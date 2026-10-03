@@ -556,7 +556,8 @@ writes it as a `UsdVolParticleField3DGaussianSplat`. The defaults convert and
 bake the light in; the decisions below are the ones worth making by hand.
 What is converted is what the renderer draws: an invisible mesh, or one
 under an invisible prim, makes no gaussians, and a PointInstancer's
-prototype is converted once per instance, where each instance stands.
+prototype is converted once per instance, where each instance stands. So is
+a mesh under an `instanceable` prim: once an instance, at the instance's path.
 
 **How many gaussians, and where.** `--resolution` is cells across the longest
 side of a box, and `--density` says which box: `per-model` measures everything

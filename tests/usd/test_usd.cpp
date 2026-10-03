@@ -7918,6 +7918,49 @@ TEST_CASE("a skinned stage is read in the pose it holds at the time asked for", 
     }
 }
 
+// A MESH UNDER AN INSTANCEABLE PRIM IS CONVERTED, ONCE AN INSTANCE.
+//
+// `Traverse()` stops at an instance: what is under it lives in a prototype,
+// and the default predicate does not walk instance proxies. A wheel authored
+// once and referenced, instanceable, at two places came out of the read as no
+// mesh at all while Hydra drew both. Read through the proxies, each instance
+// is its own mesh, at its own path and where its instance stands.
+TEST_CASE("a mesh under instanceable prims is read once an instance, where each stands", "[usd][gpu][mesh][instancing]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path path = scratch("mesh-stage-instanceable.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "class Xform \"Wheel\"\n{\n"
+               "    def Mesh \"Tyre\"\n    {\n"
+               "        int[] faceVertexCounts = [4]\n"
+               "        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "        point3f[] points = [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0)]\n"
+               "        uniform token subdivisionScheme = \"none\"\n    }\n}\n"
+               "def Xform \"Car\"\n{\n"
+               "    def Xform \"Left\" (\n        instanceable = true\n        references = </Wheel>\n    )\n    {\n"
+               "        double3 xformOp:translate = (-3, 0, 0)\n"
+               "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+               "    def Xform \"Right\" (\n        instanceable = true\n        references = </Wheel>\n    )\n    {\n"
+               "        double3 xformOp:translate = (3, 0, 0)\n"
+               "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n}\n";
+    }
+    auto builder = geom::MeshBuilder::create(*gpu->library);
+    if (!builder) FAIL(builder.error().toString());
+    auto stage = usd::MeshStage::open(path);
+    if (!stage) FAIL(stage.error().toString());
+    auto meshes = stage->read(*builder);
+    if (!meshes) FAIL(meshes.error().toString());
+    // The class itself is abstract and draws nothing; its two instances do.
+    REQUIRE(meshes->size() == 2);
+    CHECK((*meshes)[0].path == "/Car/Left/Tyre");
+    CHECK((*meshes)[1].path == "/Car/Right/Tyre");
+    // Row major, the position in the fourth column.
+    CHECK((*meshes)[0].toWorld[3] == Catch::Approx(-3.0F));
+    CHECK((*meshes)[1].toWorld[3] == Catch::Approx(3.0F));
+    CHECK((*meshes)[0].mesh.triangles == 2);
+}
+
 // A MATERIALX GLASS KEEPS ITS CUT-OUT. UsdPreviewSurface has no transmission,
 // so a map on its opacity was the only cut-out a conversion read; a feather
 // made glass in MaterialX -- OpenPBR's `geometry_opacity`, standard_surface's

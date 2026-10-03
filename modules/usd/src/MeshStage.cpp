@@ -914,7 +914,12 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
     const SkelBindings bindings = options.skinned ? resolveSkinning(impl_->stage) : SkelBindings{};
     UsdGeomXformCache transforms(at);
     std::vector<StageMesh> meshes;
-    for (const UsdPrim& prim : impl_->stage->Traverse()) {
+    // INTO INSTANCES TOO. The default predicate stops at an `instanceable`
+    // prim, so a mesh under one -- a wheel authored once and referenced four
+    // times -- was missing from the conversion without a word, while Hydra
+    // drew it. Each instance proxy is read as the mesh it stands for, at its
+    // own path and with its own transform.
+    for (const UsdPrim& prim : impl_->stage->Traverse(UsdTraverseInstanceProxies())) {
         if (!prim.IsA<UsdGeomMesh>() || !prim.GetPath().HasPrefix(under)) {
             continue;
         }

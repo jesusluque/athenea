@@ -564,7 +564,8 @@ defecto convierten y hornean la luz dentro; lo que sigue son las decisiones
 que vale la pena tomar a mano.
 Se convierte lo que el renderizador dibuja: una malla invisible, o bajo un
 prim invisible, no da gaussianas, y el prototipo de un PointInstancer se
-convierte una vez por instancia, donde está cada una.
+convierte una vez por instancia, donde está cada una. Lo mismo una malla bajo
+un prim `instanceable`: una vez por instancia, en la ruta de la instancia.
 
 **Cuántas gaussianas, y dónde.** `--resolution` son celdas a lo largo del lado
 largo de una caja, y `--density` dice qué caja: `per-model` mide todo lo que

@@ -9119,6 +9119,16 @@ root) x (instance transform, prototype root's own transform included) x
 buffers are counted references. Nested instancers are expanded at the
 innermost level only.
 
+USD's own instancing went the same way later. `Traverse()` stops at an
+`instanceable` prim -- what is under it lives in a prototype -- so a mesh
+there was not read at all while Hydra drew it: found by the analysis of the
+Corvette conversion against upstream mesh2splat, though the Corvette has no
+instances. The read now walks `Traverse(UsdTraverseInstanceProxies())`, and
+each instance proxy is a mesh of its own, at its proxy path and with its
+instance's transform. `athenea_usd_tests "a mesh under instanceable prims*"`
+(to run on a GPU turn): a class referenced instanceable at x = -3 and x = 3
+reads as two meshes, `/Car/Left/Tyre` and `/Car/Right/Tyre`, at those places.
+
 Not fixed: a light bake of the chess set under the default lights leaves 80
 pixels of infinity in a 960x540 frame, on metallic rims and crowns, whose
 coefficients overflow half precision. The rest of the bake is right; a clamp
