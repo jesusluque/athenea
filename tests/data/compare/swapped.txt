@@ -1,0 +1,4 @@
+image     mean 0.319699 0.317542 0.258503 0.668583   max 0.721191 0.822266 0.527344 0.998047   (6144 pixels)
+reference mean 0.414091 0.480769 0.303478 0.666636   max 1.0791 1.77246 0.967773 0.99707   (6144 pixels)
+hdr       relMSE 0.110697   p99 relative 20.75   max relative 49.35
+8-bit     p99 104   max 115   over 2: 6123 of 6144 pixels

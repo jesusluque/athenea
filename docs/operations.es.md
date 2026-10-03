@@ -462,13 +462,19 @@ mismo para ambas y después cuánto se aleja la primera de la segunda, que se
 toma como referencia: el error HDR relativo (`relMSE`, p99 y mayor diferencia
 relativa) y la distribución en valores de código sRGB de 8 bits (p99, máximo,
 píxeles por encima de 2). La CPU solo lee los ficheros; cada número es de un
-kernel.
+kernel. Los kernels son los del efecto Measure (§7.1), corridos por el host
+AOFX como los corre un compositor, así que el bundle tiene que estar en la
+ruta de búsqueda: uno compilado en este árbol siempre lo está.
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `image` | ruta, obligatoria | — | un EXR |
 | `reference` | ruta | ninguna | un EXR del mismo tamaño |
-| `--window` | `X0 Y0 X1 Y1` | la imagen entera | píxeles en [X0, X1) × [Y0, Y1), filas contadas desde abajo; solo las medias, las diferencias son de toda la imagen |
+| `--window` | `X0 Y0 X1 Y1` | la imagen entera | píxeles en [X0, X1) × [Y0, Y1), filas contadas desde abajo; solo las medias, las diferencias son de toda la imagen. Un X1 o Y1 de 0, o más allá del borde, es el borde |
+| `--heatmap` | ruta | ninguna | escribe además la imagen del efecto, un EXR del tamaño de `image` |
+| `--show` | `source`, `difference`, `relative`, `codes` | `codes` | lo que dibuja `--heatmap`: el `mode` del efecto Measure (§7.1) |
+| `--gain` | número ≥ 0 | `1` | por cuánto se multiplica `--heatmap`; los números no dependen de él |
+| `--path` | directorio ‹repetible› | ninguno | directorios de bundles buscados después de `$AOFX_PLUGIN_PATH` |
 
 Una media conserva el signo, y una diferencia no: un horno blanco que no debe
 devolver más de 1, o un plano convertido que debe cubrir todos sus píxeles, es
@@ -477,6 +483,7 @@ una media.
 ```sh
 athenea compare cloud.exr mesh.exr
 athenea compare furnace.exr --window 192 192 320 320
+athenea compare render.exr golden.exr --heatmap where.exr --show relative --gain 4
 ```
 
 ### 2.12 `athenea migrate` — los ficheros de lucabRTrender con los nombres de athenea
@@ -1397,6 +1404,35 @@ dos veces se carga una:
 declara cada bundle. `athenea aofx run` corre un efecto sobre ficheros EXR, con
 `--param nombre=valor` para lo que declare.
 
+### 7.1 Measure — `rt.sparrow.aofx.measure`
+
+Un nodo de QC: `Source` frente a `Reference` (opcional), medidas en el
+dispositivo donde ya están, con los números colgados de la salida. Es la
+implementación de `athenea compare`, y el mismo bundle carga en openFXplayer.
+
+| Parámetro | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `mode` | choice: `source`, `difference`, `relative`, `codes` | `codes` | la imagen de salida. `source` deja pasar Source; `difference` es \|S − R\| × gain, alfa 1; `relative` es una rampa (negro, azul, cian, verde, amarillo, rojo) de \|S − R\| / max(\|R\|, 0.001) del canal mayor, rojo en 1 / gain; `codes` colorea los píxeles cuya diferencia de 8 bits pasa de `threshold`, rojo en 32 / gain, y deja el resto en negro. Sin Reference la imagen es Source |
+| `gain` | número ≥ 0 | `1` | solo el mapa de calor |
+| `threshold` | entero 0–255 | `2` | valores de código de 8 bits que un píxel puede diferir sin contar como por encima |
+| `window` | cuatro números, píxeles | `0 0 0 0` | X0 Y0 X1 Y1 en píxeles de Source, filas desde abajo; un X1 o Y1 de 0 es el borde. Solo las medias y los máximos |
+
+Lo que adjunta, todo floats. Una cuenta son dos floats, `alto × 2^24 + bajo`,
+cada uno exacto (alto es 0 por debajo de 16 777 216):
+
+| Id | Valores |
+|---|---|
+| `source` | media R G B A, máximo R G B A, suma R G B A, los píxeles de la ventana (alto, bajo) |
+| `reference` | lo mismo de Reference; solo si está conectada |
+| `hdr` | relMSE, diferencia relativa p99, mayor diferencia relativa, la suma del error cuadrático relativo, píxeles (alto, bajo) |
+| `codes` | p99 de 8 bits, máximo de 8 bits, píxeles por encima de `threshold` (alto, bajo), `threshold`, píxeles (alto, bajo) |
+
+La diferencia relativa va en bins de un octavo de octava desde 2^-16, así que
+su p99 y su máximo son la cota superior de un bin (en torno al 9 %). Las sumas
+están para un host que divide en double, como hace `athenea compare`. Dos
+imágenes de tamaños distintos se rechazan (`measure compares pictures of one
+size`), y también una ventana sin nada dentro (`measure: an empty window`).
+
 ## 8. Referencia
 
 ### 8.1 Variables de entorno
@@ -1466,6 +1502,8 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 |---|---|---|
 | `no GPU device` (los tests se saltan) | no se pudo abrir dispositivo | mira `athenea info`; en Linux pon `ATHENEA_BACKEND` |
 | `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
+| `no Measure bundle on the AOFX search path` | `athenea compare` no encontró `rt.sparrow.aofx.measure` | compila el target `athenea_aofx_measure`, o da su directorio con `--path` |
+| `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |
 | `this build reads no .spz` | faltaba zstd cuando se compiló este binario | recompila con zstd, o convierte la captura en otro sitio |
 | un `.sog` rechazado | faltaba libwebp | instálalo y recompila |
