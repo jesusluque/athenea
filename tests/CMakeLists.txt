@@ -41,6 +41,10 @@ athenea_test(athenea_gpu_tests
     SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp
     LIBS athenea::gpu athenea::render)
 
+athenea_test(athenea_colour_tests
+    SOURCES colour/test_colour.cpp
+    LIBS athenea::colour)
+
 athenea_test(athenea_scene_tests
     SOURCES scene/test_loading.cpp
     LIBS athenea::scene)

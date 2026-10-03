@@ -15,8 +15,8 @@ cmake --build build/macos-arm64-debug --target athenea_render_tests   # one test
 ```
 
 - **Test binaries** are `athenea_<area>_tests` (core, gpu, scene, render,
-  geom, material, technique, lod, volume, usd, mcp, view, gpu_host, aofx,
-  sched), declared in `tests/CMakeLists.txt` (`athenea_test`), sources in
+  colour, geom, material, technique, lod, volume, usd, mcp, view, gpu_host,
+  aofx, sched), declared in `tests/CMakeLists.txt` (`athenea_test`), sources in
   `tests/<area>/`. `athenea_host_tests` (tests/usd/test_host.cpp) drives the
   plugin through `UsdImagingGLEngine` and deliberately links no `athenea::usd`,
   so the delegate's classes exist only in the plugin.
@@ -95,13 +95,14 @@ the ones above it.
 | io | CPU file readers (PLY header, SPZ, SOG zip/WebP), EXR with attributes |
 | gpu | slang-rhi device, `ShaderLibrary`, `ComputeKernel`, `CommandBatch`, `Buffer`; `gpu/algo` for PrefixSum and RadixSort |
 | gpu_host | gpe adopting slang-rhi's device: one `MTLDevice` or CUDA context, buffers shared without copies; the crossing as free functions (`Views.h`) for a program with a context of its own |
+| colour | `ColourCompiler` (OpenColorIO as a compiler: a colour space or a display and view into a generated Slang function `athenea_cs_<hash>` and its LUTs), `ColourNames` (what a colour space's name means) |
 | scene | `CloudLoader`: raw records uploaded, decoded on the GPU into `GpuSplats` / `GpuPoints` |
 | render | `TileRasterizer`, `GaussianRayTracer`, `PointRasterizer`, `ReferenceRenderer`, `Camera`/`Projection`, `SplatEdit` |
 | geom | `MeshBuilder`: Hydra meshes triangulated, smooth-normalled and their primvars expanded on the GPU, in `HdMeshUtil`'s order |
 | world | `GpuScene` (vertex/index/primvar pools, instance records), `Instancing` (Hydra instancer chains), `RayTracingScene` (BLAS/TLAS), `BvhScene` (two-level compute LBVH) |
-| material | `TextureStore` (decode, mips, UDIM, the texture table), `MaterialCompiler` (MaterialX graphs into Slang), the lobe library |
+| material | `TextureStore` (decode into the working space, mips, UDIM, the texture table), `MaterialCompiler` (MaterialX graphs into Slang), the lobe library |
 | light | UsdLux lights on the device: a record per light, and how a shading point samples one |
-| technique | how a frame is drawn: `VisibilityRaster` / `VisibilityTrace` / `VisibilityBvh` (same ids), `HeadlightShading`, `AovShading`, `Denoiser` (OIDN on the engine's own queue: Metal, CUDA, and Vulkan through CUDA with imported memory), `DisplayTransform` (view transforms, and OpenColorIO compiled into a kernel), `SplatVisibility` (per-part visibility fields: baked once, a product of table reads a frame, no ray) |
+| technique | how a frame is drawn: `VisibilityRaster` / `VisibilityTrace` / `VisibilityBvh` (same ids), `HeadlightShading`, `AovShading`, `Denoiser` (OIDN on the engine's own queue: Metal, CUDA, and Vulkan through CUDA with imported memory), `DisplayTransform` (view transforms, and an OpenColorIO view through `colour::ColourCompiler`), `SplatVisibility` (per-part visibility fields: baked once, a product of table reads a frame, no ray) |
 | lod | `LodBuilder`, `CutSelector`; `Athc.h` for the `.athc` reader/writer and `StreamingPool` |
 | usd | `Engine`, `StageRenderer`, `Export`; the `hdAthenea` plugin; codeless schemas in `modules/usd/schemas` |
 | aofx | this engine's side of the AOFX host (aopenfx `host/`, ABI 26): capabilities, `renderEffect`, the bundles under plugins/ |

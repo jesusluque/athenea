@@ -108,6 +108,9 @@ struct Light {
     uint32_t     shadowCategory = 0xFFFFFFFFU;
     /// A dome's lat-long image, resolved. Empty: the light is its colour.
     std::string  texture;
+    /// The colour space it is authored in (USD's `colorSpace`), as
+    /// TextureStore reads a name. Empty: the file decides.
+    std::string  textureColourSpace;
     /// The collections USD resolved into category names. Empty: unlinked,
     /// which reaches every prim. Whoever owns both lights and prims turns
     /// these into the bits below.

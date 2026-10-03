@@ -825,6 +825,19 @@ display and view into the kernel. `--edr` asks for a float surface and takes
 ACES 2.0 up to the screen's own peak, which on a standard display is the same
 image as without it.
 
+A texture is read in the colour space its material or light names --
+MaterialX's `colorspace`, a UsdUVTexture's `sourceColorSpace`, USD's
+`colorSpace` on the file input, a dome's `colorSpace` on
+`inputs:texture:file` -- and brought into the working space (linear
+Rec.709) on the device. Names are those of OpenColorIO's studio config
+(`srgb_texture`, `lin_rec709`, `acescg`, `g22_rec709`, ...), its aliases and
+roles, USD's (`lin_ap1_scene`, `srgb_rec709_scene`, ...) and UsdUVTexture's
+(`sRGB`, `raw`, `auto`). `raw`, `data`, `Non-Color`, `none`, `identity` and
+`Utility - Raw` read the file as data. No name, or `auto`: an 8-bit image is
+sRGB unless the file says otherwise, anything else linear. A name nothing
+knows is warned of once and the file is read as it says. Without OpenColorIO
+in the build only sRGB, linear Rec.709 and data are known.
+
 `athenea view --snapshot` writes the frame **as shown**, display-encoded and with
 the panels in it. It is a screenshot, not a render output.
 
@@ -1333,6 +1346,7 @@ A script's own header says what it needs and where it puts things.
 | What is printed | What it means | What to do |
 |---|---|---|
 | `no GPU device` (tests skip) | no device could be opened | check `athenea info`; on Linux set `ATHENEA_BACKEND` |
+| `colour: no colour space '<name>' in <config>; read as the file says` | a texture names a colour space neither the config nor the studio config knows | correct the name (`athenea info` says whether OpenColorIO is built in); the texture is read as if no colour space were given |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |
 | `this build reads no .spz` | zstd was missing when this binary was built | rebuild with zstd, or convert the capture elsewhere |
 | `.sog` refused | libwebp was missing | install it and rebuild |

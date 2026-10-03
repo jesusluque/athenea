@@ -55,6 +55,7 @@
 #include "athenea/usd/PrimData.h"
 #include "athenea/technique/Denoiser.h"
 #include "athenea/scene/ThinWall.h"
+#include "athenea/colour/ColourCompiler.h"
 #include "athenea/usd/StageRenderer.h"
 
 using namespace athenea;
@@ -820,6 +821,43 @@ TEST_CASE("materials bound in USD shade a mesh: MaterialX with a texture, and Us
         for (size_t k = 0; k < 3; ++k) {
             CHECK(srgbCentre[k] == Catch::Approx(linearised[k]).epsilon(0.005));
             CHECK(rawCentre[k] == Catch::Approx(textureColour[k]).epsilon(0.005));
+        }
+        // Any other space the config knows: ACEScg is brought into linear
+        // Rec.709 by the function OpenColorIO compiled for it, inside the
+        // decode kernel, and a data space by any of its names is read as held.
+        // Before colour::ColourNames both were read raw.
+        if (colour::ocioBuilt()) {
+            const auto acescg = shadeWith("acescg", "material_acescg.usda");
+            const float* acescgCentre = acescg.rgba.data() + (60 * 160 + 80) * 4;
+            const auto wrongAcescg =
+                squareMismatches(*gpu, acescg, {acescgCentre[0], acescgCentre[1], acescgCentre[2]});
+            // ACES AP1 to Rec.709, D60 to D65 by Bradford: the published matrix,
+            // what the colour tests check the compiled function against on the
+            // device; here only the journey is in question.
+            const std::array<std::array<float, 3>, 3> ap1To709{{{1.70505F, -0.62179F, -0.08326F},
+                                                                {-0.13026F, 1.14080F, -0.01055F},
+                                                                {-0.02400F, -0.12897F, 1.15297F}}};
+            std::printf("  acescg: centre %.4f %.4f %.4f\n", double(acescgCentre[0]), double(acescgCentre[1]),
+                        double(acescgCentre[2]));
+            CHECK(wrongAcescg[2] > 800);
+            CHECK(wrongAcescg[0] == 0);
+            CHECK(wrongAcescg[1] == 0);
+            for (size_t k = 0; k < 3; ++k) {
+                const float want = ap1To709[k][0] * textureColour[0] + ap1To709[k][1] * textureColour[1] +
+                                   ap1To709[k][2] * textureColour[2];
+                CHECK(acescgCentre[k] == Catch::Approx(want).epsilon(0.005));
+            }
+        }
+        const auto data = shadeWith("Non-Color", "material_noncolor.usda");
+        const float* dataCentre = data.rgba.data() + (60 * 160 + 80) * 4;
+        const auto wrongData = squareMismatches(*gpu, data, {dataCentre[0], dataCentre[1], dataCentre[2]});
+        std::printf("  Non-Color: centre %.4f %.4f %.4f\n", double(dataCentre[0]), double(dataCentre[1]),
+                    double(dataCentre[2]));
+        CHECK(wrongData[2] > 800);
+        CHECK(wrongData[0] == 0);
+        CHECK(wrongData[1] == 0);
+        for (size_t k = 0; k < 3; ++k) {
+            CHECK(dataCentre[k] == Catch::Approx(textureColour[k]).epsilon(0.005));
         }
     }
     SECTION("UsdPreviewSurface with a UsdUVTexture read through UsdPrimvarReader") {
@@ -2231,6 +2269,27 @@ TEST_CASE("a dome light's image lights a Lambert plane, and shows where nothing 
     CHECK(c[0] > 800);
     CHECK(c[1] == 0);
     CHECK(corner[0] == Catch::Approx(linear).margin(0.01F));
+
+    // The same image authored raw: its colour space reaches the texture
+    // store through the light's network in the scene index, and the sky
+    // shows the code values as they are. Before, every dome was read as the
+    // file said (sRGB for 8 bits).
+    const fs::path rawPath = scratch("light_dome_raw.usda");
+    {
+        std::ofstream out(rawPath);
+        out << kSquareStage
+            << "def DomeLight \"Sky\"\n{\n"
+               "    float inputs:intensity = 1\n"
+               "    color3f inputs:color = (1, 1, 1)\n"
+            << "    asset inputs:texture:file = @" << png.string() << "@ ( colorSpace = \"raw\" )\n"
+            << "}\n";
+    }
+    auto rawRenderer = usd::StageRenderer::open(rawPath);
+    if (!rawRenderer) FAIL(rawRenderer.error().toString());
+    auto rawImage = (*rawRenderer)->render("/Camera", 0.0, w, h);
+    if (!rawImage) FAIL(rawImage.error().toString());
+    std::printf("  dome image authored raw: background %.4f (code %.4f)\n", double(rawImage->rgba[0]), double(code));
+    CHECK(rawImage->rgba[0] == Catch::Approx(code).margin(0.01F));
 }
 
 /// The scene index's half of light linking, through Hydra. Hidden until

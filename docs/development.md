@@ -41,21 +41,22 @@ document, the header is right.
 | 4 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — one per format, each with its own layout |
 | 5 | gpu | `gpu/Device.h` (backends, the shader directory, the cache), `gpu/ComputeKernel.h` (binding by name) |
 | 6 | gpu_host | `gpu_host/Context.h` — one device, two runtimes on it, one thread that talks to it |
-| 7 | scene | `scene/GpuClouds.h` — the cloud layout every renderer reads |
-| 8 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h` |
-| 9 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
-| 10 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
-| 11 | light | `light/LightTable.h` — a light on the device |
-| 12 | world | `world/GpuScene.h` — the scene as every technique reads it |
-| 13 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 14 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
-| 15 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`) |
-| 16 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
-| 17 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
-| 18 | view | `view/Viewer.h` — the window's options |
+| 7 | colour | `colour/ColourCompiler.h` (OpenColorIO as a compiler of Slang functions and LUTs), `colour/ColourNames.h` (what a colour space's name means) |
+| 8 | scene | `scene/GpuClouds.h` — the cloud layout every renderer reads |
+| 9 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h` |
+| 10 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
+| 11 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
+| 12 | light | `light/LightTable.h` — a light on the device |
+| 13 | world | `world/GpuScene.h` — the scene as every technique reads it |
+| 14 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 15 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
+| 16 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`) |
+| 17 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
+| 18 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
+| 19 | view | `view/Viewer.h` — the window's options |
 
-One thing that looks like a violation and is not: `render` (8) links
-`aofx::aofx` (17). That target is headers only, an `INTERFACE` library, and
+One thing that looks like a violation and is not: `render` (9) links
+`aofx::aofx` (18). That target is headers only, an `INTERFACE` library, and
 what `render` takes from it is `Mat4` and `Vec3`. The ordering rule is about
 compiled libraries.
 
