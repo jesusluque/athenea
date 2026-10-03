@@ -72,6 +72,15 @@ struct GpuSplats {
     /// a rig's influences, a visibility's parts -- is read through this
     /// (`CloudLoader::keptOnly`).
     gpu::Buffer origin;
+    /// THE SHADING NORMAL, apart from the frame: one uint a splat, octahedral
+    /// 2 x 16 bits (packing.slang's `packNormal`), in the cloud's own space.
+    /// What a relit gaussian is lit with where the cloud carries it -- a
+    /// conversion from a mesh does, so the relief its normal map drew is not
+    /// lost to the disc's short axis -- while the frame keeps answering
+    /// everything geometric (the footprint, a ray's hit). Empty for a capture;
+    /// `hasNormals` is how a kernel asks. Whatever turns the frame (the
+    /// skinner) turns this with it.
+    gpu::Buffer normals;
     uint32_t    transferWords = 0;
     uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9 or 36
     /// WHAT THIS CLOUD CASTS ON THE SPACE AROUND IT, baked by part (a part is
@@ -95,6 +104,7 @@ struct GpuSplats {
 
     [[nodiscard]] bool hasPbr() const noexcept { return pbr.valid(); }
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
+    [[nodiscard]] bool hasNormals() const noexcept { return normals.valid(); }
     [[nodiscard]] bool hasTransfer() const noexcept { return transfer.valid() && transferCount >= 9; }
     /// Whether it carries which ways out are open (`shadowBits`).
     [[nodiscard]] bool hasShadowBits() const noexcept { return shadowBits.valid(); }
@@ -161,6 +171,8 @@ struct SplatStreams {
     /// One int32 a splat, nonzero for a thin-walled glass
     /// (`primvars:athenea:splat:thinWalled`); read only beside the PBR arrays.
     FloatStream thinWalled;
+    /// Three floats a splat, the shading normal (`primvars:athenea:splat:normal`).
+    FloatStream normals;
 };
 
 /// A point cloud as separate arrays, the way UsdGeomPoints stores one.
@@ -215,7 +227,8 @@ private:
     [[nodiscard]] Result<void> sogSlice(const SogOnDevice& on, uint32_t first, uint32_t n, const gpu::Buffer& into);
     [[nodiscard]] Result<GpuSplats> startSplats(const std::string& source, uint32_t declared, uint32_t keep,
                                                 bool withPbr = false, bool withCrypto = false,
-                                                uint32_t transferCount = 0, bool withShadowBits = false);
+                                                uint32_t transferCount = 0, bool withShadowBits = false,
+                                                bool withNormals = false);
     /// Validates and decodes `n` records in `raw` into `splats` after `written`;
     /// `recordBase` is the first of them in the whole cloud, for `origin`.
     [[nodiscard]] Result<uint32_t> decodeSlice(const gpu::Buffer& raw, const io::SplatEncoding& e, uint32_t n,

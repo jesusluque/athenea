@@ -115,7 +115,10 @@ comprobación.
 
 - **El contrato entre módulos es `common/packing.slang`**: cómo se empaquetan
   en cuatro palabras la opacidad, la escala, el cuaternión y el color DC de un
-  splat. Todo lo que escribe una nube y todo lo que la lee pasa por ahí.
+  splat, y en una la normal de sombreado opcional (`packNormal`). Todo lo que
+  escribe una nube y todo lo que la lee pasa por ahí. Un buffer opcional de
+  `GpuSplats` (`pbr`, `normals`) se enlaza tenga o no la nube -- la forma en
+  su lugar -- y un flag en los parámetros dice cuál.
 - **El índice de un splat no es el de su registro.** La validación descarta
   lo que no se puede dibujar; `GpuSplats::origin` dice de qué registro vino
   cada splat conservado. Cualquier otra cosa que un fichero guarde por
@@ -630,7 +633,10 @@ ignoraban el material, así que toda conversión salía del mismo plástico.
 
 **El mapa de normales**, donde lo hay, se lee en el marco tangente y se vuelve
 la normal de sombreado de la gaussiana — y, con `--normal-map-turns`, también
-su eje corto.
+su eje corto. La normal de sombreado se escribe diga lo que diga el flag
+(`primvars:athenea:splat:normal`, tres floats más por registro): una nube
+reiluminada se ilumina con ella y conserva el relieve, mientras el disco sigue
+sobre la cara.
 
 **La transmisión** va a un canal propio en vez de bajar la opacidad. Un
 material translúcido no es uno transparente, y bajar aquí la opacidad diría
@@ -840,6 +846,11 @@ demás es estático. En un pájaro de 4 269 858 gaussianas solo ese array tiene
 muestras de tiempo, y son 609 matrices — que es lo que hace que una nube
 animada cueste kilobytes por frame en vez de decenas de megabytes.
 
+El skinner gira la normal de sombreado con el marco, con la misma mezcla y
+como una normal (`(M a) x (M b)` para dos direcciones `a`, `b` de su superficie,
+que es la inversa traspuesta salvo escala), así que el relieve de un miembro
+se dobla con él.
+
 Un bake se rechaza con `--skinned`, porque la luz horneada en una pose está
 mal en todas las demás.
 
@@ -872,7 +883,7 @@ armónicos y sus coeficientes, el extent — y una cámara que lo encuadra salvo
 
 Al lado, los primvars que dicen lo que necesita este motor y los schemas que
 los declaran: `AtheneaSplatLightingAPI` (`relight`, `litBody`, y metallic,
-roughness y transmission por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
+roughness, transmission y la normal de sombreado por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
 tiene esqueleto, `AtheneaSplatCryptomatteAPI` con un id por gaussiana y el
 manifest que los nombra, y `AtheneaSplatVisibilityAPI` una vez que ha corrido `athenea
 visibility`. La referencia de atributos es

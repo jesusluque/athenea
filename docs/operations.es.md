@@ -211,8 +211,9 @@ Cómo se funde cada uno depende de lo que es: `skel:jointIndices` con
 `skel:jointWeights` como un rig (el peso de cada articulación sumado, las cuatro
 más pesadas conservadas); un array cuyo nombre acaba en `shadowBits` bit a bit;
 cualquier otro entero -- un id, una parte, una lámina -- como lo que no se
-puede fundir entre sí; cualquier float -- metallic, roughness, un transfer, una
-normal -- como una media. Metallic, roughness y transmisión también se comparan
+puede fundir entre sí; `primvars:athenea:splat:normal` como una dirección (la
+media ponderada hecha de nuevo un vector unitario); cualquier otro float --
+metallic, roughness, un transfer -- como una media. Metallic, roughness y transmisión también se comparan
 como el color. Un array muestreado en el tiempo se funde muestra a muestra. Un
 fichero de splats se escribe como una escena nueva, como la escribe
 `athenea convert`.
@@ -364,7 +365,7 @@ receta es §3.1.
 | `--max-cells` | entero | `262144` | celdas como mucho que recorre un triángulo |
 | `--texture-size` | entero | `1024` | un mapa se lee no mayor que esto; 0 lo lee a su tamaño |
 | `--no-textures` | flag | apagado | ignorar los mapas; los materiales se quedan con sus valores constantes |
-| `--normal-map-turns` | flag | apagado | el mapa de normales gira la gaussiana, no solo su sombreado |
+| `--normal-map-turns` | flag | apagado | el mapa de normales gira la gaussiana, no solo su sombreado. La normal de sombreado se escribe en ambos casos (`primvars:athenea:splat:normal`) |
 | `--no-displacement` | flag | apagado | ignorar el displacement de los materiales: toda gaussiana se queda sobre la malla plana |
 | `--displace-refine` | entero, 1 a 64 | `8` | donde el relieve estira una celda, partirla en como mucho este número de gaussianas en cada uno de sus dos ejes |
 | `--simplify` | número, 0 a 1 | `0` (apagado) | un bloque de celdas cuyo color, metallic, roughness, recorte y normales varían no más que esto -- en el bloque y en un bloque más allá de cada lado, todo dentro de un triángulo -- se convierte en una gaussiana de su tamaño. Colores y recorte van de 0 a 1; las normales se comparan por la longitud de su diferencia, más o menos el ángulo en radianes |
@@ -711,6 +712,12 @@ grueso cuyo `primvars:athenea:lod:cell` (en sus propias unidades) no ocupa más 
 `primvars:athenea:lod:threshold` píxeles donde la nube está más cerca -- el más fino
 si ninguno lo cumple --, y sólo ese nivel se posa.
 
+Una nube que guarda normales de sombreado (las de una conversión,
+`primvars:athenea:splat:normal`) las guarda en su `.athc`: cuatro bytes más por
+gaussiana, y en los niveles fundidos la media ponderada de lo que representan
+hecha unitaria de nuevo. Es la versión 2 del formato; un fichero de la versión
+1, que no tiene, se sigue leyendo.
+
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
 dibujan su gaussiana fundida, así que la nube está pero roma, y se afina según
 aterrizan. `athenea stage` espera a que los streams se asienten antes de una
@@ -822,6 +829,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:transferIndirect` | float[] ‹27 por gaussiana› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
 
 `relight` dice que los colores son un albedo que las luces de la escena tienen
 que iluminar. `litBody` dice que ya son la luz sobre el cuerpo del material,
@@ -852,6 +860,16 @@ forma suave.
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077
 con índice 1,5) y el frame sombrea sólo su reflejo.
+`normal` es la normal de sombreado, aparte del marco de la gaussiana: hacia
+dónde miraba la superficie una vez que el normal map de la malla la giró, en el
+espacio propio del field, como las posiciones. Una gaussiana reiluminada se
+ilumina con ella -- puesta del lado de su disco en que está el ojo, porque un
+disco se ve por las dos caras -- en lugar de con su eje más corto, que es la
+normal de la propia cara y no sabe nada del mapa; el marco sigue respondiendo
+a todo lo geométrico (la huella, dónde corta un rayo al disco). `athenea
+mesh2splat` la escribe siempre (doce bytes por gaussiana en el fichero, cuatro
+en el dispositivo); un esqueleto que lleva la nube la gira igual que gira el
+marco; una captura no tiene.
 
 **`AtheneaSplatSkinningAPI`** — los joints que llevan una nube.
 
@@ -1220,7 +1238,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | un host no ofrece el renderer | no encontró el plugin | pon `PXR_PLUGINPATH_NAME` a `<build>/plugin/usd` |
 | `render product '<ruta>' has no resolution` / `no vars` | el prim de settings está incompleto | dale al producto resolución y vars ordenadas |
 | a una nube convertida le faltan las últimas mallas | el presupuesto se acabó en orden de malla | sube `--max-splats`, o con `--density per-mesh` sube `--cell-min` |
-| los reflejos de una nube salen más planos que los de la malla | sus gaussianas no están orientadas por el normal map | convierte con `--normal-map-turns` |
+| los reflejos de una nube salen más planos que los de la malla | no lleva normal de sombreado (`primvars:athenea:splat:normal`): se convirtió antes de que las conversiones la escribieran | conviértela de nuevo; `--normal-map-turns` además gira los propios discos |
 | `cells of relief wanted more than N gaussians`, y el relieve muestra huecos en sus pendientes más fuertes | el relieve estiró esas celdas más de lo que permite la partición | sube `--displace-refine`; un polo de las coordenadas de textura estira sin límite y deja unas pocas sea cual sea el valor |
 | los reflejos de una nube salen más blandos que los de la malla | la celda de la conversión es el kernel de desenfoque: una nube se lee como la malla a `r + 9c/R`, con `c` la celda y `R` el radio de curvatura | convierte con `--resolution` más fina: un espejo de roughness `r` quiere una celda por debajo de `r/9` de ese radio. Lo paga el fichero, no el frame -- quince veces las gaussianas fueron un 36 % más de tiempo por frame y dieciséis veces el disco |
 | una bola de cristal enseña la sala pero no la dobla | la nube no tiene índice | `athenea mesh2splat` escribe el IOR del material de cristal; en una nube de otro origen pon `primvars:athenea:splat:ior` (1.5 es cristal). Una nube guarda un solo índice: con dos cristales de IOR distinto se queda el primero y la conversión lo avisa |

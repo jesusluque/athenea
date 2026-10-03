@@ -13,6 +13,9 @@ StructuredBuffer<uint>     srcSh;
 RWStructuredBuffer<float4> positions;
 RWStructuredBuffer<uint>   shape;
 RWStructuredBuffer<uint>   sh;
+// The shading normals, where `params.normals` says the cloud keeps them.
+StructuredBuffer<uint>     srcNormals;
+RWStructuredBuffer<uint>   normals;
 ConstantBuffer<LodParams>  params;
 
 [shader("compute")]
@@ -30,5 +33,8 @@ void lodGather(uint3 tid: SV_DispatchThreadID) {
     }
     for (uint w = 0; w < params.shWords; ++w) {
         sh[j * params.shWords + w] = srcSh[k * params.shWords + w];
+    }
+    if (params.normals != 0) {
+        normals[j] = srcNormals[k];
     }
 }

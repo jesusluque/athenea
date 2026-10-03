@@ -28,6 +28,8 @@ public struct DecodeParams {
     public uint shadowBits;
     // The first record of this slice in the whole cloud, for `origin`.
     public uint recordBase;
+    // Where the three fields of a shading normal start, or kNoField.
+    public uint normal;
 };
 
 public float fieldOf(StructuredBuffer<float> raw, uint record, uint stride, uint field) {

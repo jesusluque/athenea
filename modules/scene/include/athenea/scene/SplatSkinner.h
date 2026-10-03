@@ -56,9 +56,12 @@ public:
     /// With `motion`, and `SplatSkinInput::skinningXformsEnd` set, it also
     /// writes what the shutter moved each gaussian -- two words of halves,
     /// in the cloud's own space, which is what the rasteriser's blur takes.
+    /// With `normals`, and a rest cloud that keeps shading normals
+    /// (`GpuSplats::hasNormals`), those are turned by the same blend as the
+    /// frame and written there, one word a gaussian.
     [[nodiscard]] Result<void> skin(gpu::CommandBatch& batch, const SplatSkinInput& input,
                                     gpu::Buffer& positions, gpu::Buffer& shape,
-                                    gpu::Buffer* motion = nullptr);
+                                    gpu::Buffer* motion = nullptr, gpu::Buffer* normals = nullptr);
 
 private:
     gpu::ComputeKernel kernel_;

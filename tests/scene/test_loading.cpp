@@ -584,6 +584,123 @@ TEST_CASE("a skinned cloud follows its joints, and nothing else moves", "[scene]
     }
 }
 
+// A SHADING NORMAL TURNS WITH THE LIMB IT IS ON.
+//
+// A converted gaussian keeps the normal its mesh's normal map gave it, apart
+// from its frame (GpuSplats::normals). A skeleton that carried the frame and
+// left that normal where the bind pose put it would light a raised arm as
+// though it still hung down: the relief would stay with the light, not with
+// the arm. So the skinner turns it by the same blend -- as a normal, by the
+// inverse transpose, which for a rigid joint is the turn itself and for one
+// that stretches is not -- and it stays on the side of its disc it was on.
+// Made and compared on the device; three counters come back.
+TEST_CASE("a skinned cloud's shading normals turn with its joints", "[scene][gpu][skinning][normals]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = gpu->library->device();
+    auto make = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_normal_check", "normalSkinMake");
+    auto joints = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_normal_check", "normalSkinJoints");
+    auto compare = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_normal_check", "normalSkinCompare");
+    auto skinner = scene::SplatSkinner::create(*gpu->library);
+    if (!make) FAIL(make.error().toString());
+    if (!joints) FAIL(joints.error().toString());
+    if (!compare) FAIL(compare.error().toString());
+    if (!skinner) FAIL(skinner.error().toString());
+
+    constexpr uint32_t kCount = 4096;
+    constexpr uint32_t kPerSplat = 4;
+    constexpr uint32_t kJoints = 2;
+    const auto buffer = [&](uint64_t bytes, uint32_t element, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = bytes;
+        desc.elementBytes = element;
+        desc.label = label;
+        auto made = gpu::Buffer::create(device, desc);
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    scene::GpuSplats rest;
+    rest.count = kCount;
+    rest.positions = buffer(uint64_t{kCount} * 16, 16, "normals.restPositions");
+    rest.shape = buffer(uint64_t{kCount} * 16, 4, "normals.restShape");
+    rest.normals = buffer(uint64_t{kCount} * 4, 4, "normals.restNormals");
+    gpu::Buffer influences = buffer(uint64_t{kCount} * kPerSplat * 8, 8, "normals.influences");
+    gpu::Buffer xforms = buffer(uint64_t{kJoints} * 4 * 16, 16, "normals.xforms");
+    gpu::Buffer positions = buffer(uint64_t{kCount} * 16, 16, "normals.positions");
+    gpu::Buffer shape = buffer(uint64_t{kCount} * 16, 4, "normals.shape");
+    gpu::Buffer normals = buffer(uint64_t{kCount} * 4, 4, "normals.posed");
+    gpu::Buffer counts = buffer(8 * 4, 4, "normals.counts");
+
+    struct Case {
+        const char*                         name;
+        std::array<std::array<float, 4>, 3> rows;   // linear part, translation in w
+    };
+    // A turn of 1.2 radians about a slanted axis (Rodrigues' rows), and a
+    // joint that stretches and shears -- where a normal turned as a direction
+    // would go wrong.
+    const float c = std::cos(1.2F), s = std::sin(1.2F);
+    const float ax = 0.4082483F, ay = 0.8164966F, az = 0.4082483F;
+    const float k = 1.0F - c;
+    const std::array<Case, 2> cases{
+        Case{"turned",
+             {{{c + ax * ax * k, ax * ay * k - az * s, ax * az * k + ay * s, 1.5F},
+               {ay * ax * k + az * s, c + ay * ay * k, ay * az * k - ax * s, -0.75F},
+               {az * ax * k - ay * s, az * ay * k + ax * s, c + az * az * k, 0.25F}}}},
+        Case{"stretched and sheared",
+             {{{2.0F, 0.3F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.4F, 0.5F}, {0.0F, 0.0F, 0.5F, 0.0F}}}}};
+    for (const Case& one : cases) {
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["restPositions"].setBinding(rest.positions.rhi());
+            cursor["restShape"].setBinding(rest.shape.rhi());
+            cursor["restNormals"].setBinding(rest.normals.rhi());
+            cursor["influences"].setBinding(influences.rhi());
+            cursor["xforms"].setBinding(xforms.rhi());
+            cursor["shape"].setBinding(shape.rhi());
+            cursor["normals"].setBinding(normals.rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(kCount);
+            p["perSplat"].setData(kPerSplat);
+            p["joints"].setData(kJoints);
+            p["row0"].setData(one.rows[0].data(), 16);
+            p["row1"].setData(one.rows[1].data(), 16);
+            p["row2"].setData(one.rows[2].data(), 16);
+            // Sixteen bits a component of the octahedral square: a few
+            // thousandths of a degree, far inside this.
+            p["tolerance"].setData(1.0e-5F);
+        };
+        {
+            gpu::CommandBatch batch(device);
+            make->dispatch(batch, {kCount, 1, 1}, bind);
+            joints->dispatch(batch, {kJoints, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(device);
+            scene::SplatSkinInput input;
+            input.rest = &rest;
+            input.influences = &influences;
+            input.perSplat = kPerSplat;
+            input.skinningXforms = &xforms;
+            REQUIRE(skinner->skin(batch, input, positions, shape, nullptr, &normals));
+            REQUIRE(batch.submit(true));
+        }
+        {
+            const uint32_t zero[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            REQUIRE(counts.write(device, 0, sizeof(zero), zero));
+            gpu::CommandBatch batch(device);
+            compare->dispatch(batch, {kCount, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        uint32_t seen[3] = {0, 0, 0};
+        REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+        std::printf("  %-22s %u compared, %u not turned as a normal, %u on the other side of their disc\n",
+                    one.name, seen[0], seen[1], seen[2]);
+        CHECK(seen[0] == kCount);
+        CHECK(seen[1] == 0);
+        CHECK(seen[2] == 0);
+    }
+}
+
 // THE BASIS, AGAINST ITSELF.
 //
 // `sh.slang` writes the harmonics twice -- `evaluateRest` for a renderer

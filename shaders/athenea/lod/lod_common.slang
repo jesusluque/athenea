@@ -35,7 +35,9 @@ module lod_common;
 public static const uint kLevels = 10;   // 30-bit codes
 
 /// Moments per group: W, S1 (3), S2 (6: xx xy xz yy yz zz), C base colour
-/// (3), C rest (3 per basis kept, rgb per basis).
+/// (3), C rest (3 per basis kept, rgb per basis), and where the cloud keeps
+/// shading normals N (3): the sum of w n, weighed as a colour is, whose
+/// direction is the group's normal.
 public static const uint kMomentsHead = 13;
 
 public struct LodParams {
@@ -59,7 +61,11 @@ public struct LodParams {
     public uint  chunkSplats;     // splats per chunk
     public uint  chunks;
     public uint  splats;          // the whole cloud's splats
-    public uint  pad0; public uint pad1;
+    /// 1: the cloud keeps shading normals (`GpuSplats::normals`), which
+    /// follow the splats into Morton order and the cut, and whose weighted sum
+    /// is three moments more after the harmonics', renormalised per group.
+    public uint  normals;
+    public uint  pad1;
 };
 
 public uint levelShift(uint level) {

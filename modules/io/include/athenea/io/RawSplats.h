@@ -50,6 +50,12 @@ struct SplatEncoding {
     /// 8 x 8 octahedral grid over the sphere, carried as the floats their
     /// bits already are. `kNoField` for a cloud that has none.
     uint32_t shadowBits = kNoField;
+    /// WHICH WAY THE SURFACE UNDER IT FACED, apart from its frame: three
+    /// consecutive fields (x y z) of a shading normal in the cloud's own
+    /// space, the one positions and rotations are in. A conversion from a
+    /// mesh knows it -- the normal map turned it, the disc did not -- and a
+    /// capture does not, so `kNoField` is every file a trainer writes.
+    uint32_t normal = kNoField;
     /// First rest coefficient and how many basis functions per colour the file
     /// carries (0, 3, 8 or 15).
     uint32_t restBase = 0;

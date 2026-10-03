@@ -113,8 +113,11 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
 `technique`, `volume`, `usd`, `view`, and `test` for the check kernels.
 
 - **The cross-module contract is `common/packing.slang`**: how a splat's
-  opacity, scale, quaternion and DC colour are packed into four words. Anything
-  that writes a cloud and anything that reads one goes through it.
+  opacity, scale, quaternion and DC colour are packed into four words, and the
+  optional shading normal into one (`packNormal`). Anything that writes a
+  cloud and anything that reads one goes through it. An optional buffer of
+  `GpuSplats` (`pbr`, `normals`) is bound whether or not the cloud has it --
+  the shape in its place -- and a flag in the parameters says which.
 - **A splat's index is not its record's.** Validation drops what cannot be
   drawn; `GpuSplats::origin` says which record each kept splat came from.
   Anything else a file keeps a gaussian and a kernel reads by splat goes
@@ -608,7 +611,9 @@ material, so every conversion came out of the same plastic.
 
 **The normal map**, where there is one, is read in the tangent frame and
 becomes the gaussian's shading normal — and, with `--normal-map-turns`, its
-short axis as well.
+short axis as well. The shading normal is written whatever the flag says
+(`primvars:athenea:splat:normal`, three floats more a record): a relit cloud is
+lit with it and keeps the relief, while the disc stays on the face.
 
 **Transmission** goes into a channel of its own rather than lowering the
 opacity. A translucent material is not a transparent one, and lowering the
@@ -807,6 +812,10 @@ is static. On a bird of 4 269 858 gaussians only that array has time samples,
 and it is 609 matrices — which is what makes an animated cloud cost kilobytes
 a frame instead of tens of megabytes.
 
+The skinner turns the shading normal with the frame, by the same blend and
+as a normal (`(M a) x (M b)` for two directions `a`, `b` in its surface, which
+is the inverse transpose up to scale), so a limb's relief bends with it.
+
 A bake is refused with `--skinned`, because light baked in one pose is wrong in
 every other.
 
@@ -839,7 +848,7 @@ and its coefficients, the extent — and a camera framing it unless
 
 Beside them, the primvars that say what this engine needs and the schemas that
 declare them: `AtheneaSplatLightingAPI` (`relight`, `litBody`, and metallic,
-roughness and transmission a gaussian), `AtheneaSplatSkinningAPI` where the cloud
+roughness, transmission and the shading normal a gaussian), `AtheneaSplatSkinningAPI` where the cloud
 is skinned, `AtheneaSplatCryptomatteAPI` with an id a gaussian and the manifest
 that names them, and `AtheneaSplatVisibilityAPI` once `athenea visibility` has run.
 [`operations.md §4.3`](operations.md#43-the-api-schemas) is the attribute

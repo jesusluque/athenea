@@ -258,6 +258,9 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.thinWalled = held(kThinWalled);
         static const TfToken kShadowBits("athenea:splat:shadowBits");
         arrays.shadowBits = held(kShadowBits);
+        // The shading normal a conversion keeps apart from the frame.
+        static const TfToken kNormal("athenea:splat:normal");
+        arrays.normals = held(kNormal);
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();

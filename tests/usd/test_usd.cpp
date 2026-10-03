@@ -52,6 +52,7 @@
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/usd/Export.h"
+#include "athenea/usd/PrimData.h"
 #include "athenea/technique/Denoiser.h"
 #include "athenea/scene/ThinWall.h"
 #include "athenea/usd/StageRenderer.h"
@@ -9635,5 +9636,320 @@ TEST_CASE("a transfer recombined with a sky is what a bake under that sky reads"
                     counts[0], counts[1], double(counts[6]) * 1.0e-4);
         CHECK(counts[1] > 0);
         CHECK(counts[0] == 0);
+    }
+}
+
+namespace {
+
+/// Gives every record of `raw` the shading normal record `i % 5` of the
+/// table splat_normal_check.slang keeps (`tableNormal`): three floats more a
+/// record, as `athenea mesh2splat` writes the one its normal map turned.
+io::RawSplats withTableNormals(const io::RawSplats& raw) {
+    static const float kTable[5][3] = {{0.0F, 0.0F, 1.0F}, {0.6F, 0.0F, 0.8F}, {0.0F, -0.6F, 0.8F},
+                                       {-0.48F, 0.6F, 0.64F}, {0.0F, 0.8F, -0.6F}};
+    io::RawSplats out = raw;
+    const uint32_t stride = raw.encoding.floatsPerRecord;
+    out.records.clear();
+    for (uint32_t i = 0; i < raw.count; ++i) {
+        const float* from = raw.records.data() + size_t{i} * stride;
+        out.records.insert(out.records.end(), from, from + stride);
+        out.records.insert(out.records.end(), kTable[i % 5], kTable[i % 5] + 3);
+    }
+    out.encoding.floatsPerRecord = stride + 3;
+    out.encoding.normal = stride;
+    return out;
+}
+
+}   // namespace
+
+// A SHADING NORMAL GOES OUT AND COMES BACK.
+//
+// A converted gaussian keeps the normal its mesh's normal map gave it, apart
+// from its frame: `primvars:athenea:splat:normal` (normal3f, declared by
+// AtheneaSplatLightingAPI) in a stage, a word a splat in `GpuSplats::normals`,
+// and a word an element of every block in a `.athc`. Each way back must give
+// the normals that went out: the stage read as records
+// (`readParticleFieldRecords`), the stage read as Hydra reads it (its arrays
+// interleaved on the device, `splatStreams`), and the levels of detail written
+// to a file and read again. And a `.athc` of the version before normals, which
+// has none, still reads. Compared on the device; counters come back.
+TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc still reads",
+          "[usd][gpu][export][lod][normals]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_normal_check", "normalsAgainstTable");
+    if (!check) FAIL(check.error().toString());
+    const io::RawSplats raw = withTableNormals(cloud(3000));
+    auto direct = loader->upload(raw, 0);
+    REQUIRE(direct);
+    REQUIRE(direct->hasNormals());
+    // Validation drops none of these, so splat i is record i and the table
+    // says what each should hold.
+    REQUIRE(direct->count == raw.count);
+
+    gpu::BufferDesc countsDesc;
+    countsDesc.bytes = 8 * 4;
+    countsDesc.elementBytes = 4;
+    countsDesc.label = "normals.counts";
+    auto counts = gpu::Buffer::create(*gpu->device, countsDesc);
+    REQUIRE(counts);
+    const auto against = [&](const gpu::Buffer& a, const gpu::Buffer& b, uint32_t count) {
+        const uint32_t zero[8] = {};
+        REQUIRE(counts->write(*gpu->device, 0, sizeof(zero), zero));
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["normalsA"].setBinding(a.rhi());
+            cursor["normalsB"].setBinding(b.rhi());
+            cursor["counts"].setBinding(counts->rhi());
+            cursor["params"]["count"].setData(count);
+            // Sixteen bits a component of the octahedral square, and a float
+            // normalised on the way: a hundred-thousandth is generous.
+            cursor["params"]["tolerance"].setData(1.0e-5F);
+        });
+        REQUIRE(batch.submit(true));
+        std::array<uint32_t, 3> seen{};
+        REQUIRE(counts->read(*gpu->device, 0, sizeof(seen), seen.data()));
+        return seen;
+    };
+    const auto self = against(direct->normals, direct->normals, direct->count);
+    CHECK(self[0] == raw.count);
+    CHECK(self[1] == 0);
+
+    const fs::path path = scratch("normals.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.relight = true;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, path, options));
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    REQUIRE(stage);
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath("/World/Splats"));
+    REQUIRE(prim);
+    CHECK(prim.HasAPI(TfToken("AtheneaSplatLightingAPI")));
+    const UsdGeomPrimvar written = UsdGeomPrimvarsAPI(prim).GetPrimvar(TfToken("athenea:splat:normal"));
+    REQUIRE(written);
+    CHECK(written.GetTypeName() == SdfValueTypeNames->Normal3fArray);
+    CHECK(written.GetInterpolation() == UsdGeomTokens->vertex);
+    // Declared by the schema, so it is not a custom attribute.
+    CHECK_FALSE(written.GetAttr().IsCustom());
+
+    SECTION("read back as records") {
+        auto records = usd::readParticleFieldRecords(path);
+        REQUIRE(records);
+        REQUIRE(records->encoding.normal != io::SplatEncoding::kNoField);
+        auto back = loader->upload(*records, 0);
+        REQUIRE(back);
+        REQUIRE(back->hasNormals());
+        REQUIRE(back->count == direct->count);
+        const auto seen = against(back->normals, direct->normals, back->count);
+        std::printf("  through records: %u compared, %u off the table, %u apart from the cloud written\n", seen[0],
+                    seen[1], seen[2]);
+        CHECK(seen[1] == 0);
+        CHECK(seen[2] == 0);
+    }
+
+    SECTION("read back as Hydra reads it") {
+        const UsdVolParticleField3DGaussianSplat field(prim);
+        usd::ParticleFieldArrays arrays;
+        field.GetPositionsAttr().Get(&arrays.positions);
+        field.GetOrientationsAttr().Get(&arrays.orientations);
+        field.GetScalesAttr().Get(&arrays.scales);
+        field.GetOpacitiesAttr().Get(&arrays.opacities);
+        int degree = 0;
+        field.GetRadianceSphericalHarmonicsDegreeAttr().Get(&degree);
+        arrays.shDegree = degree;
+        field.GetRadianceSphericalHarmonicsCoefficientsAttr().Get(&arrays.shCoefficients);
+        written.Get(&arrays.normals);
+        const scene::SplatStreams streams = usd::splatStreams(arrays, "normals streams");
+        REQUIRE_FALSE(streams.normals.empty());
+        auto back = loader->upload(streams, 0);
+        REQUIRE(back);
+        REQUIRE(back->hasNormals());
+        REQUIRE(back->count == direct->count);
+        const auto seen = against(back->normals, direct->normals, back->count);
+        std::printf("  through Hydra's arrays: %u compared, %u off the table, %u apart from the cloud written\n",
+                    seen[0], seen[1], seen[2]);
+        CHECK(seen[1] == 0);
+        CHECK(seen[2] == 0);
+    }
+
+    SECTION("through a .athc, and a version 1 file without them") {
+        auto builder = lod::LodBuilder::create(*gpu->library);
+        REQUIRE(builder);
+        lod::LodBuildSettings chunked;
+        chunked.chunkSplats = 1000;
+        auto built = builder->build(*direct, chunked);
+        if (!built) FAIL(built.error().toString());
+        REQUIRE(built->splats.hasNormals());
+        const fs::path file = scratch("normals.athc");
+        REQUIRE(lod::writeAthc(*gpu->device, *built, file));
+        auto read = lod::readAthc(*gpu->device, file);
+        if (!read) FAIL(read.error().toString());
+        REQUIRE(read->splats.hasNormals());
+        REQUIRE(read->levels.size() == built->levels.size());
+        // The words themselves: the file holds what the device held.
+        auto store = render::countDifferent(*gpu->library, read->splats.normals, built->splats.normals, built->count);
+        REQUIRE(store);
+        uint64_t levelsApart = 0;
+        for (size_t l = 0; l < built->levels.size(); ++l) {
+            REQUIRE(read->levels[l].gaussians.hasNormals());
+            auto apart = render::countDifferent(*gpu->library, read->levels[l].gaussians.normals,
+                                                built->levels[l].gaussians.normals,
+                                                built->levels[l].gaussians.count);
+            REQUIRE(apart);
+            levelsApart += *apart;
+        }
+        std::printf("  through a .athc: %llu of %u splat normals and %llu merged ones changed\n",
+                    static_cast<unsigned long long>(*store), built->count,
+                    static_cast<unsigned long long>(levelsApart));
+        CHECK(*store == 0);
+        CHECK(levelsApart == 0);
+
+        // A cloud with none writes a file the version before would have, but
+        // for its version number; put that back and it must still read.
+        auto plain = loader->upload(cloud(3000), 0);
+        REQUIRE(plain);
+        REQUIRE_FALSE(plain->hasNormals());
+        auto plainLod = builder->build(*plain, chunked);
+        if (!plainLod) FAIL(plainLod.error().toString());
+        const fs::path old = scratch("normals_v1.athc");
+        REQUIRE(lod::writeAthc(*gpu->device, *plainLod, old));
+        {
+            std::fstream bytes(old, std::ios::in | std::ios::out | std::ios::binary);
+            REQUIRE(bytes);
+            const uint32_t one = 1;
+            bytes.seekp(4);
+            bytes.write(reinterpret_cast<const char*>(&one), 4);
+        }
+        auto oldRead = lod::readAthc(*gpu->device, old);
+        if (!oldRead) FAIL(oldRead.error().toString());
+        CHECK_FALSE(oldRead->splats.hasNormals());
+        CHECK(oldRead->count == plainLod->count);
+        auto oldStore = render::countDifferent(*gpu->library, oldRead->splats.shape, plainLod->splats.shape,
+                                               plainLod->count * 4);
+        REQUIRE(oldStore);
+        CHECK(*oldStore == 0);
+    }
+}
+
+// A RELIT CONVERSION KEEPS THE RELIEF ITS NORMAL MAP DREW.
+//
+// mesh2splat stands each gaussian on its triangle, its disc's axis the face's
+// own normal, and works out the normal the normal map turns that into. Until
+// a cloud kept that normal, relighting took the disc's axis and the relief was
+// gone: a quad whose map tilts every normal one way rendered relit like a quad
+// with no map at all. Here the quad is a mesh whose normals are tilted --
+// which is what a constant normal map makes of every point -- and a card of
+// gaussians laid out as mesh2splat lays one out, flat, carrying that tilted
+// normal; a distant light comes from the side the tilt leans to. The card
+// must render like the tilted mesh, and not like the flat one, on both routes.
+TEST_CASE("a relit card with a tilted shading normal renders like the tilted mesh, not the flat one",
+          "[usd][gpu][splat][relight][normals]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    // A tilt of 35 degrees towards +x, and a light from 40 degrees that way:
+    // the cosine is 0.996 with the tilt and 0.766 without.
+    const char* kTilted = "(0.573576, 0, 0.819152)";
+    const auto stage = [&](const char* name, bool card, bool tilted) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
+        if (card) {
+            // A gaussian a cell, sigma a cell wide and flat, its albedo the
+            // mesh's 0.5 kept as a cloud keeps a colour (encoded, so
+            // 0.5 + SH0 * dc = 0.735357), relit.
+            const int side = 160;
+            const double cell = 4.0 / side;
+            out << "def ParticleField3DGaussianSplat \"Card\"\n{\n    point3f[] positions = [";
+            for (int k = 0; k < side * side; ++k) {
+                out << (k ? ", " : "") << "(" << (-2.0 + ((k % side) + 0.5) * cell) << ", "
+                    << (-2.0 + ((k / side) + 0.5) * cell) << ", 0)";
+            }
+            out << "]\n    quatf[] orientations = [";
+            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
+            out << "]\n    float3[] scales = [";
+            for (int k = 0; k < side * side; ++k) {
+                out << (k ? ", " : "") << "(" << cell << ", " << cell << ", " << 1.0e-4 * cell << ")";
+            }
+            out << "]\n    float[] opacities = [";
+            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "0.99";
+            out << "]\n    uniform int radiance:sphericalHarmonicsDegree = 0\n"
+                   "    float3[] radiance:sphericalHarmonicsCoefficients = [";
+            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(0.834321, 0.834321, 0.834321)";
+            out << "]\n    bool primvars:athenea:splat:relight = 1\n";
+            if (tilted) {
+                out << "    normal3f[] primvars:athenea:splat:normal = [";
+                for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << kTilted;
+                out << "] (\n        interpolation = \"vertex\"\n    )\n";
+            }
+            out << "}\n";
+        } else {
+            out << "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                   "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                   "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n";
+            if (tilted) {
+                out << "    normal3f[] normals = [" << kTilted << ", " << kTilted << ", " << kTilted << ", "
+                    << kTilted << "] (\n        interpolation = \"vertex\"\n    )\n";
+            }
+            out << "    uniform token subdivisionScheme = \"none\"\n"
+                   "    rel material:binding = </Looks/Paint>\n}\n"
+                   "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
+                   "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
+                   "        def Shader \"Surface\"\n        {\n"
+                   "            uniform token info:id = \"UsdPreviewSurface\"\n"
+                   "            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
+                   "            float inputs:roughness = 1\n"
+                   "            float inputs:metallic = 0\n"
+                   "            token outputs:surface\n        }\n    }\n}\n";
+        }
+        out << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 2\n"
+               "    bool inputs:shadow:enable = 0\n"
+               "    float3 xformOp:rotateXYZ = (0, 40, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+        return path;
+    };
+    const fs::path meshTilted = stage("normals_mesh_tilted.usda", false, true);
+    const fs::path meshFlat = stage("normals_mesh_flat.usda", false, false);
+    const fs::path cardTilted = stage("normals_card_tilted.usda", true, true);
+    const fs::path cardFlat = stage("normals_card_flat.usda", true, false);
+    const uint32_t w = 160, h = 160;
+    for (const char* technique : {"raster", "rt"}) {
+        const auto draw = [&](const fs::path& path) {
+            auto renderer = usd::StageRenderer::open(path);
+            if (!renderer) FAIL(renderer.error().toString());
+            auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+            if (!image) FAIL(image.error().toString());
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(made);
+            return std::move(*made);
+        };
+        const gpu::Buffer mt = draw(meshTilted);
+        const gpu::Buffer mf = draw(meshFlat);
+        const gpu::Buffer ct = draw(cardTilted);
+        const gpu::Buffer cf = draw(cardFlat);
+        const auto hdr = [&](const gpu::Buffer& a, const gpu::Buffer& b) {
+            auto diff = render::compareHdr(*gpu->library, a, b, w, h);
+            REQUIRE(diff);
+            return *diff;
+        };
+        const auto tiltedPair = hdr(ct, mt);
+        const auto flatPair = hdr(cf, mf);
+        const auto tiltedAgainstFlat = hdr(ct, mf);
+        std::printf("  %s: the tilted card against the tilted mesh p99 %.3f relMSE %.2e; the flat pair p99 %.3f; "
+                    "the tilted card against the flat mesh p99 %.3f\n",
+                    technique, tiltedPair.p99Relative, tiltedPair.relMse, flatPair.p99Relative,
+                    tiltedAgainstFlat.p99Relative);
+        // The card is the mesh it came from, tilted or not, to what a cloud
+        // of discs can be ...
+        CHECK(tiltedPair.p99Relative < 0.08);
+        CHECK(flatPair.p99Relative < 0.08);
+        // ... and the tilt is what tells the two meshes apart.
+        CHECK(tiltedAgainstFlat.p99Relative > 0.2);
     }
 }

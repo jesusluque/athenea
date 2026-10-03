@@ -210,8 +210,9 @@ decimate: carries primvars:skel:jointIndices (4 a gaussian)
 How each merges is what it is: `skel:jointIndices` with `skel:jointWeights`
 as a rig (each joint's weight summed, the four heaviest kept); an array whose
 name ends in `shadowBits` bit by bit; any other int -- an id, a part, a sheet
--- as what may not be merged across at all; any float -- metallic, roughness,
-a transfer, a normal -- as a mean. Metallic, roughness and transmission are
+-- as what may not be merged across at all; `primvars:athenea:splat:normal`
+as a direction (the weighted mean made a unit vector again); any other float
+-- metallic, roughness, a transfer -- as a mean. Metallic, roughness and transmission are
 also compared as colour is. An array sampled in time is merged a sample at a
 time. A splat file is written as a new stage, as `athenea convert` writes one.
 
@@ -360,7 +361,7 @@ recipe is §3.1 below.
 | `--max-cells` | integer | `262144` | most cells one triangle may walk |
 | `--texture-size` | integer | `1024` | a map is read no larger than this; 0 reads it at its own size |
 | `--no-textures` | flag | off | ignore the maps; materials keep their constant values |
-| `--normal-map-turns` | flag | off | the normal map turns the gaussian, not only its shading |
+| `--normal-map-turns` | flag | off | the normal map turns the gaussian, not only its shading. The shading normal is written either way (`primvars:athenea:splat:normal`) |
 | `--no-displacement` | flag | off | ignore the materials' displacement: every gaussian stands on the flat mesh |
 | `--displace-refine` | integer, 1 to 64 | `8` | where the relief stretches a cell, split it into at most this many gaussians along each of its two axes |
 | `--simplify` | number, 0 to 1 | `0` (off) | a block of cells whose colour, metallic, roughness, cut-out and normals move by no more than this -- over the block and a block past each side, all inside one triangle -- becomes one gaussian of its size. Colours and cut-out are 0 to 1; normals are compared as the length of their difference, about the angle in radians |
@@ -701,6 +702,11 @@ coarsest level whose `primvars:athenea:lod:cell` (in its own units) spans no mor
 than `primvars:athenea:lod:threshold` pixels where the cloud is nearest -- the
 finest where none does -- and only that level is posed.
 
+A cloud that keeps shading normals (a conversion's, `primvars:athenea:splat:normal`)
+keeps them in its `.athc`: four bytes more a gaussian, the merged levels'
+the weighted mean of what they stand for made unit again. That is version 2
+of the format; a version 1 file, which has none, is still read.
+
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the
 chunks land. `athenea stage` waits for the streams to settle before a still, so a
@@ -811,6 +817,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:transferIndirect` | float[] ‹27 a gaussian› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
 
 `relight` says the colours are an albedo the scene's lights must light.
 `litBody` says they are already the light on the material's body, so what a
@@ -837,6 +844,15 @@ frame takes out of the sky; it is read only on a cloud that also carries
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame
 shades its reflection alone.
+`normal` is the shading normal, apart from the gaussian's frame: which way the
+surface faced once the mesh's normal map turned it, in the field's own space,
+as positions are. A relit gaussian is lit with it -- put on the side of its
+disc the eye is on, since a disc is seen from both -- instead of with its
+shortest axis, which is the face's own normal and knows nothing of the map;
+the frame keeps answering everything geometric (the footprint, where a ray
+meets the disc). `athenea mesh2splat` always writes it (twelve bytes a
+gaussian in the file, four on the device); a skeleton that carries the cloud
+turns it as it turns the frame; a capture has none.
 
 **`AtheneaSplatSkinningAPI`** — the joints that carry a cloud.
 
@@ -1199,7 +1215,7 @@ A script's own header says what it needs and where it puts things.
 | `render product '<path>' has no resolution` / `no vars` | the settings prim is incomplete | give the product a resolution and ordered vars |
 | a converted cloud is missing its last meshes | the budget ran out in mesh order | raise `--max-splats`, or with `--density per-mesh` raise `--cell-min` |
 | a converted cloud is black | the bake found no light | give the stage lights, or `--default-lights`, or `--no-bake` |
-| a cloud's reflections look flatter than the mesh's | its gaussians are not turned by the normal map | convert with `--normal-map-turns` |
+| a cloud's reflections look flatter than the mesh's | it carries no shading normal (`primvars:athenea:splat:normal`): converted before conversions wrote one | convert it again; `--normal-map-turns` also turns the discs themselves |
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |
 | a cloud's reflections look softer than the mesh's | the conversion's cell is the blur kernel: a cloud reads as the mesh at `r + 9c/R`, where `c` is the cell and `R` the radius of curvature | convert at a finer `--resolution`: a mirror at roughness `r` wants a cell under `r/9` of that radius. It costs the file, not the frame -- fifteen times the gaussians was 36 % more time a frame and sixteen times the disk |
 | a glass ball shows the room but does not bend it | the cloud has no index | `athenea mesh2splat` writes the glass material's IOR; for a cloud from elsewhere author `primvars:athenea:splat:ior` (1.5 is glass). A cloud keeps one index: with two glasses of different IOR the first is kept and the conversion says so |

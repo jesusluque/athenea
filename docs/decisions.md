@@ -8989,3 +8989,97 @@ Not done: a gaussian keeps no shading normal of its own. Without
 so the relief a map paints is in the bake's light and nowhere else; turning
 the disc instead opens the surface where the relief is steep. Storing the
 shading normal beside the frame, skinned with it, is the next change.
+
+## A gaussian keeps its shading normal apart from its frame
+
+The change the section above left for next. A converted gaussian now keeps
+the normal its normal map gave it -- the `shading` mesh2splat already worked
+out for every gaussian -- beside its frame, and a relit or transferred cloud
+is lit with it. The disc is not turned: the frame keeps answering everything
+geometric (the footprint, where a ray meets it, the plane a reflection must
+clear), so the surface does not open where the relief is steep, which is what
+`--normal-map-turns` costs and why it stays off by default.
+
+- **The record and the file.** `io::SplatEncoding::normal` names three
+  consecutive floats of a record (`kNoField` for every capture). mesh2splat
+  writes them always (`record[17..19]`, the harmonics moved to 20), and the
+  export writes `primvars:athenea:splat:normal`, `normal3f[]`, vertex,
+  declared by `AtheneaSplatLightingAPI` -- normal3f so that a host reads it as
+  a normal and a transform turns it as one. It is normalised and turned by the
+  export kernel, not on the host. `readParticleFieldRecords` and Hydra
+  (`ParticleFieldArrays::normals` -> `SplatStreams::normals` -> the streams
+  kernel) read it back.
+- **On the device, one word.** `GpuSplats::normals`, octahedral 2 x 16 bits
+  (`packNormal` / `unpackNormal` in common/packing.slang, written out there so
+  packing imports nothing): a step of a few thousandths of a degree, finer than
+  the 10-bit rotation. Encoded by the decode kernel; a record with no
+  direction at all gets the frame's shortest axis. Optional as `pbr` is:
+  `hasNormals()`, the buffer bound either way and a flag that says.
+- **Shading.** `splatShadingNormal` (splat_relight.slang) is the one place:
+  the disc's axis turned to the eye as before, and the stored normal put on
+  that same side of the disc -- a disc is seen from both faces, and the eye
+  behind a surface sees its relief from behind. The rasteriser
+  (splat_project) and the traced route (rt_shade) both take it; rt_shade
+  keeps the disc's axis for the plane its reflection ray must clear and uses
+  the shading normal for the reflection and the refraction directions. Every
+  lobe, the dome's irradiance, the transfer's sun share (`splatSunShare`,
+  whose open hemisphere was the disc's while the transfer was baked over the
+  shading normal's) and the shadow bits' horizon now read the same normal.
+- **Skinning.** The skinner turns it by the same blend as the frame, and as a
+  normal: `(M a) x (M b)` for two directions in its surface, which is
+  `cof(M) n` -- the inverse transpose up to scale, and the same construction
+  the disc's own axis already had (`cross(u, v)`), so the two stay on the same
+  side of each other through a shear. The posed cloud owns its normals.
+- **Levels of detail.** The Morton reorder and the cut carry the word; the
+  moments gain three (the sum of `w n`, weighed as a colour is), and each
+  merged Gaussian's normal is that sum made unit, or its own shortest axis
+  where its children cancel. A decimation merges the file's normal as a
+  direction (`AttributeMerge::Normal`): the mean made unit again, where the
+  plain mean of three floats came out shorter than one wherever two normals
+  disagreed (all 256 kept gaussians of the test floor). `.athc` is version 2:
+  the header's former padding is `flags`, bit 0 says every block ends with the
+  normals, and a version 1 file -- whose padding was zero -- is read as before.
+
+What it costs: four bytes a gaussian on the device and twelve in the file
+(the pawn's relit conversion, 730 559 gaussians, 40.9 -> 49.7 MB), one word
+read a relit splat a frame.
+
+Tests, each failing without its half of the change (checked by reverting it):
+
+- `athenea_usd_tests "a cloud's shading normals survive*"`: 3000 gaussians
+  with five known normals go through the export and back as records, as
+  Hydra's arrays, and through a `.athc` (store and every level, word for
+  word); 0 apart on each route. A `.athc` of a cloud without normals, its
+  version set back to 1, reads. Without the export or the `.athc` half, the
+  normals do not come back.
+- `athenea_usd_tests "a relit card with a tilted shading normal*"`: a mesh
+  quad whose normals lean 35 degrees and a card of gaussians laid flat that
+  carries that normal, under a sun from 40 degrees. Raster and traced, the card
+  against the tilted mesh p99 relative 0.020 (the untilted pair: 0.020), the
+  card against the flat mesh 0.324. With the shading taking the disc's axis,
+  the card against the tilted mesh was 0.229 and against the flat one 0.020:
+  it rendered like a quad with no map.
+- `athenea_scene_tests "[normals]"`: 4096 discs whose normals lean 0.4 rad off
+  their axes, skinned by a turn and by a stretch with shear; 0 of 4096 off the
+  inverse transpose, 0 on the other side of their disc. Not turned, 4096 were
+  off; turned as a direction, the stretched case was 4096 off.
+- `athenea_lod_tests "[normals]"`: a floor whose normals alternate between two
+  tilts: every merged normal of every level and of the cut is a unit vector on
+  the arc between them (0 off; 1364 of 1364 off with the merge replaced by the
+  shortest axis), and a decimation's merged normals are unit.
+
+The pawn under the autoshop HDRI (768 x 768, traced, 512 paths, against the
+mesh's render; `--no-bake`): relit relMSE 0.0526 -> 0.0498, transferred
+0.0498 -> 0.0470; p99 relative unchanged (0.84 and 0.77), the body's means
+within a thousandth. Small, and it is what the pawn has to give: its normal
+map leans a median 1.6 degrees (2048 texels), 0.7 degrees by the time a
+gaussian samples it at the default `--texture-size 1024` and the cell, so
+the stored normals sit a median 0.66 degrees off the discs' axes (p99 3.7).
+The grain the mesh shows is mostly its metallic and roughness maps at
+pixel scale, which a gaussian a cell averages. Read at 2048 the relit figure
+is 0.0505, no better.
+
+Not done: a capture has no normal and keeps its axis. `CloudLoader::records`
+(a cloud on the device back into records) does not unpack normals, so a
+splat file decimated without a stage keeps none -- a splat file never has
+them. The merged levels carry the normal but still no PBR channels.

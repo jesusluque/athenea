@@ -69,6 +69,7 @@ public struct FrameParams {
     public float shadowOffset;   // where its shadow ray starts, in the splat's own sigmas
     public float shadowCut;      // and where the ray gives up
     public uint  hasPbr;         // 1: `pbr` holds this cloud's metallic and roughness
+    public uint  hasNormals;     // 1: `normals` holds this cloud's shading normals
     public uint  litBody;        // 1: the colours are light already, and only the polish is added
     /// Lights an environment was prepared for: `envOfLight[k]` is the slice
     /// of light k, or `kEnvNone`. Zero: no sky prepared, and a dome is its

@@ -14,6 +14,9 @@ RWStructuredBuffer<float4>   posOpacity;   // xyz, opacity
 RWStructuredBuffer<float4>   rotation;     // x y z w
 RWStructuredBuffer<float4>   scaleValid;   // xyz, 1 when the record is a splat
 RWStructuredBuffer<float4>   coefficients; // (1 + keepPerColour) per record: rgb, 0
+// The shading normal, unit length and turned as the positions are, where the
+// record carries one (`params.normal`); written only then.
+RWStructuredBuffer<float4>   normalOut;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -47,6 +50,12 @@ void splatExport(uint3 tid: SV_DispatchThreadID) {
     const float3 safe = all(isfinite(p)) ? p : float3(0.0);
     posOpacity[i] = valid ? float4(p, saturate(a)) : float4(safe, 0.0);
     rotation[i] = q;
+    if (params.normal != kNoField) {
+        float3 n = float3(fieldOf(raw, i, s, params.normal), fieldOf(raw, i, s, params.normal + 1),
+                          fieldOf(raw, i, s, params.normal + 2));
+        n = params.flipYZ != 0 ? float3(n.x, -n.y, -n.z) : n;
+        normalOut[i] = float4(dot(n, n) > 1.0e-20 ? normalize(n) : float3(0.0), 0.0);
+    }
     scaleValid[i] = valid ? float4(exp(ls), 1.0) : float4(0.0, 0.0, 0.0, 0.0);
 
     const uint row = i * (1 + params.keepPerColour);

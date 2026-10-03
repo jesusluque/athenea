@@ -9,6 +9,8 @@
 //     [2] f16 log(scale.z) | f16 base colour r << 16
 //     [3] f16 base colour g | f16 base colour b << 16
 //   sh         uint * words   f16 rest coefficients, rgb per basis
+//   normals    uint           optional: the shading normal, octahedral
+//                             2 x 16 bits (`packNormal`), apart from the frame
 //
 // 32 bytes before harmonics, against openFXplayer's 64 float32. Why each
 // field is what it is:
@@ -99,6 +101,32 @@ public float3x3 axesOfQuaternion(float4 q) {
     return float3x3(1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w),
                     2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w),
                     2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y));
+}
+
+/// A SHADING NORMAL IN ONE WORD (`GpuSplats::normals`): the octahedral map
+/// (common/octahedral.slang's, written out here so packing imports nothing),
+/// x in the low sixteen bits and y in the high, each a unorm. A step is
+/// 2^-15 of the square, a few thousandths of a degree -- finer than the
+/// 10-bit rotation the frame keeps. A zero vector packs as +z.
+public uint packNormal(float3 n) {
+    const float l1 = abs(n.x) + abs(n.y) + abs(n.z);
+    n = l1 > 1.0e-20 ? n / l1 : float3(0.0, 0.0, 1.0);
+    float2 p = n.xy;
+    if (n.z < 0.0) {
+        p = (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    const uint2 q = uint2(round(saturate(p * 0.5 + 0.5) * 65535.0));
+    return q.x | (q.y << 16);
+}
+
+/// The other way: a unit vector.
+public float3 unpackNormal(uint word) {
+    const float2 f = float2(float(word & 0xFFFFu), float(word >> 16)) / 65535.0 * 2.0 - 1.0;
+    float3 n = float3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+    const float t = saturate(-n.z);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.y += n.y >= 0.0 ? -t : t;
+    return normalize(n);
 }
 
 public uint packHalves(float a, float b) {

@@ -69,6 +69,7 @@ void setDecodeParams(rhi::ShaderCursor cursor, const io::SplatEncoding& e, uint3
     p["transferWords"].setData((e.transferCount + 1) / 2);
     p["shadowBits"].setData(e.shadowBits);
     p["recordBase"].setData(recordBase);
+    p["normal"].setData(e.normal);
 }
 
 
@@ -180,7 +181,7 @@ Result<Bounds> CloudLoader::boundsOf(const gpu::Buffer& positions, uint32_t coun
 
 Result<GpuSplats> CloudLoader::startSplats(const std::string& source, uint32_t declared, uint32_t keep,
                                            bool withPbr, bool withCrypto, uint32_t transferCount,
-                                           bool withShadowBits) {
+                                           bool withShadowBits, bool withNormals) {
     GpuSplats splats;
     splats.source = source;
     splats.declared = declared;
@@ -220,6 +221,11 @@ Result<GpuSplats> CloudLoader::startSplats(const std::string& source, uint32_t d
         if (!bits) return std::move(bits).error();
         splats.shadowBits = *bits;
     }
+    if (withNormals) {
+        auto normals = deviceBuffer(*device_, declared, 4, "splats.normals");
+        if (!normals) return std::move(normals).error();
+        splats.normals = *normals;
+    }
     return splats;
 }
 
@@ -256,7 +262,14 @@ Result<uint32_t> CloudLoader::decodeSlice(const gpu::Buffer& raw, const io::Spla
         cursor["transfer"].setBinding(splats.hasTransfer() ? splats.transfer.rhi() : splats.shape.rhi());
         cursor["shadowBits"].setBinding(splats.hasShadowBits() ? splats.shadowBits.rhi() : splats.shape.rhi());
         cursor["origin"].setBinding(splats.origin.rhi());
-        setDecodeParams(cursor, e, n, written, keep, splats.shWords, recordBase);
+        cursor["normals"].setBinding(splats.hasNormals() ? splats.normals.rhi() : splats.shape.rhi());
+        // A cloud allocated without normals reads none, whatever the
+        // encoding says: the buffer bound in their place is the shape.
+        io::SplatEncoding decoded = e;
+        if (!splats.hasNormals()) {
+            decoded.normal = io::SplatEncoding::kNoField;
+        }
+        setDecodeParams(cursor, decoded, n, written, keep, splats.shWords, recordBase);
     });
     ATHENEA_TRY(batch.submit(true));
     uint32_t kept = 0;
@@ -332,7 +345,8 @@ Result<GpuSplats> CloudLoader::upload(const io::RawSplats& raw, uint32_t maxDegr
                      e.transmission != io::SplatEncoding::kNoField;
     auto splats = startSplats(raw.source, raw.count, keep, pbr,
                               e.cryptoObject != io::SplatEncoding::kNoField, e.transferCount,
-                              e.shadowBits != io::SplatEncoding::kNoField);
+                              e.shadowBits != io::SplatEncoding::kNoField,
+                              e.normal != io::SplatEncoding::kNoField);
     if (!splats) return std::move(splats).error();
 
     const uint64_t recordBytes = uint64_t{e.floatsPerRecord} * 4;
@@ -584,7 +598,7 @@ namespace {
 constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, kSh = 16, kColours = 32,
                    kMetallic = 64, kRoughness = 128, kTransmission = 256, kCrypto = 512,
                    kTransferDirect = 1024, kTransferIndirect = 2048, kShadowBits = 4096,
-                   kThinWalled = 8192;
+                   kThinWalled = 8192, kNormals = 16384;
 
 }   // namespace
 
@@ -614,9 +628,11 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     // Two words a gaussian of which ways out are open, only beside a transfer.
     const bool haveShadowBits = transferCount > 0 && !in.shadowBits.empty() &&
                                 in.shadowBits.values() >= uint64_t{n} * 2;
+    // The shading normal, three floats a gaussian, where the stage carries it.
+    const bool haveNormals = !in.normals.empty() && in.normals.values() >= uint64_t{n} * 3;
     io::SplatEncoding e;
     e.floatsPerRecord = 14 + keep * 3 + (havePbr ? 3 : 0) + (haveCrypto ? 1 : 0) + transferCount +
-                        (haveShadowBits ? 2 : 0);
+                        (haveShadowBits ? 2 : 0) + (haveNormals ? 3 : 0);
     e.x = 0; e.y = 1; e.z = 2; e.opacity = 3;
     e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
     e.rotW = 7; e.rotX = 8; e.rotY = 9; e.rotZ = 10;
@@ -636,6 +652,10 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     }
     if (haveShadowBits) {
         e.shadowBits = 14 + keep * 3 + (havePbr ? 3 : 0) + (haveCrypto ? 1 : 0) + transferCount;
+    }
+    if (haveNormals) {
+        e.normal = 14 + keep * 3 + (havePbr ? 3 : 0) + (haveCrypto ? 1 : 0) + transferCount +
+                   (haveShadowBits ? 2 : 0);
     }
     e.opacity_ = io::SplatEncoding::Opacity::Linear;
     e.scale_ = io::SplatEncoding::Scale::Linear;
@@ -667,6 +687,9 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (haveSh) {
         note(in.sh, kSh);
     }
+    if (haveNormals) {
+        note(in.normals, kNormals);
+    }
     auto positions = streamBuffer(in.positions, "splats.stream.positions");
     if (!positions) return std::move(positions).error();
     auto rotations = streamBuffer(in.rotations, "splats.stream.rotations");
@@ -696,7 +719,9 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!thinWalled) return std::move(thinWalled).error();
     auto shadowBits = streamBuffer(haveShadowBits ? in.shadowBits : FloatStream{}, "splats.stream.shadowBits");
     if (!shadowBits) return std::move(shadowBits).error();
-    auto splats = startSplats(in.source, n, keep, havePbr, haveCrypto, transferCount, haveShadowBits);
+    auto normals = streamBuffer(haveNormals ? in.normals : FloatStream{}, "splats.stream.normals");
+    if (!normals) return std::move(normals).error();
+    auto splats = startSplats(in.source, n, keep, havePbr, haveCrypto, transferCount, haveShadowBits, haveNormals);
     if (!splats) return std::move(splats).error();
     const uint32_t perSlice = static_cast<uint32_t>(std::max<uint64_t>(1, kSliceBytes / (uint64_t{e.floatsPerRecord} * 4)));
     uint32_t written = 0;
@@ -721,6 +746,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 cursor["transferIndirect"].setBinding(haveIndirect ? transferIndirect->rhi() : none->rhi());
                 cursor["shadowBits"].setBinding(haveShadowBits ? shadowBits->rhi() : none->rhi());
                 cursor["thinWalled"].setBinding(haveThin ? thinWalled->rhi() : none->rhi());
+                cursor["normals"].setBinding(haveNormals ? normals->rhi() : none->rhi());
                 cursor["records"].setBinding(records->rhi());
                 rhi::ShaderCursor p = cursor["params"];
                 p["count"].setData(count);
@@ -736,6 +762,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 p["transferBase"].setData(transferCount > 0 ? e.transferBase : io::SplatEncoding::kNoField);
                 p["transferCount"].setData(transferCount);
                 p["shadowBase"].setData(haveShadowBits ? e.shadowBits : io::SplatEncoding::kNoField);
+                p["normalBase"].setData(haveNormals ? e.normal : io::SplatEncoding::kNoField);
             });
             ATHENEA_TRY(batch.submit(true));
         }

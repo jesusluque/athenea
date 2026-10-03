@@ -21,6 +21,8 @@ StructuredBuffer<float4>    positions;
 StructuredBuffer<uint>      shape;
 StructuredBuffer<uint>      sh;
 StructuredBuffer<uint>      pbr;      // metallic and roughness a splat, where the cloud carries them
+// The shading normal a splat, where the cloud carries one (`params.hasNormals`).
+StructuredBuffer<uint>      normals;
 // Per-prim material overrides, keyed on the id each gaussian carries:
 // `params.overrideCount` of 0 is what says there are none.
 StructuredBuffer<float4>    splatOverrides;
@@ -293,8 +295,9 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
         const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
         const float3 eye = float3(params.eyeWorldX, params.eyeWorldY, params.eyeWorldZ);
-        const float3 cloudNormal = splatNormal(r, scale, posOpacity.xyz,
-                                               float3(params.eyeX, params.eyeY, params.eyeZ));
+        const float3 cloudNormal =
+            splatShadingNormal(r, scale, posOpacity.xyz, float3(params.eyeX, params.eyeY, params.eyeZ),
+                               params.hasNormals != 0, params.hasNormals != 0 ? normals[i] : 0u);
         SplatSurface surface;
         surface.position = relightToWorld(w0, w1, w2, posOpacity.xyz);
         surface.normal = relightDirectionToWorld(w0, w1, w2, cloudNormal);

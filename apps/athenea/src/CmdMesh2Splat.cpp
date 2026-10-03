@@ -564,7 +564,7 @@ public:
         raw.encoding.scale0 = 4; raw.encoding.scale1 = 5; raw.encoding.scale2 = 6;
         raw.encoding.rotW = 7; raw.encoding.rotX = 8; raw.encoding.rotY = 9; raw.encoding.rotZ = 10;
         raw.encoding.dc0 = 11; raw.encoding.dc1 = 12; raw.encoding.dc2 = 13;
-        raw.encoding.restBase = 17;
+        raw.encoding.restBase = 20;
         raw.encoding.restPerColour = options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0;
         raw.encoding.restColourOuter = 0;   // rgb per basis, which is how the bake writes them
         // What the gaussian reflects with, which is what lets a relit cloud
@@ -572,7 +572,13 @@ public:
         raw.encoding.metallic = 14;
         raw.encoding.roughness = 15;
         raw.encoding.transmission = 16;
-        raw.encoding.floatsPerRecord = 17 + raw.encoding.restPerColour * 3;
+        // AND WHICH WAY THE SURFACE FACED where the normal map turned it: the
+        // shading normal, apart from the frame (whose short axis is the face's
+        // own normal unless --normal-map-turns). Free -- the kernel worked it
+        // out for every gaussian -- and what lets a relit cloud keep the
+        // relief its mesh had.
+        raw.encoding.normal = 17;
+        raw.encoding.floatsPerRecord = 20 + raw.encoding.restPerColour * 3;
         raw.encoding.opacity_ = io::SplatEncoding::Opacity::Linear;
         raw.encoding.scale_ = io::SplatEncoding::Scale::Linear;
         // Not baked, the colours come from a material in linear light and the
@@ -783,9 +789,10 @@ private:
     static constexpr uint32_t kNoPrimvar = 0xFFFFFFFF;
 
     /// Floats a record: the canonical fourteen, the three the material
-    /// reflects with, and the harmonics where a bake writes them.
+    /// reflects with, the shading normal, and the harmonics where a bake
+    /// writes them.
     [[nodiscard]] uint32_t recordFloats() const {
-        return 17 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3;
+        return 20 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3;
     }
 
     struct OneMesh {
@@ -1007,14 +1014,17 @@ private:
             record[10] = rotation[3];
             record[11] = rgb[0]; record[12] = rgb[1]; record[13] = rgb[2];
             // The fifth entry is (shading normal, metallic) and the sixth
-            // (roughness, transmission, u, v): the normal and the texture
-            // coordinate have nowhere to live in a ParticleField, and these
-            // two do.
+            // (roughness, transmission, u, v). The texture coordinate has
+            // nowhere to live in a ParticleField; the normal now does
+            // (`primvars:athenea:splat:normal`).
             const float* shading = entry(4);
             const float* surface = entry(5);
             record[14] = shading[3];
             record[15] = surface[0];
             record[16] = surface[1];
+            record[17] = shading[0];
+            record[18] = shading[1];
+            record[19] = shading[2];
             // Where the bake stands and which way it looks, kept beside the
             // record rather than in it: the file has no field for a normal.
             // A displaced gaussian is baked from the flat surface under it --

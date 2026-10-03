@@ -158,7 +158,8 @@ class "AtheneaSplatLightingAPI" (
     doc = """Whether the Gaussian splat clouds at and below this prim are relit
 by the scene's lights instead of showing the radiance they were baked with.
 Baked is the default: a cloud occludes, shadows and appears in reflections as
-it was captured. Relighting takes a splat's normal from its shortest axis and
+it was captured. Relighting takes a splat's normal from its shortest axis --
+or, where the cloud keeps one, from `primvars:athenea:splat:normal` -- and
 its albedo from the spherical harmonics' constant term, which is an
 approximation of a surface a splat never had -- useful where a capture has to
 sit under different light, wrong wherever the capture's own light was the
@@ -222,6 +223,10 @@ object through the glass wants a ray, which this is not."""
     int[] primvars:athenea:splat:shadowBits = [] (
         doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer."""
         elementSize = 2
+        interpolation = "vertex"
+    )
+    normal3f[] primvars:athenea:splat:normal = [] (
+        doc = """The shading normal of each gaussian, apart from its frame: which way the surface under it faced once its normal map turned it, in the field's own space (the one positions and orientations are in). One a gaussian. A relit gaussian is lit with it, put on the side of the disc the eye is on, while its frame keeps answering everything geometric -- its footprint, where a ray meets it -- so a conversion keeps the relief its mesh's normal map drew without the discs being turned. A skeleton that carries the cloud turns it as it turns the frame. A capture has none, and is relit with its shortest axis."""
         interpolation = "vertex"
     )
 }

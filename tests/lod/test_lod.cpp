@@ -669,3 +669,136 @@ TEST_CASE("a decimation carries ids, rigs, bits and floats with the gaussians, a
     CHECK((*violations)[2] == 0);
     CHECK((*violations)[3] == 0);
 }
+
+// A MERGE OF SHADING NORMALS IS A NORMAL BETWEEN THEM.
+//
+// A converted cloud keeps a shading normal apart from each gaussian's frame
+// (GpuSplats::normals). The levels of detail merge it as they merge a colour
+// -- the sum weighed by what each covers, made unit again -- and the cut
+// hands it to the frame with the rest; a decimation merges the file's normal
+// as a direction (AttributeMerge::Normal), not as three floats averaged,
+// which are shorter than one wherever two normals disagree. A floor whose
+// normals alternate between two tilts, cell by cell, has every merge mix the
+// two, so every merged normal must be a unit vector on the arc between them.
+TEST_CASE("merged shading normals stay unit vectors between the ones they merge", "[lod][gpu][normals]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    auto inArc = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_normal_check", "normalsInArc");
+    auto unit = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_normal_check", "normalFloatsUnit");
+    auto decimator = lod::Decimator::create(*gpu->library);
+    if (!inArc) FAIL(inArc.error().toString());
+    if (!unit) FAIL(unit.error().toString());
+    if (!decimator) FAIL(decimator.error().toString());
+    constexpr int kSide = 64;
+    constexpr float kSpacing = 2.0F / kSide;
+    const std::array<float, 3> n1{0.6F, 0.0F, 0.8F};
+    const std::array<float, 3> n2{0.0F, 0.6F, 0.8F};
+    CloudBuilder built;
+    std::vector<float> normals;
+    for (int y = 0; y < kSide; ++y) {
+        for (int x = 0; x < kSide; ++x) {
+            built.add(-1.0F + (x + 0.5F) * kSpacing, -1.0F + (y + 0.5F) * kSpacing, 0.0F, 0.95F, kSpacing, kSpacing,
+                      kSpacing * 0.1F, {1.0F, 0.0F, 0.0F, 0.0F}, {0.5F, 0.4F, 0.3F});
+            const std::array<float, 3>& n = (x + y) % 2 == 0 ? n1 : n2;
+            normals.insert(normals.end(), n.begin(), n.end());
+        }
+    }
+    test::giveNormals(built, normals);
+    auto cloud = h->loader.upload(built.raw, 0);
+    REQUIRE(cloud);
+    REQUIRE(cloud->hasNormals());
+    auto lod = h->builder.build(*cloud);
+    if (!lod) FAIL(lod.error().toString());
+    REQUIRE(lod->splats.hasNormals());
+
+    gpu::BufferDesc countsDesc;
+    countsDesc.bytes = 8 * 4;
+    countsDesc.elementBytes = 4;
+    countsDesc.label = "normals.counts";
+    auto counts = gpu::Buffer::create(*gpu->device, countsDesc);
+    REQUIRE(counts);
+    const auto arcCheck = [&](const gpu::Buffer& those, uint32_t count) {
+        const uint32_t zero[8] = {};
+        REQUIRE(counts->write(*gpu->device, 0, sizeof(zero), zero));
+        gpu::CommandBatch batch(*gpu->device);
+        inArc->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["normalsA"].setBinding(those.rhi());
+            cursor["normalsB"].setBinding(those.rhi());
+            cursor["floats"].setBinding(those.rhi());
+            cursor["counts"].setBinding(counts->rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            const std::array<float, 4> a{n1[0], n1[1], n1[2], 0.0F};
+            const std::array<float, 4> b{n2[0], n2[1], n2[2], 0.0F};
+            p["n1"].setData(a.data(), 16);
+            p["n2"].setData(b.data(), 16);
+            p["tolerance"].setData(1.0e-4F);
+        });
+        REQUIRE(batch.submit(true));
+        uint32_t seen[2] = {0, 0};
+        REQUIRE(counts->read(*gpu->device, 0, sizeof(seen), seen));
+        return std::pair{seen[0], seen[1]};
+    };
+    for (const lod::LodLevel& level : lod->levels) {
+        REQUIRE(level.gaussians.hasNormals());
+        const auto [compared, outside] = arcCheck(level.gaussians.normals, level.gaussians.count);
+        std::printf("  level %u: %u merged normals, %u off the arc\n", level.level, compared, outside);
+        CHECK(compared == level.gaussians.count);
+        CHECK(outside == 0);
+    }
+
+    // And the cut draws them: merged where the floor is far, the cloud's own
+    // where it is near, all of them carried into the frame's cloud.
+    render::RenderSettings settings;
+    settings.width = 160;
+    settings.height = 120;
+    const render::Projection far = render::projectionFor(
+        render::Camera::lookingAt({0.0, 0.0, 6.0}, {0.0, 0.0, 0.0}), settings.width, settings.height);
+    const std::vector<lod::LodInstance> instances{{&*lod, render::Mat4::identity()}};
+    std::vector<lod::CutStats> stats;
+    auto selected = h->cut.select(far, instances, 8.0F, &stats);
+    if (!selected) FAIL(selected.error().toString());
+    REQUIRE(selected->size() == 1);
+    const scene::GpuSplats& drawn = *selected->front().splats;
+    REQUIRE(drawn.hasNormals());
+    const auto [cutCompared, cutOutside] = arcCheck(drawn.normals, drawn.count);
+    std::printf("  the cut: %u drawn (%u merged), %u off the arc\n", cutCompared, stats.front().merged, cutOutside);
+    CHECK(stats.front().merged > 0);
+    CHECK(cutOutside == 0);
+
+    // A decimation merges the file's own normal: three floats a record.
+    auto kept = decimator->decimate(*lod, cloud->origin);
+    if (!kept) FAIL(kept.error().toString());
+    std::vector<uint32_t> words(normals.size());
+    std::memcpy(words.data(), normals.data(), normals.size() * 4);
+    auto values = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, words, "normals.values");
+    REQUIRE(values);
+    const auto unitCheck = [&](lod::AttributeMerge how) {
+        auto merged = decimator->mergeAttribute(*lod, *kept, *values, 3, how);
+        REQUIRE(merged);
+        const uint32_t zero[8] = {};
+        REQUIRE(counts->write(*gpu->device, 0, sizeof(zero), zero));
+        gpu::CommandBatch batch(*gpu->device);
+        unit->dispatch(batch, {kept->cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["normalsA"].setBinding(merged->first.rhi());
+            cursor["normalsB"].setBinding(merged->first.rhi());
+            cursor["floats"].setBinding(merged->first.rhi());
+            cursor["counts"].setBinding(counts->rhi());
+            cursor["params"]["count"].setData(kept->cloud.count);
+            cursor["params"]["width"].setData(3u);
+            cursor["params"]["tolerance"].setData(1.0e-4F);
+        });
+        REQUIRE(batch.submit(true));
+        uint32_t seen[2] = {0, 0};
+        REQUIRE(counts->read(*gpu->device, 0, sizeof(seen), seen));
+        return std::pair{seen[0], seen[1]};
+    };
+    const auto [asNormals, notUnit] = unitCheck(lod::AttributeMerge::Normal);
+    const auto [asFloats, shortened] = unitCheck(lod::AttributeMerge::Mean);
+    std::printf("  decimated: %u kept, %u not unit merged as normals, %u of %u shorter merged as three floats\n",
+                asNormals, notUnit, shortened, asFloats);
+    CHECK(asNormals == kept->cloud.count);
+    CHECK(notUnit == 0);
+    // What the test tells apart: averaged as floats, they are not.
+    CHECK(shortened > 0);
+}

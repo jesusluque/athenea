@@ -190,6 +190,7 @@ enum class AttributeMerge : uint32_t {
     First = 1,   ///< what the key keeps apart: every record agrees
     Bits = 2,    ///< each bit set where half the weight has it
     Rig = 3,     ///< joints and their weights: summed, the heaviest kept, made whole
+    Normal = 4,  ///< a direction: the mean, weighted as the moments weigh, made unit again
 };
 
 struct DecimateStats {

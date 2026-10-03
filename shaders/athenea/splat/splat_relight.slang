@@ -16,7 +16,9 @@
 // WHAT IT IS, AND WHAT IT IS NOT
 //
 // A splat is not a surface. The normal is its shortest axis -- the direction a
-// flattened Gaussian faces -- turned towards the eye, and its albedo is the
+// flattened Gaussian faces -- turned towards the eye, or where the cloud keeps a
+// shading normal of its own (`GpuSplats::normals`, a conversion's normal map)
+// that one, turned to the same side (`splatShadingNormal`); its albedo is the
 // harmonics' constant term, the colour it shows on average. On top of that
 // there is now a specular lobe, because without one a dark glossy material is
 // black: the chess set's marble is `0.003` of diffuse albedo and everything
@@ -33,6 +35,7 @@ __exported import athenea.light.lights;
 __exported import athenea.light.environment;
 import athenea.common.color;
 import athenea.common.octahedral;
+import athenea.common.packing;
 // The DFG fit the surface lobes use: one definition for both routes. It
 // declares no binding, which is what lets a module below material import it.
 import athenea.material.microfacet;
@@ -650,6 +653,24 @@ public float3 splatNormal(float3x3 rotation, float3 scale, float3 position, floa
         normal = -normal;
     }
     return normal;
+}
+
+/// THE NORMAL A RELIT SPLAT IS SHADED WITH. Where the cloud keeps a shading
+/// normal of its own (`stored`, packed, `hasStored`) it is that one: what a
+/// mesh's normal map made of the surface, which the disc's short axis -- the
+/// face's own normal -- never knew. A splat is two-sided, so the disc's axis
+/// is turned towards the eye first (`splatNormal`), and the stored normal is
+/// put on the same side of the disc: the eye on the far side of a surface sees
+/// its relief from the far side. Everything geometric -- the footprint, where
+/// a ray meets the disc, the plane a reflection clears -- keeps the disc's.
+public float3 splatShadingNormal(float3x3 rotation, float3 scale, float3 position, float3 eye, bool hasStored,
+                                 uint stored) {
+    const float3 disc = splatNormal(rotation, scale, position, eye);
+    if (!hasStored) {
+        return disc;
+    }
+    const float3 n = unpackNormal(stored);
+    return dot(n, disc) < 0.0 ? -n : n;
 }
 
 /// A point of the cloud in the world, by the rows a caller passes.

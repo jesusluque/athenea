@@ -84,6 +84,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
         } else if (a.integer) {
             plans[k].how = ends(a.name, "shadowBits") ? lod::AttributeMerge::Bits : lod::AttributeMerge::First;
+        } else if (ends(a.name, "athenea:splat:normal") && a.width == 3) {
+            plans[k].how = lod::AttributeMerge::Normal;   // a direction: averaged, and a unit again
         }
     }
     for (Plan& plan : plans) {

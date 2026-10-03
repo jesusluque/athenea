@@ -67,6 +67,24 @@ inline void giveCryptoIds(CloudBuilder& b, std::span<const uint32_t> ids) {
     b.raw.encoding.cryptoObject = stride;
 }
 
+/// Gives every record a shading normal: three more floats at the end of each
+/// record, as `athenea mesh2splat` writes the one its normal map turned.
+/// `normals` is xyz per record already added.
+inline void giveNormals(CloudBuilder& b, std::span<const float> normals) {
+    const uint32_t stride = b.raw.encoding.floatsPerRecord;
+    std::vector<float> wider;
+    wider.reserve(b.raw.records.size() + size_t{b.raw.count} * 3);
+    for (uint32_t i = 0; i < b.raw.count; ++i) {
+        const float* from = b.raw.records.data() + size_t{i} * stride;
+        wider.insert(wider.end(), from, from + stride);
+        wider.insert(wider.end(), normals.begin() + std::ptrdiff_t(size_t{i} * 3),
+                     normals.begin() + std::ptrdiff_t(size_t{i} * 3 + 3));
+    }
+    b.raw.records = std::move(wider);
+    b.raw.encoding.floatsPerRecord = stride + 3;
+    b.raw.encoding.normal = stride;
+}
+
 /// The same id for every splat of the cloud: one prim converted whole.
 inline void giveCryptoId(CloudBuilder& b, uint32_t id) {
     const std::vector<uint32_t> ids(b.raw.count, id);

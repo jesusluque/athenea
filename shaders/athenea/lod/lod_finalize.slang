@@ -9,6 +9,7 @@ StructuredBuffer<float>    moments;
 RWStructuredBuffer<float4> positions;
 RWStructuredBuffer<uint>   shape;
 RWStructuredBuffer<uint>   sh;
+RWStructuredBuffer<uint>   normals;   // where `params.normals` says the cloud keeps them
 ConstantBuffer<LodParams>  params;
 
 /// Cyclic Jacobi on a symmetric 3x3: `a` ends diagonal (the eigenvalues) and
@@ -73,6 +74,16 @@ void lodFinalize(uint3 tid: SV_DispatchThreadID) {
     shape[row + 1] = packHalves(halfSafe(ls.x), halfSafe(ls.y));
     shape[row + 2] = packHalves(halfSafe(ls.z), halfSafe(base.x));
     shape[row + 3] = packHalves(halfSafe(base.y), halfSafe(base.z));
+    if (params.normals != 0) {
+        // The weighted sum's direction, made a unit again. Where the children
+        // face every way at once and the sum is nothing, the merged
+        // Gaussian's own shortest axis stands in.
+        const uint nb = at + kMomentsHead + params.keep * 3;
+        const float3 sum = float3(moments[nb], moments[nb + 1], moments[nb + 2]);
+        const uint shortest = s.x <= s.y ? (s.x <= s.z ? 0u : 2u) : (s.y <= s.z ? 1u : 2u);
+        const float3 axis = float3(axes[0][shortest], axes[1][shortest], axes[2][shortest]);
+        normals[g] = packNormal(dot(sum, sum) > 1.0e-24 * weight * weight ? normalize(sum) : axis);
+    }
     if (params.keep == 0) {
         return;
     }

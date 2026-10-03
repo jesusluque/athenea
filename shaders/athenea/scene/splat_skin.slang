@@ -20,7 +20,7 @@ struct SplatSkinParams {
     uint   count;          ///< gaussians
     uint   perSplat;       ///< influences each carries
     uint   motionOut;      ///< 1: also write what the shutter moved this gaussian
-    uint   pad1;
+    uint   normalsOut;     ///< 1: the cloud keeps shading normals, and they are turned too
     float4 geomBind0;      ///< rows of a 4x4, as geom/skinning.slang takes them
     float4 geomBind1;
     float4 geomBind2;
@@ -49,6 +49,11 @@ StructuredBuffer<float4>   skinningXformsEnd;
 RWStructuredBuffer<uint>   motion;
 RWStructuredBuffer<float4> positions;
 RWStructuredBuffer<uint>   shape;
+// The shading normal a gaussian keeps apart from its frame (packing's
+// `packNormal`), at rest and posed. Bound to `restShape` and `shape` when the
+// cloud has none, since a name a shader declares must be bound.
+StructuredBuffer<uint>     restNormals;
+RWStructuredBuffer<uint>   normals;
 ConstantBuffer<SplatSkinParams> params;
 
 static const float kEps = 1.0e-5;
@@ -153,4 +158,19 @@ void splatSkin(uint3 tid: SV_DispatchThreadID) {
     // the two halves of this word that hold the scale are rewritten.
     shape[row + 2] = restShape[row + 2];
     shape[row + 3] = restShape[row + 3];
+
+    // THE SHADING NORMAL, turned by the same chain as the frame and in the
+    // same way: a normal goes as the cross product of two directions in its
+    // surface, and `(M a) x (M b) = cof(M) (a x b)`, which is what the disc's
+    // own axis above is too (`cross(u, v)`). So the two stay on the same side
+    // of each other through a shear, and a limb's relief bends with the limb
+    // rather than staying where the bind pose left the light.
+    if (params.normalsOut != 0) {
+        const float3 rest = unpackNormal(restNormals[at]);
+        const float3 helper = abs(rest.x) < 0.9 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
+        const float3 a = normalize(cross(helper, rest));
+        const float3 b = cross(rest, a);
+        const float3 turned = cross(mul(chain, a), mul(chain, b));
+        normals[at] = packNormal(dot(turned, turned) > 1.0e-30 ? turned : rest);
+    }
 }

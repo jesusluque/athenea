@@ -135,6 +135,8 @@ static const uint kMostJoints = 16;
 ///      have it -- which ways out are open
 ///   3  a rig: the weights each joint carries, summed over the records, the
 ///      `width` heaviest kept and made whole again
+///   4  a direction: the mean of mode 0, made a unit vector again -- a
+///      shading normal (`primvars:athenea:splat:normal`)
 ///
 /// A gaussian kept as it was takes its record's words as they are, in every
 /// mode.
@@ -168,6 +170,24 @@ void lodMergeAttribute(uint3 tid: SV_DispatchThreadID) {
                 total += w;
             }
             merged[out + k] = asuint(total > 0.0 ? sum / total : asfloat(values[recordOf[run.x] * width + k]));
+        }
+        return;
+    }
+    if (params.mode == 4) {
+        float length2 = 0.0;
+        for (uint k = 0; k < width; ++k) {
+            float sum = 0.0;
+            for (uint s = run.x; s < run.y; ++s) {
+                sum += weightOf(s) * asfloat(values[recordOf[s] * width + k]);
+            }
+            merged[out + k] = asuint(sum);
+            length2 += sum * sum;
+        }
+        // Children facing every way at once: the first record's, as it was.
+        const bool some = length2 > 1.0e-30;
+        for (uint k = 0; k < width; ++k) {
+            merged[out + k] = some ? asuint(asfloat(merged[out + k]) * rsqrt(length2))
+                                   : values[recordOf[run.x] * width + k];
         }
         return;
     }

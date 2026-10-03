@@ -42,7 +42,8 @@ Result<SplatSkinner> SplatSkinner::create(gpu::ShaderLibrary& library) {
 }
 
 Result<void> SplatSkinner::skin(gpu::CommandBatch& batch, const SplatSkinInput& input,
-                                gpu::Buffer& positions, gpu::Buffer& shape, gpu::Buffer* motion) {
+                                gpu::Buffer& positions, gpu::Buffer& shape, gpu::Buffer* motion,
+                                gpu::Buffer* normals) {
     if (input.rest == nullptr || input.influences == nullptr || input.skinningXforms == nullptr) {
         return Error(ErrorCode::InvalidArgument, "a skinned cloud wants a rest cloud, its joints and their transforms");
     }
@@ -51,6 +52,7 @@ Result<void> SplatSkinner::skin(gpu::CommandBatch& batch, const SplatSkinInput& 
         return ok();
     }
     const bool moves = motion != nullptr && input.skinningXformsEnd != nullptr;
+    const bool turnsNormals = normals != nullptr && input.rest->hasNormals();
     kernel_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["restPositions"].setBinding(input.rest->positions.rhi());
         cursor["restShape"].setBinding(input.rest->shape.rhi());
@@ -64,10 +66,13 @@ Result<void> SplatSkinner::skin(gpu::CommandBatch& batch, const SplatSkinInput& 
         cursor["motion"].setBinding(moves ? motion->rhi() : positions.rhi());
         cursor["positions"].setBinding(positions.rhi());
         cursor["shape"].setBinding(shape.rhi());
+        cursor["restNormals"].setBinding(turnsNormals ? input.rest->normals.rhi() : input.rest->shape.rhi());
+        cursor["normals"].setBinding(turnsNormals ? normals->rhi() : shape.rhi());
         rhi::ShaderCursor p = cursor["params"];
         p["count"].setData(count);
         p["perSplat"].setData(std::max(input.perSplat, 1U));
         p["motionOut"].setData(uint32_t{moves ? 1u : 0u});
+        p["normalsOut"].setData(uint32_t{turnsNormals ? 1u : 0u});
         setRows(p, "geomBind", input.geomBindTransform);
         setRows(p, "skelToWorld", input.skelLocalToWorld);
         setRows(p, "worldToPrim", input.primWorldToLocal);

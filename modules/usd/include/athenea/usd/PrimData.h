@@ -50,6 +50,10 @@ struct ParticleFieldArrays {
     pxr::VtValue shadowBits;       ///< VtIntArray
     /// Nonzero where the gaussian came from a thin-walled glass.
     pxr::VtValue thinWalled;       ///< VtIntArray, one a gaussian
+    /// The shading normal each gaussian keeps apart from its frame
+    /// (`primvars:athenea:splat:normal`), in the field's own space. Empty for a
+    /// capture, which is relit with the frame's short axis.
+    pxr::VtValue normals;          ///< VtVec3fArray or VtVec3hArray, one a gaussian
     std::string  cryptoManifest;   ///< {"<path>":"<hex8>"} as the primvar holds it
     /// A LEVEL OF DETAIL OF A CLOUD THAT MOVES: the same cloud converted at
     /// several cells, each its own prim with its own rig, named alike by

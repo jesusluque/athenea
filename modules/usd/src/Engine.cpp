@@ -3123,7 +3123,8 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     const uint32_t kept = entry.gpu->count;
     // The posed cloud shares everything the skinner does not write -- the
     // harmonics, the PBR channels -- and owns the two buffers it does.
-    if (entry.posed == nullptr || entry.posed->count != kept) {
+    if (entry.posed == nullptr || entry.posed->count != kept ||
+        entry.posed->hasNormals() != entry.gpu->hasNormals()) {
         scene::GpuSplats posed = *entry.gpu;
         gpu::BufferDesc desc;
         desc.bytes = uint64_t{kept} * 16;
@@ -3138,6 +3139,16 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
         if (!shape) return std::move(shape).error();
         posed.positions = std::move(*positions);
         posed.shape = std::move(*shape);
+        // The shading normal turns with the frame, so the posed cloud owns
+        // its own: the rest one is the bind pose's light.
+        if (entry.gpu->hasNormals()) {
+            desc.bytes = uint64_t{kept} * 4;
+            desc.elementBytes = 4;
+            desc.label = "splat.posed.normals";
+            auto normals = gpu::Buffer::create(*device_, desc);
+            if (!normals) return std::move(normals).error();
+            posed.normals = std::move(*normals);
+        }
         posed.source = id.GetString() + " (posed)";
         entry.posed = std::make_unique<scene::GpuSplats>(std::move(posed));
     }
@@ -3159,7 +3170,8 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     input.skinningXformsEnd = moves ? &entry.xformsEnd : nullptr;
     input.geomBindTransform = entry.geomBind;
     ATHENEA_TRY(splatSkinner_->skin(batch, input, entry.posed->positions, entry.posed->shape,
-                                moves ? &entry.motion : nullptr));
+                                moves ? &entry.motion : nullptr,
+                                entry.posed->hasNormals() ? &entry.posed->normals : nullptr));
     ATHENEA_TRY(batch.submit(true));
     // The box the cloud now fills. It is not the bind pose's: a skeleton
     // moves a cloud out from under its own extent, and everything that culls,

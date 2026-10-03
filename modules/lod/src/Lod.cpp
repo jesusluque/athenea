@@ -25,7 +25,7 @@ Result<gpu::Buffer> buffer(gpu::Device& device, uint64_t count, uint32_t element
 }
 
 Result<scene::GpuSplats> packed(gpu::Device& device, uint32_t count, uint32_t restPerColour, uint32_t shWords,
-                                const char* label) {
+                                const char* label, bool withNormals = false) {
     scene::GpuSplats out;
     out.source = label;
     out.count = count;
@@ -41,7 +41,22 @@ Result<scene::GpuSplats> packed(gpu::Device& device, uint32_t count, uint32_t re
     out.positions = std::move(*p);
     out.shape = std::move(*s);
     out.sh = std::move(*h);
+    if (withNormals) {
+        auto n = buffer(device, count, 4, label);
+        if (!n) return std::move(n).error();
+        out.normals = std::move(*n);
+    }
     return out;
+}
+
+/// The shading normals' bindings: the cloud's own where it keeps them, and a
+/// buffer of the right kind in their place where it does not, since every
+/// name a shader declares must be bound. `params.normals` says which.
+void bindNormals(rhi::ShaderCursor cursor, const scene::GpuSplats& from, const scene::GpuSplats& to) {
+    const bool carried = from.hasNormals() && to.hasNormals();
+    cursor["srcNormals"].setBinding(carried ? from.normals.rhi() : from.shape.rhi());
+    cursor["normals"].setBinding(carried ? to.normals.rhi() : to.shape.rhi());
+    cursor["params"]["normals"].setData(uint32_t{carried ? 1u : 0u});
 }
 
 void setBounds(rhi::ShaderCursor p, const LodCloud& cloud) {
@@ -105,7 +120,8 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
     ATHENEA_TRY(assign(sorting.values, "lod.order"));
     ATHENEA_TRY(assign(sorting.scratchKeysLo, "lod.keys2"));
     ATHENEA_TRY(assign(sorting.scratchValues, "lod.order2"));
-    auto splats = packed(device, n, cloud.restPerColour, cloud.shWords, "lod.splats");
+    const bool normals = cloud.hasNormals();
+    auto splats = packed(device, n, cloud.restPerColour, cloud.shWords, "lod.splats", normals);
     if (!splats) return std::move(splats).error();
     {
         gpu::CommandBatch batch(device);
@@ -125,6 +141,7 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
             cursor["positions"].setBinding(splats->positions.rhi());
             cursor["shape"].setBinding(splats->shape.rhi());
             cursor["sh"].setBinding(splats->sh.rhi());
+            bindNormals(cursor, cloud, *splats);
             cursor["params"]["count"].setData(n);
             cursor["params"]["shWords"].setData(cloud.shWords);
         });
@@ -199,14 +216,14 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
 
     // Moments from the finest level up; a Gaussian per group at each.
     const uint32_t keep = cloud.restPerColour;
-    const uint32_t stride = kMomentsHead + keep * 3;
+    const uint32_t stride = kMomentsHead + keep * 3 + (normals ? 3u : 0u);
     gpu::Buffer fineMoments;
     std::vector<LodLevel> stored;
     for (uint32_t r = finest + 1; r-- > coarsest;) {
         Level& level = levels[r];
         auto moments = buffer(device, uint64_t{level.groups} * stride, 4, "lod.moments");
         if (!moments) return std::move(moments).error();
-        auto gaussians = packed(device, level.groups, keep, cloud.shWords, "lod.merged");
+        auto gaussians = packed(device, level.groups, keep, cloud.shWords, "lod.merged", normals);
         if (!gaussians) return std::move(gaussians).error();
         gpu::CommandBatch batch(device);
         if (r == finest) {
@@ -215,8 +232,10 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
                 cursor["shape"].setBinding(lod.splats.shape.rhi());
                 cursor["sh"].setBinding(lod.splats.sh.rhi());
                 cursor["starts"].setBinding(level.starts.rhi());
+                cursor["normals"].setBinding(normals ? lod.splats.normals.rhi() : lod.splats.shape.rhi());
                 cursor["moments"].setBinding(moments->rhi());
                 rhi::ShaderCursor p = cursor["params"];
+                p["normals"].setData(uint32_t{normals ? 1u : 0u});
                 p["count"].setData(n);
                 p["groups"].setData(level.groups);
                 p["keep"].setData(keep);
@@ -242,7 +261,9 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
             cursor["positions"].setBinding(gaussians->positions.rhi());
             cursor["shape"].setBinding(gaussians->shape.rhi());
             cursor["sh"].setBinding(gaussians->sh.rhi());
+            cursor["normals"].setBinding(normals ? gaussians->normals.rhi() : gaussians->shape.rhi());
             rhi::ShaderCursor p = cursor["params"];
+            p["normals"].setData(uint32_t{normals ? 1u : 0u});
             p["groups"].setData(level.groups);
             p["keep"].setData(keep);
             p["shWords"].setData(cloud.shWords);
@@ -488,10 +509,11 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             splatsDrawn += part < levels ? 0 : read[part];
         }
         if (frame.capacity < drawn || frame.cloud.restPerColour != lod.splats.restPerColour ||
-            frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid()) {
+            frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid() ||
+            frame.cloud.hasNormals() != lod.splats.hasNormals()) {
             const uint32_t capacity = std::max(drawn, frame.capacity + frame.capacity / 2);
             auto made = packed(device, std::max(capacity, 1u), lod.splats.restPerColour, lod.splats.shWords,
-                               "cut.frame");
+                               "cut.frame", lod.splats.hasNormals());
             if (!made) return std::move(made).error();
             frame.cloud = std::move(*made);
             frame.capacity = std::max(capacity, 1u);
@@ -518,6 +540,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["positions"].setBinding(frame.cloud.positions.rhi());
                     cursor["shape"].setBinding(frame.cloud.shape.rhi());
                     cursor["sh"].setBinding(frame.cloud.sh.rhi());
+                    bindNormals(cursor, source, frame.cloud);
                     cursor["params"]["count"].setData(countOf(part));
                     cursor["params"]["base"].setData(base);
                     cursor["params"]["offset"].setData(merged ? 0u : runs[part - levels].offset);
@@ -756,7 +779,8 @@ Result<DecimateResult> Decimator::decimate(const LodCloud& lod, const gpu::Buffe
     for (const uint32_t n : read) {
         kept += n;
     }
-    auto out = packed(device, std::max(kept, 1u), lod.splats.restPerColour, lod.splats.shWords, "decimate.cloud");
+    auto out = packed(device, std::max(kept, 1u), lod.splats.restPerColour, lod.splats.shWords, "decimate.cloud",
+                      lod.splats.hasNormals());
     if (!out) return std::move(out).error();
     auto ranges = buffer(device, std::max(kept, 1u), 8, "decimate.ranges");
     if (!ranges) return std::move(ranges).error();
@@ -782,6 +806,7 @@ Result<DecimateResult> Decimator::decimate(const LodCloud& lod, const gpu::Buffe
                 cursor["positions"].setBinding(out->positions.rhi());
                 cursor["shape"].setBinding(out->shape.rhi());
                 cursor["sh"].setBinding(out->sh.rhi());
+                bindNormals(cursor, source, *out);
                 cursor["params"]["count"].setData(countOf(part));
                 cursor["params"]["base"].setData(base);
                 cursor["params"]["offset"].setData(0u);

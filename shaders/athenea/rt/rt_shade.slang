@@ -27,6 +27,8 @@ StructuredBuffer<float4>   positions;
 StructuredBuffer<uint>     shape;
 StructuredBuffer<uint>     sh;
 StructuredBuffer<uint>     pbr;      // metallic and roughness a splat, where the cloud carries them
+// The shading normal a splat, where the cloud carries one (`params.hasNormals`).
+StructuredBuffer<uint>     normals;
 StructuredBuffer<LightRecord> lights;
 StructuredBuffer<float>    shadowFactors;   // measured before the frame, where a cloud carries a baked visibility
 // The sky prepared for a kernel with no texture table; `params.envLights` of
@@ -84,7 +86,11 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
         const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
         const float3x3 rotation = splatRotation(decodeQuaternion(shape[row + 0]));
-        const float3 cloudNormal = splatNormal(rotation, scale, p.xyz, eye);
+        // The disc's axis for what is geometric -- the plane a reflection must
+        // clear -- and the shading normal for what the light does.
+        const float3 discNormal = splatNormal(rotation, scale, p.xyz, eye);
+        const float3 cloudNormal = splatShadingNormal(rotation, scale, p.xyz, eye, params.hasNormals != 0,
+                                                      params.hasNormals != 0 ? normals[i] : 0u);
         const float3 eyeWorld = float3(params.eyeWorldX, params.eyeWorldY, params.eyeWorldZ);
         SplatSurface surface;
         surface.position = relightToWorld(w0, w1, w2, p.xyz);
@@ -144,7 +150,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
                 glassNearest(frames, bvhBoxes, bvhChildren, bvhLeaves, params.glassNodeBase,
                              params.glassBase, params.glassParticles, params.glassBase,
                              p.xyz + mirrorCloud * step, mirrorCloud, 0.0, 3.0e38, 2.0,
-                             p.xyz, cloudNormal, clearance, hitParticle);
+                             p.xyz, discNormal, clearance, hitParticle);
             surface.reflectionTraced = true;
             if (met.found) {
                 const float4 seen = colours[params.base + hitParticle];

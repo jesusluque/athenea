@@ -30,6 +30,9 @@ RWStructuredBuffer<uint>     shadowBits;
 // a gaussian -- a rig's influences, a part of a visibility -- is read through
 // this (scene::keptOnly).
 RWStructuredBuffer<uint>     origin;
+// The shading normal, one word a splat (packing's `packNormal`); `params.normal`
+// says whether the file carries one. Always bound.
+RWStructuredBuffer<uint>     normals;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -72,6 +75,25 @@ void splatDecode(uint3 tid: SV_DispatchThreadID) {
     }
     if (params.cryptoObject != kNoField) {
         crypto[j] = bit_cast<uint>(fieldOf(raw, i, s, params.cryptoObject));
+    }
+    // THE SHADING NORMAL, apart from the frame: the way the surface under the
+    // gaussian faced once its normal map turned it. Normalised here, as the
+    // quaternion is, so a mean a decimation wrote is a direction again; turned
+    // with the positions where the file is right-up-back. Where a record holds
+    // no direction at all it is the frame's shortest axis, which is what a
+    // relit splat would have used anyway.
+    if (params.normal != kNoField) {
+        float3 n = float3(fieldOf(raw, i, s, params.normal), fieldOf(raw, i, s, params.normal + 1),
+                          fieldOf(raw, i, s, params.normal + 2));
+        if (params.flipYZ != 0) {
+            n = float3(n.x, -n.y, -n.z);
+        }
+        if (!(dot(n, n) > 1.0e-20)) {
+            const float3x3 axes = axesOfQuaternion(normalize(qLength > 1e-8 ? q : float4(0, 0, 0, 1)));
+            const uint shortest = ls.x <= ls.y ? (ls.x <= ls.z ? 0u : 2u) : (ls.y <= ls.z ? 1u : 2u);
+            n = float3(axes[0][shortest], axes[1][shortest], axes[2][shortest]);
+        }
+        normals[j] = packNormal(normalize(n));
     }
     if (params.shadowBits != kNoField) {
         shadowBits[j * 2] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits));

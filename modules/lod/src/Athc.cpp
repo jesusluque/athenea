@@ -20,7 +20,12 @@ namespace athenea::lod {
 namespace {
 
 constexpr uint64_t kPage = 4096;
-constexpr uint32_t kVersion = 1;
+/// 2: `flags` says what a block carries besides its four arrays (the shading
+/// normals, `kHasNormals`). A version 1 file has nothing besides, and its
+/// `flags` is the zero its padding always was, so it reads unchanged.
+constexpr uint32_t kVersion = 2;
+constexpr uint32_t kOldestVersion = 1;
+constexpr uint32_t kHasNormals = 1;
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'C'};
 /// Uploads staged before a submit: the staging heap holds them until then.
 constexpr uint64_t kStageBytes = uint64_t{256} << 20;
@@ -39,7 +44,7 @@ struct FileHeader {
     float    extent;
     float    boundsMin[3];
     float    boundsMax[3];
-    uint32_t pad;
+    uint32_t flags;           // version 2: kHasNormals; 0 in a version 1 file
     uint64_t levelTable;      // LevelEntry[levels]
     uint64_t chunkTable;      // ChunkEntry[chunks]
     uint64_t starts;          // uint[finestGroups]
@@ -62,9 +67,14 @@ uint64_t aligned(uint64_t at) {
     return (at + kPage - 1) / kPage * kPage;
 }
 
-/// Bytes a level group or a splat takes: position, shape, SH, and a uint.
-uint64_t elementBytes(uint32_t shWords) {
-    return 16 + 16 + 4 * uint64_t{shWords} + 4;
+/// Bytes a level group or a splat takes: position, shape, SH, a uint, and
+/// the shading normal's word where the file keeps one.
+uint64_t elementBytes(uint32_t shWords, bool normals) {
+    return 16 + 16 + 4 * uint64_t{shWords} + 4 + (normals ? 4 : 0);
+}
+
+bool keepsNormals(const FileHeader& h) {
+    return (h.flags & kHasNormals) != 0;
 }
 
 struct Layout {
@@ -88,8 +98,12 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
     if (std::memcmp(h.magic, kMagic, 4) != 0) {
         return bad(path, "no ATHC magic");
     }
-    if (h.version != kVersion) {
-        return bad(path, "version " + std::to_string(h.version) + ", this reads " + std::to_string(kVersion));
+    if (h.version < kOldestVersion || h.version > kVersion) {
+        return bad(path, "version " + std::to_string(h.version) + ", this reads " + std::to_string(kOldestVersion) +
+                             " to " + std::to_string(kVersion));
+    }
+    if (h.version < 2) {
+        h.flags = 0;
     }
     const auto within = [&](uint64_t offset, uint64_t size) {
         return offset <= bytes.size() && size <= bytes.size() - offset;
@@ -107,7 +121,7 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
     layout.chunks.resize(h.chunks);
     std::memcpy(layout.levels.data(), bytes.data() + h.levelTable, layout.levels.size() * sizeof(LevelEntry));
     std::memcpy(layout.chunks.data(), bytes.data() + h.chunkTable, layout.chunks.size() * sizeof(ChunkEntry));
-    const uint64_t per = elementBytes(h.shWords);
+    const uint64_t per = elementBytes(h.shWords, keepsNormals(h));
     for (size_t l = 0; l < layout.levels.size(); ++l) {
         const LevelEntry& e = layout.levels[l];
         if (e.groups == 0 || !within(e.offset, e.groups * per) ||
@@ -137,16 +151,18 @@ Result<gpu::Buffer> deviceBuffer(gpu::Device& device, uint64_t count, uint32_t e
     return gpu::Buffer::create(device, desc, count > 0 ? initial : nullptr);
 }
 
-/// A block's four arrays, where they are in the mapping.
+/// A block's arrays, where they are in the mapping: four, and the shading
+/// normals after them where the file keeps them (`normals` null otherwise).
 struct Block {
-    const std::byte* positions, *shape, *sh, *tail;
+    const std::byte* positions, *shape, *sh, *tail, *normals;
 };
-Block blockAt(const std::byte* at, uint64_t n, uint32_t shWords) {
+Block blockAt(const std::byte* at, uint64_t n, uint32_t shWords, bool normals) {
     Block b;
     b.positions = at;
     b.shape = b.positions + n * 16;
     b.sh = b.shape + n * 16;
     b.tail = b.sh + n * 4 * uint64_t{shWords};
+    b.normals = normals ? b.tail + n * 4 : nullptr;
     return b;
 }
 
@@ -171,7 +187,7 @@ Result<LodCloud> openCloud(gpu::Device& device, const platform::MappedFile& file
     lod.extent = h.extent;
     const std::byte* base = file.bytes().data();
     for (const LevelEntry& e : layout.levels) {
-        const Block b = blockAt(base + e.offset, e.groups, h.shWords);
+        const Block b = blockAt(base + e.offset, e.groups, h.shWords, keepsNormals(h));
         LodLevel level;
         level.level = e.level;
         level.gaussians = splatsLike(h, path);
@@ -188,6 +204,11 @@ Result<LodCloud> openCloud(gpu::Device& device, const platform::MappedFile& file
         level.gaussians.positions = std::move(*p);
         level.gaussians.shape = std::move(*s);
         level.gaussians.sh = std::move(*sh);
+        if (b.normals != nullptr) {
+            auto normals = deviceBuffer(device, e.groups, 4, "athc.level", b.normals);
+            if (!normals) return std::move(normals).error();
+            level.gaussians.normals = std::move(*normals);
+        }
         level.cells = std::move(*cells);
         lod.levels.push_back(std::move(level));
     }
@@ -215,6 +236,11 @@ Result<void> makeStore(gpu::Device& device, LodCloud& lod, const FileHeader& h, 
     lod.splats.positions = std::move(*p);
     lod.splats.shape = std::move(*s);
     lod.splats.sh = std::move(*sh);
+    if (keepsNormals(h)) {
+        auto normals = deviceBuffer(device, n, 4, "athc.store");
+        if (!normals) return std::move(normals).error();
+        lod.splats.normals = std::move(*normals);
+    }
     lod.groups = std::move(*g);
     lod.slots.assign(h.chunks, -1);
     const std::vector<uint32_t> none(h.chunks, 0);
@@ -228,12 +254,15 @@ Result<void> makeStore(gpu::Device& device, LodCloud& lod, const FileHeader& h, 
 void place(gpu::CommandBatch& batch, LodCloud& lod, uint32_t chunk, uint32_t slot, const std::byte* from) {
     const uint64_t n = lod.chunkCount(chunk);
     const uint64_t at = uint64_t{slot} * lod.chunkSplats;
-    const Block b = blockAt(from, n, lod.splats.shWords);
+    const Block b = blockAt(from, n, lod.splats.shWords, lod.splats.hasNormals());
     rhi::ICommandEncoder* e = batch.encoder();
     e->uploadBufferData(lod.splats.positions.rhi(), at * 16, n * 16, b.positions);
     e->uploadBufferData(lod.splats.shape.rhi(), at * 16, n * 16, b.shape);
     e->uploadBufferData(lod.splats.sh.rhi(), at * 4 * lod.splats.shWords, n * 4 * lod.splats.shWords, b.sh);
     e->uploadBufferData(lod.groups.rhi(), at * 4, n * 4, b.tail);
+    if (b.normals != nullptr) {
+        e->uploadBufferData(lod.splats.normals.rhi(), at * 4, n * 4, b.normals);
+    }
     const uint32_t one = 1;
     e->uploadBufferData(lod.resident.rhi(), uint64_t{chunk} * 4, 4, &one);
     batch.markDirty();
@@ -258,10 +287,15 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         }
     }
     const uint32_t shWords = cloud.splats.shWords;
-    const uint64_t per = elementBytes(shWords);
+    // Normals are written only where every level keeps them as the splats do.
+    const bool normals = cloud.splats.hasNormals() &&
+                         std::all_of(cloud.levels.begin(), cloud.levels.end(),
+                                     [](const LodLevel& l) { return l.gaussians.hasNormals(); });
+    const uint64_t per = elementBytes(shWords, normals);
     FileHeader h{};
     std::memcpy(h.magic, kMagic, 4);
     h.version = kVersion;
+    h.flags = normals ? kHasNormals : 0u;
     h.count = cloud.count;
     h.restPerColour = cloud.splats.restPerColour;
     h.shWords = shWords;
@@ -328,6 +362,9 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         ATHENEA_TRY(copy(level.gaussians.shape, 0, n * 16));
         ATHENEA_TRY(copy(level.gaussians.sh, 0, n * 4 * shWords));
         ATHENEA_TRY(copy(level.cells, 0, n * 4));
+        if (normals) {
+            ATHENEA_TRY(copy(level.gaussians.normals, 0, n * 4));
+        }
     }
     for (uint32_t c = 0; c < h.chunks; ++c) {
         const uint64_t n = chunks[c].count;
@@ -337,6 +374,9 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         ATHENEA_TRY(copy(cloud.splats.shape, first * 16, n * 16));
         ATHENEA_TRY(copy(cloud.splats.sh, first * 4 * shWords, n * 4 * shWords));
         ATHENEA_TRY(copy(cloud.groups, first * 4, n * 4));
+        if (normals) {
+            ATHENEA_TRY(copy(cloud.splats.normals, first * 4, n * 4));
+        }
     }
     padTo(aligned(written));
     out.close();
@@ -367,7 +407,7 @@ Result<LodCloud> readAthc(gpu::Device& device, const std::filesystem::path& path
     uint64_t staged = 0;
     for (uint32_t c = 0; c < h.chunks; ++c) {
         place(batch, *lod, c, c, file->bytes().data() + layout->chunks[c].offset);
-        staged += lod->chunkCount(c) * elementBytes(h.shWords);
+        staged += lod->chunkCount(c) * elementBytes(h.shWords, keepsNormals(h));
         if (staged >= kStageBytes) {
             ATHENEA_TRY(batch.submit(true));
             staged = 0;
@@ -401,7 +441,7 @@ struct StreamingPool::Impl {
     std::vector<std::thread>                              loaders;
 
     void load() {
-        const uint64_t per = elementBytes(layout.header.shWords);
+        const uint64_t per = elementBytes(layout.header.shWords, keepsNormals(layout.header));
         std::unique_lock lock(mutex);
         for (;;) {
             work.wait(lock, [&] { return stop || !queue.empty(); });

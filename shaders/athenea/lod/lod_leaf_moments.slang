@@ -9,6 +9,7 @@ StructuredBuffer<float4>   positions;   // Morton order
 StructuredBuffer<uint>     shape;
 StructuredBuffer<uint>     sh;
 StructuredBuffer<uint>     starts;
+StructuredBuffer<uint>     normals;     // Morton order, where `params.normals` says
 RWStructuredBuffer<float>  moments;
 ConstantBuffer<LodParams>  params;       // count: splats; groups
 
@@ -60,6 +61,15 @@ void lodLeafMoments(uint3 tid: SV_DispatchThreadID) {
         moments[at + 12] += weight * highHalf(shape[row + 3]);
         for (uint half = 0; half < params.keep * 3; ++half) {
             moments[at + kMomentsHead + half] += weight * halfAt(i * params.shWords, half);
+        }
+        if (params.normals != 0) {
+            // Weighed as the colour is: a group's normal is where its
+            // gaussians, by what they cover, face.
+            const float3 n = unpackNormal(normals[i]);
+            const uint nb = at + kMomentsHead + params.keep * 3;
+            moments[nb] += weight * n.x;
+            moments[nb + 1] += weight * n.y;
+            moments[nb + 2] += weight * n.z;
         }
     }
 }
