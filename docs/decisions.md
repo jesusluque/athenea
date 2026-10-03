@@ -11180,3 +11180,106 @@ coat, and a sheen's weight apart from its colour (its largest channel stands
 for it) are not carried. `readParticleFieldRecords` (the decimation's
 records) reads no lobes; a decimation merges the eight primvars as means, as
 it merges every float array.
+
+## A transfer right under any sky and any light (task TX)
+
+`--transfer` was the mode that made a cloud independent of the sky it was
+converted under, and on the Corvette it was the mode that lost the car. Its
+mean was right -- the paint read 0.125/0.159/0.143 against the path traced
+mesh's 0.128/0.158/0.153 -- and its relMSE was 0.49 against the radiance
+bake's 0.22, because what makes a car a car is what a transfer of nine
+coefficients cannot hold: the sky's sharp reflection in the lacquer, the
+ground and the body in the chrome, the dark cabin behind the windscreen. The
+user's goal is one file that is right under any sky and any light, material
+by material no worse than the bake, and the file's size is information here,
+not a limit.
+
+### What was already there, and what was not
+
+Step 1 of the task asked for the glossy half at render time: a gaussian's own
+lobes against the actual sky, prefiltered by roughness from a mip chain built
+on the GPU. That exists -- `technique::Environment` builds the octahedral
+GGX chain (eight levels, the dome's own resolution at level 0) and
+`splat_relight` evaluates the base, the metal, the coat and the sheen of
+proposal 026 against it. What it does not have is **direction in its
+occlusion**: the reflection is narrowed by Lagarde and de Rousiers' fit of
+the transfer's constant term, one number for the whole hemisphere, so a door
+reflects the open sky where the ground stands in its mirror, and every
+occluded direction is black where the mesh shows what occludes it. That is
+the defect every step below addresses, from a different side.
+
+### The plan
+
+The cloud keeps the geometry and the albedo of what surrounds each gaussian,
+and a frame combines them with whatever sky and lights it has. Five pieces,
+one commit each, every one behind data an old cloud does not carry:
+
+1. **Which ways out are open, sixteen times finer.** The bake traces 256
+   rays a gaussian, one a cell of a 16 x 16 octahedral grid over the whole
+   sphere (front and back, so glass and a sheet seen from behind have
+   theirs), and keeps a bit where the ray left the scene: eight words, written
+   as `primvars:athenea:splat:shadowBits` with eight elements a gaussian where
+   the old file has two -- the count is the layout. A frame reads them along
+   the reflection: a lobe of six directions around the mirror and its centre,
+   at a spread that follows the roughness, gives the share of the lobe that
+   sees the sky. The sky reflected is the prefiltered map times that share;
+   the sun is shadowed by the same bits at four times the old resolution.
+2. **What the occluded directions show.** A transfer's indirect half is the
+   bounced light *integrated*; a reflection needs it *by direction*. The same
+   paths answer it: for every path that leaves the gaussian, meets the scene
+   and later escapes, what it carries is the radiance arriving along its first
+   direction under a white sky of radiance one, and that is projected onto
+   degree-3 harmonics of the arrival direction: 48 numbers a gaussian,
+   `primvars:athenea:splat:transferReflected`. Under a real sky it is scaled,
+   per channel, by how much more or less light the scene bounces than under
+   the white one -- the gaussian's own indirect transfer dotted with the sky
+   (the sun's share included) over the same dotted with white. A rank-one
+   coupling: the pattern of what is around is geometry and albedo, the
+   brightness of it is the sky's. Chrome then reflects the body and the
+   paint the ground, under any dome, with no ray at render time. The other
+   options were weighed: a 9 x 9 transfer matrix a gaussian (243 numbers,
+   5 GB on the device for the whole car, and degree 2 in direction is still
+   blur), and a lookup into the cloud itself (the index of the gaussian each
+   direction meets, which needs a radiance cache of every gaussian a frame
+   and says nothing of the ground, which may stay a mesh). The rank-one field
+   is the one that fits on the device, needs no second pass, and sees the
+   ground.
+3. **Degree 3.** The direct transfer gets sixteen coefficients and the
+   indirect forty-eight, against sixteen of the sky's -- `env_project`
+   projects degree 3 now, the irradiance still reads the first nine. A
+   cloud's layout is told by its counts (9 or 16 direct; the indirect three
+   times that; 48 reflected after), and every old count reads as it did.
+4. **Lights that are not the sky.** A `DistantLight`, a sphere, a disc and a
+   rect are relit through the same lobes; what was missing for a transfer was
+   their shadow and their bounce. Where nothing measured a shadow, the bits
+   are read toward the light; the light's bounce is the indirect transfer
+   read along it, as the sun's is, and it enters the reflected field's
+   coupling as well.
+5. **Glass.** A transmitting gaussian's back half is traced too (the bits
+   already are; the field's samples are drawn over the whole sphere where the
+   material transmits), so what the glass shows through is the sky only where
+   the bits say the refracted direction escapes, and the occluder radiance --
+   a cabin, a headlight's reflector -- where they say it does not.
+
+### What a file costs
+
+Per gaussian, in a stage (floats as USD writes them) and on the device (f16):
+
+| | old transfer | TX |
+|---|---|---|
+| direct | 9 | 16 |
+| indirect | 27 | 48 |
+| reflected field | -- | 48 |
+| visibility | 2 ints (64 bits) | 8 ints (256 bits) |
+| file, bytes | 152 | 480 |
+| device, bytes | 80 | 256 |
+
+The whole Corvette (about 10 M gaussians) is 4.8 GB of file and 2.6 GB of
+device for the transfer alone. `--transfer-degree 2` and
+`--no-transfer-cells` write the old layout, which is how the two are measured
+against each other.
+
+### `.athc`
+
+A transfer does not travel through `.athc` and this does not change it: no
+flag bit is taken. Bit 3 stays proposal 009's and bit 4 proposal 026's.
