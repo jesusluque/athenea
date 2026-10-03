@@ -158,6 +158,15 @@ struct StageSkinning {
     bool                  dualQuaternion = false;
 };
 
+/// A GEOMSUBSET THAT BINDS A MATERIAL OF ITS OWN: one of the mesh's
+/// `materialBind` family. Its faces are the mesh's triangles whose
+/// `GpuMesh::triangleSubsets` is its index plus one; the faces no subset
+/// claims keep the mesh's own material.
+struct StageSubset {
+    std::string   path;       ///< the GeomSubset prim, for messages
+    StageMaterial material;   ///< what it binds (the mesh's, where it binds none)
+};
+
 /// One mesh of the stage, already on the device.
 struct StageMesh {
     std::string           path;
@@ -180,6 +189,20 @@ struct StageMesh {
     /// (`st2`), where a map of its material reads by one that is not the
     /// first; empty otherwise.
     std::string           uv2;
+    /// Its GeomSubsets of the `materialBind` family, in the order the mesh
+    /// was built with them (`mesh.subsets` of them). Empty: one material.
+    std::vector<StageSubset> subsets;
+};
+
+/// A camera of the stage, as a conversion that sizes its cells by what that
+/// camera sees reads it: where it stands and the lens it looks through.
+struct StageCamera {
+    /// Camera to world, row major: three rows of four, the position in the
+    /// fourth column (as `StageMesh::toWorld`).
+    std::array<float, 12> toWorld{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+    float                 focalLength = 50.0F;          ///< in the aperture's units (tenths of a scene unit)
+    float                 horizontalAperture = 20.955F;
+    float                 nearClip = 1.0F;              ///< the clipping range's near end, scene units
 };
 
 struct MeshStageOptions {
@@ -245,6 +268,10 @@ public:
     [[nodiscard]] char upAxis() const;
     /// The stage's metersPerUnit, USD's fallback included.
     [[nodiscard]] double metersPerUnit() const;
+
+    /// The `UsdGeomCamera` at `path`, at `time`: its world transform, focal
+    /// length, horizontal aperture and near clip, as authored.
+    [[nodiscard]] Result<StageCamera> camera(const std::string& path, double time) const;
 
     /// The layers the stage was opened from, for a message.
     [[nodiscard]] std::string source() const;

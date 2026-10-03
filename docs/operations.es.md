@@ -354,7 +354,7 @@ receta es §3.1.
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `stage` | ruta, obligatoria | — | una escena con mallas |
-| `-o`, `--output` | ruta | `splats.usda` | `.usda`, `.usdc`, `.usd` |
+| `-o`, `--output` | ruta | `splats.usda` | `.usda`, `.usdc`, `.usd`, o `.athc` con niveles de detalle: solo las gaussianas y sus normales de sombreado (sin metallic/roughness/transmission, ids Cryptomatte, índice del vidrio, eje vertical ni unidad); con él se rechazan `--skinned`, `--transfer` y `--lod-levels` |
 | `--prim` | ruta de prim | todas las mallas | solo las que cuelgan de esa ruta |
 | `--hide` | ruta de prim, repetible | ninguna | se deja fuera con todo lo que cuelga de ella, como invisible (opinión de sesión; el fichero no cambia) |
 | `--resolution` | entero | `512` | celdas a lo largo del lado largo de la caja sobre la que se mide la densidad |
@@ -362,7 +362,9 @@ receta es §3.1.
 | `--density` | `per-model` \| `per-mesh` | `per-model` | qué caja es esa |
 | `--cell-min` | número | `0`, derivado | unidades de mundo; por malla, lo más fina que puede ser una celda |
 | `--cell-max` | número | `0`, derivado | unidades de mundo; lo más gruesa |
-| `--max-splats` | entero | `2000000` | el presupuesto, de toda la escena |
+| `--max-splats` | entero | `2000000` | el presupuesto, de toda la escena, repartido entre las mallas en proporción a lo que quiere cada una |
+| `--cell-from-camera` | ruta de un prim cámara | ninguna | la celda de cada malla es lo que cubre un píxel de esa cámara donde la caja de la malla le queda más cerca (como poco el plano cercano), en `--time`; sustituye a `--density`. `--cell-min`/`--cell-max` la acotan, si se dan; no se deriva nada |
+| `--camera-pixels` | entero, de 1 a 65536 | `1920` | con `--cell-from-camera`: píxeles a lo ancho de la apertura horizontal de la cámara |
 | `--sigma` | número | `1.0` | anchura de la gaussiana en celdas; la de mesh2splat es 0.65 |
 | `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos |
 | `--opacity` | número, de 0 a 1 | `1.0` | cobertura: cuánto de lo que hay detrás cubre la superficie convertida, multiplicado por la opacidad propia del material. Toda opacidad es cobertura -- esta, la constante del material, el valor de un mapa, lo que conserva un vidrio -- y cada gaussiana toma lo que necesita una de las varias que hay sobre un punto, así que 0.5 cubre la mitad a cualquier tamaño |
@@ -392,6 +394,17 @@ receta es §3.1.
 `--skinned` y un bake se rechazan juntos: una nube que se mueve no puede
 llevar luz horneada en una pose, así que la conversión lo dice y conserva el
 material.
+
+Una malla cuyos GeomSubsets (familia `materialBind`) enlazan materiales
+propios se convierte un subset cada vez, cada uno con su material, y las caras
+que no reclama ningún subset con el de la malla; el log nombra el prim de cada
+subset. Sus gaussianas conservan el id Cryptomatte de la malla.
+
+La salida se escribe entera o no se escribe: como `.<nombre>.partial-<pid>.<ext>`
+en el mismo directorio, y renombrada a `-o` cuando está completa. Una
+conversión que falla no deja nada en `-o` -- o deja el fichero que ya había,
+tal como estaba -- y borra su fichero parcial. Con `--lod-levels`, cada nivel
+y la escena que los dibuja se escriben así.
 
 ### 2.9 `athenea visibility` — lo que proyecta una nube con esqueleto, por partes
 
@@ -559,11 +572,26 @@ unidades dentro:
 El suelo está en su presupuesto en los dos casos: son dos triángulos, y lo
 decide el techo de celdas, no la densidad.
 
-**El presupuesto.** `--max-splats` es un techo de toda la escena, tomado en
-orden de malla, así que un presupuesto corto conserva enteras las primeras
-mallas y tira las últimas del todo. El log dice cuántas querían más de lo que
-recibieron. Sube el presupuesto, o con `--density per-mesh` sube `--cell-min`
-para que cada malla cueste menos.
+**El presupuesto.** `--max-splats` es un techo de toda la escena. Primero se
+cuenta cada malla (cada GeomSubset de una) -- una pasada del efecto con sitio
+para una gaussiana, que lo cuenta todo y no escribe nada -- y cuando quieren
+más que el presupuesto se reparte en proporción: cada una recibe
+`presupuesto × quiere / total` (y una como poco), y recorre una celda
+`sqrt(quiere / parte)` veces más gruesa para querer más o menos eso. Es un
+solo suelo de densidad para toda la escena: todas las mallas pierden densidad
+por igual y no se tira ninguna. El aviso dice cuántas se querían, y la línea
+de log de cada malla cuánto más gruesa recorrió. Una malla que aún quiere un
+poco más que su parte tras engrosarla conserva las gaussianas de sus primeros
+triángulos, en el orden de la malla. Contar cuesta una pasada corta por malla.
+
+**Desde una cámara.** `--cell-from-camera` da a cada malla la celda de la
+cámara que la va a mirar (la regla de Mesh2GS): `z × (apertura / píxeles) /
+focal`, con `z` la distancia de la cámara al punto más cercano de la caja de
+la malla (como poco su plano cercano, y cero dentro de la caja), así que una
+celda cubre más o menos un píxel donde la malla está más cerca. Cada
+triángulo de la malla recorre exactamente esa celda. Una cámara libre que no
+está en la escena no la conoce la conversión, así que es una opción y no lo
+de por defecto.
 
 **Texturas.** Cada mapa viaja al dispositivo como float4, dieciséis bytes por
 texel, así que un mapa de 4k son 268 MB y un coche con quince no cabe. La
@@ -1381,7 +1409,9 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | `mesh visibility by rays: the device has no ray tracing` | `--visibility rays` en un dispositivo sin ello | usa `automatic`, que elige lo que el dispositivo tiene |
 | un host no ofrece el renderer | no encontró el plugin | pon `PXR_PLUGINPATH_NAME` a `<build>/plugin/usd` |
 | `render product '<ruta>' has no resolution` / `no vars` | el prim de settings está incompleto | dale al producto resolución y vars ordenadas |
-| a una nube convertida le faltan las últimas mallas | el presupuesto se acabó en orden de malla | sube `--max-splats`, o con `--density per-mesh` sube `--cell-min` |
+| una nube convertida sale más gruesa de lo pedido, y `warning: the meshes want N splats` | `--max-splats` estaba por debajo de lo que querían las mallas, y todas se engrosaron por igual para repartirlo | sube `--max-splats`, o baja `--resolution` para elegir tú lo grueso |
+| `warning: the budget is exhausted` o `the budget ran out before N mesh(es)` | `--max-splats` era menor que lo que querían las mallas | sube `--max-splats`, baja `--resolution`, o con `--density per-mesh` sube `--cell-min` |
+| `warning: N cells lay past --max-cells` | un triángulo quería más celdas de las que puede recorrer uno; el resto queda desnudo | sube `--max-cells`, o baja `--resolution` |
 | los reflejos de una nube salen más planos que los de la malla | no lleva normal de sombreado (`primvars:athenea:splat:normal`): se convirtió antes de que las conversiones la escribieran | conviértela de nuevo; `--normal-map-turns` además gira los propios discos |
 | `cells of relief wanted more than N gaussians`, y el relieve muestra huecos en sus pendientes más fuertes | el relieve estiró esas celdas más de lo que permite la partición | sube `--displace-refine`; un polo de las coordenadas de textura estira sin límite y deja unas pocas sea cual sea el valor |
 | los reflejos de una nube salen más blandos que los de la malla | la celda de la conversión es el kernel de desenfoque: una nube se lee como la malla a `r + 9c/R`, con `c` la celda y `R` el radio de curvatura | convierte con `--resolution` más fina: un espejo de roughness `r` quiere una celda por debajo de `r/9` de ese radio. Lo paga el fichero, no el frame -- quince veces las gaussianas fueron un 36 % más de tiempo por frame y dieciséis veces el disco |

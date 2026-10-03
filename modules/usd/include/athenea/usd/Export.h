@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "athenea/core/Result.h"
+#include "athenea/gpu/Buffer.h"
 #include "athenea/io/RawSplats.h"
 #include "athenea/lod/Lod.h"
 
@@ -114,6 +115,25 @@ struct ExportOptions {
 /// new stage (.usda, .usdc or .usd). The values are computed on the GPU.
 [[nodiscard]] Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library,
                                                    const io::RawSplats& raw,
+                                                   const std::filesystem::path& path,
+                                                   const ExportOptions& options = {});
+
+/// RECORDS THAT NEVER LEFT THE DEVICE: `count` of them in `records`, laid
+/// out as `encoding` says, on the device of the library they are written
+/// with. What `athenea mesh2splat` hands over -- the conversion, the bake and
+/// the export's decode all on the device, and what crosses to the processor
+/// only the values a USD array holds.
+struct DeviceSplatRecords {
+    std::string       source;
+    uint32_t          count = 0;
+    io::SplatEncoding encoding;
+    gpu::Buffer       records;   ///< count * encoding.floatsPerRecord floats
+    bool              linear = false;   ///< as io::RawSplats::linear
+};
+
+/// The same stage from records on the device.
+[[nodiscard]] Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library,
+                                                   const DeviceSplatRecords& records,
                                                    const std::filesystem::path& path,
                                                    const ExportOptions& options = {});
 

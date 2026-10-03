@@ -57,6 +57,8 @@
 #include <pxr/base/tf/stringUtils.h>
 
 #include "athenea/core/Hash.h"
+#include "athenea/gpu/CommandBatch.h"
+#include "athenea/gpu/ComputeKernel.h"
 #include "athenea/io/Exr.h"
 #include <pxr/usdImaging/usdImaging/stageSceneIndex.h>
 
@@ -1372,6 +1374,39 @@ Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& r
     if (!impl.delegate->HasEngine()) {
         return Error(ErrorCode::DeviceFailure, "bake: the render delegate has no GPU");
     }
+    gpu::Device& device = impl.delegate->GetEngine().device();
+    // The kernel's layout, three float4 a point: the caller's two, and the
+    // way the gaussian faces where it gave one (its w 1) -- a copy, nothing
+    // computed.
+    std::vector<float> laid(size_t{count} * 12, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        std::copy_n(rays.data() + size_t{k} * 8, 8, laid.data() + size_t{k} * 12);
+        if (facing != nullptr) {
+            std::copy_n(facing->data() + size_t{k} * 4, 4, laid.data() + size_t{k} * 12 + 8);
+        }
+    }
+    gpu::BufferDesc desc;
+    desc.bytes = laid.size() * sizeof(float);
+    desc.elementBytes = 16;
+    desc.label = "bake.rays";
+    auto buffer = gpu::Buffer::create(device, desc, laid.data());
+    if (!buffer) return std::move(buffer).error();
+    auto answer = bakePointsOnDevice(*buffer, count, time, samples, bounces, degree, transfer);
+    if (!answer) return std::move(answer).error();
+    // Already a point's entries together: read back as it is.
+    return answer->readAll<float>(device);
+}
+
+Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
+                                                      uint32_t samples, uint32_t bounces, uint32_t degree,
+                                                      bool transfer, uint32_t batch) {
+    Impl& impl = *impl_;
+    if (count == 0 || !rays.valid() || rays.bytes() < uint64_t{count} * 48) {
+        return Error(ErrorCode::InvalidArgument, "bake: three float4 a point, and at least one point");
+    }
+    if (!impl.delegate->HasEngine()) {
+        return Error(ErrorCode::DeviceFailure, "bake: the render delegate has no GPU");
+    }
     // The stage has to be on the device before its light can be asked for,
     // and what puts it there is a frame: one pixel of it, path traced, with
     // the streams settled so nothing is still on its way in.
@@ -1383,58 +1418,74 @@ Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& r
 
     athenea::usd::Engine& engine = impl.delegate->GetEngine();
     gpu::Device& device = engine.device();
+    auto gather = gpu::ComputeKernel::create(engine.library(), "athenea/usd/bake_gather", "bakeGather");
+    if (!gather) return std::move(gather).error();
+
+    const uint32_t coefficients = (std::min(degree, 3u) + 1) * (std::min(degree, 3u) + 1);
+    // A transfer writes two planes more: the others' alpha is the direct half
+    // of the transfer, so the coverage travels on its own, and after it the
+    // sixty-four visibility bits, carried as the floats they are the bits of.
+    const uint32_t entries = coefficients + (transfer ? 2u : 0u);
     gpu::BufferDesc desc;
-    // The kernel's layout, three float4 a point: the caller's two, and the
-    // way the gaussian faces where it gave one (its w 1) -- a copy, nothing
-    // computed.
-    std::vector<float> laid(size_t{count} * 12, 0.0F);
-    for (uint32_t k = 0; k < count; ++k) {
-        std::copy_n(rays.data() + size_t{k} * 8, 8, laid.data() + size_t{k} * 12);
-        if (facing != nullptr) {
-            std::copy_n(facing->data() + size_t{k} * 4, 4, laid.data() + size_t{k} * 12 + 8);
-        }
-    }
-    desc.bytes = laid.size() * sizeof(float);
+    desc.bytes = uint64_t{count} * entries * 16;
     desc.elementBytes = 16;
-    desc.label = "bake.rays";
-    auto buffer = gpu::Buffer::create(device, desc, laid.data());
-    if (!buffer) return std::move(buffer).error();
+    desc.label = "bake.answer";
+    auto answer = gpu::Buffer::create(device, desc);
+    if (!answer) return std::move(answer).error();
 
     render::RenderSettings settings;
     settings.width = 1;
     settings.height = 1;
     const render::Projection projection = render::projectionFor(*framing, 1, 1);
-    const uint32_t coefficients = (std::min(degree, 3u) + 1) * (std::min(degree, 3u) + 1);
     render::RenderTargets out;
-    athenea::usd::BakeRequest bake;
-    bake.rays = &*buffer;
-    bake.count = count;
-    bake.samples = samples;
-    bake.bounces = bounces;
-    bake.coefficients = coefficients;
-    bake.transfer = transfer;
-    bake.out = &out;
-    ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
-    if (!out.colour.valid()) {
-        return Error(ErrorCode::InternalError, "bake: the frame wrote nothing");
+    // IN PASSES: a pass's rays are the caller's buffer where one pass holds
+    // them all, and otherwise copied out of it on the device into one buffer
+    // a pass long; the pass's planes are gathered into the answer at its
+    // place. What the tracer allocates is sized by the pass.
+    const uint32_t perPass = std::min(batch > 0 ? batch : kBakeBatch, count);
+    gpu::Buffer passRays;
+    if (perPass < count) {
+        desc.bytes = uint64_t{perPass} * 48;
+        desc.elementBytes = 16;
+        desc.label = "bake.passRays";
+        auto made = gpu::Buffer::create(device, desc);
+        if (!made) return std::move(made).error();
+        passRays = std::move(*made);
     }
-    auto baked = out.colour.readAll<float>(device);
-    if (!baked) return std::move(baked).error();
-    // The kernel writes a plane a coefficient over the whole grid; what comes
-    // back is gathered per point, in the order a record keeps them.
-    const size_t plane = size_t{out.width} * out.height;
-    // A transfer writes two planes more: the others' alpha is the direct half
-    // of the transfer, so the coverage travels on its own, and after it the
-    // sixty-four visibility bits, carried as the floats they are the bits of.
-    const uint32_t entries = coefficients + (transfer ? 2u : 0u);
-    std::vector<float> all(size_t{count} * entries * 4, 0.0F);
-    for (uint32_t k = 0; k < count; ++k) {
-        for (uint32_t c = 0; c < entries; ++c) {
-            std::copy_n(baked->data() + (c * plane + k) * 4, 4,
-                        all.data() + (size_t{k} * entries + c) * 4);
+    for (uint32_t first = 0; first < count; first += perPass) {
+        const uint32_t n = std::min(perPass, count - first);
+        if (passRays.valid()) {
+            gpu::CommandBatch copy(device);
+            copy.encoder()->copyBuffer(passRays.rhi(), 0, rays.rhi(), uint64_t{first} * 48, uint64_t{n} * 48);
+            copy.markDirty();
+            ATHENEA_TRY(copy.submit(true));
         }
+        athenea::usd::BakeRequest bake;
+        bake.rays = passRays.valid() ? &passRays : &rays;
+        bake.count = n;
+        bake.samples = samples;
+        bake.bounces = bounces;
+        bake.coefficients = coefficients;
+        bake.transfer = transfer;
+        bake.out = &out;
+        ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
+        if (!out.colour.valid()) {
+            return Error(ErrorCode::InternalError, "bake: the frame wrote nothing");
+        }
+        // The kernel writes a plane an entry over the pass's grid; what the
+        // caller wants is a point's entries together, laid out on the device.
+        gpu::CommandBatch laid(device);
+        gather->dispatch(laid, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["planes"].setBinding(out.colour.rhi());
+            cursor["answer"].setBinding(answer->rhi());
+            cursor["params"]["count"].setData(n);
+            cursor["params"]["first"].setData(first);
+            cursor["params"]["entries"].setData(entries);
+            cursor["params"]["plane"].setData(out.width * out.height);
+        });
+        ATHENEA_TRY(laid.submit(true));
     }
-    return all;
+    return std::move(*answer);
 }
 
 Result<StageImage> StageRenderer::render(const render::Camera& camera, double time, uint32_t width, uint32_t height,

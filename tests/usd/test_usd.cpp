@@ -6969,6 +6969,259 @@ TEST_CASE("a Lambertian surface bakes to the same constant at every degree", "[u
     }
 }
 
+// THE BAKE'S BOX AND RAYS, ON THE DEVICE, ANSWER AS THEY DID ON THE HOST.
+//
+// `athenea mesh2splat` folded the cloud's box over its records on the processor,
+// wrote a ray a gaussian there -- `1e-4` of the box's diagonal off the
+// surface -- and uploaded them to `bakePoints`. Now `mesh2splat_span` folds
+// the box and writes the offset on the device, and `bakePointsOnDevice`
+// traces the rays where they are. On a known plane: every ray's offset is
+// that fraction of the box the records were built in, and the device bake
+// answers what the host bake answers for the same rays, entry for entry.
+TEST_CASE("a bake from rays set up on the device answers as the host's did", "[usd][gpu][mesh][bake][mesh2splat]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("bake_device_plane.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n"
+               "def SphereLight \"Lamp\"\n{\n    float inputs:intensity = 30\n    float inputs:radius = 0.3\n"
+               "    double3 xformOp:translate = (1, 0.5, 1)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    }
+    // Records as the conversion lays them out, twenty floats a gaussian, on
+    // an 8 x 8 grid over a box the test knows: x in [-1.5, 1.5], y in
+    // [-0.5, 0.5], on the plane. And the rays the gather would have written
+    // for them: the point, the plane's normal, no facing, no offset yet.
+    constexpr uint32_t kSide = 8;
+    constexpr uint32_t kCount = kSide * kSide;
+    constexpr uint32_t kPerRecord = 20;
+    std::vector<float> records(size_t{kCount} * kPerRecord, 0.0F);
+    std::vector<float> rays(size_t{kCount} * 12, 0.0F);
+    for (uint32_t j = 0; j < kSide; ++j) {
+        for (uint32_t i = 0; i < kSide; ++i) {
+            const uint32_t k = j * kSide + i;
+            const float x = -1.5F + 3.0F * static_cast<float>(i) / static_cast<float>(kSide - 1);
+            const float y = -0.5F + 1.0F * static_cast<float>(j) / static_cast<float>(kSide - 1);
+            float* record = records.data() + size_t{k} * kPerRecord;
+            record[0] = x;
+            record[1] = y;
+            record[2] = -1.5F;
+            record[3] = 1.0F;
+            record[19] = 1.0F;
+            float* ray = rays.data() + size_t{k} * 12;
+            ray[0] = x;
+            ray[1] = y;
+            ray[2] = -1.5F;
+            ray[6] = 1.0F;
+        }
+    }
+    gpu::Device& device = *gpu->device;
+    auto recordBuffer = gpu::Buffer::fromSpan<float>(device, records, "test.records");
+    REQUIRE(recordBuffer);
+    gpu::BufferDesc desc;
+    desc.bytes = rays.size() * sizeof(float);
+    desc.elementBytes = 16;
+    desc.label = "test.rays";
+    auto rayBuffer = gpu::Buffer::create(device, desc, rays.data());
+    REQUIRE(rayBuffer);
+
+    // The conversion's own kernels, as `Converter::spanRays` runs them.
+    auto chunks = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/mesh2splat_span", "m2sRecordChunks");
+    auto reduce = gpu::ComputeKernel::create(*gpu->library, "athenea/scene/bounds_reduce", "boundsReduce");
+    auto span = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/mesh2splat_span", "m2sRaySpan");
+    auto spanCheck = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_host_check", "m2sSpanCheck");
+    auto compare = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_host_check", "m2sAnswerCompare");
+    REQUIRE(chunks);
+    REQUIRE(reduce);
+    REQUIRE(span);
+    REQUIRE(spanCheck);
+    REQUIRE(compare);
+    constexpr uint32_t kChunk = 16;
+    constexpr uint32_t kChunks = kCount / kChunk;
+    desc.bytes = uint64_t{kChunks} * 2 * 16;
+    desc.label = "test.extents";
+    auto extents = gpu::Buffer::create(device, desc);
+    desc.bytes = 2 * 16;
+    desc.label = "test.box";
+    auto box = gpu::Buffer::create(device, desc);
+    REQUIRE(extents);
+    REQUIRE(box);
+    {
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["records"].setBinding(recordBuffer->rhi());
+            cursor["extents"].setBinding(extents->rhi());
+            cursor["box"].setBinding(box->rhi());
+            cursor["rays"].setBinding(rayBuffer->rhi());
+            cursor["span"]["count"].setData(kCount);
+            cursor["span"]["perRecord"].setData(kPerRecord);
+            cursor["span"]["chunkSize"].setData(kChunk);
+            cursor["span"]["chunkCount"].setData(kChunks);
+        };
+        gpu::CommandBatch batch(device);
+        chunks->dispatch(batch, {kChunks, 1, 1}, bind);
+        reduce->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["extents"].setBinding(extents->rhi());
+            cursor["result"].setBinding(box->rhi());
+            cursor["params"]["count"].setData(kCount);
+            cursor["params"]["chunkSize"].setData(kChunk);
+            cursor["params"]["chunkCount"].setData(kChunks);
+        });
+        span->dispatch(batch, {kCount, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    {
+        gpu::Buffer counts = test::uintBuffer(device, 4, "counts");
+        gpu::CommandBatch batch(device);
+        spanCheck->dispatch(batch, {kCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["a"].setBinding(rayBuffer->rhi());
+            cursor["b"].setBinding(rayBuffer->rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            const float low[4] = {-1.5F, -0.5F, -1.5F, 0.0F};
+            const float high[4] = {1.5F, 0.5F, -1.5F, 0.0F};
+            cursor["params"]["low"].setData(low, sizeof(low));
+            cursor["params"]["high"].setData(high, sizeof(high));
+            cursor["params"]["count"].setData(kCount);
+            cursor["params"]["tolerance"].setData(1.0e-5F);
+        });
+        REQUIRE(batch.submit(true));
+        uint32_t seen[2] = {0, 0};
+        REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+        CHECK(seen[0] == kCount);
+        CHECK(seen[1] == 0);   // every ray a ten-thousandth of the diagonal off
+    }
+
+    // The same rays, traced from the host and from the device.
+    auto renderer = usd::StageRenderer::open(path, gpu->device);
+    if (!renderer) FAIL(renderer.error().toString());
+    std::vector<float> laid(size_t{kCount} * 12);
+    REQUIRE(rayBuffer->read(device, 0, laid.size() * sizeof(float), laid.data()));
+    std::vector<float> hostRays(size_t{kCount} * 8);
+    for (uint32_t k = 0; k < kCount; ++k) {   // the host form is the first two float4, copied
+        std::copy_n(laid.data() + size_t{k} * 12, 8, hostRays.data() + size_t{k} * 8);
+    }
+    constexpr uint32_t kDegree = 2;
+    constexpr uint32_t kEntries = (kDegree + 1) * (kDegree + 1);
+    auto fromHost = (*renderer)->bakePoints(hostRays, kCount, 0.0, 64, 1, kDegree);
+    if (!fromHost) FAIL(fromHost.error().toString());
+    auto fromDevice = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 64, 1, kDegree);
+    if (!fromDevice) FAIL(fromDevice.error().toString());
+    REQUIRE(fromHost->size() == size_t{kCount} * kEntries * 4);
+    REQUIRE(fromDevice->bytes() >= uint64_t{kCount} * kEntries * 16);
+    auto hostAnswer = gpu::Buffer::create(device, [&] {
+        gpu::BufferDesc d;
+        d.bytes = fromHost->size() * sizeof(float);
+        d.elementBytes = 16;
+        d.label = "test.hostAnswer";
+        return d;
+    }(), fromHost->data());
+    REQUIRE(hostAnswer);
+    gpu::Buffer counts = test::uintBuffer(device, 4, "counts");
+    {
+        gpu::CommandBatch batch(device);
+        compare->dispatch(batch, {kCount * kEntries, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["a"].setBinding(hostAnswer->rhi());
+            cursor["b"].setBinding(fromDevice->rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["count"].setData(kCount * kEntries);
+            cursor["params"]["tolerance"].setData(1.0e-5F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t seen[3] = {0, 0, 0};
+    REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+    float worst = 0.0F;
+    std::memcpy(&worst, &seen[2], sizeof(worst));
+    std::printf("  device bake against host bake: %u entries, %u apart, worst %.3g\n", seen[0], seen[1],
+                static_cast<double>(worst));
+    CHECK(seen[0] == kCount * kEntries);
+    CHECK(seen[1] == 0);
+}
+
+// A BAKE IN PASSES ANSWERS AS A BAKE IN ONE.
+//
+// A cloud of ten million gaussians in one pass had the tracer hold a plane an
+// entry for every one of them at once -- 2.6 GB at degree 3 -- besides its
+// own sums. `bakePointsOnDevice` takes it in passes of at most `batch`
+// points, each laid into the answer at its place. On a Lambertian plane under
+// a dome, where every point's answer is the same: a bake in passes of 7
+// points (so the last is short) against one pass, entry for entry, within
+// what the paths' noise moves an answer by.
+TEST_CASE("a bake taken in passes answers as one taken whole", "[usd][gpu][mesh][bake][mesh2splat]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("bake_batches.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    constexpr uint32_t kCount = 40;
+    std::vector<float> rays(size_t{kCount} * 12, 0.0F);
+    for (uint32_t k = 0; k < kCount; ++k) {
+        float* ray = rays.data() + size_t{k} * 12;
+        ray[0] = -1.5F + 3.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(kCount);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    gpu::Device& device = *gpu->device;
+    gpu::BufferDesc desc;
+    desc.bytes = rays.size() * sizeof(float);
+    desc.elementBytes = 16;
+    desc.label = "test.rays";
+    auto rayBuffer = gpu::Buffer::create(device, desc, rays.data());
+    REQUIRE(rayBuffer);
+    auto compare = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_host_check", "m2sAnswerCompare");
+    REQUIRE(compare);
+    auto renderer = usd::StageRenderer::open(path, gpu->device);
+    if (!renderer) FAIL(renderer.error().toString());
+    constexpr uint32_t kDegree = 2;
+    constexpr uint32_t kEntries = (kDegree + 1) * (kDegree + 1);
+    auto whole = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 1024, 1, kDegree, false, 0);
+    if (!whole) FAIL(whole.error().toString());
+    auto passes = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 1024, 1, kDegree, false, 7);
+    if (!passes) FAIL(passes.error().toString());
+    gpu::Buffer counts = test::uintBuffer(device, 4, "counts");
+    {
+        gpu::CommandBatch batch(device);
+        compare->dispatch(batch, {kCount * kEntries, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["a"].setBinding(whole->rhi());
+            cursor["b"].setBinding(passes->rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["count"].setData(kCount * kEntries);
+            // The constant term is about 0.46 here and the harmonics about
+            // zero; 1024 stratified paths hold both within 0.0053 (M5 Pro).
+            cursor["params"]["tolerance"].setData(0.01F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t seen[3] = {0, 0, 0};
+    REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+    float worst = 0.0F;
+    std::memcpy(&worst, &seen[2], sizeof(worst));
+    std::printf("  six passes of 7 and one of 40: %u entries, %u apart, worst %.3g\n", seen[0], seen[1],
+                static_cast<double>(worst));
+    CHECK(seen[0] == kCount * kEntries);
+    CHECK(seen[1] == 0);
+}
+
 // A BAKE GIVES NO MORE LIGHT THAN ANY PATH SAW, FROM ANY SIDE.
 //
 // The surface that broke it: polished metal under one small, bright light,

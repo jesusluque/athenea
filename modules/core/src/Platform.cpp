@@ -7,7 +7,10 @@
 #include <EGL/eglext.h>
 #endif
 
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 
 #if defined(_WIN32)
@@ -416,6 +419,40 @@ void releaseMetalBuffer(void* mtlBuffer) {
 #else
     (void)mtlBuffer;
 #endif
+}
+
+std::filesystem::path partialPathFor(const std::filesystem::path& path) {
+    // `.name.partial-<pid>.ext`: hidden where a listing hides dot files, and
+    // still ending in what the writer chooses its format by.
+    const std::string name = "." + path.stem().string() + ".partial-" + std::to_string(::getpid()) +
+                             path.extension().string();
+    return path.parent_path() / name;
+}
+
+Result<void> replaceFile(const std::filesystem::path& from, const std::filesystem::path& to) {
+    if (::rename(from.c_str(), to.c_str()) != 0) {
+        return Error::make(ErrorCode::IoFailure, "cannot move '{}' to '{}': {}", from.string(), to.string(),
+                           std::strerror(errno));
+    }
+    return ok();
+}
+
+void removeFile(const std::filesystem::path& path) noexcept { ::unlink(path.c_str()); }
+
+Result<void> writeAtomically(const std::filesystem::path& path,
+                             const std::function<Result<void>(const std::filesystem::path& partial)>& write) {
+    const std::filesystem::path partial = partialPathFor(path);
+    removeFile(partial);   // a partial file a killed run of this same pid left
+    Result<void> wrote = write(partial);
+    if (!wrote) {
+        removeFile(partial);
+        return wrote;
+    }
+    if (Result<void> moved = replaceFile(partial, path); !moved) {
+        removeFile(partial);
+        return moved;
+    }
+    return ok();
 }
 
 }   // namespace athenea::platform

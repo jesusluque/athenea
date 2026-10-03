@@ -350,7 +350,7 @@ recipe is §3.1 below.
 | Option | Value | Default | Notes |
 |---|---|---|---|
 | `stage` | path, required | — | a stage holding meshes |
-| `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd` |
+| `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd`, or `.athc` with levels of detail: the gaussians and their shading normals only (no metallic/roughness/transmission, Cryptomatte ids, glass index, up axis or unit); `--skinned`, `--transfer` and `--lod-levels` are refused with it |
 | `--prim` | prim path | every mesh | only meshes at or under this path |
 | `--hide` | prim path, repeatable | none | left out with all beneath it, as if invisible (a session opinion; the file is untouched) |
 | `--resolution` | integer | `512` | cells across the longest side of the box the density is measured over |
@@ -358,7 +358,9 @@ recipe is §3.1 below.
 | `--density` | `per-model` \| `per-mesh` | `per-model` | which box that is |
 | `--cell-min` | number | `0`, derived | world units; per-mesh, the finest a cell may be |
 | `--cell-max` | number | `0`, derived | world units; per-mesh, the coarsest |
-| `--max-splats` | integer | `2000000` | the budget, over the whole stage |
+| `--max-splats` | integer | `2000000` | the budget, over the whole stage, shared between the meshes in proportion to what each wants |
+| `--cell-from-camera` | camera prim path | none | each mesh's cell is what one pixel of that camera covers where the mesh's box is nearest to it (held to the near plane), at `--time`; replaces `--density`. `--cell-min`/`--cell-max` bound it, given; nothing is derived |
+| `--camera-pixels` | integer, 1 to 65536 | `1920` | with `--cell-from-camera`: pixels across the camera's horizontal aperture |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
 | `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
 | `--opacity` | number, 0 to 1 | `1.0` | coverage: how much of what stands behind it the converted surface covers, multiplied into the material's own opacity. Every opacity is coverage -- this, the material's constant, a map's value, what a glass keeps -- and each gaussian takes what one of the several over a point needs for it, so 0.5 covers half at any size |
@@ -387,6 +389,17 @@ recipe is §3.1 below.
 
 `--skinned` and a bake are refused together: a cloud that moves cannot carry
 light baked in one pose, so the conversion says so and keeps the material.
+
+A mesh whose GeomSubsets (`materialBind` family) bind materials of their own
+is converted a subset at a time, each with its material, and the faces no
+subset claims with the mesh's; the log names each subset's prim. Their
+gaussians keep the mesh's Cryptomatte id.
+
+The output is written whole or not at all: under `.<name>.partial-<pid>.<ext>`
+in the same directory, and renamed to `-o` once it is complete. A conversion
+that fails leaves nothing under `-o` -- or the file that was there before, as
+it was -- and removes its partial file. With `--lod-levels`, each level and
+the stage that draws them are written so.
 
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part
 
@@ -550,11 +563,25 @@ in it:
 The ground is at its budget in both: it is two triangles and the cell ceiling
 decides it, not the density.
 
-**The budget.** `--max-splats` is a ceiling over the whole stage, taken in
-mesh order, so a budget too small keeps the first meshes whole and drops the
-last ones entirely. The log says how many wanted more than they were given.
-Raise the budget, or with `--density per-mesh` raise `--cell-min` so every
-mesh costs less.
+**The budget.** `--max-splats` is a ceiling over the whole stage. Every mesh
+(every GeomSubset of one) is counted first -- a run of the effect with room
+for one gaussian, which counts everything and writes nothing -- and when they
+want more than the budget it is shared in proportion: each gets
+`budget × wanted / total` (and one at least), and walks a cell
+`sqrt(wanted / share)` times coarser so that it wants about that. That is one
+density floor for the whole stage: every mesh loses density alike and none is
+dropped. The warning says how many were wanted, and each mesh's log line how
+much coarser it walked. A mesh that still wants a little more than its share
+after the coarsening keeps its first triangles' gaussians, in the mesh's
+order. The count costs one short run a mesh.
+
+**From a camera.** `--cell-from-camera` sizes each mesh's cell by the camera
+that will look at it (Mesh2GS's rule): `z × (aperture / pixels) / focal`,
+`z` the distance from the camera to the nearest point of the mesh's box (its
+near clip at least, and zero inside the box), so one cell covers about one
+pixel where the mesh is nearest. Every triangle of the mesh walks exactly
+that cell. A free camera that is not in the stage is not known to the
+conversion, so this is an option and not the default.
 
 **Textures.** Each map travels to the device as float4, sixteen bytes a texel,
 so a 4k map is 268 MB and a car with fifteen of them does not fit. The
@@ -1354,7 +1381,9 @@ A script's own header says what it needs and where it puts things.
 | `mesh visibility by rays: the device has no ray tracing` | `--visibility rays` on a device without it | use `automatic`, which picks what the device has |
 | a host does not offer the renderer | the plugin was not found | set `PXR_PLUGINPATH_NAME` to `<build>/plugin/usd` |
 | `render product '<path>' has no resolution` / `no vars` | the settings prim is incomplete | give the product a resolution and ordered vars |
-| a converted cloud is missing its last meshes | the budget ran out in mesh order | raise `--max-splats`, or with `--density per-mesh` raise `--cell-min` |
+| a converted cloud is coarser than asked, and `warning: the meshes want N splats` | `--max-splats` was below what the meshes wanted, and every mesh was coarsened alike to share it | raise `--max-splats`, or lower `--resolution` to choose the coarseness yourself |
+| `warning: the budget is exhausted` or `the budget ran out before N mesh(es)` | `--max-splats` was smaller than what the meshes wanted | raise `--max-splats`, lower `--resolution`, or with `--density per-mesh` raise `--cell-min` |
+| `warning: N cells lay past --max-cells` | a triangle wanted more cells than one triangle may walk; the rest of it is bare | raise `--max-cells`, or lower `--resolution` |
 | a converted cloud is black | the bake found no light | give the stage lights, or `--default-lights`, or `--no-bake` |
 | a cloud's reflections look flatter than the mesh's | it carries no shading normal (`primvars:athenea:splat:normal`): converted before conversions wrote one | convert it again; `--normal-map-turns` also turns the discs themselves |
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |

@@ -378,6 +378,47 @@ Result<GpuSplats> CloudLoader::upload(const io::RawSplats& raw, uint32_t maxDegr
     return splats;
 }
 
+Result<GpuSplats> CloudLoader::upload(const gpu::Buffer& records, uint32_t count, const io::SplatEncoding& e,
+                                      const std::string& source, uint32_t maxDegree) {
+    const uint64_t recordBytes = uint64_t{e.floatsPerRecord} * 4;
+    if (count == 0 || e.floatsPerRecord == 0 || !records.valid() || records.bytes() < uint64_t{count} * recordBytes) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': no splat records on the device", source);
+    }
+    static constexpr uint32_t kPerDegree[] = {0, 3, 8, 15};
+    const uint32_t keep = std::min(e.restPerColour, kPerDegree[std::min(maxDegree, 3u)]);
+    const bool pbr = e.metallic != io::SplatEncoding::kNoField ||
+                     e.roughness != io::SplatEncoding::kNoField ||
+                     e.transmission != io::SplatEncoding::kNoField;
+    auto splats = startSplats(source, count, keep, pbr, e.cryptoObject != io::SplatEncoding::kNoField,
+                              e.transferCount, e.shadowBits != io::SplatEncoding::kNoField,
+                              e.normal != io::SplatEncoding::kNoField);
+    if (!splats) return std::move(splats).error();
+    // Slices as the host upload takes them; a slice of a larger buffer is
+    // copied out of it on the device, and one that is the whole is the
+    // buffer itself.
+    const uint32_t perSlice = static_cast<uint32_t>(std::max<uint64_t>(1, kSliceBytes / recordBytes));
+    uint32_t written = 0;
+    for (uint32_t first = 0; first < count; first += perSlice) {
+        const uint32_t n = std::min(perSlice, count - first);
+        gpu::Buffer slice = records;
+        if (n != count) {
+            auto part = deviceBuffer(*device_, uint64_t{n} * e.floatsPerRecord, 4, "splats.raw");
+            if (!part) return std::move(part).error();
+            gpu::CommandBatch batch(*device_);
+            batch.encoder()->copyBuffer(part->rhi(), 0, records.rhi(), uint64_t{first} * recordBytes,
+                                        uint64_t{n} * recordBytes);
+            batch.markDirty();
+            ATHENEA_TRY(batch.submit(true));
+            slice = std::move(*part);
+        }
+        auto kept = decodeSlice(slice, e, n, written, keep, *splats, first);
+        if (!kept) return std::move(kept).error();
+        written += *kept;
+    }
+    ATHENEA_TRY(finishSplats(*splats, written));
+    return splats;
+}
+
 struct CloudLoader::SogOnDevice {
     const io::RawSog*  sog = nullptr;
     uint32_t           keep = 0;

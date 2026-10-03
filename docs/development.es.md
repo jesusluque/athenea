@@ -180,7 +180,10 @@ captura en el borde de ese módulo y se convierte en un `Error`.
 
 **El sistema operativo vive en `core/Platform`.** Cada llamada al sistema que
 hace el motor fuera de sus dependencias está detrás de una cabecera, así que
-el port a Windows tiene un fichero por el que empezar y no una búsqueda.
+el port a Windows tiene un fichero por el que empezar y no una búsqueda. Un
+fichero que un comando escribe para que otro paso lo lea se escribe con
+`platform::writeAtomically`: con un nombre parcial a su lado, renombrado al
+completarse, así que un fallo no deja medio fichero con el nombre pedido.
 
 **aofx solo cambia de manera aditiva.** Los bundles de openFXplayer tienen que
 seguir cargando, así que las cabeceras del SDK se copian literales de su
@@ -442,10 +445,16 @@ vuelve como un `UsdVolParticleField3DGaussianSplat`.
 
 Las imágenes viven en el almacenamiento de imágenes del propio host AOFX, que
 en un dispositivo de memoria unificada es la memoria que lee un kernel. Los
-triángulos se escriben donde los va a leer el efecto y no se copia nada. Lo
-que cruza de vuelta al procesador son los registros, una vez, porque el
-escritor de USD los toma como un `io::RawSplats` — y los valores de un fichero
-USD son asunto del procesador por definición.
+triángulos se escriben donde los va a leer el efecto y no se copia nada. Los
+registros se quedan en el dispositivo desde ahí hasta el fichero: la imagen de
+cada pasada se coloca en los buffers de la propia nube con
+`athenea/usd/mesh2splat_gather` (registros, los rayos del bake, las
+articulaciones), el desplazamiento de los rayos sale de la caja de la nube con
+`mesh2splat_span`, el bake responde en un buffer del dispositivo que
+`mesh2splat_bake` escribe en los registros, y la exportación los decodifica
+donde están (`usd::DeviceSplatRecords`). Lo que cruza al procesador son
+cuentas y, al final, los valores que guarda un array de USD — que son asunto
+del procesador por definición.
 
 ### 6.2 La vida de una gaussiana, en quince líneas
 
@@ -488,6 +497,17 @@ nada compuesto para un frame.
 así que las caras de una nube convertida se corresponden con lo que habría
 dibujado Hydra.
 
+**Una malla de varios materiales.** Los GeomSubsets de la familia
+`materialBind` de una malla se leen con el material que enlaza cada uno
+(`StageMesh::subsets`) y se le pasan al builder, que dice en el dispositivo en
+qué subset está cada triángulo (`GpuMesh::triangleSubsets`). La conversión
+corre entonces una *pieza* cada vez: los triángulos de cada subset, listados
+en el orden de la malla por `athenea/usd/mesh2splat_subset` (una marca, una
+suma de prefijos, un scatter) y empaquetados como una malla propia (el
+`listed` de `mesh_pack`), con el material de ese subset; y los triángulos que
+no reclama ningún subset, con el de la malla. Las gaussianas de una pieza
+conservan el id Cryptomatte de la malla: el matte nombra prims como Hydra.
+
 La imagen de triángulos (`shaders/athenea/usd/mesh_pack.slang`) son seis `float4`
 por entrada: por cada una de las tres esquinas, la posición con la primera
 coordenada de textura en `w`, y luego la normal con la segunda en `w`. Un
@@ -509,6 +529,18 @@ MaterialX al que apunte el terminal de displacement del material, por su
 `displacementScale` y `displacementBias`; `StageMesh::displacementUnit` es la
 raíz cúbica del volumen de la transformación, porque una altura se escribe en
 las unidades de la propia malla.
+
+**Las celdas y el presupuesto, antes de convertir nada.** Lo que recorrerá
+cada pieza se calcula en el dispositivo sobre las cajas que plegó el
+empaquetado (`athenea/usd/mesh2splat_cells`): la celda del modelo, las cotas
+derivadas por malla, la celda que recorre cada pieza -- desde la cámara de
+`--cell-from-camera` si se da una -- y lo que se le pasa al efecto para ella.
+Después se cuenta cada pieza (una pasada con sitio para una gaussiana: el
+efecto cuenta todo lo que escribiría una pasada), y si el total pasa de
+`--max-splats` el presupuesto se reparte en proporción a lo que quiere cada
+una y las celdas se calculan otra vez con cada pieza engrosada por
+`sqrt(quiere / parte)`. El host hace la aritmética entera de las partes
+-- cuentas y huecos -- y le pasa al efecto los números del kernel.
 
 ### 6.4 Un solo kernel: contar, escanear, emitir
 
@@ -722,7 +754,15 @@ del bloque.
 
 **Quién los traza.** `StageRenderer::bakePoints` toma dos `float4` por punto —
 el punto con su desplazamiento, y luego su normal — y despacha el path tracer
-sobre ellos como si fueran píxeles. Es el mismo integrador que usa un frame,
+sobre ellos como si fueran píxeles. `bakePointsOnDevice` es lo mismo con los
+rayos ya en el dispositivo en la disposición de tres `float4` del kernel y la
+respuesta dejada allí, las entradas de un punto juntas
+(`athenea/usd/bake_gather`); la conversión abre el renderer en su propio
+dispositivo y usa esa. Traza en pasadas de como mucho
+`StageRenderer::kBakeBatch` puntos (2^19), así que los planos y las sumas del
+tracer tienen el tamaño de la pasada y la respuesta es el único buffer del
+tamaño de la nube; cada pasada saca sus propios caminos, así que el lote
+cambia el ruido de una respuesta, no su media. Es el mismo integrador que usa un frame,
 compilado con su constante de bake en cierto: no una segunda implementación.
 
 **Una gaussiana elevada** se hornea desde el punto plano que tiene debajo,
@@ -935,6 +975,15 @@ slots es lo que mantiene los arrays por gaussiana índice a índice, que es lo
 que permite leer las influencias del esqueleto, los ids y los armónicos con el
 mismo índice.
 
+**O un `.athc`.** Con `-o x.athc` los registros van del dispositivo a una nube
+en el dispositivo (`CloudLoader::upload` de un buffer del dispositivo), a
+niveles de detalle allí (`lod::LodBuilder`), y fuera como los bytes del
+fichero (`lod::writeAthc`). Un `.athc` guarda posiciones, forma, armónicos y
+las normales de sombreado; no tiene sitio para el material con que refleja
+una nube reiluminada, los ids Cryptomatte, el índice de un vidrio, el eje
+vertical y la unidad, un esqueleto o un transfer -- los dos últimos se
+rechazan, el resto se dice.
+
 ### 6.10 Cómo se comprueba cada fase, y qué midió
 
 | Fase | Lo comprueba | Qué afirma |
@@ -942,6 +991,12 @@ mismo índice.
 | la proyección y la celda | `athenea_aofx_tests "[mesh2splat]"` | un cuadrado unidad a una resolución conocida da una cuenta conocida, y cada gaussiana tiene un ancho conocido |
 | la celda acotada | los mismos, casos `[cell]` | un límite que muerde cambia la cuenta, y uno que no la deja bit a bit |
 | densidad por malla | `ctest -R mesh2splat_density` | el plano pequeño de una escena de dos mallas saca decenas de gaussianas por modelo y centenares por malla |
+| GeomSubsets | `athenea_mesh2splat_tests` (tras el fixture `mesh2splat_outputs`) | dos caras enlazadas en rojo y azul sobre una malla verde salen rojas y azules, tantas de cada, nada verde |
+| el presupuesto | los mismos | dos mallas iguales con un presupuesto de la mitad de lo que quieren conservan más o menos la mitad cada una |
+| la celda desde una cámara | los mismos | la tarjeta a tres unidades de la lente tiene más del triple que la que está a siete |
+| salida `.athc` | los mismos | las mismas tarjetas como `.athc` y como escena se dibujan igual (p99 como mucho 1) |
+| los rayos del bake en el dispositivo | `athenea_usd_tests "[mesh2splat]"` | cada rayo empieza a `1e-4` de la diagonal de la caja; el bake del dispositivo responde lo que el del host; las pasadas responden como una |
+| entero o nada | `athenea_core_tests "[platform]"` | un escritor que falla no deja fichero ni parcial |
 | el mapa de recorte | `athenea_aofx_tests` | un alfa de 0.3 se vuelve una opacidad de 0.3, no una gaussiana o nada |
 | el bake de luz | casos de bake de `athenea_usd_tests` | un plano lambertiano vuelve con la radiancia que dice la aritmética, y un metal no sale negro |
 | el ajuste de armónicos | los mismos | el ajuste reproduce una función direccional conocida dentro de tolerancia |

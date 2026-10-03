@@ -207,6 +207,40 @@ set_tests_properties(mesh2splat_density_per-model PROPERTIES
 set_tests_properties(mesh2splat_density_per-mesh PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [1-9][0-9][0-9]+ splats of")
 
+# WHAT `athenea mesh2splat` WRITES, checked on the device. The conversions run
+# first (the `mesh2splat_outputs` fixture) into one directory, and
+# athenea_mesh2splat_tests reads them back and counts with kernels.
+set(ATHENEA_M2S_OUTPUTS ${CMAKE_CURRENT_BINARY_DIR}/mesh2splat)
+file(MAKE_DIRECTORY ${ATHENEA_M2S_OUTPUTS})
+function(athenea_m2s_output name)
+    add_test(NAME mesh2splat_output_${name}
+        COMMAND athenea mesh2splat ${ARGN})
+    set_tests_properties(mesh2splat_output_${name} PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        FIXTURES_SETUP mesh2splat_outputs
+        LABELS gpe)
+endfunction()
+athenea_m2s_output(two_subsets ${CMAKE_CURRENT_SOURCE_DIR}/data/two_subsets.usda --no-bake --no-camera
+    --resolution 32 -o ${ATHENEA_M2S_OUTPUTS}/two_subsets.usda)
+# A budget below what the two cards want: shared, not spent on the first.
+athenea_m2s_output(two_cards_budget ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --resolution 64 --max-splats 800 -o ${ATHENEA_M2S_OUTPUTS}/two_cards_budget.usda)
+# The cell from the stage's camera, 64 pixels across.
+athenea_m2s_output(two_cards_camera ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --cell-from-camera /World/Camera --camera-pixels 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards_camera.usda)
+# The same cards as a .athc and as a stage, to be drawn side by side.
+athenea_m2s_output(two_cards_athc ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.athc)
+athenea_m2s_output(two_cards_usd ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.usda)
+athenea_test(athenea_mesh2splat_tests
+    SOURCES mesh2splat/test_outputs.cpp
+    LIBS athenea::usd athenea::lod athenea::render athenea::scene
+    LABELS gpe
+    FIXTURES mesh2splat_outputs)
+add_dependencies(athenea_mesh2splat_tests athenea athenea_aofx_mesh2splat)
+target_compile_definitions(athenea_mesh2splat_tests PRIVATE ATHENEA_M2S_OUTPUTS="${ATHENEA_M2S_OUTPUTS}")
+set_target_properties(athenea_mesh2splat_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 # What a converted lamp gives off. Two emissive quads -- a constant OpenPBR
 # luminance, and a glTF emissive map times its strength -- converted relit
 # (--no-bake), transferred (--transfer) and baked; then a hidden case of the

@@ -176,7 +176,10 @@ boundary and turned into an `Error`.
 
 **The operating system lives in `core/Platform`.** Every OS call the engine
 makes outside its dependencies is behind one header, so the Windows port has
-one file to start from rather than a search.
+one file to start from rather than a search. A file a command writes for
+another step to read is written through `platform::writeAtomically`: under a
+partial name beside it, renamed when complete, so a failure leaves no half
+file under the name asked for.
 
 **aofx changes only additively.** openFXplayer's bundles must keep loading, so
 the SDK headers are copied verbatim from their own repository and frozen by
@@ -430,10 +433,15 @@ the effect once per mesh, and write what comes back as a
 
 The pictures live in the AOFX host's own image storage, which on a device with
 unified memory is the memory a kernel reads. The triangles are written where
-the effect will read them and nothing is copied. What crosses back to the
-processor is the records, once, because the USD writer takes them as an
-`io::RawSplats` — and the values in a USD file are the processor's business by
-definition.
+the effect will read them and nothing is copied. The records stay on the
+device from there to the file: each run's picture is laid out into the
+cloud's own buffers by `athenea/usd/mesh2splat_gather` (records, the bake's
+rays, the joints), the rays' offset is set from the cloud's box by
+`mesh2splat_span`, the bake answers into a device buffer that
+`mesh2splat_bake` writes into the records, and the export decodes them where
+they are (`usd::DeviceSplatRecords`). What crosses to the processor is counts
+and, at the end, the values a USD array holds — which are the processor's
+business by definition.
 
 ### 6.2 One gaussian's life, in fifteen lines
 
@@ -475,6 +483,16 @@ frame.
 `geom::MeshBuilder` triangulates on the device, in `HdMeshUtil`'s order, so a
 converted cloud's faces correspond to what Hydra would have drawn.
 
+**A mesh of several materials.** The GeomSubsets of a mesh's `materialBind`
+family are read with the material each binds (`StageMesh::subsets`) and
+handed to the builder, which says on the device which subset every triangle
+is in (`GpuMesh::triangleSubsets`). The conversion then runs a *piece* at a
+time: each subset's triangles, listed in the mesh's order by
+`athenea/usd/mesh2splat_subset` (a flag, a prefix sum, a scatter) and packed
+as a mesh of their own (`mesh_pack`'s `listed`), with that subset's material;
+and the triangles no subset claims, with the mesh's. A piece's gaussians keep
+the mesh's Cryptomatte id: the matte names prims as Hydra does.
+
 The triangle picture (`shaders/athenea/usd/mesh_pack.slang`) is six `float4` an
 entry: for each of the three corners, the position with the first texture
 coordinate in `w`, then the normal with the second in `w`. A second UV set,
@@ -494,6 +512,18 @@ named by the material's displacement terminal, times its `scale`. The result
 is `StageMaterial::displacementMap`, `displacementScale` and
 `displacementBias`; `StageMesh::displacementUnit` is the cube root of the
 transform's volume, since a height is authored in the mesh's own units.
+
+**The cells and the budget, before anything is converted.** What each piece
+will walk is worked out on the device over the boxes the packing folded
+(`athenea/usd/mesh2splat_cells`): the model's cell, the bounds derived per
+mesh, the cell each piece walks -- from `--cell-from-camera`'s camera where
+one is given -- and what the effect is handed for it. Then every piece is
+counted (a run with room for one gaussian: the effect counts everything a run
+would write), and where the total is over `--max-splats` the budget is shared
+in proportion to what each wants and the cells are worked out again with each
+piece coarsened by `sqrt(wanted / share)`. The host does the shares' integer
+arithmetic -- counts and slots -- and relays the kernel's numbers to the
+effect.
 
 ### 6.4 The one kernel: count, scan, emit
 
@@ -694,7 +724,14 @@ disc half that wide instead of onto the centre. The conversion sets it when
 
 **What traces them.** `StageRenderer::bakePoints` takes two `float4` a point —
 the point with its offset, then its normal — and dispatches the path tracer
-over them as though they were pixels. It is the same integrator a frame uses,
+over them as though they were pixels. `bakePointsOnDevice` is the same with
+the rays already on the device in the kernel's three-`float4` layout and the
+answer left there, a point's entries together (`athenea/usd/bake_gather`);
+the conversion opens the renderer on its own device and uses that one. It
+traces in passes of at most `StageRenderer::kBakeBatch` points (2^19), so
+the tracer's planes and sums are sized by the pass and the answer is the only
+buffer the size of the cloud; each pass draws its own paths, so a batch
+changes an answer's noise, not its mean. It is the same integrator a frame uses,
 compiled with its bake constant true: not a second implementation.
 
 **A raised gaussian** is baked from the flat point under it, down the flat
@@ -897,6 +934,14 @@ it stands. Keeping the slots means the per-gaussian arrays stay index for
 index alike, which is what lets the skinning influences, the ids and the
 harmonics all be read by the same index.
 
+**Or a `.athc`.** With `-o x.athc` the records go from the device into a
+cloud on the device (`CloudLoader::upload` of a device buffer), into levels
+of detail there (`lod::LodBuilder`), and out as the file's bytes
+(`lod::writeAthc`). A `.athc` keeps positions, shape, harmonics and the
+shading normals; it has no room for the material a relit cloud reflects with,
+the Cryptomatte ids, a glass's index, the up axis and unit, a rig or a
+transfer -- the last two are refused, the rest said.
+
 ### 6.10 How each phase is checked, and what it measured
 
 | Phase | Checked by | What it asserts |
@@ -904,6 +949,12 @@ harmonics all be read by the same index.
 | the projection and the cell | `athenea_aofx_tests "[mesh2splat]"` | a unit quad at a known resolution yields a known count, and each gaussian is a known width |
 | the bounded cell | the same, `[cell]` cases | a bound that bites changes the count, and one that does not leaves it bit for bit |
 | per-mesh density | `ctest -R mesh2splat_density` | the small plane of a two-mesh stage gets tens of gaussians per model and hundreds per mesh |
+| GeomSubsets | `athenea_mesh2splat_tests` (after the `mesh2splat_outputs` fixture) | two faces bound red and blue on a green mesh convert to red and blue, as many of each, no green |
+| the budget | the same | two equal meshes under a budget half what they want keep about half each |
+| the cell from a camera | the same | the card three units from the lens holds over three times the one seven away |
+| `.athc` output | the same | the same cards as a `.athc` and as a stage draw alike (p99 at most 1) |
+| the bake's rays on the device | `athenea_usd_tests "[mesh2splat]"` | every ray starts `1e-4` of the box's diagonal off; the device bake answers what the host's does; passes answer as one |
+| whole or not at all | `athenea_core_tests "[platform]"` | a failing writer leaves no file and no partial one |
 | the cut-out map | `athenea_aofx_tests` | an alpha of 0.3 becomes an opacity of 0.3, not a gaussian or nothing |
 | the light bake | `athenea_usd_tests` bake cases | a Lambertian plane comes back at the radiance arithmetic says, and a metal is not black |
 | the harmonic fit | the same | the fit reproduces a known directional function within tolerance |
