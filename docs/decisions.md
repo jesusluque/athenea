@@ -12011,7 +12011,7 @@ metal with the DFG fit of its own two ends and their compensation
 the primvar, and every standard_surface or UsdPreviewSurface metal, is
 reflected as before.
 
-Checked (pending the GPU turn): the Schlick never above the conductor for the
+Checked (pending the GPU turn): the Schlick never above the conductor, between 30 and 75 degrees, for the
 paint's base, its colour head on, a white metal white ([schlick] in
 athenea_render_tests); the paint ball and the Corvette's paint again.
 

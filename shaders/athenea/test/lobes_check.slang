@@ -197,7 +197,10 @@ void lobesSchlickCheck(uint3 tid: SV_DispatchThreadID) {
     const float3 schlick = environmentBrdfOf(s, nDotV);
     s.schlickMetal = false;
     const float3 conductor = environmentBrdfOf(s, nDotV);
-    if (any(schlick > conductor + params.tolerance)) {
+    // Between thirty and seventy-five degrees, where the two part (at the
+    // pole they agree, and right at grazing the conductor's fit and the
+    // Schlick's cross).
+    if (nDotV > 0.25 && nDotV < 0.87 && any(schlick > conductor + params.tolerance)) {
         InterlockedAdd(counts[1], 1u);
     }
     if (any(schlick < float3(0.0)) || any(schlick > float3(1.0 + params.tolerance))) {

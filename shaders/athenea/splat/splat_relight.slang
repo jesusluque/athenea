@@ -429,10 +429,14 @@ public float3 environmentBrdf(float3 albedo, float metallic, float roughness, fl
 /// specular colour at grazing (standard_surface's `specular_color` on a
 /// metal). The plain lobes make it `environmentBrdf`.
 public float3 environmentBrdfOf(SplatSurface s, float nDotV) {
-    const float3 metal = s.schlickMetal ? ggxEnvSchlickMetal(s.albedo, s.lobes.specularColour, s.roughness, nDotV)
-                                        : ggxEnvConductorEdged(s.albedo, s.lobes.specularColour, s.roughness, nDotV);
-    return lerp(ggxEnvDielectricAt(s.roughness, nDotV, s.lobes.specularIor) * specularTint(s), metal,
-                saturate(s.metallic));
+    // Two returns, not one with the metal chosen inside: the conductor's is
+    // the expression every cloud read, to the bit (lobes_check holds it so).
+    if (s.schlickMetal) {
+        return lerp(ggxEnvDielectricAt(s.roughness, nDotV, s.lobes.specularIor) * specularTint(s),
+                    ggxEnvSchlickMetal(s.albedo, s.lobes.specularColour, s.roughness, nDotV), saturate(s.metallic));
+    }
+    return lerp(ggxEnvDielectricAt(s.roughness, nDotV, s.lobes.specularIor) * specularTint(s),
+                ggxEnvConductorEdged(s.albedo, s.lobes.specularColour, s.roughness, nDotV), saturate(s.metallic));
 }
 
 /// A SCHLICK METAL'S SHARE OF AN ENVIRONMENT: the same DFG fit with its own
