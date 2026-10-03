@@ -39,6 +39,11 @@ struct ShadowMapCaster {
     const gpu::Buffer*      positions = nullptr;   ///< posed, or the cloud's own
     std::array<float, 12>   objectToWorld{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     uint64_t                categories = 0;        ///< which lights it casts for
+    /// The box the cloud was bound in, in its own space: what the map is
+    /// sized from. A posed cloud's own `bounds` follow the pose, and a map
+    /// sized from them changed its texels with every flap of a wing. Empty:
+    /// the cloud's `restBounds`, or its `bounds` where it has none.
+    std::optional<scene::Bounds> restBounds;
 };
 
 struct ShadowMapJob {
@@ -50,9 +55,15 @@ struct ShadowMapJob {
     /// receiver behind it (a ground plane). 3, 5, 7: one, two or three
     /// Fourier pairs as well, which resolve the depth a receiver stands at.
     uint32_t                     coefficients = 1;
-    /// How much wider than the casters' box the map is drawn, since a skinned
-    /// cloud is posed away from the box it was bound in.
+    /// How much wider than the casters' rest sphere the map is drawn, since a
+    /// skinned cloud is posed away from the box it was bound in. The extent is
+    /// then rounded up to a quarter octave, so a pose that reaches a little
+    /// past it changes the map only when it crosses a step.
     float                        margin = 0.35F;
+    /// How far behind the nearest caster in a texel a receiver still counts
+    /// as standing on it, in world units. 0: two per cent of the slab, which
+    /// is the casters' rest extent and so the same length every frame.
+    float                        selfBias = 0.0F;
     /// What the optical depth is multiplied by: the shadow's density, as a
     /// compositor means it. 1 is what the cloud's own opacity says.
     float                        density = 1.0F;
@@ -82,6 +93,11 @@ public:
     [[nodiscard]] const gpu::Texture& texture() const noexcept { return texture_; }
     /// That texture's view, made with it and kept: what a frame binds.
     [[nodiscard]] rhi::ITextureView* textureView() const noexcept { return view_.get(); }
+    /// THE TRANSMITTANCE CHAIN: exp(-total), a layer a light, with a full mip
+    /// chain -- what a floor far from the map reads at its pixel's footprint
+    /// (the mean of the transmittances under it). A view of every level.
+    [[nodiscard]] const gpu::Texture& chain() const noexcept { return chain_; }
+    [[nodiscard]] rhi::ITextureView* chainView() const noexcept { return chainView_.get(); }
     [[nodiscard]] uint32_t resolution() const noexcept { return resolution_; }
     [[nodiscard]] uint32_t coefficients() const noexcept { return coefficients_; }
 
@@ -104,6 +120,19 @@ public:
     /// read. `count` is how many floats there are.
     [[nodiscard]] Result<void> clearFactors(gpu::CommandBatch& batch, const gpu::Buffer& factors, uint32_t count);
 
+    /// The map's frame for `light`, as the device built it: how many texels a
+    /// world unit is, and where the grid's origin falls. Bookkeeping a test
+    /// needs to put a receiver on a texel's centre; nothing is computed.
+    struct FrameInfo {
+        bool                 valid = false;
+        float                texelsPerUnit = 0.0F;
+        std::array<float, 4> rowU{};
+        std::array<float, 4> rowV{};
+        std::array<float, 4> rowZ{};
+        float                bias = 0.0F;   ///< in the slab's units
+    };
+    [[nodiscard]] Result<FrameInfo> frameInfo(uint32_t light);
+
     /// What the map answers at world points somebody names -- the same read a
     /// receiver does, one thread a point. For tests and for ATHENEA_SHADOW_DEBUG:
     /// what comes back is what a kernel computed, a handful of numbers.
@@ -120,12 +149,16 @@ private:
     std::optional<gpu::ComputeKernel> probe_;
     std::optional<gpu::ComputeKernel> header_;
     std::optional<gpu::ComputeKernel> resolve_;
+    std::optional<gpu::ComputeKernel> chainLevel_;
     std::optional<gpu::ComputeKernel> factors_;
     std::optional<gpu::ComputeKernel> clear_factors_;
     gpu::Buffer                       map_;
     gpu::Buffer                       total_;
     gpu::Texture                      texture_;
     rhi::ComPtr<rhi::ITextureView>    view_;
+    gpu::Texture                      chain_;
+    rhi::ComPtr<rhi::ITextureView>    chainView_;     ///< every level, for reading
+    std::vector<rhi::ComPtr<rhi::ITextureView>> chainLevels_;   ///< one a level, for writing
     uint32_t                          resolution_ = 0;
     uint32_t                          coefficients_ = 0;
     uint32_t                          lights_ = 0;

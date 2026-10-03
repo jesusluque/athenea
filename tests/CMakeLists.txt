@@ -108,7 +108,7 @@ athenea_test(athenea_volume_tests
 set_target_properties(athenea_volume_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_usd_tests
-    SOURCES usd/test_usd.cpp usd/test_migrate.cpp
+    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"

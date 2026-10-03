@@ -11576,3 +11576,255 @@ indirect half's) is a measurement to make first.
 Checked (pending the GPU turn): the pictures' round trip changes nothing,
 the direct half in the w included ([filter] in athenea_render_tests); the
 balls' fixtures convert through the filter.
+
+## A cloud's shadow that does not breathe with the wings
+
+The analysis of a flying sparrow's shadows (P005) found the combination
+already right -- the per-part fields shadow the bird, the map from the light
+shadows the floor -- and the map unstable: four causes of flicker, all in
+`splat_shadow_map.slang` and `splat_shadow_read.slang`. What does not flicker
+was kept: the accumulation is in integers (fixed point, atomic adds and
+minima), so the same pose gives the same map bit for bit; the posed shape
+carries the whole Jacobian; and a cloud that only translates moves its
+shadow unchanged. The steps below remove one cause each.
+
+### Step 1: the frame is sized from the rest pose and snapped to the world
+
+**The cause.** `shadowMapFrame` framed the map on the casters' box, and a
+skinned cloud's box is the *posed* one, recomputed every pose by
+`Engine::carryCloud`. `texels = resolution / (2 widest)`, so every flap
+changed the size of a texel and its phase under a body that had not moved,
+and the edge of the body's shadow shimmered. The slab was `2 extentZ` of the
+same box, and the lit side's bias, two per cent of it, changed its length in
+the world with the wings -- and the Fourier frequencies with it.
+
+**The frame now.**
+
+- **Extent**: the casters' rest sphere -- half the diagonal of the box the
+  cloud was bound in (`GpuSplats::restBounds`, which the posed copy keeps from
+  the bind pose; `ShadowMapCaster::restBounds` overrides it), in the world,
+  reduced on the device with the posed box -- or the posed box's support where
+  that reaches further, times `1 + margin`, **rounded up to a quarter
+  octave** (`2^(ceil(4 log2 r) / 4)`). A pose inside the sphere never changes
+  it; one past it changes it only when it crosses a step.
+- **Centre**: the posed box's, so the map follows a bird that flies, but
+  **on the world's texel grid**: `rowU.w = resolution / 2 - round(centreU
+  texels)`, an integer, so a point that does not move keeps its place in its
+  texel whatever the centre does. In depth the quantum is a quarter of the
+  slab: a shift of the depth origin turns every Fourier term's phase, so it
+  is coarse on purpose, and a quarter still keeps every caster inside.
+- **Slab**: `2 widest`, so it changes only when the extent does.
+- **Bias in the world**: `ShadowMapJob::selfBias`, in world units, a word of
+  the frame of its own (`kShadowFrameWords` is 21); 0, the default, is two
+  per cent of that slab -- the same fraction as before, of a slab that no
+  longer breathes. The analysis proposed a multiple of the cloud's mean
+  sigma instead; no header holds one, and measuring it is a pass over every
+  gaussian a frame, so the slab it is.
+- **The header is read in one place.** `splat_shadow_read.slang` reads a
+  frame and a texel through `IShadowMapSource`, which the pass's buffer
+  (gaussian receivers, the probe) and the shading kernel's texture
+  (`CloudShadowTexture`, in `MaterialShading`) both implement -- so the probe
+  answers what a floor reads. The texture's header is sixteen words a row in
+  layer zero: one row of 160 words was cut by any map narrower than that
+  (`athenea:cloudShadowResolution` goes down to 64).
+
+**Not done**: a light that stands somewhere (a sphere, a spot) turns the
+map's axis towards the box's centre every frame, and snapping does not undo a
+rotation. The sparrow's flight has a sun and a dome; a local light would want
+its axis quantised, or a perspective map fixed to the light.
+
+`athenea_technique_tests "[shadowmap][stable]"`: a body that stays put and a
+wing in three poses that make the posed box larger and smaller; sixteen probes
+across the edge of the body's shadow, with one term (behind the cloud) and
+with five (inside the slab). Expected: the same answers in every pose, to one
+unit of fixed point (5e-4). Before the step the texel changed with the wing.
+*To be run in the GPU turn.*
+
+### Step 2: every read is filtered, by hand
+
+**The cause.** Both receivers read the nearest texel (`uint(u)`, `uint(v)`).
+On the sparrow a texel of a 1024 map is about 0.13 mm, less than a pixel of
+the floor: a minification with no prefilter, which sparkles as soon as
+anything moves by part of a texel.
+
+**The read now** is percentage-closer: the four texels about the point, each
+tested against its own nearest caster, its optical depth reconstructed (the
+Fourier terms are linear in the coefficients, but the lit test and the
+exponential are not) and turned into `exp(-tau)`, and the four
+**transmittances** blended with bilinear weights. Depths and Fourier terms
+do not average into anything meaningful; transmittances do. Four integer
+loads and weights computed in the kernel, **never a sampler**: CUDA's
+hardware filter keeps its weights in nine bits, and a shadow that differs
+between the two machines by their filters is one nobody can measure. One
+function (`shadowPcf`) serves the floor, the gaussians and the probe, so a
+probe answers what both receivers read. A point within a texel of the map's
+border reads the taps that exist and counts the others as lit.
+
+`athenea_technique_tests "[shadowmap][filtered]"`: a sheet of gaussians
+smaller than a texel whose straight edge falls on a texel boundary (the grid
+is the world's since step 1), and a receiver walking from one texel's centre
+to the next in quarters. Expected: the two ends differ by more than 0.2,
+halfway reads their mean within 0.02, and the walk is monotonic. Before the
+step halfway read one of the two ends. The analysis moved the cloud by
+fractions of a texel instead; since step 1 the grid is the world's, and a
+cloud moved by part of a texel already changes the texels it lands in
+smoothly, so what a nearest-texel read still steps with is the receiver
+crossing a texel -- which is what the case moves. *To be run in the GPU
+turn.*
+
+### Step 3: a floor far from the map reads its footprint's mean
+
+**The cause.** Filtering four texels is enough while a pixel covers about
+one. A floor under a bird is far from the camera and the map is fine, so a
+pixel covers several texels: four taps are still a sample of what the pixel
+sees, and the speckle of a cloud of small gaussians aliases.
+
+**What is read now.** The resolve also writes `exp(-total)` into a **chain**
+of its own -- `SplatShadowMap::chain()`, a layer a light with every mip down
+to one texel, each level the mean of four texels of the one before
+(`shadowMapChain`). It is the mean of the *transmittances*, not exp of the
+mean optical depth, which would be darker. A receiver behind the whole slab
+(`z >= 1`, the floor) whose footprint covers more than a texel reads the
+chain bilinearly at `log2(footprint)`, blended between two levels; under a
+texel, or inside the slab, it reads level zero with PCF as before, and the
+first octave blends the two so nothing switches. Gaussians and the probe
+have no footprint and read level zero.
+
+- **The footprint** is the pixel's, by ray differentials: the rays through
+  the next pixel over and the next pixel up, met on the plane of the surface
+  (`cloudPixelSpan` in `MaterialShading`), carried into the map by the rows
+  of its frame, and the longer of the two axes taken. The analysis proposed
+  the quad's differences, as bump takes them; the light loops that read the
+  map are not uniform across a quad, and `materialInputsAt` already takes a
+  texture's footprint the same way. A grazing pixel gets no footprint and
+  reads level zero.
+- **A texture of its own**, not mips of the map's texture: the map's layers
+  hold Fourier terms and depths, which no mip means anything for, and a
+  chain on every layer would have cost a third more of all of them. The
+  chain is 5.6 MB a light at 1024 texels. It costs the shading kernel a
+  texture slot (`cloudShadowChain`), of which it has plenty; no buffer.
+
+`athenea_usd_tests "[shadowmap][mips]"`: sixteen thousand gaussians smaller
+than a texel scattered over half a unit two units up, a sun at 45 degrees,
+and a camera straight over the floor where their shadow falls, four texels a
+pixel. Its 128-pixel frame is compared on the device with the same view at
+512 pixels boxed down by four (`test/box_reduce.slang`). Expected: p99 at
+most 8 codes, where the frame without any cloud shadow differs from it by
+more than 20. *To be run in the GPU turn*, measured before the step as well,
+and the threshold set from the two with margin.
+
+### Step 4: the lit side is a ramp, in the world
+
+**The cause.** `z <= nearest + bias ? 1 : exp(-tau)`: a gaussian crossing
+the threshold jumped from 1 to almost 0 between two frames. It touches the
+clouds with no field of their own and any receiver inside the slab.
+
+**The ramp.** `lit = 1 - smoothstep(nearest + bias, nearest + 2 bias, z)`,
+and the tap reads `lerp(exp(-tau), 1, lit)`: all of a receiver up to the
+bias behind the first caster stands on it, none from twice that, and in
+between it darkens over a length that is fixed in the world (the bias of
+step 1). It is applied in each of the four taps before they are blended
+(`shadowLitOf`). Where the bias was two per cent of the slab and lit stopped
+there, it now starts there and fades out by four per cent: a cloud with no
+field reads a little lighter just behind its first surface than it did,
+which is the direction the soot measured above wants, not the other.
+
+`athenea_technique_tests "[shadowmap][ramp]"`: a stack of four opaque
+gaussians on the light's axis and a receiver walking down through the first
+in 48 steps, from in front of it to three biases behind, read through
+`factors()`; a kernel (`test/shadow_steps.slang`) counts the steps of the
+walk that jump by more than 0.15. Expected: none, with the walk lit in front
+(1.0) and shadowed at its end (under 0.5). Before the step, the step at the
+bias jumped from 1 to the reconstruction's 0.1 or so. The existing
+`[shadowmap]` case is the regression: four and eight stacked particles still
+let `(1 - alpha)^n` through. *To be run in the GPU turn.*
+
+### Step 5: flicker, measured as a second difference in time
+
+**The metric.** Flicker is the temporal second difference: frame `t`
+against the mean of frames `t - 1` and `t + 1`, with the camera still
+(`render::compareFlicker`, its midpoint a kernel of its own,
+`reference/image_midpoint.slang`, then `compareHdr` and `compareImages`). A
+smooth motion is nearly linear over three frames, so the frame between is
+nearly the mean of its neighbours; a shadow that flickers is not. Both
+metrics come back: `relMse` is continuous, which is what a ratio between two
+shadows wants, and the p99 in code values is what an eye sees.
+
+`athenea_usd_tests "[shadowmap][flicker]"`: a two-joint rig -- a body, and a
+wing hinged to it that turns 30 degrees up and down over eight frames -- 0.6
+over a floor, a sun at 40 degrees of elevation, and a camera over the shadow
+that does not see the bird. Nine frames once with a cloud bound to the rig
+(SkelBindingAPI on the ParticleField, a gaussian a centimetre) and once with
+the two quads the same skeleton carries; the worst of the seven second
+differences of each. Expected: the cloud's no more than the mesh's plus ten
+per cent, in relMSE and in p99 -- proposal 005's bar. The mesh's shadow is
+a shadow ray's, so the case needs a device that traces (skipped on CUDA,
+where Slang has no inline `RayQuery`). The metric arrives with this step,
+so its failing before steps 1, 2 and 4 is shown by cherry-picking this
+commit onto the one before step 1 (b4e1708) in a scratch worktree. *To be
+run in the GPU turn.*
+
+**Not done here, for the GPU turn**:
+
+- The cost: `athenea stage --frames` and `athenea view --play --every-frame`,
+  release, on the 4.27 M sparrow over its floor, with one and with five
+  terms, against the 109.8 / 112.9 / 116.5 ms recorded above; the bar is
+  shadow plus factors under 8 ms on the L4.
+- The flicker of the real sparrow's floor across a played clip, with the
+  same metric. `athenea compare` measures through the Measure AOFX bundle
+  and takes two images; a second difference there wants a third input in the
+  bundle, which is an ABI addition and was left for when the numbers ask
+  for it.
+- The waits: the map's `submit(true)` and `measureVisibility`'s still end
+  their batches; folding them into the frame's is C2's.
+
+### Candidate (d): a density grid splatted from the posed cloud, read by cones
+
+Proposal 018 (research, `athenea-research/proposals/018-*`), recorded here
+as the fourth candidate of P005 for a measured comparison later. **Not
+implemented.** The analysis' own (d) -- per-part fields baked per pose -- was
+rejected for its 1.2 to 4.9 GB and its bake; this (d) keeps only the cloud
+and bakes nothing.
+
+- **What it is.** After the skin, each posed gaussian adds its opacity
+  density into a 3D grid fitted to the cloud's box -- 128^3, 256^3 at most
+  -- **trilinearly** (its centre and the neighbouring voxels its scale
+  reaches), so a gaussian that moves does not jump between voxels; atomics in
+  16 to 32 bit fixed point, as the map's are. A mip pyramid by averaging the
+  density. Then cones: a narrow one towards each light from every receiver
+  (a gaussian, or a floor's shading point), and four to six about a
+  gaussian's normal for its sky visibility, which would multiply the rest
+  transfer and give the occlusion **between parts** that the per-part fields
+  do not see. Each cone starts offset so a gaussian does not occlude itself.
+- **Literature.** Voxel ray tracing of dynamic line sets (arXiv 2510.09081,
+  CGF 2026): voxelised every frame with atomics, mips, cone AO and a shadow
+  ray a voxel -- on an M3 at 128^3, 54 M segments, 20 ms to voxelise and 2.9
+  ms to shade. Staib, Grottel and Gumhold (EuroVis 2015): 2 M particles into
+  256^3, three cones about the normal. Nobody has done it with 3DGS; the exact
+  reference is the erf integral against the cloud (RAGA, arXiv 2606.29329).
+- **Where it would go.** A splat kernel after `scene/splat_skin.slang`; the
+  pyramid after `env_prefilter`'s, in 3D; the cone read beside
+  `splat_visibility_read.slang` and `splat_relight.slang` for the cloud, and
+  beside the map's read in `MaterialShading` for a floor.
+- **Memory and time** (the proposal's estimates, not measured): 4 MB at
+  128^3 x 2 bytes, 32 MB at 256^3, plus a seventh for the mips; 1 to 3 ms to
+  splat and reduce and 2 to 5 ms of cones on a current CUDA device,
+  extrapolated from 2510.09081 -- against the per-part fields' 5 to 7 ms on
+  the L4.
+- **Against the map stabilised here.** The map is exact for a receiver
+  behind the cloud and resolves the light's direction to a texel, about
+  0.13 mm on the sparrow; a 256^3 grid is 1 to 2 mm a voxel, so a floor's
+  shadow from it is softer and loses feathers. What the grid has that the
+  map does not: any number of lights and the sky from one structure, and
+  occlusion between parts. What it risks: atomic contention in the dense
+  body (accumulating a warp in shared memory first), light leaking through
+  structure finer than a voxel, and the averaged mips losing the
+  correlation of opacity, which biases wide cones -- all to be measured
+  against the erf integral.
+- **How it would be compared.** On the sparrow's flight (120 frames): sky
+  visibility per gaussian from 128^3 and 256^3 against rays through the
+  cloud's BVH, in relMSE and in flicker (the second difference above); the
+  floor's shadow by a cone towards the sun against this map's, in flicker
+  and ms; on the M5 and on the L4. Its bar: 30 % less per-pose lighting error
+  than the per-part fields alone, flicker no worse than the mesh's, and no
+  more than the fields' 8 ms.
