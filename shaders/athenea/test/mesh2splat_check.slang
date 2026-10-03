@@ -41,6 +41,11 @@ struct CheckParams {
     float heightScale;    ///< the relief: `heightScale * tent(u) + heightBias`
     float heightBias;
     uint  pad4;
+
+    float stripLength;    ///< the strip `m2sStrip` writes: along x
+    float stripWidth;     ///< and across, in y
+    uint  stripQuads;     ///< quads along it, two triangles each
+    uint  pad5;
 };
 
 RWStructuredBuffer<float4> mesh;      ///< the stream, written by `m2sQuad`
@@ -413,4 +418,60 @@ void m2sFill(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     albedo[tid.y * params.albedoStride + tid.x] = params.colour;
+}
+
+/// A LONG DENSE STRIP: `stripQuads` quads side by side along x, each
+/// `stripLength / stripQuads` long and `stripWidth` wide, in z = 0 -- far
+/// finer than a cell, so every triangle stands one gaussian at its middle
+/// and the mesh wants one a triangle at any cell. One thread a quad.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void m2sStrip(uint3 tid: SV_DispatchThreadID) {
+    const uint quad = tid.x;
+    if (quad >= params.stripQuads) {
+        return;
+    }
+    const float step = params.stripLength / float(params.stripQuads);
+    const float x0 = step * float(quad);
+    const float x1 = step * float(quad + 1);
+    const float w = params.stripWidth;
+    const float3 corners[4] = {float3(x0, 0.0, 0.0), float3(x1, 0.0, 0.0), float3(x1, w, 0.0), float3(x0, w, 0.0)};
+    const uint3 faces[2] = {uint3(0, 1, 2), uint3(0, 2, 3)};
+    for (uint f = 0; f < 2; ++f) {
+        const uint t = quad * 2 + f;
+        for (uint k = 0; k < 3; ++k) {
+            const float3 p = corners[faces[f][k]];
+            mesh[meshAt((t * 3 + k) * 2)] = float4(p, p.x / params.stripLength);
+            mesh[meshAt((t * 3 + k) * 2 + 1)] = float4(0.0, 0.0, 1.0, p.y / max(w, 1.0e-20));
+        }
+    }
+}
+
+/// Where the strip's gaussians stand: [0] how many within a cell (`cell`) of
+/// its start, [1] of its end, [2..17] how many in each sixteenth of its
+/// length, [18] how many off it (past its ends or sides by more than a
+/// cell, off its plane, or not a number).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void m2sCheckStrip(uint3 tid: SV_DispatchThreadID) {
+    const uint splat = tid.x;
+    if (splat >= params.splats) {
+        return;
+    }
+    const float3 p = records[recordAt(splat, 0)].xyz;
+    const float length = params.stripLength;
+    const float margin = params.cell;
+    if (!(p.x >= -margin && p.x <= length + margin && p.y >= -margin && p.y <= params.stripWidth + margin &&
+          abs(p.z) <= 1.0e-5)) {
+        InterlockedAdd(counts[18], 1u);
+        return;
+    }
+    if (p.x < margin) {
+        InterlockedAdd(counts[0], 1u);
+    }
+    if (p.x > length - margin) {
+        InterlockedAdd(counts[1], 1u);
+    }
+    const uint bin = uint(clamp(p.x / length * 16.0, 0.0, 15.0));
+    InterlockedAdd(counts[2 + bin], 1u);
 }

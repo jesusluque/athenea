@@ -10430,7 +10430,8 @@ multiplied by that). Proportional shares and one density floor are the same
 thing here: a cell `f` times coarser covers the surface with `f^2` fewer
 gaussians, so dividing the budget in proportion is coarsening every piece
 alike. A piece the coarsening leaves a little over its share keeps its first
-triangles' gaussians, as before; the warning and the log line say so. The
+triangles' gaussians, as before; the warning and the log line say so. (Not
+any more: "A mesh over its share is thinned by area, not cut in its order".) The
 count costs one short run a piece -- a count, a scan and one emit -- and was
 not timed here (to be measured on the Mustang on a GPU turn).
 
@@ -11094,3 +11095,59 @@ the metric's own noise of the mesh's.
 - The grain that is left is the harmonics': sixteen coefficients from 256
   paths. A filter that weighed each band by its own variance, rather than the
   luminance's, is the next thing to try.
+
+## A mesh over its share is thinned by area, not cut in its order
+
+Found on the Corvette (`car_1M_relit`, 1 M splats for a car that wants
+14.7 M): parts that looked displaced were parts cut in half. A tyre's splats
+covered z 0..0.18 of 0..0.71, a mesh of two mirrors kept one, the bonnet and
+the front bumper lost their -x half, a rim kept its lip. The geometry and the
+transforms were right; what was converted of each mesh was a prefix.
+
+Three things together. A triangle smaller than a cell still stands one
+gaussian at its middle (m2sCount), so a dense mesh wants one a triangle at any
+cell: the tyre wanted 240 826 with 240 684 triangles. The budget's sharing
+coarsens each piece by `sqrt(wanted / share)` on the assumption that a cell
+`f` times coarser wants `f^2` fewer, which that mesh does not do. And the slots
+are a prefix in mesh order, so the piece was cut at its share and kept its
+first triangles: the tyre 31 211 of 241 961, all at one end. The log said
+"X splats of Y wanted" and nothing more.
+
+**What it does now.** Where the budget is shared the host passes each piece
+its share as `thinTo`, and the effect, when the whole mesh wants more, keeps
+units by area rather than by order (PR #29 upstream proposed hash sampling for
+the same reason; this is that, weighed by area). Every unit -- a cell, a
+block, or a triangle's middle gaussian -- draws `u` in (0, 1] from a hash of
+(triangle, unit) and is kept when `u / area < lambda`, `area` being what it
+stands for on the surface in its projection plane. A unit of `1 / lambda` or
+more is always kept; a smaller one with probability `area x lambda`, so the
+kept gaussians are about one every `1 / lambda` of surface where the
+triangles are fine, and the coarse parts of the same mesh are untouched. Each
+kept one is widened by `sqrt(1 / (area x lambda))`, held under twice the
+gaussian of a cell of `1 / lambda`.
+
+`lambda` is a radix select on the device: positive floats order as their
+bits, so a histogram of the key's top twelve bits finds the bin the share
+falls in, and one of the next twelve inside it the threshold -- under the
+share by what shares the last eight bits. Two tallies, two selects, a count
+and a scan more, each a walk of the mesh; the threshold is over every
+triangle, so a mesh converted in slices draws one line. With nothing to thin
+the kernels return at once and the array is the same bit for bit (tested).
+The host warns per piece thinned, with what it wanted, its share and what it
+kept, and once at the end with how many.
+
+Kept as it is: the shares (`budget x wanted / total`) and the coarsening,
+which still does the work for meshes whose gaussians follow their cells; a
+later change is to share by surface (P015). The hash draws are independent,
+so the kept gaussians cluster as a Poisson process does rather than as a
+stratified one; widening covers the mean, not every gap, and a stratified
+draw (one a coarse cell) is the next step if the grain shows.
+
+`athenea_aofx_tests "[budget]"` (to run on a GPU turn): a strip 8 long and
+0.05 wide of 4000 slivers, the cell 0.125, given 400 -- about 400 kept, its
+first and last cell occupied, every sixteenth of it within 7..45 of the 25
+expected, nothing off the strip; the same strip cut in order with a budget of
+400 has nothing in its last sixteenth. And the unit quad converted with
+`thinTo` exactly what it wants and far over it writes the same array as
+without, bit for bit. Not yet measured: the Corvette at 1 M again, and what
+the extra walks cost on it.

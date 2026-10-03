@@ -1321,3 +1321,244 @@ TEST_CASE("a surface that is the same across a block becomes one gaussian, and d
         CHECK((*violations)[3] > 0);
     }));
 }
+
+// A MESH OVER ITS SHARE KEEPS GAUSSIANS ALONG ALL OF IT.
+//
+// Found on the Corvette: a mesh finer than its cell stands one gaussian a
+// triangle whatever the cell, so coarsening it for the budget changed
+// nothing, and the budget then kept its first triangles in mesh order -- a
+// tyre came out as its bottom quarter. Here a strip 8 long and 0.05 wide of
+// 4000 slivers, each far smaller than the cell of 0.125: it wants 4000, and
+// given 400 it must keep about 400 spread over its whole length -- the first
+// and the last cell of it occupied, every sixteenth of it within a few
+// standard deviations of 25 -- where, cut in its order, it kept the first
+// tenth.
+TEST_CASE("a dense strip over its share keeps gaussians along all of it, evenly", "[aofx][mesh2splat][budget]") {
+    gpu_host::Context* gpu = gpu_host::installProcessContext();
+    if (gpu == nullptr || gpu->compute() == nullptr) {
+        SKIP("no gpe device");
+    }
+    aofx_host::EffectRegistry registry;
+    aofx::Effect* effect = conversion(registry, gpu);
+    if (effect == nullptr) {
+        SKIP("the Mesh2Splat bundle is not built here");
+    }
+    gpu::ShaderLibrary library(gpu->deviceShared());
+
+    REQUIRE(gpu->run([&] {
+        auto strip = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sStrip");
+        auto check = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sCheckStrip");
+        REQUIRE(strip);
+        REQUIRE(check);
+
+        constexpr uint32_t kQuads = 2000;
+        constexpr uint32_t kTriangles = kQuads * 2;
+        constexpr float    kLength = 8.0F;
+        constexpr float    kWidth = 0.05F;
+        constexpr uint32_t kStripResolution = 64;   // a cell of 8 / 64 = 0.125
+        constexpr float    kCell = kLength / kStripResolution;
+        constexpr uint32_t kShare = 400;
+        constexpr uint32_t kMeshWidth = 4096;
+        const image::ImagePtr mesh = pictureOf(kMeshWidth, (kTriangles * 6 + kMeshWidth - 1) / kMeshWidth);
+        const gpu::Buffer meshView = viewOf(*gpu, mesh);
+        gpu::CommandBatch batch(library.device());
+        strip->dispatch(batch, {kQuads, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["mesh"].setBinding(meshView.rhi());
+            cursor["albedo"].setBinding(meshView.rhi());
+            cursor["records"].setBinding(meshView.rhi());
+            cursor["counts"].setBinding(meshView.rhi());
+            cursor["params"]["meshWidth"].setData(kMeshWidth);
+            cursor["params"]["meshStride"].setData(static_cast<uint32_t>(mesh->stride()));
+            cursor["params"]["stripLength"].setData(kLength);
+            cursor["params"]["stripWidth"].setData(kWidth);
+            cursor["params"]["stripQuads"].setData(kQuads);
+        });
+        REQUIRE(batch.submit(true));
+        mesh->deviceWrote();
+        mesh->attach("bounds", {0.0F, 0.0F, 0.0F, kLength, kWidth, 0.0F});
+
+        // Converted with room for every gaussian it wants and `thinTo` its
+        // share -- or, as before, with the share as the budget and no thinning.
+        const auto convert = [&](uint32_t budget, uint32_t thinTo) -> image::ImagePtr {
+            // Four entries a gaussian, room for one a triangle: 4096 by 4.
+            const image::ImagePtr records = pictureOf(4096, static_cast<int32_t>(kTriangles * 4 / 4096 + 1));
+            aofx_host::EffectJob job;
+            job.bounds = records->bounds();
+            job.inputs.push_back({"Mesh", mesh});
+            number(job, "triangles", kTriangles);
+            number(job, "resolution", kStripResolution);
+            number(job, "maxSplats", budget);
+            number(job, "thinTo", thinTo);
+            number(job, "flatness", kFlatness);
+            number(job, "opacity", 1.0);
+            number(job, "writePbr", 0.0);
+            job.params.push_back(aofx::ParamValue{"sigma", {kSigma, kSigma}, {}});
+            auto rendered = aofx_host::renderEffect(*gpu, *effect, job);
+            return rendered ? *rendered : image::ImagePtr{};
+        };
+        const auto where = [&](const image::ImagePtr& rendered, uint32_t written) {
+            const gpu::Buffer recordView = viewOf(*gpu, rendered);
+            gpu::BufferDesc desc;
+            desc.bytes = 32 * 4;
+            desc.elementBytes = 4;
+            desc.label = "test.strip";
+            auto counts = gpu::Buffer::create(library.device(), desc);
+            REQUIRE(counts);
+            gpu::CommandBatch second(library.device());
+            check->dispatch(second, {written, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["mesh"].setBinding(meshView.rhi());
+                cursor["albedo"].setBinding(meshView.rhi());
+                cursor["records"].setBinding(recordView.rhi());
+                cursor["counts"].setBinding(counts->rhi());
+                cursor["params"]["splats"].setData(written);
+                cursor["params"]["recordPixels"].setData(uint32_t{4});
+                cursor["params"]["dstWidth"].setData(static_cast<uint32_t>(rendered->bounds().width()));
+                cursor["params"]["dstStride"].setData(static_cast<uint32_t>(rendered->stride()));
+                cursor["params"]["cell"].setData(kCell);
+                cursor["params"]["stripLength"].setData(kLength);
+                cursor["params"]["stripWidth"].setData(kWidth);
+            });
+            REQUIRE(second.submit(true));
+            auto seen = counts->readAll<uint32_t>(library.device());
+            REQUIRE(seen);
+            return *seen;
+        };
+
+        // THINNED: about its share, over all of it.
+        {
+            const image::ImagePtr rendered = convert(kTriangles, kShare);
+            REQUIRE(rendered);
+            const std::vector<float>* counted = rendered->attached("splats");
+            REQUIRE(counted != nullptr);
+            REQUIRE(counted->size() >= 10);
+            const auto written = static_cast<uint32_t>((*counted)[0]);
+            std::printf("  thinned: %u written, %.0f wanted before, %.0f after\n", written,
+                        static_cast<double>((*counted)[7]), static_cast<double>((*counted)[1]));
+            CHECK((*counted)[7] == static_cast<float>(kTriangles));   // one a triangle, before
+            CHECK((*counted)[8] == 1.0F);                             // and it said it thinned
+            CHECK(written <= kShare);
+            CHECK(written >= kShare - kShare / 50);
+            const std::vector<uint32_t> seen = where(rendered, written);
+            std::printf("  first cell %u, last cell %u, off the strip %u; sixteenths:", seen[0], seen[1], seen[18]);
+            for (uint32_t bin = 0; bin < 16; ++bin) {
+                std::printf(" %u", seen[2 + bin]);
+            }
+            std::printf("\n");
+            CHECK(seen[18] == 0);   // nothing off the strip
+            CHECK(seen[0] >= 1);    // its first cell kept
+            CHECK(seen[1] >= 1);    // and its last
+            for (uint32_t bin = 0; bin < 16; ++bin) {
+                // 25 expected, a binomial's deviation 4.7: within four of them.
+                CHECK(seen[2 + bin] >= 7);
+                CHECK(seen[2 + bin] <= 45);
+            }
+        }
+        // CUT IN ITS ORDER, without the thinning: the first tenth, which is
+        // what the Corvette's tyres were.
+        {
+            const image::ImagePtr rendered = convert(kShare, 0);
+            REQUIRE(rendered);
+            const std::vector<float>* counted = rendered->attached("splats");
+            REQUIRE(counted != nullptr);
+            const auto written = static_cast<uint32_t>((*counted)[0]);
+            CHECK(written == kShare);
+            const std::vector<uint32_t> seen = where(rendered, written);
+            CHECK(seen[1] == 0);        // nothing at its end
+            CHECK(seen[2 + 15] == 0);   // nor in its last sixteenth
+        }
+    }));
+}
+
+// A MESH WITHIN ITS SHARE IS WRITTEN AS IT WAS, BIT FOR BIT: the thinning
+// tallies and selects, finds nothing to thin, and every kernel after it
+// returns at once.
+TEST_CASE("a mesh within its share converts bit for bit as without the thinning", "[aofx][mesh2splat][budget]") {
+    gpu_host::Context* gpu = gpu_host::installProcessContext();
+    if (gpu == nullptr || gpu->compute() == nullptr) {
+        SKIP("no gpe device");
+    }
+    aofx_host::EffectRegistry registry;
+    aofx::Effect* effect = conversion(registry, gpu);
+    if (effect == nullptr) {
+        SKIP("the Mesh2Splat bundle is not built here");
+    }
+    gpu::ShaderLibrary library(gpu->deviceShared());
+
+    REQUIRE(gpu->run([&] {
+        auto quad = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sQuad");
+        auto compare = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_compare", "m2sCompare");
+        REQUIRE(quad);
+        REQUIRE(compare);
+
+        constexpr uint32_t kMeshWidth = 64;
+        const image::ImagePtr mesh = pictureOf(kMeshWidth, 1);
+        const gpu::Buffer meshView = viewOf(*gpu, mesh);
+        const uint32_t budget = kResolution * kResolution * 2;
+        gpu::CommandBatch batch(library.device());
+        quad->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["mesh"].setBinding(meshView.rhi());
+            cursor["albedo"].setBinding(meshView.rhi());
+            cursor["records"].setBinding(meshView.rhi());
+            cursor["counts"].setBinding(meshView.rhi());
+            cursor["params"]["meshWidth"].setData(kMeshWidth);
+            cursor["params"]["meshStride"].setData(static_cast<uint32_t>(mesh->stride()));
+        });
+        REQUIRE(batch.submit(true));
+        mesh->deviceWrote();
+        mesh->attach("bounds", {0.0F, 0.0F, 0.0F, 1.0F, 1.0F, 0.0F});
+
+        const auto convert = [&](uint32_t thinTo) -> image::ImagePtr {
+            const image::ImagePtr records = pictureOf(static_cast<int32_t>(budget * 4), 1);
+            aofx_host::EffectJob job;
+            job.bounds = records->bounds();
+            job.inputs.push_back({"Mesh", mesh});
+            number(job, "triangles", 2);
+            number(job, "resolution", kResolution);
+            number(job, "maxSplats", budget);
+            number(job, "thinTo", thinTo);
+            number(job, "flatness", kFlatness);
+            number(job, "opacity", 1.0);
+            number(job, "writePbr", 0.0);
+            job.params.push_back(aofx::ParamValue{"sigma", {kSigma, kSigma}, {}});
+            auto rendered = aofx_host::renderEffect(*gpu, *effect, job);
+            return rendered ? *rendered : image::ImagePtr{};
+        };
+        const image::ImagePtr plain = convert(0);
+        REQUIRE(plain);
+        // A share exactly what it wants, and one far over it.
+        const image::ImagePtr exact = convert(static_cast<uint32_t>((*plain->attached("splats"))[1]));
+        const image::ImagePtr ample = convert(1000000);
+        REQUIRE(exact);
+        REQUIRE(ample);
+        CHECK((*exact->attached("splats"))[8] == 0.0F);
+        CHECK((*ample->attached("splats"))[8] == 0.0F);
+        CHECK((*exact->attached("splats"))[0] == (*plain->attached("splats"))[0]);
+
+        const gpu::Buffer viewPlain = viewOf(*gpu, plain);
+        const auto entries = static_cast<uint32_t>(kResolution * kResolution * 4);
+        for (const image::ImagePtr& other : {exact, ample}) {
+            const gpu::Buffer viewOther = viewOf(*gpu, other);
+            gpu::BufferDesc desc;
+            desc.bytes = 8 * 4;
+            desc.elementBytes = 4;
+            desc.label = "compare.counts";
+            auto counts = gpu::Buffer::create(library.device(), desc);
+            REQUIRE(counts);
+            gpu::CommandBatch second(library.device());
+            compare->dispatch(second, {entries, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["first"].setBinding(viewPlain.rhi());
+                cursor["second"].setBinding(viewOther.rhi());
+                cursor["counts"].setBinding(counts->rhi());
+                cursor["params"]["entries"].setData(entries);
+                cursor["params"]["width"].setData(static_cast<uint32_t>(plain->bounds().width()));
+                cursor["params"]["stride"].setData(static_cast<uint32_t>(plain->stride()));
+            });
+            REQUIRE(second.submit(true));
+            uint32_t seen[2] = {0, 0};
+            REQUIRE(counts->read(library.device(), 0, sizeof(seen), seen));
+            std::printf("  %u entries compared, %u differ\n", seen[0], seen[1]);
+            CHECK(seen[0] == entries);
+            CHECK(seen[1] == 0);
+        }
+    }));
+}

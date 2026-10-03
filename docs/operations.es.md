@@ -611,9 +611,14 @@ más que el presupuesto se reparte en proporción: cada una recibe
 `sqrt(quiere / parte)` veces más gruesa para querer más o menos eso. Es un
 solo suelo de densidad para toda la escena: todas las mallas pierden densidad
 por igual y no se tira ninguna. El aviso dice cuántas se querían, y la línea
-de log de cada malla cuánto más gruesa recorrió. Una malla que aún quiere un
-poco más que su parte tras engrosarla conserva las gaussianas de sus primeros
-triángulos, en el orden de la malla. Contar cuesta una pasada corta por malla.
+de log de cada malla cuánto más gruesa recorrió. Una malla que aún quiere más
+que su parte tras engrosarla -- una cuyos triángulos son más finos que su
+celda, que conservan una gaussiana cada uno sea cual sea la celda -- se
+aclara: conserva su parte, elegida sobre toda su superficie por área (una
+gaussiana que representa un triángulo pequeño se conserva menos a menudo que
+una que representa una celda), cada una de las conservadas ensanchada por las
+que se quitaron a su alrededor, y un aviso nombra la malla con lo que quería y
+lo que conservó. Contar cuesta una pasada corta por malla.
 
 **Desde una cámara.** `--cell-from-camera` da a cada malla la celda de la
 cámara que la va a mirar (la regla de Mesh2GS): `z × (apertura / píxeles) /
@@ -1556,6 +1561,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | `render product '<ruta>' has no resolution` / `no vars` | el prim de settings está incompleto | dale al producto resolución y vars ordenadas |
 | una nube convertida sale más gruesa de lo pedido, y `warning: the meshes want N splats` | `--max-splats` estaba por debajo de lo que querían las mallas, y todas se engrosaron por igual para repartirlo | sube `--max-splats`, o baja `--resolution` para elegir tú lo grueso |
 | `warning: the budget is exhausted` o `the budget ran out before N mesh(es)` | `--max-splats` era menor que lo que querían las mallas | sube `--max-splats`, baja `--resolution`, o con `--density per-mesh` sube `--cell-min` |
+| `warning: <mesh> wants N splats at its cell and its share is S: K kept, spread over its surface by area` y `N mesh(es) ... were thinned` | los triángulos de la malla son más finos que su celda engrosada, así que engrosarla no la dejó dentro de su parte; conserva K gaussianas sobre toda ella, más espaciadas de lo que querría | sube `--max-splats` para todo su detalle; no falta nada, está más gruesa |
 | `warning: N cells lay past --max-cells` | un triángulo quería más celdas de las que puede recorrer uno; el resto queda desnudo | sube `--max-cells`, o baja `--resolution` |
 | los reflejos de una nube salen más planos que los de la malla | no lleva normal de sombreado (`primvars:athenea:splat:normal`): se convirtió antes de que las conversiones la escribieran | conviértela de nuevo; `--normal-map-turns` además gira los propios discos |
 | `cells of relief wanted more than N gaussians`, y el relieve muestra huecos en sus pendientes más fuertes | el relieve estiró esas celdas más de lo que permite la partición | sube `--displace-refine`; un polo de las coordenadas de textura estira sin límite y deja unas pocas sea cual sea el valor |

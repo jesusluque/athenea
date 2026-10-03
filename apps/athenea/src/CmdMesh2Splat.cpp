@@ -809,6 +809,8 @@ public:
         uint64_t beyond = 0;   ///< cells a triangle had past --max-cells, left unwalked
         size_t   unconverted = 0;   ///< meshes the budget ran out before
         uint32_t reruns = 0;
+        size_t   thinnedPieces = 0;   ///< pieces over their share, thinned by area
+        bool     budgetShared = false;
         // THE CELL'S BOUNDS, DERIVED ONCE. Per mesh, no mesh is coarser than
         // the model's cell (nothing loses density against per-model) and none
         // finer than an eighth of it: a density ratio of 64 between the
@@ -864,6 +866,7 @@ public:
                 }
             }
             ATHENEA_TRY(deriveCells());
+            budgetShared = true;
             std::fprintf(stderr,
                          "mesh2splat: warning: the meshes want %llu splats and --max-splats is %llu: the budget "
                          "is shared in proportion, every piece's cell coarsened alike\n",
@@ -951,6 +954,16 @@ public:
             constexpr uint64_t kRunCeiling = 2u << 20;
             uint64_t meshWritten = 0;
             uint64_t meshWanted = 0;
+            uint64_t meshKept = 0;      ///< what the thinning kept of the whole piece
+            bool     thinned = false;
+            // A PIECE OVER ITS SHARE IS THINNED, NOT CUT. The coarsening
+            // above assumes a cell f times coarser wants f^2 fewer gaussians,
+            // which a mesh of triangles finer than a cell does not do: each
+            // keeps the one at its middle (m2sCount). The effect then keeps
+            // gaussians spread over the whole piece by area, and widened
+            // for the ones dropped, instead of its first triangles' -- the
+            // Corvette's tyres were their bottom quarter.
+            const uint64_t thinTo = budgetShared ? shareOf_[k] : 0;
             bool     carried = false;
             uint32_t first = 0;
             uint32_t slices = 0;
@@ -964,18 +977,20 @@ public:
                 }
                 // The count said how many: the first run is sized for them.
                 const uint64_t guess = std::clamp<uint64_t>(left, 1, kRunCeiling);
-                auto out = runOne(effect, owner, k, guess, first);
+                auto out = runOne(effect, owner, k, guess, first, thinTo);
                 if (!out) return std::move(out).error();
                 if (out->wanted > out->written && out->written < std::min(left, kRunCeiling)) {
                     const uint64_t again = std::min({out->wanted, left, kRunCeiling});
                     if (again > guess) {
-                        out = runOne(effect, owner, k, again, first);
+                        out = runOne(effect, owner, k, again, first, thinTo);
                         if (!out) return std::move(out).error();
                         ++reruns;
                     }
                 }
                 if (slices == 0) {
-                    meshWanted = out->wanted;   // the first run counts everything from here on
+                    meshWanted = out->unthinned;   // the first run counts everything from here on
+                    meshKept = out->wanted;        // and, thinned, what of it is kept
+                    thinned = out->thinned;
                     capped += out->capped;      // and so every cell the relief asked of
                     beyond += out->beyond;      // and every cell past the per-triangle bound
                 }
@@ -1029,6 +1044,15 @@ public:
                 first = static_cast<uint32_t>(out->done);
             }
             wanted += meshWanted;
+            if (thinned) {
+                ++thinnedPieces;
+                std::fprintf(stderr,
+                             "mesh2splat: warning: %s wants %llu splats at its cell and its share is %llu: "
+                             "%llu kept, spread over its surface by area and each widened for those dropped\n",
+                             piece.path.c_str(), static_cast<unsigned long long>(meshWanted),
+                             static_cast<unsigned long long>(shareOf_[k]),
+                             static_cast<unsigned long long>(meshKept));
+            }
             // The cell this piece walked, as `mesh2splat_cells` worked it
             // out: the box it was measured over (or the camera), its longest
             // side over the resolution, held to the bounds, and coarsened to
@@ -1052,6 +1076,12 @@ public:
                          "raise --max-splats, lower --resolution, or with --density per-mesh raise --cell-min\n",
                          static_cast<unsigned long long>(wanted - written),
                          static_cast<unsigned long long>(options_->maxSplats));
+        }
+        if (thinnedPieces > 0) {
+            std::fprintf(stderr,
+                         "mesh2splat: warning: %zu mesh(es) wanted more than their share at the coarsened cell and "
+                         "were thinned; raise --max-splats for all of their detail\n",
+                         thinnedPieces);
         }
         if (unconverted > 0) {
             std::fprintf(stderr, "mesh2splat: warning: the budget ran out before %zu mesh(es), which are not in "
@@ -1107,6 +1137,10 @@ private:
         /// The first triangle the budget cut into; the triangle count when
         /// everything fit. Where the next slice starts.
         uint64_t           done = 0;
+        /// What the run wanted before the thinning (`wanted` is after it),
+        /// and whether the piece was over its share and thinned.
+        uint64_t           unthinned = 0;
+        bool               thinned = false;
         /// What the effect wrote, as it wrote it: `recordEntries` float4
         /// entries a gaussian, the record's own `ownEntries` and, where the
         /// material displaces, three more (`mesh2splat_gather` reads them).
@@ -1121,7 +1155,7 @@ private:
     };
 
     [[nodiscard]] Result<OneMesh> runOne(aofx::Effect& effect, const usd::StageMesh& mesh, size_t at,
-                                         uint64_t room, uint32_t firstTriangle = 0) {
+                                         uint64_t room, uint32_t firstTriangle = 0, uint64_t thinTo = 0) {
         const usd::StageMaterial& material = *pieces_[at].material;
         // A MAP THAT WILL NOT FIT IS A MAP THIS MATERIAL DOES NOT HAVE.
         //
@@ -1220,6 +1254,10 @@ private:
         number("resolution", static_cast<double>(cellValues_[3 + 2 * pieces_.size() + at]));
         number("maxSplats", static_cast<double>(budget));
         number("firstTriangle", static_cast<double>(firstTriangle));
+        // The piece's share, where the budget is shared: a piece the
+        // coarsening left over it keeps gaussians spread over its whole
+        // surface rather than its first triangles' (m2sKept).
+        number("thinTo", static_cast<double>(thinTo));
         number("flatness", options_->flatness);
         // EVERY OPACITY HERE IS COVERAGE: how much of what stands behind the
         // surface it covers. The effect multiplies them -- `--opacity`, the
@@ -1322,6 +1360,9 @@ private:
                                            : uint64_t{triangles_[at]};
         answer.written = std::min(answer.written, budget);
         answer.capped = counted->size() >= 7 ? static_cast<uint64_t>(std::max((*counted)[6], 0.0F)) : 0;
+        answer.unthinned = counted->size() >= 10 ? static_cast<uint64_t>(std::max((*counted)[7], 0.0F))
+                                                 : answer.wanted;
+        answer.thinned = counted->size() >= 10 && (*counted)[8] > 0.5F;
 
         answer.picture = *rendered;
         answer.recordEntries = recordEntries;

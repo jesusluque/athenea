@@ -602,9 +602,13 @@ want more than the budget it is shared in proportion: each gets
 `sqrt(wanted / share)` times coarser so that it wants about that. That is one
 density floor for the whole stage: every mesh loses density alike and none is
 dropped. The warning says how many were wanted, and each mesh's log line how
-much coarser it walked. A mesh that still wants a little more than its share
-after the coarsening keeps its first triangles' gaussians, in the mesh's
-order. The count costs one short run a mesh.
+much coarser it walked. A mesh that still wants more than its share after the
+coarsening -- one whose triangles are finer than its cell, which keep a
+gaussian each whatever the cell -- is thinned: it keeps its share, chosen over
+its whole surface by area (a gaussian standing for a small triangle is kept
+less often than one standing for a cell), each kept one widened for those
+dropped around it, and a warning names the mesh with what it wanted and kept.
+The count costs one short run a mesh.
 
 **From a camera.** `--cell-from-camera` sizes each mesh's cell by the camera
 that will look at it (Mesh2GS's rule): `z × (aperture / pixels) / focal`,
@@ -1524,6 +1528,7 @@ A script's own header says what it needs and where it puts things.
 | `render product '<path>' has no resolution` / `no vars` | the settings prim is incomplete | give the product a resolution and ordered vars |
 | a converted cloud is coarser than asked, and `warning: the meshes want N splats` | `--max-splats` was below what the meshes wanted, and every mesh was coarsened alike to share it | raise `--max-splats`, or lower `--resolution` to choose the coarseness yourself |
 | `warning: the budget is exhausted` or `the budget ran out before N mesh(es)` | `--max-splats` was smaller than what the meshes wanted | raise `--max-splats`, lower `--resolution`, or with `--density per-mesh` raise `--cell-min` |
+| `warning: <mesh> wants N splats at its cell and its share is S: K kept, spread over its surface by area` and `N mesh(es) ... were thinned` | the mesh's triangles are finer than its coarsened cell, so the coarsening did not bring it under its share; it keeps K gaussians over all of it, sparser than it would have liked | raise `--max-splats` for all of its detail; nothing is missing, it is coarser |
 | `warning: N cells lay past --max-cells` | a triangle wanted more cells than one triangle may walk; the rest of it is bare | raise `--max-cells`, or lower `--resolution` |
 | a converted cloud is black | the bake found no light | give the stage lights, or `--default-lights`, or `--no-bake` |
 | a cloud's reflections look flatter than the mesh's | it carries no shading normal (`primvars:athenea:splat:normal`): converted before conversions wrote one | convert it again; `--normal-map-turns` also turns the discs themselves |

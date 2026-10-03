@@ -626,6 +626,24 @@ en orden de malla, así que un presupuesto corto conserva enteros los primeros
 triángulos y corta en el límite de uno, nunca a la mitad. El primer triángulo
 en el que corta queda registrado, y el siguiente tramo del host arranca ahí.
 
+**Aclarado.** Un prefijo es el corte correcto para un tramo, que el siguiente
+tramo continúa, y el equivocado para la parte del presupuesto de una malla,
+que nada continúa: se queda con un extremo de la malla. Así que el host pasa
+la parte como `thinTo`, y cuando la malla entera quiere más, cuatro kernels
+corren entre el escaneo y el emit. `m2sThinTally` recorre cada unidad que
+pone un triángulo -- una celda, un bloque, o la gaussiana en el centro de un
+triángulo que no atrapó ninguna celda -- en el orden del emit, le da la clave
+`u / área` (`u` un hash del triángulo y la unidad) y la suma a un histograma
+de los doce bits altos de la clave; `m2sThinSelect` encuentra el bin en el que
+cae la parte; los dos corren otra vez con los doce bits siguientes dentro de
+ese bin, y eso da el umbral. `m2sThinCount` cuenta lo que conserva cada
+triángulo (clave bajo el umbral), `m2sThinScan` vuelve a escanear sobre eso,
+y el emit escribe las unidades conservadas, ensanchadas por
+`sqrt(1 / (área x lambda))`. El umbral es sobre todos los triángulos, no los
+del tramo, así que los tramos trazan la misma línea; sin nada que aclarar
+cada kernel vuelve enseguida y la salida es la que era, bit a bit. El estado
+vive en el buffer de contadores, tras los seis contadores (`kThin*`).
+
 **Tramos.** Una malla cuyos triángulos quieren más de lo que permiten el
 presupuesto o el techo se convierte por tramos: el host vuelve a correr el
 efecto desde el triángulo que registró el corte, hasta que todo quepa o no
@@ -1050,6 +1068,7 @@ rechazan, el resto se dice.
 | densidad por malla | `ctest -R mesh2splat_density` | el plano pequeño de una escena de dos mallas saca decenas de gaussianas por modelo y centenares por malla |
 | GeomSubsets | `athenea_mesh2splat_tests` (tras el fixture `mesh2splat_outputs`) | dos caras enlazadas en rojo y azul sobre una malla verde salen rojas y azules, tantas de cada, nada verde |
 | el presupuesto | los mismos | dos mallas iguales con un presupuesto de la mitad de lo que quieren conservan más o menos la mitad cada una |
+| el aclarado | `athenea_aofx_tests "[budget]"` | una tira de 4000 astillas con 400 conserva unas 400, con su primera y su última celda ocupadas y cada dieciseisavo cerca de 25 (cortada en orden conservaba la primera décima); una malla dentro de su parte es el mismo array bit a bit |
 | la celda desde una cámara | los mismos | la tarjeta a tres unidades de la lente tiene más del triple que la que está a siete |
 | salida `.athc` | los mismos | las mismas tarjetas como `.athc` y como escena se dibujan igual (p99 como mucho 1) |
 | los rayos del bake en el dispositivo | `athenea_usd_tests "[mesh2splat]"` | cada rayo empieza a `1e-4` de la diagonal de la caja; el bake del dispositivo responde lo que el del host; las pasadas responden como una |

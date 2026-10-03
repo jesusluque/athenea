@@ -603,6 +603,23 @@ order, so a budget too small keeps the first triangles whole and cuts at a
 triangle boundary, never in the middle of one. The first triangle it cuts into
 is recorded, and the host's next slice starts there.
 
+**Thinning.** A prefix is the right cut for a slice, which the next slice
+continues, and the wrong one for a mesh's share of the budget, which nothing
+continues: it keeps one end of the mesh. So the host passes the share as
+`thinTo`, and when the whole mesh wants more, four kernels run between the
+scan and the emit. `m2sThinTally` walks every unit a triangle stands -- a
+cell, a block, or the gaussian at the middle of a triangle that caught no
+cell -- in the emit's order, keys it `u / area` (`u` a hash of the triangle
+and the unit) and adds it to a histogram of the key's top twelve bits;
+`m2sThinSelect` finds the bin the share falls in; the two run again on the
+next twelve bits inside that bin, which gives the threshold. `m2sThinCount`
+counts what each triangle keeps (key under the threshold), `m2sThinScan` runs
+the scan again over that, and the emit writes the kept units, widened by
+`sqrt(1 / (area x lambda))`. The threshold is over every triangle, not the
+slice's, so slices draw the same line; with nothing to thin every kernel
+returns at once and the output is what it was, bit for bit. The state lives
+in the counters buffer after the six counters (`kThin*`).
+
 **Slices.** A mesh whose triangles want more than the budget or the ceiling
 allows is converted in slices: the host runs the effect again starting at the
 triangle the cut recorded, until everything fits or nothing more can. And when
@@ -1003,6 +1020,7 @@ transfer -- the last two are refused, the rest said.
 | per-mesh density | `ctest -R mesh2splat_density` | the small plane of a two-mesh stage gets tens of gaussians per model and hundreds per mesh |
 | GeomSubsets | `athenea_mesh2splat_tests` (after the `mesh2splat_outputs` fixture) | two faces bound red and blue on a green mesh convert to red and blue, as many of each, no green |
 | the budget | the same | two equal meshes under a budget half what they want keep about half each |
+| the thinning | `athenea_aofx_tests "[budget]"` | a strip of 4000 slivers given 400 keeps about 400, its first and last cell occupied and every sixteenth of it near 25 (cut in order it kept the first tenth); a mesh within its share is the same array bit for bit |
 | the cell from a camera | the same | the card three units from the lens holds over three times the one seven away |
 | `.athc` output | the same | the same cards as a `.athc` and as a stage draw alike (p99 at most 1) |
 | the bake's rays on the device | `athenea_usd_tests "[mesh2splat]"` | every ray starts `1e-4` of the box's diagonal off; the device bake answers what the host's does; passes answer as one |

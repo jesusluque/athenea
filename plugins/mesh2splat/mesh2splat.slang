@@ -155,6 +155,12 @@ struct M2sParams {
     float ior;               // the sheet's index
     float materialOpacity;   // the material's own coverage, multiplied into `opacity`
     uint  coveragePad;
+
+    // A MESH OVER ITS SHARE KEEPS GAUSSIANS SPREAD OVER ALL OF IT (m2sKept).
+    uint  thinTo;            // 0: no thinning; else the most the whole mesh keeps
+    uint  thinPad0;
+    uint  thinPad1;
+    uint  thinPad2;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -163,13 +169,26 @@ StructuredBuffer<float4>   normalMap;
 StructuredBuffer<float4>   metallicRoughness;
 StructuredBuffer<float4>   opacityMask; // a cut-out, read on one channel
 StructuredBuffer<float4>   influences;  // 2 entries a corner: (joint, weight) twice
-RWStructuredBuffer<uint>   counters;    // [wanted, written, degenerate, dropped, done: first triangle the budget cut]
+RWStructuredBuffer<uint>   counters;    // [wanted, written, degenerate, dropped, done, capped, ...], then the thinning's (kThin*)
 RWStructuredBuffer<uint>   cellCounts;  // a triangle's covered cells, then where they start
 RWStructuredBuffer<float4> records;     // the output plane
 StructuredBuffer<float4>   texcoord2;   // the mesh picture's shape: (u2, v2) a corner, where there is a second set
 StructuredBuffer<float4>   heightMap;   // the displacement, read on one channel
 StructuredBuffer<float4>   emissionMap; // what the surface gives off, rgb or one channel
 ConstantBuffer<M2sParams>  params;
+
+/// WHERE THE THINNING KEEPS ITS STATE, after the six counters (m2sKept says
+/// what it is for). The host gives the counters room for all of it.
+static const uint kThinUnthinned = 6;   ///< what the slice wanted before thinning (the first scan's)
+static const uint kThinActive = 7;      ///< 1: the mesh is over `thinTo`, and m2sKept decides
+static const uint kThinThreshold = 8;   ///< a unit is kept when its key's bits are below this
+static const uint kThinBin = 9;         ///< the first level's bin the threshold falls in
+static const uint kThinBelow = 10;      ///< what the bins under it hold
+static const uint kThinTotal = 11;      ///< what the whole mesh wants, every slice
+static const uint kThinLevel = 12;      ///< 0, 1: which histogram is being filled; 2: settled
+static const uint kThinKept = 13;       ///< what the whole mesh keeps
+static const uint kThinHistogram = 16;  ///< the bins start here
+static const uint kThinBins = 4096;     ///< twelve bits of the key a level
 
 /// The counters start a render, and a buffer the host handed over holds
 /// whatever it held before. Cleared in a dispatch of its own so that no thread
@@ -186,6 +205,9 @@ void m2sClear(uint3 tid: SV_DispatchThreadID) {
     counters[3] = 0;
     counters[4] = params.triangles;
     counters[5] = 0;   // cells the relief would have split finer than displaceRefine allows   // every triangle fits until the scan says which did not
+    for (uint k = 6; k < kThinBins + kThinHistogram; ++k) {
+        counters[k] = 0;   // the thinning's state and its histogram
+    }
 }
 
 /// Where one component of a record lands. A record is several entries long
@@ -443,6 +465,7 @@ struct M2sTriangle {
     float2 oa;
     float2 edge1, edge2;
     float  inverseTwice;
+    float  range;          ///< world units a unit of the projection is
     float  cell;
     int2   first;
     uint2  span;
@@ -458,6 +481,7 @@ M2sTriangle m2sTriangleOf(uint triangle) {
     t.span = uint2(1, 1);
     t.first = int2(0, 0);
     t.cell = 1.0;
+    t.range = 1.0;
     t.oa = float2(0.0);
     t.edge1 = float2(0.0);
     t.edge2 = float2(0.0);
@@ -584,6 +608,7 @@ M2sTriangle m2sTriangleOf(uint triangle) {
     const float2 lowest = min(t.oa, min(ob, oc));
     const float2 highest = max(t.oa, max(ob, oc));
     t.cell = perCell;
+    t.range = range;
     t.first = int2(floor(lowest / t.cell));
     const int2 last = int2(floor(highest / t.cell));
     t.span = uint2(max(last.x - t.first.x + 1, 1), max(last.y - t.first.y + 1, 1));
@@ -866,6 +891,108 @@ uint2 m2sSplit(const M2sTriangle t, float2 centre, out bool capped) {
     return uint2(clamp(wanted, float2(1.0), float2(most)));
 }
 
+/// A MESH OVER ITS SHARE KEEPS GAUSSIANS SPREAD OVER ALL OF IT.
+///
+/// The budget used to be met by cutting each mesh at its share, in its own
+/// order: the slots are a prefix, so a mesh that wanted more kept its first
+/// triangles and lost the rest. The host coarsens a mesh's cell before that
+/// happens -- `sqrt(wanted / share)` -- which works where gaussians follow the
+/// cells, and not where they follow the triangles: a triangle smaller than a
+/// cell still gets one at its middle (m2sCount), so a dense mesh wants one a
+/// triangle at any cell. On the Corvette a tyre of 240 684 triangles wanted
+/// 240 826 at a cell 3.8 times coarser, kept 31 211 and came out as the band
+/// of tread nearest the ground; a bonnet lost its left half and a pair of
+/// mirrors one mirror. Nothing said so but "X of Y wanted".
+///
+/// So with `thinTo` set and the whole mesh over it, every UNIT a triangle
+/// stands -- a cell (with the gaussians its relief splits it into), a block
+/// of the tree, or the one gaussian at the middle of a triangle that caught
+/// no cell -- draws a number `u` in (0, 1] from a hash of (triangle, unit),
+/// and is kept when `u / area < lambda`. `area` is what it stands for on the
+/// surface, in the plane it was walked in: a cell's, a block's, or the
+/// triangle's own. That is sampling by area: a unit as large as `1 / lambda`
+/// or larger is always kept, a smaller one with probability `area x lambda`,
+/// so what is kept is about one gaussian every `1 / lambda` of surface
+/// wherever the triangles are fine, and the coarse parts are as they were.
+/// The number does not depend on the mesh's order, and the count, the scan
+/// and the emit draw the same one.
+///
+/// `lambda` is chosen on the device so that the kept count is the largest
+/// not over `thinTo`: a radix select over the keys' bits (positive floats
+/// order as their bits do), twelve bits a level and two levels -- a
+/// histogram of the top twelve, the bin the share falls in, then a histogram
+/// of the next twelve inside it. Under by what shares the remaining eight
+/// bits, which is nothing to speak of. The threshold is over the whole mesh,
+/// whatever slice this run is, so every slice draws the same line.
+///
+/// A KEPT GAUSSIAN COVERS WHAT WAS DROPPED AROUND IT: its two sizes are
+/// widened by `sqrt(1 / (area x lambda))`, the square root of the surface it
+/// now stands for over what it stood for, and held under twice the gaussian
+/// of a cell of `1 / lambda`, which a sliver's longest edge times that factor
+/// would otherwise run past.
+uint m2sPcg(uint v) {
+    const uint state = v * 747796405u + 2891336453u;
+    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+/// The units a triangle stands, named: a cell by its place in the walk, a
+/// block by its origin and level, the one at the middle by itself.
+static const uint kUnitMiddle = 0xFFFFFFFFu;
+
+uint m2sBlockUnit(int2 origin, uint level) {
+    return 0x80000000u | (level << 26) |
+           (m2sPcg(asuint(origin.x) * 73856093u ^ asuint(origin.y) * 19349663u) & 0x3FFFFFFu);
+}
+
+/// The key a unit is kept by: `u / area`, as the bits of a positive float.
+uint m2sThinKey(uint triangle, uint unit, float area) {
+    const uint h = m2sPcg(triangle ^ m2sPcg(unit + 0x9E3779B9u));
+    const float u = (float(h >> 8) + 1.0) / 16777216.0;
+    return asuint(u / max(area, 1.0e-30));
+}
+
+/// The surface a cell stands for, in world units squared.
+float m2sCellArea(const M2sTriangle t) {
+    const float side = t.cell * t.range;
+    return side * side;
+}
+
+/// The surface the triangle's middle gaussian stands for: the triangle's own.
+float m2sMiddleArea(const M2sTriangle t) {
+    return 0.5 / max(abs(t.inverseTwice), 1.0e-30) * t.range * t.range;
+}
+
+/// Whether the thinning keeps a unit, and how much wider it then is. Without
+/// thinning (or a mesh within its share) everything is kept as it was.
+bool m2sKept(uint triangle, uint unit, float area, out float grow) {
+    grow = 1.0;
+    if (params.thinTo == 0 || counters[kThinActive] == 0) {
+        return true;
+    }
+    const uint threshold = counters[kThinThreshold];
+    if (m2sThinKey(triangle, unit, area) >= threshold) {
+        return false;
+    }
+    const float lambda = asfloat(threshold);
+    const float share = area * lambda;
+    grow = share < 1.0 ? sqrt(1.0 / max(share, 1.0e-30)) : 1.0;
+    return true;
+}
+
+/// Two sizes widened by `grow`, held under twice a gaussian of the cell of
+/// `1 / lambda`; the third follows them. Not touched where nothing grows, so
+/// a mesh within its share is written bit for bit as before.
+float3 m2sWidened(float3 scale, float grow) {
+    if (!(grow > 1.0)) {
+        return scale;
+    }
+    const float side = sqrt(1.0 / max(asfloat(counters[kThinThreshold]), 1.0e-30));
+    const float2 most = 2.0 * float2(params.sigmaX, params.sigmaY) * side;
+    const float2 across = min(scale.xy * grow, max(scale.xy, most));
+    return float3(across, min(across.x, across.y) * params.flatness);
+}
+
 /// How many gaussians this triangle stands, one thread a triangle.
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -891,7 +1018,7 @@ void m2sCount(uint3 tid: SV_DispatchThreadID) {
     uint capped = 0;
     uint unused = 0;
     if (params.simplify > 0.0) {
-        inside = m2sWalkBlocks(triangle, t, false, unused, 0u, capped);
+        inside = m2sWalkBlocks(triangle, t, kWalkCount, unused, 0u, capped);
     } else for (uint k = 0; k < t.cells; ++k) {
         float3 bary;
         if (m2sCellInside(t, k, bary) && m2sCovered(t, bary)) {
@@ -943,7 +1070,11 @@ groupshared uint gScanPartial[kScanThreads];
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void m2sScan(uint3 gid: SV_GroupThreadID) {
-    const uint thread = gid.x;
+    m2sScanCounts(gid.x);
+}
+
+/// The scan's body, which the thinning runs a second time over what it kept.
+void m2sScanCounts(uint thread) {
     const uint total = params.triangles;
     const uint slice = (total + kScanThreads - 1) / kScanThreads;
     const uint from = min(thread * slice, total);
@@ -1101,7 +1232,7 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
 /// one gaussian a triangle that caught no cell gets at its middle. `false`
 /// once the slots run out.
 bool m2sCellEmit(uint triangle, const M2sTriangle t, float2 centre, float3 bary, float mask, bool caught,
-                 inout uint slot, uint end) {
+                 float grow, inout uint slot, uint end) {
     if (params.displaceRefine == 0) {
         if (slot >= end) {
             return false;
@@ -1111,8 +1242,8 @@ bool m2sCellEmit(uint triangle, const M2sTriangle t, float2 centre, float3 bary,
         if (!(dot(normal, normal) > 0.5)) {
             normal = t.geometric;
         }
-        if (m2sWrite(triangle, t, slot, bary, position, normal, t.tangent, t.scale, mask, position,
-                     normal, 0.0)) {
+        if (m2sWrite(triangle, t, slot, bary, position, normal, t.tangent, m2sWidened(t.scale, grow), mask,
+                     position, normal, 0.0)) {
             ++slot;
         }
         return true;
@@ -1150,7 +1281,7 @@ bool m2sCellEmit(uint triangle, const M2sTriangle t, float2 centre, float3 bary,
             // metres long across the frame. A gap is the lesser wrong.
             const float2 across =
                 t.scale.xy * min(r.stretch, float2(split) * 1.25) / float2(split);
-            const float3 scale = float3(across, min(across.x, across.y) * params.flatness);
+            const float3 scale = m2sWidened(float3(across, min(across.x, across.y) * params.flatness), grow);
             if (m2sWrite(triangle, t, slot, plane, flat + flatNormal * height, normal, tangent, scale,
                          mask, flat, flatNormal, height)) {
                 ++slot;
@@ -1327,7 +1458,8 @@ bool m2sBlockIsOne(const M2sTriangle t, int2 origin, uint size) {
 
 /// One block's gaussian: at its centre, `size` cells wide, stood on the relief
 /// where there is one.
-bool m2sBlockEmit(uint triangle, const M2sTriangle t, int2 origin, uint size, inout uint slot, uint end) {
+bool m2sBlockEmit(uint triangle, const M2sTriangle t, int2 origin, uint size, float grow, inout uint slot,
+                  uint end) {
     if (slot >= end) {
         return false;
     }
@@ -1339,6 +1471,7 @@ bool m2sBlockEmit(uint triangle, const M2sTriangle t, int2 origin, uint size, in
     float3 scale = float3(t.scale.xy * float(size), 0.0);
     if (params.displaceRefine == 0) {
         scale.z = min(scale.x, scale.y) * params.flatness;
+        scale = m2sWidened(scale, grow);
         if (m2sWrite(triangle, t, slot, bary, flat, flatNormal, t.tangent, scale, mask, flat, flatNormal, 0.0)) {
             ++slot;
         }
@@ -1355,6 +1488,7 @@ bool m2sBlockEmit(uint triangle, const M2sTriangle t, int2 origin, uint size, in
     tangent = dot(tangent, tangent) > 1.0e-30 ? normalize(tangent) : t.tangent;
     scale.xy *= min(r.stretch, float2(1.25));
     scale.z = min(scale.x, scale.y) * params.flatness;
+    scale = m2sWidened(scale, grow);
     if (m2sWrite(triangle, t, slot, bary, flat + flatNormal * height, normal, tangent, scale, mask, flat,
                  flatNormal, height)) {
         ++slot;
@@ -1362,9 +1496,40 @@ bool m2sBlockEmit(uint triangle, const M2sTriangle t, int2 origin, uint size, in
     return true;
 }
 
-/// The walk, for the count (`write` false: how many) and for the emit (the
-/// same, written from `slot` up to `end`).
-uint m2sWalkBlocks(uint triangle, const M2sTriangle t, bool write, inout uint slot, uint end, inout uint capped) {
+/// What a walk over a triangle's units is for.
+static const uint kWalkCount = 0;   ///< how many gaussians, every unit
+static const uint kWalkWrite = 1;   ///< the kept ones written, from `slot` up to `end`
+static const uint kWalkTally = 2;   ///< every unit into the thinning's histogram; how many
+static const uint kWalkKept = 3;    ///< how many the thinning keeps
+
+/// The histogram a unit goes into, at the level being filled: weighed by the
+/// gaussians it stands (a cell the relief splits is several).
+void m2sTally(uint key, uint weight) {
+    const uint level = counters[kThinLevel];
+    if (level == 0) {
+        InterlockedAdd(counters[kThinHistogram + (key >> 20)], weight);
+    } else if (level == 1 && (key >> 20) == counters[kThinBin]) {
+        InterlockedAdd(counters[kThinHistogram + ((key >> 8) & 0xFFFu)], weight);
+    }
+}
+
+/// One unit, for a walk that does not write: the gaussians it counts for.
+uint m2sUnit(uint triangle, uint unit, float area, uint weight, uint mode) {
+    if (mode == kWalkTally) {
+        m2sTally(m2sThinKey(triangle, unit, area), weight);
+        return weight;
+    }
+    if (mode == kWalkKept) {
+        float grow;
+        return m2sKept(triangle, unit, area, grow) ? weight : 0u;
+    }
+    return weight;
+}
+
+/// The walk, for the count (how many), the thinning (its tally and what it
+/// keeps) and the emit (the kept ones, written from `slot` up to `end`).
+uint m2sWalkBlocks(uint triangle, const M2sTriangle t, uint mode, inout uint slot, uint end, inout uint capped) {
+    const bool write = mode == kWalkWrite;
     const uint levels = min(params.simplifyLevels, 5u);   // the stack holds 1 + 3 * 5
     const uint top = 1u << levels;
     const int2 low = int2(floor(float2(t.first) / float(top)));
@@ -1388,24 +1553,42 @@ uint m2sWalkBlocks(uint triangle, const M2sTriangle t, bool write, inout uint sl
                     if (!m2sCellIndex(t, origin, k) || !m2sCellInside(t, k, bary) || !m2sCovered(t, bary)) {
                         continue;
                     }
+                    uint weight = 1;
                     if (params.displaceRefine != 0) {
                         bool cut;
                         const uint2 split = m2sSplit(t, m2sCellCentre(t, k), cut);
-                        count += split.x * split.y;
+                        weight = split.x * split.y;
                         capped += cut ? 1u : 0u;
-                    } else {
-                        count += 1;
                     }
-                    if (write && !m2sCellEmit(triangle, t, m2sCellCentre(t, k), bary, m2sMaskAt(t, bary), true,
-                                              slot, end)) {
+                    if (!write) {
+                        count += m2sUnit(triangle, k, m2sCellArea(t), weight, mode);
+                        continue;
+                    }
+                    float grow;
+                    if (!m2sKept(triangle, k, m2sCellArea(t), grow)) {
+                        continue;
+                    }
+                    count += weight;
+                    if (!m2sCellEmit(triangle, t, m2sCellCentre(t, k), bary, m2sMaskAt(t, bary), true, grow,
+                                     slot, end)) {
                         return count;
                     }
                     continue;
                 }
                 const uint size = 1u << level;
                 if (m2sBlockIsOne(t, origin, size)) {
+                    const uint unit = m2sBlockUnit(origin, level);
+                    const float area = m2sCellArea(t) * float(size * size);
+                    if (!write) {
+                        count += m2sUnit(triangle, unit, area, 1u, mode);
+                        continue;
+                    }
+                    float grow;
+                    if (!m2sKept(triangle, unit, area, grow)) {
+                        continue;
+                    }
                     count += 1;
-                    if (write && !m2sBlockEmit(triangle, t, origin, size, slot, end)) {
+                    if (!m2sBlockEmit(triangle, t, origin, size, grow, slot, end)) {
                         return count;
                     }
                     continue;
@@ -1421,6 +1604,145 @@ uint m2sWalkBlocks(uint triangle, const M2sTriangle t, bool write, inout uint sl
         }
     }
     return count;
+}
+
+/// THE THINNING'S WALK (m2sKept says what it is for): the units the emit
+/// would write, in the order it would write them, each into the histogram
+/// (`kWalkTally`) or counted where it is kept (`kWalkKept`).
+uint m2sThinWalk(uint triangle, const M2sTriangle t, uint mode) {
+    if (params.simplify > 0.0) {
+        uint none = 0;
+        uint probe = 0;
+        if (m2sWalkBlocks(triangle, t, kWalkCount, probe, 0u, none) > 0) {
+            return m2sWalkBlocks(triangle, t, mode, probe, 0u, none);
+        }
+    } else {
+        bool caught = false;
+        uint total = 0;
+        for (uint k = 0; k < t.cells; ++k) {
+            float3 bary;
+            if (m2sCellInside(t, k, bary) && m2sCovered(t, bary)) {
+                caught = true;
+                uint weight = 1;
+                if (params.displaceRefine != 0) {
+                    bool cut;
+                    const uint2 split = m2sSplit(t, m2sCellCentre(t, k), cut);
+                    weight = split.x * split.y;
+                }
+                total += m2sUnit(triangle, k, m2sCellArea(t), weight, mode);
+            }
+        }
+        if (caught) {
+            return total;
+        }
+    }
+    if (!m2sCovered(t, float3(1.0 / 3.0))) {
+        return 0;
+    }
+    return m2sUnit(triangle, kUnitMiddle, m2sMiddleArea(t), 1u, mode);
+}
+
+/// Every triangle of the mesh -- every slice's, not only this run's, so all
+/// of them draw one line -- into the histogram of the level being filled.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void m2sThinTally(uint3 tid: SV_DispatchThreadID) {
+    const uint triangle = tid.x;
+    if (triangle >= params.triangles || params.thinTo == 0 || counters[kThinLevel] >= 2) {
+        return;
+    }
+    const M2sTriangle t = m2sTriangleOf(triangle);
+    if (!t.valid) {
+        return;
+    }
+    const uint weight = m2sThinWalk(triangle, t, kWalkTally);
+    if (counters[kThinLevel] == 0 && weight > 0) {
+        InterlockedAdd(counters[kThinTotal], weight);
+    }
+}
+
+/// The bin the share falls in, one thread: at the first level whether there
+/// is anything to thin at all, at the second the threshold.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void m2sThinSelect(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0 || params.thinTo == 0) {
+        return;
+    }
+    const uint level = counters[kThinLevel];
+    if (level == 0) {
+        counters[kThinUnthinned] = counters[0];
+        const uint total = counters[kThinTotal];
+        if (total <= params.thinTo) {
+            counters[kThinKept] = total;
+            counters[kThinLevel] = 2;   // within its share: nothing changes
+            return;
+        }
+        uint below = 0;
+        uint bin = kThinBins - 1;
+        for (uint b = 0; b < kThinBins; ++b) {
+            const uint here = counters[kThinHistogram + b];
+            if (below + here > params.thinTo) {
+                bin = b;
+                break;
+            }
+            below += here;
+        }
+        counters[kThinBin] = bin;
+        counters[kThinBelow] = below;
+        for (uint b = 0; b < kThinBins; ++b) {
+            counters[kThinHistogram + b] = 0;
+        }
+        counters[kThinLevel] = 1;
+        return;
+    }
+    if (level == 1) {
+        uint below = counters[kThinBelow];
+        uint sub = kThinBins;   // the whole bin, should the two tallies disagree
+        for (uint b = 0; b < kThinBins; ++b) {
+            const uint here = counters[kThinHistogram + b];
+            if (below + here > params.thinTo) {
+                sub = b;
+                break;
+            }
+            below += here;
+        }
+        counters[kThinThreshold] = (counters[kThinBin] << 20) + (sub << 8);
+        counters[kThinKept] = below;
+        counters[kThinActive] = 1;
+        counters[kThinLevel] = 2;
+        // The scan runs again over what is kept, and cuts again where the
+        // run's budget does.
+        counters[4] = params.triangles;
+        counters[1] = 0;
+    }
+}
+
+/// What each of this run's triangles keeps, over the count's numbers.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void m2sThinCount(uint3 tid: SV_DispatchThreadID) {
+    const uint triangle = tid.x;
+    if (triangle >= params.triangles || params.thinTo == 0 || counters[kThinActive] == 0 ||
+        triangle < params.firstTriangle) {
+        return;   // and an earlier slice's triangle the count already gave none
+    }
+    const M2sTriangle t = m2sTriangleOf(triangle);
+    if (!t.valid) {
+        return;
+    }
+    cellCounts[countAt(triangle)] = m2sThinWalk(triangle, t, kWalkKept);
+}
+
+/// Where each kept triangle's gaussians start: the scan again, where the
+/// thinning is on.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void m2sThinScan(uint3 gid: SV_GroupThreadID) {
+    if (params.thinTo == 0 || counters[kThinActive] == 0) {
+        return;
+    }
+    m2sScanCounts(gid.x);
 }
 
 [shader("compute")]
@@ -1440,7 +1762,8 @@ void m2sEmit(uint3 tid: SV_DispatchThreadID) {
 
     // Where this triangle's gaussians go, which the scan settled. A budget
     // too small then keeps the first of them, in the mesh's own order, and
-    // not whichever ones won a race.
+    // not whichever ones won a race -- unless the thinning ran, and the scan
+    // settled what it kept (m2sKept).
     uint slot = cellCounts[countAt(triangle)];
     // AND WHERE THEY END, which is where the next triangle's start: this
     // kernel writes the slots the count gave it, no more and no fewer.
@@ -1462,8 +1785,8 @@ void m2sEmit(uint3 tid: SV_DispatchThreadID) {
     if (params.simplify > 0.0) {
         uint none = 0;
         uint probe = 0;
-        if (m2sWalkBlocks(triangle, t, false, probe, 0u, none) > 0) {
-            m2sWalkBlocks(triangle, t, true, slot, end, none);
+        if (m2sWalkBlocks(triangle, t, kWalkCount, probe, 0u, none) > 0) {
+            m2sWalkBlocks(triangle, t, kWalkWrite, slot, end, none);
             const float3 middle = float3(1.0 / 3.0);
             while (slot < end) {
                 m2sWrite(triangle, t, slot, middle, m2sFlatAt(t, middle), m2sNormalAt(t, middle), t.tangent,
@@ -1501,7 +1824,12 @@ void m2sEmit(uint3 tid: SV_DispatchThreadID) {
             continue;   // the cut-out says there is no surface here
         }
         const float2 centre = caught ? m2sCellCentre(t, k) : t.oa + t.edge1 * bary.y + t.edge2 * bary.z;
-        if (!m2sCellEmit(triangle, t, centre, bary, mask, caught, slot, end)) {
+        // What the thinning dropped is not written; what it kept is wider.
+        float grow;
+        if (!m2sKept(triangle, caught ? k : kUnitMiddle, caught ? m2sCellArea(t) : m2sMiddleArea(t), grow)) {
+            continue;
+        }
+        if (!m2sCellEmit(triangle, t, centre, bary, mask, caught, grow, slot, end)) {
             return;
         }
     }

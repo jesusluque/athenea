@@ -159,8 +159,16 @@ struct Mesh2SplatUniforms {
     /// `opacity`: the user's and the material's are two numbers.
     float    materialOpacity = 1.0F;
     uint32_t coveragePad = 0;
+
+    /// 0: no thinning. Otherwise the most gaussians the whole mesh keeps:
+    /// over it, they are chosen by area over all of its surface rather than
+    /// cut in its order (m2sKept in mesh2splat.slang).
+    uint32_t thinTo = 0;
+    uint32_t thinPad0 = 0;
+    uint32_t thinPad1 = 0;
+    uint32_t thinPad2 = 0;
 };
-static_assert(sizeof(Mesh2SplatUniforms) == 368, "must match M2sParams exactly");
+static_assert(sizeof(Mesh2SplatUniforms) == 384, "must match M2sParams exactly");
 
 class Mesh2Splat final : public aofx::Effect {
 public:
@@ -550,6 +558,19 @@ public:
         first.hardMin = {0.0};
         into.params.push_back(first);
 
+        // Additive, as the ABI asks: a host that does not send it gets the
+        // cut in mesh order it always had.
+        aofx::ParamDesc thin;
+        thin.name = "thinTo";
+        thin.label = "Thin to";
+        thin.hint = "0: off. Otherwise the most gaussians the whole mesh keeps (every slice of it): a mesh "
+                    "that wants more keeps them spread over all of its surface, chosen by area, each kept one "
+                    "wider for the ones dropped around it -- not its first triangles' in its order.";
+        thin.type = aofx::ParamType::Integer;
+        thin.defaults = {0.0};
+        thin.hardMin = {0.0};
+        into.params.push_back(thin);
+
         aofx::ParamDesc cells;
         cells.name = "maxCells";
         cells.label = "Most cells a triangle";
@@ -597,7 +618,11 @@ public:
         return {aofx::KernelDesc{"m2sClear", "m2sClear", k_mesh2splat, k_mesh2splatBytes},
                 aofx::KernelDesc{"m2sCount", "m2sCount", k_mesh2splat, k_mesh2splatBytes},
                 aofx::KernelDesc{"m2sScan", "m2sScan", k_mesh2splat, k_mesh2splatBytes},
-                aofx::KernelDesc{"m2sEmit", "m2sEmit", k_mesh2splat, k_mesh2splatBytes}};
+                aofx::KernelDesc{"m2sEmit", "m2sEmit", k_mesh2splat, k_mesh2splatBytes},
+                aofx::KernelDesc{"m2sThinTally", "m2sThinTally", k_mesh2splat, k_mesh2splatBytes},
+                aofx::KernelDesc{"m2sThinSelect", "m2sThinSelect", k_mesh2splat, k_mesh2splatBytes},
+                aofx::KernelDesc{"m2sThinCount", "m2sThinCount", k_mesh2splat, k_mesh2splatBytes},
+                aofx::KernelDesc{"m2sThinScan", "m2sThinScan", k_mesh2splat, k_mesh2splatBytes}};
     }
 
     bool process(const aofx::RenderRequest& request) override {
@@ -779,11 +804,15 @@ public:
         uniforms.simplifyLevels = static_cast<uint32_t>(std::clamp(request.number("simplifyLevels", 3.0), 1.0, 5.0));
         uniforms.firstTriangle = static_cast<uint32_t>(
             std::clamp(request.number("firstTriangle", 0.0), 0.0, static_cast<double>(triangles)));
+        uniforms.thinTo = static_cast<uint32_t>(std::clamp(request.number("thinTo", 0.0), 0.0, 4294967295.0));
 
-        // Five numbers: splats wanted, splats written, triangles with no
-        // frame, cells the per-triangle bound left out, and the first
-        // triangle the budget cut into. Two pixels hold eight.
-        const aofx::Buffer counters = request.gpu->scratch(2, 1);
+        // Six numbers: splats wanted, splats written, triangles with no
+        // frame, cells the per-triangle bound left out, the first triangle
+        // the budget cut into, and cells of relief capped. Then the
+        // thinning's state from the seventh and its histogram from the
+        // seventeenth: 4096 bins, 4112 numbers, four to a pixel.
+        constexpr uint32_t kCounterNumbers = 16 + 4096;
+        const aofx::Buffer counters = request.gpu->scratch(kCounterNumbers / 4, 1);
         if (!counters.isValid()) {
             request.complaint = "mesh2splat could not take the four numbers it counts with";
             return false;
@@ -806,8 +835,14 @@ public:
         const aofx::KernelId count = request.gpu->load("m2sCount");
         const aofx::KernelId scan = request.gpu->load("m2sScan");
         const aofx::KernelId emit = request.gpu->load("m2sEmit");
+        const aofx::KernelId tally = request.gpu->load("m2sThinTally");
+        const aofx::KernelId select = request.gpu->load("m2sThinSelect");
+        const aofx::KernelId thinCount = request.gpu->load("m2sThinCount");
+        const aofx::KernelId thinScan = request.gpu->load("m2sThinScan");
         if (clear == aofx::kInvalidKernel || count == aofx::kInvalidKernel ||
-            scan == aofx::kInvalidKernel || emit == aofx::kInvalidKernel) {
+            scan == aofx::kInvalidKernel || emit == aofx::kInvalidKernel || tally == aofx::kInvalidKernel ||
+            select == aofx::kInvalidKernel || thinCount == aofx::kInvalidKernel ||
+            thinScan == aofx::kInvalidKernel) {
             return false;
         }
         const std::vector<aofx::Buffer> buffers{
@@ -836,12 +871,30 @@ public:
         if (!request.gpu->run(scan, aofx::Grid{256, 1, 1}, buffers, &uniforms, sizeof(uniforms))) {
             return false;
         }
+        // A MESH OVER ITS SHARE IS THINNED BY AREA, NOT CUT IN ITS ORDER
+        // (m2sKept): its units tallied, the threshold selected -- two levels
+        // of each -- and what is kept counted and scanned again. Each kernel
+        // returns at once when the device found nothing to thin, so the
+        // order of dispatches is the same either way and the host reads
+        // nothing in between.
+        if (uniforms.thinTo != 0) {
+            for (int level = 0; level < 2; ++level) {
+                if (!request.gpu->run(tally, aofx::Grid{triangles, 1, 1}, buffers, &uniforms, sizeof(uniforms)) ||
+                    !request.gpu->run(select, aofx::Grid{1, 1, 1}, buffers, &uniforms, sizeof(uniforms))) {
+                    return false;
+                }
+            }
+            if (!request.gpu->run(thinCount, aofx::Grid{triangles, 1, 1}, buffers, &uniforms, sizeof(uniforms)) ||
+                !request.gpu->run(thinScan, aofx::Grid{256, 1, 1}, buffers, &uniforms, sizeof(uniforms))) {
+                return false;
+            }
+        }
         if (!request.gpu->run(emit, aofx::Grid{triangles, 1, 1}, buffers, &uniforms,
                               sizeof(uniforms))) {
             return false;
         }
 
-        uint32_t counted[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        uint32_t counted[16] = {};
         if (!request.gpu->read(counters, counted, sizeof(counted))) {
             request.complaint = "mesh2splat could not read back how many splats it wrote";
             return false;
@@ -852,10 +905,16 @@ public:
         // unwalked, and how long a record is.
         // And sixth, the first triangle the budget cut into (the triangle
         // count when nothing was): where a host's next slice starts.
+        // And eighth to tenth, the thinning: what this run wanted before it
+        // (the second number is what it wants after), whether it thinned,
+        // and what the whole mesh keeps.
+        const bool thinned = uniforms.thinTo != 0 && counted[7] != 0;
         request.attach("splats", {static_cast<float>(counted[1]), static_cast<float>(counted[0]),
                                   static_cast<float>(counted[2]), static_cast<float>(counted[3]),
                                   static_cast<float>(uniforms.recordPixels), static_cast<float>(counted[4]),
-                                  static_cast<float>(counted[5])});
+                                  static_cast<float>(counted[5]),
+                                  static_cast<float>(thinned ? counted[6] : counted[0]), thinned ? 1.0F : 0.0F,
+                                  static_cast<float>(thinned ? counted[13] : counted[0])});
         // A budget too small is not a failure: the splats that fit are real,
         // and the host is told what was wanted so it can say so or run again
         // with room. `complaint` is not the place for it -- the host ignores
