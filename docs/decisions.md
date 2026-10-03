@@ -9431,10 +9431,9 @@ Measured, Blender 5.3.0 alpha (68609be8e23b), M5 Pro, headless
 
 Not done:
 - the viewport (`view_update`/`view_draw`): untestable headless;
-- splats as splats: either the add-on authors a ParticleField from the
-  PointCloud's attributes itself, or the delegate reads Blender's `Points`
-  primvars as a cloud -- and `radiance:base` still has to reach it
-  (Blender's writer, or the add-on);
+- splats as splats: done, see *Blender's Gaussian splats, drawn as splats*
+  (the delegate reads Blender's `Points` as a cloud; the add-on's export
+  hook writes `radiance:base`);
 - volumes: OpenVDB is off in this build (Blender's `libopenvdb` 13 has no
   headers in the prefix);
 - packaging: hdAthenea still loads libslang from `~/tools/slang` and libwebp
