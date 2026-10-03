@@ -5182,11 +5182,45 @@ mesh's coverage at the hand with either kernel, and its colour error is the
 conversion's (blurred feather cards, no relief) rather than the frame's. As
 the analysis expected, gaussians that overlap their neighbours hide a frame
 fifteen percent short. The whole-image relMSE against the mesh is slightly
-worse after (by 2-3 %), which is shading over a few changed pixels rather
-than geometry: the coverage does not move. So the change is right in the
+worse after (by 2-3 %), and that was taken apart (below): it is the metric,
+not the change. So the change is right in the
 arithmetic, pinned by the strip, and not visible at this distance on this
 bird; what it buys shows where gaussians are larger than their neighbours'
 spacing -- coarse LOD levels, close-ups of a bend.
+
+**The 2-3 % is the metric's.** Each part of the change was rendered alone on
+the same conversion (frames 5, 31, 36, 512x384, 32 paths; the renders are
+deterministic, the same one twice differs by nothing), relMSE against the
+mesh at frame 5:
+
+| variant | relMSE | against the full change |
+|---|---|---|
+| old kernel | 0.08796 | |
+| exact eigenframe, no gradients | 0.08792 | 420 pixels over 2 from the old |
+| the weights accumulated as before (`weights[slot] = whole` left out), eigenframe | 0.08796 | 282 pixels over 2 |
+| gradients, shading normal by the blend alone | 0.09039 | identical to the full change |
+| gradients, normal by the whole J (as committed) | 0.09039 | |
+| the gradients negated | 0.09000 | |
+| their two components swapped | 0.09074 | |
+| halved | 0.08866 | |
+| doubled | 0.09827 | |
+
+The weights' accumulation, the eigenframe and the cofactor normal contribute
+nothing; it is the elastic term. But the image's distance from the mesh grows
+with how far the frames move *whichever way they move* -- negated, swapped,
+halved and doubled order themselves by size, not by correctness -- so it does
+not measure whether a frame is right: the cloud differs from the mesh by its
+conversion (feather cards blurred into gaussians, no relief) far more than by
+any frame, and any change to the frames is scored as more difference. What
+says the term is right is the strip test (the kernel against the analytic
+Jacobian, sign and axes included) and, for the data, a diagnostic on the
+sparrow's converted wings (174 305 gaussians, not kept as an oracle): between
+neighbouring gaussians with the same four joints, the stored gradients
+predict the change of the stored weights with an rms residual of 12.5 % of
+that change (the second order and the truncation), against 158 % with the two
+axes swapped and 100 % with no gradient at all. A geometric measure of the
+bird -- coverage against the posed mesh at a bend seen close -- is what would
+show the gain, and is not done here.
 
 **Not done here.** The sparrow's clips (`Sparrow_gs.usdc`, `gs60`, the LOD
 levels) were converted before the gradients and are carried as before until
