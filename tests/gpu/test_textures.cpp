@@ -1,0 +1,717 @@
+// Copyright (c) 2026 jesus luque.
+//
+// Textures, mips, raster and ray tracing kernels, generated and link-time
+// specialised programs, the shader cache, and the HDR image comparison --
+// checked by kernels, with only counters read back.
+#include "GpuTest.h"
+
+#include <catch2/catch_approx.hpp>
+
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <vector>
+
+#include "athenea/gpu/RasterKernel.h"
+#include "athenea/gpu/RayTracingKernel.h"
+#include "athenea/gpu/Texture.h"
+#include "athenea/gpu/algo/Mips.h"
+#include "athenea/core/Platform.h"
+#include "athenea/render/ReferenceRenderer.h"
+
+using namespace athenea;
+
+namespace {
+
+gpu::Texture texture(test::Gpu& gpu, uint32_t width, uint32_t height, uint32_t mips, const char* label,
+                     rhi::Format format = rhi::Format::RGBA32Float) {
+    gpu::TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.mipCount = mips;
+    desc.format = format;
+    desc.usage = rhi::TextureUsage::ShaderResource | rhi::TextureUsage::UnorderedAccess |
+                 rhi::TextureUsage::RenderTarget;
+    desc.label = label;
+    auto made = gpu::Texture::create(*gpu.device, desc);
+    if (!made) FAIL(made.error().toString());
+    return *made;
+}
+
+gpu::ComputeKernel kernelOf(test::Gpu& gpu, const char* entry) {
+    auto kernel = gpu::ComputeKernel::create(*gpu.library, "athenea/test/textures", entry);
+    if (!kernel) FAIL(kernel.error().toString());
+    return *kernel;
+}
+
+std::array<uint32_t, 2> check(test::Gpu& gpu, const gpu::Texture& t, uint32_t mode) {
+    static gpu::ComputeKernel kCheck = kernelOf(gpu, "textureCheck");
+    gpu::Buffer counts = test::uintBuffer(*gpu.device, 2, "counts");
+    auto view = t.view(0);
+    REQUIRE(view);
+    rhi::SamplerDesc desc;
+    desc.minFilter = rhi::TextureFilteringMode::Linear;
+    desc.magFilter = rhi::TextureFilteringMode::Linear;
+    desc.addressU = rhi::TextureAddressingMode::ClampToEdge;
+    desc.addressV = rhi::TextureAddressingMode::ClampToEdge;
+    auto sampler = gpu::Sampler::create(*gpu.device, desc);
+    REQUIRE(sampler);
+    gpu::CommandBatch batch(*gpu.device);
+    kCheck.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["texture"].setBinding((*view).get());
+        cursor["linearClamp"].setBinding(sampler->rhi());
+        cursor["counts"].setBinding(counts.rhi());
+        cursor["params"]["width"].setData(t.width());
+        cursor["params"]["height"].setData(t.height());
+        cursor["params"]["mode"].setData(mode);
+    });
+    REQUIRE(batch.submit(true));
+    std::array<uint32_t, 2> out{};
+    REQUIRE(counts.read(*gpu.device, 0, sizeof(out), out.data()));
+    return out;
+}
+
+}   // namespace
+
+TEST_CASE("a texture uploaded reads back through Load and through a sampler at texel centres", "[gpu][texture]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const uint32_t w = 37;
+    const uint32_t h = 23;
+    // The input, authored on the host as a file would be.
+    std::vector<float> texels(size_t{w} * h * 4);
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            const float* v = texels.data() + (size_t{y} * w + x) * 4;
+            const_cast<float*>(v)[0] = static_cast<float>((x * 7 + y * 13) % 251) / 256.0F;
+            const_cast<float*>(v)[1] = static_cast<float>((x * 3 + y * 5 + 1) % 241) / 256.0F;
+            const_cast<float*>(v)[2] = static_cast<float>((x + y * 11 + 2) % 239) / 256.0F;
+            const_cast<float*>(v)[3] = static_cast<float>((x * 5 + y + 3) % 233) / 256.0F;
+        }
+    }
+    gpu::Texture t = texture(*gpu, w, h, 1, "roundtrip");
+    REQUIRE(t.upload(*gpu->device, 0, 0, std::as_bytes(std::span<const float>(texels))));
+    const auto loaded = check(*gpu, t, 0);
+    const auto sampled = check(*gpu, t, 1);
+    CHECK(loaded[1] == w * h);
+    CHECK(loaded[0] == 0);
+    CHECK(sampled[0] == 0);
+}
+
+TEST_CASE("every mip level keeps level 0's mean, whatever the sizes", "[gpu][texture][mips]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kFill = kernelOf(*gpu, "textureFill");
+    static gpu::ComputeKernel kMean = kernelOf(*gpu, "textureMean");
+    auto mips = gpu::MipGenerator::create(*gpu->library);
+    if (!mips) FAIL(mips.error().toString());
+    for (const auto [w, h] : {std::pair{64u, 64u}, std::pair{37u, 23u}, std::pair{1u, 9u}, std::pair{128u, 5u}}) {
+        gpu::Texture t = texture(*gpu, w, h, 0, "mips");
+        auto level0 = t.view(0);
+        REQUIRE(level0);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            kFill.dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["written"].setBinding((*level0).get());
+                cursor["params"]["width"].setData(w);
+                cursor["params"]["height"].setData(h);
+            });
+            REQUIRE(mips->generate(batch, t));
+            REQUIRE(batch.submit(true));
+        }
+        std::vector<float> means;
+        for (uint32_t mip = 0; mip < t.mipCount(); ++mip) {
+            auto view = t.view(mip);
+            REQUIRE(view);
+            gpu::BufferDesc desc;
+            desc.bytes = 4;
+            desc.elementBytes = 4;
+            auto mean = gpu::Buffer::create(*gpu->device, desc);
+            REQUIRE(mean);
+            gpu::CommandBatch batch(*gpu->device);
+            kMean.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["texture"].setBinding((*view).get());
+                cursor["mean"].setBinding(mean->rhi());
+                cursor["params"]["width"].setData(t.width(mip));
+                cursor["params"]["height"].setData(t.height(mip));
+            });
+            REQUIRE(batch.submit(true));
+            float value = 0.0F;
+            REQUIRE(mean->read(*gpu->device, 0, sizeof(value), &value));
+            means.push_back(value);
+        }
+        std::printf("  %ux%u, %u levels: mean %.7f at 0, %.7f at the last\n", w, h, t.mipCount(),
+                    static_cast<double>(means.front()), static_cast<double>(means.back()));
+        CHECK(t.mipCount() == gpu::mipChain(w, h));
+        for (const float m : means) {
+            CHECK(std::abs(m - means.front()) <= 2e-6F);
+        }
+    }
+}
+
+TEST_CASE("a raster kernel covers exactly the pixels its triangles cover", "[gpu][raster]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    static gpu::ComputeKernel kCount = kernelOf(*gpu, "textureCountColour");
+    gpu::RasterDesc desc;
+    desc.module = "athenea/test/textures";
+    desc.vertexEntry = "rasterHalfVertex";
+    desc.fragmentEntry = "rasterHalfFragment";
+    rhi::ColorTargetDesc target;
+    target.format = rhi::Format::RGBA32Float;
+    desc.targets = {target};
+    auto kernel = gpu::RasterKernel::create(*gpu->library, desc);
+    if (!kernel) FAIL(kernel.error().toString());
+    const uint32_t w = 64;
+    const uint32_t h = 40;
+    gpu::Texture t = texture(*gpu, w, h, 1, "raster");
+    auto view = t.view(0);
+    REQUIRE(view);
+    gpu::RasterPass pass;
+    pass.width = w;
+    pass.height = h;
+    pass.colours = {(*view).get()};
+    pass.clearColours = {{0.0F, 0.0F, 0.0F, 0.0F}};
+    const std::array<float, 4> colour{0.25F, 0.5F, 0.75F, 1.0F};
+    const gpu::RasterDraw draw{6, 1, 0, 0, [&](rhi::ShaderCursor cursor) {
+                                   cursor["params"]["colourR"].setData(colour[0]);
+                                   cursor["params"]["colourG"].setData(colour[1]);
+                                   cursor["params"]["colourB"].setData(colour[2]);
+                                   cursor["params"]["colourA"].setData(colour[3]);
+                               }};
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 2, "counts");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kernel->run(batch, pass, std::span<const gpu::RasterDraw>(&draw, 1));
+        REQUIRE(batch.submit(true));
+    }
+    auto read = t.view(0);
+    REQUIRE(read);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kCount.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["texture"].setBinding((*read).get());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["width"].setData(w);
+            cursor["params"]["height"].setData(h);
+            cursor["params"]["colourR"].setData(colour[0]);
+            cursor["params"]["colourG"].setData(colour[1]);
+            cursor["params"]["colourB"].setData(colour[2]);
+            cursor["params"]["colourA"].setData(colour[3]);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 2> covered{};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(covered), covered.data()));
+    // The left half: pixel centres x + 0.5 < w / 2, every row.
+    CHECK(covered[0] == (w / 2) * h);
+}
+
+TEST_CASE("ray tracing pipelines exist where the device has them, and say why not where it does not",
+          "[gpu][raytracing]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::RayTracingDesc desc;
+    desc.module = "athenea/test/textures";
+    desc.rayGen = "none";
+    auto kernel = gpu::RayTracingKernel::create(*gpu->library, desc);
+    if (!gpu->device->caps().rayTracing) {
+        REQUIRE_FALSE(kernel);
+        CHECK(kernel.error().code() == ErrorCode::Unsupported);
+    } else {
+        SUCCEED("pipelines on this device: covered by the path tracer's tests");
+    }
+}
+
+TEST_CASE("link-time constants and generated modules make distinct programs", "[gpu][shaders]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Buffer out = test::uintBuffer(*gpu->device, 1, "linked");
+    const auto run = [&](const std::shared_ptr<const gpu::Program>& program) {
+        rhi::ComputePipelineDesc desc;
+        desc.program = program->program.get();
+        rhi::ComPtr<rhi::IComputePipeline> pipeline;
+        REQUIRE(SLANG_SUCCEEDED(gpu->device->rhi()->createComputePipeline(desc, pipeline.writeRef())));
+        gpu::CommandBatch batch(*gpu->device);
+        rhi::IComputePassEncoder* pass = batch.encoder()->beginComputePass();
+        rhi::ShaderCursor cursor(pass->bindPipeline(pipeline.get()));
+        cursor["linkedOut"].setBinding(out.rhi());
+        pass->dispatchCompute(1, 1, 1);
+        pass->end();
+        batch.markDirty();
+        REQUIRE(batch.submit(true));
+        uint32_t value = 0;
+        REQUIRE(out.read(*gpu->device, 0, sizeof(value), &value));
+        return value;
+    };
+    for (const uint32_t value : {7u, 9u}) {
+        auto program = gpu->library->load("athenea/test/linked", {"linkedConstant"},
+                                          {{"uint", "kLinkedValue", std::to_string(value)}});
+        if (!program) FAIL(program.error().toString());
+        CHECK(run(*program) == value);
+    }
+    const std::string source = "RWStructuredBuffer<uint> linkedOut;\n"
+                               "[shader(\"compute\")] [numthreads(1, 1, 1)]\n"
+                               "void generated(uint3 tid: SV_DispatchThreadID) { linkedOut[0] = 1234; }\n";
+    auto generated = gpu->library->loadSource("athenea_test_generated", source, {"generated"});
+    if (!generated) FAIL(generated.error().toString());
+    CHECK(run(*generated) == 1234);
+    auto clash = gpu->library->loadSource("athenea_test_generated", source + "// other\n", {"generated"});
+    CHECK_FALSE(clash);
+}
+
+TEST_CASE("compiled shaders come back from the disk cache on a second device", "[gpu][shaders][cache]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const std::filesystem::path cache = std::filesystem::temp_directory_path() / "athenea_test_shader_cache";
+    std::filesystem::remove_all(cache);
+    const auto compile = [&]() {
+        gpu::DeviceDesc desc;
+        desc.shaderCache = cache;
+        auto device = gpu::Device::create(desc);
+        if (!device) FAIL(device.error().toString());
+        gpu::ShaderLibrary library(*device);
+        auto kernel = gpu::ComputeKernel::create(library, "athenea/test/textures", "textureMean");
+        if (!kernel) FAIL(kernel.error().toString());
+        return (*device)->shaderCacheStats();
+    };
+    const gpu::ShaderCacheStats first = compile();
+    const gpu::ShaderCacheStats second = compile();
+    std::printf("  shader cache: first %llu hits %llu writes, second %llu hits\n",
+                static_cast<unsigned long long>(first.hits), static_cast<unsigned long long>(first.writes),
+                static_cast<unsigned long long>(second.hits));
+    CHECK(first.writes > 0);
+    CHECK(second.hits > 0);
+    std::filesystem::remove_all(cache);
+}
+
+TEST_CASE("HDR images and ID buffers compare on the device", "[gpu][compare]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const uint32_t w = 50;
+    const uint32_t h = 30;
+    std::vector<float> a(size_t{w} * h * 4);
+    std::vector<float> b(a.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        a[i] = 0.5F + static_cast<float>(i % 97) * 0.25F;   // up to 24.5: past what 8 bits show
+        b[i] = a[i] * 1.1F;
+    }
+    gpu::BufferDesc desc;
+    desc.bytes = a.size() * 4;
+    desc.elementBytes = 16;
+    auto bufferA = gpu::Buffer::create(*gpu->device, desc, a.data());
+    auto bufferB = gpu::Buffer::create(*gpu->device, desc, b.data());
+    REQUIRE(bufferA);
+    REQUIRE(bufferB);
+    auto same = render::compareHdr(*gpu->library, *bufferA, *bufferA, w, h);
+    REQUIRE(same);
+    CHECK(same->pixels == uint64_t{w} * h);
+    CHECK(same->relMse == 0.0);
+    CHECK(same->maxRelative == 0.0);
+    auto scaled = render::compareHdr(*gpu->library, *bufferA, *bufferB, w, h);
+    REQUIRE(scaled);
+    std::printf("  a against 1.1 a: relMSE %.5f, p99 relative %.4f, max %.4f\n", scaled->relMse,
+                scaled->p99Relative, scaled->maxRelative);
+    // |a - 1.1a| / 1.1a = 1/11 = 0.0909..., within one bin (9%) above.
+    CHECK(scaled->p99Relative >= 1.0 / 11.0);
+    CHECK(scaled->p99Relative <= 1.0 / 11.0 * 1.0906);
+
+    std::vector<uint32_t> ids(10000);
+    std::vector<uint32_t> other(10000);
+    for (uint32_t i = 0; i < ids.size(); ++i) {
+        ids[i] = i * 2654435761u;
+        other[i] = (i % 37 == 0) ? ids[i] + 1 : ids[i];
+    }
+    auto idsA = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, ids, "ids.a");
+    auto idsB = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, other, "ids.b");
+    REQUIRE(idsA);
+    REQUIRE(idsB);
+    auto differing = render::countDifferent(*gpu->library, *idsA, *idsB, static_cast<uint32_t>(ids.size()));
+    REQUIRE(differing);
+    CHECK(*differing == (10000 + 36) / 37);
+}
+
+TEST_CASE("a draw's start vertex and instance reach the vertex stage as this backend defines them",
+          "[gpu][raster]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    static gpu::ComputeKernel kTexel = kernelOf(*gpu, "textureTexelIds");
+    gpu::RasterDesc desc;
+    desc.module = "athenea/test/textures";
+    desc.vertexEntry = "rasterStartsVertex";
+    desc.fragmentEntry = "rasterStartsFragment";
+    rhi::ColorTargetDesc target;
+    target.format = rhi::Format::RGBA32Uint;
+    desc.targets = {target};
+    auto kernel = gpu::RasterKernel::create(*gpu->library, desc);
+    if (!kernel) FAIL(kernel.error().toString());
+    const uint32_t w = 8;
+    const uint32_t h = 8;
+    gpu::TextureDesc ids;
+    ids.width = w;
+    ids.height = h;
+    ids.format = rhi::Format::RGBA32Uint;
+    ids.usage = rhi::TextureUsage::RenderTarget | rhi::TextureUsage::ShaderResource;
+    auto t = gpu::Texture::create(*gpu->device, ids);
+    REQUIRE(t);
+    auto view = t->view(0);
+    REQUIRE(view);
+    gpu::RasterPass pass;
+    pass.width = w;
+    pass.height = h;
+    pass.colours = {(*view).get()};
+    pass.clearColours = {{0.0F, 0.0F, 0.0F, 0.0F}};
+    pass.bind = [](rhi::ShaderCursor) {};
+    const gpu::RasterDraw draw{6, 1, 12, 5, {}};
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kernel->run(batch, pass, std::span<const gpu::RasterDraw>(&draw, 1));
+        REQUIRE(batch.submit(true));
+    }
+    gpu::Buffer out = test::uintBuffer(*gpu->device, 4, "texel");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kTexel.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["idsTexture"].setBinding((*view).get());
+            cursor["counts"].setBinding(out.rhi());
+            cursor["params"]["width"].setData(w);
+            cursor["params"]["height"].setData(h);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t v[4] = {};
+    REQUIRE(out.read(*gpu->device, 0, sizeof(v), v));
+    std::printf("  %s: start vertex 12, instance 5 -> SV_VertexID %u, SV_InstanceID %u, "
+                "SV_StartVertexLocation %u, SV_StartInstanceLocation %u\n",
+                gpu->device->caps().apiName.c_str(), v[0], v[1], v[2], v[3]);
+    CHECK(v[2] == 12);
+    CHECK(v[3] == 5);
+    // What Caps::drawIdsIncludeStart promises the engine's shaders.
+    const bool included = gpu->device->caps().drawIdsIncludeStart;
+    CHECK((included ? v[0] : v[0] + v[2]) == 12);
+    CHECK((included ? v[1] : v[1] + v[3]) == 5);
+}
+
+TEST_CASE("a texture table binds textures by slot, and an sRGB view decodes what it samples", "[gpu][texture]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto kernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/texture_table", "textureTableProbe");
+    if (!kernel) FAIL(kernel.error().toString());
+    std::vector<gpu::Texture> textures;
+    for (int k = 0; k < 3; ++k) {
+        gpu::TextureDesc desc;
+        desc.width = 2;
+        desc.height = 2;
+        desc.format = rhi::Format::RGBA8Unorm;
+        desc.usage = rhi::TextureUsage::ShaderResource | rhi::TextureUsage::CopyDestination;
+        auto t = gpu::Texture::create(*gpu->device, desc);
+        REQUIRE(t);
+        std::array<uint8_t, 16> texels{};
+        for (size_t i = 0; i < 16; i += 4) {
+            texels[i] = static_cast<uint8_t>(60 * (k + 1));
+            texels[i + 1] = 128;
+            texels[i + 3] = 255;
+        }
+        REQUIRE(t->upload(*gpu->device, 0, 0, std::as_bytes(std::span(texels))));
+        textures.push_back(std::move(*t));
+    }
+    rhi::TextureViewDesc srgbDesc;
+    srgbDesc.format = rhi::Format::RGBA8UnormSrgb;
+    rhi::ComPtr<rhi::ITextureView> srgb;
+    REQUIRE(SLANG_SUCCEEDED(gpu->device->rhi()->createTextureView(textures[2].rhi(), srgbDesc, srgb.writeRef())));
+    auto sampler = gpu::Sampler::create(*gpu->device, {});
+    REQUIRE(sampler);
+    gpu::BufferDesc out;
+    out.bytes = 16 * 3;
+    out.elementBytes = 16;
+    auto result = gpu::Buffer::create(*gpu->device, out);
+    REQUIRE(result);
+    gpu::CommandBatch batch(*gpu->device);
+    kernel->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["table"]["textures"][0].setBinding(textures[0].rhi());
+        cursor["table"]["textures"][500].setBinding(textures[1].rhi());
+        cursor["table"]["textures"][1000].setBinding(srgb.get());
+        cursor["table"]["samplers"][0].setBinding(sampler->rhi());
+        cursor["table"]["samplers"][1].setBinding(sampler->rhi());
+        cursor["result"].setBinding(result->rhi());
+        cursor["params"]["count"].setData(uint32_t{3});
+        cursor["params"]["stride"].setData(uint32_t{500});
+    });
+    REQUIRE(batch.submit(true));
+    float v[12] = {};
+    REQUIRE(result->read(*gpu->device, 0, sizeof(v), v));
+    std::printf("  slots 0, 500, 1000: r %.4f %.4f %.4f (the last through sRGB), g %.4f %.4f\n", double(v[0]),
+                double(v[4]), double(v[8]), double(v[1]), double(v[9]));
+    CHECK(v[0] == Catch::Approx(60.0F / 255.0F).margin(1e-6F));
+    CHECK(v[4] == Catch::Approx(120.0F / 255.0F).margin(1e-6F));
+    const float encoded = 180.0F / 255.0F;
+    const float decoded = std::pow((encoded + 0.055F) / 1.055F, 2.4F);
+    CHECK(v[8] == Catch::Approx(decoded).margin(2e-3F));
+}
+
+/// What a float4 store becomes in an 8-bit texture. The texture store decodes
+/// an 8-bit image into RGBA8Unorm through an RWTexture2D<float4>, and on a
+/// backend whose store does not convert, every component of every texel is
+/// wrong; this asks that question of one texel, with no decoding, sampling or
+/// mips in the way.
+TEST_CASE("a float4 written to an 8-bit texture comes back as the colour it wrote", "[gpu][texture][probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kWrite = kernelOf(*gpu, "formatWrite");
+    static gpu::ComputeKernel kRead = kernelOf(*gpu, "formatRead");
+    gpu::Texture eight = texture(*gpu, 4, 4, 1, "eight-bit", rhi::Format::RGBA8Unorm);
+    auto view = eight.view(0);
+    REQUIRE(view);
+    gpu::Buffer got = test::uintBuffer(*gpu->device, 4, "got");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kWrite.dispatch(batch, {1, 1, 1},
+                        [&](rhi::ShaderCursor cursor) { cursor["written"].setBinding((*view).get()); });
+        REQUIRE(batch.submit(true));
+    }
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kRead.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["texture"].setBinding((*view).get());
+            cursor["counts"].setBinding(got.rhi());
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 4> bits{};
+    REQUIRE(got.read(*gpu->device, 0, sizeof(bits), bits.data()));
+    std::array<float, 4> read{};
+    std::memcpy(read.data(), bits.data(), sizeof(read));
+    const std::array<float, 4> wrote = {1.0F, 0.0F, 64.0F / 255.0F, 1.0F};
+    std::printf("  eight-bit texel: %.4f %.4f %.4f %.4f (wrote %.4f %.4f %.4f %.4f)\n", double(read[0]),
+                double(read[1]), double(read[2]), double(read[3]), double(wrote[0]), double(wrote[1]),
+                double(wrote[2]), double(wrote[3]));
+    if (!gpu->device->caps().convertingStores) {
+        // The device says its store does not convert, and every kernel that
+        // writes a texture packs its texels into a buffer there instead. What
+        // is checked is that the capability tells the truth: the texel is not
+        // the colour.
+        INFO("Caps::convertingStores is false, so this store must not convert; read back: "
+             << read[0] << ", " << read[1] << ", " << read[2] << ", " << read[3]);
+        bool converted = true;
+        for (uint32_t k = 0; k < 4; ++k) {
+            converted = converted && std::abs(read[k] - wrote[k]) <= 1.0F / 255.0F;
+        }
+        CHECK_FALSE(converted);
+        return;
+    }
+    INFO("A float4 stored through an RWTexture2D must arrive as the texture's format on a device whose "
+         "Caps::convertingStores says so. CUDA's surface store does not convert (surf2Dwrite<float4> writes the "
+         "float4's own bytes), which is why that capability is false there. Read back: "
+         << read[0] << ", " << read[1] << ", " << read[2] << ", " << read[3]);
+    for (uint32_t k = 0; k < 4; ++k) {
+        // One step of eight-bit quantisation is all the write may cost.
+        CHECK(std::abs(read[k] - wrote[k]) <= 1.0F / 255.0F);
+    }
+}
+
+/// The same eight-bit texture written as its own bytes, through a uint view of
+/// it: four bytes stored as four bytes, which asks neither backend to convert
+/// anything. If this holds on both, it is what the texture store's decode
+/// should do.
+TEST_CASE("an eight-bit texture written through a uint view holds the colour packed into it",
+          "[gpu][texture][probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kPacked = kernelOf(*gpu, "packedWrite");
+    static gpu::ComputeKernel kRead = kernelOf(*gpu, "formatRead");
+    gpu::Texture eight = texture(*gpu, 4, 4, 1, "eight-bit packed", rhi::Format::RGBA8Unorm);
+    rhi::TextureViewDesc desc;
+    desc.format = rhi::Format::R32Uint;
+    rhi::ComPtr<rhi::ITextureView> uintView;
+    if (SLANG_FAILED(gpu->device->rhi()->createTextureView(eight.rhi(), desc, uintView.writeRef()))) {
+        SKIP("this backend will not make a uint view of an eight-bit texture");
+    }
+    auto colourView = eight.view(0);
+    REQUIRE(colourView);
+    gpu::Buffer got = test::uintBuffer(*gpu->device, 4, "got");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kPacked.dispatch(batch, {1, 1, 1},
+                         [&](rhi::ShaderCursor cursor) { cursor["packed"].setBinding(uintView.get()); });
+        REQUIRE(batch.submit(true));
+    }
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kRead.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["texture"].setBinding((*colourView).get());
+            cursor["counts"].setBinding(got.rhi());
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 4> bits{};
+    REQUIRE(got.read(*gpu->device, 0, sizeof(bits), bits.data()));
+    std::array<float, 4> read{};
+    std::memcpy(read.data(), bits.data(), sizeof(read));
+    const std::array<float, 4> wrote = {1.0F, 0.0F, 64.0F / 255.0F, 1.0F};
+    std::printf("  packed through a uint view: %.4f %.4f %.4f %.4f (wrote %.4f %.4f %.4f %.4f)\n", double(read[0]),
+                double(read[1]), double(read[2]), double(read[3]), double(wrote[0]), double(wrote[1]),
+                double(wrote[2]), double(wrote[3]));
+    for (uint32_t k = 0; k < 4; ++k) {
+        CHECK(std::abs(read[k] - wrote[k]) <= 1.0F / 255.0F);
+    }
+}
+
+/// Written through the uint view and read back through it: does the store land?
+TEST_CASE("an eight-bit texture read back through the same uint view holds what was stored",
+          "[gpu][texture][probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kFill = kernelOf(*gpu, "packedFill");
+    static gpu::ComputeKernel kVerify = kernelOf(*gpu, "packedVerifyUint");
+    const uint32_t w = 16;
+    const uint32_t h = 16;
+    gpu::Texture eight = texture(*gpu, w, h, 1, "eight-bit round trip", rhi::Format::RGBA8Unorm);
+    rhi::TextureViewDesc desc;
+    desc.format = rhi::Format::R32Uint;
+    rhi::ComPtr<rhi::ITextureView> uintView;
+    if (SLANG_FAILED(gpu->device->rhi()->createTextureView(eight.rhi(), desc, uintView.writeRef()))) {
+        SKIP("this backend will not make a uint view of an eight-bit texture");
+    }
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 2, "counts");
+    gpu::CommandBatch batch(*gpu->device);
+    kFill.dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["packed"].setBinding(uintView.get());
+        cursor["params"]["width"].setData(w);
+        cursor["params"]["height"].setData(h);
+    });
+    REQUIRE(batch.submit(true));
+    gpu::CommandBatch second(*gpu->device);
+    kVerify.dispatch(second, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["packed"].setBinding(uintView.get());
+        cursor["counts"].setBinding(counts.rhi());
+        cursor["params"]["width"].setData(w);
+        cursor["params"]["height"].setData(h);
+    });
+    REQUIRE(second.submit(true));
+    std::array<uint32_t, 2> out{};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(out), out.data()));
+    std::printf("  packed round trip through the uint view: %u of %u texels differ\n", out[0], out[1]);
+    CHECK(out[0] == 0u);
+}
+
+// A Metal buffer the platform makes with hazard tracking -- what OIDN will
+// share and slang-rhi will not make -- wrapped for slang-rhi, written and read
+// by kernels, and blitted. The denoiser's staging, checked on its own so an
+// OIDN result can be told from a copy that never happened. What it found:
+// slang-rhi's Metal copyBuffer does nothing, silently, with a wrapped buffer
+// on either side (4095 of 4096 words untouched both ways), while kernels read
+// and write the same buffer exactly. The kernel path is what is asserted; the
+// blit numbers are printed as the record of the defect.
+TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by slang-rhi's blit",
+          "[gpu][platform][metal]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (gpu->device->backend() != gpu::Backend::Metal) {
+        SKIP("Metal only: the tracked buffer is a Metal object");
+    }
+    const uint32_t count = 4096;
+    std::vector<uint32_t> values(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        values[i] = i * 2654435761u;
+    }
+    auto source = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, values, "tracked.source");
+    REQUIRE(source);
+    gpu::Buffer back = test::uintBuffer(*gpu->device, count, "tracked.back");
+    void* native = platform::newTrackedMetalBuffer(reinterpret_cast<void*>(gpu->device->native().device.value),
+                                                   uint64_t{count} * sizeof(uint32_t));
+    REQUIRE(native != nullptr);
+    rhi::NativeHandle handle;
+    handle.type = rhi::NativeHandleType::MTLBuffer;
+    handle.value = reinterpret_cast<uint64_t>(native);
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{count} * sizeof(uint32_t);
+    desc.elementBytes = sizeof(uint32_t);
+    desc.label = "tracked.staging";
+    auto staging = gpu::Buffer::wrap(*gpu->device, handle, desc);
+    REQUIRE(staging);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        batch.encoder()->copyBuffer(staging->rhi(), 0, source->rhi(), 0, desc.bytes);
+        REQUIRE(batch.submit(true));
+    }
+    // Which half: the wrapped buffer read straight from a kernel after the
+    // copy in, before the copy out.
+    auto afterIn = render::countDifferent(*gpu->library, *source, *staging, count);
+    REQUIRE(afterIn);
+    std::printf("  %llu of %u words differ between the source and the tracked buffer after the copy in\n",
+                static_cast<unsigned long long>(*afterIn), count);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        batch.encoder()->copyBuffer(back.rhi(), 0, staging->rhi(), 0, desc.bytes);
+        REQUIRE(batch.submit(true));
+    }
+    auto differing = render::countDifferent(*gpu->library, *source, back, count);
+    REQUIRE(differing);
+    std::printf("  %llu of %u words differ after a copy in and a copy out of a tracked buffer\n",
+                static_cast<unsigned long long>(*differing), count);
+
+    // Which operation: a kernel writes the tracked buffer (rngFingerprint
+    // writes values[at] = at), a kernel reads it back against the pattern,
+    // and a blit copies it out.
+    std::vector<uint32_t> ramp(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        ramp[i] = i;
+    }
+    auto pattern = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, ramp, "tracked.ramp");
+    REQUIRE(pattern);
+    gpu::Buffer scratchLo = test::uintBuffer(*gpu->device, count, "tracked.lo");
+    gpu::Buffer scratchHi = test::uintBuffer(*gpu->device, count, "tracked.hi");
+    gpu::Buffer scratchCounts = test::uintBuffer(*gpu->device, 2, "tracked.counts");
+    auto writer = gpu::ComputeKernel::create(*gpu->library, "athenea/test/rng_probe", "rngFingerprint");
+    if (!writer) FAIL(writer.error().toString());
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        writer->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["keysLo"].setBinding(scratchLo.rhi());
+            cursor["keysHi"].setBinding(scratchHi.rhi());
+            cursor["values"].setBinding(staging->rhi());
+            cursor["counts"].setBinding(scratchCounts.rhi());
+            cursor["probe"]["width"].setData(uint32_t{64});
+            cursor["probe"]["height"].setData(uint32_t{64});
+            cursor["probe"]["seed"].setData(uint32_t{1});
+            cursor["probe"]["draws"].setData(uint32_t{1});
+        });
+        REQUIRE(batch.submit(true));
+    }
+    auto kernelRead = render::countDifferent(*gpu->library, *pattern, *staging, count);
+    REQUIRE(kernelRead);
+    std::printf("  kernel write then kernel read of the tracked buffer: %llu of %u differ\n",
+                static_cast<unsigned long long>(*kernelRead), count);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        batch.encoder()->copyBuffer(back.rhi(), 0, staging->rhi(), 0, desc.bytes);
+        REQUIRE(batch.submit(true));
+    }
+    auto blitOut = render::countDifferent(*gpu->library, *pattern, back, count);
+    REQUIRE(blitOut);
+    std::printf("  kernel write then blit out of the tracked buffer: %llu of %u differ\n",
+                static_cast<unsigned long long>(*blitOut), count);
+    CHECK(*kernelRead == 0);
+
+    // And the copy the denoiser actually uses: buffer_copy's kernel, in and
+    // out of the tracked buffer.
+    auto copier = gpu::ComputeKernel::create(*gpu->library, "athenea/technique/buffer_copy", "copyWords");
+    if (!copier) FAIL(copier.error().toString());
+    const auto copyWords = [&](const gpu::Buffer& from, const gpu::Buffer& to) {
+        gpu::CommandBatch batch(*gpu->device);
+        copier->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["src"].setBinding(from.rhi());
+            cursor["dst"].setBinding(to.rhi());
+            cursor["copy"]["words"].setData(count);
+        });
+        REQUIRE(batch.submit(true));
+    };
+    copyWords(*source, *staging);
+    auto kernelIn = render::countDifferent(*gpu->library, *source, *staging, count);
+    REQUIRE(kernelIn);
+    copyWords(*staging, back);
+    auto kernelOut = render::countDifferent(*gpu->library, *source, back, count);
+    REQUIRE(kernelOut);
+    std::printf("  buffer_copy in then out of the tracked buffer: %llu in, %llu out of %u differ\n",
+                static_cast<unsigned long long>(*kernelIn), static_cast<unsigned long long>(*kernelOut), count);
+    CHECK(*kernelIn == 0);
+    CHECK(*kernelOut == 0);
+    staging = gpu::Buffer();
+    platform::releaseMetalBuffer(native);
+}
+

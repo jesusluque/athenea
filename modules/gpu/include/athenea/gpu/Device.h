@@ -1,0 +1,144 @@
+// Copyright (c) 2026 jesus luque.
+//
+// The render device: slang-rhi, one per process.
+//
+// WHY SLANG-RHI AND NOT GPE FOR RENDERING
+//
+// gpe is a compute engine with kernels compiled at build time and bound by
+// position. That is right for image effects and wrong for a renderer that
+// needs a rasterisation pipeline for points, acceleration structures for ray
+// tracing, and bindings a person cannot get wrong by counting. slang-rhi gives
+// all three on Metal, CUDA (with OptiX) and Vulkan, from one Slang source
+// compiled for whichever device the process opened.
+//
+// gpe is not replaced: it adopts this device (see athenea::gpu_host::RhiBridge),
+// so the two share memory and nothing crosses between them.
+#pragma once
+
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <slang-rhi.h>
+
+#include "athenea/core/Result.h"
+
+namespace athenea::gpu {
+
+enum class Backend { Metal, CUDA, Vulkan, D3D12 };
+
+[[nodiscard]] const char* toString(Backend) noexcept;
+
+struct DeviceDesc {
+    /// Empty means the platform's preference: Metal on Apple, CUDA then Vulkan
+    /// on Linux, D3D12 then Vulkan on Windows. There is no CPU entry and there
+    /// never will be.
+    std::vector<Backend> backends;
+    /// slang-rhi's own validation layer. Slow; for tests and debugging.
+    bool validation = false;
+    /// Extra directories searched for `import`ed Slang modules, after the
+    /// engine's own shader directory.
+    std::vector<std::filesystem::path> shaderPaths;
+    /// Compiled shaders kept on disk between runs. Empty: $ATHENEA_SHADER_CACHE,
+    /// else athenea/shaders in the platform's cache directory.
+    std::filesystem::path shaderCache;
+    bool                  useShaderCache = true;
+};
+
+/// What the persistent shader cache did since the device opened.
+struct ShaderCacheStats {
+    uint64_t hits = 0;
+    uint64_t misses = 0;
+    uint64_t writes = 0;
+};
+
+/// What the device can do, asked once at creation.
+struct Caps {
+    std::string apiName;
+    std::string adapterName;
+    bool rasterization = false;
+    bool rayTracing = false;       ///< ray tracing pipelines (shader tables)
+    bool rayQuery = false;         ///< inline RayQuery in compute
+    bool accelerationStructure = false;
+    bool timestampQuery = false;
+    bool half = false;
+    bool unifiedMemory = false;
+    /// SV_VertexID and SV_InstanceID already count from a draw's start
+    /// locations (Metal's vertex_id and instance_id). Elsewhere Slang
+    /// subtracts them, and a shader adds SV_Start*Location back.
+    bool drawIdsIncludeStart = false;
+    /// A float4 stored through an RWTexture2D arrives as the texture's
+    /// format. CUDA's surface store writes the float's own bytes instead
+    /// (tests/gpu/test_textures.cpp measures it), so where this is false a
+    /// kernel packs the texels into a buffer and the buffer is copied into
+    /// the texture.
+    bool convertingStores = false;
+    uint32_t optixVersion = 0;
+};
+
+/// The native objects behind the device, for adopting it elsewhere (gpe).
+struct NativeHandles {
+    rhi::NativeHandle device;    ///< MTLDevice | CUcontext | VkDevice
+    rhi::NativeHandle queue;     ///< MTLCommandQueue | CUstream | VkQueue
+};
+
+class Device {
+public:
+    [[nodiscard]] static Result<std::shared_ptr<Device>> create(const DeviceDesc& desc = {});
+
+    Device(const Device&) = delete;
+    Device& operator=(const Device&) = delete;
+    ~Device();
+
+    [[nodiscard]] Backend backend() const noexcept { return backend_; }
+    [[nodiscard]] const Caps& caps() const noexcept { return caps_; }
+    [[nodiscard]] NativeHandles native() const;
+    /// All zero when the device runs without a shader cache.
+    [[nodiscard]] ShaderCacheStats shaderCacheStats() const;
+
+    [[nodiscard]] rhi::IDevice* rhi() const noexcept { return device_.get(); }
+    [[nodiscard]] rhi::ICommandQueue* queue() const noexcept { return queue_.get(); }
+    [[nodiscard]] slang::ISession* slangSession() const noexcept { return session_.get(); }
+
+    /// The directories Slang searches, in order, engine shaders first.
+    [[nodiscard]] const std::vector<std::string>& shaderSearchPaths() const noexcept {
+        return searchPaths_;
+    }
+
+    /// Blocks until everything submitted has run.
+    void waitIdle();
+
+    /// Called before this device submits anything to its queue.
+    ///
+    /// For a second runtime sharing the queue (gpe, see gpu_host::Context)
+    /// that holds work back in batches: it hands its batch over here, so what
+    /// the renderer submits next runs after it -- the order the calls were
+    /// made in, with nothing for a caller to remember.
+    void setBeforeSubmit(std::function<void()> hook) { beforeSubmit_ = std::move(hook); }
+    void beforeSubmit() const {
+        if (beforeSubmit_) {
+            beforeSubmit_();
+        }
+    }
+
+private:
+    Device() = default;
+
+    Backend                         backend_ = Backend::Metal;
+    Caps                            caps_;
+    std::vector<std::string>        searchPaths_;
+    rhi::ComPtr<rhi::IPersistentCache> shaderCache_;
+    rhi::ComPtr<rhi::IDevice>       device_;
+    rhi::ComPtr<rhi::ICommandQueue> queue_;
+    rhi::ComPtr<slang::ISession>    session_;
+    std::function<void()>           beforeSubmit_;
+};
+
+/// Where the engine's own .slang files are: $ATHENEA_SHADER_DIR, then
+/// <exe>/../shaders, then the build tree.
+[[nodiscard]] std::filesystem::path shaderDirectory();
+
+}   // namespace athenea::gpu

@@ -1,0 +1,322 @@
+// Copyright (c) 2026 jesus luque.
+#include "athenea/technique/Denoiser.h"
+
+#include "athenea/core/Platform.h"
+#include "athenea/gpu/Buffer.h"
+#include "athenea/gpu/CommandBatch.h"
+#include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/Device.h"
+#include "athenea/gpu/ShaderLibrary.h"
+
+#include <optional>
+
+#if ATHENEA_HAVE_OIDN
+#include <OpenImageDenoise/oidn.h>
+#endif
+
+namespace athenea::technique {
+
+struct Denoiser::Impl {
+    std::string description;
+    gpu::Device* gpu = nullptr;
+    std::optional<gpu::ComputeKernel> copy;   ///< buffer_copy: slang-rhi's Metal blit skips wrapped buffers
+#if ATHENEA_HAVE_OIDN
+    OIDNDevice device = nullptr;
+    OIDNFilter filter = nullptr;   ///< "RT", kept between frames; images rebound each call
+    bool       metal = false;
+    /// On Vulkan there is no OIDN device of its own: OIDN runs on the same GPU
+    /// through CUDA and imports the staging buffers' memory, exported by
+    /// Vulkan as file descriptors. The copies in and out are the same as Metal's.
+    bool       vulkan = false;
+    /// On Metal, OIDN shares only buffers with hazard tracking, and slang-rhi
+    /// makes none (it orders its own work). So each image goes through a
+    /// staging buffer the platform makes tracked: the engine's buffer is copied
+    /// into it on the device, OIDN reads and writes it, and the output is
+    /// copied back -- device to device throughout, nothing through the host.
+    struct Staging {
+        void*       native = nullptr;   ///< the MTLBuffer, ours to release
+        gpu::Buffer wrapped;            ///< the same buffer as slang-rhi sees it, for the copies
+        OIDNBuffer  shared = nullptr;   ///< the same buffer as OIDN sees it
+        uint64_t    bytes = 0;
+    };
+    Staging colour, albedo, normal, output;
+    void drop(Staging& s) {
+        if (s.shared != nullptr) {
+            oidnReleaseBuffer(s.shared);
+            s.shared = nullptr;
+        }
+        s.wrapped = gpu::Buffer();
+        if (s.native != nullptr && metal) {
+            platform::releaseMetalBuffer(s.native);
+            s.native = nullptr;
+        }
+        s.bytes = 0;
+    }
+    Result<void> stage(Staging& s, uint64_t bytes, const char* label) {
+        if (s.bytes == bytes && (s.native != nullptr || (vulkan && s.shared != nullptr))) {
+            return ok();
+        }
+        drop(s);
+        if (vulkan) {
+            gpu::BufferDesc desc;
+            desc.bytes = bytes;
+            desc.elementBytes = 16;
+            desc.label = label;
+            desc.extraUsage = rhi::BufferUsage::Shared;
+            auto made = gpu::Buffer::create(*gpu, desc);
+            if (!made) return std::move(made).error();
+            s.wrapped = std::move(*made);
+            rhi::NativeHandle handle;
+            if (SLANG_FAILED(s.wrapped.rhi()->getSharedHandle(&handle)) ||
+                handle.type != rhi::NativeHandleType::FileDescriptor) {
+                drop(s);
+                return Error(ErrorCode::DeviceFailure, std::string("no exported memory for ") + label);
+            }
+            // OIDN takes the descriptor it is given; slang-rhi keeps its own.
+            const int descriptor = platform::duplicateDescriptor(static_cast<int>(handle.value));
+            if (descriptor < 0) {
+                drop(s);
+                return Error(ErrorCode::DeviceFailure, std::string("no descriptor to hand OIDN for ") + label);
+            }
+            s.shared = oidnNewSharedBufferFromFD(device, OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD, descriptor, bytes);
+            if (s.shared == nullptr) {
+                const char* message = nullptr;
+                oidnGetDeviceError(device, &message);
+                drop(s);
+                return Error(ErrorCode::DeviceFailure,
+                             std::string("OIDN would not import the staging buffer: ") + (message ? message : "?"));
+            }
+            s.bytes = bytes;
+            return ok();
+        }
+        s.native = platform::newTrackedMetalBuffer(reinterpret_cast<void*>(gpu->native().device.value), bytes);
+        if (s.native == nullptr) {
+            return Error(ErrorCode::DeviceFailure, std::string("no tracked Metal buffer for ") + label);
+        }
+        rhi::NativeHandle handle;
+        handle.type = rhi::NativeHandleType::MTLBuffer;
+        handle.value = reinterpret_cast<uint64_t>(s.native);
+        gpu::BufferDesc desc;
+        desc.bytes = bytes;
+        desc.elementBytes = 16;
+        desc.label = label;
+        auto wrapped = gpu::Buffer::wrap(*gpu, handle, desc);
+        if (!wrapped) {
+            drop(s);
+            return std::move(wrapped).error();
+        }
+        s.wrapped = std::move(*wrapped);
+        s.shared = oidnNewSharedBufferFromMetal(device, static_cast<MTLBuffer_id>(s.native));
+        if (s.shared == nullptr) {
+            const char* message = nullptr;
+            oidnGetDeviceError(device, &message);
+            drop(s);
+            return Error(ErrorCode::DeviceFailure,
+                         std::string("OIDN would not share the staging buffer: ") + (message ? message : "?"));
+        }
+        s.bytes = bytes;
+        return ok();
+    }
+    ~Impl() {
+        drop(colour);
+        drop(albedo);
+        drop(normal);
+        drop(output);
+        if (filter != nullptr) {
+            oidnReleaseFilter(filter);
+        }
+        if (device != nullptr) {
+            oidnReleaseDevice(device);
+        }
+    }
+    /// A CUDA buffer as OIDN sees it: the same memory, no copy.
+    OIDNBuffer shareDirect(const gpu::Buffer& buffer) const {
+        const rhi::NativeHandle handle = buffer.native();
+        return oidnNewSharedBuffer(device, reinterpret_cast<void*>(handle.value), buffer.bytes());
+    }
+#endif
+};
+
+bool denoiserBuilt() noexcept {
+#if ATHENEA_HAVE_OIDN
+    return true;
+#else
+    return false;
+#endif
+}
+
+const std::string& Denoiser::description() const noexcept {
+    return impl_->description;
+}
+
+Result<Denoiser> Denoiser::create(gpu::ShaderLibrary& library) {
+    auto made = create(library.device());
+    if (!made) return made;
+    auto copy = gpu::ComputeKernel::create(library, "athenea/technique/buffer_copy", "copyWords");
+    if (!copy) return std::move(copy).error();
+    made->impl_->copy.emplace(std::move(*copy));
+    return made;
+}
+
+Result<Denoiser> Denoiser::create(gpu::Device& device) {
+#if ATHENEA_HAVE_OIDN
+    auto impl = std::make_shared<Impl>();
+    impl->gpu = &device;
+    const gpu::NativeHandles native = device.native();
+    const char* on = "";
+    switch (device.backend()) {
+    case gpu::Backend::Metal: {
+        auto queue = static_cast<MTLCommandQueue_id>(reinterpret_cast<void*>(native.queue.value));
+        impl->device = oidnNewMetalDevice(&queue, 1);
+        impl->metal = true;
+        on = "Metal";
+        break;
+    }
+    case gpu::Backend::CUDA: {
+        const int ids[1] = {0};
+        auto stream = static_cast<cudaStream_t>(reinterpret_cast<void*>(native.queue.value));
+        impl->device = oidnNewCUDADevice(ids, &stream, 1);
+        on = "CUDA";
+        break;
+    }
+    case gpu::Backend::Vulkan: {
+        // The same GPU through CUDA, sharing memory Vulkan exports.
+        impl->device = oidnNewDevice(OIDN_DEVICE_TYPE_CUDA);
+        impl->vulkan = true;
+        on = "Vulkan, through CUDA";
+        break;
+    }
+    default:
+        return Error(ErrorCode::Unsupported, "no denoiser on this backend: OIDN runs on Metal, CUDA and Vulkan");
+    }
+    if (impl->device == nullptr) {
+        return Error(ErrorCode::DeviceFailure, std::string("OIDN could not open a ") + on + " device");
+    }
+    oidnCommitDevice(impl->device);
+    const char* message = nullptr;
+    if (oidnGetDeviceError(impl->device, &message) != OIDN_ERROR_NONE) {
+        return Error(ErrorCode::DeviceFailure, std::string("OIDN: ") + (message != nullptr ? message : "unknown"));
+    }
+    if (impl->vulkan && (oidnGetDeviceInt(impl->device, "externalMemoryTypes") &
+                         OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD) == 0) {
+        return Error(ErrorCode::Unsupported, "no denoiser on this backend: OIDN's CUDA device imports no Vulkan memory here");
+    }
+    impl->description = std::string("OIDN ") + OIDN_VERSION_STRING + " on " + on;
+    impl->filter = oidnNewFilter(impl->device, "RT");
+    if (impl->filter == nullptr) {
+        return Error(ErrorCode::DeviceFailure, "OIDN: no RT filter on this device");
+    }
+    Denoiser denoiser;
+    denoiser.impl_ = std::move(impl);
+    return denoiser;
+#else
+    (void)device;
+    return Error(ErrorCode::Unsupported, "built without OIDN (scripts/build-oidn.sh, ATHENEA_OIDN_ROOT)");
+#endif
+}
+
+Result<void> Denoiser::denoise(const gpu::Buffer& colour, const gpu::Buffer* aux, uint64_t albedoOffsetBytes,
+                               uint64_t normalOffsetBytes, gpu::Buffer& out, uint32_t width, uint32_t height) {
+#if ATHENEA_HAVE_OIDN
+    Impl& impl = *impl_;
+    const size_t pixelStride = 16;   // float4 a pixel; OIDN reads the first three
+    const size_t rowStride = pixelStride * width;
+    const uint64_t bytes = uint64_t{width} * height * pixelStride;
+
+    OIDNBuffer colourShared = nullptr;
+    OIDNBuffer outShared = nullptr;
+    OIDNBuffer albedoShared = nullptr;
+    OIDNBuffer normalShared = nullptr;
+    if (impl.metal || impl.vulkan) {
+        if (!impl.copy.has_value()) {
+            return Error(ErrorCode::InvalidArgument,
+                         "denoiser made without a shader library: on Metal the staging copies are a kernel");
+        }
+        const auto copyWords = [&](gpu::CommandBatch& batch, const gpu::Buffer& from, const gpu::Buffer& to,
+                                   uint64_t count = 0) {
+            const uint32_t words = static_cast<uint32_t>((count != 0 ? count : bytes) / 4);
+            impl.copy->dispatch(batch, {words, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["src"].setBinding(from.rhi());
+                cursor["dst"].setBinding(to.rhi());
+                cursor["copy"]["words"].setData(words);
+            });
+        };
+        ATHENEA_TRY(impl.stage(impl.colour, bytes, "denoise.colour"));
+        ATHENEA_TRY(impl.stage(impl.output, bytes, "denoise.output"));
+        // The aux planes travel as the one buffer they are; the images
+        // name their planes by offset.
+        if (aux != nullptr) ATHENEA_TRY(impl.stage(impl.albedo, aux->bytes(), "denoise.aux"));
+        // In: the engine's buffers into the tracked ones, on the device.
+        gpu::CommandBatch batch(*impl.gpu);
+        copyWords(batch, colour, impl.colour.wrapped);
+        // The output staging starts as the colour too: OIDN writes three of a
+        // pixel's four floats and leaves the fourth -- the alpha -- alone, and
+        // a fresh private buffer holds anything there. Seeded from the input,
+        // the alpha that comes back is the input's.
+        copyWords(batch, colour, impl.output.wrapped);
+        if (aux != nullptr) copyWords(batch, *aux, impl.albedo.wrapped, aux->bytes());
+        ATHENEA_TRY(batch.submit(true));
+        colourShared = impl.colour.shared;
+        outShared = impl.output.shared;
+        albedoShared = aux != nullptr ? impl.albedo.shared : nullptr;
+        normalShared = albedoShared;
+    } else {
+        colourShared = impl.shareDirect(colour);
+        outShared = impl.shareDirect(out);
+        albedoShared = aux != nullptr ? impl.shareDirect(*aux) : nullptr;
+        normalShared = albedoShared;
+        if (colourShared == nullptr || outShared == nullptr || (aux != nullptr && albedoShared == nullptr)) {
+            const char* message = nullptr;
+            oidnGetDeviceError(impl.device, &message);
+            return Error(ErrorCode::DeviceFailure,
+                         std::string("OIDN could not share the engine's buffers: ") + (message ? message : "?"));
+        }
+    }
+    oidnSetFilterImage(impl.filter, "color", colourShared, OIDN_FORMAT_FLOAT3, width, height, 0, pixelStride,
+                       rowStride);
+    oidnSetFilterImage(impl.filter, "output", outShared, OIDN_FORMAT_FLOAT3, width, height, 0, pixelStride,
+                       rowStride);
+    if (albedoShared != nullptr) {
+        oidnSetFilterImage(impl.filter, "albedo", albedoShared, OIDN_FORMAT_FLOAT3, width, height,
+                           albedoOffsetBytes, pixelStride, rowStride);
+    } else {
+        oidnUnsetFilterImage(impl.filter, "albedo");
+    }
+    if (normalShared != nullptr) {
+        oidnSetFilterImage(impl.filter, "normal", normalShared, OIDN_FORMAT_FLOAT3, width, height,
+                           normalOffsetBytes, pixelStride, rowStride);
+    } else {
+        oidnUnsetFilterImage(impl.filter, "normal");
+    }
+    oidnSetFilterBool(impl.filter, "hdr", true);
+    oidnCommitFilter(impl.filter);
+    oidnExecuteFilter(impl.filter);
+    const char* message = nullptr;
+    const OIDNError error = oidnGetDeviceError(impl.device, &message);
+    if (!impl.metal && !impl.vulkan) {
+        oidnReleaseBuffer(colourShared);
+        oidnReleaseBuffer(outShared);
+        if (albedoShared != nullptr) oidnReleaseBuffer(albedoShared);   // the normal shares it
+    }
+    if (error != OIDN_ERROR_NONE) {
+        return Error(ErrorCode::DeviceFailure, std::string("OIDN: ") + (message != nullptr ? message : "unknown"));
+    }
+    if (impl.metal || impl.vulkan) {
+        // Out: the denoised staging back into the engine's buffer.
+        gpu::CommandBatch batch(*impl.gpu);
+        const uint32_t words = static_cast<uint32_t>(bytes / 4);
+        impl.copy->dispatch(batch, {words, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["src"].setBinding(impl.output.wrapped.rhi());
+            cursor["dst"].setBinding(out.rhi());
+            cursor["copy"]["words"].setData(words);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    return ok();
+#else
+    (void)colour; (void)aux; (void)albedoOffsetBytes; (void)normalOffsetBytes; (void)out; (void)width; (void)height;
+    return Error(ErrorCode::Unsupported, "built without OIDN");
+#endif
+}
+
+}   // namespace athenea::technique

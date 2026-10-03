@@ -1,0 +1,10 @@
+athenea_add_module(gpu_host
+    SOURCES
+        src/Context.cpp
+        src/ImageStorage.cpp
+        src/Views.cpp
+    PUBLIC_LIBS
+        athenea::core
+        athenea::gpu
+        athenea::image
+        gpe)

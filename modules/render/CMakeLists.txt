@@ -1,0 +1,13 @@
+athenea_add_module(render
+    SOURCES
+        src/Camera.cpp
+        src/SplatQuery.cpp
+        src/TileRasterizer.cpp
+        src/ReferenceRenderer.cpp
+        src/PointRasterizer.cpp
+        src/GaussianRayTracer.cpp
+    PUBLIC_LIBS
+        athenea::core
+        athenea::gpu
+        athenea::scene
+        aofx::aofx)

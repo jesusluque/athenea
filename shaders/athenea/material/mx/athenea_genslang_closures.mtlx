@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!-- Copyright (c) 2026 jesus luque.
+     The engine's BSDF nodes for the genslang target: they push lobes
+     (athenea/material/material_runtime.slang) where genglsl computes responses. -->
+<materialx version="1.39">
+  <implementation name="IM_oren_nayar_diffuse_bsdf_genslang" nodedef="ND_oren_nayar_diffuse_bsdf" file="athenea/material/mx/athenea_oren_nayar_diffuse_bsdf.slang" function="athenea_oren_nayar_diffuse_bsdf" target="genslang" />
+  <implementation name="IM_burley_diffuse_bsdf_genslang" nodedef="ND_burley_diffuse_bsdf" file="athenea/material/mx/athenea_burley_diffuse_bsdf.slang" function="athenea_burley_diffuse_bsdf" target="genslang" />
+  <implementation name="IM_translucent_bsdf_genslang" nodedef="ND_translucent_bsdf" file="athenea/material/mx/athenea_translucent_bsdf.slang" function="athenea_translucent_bsdf" target="genslang" />
+  <implementation name="IM_subsurface_bsdf_genslang" nodedef="ND_subsurface_bsdf" file="athenea/material/mx/athenea_subsurface_bsdf.slang" function="athenea_subsurface_bsdf" target="genslang" />
+  <implementation name="IM_dielectric_bsdf_genslang" nodedef="ND_dielectric_bsdf" file="athenea/material/mx/athenea_dielectric_bsdf.slang" function="athenea_dielectric_bsdf" target="genslang" />
+  <implementation name="IM_conductor_bsdf_genslang" nodedef="ND_conductor_bsdf" file="athenea/material/mx/athenea_conductor_bsdf.slang" function="athenea_conductor_bsdf" target="genslang" />
+  <implementation name="IM_generalized_schlick_bsdf_genslang" nodedef="ND_generalized_schlick_bsdf" file="athenea/material/mx/athenea_generalized_schlick_bsdf.slang" function="athenea_generalized_schlick_bsdf" target="genslang" />
+  <implementation name="IM_sheen_bsdf_genslang" nodedef="ND_sheen_bsdf" file="athenea/material/mx/athenea_sheen_bsdf.slang" function="athenea_sheen_bsdf" target="genslang" />
+  <implementation name="IM_chiang_hair_bsdf_genslang" nodedef="ND_chiang_hair_bsdf" file="athenea/material/mx/athenea_chiang_hair_bsdf.slang" function="athenea_chiang_hair_bsdf" target="genslang" />
+  <implementation name="IM_layer_bsdf_genslang" nodedef="ND_layer_bsdf" file="athenea/material/mx/athenea_layer_bsdf.slang" function="athenea_layer_bsdf" target="genslang" />
+  <implementation name="IM_mix_bsdf_genslang" nodedef="ND_mix_bsdf" file="athenea/material/mx/athenea_mix_bsdf.slang" function="athenea_mix_bsdf" target="genslang" />
+  <implementation name="IM_add_bsdf_genslang" nodedef="ND_add_bsdf" file="athenea/material/mx/athenea_add_bsdf.slang" function="athenea_add_bsdf" target="genslang" />
+  <implementation name="IM_multiply_bsdf_color3_genslang" nodedef="ND_multiply_bsdfC" file="athenea/material/mx/athenea_multiply_bsdf_color3.slang" function="athenea_multiply_bsdf_color3" target="genslang" />
+  <implementation name="IM_multiply_bsdf_float_genslang" nodedef="ND_multiply_bsdfF" file="athenea/material/mx/athenea_multiply_bsdf_float.slang" function="athenea_multiply_bsdf_float" target="genslang" />
+  <implementation name="IM_layer_vdf_genslang" nodedef="ND_layer_vdf" file="athenea/material/mx/athenea_layer_vdf.slang" function="athenea_layer_vdf" target="genslang" />
+</materialx>

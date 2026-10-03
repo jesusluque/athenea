@@ -1,0 +1,194 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3305d4f8..79da44d6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -137,6 +137,15 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+     set(SLANG_RHI_HAS_METAL ON)
+     set(SLANG_RHI_HAS_CUDA OFF)
+     set(SLANG_RHI_HAS_WGPU ON)
++elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    # Metal and nothing else: no Vulkan loader, no CUDA, no Dawn on a phone.
++    set(SLANG_RHI_HAS_CPU OFF)
++    set(SLANG_RHI_HAS_D3D11 OFF)
++    set(SLANG_RHI_HAS_D3D12 OFF)
++    set(SLANG_RHI_HAS_VULKAN OFF)
++    set(SLANG_RHI_HAS_METAL ON)
++    set(SLANG_RHI_HAS_CUDA OFF)
++    set(SLANG_RHI_HAS_WGPU OFF)
+ elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+     set(SLANG_RHI_HAS_CPU OFF)
+     set(SLANG_RHI_HAS_D3D11 OFF)
+@@ -417,7 +426,10 @@ set(SLANG_RHI_SLANG_BINARY_DIR ${SLANG_RHI_SLANG_BINARY_DIR} CACHE STRING "Slang
+ unset(SLANG_RHI_SLANG_INCLUDE_DIR)
+ if(NOT SLANG_RHI_BUILD_FROM_SLANG_REPO)
+     function(slang_rhi_add_library_slang)
+-        if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
++        # iOS, like Emscripten, links Slang statically: an app is one signed
++        # binary, and a dylib beside it is a second thing to embed, sign and
++        # find at run time.
++        if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
+             add_library(slang STATIC IMPORTED GLOBAL)
+         else()
+             add_library(slang SHARED IMPORTED GLOBAL)
+@@ -425,7 +437,9 @@ if(NOT SLANG_RHI_BUILD_FROM_SLANG_REPO)
+ 
+         # Slang renamed the compiler library from slang to slang-compiler in v2025.21
+         # Detect if the old or new library name is used.
+-        if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND EXISTS ${SLANG_RHI_SLANG_BINARY_DIR}/bin/slang-compiler.dll)
++        if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND EXISTS ${SLANG_RHI_SLANG_BINARY_DIR}/lib/libslang-compiler.a)
++            set(SLANG_LIB_NAME slang-compiler)
++        elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND EXISTS ${SLANG_RHI_SLANG_BINARY_DIR}/bin/slang-compiler.dll)
+             set(SLANG_LIB_NAME slang-compiler)
+         elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS ${SLANG_RHI_SLANG_BINARY_DIR}/lib/libslang-compiler.so)
+             set(SLANG_LIB_NAME slang-compiler)
+@@ -453,6 +467,18 @@ if(NOT SLANG_RHI_BUILD_FROM_SLANG_REPO)
+                 INTERFACE_INCLUDE_DIRECTORIES ${SLANG_RHI_SLANG_INCLUDE_DIR}
+                 IMPORTED_LOCATION ${SLANG_RHI_SLANG_BINARY_DIR}/lib/lib${SLANG_LIB_NAME}.dylib
+             )
++        elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++            set_target_properties(slang PROPERTIES
++                INTERFACE_INCLUDE_DIRECTORIES ${SLANG_RHI_SLANG_INCLUDE_DIR}
++                IMPORTED_LOCATION ${SLANG_RHI_SLANG_BINARY_DIR}/lib/lib${SLANG_LIB_NAME}.a
++            )
++            target_link_libraries(slang INTERFACE
++                ${SLANG_RHI_SLANG_BINARY_DIR}/lib/libcompiler-core.a
++                ${SLANG_RHI_SLANG_BINARY_DIR}/lib/libcore.a
++                ${SLANG_RHI_SLANG_BINARY_DIR}/lib/liblz4.a
++                ${SLANG_RHI_SLANG_BINARY_DIR}/lib/libminiz.a
++                ${SLANG_RHI_SLANG_BINARY_DIR}/lib/libcmark-gfm.a
++            )
+         elseif(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+             set_target_properties(slang PROPERTIES
+                 INTERFACE_INCLUDE_DIRECTORIES ${SLANG_RHI_SLANG_INCLUDE_DIR}
+@@ -836,6 +862,13 @@ if(APPLE)
+         src/cocoa-util.mm
+     )
+     target_link_libraries(slang-rhi INTERFACE "-framework Foundation" "-framework QuartzCore")
++    # cocoa-util.mm takes a window's layer from UIKit on iOS and from AppKit
++    # on the Mac.
++    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++        target_link_libraries(slang-rhi INTERFACE "-framework UIKit")
++    else()
++        target_link_libraries(slang-rhi INTERFACE "-framework Cocoa")
++    endif()
+ endif()
+ 
+ if(SLANG_RHI_ENABLE_CPU)
+diff --git a/src/cocoa-util.mm b/src/cocoa-util.mm
+index 018a34ee..38701413 100644
+--- a/src/cocoa-util.mm
++++ b/src/cocoa-util.mm
+@@ -1,17 +1,34 @@
+ #include "cocoa-util.h"
+ 
++#include <TargetConditionals.h>
++
++#if TARGET_OS_IPHONE
++#import <UIKit/UIKit.h>
++#else
+ #import <Cocoa/Cocoa.h>
++#endif
+ #import <QuartzCore/CAMetalLayer.h>
+ 
+ namespace rhi {
+ 
+-void* CocoaUtil::createMetalLayer(void* nswindow)
++void* CocoaUtil::createMetalLayer(void* window)
+ {
++#if TARGET_OS_IPHONE
++    // On iOS the handle is a UIView whose +layerClass is CAMetalLayer. The
++    // layer must be the one UIKit already has on screen -- a view's layer is
++    // not replaceable there, and a layer of our own would be laid out by
++    // nobody and shown by nobody.
++    UIView* view = (UIView*)window;
++    CAMetalLayer* layer = (CAMetalLayer*)view.layer;
++    [layer retain];
++    return layer;
++#else
+     CAMetalLayer* layer = [CAMetalLayer layer];
+-    NSWindow* window = (NSWindow*)nswindow;
+-    window.contentView.layer = layer;
+-    window.contentView.wantsLayer = YES;
++    NSWindow* nswindow = (NSWindow*)window;
++    nswindow.contentView.layer = layer;
++    nswindow.contentView.wantsLayer = YES;
+     return layer;
++#endif
+ }
+ 
+ void* CocoaUtil::nextDrawable(void* metalLayer)
+diff --git a/src/metal/metal-device.cpp b/src/metal/metal-device.cpp
+index 391b950e..1722a71f 100644
+--- a/src/metal/metal-device.cpp
++++ b/src/metal/metal-device.cpp
+@@ -1,4 +1,6 @@
+ #include "metal-device.h"
++
++#include <TargetConditionals.h>
+ #include "metal-backend.h"
+ #include "../resource-desc-utils.h"
+ #include "metal-command.h"
+@@ -342,9 +344,19 @@ Result DeviceImpl::initialize(const DeviceDesc& desc, BackendImpl* backend)
+     }
+ 
+     // Initialize slang context.
++    // A metallib is made by Xcode's `metal` compiler, which Slang runs as a
++    // downstream tool -- a tool an iOS device does not have. There the target
++    // is Metal source, and Metal itself compiles it (ShaderProgramImpl::
++    // createShaderModule), which is what MTLDevice::newLibrary(NS::String*)
++    // is for.
++#if TARGET_OS_IPHONE
++    const SlangCompileTarget kernelTarget = SLANG_METAL;
++#else
++    const SlangCompileTarget kernelTarget = SLANG_METAL_LIB;
++#endif
+     SLANG_RETURN_ON_FAIL(m_slangContext.initialize(
+         desc.slang,
+-        SLANG_METAL_LIB,
++        kernelTarget,
+         nullptr,
+         getCapabilities(),
+         std::array{slang::PreprocessorMacroDesc{"__METAL__", "1"}}
+diff --git a/src/metal/metal-shader-program.cpp b/src/metal/metal-shader-program.cpp
+index ed3819bc..9e1be644 100644
+--- a/src/metal/metal-shader-program.cpp
++++ b/src/metal/metal-shader-program.cpp
+@@ -3,6 +3,10 @@
+ #include "metal-shader-object-layout.h"
+ #include "metal-utils.h"
+ 
++#include <TargetConditionals.h>
++
++#include <string>
++
+ namespace rhi::metal {
+ 
+ ShaderProgramImpl::ShaderProgramImpl(Device* device, const ShaderProgramDesc& desc)
+@@ -21,14 +25,26 @@ Result ShaderProgramImpl::createShaderModule(const ShaderModuleDesc& desc, ComPt
+     module.entryPointName = desc.entryPointName;
+     module.code = kernelCode;
+ 
++    NS::Error* error;
++#if TARGET_OS_IPHONE
++    // The kernel code is Metal source (metal-device.cpp: no `metal` compiler
++    // on a phone), and the blob is not terminated, so it is copied to say
++    // where it ends. Compiling is the cost of opening a scene here, which is
++    // why the shader cache beside it matters more on this platform.
++    std::string source(static_cast<const char*>(kernelCode->getBufferPointer()), kernelCode->getBufferSize());
++    NS::SharedPtr<NS::String> sourceString =
++        NS::TransferPtr(NS::String::string(source.c_str(), NS::UTF8StringEncoding)->retain());
++    NS::SharedPtr<MTL::CompileOptions> options = NS::TransferPtr(MTL::CompileOptions::alloc()->init());
++    module.library = NS::TransferPtr(device->m_device->newLibrary(sourceString.get(), options.get(), &error));
++#else
+     dispatch_data_t data = dispatch_data_create(
+         kernelCode->getBufferPointer(),
+         kernelCode->getBufferSize(),
+         dispatch_get_main_queue(),
+         NULL
+     );
+-    NS::Error* error;
+     module.library = NS::TransferPtr(device->m_device->newLibrary(data, &error));
++#endif
+     if (!module.library)
+     {
+         const char* msg = error->localizedDescription()->utf8String();

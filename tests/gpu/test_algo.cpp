@@ -1,0 +1,407 @@
+// Copyright (c) 2026 jesus luque.
+//
+// The GPU prefix sum and radix sort, checked on the GPU.
+#include "GpuTest.h"
+
+#include <chrono>
+#include <cstdio>
+
+#include "athenea/gpu/algo/PrefixSum.h"
+#include "athenea/gpu/algo/RadixSort.h"
+
+using namespace athenea;
+
+namespace {
+
+constexpr uint32_t kChunk = 4096;
+
+uint32_t chunksFor(uint32_t count) { return count == 0 ? 1 : (count + kChunk - 1) / kChunk; }
+
+std::array<uint32_t, 8> statsOf(test::Gpu& gpu, const gpu::SortBuffers& buffers, uint32_t count,
+                                bool wide) {
+    static gpu::ComputeKernel kStats = test::kernel(gpu, "athenea/test/sort_stats");
+    const uint32_t chunks = chunksFor(count);
+    gpu::Buffer stats = test::uintBuffer(*gpu.device, uint64_t{chunks} * 8, "sort.stats");
+    gpu::CommandBatch batch(*gpu.device);
+    kStats.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["keysLo"].setBinding(buffers.keysLo.rhi());
+        cursor["keysHi"].setBinding(buffers.keysHi.rhi());
+        cursor["values"].setBinding(buffers.values.rhi());
+        cursor["stats"].setBinding(stats.rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["chunkSize"].setData(kChunk);
+        cursor["params"]["chunkCount"].setData(chunks);
+        cursor["params"]["wide"].setData(uint32_t{wide ? 1u : 0u});
+    });
+    REQUIRE(batch.submit(true));
+    return test::reduceStats(gpu, stats, chunks);
+}
+
+gpu::SortBuffers sortBuffers(gpu::Device& device, uint32_t count) {
+    gpu::SortBuffers buffers;
+    buffers.keysLo = test::uintBuffer(device, count, "keysLo");
+    buffers.keysHi = test::uintBuffer(device, count, "keysHi");
+    buffers.values = test::uintBuffer(device, count, "values");
+    buffers.scratchKeysLo = test::uintBuffer(device, count, "scratchKeysLo");
+    buffers.scratchKeysHi = test::uintBuffer(device, count, "scratchKeysHi");
+    buffers.scratchValues = test::uintBuffer(device, count, "scratchValues");
+    return buffers;
+}
+
+void generate(test::Gpu& gpu, gpu::SortBuffers& buffers, uint32_t count, uint32_t mode,
+              uint32_t keyBits) {
+    static gpu::ComputeKernel kGenerate = test::kernel(gpu, "athenea/test/sort_generate");
+    const uint32_t maskLo = keyBits >= 32 ? 0xFFFFFFFFu : ((1u << keyBits) - 1u);
+    const uint32_t maskHi = keyBits <= 32 ? 0u : keyBits >= 64 ? 0xFFFFFFFFu : ((1u << (keyBits - 32)) - 1u);
+    gpu::CommandBatch batch(*gpu.device);
+    kGenerate.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["keysLo"].setBinding(buffers.keysLo.rhi());
+        cursor["keysHi"].setBinding(buffers.keysHi.rhi());
+        cursor["values"].setBinding(buffers.values.rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["mode"].setData(mode);
+        cursor["params"]["seed"].setData(uint32_t{0x9E3779B9u ^ count ^ (mode << 8)});
+        cursor["params"]["keyMaskLo"].setData(maskLo);
+        cursor["params"]["keyMaskHi"].setData(maskHi);
+    });
+    REQUIRE(batch.submit(true));
+}
+
+}   // namespace
+
+TEST_CASE("the prefix sum of every size is right, checked element by element on the GPU",
+          "[gpu][algo]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto prefix = gpu::PrefixSum::create(*gpu->library);
+    if (!prefix) {
+        FAIL(prefix.error().toString());
+    }
+    gpu::ComputeKernel generate = test::kernel(*gpu, "athenea/test/counts_generate");
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/prefix_check");
+
+    for (const uint32_t count : {1u, 7u, 4095u, 4096u, 4097u, 100003u, 1u << 22}) {
+        CAPTURE(count);
+        gpu::Buffer input = test::uintBuffer(*gpu->device, count, "counts");
+        gpu::Buffer output = test::uintBuffer(*gpu->device, count, "offsets");
+        gpu::Buffer total = test::uintBuffer(*gpu->device, 1, "total");
+        const uint32_t chunks = chunksFor(count);
+        gpu::Buffer errors = test::uintBuffer(*gpu->device, uint64_t{chunks} * 8, "errors");
+
+        gpu::CommandBatch batch(*gpu->device);
+        generate.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(input.rhi());
+            cursor["params"]["count"].setData(count);
+            cursor["params"]["seed"].setData(uint32_t{1234});
+        });
+        REQUIRE(prefix->apply(batch, input, output, total, count));
+        check.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["input"].setBinding(input.rhi());
+            cursor["output"].setBinding(output.rhi());
+            cursor["total"].setBinding(total.rhi());
+            cursor["errors"].setBinding(errors.rhi());
+            cursor["params"]["count"].setData(count);
+            cursor["params"]["chunkSize"].setData(kChunk);
+            cursor["params"]["chunkCount"].setData(chunks);
+        });
+        REQUIRE(batch.submit(true));
+        CHECK(test::reduceStats(*gpu, errors, chunks)[0] == 0);
+    }
+}
+
+/// The pairs themselves, before and after, for the smallest sort there is.
+/// When a backend gets the sort wrong, this says which stage wrote what: the
+/// generator's two pairs, then what the sort left in their place.
+/// What each of a sort pass's dispatches receives in its parameter block.
+/// Four dispatches are queued into one batch, as RadixSort::sort queues them,
+/// each with its own shift; a backend that hands them all the same constants
+/// shows up here rather than as a wrong sort.
+/// Where a dispatch's buffers land. Seven buffers, each holding a marker of
+/// its own, bound by the names the kernel declares: what the kernel reads back
+/// says whether a backend put them where they were asked for. The radix
+/// scatter binds seven, and changing which buffer one of its unused names
+/// points at changed what another name read.
+/// The scatter's shape without its arithmetic: the same seven buffers, one
+/// invocation, two elements, reporting what each read returned and writing
+/// what the scatter would write. The sort is wrong on CUDA while its counts,
+/// totals and cursors are right, so this asks whether the reads or the writes
+/// are what differ.
+TEST_CASE("a scatter-shaped kernel reads and writes the words it was given", "[gpu][algo][probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kProbe = test::kernel(*gpu, "athenea/test/scatter_shape_probe");
+    constexpr uint32_t kPairs = 2;
+    constexpr uint32_t kDigits = 256;
+    const uint32_t keys[kPairs] = {0xAAAA0001u, 0xBBBB0002u};
+    const uint32_t values[kPairs] = {0x11110001u, 0x22220002u};
+    gpu::Buffer srcLo = test::uintBuffer(*gpu->device, kPairs, "srcKeysLo");
+    gpu::Buffer srcVal = test::uintBuffer(*gpu->device, kPairs, "srcValues");
+    gpu::Buffer dstLo = test::uintBuffer(*gpu->device, kPairs, "dstKeysLo");
+    gpu::Buffer dstVal = test::uintBuffer(*gpu->device, kPairs, "dstValues");
+    gpu::Buffer starts = test::uintBuffer(*gpu->device, kDigits, "chunkStarts");
+    gpu::Buffer spare = test::uintBuffer(*gpu->device, kDigits, "spare");
+    gpu::Buffer spareHi = test::uintBuffer(*gpu->device, kDigits, "spareHi");
+    gpu::Buffer saw = test::uintBuffer(*gpu->device, kPairs * 4, "saw");
+    REQUIRE(srcLo.write(*gpu->device, 0, sizeof(keys), keys));
+    REQUIRE(srcVal.write(*gpu->device, 0, sizeof(values), values));
+    // A buffer this test made is not zeroed, and the kernel reads its cursor
+    // before it writes one: the sort's own cursors come from radix_starts,
+    // which writes every one of them, so the probe writes its own here.
+    const std::vector<uint32_t> zeros(kDigits, 0);
+    REQUIRE(starts.write(*gpu->device, 0, zeros.size() * sizeof(uint32_t), zeros.data()));
+    REQUIRE(spare.write(*gpu->device, 0, zeros.size() * sizeof(uint32_t), zeros.data()));
+    REQUIRE(spareHi.write(*gpu->device, 0, zeros.size() * sizeof(uint32_t), zeros.data()));
+    gpu::CommandBatch batch(*gpu->device);
+    kProbe.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["srcKeysLo"].setBinding(srcLo.rhi());
+        cursor["srcKeysHi"].setBinding(spareHi.rhi());   // its own buffer: nothing bound twice
+        cursor["srcValues"].setBinding(srcVal.rhi());
+        cursor["dstKeysLo"].setBinding(dstLo.rhi());
+        cursor["dstKeysHi"].setBinding(spare.rhi());
+        cursor["dstValues"].setBinding(dstVal.rhi());
+        cursor["chunkStarts"].setBinding(starts.rhi());
+        cursor["saw"].setBinding(saw.rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        p["count"].setData(kPairs);
+        p["chunkSize"].setData(uint32_t{256});
+        p["chunkCount"].setData(uint32_t{1});
+        p["shift"].setData(uint32_t{0});
+        p["wide"].setData(uint32_t{0});
+    });
+    REQUIRE(batch.submit(true));
+    std::array<uint32_t, kPairs * 4> read{};
+    std::array<uint32_t, kPairs> wroteKeys{};
+    std::array<uint32_t, kPairs> wroteValues{};
+    REQUIRE(saw.read(*gpu->device, 0, sizeof(read), read.data()));
+    REQUIRE(dstLo.read(*gpu->device, 0, sizeof(wroteKeys), wroteKeys.data()));
+    REQUIRE(dstVal.read(*gpu->device, 0, sizeof(wroteValues), wroteValues.data()));
+    for (uint32_t k = 0; k < kPairs; ++k) {
+        std::printf("  element %u saw key %#x value %#x at slot %u; wrote key %#x value %#x\n", k, read[k * 4],
+                    read[k * 4 + 2], read[k * 4 + 3], wroteKeys[k], wroteValues[k]);
+    }
+    for (uint32_t k = 0; k < kPairs; ++k) {
+        CHECK(read[k * 4] == keys[k]);          // the reads gave the words that were written
+        CHECK(read[k * 4 + 2] == values[k]);
+        CHECK(read[k * 4 + 3] == k);            // and each element took the next slot
+        CHECK(wroteKeys[k] == keys[k]);         // and the writes landed where the cursor said
+        CHECK(wroteValues[k] == values[k]);
+    }
+}
+
+TEST_CASE("a kernel's buffers land on the names they were bound to", "[gpu][algo][probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kProbe = test::kernel(*gpu, "athenea/test/binding_probe");
+    constexpr uint32_t kBuffers = 7;
+    static const char* kNames[kBuffers] = {"first", "second", "third", "fourth", "fifth", "sixth", "seventh"};
+    std::vector<gpu::Buffer> buffers;
+    for (uint32_t k = 0; k < kBuffers; ++k) {
+        gpu::Buffer buffer = test::uintBuffer(*gpu->device, 1, kNames[k]);
+        const uint32_t marker = 0x1000 + k;
+        REQUIRE(buffer.write(*gpu->device, 0, sizeof(marker), &marker));
+        buffers.push_back(std::move(buffer));
+    }
+    gpu::Buffer seen = test::uintBuffer(*gpu->device, kBuffers, "binding.seen");
+    gpu::CommandBatch batch(*gpu->device);
+    kProbe.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        for (uint32_t k = 0; k < kBuffers; ++k) {
+            cursor[kNames[k]].setBinding(buffers[k].rhi());
+        }
+        cursor["seen"].setBinding(seen.rhi());
+        cursor["params"]["count"].setData(kBuffers);
+    });
+    REQUIRE(batch.submit(true));
+    std::array<uint32_t, kBuffers> read{};
+    REQUIRE(seen.read(*gpu->device, 0, sizeof(read), read.data()));
+    for (uint32_t k = 0; k < kBuffers; ++k) {
+        std::printf("  %s read %#x (wanted %#x)\n", kNames[k], read[k], 0x1000 + k);
+    }
+    for (uint32_t k = 0; k < kBuffers; ++k) {
+        CHECK(read[k] == 0x1000 + k);
+    }
+}
+
+TEST_CASE("each dispatch in a batch gets its own parameters", "[gpu][algo][probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kProbe = test::kernel(*gpu, "athenea/test/radix_params_probe");
+    constexpr uint32_t kPasses = 4;
+    gpu::Buffer seen = test::uintBuffer(*gpu->device, kPasses * 4, "radix.params.seen");
+    gpu::CommandBatch batch(*gpu->device);
+    for (uint32_t pass = 0; pass < kPasses; ++pass) {
+        kProbe.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["seen"].setBinding(seen.rhi());
+            cursor["which"]["pass"].setData(pass);
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(uint32_t{100 + pass});
+            p["chunkSize"].setData(uint32_t{4096});
+            p["chunkCount"].setData(uint32_t{1 + pass});
+            p["shift"].setData(uint32_t{pass * 8});
+            p["wide"].setData(uint32_t{0});
+        });
+    }
+    REQUIRE(batch.submit(true));
+    std::array<uint32_t, kPasses * 4> words{};
+    REQUIRE(seen.read(*gpu->device, 0, sizeof(words), words.data()));
+    for (uint32_t pass = 0; pass < kPasses; ++pass) {
+        std::printf("  pass %u saw count %u, chunks %u, shift %u\n", pass, words[pass * 4], words[pass * 4 + 1],
+                    words[pass * 4 + 2]);
+    }
+    for (uint32_t pass = 0; pass < kPasses; ++pass) {
+        CHECK(words[pass * 4] == 100 + pass);
+        CHECK(words[pass * 4 + 1] == 1 + pass);
+        CHECK(words[pass * 4 + 2] == pass * 8);
+    }
+}
+
+/// One pass over two pairs, with what the pass left between its stages: the
+/// digit counts, their totals and the cursors the scatter writes from. Eight
+/// key bits is one pass, so what `working` holds is that pass's own.
+TEST_CASE("one radix pass counts, totals and places its two pairs", "[gpu][algo][probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto sort = gpu::RadixSort::create(*gpu->library);
+    if (!sort) FAIL(sort.error().toString());
+    static gpu::ComputeKernel kDump = test::kernel(*gpu, "athenea/test/sort_dump");
+    constexpr uint32_t kPairs = 2;
+    gpu::SortBuffers buffers = sortBuffers(*gpu->device, kPairs);
+    generate(*gpu, buffers, kPairs, 0, 8);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(sort->sort(batch, buffers, kPairs, 8));
+        REQUIRE(batch.submit(true));
+    }
+    const gpu::RadixSort::Working working = sort->working();
+    REQUIRE(working.chunks == 1);
+    // The digits the two keys carry, and what each stage made of them.
+    std::array<uint32_t, kPairs * 3> pairs{};
+    {
+        gpu::Buffer out = test::uintBuffer(*gpu->device, kPairs * 3, "sort.dump");
+        gpu::CommandBatch batch(*gpu->device);
+        kDump.dispatch(batch, {kPairs, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["keysLo"].setBinding(buffers.keysLo.rhi());
+            cursor["keysHi"].setBinding(buffers.keysHi.rhi());
+            cursor["values"].setBinding(buffers.values.rhi());
+            cursor["dump"].setBinding(out.rhi());
+            cursor["params"]["count"].setData(kPairs);
+        });
+        REQUIRE(batch.submit(true));
+        REQUIRE(out.read(*gpu->device, 0, sizeof(pairs), pairs.data()));
+    }
+    std::vector<uint32_t> histogram(256);
+    std::vector<uint32_t> totals(256);
+    std::vector<uint32_t> starts(256);
+    REQUIRE(working.histogram->read(*gpu->device, 0, histogram.size() * 4, histogram.data()));
+    REQUIRE(working.digitTotals->read(*gpu->device, 0, totals.size() * 4, totals.data()));
+    REQUIRE(working.chunkStarts->read(*gpu->device, 0, starts.size() * 4, starts.data()));
+    uint32_t counted = 0;
+    uint32_t totalled = 0;
+    uint32_t cursorsPastZero = 0;
+    for (uint32_t d = 0; d < 256; ++d) {
+        counted += histogram[d];
+        totalled += totals[d];
+        cursorsPastZero += starts[d] > 0 ? 1u : 0u;
+    }
+    std::printf("  sorted keys %u and %u; histogram counts %u, totals %u, cursors past zero %u\n", pairs[0],
+                pairs[3], counted, totalled, cursorsPastZero);
+    CHECK(counted == kPairs);     // the histogram saw both pairs
+    CHECK(totalled == kPairs);    // and the totals agree
+    CHECK(pairs[0] <= pairs[3]);  // and the pass placed them in order
+}
+
+TEST_CASE("two pairs sort into one order, and are the pairs that went in", "[gpu][algo][probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto sort = gpu::RadixSort::create(*gpu->library);
+    if (!sort) FAIL(sort.error().toString());
+    static gpu::ComputeKernel kDump = test::kernel(*gpu, "athenea/test/sort_dump");
+    constexpr uint32_t kPairs = 2;
+    gpu::SortBuffers buffers = sortBuffers(*gpu->device, kPairs);
+    generate(*gpu, buffers, kPairs, 0, 32);
+    const auto dump = [&](const char* when) {
+        gpu::Buffer out = test::uintBuffer(*gpu->device, kPairs * 3, "sort.dump");
+        gpu::CommandBatch batch(*gpu->device);
+        kDump.dispatch(batch, {kPairs, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["keysLo"].setBinding(buffers.keysLo.rhi());
+            cursor["keysHi"].setBinding(buffers.keysHi.rhi());
+            cursor["values"].setBinding(buffers.values.rhi());
+            cursor["dump"].setBinding(out.rhi());
+            cursor["params"]["count"].setData(kPairs);
+        });
+        REQUIRE(batch.submit(true));
+        std::array<uint32_t, kPairs * 3> words{};
+        REQUIRE(out.read(*gpu->device, 0, sizeof(words), words.data()));
+        std::printf("  %s: (key %u, value %u) (key %u, value %u)\n", when, words[0], words[2], words[3], words[5]);
+        return words;
+    };
+    const auto before = dump("generated");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(sort->sort(batch, buffers, kPairs, 32));
+        REQUIRE(batch.submit(true));
+    }
+    const auto after = dump("sorted   ");
+    CHECK(after[0] <= after[3]);   // ordered
+    const uint64_t inKeys = uint64_t{before[0]} + before[3];
+    const uint64_t outKeys = uint64_t{after[0]} + after[3];
+    const uint64_t inValues = uint64_t{before[2]} + before[5];
+    const uint64_t outValues = uint64_t{after[2]} + after[5];
+    CHECK(outKeys == inKeys);       // the same two keys
+    CHECK(outValues == inValues);   // carrying the same two values
+}
+
+TEST_CASE("the radix sort orders, keeps ties stable and loses nothing, for every pattern",
+          "[gpu][algo]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto sort = gpu::RadixSort::create(*gpu->library);
+    if (!sort) {
+        FAIL(sort.error().toString());
+    }
+    struct Case {
+        uint32_t count;
+        uint32_t keyBits;
+    };
+    for (const Case c : {Case{1, 32}, Case{2, 32}, Case{4097, 13}, Case{65537, 32},
+                         Case{300007, 24}, Case{250001, 64}, Case{100000, 40}}) {
+        for (uint32_t mode = 0; mode < 5; ++mode) {
+            CAPTURE(c.count, c.keyBits, mode);
+            const bool wide = c.keyBits > 32;
+            gpu::SortBuffers buffers = sortBuffers(*gpu->device, c.count);
+            generate(*gpu, buffers, c.count, mode, c.keyBits);
+            const auto before = statsOf(*gpu, buffers, c.count, wide);
+
+            gpu::CommandBatch batch(*gpu->device);
+            REQUIRE(sort->sort(batch, buffers, c.count, c.keyBits));
+            REQUIRE(batch.submit(true));
+            const auto after = statsOf(*gpu, buffers, c.count, wide);
+
+            CHECK(after[0] == 0);   // ordered, and stable on ties
+            for (int k = 1; k < 8; ++k) {
+                CAPTURE(k);
+                CHECK(after[k] == before[k]);   // the same pairs, permuted
+            }
+        }
+    }
+}
+
+TEST_CASE("sorting ten million pairs, timed", "[gpu][algo][bench]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto sort = gpu::RadixSort::create(*gpu->library);
+    if (!sort) FAIL(sort.error().toString());
+    constexpr uint32_t kCount = 10'000'000;
+    gpu::SortBuffers buffers = sortBuffers(*gpu->device, kCount);
+    generate(*gpu, buffers, kCount, 0, 32);
+    const auto before = statsOf(*gpu, buffers, kCount, false);
+
+    double best = 1e9;
+    for (int round = 0; round < 3; ++round) {
+        generate(*gpu, buffers, kCount, 0, 32);
+        const auto start = std::chrono::steady_clock::now();
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(sort->sort(batch, buffers, kCount, 32));
+        REQUIRE(batch.submit(true));
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                .count();
+        best = std::min(best, ms);
+    }
+    const auto after = statsOf(*gpu, buffers, kCount, false);
+    CHECK(after[0] == 0);
+    CHECK(after[1] == before[1]);
+    CHECK(after[5] == before[5]);
+    std::printf("radix sort, 10M pairs, 32-bit keys: %.1f ms (best of 3)\n", best);
+}

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "athenea": {
+      "command": "${ATHENEA_BUILD:-./build/macos-arm64-debug}/bin/athenea-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

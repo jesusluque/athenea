@@ -1,0 +1,223 @@
+// Copyright (c) 2026 jesus luque.
+//
+// A mesh's triangles as the stream an AOFX effect can be handed.
+//
+// An effect is given pictures, and a mesh is not one. So it travels as a
+// picture of numbers: six `float4` entries a triangle, `(position, u)` and
+// `(normal, v)` for each of its three corners, in world space. That is the
+// whole of what mesh2splat's conversion reads, and writing it here rather
+// than in the host is what keeps the rule: the triangulation is a kernel's,
+// the transform is a kernel's, and the primvar lookup is a kernel's.
+//
+// One thread a triangle. Positions come from the mesh's own point buffer and
+// the indices `geom::MeshBuilder` wrote; normals and texture coordinates come
+// from primvars whose interpolation the host passes in, resolved exactly as
+// `world/primvars.slang` resolves them -- per point, per corner, per authored
+// face or one for the mesh.
+module mesh_pack;
+
+struct PackParams {
+    uint  triangles;      ///< of this mesh
+    uint  destFirst;      ///< where its entries start, in float4 entries
+    uint  normalMode;     ///< an interpolation, or kNoPrimvar
+    uint  normalCount;
+
+    uint  uvMode;
+    uint  uvCount;
+    uint  points;
+    uint  corners;
+
+    uint  destWidth;      ///< entries a row of the destination picture
+    uint  destStride;     ///< pixels a row of it, which is padded
+    uint  chunkFirst;     ///< where this mesh's chunks start, for the fold
+    uint  perPoint;       ///< joint influences a point; 0 when nothing carries it
+
+    float4 toWorld0;      ///< object to world, three rows of four
+    float4 toWorld1;
+    float4 toWorld2;
+    float4 normalTo0;     ///< its inverse transpose, for the normals
+    float4 normalTo1;
+    float4 normalTo2;
+
+    uint  entries;        ///< float4 entries the whole stream holds
+    uint  chunkSize;      ///< for the bounds fold below
+    uint  chunkCount;
+    uint  uv2Mode;        ///< a second set of texture coordinates, or kNoPrimvar
+
+    uint  uv2Count;
+    uint  pad0;
+    uint  pad1;
+    uint  pad2;
+};
+
+static const uint kConstant = 0;
+static const uint kUniform = 1;
+static const uint kVarying = 2;
+static const uint kVertex = 3;
+static const uint kFaceVarying = 4;
+static const uint kNoPrimvar = 0xFFFFFFFF;
+
+StructuredBuffer<float4>   positions;         // float4 a point
+StructuredBuffer<uint>     indices;           // 3 a triangle: points
+StructuredBuffer<uint>     triangleCorners;   // 3 a triangle: face-vertex corners
+StructuredBuffer<uint>     triangleFaces;     // 1 a triangle: the authored face
+StructuredBuffer<float4>   normals;           // a primvar, float4 an element
+StructuredBuffer<float4>   uvs;
+StructuredBuffer<float4>   uvs2;              // the second set, where a material reads its maps by one
+StructuredBuffer<float2>   influences;        // (joint, weight), perPoint a point
+RWStructuredBuffer<float4> skinStream;        // the same shape as `stream`, 2 entries a corner
+RWStructuredBuffer<float4> uv2Stream;         // the same shape again: (u2, v2, 0, 0) then zeros, a corner
+RWStructuredBuffer<float4> stream;
+RWStructuredBuffer<float4> extents;   // chunkCount * 2: low, high
+ConstantBuffer<PackParams> pack;
+
+/// Which element of a primvar one corner of a triangle reads. `kNoPrimvar`
+/// back means there is nothing to read.
+uint elementAt(uint mode, uint count, uint triangle, uint corner, uint point) {
+    if (mode == kNoPrimvar || count == 0) {
+        return kNoPrimvar;
+    }
+    if (mode == kConstant) {
+        return 0;
+    }
+    if (mode == kUniform) {
+        const uint face = triangleFaces[triangle];
+        return face < count ? face : kNoPrimvar;
+    }
+    const uint at = mode == kFaceVarying ? triangleCorners[triangle * 3 + corner] : point;
+    return at < count ? at : kNoPrimvar;
+}
+
+/// Where one entry of the stream lands. The destination is a picture, so an
+/// entry's row is its own and the rows are padded -- the same address the
+/// effect's own `meshEntry` computes from the other side.
+uint streamAt(uint entry) {
+    const uint x = entry % pack.destWidth;
+    const uint y = entry / pack.destWidth;
+    return y * pack.destStride + x;
+}
+
+float3 toWorld(float3 p) {
+    return float3(dot(pack.toWorld0, float4(p, 1.0)), dot(pack.toWorld1, float4(p, 1.0)),
+                  dot(pack.toWorld2, float4(p, 1.0)));
+}
+
+float3 normalToWorld(float3 n) {
+    return float3(dot(pack.normalTo0.xyz, n), dot(pack.normalTo1.xyz, n), dot(pack.normalTo2.xyz, n));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void meshPack(uint3 tid: SV_DispatchThreadID) {
+    const uint triangle = tid.x;
+    if (triangle >= pack.triangles) {
+        return;
+    }
+    const uint3 points = uint3(indices[triangle * 3], indices[triangle * 3 + 1], indices[triangle * 3 + 2]);
+    float3 corner[3];
+    for (uint k = 0; k < 3; ++k) {
+        const uint point = points[k];
+        corner[k] = toWorld(point < pack.points ? positions[point].xyz : float3(0.0));
+    }
+    // The geometric normal, for a mesh with no normals of its own and for a
+    // corner whose primvar is missing. Wound as the triangles are.
+    const float3 crossed = cross(corner[1] - corner[0], corner[2] - corner[0]);
+    const float area2 = length(crossed);
+    const float3 geometric = area2 > 1.0e-20 ? crossed / area2 : float3(0.0, 0.0, 1.0);
+
+    for (uint k = 0; k < 3; ++k) {
+        const uint point = points[k];
+        float3 normal = geometric;
+        const uint atNormal = elementAt(pack.normalMode, pack.normalCount, triangle, k, point);
+        if (atNormal != kNoPrimvar) {
+            const float3 authored = normalToWorld(normals[atNormal].xyz);
+            if (dot(authored, authored) > 1.0e-20) {
+                normal = normalize(authored);
+            }
+        }
+        float2 uv = float2(0.0, 0.0);
+        const uint atUv = elementAt(pack.uvMode, pack.uvCount, triangle, k, point);
+        if (atUv != kNoPrimvar) {
+            uv = uvs[atUv].xy;
+        }
+        // THE JOINTS THIS CORNER IS CARRIED BY, four of them at most.
+        //
+        // A gaussian standing inside the triangle takes the barycentric blend
+        // of its three corners', which is what interpolating the skin means;
+        // the blend is the effect's, because it is the effect that knows
+        // where inside the triangle the gaussian stands. Four is what the
+        // cloud's format carries, so a point held by more than four keeps the
+        // four heaviest -- the rest are a rounding error on a surface, and
+        // USD's own skinning caps the same way.
+        if (pack.perPoint > 0) {
+            float4 joint = float4(0.0);
+            float4 weight = float4(0.0);
+            for (uint i = 0; i < pack.perPoint; ++i) {
+                const float2 one = influences[point * pack.perPoint + i];
+                // Insertion into the four heaviest, which keeps the order
+                // settled and so keeps the conversion repeatable.
+                float2 carry = one;
+                for (uint slot = 0; slot < 4; ++slot) {
+                    if (carry.y > weight[slot]) {
+                        const float2 out = float2(joint[slot], weight[slot]);
+                        joint[slot] = carry.x;
+                        weight[slot] = carry.y;
+                        carry = out;
+                    }
+                }
+            }
+            const uint skin = pack.destFirst + triangle * 6 + k * 2;
+            skinStream[streamAt(skin)] = float4(joint.x, weight.x, joint.y, weight.y);
+            skinStream[streamAt(skin + 1)] = float4(joint.z, weight.z, joint.w, weight.w);
+        }
+        const uint entry = pack.destFirst + triangle * 6 + k * 2;
+        stream[streamAt(entry)] = float4(corner[k], uv.x);
+        stream[streamAt(entry + 1)] = float4(normal, uv.y);
+        // THE SECOND SET, where the mesh has one: the sparrow's feather cards
+        // read their colour off one atlas by `st` and their shape and normal
+        // off another by `UVMap_001`. Its own stream, the mesh stream's
+        // shape, so the effect addresses the two alike.
+        if (pack.uv2Mode != kNoPrimvar) {
+            float2 uv2 = float2(0.0, 0.0);
+            const uint atUv2 = elementAt(pack.uv2Mode, pack.uv2Count, triangle, k, point);
+            if (atUv2 != kNoPrimvar) {
+                uv2 = uvs2[atUv2].xy;
+            }
+            uv2Stream[streamAt(entry)] = float4(uv2, 0.0, 0.0);
+            uv2Stream[streamAt(entry + 1)] = float4(0.0);
+        }
+    }
+}
+
+/// The stream's own box, in world space, in the shape `athenea/scene/bounds_reduce`
+/// folds: one low and one high corner a chunk.
+///
+/// It is read off the stream rather than off the mesh's points because the
+/// stream is where the world transform has been applied -- and putting a box
+/// through an affine map on the host would be arithmetic on scene data, which
+/// this engine does not do. Only the even entries are positions; the odd ones
+/// are normals, and a box drawn round those would be the unit sphere.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void streamBoundsChunks(uint3 tid: SV_DispatchThreadID) {
+    const uint c = tid.x;
+    if (c >= pack.chunkCount) {
+        return;
+    }
+    const uint begin = c * pack.chunkSize;
+    const uint end = min(begin + pack.chunkSize, pack.entries);
+    float3 lo = float3(3.4e38);
+    float3 hi = float3(-3.4e38);
+    for (uint i = begin; i < end; ++i) {
+        if ((i & 1u) == 0u) {
+            const float3 p = stream[streamAt(i)].xyz;
+            lo = min(lo, p);
+            hi = max(hi, p);
+        }
+    }
+    // Every mesh folds into the same buffer, at its own offset, so that one
+    // reduce over the lot gives the model's box rather than each mesh's.
+    const uint slot = pack.chunkFirst + c;
+    extents[slot * 2] = float4(lo, 0.0);
+    extents[slot * 2 + 1] = float4(hi, 0.0);
+}

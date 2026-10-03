@@ -1,0 +1,303 @@
+#usda 1.0
+(
+    "Codeless schemas for athenea, written by hand in usdGenSchema's output form: no C++ is generated for them and none is needed -- the render delegate reads their properties as primvars. Registered through modules/usd/schemas/plugInfo.json."
+)
+
+class "AtheneaSplatEditAPI" (
+    doc = """A SplatEdit over the Gaussian splat clouds at and below this prim:
+a selection volume in each cloud's own space, what happens to the splats it
+selects, and a grade -- openFXplayer's SplatEdit, rule for rule
+(shaders/athenea/common/edit.slang). Its properties are constant primvars, so an
+edit on an Xform is inherited by every ParticleField under it, and one
+authored nearer a cloud overrides it."""
+)
+{
+    bool primvars:athenea:edit:active = 0 (
+        doc = "Whether the edit applies."
+        interpolation = "constant"
+    )
+    token primvars:athenea:edit:shape = "box" (
+        allowedTokens = ["box", "sphere"]
+        doc = "The selection volume: a box of half extents `size`, or a sphere of radius size.x."
+        interpolation = "constant"
+    )
+    token primvars:athenea:edit:mode = "grade" (
+        allowedTokens = ["keep", "remove", "grade"]
+        doc = "keep: splats outside the volume go. remove: splats inside go. grade: nothing goes. Splats inside that remain are graded."
+        interpolation = "constant"
+    )
+    float3 primvars:athenea:edit:centre = (0, 0, 0) (
+        doc = "The volume's centre, in the cloud's own space."
+        interpolation = "constant"
+    )
+    float3 primvars:athenea:edit:size = (1, 1, 1) (
+        doc = "Half extents of the box, or radius of the sphere in x, in the cloud's own space."
+        interpolation = "constant"
+    )
+    color3f primvars:athenea:edit:tint = (1, 1, 1) (
+        doc = "Multiplies the colour of graded splats, in the encoded space the cloud was trained in."
+        interpolation = "constant"
+    )
+    float primvars:athenea:edit:saturation = 1 (
+        doc = "Lerps graded colour from its Rec.709 luma (0) to itself (1)."
+        interpolation = "constant"
+    )
+    float primvars:athenea:edit:brightness = 1 (
+        doc = "Multiplies graded colour."
+        interpolation = "constant"
+    )
+    float primvars:athenea:edit:opacity = 1 (
+        doc = "Multiplies the opacity of graded splats; below 1/255 they go."
+        interpolation = "constant"
+    )
+    float primvars:athenea:edit:minOpacity = 0 (
+        doc = "Wherever the volume is, splats below this opacity go (0: off)."
+        interpolation = "constant"
+    )
+    float primvars:athenea:edit:maxScale = 0 (
+        doc = "Wherever the volume is, splats longer than this on their longest axis, in the cloud's units, go (0: off)."
+        interpolation = "constant"
+    )
+    bool primvars:athenea:edit:invert = 0 (
+        doc = "Turns the volume test round."
+        interpolation = "constant"
+    )
+}
+
+class "AtheneaStreamedAssetAPI" (
+    doc = """A Gaussian splat cloud drawn from a .athc file -- a cloud with its
+levels of detail, written by `athenea convert cloud.ply cloud.athc` -- in place
+of the ParticleField's own arrays, which may then be left empty. Every frame
+the cloud is cut for the view: cells that project small are drawn merged, and
+the splats of the rest are drawn when their chunk is on the device and merged
+until it is. Its properties are constant primvars; author them on the
+ParticleField itself."""
+)
+{
+    asset primvars:athenea:asset = @@ (
+        doc = "The .athc file."
+        interpolation = "constant"
+    )
+    float primvars:athenea:lod:threshold = 1 (
+        doc = "Pixels a merged cell may span on screen before its splats are drawn instead (0: every splat)."
+        interpolation = "constant"
+    )
+    int64 primvars:athenea:stream:budget = 0 (
+        doc = "Splats kept on the device, loaded from the file as views want them, most wanted first (0: the file is read whole)."
+        interpolation = "constant"
+    )
+}
+
+class "AtheneaPointStyleAPI" (
+    doc = """How athenea draws a UsdGeomPoints: widths are world units
+unless sizeInPixels says otherwise, with optional eye-dome lighting and
+surface splatting (render::PointStyle)."""
+)
+{
+    float primvars:athenea:sizeInPixels = 0 (
+        doc = "Above zero, every point is this many pixels across and widths are ignored."
+        interpolation = "constant"
+    )
+    float primvars:athenea:edl = 0 (
+        doc = "Eye-dome lighting strength (0: off)."
+        interpolation = "constant"
+    )
+    float primvars:athenea:surfaceOffset = 0 (
+        doc = "Surface splatting's depth slack in world units: points within it of the nearest blend (0: off)."
+        interpolation = "constant"
+    )
+}
+
+class "AtheneaSplatSkinningAPI" (
+    doc = """A Gaussian splat cloud's cache of the joints that carry it.
+
+The binding itself is UsdSkel's: `SkelBindingAPI` on the ParticleField, with
+`skel:jointIndices`, `skel:jointWeights`, `skel:geomBindTransform`,
+`skel:joints` and `skel:skeleton`, exactly as on a mesh. The renderer resolves
+the bound Skeleton's animation at each instant, which is what makes
+retargeting and clip blending work on a cloud as on a mesh.
+
+`skinningXforms` is the one attribute this API adds: the joints' transforms
+written down at the instants a conversion read them (`athenea mesh2splat
+--skinned`). A stage that composes the cloud without its Skeleton still
+moves by it, and one with the Skeleton skips the resolving; where both are
+present the cache wins, being the same numbers. The other three attributes
+are what a cloud written before the binding was UsdSkel's carries the same
+influences under, and are still read from such a file."""
+)
+{
+    int[] primvars:athenea:splat:jointIndices = [] (
+        doc = "Four joints a gaussian, indices into `skinningXforms`. `elementSize` is 4."
+        elementSize = 4
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:jointWeights = [] (
+        doc = "How much each of those four carries it; they sum to one."
+        elementSize = 4
+        interpolation = "vertex"
+    )
+    matrix4d primvars:athenea:splat:geomBindTransform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) ) (
+        doc = "The cloud's own space into the space the joints are measured from."
+        interpolation = "constant"
+    )
+    matrix4d[] primvars:athenea:splat:skinningXforms = [] (
+        doc = """One transform a joint, in the skeleton's joint order, taking a
+point from bind space to the skeleton's space. Time sampled: this is the only
+thing about an animated cloud that changes from frame to frame, and for sixty
+joints it is four kilobytes."""
+        interpolation = "constant"
+    )
+    string primvars:athenea:splat:skeleton = "" (
+        doc = "The Skeleton prim the cloud was converted against, for provenance."
+        interpolation = "constant"
+    )
+}
+
+class "AtheneaSplatLightingAPI" (
+    apiSchemas = ["ParticleFieldRadianceBaseAPI"]
+    doc = """Whether the Gaussian splat clouds at and below this prim are relit
+by the scene's lights instead of showing the radiance they were baked with.
+Baked is the default: a cloud occludes, shadows and appears in reflections as
+it was captured. Relighting takes a splat's normal from its shortest axis and
+its albedo from the spherical harmonics' constant term, which is an
+approximation of a surface a splat never had -- useful where a capture has to
+sit under different light, wrong wherever the capture's own light was the
+point. Its property is a constant primvar, so it is inherited by every
+ParticleField under the prim it is authored on.
+
+This is another definition of a ParticleField's radiance -- the scene's
+lights on a surface read out of the gaussians -- and so it is built on
+UsdVol's ParticleFieldRadianceBaseAPI, the base the specification gives every
+radiance definition (applying this API applies that one). The rest of this
+engine's vocabulary for a cloud (skinning, visibility, streaming, editing) has
+no standard base to stand on, and says so in its own doc."""
+)
+{
+    bool primvars:athenea:splat:relight = 0 (
+        doc = "Whether the splats are relit by the scene's lights rather than showing their baked radiance."
+        interpolation = "constant"
+    )
+    bool primvars:athenea:splat:litBody = 0 (
+        doc = """The colours are light already -- the body of a material with the
+scene's light on it, which is what `athenea mesh2splat` bakes -- so relighting adds
+the polish (the reflection) and nothing else. Off, the colours are an albedo
+and relighting lights them."""
+        interpolation = "constant"
+    )
+    float primvars:athenea:splat:ior = 0 (
+        doc = """The index of refraction its transmitting gaussians bend the sky
+by. 0 bends nothing and the transmitted half is the cosine average of what
+stands behind, which is translucency; above one it is the sky along the
+direction Snell gives at each gaussian's own normal, which is what makes a
+glass ball show the room turned. It is the entry face alone: seeing another
+object through the glass wants a ray, which this is not."""
+        interpolation = "constant"
+    )
+    float[] primvars:athenea:splat:metallic = [] (
+        doc = "What a relit gaussian reflects with, one a gaussian: a conversion from a mesh knows it, a capture does not."
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:roughness = [] (
+        doc = "The roughness of that reflection, one a gaussian."
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:transmission = [] (
+        doc = "How much of the light goes through rather than back, one a gaussian."
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:transferDirect = [] (
+        doc = """How much of an environment reaches this gaussian, projected onto nine spherical harmonics: visibility times the cosine, with the gaussian's own albedo taken as one. Nine floats a gaussian (elementSize 9). A cloud that carries it is lit by whatever sky it is put under, rather than by the one it was baked beneath, so its colours are an albedo and nothing else."""
+        elementSize = 9
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:transferIndirect = [] (
+        doc = """The same, for the light that reached this gaussian after bouncing off what stands around it: twenty-seven floats a gaussian (elementSize 27), rgb a coefficient, because what it bounced off has a colour. Optional, and the frame can be asked to leave it out."""
+        elementSize = 27
+        interpolation = "vertex"
+    )
+    int[] primvars:athenea:splat:thinWalled = [] (
+        doc = """Nonzero where the gaussian came from a thin-walled glass (OpenPBR's geometry_thin_walled): a sheet that sends what it does not reflect straight on. Its gaussians are as transparent as the sheet is -- their opacity is what it reflects head on -- so the blend is its transmission and the frame shades its reflection alone. One int a gaussian."""
+        interpolation = "vertex"
+    )
+    int[] primvars:athenea:splat:shadowBits = [] (
+        doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer."""
+        elementSize = 2
+        interpolation = "vertex"
+    )
+}
+
+class "AtheneaSplatVisibilityAPI" (
+    doc = """What a Gaussian splat cloud casts on the space around it, baked by
+part and read by product (`athenea visibility`). A cloud carried by a skeleton
+cannot carry one baked visibility, because the wing moves and takes its shadow
+with it; but a part of a body changes shape very little between poses, so
+each part gets a field of its own -- a grid of probes, in every direction, how
+much of a ray leaving that probe the part's gaussians stop -- baked in the
+bind pose. At render a gaussian asks each part in that part's own current
+frame and multiplies the answers: a table read a part a light a gaussian, and
+no ray. The fields are the cloud's own, so they travel with it; this engine's
+extension, since the specification has no notion of a baked visibility."""
+)
+{
+    float[] primvars:athenea:splat:visibilityParts = [] (
+        doc = "Twelve floats a part: the box the part's field covers and how its probes are laid out, in the bind pose."
+        interpolation = "constant"
+    )
+    int[] primvars:athenea:splat:visibilityTexels = [] (
+        doc = "The fields' texels, two halves a word: every probe's octahedral map of what the part stops, part after part."
+        interpolation = "constant"
+    )
+    int[] primvars:athenea:splat:visibilityAmbient = [] (
+        doc = "A probe's mean over every direction, two halves a word: what a dome light sees of each part."
+        interpolation = "constant"
+    )
+    int[] primvars:athenea:splat:visibilityPartOf = [] (
+        doc = "Which part each gaussian belongs to: the part whose joint carries most of it."
+        interpolation = "vertex"
+    )
+}
+
+class "AtheneaSplatCryptomatteAPI" (
+    doc = """Which prim each gaussian of a cloud came from, so a matte can name
+it. A cloud converted from meshes (`athenea mesh2splat`) knows the source prim of
+every gaussian it wrote, and keeps that ancestry as one Cryptomatte id a
+gaussian -- the MurmurHash3_32 of the prim's path, with the specification's
+fixup, which is the number the rendered CryptoObject layers carry. The manifest
+beside it is what turns those numbers back into paths. A captured cloud has no
+ancestry to inherit and carries neither, which leaves it out of the matte
+rather than named wrongly; this engine's extension, since the specification has
+no notion of a per-point matte id."""
+)
+{
+    int[] primvars:athenea:splat:cryptoObject = [] (
+        doc = "One Cryptomatte id a gaussian: the hash of the path of the prim it was converted from."
+        interpolation = "vertex"
+    )
+    string primvars:athenea:splat:cryptoManifest = "" (
+        doc = """What those ids are called: {"<prim path>":"<eight hex digits of the id>", ...}, as an EXR's cryptomatte manifest holds it."""
+        interpolation = "constant"
+    )
+}
+
+class "AtheneaVolumeAPI" (
+    doc = """How a UsdVol Volume scatters, said on the prim: a density scale on
+the field, a single-scattering albedo and the Henyey-Greenstein anisotropy.
+The specification's own way to say this is a Material bound to the Volume
+with a `volume` terminal (MaterialX's `anisotropic_vdf`), and where one is
+bound it wins; these three are the fallback, and the whole of what a stage
+without such a material can say."""
+)
+{
+    float primvars:athenea:densityScale = 1 (
+        doc = "What the field's density is multiplied by to give the extinction coefficient."
+        interpolation = "constant"
+    )
+    color3f primvars:athenea:albedo = (0.8, 0.8, 0.8) (
+        doc = "The single-scattering albedo: what share of the extinction is scattering rather than absorption, per channel."
+        interpolation = "constant"
+    )
+    float primvars:athenea:anisotropy = 0 (
+        doc = "Henyey-Greenstein's g: 0 isotropic, towards 1 forward, towards -1 back."
+        interpolation = "constant"
+    )
+}

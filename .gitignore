@@ -1,0 +1,40 @@
+# Reference engines: studied, never built or committed here.
+/ref/
+
+/build/
+/out/
+.cache/
+compile_commands.json
+.DS_Store
+*.exr
+!tests/data/**/*.exr
+
+# MODELS AND CAPTURES DO NOT LIVE HERE. Assets are fetched into
+# ~/tools/assets and renders go to a scratch directory; the only things of
+# this kind the repository holds are the four fixtures under tests/data and
+# the codeless schema, which are kilobytes and are allowed back in by name.
+*.usd
+*.usdc
+*.usdz
+*.usda
+!modules/usd/schemas/*.usda
+!tests/data/*.usda
+*.fbx
+*.blend
+*.blend[0-9]
+*.glb
+*.gltf
+*.abc
+*.vdb
+*.athc
+*.ply
+*.spz
+*.sog
+!tests/data/**/*.ply
+!tests/data/**/*.sog
+*.mp4
+*.mov
+*.zip
+
+# Metal shader caches dropped at the root by a run with a relative cache path.
+/0/

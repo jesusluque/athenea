@@ -1,0 +1,111 @@
+// Copyright (c) 2026 jesus luque.
+//
+// Stable LSD radix sort of (key, value) pairs on the GPU: 32- or 64-bit keys,
+// eight bits a pass, portable across every backend slang-rhi has.
+// See shaders/athenea/algo/radix_common.slang for the algorithm and why it looks
+// the way it does.
+#pragma once
+
+#include <cstdint>
+
+#include "athenea/core/Result.h"
+#include "athenea/gpu/Buffer.h"
+#include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/algo/PrefixSum.h"
+
+#include <optional>
+
+namespace athenea::gpu {
+
+class CommandBatch;
+class ShaderLibrary;
+
+/// The pairs being sorted, and the same-sized buffers the passes alternate
+/// with. `keysHi`/`scratchKeysHi` only for 64-bit keys.
+struct SortBuffers {
+    Buffer keysLo;
+    Buffer keysHi;
+    Buffer values;
+    Buffer scratchKeysLo;
+    Buffer scratchKeysHi;
+    Buffer scratchValues;
+};
+
+class RadixSort {
+public:
+    /// Elements per chunk for `count` elements.
+    ///
+    /// Each chunk is one GPU invocation walking its elements in order, so the
+    /// chunk count is the parallelism. A fixed 4096 gave a 741k-splat depth
+    /// sort 182 invocations -- 8 ms, over twice the per-element cost of ten
+    /// million. Smaller chunks for smaller inputs, bounded below where a
+    /// histogram row (256 digits) would cost more than the chunk it counts.
+    [[nodiscard]] static uint32_t chunkFor(uint32_t count) noexcept {
+        uint32_t chunk = kMinChunk;
+        while (chunk < kMaxChunk && count / chunk > kTargetChunks) {
+            chunk *= 2;
+        }
+        return chunk;
+    }
+    static constexpr uint32_t kMinChunk = 256;
+    static constexpr uint32_t kMaxChunk = 4096;
+    static constexpr uint32_t kTargetChunks = 2048;
+    /// From here up a sort goes a tile of 1024 at a time through group
+    /// memory (radix_block.slang), where the device builds those kernels;
+    /// below it, and with `ATHENEA_PORTABLE_SORT` set, the chunked passes do.
+    static constexpr uint32_t kBlockFrom = 1u << 16;
+
+    [[nodiscard]] static Result<RadixSort> create(ShaderLibrary& library);
+
+    /// Sorts the first `count` pairs by their low `keyBits` bits (1..64).
+    /// The result is always back in `keysLo`/`keysHi`/`values`: an odd number
+    /// of passes ends with a copy. Queued into `batch`, not waited for.
+    [[nodiscard]] Result<void> sort(CommandBatch& batch, SortBuffers& buffers, uint32_t count,
+                                    uint32_t keyBits);
+
+    [[nodiscard]] static uint32_t passesFor(uint32_t keyBits) noexcept {
+        return (keyBits + 7) / 8;
+    }
+
+    /// What the passes leave between them, as the last `sort` left it: the
+    /// digit counts per chunk, their totals, and the cursor each chunk writes
+    /// its share of each digit from. A sort of one pass (`keyBits` 8) leaves
+    /// that pass's own, which is how a test says which pass a backend gets
+    /// wrong. Empty until something has been sorted.
+    struct Working {
+        const Buffer* histogram = nullptr;     ///< chunkCount rows of 256 digit counts
+        const Buffer* digitTotals = nullptr;   ///< 256: each digit over every chunk
+        const Buffer* chunkStarts = nullptr;   ///< chunkCount rows of 256 cursors
+        uint32_t      chunks = 0;
+    };
+    [[nodiscard]] Working working() const noexcept {
+        return {&histogramBuffer_, &digitTotals_, &chunkStarts_, chunks_};
+    }
+
+private:
+    [[nodiscard]] Result<void> reserve(uint32_t chunks);
+
+    Device*       device_ = nullptr;
+    ComputeKernel histogram_;
+    ComputeKernel totals_;
+    ComputeKernel starts_;
+    ComputeKernel scatter_;
+    Buffer        histogramBuffer_;
+    Buffer        digitTotals_;
+    Buffer        chunkStarts_;
+    Buffer        dummy_;
+    /// The tiled route (radix_block.slang), where the device built it.
+    std::optional<ComputeKernel> blockHistogram_;
+    std::optional<ComputeKernel> blockScatter_;
+    std::optional<PrefixSum>     blockPrefix_;
+    Buffer        blockCounts_;
+    Buffer        blockOffsets_;
+    Buffer        blockTotal_;
+    uint32_t      blockCapacity_ = 0;
+    [[nodiscard]] Result<void> sortTiles(CommandBatch& batch, SortBuffers& buffers, uint32_t count,
+                                         uint32_t keyBits);
+    uint32_t      capacity_ = 0;
+    uint32_t      chunks_ = 0;   ///< the last sort's, for `working`
+};
+
+}   // namespace athenea::gpu

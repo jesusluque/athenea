@@ -1,0 +1,178 @@
+// Copyright (c) 2026 jesus luque.
+//
+// Gaussians ray traced through a hardware BVH of per-particle proxies, after
+// 3DGRT (Moenne-Loccoz et al. 2024). The kernel, what it costs and what it
+// does differently from the rasteriser are in shaders/athenea/rt/rt_integrate.slang.
+//
+//   per cloud, when it changes    particle frames (GPU), and
+//                                   Hardware: proxies (GPU) -> one BLAS per chunk
+//                                   ComputeBvh: boxes, Morton sort, hierarchy, refit (GPU)
+//   per frame                     colours per instance (GPU), and
+//                                   Hardware: TLAS over instances x chunks
+//                                   ComputeBvh: the instance list
+//
+// Two routes to the same integrator (shaders/athenea/rt/rt_integrate.slang):
+//   Hardware     proxies in a device BVH, inline RayQuery: Metal, Vulkan.
+//   ComputeBvh   an LBVH of particle boxes built and traversed in compute:
+//                every device, CUDA included.
+// The same image either way. On Metal the compute route is the faster one
+// (see create()); Auto picks it there.
+// There is no CPU route in this engine.
+#pragma once
+
+#include <cstdint>
+#include <span>
+#include <vector>
+
+#include <slang-rhi.h>
+
+#include "athenea/core/Result.h"
+#include "athenea/gpu/Buffer.h"
+#include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/algo/RadixSort.h"
+#include "athenea/render/TileRasterizer.h"
+
+namespace athenea::render {
+
+enum class RayTracingRoute { Auto, Hardware, ComputeBvh };
+
+struct RayTracerSettings {
+    /// Auto: ComputeBvh on Metal and wherever there is no ray tracing,
+    /// Hardware elsewhere.
+    RayTracingRoute route = RayTracingRoute::Auto;
+    /// Traversals a ray may make (each records up to 256 entries) before what
+    /// it has found is all it draws.
+    uint32_t maxSegments = 16;
+    /// Splats per bottom-level structure. Bounds a single build's memory.
+    uint32_t chunkSplats = uint32_t{1} << 20;
+    /// Draw the frame as two queries composed at this distance instead of
+    /// one (Hardware route). 0: one query, which is what a frame draws.
+    /// It is the segment query's own check: a ray cut in two and put back
+    /// together must be the ray.
+    float    splitAt = 0.0F;
+};
+
+struct RayTracerStats {
+    uint32_t splats = 0;
+    uint32_t chunks = 0;
+    uint32_t instances = 0;
+    RayTracingRoute route = RayTracingRoute::Hardware;
+    bool     rebuilt = false;   ///< per-cloud structures were built this frame
+    double   buildMs = 0;       ///< structures (and BLAS when rebuilt) and colours
+    double   renderMs = 0;      ///< the traced pass
+    double   totalMs = 0;
+};
+
+/// What a secondary ray traces a cloud against: the structures the last
+/// `render` left behind, and the buffers that say what each particle is.
+/// `tlas` is null before the first render and on the ComputeBvh route, whose
+/// traversal is the kernel's own (shaders/athenea/rt/rt_shadow.slang).
+struct ShadowScene {
+    rhi::IAccelerationStructure* tlas = nullptr;
+    const gpu::Buffer*           frames = nullptr;
+    const gpu::Buffer*           colours = nullptr;
+    const gpu::Buffer*           instanceData = nullptr;
+    const gpu::Buffer*           instanceIndices = nullptr;
+    uint32_t                     instances = 0;
+};
+
+class GaussianRayTracer {
+public:
+    /// Whether `device` can take the Hardware route. ComputeBvh runs anywhere.
+    [[nodiscard]] static bool hardwareSupported(const gpu::Device& device) noexcept;
+
+    [[nodiscard]] static Result<GaussianRayTracer> create(gpu::ShaderLibrary& library,
+                                                          RayTracerSettings settings = {});
+
+    /// `lights` is what a cloud whose prim asked to be relit is relit with
+    /// (AtheneaSplatLightingAPI): the same table the rasteriser takes, so the two
+    /// routes answer alike. Null leaves every cloud as it was baked.
+    [[nodiscard]] Result<RayTracerStats> render(const Camera& camera,
+                                                std::span<const SplatInstance> instances,
+                                                const RenderSettings& settings,
+                                                RenderTargets& targets,
+                                                const SplatLights* lights = nullptr);
+    [[nodiscard]] Result<RayTracerStats> render(const Projection& projection,
+                                                std::span<const SplatInstance> instances,
+                                                const RenderSettings& settings,
+                                                RenderTargets& targets,
+                                                const SplatLights* lights = nullptr);
+
+    /// Everything `render` builds before it draws -- the per-cloud
+    /// structures and this frame's colours -- for a caller that will not
+    /// draw with it: a shadow ray needs the proxies, not the image.
+    [[nodiscard]] Result<RayTracerStats> prepare(const Projection& projection,
+                                                 std::span<const SplatInstance> instances,
+                                                 uint32_t maxShDegree = 3,
+                                                 const SplatLights* lights = nullptr);
+
+    /// The structures the last render or prepare built, for a ray that only
+    /// needs transmittance (rt_shadow.slang). Valid until the next of either.
+    [[nodiscard]] ShadowScene shadowScene() const noexcept;
+
+private:
+    struct CloudKey {
+        const scene::GpuSplats* cloud = nullptr;
+        rhi::IBuffer*           positions = nullptr;
+        uint32_t                count = 0;
+        uint32_t                restPerColour = 0;
+        uint32_t                revision = 0;   ///< scene::GpuSplats::revision: the pose the proxies were built over
+        bool operator==(const CloudKey&) const = default;
+    };
+    struct Cloud {
+        CloudKey key;
+        uint32_t base = 0;          ///< first particle in `frames_` (and leaf in `bvhLeaves_`)
+        uint32_t firstChunk = 0;    ///< Hardware
+        uint32_t chunks = 0;        ///< Hardware
+        uint32_t nodeBase = 0;      ///< ComputeBvh: first internal node
+    };
+
+    [[nodiscard]] Result<void> rebuild(std::span<const SplatInstance> instances);
+    [[nodiscard]] Result<void> buildHardware(const Cloud& cloud,
+                                             std::vector<rhi::ComPtr<rhi::IAccelerationStructure>>& blas);
+    [[nodiscard]] Result<void> buildBvh(const Cloud& cloud, gpu::Buffer& boxes, gpu::Buffer& children,
+                                        gpu::Buffer& leaves);
+    [[nodiscard]] Result<void> prepareFrame(std::span<const SplatInstance> instances,
+                                            const Vec3& eyeWorld, uint32_t shLimit,
+                                            const SplatLights* lights, bool linearise);
+    [[nodiscard]] const Cloud* find(const scene::GpuSplats& splats) const;
+
+    gpu::Device*       device_ = nullptr;
+    RayTracerSettings  settings_;   ///< route resolved: never Auto
+    gpu::ComputeKernel proxy_;
+    gpu::ComputeKernel frames_kernel_;
+    gpu::ComputeKernel shade_;
+    gpu::ComputeKernel render_;
+    gpu::ComputeKernel renderSplit_;   ///< settings_.splitAt != 0
+    // ComputeBvh
+    gpu::RadixSort     sort_;
+    gpu::ComputeKernel bvhLeaves_;
+    gpu::ComputeKernel bvhHierarchy_;
+    gpu::ComputeKernel bvhRefit_;
+    gpu::ComputeKernel count_;
+    gpu::ComputeKernel bvhRender_;
+
+    std::vector<Cloud> clouds_;
+    std::vector<rhi::ComPtr<rhi::IAccelerationStructure>> blas_;
+    rhi::ComPtr<rhi::IAccelerationStructure> tlas_;
+    uint32_t    splats_ = 0;
+    gpu::Buffer frames_;            ///< float4 * 4 per splat
+    gpu::Buffer colours_;           ///< float4 per instance particle, this frame
+    uint64_t    colourCapacity_ = 0;
+    gpu::Buffer instanceDescs_;
+    gpu::Buffer instanceData_;      ///< per TLAS instance: world->cloud rows (float4 * 3)
+    gpu::Buffer instanceIndices_;   ///< per instance: first particle (of the chunk), colour offset
+    uint32_t    instanceCount_ = 0; ///< entries in the instance tables this frame: clouds (ComputeBvh) or chunks (Hardware)
+    gpu::Buffer bvhBoxes_;          ///< float4 * 2 per internal node, all clouds
+    gpu::Buffer bvhChildren_;       ///< uint * 2 per internal node
+    gpu::Buffer bvhLeaves_buffer_;  ///< uint per particle: sorted leaf -> particle in cloud
+    gpu::Buffer bvhInstances_;      ///< per instance: node base, leaf base, particles
+    // One record of nothing, for a frame that relights nothing: a name the
+    // shader declares must be bound whether it is read or not.
+    gpu::Buffer emptyLights_;
+    gpu::Buffer emptyShadow_;
+    /// One word and one record of nothing, for a frame with no sky prepared.
+    gpu::Buffer emptyEnvWords_, emptyEnvSh_;
+};
+
+}   // namespace athenea::render

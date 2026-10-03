@@ -1,0 +1,259 @@
+// Copyright (c) 2026 jesus luque.
+//
+// Splat and point clouds as they live on the device, and how they get there.
+//
+// The layout is in shaders/athenea/common/packing.slang. Getting there is:
+//
+//   CPU  read the file, arrange float records (io::RawSplats / RawPoints)
+//   GPU  validate -> prefix sum -> decode + compact -> bounds
+//
+// in slices of at most kSliceBytes of raw records, so a cloud larger than a
+// single device buffer may be still loads. The only numbers read back are one
+// count per slice and the six numbers of the bounding box.
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <span>
+#include <filesystem>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "athenea/core/Result.h"
+#include "athenea/gpu/Buffer.h"
+#include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/algo/PrefixSum.h"
+#include "athenea/io/RawSplats.h"
+#include "athenea/io/Sog.h"
+
+namespace athenea::gpu {
+class ShaderLibrary;
+}
+
+namespace athenea::scene {
+
+struct Bounds {
+    std::array<float, 3> min{0, 0, 0};
+    std::array<float, 3> max{0, 0, 0};
+};
+
+struct GpuSplats {
+    std::string source;
+    uint32_t    count = 0;          ///< splats kept
+    uint32_t    declared = 0;       ///< records in the file
+    uint32_t    restPerColour = 0;  ///< 0, 3, 8, 15 -> degree 0..3
+    uint32_t    shWords = 0;
+    gpu::Buffer positions;          ///< float4
+    gpu::Buffer shape;              ///< uint * 4
+    gpu::Buffer sh;                 ///< uint * shWords (one dummy word at degree 0)
+    /// What each splat reflects with, where the cloud carries it: one uint a
+    /// splat, metallic in the low byte and roughness in the next. Empty for a
+    /// capture, which has neither -- `hasPbr` is how a kernel asks.
+    gpu::Buffer pbr;
+    /// WHICH PRIM EACH GAUSSIAN CAME FROM, one Cryptomatte id a splat, where
+    /// the cloud was converted from meshes (`athenea mesh2splat` writes it) and so
+    /// knows. Empty for a capture, which has no ancestry to inherit: a cloud
+    /// without it is left out of the matte rather than named wrongly.
+    gpu::Buffer crypto;
+    /// HOW MUCH OF AN ENVIRONMENT REACHES EACH GAUSSIAN: `transferWords` uint
+    /// a gaussian, f16 pairs, the nine scalars of the direct half first and
+    /// then, where the cloud carries it, nine rgb triples of the indirect
+    /// one. Empty for a cloud baked the old way, whose colours are the light
+    /// of the dome it was baked under.
+    gpu::Buffer transfer;
+    /// WHICH WAYS OUT ARE OPEN, two words a gaussian: sixty-four bits of an
+    /// 8 x 8 octahedral grid over the sphere, set where a ray traced at the
+    /// bake found nothing. What lets a sun cast a hard shadow. Empty for a
+    /// cloud that was not baked with a transfer.
+    gpu::Buffer shadowBits;
+    /// WHICH RECORD EACH SPLAT CAME FROM, one uint a splat: validation drops
+    /// what cannot be drawn, so anything else the file keeps a gaussian --
+    /// a rig's influences, a visibility's parts -- is read through this
+    /// (`CloudLoader::keptOnly`).
+    gpu::Buffer origin;
+    uint32_t    transferWords = 0;
+    uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9 or 36
+    /// WHAT THIS CLOUD CASTS ON THE SPACE AROUND IT, baked by part (a part is
+    /// what one joint carries) and read as a product over parts. Empty for a
+    /// cloud nothing baked; `hasVisibility` is how a kernel asks. The layout
+    /// is splat_visibility.slang's: `visibilityParts` holds one
+    /// `VisibilityPart` a part, `visibilityTexels` two f16 a word, and
+    /// `visibilityPartOf` the part each gaussian belongs to.
+    gpu::Buffer visibilityParts;
+    gpu::Buffer visibilityTexels;
+    gpu::Buffer visibilityPartOf;
+    gpu::Buffer visibilityAmbient;   ///< a probe's mean over its directions, for domes
+    uint32_t    visibilityPartCount = 0;
+    Bounds      bounds;
+    /// Counted up by whatever rewrites `positions` or `shape` in place -- the
+    /// skinner, a frame -- so a structure built over them (the ray tracer's
+    /// proxies) can tell a cloud posed anew from the one it built for. The
+    /// buffers keep their handles across a pose, which is why a handle alone
+    /// answered "the same cloud" to a bird that had flown off its bind pose.
+    uint32_t    revision = 0;
+
+    [[nodiscard]] bool hasPbr() const noexcept { return pbr.valid(); }
+    [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
+    [[nodiscard]] bool hasTransfer() const noexcept { return transfer.valid() && transferCount >= 9; }
+    /// Whether it carries which ways out are open (`shadowBits`).
+    [[nodiscard]] bool hasShadowBits() const noexcept { return shadowBits.valid(); }
+    /// Whether the indirect half is there as well as the direct one.
+    [[nodiscard]] bool hasIndirect() const noexcept { return transferCount >= 36; }
+    [[nodiscard]] bool hasVisibility() const noexcept {
+        return visibilityPartCount > 0 && visibilityParts.valid() && visibilityTexels.valid() &&
+               visibilityPartOf.valid();
+    }
+
+    [[nodiscard]] uint32_t degree() const noexcept {
+        return restPerColour == 15 ? 3 : restPerColour == 8 ? 2 : restPerColour == 3 ? 1 : 0;
+    }
+};
+
+struct GpuPoints {
+    std::string source;
+    uint32_t    count = 0;
+    uint32_t    declared = 0;
+    gpu::Buffer positions;   ///< float4 xyz, 1
+    gpu::Buffer colours;     ///< uint * 2: f16 r|g, b|a (linear)
+    Bounds      bounds;
+};
+
+/// A float array as it sits in memory -- float32 values, or float16 when
+/// `half` -- uploaded as bytes and read on the device.
+struct FloatStream {
+    std::span<const std::byte> bytes;
+    bool                       half = false;
+    bool                       isDouble = false;   ///< float64 (matrix4d, point3d); `half` then false
+
+    [[nodiscard]] bool   empty() const noexcept { return bytes.empty(); }
+    [[nodiscard]] size_t values() const noexcept { return bytes.size() / (isDouble ? 8 : half ? 2 : 4); }
+    /// The kind kernels read: 0 none, 1 float, 2 half, 3 double.
+    [[nodiscard]] uint32_t kind() const noexcept { return empty() ? 0 : isDouble ? 3 : half ? 2 : 1; }
+};
+
+/// A splat cloud as separate arrays, the way USD's ParticleField stores one.
+/// Empty streams take defaults: identity rotation, unit scale, opacity 1, DC 0.
+struct SplatStreams {
+    std::string source;
+    uint32_t    count = 0;
+    FloatStream positions;      ///< xyz
+    FloatStream rotations;      ///< xyzw (GfQuat's layout)
+    FloatStream scales;         ///< xyz, linear
+    FloatStream opacities;      ///< linear
+    uint32_t    coefficients = 0;   ///< SH coefficients per splat, DC first: (degree + 1)^2
+    FloatStream sh;             ///< rgb per coefficient
+    /// What the gaussian reflects with, one per splat, where the stage says
+    /// so (`primvars:athenea:splat:metallic` and `:roughness`). Empty otherwise.
+    FloatStream metallic;
+    FloatStream roughness;
+    FloatStream transmission;
+    /// One Cryptomatte id a splat (`primvars:athenea:splat:cryptoObject`, int32),
+    /// read as the bits they are and not as numbers to do arithmetic on.
+    FloatStream cryptoObject;
+    /// Nine floats a splat, and twenty-seven more where the cloud carries the
+    /// indirect half (`primvars:athenea:splat:transferDirect` and
+    /// `:transferIndirect`).
+    FloatStream transferDirect;
+    FloatStream transferIndirect;
+    /// Two int32 a splat (`primvars:athenea:splat:shadowBits`), read as bits.
+    FloatStream shadowBits;
+    /// One int32 a splat, nonzero for a thin-walled glass
+    /// (`primvars:athenea:splat:thinWalled`); read only beside the PBR arrays.
+    FloatStream thinWalled;
+};
+
+/// A point cloud as separate arrays, the way UsdGeomPoints stores one.
+struct PointStreams {
+    std::string source;
+    uint32_t    count = 0;
+    FloatStream positions;   ///< xyz
+    FloatStream colours;     ///< rgb, linear: one for every point, one per point, or empty (white)
+};
+
+class CloudLoader {
+public:
+    static constexpr uint64_t kSliceBytes = uint64_t{256} << 20;
+
+    [[nodiscard]] static Result<CloudLoader> create(gpu::ShaderLibrary& library);
+
+    /// `maxDegree` caps the harmonics kept (0..3).
+    [[nodiscard]] Result<GpuSplats> upload(const io::RawSplats& raw, uint32_t maxDegree = 3);
+    /// A SOG's images, decoded on the device into records that then take the
+    /// same validate and decode as any other format -- nothing crosses back.
+    [[nodiscard]] Result<GpuSplats> upload(const io::RawSog& sog, uint32_t maxDegree = 3);
+    /// The same decode, read back as float records, for what consumes records
+    /// on the host side (the USD export).
+    [[nodiscard]] Result<io::RawSplats> records(const io::RawSog& sog, uint32_t maxDegree = 3);
+    /// `detail` keeps that fraction of the points, the same ones every time.
+    [[nodiscard]] Result<GpuPoints> upload(const io::RawPoints& raw, float detail = 1.0F);
+    /// Arrays uploaded as they are and interleaved into records on the device.
+    [[nodiscard]] Result<GpuSplats> upload(const SplatStreams& streams, uint32_t maxDegree = 3);
+    [[nodiscard]] Result<GpuPoints> upload(const PointStreams& streams, float detail = 1.0F);
+
+    /// `byRecord`, `words` 32-bit words a record of the file `splats` came
+    /// from, packed to the splats validation kept (`GpuSplats::origin`).
+    /// Returned as it is when nothing was dropped.
+    [[nodiscard]] Result<gpu::Buffer> keptOnly(const GpuSplats& splats, const gpu::Buffer& byRecord, uint32_t words,
+                                               const char* label);
+    /// The other way: `bySplat`, `words` words a kept splat, laid out a
+    /// record each again, the dropped records holding `fill`.
+    [[nodiscard]] Result<gpu::Buffer> toRecords(const GpuSplats& splats, const gpu::Buffer& bySplat, uint32_t words,
+                                                uint32_t fill, const char* label);
+
+    /// A cloud on the device back into float records -- position, linear
+    /// opacity, log scales, rotation w x y z, the base colour (0.5 + SH0 * dc,
+    /// as the shape keeps it) and the rest rgb per basis -- for what writes records (the USD
+    /// export). Unpacked on the device; only the records cross.
+    [[nodiscard]] Result<io::RawSplats> records(const GpuSplats& splats);
+    /// The extent of `count` float4 positions, computed on the device.
+    [[nodiscard]] Result<Bounds> boundsOf(const gpu::Buffer& positions, uint32_t count);
+
+private:
+    struct SogOnDevice;
+    [[nodiscard]] Result<SogOnDevice> sogOnDevice(const io::RawSog& sog, uint32_t maxDegree);
+    [[nodiscard]] Result<void> sogSlice(const SogOnDevice& on, uint32_t first, uint32_t n, const gpu::Buffer& into);
+    [[nodiscard]] Result<GpuSplats> startSplats(const std::string& source, uint32_t declared, uint32_t keep,
+                                                bool withPbr = false, bool withCrypto = false,
+                                                uint32_t transferCount = 0, bool withShadowBits = false);
+    /// Validates and decodes `n` records in `raw` into `splats` after `written`;
+    /// `recordBase` is the first of them in the whole cloud, for `origin`.
+    [[nodiscard]] Result<uint32_t> decodeSlice(const gpu::Buffer& raw, const io::SplatEncoding& e, uint32_t n,
+                                               uint32_t written, uint32_t keep, GpuSplats& splats,
+                                               uint32_t recordBase);
+    [[nodiscard]] Result<void> finishSplats(GpuSplats& splats, uint32_t written);
+    [[nodiscard]] Result<uint32_t> decodePoints(const gpu::Buffer& raw, uint32_t n, uint32_t first,
+                                                uint32_t colourKind, float detail, uint32_t written,
+                                                GpuPoints& points);
+    [[nodiscard]] Result<gpu::Buffer> streamBuffer(const FloatStream& stream, const char* label);
+
+    gpu::Device*       device_ = nullptr;
+    gpu::ComputeKernel sogDecode_;
+    gpu::PrefixSum     prefix_;
+    gpu::ComputeKernel splatValidate_;
+    gpu::ComputeKernel splatDecode_;
+    gpu::ComputeKernel splatKept_;
+    gpu::ComputeKernel splatKeptScatter_;
+    gpu::ComputeKernel splatUnpack_;
+    gpu::ComputeKernel pointsValidate_;
+    gpu::ComputeKernel pointsDecode_;
+    gpu::ComputeKernel splatStreams_;
+    gpu::ComputeKernel pointStreams_;
+    gpu::ComputeKernel boundsChunks_;
+    gpu::ComputeKernel boundsReduce_;
+};
+
+/// Whether `path` names a SOG: a .sog bundle or an unbundled meta.json.
+[[nodiscard]] bool isSog(const std::filesystem::path& path);
+
+/// Any splat file onto the device: .ply, .splat, .spz through io::readSplats,
+/// SOG through io::readSog and the device decode.
+[[nodiscard]] Result<GpuSplats> loadSplatFile(CloudLoader& loader, const std::filesystem::path& path,
+                                              uint32_t maxDegree = 3);
+
+/// Any splat file as host records in the engine's float encoding, for what
+/// consumes records (the USD export). SOG is decoded on the device and read back.
+[[nodiscard]] Result<io::RawSplats> readSplatRecords(CloudLoader& loader, const std::filesystem::path& path,
+                                                     uint32_t maxDegree = 3);
+
+}   // namespace athenea::scene
