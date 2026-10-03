@@ -234,6 +234,9 @@ struct MaterialGroup {
                                                                      const std::vector<std::string>& hidden,
                                                                      double time);
 
+/// Every UsdLux light of a stage, and whether it is a dome.
+[[nodiscard]] Result<std::vector<std::pair<std::string, bool>>> stageLights(const std::filesystem::path& path);
+
 /// The first camera of a stage, in traversal order, or "" where it has none.
 [[nodiscard]] Result<std::string> stageFirstCamera(const std::filesystem::path& path);
 

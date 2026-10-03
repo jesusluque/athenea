@@ -416,6 +416,7 @@ receta es §3.1.
 | `--validate-paths` | entero | `512` | caminos por píxel que reúne el GT |
 | `--validate-bounces` | entero | `6` | rebotes de los caminos del GT |
 | `--validate-material` | ruta de prim o nombre | todos los materiales | sólo este (repetible) |
+| `--validate-sky` | `white` o un fichero de imagen | las luces de la escena | cada fotograma bajo otro cielo -- una constante de radiancia uno, o esa imagen en los domos de la escena -- con sus demás luces apagadas; el GT se guarda como `gt_<cielo>.exr` |
 | `--transfer-lobes` | 0 a 2 | `0` | con `--transfer`: guardarlo como este número de lóbulos zonales en el marco propio de cada gaussiana (el bundle `SplatTransferZonal`); 0 es dos lóbulos con `--skinned` y nueve armónicos en el mundo en otro caso |
 | `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |

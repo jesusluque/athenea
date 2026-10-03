@@ -411,6 +411,7 @@ recipe is §3.1 below.
 | `--validate-paths` | integer | `512` | paths a pixel the GT holds |
 | `--validate-bounces` | integer | `6` | bounces of the GT's paths |
 | `--validate-material` | prim path or name | every material | only this one (repeatable) |
+| `--validate-sky` | `white` or an image file | the stage's lights | every frame under another sky -- a constant of radiance one, or that image on the stage's domes -- with its other lights off; the GT is kept as `gt_<sky>.exr` |
 | `--transfer-lobes` | 0 to 2 | `0` | with `--transfer`: keep it as this many zonal lobes in each gaussian's own frame (the `SplatTransferZonal` bundle); 0 is two lobes with `--skinned` and nine harmonics in the world otherwise |
 | `--skinned` | flag | off | carry the skeleton; forces `--no-bake`, keeps a `--transfer` as zonal lobes |
 | `--range` | `START:END[:STEP]` | the stage's own range | time codes a skinned cloud keeps |

@@ -46,6 +46,9 @@ struct ValidateJob {
     std::string              prim;            ///< only meshes at or under it are converted
     std::vector<std::string> hidden;          ///< left out of everything, as --hide
     std::vector<std::string> materials;       ///< only these (prim paths or names); empty is every one
+    /// Another sky for every frame: "white" (a constant of one), or an image
+    /// file; the stage's other lights off. Empty: the stage as it is.
+    std::string              sky;
 };
 
 /// Converts `hidden` left out into `output`, returning the gaussians written:

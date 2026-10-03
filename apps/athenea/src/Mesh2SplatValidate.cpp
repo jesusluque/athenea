@@ -75,23 +75,32 @@ std::string fileNameOf(const std::string& material) {
     return name;
 }
 
-/// A stage that is the source with `meshes` switched off and `cloud` beside
-/// them: nested overs down to each mesh, as USD composes a deactivation.
-std::string composedStage(const std::string& source, const std::vector<std::string>& meshes, const std::string& cloud,
-                          char upAxis, double metersPerUnit) {
+/// A layer over `source`: nested overs down to each prim of `off`, switched
+/// off, and to each of `bodies`, given those attribute lines -- as USD
+/// composes them. `tail` is written after.
+std::string overLayer(const std::string& source, const std::vector<std::string>& off,
+                      const std::map<std::string, std::string>& bodies, char upAxis, double metersPerUnit,
+                      const std::string& tail) {
     struct Node {
         std::map<std::string, Node> children;
-        bool off = false;
+        bool        off = false;
+        std::string body;
     };
     Node root;
-    for (const std::string& mesh : meshes) {
+    const auto nodeAt = [&root](const std::string& path) {
         Node* at = &root;
-        std::stringstream parts(mesh.substr(1));
+        std::stringstream parts(path.substr(1));
         std::string part;
         while (std::getline(parts, part, '/')) {
             at = &at->children[part];
         }
-        at->off = true;
+        return at;
+    };
+    for (const std::string& path : off) {
+        nodeAt(path)->off = true;
+    }
+    for (const auto& [path, body] : bodies) {
+        nodeAt(path)->body = body;
     }
     std::ostringstream out;
     out << "#usda 1.0\n(\n    metersPerUnit = " << metersPerUnit << "\n    upAxis = \"" << (upAxis == 'z' ? "Z" : "Y")
@@ -100,15 +109,26 @@ std::string composedStage(const std::string& source, const std::vector<std::stri
         for (const auto& [name, child] : node.children) {
             out << in << "over \"" << name << "\"" << (child.off ? " (\n" + in + "    active = false\n" + in + ")" : "")
                 << "\n" << in << "{\n";
+            if (!child.body.empty()) {
+                out << child.body;
+            }
             emit(child, in + "    ");
             out << in << "}\n";
         }
     };
     emit(root, "");
-    // Typeless, so the reference gives it the ParticleField it is.
-    out << "def \"AtheneaValidateCloud\" (\n    prepend references = @" << cloud
-        << "@</World/Splats>\n)\n{\n}\n";
+    out << tail;
     return out.str();
+}
+
+/// A stage that is the source with `meshes` switched off and `cloud` beside
+/// them.
+std::string composedStage(const std::string& source, const std::vector<std::string>& meshes, const std::string& cloud,
+                          char upAxis, double metersPerUnit) {
+    // Typeless, so the reference gives it the ParticleField it is.
+    return overLayer(source, meshes, {}, upAxis, metersPerUnit,
+                     "def \"AtheneaValidateCloud\" (\n    prepend references = @" + cloud +
+                         "@</World/Splats>\n)\n{\n}\n");
 }
 
 struct Measured {
@@ -137,7 +157,7 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     if (made) {
         return Error::make(ErrorCode::InvalidArgument, "--validate {}: {}", job.directory, made.message());
     }
-    const fs::path source = fs::absolute(job.stage);
+    fs::path source = fs::absolute(job.stage);
     std::string camera = job.camera;
     if (camera.empty()) {
         auto first = usd::stageFirstCamera(source);
@@ -164,6 +184,38 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     if (!meshStage) return std::move(meshStage).error();
     const char upAxis = meshStage->upAxis();
     const double metersPerUnit = meshStage->metersPerUnit();
+    // ANOTHER SKY (--validate-sky): every frame -- the GT's, the mesh's, the
+    // clouds' -- drawn under it rather than the stage's own lights. "white":
+    // the stage's domes a constant of radiance one; a file: its domes that
+    // image. Either way every other light is switched off, so what is
+    // measured is the sky alone. The conversion still bakes the stage as it
+    // is; a transfer does not depend on the light it is baked under.
+    std::string gtName = "gt.exr";
+    if (!job.sky.empty()) {
+        auto lights = usd::stageLights(source);
+        if (!lights) return std::move(lights).error();
+        std::vector<std::string> off;
+        std::map<std::string, std::string> bodies;
+        const bool white = job.sky == "white";
+        const std::string file = white ? std::string() : fs::absolute(job.sky).string();
+        for (const auto& [path, dome] : *lights) {
+            if (!dome) {
+                off.push_back(path);
+                continue;
+            }
+            bodies[path] = white ? "    asset inputs:texture:file = @@\n    color3f inputs:color = (1, 1, 1)\n"
+                                   "    float inputs:intensity = 1\n    float inputs:exposure = 0\n"
+                                 : "    asset inputs:texture:file = @" + file + "@\n";
+        }
+        if (bodies.empty()) {
+            return Error(ErrorCode::InvalidArgument, "--validate-sky: the stage has no dome to give another sky");
+        }
+        const fs::path skyStage = dir / "sky.usda";
+        std::ofstream(skyStage) << overLayer(source.string(), off, bodies, upAxis, metersPerUnit, "");
+        source = fs::absolute(skyStage);
+        gtName = "gt_" + (white ? std::string("white") : fs::path(job.sky).stem().string()) + ".exr";
+        std::printf("validate: under %s, the stage's other lights off\n", white ? "a white sky" : file.c_str());
+    }
     std::printf("validate: %zu materials, %ux%u through %s\n", groups->size(), job.width, job.height,
                 camera.c_str());
 
@@ -178,7 +230,7 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     Result<void> inside = ok();
     auto ran = context.run([&] {
         inside = [&]() -> Result<void> {
-            const fs::path gtFile = dir / "gt.exr";
+            const fs::path gtFile = dir / gtName;
             if (auto kept = io::readExr(gtFile); kept && kept->width == w && kept->height == h) {
                 gt = {w, h, std::move(kept->rgba)};
                 std::printf("validate: GT read from %s\n", gtFile.string().c_str());

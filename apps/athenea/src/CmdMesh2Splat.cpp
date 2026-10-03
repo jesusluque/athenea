@@ -194,6 +194,7 @@ struct Options {
     uint32_t                 validatePaths = 512;
     uint32_t                 validateBounces = 6;
     std::vector<std::string> validateMaterials;
+    std::string              validateSky;
     /// THE TRANSFER AS ZONAL LOBES in each gaussian's own frame (proposal 014
     /// B): 1 or 2 lobes, which turn with the gaussian; 0 is nine harmonics in
     /// the world for a still cloud and two lobes for one a skeleton carries,
@@ -2404,6 +2405,9 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_option("--validate-size", o->validateSize, "--validate: W H of the frames")->expected(2);
     cmd->add_option("--validate-paths", o->validatePaths, "--validate: paths a pixel the GT holds");
     cmd->add_option("--validate-bounces", o->validateBounces, "--validate: bounces of the GT's paths");
+    cmd->add_option("--validate-sky", o->validateSky,
+                    "--validate: draw every frame under another sky, 'white' or an image file, with the stage's "
+                    "other lights off");
     cmd->add_option("--validate-material", o->validateMaterials,
                     "--validate: only this material, by prim path or name (repeatable)");
     cmd->add_option("--transfer-degree", o->transferDegree,
@@ -2838,6 +2842,7 @@ void addMesh2Splat(CLI::App& app) {
         job.prim = o->prim;
         job.hidden = o->hidden;
         job.materials = o->validateMaterials;
+        job.sky = o->validateSky;
         o->lodLevels = 1;
         const std::vector<std::string> askedHidden = o->hidden;
         auto validated = validateConversion(

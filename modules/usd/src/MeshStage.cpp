@@ -1313,4 +1313,19 @@ Result<std::string> stageFirstCamera(const std::filesystem::path& path) {
     return std::string();
 }
 
+Result<std::vector<std::pair<std::string, bool>>> stageLights(const std::filesystem::path& path) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::NotFound, "'{}': not a stage USD opens", path.string());
+    }
+    std::vector<std::pair<std::string, bool>> out;
+    for (const UsdPrim& p : stage->Traverse()) {
+        const std::string type = p.GetTypeName().GetString();
+        if (type.size() > 5 && type.compare(type.size() - 5, 5, "Light") == 0) {
+            out.emplace_back(p.GetPath().GetString(), type == "DomeLight" || type == "DomeLight_1");
+        }
+    }
+    return out;
+}
+
 }   // namespace athenea::usd

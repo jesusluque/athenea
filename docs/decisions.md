@@ -12081,3 +12081,11 @@ end (544), which a bundle that does not set them reads as no maps.
 Checked (pending the GPU turn): a card whose coat weight is half nothing and
 half whole converts to gaussians a third or more of each
 (`a_map_on_a_layer_is_sampled_per_gaussian`).
+
+`--validate-sky white` (or an image) draws every frame -- the GT, the mesh,
+the clouds -- under another sky with the stage's other lights off: a layer
+over the stage (`DIR/sky.usda`) that sets each dome's image and colour and
+deactivates every other light. Under a constant white dome a transfer's
+error is its occlusion's and its reflection's alone, with no sky detail to
+hide in -- the experiment proposals 030 and 031 ask for. The conversion is
+the stage's own; a transfer does not depend on the light it is baked under.
