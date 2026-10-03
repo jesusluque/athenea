@@ -23,7 +23,7 @@ public static const uint kLightDome    = 4;
 public static const uint kLightUnlinked = 0xFFFFFFFF;
 
 public static const uint kLightShadow      = 1;   // casts one
-public static const uint kLightNormalize   = 2;   // intensity is power, not radiance: divide by area
+public static const uint kLightNormalize   = 2;   // divide the radiance by the area (a sun: its disc's projected solid angle)
 public static const uint kLightTemperature = 4;   // tint by the blackbody of `temperature`
 public static const uint kLightIesNormalize = 8;   // divide the IES intensity by the profile's power
 
@@ -288,9 +288,48 @@ public float2 domeUv(LightRecord l, float3 wi) {
 }
 
 
-/// The area a light's `normalize` divides by, 0 where it has none.
+/// A distant light's half angle, as UsdLux clips it: `angle` is the disc's
+/// angular diameter, from 0 to 360 degrees.
+float distantHalfAngle(LightRecord l) {
+    return clamp(0.5 * l.sizeX, 0.0, 3.14159265358979);
+}
+
+/// 1 - cos of a distant light's half angle, without the cancellation of
+/// 1 - cos(a) in float: for UsdLux's 0.53 degree sun that is 1.07e-5, and
+/// as a difference of two numbers near 1 it carried 0.6% of rounding.
+float distantOneMinusCos(LightRecord l) {
+    const float s = sin(0.5 * distantHalfAngle(l));
+    return 2.0 * s * s;
+}
+
+/// True where a distant light is a direction rather than a disc: an angle
+/// of 0, and only that. A disc too small for a cosine to tell from 1 is
+/// still a disc, sampled through `distantOneMinusCos`.
+public bool distantIsDelta(LightRecord l) {
+    return !(l.sizeX > 0.0);
+}
+
+/// What UsdLux's `normalize` divides a distant light's radiance by
+/// (usdLux/schema.usda, LightAPI inputs:normalize): the disc's projected
+/// solid angle, pi sin^2(theta) for a half angle theta up to 90 degrees,
+/// (2 - sin^2(theta)) pi beyond -- the integral of |cos| over the cap -- and
+/// 1 for a parallel light. A surface facing the light takes radiance times
+/// this as its irradiance, so with normalize on the intensity is that
+/// irradiance, in lux.
+public float distantSizeFactor(LightRecord l) {
+    if (distantIsDelta(l)) {
+        return 1.0;
+    }
+    const float theta = distantHalfAngle(l);
+    const float s = sin(theta);
+    return 3.14159265358979 * (theta <= 0.5 * 3.14159265358979 ? s * s : 2.0 - s * s);
+}
+
+/// The area a light's `normalize` divides by, 0 where it has none. For a
+/// distant light, the projected solid angle of its disc.
 float lightArea(LightRecord l) {
     switch (l.kind) {
+    case kLightDistant: return distantSizeFactor(l);
     case kLightSphere: return 4.0 * 3.14159265358979 * l.sizeX * l.sizeX;
     case kLightDisk:   return 3.14159265358979 * l.sizeX * l.sizeX;
     case kLightRect:   return l.sizeX * l.sizeY;
@@ -424,11 +463,11 @@ public float3 domeDirection(LightRecord l, float2 uv) {
 public float lightPdf(LightRecord l, float3 p, float3 n, float3 wi) {
     switch (l.kind) {
     case kLightDistant: {
-        const float cosMax = cos(0.5 * max(l.sizeX, 0.0));
-        if (cosMax >= 1.0) {
+        if (distantIsDelta(l)) {
             return 0.0;   // a delta direction
         }
-        return dot(wi, lightAxisZ(l)) >= cosMax ? 1.0 / (2.0 * 3.14159265358979 * (1.0 - cosMax)) : 0.0;
+        const float oneMinus = distantOneMinusCos(l);
+        return dot(wi, lightAxisZ(l)) >= 1.0 - oneMinus ? 1.0 / (2.0 * 3.14159265358979 * oneMinus) : 0.0;
     }
     case kLightDome:
         // Cosine weighted around the surface. Sampling by an image is
@@ -515,11 +554,13 @@ public LightHit lightHit(LightRecord l, float3 p, float3 wi) {
     const float3 emission = lightEmission(l);
     switch (l.kind) {
     case kLightDistant: {
-        const float cosMax = cos(0.5 * max(l.sizeX, 0.0));
-        if (cosMax >= 1.0 || dot(wi, lightAxisZ(l)) < cosMax) {
+        // The disc's radiance is the emission itself, as `sampleLight` hands
+        // it out: UsdLux's intensity is a radiance, and `normalize` is
+        // already in `lightEmission`.
+        if (distantIsDelta(l) || dot(wi, lightAxisZ(l)) < 1.0 - distantOneMinusCos(l)) {
             return h;
         }
-        h.radiance = emission / (2.0 * 3.14159265358979 * (1.0 - cosMax));
+        h.radiance = emission;
         break;
     }
     case kLightDome:
@@ -611,25 +652,35 @@ public LightSample sampleLight(LightRecord l, float3 p, float3 n, float2 u) {
         // UsdLux shines down -Z, so the light is towards +Z, spread over a
         // disc of angular diameter sizeX.
         const float3 towards = lightAxisZ(l);
-        const float cosMax = cos(0.5 * max(l.sizeX, 0.0));
-        if (cosMax >= 1.0) {
+        if (distantIsDelta(l)) {
             s.wi = towards;
             s.delta = true;
             s.pdf = 1.0;
         } else {
+            // Uniform over the cap by 1 - cos, which keeps its precision
+            // where a cosine near 1 would not.
+            const float oneMinusMax = distantOneMinusCos(l);
+            const float oneMinus = u.x * oneMinusMax;
+            const float sinTheta = sqrt(max(0.0, oneMinus * (2.0 - oneMinus)));
+            const float phi = 2.0 * 3.14159265358979 * u.y;
             float3 x, y;
             lightFrame(towards, x, y);
-            const float3 local = sampleCone(cosMax, u);
-            s.wi = normalize(x * local.x + y * local.y + towards * local.z);
-            s.pdf = 1.0 / (2.0 * 3.14159265358979 * (1.0 - cosMax));
+            s.wi = normalize(x * (sinTheta * cos(phi)) + y * (sinTheta * sin(phi)) + towards * (1.0 - oneMinus));
+            s.pdf = 1.0 / (2.0 * 3.14159265358979 * oneMinusMax);
         }
-        // A distant light's intensity is the irradiance it lays on a surface
-        // facing it, whatever its angular size: over a disc of solid angle
-        // omega it is spread as a radiance of intensity / omega. Until this,
-        // the disc's radiance was the intensity itself, and UsdLux's default
-        // 0.53 degree sun lit a plane 6.7e-5 of what its intensity said --
-        // 15000 times short -- while a sun of angle 0 was right.
-        s.radiance = s.delta ? emission : emission * s.pdf;
+        // UsdLux's intensity is the radiance of the disc (LightAPI
+        // inputs:intensity), and `normalize` divides it by the disc's
+        // projected solid angle (lightEmission, through lightArea), so that
+        // the intensity is then the illuminance on a surface facing the
+        // light. A parallel light has no disc: its intensity is that
+        // irradiance whether normalize is on or not (sizeFactor 1).
+        //
+        // Until this the intensity was always the irradiance, divided by
+        // the disc's solid angle 2 pi (1 - cos) whatever normalize said: a
+        // sun authored without normalize -- UsdLux's default -- lit a plane
+        // 1 / (pi sin^2(theta)) times what the schema says: 14900 times for
+        // the 0.53 degree default.
+        s.radiance = emission;
         break;
     }
     case kLightDome: {

@@ -1855,14 +1855,16 @@ Checked against closed forms that share nothing with the tracer
   at 161 the pixel centres lay on the square's triangle seam, and one lens
   ray in four converging exactly on the seam fell through it.
 
-**A bug the Hydra check found, in the sun.** A distant light with an angle
-handed its intensity out as the disc's radiance, so the irradiance it laid
-was `intensity * solid angle`: UsdLux's default 0.53 degree sun lit a plane
-6.7e-5 of its intensity, 15000 times short, while a sun of angle 0 -- the
-one the closed forms had been checking -- was right. Now the disc's radiance
-is `intensity / solid angle`, and the closed form takes a cap's vector
-irradiance, `pi sin^2(a)` along its axis, over that solid angle: the 0.2
-radian sun reads 0 of 8281 pixels beyond 2%, worst 0.01%.
+**A bug the Hydra check found, in the sun -- fixed the wrong way, then
+right.** A distant light with an angle handed its intensity out as the
+disc's radiance, and UsdLux's default 0.53 degree sun lit a plane 6.7e-5 of
+its intensity. That was read as a bug and the disc's radiance became
+`intensity / solid angle`, so that the intensity was always the irradiance.
+It was the schema that was right: LightAPI's `intensity` is the emitted
+radiance, and only `normalize` divides it by the disc's size, so that 6.7e-5
+(`pi sin^2(0.265 degrees)`) is exactly what an unnormalized default sun lays
+per unit of intensity. The correction, and what it is checked by, is "A
+DistantLight in UsdLux's units" below.
 
 ### Not done
 
@@ -3095,6 +3097,91 @@ off (worst 3e-8). **Not done**: an instance moving without a change of the
 mesh set keeps the old radius, which costs sampling efficiency and not
 correctness.
 
+### A DistantLight in UsdLux's units
+
+`usdLux/schema.usda` says it in three places. LightAPI's `inputs:intensity`
+is "the unmultiplied luminance emitted (L) of the light, in nits", times
+`2^exposure` and the colour. `inputs:normalize` divides that luminance by a
+`sizeFactor`, and for a DistantLight, with `theta = clamp(angle / 2, 0, pi)`:
+
+    sizeFactor = 1                      theta = 0
+               = pi sin^2(theta)        0 < theta <= pi/2
+               = (2 - sin^2(theta)) pi  pi/2 < theta <= pi
+
+-- the disc's projected solid angle, the integral of |cos| over the cap --
+chosen so that "the received illuminance on a surface normal to the light's
+primary direction is held constant when angle changes, and intensity becomes
+a measure of the illuminance, in lux". DistantLight's `inputs:angle` of 0 is
+a perfectly parallel light. So a surface facing the light takes
+
+    E = intensity * 2^exposure * colour * (normalize ? 1 : sizeFactor)
+
+and a sun of angle 0 lays its intensity either way.
+
+**What it was.** The intensity was always the irradiance: the disc's
+radiance was `emission / (2 pi (1 - cos theta))`, whatever `normalize`
+said -- renders with normalize 0 and 1 were identical, an unnormalized
+default sun was `1 / (pi sin^2 theta)` = 14900 times the schema's, and even a
+normalized one was off past small angles, since the solid angle is not the
+projected one (a 90 degree sun laid 0.854 of its intensity).
+
+**What it is.** `lights.slang`: the disc's radiance is `lightEmission`, and
+`normalize` reaches a distant light as it reaches an area light, through
+`lightArea`, which is `distantSizeFactor` for one. `sampleLight` hands that
+radiance out over the cap, `lightHit` returns the same along any direction
+inside it, and `lightPdf` is the cap's uniform density, so MIS weighs the
+two strategies against each other unchanged. The cap is drawn by
+`1 - cos`, kept as `2 sin^2(theta / 2)`: as a difference of two numbers near
+1 it carried 0.6% of rounding at 0.53 degrees. Only an angle of exactly 0 is
+a delta direction; a disc too small for its cosine to differ from 1 is still
+a disc, so the sizeFactor's limit is reached continuously rather than
+jumping to a sizeFactor of 1.
+
+**The choice of a light** (`light_prefix.slang`) weighs a sun by the same
+irradiance, `E R^2`, with `sizeFactor` in E unless normalized. Two shares
+were wrong besides: a normalized sun and a dome that authored `normalize`
+skipped their `R^2` and `pi R^2` -- normalize was read as "divided by its
+area" for every kind, and a dome has none to divide by (the schema: a dome
+ignores normalize, and `lightEmission` already did).
+
+**The sun taken out of a sky** (`env_sun.slang`) is not a DistantLight and
+was not touched: it is the irradiance the dome's own texels deliver, summed
+in the dome's radiance units, and it goes back to a relit cloud as an
+irradiance -- which is what a normalized DistantLight's intensity is now.
+
+**Storm** (`hdSt/light.cpp`) multiplies an unnormalized distant light's
+intensity by the disc's solid angle, `2 pi (1 - cos theta)`, not the
+projected one: the two agree to 1e-5 at 0.53 degrees, 0.8% at 20 and differ
+by 17% at 90 (1.840 against 1.571). A normalized sun is its intensity in
+both.
+
+**What was authored for the old meaning.** Every DistantLight fixture of
+intensity 3 at the default angle (`test_usd.cpp`, `test_host.cpp`) meant its
+intensity as irradiance and now authors `normalize = 1`, which keeps that
+meaning exactly; the ones of angle 0 already meant it. The default sun
+(`setDefaultLights`, 2.5 at 2 degrees) is normalized, and so are the suns of
+`scripts/readme-images.sh` and the sparrow clips. The closed form of
+`lambert_irradiance.slang` takes the disc's radiance times `pi sin^2(a)`.
+
+**Checked.** A white Lambert square facing the light through Hydra, its
+mean over the middle of the frame by `imageStats` against `E / pi`, for
+angles 0, 0.53, 20 and 90 degrees with normalize 0 and 1, in the raster's
+shading (64 light samples) and the path tracer (64 paths, no bounce): all
+16 within 6e-4 (exact to 1e-7 at 0 and 0.53 degrees). Before, the suns
+with an angle and normalize 0 were 14900 and 10.5 times too bright at 0.53
+and 20 degrees and 0.54 of the schema at 90, and the normalized 90 degree
+sun 15% dark. The prefix's shares, written again from
+the records with a 0.53 degree sun of 50000, a normalized 0.2 radian sun and
+a normalized dome beside the rest: 0 of 6 off at scene radii 1 and 400
+(before, 6 of 6), and the five-light prefix check, its sun given a disc, 0
+missing (before, 3).
+
+**Not done.** Area lights take their authored size: a transform's scale
+changes neither the shape that is sampled nor the area `normalize` divides
+by, where the schema asks for the world-space area. Storm's solid angle for
+an unnormalized sun is left as Storm's; `storm_oracle` has no distant light
+with an angle and no normalize.
+
 After both, Kitchen_set lit renders under both techniques from inside the
 kitchen; the path traced frame at 256 paths is clean without the denoiser.
 
@@ -3232,10 +3319,13 @@ fails without its fix where a control was run:
 
 Not defects, and left as they are:
 
-- **McUsd blows out.** Its DistantLight and DomeLight leave intensity
-  unauthored ("no intensity often helps the viewer pick a default"), and
-  UsdLux's default for a distant light is 50000: with its 1 degree angle
-  that is an illuminance of about 12. The renderer follows the schema.
+- **McUsd blew out, and no longer does.** Its DistantLight and DomeLight
+  leave intensity unauthored ("no intensity often helps the viewer pick a
+  default"), and UsdLux's default for a distant light is 50000: with its 1
+  degree angle and no `normalize` that is an illuminance of about 12
+  (`50000 pi sin^2(0.5 degrees)`). This note said the renderer followed the
+  schema; it did not -- it laid the 50000 itself -- until the sun was put in
+  UsdLux's units (below).
 - **The MaterialX texture test's teapot is black**: its `.mtlx` sets
   `fileprefix="./textures/"` and also writes `./textures/` in every value,
   so the path is `./textures/./textures/brass_color.jpg`; its own flattened

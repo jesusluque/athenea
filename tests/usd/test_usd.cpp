@@ -3246,7 +3246,7 @@ TEST_CASE("a UsdGeomCamera's fStop and focusDistance reach the path tracer throu
         SKIP("needs rasterisation and ray queries");
     }
     const std::string rest =
-        "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n"
+        "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n"
         "def Scope \"Materials\"\n{\n"
         "    def Material \"Mat\"\n    {\n"
         "        token outputs:mtlx:surface.connect = </Materials/Mat/Surface.outputs:out>\n"
@@ -3317,6 +3317,85 @@ TEST_CASE("a UsdGeomCamera's fStop and focusDistance reach the path tracer throu
     CHECK(focused->relMse < 1e-8);
     CHECK(blurred->relMse > 1e-3);
     CHECK(bent->relMse > 1e-3);
+}
+
+// UsdLux's DistantLight, in its own words (usdLux/schema.usda, LightAPI's
+// `intensity` and `normalize`, DistantLight's `angle`): `intensity` is the
+// radiance of the disc the light covers, and `normalize` divides it by
+// sizeFactor = pi sin^2(angle / 2) (for half angles up to 90 degrees), so
+// that the intensity becomes the illuminance on a surface facing the light.
+// An angle of 0 is a parallel light whose irradiance is the intensity. A
+// white Lambert square faces the sun at normal incidence; its radiance is
+// E / pi, measured over the square's middle by `imageStats`, in the raster's
+// shading and in the path tracer, for four angles with normalize off and on.
+TEST_CASE("a DistantLight lays the irradiance UsdLux's intensity, angle and normalize say",
+          "[usd][gpu][mesh][path][light][distant]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    const std::string material =
+        "def Scope \"Materials\"\n{\n"
+        "    def Material \"Mat\"\n    {\n"
+        "        token outputs:mtlx:surface.connect = </Materials/Mat/Surface.outputs:out>\n"
+        "        def Shader \"Surface\"\n        {\n"
+        "            uniform token info:id = \"ND_surface\"\n"
+        "            token inputs:bsdf.connect = </Materials/Mat/Diffuse.outputs:out>\n"
+        "            token outputs:out\n        }\n"
+        "        def Shader \"Diffuse\"\n        {\n"
+        "            uniform token info:id = \"ND_oren_nayar_diffuse_bsdf\"\n"
+        "            color3f inputs:color = (1, 1, 1)\n"
+        "            float inputs:roughness = 0\n"
+        "            token outputs:out\n        }\n    }\n}\n";
+    struct Case {
+        float degrees;
+        bool  normalize;
+    };
+    const std::array<Case, 8> cases{Case{0.0F, false},  Case{0.0F, true},  Case{0.53F, false}, Case{0.53F, true},
+                                    Case{20.0F, false}, Case{20.0F, true}, Case{90.0F, false}, Case{90.0F, true}};
+    const float intensity = 2.0F;
+    const uint32_t w = 96, h = 72;
+    for (const Case& c : cases) {
+        const fs::path path = scratch("distant_units.usda");
+        {
+            std::ofstream out(path);
+            out << kSquareStage << material << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = " << intensity
+                << "\n    float inputs:angle = " << c.degrees << "\n    bool inputs:normalize = " << (c.normalize ? 1 : 0)
+                << "\n    bool inputs:shadow:enable = 0\n}\n";
+        }
+        // The schema's sizeFactor, a constant of the case: the expected
+        // radiance of the white Lambert square facing the light is E / pi.
+        const double half = 0.5 * double(c.degrees) * 3.14159265358979 / 180.0;
+        const double sizeFactor = half > 0.0 ? 3.14159265358979 * std::sin(half) * std::sin(half) : 1.0;
+        const double irradiance = double(intensity) * (c.normalize ? 1.0 : sizeFactor);
+        const double expected = irradiance / 3.14159265358979;
+        for (const char* technique : {"raster", "rt"}) {
+            auto renderer = usd::StageRenderer::open(path);
+            if (!renderer) FAIL(renderer.error().toString());
+            (*renderer)->setLightSamples(64);
+            (*renderer)->setPathSamples(64);
+            (*renderer)->setPathTotal(64);
+            (*renderer)->setPathBounces(0);
+            auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+            if (!image) FAIL(image.error().toString());
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto buffer = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(buffer);
+            // The square covers the middle 57% of the frame: the middle 40%.
+            auto stats =
+                render::imageStats(*gpu->library, *buffer, w, h, w * 3 / 10, h * 3 / 10, w * 7 / 10, h * 7 / 10);
+            if (!stats) FAIL(stats.error().toString());
+            const double got = stats->mean[1];
+            const double relative = std::abs(got - expected) / expected;
+            std::printf("  DistantLight angle %5.2f normalize %d, %-6s: mean %.6e, expected %.6e (E %.6e), off %.2e\n",
+                        double(c.degrees), c.normalize ? 1 : 0, technique, got, expected, irradiance, relative);
+            CHECK(stats->pixels > 1000);
+            CHECK(relative < 0.01);
+        }
+    }
 }
 
 // A mesh whose points are time sampled, through Hydra: at the second time
@@ -3449,7 +3528,7 @@ TEST_CASE("a camera's shutter blurs a moving mesh through Hydra, rigid and defor
         SKIP("needs rasterisation and ray queries");
     }
     const std::string sun =
-        "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
+        "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
     const auto stageWith = [&](const char* name, bool shutter, bool deform) {
         const fs::path path = scratch(name);
         std::ofstream out(path);
@@ -3563,7 +3642,7 @@ TEST_CASE("a moving PointInstancer's instances blur as the same prims authored o
             out << "    double shutter:open = -0.25\n    double shutter:close = 0.25\n";
         }
         out << "}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
         return path;
     };
     const uint32_t w = 160, h = 120;
@@ -3651,7 +3730,7 @@ TEST_CASE("a camera moving under the shutter blurs the frame as the scene moving
             out << "    double shutter:open = -0.25\n    double shutter:close = 0.25\n";
         }
         out << "}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
         return path;
     };
     const uint32_t w = 160, h = 120;
@@ -3921,7 +4000,7 @@ TEST_CASE("a shutter opened after the first frame blurs the next as a stage auth
                "    float focalLength = 35\n"
                "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
                "    float2 clippingRange = (0.1, 1000)\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
     }
     const uint32_t w = 160, h = 120;
     const auto settle = [](usd::StageRenderer& r) {
@@ -4012,7 +4091,7 @@ TEST_CASE("authored velocities blur a mesh as the equivalent time samples do", "
                "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
                "    float2 clippingRange = (0.1, 1000)\n"
                "    double shutter:open = -0.25\n    double shutter:close = 0.25\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
         return path;
     };
     const uint32_t w = 160;
@@ -4544,7 +4623,7 @@ TEST_CASE("a chiang hair material shades a curve through Hydra", "[usd][gpu][mes
                "    point3f[] points = [(-3, -0.5, -5), (-2, 0.6, -5), (-1, -0.4, -4.5), (1, 0.5, -5.5), (2, -0.6, -5), (3, 0.5, -5)]\n"
                "    float[] widths = [0.5] ( interpolation = \"constant\" )\n"
                "    rel material:binding = </Materials/Mat>\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n"
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n"
                "    double xformOp:rotateX = -30\n    uniform token[] xformOpOrder = [\"xformOp:rotateX\"]\n}\n"
                "def Camera \"Camera\"\n{\n"
                "    float focalLength = 35\n"
@@ -5171,7 +5250,7 @@ TEST_CASE("a render product's disableMotionBlur and disableDepthOfField draw it 
                "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
                "    uniform token subdivisionScheme = \"none\"\n"
                "    color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)] ( interpolation = \"constant\" )\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n"
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n"
                "def Camera \"Camera\"\n{\n"
                "    float focalLength = 35\n"
                "    float horizontalAperture = 24.576\n    float verticalAperture = 16.384\n"
@@ -7155,7 +7234,7 @@ TEST_CASE("an OpenPBR geometry_opacity of zero cuts the surface away, and its sh
         // With shadows on the traced route: a card that is not there casts
         // none either. The rasteriser does not ask a shadow's cut-out yet
         // (docs/decisions.md), so there only the card is looked for.
-        out << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 2\n"
+        out << "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 2\n"
             << (shadows ? "" : "    bool inputs:shadow:enable = 0\n") << "}\n"
                "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
                "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
@@ -7761,7 +7840,7 @@ TEST_CASE("a variant set is listed, selected and drawn, and the timeline follows
                "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
                "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
                "    float2 clippingRange = (0.1, 1000)\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
     }
     auto renderer = usd::StageRenderer::open(path);
     if (!renderer) FAIL(renderer.error().toString());
@@ -7965,7 +8044,7 @@ TEST_CASE("a stage's lights are listed and switched off and on, and the stage on
                "    float2 clippingRange = (0.1, 1000)\n}\n"
                "def Xform \"Lights\"\n{\n"
                "    def DomeLight \"Sky\"\n    {\n        float inputs:intensity = 0.3\n    }\n"
-               "    def DistantLight \"Sun\"\n    {\n        float inputs:intensity = 3\n    }\n"
+               "    def DistantLight \"Sun\"\n    {\n        bool inputs:normalize = 1\n        float inputs:intensity = 3\n    }\n"
                "    def SphereLight \"Lamp\" ( active = false )\n    {\n        float inputs:intensity = 50\n"
                "        double3 xformOp:translate = (0, 0, -3)\n"
                "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
@@ -8079,7 +8158,7 @@ TEST_CASE("a path traced frame antialiases its edges as it gathers, and one pass
                "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
                "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
                "    float2 clippingRange = (0.1, 1000)\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
     }
     const uint32_t w = 200, h = 150;
     auto renderer = usd::StageRenderer::open(path);
@@ -8182,7 +8261,7 @@ TEST_CASE("a UsdPreviewSurface at opacity 0 keeps its specular in transparent mo
                "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
                "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
                "    float2 clippingRange = (0.1, 1000)\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 4\n    float inputs:angle = 2\n"
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 4\n    float inputs:angle = 2\n"
                "    bool inputs:shadow:enable = 0\n"
                "    double3 xformOp:rotateXYZ = (-20, 15, 0)\n"
                "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
@@ -8355,7 +8434,7 @@ TEST_CASE("a cloud's shadow on a plane is tinted, switched off and cut short as 
     // The sun from 45 degrees to the left: the slab at 0.6 up shadows the
     // plane 0.6 to the right of itself.
     const std::string sun =
-        "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    float inputs:angle = 0.5\n"
+        "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    float inputs:angle = 0.5\n"
         "    float3 xformOp:rotateXYZ = (0, -45, 0)\n    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n";
     // A lamp to the left and up: 1.4 from the slab, 2.4 from the shadow it
     // throws, which is what a `shadow:distance` in between tells apart.
@@ -8624,7 +8703,7 @@ TEST_CASE("the active render settings switch motion blur off for a camera of the
                "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
                "    uniform token subdivisionScheme = \"none\"\n"
                "    color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)] ( interpolation = \"constant\" )\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n"
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n"
                "def Scope \"Render\"\n{\n    def RenderSettings \"Settings\"\n    {\n"
             << "        uniform bool disableMotionBlur = " << (noBlur ? 1 : 0) << "\n    }\n}\n";
         return path;
@@ -8703,7 +8782,7 @@ TEST_CASE("a displaced gaussian bakes as the relief faces, from the flat surface
                "    float3 xformOp:rotateXYZ = (0, 40, 0)\n"
                "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n"
                "    rel material:binding = </Materials/White>\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 1\n    float inputs:angle = 0.5\n}\n"
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 1\n    float inputs:angle = 0.5\n}\n"
                "def Scope \"Materials\"\n{\n"
                "    def Material \"White\"\n    {\n"
                "        token outputs:surface.connect = </Materials/White/S.outputs:surface>\n"
@@ -9901,7 +9980,7 @@ TEST_CASE("a relit card with a tilted shading normal renders like the tilted mes
                    "            float inputs:metallic = 0\n"
                    "            token outputs:surface\n        }\n    }\n}\n";
         }
-        out << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 2\n"
+        out << "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 2\n"
                "    bool inputs:shadow:enable = 0\n"
                "    float3 xformOp:rotateXYZ = (0, 40, 0)\n"
                "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"

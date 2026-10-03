@@ -649,6 +649,18 @@ interactive frame. `--default-lights` puts a dome and a sun in the session
 layer for a stage that authors none, which is what makes an unlit asset
 visible without editing it.
 
+**A `DistantLight` is in UsdLux's units.** `intensity` (times `2^exposure`
+and `color`) is the radiance of the sun's disc, in nits; with
+`normalize = 1` it is divided by the disc's projected solid angle,
+`pi sin^2(angle / 2)`, and becomes the illuminance on a surface facing the
+light, in lux. An `angle` of 0 is a parallel light whose irradiance is the
+intensity either way. So a sun authored without `normalize` lays
+`intensity * pi sin^2(angle / 2)`: UsdLux's default sun (50000 at 0.53
+degrees) lays about 3.4, and one of intensity 3 at the default angle is all
+but black -- author `normalize = 1` for a sun whose intensity is what it
+lights with. The default sun is normalized. A `DomeLight` ignores
+`normalize`, as the schema says.
+
 **Shadows.** Meshes shadow by ray on the traced route. A cloud casts through a
 transmittance map at each light, with no ray at all:
 `--cloud-shadow-texels`, `--cloud-shadow-density` and `--cloud-shadow-terms`
