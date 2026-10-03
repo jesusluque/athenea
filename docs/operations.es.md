@@ -233,7 +233,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--technique` | `raster` \| `rt` | `raster` | el `athenea:technique` del delegate |
 | `--visibility` | `automatic` \| `raster` \| `rays` \| `bvh` | `automatic` | cómo se ven las mallas |
 | `--path-samples` | entero | `1` | rt: caminos por píxel en cada pasada |
-| `--path-bounces` | entero | `1` | rt: rebotes tras el primer impacto |
+| `--path-bounces` | entero | `1` | rt: rebotes tras el primer impacto; atravesar una superficie (entrar en un vidrio, salir de él, dentro de él) no es uno, hasta 8 por camino |
 | `--path-total` | entero | `1` | rt: caminos por píxel hasta los que se dibuja |
 | `--denoise` | flag | apagado | rt: denoise cuando alcanza el total |
 | `--default-lights` | flag | apagado | un dome y un sol en la capa de sesión, para una escena sin luces |
@@ -286,7 +286,7 @@ están en §5.
 | `--light-samples` | entero | `1` | 1 es interactivo |
 | `--choose-lights` | flag | apagado | una luz por muestra, elegida por potencia |
 | `--path-samples` | entero | `1` | rt: caminos por píxel y frame |
-| `--path-bounces` | entero | `4` | |
+| `--path-bounces` | entero | `4` | atravesar una superficie no es un rebote, hasta 8 por camino |
 | `--path-total` | entero | `64` | dónde el frame cuenta como convergido, y se denoisea |
 | `--denoise` | flag | apagado | |
 | `--no-default-lights` | flag | luces por defecto encendidas | una escena sin luces se queda a oscuras |
@@ -775,7 +775,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:lightSamples` | int | `1` | muestras por luz |
 | `athenea:chooseLights` | bool | `false` | una luz por muestra, elegida por potencia |
 | `athenea:pathSamples` | int | `1` | rt: caminos por píxel y pasada |
-| `athenea:pathBounces` | int | `1` | rt: rebotes tras el primer impacto |
+| `athenea:pathBounces` | int | `1` | rt: rebotes tras el primer impacto; hasta 8 cruces de una superficie por camino no cuentan |
 | `athenea:pathTotal` | int | `1` | rt: caminos por píxel hasta converger |
 | `athenea:pathAdaptive` | bool | `false` | parar un píxel cuando su error baja lo suficiente |
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |

@@ -231,7 +231,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--technique` | `raster` \| `rt` | `raster` | the delegate's `athenea:technique` |
 | `--visibility` | `automatic` \| `raster` \| `rays` \| `bvh` | `automatic` | how meshes are seen |
 | `--path-samples` | integer | `1` | rt: paths a pixel each pass |
-| `--path-bounces` | integer | `1` | rt: bounces after the first hit |
+| `--path-bounces` | integer | `1` | rt: bounces after the first hit; going through a surface (into a glass, out of it, inside it) is not one, up to 8 a path |
 | `--path-total` | integer | `1` | rt: paths a pixel the image is drawn until it holds |
 | `--denoise` | flag | off | rt: denoise once the total is held |
 | `--default-lights` | flag | off | a dome and a sun in the session layer, for a stage with none |
@@ -283,7 +283,7 @@ Present only in a build with the viewer. The window's controls are in §5.
 | `--light-samples` | integer | `1` | 1 is interactive |
 | `--choose-lights` | flag | off | one light a sample, chosen by power |
 | `--path-samples` | integer | `1` | rt: paths a pixel each frame |
-| `--path-bounces` | integer | `4` | |
+| `--path-bounces` | integer | `4` | going through a surface is not a bounce, up to 8 a path |
 | `--path-total` | integer | `64` | where the frame counts as converged, and is denoised |
 | `--denoise` | flag | off | |
 | `--no-default-lights` | flag | default lights on | a stage with no lights stays unlit |
@@ -764,7 +764,7 @@ found and does not.
 | `athenea:lightSamples` | int | `1` | samples per light |
 | `athenea:chooseLights` | bool | `false` | one light a sample, chosen by power |
 | `athenea:pathSamples` | int | `1` | rt: paths a pixel each pass |
-| `athenea:pathBounces` | int | `1` | rt: bounces after the first hit |
+| `athenea:pathBounces` | int | `1` | rt: bounces after the first hit; up to 8 crossings of a surface a path are not counted |
 | `athenea:pathTotal` | int | `1` | rt: paths a pixel to converge to |
 | `athenea:pathAdaptive` | bool | `false` | stop a pixel once its error is low enough |
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |

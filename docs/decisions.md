@@ -8925,3 +8925,49 @@ The lighting primvars (relight, litBody, ior, the PBR arrays, the transfer
 and its shadow bits) were also written without AtheneaSplatLightingAPI
 applied, so `relight` came out as a custom attribute nobody declared. The
 API is applied whenever any of them is written.
+
+## A ray that went into a glass meets its far face
+
+The converted pawn's glass head was measured against the mesh path traced
+beside it, and came out 0.050 relMSE from it -- worse than with no index at
+all. The cloud was not what was wrong. The path tracer culled back faces for
+every ray after the first hit (`traceNearestFrom`, both routes), which is what
+a single-sided mesh asks of a ray that bounced off it and wrong for one that
+went through: inside a solid glass ball the far face is a back face, so the
+ray left without bending again, and the ball showed the room bent once -- a
+thick lens drawn as one interface. The cloud, which bends at its far face
+(`rt_glass`), was being held to a picture no glass makes.
+
+Two measurements said so before anything was changed. The cloud's own single
+bend (no far face asked) against the old mesh: relMSE **0.0059**, head 0.050.
+And the mesh with its index raised to 2.0 looked as the cloud did at 1.5.
+
+**A crossing sees back faces.** A bounce ray is traced without culling when
+its direction went through the surface it left (`dot(n, wi) < 0`, with `n`
+facing the side the path came from) or when that surface was met from inside.
+A ray that bounced off a single-sided mesh still culls, as before.
+
+**A crossing is not a bounce.** With the far face found, a double-sided ball
+-- which was never culled -- showed what the default of one bounce does to a
+solid: the ray met the far face with nothing left to leave by, and the ball
+drew black. Crossings are free now, up to `kFreeCrossings` (8) a path, as a
+renderer keeps its transmission depth apart from its diffuse one. Next event
+estimation weighs a light against the material only where the path would go
+on in that direction (`pathGoesOn`): out of bounces, that is through the
+surface alone.
+
+| pawn, autoshop_01, the transferred cloud, 512 paths | whole relMSE | p99 | head relMSE (x 300-470, y 470-590) |
+|---|---|---|---|
+| against the mesh bent once (before) | 0.0498 | 0.771 | 1.32 |
+| against the mesh bent twice (now) | 0.0087 | 0.648 | 0.134 |
+
+The mesh's own frame changes only in the head (relMSE 0.031 between the two,
+p99 0.39) and takes 18.4 s where it took 15.2 (debug build, 768 x 768, 512
+paths): the paths through the ball are longer. The table "What the glass is
+worth" above was measured against the mesh bent once, and its halfway-out and
+rim rows say as much about that mesh as about the cloud.
+
+Test: `athenea_usd_tests "a glass ball bends at its far face*"` -- a smooth
+glass ball under a four-colour checker sky, single-sided against
+double-sided and one bounce against four, all one picture. Before: relMSE 3.6
+and 0.18.

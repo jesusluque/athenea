@@ -6386,6 +6386,175 @@ TEST_CASE("the raster sees a dome through glass as the path tracer does", "[usd]
     }
 }
 
+namespace {
+
+/// A lat-long sky of `columns` x `rows` cells in four colours (ABGR), so what
+/// a glass shows through it is a picture and where it bends to can be seen.
+/// Four and not two: a ball lens turns what is behind it over, and a
+/// two-colour checker turned over about a corner is the same checker.
+fs::path checkerSky(const std::string& name, uint32_t columns, uint32_t rows) {
+    const fs::path png = scratch(name);
+    fs::remove(png);
+    const uint32_t palette[4] = {0xFF2050E0u, 0xFFE0D0A0u, 0xFF30B040u, 0xFF101010u};
+    const uint32_t w = 128, h = 64;
+    std::vector<uint32_t> texels(size_t{w} * h);
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            texels[size_t{y} * w + x] = palette[((x * columns / w) + 2 * (y * rows / h)) % 4];
+        }
+    }
+    HioImageSharedPtr image = HioImage::OpenForWriting(png.string());
+    REQUIRE(image);
+    HioImage::StorageSpec spec;
+    spec.width = static_cast<int>(w);
+    spec.height = static_cast<int>(h);
+    spec.depth = 1;
+    spec.format = HioFormatUNorm8Vec4;
+    spec.data = texels.data();
+    REQUIRE(image->Write(spec));
+    return png;
+}
+
+/// A standard_surface glass as a MaterialX file, `M_Glass` under /MaterialX.
+fs::path glassLook(const std::string& name, float roughness, const std::string& tint) {
+    const fs::path material = scratch(name + ".mtlx");
+    std::ofstream out(material);
+    out << "<?xml version=\"1.0\"?>\n<materialx version=\"1.39\">\n"
+           "  <standard_surface name=\"Glass\" type=\"surfaceshader\">\n"
+           "    <input name=\"base_color\" type=\"color3\" value=\"1, 1, 1\" />\n"
+           "    <input name=\"specular_roughness\" type=\"float\" value=\""
+        << roughness
+        << "\" />\n"
+           "    <input name=\"specular_IOR\" type=\"float\" value=\"1.5\" />\n"
+           "    <input name=\"transmission\" type=\"float\" value=\"1\" />\n"
+           "    <input name=\"transmission_color\" type=\"color3\" value=\""
+        << tint
+        << "\" />\n"
+           "  </standard_surface>\n"
+           "  <surfacematerial name=\"M_Glass\" type=\"material\">\n"
+           "    <input name=\"surfaceshader\" type=\"surfaceshader\" nodename=\"Glass\" />\n"
+           "  </surfacematerial>\n</materialx>\n";
+    return material;
+}
+
+/// A ball of radius one at the origin, `slices` around and `stacks` from pole
+/// to pole, as a Mesh prim `name` bound to `material`. Hydra's own sphere is
+/// ten facets around, which is a lens of facets.
+std::string ballMesh(const std::string& name, const std::string& material, bool doubleSided,
+                     uint32_t slices = 96, uint32_t stacks = 48) {
+    std::ostringstream out;
+    out << "def Mesh \"" << name << "\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+        << "    uniform bool doubleSided = " << (doubleSided ? "1" : "0") << "\n"
+        << "    uniform token subdivisionScheme = \"none\"\n    rel material:binding = <" << material << ">\n";
+    const auto vertices = [&](const char* attribute) {
+        out << "    " << attribute << " = [";
+        for (uint32_t j = 0; j <= stacks; ++j) {
+            const double theta = 3.14159265358979 * j / stacks;
+            for (uint32_t i = 0; i < slices; ++i) {
+                const double phi = 2.0 * 3.14159265358979 * i / slices;
+                out << (j + i ? ", " : "") << "(" << std::sin(theta) * std::cos(phi) << ", " << std::cos(theta)
+                    << ", " << -std::sin(theta) * std::sin(phi) << ")";
+            }
+        }
+        out << "]";
+    };
+    vertices("point3f[] points");
+    out << "\n";
+    vertices("normal3f[] normals");
+    out << " (interpolation = \"vertex\")\n    int[] faceVertexCounts = [";
+    for (uint32_t k = 0; k < slices * stacks; ++k) {
+        out << (k ? ", " : "") << 4;
+    }
+    // Counter-clockwise seen from outside, which is USD's right-handed front.
+    out << "]\n    int[] faceVertexIndices = [";
+    for (uint32_t j = 0; j < stacks; ++j) {
+        for (uint32_t i = 0; i < slices; ++i) {
+            const uint32_t a = j * slices + i;
+            const uint32_t b = j * slices + (i + 1) % slices;
+            const uint32_t c = (j + 1) * slices + (i + 1) % slices;
+            const uint32_t d = (j + 1) * slices + i;
+            out << (j + i ? ", " : "") << a << ", " << d << ", " << c << ", " << b;
+        }
+    }
+    out << "]\n}\n";
+    return out.str();
+}
+
+/// The camera every glass ball below is seen from: the ball of radius one
+/// at the origin nearly fills it.
+const char* const kBallCamera =
+    "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+    "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+    "    float2 clippingRange = (0.1, 1000)\n"
+    "    double3 xformOp:translate = (0, 0, 3.5)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+
+}   // namespace
+
+// A RAY THAT WENT INTO A GLASS MEETS ITS FAR FACE.
+//
+// Back faces were culled for every ray the path tracer traced after the
+// first hit, which is what a single-sided mesh asks of a ray that bounced off
+// it -- and wrong for one that went through: inside a solid glass ball the
+// far face is a back face, so the ray left without bending again and the
+// ball showed the room bent once, a thick lens drawn as one interface. The
+// chess pawn's glass head was the reference a converted cloud was measured
+// against, and the cloud, which bends twice, came out 0.05 relMSE from it for
+// being right. A double-sided ball was not culled and drew black instead: at
+// the default of one bounce the ray met the far face with nothing left to
+// leave by. Now a crossing sees back faces and costs no bounce, so the two
+// balls are one picture, and one bounce draws what four do.
+TEST_CASE("a glass ball bends at its far face whether or not it is double-sided, at one bounce",
+          "[usd][gpu][mesh][path][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path sky = checkerSky("ball_sky.png", 8, 4);
+    glassLook("ball_glass", 0.0F, "1, 1, 1");
+    const auto stage = [&](const std::string& name, bool doubleSided) {
+        const fs::path path = scratch(name + ".usda");
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Scope \"Looks\" (\n    prepend references = @./ball_glass.mtlx@</MaterialX/Materials>\n)\n{\n}\n"
+            << ballMesh("Ball", "/Looks/M_Glass", doubleSided)
+            << "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n"
+               "    asset inputs:texture:file = @"
+            << sky.string() << "@\n}\n"
+            << kBallCamera;
+        return path;
+    };
+    const uint32_t w = 64, h = 64;
+    const auto render = [&](const fs::path& path, uint32_t bounces) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setPathBounces(bounces);
+        (*renderer)->setPathTotal(256);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        if (!made) FAIL(made.error().toString());
+        return std::move(*made);
+    };
+    const gpu::Buffer single = render(stage("ball_single", false), 1);
+    const gpu::Buffer twice = render(stage("ball_double", true), 1);
+    const gpu::Buffer deep = render(stage("ball_double_deep", true), 4);
+    auto sided = render::compareHdr(*gpu->library, single, twice, w, h);
+    auto bounces = render::compareHdr(*gpu->library, twice, deep, w, h);
+    REQUIRE(sided);
+    REQUIRE(bounces);
+    std::printf("  single- against double-sided: relMse %.2e, p99 %.3g; one bounce against four: relMse %.2e, p99 %.3g\n",
+                sided->relMse, sided->p99Relative, bounces->relMse, bounces->p99Relative);
+    CHECK(sided->pixels == uint64_t{w} * h);
+    CHECK(sided->relMse < 0.01);
+    CHECK(sided->p99Relative < 0.3);
+    CHECK(bounces->relMse < 0.01);
+    CHECK(bounces->p99Relative < 0.3);
+}
+
 // THE BAKE'S ANSWER CANNOT DEPEND ON HOW MANY HARMONICS IT IS ASKED FOR.
 //
 // A Lambertian surface sends the same radiance in every direction of the half

@@ -124,6 +124,13 @@ float random(uint2 pixel, uint sample, uint bounce, uint which) {
     return float(key >> 8) * (1.0 / 16777216.0);
 }
 
+/// HOW MANY TIMES A PATH MAY GO THROUGH A SURFACE WITHOUT IT COUNTING AS A
+/// BOUNCE: into a glass, out of it, or on inside it. A solid takes two, and
+/// a glass ball standing in a glass tumbler four; eight leaves room for a
+/// set of them, and is what bounds a ray caught inside a solid by total
+/// internal reflection.
+static const uint kFreeCrossings = 8;
+
 float2 random2(uint2 pixel, uint sample, uint bounce, uint which) {
     return float2(random(pixel, sample, bounce, which), random(pixel, sample, bounce, which + 1u));
 }
@@ -149,14 +156,14 @@ struct PathHit {
     float2 barycentrics;  // of the committed triangle: where the ray met it
 };
 
-PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask) {
+PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask, bool cullBack) {
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;
     ray.TMin = tMin;
     ray.TMax = 3.0e38;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
-    query.TraceRayInline(scene, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES, mask, ray);
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+    query.TraceRayInline(scene, cullBack ? RAY_FLAG_CULL_BACK_FACING_TRIANGLES : RAY_FLAG_NONE, mask, ray);
     query.Proceed();
     PathHit hit;
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
@@ -293,7 +300,7 @@ void pathShadowAnyHit(inout ShadowPayload payload, in BuiltInTriangleIntersectio
     AcceptHitAndEndSearch();
 }
 
-PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask) {
+PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask, bool cullBack) {
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;
@@ -303,7 +310,8 @@ PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask)
     payload.seen = uint4(0);
     payload.t = 0.0;
     payload.barycentrics = float2(0.0);
-    TraceRay(scene, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES, mask, 0, 2, 0, ray, payload);
+    TraceRay(scene, cullBack ? (RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES) : RAY_FLAG_FORCE_OPAQUE,
+             mask, 0, 2, 0, ray, payload);
     PathHit hit;
     hit.seen = payload.seen;
     hit.t = payload.t;
@@ -342,7 +350,7 @@ struct PathHit {
     float2 barycentrics;
 };
 
-PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask) {
+PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask, bool cullBack) {
     PathHit hit;
     hit.seen = uint4(0);
     hit.t = 0.0;
@@ -605,7 +613,7 @@ Found foundBaked(uint at, uint sample, uint mask) {
         const float3 bitangent = cross(n, tangent);
         from += (tangent * cos(phi) + bitangent * sin(phi)) * radius;
     }
-    const PathHit hit = traceNearestFrom(from, -n, o.w * 0.01, mask);
+    const PathHit hit = traceNearestFrom(from, -n, o.w * 0.01, mask, true);
     Found f = foundHit(hit, from, -n);
     if (f.valid) {
         // A DISPLACED GAUSSIAN IS SHADED AS THE RELIEF FACES. The mesh the
@@ -1255,7 +1263,7 @@ Found foundLensSample(uint2 pixel, uint sample, uint mask) {
     const float3 directionWorld = normalize(float3(dot(eye.row0.xyz, direction),
                                                    dot(eye.row1.xyz, direction),
                                                    dot(eye.row2.xyz, direction)));
-    const PathHit hit = traceNearestFrom(originWorld, directionWorld, camera.nearZ, mask);
+    const PathHit hit = traceNearestFrom(originWorld, directionWorld, camera.nearZ, mask, true);
     return foundHit(hit, originWorld, directionWorld);
 }
 
@@ -1518,7 +1526,19 @@ bool misWeighs(LightRecord l) {
            l.shadowCategory == kLightUnlinked;
 }
 
-float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint mask, out uint group) {
+/// WHETHER A PATH GOES ON FROM A VERTEX ALONG `wi`: while bounces are left,
+/// and through a surface -- into glass, or on inside it -- while free
+/// crossings are (`kFreeCrossings`). `charged` is the bounces spent,
+/// `crossed` the crossings that were not charged.
+bool pathGoesOn(uint charged, uint crossed, Shaded sh, float3 wi) {
+    if (!kTraces) {
+        return false;
+    }
+    return charged < path.bounces ||
+           (crossed < kFreeCrossings && (dot(sh.inputs.normalWorld, wi) < 0.0 || sh.inputs.inside));
+}
+
+float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint mask, out uint group) {
     group = 0;
     if (lightCount == 0) {
         // A stage without lights is lit as the raster lights it, when the
@@ -1592,7 +1612,7 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint mask, 
     // -- the dome's density and the Lambert lobe's the same function -- read
     // 0.5453 of what it should; the complement is what makes it whole.
     float weight = 1.0;
-    if (!ls.delta && kTraces && bounce < path.bounces && misWeighs(light)) {
+    if (!ls.delta && pathGoesOn(bounce - crossed, crossed, sh, ls.wi) && misWeighs(light)) {
         const float other = stackPdf(sh.stack, sh.toEye, ls.wi);
         weight = density * density / (density * density + other * other);
     }
@@ -1779,6 +1799,7 @@ void tracePathsAt(uint2 group, uint index) {
         // such a point waits while it is shaded, then goes on. The trip count
         // is a uniform's, so the compiler cannot unroll the call into copies.
         uint bounce = 0;
+        uint crossed = 0;  // bounces that went through a surface and were not charged
         uint passed = 0;   // surfaces this sample's lot saw through
         Shaded cur;
         cur.valid = false;
@@ -1787,7 +1808,7 @@ void tracePathsAt(uint2 group, uint index) {
         float3 lightScale = float3(0.0);
         float  previousPdf = 0.0;     // the material's density for the direction that reached `found`
         bool   previousWeighs = false;   // and whether emission met there is weighed against it
-        const uint steps = 2 * path.bounces + 3;
+        const uint steps = 2 * (path.bounces + kFreeCrossings) + 3;
         for (uint step = 0; step < steps; ++step) {
             if (!lightStep) {
                 float tS;
@@ -1814,12 +1835,12 @@ void tracePathsAt(uint2 group, uint index) {
                     if (kLightGroups) {
                         addGroup(groups, group, throughput * direct * opacity);
                     }
-                    if (bounce == path.bounces || !kTraces) {
+                    if (bounce - crossed >= path.bounces || !kTraces) {
                         break;
                     }
                     d = hgSample(-d, g, float2(mediumRandom(rng), mediumRandom(rng)));
                     o = p;
-                    const PathHit hit = traceNearestFrom(o, d, 1.0e-4 * max(1.0, length(o)), mask);
+                    const PathHit hit = traceNearestFrom(o, d, 1.0e-4 * max(1.0, length(o)), mask, true);
                     found = foundHit(hit, o, d);
                     tHit = hit.seen.x == 0 ? 1.0e30 : hit.t;
                     previousWeighs = false;
@@ -1899,7 +1920,7 @@ void tracePathsAt(uint2 group, uint index) {
                     // covers, and a bounce's margin skipped the body.
                     const float3 o = target.positionWorld;
                     const float3 d = normalize(o - target.rayOrigin);
-                    const PathHit hit = traceNearestFrom(o, d, 1.0e-5 * max(1.0e-2, length(o)), mask);
+                    const PathHit hit = traceNearestFrom(o, d, 1.0e-5 * max(1.0e-2, length(o)), mask, true);
                     if (hit.seen.x == 0) {
                         // Nothing behind: the sample sees the sky through
                         // the surface. The background is drawn only where
@@ -1981,7 +2002,6 @@ void tracePathsAt(uint2 group, uint index) {
                 // emission, no light of any kind. What it is after is the
                 // path's own weight when it finally leaves.
                 const float share = transferMode ? 0.0 : emissiveShare();
-                const bool continues = kTraces && bounce < path.bounces;
                 if (share > 0.0 && random(tid, sample, bounce, 11u) < share) {
                     // An emitting triangle: sampled here, shaded next step.
                     const LightPoint lp = sampleEmissive(cur.inputs.positionWorld,
@@ -1999,7 +2019,7 @@ void tracePathsAt(uint2 group, uint index) {
                             !pathOccluded(cur.inputs.positionWorld, cur.inputs.normalWorld, lp.wi,
                                           lp.distance - shortOf, kLightUnlinked, mask)) {
                             float weight = 1.0;
-                            if (continues && path.mis != 0) {
+                            if (pathGoesOn(bounce - crossed, crossed, cur, lp.wi) && path.mis != 0) {
                                 const float other = stackPdf(cur.stack, cur.toEye, lp.wi);
                                 weight = lp.weighPdf * lp.weighPdf / (lp.weighPdf * lp.weighPdf + other * other);
                             }
@@ -2017,15 +2037,16 @@ void tracePathsAt(uint2 group, uint index) {
                         }
                     }
                 } else if (!transferMode) {
-                    const float3 direct = gatherLight(cur, tid, sample, bounce, mask, group);
+                    const float3 direct = gatherLight(cur, tid, sample, bounce, crossed, mask, group);
                     carried += throughput * direct;
                     if (kLightGroups) {
                         addGroup(groups, group, throughput * direct * opacity);
                     }
                 }
             }
-            // The path goes on from `cur`.
-            if (bounce == path.bounces || !kTraces) {
+            // The path goes on from `cur`: while bounces are left, or while
+            // it may still go through a surface for free.
+            if (!kTraces || (bounce - crossed >= path.bounces && crossed >= kFreeCrossings)) {
                 break;
             }
             // THE FIRST STEP OF A TRANSFER PATH IS NOT THE MATERIAL'S.
@@ -2079,6 +2100,11 @@ void tracePathsAt(uint2 group, uint index) {
             if (!ms.valid || ms.pdf <= 0.0) {
                 break;
             }
+            // Out of bounces, the path goes on only through the surface.
+            const bool through = dot(cur.inputs.normalWorld, ms.wi) < 0.0 || cur.inputs.inside;
+            if (!pathGoesOn(bounce - crossed, crossed, cur, ms.wi)) {
+                break;
+            }
             // BELOW THE FLAT SURFACE IS THE RELIEF. A raised gaussian is
             // shaded as the relief faces, and a direction its tilt opens
             // under the flat mesh would meet that mesh from above, lit, a
@@ -2102,7 +2128,14 @@ void tracePathsAt(uint2 group, uint index) {
             const float3 away = dot(n, ms.wi) < 0.0 ? -n : n;
             o = p + (away + ms.wi) * (1.0e-3 * scale);
             d = ms.wi;
-            const PathHit hit = traceNearestFrom(o, d, 1.0e-3 * scale, mask);
+            // A RAY THAT WENT THROUGH SEES BACK FACES. Back faces are culled
+            // for a ray that bounced off a surface, which is what a
+            // single-sided mesh asks; a ray that crossed one -- into a glass
+            // ball -- or that is already inside one meets the solid's far
+            // face from behind, and with it culled the ray left the ball
+            // without its second bend: a thick lens drawn as one interface,
+            // the pawn's glass head showing the room barely turned.
+            const PathHit hit = traceNearestFrom(o, d, 1.0e-3 * scale, mask, !through);
             // The material's strategy for the lights: what of each light this
             // direction meets before the surface it found (or, escaping, a
             // dome's or a distant light's), weighed against the density next
@@ -2142,6 +2175,15 @@ void tracePathsAt(uint2 group, uint index) {
             tHit = hit.seen.x == 0 ? 1.0e30 : hit.t;
             previousPdf = ms.pdf;
             previousWeighs = path.mis != 0 && !ms.delta;
+            // A CROSSING IS NOT A BOUNCE. A solid glass ball is two crossings
+            // deep before the ray is out again, and at the default of one
+            // bounce it drew black once its far face stopped being culled:
+            // the ray met the far face with no bounce left to leave by.
+            // Crossings are free up to `kFreeCrossings`, as a renderer's
+            // transmission depth is separate from its diffuse one.
+            if (through && crossed < kFreeCrossings) {
+                ++crossed;
+            }
             ++bounce;
         }
         if (!vertexSeen) {
