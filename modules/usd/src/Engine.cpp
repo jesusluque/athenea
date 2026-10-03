@@ -3113,18 +3113,21 @@ namespace {
 }   // namespace
 
 CloudIdentity Engine::identityOf(const ParticleFieldArrays& arrays) {
-    const pxr::VtValue* const held[14] = {
+    // Blender's planes come and go together: the first stands for them all.
+    static const pxr::VtValue kNone;
+    const pxr::VtValue* const held[16] = {
         &arrays.positions,   &arrays.orientations, &arrays.scales,       &arrays.opacities,
         &arrays.shCoefficients, &arrays.metallic,  &arrays.roughness,    &arrays.transmission,
         &arrays.jointIndices,   &arrays.jointWeights, &arrays.visibilityParts, &arrays.visibilityTexels,
-        &arrays.visibilityPartOf, &arrays.visibilityAmbient};
+        &arrays.visibilityPartOf, &arrays.visibilityAmbient, &arrays.radianceBase,
+        arrays.shPlanes.empty() ? &kNone : &arrays.shPlanes.front()};
     CloudIdentity identity;
-    for (size_t k = 0; k < 14; ++k) {
+    for (size_t k = 0; k < 16; ++k) {
         const auto [data, bytes] = arrayIdentity(*held[k]);
         identity.data[k] = data;
         identity.bytes[k] = bytes;
     }
-    identity.shDegree = arrays.shDegree;
+    identity.shDegree = arrays.shPlanes.empty() ? arrays.shDegree : 100 + static_cast<int>(arrays.shPlanes.size());
     return identity;
 }
 

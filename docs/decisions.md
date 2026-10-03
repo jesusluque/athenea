@@ -10485,3 +10485,69 @@ writes the front end's flag, the traced route hides what it cannot count;
 blend's walk, and wants a per-pixel counter the blend does not keep). GPU
 timestamps on Metal, which would make the stage times free. The iOS app has
 not been given `ViewerFacts::gaussians` in this branch.
+## Blender's Gaussian splats, drawn as splats
+
+Blender 5.3 keeps a Gaussian-splat cloud as a PointCloud of type
+`GAUSSIAN_SPLAT`: `position`, `radiance:base` (FLOAT4), `scale`, `rotation`
+(quaternion) and `radiance:sh_0..14`. Its USD export -- the one a Hydra
+render with the USD export method runs too -- writes it as a `Points` prim
+with those attributes as primvars, except `radiance:base`, which it has no
+USD type for (*"Attribute 'radiance:base' (Blender domain 0, type 13) cannot
+be converted to USD"*). It writes no ParticleField.
+
+**The conventions, measured.** `sh3.ply` imported headless
+(`bpy.ops.wm.ply_import`), every attribute against the file's own values:
+position as stored (no axis change, the object's matrix the identity);
+`radiance:base.rgb` = `f_dc_*` exactly (the DC coefficient, not a colour);
+`radiance:base.a` = sigmoid(`opacity`) (linear opacity); `scale` =
+exp(`scale_*`) (linear); `rotation` = `rot_0..3` normalised, w first;
+`radiance:sh_k` = (`f_rest_k`, `f_rest_{k+15}`, `f_rest_{k+30}`), one array a
+basis function, rgb -- all to 0 or one float32 ulp. These are exactly
+ParticleField's: Blender's own reader of one (`usd_reader_particlefield.cc`)
+copies `radiance:base = (coefficient 0, opacity)`, `scale`, `rotation` and
+`sh_k = coefficient k + 1` across with no arithmetic. So nothing about the
+values needs converting; only the layout differs. The colours are what a
+trainer gives, sRGB: a cloud from Blender says nothing of its colour space,
+and one that says nothing is a capture (`athenea:splat:linear` unset).
+
+**Where it is done.** Two routes were weighed: an export hook that authors a
+ParticleField, or the delegate reading Blender's `Points` as a cloud. Either
+needs `radiance:base`, which only Blender's side can supply, so the add-on
+(`blender` branch) has a `USDHook` whose `on_export` -- Blender calls it at
+the end of `export_to_stage`, which Hydra's USD scene index uses -- copies
+the evaluated attribute onto the Points prim as `primvars:radiance:base`
+(float4[], vertex), bytes as they are. The rest is the delegate's, so a
+`Points` prim out of any Blender export draws as a cloud wherever hdAthenea
+runs, not only inside Blender:
+- `HdAtheneaPoints` asks for `rotation`, `scale`, `radiance:base` and
+  `radiance:sh_N`; a quaternion rotation, a scale and either radiance make it
+  a cloud, handed to `Engine::setSplats` under the prim's id (a prim that
+  changes kind leaves the old entry);
+- `SplatStreams` takes Blender's layout as it is: `radianceBase` (four floats
+  a splat) and `shPlanes` (one array a basis function). The CPU uploads the
+  planes end to end into one buffer and reads none of them;
+  `scene/streams.slang` takes opacity and DC from `radianceBase` (`kBase`)
+  and the rest from the planes (`kShPlanes`, `planeLength`), into the same
+  records every other layout gives, then the same decode.
+
+Not an AOFX bundle: this is a layout the cloud loader's own stream kernel
+reads, one more pair of indices in it, inside the upload every cloud takes.
+mesh2splat is a bundle because it makes new data out of a model; this makes
+none.
+
+Measured (M5 Pro, debug): the test "Blender's Gaussian-splat points draw
+as the PLY they were imported from" (`athenea_usd_tests`, fixture
+`tests/data/splats/sh3_blender.usda`: Blender's export of `sh3.ply` with the
+hook) renders that stage and a ParticleField athenea wrote from the PLY
+itself, 240x180: p99 0, max 0 -- the same floats reach the same records.
+The control, the same Points with `radiance:base` blocked (opaque, DC 0,
+with the warning), is p99 100 from it. Both stages reference their cloud
+under a typeless prim: a `def Xform` there is a stronger opinion than the
+referenced ParticleField's type, and draws nothing.
+
+Not done:
+- half-precision planes of an odd total of halves are refused (a plane would
+  start inside a word); Blender writes float32;
+- a cloud from Blender does not mark its colour space and need not:
+  `athenea:splat:linear` unset is a capture's sRGB, which is what Blender
+  holds, decoded to linear light a gaussian at a time like any capture's.
