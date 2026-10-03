@@ -105,7 +105,8 @@ std::string composedStage(const std::string& source, const std::vector<std::stri
         }
     };
     emit(root, "");
-    out << "def Xform \"AtheneaValidateCloud\" (\n    prepend references = @" << cloud
+    // Typeless, so the reference gives it the ParticleField it is.
+    out << "def \"AtheneaValidateCloud\" (\n    prepend references = @" << cloud
         << "@</World/Splats>\n)\n{\n}\n";
     return out.str();
 }
