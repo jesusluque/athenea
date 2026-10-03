@@ -9999,10 +9999,15 @@ Measured, Blender 5.3.0 alpha (68609be8e23b), M5 Pro, headless
 
 Not done:
 - the viewport (`view_update`/`view_draw`): untestable headless;
-- splats as splats: either the add-on authors a ParticleField from the
-  PointCloud's attributes itself, or the delegate reads Blender's `Points`
-  primvars as a cloud -- and `radiance:base` still has to reach it
-  (Blender's writer, or the add-on);
+- splats as splats: done, see *Blender's Gaussian splats, drawn as splats*
+  (the delegate reads Blender's `Points` as a cloud; the add-on's export
+  hook, `athenea_splat_export`, writes `radiance:base`). Measured: `sh3.ply`
+  imported and rendered headless by Blender through Athenea (USD export
+  method, 240x180, 32-bit EXR) against `athenea stage` of the PLY's
+  ParticleField under the same camera (half EXR): relMSE 1.7e-8, 8-bit p99
+  1, max 1, no pixel over 2 -- the half output's rounding. Blender's default
+  export method, `HYDRA`, hands no point cloud over; the add-on says so when
+  a scene with splats renders under it;
 - volumes: OpenVDB is off in this build (Blender's `libopenvdb` 13 has no
   headers in the prefix);
 - packaging: hdAthenea still loads libslang from `~/tools/slang` and libwebp

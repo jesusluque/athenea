@@ -905,8 +905,15 @@ ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
 Los renders finales (F12, `-f`) funcionan; el viewport está sin probar. El
 método de exportación **Hydra** de Blender no entrega ninguna nube de puntos
 a un delegate; con **USD**, una nube de puntos de Gaussian splats llega como
-un prim `Points` dibujado como puntos: su `radiance:base` (opacidad y DC) no
-se exporta. Los volúmenes (`.vdb`) están desactivados en esta compilación.
+un prim `Points` y se dibuja como una nube de splats (véase *Los Gaussian
+splats de Blender como `UsdGeomPoints`* en 4.3). Su `radiance:base` (DC y
+opacidad), que el escritor de Blender pierde, lo escribe el hook de
+exportación USD del add-on, `athenea_splat_export`, en toda exportación USD
+hecha mientras el motor de render de la escena es Athenea -- también una
+exportación a archivo. El método de exportación es el de la escena
+(`scene.hydra.export_method`, `HYDRA` por defecto); un render de una escena
+con splats bajo `HYDRA` lo avisa. Los volúmenes (`.vdb`) están desactivados en esta
+compilación.
 
 ### 4.2 Render settings
 
