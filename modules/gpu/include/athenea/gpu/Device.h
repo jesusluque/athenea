@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -137,8 +138,18 @@ private:
     std::function<void()>           beforeSubmit_;
 };
 
-/// Where the engine's own .slang files are: $ATHENEA_SHADER_DIR, then
-/// <exe>/../shaders, then the build tree.
+/// Where the engine's own .slang files are: $ATHENEA_SHADER_DIR, then a
+/// `shaders` directory found from the image this code is linked into
+/// (platform::moduleDir), then from the executable, then the build tree.
+/// The image comes first so a plugin loaded by another program (hdAthenea
+/// in usdview or Blender) finds its own files and not the host's.
 [[nodiscard]] std::filesystem::path shaderDirectory();
+
+/// The first `shaders` directory holding the engine's tree (`athenea/`) at
+/// one of `starts` or up to three directories above it, in the order given:
+/// <exe>/../shaders for a program in bin/, and
+/// <plugin>/hdAthenea/../../../shaders for the plugin in a build tree.
+/// Empty if there is none.
+[[nodiscard]] std::filesystem::path findShaderDirectory(std::span<const std::filesystem::path> starts);
 
 }   // namespace athenea::gpu

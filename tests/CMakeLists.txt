@@ -34,11 +34,11 @@ function(athenea_test name)
 endfunction()
 
 athenea_test(athenea_core_tests
-    SOURCES core/test_hash.cpp
+    SOURCES core/test_hash.cpp core/test_platform.cpp
     LIBS athenea::core)
 
 athenea_test(athenea_gpu_tests
-    SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp
+    SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp
     LIBS athenea::gpu athenea::render)
 
 athenea_test(athenea_scene_tests

@@ -9083,3 +9083,32 @@ Not done: a capture has no normal and keeps its axis. `CloudLoader::records`
 (a cloud on the device back into records) does not unpack normals, so a
 splat file decimated without a stage keeps none -- a splat file never has
 them. The merged levels carry the normal but still no PBR channels.
+
+## A plugin finds its files from itself, not from its host
+
+hdAthenea loaded by another program -- usdview, Houdini, Blender's
+`HydraRenderEngine` -- found its shaders from the executable
+(`<exe>/../shaders`), which is the host's: inside Blender that is
+`Blender.app/Contents/shaders`, which does not exist, and the plugin fell
+back to the build tree it was compiled in, which a packaged plugin does not
+have. `platform::moduleDir()` names the image the calling code was linked
+into (`dladdr` of a function in core, a static library: the executable for a
+program, the plugin for the plugin), and `gpu::shaderDirectory` asks it
+first: a `shaders` directory holding `athenea/` at that directory or up to
+three above it (`<build>/plugin/usd/hdAthenea/../../../shaders`), then the
+same from the executable, then the build tree. A program in `bin/` finds
+`bin/../shaders` exactly as before; `$ATHENEA_SHADER_DIR` still wins.
+
+hdAthenea's rpath starts with its own directory (`@loader_path`, `$ORIGIN`),
+so a package carrying libslang beside the plugin loads that one wherever it
+is unpacked; the build tree's rpaths stay after it.
+
+- `athenea_core_tests "[platform]"`: a test binary's module is its
+  executable directory.
+- `athenea_gpu_tests "[paths]"`: no device; scratch trees for a program in
+  `bin/`, the plugin three levels down, a package whose shaders sit beside
+  the library and a host with shaders of its own (the module wins), and a
+  `shaders` without `athenea/` (not taken).
+
+Not done: Windows (`GetModuleHandleEx` from an address and
+`GetModuleFileName`, in the port).
