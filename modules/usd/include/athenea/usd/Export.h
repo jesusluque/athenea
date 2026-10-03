@@ -99,6 +99,9 @@ struct ExportOptions {
     std::span<const int32_t>        shadowBits;
     /// One int a record, 1 where the gaussian came from a thin-walled glass.
     std::span<const int32_t>        thinWalled;
+    /// `primvars:athenea:splat:ior` when above 1: the index the cloud's
+    /// transmitting gaussians refract by. Not written at 0.
+    float                           ior = 0.0F;
 };
 
 /// Writes `raw` as a UsdVolParticleField3DGaussianSplat at /World/Splats in a

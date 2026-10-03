@@ -18,6 +18,7 @@
 #include <optional>
 #include <set>
 
+#include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/base/plug/registry.h>
 #include <pxr/imaging/hio/image.h>
 #include <pxr/imaging/hd/pluginRenderDelegateUniqueHandle.h>
@@ -6578,6 +6579,45 @@ TEST_CASE("a glossy bake stays within the light the scene sends, from every side
         CHECK(seen[1] == 0);
         CHECK(seen[2] == 0);
     }
+}
+
+// A CONVERTED GLASS CARRIES WHAT IT BENDS BY, AND SAYS WHICH SCHEMA SAYS SO.
+//
+// A transmitting gaussian refracts only with the cloud's index (`ior > 1`),
+// and mesh2splat knew the material's and never wrote it: the chess pawn's
+// glass head drew as a milky ball whether relit, transferred or baked. And
+// the lighting primvars were written without AtheneaSplatLightingAPI
+// applied, so `relight` came out as a custom attribute nobody declared.
+TEST_CASE("a converted cloud keeps its glass index and applies the lighting schema", "[usd][gpu][export]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    io::RawSplats raw = cloud(64);
+    const fs::path path = scratch("export_ior.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.relight = true;
+    options.ior = 1.5F;
+    options.metersPerUnit = 1.0;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, path, options));
+
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    REQUIRE(stage);
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath("/World/Splats"));
+    REQUIRE(prim);
+    CHECK(prim.HasAPI(TfToken("AtheneaSplatLightingAPI")));
+    float ior = 0.0F;
+    REQUIRE(prim.GetAttribute(TfToken("primvars:athenea:splat:ior")).Get(&ior));
+    CHECK(ior == 1.5F);
+    CHECK_FALSE(prim.GetAttribute(TfToken("primvars:athenea:splat:relight")).IsCustom());
+    CHECK(UsdGeomGetStageMetersPerUnit(stage) == 1.0);
+
+    // A cloud with nothing to bend writes no index: 0 is the schema's own.
+    const fs::path plain = scratch("export_no_ior.usda");
+    usd::ExportOptions none;
+    none.addCamera = false;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, plain, none));
+    UsdStageRefPtr opened = UsdStage::Open(plain.string());
+    REQUIRE(opened);
+    CHECK_FALSE(opened->GetPrimAtPath(SdfPath("/World/Splats")).GetAttribute(TfToken("primvars:athenea:splat:ior")).HasAuthoredValue());
 }
 
 // A SLOT WITH NOTHING IN IT IS STILL A SLOT.

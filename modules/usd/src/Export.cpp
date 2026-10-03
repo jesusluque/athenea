@@ -268,11 +268,33 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
         static const TfToken kRelight("primvars:athenea:splat:relight");
         splats.GetPrim().CreateAttribute(kRelight, SdfValueTypeNames->Bool, true).Set(true);
     }
+    if (options.ior > 1.0F) {
+        static const TfToken kIor("primvars:athenea:splat:ior");
+        splats.GetPrim().CreateAttribute(kIor, SdfValueTypeNames->Float, false).Set(options.ior);
+    }
     if (options.litBody) {
         // Its colours are light, not an albedo: what a frame adds is the
         // reflection, which is the part a single colour cannot hold.
         static const TfToken kLit("primvars:athenea:splat:litBody");
         splats.GetPrim().CreateAttribute(kLit, SdfValueTypeNames->Bool, true).Set(true);
+    }
+
+    // AND THE SCHEMA THOSE PRIMVARS ARE DECLARED BY. They were written and
+    // the API never applied, so `relight` came out `custom` and a host that
+    // asks the prim which APIs it has -- usdview, a validator -- saw none of
+    // the lighting a cloud carries: its PBR, its transfer, its index.
+    {
+        static const TfToken kLighting[] = {
+            TfToken("primvars:athenea:splat:relight"),      TfToken("primvars:athenea:splat:litBody"),
+            TfToken("primvars:athenea:splat:ior"),          TfToken("primvars:athenea:splat:metallic"),
+            TfToken("primvars:athenea:splat:roughness"),    TfToken("primvars:athenea:splat:transmission"),
+            TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
+            TfToken("primvars:athenea:splat:thinWalled"),   TfToken("primvars:athenea:splat:shadowBits")};
+        const UsdPrim prim = splats.GetPrim();
+        if (std::any_of(std::begin(kLighting), std::end(kLighting),
+                        [&](const TfToken& name) { return prim.GetAttribute(name).HasAuthoredValue(); })) {
+            prim.ApplyAPI(TfToken("AtheneaSplatLightingAPI"));
+        }
     }
 
     // THE RIG, WHEN THE CLOUD IS CARRIED BY ONE.

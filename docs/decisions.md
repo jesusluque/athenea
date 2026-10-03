@@ -8900,3 +8900,28 @@ dropped from the file.
 Not done: the bake still fits in linear light and encodes, because a cloud is
 still blended in sRGB. Blending every cloud in linear light, with sRGB only
 where an image is shown, is the next change, and it removes the encoding.
+
+## A converted glass bends, and its cloud says which schema it carries
+
+Under an HDRI (autoshop_01) the pawn's glass head drew as a milky ball in
+every mode a converted cloud has -- relit, transferred, baked -- while the
+mesh showed the workshop through it. A transmitting gaussian refracts only
+with the cloud's index (`rt_shade`: `ior > 1`), mesh2splat knew the
+material's (it sizes a thin wall's opacity from it) and never wrote it. It
+writes `primvars:athenea:splat:ior` now, the first glass's when a stage has
+two, with a line saying so: a cloud keeps one index.
+
+| pawn, autoshop_01, transfer, 512 paths | relMSE against the mesh | p99 relative | largest |
+|---|---|---|---|
+| no index | 0.023 | 1.41 | 5.1 |
+| with the index | 0.050 | 0.77 | 11.8 |
+
+The relMSE rises because the head now refracts the room and a refraction
+seen through 0.73 million gaussians is not the mesh's to the pixel; the p99
+halves, and the largest values are the reflections and the refracted lights
+that were missing.
+
+The lighting primvars (relight, litBody, ior, the PBR arrays, the transfer
+and its shadow bits) were also written without AtheneaSplatLightingAPI
+applied, so `relight` came out as a custom attribute nobody declared. The
+API is applied whenever any of them is written.

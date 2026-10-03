@@ -697,6 +697,22 @@ public:
                 // its gaussians' own transparency (see `glassOpacity`).
                 thinWalled_.insert(thinWalled_.end(), out->written,
                                    thinGlass(meshes[k].material) ? int32_t{1} : int32_t{0});
+                // AND WHAT ITS GLASS BENDS BY. A transmitting gaussian
+                // refracts only with an index (rt_shade: `ior > 1`), and a
+                // cloud keeps one: without it the pawn's glass head was a
+                // milky ball in every mode, relit, transferred or baked.
+                if (out->written > 0 && meshes[k].material.transmission > 0.0F) {
+                    const float ior = meshes[k].material.ior;
+                    if (glassIor_ > 0.0F && glassIor_ != ior) {
+                        std::fprintf(stderr,
+                                     "mesh2splat: %s bends by %.3f and an earlier glass by %.3f; a cloud keeps "
+                                     "one index, the first\n",
+                                     meshes[k].path.c_str(), static_cast<double>(ior),
+                                     static_cast<double>(glassIor_));
+                    } else {
+                        glassIor_ = ior;
+                    }
+                }
                 // A MESH NOTHING CARRIES STILL TAKES ITS PLACE IN THE RIG.
                 //
                 // A stage's skinned meshes are rarely all of them -- the
@@ -1033,6 +1049,9 @@ private:
     std::vector<uint32_t>                    cryptoIds_;
     /// 1 where the splat came from a thin-walled glass, in the same order.
     std::vector<int32_t>                     thinWalled_;
+    /// The index the cloud's transmitting gaussians bend by: the first glass
+    /// met's. 0 while there is none.
+    float                                    glassIor_ = 0.0F;
     std::map<std::string, uint32_t>          cryptoManifest_;
     std::vector<float>                       influences_;
     std::set<std::string>                    refused_;   ///< maps the device would not hold
@@ -1045,6 +1064,7 @@ public:
     [[nodiscard]] const std::vector<uint32_t>& cryptoIds() const noexcept { return cryptoIds_; }
     [[nodiscard]] double modelCell() const noexcept { return modelCell_; }
     [[nodiscard]] const std::vector<int32_t>& thinWalled() const noexcept { return thinWalled_; }
+    [[nodiscard]] float glassIor() const noexcept { return glassIor_; }
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
     }
@@ -1567,6 +1587,7 @@ void addMesh2Splat(CLI::App& app) {
                 options.cryptoObject = converter.cryptoIds();
                 options.cryptoManifest = converter.cryptoManifest();
                 options.thinWalled = converter.thinWalled();
+                options.ior = converter.glassIor();
                 options.transferDirect = transferDirect;
                 options.transferIndirect = transferIndirect;
                 options.shadowBits = shadowBits;

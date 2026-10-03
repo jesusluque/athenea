@@ -1202,7 +1202,7 @@ A script's own header says what it needs and where it puts things.
 | a cloud's reflections look flatter than the mesh's | its gaussians are not turned by the normal map | convert with `--normal-map-turns` |
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |
 | a cloud's reflections look softer than the mesh's | the conversion's cell is the blur kernel: a cloud reads as the mesh at `r + 9c/R`, where `c` is the cell and `R` the radius of curvature | convert at a finer `--resolution`: a mirror at roughness `r` wants a cell under `r/9` of that radius. It costs the file, not the frame -- fifteen times the gaussians was 36 % more time a frame and sixteen times the disk |
-| a glass ball shows the room but does not bend it | the cloud has no index | author `primvars:athenea:splat:ior` (1.5 is glass); what stands between the ball and the sky still will not show |
+| a glass ball shows the room but does not bend it | the cloud has no index | `athenea mesh2splat` writes the glass material's IOR; for a cloud from elsewhere author `primvars:athenea:splat:ior` (1.5 is glass). A cloud keeps one index: with two glasses of different IOR the first is kept and the conversion says so |
 | a cloud renders blunt and then sharpens | chunks are still arriving | raise `--stream-budget`, or wait; a still settles first |
 | the Storm oracle tests fail | `HDX_MSAA_SAMPLE_COUNT` is not 1 | ctest sets it; set it by hand if running the binary directly |
 
