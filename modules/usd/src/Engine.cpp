@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "Engine.h"
+#include "athenea/colour/WorkingSpace.h"
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/pxOsd/tokens.h>
 #include <pxr/base/gf/vec4f.h>
@@ -684,6 +685,52 @@ void Engine::setAntialias(bool on) {
     antialias_.store(on);
 }
 
+void Engine::setRenderingColorSpace(const std::string& name) {
+    const std::lock_guard<std::mutex> held(guard_);
+    if (name != renderingColorSpace_) {
+        renderingColorSpace_ = name;
+        renderingColorSpacePending_ = true;
+    }
+}
+
+std::string Engine::renderingColorSpace() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    return renderingColorSpace_;
+}
+
+void Engine::commitWorkingSpace() {
+    if (!renderingColorSpacePending_) {
+        return;
+    }
+    renderingColorSpacePending_ = false;
+    // THE WORKING SPACE A STAGE ASKS FOR. UsdRenderSettings'
+    // renderingColorSpace is USD's way of saying it; the record it names is
+    // what the device binds to every kernel. Only lin_rec709_scene is
+    // rendered in yet, so anything else is said once and the frame is drawn
+    // as before -- the record set is the same one either way.
+    gpu::WorkingSpace record = gpu::linRec709Scene();
+    if (!renderingColorSpace_.empty()) {
+        if (!colourNames_) {
+            auto made = colour::ColourCompiler::create(*library_);
+            if (!made) {
+                log::warn("hdAthenea: renderingColorSpace '{}' not resolved: {}", renderingColorSpace_,
+                          made.error().toString());
+            } else {
+                colourNames_ = std::move(*made);
+            }
+        }
+        if (colourNames_) {
+            auto resolved = colour::workingSpaceRecord(colourNames_->names(), renderingColorSpace_);
+            if (resolved) {
+                record = *resolved;
+            } else if (colourSpacesWarned_.insert(renderingColorSpace_).second) {
+                log::warn("hdAthenea: renderingColorSpace: {}", resolved.error().message());
+            }
+        }
+    }
+    device_->setWorkingSpace(record);
+}
+
 void Engine::setCloudShadowDensity(float density) {
     cloudShadowDensity_.store(std::clamp(density, 0.0F, 16.0F));
 }
@@ -1029,6 +1076,7 @@ Result<size_t> Engine::commit() {
         }
     } clock{std::chrono::steady_clock::now(), &lastCommitMs_};
     const std::lock_guard<std::mutex> held(guard_);
+    commitWorkingSpace();
     size_t uploaded = 0;
     for (auto& [id, entry] : materials_) {
         if (!entry.pending) {

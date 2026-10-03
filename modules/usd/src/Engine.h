@@ -414,6 +414,13 @@ public:
     /// the stage was opened from. A Hydra material network does not carry it,
     /// and a MaterialX network's `file` arrives exactly as the asset wrote it.
     void setAssetSearchPath(const std::filesystem::path& directory);
+    /// The active render settings' `renderingColorSpace` (UsdRenderSettings),
+    /// from Sync on any thread; empty where unauthored. Resolved at the next
+    /// commit into the working-space record the device binds
+    /// (colour::workingSpaceRecord). Only lin_rec709_scene is rendered in
+    /// yet: another name is warned of once and the frame stays in Rec.709.
+    void setRenderingColorSpace(const std::string& name);
+    [[nodiscard]] std::string renderingColorSpace() const;
     /// Paths a pixel a path traced frame gathers, and how many bounces each
     /// one takes after its first hit. One of each is what an interactive
     /// frame affords.
@@ -821,6 +828,14 @@ private:
     std::unique_ptr<material::MaterialCompiler> compiler_;
     bool                                      compilerFailed_ = false;
     std::unique_ptr<material::TextureStore>   textures_;
+    std::string                               renderingColorSpace_;          ///< as authored; under guard_
+    bool                                      renderingColorSpacePending_ = false;
+    std::set<std::string>                     colourSpacesWarned_;           ///< renderingColorSpace names refused
+    /// What the names of renderingColorSpace mean: the studio config's, as
+    /// the texture store's. Made at the first commit that has a name.
+    std::unique_ptr<colour::ColourCompiler>   colourNames_;
+    /// The renderingColorSpace pending, resolved; on the render thread.
+    void commitWorkingSpace();
     std::map<pxr::SdfPath, uint32_t>          materialRows_;     ///< into materialRecords_; absent: row 0, the fallback
     std::vector<std::string>                  materialSlotNames_;   ///< the extra primvar slots the blob was written for
     gpu::Buffer                               materialRecords_;
