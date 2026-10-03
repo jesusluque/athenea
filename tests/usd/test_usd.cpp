@@ -10258,6 +10258,90 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
     }
 }
 
+namespace {
+
+/// THE CARD AND THE QUAD the shading normal tests draw: a 4 x 4 square at
+/// z = 0, as a relit cloud (`card`) of gaussians a cell wide and flat or as a
+/// mesh of a grey diffuse paint, carrying the normal `kTiltedNormal` where
+/// `tilted`, under a prim scaled `scaleX` in x where that is not one, lit by
+/// a distant light turned `lightDegrees` about y, seen from z = 3.
+const char* const kTiltedNormal = "(0.573576, 0, 0.819152)";   // 35 degrees towards +x
+
+fs::path tiltedCardStage(const char* name, bool card, bool tilted, float scaleX = 1.0F,
+                         float lightDegrees = 40.0F) {
+    const char* kTilted = kTiltedNormal;
+    const fs::path path = scratch(name);
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
+    // Under a prim of that scale, where it is not one.
+    const bool scaled = scaleX != 1.0F;
+    if (scaled) {
+        out << "def Xform \"Scaled\"\n{\n    float3 xformOp:scale = (" << scaleX << ", 1, 1)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:scale\"]\n";
+    }
+    if (card) {
+        // A gaussian a cell, sigma a cell wide and flat, its albedo the
+        // mesh's 0.5 kept as a cloud keeps a colour (encoded, so
+        // 0.5 + SH0 * dc = 0.735357), relit.
+        const int side = 160;
+        const double cell = 4.0 / side;
+        out << "def ParticleField3DGaussianSplat \"Card\"\n{\n    point3f[] positions = [";
+        for (int k = 0; k < side * side; ++k) {
+            out << (k ? ", " : "") << "(" << (-2.0 + ((k % side) + 0.5) * cell) << ", "
+                << (-2.0 + ((k / side) + 0.5) * cell) << ", 0)";
+        }
+        out << "]\n    quatf[] orientations = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
+        out << "]\n    float3[] scales = [";
+        for (int k = 0; k < side * side; ++k) {
+            out << (k ? ", " : "") << "(" << cell << ", " << cell << ", " << 1.0e-4 * cell << ")";
+        }
+        out << "]\n    float[] opacities = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "0.99";
+        out << "]\n    uniform int radiance:sphericalHarmonicsDegree = 0\n"
+               "    float3[] radiance:sphericalHarmonicsCoefficients = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(0.834321, 0.834321, 0.834321)";
+        out << "]\n    bool primvars:athenea:splat:relight = 1\n";
+        if (tilted) {
+            out << "    normal3f[] primvars:athenea:splat:normal = [";
+            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << kTilted;
+            out << "] (\n        interpolation = \"vertex\"\n    )\n";
+        }
+        out << "}\n";
+        if (scaled) out << "}\n";
+    } else {
+        out << "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n";
+        if (tilted) {
+            out << "    normal3f[] normals = [" << kTilted << ", " << kTilted << ", " << kTilted << ", "
+                << kTilted << "] (\n        interpolation = \"vertex\"\n    )\n";
+        }
+        out << "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Looks/Paint>\n}\n";
+        if (scaled) out << "}\n";
+        out << "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
+               "            float inputs:roughness = 1\n"
+               "            float inputs:metallic = 0\n"
+               "            token outputs:surface\n        }\n    }\n}\n";
+    }
+    out << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 2\n"
+           "    bool inputs:shadow:enable = 0\n"
+           "    float3 xformOp:rotateXYZ = (0, " << lightDegrees << ", 0)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
+           "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+           "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+           "    float2 clippingRange = (0.1, 1000)\n"
+           "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    return path;
+}
+
+}   // namespace
+
 // A RELIT CONVERSION KEEPS THE RELIEF ITS NORMAL MAP DREW.
 //
 // mesh2splat stands each gaussian on its triangle, its disc's axis the face's
@@ -10274,69 +10358,7 @@ TEST_CASE("a relit card with a tilted shading normal renders like the tilted mes
     ATHENEA_REQUIRE_GPU(gpu);
     // A tilt of 35 degrees towards +x, and a light from 40 degrees that way:
     // the cosine is 0.996 with the tilt and 0.766 without.
-    const char* kTilted = "(0.573576, 0, 0.819152)";
-    const auto stage = [&](const char* name, bool card, bool tilted) {
-        const fs::path path = scratch(name);
-        std::ofstream out(path);
-        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
-        if (card) {
-            // A gaussian a cell, sigma a cell wide and flat, its albedo the
-            // mesh's 0.5 kept as a cloud keeps a colour (encoded, so
-            // 0.5 + SH0 * dc = 0.735357), relit.
-            const int side = 160;
-            const double cell = 4.0 / side;
-            out << "def ParticleField3DGaussianSplat \"Card\"\n{\n    point3f[] positions = [";
-            for (int k = 0; k < side * side; ++k) {
-                out << (k ? ", " : "") << "(" << (-2.0 + ((k % side) + 0.5) * cell) << ", "
-                    << (-2.0 + ((k / side) + 0.5) * cell) << ", 0)";
-            }
-            out << "]\n    quatf[] orientations = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
-            out << "]\n    float3[] scales = [";
-            for (int k = 0; k < side * side; ++k) {
-                out << (k ? ", " : "") << "(" << cell << ", " << cell << ", " << 1.0e-4 * cell << ")";
-            }
-            out << "]\n    float[] opacities = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "0.99";
-            out << "]\n    uniform int radiance:sphericalHarmonicsDegree = 0\n"
-                   "    float3[] radiance:sphericalHarmonicsCoefficients = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(0.834321, 0.834321, 0.834321)";
-            out << "]\n    bool primvars:athenea:splat:relight = 1\n";
-            if (tilted) {
-                out << "    normal3f[] primvars:athenea:splat:normal = [";
-                for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << kTilted;
-                out << "] (\n        interpolation = \"vertex\"\n    )\n";
-            }
-            out << "}\n";
-        } else {
-            out << "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
-                   "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
-                   "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n";
-            if (tilted) {
-                out << "    normal3f[] normals = [" << kTilted << ", " << kTilted << ", " << kTilted << ", "
-                    << kTilted << "] (\n        interpolation = \"vertex\"\n    )\n";
-            }
-            out << "    uniform token subdivisionScheme = \"none\"\n"
-                   "    rel material:binding = </Looks/Paint>\n}\n"
-                   "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
-                   "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
-                   "        def Shader \"Surface\"\n        {\n"
-                   "            uniform token info:id = \"UsdPreviewSurface\"\n"
-                   "            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
-                   "            float inputs:roughness = 1\n"
-                   "            float inputs:metallic = 0\n"
-                   "            token outputs:surface\n        }\n    }\n}\n";
-        }
-        out << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 2\n"
-               "    bool inputs:shadow:enable = 0\n"
-               "    float3 xformOp:rotateXYZ = (0, 40, 0)\n"
-               "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
-               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
-               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
-               "    float2 clippingRange = (0.1, 1000)\n"
-               "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
-        return path;
-    };
+    const auto stage = [&](const char* name, bool card, bool tilted) { return tiltedCardStage(name, card, tilted); };
     const fs::path meshTilted = stage("normals_mesh_tilted.usda", false, true);
     const fs::path meshFlat = stage("normals_mesh_flat.usda", false, false);
     const fs::path cardTilted = stage("normals_card_tilted.usda", true, true);
@@ -10377,5 +10399,44 @@ TEST_CASE("a relit card with a tilted shading normal renders like the tilted mes
         CHECK(flatPair.p99Relative < 0.08);
         // ... and the tilt is what tells the two meshes apart.
         CHECK(tiltedAgainstFlat.p99Relative > 0.2);
+    }
+}
+
+// A STORED NORMAL GOES TO THE WORLD AS A NORMAL.
+//
+// A prim scaled (2, 1, 1) stretches its card in x, and a normal tilted 35
+// degrees towards +x on it leans 19 degrees in the world -- the inverse
+// transpose, which is what the mesh's normals take -- where turned by the
+// rows as a direction it leant 54. Lit from straight above, that is a cosine
+// of 0.94 against 0.58: the stretched card must render like the stretched
+// mesh on both routes.
+TEST_CASE("a relit card's stored normal under a scale that is not uniform leans as the scaled mesh's",
+          "[usd][gpu][splat][relight][normals]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path mesh = tiltedCardStage("normals_mesh_stretched.usda", false, true, 2.0F, 0.0F);
+    const fs::path card = tiltedCardStage("normals_card_stretched.usda", true, true, 2.0F, 0.0F);
+    const uint32_t w = 160, h = 160;
+    for (const char* technique : {"raster", "rt"}) {
+        const auto draw = [&](const fs::path& path) {
+            auto renderer = usd::StageRenderer::open(path);
+            if (!renderer) FAIL(renderer.error().toString());
+            auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+            if (!image) FAIL(image.error().toString());
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(made);
+            return std::move(*made);
+        };
+        const gpu::Buffer m = draw(mesh);
+        const gpu::Buffer c = draw(card);
+        auto diff = render::compareHdr(*gpu->library, c, m, w, h);
+        REQUIRE(diff);
+        std::printf("  %s: the stretched card against the stretched mesh p99 %.3f relMSE %.2e\n", technique,
+                    diff->p99Relative, diff->relMse);
+        CHECK(diff->pixels == uint64_t{w} * h);
+        // As a direction the card was a cosine of 0.58 where the mesh is 0.94.
+        CHECK(diff->p99Relative < 0.08);
     }
 }

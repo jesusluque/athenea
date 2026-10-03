@@ -9048,6 +9048,14 @@ clear), so the surface does not open where the relief is steep, which is what
   lobe, the dome's irradiance, the transfer's sun share (`splatSunShare`,
   whose open hemisphere was the disc's while the transfer was baked over the
   shading normal's) and the shadow bits' horizon now read the same normal.
+  It goes to the world as a normal (`relightNormalToWorld`): the cofactor of
+  the instance's linear part -- columns `b x c`, `c x a`, `a x b` -- with the
+  determinant's sign put back for a mirror, made unit. Turned by the rows as
+  a direction (`relightDirectionToWorld`, as it first was), a prim scaled
+  (2, 1, 1) leant a 35-degree normal to 54 degrees where the mesh's inverse
+  transpose leans it to 19; the disc's axis, the normal where none is stored,
+  had the same fault. Both routes take it; directions -- the way out of a
+  glass -- stay directions.
 - **Skinning.** The skinner turns it by the same blend as the frame, and as a
   normal: `(M a) x (M b)` for two directions in its surface, which is
   `cof(M) n` -- the inverse transpose up to scale, and the same construction
@@ -9089,6 +9097,11 @@ Tests, each failing without its half of the change (checked by reverting it):
   card against the flat mesh 0.324. With the shading taking the disc's axis,
   the card against the tilted mesh was 0.229 and against the flat one 0.020:
   it rendered like a quad with no map.
+- `athenea_usd_tests "a relit card's stored normal under a scale*"`: the same
+  card and the same tilted mesh under a prim scaled (2, 1, 1), lit from
+  straight above, raster and traced: the card against the mesh p99 relative
+  under 0.08. Turned as a direction the card's cosine is 0.58 where the mesh's
+  is 0.94. (Pending a GPU run for the measured figures.)
 - `athenea_scene_tests "[normals]"`: 4096 discs whose normals lean 0.4 rad off
   their axes, skinned by a turn and by a stretch with shear; 0 of 4096 off the
   inverse transpose, 0 on the other side of their disc. Not turned, 4096 were

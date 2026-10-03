@@ -300,7 +300,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
                                params.hasNormals != 0, params.hasNormals != 0 ? normals[i] : 0u);
         SplatSurface surface;
         surface.position = relightToWorld(w0, w1, w2, posOpacity.xyz);
-        surface.normal = relightDirectionToWorld(w0, w1, w2, cloudNormal);
+        surface.normal = relightNormalToWorld(w0, w1, w2, cloudNormal);
         // What the cloud shows in this direction, decoded: the stored colours
         // are in the space a cloud is blended in and an albedo is light. The
         // harmonics are part of it -- a baked cloud keeps the body's own

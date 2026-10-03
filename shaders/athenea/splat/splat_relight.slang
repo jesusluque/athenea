@@ -712,11 +712,29 @@ public float3 relightToWorld(float4 row0, float4 row1, float4 row2, float3 p) {
     return float3(dot(row0, float4(p, 1.0)), dot(row1, float4(p, 1.0)), dot(row2, float4(p, 1.0)));
 }
 
-/// A direction of the cloud in the world. The same rows, which is exact for a
-/// rigid or uniformly scaled prim and skewed for any other -- the
-/// approximation the shadow kernel already makes, and a splat's normal is an
-/// approximation before this one touches it.
+/// A direction of the cloud in the world -- a ray, the way out of a glass --
+/// by the same rows, made unit. A normal is not a direction under a scale
+/// that is not uniform: relightNormalToWorld.
 public float3 relightDirectionToWorld(float4 row0, float4 row1, float4 row2, float3 v) {
     const float3 turned = float3(dot(row0.xyz, v), dot(row1.xyz, v), dot(row2.xyz, v));
+    return dot(turned, turned) > 1.0e-20 ? normalize(turned) : float3(0.0, 0.0, 1.0);
+}
+
+/// A NORMAL of the cloud in the world, by the same rows: not as a direction
+/// but by the inverse transpose, which keeps it perpendicular to the surface
+/// under any linear map. Up to a scale that is the cofactor matrix, whose
+/// columns are `b x c`, `c x a` and `a x b` for the columns `a`, `b`, `c` of
+/// the linear part -- what the skinner turns a normal with too. Taken as a
+/// direction, a card scaled (2, 1, 1) with its normal tilted 45 degrees in
+/// x tilted to 63 instead of 27. A mirror flips the cofactor against the
+/// inverse transpose, so the determinant's sign is put back: the normal stays
+/// on the side of the surface it was on, the eye's.
+public float3 relightNormalToWorld(float4 row0, float4 row1, float4 row2, float3 n) {
+    const float3 a = float3(row0.x, row1.x, row2.x);
+    const float3 b = float3(row0.y, row1.y, row2.y);
+    const float3 c = float3(row0.z, row1.z, row2.z);
+    const float3 bc = cross(b, c);
+    const float side = dot(a, bc) < 0.0 ? -1.0 : 1.0;
+    const float3 turned = side * (n.x * bc + n.y * cross(c, a) + n.z * cross(a, b));
     return dot(turned, turned) > 1.0e-20 ? normalize(turned) : float3(0.0, 0.0, 1.0);
 }
