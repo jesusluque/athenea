@@ -9129,6 +9129,20 @@ already took library roots. Only the compiler reads it: putting 1.39.5's
 libraries in USD's own search paths would hand them to the host's Storm,
 whose generators are 1.39.4's.
 
-Not done: a test. The override is exercised by the Blender spike (the
-default cube's material compiles and shades); a test would need a second
-MaterialX library tree in the build.
+A document hdMtlx builds carries the libraries of the host's USD
+(`importLibrary` in `HdMtlxCreateMtlxDocumentFromHdNetwork`), and the
+compiler used to copy it and import its own libraries after, skipping what
+was there: the host's 1.39.4 definitions and implementations stayed, and
+their source files were included beside 1.39.5's (`ClosureData` declared
+twice). Now a definition, implementation, typedef or definition graph the
+document shares with the compiler's libraries (same name, same kind) is
+dropped before they are imported, so the compiler's wins -- which also
+covers the UsdPreviewSurface graph the code used to remove by name. Only
+definitions: a material named `material` is not the typedef of that name.
+
+- `athenea_material_tests`: all pass (513 assertions, 9 cases).
+- `athenea_usd_tests "[materials]"`: all pass (281 assertions, 10 cases).
+
+Not done: a test of the override itself. It is exercised by the Blender
+spike (the default cube's material compiles and shades); a test would need
+a second MaterialX library tree in the build.

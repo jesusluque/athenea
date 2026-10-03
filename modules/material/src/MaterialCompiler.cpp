@@ -918,16 +918,34 @@ Result<CompiledMaterial> MaterialCompiler::compileDocument(const std::shared_ptr
     const bool ours = variant != ClosureVariant::GenglslReference;
     try {
         const mx::DocumentPtr given = std::static_pointer_cast<mx::Document>(document);
-        // A document built elsewhere (hdMtlx) knows the standard libraries but
-        // not the engine's implementations.
+        // A document built elsewhere (hdMtlx) carries the libraries its USD
+        // loaded but not the engine's implementations. Where the document
+        // and the compiler's libraries define the same element, the
+        // compiler's wins: the engine's UsdPreviewSurface graph over
+        // MaterialX's, and -- for a compiler given libraries of its own
+        // ($ATHENEA_MATERIALX_ROOT) -- its definitions and implementations
+        // over the host's older ones, whose source files would otherwise be
+        // included beside its own.
+        const mx::DocumentPtr& libraries = ours ? impl.libraries : impl.referenceLibraries;
         mx::DocumentPtr doc = mx::createDocument();
         doc->copyContentFrom(given);
-        if (ours && doc->getNodeGraph(kPreviewSurfaceGraph)) {
-            // hdMtlx's document brought MaterialX's graph; the engine's is in
-            // its libraries.
-            doc->removeNodeGraph(kPreviewSurfaceGraph);
+        const std::vector<mx::ElementPtr> children = doc->getChildren();   // a copy: removing changes the list
+        for (const mx::ElementPtr& child : children) {
+            if (!ours && child->getName() == kPreviewSurfaceGraph) {
+                continue;   // the reference keeps MaterialX's graph
+            }
+            // Library content only -- definitions, implementations and a
+            // definition's graph -- and only of the same kind: a material
+            // may be named like a library's typedef ("material").
+            const mx::ElementPtr theirs = libraries->getChild(child->getName());
+            const bool definition = child->isA<mx::NodeDef>() || child->isA<mx::Implementation>() ||
+                                    child->isA<mx::TypeDef>() ||
+                                    (child->isA<mx::NodeGraph>() && child->hasAttribute(mx::InterfaceElement::NODE_DEF_ATTRIBUTE));
+            if (definition && theirs && theirs->getCategory() == child->getCategory()) {
+                doc->removeChild(child->getName());
+            }
         }
-        doc->importLibrary(ours ? impl.libraries : impl.referenceLibraries);
+        doc->importLibrary(libraries);
         mx::TypedElementPtr renderable;
         if (!element.empty()) {
             renderable = doc->getDescendant(element) ? doc->getDescendant(element)->asA<mx::TypedElement>() : nullptr;
