@@ -430,11 +430,24 @@ float3 transferredBody(SplatSurface s, StructuredBuffer<uint> transfer, Structur
                        uint dome, bool withIndirect) {
     const uint base = dome * kEnvCoefficients;
     float3 sum = float3(0.0);
-    [unroll] for (uint k = 0; k < kEnvCoefficients; ++k) {
+    // DEGREE 3 (task TX, step 3): sixteen of each half against sixteen of
+    // the sky's.
+    if (transferDirectCount(s.transferCount) == 16u) {
+        [unroll] for (uint k = 0; k < 16u; ++k) {
+            sum += envSh[base + k].rgb * transferAt(transfer, s.transferBase, k);
+        }
+        if (withIndirect && transferIndirectCount(s.transferCount) == 48u) {
+            [unroll] for (uint k = 0; k < 16u; ++k) {
+                sum += envSh[base + k].rgb * transferRgbAt(transfer, s.transferBase + 16u + k * 3u);
+            }
+        }
+        return sum;
+    }
+    [unroll] for (uint k = 0; k < kEnvIrradianceCoefficients; ++k) {
         sum += envSh[base + k].rgb * transferAt(transfer, s.transferBase, k);
     }
     if (withIndirect && s.transferCount >= 36) {
-        [unroll] for (uint k = 0; k < kEnvCoefficients; ++k) {
+        [unroll] for (uint k = 0; k < kEnvIrradianceCoefficients; ++k) {
             const uint at = s.transferBase + 9 + k * 3;
             const float3 indirect = float3(transferAt(transfer, at, 0), transferAt(transfer, at, 1),
                                            transferAt(transfer, at, 2));
@@ -549,7 +562,7 @@ public float splatSunShare(SplatSurface s, StructuredBuffer<uint> transfer, floa
     float lit = 0.0;
     float open = 0.0;
     const float3 n = s.normal;
-    [unroll] for (uint k = 0; k < kEnvCoefficients; ++k) {
+    [unroll] for (uint k = 0; k < kEnvIrradianceCoefficients; ++k) {
         const float basis = envBasisValue(k, sunDirection);
         const float band = k == 0 ? 1.0 : (k < 4 ? (2.0 / 3.0) : 0.25);
         lit += transferAt(transfer, s.transferBase, k) * basis;

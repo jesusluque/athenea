@@ -403,6 +403,7 @@ recipe is §3.1 below.
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |
 | `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well |
+| `--transfer-degree` | 2 or 3 | 3 | with `--transfer`: the harmonics' degree, 16 coefficients direct and 48 indirect at 3, the first transfer's 9 and 27 at 2 |
 | `--transfer-cells` | 0, 16 or 32 | 16 | with `--transfer`: cells a side of the grid of open directions over the whole sphere (256 or 1024 bits a gaussian); 0 writes the first transfer's 8 x 8 over the half a gaussian faces |
 | `--skinned` | flag | off | carry the skeleton; forces `--no-bake` |
 | `--range` | `START:END[:STEP]` | the stage's own range | time codes a skinned cloud keeps |
@@ -1037,8 +1038,8 @@ showing the radiance it carries.
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
 | `primvars:athenea:splat:ior` | float | `0` |
-| `primvars:athenea:splat:transferDirect` | float[] ‹9 a gaussian› | — |
-| `primvars:athenea:splat:transferIndirect` | float[] ‹27 a gaussian› | — |
+| `primvars:athenea:splat:transferDirect` | float[] ‹9 or 16 a gaussian› | — |
+| `primvars:athenea:splat:transferIndirect` | float[] ‹27 or 48 a gaussian› | — |
 | `primvars:athenea:splat:transferReflected` | float[] ‹48 a gaussian› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 or 32 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
@@ -1069,7 +1070,10 @@ sky. Neither shows a **mesh** through the glass.
 The two transfer arrays are what `--transfer` writes instead: how much of any
 sky reaches the gaussian, direct and after a bounce, which the frame combines
 with the sky that is there. A cloud that has them needs no `litBody`, and
-there is no attribute saying so — carrying them is what says it.
+there is no attribute saying so — carrying them is what says it. Sixteen and
+forty-eight a gaussian are degree 3 (`--transfer-degree 3`, the default),
+dotted with sixteen harmonics of the sky; nine and twenty-seven are the first
+transfer's, read as they always were.
 `shadowBits` is written beside them: sixty-four bits a gaussian, one a cell of
 an 8 x 8 octahedral grid over the sphere in the cloud's own space, set where
 the bake's ray in that direction left the scene. It is what shadows the sun a

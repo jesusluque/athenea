@@ -926,6 +926,13 @@ times that indirect, 48 of field. `splatFieldCoupling` scales the field to a
 sky, `splatFieldAlong` reads it narrowed to a lobe, `splatIndirectAlong`
 reads the indirect half along a light (the sun's bounce).
 
+**Degree 3.** `technique::Environment` projects sixteen coefficients of each
+sky (`kEnvCoefficients`, `kEnvironmentCoefficients`), one thread each as
+before, so the first nine are the same sums; the irradiance and the first
+transfer read those nine (`kEnvIrradianceCoefficients`). A transfer of
+sixteen direct coefficients is dotted with all sixteen, as is its indirect
+half of forty-eight.
+
 **Saying otherwise about a prim.** The Cryptomatte id a gaussian carries is
 also a selection -- everything that came from one prim -- so
 `render::SplatOverride` is a row keyed on it: metallic, roughness,

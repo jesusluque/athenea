@@ -10961,6 +10961,84 @@ TEST_CASE("an unoccluded point transfers the cosine lobe, and that times a sky i
     CHECK(counts[2] == 0);       // and that sky reads as the sky
 }
 
+// AND AT DEGREE 3 (task TX, step 3): the clamped cosine lobe's band 3 is
+// zero, so an unoccluded point's sixteen coefficients are its first nine and
+// seven zeros, in a TX transfer's layout, whose coverage follows the
+// coefficients and whose cells and field follow that.
+TEST_CASE("an unoccluded point transfers the cosine lobe at degree 3, with nothing in band 3",
+          "[usd][gpu][mesh][bake][transfer][degree3]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("transfer_plane_degree3.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t count = 64;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = -1.5F + 3.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(count);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const uint32_t coefficients = 16;
+    auto baked = (*renderer)->bakePoints(rays, count, 0.0, 1024, 2, 3, /*transfer=*/true, nullptr, 16);
+    if (!baked) FAIL(baked.error().toString());
+    const uint32_t entries = coefficients + technique::transferPlanes(true, 16);
+    REQUIRE(baked->size() == size_t{count} * entries * 4);
+    gpu::BufferDesc desc;
+    desc.bytes = baked->size() * 4;
+    desc.elementBytes = 16;
+    auto values = gpu::Buffer::create(*gpu->device, desc, baked->data());
+    REQUIRE(values);
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "transfer3.stats");
+    const std::array<float, 8> zeros{};
+    gpu::BufferDesc worstDesc;
+    worstDesc.bytes = sizeof(zeros);
+    worstDesc.elementBytes = sizeof(float);
+    auto worst = gpu::Buffer::create(*gpu->device, worstDesc, zeros.data());
+    REQUIRE(worst);
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/transfer_check");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["baked"].setBinding(values->rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            cursor["worst"].setBinding(worst->rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            p["entries"].setData(entries);
+            p["coefficients"].setData(coefficients);
+            p["tolerance"].setData(0.03F);
+            const float normal[3] = {0.0F, 0.0F, 1.0F};
+            p["normal"].setData(normal, sizeof(normal));
+            p["skyRadiance"].setData(0.7F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    std::printf("  degree 3: %u points, %u beyond (worst coefficient %.4f), %u found nothing, sky worst %.4f\n",
+                counts[1], counts[0], double(counts[4]) * 1.0e-6, counts[3], double(counts[5]) * 1.0e-6);
+    CHECK(counts[1] == count);
+    CHECK(counts[3] == 0);
+    CHECK(counts[0] == 0);
+    CHECK(counts[2] == 0);
+}
+
 // WHICH WAYS OUT ARE OPEN IS A SHADOW WITH AN EDGE.
 //
 // The transfer is degree 2: it knows how much of the sky a point sees and

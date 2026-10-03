@@ -1074,6 +1074,19 @@ TEST_CASE("a TX transfer's reflected field reads back, and couples to a sky line
     CHECK(counts[0] == 0);
     CHECK(counts[1] == 0);
     CHECK(counts[2] == 0);
+    // And the sky's basis is the bake's to degree 3 (step 3), which nothing
+    // held before: the two were kept equal to degree 2 by hand.
+    auto basis = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "basisCheck");
+    if (!basis) FAIL(basis.error().toString());
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        basis->dispatch(batch, {64, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    std::printf("  the basis: %u readings, %u where the sky's and the bake's differ\n", counts[7], counts[6]);
+    CHECK(counts[7] == 64 * 16);
+    CHECK(counts[6] == 0);
 }
 
 // GLASS SENDS ON WHAT IT DID NOT REFLECT, AND NOT MORE.

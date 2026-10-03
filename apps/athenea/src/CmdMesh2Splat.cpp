@@ -181,9 +181,10 @@ struct Options {
     /// what a reflection's occlusion and a glass's view through are read from
     /// (task TX); 0, the first transfer's 64 over the half a gaussian faces.
     uint32_t                 transferCells = 16;
-    /// THE TRANSFER'S DEGREE: 2 (nine coefficients direct, twenty-seven
-    /// indirect, the first transfer's) or 3 (sixteen and forty-eight).
-    uint32_t                 transferDegree = 2;
+    /// THE TRANSFER'S DEGREE: 3 (sixteen coefficients direct, forty-eight
+    /// indirect: task TX, step 3), or 2 (nine and twenty-seven, the first
+    /// transfer's).
+    uint32_t                 transferDegree = 3;
     /// PATHS A GAUSSIAN, 256 on average since every gaussian is blended in
     /// linear light: these everywhere, then `bakeExtra` more shared out
     /// where the noise is (docs/decisions.md, "The bake's grain"). A transfer
@@ -1986,6 +1987,10 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--transfer", o->transfer,
                   "bake how much of an environment reaches each gaussian instead of the light itself, "
                   "so the cloud can be lit by any sky (excludes the radiance bake)");
+    cmd->add_option("--transfer-degree", o->transferDegree,
+                    "--transfer: the harmonics' degree, 3 (16 coefficients direct, 48 indirect) or 2 (9 and 27, "
+                    "the first transfer's)")
+        ->check(CLI::IsMember({2u, 3u}));
     cmd->add_option("--transfer-cells", o->transferCells,
                     "--transfer: cells a side of the grid of open directions over the whole sphere, 16 or 32; "
                     "0 keeps the first transfer's 8 x 8 over the half a gaussian faces")

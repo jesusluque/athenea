@@ -54,7 +54,7 @@ inline constexpr uint32_t kEnvironmentFloorSide = 16;
 /// How wide level 0 is allowed to be: where a 4k sky lands, and what holds a
 /// slice to 45 MB.
 inline constexpr uint32_t kEnvironmentWidestSide = 2048;
-inline constexpr uint32_t kEnvironmentCoefficients = 9;
+inline constexpr uint32_t kEnvironmentCoefficients = 16;   // degree 3 (environment.slang)
 /// The light a slice was prepared for, when it was not prepared at all.
 inline constexpr uint32_t kEnvironmentNone = 0xFFFFFFFFU;
 

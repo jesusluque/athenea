@@ -347,7 +347,7 @@ foreach(material paint chrome rubber glass)
     foreach(mode tx first)
         set(flags --transfer --bake-samples 256 --bake-extra 0 --prim /World/Ball)
         if(mode STREQUAL "first")
-            list(APPEND flags --transfer-cells 0)
+            list(APPEND flags --transfer-cells 0 --transfer-degree 2)
         endif()
         add_test(NAME mesh2splat_tx_${material}_${mode}
             COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/${material}.usda ${flags} --no-camera

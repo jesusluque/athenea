@@ -16,6 +16,7 @@
 // where the field holds nothing.
 module field_check;
 import athenea.splat.splat_relight;
+import athenea.common.sh;
 
 struct FieldParams {
     uint  count;        ///< points (fieldBakeCheck)
@@ -155,4 +156,24 @@ void fieldBakeCheck(uint3 tid: SV_DispatchThreadID) {
     uint dummy;
     InterlockedMax(stats[4], asuint(error), dummy);
     InterlockedMax(stats[5], asuint(max(upRead, 0.0)), dummy);
+}
+
+/// THE SKY'S BASIS IS THE BAKE'S, to degree 3: `envBasisValue`, which the sky
+/// is projected on and a frame reads, against `shBasisValue`, which the bake
+/// projects a transfer and its field on. stats[6] terms off, stats[7] readings.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void basisCheck(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= 64u) {
+        return;
+    }
+    const float theta = 3.14159265 * (float(tid.x) + 0.5) / 64.0;
+    const float phi = 2.39996323 * float(tid.x);
+    const float3 d = float3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+    for (uint k = 0; k < 16u; ++k) {
+        if (abs(envBasisValue(k, d) - shBasisValue(k, d)) > 1.0e-5) {
+            InterlockedAdd(stats[6], 1u);
+        }
+        InterlockedAdd(stats[7], 1u);
+    }
 }

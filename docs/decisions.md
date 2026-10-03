@@ -11420,3 +11420,30 @@ black floor beside a grey wall reads the wall's closed form, half its
 albedo, toward it and next to nothing straight up ([field] in
 athenea_usd_tests); the balls on a ground again (paint and chrome must now
 reflect the ground).
+
+### Step 3: degree 3, and a maximum level to measure against
+
+**Degree 3** is now a TX transfer's default (`--transfer-degree 3`): sixteen
+coefficients of the direct half and forty-eight of the indirect, against
+sixteen of the sky's. The bake already fitted sixteen; the sky did not, so
+`env_project` now projects sixteen a dome -- each coefficient its own
+thread's sum, as before, so the first nine are bit for bit what they were,
+and the irradiance and the first transfer read only those
+(`kEnvIrradianceCoefficients`). The clamped cosine's band 3 is zero, so an
+unoccluded gaussian gains nothing; what degree 3 adds is where visibility is
+not smooth -- a collar, a door's edge over the sill -- which degree 2 rounds
+to a sixty-degree smear. `environment.slang`'s basis is held equal to the
+bake's to degree 3 by a test, where it was kept equal to degree 2 by hand.
+
+**The maximum level** proposal 028 asks to be measured as well: degree 4 in
+the direct half and 32 x 32 cells. The cells are there (`--transfer-cells
+32`, 1024 rays a gaussian). Degree 4 is not: the bake's sums are sized for
+sixteen coefficients in a kernel that is already at Metal's limits, and the
+measurement on paint and chrome decides whether it is worth the 25-wide sums
+-- the cells, not the harmonics, are what a reflection now reads its edges
+from.
+
+**Checked** (pending the GPU turn): an unoccluded point's sixteen
+coefficients are the clamped cosine's, with nothing in band 3, in the TX
+layout ([degree3] in athenea_usd_tests); the two bases equal to degree 3
+([field] in athenea_render_tests).

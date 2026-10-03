@@ -408,6 +408,7 @@ receta es §3.1.
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
 | `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó |
+| `--transfer-degree` | 2 o 3 | 3 | con `--transfer`: el grado de los armónicos, 16 coeficientes directos y 48 indirectos con 3, los 9 y 27 del primer transfer con 2 |
 | `--transfer-cells` | 0, 16 o 32 | 16 | con `--transfer`: celdas por lado de la rejilla de direcciones abiertas sobre la esfera entera (256 o 1024 bits por gaussiana); 0 escribe la de 8 x 8 del primer transfer sobre la mitad a la que mira la gaussiana |
 | `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake` |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
@@ -1055,8 +1056,8 @@ la radiancia que lleva.
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
 | `primvars:athenea:splat:ior` | float | `0` |
-| `primvars:athenea:splat:transferDirect` | float[] ‹9 por gaussiana› | — |
-| `primvars:athenea:splat:transferIndirect` | float[] ‹27 por gaussiana› | — |
+| `primvars:athenea:splat:transferDirect` | float[] ‹9 o 16 por gaussiana› | — |
+| `primvars:athenea:splat:transferIndirect` | float[] ‹27 o 48 por gaussiana› | — |
 | `primvars:athenea:splat:transferReflected` | float[] ‹48 por gaussiana› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 o 32 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
@@ -1090,7 +1091,10 @@ Los dos arrays de transfer son lo que escribe `--transfer` en su lugar: cuánto
 de cualquier cielo llega a la gaussiana, directo y tras un rebote, que el
 frame combina con el cielo que hay. Una nube que los lleva no necesita
 `litBody`, y no hay ningún atributo que lo diga: llevarlos es lo que lo
-dice.
+dice. Dieciséis y cuarenta y ocho por gaussiana son grado 3
+(`--transfer-degree 3`, el valor por omisión), multiplicados por dieciséis
+armónicos del cielo; nueve y veintisiete son los del primer transfer, que se
+leen como siempre.
 `shadowBits` se escribe a su lado: sesenta y cuatro bits por gaussiana, uno por
 celda de una rejilla octaédrica de 8 x 8 sobre la esfera en el espacio propio
 de la nube, puesto donde el rayo del bake en esa dirección salió de la escena.

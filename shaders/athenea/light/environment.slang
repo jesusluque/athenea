@@ -52,8 +52,14 @@ public static const uint  kEnvLevels = 8;
 public static const uint  kEnvCoarseSide = 256;
 /// The floor under every level.
 public static const uint  kEnvFloorSide = 16;
-/// Coefficients kept: degree 2.
-public static const uint  kEnvCoefficients = 9;
+/// Coefficients kept: degree 3, which a TX transfer's sixteen are dotted
+/// with (docs/decisions.md, task TX, step 3). The irradiance and the first
+/// transfer read the first nine (`kEnvIrradianceCoefficients`), whose values
+/// are what they were: each coefficient is its own sum.
+public static const uint  kEnvCoefficients = 16;
+/// Degree 2: what a diffuse surface's irradiance needs, the clamped cosine's
+/// band 3 being zero.
+public static const uint  kEnvIrradianceCoefficients = 9;
 /// No environment prepared for this light.
 public static const uint  kEnvNone = 0xFFFFFFFFu;
 
@@ -154,7 +160,7 @@ public float envBandWeight(uint k) {
 public float3 envIrradiance(StructuredBuffer<float4> sh, uint dome, float3 n) {
     const uint base = dome * kEnvCoefficients;
     float3 e = float3(0.0);
-    [unroll] for (uint k = 0; k < kEnvCoefficients; ++k) {
+    [unroll] for (uint k = 0; k < kEnvIrradianceCoefficients; ++k) {
         e += sh[base + k].rgb * (envBandWeight(k) * envBasisValue(k, n));
     }
     return e;

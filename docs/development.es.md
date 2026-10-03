@@ -971,6 +971,13 @@ indirectos, 48 de campo. `splatFieldCoupling` escala el campo a un cielo,
 `splatFieldAlong` lo lee estrechado a un lóbulo y `splatIndirectAlong` lee la
 mitad indirecta a lo largo de una luz (el rebote del sol).
 
+**Grado 3.** `technique::Environment` proyecta dieciséis coeficientes de cada
+cielo (`kEnvCoefficients`, `kEnvironmentCoefficients`), un hilo por cada uno
+como antes, así que los nueve primeros son las mismas sumas; la irradiancia y
+el primer transfer leen esos nueve (`kEnvIrradianceCoefficients`). Un transfer
+de dieciséis coeficientes directos se multiplica por los dieciséis, igual que
+su mitad indirecta de cuarenta y ocho.
+
 **Decir otra cosa de un prim.** El id de Cryptomatte que lleva una gaussiana
 es también una selección -- todo lo que vino de un mismo prim -- así que
 `render::SplatOverride` es una fila con ese id como clave: metallic,
