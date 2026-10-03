@@ -69,6 +69,7 @@ void RasterKernel::run(CommandBatch& batch, const RasterPass& pass, std::span<co
         }
         if (draw.bind || !shared) {
             rhi::IShaderObject* root = encoder->bindPipeline(pipeline_.get());
+            bindWorkingSpace(rhi::ShaderCursor(root), batch.device().workingSpace());
             if (pass.bind) {
                 pass.bind(rhi::ShaderCursor(root));
             }

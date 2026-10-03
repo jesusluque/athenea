@@ -141,7 +141,8 @@ comprobación.
   cada splat conservado. Cualquier otra cosa que un fichero guarde por
   gaussiana y un kernel lea por splat pasa por `CloudLoader::keptOnly`, y de
   vuelta por `toRecords` para escribirse.
-- **Todo splat se mezcla en luz lineal**, Rec.709 lineal, como las mallas, los
+- **Todo splat se mezcla en luz lineal**, en el espacio de trabajo (Rec.709
+  lineal por defecto), como las mallas, los
   puntos y las luces; el sRGB sólo aparece donde se enseña una imagen
   (`DisplayTransform`, OpenColorIO). Una nube dice en qué espacio están sus
   colores (`GpuSplats::linear`, `primvars:athenea:splat:linear`): los de una
@@ -151,6 +152,16 @@ comprobación.
   las de las referencias. Nada después decodifica ni codifica un color: ni la
   mezcla, ni la reiluminación, ni un grade, ni un bake. Todo lo que copia una
   nube copia el flag.
+- **Ningún kernel escribe Rec.709 dentro.** Una luminancia, un color dado en
+  CIE XYZ, el sRGB decodificado de una captura: un kernel se lo pide a
+  `common/working_space.slang` (`workingLuminance`, `workingFromXyz`,
+  `workingFromSrgbLinear`), que lee el uniform `gWorkingSpace`. Todo tipo de
+  kernel lo enlaza por nombre al despachar desde `Device::workingSpace()`
+  (`gpu/WorkingSpace.h`), así que un kernel nuevo no hace nada para tenerlo.
+  Es un uniform y no un buffer: va en el bloque de constantes global que
+  llenan los uniforms del propio kernel, y un kernel en el límite de 31
+  buffers de Metal no lo nota. Un kernel de comprobación que compara dentro
+  de un mismo espacio puede quedarse con sus propios pesos.
 - Un fichero declara `module <nombre>;` igual que su nombre de fichero. Un
   hermano se importa a secas (`import frame;`), otra área por su ruta con
   puntos (`import athenea.common.packing;`). Todo lo que use otro módulo va

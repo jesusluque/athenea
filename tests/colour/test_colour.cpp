@@ -12,6 +12,8 @@
 #include <fstream>
 
 #include "athenea/colour/ColourCompiler.h"
+#include "athenea/colour/WorkingSpace.h"
+#include "athenea/gpu/WorkingSpace.h"
 
 using namespace athenea;
 namespace fs = std::filesystem;
@@ -241,4 +243,58 @@ TEST_CASE("a colour space the config in use lacks is reached through the studio 
                 double(agreement.worst));
     CHECK(agreement.colours == count);
     CHECK(agreement.worst < 1e-5F);
+}
+
+/// Phase 2a: the kernels read Rec.709's numbers from the working-space
+/// record, and the record of lin_rec709_scene is those numbers. The kernel
+/// holds the record the device binds against the literals, word by word,
+/// and every function that reads it against the expression it replaced --
+/// blackbody, a capture's decode, the edit's grade, a luminance, the XYZ
+/// matrix -- by their bits, over 4096 colours and temperatures.
+TEST_CASE("the working-space record of lin_rec709_scene holds the constants the kernels held, to the bit",
+          "[colour][working_space]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    CHECK(gpu->device->workingSpace() == gpu::linRec709Scene());
+    auto kernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/working_space_check", "workingSpaceCheck");
+    if (!kernel) FAIL(kernel.error().toString());
+    const uint32_t count = 4096;
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 7, "counts");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kernel->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["count"].setData(count);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t c[7] = {};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+    std::printf("  record words off %u; differing: blackbody %u, cloudLight %u, editGrade %u, luminance %u, "
+                "matrices %u; threads %u\n", c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
+    CHECK(c[0] == 0);
+    CHECK(c[1] == 0);
+    CHECK(c[2] == 0);
+    CHECK(c[3] == 0);
+    CHECK(c[4] == 0);
+    CHECK(c[5] == 0);
+    CHECK(c[6] == count);
+}
+
+TEST_CASE("a working space is named as any colour space, and only linear Rec.709 is rendered in yet",
+          "[colour][working_space][names]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto compiler = colour::ColourCompiler::create(*gpu->library);
+    if (!compiler) FAIL(compiler.error().toString());
+    const colour::ColourNames& names = (*compiler)->names();
+    for (const char* rec709 : {"", "auto", "lin_rec709_scene", "lin_rec709", "Linear Rec.709 (sRGB)"}) {
+        auto record = colour::workingSpaceRecord(names, rec709);
+        INFO(rec709);
+        REQUIRE(record);
+        CHECK(*record == gpu::linRec709Scene());
+    }
+    for (const char* other : {"acescg", "lin_ap1_scene", "raw", "srgb_texture", "no such space"}) {
+        auto record = colour::workingSpaceRecord(names, other);
+        INFO(other);
+        CHECK(!record);
+    }
 }

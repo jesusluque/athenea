@@ -10,6 +10,7 @@ athenea_add_module(gpu
         src/Texture.cpp
         src/RasterKernel.cpp
         src/RayTracingKernel.cpp
+        src/WorkingSpace.cpp
         src/algo/Mips.cpp
         src/algo/PrefixSum.cpp
         src/algo/RadixSort.cpp

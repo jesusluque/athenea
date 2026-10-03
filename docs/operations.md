@@ -902,6 +902,12 @@ sRGB unless the file says otherwise, anything else linear. A name nothing
 knows is warned of once and the file is read as it says. Without OpenColorIO
 in the build only sRGB, linear Rec.709 and data are known.
 
+The working space is linear Rec.709 (`lin_rec709_scene`). A
+`UsdRenderSettings` prim's `renderingColorSpace` is read, by the same names:
+linear Rec.709 under any of them, or none authored, renders as always;
+another space is not rendered in yet, and is warned of once while the frame
+is drawn in Rec.709.
+
 `athenea view --snapshot` writes the frame **as shown**, display-encoded and with
 the panels in it. It is a screenshot, not a render output.
 
@@ -1498,6 +1504,7 @@ A script's own header says what it needs and where it puts things.
 |---|---|---|
 | `no GPU device` (tests skip) | no device could be opened | check `athenea info`; on Linux set `ATHENEA_BACKEND` |
 | `colour: no colour space '<name>' in <config>; read as the file says` | a texture names a colour space neither the config nor the studio config knows | correct the name (`athenea info` says whether OpenColorIO is built in); the texture is read as if no colour space were given |
+| `hdAthenea: renderingColorSpace: colour: '<name>' as the working space is ...; rendering in lin_rec709_scene` | the stage's render settings ask for a working space other than linear Rec.709, which is not rendered in yet | nothing: the frame is linear Rec.709, as without the setting. Author `lin_rec709_scene`, or none, to silence it |
 | `no Measure bundle on the AOFX search path` | `athenea compare` found no `rt.sparrow.aofx.measure` | build the `athenea_aofx_measure` target, or give its directory with `--path` |
 | `measure: an empty window` | `athenea compare --window` (or the effect's `window`) holds no pixel | give X0 < X1 and Y0 < Y1 inside the image |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |

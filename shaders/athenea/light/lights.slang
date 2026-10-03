@@ -6,6 +6,7 @@
 // colour is derived here, not on the host -- exposure, and the blackbody of a
 // colour temperature -- so a record carries what USD authored.
 module lights;
+import athenea.common.working_space;
 // Nothing here reads a texture: a dome is its colour. The image, and the warp
 // that samples by it, live in athenea/light/lights_image.slang, which the kernels
 // that have a texture table import instead. That way a kernel without one --
@@ -248,7 +249,9 @@ public float3 lightAxisZ(LightRecord l) { return normalize(float3(l.row0.z, l.ro
 public float3 lightOrigin(LightRecord l) { return float3(l.row0.w, l.row1.w, l.row2.w); }
 
 /// Planck's law through the CIE curves, as a colour normalised to luminance
-/// 1: the analytic fit USD's own renderers use (Krystek's uv, then sRGB).
+/// 1: the analytic fit USD's own renderers use (Krystek's uv, then the
+/// working space's XYZ matrix and luminance -- for lin_rec709_scene, linear
+/// sRGB and BT.709's weights).
 public float3 blackbody(float kelvin) {
     const float t = clamp(kelvin, 1000.0, 15000.0);
     const float t2 = t * t;
@@ -262,12 +265,9 @@ public float3 blackbody(float kelvin) {
     const float y = 2.0 * v / denominator;
     const float z = 1.0 - x - y;
     const float3 xyz = float3(x / max(y, 1e-6), 1.0, z / max(y, 1e-6));
-    // XYZ to linear sRGB.
-    const float3 rgb = float3(dot(float3(3.2404542, -1.5371385, -0.4985314), xyz),
-                              dot(float3(-0.9692660, 1.8760108, 0.0415560), xyz),
-                              dot(float3(0.0556434, -0.2040259, 1.0572252), xyz));
+    const float3 rgb = workingFromXyz(xyz);
     const float3 positive = max(rgb, float3(0.0));
-    const float luminance = dot(float3(0.2126, 0.7152, 0.0722), positive);
+    const float luminance = workingLuminance(positive);
     return luminance > 0.0 ? positive / luminance : float3(1.0);
 }
 

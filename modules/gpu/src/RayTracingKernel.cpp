@@ -76,6 +76,7 @@ void RayTracingKernel::dispatch(CommandBatch& batch, uint32_t width, uint32_t he
     }
     rhi::IRayTracingPassEncoder* pass = batch.encoder()->beginRayTracingPass();
     rhi::IShaderObject* root = pass->bindPipeline(pipeline_.get(), table_.get());
+    bindWorkingSpace(rhi::ShaderCursor(root), batch.device().workingSpace());
     if (bind) {
         bind(rhi::ShaderCursor(root));
     }

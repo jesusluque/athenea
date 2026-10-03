@@ -7,6 +7,7 @@ athenea_add_module(colour
     SOURCES
         src/ColourCompiler.cpp
         src/ColourNames.cpp
+        src/WorkingSpace.cpp
     PUBLIC_LIBS
         athenea::core
         athenea::gpu)

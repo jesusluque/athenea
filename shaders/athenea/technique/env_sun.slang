@@ -24,6 +24,7 @@
 module env_sun;
 import athenea.light.lights_image;
 import athenea.light.environment;
+import athenea.common.working_space;
 
 /// 4096 cells, about 1.8 degrees each: a sun of half a degree lands in one,
 /// and an overcast lands in none.
@@ -122,7 +123,7 @@ void envSun(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint cells = kSunCells * kSunCells;
-    const float3 grey = float3(0.2126, 0.7152, 0.0722);
+    const float3 grey = workingLuminanceWeights();
     const float3 emission = lightEmission(light);
 
     // The brightest cell, and the sky's mean luminance beside it -- the mean

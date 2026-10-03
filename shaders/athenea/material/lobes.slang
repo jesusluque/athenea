@@ -13,6 +13,7 @@
 module lobes;
 __exported import sampling;
 __exported import microfacet;
+import athenea.common.working_space;
 
 public static const uint kLobeNone = 0;
 public static const uint kLobeOrenNayar = 1;
@@ -82,8 +83,6 @@ public struct LobeSample {
     public bool   delta;
     public bool   valid;
 };
-
-static const float3 kLuminance = float3(0.2126, 0.7152, 0.0722);
 
 bool smooth(float2 alpha) {
     return max(alpha.x, alpha.y) < 1e-3;
@@ -269,7 +268,7 @@ HairState hairState(Lobe lobe, float3 wo) {
     h.ap[3] *= tintTRT;
     float total = 0.0;
     for (int p = 0; p < 4; ++p) {
-        h.apPdf[p] = dot(h.ap[p], kLuminance);
+        h.apPdf[p] = workingLuminance(h.ap[p]);
         total += h.apPdf[p];
     }
     for (int p = 0; p < 4; ++p) {
@@ -794,7 +793,7 @@ public LobeStack emptyStack() {
 }
 
 float selectionWeight(Lobe lobe, float3 wo) {
-    return max(dot(lobe.weight * lobeAlbedo(lobe, wo), kLuminance), 0.0);
+    return max(workingLuminance(lobe.weight * lobeAlbedo(lobe, wo)), 0.0);
 }
 
 public float3 stackEval(LobeStack stack, float3 wo, float3 wi) {

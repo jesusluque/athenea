@@ -5,6 +5,7 @@
 module points_decode;
 import athenea.common.color;
 import athenea.common.packing;
+import athenea.common.working_space;
 
 struct PointParams {
     uint  count;
@@ -32,7 +33,7 @@ void pointsDecode(uint3 tid: SV_DispatchThreadID) {
     positions[j] = float4(raw[at], raw[at + 1], raw[at + 2], 1.0);
     float3 rgb = float3(1.0);
     if (params.colourKind == 1) {
-        rgb = srgbToLinear(float3(raw[at + 3], raw[at + 4], raw[at + 5]) / 255.0);
+        rgb = workingFromSrgbLinear(srgbToLinear(float3(raw[at + 3], raw[at + 4], raw[at + 5]) / 255.0));
     } else if (params.colourKind == 2) {
         rgb = float3(raw[at + 3], raw[at + 4], raw[at + 5]);
     }

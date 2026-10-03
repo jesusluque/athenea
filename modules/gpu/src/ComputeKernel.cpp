@@ -32,6 +32,7 @@ void ComputeKernel::dispatch(CommandBatch& batch, std::array<uint32_t, 3> thread
     }
     rhi::IComputePassEncoder* pass = batch.encoder()->beginComputePass();
     rhi::IShaderObject* root = pass->bindPipeline(pipeline_.get());
+    bindWorkingSpace(rhi::ShaderCursor(root), batch.device().workingSpace());
     if (bind) {
         bind(rhi::ShaderCursor(root));
     }

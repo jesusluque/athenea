@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 module color;
+import athenea.common.working_space;
 
 /// The sRGB curve, extended past 1: a trained cloud's colours are not bounded
 /// to the display, and clamping here clips every highlight the scene has
@@ -28,16 +29,17 @@ public float3 linearToSrgb(float3 c) {
 
 /// WHAT A SPLAT'S EVALUATED HARMONICS ARE IN LINEAR LIGHT.
 ///
-/// Every gaussian is blended in the working space, linear Rec.709, and sRGB
-/// appears only where an image is shown. A cloud says which space its
-/// colours were written in: a capture (PLY, SPZ, SOG, .splat, a
-/// ParticleField that does not say) was trained on sRGB photographs, so its
-/// colours are sRGB and are decoded here, one splat at a time; a cloud this
-/// engine wrote (`athenea mesh2splat`, an export, a bake) holds light and is
-/// taken as it is (`GpuSplats::linear`, `primvars:athenea:splat:linear`).
+/// Every gaussian is blended in the working space (common/working_space.slang;
+/// linear Rec.709 by default), and sRGB appears only where an image is
+/// shown. A cloud says which space its colours were written in: a capture
+/// (PLY, SPZ, SOG, .splat, a ParticleField that does not say) was trained on
+/// sRGB photographs, so its colours are sRGB and are decoded here, one splat
+/// at a time, and brought from Rec.709's primaries to the working space's; a
+/// cloud this engine wrote (`athenea mesh2splat`, an export, a bake) holds
+/// light and is taken as it is (`GpuSplats::linear`, `primvars:athenea:splat:linear`).
 /// Negative values -- harmonics ringing below zero -- are no light either way.
 public float3 cloudLight(float3 c, bool linearCloud) {
-    return linearCloud ? max(c, float3(0.0)) : srgbToLinear(c);
+    return linearCloud ? max(c, float3(0.0)) : workingFromSrgbLinear(srgbToLinear(c));
 }
 
 public float hash01(uint v) {

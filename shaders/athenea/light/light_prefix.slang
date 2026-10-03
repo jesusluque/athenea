@@ -24,15 +24,14 @@
 // were the size of a unit.
 module light_prefix;
 import athenea.light.lights;
+import athenea.common.working_space;
 
 RWStructuredBuffer<LightRecord> records;
 uniform uint                    count;
 uniform float                   sceneRadius;   // the scene's reach, in its units
 
-static const float3 kPrefixLuminance = float3(0.2126, 0.7152, 0.0722);
-
 float powerOf(LightRecord l) {
-    float power = max(dot(l.colour, kPrefixLuminance), 0.0) * exp2(l.exposure);
+    float power = max(workingLuminance(l.colour), 0.0) * exp2(l.exposure);
     const bool normalized = (l.flags & kLightNormalize) != 0;
     switch (l.kind) {
     case kLightDome:     power *= 3.14159265358979 * sceneRadius * sceneRadius; break;

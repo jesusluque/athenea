@@ -11,6 +11,7 @@
 module lights_image;
 __exported import athenea.light.lights;
 __exported import athenea.material.material_inputs;
+import athenea.common.working_space;
 
 /// A dome's image along `wi`, white where it has none.
 public float3 domeImage(LightRecord l, float3 wi) {
@@ -33,7 +34,7 @@ public float domeTexelOf(LightRecord l, int2 xy, uint level) {
     const int2 size = int2(max(int(record.width) >> level, 1), max(int(record.height) >> level, 1));
     const int2 at = clamp(xy, int2(0, 0), size - 1);
     const float3 rgb = gTextures.textures[record.slot].Load(int3(at, int(level))).rgb;
-    return dot(rgb, float3(0.2126, 0.7152, 0.0722));
+    return workingLuminance(rgb);
 }
 
 /// The same by uv, for a density that is asked about a direction.

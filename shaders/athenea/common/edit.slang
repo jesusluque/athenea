@@ -19,6 +19,7 @@
 //   colour, in linear light (whatever space the cloud keeps it in), *= tint *
 //   brightness, then lerped from its Rec.709 luminance by saturation.
 module edit;
+import athenea.common.working_space;
 
 public struct EditParams {
     public uint  active;
@@ -79,12 +80,12 @@ public EditFate editFate(EditParams e, float3 position, float opacity, float3 sc
 
 /// The grade, on a splat's colour in linear light: every splat is made
 /// linear before it is graded and blended (common/color.slang, `cloudLight`),
-/// so a brightness of 2 is twice the light, and the Rec.709 weights below are
-/// a luminance and not a luma of encoded values. (It used to run on a
+/// so a brightness of 2 is twice the light, and the working space's weights
+/// below are a luminance and not a luma of encoded values. (It used to run on a
 /// capture's sRGB; the same numbers now grade a little differently, and
 /// openFXplayer, which shares the edit, grades encoded until it follows.)
 public float3 editGrade(EditParams e, float3 colour) {
     float3 c = colour * float3(e.tintR, e.tintG, e.tintB) * e.brightness;
-    const float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
+    const float luma = workingLuminance(c);
     return max(lerp(float3(luma), c, e.saturation), 0.0);
 }

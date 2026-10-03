@@ -21,6 +21,7 @@ public:
     ~CommandBatch();
 
     [[nodiscard]] rhi::ICommandEncoder* encoder() noexcept { return encoder_.get(); }
+    [[nodiscard]] Device& device() noexcept { return device_; }
     /// For callers that record straight into `encoder()` (copies, clears).
     void markDirty() noexcept { dirty_ = true; }
 

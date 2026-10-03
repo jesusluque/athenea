@@ -918,6 +918,12 @@ cualquier otra, lineal. Un nombre que nadie conoce se avisa una vez y el
 archivo se lee como él dice. Sin OpenColorIO en la compilación solo se
 conocen sRGB, Rec.709 lineal y datos.
 
+El espacio de trabajo es Rec.709 lineal (`lin_rec709_scene`). El
+`renderingColorSpace` de un prim `UsdRenderSettings` se lee, con los mismos
+nombres: Rec.709 lineal con cualquiera de ellos, o sin autorar, renderiza
+como siempre; otro espacio aún no se renderiza, y se avisa una vez mientras
+el frame se dibuja en Rec.709.
+
 `athenea view --snapshot` escribe el frame **tal como se ve**, codificado para
 pantalla y con los paneles dentro. Es una captura de pantalla, no una salida
 de render: para eso está `athenea stage`.
@@ -1529,6 +1535,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 |---|---|---|
 | `no GPU device` (los tests se saltan) | no se pudo abrir dispositivo | mira `athenea info`; en Linux pon `ATHENEA_BACKEND` |
 | `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
+| `hdAthenea: renderingColorSpace: colour: '<nombre>' as the working space is ...; rendering in lin_rec709_scene` | los render settings del stage piden un espacio de trabajo distinto de Rec.709 lineal, que aún no se renderiza | nada: el frame es Rec.709 lineal, como sin el ajuste. Autora `lin_rec709_scene`, o nada, para callarlo |
 | `no Measure bundle on the AOFX search path` | `athenea compare` no encontró `rt.sparrow.aofx.measure` | compila el target `athenea_aofx_measure`, o da su directorio con `--path` |
 | `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |

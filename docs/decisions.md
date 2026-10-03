@@ -10013,12 +10013,85 @@ Rec.709; what changes is who knows the rest.
   (64 ms a file against 35); each store reads the studio config at its
   first commit.
 
+### Phase 2a: the working space as a record
+
+Before the working space can move, the kernels have to stop knowing it.
+Eleven places wrote Rec.709 in: BT.709's luminance weights in the lobe
+choice (`lobes.slang`, `material_runtime.slang`), a light's share of the
+frame's power (`light_prefix.slang`), the dome's importance warp
+(`lights_image.slang`), the sun found in a sky (`env_sun.slang`) and the
+edit's grade (`edit.slang`); the XYZ-to-sRGB rows and the weights of a
+blackbody (`lights.slang`); and a capture's sRGB decoded straight into the
+working space (`color.slang`'s `cloudLight`, `points_decode.slang`).
+
+- **The record.** `gpu::WorkingSpace` (`gpu/WorkingSpace.h`) and the Slang
+  struct of the same name (`common/working_space.slang`): working to XYZ,
+  XYZ to working, decoded sRGB to working -- three 3x3s as float4 rows --
+  the luminance weights, and a flag that says the primaries are Rec.709's.
+  Every linear RGB space is a 3x3 from every other, so a kernel reads a few
+  matrices and imports no OCIO function. The kernels call
+  `workingLuminance`, `workingFromXyz` and `workingFromSrgbLinear`.
+- **For lin_rec709_scene the record is a table**, `gpu::linRec709Scene()`:
+  the weights as the kernels wrote them (0.2126, 0.7152, 0.0722, not the Y
+  row of the matrix, 0.2126729, 0.7151522, 0.0721750), the blackbody's rows
+  digit for digit, and the identity for sRGB -- which the flag skips, so a
+  capture's colour is the curve's bits and not a multiplication by one.
+- **Where it lives.** A uniform, `gWorkingSpace`, in the kernel's global
+  constant block. The path tracer stands at Metal's 31 buffers (see *Light
+  groups* and *Invisible faces*), and it, the shading kernel and the
+  emissive table already had global uniforms, so the record costs them no
+  buffer. A kernel whose uniforms were all in `ConstantBuffer`s gains the
+  block: measured with `slangc -target metal` over the 336 static entry
+  points that compile alone, 66 gained one buffer and 270 none; the most any
+  binds is `splatProject`'s 27 (26 before). The generated kernels cannot be measured
+  without a device; their global uniforms are visible in their source.
+- **Who binds it.** `ComputeKernel`, `RayTracingKernel` and `RasterKernel`
+  set it by name at every dispatch from `Device::workingSpace()`, where the
+  program has it. Seventy-odd dispatch sites reach a kernel that reads it,
+  through `cloudLight` alone a dozen; a site that forgot would have drawn
+  black, and a binding no site can forget is the one that cannot. The
+  device holds one record: two stages with two working spaces on one device
+  would have to set it before each frame, which is the render thread's
+  anyway.
+- **`renderingColorSpace`.** The active UsdRenderSettings prim's
+  `renderingColorSpace` reaches `Engine` from the settings bprim's Sync and
+  is resolved at the next commit by `colour::workingSpaceRecord`, through
+  `ColourNames` like any other name. Linear Rec.709 under any of its names
+  gives the table; anything else is warned of once (`hdAthenea:
+  renderingColorSpace: colour: 'acescg' as the working space is not linear
+  Rec.709; rendering in lin_rec709_scene`) and the frame is drawn as before.
+- **Checked** (to run on a device: written while the GPU was another job's).
+  - `athenea_colour_tests` "the working-space record of lin_rec709_scene
+    holds the constants the kernels held, to the bit": the record the device
+    binds, word for word against the literals, and `blackbody`,
+    `cloudLight`, `editGrade`, the luminance and the matrices against the
+    expressions they replaced, by their bits, over 4096 colours and
+    temperatures from 500 K to 16000 K. And the names: `lin_rec709_scene`,
+    `lin_rec709`, `Linear Rec.709 (sRGB)` and no name give the table;
+    `acescg`, `raw`, `srgb_texture` are refused.
+  - `athenea_usd_tests` `[working_space]`: three stages that reach every
+    one of those kernels -- meshes under a 2700 K bulb, a 9000 K sun, a
+    coloured rect and an imaged sky, in a clearcoated UsdPreviewSurface and
+    a coated, sheened standard_surface, with an edited capture among them;
+    and the edited capture alone -- by raster, by the path tracer and as
+    splats, against references the engine before the record rendered
+    (`tests/data/working_space`, written by the commit that adds the test,
+    which is that engine plus the test). `countDifferent`, `compareHdr`'s
+    maximum and `compareImages`' maximum, all zero. Each frame is first drawn
+    twice in one process and must match itself, so a frame that does not
+    repeat is not taken for a changed pixel.
+
 ### Not done (phases 2 to 5)
 
-- **The working space** is linear Rec.709, fixed (`colour::kWorkingSpace`).
-  Phase 2 makes it a setting; then every function's destination, the
-  display's source, the light and material constants and the MaterialX
-  default space follow it. A MaterialX image node with no colour space is
+- **The working space** is linear Rec.709, fixed (`colour::kWorkingSpace`);
+  the kernels read it from the record (phase 2a), but only Rec.709's record
+  exists. Phase 2b makes it a setting; then every function's destination,
+  the display's source, the textures (a matrix after the filter for the
+  fast sRGB route) and the MaterialX default space follow it. A record of
+  another space has to reach the uniform without a readback: built by a
+  kernel, as the plan has it, it lands in a buffer, and the uniform route
+  then wants the values on the host -- the matrix OCIO gives a processor is
+  the host-side way, and is the one exception to weigh. A MaterialX image node with no colour space is
   read as `lin_rec709` today, the same as raw; once the working space
   moves, vector and float image nodes must resolve to Raw.
 - **The config** of textures is the studio config; `--ocio-config` reaches

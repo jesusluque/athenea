@@ -30,6 +30,7 @@
 #include <slang-rhi.h>
 
 #include "athenea/core/Result.h"
+#include "athenea/gpu/WorkingSpace.h"
 
 namespace athenea::gpu {
 
@@ -164,6 +165,13 @@ public:
     /// that holds work back in batches: it hands its batch over here, so what
     /// the renderer submits next runs after it -- the order the calls were
     /// made in, with nothing for a caller to remember.
+    /// THE WORKING SPACE every kernel dispatched on this device reads
+    /// (gpu/WorkingSpace.h): `lin_rec709_scene` until someone sets another.
+    /// Bound at each dispatch, so a change reaches the next kernel queued;
+    /// set from the thread that records, which is the device's one caller.
+    [[nodiscard]] const WorkingSpace& workingSpace() const noexcept { return workingSpace_; }
+    void setWorkingSpace(const WorkingSpace& space) noexcept { workingSpace_ = space; }
+
     void setBeforeSubmit(std::function<void()> hook) { beforeSubmit_ = std::move(hook); }
     void beforeSubmit() const {
         if (beforeSubmit_) {
@@ -182,6 +190,7 @@ private:
     rhi::ComPtr<rhi::ICommandQueue> queue_;
     rhi::ComPtr<slang::ISession>    session_;
     std::function<void()>           beforeSubmit_;
+    WorkingSpace                    workingSpace_ = linRec709Scene();
     std::atomic<uint64_t>           memoryBudget_{0};
     std::mutex                      queueErrorGuard_;
     std::optional<Error>            queueError_;

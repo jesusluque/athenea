@@ -13,6 +13,7 @@
 module material_runtime;
 __exported import athenea.material.lobes;
 __exported import athenea.material.material_inputs;
+import athenea.common.working_space;
 
 // ---- MaterialX's types and constants -----------------------------------------
 
@@ -118,7 +119,7 @@ public LobeStack atheneaFinishStack(BSDF bsdf, float3 emission, float opacity) {
     stack.opacity = opacity;
     for (uint k = 0; k < gAtheneaLobeCount; ++k) {
         const float3 w = max(bsdf.weights[k], float3(0.0));
-        const float heft = dot(w, float3(0.2126, 0.7152, 0.0722));
+        const float heft = workingLuminance(w);
         if (heft <= 1e-6) {
             continue;
         }
@@ -132,7 +133,7 @@ public LobeStack atheneaFinishStack(BSDF bsdf, float3 emission, float opacity) {
         uint lightest = 0;
         float least = 3.4e38;
         for (uint j = 0; j < kMaxLobes; ++j) {
-            const float h = dot(stack.lobes[j].weight, float3(0.2126, 0.7152, 0.0722));
+            const float h = workingLuminance(stack.lobes[j].weight);
             if (h < least) {
                 least = h;
                 lightest = j;

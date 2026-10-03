@@ -137,7 +137,8 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   drawn; `GpuSplats::origin` says which record each kept splat came from.
   Anything else a file keeps a gaussian and a kernel reads by splat goes
   through `CloudLoader::keptOnly`, and back through `toRecords` to be written.
-- **Every splat is blended in linear light**, linear Rec.709, as meshes,
+- **Every splat is blended in linear light**, in the working space (linear
+  Rec.709 by default), as meshes,
   points and lights are; sRGB appears only where an image is shown
   (`DisplayTransform`, OpenColorIO). A cloud says which space its colours are
   in (`GpuSplats::linear`, `primvars:athenea:splat:linear`): a capture's are
@@ -147,6 +148,15 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   references'. Nothing after that decodes or encodes a colour: not the
   blend, not relighting, not a grade, not a bake. Anything that copies a
   cloud copies the flag.
+- **No kernel writes Rec.709 in.** A luminance, a colour given in CIE XYZ,
+  a capture's decoded sRGB: a kernel asks `common/working_space.slang`
+  (`workingLuminance`, `workingFromXyz`, `workingFromSrgbLinear`), which
+  reads the uniform `gWorkingSpace`. Every kernel type binds it by name at
+  dispatch from `Device::workingSpace()` (`gpu/WorkingSpace.h`), so a new
+  kernel does nothing to get it. It is a uniform and not a buffer: it sits
+  in the global constant block the kernel's own uniforms fill, and a kernel
+  at Metal's 31 buffers does not feel it. A check kernel comparing within
+  one space may keep its own weights.
 - A file declares `module <basename>;` matching its filename. A sibling is
   imported bare (`import frame;`), another area by its dotted path (`import
   athenea.common.packing;`). Anything another module uses is `public`, buffers
