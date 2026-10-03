@@ -9008,3 +9008,54 @@ Test: `athenea_usd_tests "a glass cloud lets out*"` -- a ball of 60 000
 gaussians at the conversion's glass opacity, tint (1, 1, 0.5), under a sky of
 one colour, against the mesh ball: green and blue through the middle 0.98 and
 0.51 before against the mesh's 0.92 and 0.26, within 3.3 % now.
+
+### The room through a rough glass is sharper than its reflection
+
+With the weights right the head was still a haze where the mesh shows the
+workshop. The transmitted half read the prepared sky at the material's own
+roughness (0.23 on the pawn, from its map), and the sky's levels are
+reflection lobes: a microfacet tilted by `theta` turns a reflected ray by
+`2 theta`, and a ray through an interface by `(1 - 1/ior) theta` going in and
+`(ior - 1) theta` coming out -- the first opened by `ior` again where the ray
+leaves. Through both faces that is `sqrt(2) (ior - 1) theta`, a third of the
+reflection's spread at 1.5. `transmittedRoughness` reads the level that wide:
+a level's width goes as the roughness squared, so the roughness is scaled by
+the root of that ratio, 0.59 at 1.5.
+
+| pawn head, against the mesh bent twice | relMSE | p99 |
+|---|---|---|
+| the reflection's roughness (before) | 0.081 | 2.00 |
+| the factor at 0.8 | 0.061 | 1.83 |
+| at 0.7 | 0.054 | 1.68 |
+| **at sqrt(0.707 (ior - 1)) = 0.59** | **0.048** | **1.54** |
+| at 0.5 | 0.046 | 1.54 |
+
+The test ball (roughness 0.3) is best at 0.59 (0.045 against 0.048 at both 0.5
+and 0.7); the pawn would take a little less. The closed form stays.
+
+Only where both faces were found. The single bend of a route with no tree --
+the rasteriser, the hardware route -- is not the image a lens forms, and
+sharpening it made the rasterised head worse against the mesh (0.138 to
+0.211): there the blur is what hides that it is the wrong picture.
+
+**Where the pawn ends up.** Against the mesh bent twice, the transferred cloud
+under autoshop_01 at 768 x 768 and 512 paths:
+
+| | whole relMSE | p99 | largest | head relMSE | head p99 |
+|---|---|---|---|---|---|
+| before these changes (the mesh bent once) | 0.0498 | 0.771 | 83 | 1.32 | 5.66 |
+| before, against the mesh bent twice | 0.0087 | 0.648 | 76 | 0.134 | 2.59 |
+| now | 0.0057 | 0.545 | 76 | 0.048 | 1.54 |
+
+The body (x 234-534, y 188-448) is 0.0174 throughout: none of this touches
+it. The largest relative value is in the opaque parts, not the glass.
+
+Test: `athenea_usd_tests "a rough glass cloud*"` -- a ball of roughness 0.3
+under a 16 x 8 checker sky, cloud against mesh: relMSE 0.119 before, 0.045
+now.
+
+**Not done.** The rasteriser's glass bends once and shows the sky alone; a
+thick lens there needs the far face without a tree. The mesh has a normal map
+on the glass (scratches) that the cloud does not carry. The glass's own
+opacity was tried: front faces opaque and far faces gone took the head from
+0.047 to 0.055, so the conversion's 0.6 stays.

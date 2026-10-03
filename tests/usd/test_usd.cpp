@@ -6702,6 +6702,35 @@ TEST_CASE("a glass cloud lets out at its far face what the mesh's glass does", "
     CHECK(std::abs(c[2] - m[2]) < 0.045 * m[2]);
 }
 
+// THE ROOM THROUGH A ROUGH GLASS IS SHARPER THAN ITS REFLECTION.
+//
+// The prepared sky's levels are reflection lobes, and the transmitted half
+// read them at the material's own roughness: a microfacet tilted by theta
+// turns a reflection by 2 theta and a ray through two faces of index 1.5 by
+// about 0.7 theta, so a rough ball showed the room through a reflection's
+// blur. A ball of roughness 0.3 under a checker sky, cloud against mesh.
+TEST_CASE("a rough glass cloud blurs the room behind it as the mesh's glass does", "[usd][gpu][splat][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path png = checkerSky("rough_sky.png", 16, 8);
+    const std::string sky = "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n"
+                            "    asset inputs:texture:file = @" + png.string() + "@\n}\n";
+    const uint32_t w = 96, h = 96;
+    const gpu::Buffer mesh = renderBall(gpu, glassBallMeshStage("rough_mesh", "1, 1, 1", 0.3F, sky), w, h, 1024);
+    const gpu::Buffer cloud =
+        renderBall(gpu, glassBallCloudStage(gpu, "rough_cloud", 60000, {1.0F, 1.0F, 1.0F}, 0.3F, sky), w, h, 16);
+    auto difference = render::compareHdr(*gpu->library, cloud, mesh, w, h);
+    REQUIRE(difference);
+    std::printf("  a ball of roughness 0.3, cloud against mesh: relMse %.4f, p99 %.3f\n", difference->relMse,
+                difference->p99Relative);
+    CHECK(difference->pixels == uint64_t{w} * h);
+    // 0.119 read at the reflection's roughness, 0.045 now.
+    CHECK(difference->relMse < 0.07);
+}
+
 // THE BAKE'S ANSWER CANNOT DEPEND ON HOW MANY HARMONICS IT IS ASKED FOR.
 //
 // A Lambertian surface sends the same radiance in every direction of the half
