@@ -9246,3 +9246,58 @@ thick lens there needs the far face without a tree. The mesh has a normal map
 on the glass (scratches) that the cloud does not carry. The glass's own
 opacity was tried: front faces opaque and far faces gone took the head from
 0.047 to 0.055, so the conversion's 0.6 stays.
+
+## lucabRTrender's files, migrated
+
+athenea is lucabRTrender renamed (e8ef1eb), and nothing written before the
+rename read any more: the stages applied `Lrt*API`, named `primvars:lrt:*`
+and `lrt:*` settings, and streamed `.lrtc` files. `athenea migrate`
+(`usd::migrate`, `lod::migrateLrtc`) writes copies under the new names.
+
+- **Layer by layer, not composed.** Each layer is opened, its content moved
+  into an anonymous layer (the cached original is never edited, so a process
+  that opens it afterwards sees the file) and every spec walked, variants
+  included: `apiSchemas` list ops (`Lrt` + capital -> `Athenea`), every
+  property name whose namespace has an `lrt` component (a rename of the spec,
+  so values, metadata, time samples and connections go with it), connection
+  and relationship target paths by the same rule (the rule is a function of
+  the name, so a target in another layer or prim is renamed without knowing
+  where its property was), `propertyOrder`, `customData` and
+  `customLayerData` keys, and `hydra:rendererName`'s value. Then `Export`.
+- **Asset paths.** `.lrtc` -> `.athc`. A relative path to a file not copied is
+  made absolute when the copy lands in another directory, so it resolves; with
+  `--recursive`, layers, packages and `.lrtc` files under `--root` are
+  migrated to the same place under the output's directory and the paths name
+  the copies (absolute paths too: the Sparrow film layers sublayer each other
+  by absolute path). A copy may never land on its original.
+- **.lrtc.** Its `Lrtc.cpp` (lucabRTrender e51ca4a, never changed after)
+  differs from `Athc.cpp` at e8ef1eb in the magic alone, and the last header
+  word was padding written as zero -- version 2's `flags`, no normals. The
+  header is rewritten (`ATHC`, version 2), the payload copied in slices
+  without decoding, and the result parsed before it takes its name.
+- **.usdz.** Extracted beside the output, each member layer migrated as itself
+  (no anchoring: a package names everything relatively), a `.lrtc` member
+  converted and renamed, and the package written in the same order, so the
+  first file is still the root layer.
+
+Measured. A stage written by the test with every old name (a schema, nine
+edit primvars, one time-sampled, one with doc and customData, a connection,
+a relationship, a render setting, a renderer name, layer data) renders after
+migration as the stage authored natively: max 0, over2 0; unmigrated it does
+not (the edit is not read); migrated twice it reports no rename; in a
+package the same. A `.lrtc` made from a written `.athc` (magic and version)
+migrates, reads, cuts and draws as the native file (max 0), and streams
+through a migrated stage as the native stage does (max 0). The user's
+Sparrow assets: `FilmGs.usda` -r (3 files, 10 properties, 4.8 s; 453 MB
+crate), `FilmGsGlass.usda` -r (4 files), `Sparrow60.usdz` (12 properties),
+`SparrowClips.usda` -r (73 files, 84 properties through the clip variants,
+66 s) render skinned and relit; the originals draw the bird in its bind pose,
+unlit.
+
+Not done. A `.athc` inside a `.usdz` is migrated but not drawn: the engine
+maps a `.athc` as a file, and a package member is not one. Clip
+`templateAssetPath`s and asset-path expressions are reported, not
+rewritten. A `.usda`'s `#` comments are not kept (USD's parser drops them).
+A schema a stage lost when it was written (lucabRTrender's mesh2splat without
+its plugins dropped `LrtSplatCryptomatteAPI` as an unknown token, e.g.
+`Sparrow_glass_gs.usdc`) is not there to rename; its primvars are.

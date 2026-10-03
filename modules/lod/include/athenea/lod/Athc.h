@@ -38,6 +38,12 @@ namespace athenea::lod {
 
 [[nodiscard]] bool isAthc(const std::filesystem::path& path);
 
+/// A .lrtc lucabRTrender wrote, as the .athc it is under this name: the same
+/// layout (version 1) with another magic, so the header is rewritten and the
+/// payload copied as it is. True when `in` was a .lrtc; an .athc is copied
+/// unchanged and returns false. `out` may not be `in`.
+[[nodiscard]] Result<bool> migrateLrtc(const std::filesystem::path& in, const std::filesystem::path& out);
+
 struct StreamingSettings {
     /// The store's size in splats, rounded down to whole chunks (at least one).
     uint64_t budgetSplats = uint64_t{4} << 20;

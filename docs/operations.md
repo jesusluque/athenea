@@ -448,6 +448,56 @@ athenea compare cloud.exr mesh.exr
 athenea compare furnace.exr --window 192 192 320 320
 ```
 
+### 2.12 `athenea migrate` — lucabRTrender's files under athenea's names
+
+athenea is lucabRTrender renamed, and a file written before the rename names
+nothing this engine reads: its schemas, its primvars, its settings and its
+`.lrtc` clouds are ignored. `migrate` writes a copy under the new names; the
+input is never written to.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `input` | path, required | — | `.usda`, `.usdc`, `.usd`, `.usdz` or `.lrtc` |
+| `-o`, `--output` | path, required | — | the same kind of file: a layer as `.usda`, `.usdc` or `.usd` (a `.usd` keeps the input's encoding), a package as `.usdz`, a `.lrtc` as `.athc`; never the input |
+| `-r`, `--recursive` | flag | off | also migrates every layer, package and `.lrtc` the file names -- sublayers, references, payloads, value clips, asset-valued attributes -- that lies under `--root`, each to the same place under the output's directory |
+| `--root` | directory | the input's directory | what `--recursive` may copy; it must hold the input, and may not be the output's directory |
+| `-q`, `--quiet` | flag | off | prints the warnings and the totals only |
+
+What is renamed, layer by layer, without composing the stage (each layer
+keeps its own opinions, variants included):
+
+| Before | After |
+|---|---|
+| `LrtSplatEditAPI`, `LrtSplatLightingAPI`, `LrtSplatSkinningAPI`, `LrtPointStyleAPI`, `LrtStreamedAssetAPI`, `LrtSplatVisibilityAPI`, `LrtSplatCryptomatteAPI`, `LrtVolumeAPI` in `apiSchemas` | `Athenea…API` |
+| any property whose name has an `lrt` component: `primvars:lrt:splat:*`, `lrt:*` render settings, `outputs:lrt:*` | the same with `athenea`; value, metadata, time samples and connections kept |
+| a connection or relationship target naming such a property | the renamed property |
+| `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
+| `customData` and `customLayerData` keys with an `lrt` component | the same with `athenea` |
+| an asset path ending `.lrtc` | `.athc` |
+| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 2, no normals); the payload is copied as it is |
+
+Asset paths. A relative path to a file that is not copied (a texture, a layer
+without `--recursive`, one outside `--root`) is made absolute when the output
+is in another directory, so it still resolves (`anchored` in the report).
+With `--recursive`, a path to a migrated copy names the copy: relative as it
+was, or absolute to where the copy is. Inside a `.usdz` every path stays
+relative and a `.lrtc` is converted and renamed in the package; the files keep
+their order, so the first is still the root layer.
+
+Every rename is printed, one a line (`schema`, `property`, `target`, `value`,
+`metadata`, `asset`, `anchored`, `file`, `warning`), and a total. A file
+already migrated is written unchanged and reports no rename. A `warning` is
+something left as it was: a property whose new name is already authored
+beside it (the new one wins), a `.lrtc` the copy names that does not exist
+yet (run `migrate` on it), a `.lrtc` in an expression or a clip template.
+USD does not keep a `.usda`'s `#` comments.
+
+```sh
+athenea migrate old/shot.usda -o new/shot.usda
+athenea migrate ~/assets/Sparrow/FilmGs.usda -o ~/migrated/FilmGs.usda --recursive
+athenea migrate cloud.lrtc -o cloud.athc
+```
+
 ## 3. Tasks
 
 ### 3.1 A model into a cloud
@@ -1181,6 +1231,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea mesh2splat` | a USD stage holding the cloud |
 | `athenea visibility` | the cloud's file, edited in place or copied |
 | `athenea aofx run` | one EXR |
+| `athenea migrate` | a copy of the stage, package or cloud; with `--recursive`, of what it names too |
 
 ### 8.4 The scripts
 
