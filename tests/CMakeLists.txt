@@ -43,6 +43,11 @@ athenea_test(athenea_core_tests
     SOURCES core/test_hash.cpp core/test_platform.cpp
     LIBS athenea::core)
 
+# The panels' description: bookkeeping, checked on the CPU.
+athenea_test(athenea_ui_tests
+    SOURCES ui/test_panels.cpp
+    LIBS athenea::ui)
+
 athenea_test(athenea_gpu_tests
     SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp
     LIBS athenea::gpu athenea::render)

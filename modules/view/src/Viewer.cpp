@@ -29,6 +29,7 @@
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/technique/DisplayTransform.h"
+#include "athenea/ui/GaussianPanel.h"
 #include "athenea/usd/StageRenderer.h"
 #include "athenea/view/ImGuiRenderer.h"
 #include "athenea/view/Window.h"
@@ -275,6 +276,83 @@ bool combo(const char* label, int& index, std::span<const Choice> choices) {
         ImGui::EndCombo();
     }
     return changed;
+}
+
+/// A PANEL OF THE SHARED DESCRIPTION (athenea::ui), drawn with Dear ImGui: a
+/// collapsing header a section, a reading its label and its text, a note as
+/// the row's tooltip. What the iOS app draws with UIKit from the same table.
+void drawPanel(const ui::Panel& panel) {
+    for (const ui::Section& section : panel.sections) {
+        if (!section.isShown()) {
+            continue;
+        }
+        ImGui::PushID(section.id.c_str());
+        if (ImGui::CollapsingHeader(section.title.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+            for (const ui::Control& control : section.controls) {
+                if (!control.isShown()) {
+                    continue;
+                }
+                ImGui::PushID(control.id.c_str());
+                ImGui::BeginDisabled(!control.isEnabled());
+                switch (control.kind) {
+                case ui::Control::Kind::Reading: {
+                    const std::string text = control.reading ? control.reading() : std::string();
+                    if (control.label.empty()) {
+                        ImGui::Separator();
+                        ImGui::TextWrapped("%s", text.c_str());
+                    } else {
+                        ImGui::TextDisabled("%s", control.label.c_str());
+                        ImGui::SameLine(150.0F);
+                        ImGui::TextWrapped("%s", text.c_str());
+                    }
+                    break;
+                }
+                case ui::Control::Kind::Toggle: {
+                    bool on = control.flag && control.flag();
+                    if (ImGui::Checkbox(control.label.c_str(), &on) && control.setFlag) {
+                        control.setFlag(on);
+                    }
+                    break;
+                }
+                case ui::Control::Kind::Action:
+                    if (ImGui::Button(control.label.c_str()) && control.act) {
+                        control.act();
+                    }
+                    break;
+                case ui::Control::Kind::Slider:
+                case ui::Control::Kind::Stepper: {
+                    const auto [lo, hi] = control.bounds();
+                    float value = control.number ? float(control.number()) : 0.0F;
+                    const std::string format = "%." + std::to_string(control.decimals) + "f " + control.unit;
+                    if (ImGui::SliderFloat(control.label.c_str(), &value, float(lo), float(hi), format.c_str(),
+                                           control.logarithmic ? ImGuiSliderFlags_Logarithmic : 0) &&
+                        control.setNumber) {
+                        control.setNumber(double(value));
+                    }
+                    break;
+                }
+                case ui::Control::Kind::Choice: {
+                    const std::string now = control.chosen ? control.chosen() : std::string();
+                    if (ImGui::BeginCombo(control.label.c_str(), ui::labelOf(control.choices, now).c_str())) {
+                        for (const ui::Choice& entry : control.choices) {
+                            if (ImGui::Selectable(entry.label.c_str(), entry.value == now) && control.choose) {
+                                control.choose(entry.value);
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    break;
+                }
+                }
+                ImGui::EndDisabled();
+                if (!control.note.empty() && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", control.note.c_str());
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::PopID();
+    }
 }
 
 int indexOf(std::span<const Choice> choices, const std::string& value) {
@@ -535,6 +613,16 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
         settings.farZ = static_cast<float>(orbit.distance + orbit.radius);
         return settings;
     };
+    // THE GAUSSIANS PANEL, described in athenea::ui and drawn by drawPanel. Its
+    // numbers are the report of the frame just drawn, taken once a frame; the
+    // engine gathers them only while the panel is open, and the device's
+    // counts in it are read without waiting, so they can be a frame behind.
+    usd::GaussianStats gaussianReport;
+    bool timeSplatStages = false;
+    bool gaussiansOpen = true;
+    const ui::Panel gaussians =
+        ui::gaussianPanel([&gaussianReport]() -> const ui::GaussianReport& { return gaussianReport; },
+                          timeSplatStages);
     uint64_t snapshotLit = 0;
     std::vector<double> drawMs;
     std::vector<double> frameMs;
@@ -1094,6 +1182,11 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
             shutterSet = shutter;
         }
 
+        // What the Gaussians panel asks of the frame: counted while it is
+        // open, its stages timed while its switch is on.
+        stage.setGaussianStats(gaussiansOpen);
+        stage.setTimeSplatStages(gaussiansOpen && timeSplatStages);
+
         // The frame.
         const auto drawStart = std::chrono::steady_clock::now();
         const std::string techniqueName = kTechniques[static_cast<size_t>(technique)].value;
@@ -1140,6 +1233,16 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
             }
             drawnTime = time;
         }
+
+        // Drawn after the frame, so its numbers are this frame's.
+        gaussianReport = stage.gaussianStats();
+        ImGui::SetNextWindowPos(ImVec2(730, 10), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(400, 620), ImGuiCond_FirstUseEver);
+        gaussiansOpen = ImGui::Begin("Gaussians");
+        if (gaussiansOpen) {
+            drawPanel(gaussians);
+        }
+        ImGui::End();
 
         rhi::ComPtr<rhi::ITexture> image = surface->acquireNextImage();
         ImGui::Render();

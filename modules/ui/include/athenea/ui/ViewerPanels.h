@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "athenea/ui/Controls.h"
+#include "athenea/ui/GaussianPanel.h"
 
 namespace athenea::ui {
 
@@ -48,6 +49,9 @@ struct ViewerSettings {
     /// One time code a drawn frame, rather than the stage's rate by the
     /// clock: every frame of a clip is seen however long each takes to draw.
     bool   everyFrame = false;
+
+    // The Gaussians panel.
+    bool   timeSplatStages = false;   ///< time each rasteriser stage, each waiting for the device
 };
 
 /// A variant set of the stage: USD's "pick one of these". The engine does not
@@ -88,6 +92,9 @@ struct ViewerFacts {
     std::function<std::string()> sceneCounts;   ///< "1.2 M gaussians, 3 lights"
     std::function<std::string()> status;        ///< the last error, or empty
     std::function<std::string()> paths;         ///< "128 paths a pixel"
+    /// The gaussians on screen (GaussianPanel.h): set, the panels gain a
+    /// Gaussians panel that reads it.
+    GaussianSource               gaussians;
 };
 
 /// What a button does. Framing and playback are the front end's to carry out,
@@ -109,6 +116,7 @@ struct ViewerActions {
 
 /// The panels, over `settings`, which must outlive them. The variant sets are
 /// read once, here: a front end builds the panels again when it opens a stage.
+/// View first; Gaussians after it where `facts.gaussians` is set.
 [[nodiscard]] std::vector<Panel> viewerPanels(ViewerSettings& settings, ViewerFacts facts,
                                               ViewerActions actions);
 

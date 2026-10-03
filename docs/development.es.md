@@ -36,27 +36,28 @@ coinciden, la cabecera tiene razón.
 | # | Módulo | Léete esto primero |
 |---|---|---|
 | 1 | core | `core/Result.h` (la convención de errores), `core/Platform.h` (toda la superficie del sistema operativo), `core/Hash.h` |
-| 2 | sched | `sched/FrameClock.h` — genlock, PTP y alineamiento ST 2059-1 |
-| 3 | image | `image/Image.h` — la imagen de host que el host AOFX pasa de un lado a otro |
-| 4 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout |
-| 5 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre) |
-| 6 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
-| 7 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
-| 8 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
-| 9 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
-| 10 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
-| 11 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
-| 12 | light | `light/LightTable.h` — una luz en el dispositivo |
-| 13 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
-| 14 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 15 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 16 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
-| 17 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
-| 18 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
-| 19 | view | `view/Viewer.h` — las opciones de la ventana |
+| 2 | ui | `ui/Controls.h` (qué es un panel), `ui/ViewerPanels.h` (los paneles del visor), `ui/GaussianPanel.h` y `ui/GaussianReport.h` (el panel Gaussians, y el registro que el motor rellena para él) — descritos una vez, dibujados por `athenea view` y la app de iOS |
+| 3 | sched | `sched/FrameClock.h` — genlock, PTP y alineamiento ST 2059-1 |
+| 4 | image | `image/Image.h` — la imagen de host que el host AOFX pasa de un lado a otro |
+| 5 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout |
+| 6 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre), `gpu/AsyncReadback.h` (números de un frame sin esperarlo) |
+| 7 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
+| 8 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
+| 9 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
+| 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
+| 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
+| 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
+| 13 | light | `light/LightTable.h` — una luz en el dispositivo |
+| 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
+| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
+| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
+| 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
+| 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
+| 20 | view | `view/Viewer.h` — las opciones de la ventana |
 
-Una cosa que parece una violación y no lo es: `render` (9) enlaza `aofx::aofx`
-(18). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
+Una cosa que parece una violación y no lo es: `render` (10) enlaza `aofx::aofx`
+(19). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
 le toma son `Mat4` y `Vec3`. La regla de orden es sobre librerías compiladas.
 
 ### 1.2 Una GPU, un hilo
@@ -100,6 +101,13 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
    los splats se proyectan, ordenan, reparten por tiles y mezclan encima, en
    luz lineal como la capa que tienen debajo. Las etapas del pipeline están
    nombradas en `shaders/athenea/splat/frame.slang`.
+   Mientras un panel lo pide (`RenderSettings::countSplats`), cuatro kernels
+   pequeños cuentan lo que hizo la proyección -- por qué se descartó cada
+   splat descartado, que la proyección deja en la clave de profundidad del
+   hueco descartado, y la parte de cada nube -- y `gpu::AsyncReadback` copia
+   las cuentas fuera con el propio submit del frame y un fence. Se leen
+   después, nunca se esperan: un número que muestra un panel no debe ser una
+   espera que el panel haya causado.
 6. Los domes se pintan detrás, se aplica la exposición y el frame está. Lo que
    lo convierte en algo que mirar es `technique::DisplayTransform`, y solo lo
    llaman un viewer o una vista previa.
