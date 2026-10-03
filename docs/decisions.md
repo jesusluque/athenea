@@ -9582,6 +9582,215 @@ back as `Linear` base colours in its own (sRGB) space and keeps the flag
 false, which is right but means "Linear" in the encoding names a layout, not
 a colour space.
 
+## A converted gaussian gives off what its material gave off
+
+`athenea mesh2splat` dropped a material's emission: `usd::StageMaterial` had no
+field for it, so a converted lamp shade or screen, relit (`--no-bake`) or
+transferred, was as dark as its albedo under the scene's light. Only the
+radiance bake kept it, because the path tracer meets the emission at the
+bake's first vertex (`carried += throughput * stack.emission`, which
+`bakeBody` leaves alone: it keeps `stack.emission` while it drops the polish).
+It is now carried end to end, in the shape the shading normal took:
+
+- **Read in four vocabularies** (`materialOf`, MeshStage.cpp):
+  standard_surface `emission` x `emission_color` (white weighed by 0 by
+  default), OpenPBR `emission_luminance` x `emission_color`, glTF `emissive` x
+  `emissive_strength` (black weighed by 1), UsdPreviewSurface `emissiveColor`
+  (black). OpenPBR's luminance is in nits, and its nodedef
+  (`libraries/bxdf/open_pbr_surface.mtlx`, `emission_weight`) multiplies it
+  into the colour as it stands and hands that to a `uniform_edf` -- which is
+  what the mesh is rendered with here, the graph compiled as authored -- so
+  the conversion carries the same number, no conversion of units. A map on the
+  colour is the colour and the weight multiplies it; a map on the weight is
+  read on one channel (`r` unless the connection says) and the colour
+  multiplies it; a map on a material that gives off nothing is dropped.
+  `StageMaterial::emission` is that product, `emissionMap` the map.
+- **The effect** (plugins/mesh2splat) gains an optional `Emission` clip and
+  `writeEmission`, `emissionColour`, `emissionChannel`, `emissionUv2`
+  parameters, all additive: a host that sends none gets the records it got.
+  With `writeEmission` a record has one entry more, the last
+  (`emissionEntry`), the colour times the map at the gaussian; `--simplify`
+  compares it as it compares the colour.
+- **The record and the file.** `io::SplatEncoding::emission`, three floats of
+  linear radiance; mesh2splat keeps `record[20..22]` for it (harmonics from 23)
+  and points the encoding at them only when some material of the stage
+  emits, so no file carries a primvar of zeros. The export writes
+  `primvars:athenea:splat:emission`, `color3f[]`, vertex, declared by
+  `AtheneaSplatLightingAPI`; negative and NaN are cleaned by the export
+  kernel. `readParticleFieldRecords` and Hydra (`ParticleFieldArrays::emission`
+  -> `SplatStreams::emission` -> the streams kernel) read it back.
+- **On the device, one word.** `GpuSplats::emission`, RGB9E5 (`packRgb9e5` /
+  `unpackRgb9e5` in common/packing.slang): unsigned HDR up to 65408, each
+  channel to 1/512 of the brightest, finer than f16 on the channel that is
+  seen, four bytes where three halves would be six. Packed by the decode.
+  Optional, as `pbr` and `normals` are: `hasEmission()`, bound either way.
+- **Shading.** `SplatSurface::emission`, and `relitSplat` starts from it where
+  it started from zero: `lit = s.lit ? s.albedo : s.emission`. So both routes
+  (splat_project, rt_shade), relit and transferred, add it unshadowed and the
+  same from both sides of the disc; a `litBody` cloud does not, since the bake
+  holds it -- the one place the two agree by construction.
+- **Levels of detail, decimation, `.athc`.** The reorder and the cut carry
+  the word; the moments gain three (`emissionMoments`: after the normals'),
+  the merged gaussian gives off their weighted mean, as the base colour is
+  merged. A decimation merges the file's `emission` as a mean (`Mean`, the
+  default for a float). `.athc` takes bit 2 of `flags` (bit 0 the normals,
+  bit 1 left to `linear`): one word an element after the normals; files
+  without it read as before. Skinning does not touch it: it has no direction.
+
+What it costs: nothing for a stage that emits nothing; otherwise twelve bytes
+a gaussian in the file and four on the device, one word read a relit splat a
+frame.
+
+Tests:
+
+- `athenea_usd_tests "a material's emission is read in each vocabulary*"`:
+  nine materials -- each vocabulary's constant, standard_surface with a colour
+  and no weight (nothing), glTF's map times strength, standard_surface's map on
+  the weight (channel r, the colour multiplying), a preview surface's sRGB map,
+  and a map on a weight of zero (dropped).
+- `athenea_usd_tests "a cloud's emission survives*"`: 3000 gaussians with five
+  known emissions, nothing to a hundred, go out and back as records, as
+  Hydra's arrays and through a `.athc`: 0 off the table at 4e-3 of the
+  brightest channel, 0 words apart, 0 changed in the store and the 440 merged;
+  every merge inside the box of what it merged.
+- `emissive_conversions_render_like_the_mesh` (ctest; it runs after the six
+  `mesh2splat_emissive_*` conversions and runs the hidden case
+  `[emissive_conversion]`): two quads under a dome of 0.1, OpenPBR's luminance
+  2 x (0.6, 0.3, 0.15), and glTF's emissive map (a gradient, sRGB) x strength
+  2, converted at `--resolution 256` relit, transferred and baked, drawn
+  raster and traced against the rasterised mesh: p99 relative 0.014 to 0.022,
+  the mean red within 0.6 % of the mesh's in the same route. Without the
+  emission in `relitSplat` the relit and transferred clouds were p99 1.000,
+  mean red 0.054 against 1.250; adding it on a `litBody` cloud as well made
+  the baked ones twice the mesh (checked by changing the one line both ways).
+  The traced mesh is not the pixel reference because it samples the map with
+  each path's jitter: on the gradient a percent of its pixels sit 0.125 off
+  the rasterised mesh, the reference's noise; its mean still is.
+
+**Not done.** An emissive gaussian lights nothing: the mesh's emissive
+triangles are sampled by the path tracer (`EmissiveTable`), a cloud's are not,
+so a converted lamp glows but does not light the table under it unless the
+cloud was baked with the lamp mesh in the scene. An OpenPBR or
+standard_surface coat over the emission (which tints and dims it on the mesh)
+is not carried; neither is a map on both the colour and the weight (the
+colour's is read, and the log says so). The transfer's own bake measures no
+emission (`transferMode` gathers nothing), which is right: the frame adds it.
+
+
+## Colour: OpenColorIO as a compiler, and a texture read in its own colour space
+
+Phases 0 and 1 of the colour plan. The working space is still linear
+Rec.709; what changes is who knows the rest.
+
+### Phase 0: one compiler, below material and technique
+
+- **The module.** `colour` sits between `gpu` and `scene` (material may not
+  link technique, and both need it). It owns the OpenColorIO dependency,
+  PRIVATE and behind `ATHENEA_HAVE_OCIO`, moved from technique.
+- **`ColourCompiler`** (`colour/ColourCompiler.h`). `function(src, dst)`
+  and `displayView(src, display, view, look)` make a processor, extract its
+  HLSL with `setFunctionName("atheneaCs_<hash>")` and
+  `setResourcePrefix("athenea_<hash>_")`, and load it as the Slang module
+  `athenea_cs_<hash>`, the function marked `public` and nothing else. The
+  hash is FNV-1a of the config's cache id and the names, so a pair compiles
+  once per compiler and two functions in one kernel never share a LUT's
+  name. LUTs are filled on the device from OCIO's values
+  (`athenea_colour_fill`); `ColourFunction::bind` binds them and the
+  dynamic properties by name. The host computes the shader text and the LUT
+  values, nothing per pixel.
+- **The display is a client.** `DisplayTransform::setOcio` asks for
+  `displayView` and compiles a second module that imports the function and
+  `athenea.technique.display`. The pixels did not change by a bit: the test
+  builds the old recipe (function text inline in the display module) from
+  the same text and compares both kernels with a tolerance of zero, over
+  sixteen stops, three exposures and three views (ACES 2.0 Rec.709 and P3,
+  un-tone-mapped). The ACES 2.0 agreement test reads what it read before
+  (worst 3.2e-4, 5.5e-4, 2.2e-5).
+- **`ColourNames`** (`colour/ColourNames.h`) is the one resolution of a
+  name. Empty or `auto`: the file decides (8-bit sRGB-tagged, sRGB; the
+  rest, the working space). Data names (`raw`, `Raw`, `data`, `Non-Color`,
+  `none`, `identity`, `Utility - Raw`) and any space the config marks data:
+  Raw. Then a short alias table (UsdUVTexture's `sRGB`, `linear`, the
+  GfColorSpaceNames tokens the studio config does not carry as aliases,
+  such as `g24_rec709_scene`), then the config by name, alias or role, then
+  the built-in studio config -- a function then crosses configs through
+  `GetProcessorFromConfigs`. Nothing knows the name: Unknown, one warning per
+  name, `TextureInfo::error`, and the texture is read as the file says.
+  The studio config already carries MaterialX's (`srgb_texture`,
+  `lin_rec709`, `acescg`, `g22_rec709`) and USD's (`lin_ap1_scene`, ...)
+  names as aliases.
+- **The two ad-hoc tables are gone.** `Material.cpp` hands MaterialX the
+  colour space USD authored, verbatim; `MaterialCompiler` keeps it on the
+  slot as a string. Before, `g22_rec709` was read as sRGB, and `acescg` or
+  any name not in either table was read raw.
+- **Without OpenColorIO** the names resolve by table (sRGB, linear Rec.709,
+  data) and the one function compiled is sRGB to linear, written in the
+  compiler: a 16-bit sRGB file decodes as it did.
+
+### Phase 1: texture input spaces
+
+- **Three routes** in `TextureStore::loadFile`, by what the name resolves
+  to. Raw and the working space: read as they are, as before. 8-bit sRGB:
+  the fast route, unchanged -- RGBA8 behind an `RGBA8UnormSrgb` view, mips
+  averaged as light. Anything else, a 16-bit or float sRGB file included:
+  RGBA16F (RGBA32F for a float32 file), and the decode kernel is
+  `athenea_texdec_<hash>`, generated once per space: texture_decode's
+  `decodeTexel`, the compiled function, `storeTexel`. Alpha is not
+  transformed. The mips are made after, in light, as for any float texture.
+  `texture_decode.slang` lost its `toLinear` parameter.
+- **Keys.** A texture is (path, name as written): `srgb_texture` and `sRGB`
+  of one file are two entries, which costs a second upload and nothing
+  else.
+- **Domes.** A dome's image takes the `colorSpace` authored on
+  `inputs:texture:file`, read from the light's network in the scene index
+  beside the value (`domeColourSpace`, Light.cpp), as a material's file
+  input is. Empty: the file decides, as before. `aofx://` stays raw.
+- **Checked.**
+  - `athenea_colour_tests`: sRGB to linear and back over a 4096-value ramp,
+    worst relative 1.2e-6; linear Rec.709 to ACEScg against aces2.slang's
+    `rgbToRgb(kRec709, kAP1)` over 512 colours, worst relative 9.0e-7;
+    ACEScg reached from a three-space config that lacks it equals the
+    studio config's own function exactly; the names, as bookkeeping.
+    (`compareHdr` bins its maximum at 1.66e-5 and could not certify these;
+    the kernel keeps its own worst as float bits.)
+  - `athenea_material_tests`: one 8-bit sRGB file through the view and
+    through the compiled function, level 0 worst 4.9e-4 in light; the 1x1
+    level 4.9e-3, which is half an 8-bit sRGB code near white where the fast
+    route stores its mips.
+  - `athenea_usd_tests`: a texture authored `acescg` shades as the AP1 to
+    Rec.709 matrix of its colour (0.974 0.578 0.134 for 0.8 0.6 0.2), one
+    authored `Non-Color` as held; a dome authored `raw` shows its code
+    values (0.800 where auto showed 0.604).
+- **Measured** (M5 Pro, debug build, a shared machine; `texture commit time`,
+  hidden `[.timing]` case, eight 2048x2048 files a commit, median of three
+  rounds, per file). Before: 8-bit sRGB 33.0 ms, 8-bit raw 34.0 ms, 16-bit
+  sRGB 49.6 ms. After: 34.5, 34.6 and 49.5 ms; 8-bit sRGB through the
+  compiled function 36.4 ms, 8-bit ACEScg 35.5 ms. The routes cost what
+  they cost before, within this machine's noise. The first commit that
+  needs a new function pays its compile once, about 230 ms for eight files
+  (64 ms a file against 35); each store reads the studio config at its
+  first commit.
+
+### Not done (phases 2 to 5)
+
+- **The working space** is linear Rec.709, fixed (`colour::kWorkingSpace`).
+  Phase 2 makes it a setting; then every function's destination, the
+  display's source, the light and material constants and the MaterialX
+  default space follow it. A MaterialX image node with no colour space is
+  read as `lin_rec709` today, the same as raw; once the working space
+  moves, vector and float image nodes must resolve to Raw.
+- **The config** of textures is the studio config; `--ocio-config` reaches
+  only the display. One config for the stage is phase 2's too.
+- **Colours that are not textures** -- `displayColor`, material constants,
+  light colours, splat SH -- are taken as the working space.
+- **An AOFX colour convert effect** was weighed and not built: an AOFX
+  kernel is a blob compiled when the bundle is built and binds buffers only
+  (aopenfx `KernelDesc`), while a compiled OCIO function is Slang generated
+  at run time that samples textures. It needs an additive ABI extension in
+  aopenfx (a kernel given as source, and texture inputs), or functions
+  generated at build time for a fixed list of spaces, with their LUTs as
+  buffers.
+
 ## A converted surface covers what its opacity says
 
 mesh2splat lays a gaussian a cell over a surface, `sigma` cells wide, so a
@@ -9710,3 +9919,4 @@ Not done:
   renderer, for a coverage that is already within 0.015 of the mesh at every
   size measured here. The second-order transmittance above is this change's
   own, derived for the conversion's grid.
+

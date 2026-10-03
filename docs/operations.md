@@ -217,7 +217,8 @@ as a rig (each joint's weight summed, the four heaviest kept); an array whose
 name ends in `shadowBits` bit by bit; any other int -- an id, a part, a sheet
 -- as what may not be merged across at all; `primvars:athenea:splat:normal`
 as a direction (the weighted mean made a unit vector again); any other float
--- metallic, roughness, a transfer -- as a mean. Metallic, roughness and transmission are
+-- metallic, roughness, a transfer, `primvars:athenea:splat:emission` -- as a
+mean. Metallic, roughness and transmission are
 also compared as colour is. An array sampled in time is merged a sample at a
 time. A splat file is written as a new stage, as `athenea convert` writes one.
 
@@ -369,7 +370,7 @@ recipe is §3.1 below.
 | `--normal-map-turns` | flag | off | the normal map turns the gaussian, not only its shading. The shading normal is written either way (`primvars:athenea:splat:normal`) |
 | `--no-displacement` | flag | off | ignore the materials' displacement: every gaussian stands on the flat mesh |
 | `--displace-refine` | integer, 1 to 64 | `8` | where the relief stretches a cell, split it into at most this many gaussians along each of its two axes |
-| `--simplify` | number, 0 to 1 | `0` (off) | a block of cells whose colour, metallic, roughness, cut-out and normals move by no more than this -- over the block and a block past each side, all inside one triangle -- becomes one gaussian of its size. Colours and cut-out are 0 to 1; normals are compared as the length of their difference, about the angle in radians |
+| `--simplify` | number, 0 to 1 | `0` (off) | a block of cells whose colour, metallic, roughness, emission, cut-out and normals move by no more than this -- over the block and a block past each side, all inside one triangle -- becomes one gaussian of its size. Colours and cut-out are 0 to 1; emission is compared in its own units, so a bright one merges less; normals are compared as the length of their difference, about the angle in radians |
 | `--simplify-levels` | integer, 1 to 5 | `3` | the largest block `--simplify` may merge is 2^this cells a side |
 | `--no-camera` | flag | camera added | |
 | `--no-bake` | flag | bake on | carry the material to be relit instead of baking the light in |
@@ -594,6 +595,26 @@ shadow on itself: nothing in the tracer stands where the relief does.
 `--no-displacement` converts the flat surface. Hydra's own mesh route ignores
 displacement.
 
+**What it gives off.** A material's emission is carried, a gaussian at a time,
+as the linear radiance its mesh is rendered with: standard_surface's
+`emission` times `emission_color`, OpenPBR's `emission_luminance` times
+`emission_color` (nits, multiplied in as they stand, which is what its graph
+does), glTF's `emissive` times `emissive_strength`, and UsdPreviewSurface's
+`emissiveColor`. A map on the colour is the colour and the weight multiplies
+it; a map on the weight is read on one channel and the colour multiplies it.
+The log line of a mesh that gives off light says so:
+
+```
+mesh2splat: /World/Quad uses /World/Looks/Screen (colour 0.50 0.50 0.50, ..., emission 2.000000 2.000000 2.000000 x '.../emission_gradient.png')
+```
+
+It is written as `primvars:athenea:splat:emission` (§4.3) only where some
+material of the stage emits. Relit (`--no-bake`) and transferred clouds add it
+when they are drawn; a baked one holds it in its colours already. What it
+does not do is light anything: the mesh's emissive triangles are a light for
+the path tracer, the cloud's gaussians are not. An OpenPBR coat over the
+emission, which tints and dims it on the mesh, is not carried.
+
 **Fewer gaussians where the surface is the same.** A gaussian a cell is what
 the surface costs wherever it is, and most of a surface -- a painted panel, a
 wall, a floor -- is the same from one cell to the next. `--simplify` walks each
@@ -777,6 +798,13 @@ version keeps whether the colours are linear light (`primvars:athenea:splat:line
 in its header's flags (bit 1, beside bit 0 for the normals); a file written
 before has it clear and is read as a capture, sRGB.
 
+of the format; a version 1 file, which has none, is still read. A cloud that
+gives off light (`primvars:athenea:splat:emission`) keeps that too, four bytes
+more a gaussian (one RGB9E5 word, after the normals where both are there),
+the merged levels' the weighted mean of what they stand for; it is bit 2 of
+the header's `flags` (bit 0 is the normals), so a file without it reads as
+before.
+
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the
 chunks land. `athenea stage` waits for the streams to settle before a still, so a
@@ -796,6 +824,19 @@ it — `--ocio-config`, `--ocio-display` and `--ocio-view` compile that config's
 display and view into the kernel. `--edr` asks for a float surface and takes
 ACES 2.0 up to the screen's own peak, which on a standard display is the same
 image as without it.
+
+A texture is read in the colour space its material or light names --
+MaterialX's `colorspace`, a UsdUVTexture's `sourceColorSpace`, USD's
+`colorSpace` on the file input, a dome's `colorSpace` on
+`inputs:texture:file` -- and brought into the working space (linear
+Rec.709) on the device. Names are those of OpenColorIO's studio config
+(`srgb_texture`, `lin_rec709`, `acescg`, `g22_rec709`, ...), its aliases and
+roles, USD's (`lin_ap1_scene`, `srgb_rec709_scene`, ...) and UsdUVTexture's
+(`sRGB`, `raw`, `auto`). `raw`, `data`, `Non-Color`, `none`, `identity` and
+`Utility - Raw` read the file as data. No name, or `auto`: an 8-bit image is
+sRGB unless the file says otherwise, anything else linear. A name nothing
+knows is warned of once and the file is read as it says. Without OpenColorIO
+in the build only sRGB, linear Rec.709 and data are known.
 
 `athenea view --snapshot` writes the frame **as shown**, display-encoded and with
 the panels in it. It is a screenshot, not a render output.
@@ -889,6 +930,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:shadowBits` | int[] ‹2 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:emission` | color3f[] ‹1 a gaussian› | — |
 
 `relight` says the colours are an albedo the scene's lights must light.
 `litBody` says they are already the light on the material's body, so what a
@@ -934,6 +976,18 @@ every cloud it makes -- an albedo, a transfer's albedo, a bake -- and a cloud
 written again (`athenea decimate`, an export) keeps it. A capture's look
 moves a little: where splats overlap, the mean of their light is brighter
 than the light of their mean (decisions.md has the measurement).
+
+`emission` is the light each gaussian gives off by itself, linear radiance in
+the scene's units, unbounded: what its material's emission was where it stood
+(below). A relit gaussian adds it to what it reflects, transferred or not,
+unshadowed and the same from both sides of its disc; one whose colours are
+`litBody` does not, because the bake that wrote them met the emission and
+holds it already. It lights nothing else -- an emissive gaussian is not a
+light, and a mesh beside it is not lit by it. `athenea mesh2splat` writes it
+only where some material of the stage gives off light (twelve bytes a
+gaussian in the file, four on the device as RGB9E5: three 9-bit mantissas
+under a shared exponent, up to 65408, each channel to 1/512 of the
+brightest); a capture has none.
 
 **`AtheneaSplatSkinningAPI`** — the joints that carry a cloud.
 
@@ -1292,6 +1346,7 @@ A script's own header says what it needs and where it puts things.
 | What is printed | What it means | What to do |
 |---|---|---|
 | `no GPU device` (tests skip) | no device could be opened | check `athenea info`; on Linux set `ATHENEA_BACKEND` |
+| `colour: no colour space '<name>' in <config>; read as the file says` | a texture names a colour space neither the config nor the studio config knows | correct the name (`athenea info` says whether OpenColorIO is built in); the texture is read as if no colour space were given |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |
 | `this build reads no .spz` | zstd was missing when this binary was built | rebuild with zstd, or convert the capture elsewhere |
 | `.sog` refused | libwebp was missing | install it and rebuild |

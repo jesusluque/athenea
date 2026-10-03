@@ -218,7 +218,8 @@ más pesadas conservadas); un array cuyo nombre acaba en `shadowBits` bit a bit;
 cualquier otro entero -- un id, una parte, una lámina -- como lo que no se
 puede fundir entre sí; `primvars:athenea:splat:normal` como una dirección (la
 media ponderada hecha de nuevo un vector unitario); cualquier otro float --
-metallic, roughness, un transfer -- como una media. Metallic, roughness y transmisión también se comparan
+metallic, roughness, un transfer, `primvars:athenea:splat:emission` -- como una
+media. Metallic, roughness y transmisión también se comparan
 como el color. Un array muestreado en el tiempo se funde muestra a muestra. Un
 fichero de splats se escribe como una escena nueva, como la escribe
 `athenea convert`.
@@ -373,7 +374,7 @@ receta es §3.1.
 | `--normal-map-turns` | flag | apagado | el mapa de normales gira la gaussiana, no solo su sombreado. La normal de sombreado se escribe en ambos casos (`primvars:athenea:splat:normal`) |
 | `--no-displacement` | flag | apagado | ignorar el displacement de los materiales: toda gaussiana se queda sobre la malla plana |
 | `--displace-refine` | entero, 1 a 64 | `8` | donde el relieve estira una celda, partirla en como mucho este número de gaussianas en cada uno de sus dos ejes |
-| `--simplify` | número, 0 a 1 | `0` (apagado) | un bloque de celdas cuyo color, metallic, roughness, recorte y normales varían no más que esto -- en el bloque y en un bloque más allá de cada lado, todo dentro de un triángulo -- se convierte en una gaussiana de su tamaño. Colores y recorte van de 0 a 1; las normales se comparan por la longitud de su diferencia, más o menos el ángulo en radianes |
+| `--simplify` | número, 0 a 1 | `0` (apagado) | un bloque de celdas cuyo color, metallic, roughness, emisión, recorte y normales varían no más que esto -- en el bloque y en un bloque más allá de cada lado, todo dentro de un triángulo -- se convierte en una gaussiana de su tamaño. Colores y recorte van de 0 a 1; la emisión se compara en sus propias unidades, así que una brillante se funde menos; las normales se comparan por la longitud de su diferencia, más o menos el ángulo en radianes |
 | `--simplify-levels` | entero, 1 a 5 | `3` | el bloque más grande que puede fundir `--simplify` tiene 2^esto celdas de lado |
 | `--no-camera` | flag | cámara añadida | |
 | `--no-bake` | flag | bake encendido | llevar el material para ser relit, en vez de hornear la luz |
@@ -603,6 +604,26 @@ sombra del relieve sobre sí mismo: en el trazador no hay nada donde está el
 relieve. `--no-displacement` convierte la superficie plana. La ruta de mallas
 de Hydra ignora el displacement.
 
+**Lo que emite.** La emisión de un material se lleva, gaussiana a gaussiana,
+como la radiancia lineal con que se renderiza su malla: `emission` por
+`emission_color` de standard_surface, `emission_luminance` por
+`emission_color` de OpenPBR (nits, multiplicados tal cual, que es lo que hace
+su grafo), `emissive` por `emissive_strength` de glTF, y `emissiveColor` de
+UsdPreviewSurface. Un mapa sobre el color es el color y el peso lo multiplica;
+un mapa sobre el peso se lee en un canal y el color lo multiplica. La línea de
+log de una malla que emite luz lo dice:
+
+```
+mesh2splat: /World/Quad uses /World/Looks/Screen (colour 0.50 0.50 0.50, ..., emission 2.000000 2.000000 2.000000 x '.../emission_gradient.png')
+```
+
+Se escribe como `primvars:athenea:splat:emission` (§4.3) sólo donde algún
+material de la escena emite. Las nubes reiluminadas (`--no-bake`) y con
+transfer la suman al dibujarse; una horneada ya la lleva en sus colores. Lo que
+no hace es iluminar nada: los triángulos emisivos de la malla son una luz para
+el path tracer, las gaussianas de la nube no. Una capa de coat de OpenPBR sobre
+la emisión, que en la malla la tiñe y la atenúa, no se lleva.
+
 **Menos gaussianas donde la superficie es igual.** Una gaussiana por celda es lo
 que cuesta la superficie esté donde esté, y casi toda una superficie -- un panel
 pintado, una pared, un suelo -- es igual de una celda a la siguiente.
@@ -789,6 +810,13 @@ luz lineal (`primvars:athenea:splat:linear`) en los flags de su cabecera (bit
 1, junto al bit 0 de las normales); un fichero escrito antes lo tiene a cero y
 se lee como una captura, sRGB.
 
+1, que no tiene, se sigue leyendo. Una nube que emite luz
+(`primvars:athenea:splat:emission`) también la guarda, cuatro bytes más por
+gaussiana (una palabra RGB9E5, tras las normales donde están las dos), y en los
+niveles fundidos la media ponderada de lo que representan; es el bit 2 de los
+`flags` de la cabecera (el bit 0 son las normales), así que un fichero sin ella
+se lee como antes.
+
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
 dibujan su gaussiana fundida, así que la nube está pero roma, y se afina según
 aterrizan. `athenea stage` espera a que los streams se asienten antes de una
@@ -808,6 +836,20 @@ compilación lo tenga — `--ocio-config`, `--ocio-display` y `--ocio-view`
 compilan el display y el view de ese config dentro del kernel. `--edr` pide
 una superficie float y lleva ACES 2.0 hasta el pico de la pantalla, que en una
 pantalla normal es la misma imagen que sin él.
+
+Una textura se lee en el espacio de color que nombra su material o su luz
+-- el `colorspace` de MaterialX, el `sourceColorSpace` de un UsdUVTexture, el
+`colorSpace` de USD en la entrada de archivo, el `colorSpace` de un domo en
+`inputs:texture:file` -- y se lleva al espacio de trabajo (Rec.709 lineal) en
+el dispositivo. Los nombres son los del studio config de OpenColorIO
+(`srgb_texture`, `lin_rec709`, `acescg`, `g22_rec709`, ...), sus alias y
+roles, los de USD (`lin_ap1_scene`, `srgb_rec709_scene`, ...) y los de
+UsdUVTexture (`sRGB`, `raw`, `auto`). `raw`, `data`, `Non-Color`, `none`,
+`identity` y `Utility - Raw` leen el archivo como datos. Sin nombre, o con
+`auto`: una imagen de 8 bits es sRGB salvo que el archivo diga otra cosa, y
+cualquier otra, lineal. Un nombre que nadie conoce se avisa una vez y el
+archivo se lee como él dice. Sin OpenColorIO en la compilación solo se
+conocen sRGB, Rec.709 lineal y datos.
 
 `athenea view --snapshot` escribe el frame **tal como se ve**, codificado para
 pantalla y con los paneles dentro. Es una captura de pantalla, no una salida
@@ -902,6 +944,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:shadowBits` | int[] ‹2 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
 
 `relight` dice que los colores son un albedo que las luces de la escena tienen
 que iluminar. `litBody` dice que ya son la luz sobre el cuerpo del material,
@@ -953,6 +996,18 @@ transfer, un bake -- y una nube que se vuelve a escribir (`athenea decimate`,
 un export) lo conserva. El aspecto de una captura se mueve un poco: donde se
 solapan splats, la media de su luz es más clara que la luz de su media
 (decisions.md tiene la medida).
+
+`emission` es la luz que cada gaussiana emite por sí misma, radiancia lineal en
+las unidades de la escena, sin tope: lo que era la emisión de su material donde
+estaba (arriba). Una gaussiana reiluminada la suma a lo que refleja, con
+transfer o sin él, sin sombra y igual por las dos caras de su disco; una cuyos
+colores son `litBody` no, porque el bake que los escribió se encontró la
+emisión y ya la lleva. No ilumina nada más -- una gaussiana emisiva no es una
+luz, y una malla a su lado no recibe luz de ella. `athenea mesh2splat` la
+escribe sólo donde algún material de la escena emite luz (doce bytes por
+gaussiana en el fichero, cuatro en el dispositivo como RGB9E5: tres mantisas de
+9 bits bajo un exponente compartido, hasta 65408, cada canal a 1/512 del más
+brillante); una captura no tiene.
 
 **`AtheneaSplatSkinningAPI`** — los joints que llevan una nube.
 
@@ -1318,6 +1373,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | Qué se imprime | Qué significa | Qué hacer |
 |---|---|---|
 | `no GPU device` (los tests se saltan) | no se pudo abrir dispositivo | mira `athenea info`; en Linux pon `ATHENEA_BACKEND` |
+| `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |
 | `this build reads no .spz` | faltaba zstd cuando se compiló este binario | recompila con zstd, o convierte la captura en otro sitio |
 | un `.sog` rechazado | faltaba libwebp | instálalo y recompila |

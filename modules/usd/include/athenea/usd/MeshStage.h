@@ -18,8 +18,8 @@
 // drawn, from the same kernel.
 //
 // What a material says is narrowed here to what a gaussian can carry: a
-// colour, a metallic, a roughness, a normal, a transmission, and the files
-// those come from. A MaterialX graph is not evaluated -- that is
+// colour, a metallic, a roughness, a normal, a transmission, the light it
+// gives off, and the files those come from. A MaterialX graph is not evaluated -- that is
 // `material::MaterialCompiler`'s work and it needs a shading point -- so a
 // value that is computed rather than authored comes back as the texture it
 // is read from, or as the default.
@@ -115,6 +115,21 @@ struct StageMaterial {
     /// not zero.
     [[nodiscard]] bool displaces() const noexcept {
         return !displacementMap.empty() || displacementBias != 0.0F;
+    }
+    /// THE LIGHT IT GIVES OFF BY ITSELF, linear radiance: the colour times
+    /// the weight, in each vocabulary's words -- standard_surface's
+    /// `emission` x `emission_color`, OpenPBR's `emission_luminance` x
+    /// `emission_color` (nits, which the mesh is rendered with as they are),
+    /// glTF's `emissive` x `emissive_strength`, UsdPreviewSurface's
+    /// `emissiveColor`. With `emissionMap` the map is the colour and this is
+    /// what multiplies it (the weight, where the colour is the map; the
+    /// colour, where the weight is), as for every other map here.
+    std::array<float, 3>   emission{0.0F, 0.0F, 0.0F};
+    /// A map on the colour (rgb, `channel` 0) or on the weight (one channel).
+    StageTexture           emissionMap;
+    /// Whether anything is given off at all.
+    [[nodiscard]] bool emits() const noexcept {
+        return emission[0] > 0.0F || emission[1] > 0.0F || emission[2] > 0.0F;
     }
 };
 

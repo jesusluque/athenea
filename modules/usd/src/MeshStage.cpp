@@ -453,6 +453,54 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         }
     }
 
+    // THE LIGHT IT GIVES OFF. A colour and a weight, which the four
+    // vocabularies name four ways and give four defaults: standard_surface
+    // and OpenPBR weigh a white colour by nothing (`emission`,
+    // `emission_luminance`, both 0), glTF a black colour by one
+    // (`emissive`, `emissive_strength`), and UsdPreviewSurface has the
+    // colour alone (`emissiveColor`, black). OpenPBR's luminance is in nits
+    // and its graph multiplies it into the colour as it stands -- which is
+    // the radiance the mesh is rendered with here, so it is carried as that.
+    // A map on either is the value: connected, the colour is one (or the
+    // weight is), and what is left multiplies the map.
+    {
+        const char* colourName = preview ? "emissiveColor" : gltf ? "emissive" : "emission_color";
+        const char* weightName = preview ? nullptr
+                                 : gltf  ? "emissive_strength"
+                                 : openPbr ? "emission_luminance"
+                                           : "emission";
+        std::array<float, 3> colour = preview || gltf ? std::array<float, 3>{0.0F, 0.0F, 0.0F}
+                                                      : std::array<float, 3>{1.0F, 1.0F, 1.0F};
+        float weight = preview ? 1.0F : gltf ? 1.0F : 0.0F;
+        const Resolved colourIn = read(colourName);
+        takeColour(colourIn, colour);
+        Resolved weightIn;
+        if (weightName != nullptr) {
+            weightIn = read(weightName);
+            takeFloat(weightIn, weight);
+        }
+        if (!colourIn.texture.empty()) {
+            out.emissionMap = colourIn.texture;
+            colour = {1.0F, 1.0F, 1.0F};
+            if (!weightIn.texture.empty()) {
+                athenea::log::info("mesh2splat: '{}' maps both the emission's colour and its weight; the "
+                                   "weight's map is not read", out.path);
+            }
+        } else if (!weightIn.texture.empty()) {
+            // A grey map on the weight: one channel, the first unless the
+            // connection says which.
+            out.emissionMap = weightIn.texture;
+            if (out.emissionMap.channel == 0) {
+                out.emissionMap.channel = 'r';
+            }
+            weight = 1.0F;
+        }
+        out.emission = {colour[0] * weight, colour[1] * weight, colour[2] * weight};
+        if (out.emissionMap.empty() || !out.emits()) {
+            out.emissionMap = {};   // a map on nothing gives off nothing
+        }
+    }
+
     // DISPLACEMENT: a height along the normal, which a gaussian can carry for
     // almost nothing -- it is where it stands -- and a mesh only by being cut
     // into triangles finer than the relief.

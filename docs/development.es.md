@@ -41,21 +41,22 @@ coinciden, la cabecera tiene razón.
 | 4 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout |
 | 5 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre) |
 | 6 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
-| 7 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
-| 8 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
-| 9 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
-| 10 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
-| 11 | light | `light/LightTable.h` — una luz en el dispositivo |
-| 12 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
-| 13 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 14 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 15 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
-| 16 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
-| 17 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
-| 18 | view | `view/Viewer.h` — las opciones de la ventana |
+| 7 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
+| 8 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
+| 9 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
+| 10 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
+| 11 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
+| 12 | light | `light/LightTable.h` — una luz en el dispositivo |
+| 13 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
+| 14 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 15 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
+| 16 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
+| 17 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
+| 18 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
+| 19 | view | `view/Viewer.h` — las opciones de la ventana |
 
-Una cosa que parece una violación y no lo es: `render` (8) enlaza `aofx::aofx`
-(17). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
+Una cosa que parece una violación y no lo es: `render` (9) enlaza `aofx::aofx`
+(18). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
 le toma son `Mat4` y `Vec3`. La regla de orden es sobre librerías compiladas.
 
 ### 1.2 Una GPU, un hilo
@@ -116,9 +117,10 @@ comprobación.
 
 - **El contrato entre módulos es `common/packing.slang`**: cómo se empaquetan
   en cuatro palabras la opacidad, la escala, el cuaternión y el color DC de un
-  splat, y en una la normal de sombreado opcional (`packNormal`). Todo lo que
-  escribe una nube y todo lo que la lee pasa por ahí. Un buffer opcional de
-  `GpuSplats` (`pbr`, `normals`) se enlaza tenga o no la nube -- la forma en
+  splat, en una la normal de sombreado opcional (`packNormal`) y en una la
+  emisión opcional (`packRgb9e5`). Todo lo que escribe una nube y todo lo que
+  la lee pasa por ahí. Un buffer opcional de `GpuSplats` (`pbr`, `normals`,
+  `emission`) se enlaza tenga o no la nube -- la forma en
   su lugar -- y un flag en los parámetros dice cuál.
 - **El índice de un splat no es el de su registro.** La validación descarta
   lo que no se puede dibujar; `GpuSplats::origin` dice de qué registro vino
@@ -657,6 +659,20 @@ sobre la cara.
 material translúcido no es uno transparente, y bajar aquí la opacidad diría
 que sí lo es.
 
+**La emisión**, donde algún material de la escena emite luz: el color del
+material por su peso (`StageMaterial::emission`, leído en cada uno de los
+cuatro vocabularios), por su mapa donde lo hay -- el clip `Emission` del
+efecto, leído como rgb o en un canal (`emissionChannel`) --, escrita por el
+efecto en una entrada propia del registro, la última, y por el host en
+`record[20..22]` (`primvars:athenea:splat:emission`; los armónicos empiezan en
+23). Las nubes reiluminadas y con transfer la suman al dibujarse; el bake se la
+encuentra en su primer vértice y la guarda en los colores. Añadir una entrada
+de material que lleve una gaussiana son los mismos cinco sitios:
+`StageMaterial` y `materialOf`, un clip o un parámetro del efecto, `m2sWrite`
+del kernel (y `m2sLookAt`, para que `--simplify` la compare), la disposición
+del registro en `convert`/`recordFloats`, y el campo del encoding que leen la
+exportación y la decodificación.
+
 **Joints y pesos**, con `--skinned`: cuatro de cada por gaussiana, mezclados
 desde las esquinas del triángulo, para que la nube se deforme con el esqueleto
 que llevaba la malla.
@@ -900,8 +916,8 @@ armónicos y sus coeficientes, el extent — y una cámara que lo encuadra salvo
 
 Al lado, los primvars que dicen lo que necesita este motor y los schemas que
 los declaran: `AtheneaSplatLightingAPI` (`relight`, `litBody`, `linear` --
-los colores de toda conversión son luz lineal -- y metallic,
-roughness, transmission y la normal de sombreado por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
+los colores de toda conversión son luz lineal -- y metallic, roughness,
+transmission, la normal de sombreado y la emisión por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
 tiene esqueleto, `AtheneaSplatCryptomatteAPI` con un id por gaussiana y el
 manifest que los nombra, y `AtheneaSplatVisibilityAPI` una vez que ha corrido `athenea
 visibility`. La referencia de atributos es
