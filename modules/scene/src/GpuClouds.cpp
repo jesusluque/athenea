@@ -173,9 +173,9 @@ Result<Bounds> CloudLoader::boundsOf(const gpu::Buffer& positions, uint32_t coun
         cursor["result"].setBinding(result->rhi());
         params(cursor);
     });
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     float extent[8];
-    ATHENEA_TRY(result->read(*device_, 0, sizeof(extent), extent));
+    ATHENEA_TRY(result->read(*device_, 0, sizeof(extent), extent));   // the one wait
     bounds.min = {extent[0], extent[1], extent[2]};
     bounds.max = {extent[4], extent[5], extent[6]};
     return bounds;

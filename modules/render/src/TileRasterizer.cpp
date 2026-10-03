@@ -6,6 +6,7 @@
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
+#include "athenea/gpu/FrameProfiler.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "FrameParams.h"
 
@@ -262,336 +263,385 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
 
     FrameStats stats;
     stats.splats = splatCount;
-
-    // --- batch 1: project; how many are visible and how many pairs --------
-    //
-    // Both counts come from prefix sums over what the projection wrote, so one
-    // readback answers both, and everything after it is sized exactly.
-    gpu::CommandBatch batch(*device_);
-    // A relit cloud's shadows, measured before anything is projected: one ray
-    // a splat a light (splat_shadow.slang), read by the projection as a
-    // factor. Its own kernel, since an inline ray is a feature a device may
-    // not have and the projection must stay available everywhere.
-    // Factors measured before the frame stand in for the shadow ray: a baked
-    // visibility answers the same question without a trace, and answers it
-    // on a device that cannot trace inline at all.
-    const bool measured = lights != nullptr && lights->any() && lights->visibilityFactors != nullptr &&
-                          lights->visibilityLights > 0;
-    const bool splatShadows = !measured && lights != nullptr && lights->any() && lights->shadows() && shadowsSupported_ &&
-                              std::any_of(instances.begin(), instances.end(),
-                                          [](const SplatInstance& i) { return i.relight; });
-    const uint32_t shadowLights = splatShadows ? std::min(lights->count, uint32_t{8}) : 0u;
-    if (splatShadows) {
-        uint64_t wanted = 0;
-        for (const SplatInstance& instance : instances) {
-            wanted += instance.splats != nullptr ? instance.splats->count : 0;
-        }
-        wanted *= shadowLights;
-        if (!shadowFactors_.valid() || shadowFactors_.bytes() < wanted * sizeof(float)) {
-            auto made = buffer(*device_, std::max<uint64_t>(wanted, 1), 4, "splat.shadowFactors");
-            if (!made) return std::move(made).error();
-            shadowFactors_ = *made;
-        }
-        uint32_t at = 0;
-        for (const SplatInstance& instance : instances) {
-            const scene::GpuSplats* cloud = instance.splats;
-            if (cloud == nullptr || cloud->count == 0) {
-                continue;
+    if (!frameTotals_.valid()) {
+        auto made = buffer(*device_, 4, 4, "splat.frameTotals");
+        if (!made) return std::move(made).error();
+        frameTotals_ = *made;
+        auto readback = gpu::AsyncReadback::create(*device_, 8, 3, "splat.frameTotals.readback");
+        if (!readback) return std::move(readback).error();
+        totalsReadback_ = std::move(*readback);
+    }
+    // NO WAIT IN THE MIDDLE OF A FRAME. How many splats are visible and how
+    // many (tile, splat) pairs they make are prefix sums the device takes,
+    // and everything after them reads its count from those sums: the sorts,
+    // the gather, the emit and the ranges are dispatched for the most there
+    // can be and stop at the count (gpu::RadixSort's and gpu::PrefixSum's
+    // device-sized forms). The host reads both totals once, at the frame's
+    // end. The pairs are the one thing sized before they are known: the
+    // buffers are what the last frame grew them to (half as much again as
+    // the splats, the first time), the emit writes none past them, and a
+    // frame that made more is drawn again in bigger ones.
+    if (pairCapacity_ == 0) {
+        ATHENEA_TRY(reservePairs(std::max(splatCount + splatCount / 2, 1u)));
+    }
+    const uint32_t all = std::max(splatCount, 1u);
+    const bool anything = splatCount > 0;
+    for (int attempt = 0;; ++attempt) {
+        gpu::CommandBatch batch(*device_);
+        // A relit cloud's shadows, measured before anything is projected: one ray
+        // a splat a light (splat_shadow.slang), read by the projection as a
+        // factor. Its own kernel, since an inline ray is a feature a device may
+        // not have and the projection must stay available everywhere.
+        // Factors measured before the frame stand in for the shadow ray: a baked
+        // visibility answers the same question without a trace, and answers it
+        // on a device that cannot trace inline at all.
+        const bool measured = lights != nullptr && lights->any() && lights->visibilityFactors != nullptr &&
+                              lights->visibilityLights > 0;
+        const bool splatShadows = !measured && lights != nullptr && lights->any() && lights->shadows() && shadowsSupported_ &&
+                                  std::any_of(instances.begin(), instances.end(),
+                                              [](const SplatInstance& i) { return i.relight; });
+        const uint32_t shadowLights = splatShadows ? std::min(lights->count, uint32_t{8}) : 0u;
+        if (splatShadows) {
+            uint64_t wanted = 0;
+            for (const SplatInstance& instance : instances) {
+                wanted += instance.splats != nullptr ? instance.splats->count : 0;
             }
-            if (instance.relight) {
-                const std::array<float, 12> rows = instance.objectToWorld.rows3x4();
-                splatShadow_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            wanted *= shadowLights;
+            if (!shadowFactors_.valid() || shadowFactors_.bytes() < wanted * sizeof(float)) {
+                auto made = buffer(*device_, std::max<uint64_t>(wanted, 1), 4, "splat.shadowFactors");
+                if (!made) return std::move(made).error();
+                shadowFactors_ = *made;
+            }
+            uint32_t at = 0;
+            for (const SplatInstance& instance : instances) {
+                const scene::GpuSplats* cloud = instance.splats;
+                if (cloud == nullptr || cloud->count == 0) {
+                    continue;
+                }
+                if (instance.relight) {
+                    const std::array<float, 12> rows = instance.objectToWorld.rows3x4();
+                    splatShadow_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                        cursor["positions"].setBinding(cloud->positions.rhi());
+                        cursor["shape"].setBinding(cloud->shape.rhi());
+                        cursor["lights"].setBinding(lights->records->rhi());
+                        cursor["shadowFrames"].setBinding(lights->shadowFrames->rhi());
+                        cursor["shadowColours"].setBinding(lights->shadowColours->rhi());
+                        cursor["shadowInstanceData"].setBinding(lights->shadowInstanceData->rhi());
+                        cursor["shadowInstanceIndices"].setBinding(lights->shadowInstanceIndices->rhi());
+                        cursor["factors"].setBinding(shadowFactors_.rhi());
+                        cursor["scene"].setBinding(lights->shadowTlas);
+                        rhi::ShaderCursor p = cursor["params"];
+                        p["count"].setData(cloud->count);
+                        p["base"].setData(at);
+                        p["lights"].setData(shadowLights);
+                        p["offset"].setData(lights->shadowOffset);
+                        p["cut"].setData(lights->shadowCut);
+                        p["categoriesLo"].setData(static_cast<uint32_t>(instance.categories & 0xFFFFFFFFu));
+                        p["categoriesHi"].setData(static_cast<uint32_t>(instance.categories >> 32));
+                        static const char* kRow[12] = {"w00", "w01", "w02", "w03", "w10", "w11",
+                                                       "w12", "w13", "w20", "w21", "w22", "w23"};
+                        for (int k = 0; k < 12; ++k) {
+                            p[kRow[k]].setData(rows[static_cast<size_t>(k)]);
+                        }
+                    });
+                }
+                at += cloud->count;
+            }
+        }
+        Stopwatch watch(batch, settings.timeStages);
+        {
+            gpu::Phase phase(batch, "project");
+            uint32_t base = 0;
+            for (const SplatInstance& instance : instances) {
+                const scene::GpuSplats* cloud = instance.splats;
+                if (cloud == nullptr || cloud->count == 0) {
+                    continue;
+                }
+                const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
+                const Vec3 eyeObject =
+                    aofx::xform::inverseAffine(instance.objectToWorld).point(projection.eyeWorld);
+                project_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["positions"].setBinding(cloud->positions.rhi());
                     cursor["shape"].setBinding(cloud->shape.rhi());
-                    cursor["lights"].setBinding(lights->records->rhi());
-                    cursor["shadowFrames"].setBinding(lights->shadowFrames->rhi());
-                    cursor["shadowColours"].setBinding(lights->shadowColours->rhi());
-                    cursor["shadowInstanceData"].setBinding(lights->shadowInstanceData->rhi());
-                    cursor["shadowInstanceIndices"].setBinding(lights->shadowInstanceIndices->rhi());
-                    cursor["factors"].setBinding(shadowFactors_.rhi());
-                    cursor["scene"].setBinding(lights->shadowTlas);
-                    rhi::ShaderCursor p = cursor["params"];
-                    p["count"].setData(cloud->count);
-                    p["base"].setData(at);
-                    p["lights"].setData(shadowLights);
-                    p["offset"].setData(lights->shadowOffset);
-                    p["cut"].setData(lights->shadowCut);
-                    p["categoriesLo"].setData(static_cast<uint32_t>(instance.categories & 0xFFFFFFFFu));
-                    p["categoriesHi"].setData(static_cast<uint32_t>(instance.categories >> 32));
-                    static const char* kRow[12] = {"w00", "w01", "w02", "w03", "w10", "w11",
-                                                   "w12", "w13", "w20", "w21", "w22", "w23"};
+                    cursor["sh"].setBinding(cloud->sh.rhi());
+                    cursor["proj"].setBinding(proj_.rhi());
+                    cursor["visible"].setBinding(visible_.rhi());
+                    cursor["tileRects"].setBinding(tileRects_.rhi());
+                    cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
+                    cursor["depthKeys"].setBinding(depthKeys_.rhi());
+                    // Cryptomatte: this cloud's ids, where it has them. A cloud
+                    // without ancestry (a capture) writes zero, which the blend
+                    // leaves out of the matte rather than calling it something.
+                    const uint32_t cryptoMode =
+                        !settings.cryptomatte ? 0u : cloud->hasCrypto() ? 1u : 2u;
+                    cursor["cloudCrypto"].setBinding(cloud->hasCrypto() ? cloud->crypto.rhi()
+                                                                        : placeholderCrypto_.rhi());
+                    cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
+                    setFrame(cursor, common);
+                    cursor["params"]["cryptoMode"].setData(cryptoMode);
+                    setObject(cursor, objectToView, eyeObject);
+                    cursor["params"]["count"].setData(cloud->count);
+                    cursor["params"]["base"].setData(base);
+                    cursor["params"]["restPerColour"].setData(cloud->restPerColour);
+                    cursor["params"]["shWords"].setData(cloud->shWords);
+                    setEdit(cursor["params"]["edit"], instance.edit);
+                    // Relighting: only where the prim asked for it and the frame has
+                    // lights to do it with. The buffer is bound either way, since a
+                    // name a shader declares must be bound whether it is read or not.
+                    const bool relight = instance.relight && lights != nullptr && lights->any();
+                    cursor["params"]["relight"].setData(uint32_t{relight ? 1u : 0u});
+                    cursor["params"]["lightCount"].setData(relight ? lights->count : 0u);
+                    cursor["params"]["categoriesLo"].setData(static_cast<uint32_t>(instance.categories & 0xFFFFFFFFu));
+                    cursor["params"]["categoriesHi"].setData(static_cast<uint32_t>(instance.categories >> 32));
+                    cursor["lights"].setBinding(relight ? lights->records->rhi() : emptyLights_.rhi());
+                    // The shadow ray a relit splat casts against the cloud's own
+                    // proxies. Bound either way; taken only where there is a
+                    // structure to trace and the device can trace it inline.
+                    const bool shadows = relight && splatShadows && instance.relight;
+                    const bool fromField = relight && measured && instance.relight;
+                    cursor["params"]["shadowRays"].setData(uint32_t{(shadows || fromField) ? 1u : 0u});
+                    cursor["params"]["shadowLights"].setData(fromField ? lights->visibilityLights : shadowLights);
+                    cursor["shadowFactors"].setBinding(fromField  ? lights->visibilityFactors->rhi()
+                                                       : shadows ? shadowFactors_.rhi()
+                                                                 : emptyShadow_.rhi());
+                    // The sky, where one was prepared for this frame. Bound either
+                    // way: a name a shader declares must be bound whether it is read
+                    // or not, and `envLights` of 0 is what says it is not.
+                    const bool sky = relight && lights != nullptr && lights->environment();
+                    cursor["envTexels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());
+                    cursor["envSh"].setBinding(sky ? lights->envSh->rhi() : emptyEnvSh_.rhi());
+                    cursor["envSun"].setBinding(sky ? lights->envSun->rhi() : emptyEnvSh_.rhi());
+                    cursor["envOfLight"].setBinding(sky ? lights->envOfLight->rhi() : emptyEnvWords_.rhi());
+                    cursor["params"]["envLights"].setData(sky ? lights->envLights : 0u);
+                    cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
+                    // What of an environment reaches each gaussian, where the cloud
+                    // carries it. Bound either way, as every name a shader declares.
+                    const bool carried = cloud->hasTransfer();
+                    cursor["transfer"].setBinding(carried ? cloud->transfer.rhi() : cloud->shape.rhi());
+                    cursor["params"]["transferWords"].setData(carried ? cloud->transferWords : 0u);
+                    cursor["params"]["transferCount"].setData(carried ? cloud->transferCount : 0u);
+                    const bool open = carried && cloud->hasShadowBits();
+                    cursor["shadowBits"].setBinding(open ? cloud->shadowBits.rhi() : cloud->shape.rhi());
+                    cursor["params"]["shadowBits"].setData(open ? 1u : 0u);
+                    cursor["params"]["transferIndirect"].setData(
+                        uint32_t{carried && instance.transferIndirect && cloud->hasIndirect() ? 1u : 0u});
+                    cursor["params"]["ior"].setData(instance.ior);
+                    // What the splat reflects with, where its cloud carries it (a
+                    // conversion from a mesh does, a capture does not). Bound either
+                    // way, and `hasPbr` is what says whether it is read.
+                    cursor["params"]["hasPbr"].setData(uint32_t{cloud->hasPbr() ? 1u : 0u});
+                    cursor["params"]["litBody"].setData(uint32_t{instance.litBody ? 1u : 0u});
+                    setCloudSpace(cursor, *cloud);
+                    cursor["pbr"].setBinding(cloud->hasPbr() ? cloud->pbr.rhi() : cloud->shape.rhi());
+                    // The shading normal a conversion kept apart from the frame,
+                    // where the cloud has one: bound either way, read by `hasNormals`.
+                    cursor["params"]["hasNormals"].setData(uint32_t{cloud->hasNormals() ? 1u : 0u});
+                    cursor["normals"].setBinding(cloud->hasNormals() ? cloud->normals.rhi() : cloud->shape.rhi());
+                    // And the radiance its gaussians give off, where it has any.
+                    cursor["params"]["hasEmission"].setData(uint32_t{cloud->hasEmission() ? 1u : 0u});
+                    cursor["emission"].setBinding(cloud->hasEmission() ? cloud->emission.rhi() : cloud->shape.rhi());
+                    // What a pick said this prim is made of. Bound either way, as
+                    // every name a shader declares; `overrideCount` of 0 is what says
+                    // the table is not read.
+                    const bool said = instance.overrides != nullptr && instance.overrideCount > 0 &&
+                                      cloud->hasCrypto();
+                    cursor["splatOverrides"].setBinding(said ? instance.overrides->rhi() : emptyEnvSh_.rhi());
+                    cursor["params"]["overrideCount"].setData(said ? instance.overrideCount : 0u);
+                    // Relighting happens in the world: the rows take this cloud there
+                    // and the eye is already there.
+                    const std::array<float, 12> toWorld = instance.objectToWorld.rows3x4();
+                    static const char* kWorldRow[12] = {"w00", "w01", "w02", "w03", "w10", "w11",
+                                                        "w12", "w13", "w20", "w21", "w22", "w23"};
                     for (int k = 0; k < 12; ++k) {
-                        p[kRow[k]].setData(rows[static_cast<size_t>(k)]);
+                        cursor["params"][kWorldRow[k]].setData(toWorld[static_cast<size_t>(k)]);
                     }
+                    cursor["params"]["eyeWorldX"].setData(static_cast<float>(projection.eyeWorld.x));
+                    cursor["params"]["eyeWorldY"].setData(static_cast<float>(projection.eyeWorld.y));
+                    cursor["params"]["eyeWorldZ"].setData(static_cast<float>(projection.eyeWorld.z));
+                    // What moves during the shutter. Set for every instance, still or
+                    // not, so that no dispatch inherits the last one's flag.
+                    setMotion(cursor, instance,
+                              static_cast<float>(std::max(common.width, common.height)) * 0.25F);
+                    cursor["motion"].setBinding(instance.motion != nullptr ? instance.motion->rhi()
+                                                                           : emptyMotion_.rhi());
+                });
+                base += cloud->count;
+            }
+            for (const PointInstance& instance : points) {
+                const scene::GpuPoints* cloud = instance.points;
+                if (cloud == nullptr || cloud->count == 0) {
+                    continue;
+                }
+                const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
+                pointsProject_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["positions"].setBinding(cloud->positions.rhi());
+                    cursor["colours"].setBinding(cloud->colours.rhi());
+                    cursor["proj"].setBinding(proj_.rhi());
+                    cursor["visible"].setBinding(visible_.rhi());
+                    cursor["tileRects"].setBinding(tileRects_.rhi());
+                    cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
+                    cursor["depthKeys"].setBinding(depthKeys_.rhi());
+                    cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
+                    setFrame(cursor, common);
+                    cursor["params"]["cryptoMode"].setData(uint32_t{settings.cryptomatte ? 2u : 0u});
+                    setObject(cursor, objectToView, projection.eyeWorld);
+                    cursor["params"]["count"].setData(cloud->count);
+                    cursor["params"]["base"].setData(base);
+                    setPointParams(cursor["points"], projection, settings.width, settings.height,
+                                   objectToView, instance.style, cloud->count);
+                });
+                base += cloud->count;
+            }
+            if (anything) {
+                ATHENEA_TRY(prefix_.apply(batch, visible_, visibleOffsets_, visibleTotal_, all));
+                ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
+            }
+        }
+        auto ms = watch.lap();
+        if (!ms) return std::move(ms).error();
+        stats.projectMs += *ms;
+
+        // --- the visible, in depth order: sized by visibleTotal_ ---------------
+        if (anything) {
+            gpu::Phase phase(batch, "sort");
+            compact_.dispatch(batch, {splatCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["visible"].setBinding(visible_.rhi());
+                cursor["visibleOffsets"].setBinding(visibleOffsets_.rhi());
+                cursor["depthKeys"].setBinding(depthKeys_.rhi());
+                cursor["sortKeys"].setBinding(depthSort_.keysLo.rhi());
+                cursor["sortOrder"].setBinding(depthSort_.values.rhi());
+                setFrame(cursor, common);
+                cursor["params"]["count"].setData(splatCount);
+            });
+            ATHENEA_TRY(sort_.sort(batch, depthSort_, visibleTotal_, splatCount, 24));
+        }
+        ms = watch.lap();
+        if (!ms) return std::move(ms).error();
+        stats.depthSortMs += *ms;
+
+        // --- the pairs, in depth order: sized by visibleTotal_, counted into totalPairs_
+        if (anything) {
+            gpu::Phase phase(batch, "emit");
+            gather_.dispatch(batch, {splatCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["order"].setBinding(depthSort_.values.rhi());
+                cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
+                cursor["sortedCounts"].setBinding(sortedCounts_.rhi());
+                cursor["visibleTotal"].setBinding(visibleTotal_.rhi());
+                setFrame(cursor, common);
+                cursor["params"]["count"].setData(splatCount);
+            });
+            ATHENEA_TRY(prefix_.apply(batch, sortedCounts_, offsets_, totalPairs_, visibleTotal_, splatCount));
+            emit_.dispatch(batch, {splatCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["order"].setBinding(depthSort_.values.rhi());
+                cursor["offsets"].setBinding(offsets_.rhi());
+                cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
+                cursor["tileRects"].setBinding(tileRects_.rhi());
+                cursor["proj"].setBinding(proj_.rhi());
+                cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());
+                cursor["pairSplats"].setBinding(tileSort_.values.rhi());
+                cursor["visibleTotal"].setBinding(visibleTotal_.rhi());
+                setFrame(cursor, common);
+                cursor["params"]["count"].setData(splatCount);
+                cursor["params"]["base"].setData(pairCapacity_);
+            });
+        }
+        ms = watch.lap();
+        if (!ms) return std::move(ms).error();
+        stats.emitMs += *ms;
+
+        // --- the pairs by tile, and where each tile's run is: sized by totalPairs_
+        {
+            gpu::Phase phase(batch, "sort");
+            if (anything) {
+                ATHENEA_TRY(sort_.sort(batch, tileSort_, totalPairs_, pairCapacity_, bitsFor(tiles)));
+            }
+            clear_.dispatch(batch, {tiles, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["ranges"].setBinding(ranges_buffer_.rhi());
+                setFrame(cursor, common);
+            });
+            if (anything) {
+                ranges_.dispatch(batch, {pairCapacity_, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());
+                    cursor["ranges"].setBinding(ranges_buffer_.rhi());
+                    cursor["totalPairs"].setBinding(totalPairs_.rhi());
+                    setFrame(cursor, common);
+                    cursor["params"]["count"].setData(pairCapacity_);
                 });
             }
-            at += cloud->count;
         }
-    }
-    Stopwatch watch(batch, settings.timeStages);
-    uint32_t base = 0;
-    for (const SplatInstance& instance : instances) {
-        const scene::GpuSplats* cloud = instance.splats;
-        if (cloud == nullptr || cloud->count == 0) {
-            continue;
+        ms = watch.lap();
+        if (!ms) return std::move(ms).error();
+        stats.tileSortMs += *ms;
+
+        {
+            gpu::Phase phase(batch, "raster");
+            const bool composite = under != nullptr || !points.empty();
+            const bool matte = settings.cryptomatte && targets.crypto.valid();
+            const bool underCrypto = matte && under != nullptr && under->cryptoIds.valid();
+            gpu::ComputeKernel& blend = matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
+                                              : (composite ? blendComposite_ : blend_);
+            blend.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["ranges"].setBinding(ranges_buffer_.rhi());
+                cursor["pairSplats"].setBinding(tileSort_.values.rhi());
+                cursor["proj"].setBinding(proj_.rhi());
+                cursor["underColour"].setBinding(under != nullptr ? under->colour.rhi() : placeholderColour_.rhi());
+                cursor["underDepth"].setBinding(under != nullptr ? under->depth.rhi() : placeholderDepth_.rhi());
+                cursor["colour"].setBinding(targets.colour.rhi());
+                cursor["depth"].setBinding(targets.depth.rhi());
+                cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
+                cursor["underCrypto"].setBinding(underCrypto ? under->cryptoIds.rhi()
+                                                             : placeholderCrypto_.rhi());
+                cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderColour_.rhi());
+                setFrame(cursor, common);
+                cursor["params"]["hasUnder"].setData(uint32_t{under != nullptr ? 1u : 0u});
+                cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
+            });
         }
-        const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
-        const Vec3 eyeObject =
-            aofx::xform::inverseAffine(instance.objectToWorld).point(projection.eyeWorld);
-        project_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["positions"].setBinding(cloud->positions.rhi());
-            cursor["shape"].setBinding(cloud->shape.rhi());
-            cursor["sh"].setBinding(cloud->sh.rhi());
-            cursor["proj"].setBinding(proj_.rhi());
-            cursor["visible"].setBinding(visible_.rhi());
-            cursor["tileRects"].setBinding(tileRects_.rhi());
-            cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
-            cursor["depthKeys"].setBinding(depthKeys_.rhi());
-            // Cryptomatte: this cloud's ids, where it has them. A cloud
-            // without ancestry (a capture) writes zero, which the blend
-            // leaves out of the matte rather than calling it something.
-            const uint32_t cryptoMode =
-                !settings.cryptomatte ? 0u : cloud->hasCrypto() ? 1u : 2u;
-            cursor["cloudCrypto"].setBinding(cloud->hasCrypto() ? cloud->crypto.rhi()
-                                                                : placeholderCrypto_.rhi());
-            cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
-            setFrame(cursor, common);
-            cursor["params"]["cryptoMode"].setData(cryptoMode);
-            setObject(cursor, objectToView, eyeObject);
-            cursor["params"]["count"].setData(cloud->count);
-            cursor["params"]["base"].setData(base);
-            cursor["params"]["restPerColour"].setData(cloud->restPerColour);
-            cursor["params"]["shWords"].setData(cloud->shWords);
-            setEdit(cursor["params"]["edit"], instance.edit);
-            // Relighting: only where the prim asked for it and the frame has
-            // lights to do it with. The buffer is bound either way, since a
-            // name a shader declares must be bound whether it is read or not.
-            const bool relight = instance.relight && lights != nullptr && lights->any();
-            cursor["params"]["relight"].setData(uint32_t{relight ? 1u : 0u});
-            cursor["params"]["lightCount"].setData(relight ? lights->count : 0u);
-            cursor["params"]["categoriesLo"].setData(static_cast<uint32_t>(instance.categories & 0xFFFFFFFFu));
-            cursor["params"]["categoriesHi"].setData(static_cast<uint32_t>(instance.categories >> 32));
-            cursor["lights"].setBinding(relight ? lights->records->rhi() : emptyLights_.rhi());
-            // The shadow ray a relit splat casts against the cloud's own
-            // proxies. Bound either way; taken only where there is a
-            // structure to trace and the device can trace it inline.
-            const bool shadows = relight && splatShadows && instance.relight;
-            const bool fromField = relight && measured && instance.relight;
-            cursor["params"]["shadowRays"].setData(uint32_t{(shadows || fromField) ? 1u : 0u});
-            cursor["params"]["shadowLights"].setData(fromField ? lights->visibilityLights : shadowLights);
-            cursor["shadowFactors"].setBinding(fromField  ? lights->visibilityFactors->rhi()
-                                               : shadows ? shadowFactors_.rhi()
-                                                         : emptyShadow_.rhi());
-            // The sky, where one was prepared for this frame. Bound either
-            // way: a name a shader declares must be bound whether it is read
-            // or not, and `envLights` of 0 is what says it is not.
-            const bool sky = relight && lights != nullptr && lights->environment();
-            cursor["envTexels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());
-            cursor["envSh"].setBinding(sky ? lights->envSh->rhi() : emptyEnvSh_.rhi());
-            cursor["envSun"].setBinding(sky ? lights->envSun->rhi() : emptyEnvSh_.rhi());
-            cursor["envOfLight"].setBinding(sky ? lights->envOfLight->rhi() : emptyEnvWords_.rhi());
-            cursor["params"]["envLights"].setData(sky ? lights->envLights : 0u);
-            cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
-            // What of an environment reaches each gaussian, where the cloud
-            // carries it. Bound either way, as every name a shader declares.
-            const bool carried = cloud->hasTransfer();
-            cursor["transfer"].setBinding(carried ? cloud->transfer.rhi() : cloud->shape.rhi());
-            cursor["params"]["transferWords"].setData(carried ? cloud->transferWords : 0u);
-            cursor["params"]["transferCount"].setData(carried ? cloud->transferCount : 0u);
-            const bool open = carried && cloud->hasShadowBits();
-            cursor["shadowBits"].setBinding(open ? cloud->shadowBits.rhi() : cloud->shape.rhi());
-            cursor["params"]["shadowBits"].setData(open ? 1u : 0u);
-            cursor["params"]["transferIndirect"].setData(
-                uint32_t{carried && instance.transferIndirect && cloud->hasIndirect() ? 1u : 0u});
-            cursor["params"]["ior"].setData(instance.ior);
-            // What the splat reflects with, where its cloud carries it (a
-            // conversion from a mesh does, a capture does not). Bound either
-            // way, and `hasPbr` is what says whether it is read.
-            cursor["params"]["hasPbr"].setData(uint32_t{cloud->hasPbr() ? 1u : 0u});
-            cursor["params"]["litBody"].setData(uint32_t{instance.litBody ? 1u : 0u});
-            setCloudSpace(cursor, *cloud);
-            cursor["pbr"].setBinding(cloud->hasPbr() ? cloud->pbr.rhi() : cloud->shape.rhi());
-            // The shading normal a conversion kept apart from the frame,
-            // where the cloud has one: bound either way, read by `hasNormals`.
-            cursor["params"]["hasNormals"].setData(uint32_t{cloud->hasNormals() ? 1u : 0u});
-            cursor["normals"].setBinding(cloud->hasNormals() ? cloud->normals.rhi() : cloud->shape.rhi());
-            // And the radiance its gaussians give off, where it has any.
-            cursor["params"]["hasEmission"].setData(uint32_t{cloud->hasEmission() ? 1u : 0u});
-            cursor["emission"].setBinding(cloud->hasEmission() ? cloud->emission.rhi() : cloud->shape.rhi());
-            // What a pick said this prim is made of. Bound either way, as
-            // every name a shader declares; `overrideCount` of 0 is what says
-            // the table is not read.
-            const bool said = instance.overrides != nullptr && instance.overrideCount > 0 &&
-                              cloud->hasCrypto();
-            cursor["splatOverrides"].setBinding(said ? instance.overrides->rhi() : emptyEnvSh_.rhi());
-            cursor["params"]["overrideCount"].setData(said ? instance.overrideCount : 0u);
-            // Relighting happens in the world: the rows take this cloud there
-            // and the eye is already there.
-            const std::array<float, 12> toWorld = instance.objectToWorld.rows3x4();
-            static const char* kWorldRow[12] = {"w00", "w01", "w02", "w03", "w10", "w11",
-                                                "w12", "w13", "w20", "w21", "w22", "w23"};
-            for (int k = 0; k < 12; ++k) {
-                cursor["params"][kWorldRow[k]].setData(toWorld[static_cast<size_t>(k)]);
+        if (settings.countSplats) {
+            // What the panel shows, counted from what the frame already wrote
+            // and copied out with the submit the frame makes anyway.
+            uint32_t splatSlots = 0;
+            for (const SplatInstance& instance : instances) {
+                splatSlots += instance.splats != nullptr ? instance.splats->count : 0u;
             }
-            cursor["params"]["eyeWorldX"].setData(static_cast<float>(projection.eyeWorld.x));
-            cursor["params"]["eyeWorldY"].setData(static_cast<float>(projection.eyeWorld.y));
-            cursor["params"]["eyeWorldZ"].setData(static_cast<float>(projection.eyeWorld.z));
-            // What moves during the shutter. Set for every instance, still or
-            // not, so that no dispatch inherits the last one's flag.
-            setMotion(cursor, instance,
-                      static_cast<float>(std::max(common.width, common.height)) * 0.25F);
-            cursor["motion"].setBinding(instance.motion != nullptr ? instance.motion->rhi()
-                                                                   : emptyMotion_.rhi());
-        });
-        base += cloud->count;
-    }
-    for (const PointInstance& instance : points) {
-        const scene::GpuPoints* cloud = instance.points;
-        if (cloud == nullptr || cloud->count == 0) {
-            continue;
+            ATHENEA_TRY(countFrame(batch, instances, splatSlots, all));
+            ATHENEA_TRY(counterReadback_.submit(batch, counterWords_, settings.countersTag, false));
         }
-        const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
-        pointsProject_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["positions"].setBinding(cloud->positions.rhi());
-            cursor["colours"].setBinding(cloud->colours.rhi());
-            cursor["proj"].setBinding(proj_.rhi());
-            cursor["visible"].setBinding(visible_.rhi());
-            cursor["tileRects"].setBinding(tileRects_.rhi());
-            cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
-            cursor["depthKeys"].setBinding(depthKeys_.rhi());
-            cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
-            setFrame(cursor, common);
-            cursor["params"]["cryptoMode"].setData(uint32_t{settings.cryptomatte ? 2u : 0u});
-            setObject(cursor, objectToView, projection.eyeWorld);
-            cursor["params"]["count"].setData(cloud->count);
-            cursor["params"]["base"].setData(base);
-            setPointParams(cursor["points"], projection, settings.width, settings.height,
-                           objectToView, instance.style, cloud->count);
-        });
-        base += cloud->count;
-    }
-    auto ms = watch.lap();
-    if (!ms) return std::move(ms).error();
-    stats.projectMs = *ms;
-
-    const uint32_t all = std::max(splatCount, 1u);
-    ATHENEA_TRY(prefix_.apply(batch, visible_, visibleOffsets_, visibleTotal_, all));
-    ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
-    ATHENEA_TRY(batch.submit(true));
-    uint32_t visibleCount = 0;
-    uint32_t pairs = 0;
-    if (splatCount > 0) {
-        ATHENEA_TRY(visibleTotal_.read(*device_, 0, sizeof(visibleCount), &visibleCount));
-        ATHENEA_TRY(touchedTotal_.read(*device_, 0, sizeof(pairs), &pairs));
-    }
-    ms = watch.lap();
-    if (!ms) return std::move(ms).error();
-    stats.countsMs = *ms;
-    stats.visible = visibleCount;
-    stats.pairs = pairs;
-    ATHENEA_TRY(reservePairs(std::max(pairs, 1u)));
-
-    // --- batch 2: sort the visible, emit, tile sort, ranges, blend ---------
-    if (visibleCount > 0) {
-        compact_.dispatch(batch, {splatCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["visible"].setBinding(visible_.rhi());
-            cursor["visibleOffsets"].setBinding(visibleOffsets_.rhi());
-            cursor["depthKeys"].setBinding(depthKeys_.rhi());
-            cursor["sortKeys"].setBinding(depthSort_.keysLo.rhi());
-            cursor["sortOrder"].setBinding(depthSort_.values.rhi());
-            setFrame(cursor, common);
-            cursor["params"]["count"].setData(splatCount);
-        });
-        if (visibleCount > 1) {
-            ATHENEA_TRY(sort_.sort(batch, depthSort_, visibleCount, 24));
+        // The frame's two totals, copied out with its last submit: the frame's
+        // one host wait, or none where it is left in flight.
+        if (anything) {
+            batch.encoder()->copyBuffer(frameTotals_.rhi(), 0, visibleTotal_.rhi(), 0, 4);
+            batch.encoder()->copyBuffer(frameTotals_.rhi(), 4, totalPairs_.rhi(), 0, 4);
+        } else {
+            batch.encoder()->clearBuffer(frameTotals_.rhi(), 0, 8);
         }
-    }
-    ms = watch.lap();
-    if (!ms) return std::move(ms).error();
-    stats.depthSortMs = *ms;
+        batch.markDirty();
+        const uint64_t drawn = ++framesDrawn_;
+        ATHENEA_TRY(totalsReadback_.submit(batch, frameTotals_, drawn, settings.waitForFrame));
+        ms = watch.lap();
+        if (!ms) return std::move(ms).error();
+        stats.blendMs += *ms;
 
-    if (pairs > 0) {
-        gather_.dispatch(batch, {visibleCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["order"].setBinding(depthSort_.values.rhi());
-            cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
-            cursor["sortedCounts"].setBinding(sortedCounts_.rhi());
-            setFrame(cursor, common);
-            cursor["params"]["count"].setData(visibleCount);
-        });
-        ATHENEA_TRY(prefix_.apply(batch, sortedCounts_, offsets_, totalPairs_, visibleCount));
-        emit_.dispatch(batch, {visibleCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["order"].setBinding(depthSort_.values.rhi());
-            cursor["offsets"].setBinding(offsets_.rhi());
-            cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
-            cursor["tileRects"].setBinding(tileRects_.rhi());
-            cursor["proj"].setBinding(proj_.rhi());
-            cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());
-            cursor["pairSplats"].setBinding(tileSort_.values.rhi());
-            setFrame(cursor, common);
-            cursor["params"]["count"].setData(visibleCount);
-            cursor["params"]["base"].setData(pairCapacity_);
-        });
-    }
-    ms = watch.lap();
-    if (!ms) return std::move(ms).error();
-    stats.emitMs = *ms;
-
-    if (pairs > 1) {
-        ATHENEA_TRY(sort_.sort(batch, tileSort_, pairs, bitsFor(tiles)));
-    }
-    clear_.dispatch(batch, {tiles, 1, 1}, [&](rhi::ShaderCursor cursor) {
-        cursor["ranges"].setBinding(ranges_buffer_.rhi());
-        setFrame(cursor, common);
-    });
-    if (pairs > 0) {
-        ranges_.dispatch(batch, {pairs, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());
-            cursor["ranges"].setBinding(ranges_buffer_.rhi());
-            setFrame(cursor, common);
-            cursor["params"]["count"].setData(pairs);
-        });
-
-    }
-    ms = watch.lap();
-    if (!ms) return std::move(ms).error();
-    stats.tileSortMs = *ms;
-
-    const bool composite = under != nullptr || !points.empty();
-    const bool matte = settings.cryptomatte && targets.crypto.valid();
-    const bool underCrypto = matte && under != nullptr && under->cryptoIds.valid();
-    gpu::ComputeKernel& blend = matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
-                                      : (composite ? blendComposite_ : blend_);
-    blend.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
-        cursor["ranges"].setBinding(ranges_buffer_.rhi());
-        cursor["pairSplats"].setBinding(tileSort_.values.rhi());
-        cursor["proj"].setBinding(proj_.rhi());
-        cursor["underColour"].setBinding(under != nullptr ? under->colour.rhi() : placeholderColour_.rhi());
-        cursor["underDepth"].setBinding(under != nullptr ? under->depth.rhi() : placeholderDepth_.rhi());
-        cursor["colour"].setBinding(targets.colour.rhi());
-        cursor["depth"].setBinding(targets.depth.rhi());
-        cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
-        cursor["underCrypto"].setBinding(underCrypto ? under->cryptoIds.rhi()
-                                                     : placeholderCrypto_.rhi());
-        cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderColour_.rhi());
-        setFrame(cursor, common);
-        cursor["params"]["hasUnder"].setData(uint32_t{under != nullptr ? 1u : 0u});
-        cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
-    });
-    if (settings.countSplats) {
-        // What the panel shows, counted from what the frame already wrote
-        // and copied out with the submit the frame makes anyway.
-        uint32_t splatSlots = 0;
-        for (const SplatInstance& instance : instances) {
-            splatSlots += instance.splats != nullptr ? instance.splats->count : 0u;
+        std::array<uint32_t, 2> totals{};
+        const auto read = totalsReadback_.latest(
+            std::span<uint8_t>(reinterpret_cast<uint8_t*>(totals.data()), totals.size() * sizeof(uint32_t)));
+        if (read.has_value()) {
+            lastVisible_ = totals[0];
+            lastPairs_ = totals[1];
         }
-        ATHENEA_TRY(countFrame(batch, instances, splatSlots, all));
-        ATHENEA_TRY(counterReadback_.submit(batch, counterWords_, settings.countersTag, true));
-    } else {
-        ATHENEA_TRY(batch.submit(true));
+        stats.visible = lastVisible_;
+        stats.pairs = lastPairs_;
+        if (read.has_value() && lastPairs_ > pairCapacity_) {
+            // More pairs than the buffers hold: the emit kept what fitted, and
+            // the buffers grow. A frame that waited is drawn again in them; one
+            // in flight was drawn short, and the next is not.
+            ATHENEA_TRY(reservePairs(lastPairs_));
+            if (settings.waitForFrame && *read == drawn && attempt == 0) {
+                continue;
+            }
+        }
+        break;
     }
-    ms = watch.lap();
-    if (!ms) return std::move(ms).error();
-    stats.blendMs = *ms;
     stats.totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                               frameStart)
                         .count();

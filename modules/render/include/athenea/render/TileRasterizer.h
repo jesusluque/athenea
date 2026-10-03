@@ -201,7 +201,16 @@ struct RenderSettings {
     /// is left out rather than named wrongly.
     bool     cryptomatte = false;
     /// Wait after every stage so `FrameStats` times each one. Slower; for bench.
+    /// gpu::Phase times the same stages on the device without waiting.
     bool     timeStages = false;
+    /// WAIT ONCE, AT THE FRAME'S END: the frame's only host wait, after which
+    /// `FrameStats::visible` and `pairs` are this frame's and a frame whose
+    /// tile pairs outgrew their buffers has been drawn again in bigger ones.
+    /// False leaves the frame in flight (a viewer that draws the next while
+    /// the device finishes this one): the counts are then the newest frame
+    /// the device has finished, and a frame that outgrew its pairs is drawn
+    /// short of them once, the buffers grown for the next.
+    bool     waitForFrame = true;
     /// COUNT WHAT THE FRAME DID on the device -- why each culled splat was
     /// culled, the most tiles one touched, what each cloud kept -- and copy
     /// it out without waiting: `TileRasterizer::latestCounters` hands back
@@ -354,6 +363,14 @@ private:
     gpu::ComputeKernel countersClear_, counters_, countersCloud_;
     gpu::Buffer        counterWords_;
     gpu::AsyncReadback counterReadback_;
+    /// How many splats were visible and how many pairs the frame made,
+    /// copied out beside the frame's last submit: the host learns them at
+    /// the frame's end, or a frame later, never in the middle.
+    gpu::Buffer        frameTotals_;
+    gpu::AsyncReadback totalsReadback_;
+    uint64_t           framesDrawn_ = 0;
+    /// The latest totals read, and from which frame.
+    uint32_t           lastVisible_ = 0, lastPairs_ = 0;
 };
 
 }   // namespace athenea::render

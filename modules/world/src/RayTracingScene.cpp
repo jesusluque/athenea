@@ -48,7 +48,9 @@ Result<rhi::ComPtr<rhi::IAccelerationStructure>> buildStructure(gpu::Device& dev
     batch.encoder()->buildAccelerationStructure(build, structure, nullptr, rhi::BufferOffsetPair(scratch->rhi(), 0),
                                                 0, nullptr);
     batch.markDirty();
-    ATHENEA_TRY(batch.submit(true));   // the scratch buffer goes when this returns
+    // Not waited for: the command buffer holds the scratch (and the
+    // structure) until the device has run it, so it may go when this returns.
+    ATHENEA_TRY(batch.submit());
     return structure;
 }
 
@@ -145,7 +147,7 @@ Result<void> RayTracingScene::build(const GpuScene& scene, bool refit) {
             batch.encoder()->buildAccelerationStructure(build, bottom_[s], bottom_[s],
                                                         rhi::BufferOffsetPair(updateScratch_.rhi(), 0), 0, nullptr);
             batch.markDirty();
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());
             meshRevisions_[s] = scene.meshRevision(m);
         }
     }
@@ -182,7 +184,7 @@ Result<void> RayTracingScene::build(const GpuScene& scene, bool refit) {
             cursor["params"]["doubleSided"].setData(
                 static_cast<uint32_t>(rhi::AccelerationStructureInstanceFlags::TriangleFacingCullDisable));
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     rhi::AccelerationStructureBuildInput input = {};
     input.type = rhi::AccelerationStructureBuildInputType::Instances;

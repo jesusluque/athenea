@@ -235,6 +235,28 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
     if (iesValues.empty()) {
         iesValues.push_back(0.0F);
     }
+    // THE SAME LIGHTS AS LAST FRAME BUILD NOTHING. Everything the table and
+    // its tree are made from is in these host arrays -- unless a light is
+    // placed by an instancer, whose rows are a buffer the host never reads --
+    // so equal arrays make equal buffers, and the ones already on the device
+    // are kept. A frame used to rebuild the tree, and wait for the device a
+    // dozen times doing it, for lights that had not moved.
+    const auto bytesOf = [](const auto& v) {
+        return std::span<const std::byte>(reinterpret_cast<const std::byte*>(v.data()), v.size() * sizeof(v[0]));
+    };
+    const auto keyOf = [&](const auto& v) {
+        const auto b = bytesOf(v);
+        return std::vector<std::byte>(b.begin(), b.end());
+    };
+    std::vector<std::byte> keyRecords = keyOf(records);
+    std::vector<std::byte> keyIesRecords = keyOf(iesRecords);
+    std::vector<std::byte> keyIesValues = keyOf(iesValues);
+    const bool placedOnDevice = !expansions.empty() || !motionExpansions.empty();
+    if (!placedOnDevice && built_ && sceneRadius == builtRadius_ && records_.valid() && keyRecords == builtRecords_ &&
+        keyIesRecords == builtIesRecords_ && keyIesValues == builtIesValues_ && lights.empty() == builtEmpty_) {
+        return ok();
+    }
+    built_ = false;
     {
         auto madeRecords = gpu::Buffer::fromSpan<IesRecord>(*device_, iesRecords, "lights.ies.records");
         if (!madeRecords) return std::move(madeRecords).error();
@@ -252,7 +274,7 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
             cursor["iesValues"].setBinding(iesValues_.rhi());
             cursor["iesCount"].setData(iesCount_);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     if (!motionExpansions.empty()) {
         gpu::CommandBatch batch(*device_);
@@ -265,7 +287,7 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
                 cursor["count"].setData(e.count);
             });
         }
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     if (records.empty()) {
         records.emplace_back();   // a buffer to bind, which nothing reads
@@ -297,9 +319,18 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
             cursor["count"].setData(count_);
             cursor["sceneRadius"].setData(std::max(sceneRadius, 1.0e-6F));
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
-    return buildBvh(bounded, unbounded);
+    ATHENEA_TRY(buildBvh(bounded, unbounded));
+    if (!placedOnDevice) {
+        builtRecords_ = std::move(keyRecords);
+        builtIesRecords_ = std::move(keyIesRecords);
+        builtIesValues_ = std::move(keyIesValues);
+        builtRadius_ = sceneRadius;
+        builtEmpty_ = lights.empty();
+        built_ = true;
+    }
+    return ok();
 }
 
 Result<void> LightTable::buildBvh(const std::vector<uint32_t>& bounded, const std::vector<uint32_t>& unbounded) {
@@ -353,7 +384,7 @@ Result<void> LightTable::buildBvh(const std::vector<uint32_t>& bounded, const st
                 cursor["mortonValues"].setBinding(sorting.values.rhi());
                 bvhParams(cursor["params"], n, zero, zero);
             });
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());
         }
         float box[8] = {};
         {
@@ -380,8 +411,8 @@ Result<void> LightTable::buildBvh(const std::vector<uint32_t>& bounded, const st
                 cursor["result"].setBinding(result->rhi());
                 params(cursor);
             });
-            ATHENEA_TRY(batch.submit(true));
-            ATHENEA_TRY(result->read(device, 0, sizeof(box), box));
+            ATHENEA_TRY(batch.submit());
+            ATHENEA_TRY(result->read(device, 0, sizeof(box), box));   // the one wait: the codes are scaled to it
         }
         // The codes again within the bounds, sorted, and the hierarchy over them.
         auto boxes = buffer(uint64_t{std::max(n, 2u) - 1} * 2, 16, "lights.bvh.boxes");
@@ -412,7 +443,7 @@ Result<void> LightTable::buildBvh(const std::vector<uint32_t>& bounded, const st
                 cursor["leaves"].setBinding(leaves->rhi());
                 bvhParams(cursor["params"], n, box, box + 4);
             });
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());
         }
         // Boxes settled up the tree, then the nodes, then power and cones.
         const auto settle = [&](const std::optional<gpu::ComputeKernel>& kernel,
@@ -428,7 +459,7 @@ Result<void> LightTable::buildBvh(const std::vector<uint32_t>& bounded, const st
                     cursor["total"].setBinding(changedCount->rhi());
                     cursor["params"]["count"].setData(n - 1);
                 });
-                ATHENEA_TRY(batch.submit(true));
+                ATHENEA_TRY(batch.submit());
                 uint32_t still = 0;
                 ATHENEA_TRY(changedCount->read(device, 0, sizeof(still), &still));
                 if (still == 0) return ok();
@@ -460,7 +491,7 @@ Result<void> LightTable::buildBvh(const std::vector<uint32_t>& bounded, const st
             bvhPack_->dispatch(batch, {treeNodes_, 1, 1}, bindPack);
             bvhParents_->dispatch(batch, {std::max(n, 2u) - 1, 1, 1}, bindPack);
             bvhLeafIndices_->dispatch(batch, {n, 1, 1}, bindPack);
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());
         }
         ATHENEA_TRY(settle(bvhSettle_, [&](rhi::ShaderCursor cursor) {
             cursor["nodeValues"].setBinding(iesValues_.rhi());
@@ -481,7 +512,7 @@ Result<void> LightTable::buildBvh(const std::vector<uint32_t>& bounded, const st
             cursor["treeNodeCount"].setData(treeNodes_);
             bvhParams(cursor["params"], unbounded_, zero, zero);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     return ok();
 }

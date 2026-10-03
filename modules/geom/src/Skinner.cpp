@@ -103,7 +103,7 @@ Result<gpu::Buffer> Skinner::skin(const SkinningInput& in) {
             cursor["params"]["count"].setData(in.points);
             cursor["params"]["half"].setData(uint32_t{0});
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     auto offsets = upload(device, in.blendShapeOffsets, 16, "skin.offsets");
     if (!offsets) return std::move(offsets).error();
@@ -160,7 +160,7 @@ Result<gpu::Buffer> Skinner::skin(const SkinningInput& in) {
             }
         }
     });
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     return out;
 }
 

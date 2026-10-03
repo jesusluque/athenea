@@ -1,5 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 #include "Engine.h"
+
+#include "athenea/gpu/FrameProfiler.h"
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/pxOsd/tokens.h>
 #include <pxr/base/gf/vec4f.h>
@@ -1817,8 +1819,9 @@ Result<void> Engine::writeAov(const render::RenderTargets& targets, AovSource ao
         p["p23"].setData(static_cast<float>(projection[11]));
         p["p33"].setData(static_cast<float>(projection[15]));
     });
-    ATHENEA_TRY(batch.submit(true));
-    // A readback for a host that maps the buffer: output IO, the only copy.
+    ATHENEA_TRY(batch.submit());
+    // A readback for a host that maps the buffer: output IO, the only copy,
+    // and the only wait.
     return out->read(*device_, 0, bytes, into.data());
 }
 
@@ -1898,9 +1901,16 @@ Result<void> Engine::prepareSplatLights(std::vector<light::Light>& lamps,
             if (!loader_.has_value()) {
                 break;
             }
-            auto bounds = loader_->boundsOf(instance.splats->positions, instance.splats->count);
-            if (!bounds) return std::move(bounds).error();
-            const scene::Bounds& b = *bounds;
+            // A cloud uploaded or posed already knows its box, measured over
+            // the same positions: only a cut, made this frame, is measured
+            // here -- each of them a wait for the device, which every cloud
+            // of every frame used to be.
+            scene::Bounds b = instance.splats->bounds;
+            if (!exactBounds_.contains(instance.splats)) {
+                auto bounds = loader_->boundsOf(instance.splats->positions, instance.splats->count);
+                if (!bounds) return std::move(bounds).error();
+                b = *bounds;
+            }
             const float dx = b.max[0] - b.min[0], dy = b.max[1] - b.min[1], dz = b.max[2] - b.min[2];
             radius = std::max(radius, 0.5F * std::sqrt(dx * dx + dy * dy + dz * dz));
         }
@@ -2026,6 +2036,28 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     //
     // The offsets are a Halton sequence in 2 and 3: they fill the pixel
     // evenly at any number of passes, which a random pair does not.
+    // THE FRAME, FOR THE PROFILER: its first boundary here and its last on
+    // the way out, whichever return that is (gpu::FrameProfiler). Nothing
+    // when the profiler is off.
+    struct FrameMark {
+        gpu::Device& device;
+        explicit FrameMark(gpu::Device& d, uint64_t tag) : device(d) {
+            if (device.profiler().enabled()) {
+                gpu::CommandBatch mark(device);
+                if (device.profiler().beginFrame(mark, tag)) {
+                    (void)mark.submit();
+                }
+            }
+        }
+        ~FrameMark() {
+            if (device.profiler().inFrame()) {
+                gpu::CommandBatch mark(device);
+                if (device.profiler().endFrame(mark)) {
+                    (void)mark.submit();
+                }
+            }
+        }
+    } frameMark(*device_, frameSerial_ + 1);
     render::Projection projection = base;
     const auto halton = [](uint32_t index, uint32_t prime) {
         double out = 0.0;
@@ -2185,6 +2217,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frameMeasured_.clear();
         frameClouds_.clear();
         frameSlots_ = 0;
+        exactBounds_.clear();
         const std::set<const SplatEntry*> levels = lodLevelsFor(projection);
         drawnLevels = levels;
         // The levels this view draws are posed now, with the latest joints
@@ -2212,6 +2245,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 // The posed cloud where a skeleton carries it, and the cloud
                 // itself where nothing does.
                 const scene::GpuSplats* drawn = entry.posed != nullptr ? entry.posed.get() : entry.gpu.get();
+                // Its box was measured over these very positions, when it
+                // was uploaded or posed: what the lights' reach is taken from.
+                exactBounds_.insert(drawn);
                 splats.push_back({drawn, entry.objectToWorld, entry.edit, entry.relight,
                                   entry.litBody, categoryMask(entry.categories)});
                 instancePrims.push_back(id.GetString());
@@ -2631,7 +2667,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             {
                 gpu::CommandBatch packing(*device_);
                 ATHENEA_TRY(splatShadowScene_->prepare(packing, shadowTracer_->shadowScene()));
-                ATHENEA_TRY(packing.submit(true));
+                ATHENEA_TRY(packing.submit());
             }
             if (splatShadowScene_->valid()) {
                 meshSplatShadows = &*splatShadowScene_;
@@ -2677,7 +2713,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             if (!job.casters.empty()) {
                 gpu::CommandBatch casting(*device_);
                 ATHENEA_TRY(cloudShadowMap_->build(casting, job));
-                ATHENEA_TRY(casting.submit(true));
+                ATHENEA_TRY(casting.submit());
             }
             if (cloudShadowMap_->valid()) {
                 if (std::getenv("ATHENEA_SHADOW_DEBUG") != nullptr) {
@@ -2801,7 +2837,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 }
                 gpu::CommandBatch volumeBatch(*device_);
                 ATHENEA_TRY(volumeSet_->set(volumeBatch, inputs));
-                ATHENEA_TRY(volumeBatch.submit(true));
+                ATHENEA_TRY(volumeBatch.submit());
                 volumesDrawn_ = static_cast<uint32_t>(inputs.size());
             }
             if (volumesDrawn_ > 0) {
@@ -2838,6 +2874,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         }
         const technique::MaterialFrame* cutouts = (materialCutouts_ || scene_->anyHidden()) ? &frame : nullptr;
             gpu::CommandBatch batch(*device_);
+        std::optional<gpu::Phase> visibilityPhase;
+        visibilityPhase.emplace(batch, "visibility");
         switch (visibility) {
         case MeshVisibility::Automatic:
         case MeshVisibility::Raster:
@@ -2880,6 +2918,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // rebuilds this structure there, and the one it replaces is released
         // with it -- taking the pointer earlier left shading tracing against
         // a freed structure.
+        visibilityPhase.reset();
+        std::optional<gpu::Phase> shadePhase;
+        shadePhase.emplace(batch, "shade");
         frame.shadows = raysWanted ? rayTracingScene_->topLevel() : nullptr;
         frame.splatShadows = meshSplatShadows;
         frame.cloudShadow =
@@ -3019,7 +3060,11 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             ATHENEA_TRY(aovShading_->shade(batch, *scene_, visibility_, projection, slots, aovs_));
             aovsValid_ = true;
         }
-        ATHENEA_TRY(batch.submit(true));
+        // A rasterised mesh layer is not waited for: the splats are blended
+        // over it later in the same queue. A path traced one is, as the
+        // adaptive gate reads its counters and the denoiser runs after it.
+        shadePhase.reset();
+        ATHENEA_TRY(batch.submit(pathTracing));
         // The adaptive gate's counters, after the pass: which covered pixels
         // have stopped. Its own dispatch and readback, so after the batch.
         if (pathTracing && pathState_.adaptive) {
@@ -3112,7 +3157,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             cursor["params"]["hasIds"].setData(uint32_t{carryIds ? 1u : 0u});
             cursor["params"]["pixels"].setData(static_cast<uint32_t>(pixels));
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         under = &opaqueLayer_;
     } else if (meshLayer) {
         under = &meshLayer_;
@@ -3166,6 +3211,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     splatSettings.timeStages = splatSettings.timeStages || stages || timeSplatStages_.load();
     splatSettings.countSplats = countSplats_.load();
     splatSettings.countersTag = frameSerial_;
+    splatSettings.waitForFrame = !framesInFlight_.load();
     if (splatSettings.countSplats) {
         // The prims of this frame's instances, kept until its counts arrive.
         countedFrames_.push_back({frameSerial_, instancePrims});
@@ -3230,7 +3276,7 @@ Result<void> Engine::gatherLightGroups(bool traced, uint32_t width, uint32_t hei
         cursor["params"]["scale"].setData(1.0F);
         cursor["params"]["pixels"].setData(entries);
     });
-    return batch.submit(true);
+    return batch.submit();
 }
 
 Result<void> Engine::applyExposure(double stops, uint32_t width, uint32_t height, render::RenderTargets& targets) {
@@ -3258,7 +3304,7 @@ Result<void> Engine::applyExposure(double stops, uint32_t width, uint32_t height
             cursor["params"]["pixels"].setData(entries);
         });
     }
-    return batch.submit(true);
+    return batch.submit();
 }
 
 namespace {
@@ -3396,7 +3442,8 @@ Result<void> Engine::measureVisibility(render::SplatLights& into) {
         job.geomBind = m.geomBind;
         ATHENEA_TRY(splatVisibility_->factors(batch, job, visibilityFactors_));
     }
-    ATHENEA_TRY(batch.submit(true));
+    // Not waited for: the rasteriser reads them later in the same queue.
+    ATHENEA_TRY(batch.submit());
     into.visibilityFactors = &visibilityFactors_;
     into.visibilityLights = lightsMeasured;
     if (std::getenv("ATHENEA_VISIBILITY_DEBUG") != nullptr) {
@@ -3612,7 +3659,8 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     ATHENEA_TRY(splatSkinner_->skin(batch, input, entry.posed->positions, entry.posed->shape,
                                 moves ? &entry.motion : nullptr,
                                 entry.posed->hasNormals() ? &entry.posed->normals : nullptr));
-    ATHENEA_TRY(batch.submit(true));
+    // The bounds below wait for it: one wait a pose, not two.
+    ATHENEA_TRY(batch.submit());
     // The box the cloud now fills. It is not the bind pose's: a skeleton
     // moves a cloud out from under its own extent, and everything that culls,
     // frames or sorts by it would be looking in the wrong place.
@@ -3683,7 +3731,7 @@ Result<void> Engine::paintDomes(const render::Projection& projection, uint32_t w
             cursor["background"][kNames[k]].setData(toWorld[k]);
         }
     });
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     return ok();
 }
 

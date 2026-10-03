@@ -25,6 +25,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <pxr/base/tf/token.h>
@@ -561,6 +562,11 @@ public:
     /// Time each stage of the rasteriser: every stage then waits for the
     /// device, so the frame is slower by what the waits cost.
     void setTimeSplatStages(bool on) { timeSplatStages_.store(on); }
+    /// FRAMES IN FLIGHT: a frame of splats ends without waiting for the
+    /// device (render::RenderSettings::waitForFrame), for a viewer that draws
+    /// the next while the device finishes this one. Off, a frame waits once,
+    /// at its end.
+    void setFramesInFlight(bool on) { framesInFlight_.store(on); }
     [[nodiscard]] const GaussianStats& gaussianStats() const noexcept { return gaussianStats_; }
 
     /// What the last frame's Cryptomatte ids are called: path -> id, for the
@@ -653,6 +659,10 @@ private:
     };
     std::vector<SlottedCloud>                 frameClouds_;
     uint32_t                                  frameSlots_ = 0;
+    /// The clouds of this frame whose `bounds` were measured over their own
+    /// positions (uploaded, or posed), so the lights' reach need not measure
+    /// them again.
+    std::unordered_set<const scene::GpuSplats*> exactBounds_;
     /// Measures the frame's factors into `into`, once, for either route.
     [[nodiscard]] Result<void> measureVisibility(render::SplatLights& into);
     std::optional<scene::SplatSkinner>        splatSkinner_;
@@ -891,6 +901,7 @@ private:
     /// The Gaussians panel's numbers (`gaussianStats`), and what gathers them.
     std::atomic<bool>                         countSplats_{false};
     std::atomic<bool>                         timeSplatStages_{false};
+    std::atomic<bool>                         framesInFlight_{false};
     uint64_t                                  frameSerial_ = 0;
     GaussianStats                             gaussianStats_;
     /// The prims of the frames whose counts are still on their way, by tag:

@@ -284,7 +284,9 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--far` | number | `100000` | |
 | `-o`, `--output` | path | `out.exr` | half RGBA plus `Z` |
 | `--render-settings` | prim path | unset | render that prim's products instead, and stop |
-| `--frames` | integer | `1` | repeat, and report first, median and fastest |
+| `--frames` | integer | `1` | repeat, and report first, median and fastest, and how often a frame made the host wait for the GPU (a frame of splats: once at its end, once to read the image) |
+| `--waits` | flag | off | with `--frames`: where the last frame waited, by source line |
+| `--profile` | flag | off | with `--frames`: GPU time by phase (`project`, `sort`, `emit`, `raster`, `visibility`, `shade`, `other`), medians of the frames after the first, in ms, and the frame's span on the device. Timestamps on CUDA and Vulkan; on Metal a command buffer a phase. A phase counts only its own commands, so the phases sum to less than the frame |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr
@@ -303,7 +305,8 @@ Present only in a build with the viewer. The window's controls are in §5.
 | `--technique` | `raster` \| `rt` | `raster` | |
 | `--visibility` | `automatic` \| `raster` \| `rays` \| `bvh` | `automatic` | |
 | `--size` | `WIDTHxHEIGHT` | `1600x900` | in points, not pixels |
-| `--frames` | integer | `0` | close after this many and print their timings; 0 runs until the window closes |
+| `--frames` | integer | `0` | close after this many and print their timings and host waits a frame; 0 runs until the window closes. The window leaves each frame in flight: a frame of splats does not wait for the GPU |
+| `--profile` | flag | off | with `--frames`: GPU time by phase, as `athenea stage --profile` prints it, a frame or so behind |
 | `--light-samples` | integer | `1` | 1 is interactive |
 | `--choose-lights` | flag | off | one light a sample, chosen by power |
 | `--path-samples` | integer | `1` | rt: paths a pixel each frame |

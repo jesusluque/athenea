@@ -20,6 +20,9 @@ void addView(CLI::App& app) {
     cmd->add_option("--visibility", options->visibility, "how meshes are seen: automatic | raster | rays | bvh");
     cmd->add_option("--size", *size, "the window's WIDTHxHEIGHT, in points");
     cmd->add_option("--frames", options->frames, "close after this many frames and print their timings");
+    cmd->add_flag("--profile", options->profile,
+                  "with --frames: GPU time by phase (project, sort, emit, raster, visibility, shade), "
+                  "measured on the device");
     cmd->add_option("--light-samples", options->lightSamples, "samples per light per pixel (1 is interactive)");
     cmd->add_flag("--choose-lights", options->chooseLights, "one light a sample, chosen by power");
     cmd->add_option("--path-samples", options->pathSamples, "rt: paths a pixel each frame");
@@ -72,6 +75,17 @@ void addView(CLI::App& app) {
         }
         std::printf("%u frames: draw %.2f ms, frame %.2f ms (medians); %u distinct times, the last %.2f\n",
                     stats->frames, stats->medianDrawMs, stats->medianFrameMs, stats->distinctTimes, stats->lastTime);
+        std::printf("host waits: median %.0f a frame\n", stats->medianHostWaits);
+        if (options->profile && !stats->phases.empty()) {
+            std::printf("GPU by phase, medians (%s):", stats->phasesMeasuredBy.c_str());
+            double sum = 0.0;
+            for (size_t k = 0; k < stats->phases.size(); ++k) {
+                sum += stats->phases[k].ms;
+                std::printf(" %s %.2f ms%s", stats->phases[k].name.c_str(), stats->phases[k].ms,
+                            k + 1 < stats->phases.size() ? "," : "");
+            }
+            std::printf("; together %.2f ms, the frame's span on the device %.2f ms\n", sum, stats->medianSpanMs);
+        }
     });
 }
 

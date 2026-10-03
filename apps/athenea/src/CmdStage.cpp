@@ -104,6 +104,7 @@ void addStage(CLI::App& app) {
         double fStop = 0.0, focus = 0.0;
         uint32_t frames = 1;
         bool waits = false;
+        bool profile = false;
         uint32_t pathSamples = 1, pathBounces = 1, pathTotal = 1, motionBuckets = 4, refine = 0;
         std::string shutter;
         std::vector<std::string> variants;
@@ -191,6 +192,9 @@ void addStage(CLI::App& app) {
                     "render this many times and print the time a frame takes (Hydra sync, drawing and the readback)");
     cmd->add_flag("--waits", o->waits,
                   "with --frames: where the last frame made the host wait for the GPU, by source line");
+    cmd->add_flag("--profile", o->profile,
+                  "with --frames: GPU time by phase (project, sort, emit, raster, visibility, shade), "
+                  "measured on the device");
     cmd->callback([o] {
         uint32_t width = 0, height = 0;
         if (std::sscanf(o->size.c_str(), "%ux%u", &width, &height) != 2) {
@@ -321,6 +325,14 @@ void addStage(CLI::App& app) {
         // HOST WAITS A FRAME: how often the host blocked on the device in it
         // (gpu::Device::hostWaits), and in the last frame by source line.
         gpu::Device& device = (*renderer)->device();
+        if (o->profile) {
+            (*renderer)->setProfiling(true);
+        }
+        // Each phase's milliseconds, frame by frame, the first frame left out.
+        std::vector<std::string> phaseNames;
+        std::vector<std::vector<double>> phaseMs;
+        std::vector<double> spanMs;
+        const char* measuredBy = "";
         std::vector<uint64_t> waits;
         std::vector<gpu::Device::HostWaitSite> sitesBefore;
         for (uint32_t frame = 0; frame < std::max(o->frames, uint32_t{1}); ++frame) {
@@ -339,6 +351,23 @@ void addStage(CLI::App& app) {
             }
             ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
             waits.push_back(device.hostWaits() - waitsBefore);
+            if (o->profile) {
+                std::optional<gpu::FrameTimes> times = (*renderer)->phaseTimes();
+                if (times.has_value() && frame > 0) {
+                    measuredBy = times->source;
+                    spanMs.push_back(times->spanMs);
+                    for (const gpu::PhaseTime& phase : times->phases) {
+                        const auto at = std::find(phaseNames.begin(), phaseNames.end(), phase.name);
+                        if (at == phaseNames.end()) {
+                            phaseNames.push_back(phase.name);
+                            phaseMs.emplace_back();
+                            phaseMs.back().push_back(phase.ms);
+                        } else {
+                            phaseMs[static_cast<size_t>(at - phaseNames.begin())].push_back(phase.ms);
+                        }
+                    }
+                }
+            }
         }
         if (ms.size() > 1) {
             // The first frame loads the stage onto the device and compiles; the rest are steady.
@@ -352,6 +381,25 @@ void addStage(CLI::App& app) {
                         static_cast<unsigned long long>(waits.front()),
                         static_cast<unsigned long long>(steadyWaits[steadyWaits.size() / 2]),
                         static_cast<unsigned long long>(steadyWaits.back()));
+        }
+        if (o->profile) {
+            const auto median = [](std::vector<double> v) {
+                if (v.empty()) return 0.0;
+                std::sort(v.begin(), v.end());
+                return v[v.size() / 2];
+            };
+            if (spanMs.empty()) {
+                std::printf("GPU by phase: no frame after the first was timed (--frames 2 or more)\n");
+            } else {
+                std::printf("GPU by phase, medians of %zu frames (%s):", spanMs.size(), measuredBy);
+                double sum = 0.0;
+                for (size_t k = 0; k < phaseNames.size(); ++k) {
+                    const double m = median(phaseMs[k]);
+                    sum += m;
+                    std::printf(" %s %.2f ms%s", phaseNames[k].c_str(), m, k + 1 < phaseNames.size() ? "," : "");
+                }
+                std::printf("; together %.2f ms, the frame's span on the device %.2f ms\n", sum, median(spanMs));
+            }
         }
         if (o->waits && !ms.empty()) {
             std::printf("host waits in the last frame, by source line:\n");

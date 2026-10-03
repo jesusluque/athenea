@@ -85,7 +85,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
         gpu::CommandBatch batch(device);
         batch.encoder()->copyBuffer(mesh.positions.rhi(), 0, in.devicePositions->rhi(), 0, uint64_t{mesh.points} * 16);
         batch.markDirty();
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     } else {
         const uint64_t words = std::max<uint64_t>((in.points.bytes.size() + 3) / 4, 1);
         auto source = deviceBuffer(device, words, 4, "mesh.points.words");
@@ -101,7 +101,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
             cursor["params"]["count"].setData(mesh.points);
             cursor["params"]["half"].setData(uint32_t{in.points.half ? 1u : 0u});
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
 
     // Topology: holes, counts, starts, triangles.
@@ -183,7 +183,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
         batch.encoder()->copyBuffer(totals->rhi(), 0, cornerTotal->rhi(), 0, 4);
         batch.encoder()->copyBuffer(totals->rhi(), 4, triangleTotal->rhi(), 0, 4);
         batch.markDirty();
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         uint32_t read[2] = {0, 0};
         ATHENEA_TRY(totals->read(device, 0, sizeof(read), read));
         mesh.corners = std::min(read[0], indexCount);
@@ -210,7 +210,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
             cursor["triangleFaces"].setBinding(mesh.triangleFaces.rhi());
             topologyParams(cursor["params"]);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
 
     // GeomSubsets: faces to subsets, then triangles to their faces' subsets
@@ -254,7 +254,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
             cursor["triangleSubsets"].setBinding(triangleSubsets->rhi());
             cursor["params"]["count"].setData(mesh.triangles);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         mesh.subsets = static_cast<uint32_t>(in.subsets.size());
         mesh.triangleSubsets = std::move(*triangleSubsets);
     }
@@ -276,7 +276,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
             gpu::CommandBatch batch(device);
             batch.encoder()->copyBuffer(primvar.values.rhi(), 0, p.deviceValues->rhi(), 0, uint64_t{p.deviceCount} * 16);
             batch.markDirty();
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());
             authoredNormals = authoredNormals || p.name == "normals";
             mesh.primvars.push_back(std::move(primvar));
             continue;
@@ -312,7 +312,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
             q["indexed"].setData(uint32_t{p.indices.empty() ? 0u : 1u});
             q["values"].setData(static_cast<uint32_t>(elements));
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         authoredNormals = authoredNormals || p.name == "normals";
         mesh.primvars.push_back(std::move(primvar));
     }
@@ -375,7 +375,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
             cursor["normals"].setBinding(normals->rhi());
             normalParams(cursor["params"]);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         GpuPrimvar primvar;
         primvar.name = "normals";
         primvar.interpolation = Interpolation::Vertex;
@@ -409,7 +409,7 @@ Result<GpuMesh> MeshBuilder::build(const MeshInput& in) {
             cursor["result"].setBinding(result->rhi());
             params(cursor);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         float extent[8];
         ATHENEA_TRY(result->read(device, 0, sizeof(extent), extent));
         mesh.bounds.min = {extent[0], extent[1], extent[2]};

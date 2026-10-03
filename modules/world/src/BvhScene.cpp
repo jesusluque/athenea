@@ -68,7 +68,7 @@ Result<void> BvhScene::hierarchy(const Build& build, gpu::SortBuffers& sorting, 
             cursor["leaves"].setBinding(leaves.rhi());
             setBvh(cursor["params"]);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     return settle(build, leafBoxes, boxes, children, leaves);
 }
@@ -114,7 +114,7 @@ Result<void> BvhScene::settle(const Build& build, const gpu::Buffer& leafBoxes, 
             cursor["total"].setBinding(changedCount->rhi());
             cursor["params"]["count"].setData(n - 1);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         uint32_t still = 0;
         ATHENEA_TRY(changedCount->read(device, 0, sizeof(still), &still));
         if (still == 0) {
@@ -191,7 +191,7 @@ Result<void> BvhScene::build(const GpuScene& scene, bool refit) {
                     cursor["mesh"]["firstPoint"].setData(scene.firstPoint(m));
                     cursor["mesh"]["firstTriangle"].setData(scene.firstTriangle(m));
                 });
-                ATHENEA_TRY(batch.submit(true));
+                ATHENEA_TRY(batch.submit());
             }
             ATHENEA_TRY(hierarchy(build, sorting, *leafBoxes, meshBoxes_, meshChildren_, meshLeaves_));
             nodeBase += std::max<uint32_t>(n, 1) - 1;
@@ -233,7 +233,7 @@ Result<void> BvhScene::build(const GpuScene& scene, bool refit) {
                     cursor["mesh"]["firstPoint"].setData(scene.firstPoint(m));
                     cursor["mesh"]["firstTriangle"].setData(scene.firstTriangle(m));
                 });
-                ATHENEA_TRY(batch.submit(true));
+                ATHENEA_TRY(batch.submit());
             }
             ATHENEA_TRY(settle(build, *leafBoxes, meshBoxes_, meshChildren_, meshLeaves_));
             meshRevisions_[m] = scene.meshRevision(m);
@@ -292,7 +292,7 @@ Result<void> BvhScene::build(const GpuScene& scene, bool refit) {
             cursor["result"].setBinding(result->rhi());
             params(cursor);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         float extent[8];
         ATHENEA_TRY(result->read(device, 0, sizeof(extent), extent));
         std::copy(extent, extent + 3, build.lo);
@@ -313,7 +313,7 @@ Result<void> BvhScene::build(const GpuScene& scene, bool refit) {
             p["boundsHiY"].setData(build.hi[1]);
             p["boundsHiZ"].setData(build.hi[2]);
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     return hierarchy(build, sorting, *leafBoxes, topBoxes_, topChildren_, topLeaves_);
 }

@@ -1542,3 +1542,82 @@ TEST_CASE("the counters a panel reads say how many splats were kept and why the 
     REQUIRE(still.has_value());
     CHECK(still->tag == 42);
 }
+
+/// THE HOST WAITS FOR A FRAME OF SPLATS ONCE, AT ITS END. How many splats
+/// are visible and how many tile pairs they make are prefix sums on the
+/// device, and everything after them is sized by those sums there; the host
+/// learns both at the frame's end. The pairs' buffers are sized before the
+/// count is known, so a frame of large splats -- many pairs a splat -- made
+/// first outgrows them, and is drawn again in bigger ones: two waits, and
+/// the same image a frame that fitted draws. Left in flight, a frame does
+/// not wait at all and draws that image too.
+TEST_CASE("a frame of splats waits for the device once, at its end, and one that outgrew its pairs is drawn again",
+          "[render][gpu][waits]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    // Large splats over a small frame: each touches tens of tiles.
+    CloudBuilder built = randomCloud(600, 11, 0.25F, 0.9F, 0.3F, 0.95F);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    const std::vector<render::SplatInstance> instances{{&*cloud, render::Mat4::identity()}};
+    render::Camera camera = render::Camera::lookingAt({0.5, 0.4, 6.0}, {0.0, 0.0, 0.0});
+    camera.lens.focal = 30.0;
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    gpu::Device& device = *gpu->device;
+    const uint32_t words = settings.width * settings.height * 4;
+
+    render::RenderTargets first;
+    uint64_t before = device.hostWaits();
+    auto drawnFirst = h->raster.render(camera, instances, settings, first);
+    if (!drawnFirst) FAIL(drawnFirst.error().toString());
+    const uint64_t firstWaits = device.hostWaits() - before;
+    // More pairs than the first guess -- half as much again as the splats --
+    // so the first frame was drawn twice, a wait each.
+    CHECK(drawnFirst->pairs > drawnFirst->splats + drawnFirst->splats / 2);
+    CHECK(firstWaits == 2);
+
+    render::RenderTargets second;
+    before = device.hostWaits();
+    auto drawnSecond = h->raster.render(camera, instances, settings, second);
+    if (!drawnSecond) FAIL(drawnSecond.error().toString());
+    CHECK(device.hostWaits() - before == 1);
+    CHECK(drawnSecond->pairs == drawnFirst->pairs);
+    CHECK(drawnSecond->visible == drawnFirst->visible);
+
+    render::RenderTargets inFlight;
+    render::RenderSettings flying = settings;
+    flying.waitForFrame = false;
+    before = device.hostWaits();
+    auto drawnFlying = h->raster.render(camera, instances, flying, inFlight);
+    if (!drawnFlying) FAIL(drawnFlying.error().toString());
+    CHECK(device.hostWaits() - before == 0);
+
+    // The same image, word for word, whichever way it was drawn.
+    auto redrawn = render::countDifferent(*gpu->library, first.colour, second.colour, words);
+    auto flown = render::countDifferent(*gpu->library, inFlight.colour, second.colour, words);
+    auto depth = render::countDifferent(*gpu->library, first.depth, second.depth, settings.width * settings.height);
+    REQUIRE(redrawn);
+    REQUIRE(flown);
+    REQUIRE(depth);
+    CHECK(*redrawn == 0);
+    CHECK(*flown == 0);
+    CHECK(*depth == 0);
+    // And what the reference draws, as every frame of the rasteriser does.
+    render::RenderTargets truth;
+    auto overflow = h->reference.render(camera, instances, settings, truth);
+    REQUIRE(overflow);
+    auto diff = render::compareImages(*gpu->library, first.colour, truth.colour, settings.width, settings.height);
+    REQUIRE(diff);
+    CHECK(diff->p99 <= 2);
+
+    // A frame of nothing waits once too, and draws nothing.
+    render::RenderTargets empty;
+    before = device.hostWaits();
+    auto drawnEmpty = h->raster.render(camera, {}, settings, empty);
+    if (!drawnEmpty) FAIL(drawnEmpty.error().toString());
+    CHECK(device.hostWaits() - before == 1);
+    CHECK(drawnEmpty->pairs == 0);
+    CHECK(drawnEmpty->visible == 0);
+}

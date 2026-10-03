@@ -108,6 +108,14 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
    las cuentas fuera con el propio submit del frame y un fence. Se leen
    después, nunca se esperan: un número que muestra un panel no debe ser una
    espera que el panel haya causado.
+   **Nada en mitad del frame espera al dispositivo.** Cuántos splats son
+   visibles y cuántos pares (tile, splat) hacen son sumas prefijas que toma
+   el dispositivo, y los órdenes, el gather, la emisión y los rangos leen sus
+   cuentas de esas sumas (`gpu::RadixSort` y `gpu::PrefixSum` dimensionados en
+   el dispositivo); el host conoce los dos totales una vez, al final del
+   frame. Un frame cuyos pares desbordaron sus buffers se dibuja otra vez en
+   unos mayores. Un viewer deja el frame en vuelo y no espera en absoluto
+   (`Engine::setFramesInFlight`).
 6. Los domes se pintan detrás, se aplica la exposición y el frame está. Lo que
    lo convierte en algo que mirar es `technique::DisplayTransform`, y solo lo
    llaman un viewer o una vista previa.
@@ -259,6 +267,7 @@ fuera del proceso.
 | `ATHENEA_VIEW_SWITCH_AT` | `=N`: el viewer cambia de técnica en el frame N, como haría un clic, para ejecuciones `--frames` reproducibles |
 | `ATHENEA_VIEW_ORBIT` | `=R`: la cámara libre del viewer gira R radianes alrededor de su objetivo en cada frame, como haría un arrastre, para medir una cámara en movimiento con `--frames` |
 | `ATHENEA_STAGES` | `=1`: una línea por frame rasterizado de splats diciendo adónde fue -- commit, visibilidad por partes, proyección, recuentos, orden por profundidad, emisión, orden por tile, blend --, esperando cada etapa, así que el frame es más lento |
+| `ATHENEA_PROFILE` | `=1`: tiempo de GPU por fase desde el primer frame, como lo enciende `--profile` (`gpu::FrameProfiler`); timestamps donde el backend los escribe, un command buffer por fase en Metal, así que un frame cronometrado envía más y no espera más |
 | `ATHENEA_PORTABLE_SORT` | `=1`: todo radix sort toma las pasadas por trozos, como antes de la ruta por tiles; para apartar la ruta por tiles de un backend |
 | `ATHENEA_ORACLE_*` | las entradas del oráculo de Storm en paralelo; son siete, documentadas donde el test las lee |
 | `HDX_MSAA_SAMPLE_COUNT` | tiene que ser `1` para el oráculo de Storm; ctest lo pone, y el test falla explicándolo si no |
@@ -291,11 +300,27 @@ kernel.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
     cursor["positions"].setBinding(cloud.positions.rhi());
     cursor["params"]["count"].setData(count);
 });
-ATHENEA_TRY(batch.submit(true));
+ATHENEA_TRY(batch.submit());
 ```
 
 Todo nombre que declare el shader tiene que estar enlazado, lo lea o no esta
 vez. Para eso están los buffers de relleno del rasterizador.
+
+4. **Envía sin esperar** salvo que el host vaya a leer lo que escribió el
+   kernel. El trabajo corre en el orden en que se envió -- una cola, y cada
+   encoder espera a su fence -- y un command buffer retiene los buffers que
+   enlaza hasta que el dispositivo lo ha ejecutado, así que un temporal puede
+   salir de ámbito tras `submit()`. `submit(true)`, `Buffer::read` y
+   `waitIdle` son esperas del host, contadas con su línea de código
+   (`gpu::Device::hostWaits`); un frame que espera entre pases deja el
+   dispositivo parado mientras el host se pone al día. Una cuenta con la que
+   se dimensiona el pase siguiente se queda en el dispositivo: se despacha
+   para el máximo posible y el kernel lee la cuenta, como hace el frame de
+   splats. `athenea stage --frames 10 --waits` dice dónde espera un frame.
+5. **Nombra la fase** a la que pertenece un kernel con `gpu::Phase
+   phase(batch, "nombre")` alrededor de sus dispatches: un grupo de depuración
+   para una herramienta de captura, y su tiempo de GPU cuando el profiler está
+   encendido (`--profile`, `ATHENEA_PROFILE=1`).
 
 ### 4.2 Un test
 

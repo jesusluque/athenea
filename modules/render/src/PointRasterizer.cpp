@@ -236,7 +236,8 @@ Result<void> PointRasterizer::render(const Projection& projection,
                            Mat4::identity(), style, 0);
         });
     }
-    return batch.submit(true);
+    // The layer is composited later in the same queue: nothing here waits.
+    return batch.submit();
 }
 
 }   // namespace athenea::render

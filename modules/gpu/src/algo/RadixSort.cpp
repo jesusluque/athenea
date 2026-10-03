@@ -16,12 +16,13 @@ namespace {
 constexpr uint32_t kDigits = 256;
 
 void setParams(rhi::ShaderCursor cursor, uint32_t count, uint32_t chunks, uint32_t shift,
-               bool wide) {
+               bool wide, bool counted) {
     cursor["params"]["count"].setData(count);
     cursor["params"]["chunkSize"].setData(RadixSort::chunkFor(count));
     cursor["params"]["chunkCount"].setData(chunks);
     cursor["params"]["shift"].setData(shift);
     cursor["params"]["wide"].setData(uint32_t{wide ? 1u : 0u});
+    cursor["params"]["counted"].setData(uint32_t{counted ? 1u : 0u});
 }
 
 }   // namespace
@@ -94,6 +95,19 @@ Result<void> RadixSort::reserve(uint32_t chunks) {
 
 Result<void> RadixSort::sort(CommandBatch& batch, SortBuffers& buffers, uint32_t count,
                              uint32_t keyBits) {
+    return run(batch, buffers, count, keyBits, nullptr);
+}
+
+Result<void> RadixSort::sort(CommandBatch& batch, SortBuffers& buffers, const Buffer& count,
+                             uint32_t maxCount, uint32_t keyBits) {
+    if (count.count() < 1) {
+        return Error(ErrorCode::InvalidArgument, "a radix sort's count buffer is empty");
+    }
+    return run(batch, buffers, maxCount, keyBits, &count);
+}
+
+Result<void> RadixSort::run(CommandBatch& batch, SortBuffers& buffers, uint32_t count, uint32_t keyBits,
+                            const Buffer* countFrom) {
     if (keyBits == 0 || keyBits > 64) {
         return Error::make(ErrorCode::InvalidArgument, "cannot sort on {} key bits", keyBits);
     }
@@ -108,8 +122,11 @@ Result<void> RadixSort::sort(CommandBatch& batch, SortBuffers& buffers, uint32_t
     }
     static const bool portable = !platform::env("ATHENEA_PORTABLE_SORT").empty();
     if (!portable && count >= kBlockFrom && blockScatter_.has_value()) {
-        return sortTiles(batch, buffers, count, keyBits);
+        return sortTiles(batch, buffers, count, keyBits, countFrom);
     }
+    const bool counted = countFrom != nullptr;
+    // Bound either way, as every name a shader declares.
+    rhi::IBuffer* countBinding = counted ? countFrom->rhi() : dummy_.rhi();
     const uint32_t chunk = chunkFor(count);
     const uint32_t chunks = (count + chunk - 1) / chunk;
     ATHENEA_TRY(reserve(chunks));
@@ -126,21 +143,22 @@ Result<void> RadixSort::sort(CommandBatch& batch, SortBuffers& buffers, uint32_t
     for (uint32_t pass = 0; pass < passes; ++pass) {
         const uint32_t shift = pass * 8;
         histogram_.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["countFrom"].setBinding(countBinding);
             cursor["keysLo"].setBinding(srcLo->rhi());
             cursor["keysHi"].setBinding(srcHi->rhi());
             cursor["histogram"].setBinding(histogramBuffer_.rhi());
-            setParams(cursor, count, chunks, shift, wide);
+            setParams(cursor, count, chunks, shift, wide, counted);
         });
         totals_.dispatch(batch, {kDigits, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["histogram"].setBinding(histogramBuffer_.rhi());
             cursor["digitTotals"].setBinding(digitTotals_.rhi());
-            setParams(cursor, count, chunks, shift, wide);
+            setParams(cursor, count, chunks, shift, wide, counted);
         });
         starts_.dispatch(batch, {kDigits, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["histogram"].setBinding(histogramBuffer_.rhi());
             cursor["digitTotals"].setBinding(digitTotals_.rhi());
             cursor["chunkStarts"].setBinding(chunkStarts_.rhi());
-            setParams(cursor, count, chunks, shift, wide);
+            setParams(cursor, count, chunks, shift, wide, counted);
         });
         // Distinct placeholders for the unused hi bindings: a buffer bound as
         // both read-only and read-write in one dispatch is refused by D3D and
@@ -148,6 +166,7 @@ Result<void> RadixSort::sort(CommandBatch& batch, SortBuffers& buffers, uint32_t
         Buffer* scatterSrcHi = wide ? srcHi : &dummy_;
         Buffer* scatterDstHi = wide ? dstHi : &histogramBuffer_;
         scatter_.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["countFrom"].setBinding(countBinding);
             cursor["srcKeysLo"].setBinding(srcLo->rhi());
             cursor["srcKeysHi"].setBinding(scatterSrcHi->rhi());
             cursor["srcValues"].setBinding(srcVal->rhi());
@@ -155,7 +174,7 @@ Result<void> RadixSort::sort(CommandBatch& batch, SortBuffers& buffers, uint32_t
             cursor["dstKeysHi"].setBinding(scatterDstHi->rhi());
             cursor["dstValues"].setBinding(dstVal->rhi());
             cursor["chunkStarts"].setBinding(chunkStarts_.rhi());
-            setParams(cursor, count, chunks, shift, wide);
+            setParams(cursor, count, chunks, shift, wide, counted);
         });
         std::swap(srcLo, dstLo);
         std::swap(srcHi, dstHi);
@@ -176,7 +195,7 @@ Result<void> RadixSort::sort(CommandBatch& batch, SortBuffers& buffers, uint32_t
 }
 
 Result<void> RadixSort::sortTiles(CommandBatch& batch, SortBuffers& buffers, uint32_t count,
-                                  uint32_t keyBits) {
+                                  uint32_t keyBits, const Buffer* countFrom) {
     constexpr uint32_t kTile = 1024;
     const bool wide = keyBits > 32;
     const uint32_t blocks = (count + kTile - 1) / kTile;
@@ -217,6 +236,9 @@ Result<void> RadixSort::sortTiles(CommandBatch& batch, SortBuffers& buffers, uin
             cursor["blockParams"]["blocks"].setData(blocks);
             cursor["blockParams"]["shift"].setData(pass * 8);
             cursor["blockParams"]["wide"].setData(uint32_t{wide ? 1u : 0u});
+            cursor["blockParams"]["counted"].setData(uint32_t{countFrom != nullptr ? 1u : 0u});
+            // Bound either way, as every name a shader declares.
+            cursor["countFrom"].setBinding(countFrom != nullptr ? countFrom->rhi() : dummy_.rhi());
         };
         // Every name the module declares is bound in both, whether or not
         // that entry reads it.

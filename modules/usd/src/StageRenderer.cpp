@@ -1,6 +1,8 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/usd/StageRenderer.h"
 
+#include "athenea/gpu/FrameProfiler.h"
+
 #include "athenea/core/Log.h"
 
 #include <map>
@@ -1024,6 +1026,20 @@ void StageRenderer::setTimeSplatStages(bool on) {
     }
 }
 
+void StageRenderer::setFramesInFlight(bool on) {
+    if (Engine* engine = engineBehind(*impl_->delegate); engine != nullptr) {
+        engine->setFramesInFlight(on);
+    }
+}
+
+void StageRenderer::setProfiling(bool on) {
+    device().profiler().setEnabled(on);
+}
+
+std::optional<gpu::FrameTimes> StageRenderer::phaseTimes() {
+    return device().profiler().latest();
+}
+
 GaussianStats StageRenderer::gaussianStats() const {
     const Engine* engine = engineBehind(*impl_->delegate);
     return engine != nullptr ? engine->gaussianStats() : GaussianStats{};
@@ -1891,14 +1907,16 @@ Result<StageImage> StageRenderer::readImage(uint32_t width, uint32_t height) {
     StageImage image;
     image.width = width;
     image.height = height;
-    auto rgba = targets->colour.readAll<float>(impl_->delegate->GetEngineDevice());
-    if (!rgba) return std::move(rgba).error();
-    auto depth = targets->depth.readAll<float>(impl_->delegate->GetEngineDevice());
-    if (!depth) return std::move(depth).error();
-    image.rgba = std::move(*rgba);
-    image.depth = std::move(*depth);
+    // Both in one readback: the frame's one host wait.
     image.rgba.resize(size_t{width} * height * 4);
     image.depth.resize(size_t{width} * height);
+    const gpu::ReadRequest requests[] = {
+        {&targets->colour, 0, std::min<uint64_t>(targets->colour.bytes(), image.rgba.size() * sizeof(float)),
+         image.rgba.data()},
+        {&targets->depth, 0, std::min<uint64_t>(targets->depth.bytes(), image.depth.size() * sizeof(float)),
+         image.depth.data()},
+    };
+    ATHENEA_TRY(gpu::readBuffers(impl_->delegate->GetEngineDevice(), requests));
     return image;
 }
 

@@ -8,7 +8,7 @@ struct PrefixParams {
     uint count;
     uint chunkSize;
     uint chunkCount;
-    uint pad0;
+    uint counted;   // 1: the count is countFrom[0], at most `count`
 };
 
 StructuredBuffer<uint>       chunkTotals;

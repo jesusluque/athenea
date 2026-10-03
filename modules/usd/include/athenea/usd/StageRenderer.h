@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "athenea/core/Result.h"
+#include "athenea/gpu/FrameProfiler.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/SplatQuery.h"
 #include "athenea/render/TileRasterizer.h"
@@ -478,6 +479,16 @@ public:
     void setGaussianStats(bool on);
     /// Time each rasteriser stage for the panel; each then waits for the device.
     void setTimeSplatStages(bool on);
+    /// Leave each frame in flight rather than wait for it at its end
+    /// (Engine::setFramesInFlight): for `draw` in a viewer. An image read
+    /// back (`render`) waits for its own frame either way.
+    void setFramesInFlight(bool on);
+    /// GPU TIME BY PHASE (gpu::FrameProfiler): on, every frame's phases --
+    /// project, sort, emit, raster, visibility, shade -- are timed on the
+    /// device; `phaseTimes` hands back the newest frame it has finished,
+    /// once, never waiting. Off by default ($ATHENEA_PROFILE turns it on).
+    void setProfiling(bool on);
+    [[nodiscard]] std::optional<gpu::FrameTimes> phaseTimes();
     [[nodiscard]] GaussianStats gaussianStats() const;
 
     /// Every camera prim on the stage.

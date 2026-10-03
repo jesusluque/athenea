@@ -97,10 +97,24 @@ struct ViewOptions {
     /// It costs a readback and a file a frame, so a captured run does not
     /// time like a run that is only drawn.
     std::filesystem::path capture;
+    /// GPU time by phase, printed with the timings (`--profile`).
+    bool                  profile = false;
 };
 
 struct ViewStats {
     uint32_t frames = 0;
+    /// How often a frame made the host wait for the device (gpu::Device::
+    /// hostWaits), the median over the frames after the first.
+    double   medianHostWaits = 0.0;
+    /// With `ViewOptions::profile`: each phase's GPU time, medians over the
+    /// frames timed, and the frame's span on the device.
+    struct Phase {
+        std::string name;
+        double      ms = 0.0;
+    };
+    std::vector<Phase> phases;
+    double             medianSpanMs = 0.0;
+    std::string        phasesMeasuredBy;
     uint64_t snapshotLitPixels = 0;   ///< of the snapshot: pixels brighter than the background
     double   medianDrawMs = 0.0;    ///< Hydra and the engine
     double   medianFrameMs = 0.0;   ///< the whole loop, events to present

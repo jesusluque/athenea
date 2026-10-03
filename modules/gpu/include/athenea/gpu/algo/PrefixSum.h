@@ -43,8 +43,17 @@ public:
     [[nodiscard]] Result<void> apply(CommandBatch& batch, const Buffer& input,
                                      const Buffer& output, const Buffer& total, uint32_t count);
 
+    /// SIZED ON THE DEVICE: the sum over the first `count[0]` entries, a
+    /// count an earlier pass of the same batch wrote (a prefix sum's total),
+    /// and at most `maxCount`. Dispatched for `maxCount`; the chunks past the
+    /// count sum nothing. The host never reads the count, so nothing waits.
+    [[nodiscard]] Result<void> apply(CommandBatch& batch, const Buffer& input, const Buffer& output,
+                                     const Buffer& total, const Buffer& count, uint32_t maxCount);
+
 private:
     [[nodiscard]] Result<void> reserve(uint32_t chunks);
+    [[nodiscard]] Result<void> run(CommandBatch& batch, const Buffer& input, const Buffer& output,
+                                   const Buffer& total, const Buffer* count, uint32_t maxCount);
 
     Device*       device_ = nullptr;
     ComputeKernel totals_;

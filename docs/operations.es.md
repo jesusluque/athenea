@@ -287,7 +287,9 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--far` | número | `100000` | |
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más `Z` |
 | `--render-settings` | ruta de prim | sin poner | renderiza los productos de ese prim y para |
-| `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido |
+| `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido, y de cuántas veces un frame hizo esperar al host por la GPU (un frame de splats: una al final, otra para leer la imagen) |
+| `--waits` | flag | apagado | con `--frames`: dónde esperó el último frame, por línea de código |
+| `--profile` | flag | apagado | con `--frames`: tiempo de GPU por fase (`project`, `sort`, `emit`, `raster`, `visibility`, `shade`, `other`), medianas de los frames tras el primero, en ms, y lo que abarca el frame en el dispositivo. Timestamps en CUDA y Vulkan; en Metal un command buffer por fase. Una fase cuenta solo sus propios comandos, así que las fases suman menos que el frame |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr
@@ -307,7 +309,8 @@ están en §5.
 | `--technique` | `raster` \| `rt` | `raster` | |
 | `--visibility` | `automatic` \| `raster` \| `rays` \| `bvh` | `automatic` | |
 | `--size` | `ANCHOxALTO` | `1600x900` | en puntos, no en píxeles |
-| `--frames` | entero | `0` | cierra tras tantos frames e imprime sus tiempos; 0 corre hasta que se cierre la ventana |
+| `--frames` | entero | `0` | cierra tras tantos frames e imprime sus tiempos y las esperas del host por frame; 0 corre hasta que se cierre la ventana. La ventana deja cada frame en vuelo: un frame de splats no espera a la GPU |
+| `--profile` | flag | apagado | con `--frames`: tiempo de GPU por fase, como lo imprime `athenea stage --profile`, un frame o así por detrás |
 | `--light-samples` | entero | `1` | 1 es interactivo |
 | `--choose-lights` | flag | apagado | una luz por muestra, elegida por potencia |
 | `--path-samples` | entero | `1` | rt: caminos por píxel y frame |

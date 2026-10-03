@@ -6,13 +6,14 @@ import frame;
 StructuredBuffer<uint>      order;
 StructuredBuffer<uint>      tilesTouched;
 RWStructuredBuffer<uint>    sortedCounts;
-ConstantBuffer<FrameParams> params;
+StructuredBuffer<uint>      visibleTotal;   // how many are visible: the projection's prefix sum
+ConstantBuffer<FrameParams> params;         // count: the most there can be
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void splatGatherCounts(uint3 tid: SV_DispatchThreadID) {
     const uint k = tid.x;
-    if (k >= params.count) {
+    if (k >= min(params.count, visibleTotal[0])) {
         return;
     }
     sortedCounts[k] = tilesTouched[order[k]];

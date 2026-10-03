@@ -27,6 +27,7 @@
 #include "athenea/io/Png.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
+#include "athenea/gpu/FrameProfiler.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/technique/DisplayTransform.h"
 #include "athenea/ui/GaussianPanel.h"
@@ -370,6 +371,13 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     auto opened = usd::StageRenderer::open(options.stage);
     if (!opened) return std::move(opened).error();
     usd::StageRenderer& stage = **opened;
+    // A window draws the next frame while the device finishes this one: no
+    // frame of splats waits for the device at its end (the snapshots and
+    // captures read theirs back, and wait for that).
+    stage.setFramesInFlight(true);
+    if (options.profile) {
+        stage.setProfiling(true);
+    }
     gpu::Device& device = stage.device();
     gpu::ShaderLibrary& library = stage.library();
 
@@ -632,10 +640,16 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     uint64_t snapshotLit = 0;
     std::vector<double> drawMs;
     std::vector<double> frameMs;
+    std::vector<double> waitsPerFrame;
+    std::vector<std::string> phaseNames;
+    std::vector<std::vector<double>> phaseMs;
+    std::vector<double> spanMs;
+    std::string phasesMeasuredBy;
     ImVec2 pressedAt{0.0F, 0.0F};
     uint32_t frames = 0;
     while (!(*window)->shouldClose() && (options.frames == 0 || frames < options.frames)) {
         const auto frameStart = std::chrono::steady_clock::now();
+        const uint64_t waitsBefore = device.hostWaits();
         (*window)->pollEvents();
         const auto [fbw, fbh] = (*window)->framebufferSize();
         if (fbw == 0 || fbh == 0) {
@@ -1325,6 +1339,23 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
         ++frames;
         frameMs.push_back(
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frameStart).count());
+        waitsPerFrame.push_back(static_cast<double>(device.hostWaits() - waitsBefore));
+        // The newest frame the device has finished, a frame or so behind.
+        if (options.profile && frames > 1) {
+            if (std::optional<gpu::FrameTimes> times = stage.phaseTimes(); times.has_value()) {
+                phasesMeasuredBy = times->source;
+                spanMs.push_back(times->spanMs);
+                for (const gpu::PhaseTime& phase : times->phases) {
+                    const auto at = std::find(phaseNames.begin(), phaseNames.end(), phase.name);
+                    if (at == phaseNames.end()) {
+                        phaseNames.push_back(phase.name);
+                        phaseMs.push_back({phase.ms});
+                    } else {
+                        phaseMs[static_cast<size_t>(at - phaseNames.begin())].push_back(phase.ms);
+                    }
+                }
+            }
+        }
     }
     {
         gpu::CommandBatch finish(device);
@@ -1339,6 +1370,14 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     stats.snapshotLitPixels = snapshotLit;
     stats.medianDrawMs = median(drawMs);
     stats.medianFrameMs = median(frameMs);
+    if (waitsPerFrame.size() > 1) {
+        stats.medianHostWaits = median(std::vector<double>(waitsPerFrame.begin() + 1, waitsPerFrame.end()));
+    }
+    for (size_t k = 0; k < phaseNames.size(); ++k) {
+        stats.phases.push_back({phaseNames[k], median(phaseMs[k])});
+    }
+    stats.medianSpanMs = median(spanMs);
+    stats.phasesMeasuredBy = phasesMeasuredBy;
     return stats;
 }
 

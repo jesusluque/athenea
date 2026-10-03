@@ -6,9 +6,11 @@
 // derived in the shader (shaders/athenea/light/lights.slang).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 #include <slang-rhi.h>
 #include <slang-rhi/shader-cursor.h>
@@ -221,6 +223,12 @@ public:
 private:
     gpu::Device* device_ = nullptr;
     gpu::Buffer  records_;
+    /// What the table was last built from, where nothing of it was placed on
+    /// the device (an instancer's rows): `set` with the same arrays keeps it.
+    bool                   built_ = false;
+    bool                   builtEmpty_ = false;
+    float                  builtRadius_ = 0.0F;
+    std::vector<std::byte> builtRecords_, builtIesRecords_, builtIesValues_;
     std::optional<gpu::ComputeKernel> prefix_;   ///< light_prefix: each light's cumulative share, on the device
     std::optional<gpu::ComputeKernel> iesPrepare_;   ///< ies_prepare: each profile's power
     std::optional<gpu::ComputeKernel> instancesMotion_;   ///< light_instances: a moving instanced light's samples

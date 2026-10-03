@@ -31,7 +31,7 @@ public struct RadixParams {
     public uint chunkCount;
     public uint shift;        // bit position of this pass's digit, 0..56
     public uint wide;         // 1 when keys are 64-bit (keysHi is live)
-    public uint pad0;
+    public uint counted;      // 1: the count is countFrom[0], at most `count`
     public uint pad1;
     public uint pad2;
 };

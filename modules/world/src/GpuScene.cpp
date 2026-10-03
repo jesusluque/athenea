@@ -137,7 +137,7 @@ Result<void> GpuScene::refresh(uint32_t k, const geom::GpuMesh& m) {
         valueAt += p.count;
     }
     batch.markDirty();
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     // The record's box is the mesh's new one; the rest of the record stands.
     constexpr size_t kWords = sizeof(MeshRecord) / 4;
     constexpr size_t kLoWord = offsetof(MeshRecord, lo) / 4;
@@ -251,7 +251,7 @@ Result<void> GpuScene::repack() {
         nodes += std::max<uint32_t>(m.triangles, 1) - 1;   // a mesh's LBVH has triangles - 1 internal nodes
     }
     batch.markDirty();
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     meshRecordWords_.assign(records.size() * sizeof(MeshRecord) / 4, 0);
     if (!records.empty()) {
         std::memcpy(meshRecordWords_.data(), records.data(), records.size() * sizeof(MeshRecord));
@@ -513,7 +513,7 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
                 p["open"].setData(static_cast<float>(shutterOpen));
                 p["close"].setData(static_cast<float>(shutterClose));
             });
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());
             ++meshRevisions_[m];   // its structures follow the new positions each frame
         }
         if (anyDeforms) {
@@ -608,7 +608,7 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
                 p[kNames[k]].setData(view[k]);
             }
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     // Every set's records in one dispatch. Their chains are pooled, copied
     // on the device when the sets' chains change; per frame only the sets'
@@ -725,7 +725,7 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
             }
         });
     }
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     return ok();
 }
 
@@ -765,7 +765,7 @@ Result<std::optional<scene::Bounds>> GpuScene::worldBounds() const {
         cursor["result"].setBinding(result->rhi());
         params(cursor);
     });
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     float box[8];
     ATHENEA_TRY(result->read(*device_, 0, sizeof(box), box));
     scene::Bounds bounds;
