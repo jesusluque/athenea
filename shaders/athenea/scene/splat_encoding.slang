@@ -30,6 +30,8 @@ public struct DecodeParams {
     public uint recordBase;
     // Where the three fields of a shading normal start, or kNoField.
     public uint normal;
+    // Where the three fields of an emitted radiance start, or kNoField.
+    public uint emission;
 };
 
 public float fieldOf(StructuredBuffer<float> raw, uint record, uint stride, uint field) {
@@ -59,8 +61,7 @@ public float decodeColour(float v, uint mode) {
     if (mode == 0) return 0.5 + kSH0 * v;          // SH DC coefficient
     if (mode == 2) return v / 255.0;
     if (mode == 3) return 0.5 + kSH0 * ((v / 255.0 - 0.5) / 0.15);   // SPZ byte: its DC scale
-    if (mode == 4) return linearToSrgb(v);         // light, into the space a cloud is blended in
-    return v;
+    return v;                                      // 1 linear, 4 light: stored as they are
 }
 
 /// A rest coefficient.

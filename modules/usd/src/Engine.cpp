@@ -3167,6 +3167,9 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
         posed.source = id.GetString() + " (posed)";
         entry.posed = std::make_unique<scene::GpuSplats>(std::move(posed));
     }
+    // The space its colours are in is the cloud's, whichever pose it is in:
+    // a posed cloud kept from before a reupload takes the new one's.
+    entry.posed->linear = entry.gpu->linear;
     if (moves && (!entry.motion.valid() || entry.motion.count() < uint64_t{kept} * 2)) {
         gpu::BufferDesc desc;
         desc.bytes = uint64_t{kept} * 2 * 4;

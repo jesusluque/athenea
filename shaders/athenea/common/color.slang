@@ -14,10 +14,9 @@ public float3 srgbToLinear(float3 c) {
 }
 
 /// The way back, extended past 1 for the same reason and exactly inverse to
-/// it. What it is for: a splat blended in the encoded space its cloud was
-/// trained in, whose colour this frame computed in linear light -- a relit
-/// cloud -- has to go into that space so that the blend's own linearise gives
-/// back the light it started with.
+/// it. What it is for: an image shown on an sRGB display, a code value a
+/// test compares in, a file written for a program that expects encoded
+/// colours. Not a splat: every splat is blended in linear light.
 public float linearToSrgb(float c) {
     c = max(c, 0.0);
     return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
@@ -27,21 +26,18 @@ public float3 linearToSrgb(float3 c) {
     return float3(linearToSrgb(c.x), linearToSrgb(c.y), linearToSrgb(c.z));
 }
 
-/// How fast that curve moves where it stands: `d linearToSrgb / dc`.
+/// WHAT A SPLAT'S EVALUATED HARMONICS ARE IN LINEAR LIGHT.
 ///
-/// What it is for: a quantity fitted in linear light whose small variations
-/// have to be carried into the encoded space along with their mean. The mean
-/// goes through the curve itself and the variations through this, which is
-/// the first term of the curve about that mean -- a bake's harmonics, whose
-/// constant term is the light at a point and whose bands are how that light
-/// changes with the direction it is looked from.
-public float srgbSlope(float c) {
-    c = max(c, 0.0);
-    return c <= 0.0031308 ? 12.92 : (1.055 / 2.4) * pow(c, 1.0 / 2.4 - 1.0);
-}
-
-public float3 srgbSlope(float3 c) {
-    return float3(srgbSlope(c.x), srgbSlope(c.y), srgbSlope(c.z));
+/// Every gaussian is blended in the working space, linear Rec.709, and sRGB
+/// appears only where an image is shown. A cloud says which space its
+/// colours were written in: a capture (PLY, SPZ, SOG, .splat, a
+/// ParticleField that does not say) was trained on sRGB photographs, so its
+/// colours are sRGB and are decoded here, one splat at a time; a cloud this
+/// engine wrote (`athenea mesh2splat`, an export, a bake) holds light and is
+/// taken as it is (`GpuSplats::linear`, `primvars:athenea:splat:linear`).
+/// Negative values -- harmonics ringing below zero -- are no light either way.
+public float3 cloudLight(float3 c, bool linearCloud) {
+    return linearCloud ? max(c, float3(0.0)) : srgbToLinear(c);
 }
 
 public float hash01(uint v) {

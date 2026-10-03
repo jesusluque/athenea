@@ -89,10 +89,7 @@ void referencePeakBlend(uint3 tid: SV_DispatchThreadID) {
         }
     }
     const float coverage = 1.0 - transmittance;
-    float3 linearRgb = rgb;
-    if (params.linearise != 0 && coverage > 1e-6) {
-        linearRgb = srgbToLinear(rgb / coverage) * coverage;
-    }
+    const float3 linearRgb = rgb;   // every particle's colour is linear (cloudLight)
     const uint at = py * params.width + px;
     colour[at] = float4(linearRgb + transmittance * float3(params.bgR, params.bgG, params.bgB),
                         coverage + transmittance * params.bgA);
