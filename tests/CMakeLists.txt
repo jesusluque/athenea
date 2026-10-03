@@ -11,7 +11,7 @@ include(Catch)
 # (rasterisation, ray queries) it says in its skip message, which
 # scripts/remote-test.sh tabulates.
 function(athenea_test name)
-    cmake_parse_arguments(ARG "" "" "SOURCES;LIBS;ENVIRONMENT_MODIFICATION;LABELS" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "SOURCES;LIBS;ENVIRONMENT_MODIFICATION;LABELS;FIXTURES_REQUIRED" ${ARGN})
     add_executable(${name} ${ARG_SOURCES})
     target_link_libraries(${name} PRIVATE Catch2::Catch2WithMain ${ARG_LIBS})
     athenea_set_target_defaults(${name})
@@ -27,6 +27,10 @@ function(athenea_test name)
     set(properties ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}" LABELS "${label}")
     if(ARG_ENVIRONMENT_MODIFICATION)
         list(APPEND properties ENVIRONMENT_MODIFICATION "${ARG_ENVIRONMENT_MODIFICATION}")
+    endif()
+    # What a binary reads that another test writes first (a command's output).
+    if(ARG_FIXTURES_REQUIRED)
+        list(APPEND properties FIXTURES_REQUIRED "${ARG_FIXTURES_REQUIRED}")
     endif()
     catch_discover_tests(${name}
         PROPERTIES ${properties}
@@ -194,6 +198,29 @@ set_tests_properties(mesh2splat_density_per-model PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [0-9][0-9]? splats of")
 set_tests_properties(mesh2splat_density_per-mesh PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [1-9][0-9][0-9]+ splats of")
+
+# WHAT `athenea mesh2splat` WRITES, checked on the device. The conversions run
+# first (the `mesh2splat_outputs` fixture) into one directory, and
+# athenea_mesh2splat_tests reads them back and counts with kernels.
+set(ATHENEA_M2S_OUTPUTS ${CMAKE_CURRENT_BINARY_DIR}/mesh2splat)
+file(MAKE_DIRECTORY ${ATHENEA_M2S_OUTPUTS})
+function(athenea_m2s_output name)
+    add_test(NAME mesh2splat_output_${name}
+        COMMAND athenea mesh2splat ${ARGN})
+    set_tests_properties(mesh2splat_output_${name} PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        FIXTURES_SETUP mesh2splat_outputs
+        LABELS gpe)
+endfunction()
+athenea_m2s_output(two_subsets ${CMAKE_CURRENT_SOURCE_DIR}/data/two_subsets.usda --no-bake --no-camera
+    --resolution 32 -o ${ATHENEA_M2S_OUTPUTS}/two_subsets.usda)
+athenea_test(athenea_mesh2splat_tests
+    SOURCES mesh2splat/test_outputs.cpp
+    LIBS athenea::usd athenea::lod athenea::render athenea::scene
+    LABELS gpe
+    FIXTURES_REQUIRED mesh2splat_outputs)
+target_compile_definitions(athenea_mesh2splat_tests PRIVATE ATHENEA_M2S_OUTPUTS="${ATHENEA_M2S_OUTPUTS}")
+set_target_properties(athenea_mesh2splat_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 # One TBB in the process: OpenUSD's oneTBB, which OIDN (built without its CPU
 # device) and everything else share.

@@ -56,6 +56,7 @@
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Device.h"
+#include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/gpu_host/Context.h"
 #include "athenea/gpu_host/ImageStorage.h"
@@ -231,28 +232,121 @@ public:
         ATHENEA_TRY(make("athenea/usd/mesh2splat_span", "m2sRaySpan", raySpan_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sBakeInto", bakeInto_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sTransferInto", transferInto_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetFlags", subsetFlags_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetScatter", subsetScatter_));
+        auto prefix = gpu::PrefixSum::create(*library_);
+        if (!prefix) return std::move(prefix).error();
+        prefix_ = std::move(*prefix);
         auto textures = material::TextureStore::create(*library_);
         if (!textures) return std::move(textures).error();
         textures_ = std::move(*textures);
         return ok();
     }
 
-    /// Every mesh's triangles into a picture of its own, and the model's box
+    /// A piece that is a whole mesh, not one of its subsets.
+    static constexpr uint32_t kWhole = 0xFFFFFFFF;
+
+    /// WHAT ONE RUN OF THE EFFECT CONVERTS: a mesh; or, where its GeomSubsets
+    /// bind materials of their own, the triangles of one subset, or those no
+    /// subset claims -- each with the material it is bound to. A mesh of
+    /// three materials used to be converted with the mesh's alone.
+    struct Piece {
+        size_t                    mesh = 0;          ///< which of the stage's meshes
+        uint32_t                  subset = kWhole;   ///< kWhole, 0 (no subset's), or the subset's index + 1
+        std::string               path;              ///< for the log: the mesh, or the GeomSubset
+        const usd::StageMaterial* material = nullptr;
+        uint32_t                  triangles = 0;
+        gpu::Buffer               list;              ///< the subset's triangles, in the mesh's order
+    };
+    /// The pieces of every mesh, and for each subset the list of its
+    /// triangles, made on the device (`athenea/usd/mesh2splat_subset`); what
+    /// crosses back is how many each holds.
+    [[nodiscard]] Result<void> makePieces(const std::vector<usd::StageMesh>& meshes) {
+        gpu::Device& device = library_->device();
+        pieces_.clear();
+        std::vector<gpu::Buffer> totals;
+        std::vector<gpu::Buffer> held;   // flags and offsets, alive until the batch has run
+        gpu::CommandBatch batch(device);
+        for (size_t m = 0; m < meshes.size(); ++m) {
+            const usd::StageMesh& one = meshes[m];
+            const uint32_t triangles = one.mesh.triangles;
+            if (one.subsets.empty() || triangles == 0 || !one.mesh.triangleSubsets.valid()) {
+                pieces_.push_back({m, kWhole, one.path, &one.material, triangles, {}});
+                totals.emplace_back();
+                continue;
+            }
+            // Every subset, and then what none of them claims.
+            for (uint32_t k = 0; k <= one.subsets.size(); ++k) {
+                const bool rest = k == one.subsets.size();
+                const uint32_t wanted = rest ? 0u : k + 1;
+                const auto words = [&](uint64_t n, const char* label) {
+                    gpu::BufferDesc desc;
+                    desc.bytes = std::max<uint64_t>(n, 1) * 4;
+                    desc.elementBytes = 4;
+                    desc.label = label;
+                    return gpu::Buffer::create(device, desc);
+                };
+                auto flags = words(triangles, "mesh2splat.subsetFlags");
+                auto offsets = words(triangles, "mesh2splat.subsetOffsets");
+                auto list = words(triangles, "mesh2splat.subsetList");
+                auto total = words(1, "mesh2splat.subsetTotal");
+                if (!flags || !offsets || !list || !total) {
+                    return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot list a subset's triangles");
+                }
+                const auto bind = [&](rhi::ShaderCursor cursor) {
+                    cursor["triangleSubsets"].setBinding(one.mesh.triangleSubsets.rhi());
+                    cursor["flags"].setBinding(flags->rhi());
+                    cursor["offsets"].setBinding(offsets->rhi());
+                    cursor["list"].setBinding(list->rhi());
+                    cursor["subset"]["triangles"].setData(triangles);
+                    cursor["subset"]["wanted"].setData(wanted);
+                };
+                subsetFlags_.dispatch(batch, {triangles, 1, 1}, bind);
+                ATHENEA_TRY(prefix_.apply(batch, *flags, *offsets, *total, triangles));
+                subsetScatter_.dispatch(batch, {triangles, 1, 1}, bind);
+                pieces_.push_back({m, wanted, rest ? one.path : one.subsets[k].path,
+                                   rest ? &one.material : &one.subsets[k].material, 0, std::move(*list)});
+                totals.push_back(std::move(*total));
+                held.push_back(std::move(*flags));
+                held.push_back(std::move(*offsets));
+            }
+        }
+        ATHENEA_TRY(batch.submit(true));
+        for (size_t p = 0; p < pieces_.size(); ++p) {
+            if (totals[p].valid()) {
+                ATHENEA_TRY(totals[p].read(device, 0, sizeof(uint32_t), &pieces_[p].triangles));
+            }
+        }
+        return ok();
+    }
+
+    /// Every piece's triangles into a picture of its own, and the model's box
     /// -- which is what the projection grid is measured against -- folded from
-    /// those pictures on the device.
+    /// those pictures on the device, with each mesh's own beside it.
     [[nodiscard]] Result<void> packMeshes(std::vector<usd::StageMesh>& meshes) {
         gpu::Device& device = library_->device();
-        streams_.resize(meshes.size());
-        skins_.resize(meshes.size());
-        uv2s_.resize(meshes.size());
-        triangles_.resize(meshes.size());
+        ATHENEA_TRY(makePieces(meshes));
+        const size_t pieces = pieces_.size();
+        streams_.resize(pieces);
+        skins_.resize(pieces);
+        uv2s_.resize(pieces);
+        triangles_.resize(pieces);
         uint64_t chunkTotal = 0;
-        std::vector<uint32_t> chunkFirst(meshes.size(), 0);
-        std::vector<uint32_t> chunkCount(meshes.size(), 0);
-        for (size_t k = 0; k < meshes.size(); ++k) {
-            const uint64_t entries = uint64_t{meshes[k].mesh.triangles} * 6;
+        std::vector<uint32_t> chunkFirst(pieces, 0);
+        std::vector<uint32_t> chunkCount(pieces, 0);
+        // A mesh's pieces are consecutive, so its chunks are one run: the
+        // box it is measured over is folded from that run.
+        std::vector<uint32_t> meshChunkFirst(meshes.size(), 0);
+        std::vector<uint32_t> meshChunkCount(meshes.size(), 0);
+        for (size_t k = 0; k < pieces; ++k) {
+            const uint64_t entries = uint64_t{pieces_[k].triangles} * 6;
             chunkFirst[k] = static_cast<uint32_t>(chunkTotal);
             chunkCount[k] = static_cast<uint32_t>((entries + kChunkEntries - 1) / kChunkEntries);
+            const size_t m = pieces_[k].mesh;
+            if (meshChunkCount[m] == 0) {
+                meshChunkFirst[m] = chunkFirst[k];
+            }
+            meshChunkCount[m] += chunkCount[k];
             chunkTotal += chunkCount[k];
         }
         if (chunkTotal == 0) {
@@ -272,18 +366,23 @@ public:
         if (!bounds) return std::move(bounds).error();
         std::vector<uint32_t> sliceRuns;
         sliceRuns.reserve(meshes.size() * 2);
-        for (size_t k = 0; k < meshes.size(); ++k) {
-            sliceRuns.push_back(chunkFirst[k]);
-            sliceRuns.push_back(chunkCount[k]);
+        for (size_t m = 0; m < meshes.size(); ++m) {
+            sliceRuns.push_back(meshChunkFirst[m]);
+            sliceRuns.push_back(meshChunkCount[m]);
         }
         auto sliceBuffer = gpu::Buffer::fromSpan<uint32_t>(device, sliceRuns, "mesh2splat.slices");
         if (!sliceBuffer) return std::move(sliceBuffer).error();
 
         gpu::CommandBatch batch(device);
-        for (size_t k = 0; k < meshes.size(); ++k) {
-            const geom::GpuMesh& mesh = meshes[k].mesh;
-            triangles_[k] = mesh.triangles;
-            const uint64_t entries = uint64_t{mesh.triangles} * 6;
+        for (size_t k = 0; k < pieces; ++k) {
+            const Piece& piece = pieces_[k];
+            const usd::StageMesh& owner = meshes[piece.mesh];
+            const geom::GpuMesh& mesh = owner.mesh;
+            triangles_[k] = piece.triangles;
+            if (piece.triangles == 0) {
+                continue;
+            }
+            const uint64_t entries = uint64_t{piece.triangles} * 6;
             auto picture = image::Image::create(pictureFor(entries));
             if (!picture) return std::move(picture).error();
             streams_[k] = *picture;
@@ -293,7 +392,7 @@ public:
             // The joints each corner is carried by, in a second picture of
             // exactly the same shape, so the two are addressed alike and the
             // effect needs no second set of dimensions.
-            const usd::StageSkinning& skin = meshes[k].skinning;
+            const usd::StageSkinning& skin = owner.skinning;
             gpu::Buffer influences;
             std::optional<gpu::Buffer> skinView;
             if (skin.bound && !skin.influences.empty()) {
@@ -346,7 +445,9 @@ public:
                 cursor["uv2Stream"].setBinding(uv2View ? uv2View->rhi() : view->rhi());
                 cursor["stream"].setBinding(view->rhi());
                 cursor["extents"].setBinding(extents->rhi());
-                cursor["pack"]["triangles"].setData(mesh.triangles);
+                cursor["pack"]["triangles"].setData(piece.triangles);
+                cursor["pack"]["listed"].setData(piece.list.valid() ? 1u : 0u);
+                cursor["triangleList"].setBinding(piece.list.valid() ? piece.list.rhi() : mesh.indices.rhi());
                 cursor["pack"]["destFirst"].setData(uint32_t{0});
                 cursor["pack"]["normalMode"].setData(normals != nullptr
                                                          ? static_cast<uint32_t>(normals->interpolation)
@@ -367,14 +468,14 @@ public:
                 for (uint32_t r = 0; r < 3; ++r) {
                     const std::string world = "toWorld" + std::to_string(r);
                     const std::string normal = "normalTo" + std::to_string(r);
-                    cursor["pack"][world.c_str()].setData(meshes[k].toWorld.data() + r * 4, 16);
-                    cursor["pack"][normal.c_str()].setData(meshes[k].normalToWorld.data() + r * 4, 16);
+                    cursor["pack"][world.c_str()].setData(owner.toWorld.data() + r * 4, 16);
+                    cursor["pack"][normal.c_str()].setData(owner.normalToWorld.data() + r * 4, 16);
                 }
                 cursor["pack"]["entries"].setData(static_cast<uint32_t>(entries));
                 cursor["pack"]["chunkSize"].setData(kChunkEntries);
                 cursor["pack"]["chunkCount"].setData(chunkThreads);
             };
-            pack_.dispatch(batch, {mesh.triangles, 1, 1}, bind);
+            pack_.dispatch(batch, {piece.triangles, 1, 1}, bind);
             // Every mesh's chunks go into one buffer, each at its own offset,
             // so that one reduce at the end gives the model's box.
             const uint32_t first = chunkFirst[k];
@@ -400,7 +501,9 @@ public:
         });
         ATHENEA_TRY(batch.submit(true));
         for (const image::ImagePtr& stream : streams_) {
-            stream->deviceWrote();
+            if (stream) {
+                stream->deviceWrote();
+            }
         }
         for (const image::ImagePtr& skin : skins_) {
             if (skin) {
@@ -426,7 +529,7 @@ public:
                 meshBounds_[k][3 + axis] = (*box)[at + 4 + axis];
             }
             // A mesh with no triangles folded nothing: give it the model's box.
-            if (chunkCount[k] == 0) {
+            if (meshChunkCount[k] == 0) {
                 for (size_t axis = 0; axis < 3; ++axis) {
                     meshBounds_[k][axis] = boundsMin_[axis];
                     meshBounds_[k][3 + axis] = boundsMax_[axis];
@@ -436,8 +539,9 @@ public:
         return ok();
     }
 
-    /// The maps every material names, decoded once and handed over as pictures.
-    [[nodiscard]] Result<void> loadTextures(const std::vector<usd::StageMesh>& meshes) {
+    /// The maps every material names -- a mesh's and its subsets' -- decoded
+    /// once and handed over as pictures.
+    [[nodiscard]] Result<void> loadTextures() {
         if (options_->noTextures) {
             return ok();
         }
@@ -447,18 +551,19 @@ public:
                     texture.file, texture.srgb ? material::ColourSpace::Srgb : material::ColourSpace::Raw);
             }
         };
-        for (const usd::StageMesh& mesh : meshes) {
-            ask(mesh.material.albedo);
-            ask(mesh.material.normal);
-            ask(mesh.material.metallicMap);
-            ask(mesh.material.roughnessMap);
+        for (const Piece& piece : pieces_) {
+            const usd::StageMaterial& material = *piece.material;
+            ask(material.albedo);
+            ask(material.normal);
+            ask(material.metallicMap);
+            ask(material.roughnessMap);
             // The cut-out too: it was never asked for, and passed only while
             // it happened to be the normal map's file (the sparrow's feathers
             // read their alpha off it). With the normal map repaired into a
             // file of its own, the cut silently went.
-            ask(mesh.material.opacityMap);
+            ask(material.opacityMap);
             if (!options_->noDisplacement) {
-                ask(mesh.material.displacementMap);
+                ask(material.displacementMap);
             }
         }
         if (ids_.empty()) {
@@ -625,25 +730,31 @@ public:
                             options_->resolution, cellMin_, cellMax_, modelCell);
             }
         }
-        for (size_t k = 0; k < meshes.size(); ++k) {
+        for (size_t k = 0; k < pieces_.size(); ++k) {
             if (triangles_[k] == 0) {
                 continue;
             }
+            const Piece& piece = pieces_[k];
+            const usd::StageMesh& owner = meshes[piece.mesh];
+            const usd::StageMaterial& material = *piece.material;
             const uint64_t room = options_->maxSplats > written ? options_->maxSplats - written : 0;
             if (room == 0) {
                 // Said, not left to be noticed: every mesh from here on is
                 // missing from the cloud.
-                for (size_t rest = k; rest < meshes.size(); ++rest) {
+                for (size_t rest = k; rest < pieces_.size(); ++rest) {
                     unconverted += triangles_[rest] > 0 ? 1 : 0;
                 }
                 break;
             }
-            const uint32_t meshCrypto = athenea::core::cryptomatteId(meshes[k].path);
-            cryptoManifest_[meshes[k].path] = meshCrypto;
-            const usd::StageMaterial& what = meshes[k].material;
+            // THE MATTE NAMES PRIMS: a subset's gaussians are its mesh's,
+            // as Hydra's ids are -- the matte picks the mesh, whatever its
+            // faces are bound to.
+            const uint32_t meshCrypto = athenea::core::cryptomatteId(owner.path);
+            cryptoManifest_[owner.path] = meshCrypto;
+            const usd::StageMaterial& what = material;
             std::printf("mesh2splat: %s uses %s (colour %.2f %.2f %.2f, albedo '%s', metallic %.2f, "
                         "roughness %.2f, transmission %.3f)\n",
-                        meshes[k].path.c_str(), what.path.empty() ? "no material" : what.path.c_str(),
+                        piece.path.c_str(), what.path.empty() ? "no material" : what.path.c_str(),
                         static_cast<double>(what.baseColour[0]), static_cast<double>(what.baseColour[1]),
                         static_cast<double>(what.baseColour[2]), what.albedo.file.c_str(),
                         static_cast<double>(what.metallic), static_cast<double>(what.roughness),
@@ -688,12 +799,12 @@ public:
                 }
                 const uint64_t guess = std::clamp<uint64_t>(uint64_t{triangles_[k] - first} * 128, 4096,
                                                             std::min(left, kRunCeiling));
-                auto out = runOne(effect, meshes[k], k, guess, first);
+                auto out = runOne(effect, owner, k, guess, first);
                 if (!out) return std::move(out).error();
                 if (out->wanted > out->written && out->written < std::min(left, kRunCeiling)) {
                     const uint64_t again = std::min({out->wanted, left, kRunCeiling});
                     if (again > guess) {
-                        out = runOne(effect, meshes[k], k, again, first);
+                        out = runOne(effect, owner, k, again, first);
                         if (!out) return std::move(out).error();
                         ++reruns;
                     }
@@ -711,7 +822,7 @@ public:
                 // on the device: the records, where the bake starts from,
                 // and the joints.
                 ATHENEA_TRY(keep(*out, written - out->written));
-                displaced_ = displaced_ || (out->written > 0 && meshDisplaced(meshes[k]));
+                displaced_ = displaced_ || (out->written > 0 && displaces(material));
                 // WHICH PRIM THESE GAUSSIANS CAME FROM. The conversion knows
                 // it -- this run is one mesh -- so the ancestry a matte needs
                 // is inherited here and nowhere else (AtheneaSplatCryptomatteAPI).
@@ -719,18 +830,18 @@ public:
                 // And whether it is a sheet: a thin wall's transmission is
                 // its gaussians' own transparency (see `glassOpacity`).
                 thinWalled_.insert(thinWalled_.end(), out->written,
-                                   thinGlass(meshes[k].material) ? int32_t{1} : int32_t{0});
+                                   thinGlass(material) ? int32_t{1} : int32_t{0});
                 // AND WHAT ITS GLASS BENDS BY. A transmitting gaussian
                 // refracts only with an index (rt_shade: `ior > 1`), and a
                 // cloud keeps one: without it the pawn's glass head was a
                 // milky ball in every mode, relit, transferred or baked.
-                if (out->written > 0 && meshes[k].material.transmission > 0.0F && !meshes[k].material.thinWalled) {
-                    const float ior = meshes[k].material.ior;
+                if (out->written > 0 && material.transmission > 0.0F && !material.thinWalled) {
+                    const float ior = material.ior;
                     if (glassIor_ > 0.0F && glassIor_ != ior) {
                         std::fprintf(stderr,
                                      "mesh2splat: %s bends by %.3f and an earlier glass by %.3f; a cloud keeps "
                                      "one index, the first\n",
-                                     meshes[k].path.c_str(), static_cast<double>(ior),
+                                     piece.path.c_str(), static_cast<double>(ior),
                                      static_cast<double>(glassIor_));
                     } else {
                         glassIor_ = ior;
@@ -756,7 +867,7 @@ public:
             // The cell this mesh walked, as the kernel works it out: the box
             // it was measured over, its longest side over the resolution, held
             // to the bounds. Said here so a log reads what a part got.
-            const std::array<float, 6>& box = perMesh_ ? meshBounds_[k]
+            const std::array<float, 6>& box = perMesh_ ? meshBounds_[piece.mesh]
                                                        : std::array<float, 6>{boundsMin_[0], boundsMin_[1], boundsMin_[2],
                                                                               boundsMax_[0], boundsMax_[1], boundsMax_[2]};
             const double longest = std::max({box[3] - box[0], box[4] - box[1], box[5] - box[2], 1.0e-20F});
@@ -764,10 +875,10 @@ public:
             if (cellMin_ > 0.0) cell = std::max(cell, cellMin_);
             if (cellMax_ > 0.0) cell = std::min(cell, cellMax_);
             std::printf("mesh2splat: %s -> %llu splats of %llu wanted (%u triangles%s, cell %.4g over %.3g)%s\n",
-                        meshes[k].path.c_str(), static_cast<unsigned long long>(meshWritten),
+                        piece.path.c_str(), static_cast<unsigned long long>(meshWritten),
                         static_cast<unsigned long long>(meshWanted), triangles_[k],
                         slices > 1 ? (", " + std::to_string(slices) + " slices").c_str() : "", cell, longest,
-                        carried ? (", carried by " + meshes[k].skinning.skeleton).c_str() : "");
+                        carried ? (", carried by " + owner.skinning.skeleton).c_str() : "");
         }
         if (written == 0) {
             return Error(ErrorCode::InvalidArgument, "the conversion produced no splats");
@@ -848,7 +959,7 @@ private:
 
     [[nodiscard]] Result<OneMesh> runOne(aofx::Effect& effect, const usd::StageMesh& mesh, size_t at,
                                          uint64_t room, uint32_t firstTriangle = 0) {
-        const usd::StageMaterial& material = mesh.material;
+        const usd::StageMaterial& material = *pieces_[at].material;
         // A MAP THAT WILL NOT FIT IS A MAP THIS MATERIAL DOES NOT HAVE.
         //
         // The device pool is finite and a stage decides how many maps it
@@ -911,7 +1022,7 @@ private:
         // own. An attachment replaces by id, so a mesh converted in slices
         // sees its box on every run.
         if (perMesh_ && at < meshBounds_.size()) {
-            const std::array<float, 6>& own = meshBounds_[at];
+            const std::array<float, 6>& own = meshBounds_[pieces_[at].mesh];
             streams_[at]->attach("bounds", {own[0], own[1], own[2], own[3], own[4], own[5]});
         } else {
             streams_[at]->attach("bounds", {boundsMin_[0], boundsMin_[1], boundsMin_[2], boundsMax_[0],
@@ -1192,8 +1303,8 @@ private:
     bool                                     displaced_ = false;   ///< a ray faces as its relief does
 
 public:
-    [[nodiscard]] bool meshDisplaced(const usd::StageMesh& mesh) const noexcept {
-        return !options_->noDisplacement && mesh.material.displaces();
+    [[nodiscard]] bool displaces(const usd::StageMaterial& material) const noexcept {
+        return !options_->noDisplacement && material.displaces();
     }
     [[nodiscard]] const std::vector<uint32_t>& cryptoIds() const noexcept { return cryptoIds_; }
     [[nodiscard]] double modelCell() const noexcept { return modelCell_; }
@@ -1219,7 +1330,9 @@ private:
     const Options*                           options_ = nullptr;
     gpu::ComputeKernel                       pack_, chunks_, reduce_, reduceSlices_, rows_;
     gpu::ComputeKernel                       gather_, noInfluence_, recordChunks_, raySpan_, bakeInto_,
-                                             transferInto_;
+                                             transferInto_, subsetFlags_, subsetScatter_;
+    gpu::PrefixSum                           prefix_;
+    std::vector<Piece>                       pieces_;
     std::unique_ptr<material::TextureStore>  textures_;
     std::map<std::string, uint32_t>          ids_;
     std::map<MapKey, image::ImagePtr>        maps_;
@@ -1565,7 +1678,7 @@ void addMesh2Splat(CLI::App& app) {
                 Converter converter(*context, library, *o);
                 ATHENEA_TRY(converter.prepare());
                 ATHENEA_TRY(converter.packMeshes(*meshes));
-                ATHENEA_TRY(converter.loadTextures(*meshes));
+                ATHENEA_TRY(converter.loadTextures());
                 auto raw = converter.convert(*effect, *meshes);
                 if (!raw) return std::move(raw).error();
                 count = raw->count;

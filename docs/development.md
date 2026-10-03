@@ -461,6 +461,16 @@ frame.
 `geom::MeshBuilder` triangulates on the device, in `HdMeshUtil`'s order, so a
 converted cloud's faces correspond to what Hydra would have drawn.
 
+**A mesh of several materials.** The GeomSubsets of a mesh's `materialBind`
+family are read with the material each binds (`StageMesh::subsets`) and
+handed to the builder, which says on the device which subset every triangle
+is in (`GpuMesh::triangleSubsets`). The conversion then runs a *piece* at a
+time: each subset's triangles, listed in the mesh's order by
+`athenea/usd/mesh2splat_subset` (a flag, a prefix sum, a scatter) and packed
+as a mesh of their own (`mesh_pack`'s `listed`), with that subset's material;
+and the triangles no subset claims, with the mesh's. A piece's gaussians keep
+the mesh's Cryptomatte id: the matte names prims as Hydra does.
+
 The triangle picture (`shaders/athenea/usd/mesh_pack.slang`) is six `float4` an
 entry: for each of the three corners, the position with the first texture
 coordinate in `w`, then the normal with the second in `w`. A second UV set,

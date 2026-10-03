@@ -128,6 +128,15 @@ struct StageSkinning {
     bool                  dualQuaternion = false;
 };
 
+/// A GEOMSUBSET THAT BINDS A MATERIAL OF ITS OWN: one of the mesh's
+/// `materialBind` family. Its faces are the mesh's triangles whose
+/// `GpuMesh::triangleSubsets` is its index plus one; the faces no subset
+/// claims keep the mesh's own material.
+struct StageSubset {
+    std::string   path;       ///< the GeomSubset prim, for messages
+    StageMaterial material;   ///< what it binds (the mesh's, where it binds none)
+};
+
 /// One mesh of the stage, already on the device.
 struct StageMesh {
     std::string           path;
@@ -150,6 +159,9 @@ struct StageMesh {
     /// (`st2`), where a map of its material reads by one that is not the
     /// first; empty otherwise.
     std::string           uv2;
+    /// Its GeomSubsets of the `materialBind` family, in the order the mesh
+    /// was built with them (`mesh.subsets` of them). Empty: one material.
+    std::vector<StageSubset> subsets;
 };
 
 struct MeshStageOptions {

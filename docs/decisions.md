@@ -9442,3 +9442,29 @@ same bits. `athenea_usd_tests "a bake taken in passes*"`: passes of 7 against
 one pass of 40 on a Lambertian plane, every entry within 0.02 (the paths'
 noise). Not measured yet: the time a pass costs on a large cloud against one
 pass (to be taken on a GPU turn).
+
+**A mesh of several materials, converted as several.** `usd::MeshStage` read a
+mesh's one bound material and the conversion ran the whole mesh with it, so a
+car body whose GeomSubsets bind paint, chrome and rubber came out all paint.
+The `materialBind` subsets are now read with their materials
+(`StageMesh::subsets`; a subset that binds none takes the mesh's, as
+`ComputeBoundMaterial` answers) and given to `geom::MeshBuilder`, which
+already said on the device which subset each triangle is in -- the renderer
+has used it since M5. The conversion's unit is a *piece*: a whole mesh, or
+one subset's triangles, or those no subset claims. A piece's triangles are
+listed in the mesh's order on the device (`usd/mesh2splat_subset`: flag,
+`gpu::PrefixSum`, scatter; the count crosses back to size the picture) and
+`mesh_pack` packs the list (`listed`, `triangleList`) as if it were a mesh,
+so the effect, its parameters and its record layout are untouched. A mesh's
+box is still its own -- the fold runs over its pieces' chunks -- so
+`--density per-mesh` measures a subset against the mesh it belongs to. The
+Cryptomatte id stays the mesh's: the matte names prims as Hydra names them,
+and a GeomSubset is not a prim Hydra draws.
+
+`athenea_mesh2splat_tests "a mesh's GeomSubsets*"` (to run on a GPU turn),
+over `tests/data/two_subsets.usda` converted by the `mesh2splat_outputs`
+fixture: two faces bound red and blue by subsets, the mesh green; the cloud
+carries red and blue, within 10 % of each other, and no green. Before, it was
+all green. The new binary reads what the command wrote, since the conversion
+is the command's: ctest runs the commands first (`FIXTURES_SETUP`) and every
+number is counted by `test/mesh2splat_output_check`.

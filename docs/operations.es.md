@@ -388,6 +388,11 @@ receta es §3.1.
 llevar luz horneada en una pose, así que la conversión lo dice y conserva el
 material.
 
+Una malla cuyos GeomSubsets (familia `materialBind`) enlazan materiales
+propios se convierte un subset cada vez, cada uno con su material, y las caras
+que no reclama ningún subset con el de la malla; el log nombra el prim de cada
+subset. Sus gaussianas conservan el id Cryptomatte de la malla.
+
 La salida se escribe entera o no se escribe: como `.<nombre>.partial-<pid>.<ext>`
 en el mismo directorio, y renombrada a `-o` cuando está completa. Una
 conversión que falla no deja nada en `-o` -- o deja el fichero que ya había,

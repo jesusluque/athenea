@@ -474,6 +474,17 @@ nada compuesto para un frame.
 así que las caras de una nube convertida se corresponden con lo que habría
 dibujado Hydra.
 
+**Una malla de varios materiales.** Los GeomSubsets de la familia
+`materialBind` de una malla se leen con el material que enlaza cada uno
+(`StageMesh::subsets`) y se le pasan al builder, que dice en el dispositivo en
+qué subset está cada triángulo (`GpuMesh::triangleSubsets`). La conversión
+corre entonces una *pieza* cada vez: los triángulos de cada subset, listados
+en el orden de la malla por `athenea/usd/mesh2splat_subset` (una marca, una
+suma de prefijos, un scatter) y empaquetados como una malla propia (el
+`listed` de `mesh_pack`), con el material de ese subset; y los triángulos que
+no reclama ningún subset, con el de la malla. Las gaussianas de una pieza
+conservan el id Cryptomatte de la malla: el matte nombra prims como Hydra.
+
 La imagen de triángulos (`shaders/athenea/usd/mesh_pack.slang`) son seis `float4`
 por entrada: por cada una de las tres esquinas, la posición con la primera
 coordenada de textura en `w`, y luego la normal con la segunda en `w`. Un

@@ -383,6 +383,11 @@ recipe is §3.1 below.
 `--skinned` and a bake are refused together: a cloud that moves cannot carry
 light baked in one pose, so the conversion says so and keeps the material.
 
+A mesh whose GeomSubsets (`materialBind` family) bind materials of their own
+is converted a subset at a time, each with its material, and the faces no
+subset claims with the mesh's; the log names each subset's prim. Their
+gaussians keep the mesh's Cryptomatte id.
+
 The output is written whole or not at all: under `.<name>.partial-<pid>.<ext>`
 in the same directory, and renamed to `-o` once it is complete. A conversion
 that fails leaves nothing under `-o` -- or the file that was there before, as

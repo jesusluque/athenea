@@ -22,6 +22,7 @@
 #include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
+#include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usd/usdShade/connectableAPI.h>
@@ -835,14 +836,39 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         // not the first: carried as `st2`, and the conversion samples that map
         // by it. One second set; a third map's would have to be a third.
         StageMaterial material = materialOf(prim);
-        std::string second;
-        for (const StageTexture* texture : {&material.albedo, &material.normal, &material.metallicMap,
-                                            &material.roughnessMap, &material.opacityMap,
-                                            &material.displacementMap}) {
-            if (!texture->empty() && !texture->uvSet.empty() && texture->uvSet != primary) {
-                second = texture->uvSet;
-                break;
+        // A MESH OF SEVERAL MATERIALS: the GeomSubsets of its `materialBind`
+        // family, each binding its own. Read as Hydra reads them -- face
+        // indices, handed to the builder, which says on the device which
+        // subset each triangle is in -- so the conversion can run each with
+        // its own material instead of the whole mesh with the mesh's.
+        std::vector<StageSubset> subsets;
+        std::vector<VtIntArray>  subsetFaces;
+        for (const UsdGeomSubset& subset : UsdShadeMaterialBindingAPI(prim).GetMaterialBindSubsets()) {
+            TfToken element;
+            subset.GetElementTypeAttr().Get(&element);
+            if (!element.IsEmpty() && element != UsdGeomTokens->face) {
+                continue;
             }
+            VtIntArray faces;
+            if (!subset.GetIndicesAttr().Get(&faces, at) || faces.empty()) {
+                continue;
+            }
+            subsets.push_back({subset.GetPath().GetString(), materialOf(subset.GetPrim())});
+            subsetFaces.push_back(std::move(faces));
+        }
+        std::string second;
+        const auto secondOf = [&primary](const StageMaterial& one) {
+            for (const StageTexture* texture : {&one.albedo, &one.normal, &one.metallicMap, &one.roughnessMap,
+                                                &one.opacityMap, &one.displacementMap}) {
+                if (!texture->empty() && !texture->uvSet.empty() && texture->uvSet != primary) {
+                    return texture->uvSet;
+                }
+            }
+            return std::string();
+        };
+        second = secondOf(material);
+        for (size_t k = 0; k < subsets.size() && second.empty(); ++k) {
+            second = secondOf(subsets[k].material);
         }
         VtVec2fArray uvs2;
         VtIntArray   uv2Indices;
@@ -909,6 +935,9 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         input.smoothNormals =
             !hasNormals && scheme != UsdGeomTokens->none && scheme != UsdGeomTokens->bilinear;
         input.primvars = inputs;
+        for (const VtIntArray& faces : subsetFaces) {
+            input.subsets.emplace_back(faces.cdata(), faces.size());
+        }
 
         auto built = builder.build(input);
         if (!built) {
@@ -923,6 +952,7 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         out.displacementUnit = static_cast<float>(std::cbrt(std::abs(toWorld.GetDeterminant3())));
         out.material = std::move(material);
         out.uv2 = hasUvs2 ? second : std::string();
+        out.subsets = std::move(subsets);
         if (instances.instanced) {
             // One entry an instance, sharing the mesh on the device: its
             // buffers are counted references, so a copy costs no memory.
