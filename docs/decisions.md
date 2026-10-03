@@ -10963,3 +10963,31 @@ marble patch from 0.01999 to 0.01998. The grain is the direct light's, and
 mostly its harmonics': sixteen coefficients fitted from a few hundred paths,
 each of them a different direction and a sample of a sky with a sun in it.
 What does help the whole light, measured, is in step 4.
+
+### 3. More paths where the noise is
+
+`--bake-extra` (default 128) adds paths after a first pass of
+`--bake-samples` (default 128 now; 256 on average, as step 1 set). Each
+gaussian is weighed by `sqrt(v / (m^2) / c)` -- `v` the variance of a path's
+luminance, `m` its mean (floored at 0.01, so black is not infinitely noisy in
+relative terms), `c` the steps its paths took -- which is the allocation
+that minimises the summed relative variance of the means for a budget of
+paths (MARS, arXiv 2410.20429, with the gaussian as the cell), and given its
+share in whole passes of `--bake-pass-samples`, rounded up or down at random
+with the fraction as the odds, at most 16. A pass runs over the gaussians
+allotted at least that many, packed with their rays by a kernel
+(`bakeSelect`); the only number that crosses back is how many.
+
+Checked: `athenea_usd_tests "[adaptive]"`, made-up sums whose variance differs
+a hundredfold between two halves: 710 passes to the quiet half, 7409 to the
+noisy one (sqrt(100) = 10 predicted), 8119 of a budget of 8192.
+
+On the pawn, 128 + 128 adaptive against 256 uniform, both unfiltered (the
+4096-path bake as the truth; relMSE over the body, mean |difference| in a
+50 x 40 marble patch): 0.0084 against 0.0109, 0.0205 against 0.0200; and the
+whole frame against the mesh 0.0107 against 0.105. The paths go to the
+gaussians that a few bright paths make noisy -- the glass head, the gold
+ring -- which are what the whole frame's relMSE was made of (a dozen
+gaussians at 55 where the mesh reads 22), and not to the marble, whose grain
+is spread evenly. In 145.3 s against 132.6 s: ten passes, and a quarter of
+the gaussians traced again in each on average.

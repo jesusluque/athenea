@@ -393,7 +393,9 @@ recipe is §3.1 below.
 | `--simplify-levels` | integer, 1 to 5 | `3` | the largest block `--simplify` may merge is 2^this cells a side |
 | `--no-camera` | flag | camera added | |
 | `--no-bake` | flag | bake on | carry the material to be relit instead of baking the light in |
-| `--bake-samples` | integer | `256` | paths a gaussian, for a light bake and for a transfer alike |
+| `--bake-samples` | integer | `128` | paths every gaussian takes first; a transfer takes this plus `--bake-extra` |
+| `--bake-extra` | integer | `128` | paths a gaussian on average added after the first pass, shared out by sqrt(relative variance / cost) of what the first pass saw; 0 traces none |
+| `--bake-pass-samples` | integer, 1 to 4096 | `64` | paths each added pass gives the gaussians it is for; a gaussian gets at most 16 such passes |
 | `--bake-bounces` | integer | `3` | after the first hit |
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |

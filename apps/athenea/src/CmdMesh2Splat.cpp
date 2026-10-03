@@ -175,15 +175,20 @@ struct Options {
     /// Excludes the radiance bake, which keeps one sky's light instead.
     bool                     transfer = false;
     bool                     indirect = true;
-    /// PATHS A GAUSSIAN. 256 since every gaussian is blended in linear
-    /// light: the bake's noise is no longer hidden by an sRGB blend, and at
-    /// 64 the pawn's marble was grain (docs/decisions.md, "The bake's grain").
-    uint32_t                 bakeSamples = 256;
+    /// PATHS A GAUSSIAN, 256 on average since every gaussian is blended in
+    /// linear light: these everywhere, then `bakeExtra` more shared out
+    /// where the noise is (docs/decisions.md, "The bake's grain"). A transfer
+    /// takes the two together.
+    uint32_t                 bakeSamples = 128;
     uint32_t                 bakeBounces = 3;
     /// How much of the direction the light leaves in the cloud carries: 0 is
     /// a colour, 1 to 3 are harmonics. Two is where a highlight starts to
     /// look like one.
     uint32_t                 bakeDegree = 2;
+    /// ADAPTIVE: paths a gaussian on average added after the first pass,
+    /// where the relative variance per cost says they are worth most.
+    uint32_t                 bakeExtra = 128;
+    uint32_t                 bakePassSamples = 64;
     bool                     defaultLights = false;
     /// Carry the skeleton: the gaussians are built in the bind pose and each
     /// keeps the joints that move it.
@@ -1459,8 +1464,8 @@ private:
 public:
     /// The path tracer's answer at every gaussian, written into its colour
     /// (below, beside the free functions it replaced).
-    [[nodiscard]] Result<void> bake(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
-                                    bool defaultLights, uint32_t degree);
+    [[nodiscard]] Result<void> bake(const std::string& stage, double time, const usd::BakeOptions& bake,
+                                    bool defaultLights);
     /// How much of an environment reaches each gaussian, instead of the light.
     [[nodiscard]] Result<void> transfer(const std::string& stage, double time, uint32_t samples,
                                         uint32_t bounces, bool indirect, std::vector<float>& direct,
@@ -1582,16 +1587,26 @@ private:
 /// into a device buffer; and a kernel writes the answer into the records.
 /// What crosses back is the count of gaussians the bake found a surface
 /// under.
-Result<void> Converter::bake(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
-                             bool defaultLights, uint32_t degree) {
+Result<void> Converter::bake(const std::string& stage, double time, const usd::BakeOptions& options,
+                             bool defaultLights) {
     const auto started = std::chrono::steady_clock::now();
+    const uint32_t samples = options.samples;
+    const uint32_t bounces = options.bounces;
+    const uint32_t degree = options.degree;
     ATHENEA_TRY(spanRays());
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
     if (defaultLights) {
         ATHENEA_TRY((*renderer)->setDefaultLights(true));
     }
-    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, degree, false);
+    // THE BAKE IN TWO HALVES (StageRenderer::bakeSplitOnDevice): direct and
+    // indirect as sums, more paths where they are worth most, then the two
+    // fitted and added.
+    auto split = (*renderer)->bakeSplitOnDevice(rays_, count_, time, options);
+    if (!split) return std::move(split).error();
+    const double traced =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    auto baked = (*renderer)->combineBake(*split, rays_);
     if (!baked) return std::move(baked).error();
     auto lit = counter();
     if (!lit) return std::move(lit).error();
@@ -1620,6 +1635,13 @@ Result<void> Converter::bake(const std::string& stage, double time, uint32_t sam
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     std::printf("mesh2splat: baked %u of %u gaussians (%u paths each, %u bounces, degree %u) in %.0f ms\n", found,
                 count_, samples, bounces, degree, took);
+    if (split->extraPasses > 0) {
+        std::printf("mesh2splat: %llu more paths in %u adaptive passes of %u (%.1f a gaussian on average)\n",
+                    static_cast<unsigned long long>(split->extraPoints) * options.passSamples, split->extraPasses,
+                    options.passSamples,
+                    static_cast<double>(split->extraPoints) * options.passSamples / std::max(count_, 1u));
+    }
+    std::printf("mesh2splat: traced in %.0f ms\n", traced);
     if (found * 2 < count_) {
         std::fprintf(stderr,
                      "mesh2splat: more than half the gaussians found no surface under them; the bake "
@@ -1793,6 +1815,11 @@ void addMesh2Splat(CLI::App& app) {
                   "gaussian to keep");
     cmd->add_option("--bake-samples", o->bakeSamples, "paths a gaussian the bake traces");
     cmd->add_option("--bake-bounces", o->bakeBounces, "bounces after the first hit, in the bake");
+    cmd->add_option("--bake-extra", o->bakeExtra,
+                    "adaptive: paths a gaussian on average added after the first pass, shared out by "
+                    "sqrt(relative variance / cost)");
+    cmd->add_option("--bake-pass-samples", o->bakePassSamples, "paths a gaussian in each adaptive pass")
+        ->check(CLI::Range(1u, 4096u));
     cmd->add_option("--bake-degree", o->bakeDegree,
                     "harmonics the bake fits, 0 to 3: 0 is one colour a gaussian and cannot hold a "
                     "reflection, and each degree costs a pass over the paths");
@@ -1953,11 +1980,16 @@ void addMesh2Splat(CLI::App& app) {
                     // this one did. The colours stay the material's albedo and
                     // the frame lights them with whatever sky it has, so the same
                     // file is right under every HDRI rather than under one.
-                    ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples, o->bakeBounces, o->indirect,
+                    ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples + o->bakeExtra, o->bakeBounces, o->indirect,
                                                    transferDirect, transferIndirect, shadowBits));
                 } else if (o->bake) {
-                    ATHENEA_TRY(converter.bake(o->stage, o->time, o->bakeSamples, o->bakeBounces,
-                                               o->defaultLights, std::min(o->bakeDegree, 3u)));
+                    usd::BakeOptions bake;
+                    bake.samples = o->bakeSamples;
+                    bake.bounces = o->bakeBounces;
+                    bake.degree = std::min(o->bakeDegree, 3u);
+                    bake.extraSamples = o->bakeExtra;
+                    bake.passSamples = o->bakePassSamples;
+                    ATHENEA_TRY(converter.bake(o->stage, o->time, bake, o->defaultLights));
                 }
 
                 // THE RIG, WHEN THE CLOUD KEEPS ONE. Four joints a gaussian came

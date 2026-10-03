@@ -398,7 +398,9 @@ receta es §3.1.
 | `--simplify-levels` | entero, 1 a 5 | `3` | el bloque más grande que puede fundir `--simplify` tiene 2^esto celdas de lado |
 | `--no-camera` | flag | cámara añadida | |
 | `--no-bake` | flag | bake encendido | llevar el material para ser relit, en vez de hornear la luz |
-| `--bake-samples` | entero | `256` | caminos por gaussiana, en un bake de luz y en una transferencia |
+| `--bake-samples` | entero | `128` | caminos que toma primero cada gaussiana; una transferencia toma estos más `--bake-extra` |
+| `--bake-extra` | entero | `128` | caminos por gaussiana en promedio añadidos tras la primera pasada, repartidos por sqrt(varianza relativa / coste) de lo que vio la primera; 0 no traza ninguno |
+| `--bake-pass-samples` | entero, 1 a 4096 | `64` | caminos que da cada pasada añadida a las gaussianas para las que es; una gaussiana recibe como mucho 16 de ellas |
 | `--bake-bounces` | entero | `3` | tras el primer impacto |
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
