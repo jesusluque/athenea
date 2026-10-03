@@ -88,7 +88,7 @@ the ones above it.
 
 | Module | What it holds |
 |---|---|
-| core | `Result`, logging, Platform |
+| core | `Result`, logging, Platform, `Progress` (the progress line: a tracker, a throttle, a printer) |
 | ui | the viewer's panels as a description (`Controls.h`; `GaussianPanel.h` over the `GaussianReport` the engine fills), walked by `athenea view` and the iOS app |
 | sched | `FrameClock`: genlock PTP and ST 2059-1 alignment, timecode |
 | image | `Image`: float32 RGBA premultiplied, bottom-left origin, pluggable storage; what gpe and aofx exchange |

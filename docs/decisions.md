@@ -11084,3 +11084,51 @@ the metric's own noise of the mesh's.
 - The grain that is left is the harmonics': sixteen coefficients from 256
   paths. A filter that weighed each band by its own variance, rather than the
   luminance's, is the next thing to try.
+
+## Progress: what a long render says while it runs
+
+`athenea stage --technique rt --size 1920x1080 --path-total 2048
+--path-samples 8` ran for over an hour without a word: `executeUntilGathered`
+loops on passes, and nothing between the first line and `wrote` said how
+far it had got. Now a render, a bake and the denoiser report as they go.
+
+**Bookkeeping only.** A report is counts the renderer already holds -- the
+paths a pixel `PathTracer::accumulated` says, the points a bake batch
+traced, the frame of `--frames` -- handed over where the work it counts has
+already been waited for: after the frame's `batch.submit(true)` in
+`Engine::render`, after a bake batch's sums were added, before and after
+OIDN. No report adds a wait or a readback, so the image is the same with
+progress or without it (the GPU check below compares the two).
+
+**Where it is reported.** `Engine::setProgress` takes a
+`progress::Callback`, called on the render thread after each path traced
+pass whose total is above one (a viewport's frame of total one gathers
+nothing to report) and around the denoiser. `StageRenderer::setProgress`
+hands it to the engine and calls it from the bakes (`bakePoints`'s batches,
+`bakeSplitOnDevice`'s first pass and its adaptive passes). The engine also
+keeps the last pass's counts in atomics, which the delegate returns from
+`GetRenderStats` -- Hydra's `percentDone` and `athenea:path*` -- for a host
+that asks rather than listens: usdview, and Blender's add-on, whose
+progress bar is left for the blender branch to wire.
+
+**The line.** `core/Progress` formats `render 512/2048 paths/px (25.0%)
+pass 64/256 1m12s 7.11 paths/px/s ETA 3m36s`. A task's rate is taken from
+its first report on, so the stage's load and the first kernels' compile --
+which on that stage were tens of seconds -- are in the elapsed time and not
+in the rate, where they would hold the ETA high for the whole render. Done
+going backwards restarts a task's clock: a viewport whose camera moved. On
+a terminal the line is redrawn in place two times a second; when stderr is
+not a terminal it is a plain line every ten seconds, the finishing one
+always, so a farm's log of an hour-long frame is about 360 lines rather than
+one per pass. `--quiet` and `ATHENEA_PROGRESS=0` turn it off.
+
+**Bakes.** The first pass reports in points of the cloud, by batch; the
+adaptive passes report against the points `extraSamples * count /
+passSamples` allots, which is what the allotment spends at most, and close
+with what they did spend.
+
+**Not done.** The ETA of an adaptive frame is an upper bound: it may stop
+when every pixel's error is under the threshold, which no count predicts.
+The MCP server's tools and `athenea live` do not report; their callers
+time frames already.
+

@@ -47,6 +47,7 @@ el que corre el binario.
 | `AOFX_PLUGIN_PATH` | directorios extra de bundles AOFX, buscados antes que la ruta del sistema y antes que `--path`. |
 | `ATHENEA_BACKEND` | qué dispositivo abrir, como un orden separado por comas: `metal,cuda,vulkan,d3d12`. Las palabras desconocidas avisan y se saltan. |
 | `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina, diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
+| `ATHENEA_PROGRESS` | `0` apaga las líneas de progreso, como `--quiet` (§2.5). Sin definir, o con cualquier otro valor, quedan encendidas. |
 | `ATHENEA_SHADER_CACHE` | dónde se cachean los shaders compilados entre ejecuciones. Por defecto, un directorio bajo el de caché de la plataforma. Borrarla cuesta un primer frame lento. |
 
 Un binario compilado sin `ATHENEA_BUILD_VIEW` no tiene el subcomando `athenea view`:
@@ -288,12 +289,35 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más `Z` |
 | `--render-settings` | ruta de prim | sin poner | renderiza los productos de ese prim y para |
 | `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido |
+| `-q`, `--quiet` | flag | progreso encendido | sin líneas de progreso en stderr |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr
 athenea stage shot.usda --technique rt --path-total 256 --denoise -o shot.exr
 athenea stage shot.usda --render-settings /Render/Settings
 ```
+
+**Progreso.** Una imagen trazada por caminos (`--path-total` mayor que 1), su
+denoiser y los frames de `--frames` imprimen su progreso en stderr según
+avanzan, con las cuentas que el renderer ya tiene -- ninguna pasada espera por
+él, y la imagen es la misma con él o sin él. Una línea dice
+
+```
+frame 2/10  render 512/2048 paths/px (25.0%)  pass 64/256  1m12s  7.11 paths/px/s  ETA 3m36s
+```
+
+el frame (con `--frames` mayor que 1), los caminos por píxel reunidos del
+total y su proporción, la pasada de las que lleva el total, el tiempo desde
+que empezó el frame, el ritmo y lo que queda a ese ritmo. El ritmo se toma
+desde la primera pasada, así que la carga de la escena y la compilación de los
+kernels están en el tiempo pero no en el ritmo; con muestreo adaptativo el
+frame puede acabar antes del ETA. `denoise` informa de cuándo empieza y acaba
+OIDN, y `frames k/N` tras cada frame. En un terminal la línea se redibuja en
+su sitio, como mucho dos veces por segundo, y acaba en `done`; cuando stderr es
+un fichero o una tubería (un log, una granja), se escribe una línea normal
+como mucho cada 10 s, y la última siempre. `--quiet` o `ATHENEA_PROGRESS=0`
+lo apagan. Un host llega a las mismas cuentas por los render stats del
+delegate (§4.1).
 
 ### 2.6 `athenea view` — una ventana sobre una escena
 
@@ -413,6 +437,13 @@ receta es §3.1.
 | `--default-lights` | flag | apagado | un dome y un sol para el bake, en una escena sin luces |
 | `--time` | número | `0` | el instante en que se posa la escena y traza el bake |
 | `--path` | directorio ‹repetible› | ninguno | directorios extra de bundles AOFX |
+| `-q`, `--quiet` | flag | progreso encendido | sin líneas de progreso en stderr |
+
+El bake imprime su progreso en stderr como `athenea stage` (§2.5), en
+gaussianas trazadas: `bake` para la primera pasada, por lotes, y luego
+`bake extra` para las pasadas adaptativas, la pasada k de como mucho 16,
+frente a los puntos que reparte `--bake-extra` (una estimación: las pasadas
+paran donde para el reparto, y la última línea da lo gastado).
 
 `--skinned` y un bake se rechazan juntos: una nube que se mueve no puede
 llevar luz horneada en una pose, así que la conversión lo dice y conserva el
@@ -963,6 +994,13 @@ juntos, así que una variable encuentra los dos. El host ofrece entonces el
 renderer con su nombre, y los ajustes de abajo aparecen en su panel de render
 settings.
 
+La barra de progreso de un host lee los render stats del delegate
+(`HdRenderDelegate::GetRenderStats`): `percentDone` (0 a 100, la clave de
+Hydra), `athenea:pathAccumulated`, `athenea:pathTotal`, `athenea:pathPasses`
+y `athenea:converged`, tal como los dejó la última pasada trazada. Un programa
+que enlaza el motor usa `StageRenderer::setProgress`, un callback en el hilo
+de render tras cada pasada, el denoiser y los lotes de un bake.
+
 ### 4.2 Render settings
 
 Se autorizan en el namespace `athenea:` de un prim `UsdRenderSettings`, o los pone
@@ -1229,7 +1267,8 @@ según crece el motor.
 
 **View** lleva el frame: qué cámara (la libre, o cualquiera de la escena) y su
 focal, diafragma y enfoque; la técnica y, bajo `rt`, los caminos por frame,
-los rebotes, el denoiser y cuántos caminos por píxel lleva reunidos; las
+los rebotes, el denoiser y cuántos caminos por píxel lleva reunidos, con
+`--path-total` mayor que 1 la línea de progreso de §2.5 debajo; las
 sombras de nube y su densidad; las luces por defecto, ofrecidas solo donde la
 escena no tiene; la visibilidad de mallas; el combo **Output**; el view
 transform y la codificación de pantalla; la exposición; el obturador; la

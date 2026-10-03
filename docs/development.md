@@ -35,7 +35,7 @@ document, the header is right.
 
 | # | Module | Read this first |
 |---|---|---|
-| 1 | core | `core/Result.h` (the error convention), `core/Platform.h` (the whole OS surface), `core/Hash.h` |
+| 1 | core | `core/Result.h` (the error convention), `core/Platform.h` (the whole OS surface), `core/Hash.h`, `core/Progress.h` (what a long render or bake prints as it goes) |
 | 2 | ui | `ui/Controls.h` (what a panel is), `ui/ViewerPanels.h` (the viewer's panels), `ui/GaussianPanel.h` and `ui/GaussianReport.h` (the Gaussians panel, and the record the engine fills for it) — described once, drawn by `athenea view` and the iOS app |
 | 3 | sched | `sched/FrameClock.h` — genlock, PTP and ST 2059-1 alignment |
 | 4 | image | `image/Image.h` — the host-side image the AOFX host passes about |

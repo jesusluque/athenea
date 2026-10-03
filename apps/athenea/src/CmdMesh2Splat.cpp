@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "Commands.h"
+#include "athenea/core/Progress.h"
 #include "aofx/Effect.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
@@ -197,6 +198,8 @@ struct Options {
     /// whole light (which is where the grain was, measured on the pawn).
     bool                     bakeFilterIndirectOnly = false;
     bool                     defaultLights = false;
+    /// No progress lines on stderr (ATHENEA_PROGRESS=0 does the same).
+    bool                     quiet = false;
     /// Carry the skeleton: the gaussians are built in the bind pose and each
     /// keeps the joints that move it.
     bool                     skinned = false;
@@ -1610,10 +1613,16 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
     if (defaultLights) {
         ATHENEA_TRY((*renderer)->setDefaultLights(true));
     }
+    // PROGRESS of the bake's batches and its adaptive passes, on stderr.
+    progress::Printer printer(progress::modeForStderr(options_->quiet));
+    printer.begin("bake");
+    (*renderer)->setProgress(printer.callback());
     // THE BAKE IN TWO HALVES (StageRenderer::bakeSplitOnDevice): direct and
     // indirect as sums, more paths where they are worth most, the indirect
     // half filtered between neighbours, then the two added and fitted.
     auto split = (*renderer)->bakeSplitOnDevice(rays_, count_, time, options);
+    (*renderer)->setProgress({});
+    printer.close();
     if (!split) return std::move(split).error();
     const double traced =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
@@ -1911,6 +1920,7 @@ void addMesh2Splat(CLI::App& app) {
                     "the largest block --simplify may merge is 2^this cells a side")
         ->check(CLI::Range(1u, 5u));
     cmd->add_flag("!--no-camera", o->addCamera, "do not add a camera framing the cloud");
+    cmd->add_flag("-q,--quiet", o->quiet, "no progress lines on stderr while the bake traces");
     cmd->add_flag("!--no-bake", o->bake,
                   "do not bake: carry the material instead and let the scene's lights relight the "
                   "cloud every frame. Cheaper to convert, and the cloud can then be put under other "

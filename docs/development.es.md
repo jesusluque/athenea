@@ -35,7 +35,7 @@ coinciden, la cabecera tiene razón.
 
 | # | Módulo | Léete esto primero |
 |---|---|---|
-| 1 | core | `core/Result.h` (la convención de errores), `core/Platform.h` (toda la superficie del sistema operativo), `core/Hash.h` |
+| 1 | core | `core/Result.h` (la convención de errores), `core/Platform.h` (toda la superficie del sistema operativo), `core/Hash.h`, `core/Progress.h` (lo que imprime un render o un bake largo según avanza) |
 | 2 | ui | `ui/Controls.h` (qué es un panel), `ui/ViewerPanels.h` (los paneles del visor), `ui/GaussianPanel.h` y `ui/GaussianReport.h` (el panel Gaussians, y el registro que el motor rellena para él) — descritos una vez, dibujados por `athenea view` y la app de iOS |
 | 3 | sched | `sched/FrameClock.h` — genlock, PTP y alineamiento ST 2059-1 |
 | 4 | image | `image/Image.h` — la imagen de host que el host AOFX pasa de un lado a otro |

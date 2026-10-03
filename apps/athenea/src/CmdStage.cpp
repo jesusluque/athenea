@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "Commands.h"
+#include "athenea/core/Progress.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/io/Exr.h"
@@ -108,7 +109,7 @@ void addStage(CLI::App& app) {
         std::vector<std::string> variants;
         std::vector<std::string> splatOverrides;
         uint32_t lightSamples = 1;
-        bool denoise = false, frameAll = false, splatShadows = false, defaultLights = false;
+        bool denoise = false, frameAll = false, splatShadows = false, defaultLights = false, quiet = false;
         bool transferIndirect = true;
         bool splatReflections = false;
         bool cloudShadows = true;
@@ -188,6 +189,8 @@ void addStage(CLI::App& app) {
                     "a UsdRenderSettings prim: render its products, each var a layer of its EXR, and stop");
     cmd->add_option("--frames", o->frames,
                     "render this many times and print the time a frame takes (Hydra sync, drawing and the readback)");
+    cmd->add_flag("-q,--quiet", o->quiet,
+                  "no progress lines on stderr (paths gathered, the denoiser, frame k of N)");
     cmd->callback([o] {
         uint32_t width = 0, height = 0;
         if (std::sscanf(o->size.c_str(), "%ux%u", &width, &height) != 2) {
@@ -206,6 +209,10 @@ void addStage(CLI::App& app) {
         if (auto set = (*renderer)->setMeshVisibility(o->visibility); !set) {
             cli::fail(set.error());
         }
+        // PROGRESS on stderr: each path traced pass and the denoiser, as the
+        // engine reports them, and the frames of --frames.
+        progress::Printer printer(progress::modeForStderr(o->quiet));
+        (*renderer)->setProgress(printer.callback());
         (*renderer)->setPathSamples(o->pathSamples);
         (*renderer)->setPathBounces(o->pathBounces);
         (*renderer)->setPathTotal(o->pathTotal);
@@ -239,6 +246,7 @@ void addStage(CLI::App& app) {
             const std::filesystem::path directory =
                 o->output.empty() ? std::filesystem::path() : std::filesystem::path(o->output).parent_path();
             auto written = (*renderer)->renderProducts(o->renderSettings, o->time, directory);
+            printer.close();
             if (!written) {
                 cli::fail(written.error());
             }
@@ -315,7 +323,13 @@ void addStage(CLI::App& app) {
         }
         Result<usd::StageImage> image = Error(ErrorCode::InvalidArgument, "no image");
         std::vector<double> ms;
-        for (uint32_t frame = 0; frame < std::max(o->frames, uint32_t{1}); ++frame) {
+        const uint32_t frames = std::max(o->frames, uint32_t{1});
+        printer.begin("frames");
+        for (uint32_t frame = 0; frame < frames; ++frame) {
+            printer.begin("render");   // each frame's clock from its start
+            if (frames > 1) {
+                printer.setContext("frame " + std::to_string(frame + 1) + "/" + std::to_string(frames));
+            }
             const auto start = std::chrono::steady_clock::now();
             if (own) {
                 image = (*renderer)->render(*own, o->time, width, height, o->technique);
@@ -326,7 +340,19 @@ void addStage(CLI::App& app) {
                 break;
             }
             ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            if (frames > 1) {
+                progress::Report report;
+                report.task = "frames";
+                report.unit = "frames";
+                report.done = frame + 1;
+                report.total = frames;
+                report.finished = frame + 1 == frames;
+                printer.setContext({});
+                printer.report(report);
+            }
         }
+        (*renderer)->setProgress({});
+        printer.close();
         if (ms.size() > 1) {
             // The first frame loads the stage onto the device and compiles; the rest are steady.
             std::vector<double> steady(ms.begin() + 1, ms.end());

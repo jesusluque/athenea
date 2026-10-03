@@ -44,6 +44,7 @@
 #include "athenea/technique/Visibility.h"
 #include "athenea/core/Hash.h"
 #include "athenea/core/Platform.h"
+#include "athenea/core/Progress.h"
 #include "athenea/io/Exr.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/io/Readers.h"
@@ -2927,6 +2928,91 @@ TEST_CASE("a path traced frame accumulates over passes and starts again when it 
                 (*renderer)->pathAccumulated(), (*renderer)->pathConverged() ? "yes" : "no");
     CHECK((*renderer)->pathConverged());
     CHECK((*renderer)->pathAccumulated() < 100000);
+}
+
+// PROGRESS is bookkeeping: a report after each pass of a path traced image,
+// pass k of N with the paths gathered, the last one finished -- and the image
+// the same, to the code value, as the one drawn with nobody listening.
+TEST_CASE("a path traced image reports each pass and draws the same without listeners",
+          "[usd][gpu][mesh][path][progress]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    const fs::path path = scratch("rt_progress.usda");
+    {
+        std::ofstream out(path);
+        out << kSquareStage
+            << "def SphereLight \"Key\"\n{\n"
+               "    float inputs:radius = 0.4\n"
+               "    float inputs:intensity = 1\n"
+               "    bool inputs:normalize = 0\n"
+               "    double3 xformOp:translate = (0, 0, -3)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    }
+    const uint32_t w = 96;
+    const uint32_t h = 72;
+    const auto draw = [&](progress::Callback callback) -> usd::StageImage {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setPathSamples(4);
+        (*renderer)->setPathBounces(1);
+        (*renderer)->setPathTotal(32);
+        (*renderer)->setProgress(std::move(callback));
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        return std::move(*image);
+    };
+    std::vector<progress::Report> reports;
+    std::FILE* log = std::tmpfile();
+    REQUIRE(log != nullptr);
+    std::string printed;
+    {
+        progress::Printer printer(progress::Mode::Lines, log);
+        const usd::StageImage listened = draw([&](const progress::Report& report) {
+            reports.push_back(report);
+            printer.report(report);
+        });
+        printer.close();
+        std::rewind(log);
+        char buffer[512];
+        size_t n = 0;
+        while ((n = std::fread(buffer, 1, sizeof(buffer), log)) > 0) {
+            printed.append(buffer, n);
+        }
+        std::fclose(log);
+        std::printf("  %zu reports; printed:\n%s", reports.size(), printed.c_str());
+
+        // Eight passes of four, each counted once, the last one finished.
+        REQUIRE(reports.size() == 8);
+        for (size_t k = 0; k < reports.size(); ++k) {
+            CHECK(reports[k].task == "render");
+            CHECK(reports[k].pass == k + 1);
+            CHECK(reports[k].passes == 8);
+            CHECK(reports[k].done == 4 * (k + 1));
+            CHECK(reports[k].total == 32);
+            CHECK(reports[k].finished == (k + 1 == reports.size()));
+        }
+        CHECK(printed.find("render 32/32 paths/px (100.0%)  pass 8/8") != std::string::npos);
+
+        const usd::StageImage quiet = draw({});
+        REQUIRE(quiet.rgba.size() == listened.rgba.size());
+        const auto upload = [&](const usd::StageImage& image) {
+            gpu::BufferDesc desc;
+            desc.bytes = image.rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto made = gpu::Buffer::create(*gpu->device, desc, image.rgba.data());
+            REQUIRE(made);
+            return std::move(*made);
+        };
+        const gpu::Buffer a = upload(listened);
+        const gpu::Buffer b = upload(quiet);
+        auto same = render::compareImages(*gpu->library, a, b, w, h);
+        REQUIRE(same);
+        std::printf("  with and without progress: max %u, over2 %llu\n", same->max,
+                    static_cast<unsigned long long>(same->over2));
+        CHECK(same->max == 0);
+    }
 }
 
 // The denoiser from the engine: athenea:denoise runs OIDN over a path traced

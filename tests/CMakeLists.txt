@@ -306,6 +306,24 @@ set_tests_properties(emissive_conversions_render_like_the_mesh PROPERTIES
     FIXTURES_REQUIRED emissive_clouds
     LABELS gpe)
 
+# PROGRESS on stderr, as a log gets it (ctest's stderr is no terminal): a
+# small path traced stage drawn twice, every pass counted and each frame's
+# last line written; and nothing of it with --quiet.
+add_test(NAME stage_progress
+    COMMAND athenea stage ${CMAKE_CURRENT_SOURCE_DIR}/data/emissive_quad.usda --technique rt --size 64x48
+            --path-samples 2 --path-total 8 --frames 2 -o ${CMAKE_CURRENT_BINARY_DIR}/stage_progress.exr)
+set_tests_properties(stage_progress PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "frame 2/2  render 8/8 paths/px \\(100.0%\\)  pass 4/4 .* done"
+    LABELS gpe)
+add_test(NAME stage_progress_quiet
+    COMMAND athenea stage ${CMAKE_CURRENT_SOURCE_DIR}/data/emissive_quad.usda --technique rt --size 64x48
+            --path-samples 2 --path-total 8 --quiet -o ${CMAKE_CURRENT_BINARY_DIR}/stage_progress_quiet.exr)
+set_tests_properties(stage_progress_quiet PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FAIL_REGULAR_EXPRESSION "paths/px"
+    LABELS gpe)
+
 # WHAT A CONVERTED SURFACE COVERS: the planes of tests/data/coverage converted
 # once (the fixture), then measured against the meshes they came from.
 add_test(NAME mesh2splat_coverage
