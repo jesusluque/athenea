@@ -35,7 +35,7 @@ authored nearer a cloud overrides it."""
         interpolation = "constant"
     )
     color3f primvars:athenea:edit:tint = (1, 1, 1) (
-        doc = "Multiplies the colour of graded splats, in the encoded space the cloud was trained in."
+        doc = "Multiplies the colour of graded splats, in linear light."
         interpolation = "constant"
     )
     float primvars:athenea:edit:saturation = 1 (
@@ -185,6 +185,14 @@ the polish (the reflection) and nothing else. Off, the colours are an albedo
 and relighting lights them."""
         interpolation = "constant"
     )
+    bool primvars:athenea:splat:linear = 0 (
+        doc = """The colours are linear light (linear Rec.709, the working space),
+which is what `athenea mesh2splat`, an export and a bake write. Off, they are
+the sRGB a capture was trained in -- every trainer's -- and are decoded one
+gaussian at a time when drawn. Either way gaussians are blended in linear
+light, and sRGB appears only where an image is shown."""
+        interpolation = "constant"
+    )
     float primvars:athenea:splat:ior = 0 (
         doc = """The index of refraction its transmitting gaussians bend the sky
 by. 0 bends nothing and the transmitted half is the cosine average of what
@@ -227,6 +235,10 @@ object through the glass wants a ray, which this is not."""
     )
     normal3f[] primvars:athenea:splat:normal = [] (
         doc = """The shading normal of each gaussian, apart from its frame: which way the surface under it faced once its normal map turned it, in the field's own space (the one positions and orientations are in). One a gaussian. A relit gaussian is lit with it, put on the side of the disc the eye is on, while its frame keeps answering everything geometric -- its footprint, where a ray meets it -- so a conversion keeps the relief its mesh's normal map drew without the discs being turned. A skeleton that carries the cloud turns it as it turns the frame. A capture has none, and is relit with its shortest axis."""
+        interpolation = "vertex"
+    )
+    color3f[] primvars:athenea:splat:emission = [] (
+        doc = """The light each gaussian gives off by itself, linear radiance in the scene's units: what its material's emission was where it stood (standard_surface's `emission` times `emission_color`, OpenPBR's `emission_luminance` times `emission_color`, glTF's `emissive` times `emissive_strength`, UsdPreviewSurface's `emissiveColor`, each with its map). One a gaussian. A relit gaussian -- its colours an albedo, transferred or not -- adds it to what it reflects, unshadowed and the same from every side; one whose body was baked (`litBody`) does not, since the bake already holds it. It lights nothing else: an emissive gaussian is not a light. A capture has none."""
         interpolation = "vertex"
     )
 }

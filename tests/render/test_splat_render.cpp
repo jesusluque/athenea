@@ -169,7 +169,6 @@ TEST_CASE("the nearer splat wins from either side, and left stays left", "[rende
     render::RenderSettings settings;
     settings.width = 200;
     settings.height = 100;
-    settings.linearise = false;
 
     const auto centre = [&](const std::vector<float>& p) {
         const size_t at = (50 * 200 + 100) * 4;
@@ -1316,3 +1315,142 @@ TEST_CASE("a posed cloud refits its ray tracing structure and draws what a rebui
     CHECK(periodicRebuilds == 2);
 }
 
+namespace {
+
+/// The image `athenea/test/linear_blend` builds: two layers of constant
+/// colour, front over back, blended in linear light.
+gpu::Buffer analyticBlend(test::Gpu& gpu, uint32_t width, uint32_t height, std::array<float, 4> front,
+                          std::array<float, 4> back) {
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{width} * height * 16;
+    desc.elementBytes = 16;
+    desc.label = "analytic";
+    auto image = gpu::Buffer::create(*gpu.device, desc);
+    REQUIRE(image);
+    auto blend = gpu::ComputeKernel::create(*gpu.library, "athenea/test/linear_blend", "linearBlend");
+    if (!blend) FAIL(blend.error().toString());
+    gpu::CommandBatch batch(*gpu.device);
+    blend->dispatch(batch, {width * height, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["analytic"].setBinding(image->rhi());
+        rhi::ShaderCursor p = cursor["blendParams"];
+        p["front"].setData(front.data(), sizeof(front));
+        p["back"].setData(back.data(), sizeof(back));
+        p["width"].setData(width);
+        p["height"].setData(height);
+    });
+    REQUIRE(batch.submit(true));
+    return std::move(*image);
+}
+
+}   // namespace
+
+TEST_CASE("a converted cloud's splats are blended in linear light", "[render][gpu][linear]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    // Two discs facing the camera, each far wider than the frame -- a sigma
+    // of 1000 against a frame 5 units across at their distance, so a pixel
+    // sees each at its peak opacity to five decimals -- of half opacity and
+    // colours in linear light, as a conversion writes them (LinearLight).
+    // Front red, back blue: a mix that is far from its sRGB counterpart.
+    const std::array<float, 3> red{0.8F, 0.05F, 0.05F};
+    const std::array<float, 3> blue{0.05F, 0.05F, 0.8F};
+    CloudBuilder b;
+    b.add(0.0F, 0.0F, 1.0F, 0.5F, 1000.0F, 1000.0F, 0.01F, {1, 0, 0, 0}, {0.5F, 0.5F, 0.5F});
+    b.add(0.0F, 0.0F, -1.0F, 0.5F, 1000.0F, 1000.0F, 0.01F, {1, 0, 0, 0}, {0.5F, 0.5F, 0.5F});
+    b.raw.encoding.colour = io::SplatEncoding::Colour::LinearLight;
+    for (uint32_t k = 0; k < 2; ++k) {
+        const std::array<float, 3>& c = k == 0 ? red : blue;
+        for (uint32_t ch = 0; ch < 3; ++ch) {
+            b.raw.records[size_t{k} * b.raw.encoding.floatsPerRecord + b.raw.encoding.dc0 + ch] = c[ch];
+        }
+    }
+    auto cloud = h->loader.upload(b.raw);
+    REQUIRE(cloud);
+    const std::vector<render::SplatInstance> instances{{&*cloud, render::Mat4::identity()}};
+    const render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 10.0}, {0.0, 0.0, 0.0});
+    render::RenderSettings settings;
+    settings.width = 64;
+    settings.height = 48;
+    const gpu::Buffer analytic = analyticBlend(*gpu, settings.width, settings.height,
+                                               {red[0], red[1], red[2], 0.5F}, {blue[0], blue[1], blue[2], 0.5F});
+    const auto against = [&](const render::RenderTargets& drawn, const char* route) {
+        auto diff = render::compareImages(*gpu->library, drawn.colour, analytic, settings.width, settings.height);
+        if (!diff) FAIL(diff.error().toString());
+        std::printf("  %s against the linear mix: p99 %u, max %u, %llu of %llu pixels over 2\n", route, diff->p99,
+                    diff->max, static_cast<unsigned long long>(diff->over2),
+                    static_cast<unsigned long long>(diff->pixels));
+        return *diff;
+    };
+    // Blended in sRGB and linearised at the end, as clouds were, the red
+    // channel is 0.32 where the mix is 0.41: 15 codes off at every pixel.
+    render::RenderTargets rasterised, reference;
+    REQUIRE(h->raster.render(camera, instances, settings, rasterised));
+    const auto raster = against(rasterised, "rasteriser");
+    CHECK(raster.max <= 1);
+    auto overflow = h->reference.render(camera, instances, settings, reference);
+    REQUIRE(overflow);
+    const auto truth = against(reference, "reference");
+    CHECK(truth.max <= 1);
+    if (gpu->device->caps().rayQuery && gpu->device->caps().accelerationStructure) {
+        auto tracer = render::GaussianRayTracer::create(*gpu->library);
+        if (!tracer) FAIL(tracer.error().toString());
+        render::RenderTargets traced;
+        REQUIRE(tracer->render(camera, instances, settings, traced));
+        const auto rays = against(traced, "ray tracer");
+        CHECK(rays.max <= 1);
+    }
+}
+
+TEST_CASE("a capture keeps its look when its splats are blended in linear light", "[render][gpu][linear]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    // A capture: sRGB colours, as every trainer writes them. Drawn now, each
+    // splat is made linear before the blend.
+    CloudBuilder built = randomCloud(3000, 7);
+    auto capture = h->loader.upload(built.raw);
+    REQUIRE(capture);
+    CHECK_FALSE(capture->linear);
+    // What it was drawn as before: the same sRGB values blended as they are
+    // (a cloud that says its colours are light is taken as it is) and the
+    // finished contribution taken through the curve, which over nothing is
+    // exactly what the blend wrote then.
+    built.raw.linear = true;
+    auto asItWas = h->loader.upload(built.raw);
+    REQUIRE(asItWas);
+    const render::Camera camera = render::Camera::lookingAt({1.0, 2.0, 6.0}, {0.0, 0.0, 0.0});
+    render::RenderSettings settings;
+    settings.width = 250;
+    settings.height = 190;
+    render::RenderTargets now, before;
+    const std::vector<render::SplatInstance> nowList{{&*capture, render::Mat4::identity()}};
+    const std::vector<render::SplatInstance> beforeList{{&*asItWas, render::Mat4::identity()}};
+    REQUIRE(h->raster.render(camera, nowList, settings, now));
+    REQUIRE(h->raster.render(camera, beforeList, settings, before));
+    {
+        auto finish = gpu::ComputeKernel::create(*gpu->library, "athenea/test/linear_blend", "srgbFinish");
+        if (!finish) FAIL(finish.error().toString());
+        const uint32_t pixels = settings.width * settings.height;
+        gpu::CommandBatch batch(*gpu->device);
+        finish->dispatch(batch, {pixels, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["finished"].setBinding(before.colour.rhi());
+            cursor["finishParams"]["pixels"].setData(pixels);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    auto diff = render::compareImages(*gpu->library, now.colour, before.colour, settings.width, settings.height);
+    if (!diff) FAIL(diff.error().toString());
+    std::printf("  a capture, linear blend against the sRGB blend: p99 %u, max %u, %llu of %llu pixels over 2\n",
+                diff->p99, diff->max, static_cast<unsigned long long>(diff->over2),
+                static_cast<unsigned long long>(diff->pixels));
+    // Where one splat covers a pixel the two are the same; where several
+    // overlap, the mean of their light is brighter than the light of their
+    // mean (the curve is convex). This cloud is the worst case for it --
+    // every splat a random colour, so a pixel mixes black with white, which
+    // is 128 codes blended encoded and 188 blended as light -- and measured
+    // p99 51, max 63. Real captures, whose neighbours agree, move less:
+    // decisions.md has train, drjohnson and a beetle at p99 55, 24 and 14
+    // over far fewer pixels. The bound is the measurement with a margin of a
+    // few codes: what it guards is that the decode stays per splat and sRGB.
+    CHECK(diff->p99 <= 55);
+    CHECK(diff->max <= 70);
+}

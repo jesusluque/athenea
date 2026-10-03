@@ -74,10 +74,8 @@ public struct SegmentResult {
 /// background, premultiplied, with the depth the query settled on.
 public void writeSegment(uint px, uint py, SegmentResult gathered) {
     const float coverage = 1.0 - gathered.transmittance;
-    float3 linearRgb = gathered.radiance;
-    if (params.linearise != 0 && coverage > 1e-6) {
-        linearRgb = srgbToLinear(gathered.radiance / coverage) * coverage;
-    }
+    // Linear already: rt_shade made every particle's colour light.
+    const float3 linearRgb = gathered.radiance;
     const uint at = py * params.width + px;
     colour[at] = float4(linearRgb + gathered.transmittance * float3(params.bgR, params.bgG, params.bgB),
                         coverage + gathered.transmittance * params.bgA);

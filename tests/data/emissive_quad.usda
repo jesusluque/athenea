@@ -1,0 +1,50 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# A quad that gives off light, for `athenea mesh2splat` with --no-bake,
+# --transfer and the radiance bake: OpenPBR's `emission_luminance` times
+# `emission_color`, a radiance of (1.2, 0.6, 0.3), under a dome dim enough
+# that what the quad gives off is most of what it shows. Its converted cloud
+# must render as the mesh does (tests/usd/test_usd.cpp, "[emissive_conversion]").
+def Xform "World"
+{
+    def Mesh "Quad" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Lamp>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Lamp"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Lamp/Surface.outputs:out>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                color3f inputs:base_color = (0.5, 0.5, 0.5)
+                float inputs:specular_weight = 0
+                float inputs:emission_luminance = 2
+                color3f inputs:emission_color = (0.6, 0.3, 0.15)
+                token outputs:out
+            }
+        }
+    }
+
+    def DomeLight "Sky"
+    {
+        float inputs:intensity = 0.1
+    }
+}

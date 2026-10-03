@@ -104,9 +104,8 @@ void transferCheck(uint3 tid: SV_DispatchThreadID) {
 /// bake because that is what it measured, the transfer because that is what
 /// it is for.
 ///
-/// The bake's value is decoded exactly as a cloud decodes it: the constant
-/// term is stored shifted (`colour = 0.5 + kSH0 * dc`) and in the space a
-/// cloud is blended in, so it is taken back to linear light here.
+/// The bake's value is read exactly as a cloud reads it: the constant term is
+/// stored shifted (`colour = 0.5 + kSH0 * dc`), in linear light.
 struct TransferBakeParams {
     uint  count;
     uint  entries;       ///< float4 a point in `baked`; the coverage is the one before last
@@ -145,9 +144,9 @@ void transferAgainstBake(uint3 tid: SV_DispatchThreadID) {
         recombined += baked[base].rgb * skyFirst;
     }
     recombined *= bakeParams.albedo;
-    // The bake, decoded as a cloud decodes it and taken back to linear light.
+    // The bake, read as a cloud reads it: linear light.
     const float3 shifted = float3(0.5) + float3(0.28209479177387814) * radianceBaked[k].rgb;
-    const float3 fromBake = srgbToLinear(max(shifted, float3(0.0)));
+    const float3 fromBake = max(shifted, float3(0.0));
     const float a = (recombined.r + recombined.g + recombined.b) / 3.0;
     const float b = (fromBake.r + fromBake.g + fromBake.b) / 3.0;
     const float relative = abs(a - b) / max(b, 1.0e-6);

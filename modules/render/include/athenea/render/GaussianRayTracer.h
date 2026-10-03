@@ -165,7 +165,7 @@ private:
     [[nodiscard]] Result<void> refitBvh(const Cloud& cloud);
     [[nodiscard]] Result<void> prepareFrame(std::span<const SplatInstance> instances,
                                             const Vec3& eyeWorld, uint32_t shLimit,
-                                            const SplatLights* lights, bool linearise);
+                                            const SplatLights* lights);
     [[nodiscard]] const Cloud* find(const scene::GpuSplats& splats) const;
 
     gpu::Device*       device_ = nullptr;

@@ -118,7 +118,7 @@ TEST_CASE("usdImagingGL drives the plugin, and a shutter opened after a frame bl
                "    float focalLength = 35\n"
                "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
                "    float2 clippingRange = (0.1, 1000)\n}\n"
-               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
+               "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 3\n    bool inputs:shadow:enable = 0\n}\n";
     }
     const uint32_t w = 160, h = 120;
     const auto upload = [&](const std::vector<float>& rgba) {

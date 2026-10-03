@@ -34,6 +34,7 @@ void addInfo(CLI::App& app) {
         }
         const gpu::Caps& caps = (*device)->caps();
         const auto yes = [](bool b) { return b ? "yes" : "no"; };
+        std::printf("athenea        %s\n", ATHENEA_VERSION);
         std::printf("backend        %s\n", gpu::toString((*device)->backend()));
         std::printf("api            %s\n", caps.apiName.c_str());
         std::printf("adapter        %s\n", caps.adapterName.c_str());

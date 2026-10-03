@@ -40,19 +40,6 @@ import athenea.common.packing;
 // declares no binding, which is what lets a module below material import it.
 import athenea.material.microfacet;
 
-/// Relit light put where the blend expects a splat's colour.
-///
-/// A cloud is blended in the encoded space it was trained in and the finished
-/// pixel is linearised (frame.slang). Relighting does not produce a trained
-/// colour, it produces light -- so it goes in encoded, and the blend's own
-/// linearise gives back exactly this. Without it every relit cloud was put
-/// through the sRGB curve a second time: 0.5 came out 0.214 and a dark
-/// material, where the curve is steepest, came out ten times too dark. That
-/// is what made a converted mesh black.
-public float3 relitForBlend(float3 lit, bool linearising) {
-    return linearising ? linearToSrgb(lit) : lit;
-}
-
 /// What a splat reflects with.
 /// One value of a gaussian's transfer, f16 pairs, `base` counted in halves.
 public float transferAt(StructuredBuffer<uint> transfer, uint base, uint k) {
@@ -155,6 +142,13 @@ public struct SplatSurface {
     /// polish -- the reflection, which is the part of a surface that one
     /// colour cannot hold and which a bake therefore left out.
     public bool   lit;
+    /// WHAT THE SURFACE GIVES OFF BY ITSELF, linear radiance (the cloud's
+    /// `emission`, a converted lamp shade or screen; zero where it has none).
+    /// Added as it is: no light reaches it and no shadow takes it away, and
+    /// it is the same from both sides of the disc. Not where the body is
+    /// `lit` -- a radiance bake met the emission at its first vertex and
+    /// holds it already, and adding it again would be it twice.
+    public float3 emission;
 };
 
 /// GGX, as the surface lobes write it: D, Smith's height-correlated V, and
@@ -630,9 +624,9 @@ public float3 relitSplat(SplatSurface s, float3 wo, StructuredBuffer<LightRecord
                          StructuredBuffer<float4> envSh, StructuredBuffer<uint> envOfLight,
                          uint envLights, uint envBaseSide, StructuredBuffer<float4> envSun,
                          StructuredBuffer<uint> transfer, bool withIndirect) {
-    // A baked body starts from the light it already carries; an albedo starts
-    // from nothing and gathers.
-    float3 lit = s.lit ? s.albedo : float3(0.0);
+    // A baked body starts from the light it already carries -- its emission
+    // in it; an albedo starts from what it gives off by itself and gathers.
+    float3 lit = s.lit ? s.albedo : s.emission;
     for (uint k = 0; k < lightCount; ++k) {
         const LightRecord light = lights[k];
         // Light linking reaches a cloud as it reaches a mesh: by one bit.
