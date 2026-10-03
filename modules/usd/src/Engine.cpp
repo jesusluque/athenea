@@ -700,6 +700,14 @@ void Engine::setPathBounces(uint32_t bounces) {
     }
 }
 
+void Engine::setPathLimits(const technique::PathLimits& limits) {
+    // It changes what a path gathers, so the mean starts again.
+    const bool changed = pathRoulette_.exchange(limits.rouletteDepth) != limits.rouletteDepth;
+    if (changed) {
+        revision_.fetch_add(1);
+    }
+}
+
 void Engine::setShutter(double open, double close) {
     const bool changed = shutterOpen_.exchange(open) != open || shutterClose_.exchange(close) != close;
     if (changed) {
@@ -2900,6 +2908,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             technique::PathSettings paths;
             paths.samples = pathSamples_.load();
             paths.bounces = pathBounces_.load();
+            paths.limits.rouletteDepth = pathRoulette_.load();
             paths.adaptive = pathAdaptive_.load();
             paths.mis = pathMis_.load();
             paths.errorTarget = pathError_.load();

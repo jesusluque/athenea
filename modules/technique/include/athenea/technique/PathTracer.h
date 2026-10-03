@@ -25,6 +25,7 @@
 #include "athenea/render/Camera.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/technique/MaterialPrograms.h"
+#include "athenea/technique/PathLimits.h"
 #include "athenea/technique/Visibility.h"
 
 namespace athenea::gpu {
@@ -53,6 +54,8 @@ struct PathSettings {
     /// by the power heuristic (false: next event estimation alone lights a
     /// surface, as before MIS; a comparison's other half).
     bool     mis = true;
+    /// Roulette and the bounce limits by kind.
+    PathLimits limits;
 };
 
 /// How much of a frame has converged, for the adaptive gate: pixels the

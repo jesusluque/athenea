@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "athenea/core/Result.h"
+#include "athenea/technique/PathLimits.h"
 
 namespace athenea::view {
 
@@ -39,6 +40,7 @@ struct ViewOptions {
     uint32_t              pathSamples = 1;          ///< paths a pixel each frame
     uint32_t              pathBounces = 4;          ///< bounces after the first hit
     uint32_t              pathTotal = 64;           ///< paths a pixel it counts as converged at
+    technique::PathLimits pathLimits;               ///< Russian roulette
     bool                  denoise = false;          ///< denoise once converged
     /// A sky and a sun in the session layer when the stage authors no lights
     /// (StageRenderer::setDefaultLights). Without them a stage like the chess

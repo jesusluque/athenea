@@ -108,6 +108,7 @@ void addStage(CLI::App& app) {
         std::vector<std::string> variants;
         std::vector<std::string> splatOverrides;
         uint32_t lightSamples = 1;
+        technique::PathLimits pathLimits;
         bool denoise = false, frameAll = false, splatShadows = false, defaultLights = false;
         bool transferIndirect = true;
         bool splatReflections = false;
@@ -128,6 +129,8 @@ void addStage(CLI::App& app) {
     cmd->add_option("--path-samples", o->pathSamples, "rt: paths a pixel each pass");
     cmd->add_option("--path-bounces", o->pathBounces, "rt: bounces after the first hit");
     cmd->add_option("--path-total", o->pathTotal, "rt: paths a pixel the image is drawn until it holds");
+    cmd->add_option("--roulette-depth", o->pathLimits.rouletteDepth,
+                    "rt: bounces before Russian roulette may end a dim path (0: never)");
     cmd->add_flag("--denoise", o->denoise, "rt: denoise the image once it holds its total (OIDN)");
     cmd->add_flag("--default-lights", o->defaultLights,
                   "a dome and a sun in the session layer, for a stage that brings no lights "
@@ -208,6 +211,7 @@ void addStage(CLI::App& app) {
         }
         (*renderer)->setPathSamples(o->pathSamples);
         (*renderer)->setPathBounces(o->pathBounces);
+        (*renderer)->setPathLimits(o->pathLimits);
         (*renderer)->setPathTotal(o->pathTotal);
         (*renderer)->setDenoise(o->denoise);
         (*renderer)->setMotionBuckets(o->motionBuckets);

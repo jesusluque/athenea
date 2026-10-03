@@ -577,6 +577,7 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     bool denoise = options.denoise;
     stage.setPathSamples(static_cast<uint32_t>(pathSamples));
     stage.setPathBounces(static_cast<uint32_t>(pathBounces));
+    stage.setPathLimits(options.pathLimits);
     stage.setPathTotal(static_cast<uint32_t>(pathTotal));
     stage.setDenoise(denoise);
     // A camera of the viewer's own authors no shutter, so this is how one is

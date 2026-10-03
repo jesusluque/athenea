@@ -1163,6 +1163,8 @@ the density is read back from the same sums,
     pdf = p(row) p(column | row) width height / (2 pi^2 sin(theta))
 
 so what MIS weighs a hit by is what the sample was drawn with.
+Proposal 021's first step (the path tracer section, "Fewer rays and less
+noise a path").
 
 - **Built on the device** (`light/dome_cdf.slang`), every time the light
   table is set: one thread a row sums its texels in order, one thread sums
@@ -1200,6 +1202,10 @@ a million samples each), a cone in its own solid angle and an area light on
 its own surface; a round trip checks the mapping without statistics; and
 `lightCdf` checks the table itself -- every sum non-decreasing from zero,
 each step of the marginal its row's total.
+And in the path tracer, with MIS: a plane under a sky with a sun in it, one
+bounce, gathered by the image's distribution and around the surface -- at
+4096 paths the frames' means must agree within 5e-3, and at 16 paths the
+image's must be the less noisy against the deep frame.
 
 ### The cylinder, added with M6
 
@@ -2041,6 +2047,54 @@ as a light against 11.75 by the material's rays alone.
 under motion at their shutter slice (the table is the frame's). A table of
 millions of triangles accumulates in float: a triangle whose power is below
 the running total's precision is sampled with a rounded probability.
+
+### Fewer rays and less noise a path (proposal 021)
+
+The mesh path tracer took 100 minutes for 2048 paths a pixel of the
+Corvette (2.1 M triangles, 38 materials, an interior HDRI, 8 bounces, 1080p,
+M5 Pro) where Cycles on six CPU threads takes 28. Proposal 021 put the
+renderers' answers against this one in order; the first three steps are in:
+the dome sampled by its image (the lights section, "The dome"), Russian
+roulette, and bounce limits by kind. The speed is measured after, against
+that baseline, with `athenea stage --frames` on the release preset.
+
+**Russian roulette** (`technique::PathLimits::rouletteDepth`,
+`athenea:rouletteDepth`, `--roulette-depth`), after pbrt-v4's `rrBeta`
+(Apache-2.0) and Falcor's PathTracer (BSD-3): past that many bounces a path
+whose throughput has fallen below one survives with probability its
+largest channel and is divided by it. The mean is unchanged -- what survives,
+weighed up, is what would have gone on -- and a path that keeps its energy
+(a white furnace, a mirror) is never cut. After a lobe's sample and before
+its ray, and after a medium's collision before its phase sample. Three by
+default, so the default of one bounce never meets it and a frame of eight
+does. The proposal's estimate was 20-40% fewer rays at eight bounces; the
+measured number goes here.
+
+- **Checked**: the closed emissive shell's series stays exact with roulette
+  off (the test sets it so, being exact), and with it on at depths 1 and 3
+  over 8 bounces the frame's mean is the series within 5e-3, a bound well
+  outside the frame's own relative error (3072 pixels x 256 paths).
+- **Roulette and MIS**: next event estimation's weight assumes the
+  material's ray goes on; roulette ends that ray with probability 1 - q and
+  weighs the survivors by 1/q, so in expectation it does go on, and the
+  weights still sum to one.
+
+**What each gain needs of the platform**, from the proposal:
+
+| Step | Portable (Metal, CUDA) | Apple Silicon only | Discrete GPU only (L4) |
+|---|---|---|---|
+| 1 the dome's own distribution | the same gain a path on both: it is statistics | -- | -- |
+| 2 Russian roulette | the same on both; on the L4 perhaps more, if its traversal costs more (to measure) | -- | -- |
+| 3 bounce limits by kind | the same on both | -- | -- |
+| 4 shadows through thin glass | the same on both | -- | -- |
+| 5 texture LOD past the first hit, 6 robust ray offsets | the same on both | -- | -- |
+| 7 compacting the BLAS/TLAS | on both, if slang-rhi exposes it | `PreferFastIntersection` (Metal) | the Vulkan/DXR equivalent: to measure on the L4 |
+| 8 wavefront with material queues | on both (atomics and scans, no SER) | -- | -- |
+| 9 a software SAH BVH | on both | -- | -- |
+| shared buffers, CPU reads without staging | -- | helps profiling and preprocessing, not the render | not applicable |
+
+Everything in 1-3 is Slang compute or the kernel's own loop: no TBDR, no
+tile memory, no NVIDIA SER.
 
 ## Complete USD: animation and movement (M7)
 

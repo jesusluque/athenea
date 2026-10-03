@@ -336,6 +336,11 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     mis.name = "Weigh light sampling and material sampling (MIS) (rt)";
     mis.key = _atheneaSettings->pathMis;
     mis.defaultValue = VtValue(true);
+    // When a path stops before its total of bounces (technique::PathLimits).
+    HdRenderSettingDescriptor roulette;
+    roulette.name = "Russian roulette past this many bounces, 0 none (rt)";
+    roulette.key = TfToken("athenea:rouletteDepth");
+    roulette.defaultValue = VtValue(3);
     HdRenderSettingDescriptor motion;
     motion.name = "Motion blur: shutter slices, 1 to 8 (rt)";
     motion.key = _atheneaSettings->motionBuckets;
@@ -377,7 +382,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudDensity.defaultValue = VtValue(1.0f);
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        motion,      transferIndirect, reflectCloud, splatShadows,
-            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias};
+            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, roulette};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -470,6 +475,12 @@ uint32_t HdAtheneaRenderDelegate::GetPathSamples() const {
 
 uint32_t HdAtheneaRenderDelegate::GetPathBounces() const {
     return _UintSetting(GetRenderSetting(_atheneaSettings->pathBounces), 1, 0);
+}
+
+athenea::technique::PathLimits HdAtheneaRenderDelegate::GetPathLimits() const {
+    athenea::technique::PathLimits limits;
+    limits.rouletteDepth = _UintSetting(GetRenderSetting(TfToken("athenea:rouletteDepth")), 3, 0);
+    return limits;
 }
 
 uint32_t HdAtheneaRenderDelegate::GetMotionBuckets() const {

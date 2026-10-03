@@ -49,6 +49,29 @@ std::filesystem::path scratch(const std::string& name) {
     return dir / name;
 }
 
+/// A sky that varies: dark everywhere but one bright patch, a sun, to the
+/// +z side of the dome a little below its horizon. A flat image is better
+/// served by the cosine and takes that path instead, so only an image like
+/// this one exercises the dome's own distribution at all.
+void writeSunDome(const std::filesystem::path& png, uint32_t w, uint32_t h) {
+    std::filesystem::remove(png);
+    std::vector<uint32_t> texels(size_t{w} * h, 0xFF101010u);   // ABGR, a dim sky
+    for (uint32_t y = 10; y < 14; ++y) {
+        for (uint32_t x = w / 2; x < w / 2 + 6 && x < w; ++x) {
+            texels[y * w + x] = 0xFFFFFFFFu;   // the sun
+        }
+    }
+    pxr::HioImageSharedPtr made = pxr::HioImage::OpenForWriting(png.string());
+    REQUIRE(made);
+    pxr::HioImage::StorageSpec spec;
+    spec.width = static_cast<int>(w);
+    spec.height = static_cast<int>(h);
+    spec.depth = 1;
+    spec.format = pxr::HioFormatUNorm8Vec4;
+    spec.data = texels.data();
+    REQUIRE(made->Write(spec));
+}
+
 std::shared_ptr<const geom::GpuMesh> lambertSquare(geom::MeshBuilder& builder, float half, float shiftX = 0.0F,
                                                    uint64_t topology = 0) {
     static std::vector<float> points;
@@ -507,24 +530,7 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     const uint32_t w = GENERATE(32u, 64u);
     const uint32_t h = 32;
     const std::filesystem::path png = scratch(w == h ? "dome_sun.png" : "dome_sun_wide.png");
-    {
-        std::filesystem::remove(png);
-        std::vector<uint32_t> texels(size_t{w} * h, 0xFF101010u);   // ABGR, a dim sky
-        for (uint32_t y = 10; y < 14; ++y) {
-            for (uint32_t x = w / 2; x < w / 2 + 6 && x < w; ++x) {
-                texels[y * w + x] = 0xFFFFFFFFu;   // the sun
-            }
-        }
-        pxr::HioImageSharedPtr made = pxr::HioImage::OpenForWriting(png.string());
-        REQUIRE(made);
-        pxr::HioImage::StorageSpec spec;
-        spec.width = static_cast<int>(w);
-        spec.height = static_cast<int>(h);
-        spec.depth = 1;
-        spec.format = pxr::HioFormatUNorm8Vec4;
-        spec.data = texels.data();
-        REQUIRE(made->Write(spec));
-    }
+    writeSunDome(png, w, h);
     auto textures = material::TextureStore::create(*gpu->library);
     if (!textures) FAIL(textures.error().toString());
     light::Light lamp;
@@ -1646,6 +1652,141 @@ TEST_CASE("a white furnace gathers the same light path traced as by next event e
     CHECK(diff->maxRelative < 0.01);
 }
 
+// A DOME SAMPLED BY ITS IMAGE LIGHTS A PLANE AS THE COSINE DOES, WITH LESS
+// NOISE. The same plane under the same sun-in-a-sky, path traced with one
+// bounce -- next event estimation and the material's ray weighed by MIS
+// against each other -- once with the dome's distribution (the table given
+// the texture store) and once around the surface (not given it). Converged,
+// the two must agree: the plane is lit alike everywhere, so the frames' means
+// are the measure, at a noise bound of the frames' own. At a low count the
+// image's distribution must be the less noisy of the two, which is what it
+// is for.
+TEST_CASE("a dome sampled by its image lights a plane as the cosine does, with less noise",
+          "[technique][path][mis][dome]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs rasterisation and acceleration structures");
+    }
+    std::vector<std::filesystem::path> shaderPaths;
+    for (const std::string& path : gpu->device->shaderSearchPaths()) {
+        shaderPaths.emplace_back(path);
+    }
+    auto compiler = material::MaterialCompiler::create({ATHENEA_MATERIALX_ROOT}, shaderPaths);
+    auto textures = material::TextureStore::create(*gpu->library);
+    auto builder = geom::MeshBuilder::create(*gpu->library);
+    auto scene = world::GpuScene::create(*gpu->library);
+    auto accel = world::RayTracingScene::create(*gpu->library);
+    auto raster = technique::VisibilityRaster::create(*gpu->library);
+    auto programs = technique::MaterialPrograms::create(*gpu->library);
+    auto tracer = technique::PathTracer::create(*gpu->library);
+    auto imaged = light::LightTable::create(*gpu->library);
+    auto cosine = light::LightTable::create(*gpu->library);
+    if (!compiler) FAIL(compiler.error().toString());
+    if (!textures) FAIL(textures.error().toString());
+    if (!builder) FAIL(builder.error().toString());
+    if (!scene) FAIL(scene.error().toString());
+    if (!accel) FAIL(accel.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!programs) FAIL(programs.error().toString());
+    if (!tracer) FAIL(tracer.error().toString());
+    if (!imaged) FAIL(imaged.error().toString());
+    if (!cosine) FAIL(cosine.error().toString());
+    auto grey = (*compiler)->compileXml(
+        "<?xml version=\"1.0\"?>\n<materialx version=\"1.39\">\n"
+        "  <oren_nayar_diffuse_bsdf name=\"d\" type=\"BSDF\">\n"
+        "    <input name=\"color\" type=\"color3\" value=\"0.8, 0.8, 0.8\" />\n"
+        "    <input name=\"roughness\" type=\"float\" value=\"0\" />\n"
+        "  </oren_nayar_diffuse_bsdf>\n"
+        "  <surface name=\"shader\" type=\"surfaceshader\"><input name=\"bsdf\" type=\"BSDF\" nodename=\"d\" /></surface>\n"
+        "  <surfacematerial name=\"material\" type=\"material\">\n"
+        "    <input name=\"surfaceshader\" type=\"surfaceshader\" nodename=\"shader\" />\n"
+        "  </surfacematerial>\n</materialx>\n");
+    if (!grey) FAIL(grey.error().toString());
+    REQUIRE(programs->setModules(std::span<const material::CompiledMaterial>(&*grey, 1)));
+    REQUIRE(tracer->setPrograms(*programs));
+    const std::vector<float> blob = material::MaterialCompiler::parameters(
+        *grey, **textures, [](const std::string&) { return 0xFFFFFFFFu; });
+    const std::filesystem::path png = scratch("dome_sun_plane.png");
+    writeSunDome(png, 64, 32);
+    light::Light sky;
+    sky.kind = light::LightKind::Dome;
+    sky.texture = png.string();
+    sky.textureId = (*textures)->request(png.string(), "");
+    sky.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    sky.shadow = true;   // so the material's ray is weighed against it (misWeighs)
+    REQUIRE((*textures)->commit());
+    const std::vector<technique::MaterialRecord> rows{{0, 0, 0, 0}, {1, 0, 0, 0}};
+    auto records = gpu::Buffer::fromSpan<technique::MaterialRecord>(*gpu->device, rows, "materials.records");
+    auto blobBuffer = gpu::Buffer::fromSpan<float>(*gpu->device, blob, "materials.blob");
+    REQUIRE(records);
+    REQUIRE(blobBuffer);
+    imaged->setTextures(textures->get());
+    REQUIRE(imaged->set(std::span<const light::Light>(&sky, 1)));
+    REQUIRE(cosine->set(std::span<const light::Light>(&sky, 1)));
+
+    const uint32_t w = 64;
+    const uint32_t h = 48;
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 0.0}, {0.0, 0.0, -1.0});
+    camera.lens.focal = 35.0;
+    const render::Projection projection = render::projectionFor(camera, w, h);
+    world::MeshInstance instance;
+    instance.mesh = lambertSquare(*builder, 1.0F);
+    instance.objectToWorld = aofx::xform::translation({0.0, 0.0, -5.0});
+    instance.material = 1;
+    REQUIRE(scene->update(std::span<const world::MeshInstance>(&instance, 1), projection));
+    REQUIRE(accel->build(*scene));
+    technique::VisibilityTargets visibility;
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(raster->render(batch, *scene, projection, w, h, visibility));
+        REQUIRE(batch.submit(true));
+    }
+    technique::MaterialFrame frame;
+    frame.programs = &*programs;
+    frame.scene = &*scene;
+    frame.records = &*records;
+    frame.blob = &*blobBuffer;
+    frame.textures = &**textures;
+    frame.shadows = accel->topLevel();
+    frame.samples = 1;
+    const auto gather = [&](light::LightTable& table, uint32_t total, uint32_t seed, render::RenderTargets& out) {
+        frame.lights = &table;
+        tracer->restart();
+        technique::PathSettings paths;
+        paths.samples = std::min(total, 256u);
+        paths.bounces = 1;
+        paths.accumulate = true;
+        for (uint32_t taken = 0; taken < total; taken += paths.samples) {
+            paths.seed = seed + taken;
+            gpu::CommandBatch batch(*gpu->device);
+            REQUIRE(tracer->trace(batch, visibility, projection, frame, paths, out));
+            REQUIRE(batch.submit(true));
+        }
+    };
+    render::RenderTargets imagedLong, cosineLong, imagedShort, cosineShort;
+    gather(*imaged, 4096, 11u, imagedLong);
+    gather(*cosine, 4096, 11u, cosineLong);
+    gather(*imaged, 16, 90001u, imagedShort);
+    gather(*cosine, 16, 90001u, cosineShort);
+    auto a = render::imageStats(*gpu->library, imagedLong.colour, w, h);
+    auto b = render::imageStats(*gpu->library, cosineLong.colour, w, h);
+    auto shortImaged = render::compareHdr(*gpu->library, imagedShort.colour, imagedLong.colour, w, h);
+    auto shortCosine = render::compareHdr(*gpu->library, cosineShort.colour, imagedLong.colour, w, h);
+    REQUIRE(a);
+    REQUIRE(b);
+    REQUIRE(shortImaged);
+    REQUIRE(shortCosine);
+    const double relative = std::abs(a->mean[1] - b->mean[1]) / std::max(b->mean[1], 1.0e-9);
+    std::printf("  4096 paths: mean %.6f by the image, %.6f around the surface (relative %.2e)\n", a->mean[1],
+                b->mean[1], relative);
+    std::printf("  16 paths against 4096: relMSE %.3e by the image, %.3e around the surface\n",
+                shortImaged->relMse, shortCosine->relMse);
+    CHECK(a->mean[1] > 0.0);
+    CHECK(relative < 5.0e-3);
+    CHECK(shortImaged->relMse < shortCosine->relMse);
+}
+
 // D1: the same samples, gathered three ways, must give the same frame.
 //
 // random() mixes (sample + path.seed), and sample runs 0..samples-1 within a
@@ -2179,18 +2320,20 @@ TEST_CASE("a closed emissive shell reads the geometric series of its bounces",
     gpu::Buffer counts = test::uintBuffer(*gpu->device, 2, "furnace.counts");
     gpu::Buffer worst = test::uintBuffer(*gpu->device, 1, "furnace.worst");
 
-    for (const uint32_t bounces : {0u, 1u, 2u, 3u, 6u}) {
-        render::RenderTargets out;
+    const auto traceShell = [&](uint32_t bounces, const technique::PathLimits& limits, uint32_t samples,
+                                render::RenderTargets& out) {
         tracer->restart();
         technique::PathSettings paths;
-        paths.samples = 16;
+        paths.samples = samples;
         paths.bounces = bounces;
         paths.seed = 7u;
-        {
-            gpu::CommandBatch batch(*gpu->device);
-            REQUIRE(tracer->trace(batch, visibility, projection, frame, paths, out));
-            REQUIRE(batch.submit(true));
-        }
+        paths.limits = limits;
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(tracer->trace(batch, visibility, projection, frame, paths, out));
+        REQUIRE(batch.submit(true));
+    };
+    // Every covered pixel against the series to `terms` bounces.
+    const auto checkSeries = [&](const render::RenderTargets& out, uint32_t terms, const char* what) {
         {
             gpu::CommandBatch batch(*gpu->device);
             check.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -2199,7 +2342,7 @@ TEST_CASE("a closed emissive shell reads the geometric series of its bounces",
                 cursor["worst"].setBinding(worst.rhi());
                 cursor["furnace"]["emission"].setData(kEmission);
                 cursor["furnace"]["albedo"].setData(kAlbedo);
-                cursor["furnace"]["bounces"].setData(bounces);
+                cursor["furnace"]["bounces"].setData(terms);
                 cursor["furnace"]["tolerance"].setData(1.0e-4F);
                 cursor["furnace"]["pixels"].setData(w * h);
             });
@@ -2209,10 +2352,49 @@ TEST_CASE("a closed emissive shell reads the geometric series of its bounces",
         float largest = 0.0F;
         REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
         REQUIRE(worst.read(*gpu->device, 0, sizeof(largest), &largest));
-        std::printf("  %u bounces: %u covered, %u beyond 1e-4, worst relative %.2e\n", bounces, c[0], c[1],
+        std::printf("  %s: %u covered, %u beyond 1e-4, worst relative %.2e\n", what, c[0], c[1],
                     static_cast<double>(largest));
         CHECK(c[0] == w * h);
         CHECK(c[1] == 0);
+    };
+    // Without roulette, which is the one thing here that is a statistic.
+    technique::PathLimits exact;
+    exact.rouletteDepth = 0;
+    for (const uint32_t bounces : {0u, 1u, 2u, 3u, 6u}) {
+        render::RenderTargets out;
+        traceShell(bounces, exact, 16, out);
+        char what[64];
+        std::snprintf(what, sizeof(what), "%u bounces", bounces);
+        checkSeries(out, bounces, what);
+    }
+    // RUSSIAN ROULETTE LEAVES THE MEAN WHERE IT WAS. A path whose throughput
+    // is rho^k < 1 survives with that probability and is weighed back up, so
+    // each pixel is noisy now but the frame's mean is the series; the noise
+    // bound is the frame's own (3072 pixels x 256 paths: a relative standard
+    // error near 5e-4, measured against 5e-3 here).
+    for (const uint32_t depth : {1u, 3u}) {
+        technique::PathLimits roulette;
+        roulette.rouletteDepth = depth;
+        render::RenderTargets withRoulette;
+        render::RenderTargets without;
+        traceShell(8, roulette, 256, withRoulette);
+        traceShell(8, exact, 16, without);
+        double expected = 0.0;
+        double term = kEmission;
+        for (uint32_t k = 0; k <= 8; ++k) {
+            expected += term;
+            term *= kAlbedo;
+        }
+        auto stats = render::imageStats(*gpu->library, withRoulette.colour, w, h);
+        auto diff = render::compareHdr(*gpu->library, withRoulette.colour, without.colour, w, h);
+        REQUIRE(stats);
+        REQUIRE(diff);
+        const double relative = std::abs(stats->mean[0] - expected) / expected;
+        std::printf("  roulette past %u of 8 bounces: frame mean %.6f against %.6f (relative %.2e), relMSE "
+                    "against no roulette %.3e, p99 %.3e\n",
+                    depth, stats->mean[0], expected, relative, diff->relMse, diff->p99Relative);
+        CHECK(relative < 5.0e-3);
+        CHECK(diff->relMse < 1.0e-2);
     }
 }
 

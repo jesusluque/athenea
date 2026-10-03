@@ -24,6 +24,8 @@ void addView(CLI::App& app) {
     cmd->add_flag("--choose-lights", options->chooseLights, "one light a sample, chosen by power");
     cmd->add_option("--path-samples", options->pathSamples, "rt: paths a pixel each frame");
     cmd->add_option("--path-bounces", options->pathBounces, "rt: bounces after the first hit");
+    cmd->add_option("--roulette-depth", options->pathLimits.rouletteDepth,
+                    "rt: bounces before Russian roulette may end a dim path (0: never)");
     cmd->add_option("--path-total", options->pathTotal, "rt: paths a pixel at which the frame counts as converged (and is denoised)");
     cmd->add_flag("--denoise", options->denoise, "rt: denoise once converged (OIDN)");
     cmd->add_flag("!--no-default-lights", options->defaultLights,

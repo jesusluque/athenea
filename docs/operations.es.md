@@ -260,6 +260,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--path-samples` | entero | `1` | rt: caminos por píxel en cada pasada |
 | `--path-bounces` | entero | `1` | rt: rebotes tras el primer impacto; atravesar un vidrio (entrar en él, salir de él, dentro de él) no es uno, hasta 8 por camino |
 | `--path-total` | entero | `1` | rt: caminos por píxel hasta los que se dibuja |
+| `--roulette-depth` | entero | `3` | rt: rebotes antes de que la ruleta rusa pueda terminar un camino cuyo throughput es menor que uno; `0` nunca |
 | `--denoise` | flag | apagado | rt: denoise cuando alcanza el total |
 | `--default-lights` | flag | apagado | un dome y un sol en la capa de sesión, para una escena sin luces |
 | `--shutter` | `ABRE:CIERRA` | sin poner | en frames; solo para una cámara hecha con `--eye` |
@@ -313,6 +314,7 @@ están en §5.
 | `--path-samples` | entero | `1` | rt: caminos por píxel y frame |
 | `--path-bounces` | entero | `4` | atravesar un vidrio no es un rebote, hasta 8 por camino |
 | `--path-total` | entero | `64` | dónde el frame cuenta como convergido, y se denoisea |
+| `--roulette-depth` | entero | `3` | como el de `athenea stage` |
 | `--denoise` | flag | apagado | |
 | `--no-default-lights` | flag | luces por defecto encendidas | una escena sin luces se queda a oscuras |
 | `--edr` | flag | apagado | rango extendido: superficie float y ACES 2.0 hasta el pico de la pantalla |
@@ -982,6 +984,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathAdaptive` | bool | `false` | parar un píxel cuando su error baja lo suficiente |
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
+| `athenea:rouletteDepth` | int | `3` | rt: rebotes antes de la ruleta rusa; `0` ninguna. Sin sesgo: la media se queda, los caminos tenues paran |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
 | `athenea:motionBuckets` | int | `4` | rt: rodajas del obturador, de 1 a 8 |
 | `athenea:antialias` | bool | `true` | un desplazamiento subpíxel por pasada |

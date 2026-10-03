@@ -257,6 +257,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--path-samples` | integer | `1` | rt: paths a pixel each pass |
 | `--path-bounces` | integer | `1` | rt: bounces after the first hit; going through a glass (into it, out of it, inside it) is not one, up to 8 a path |
 | `--path-total` | integer | `1` | rt: paths a pixel the image is drawn until it holds |
+| `--roulette-depth` | integer | `3` | rt: bounces before Russian roulette may end a path whose throughput is under one; `0` never |
 | `--denoise` | flag | off | rt: denoise once the total is held |
 | `--default-lights` | flag | off | a dome and a sun in the session layer, for a stage with none |
 | `--shutter` | `OPEN:CLOSE` | unset | in frames; only for a camera made by `--eye` |
@@ -309,6 +310,7 @@ Present only in a build with the viewer. The window's controls are in §5.
 | `--path-samples` | integer | `1` | rt: paths a pixel each frame |
 | `--path-bounces` | integer | `4` | going through a glass is not a bounce, up to 8 a path |
 | `--path-total` | integer | `64` | where the frame counts as converged, and is denoised |
+| `--roulette-depth` | integer | `3` | as `athenea stage`'s |
 | `--denoise` | flag | off | |
 | `--no-default-lights` | flag | default lights on | a stage with no lights stays unlit |
 | `--edr` | flag | off | extended range: a float surface and ACES 2.0 to the screen's peak |
@@ -964,6 +966,7 @@ found and does not.
 | `athenea:pathAdaptive` | bool | `false` | stop a pixel once its error is low enough |
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |
 | `athenea:pathMis` | bool | `true` | multiple importance sampling |
+| `athenea:rouletteDepth` | int | `3` | rt: bounces before Russian roulette; `0` none. Unbiased: the mean stays, the dim paths stop |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
 | `athenea:motionBuckets` | int | `4` | rt: shutter slices, 1 to 8 |
 | `athenea:antialias` | bool | `true` | a sub-pixel offset per pass |

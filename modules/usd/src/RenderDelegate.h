@@ -91,6 +91,9 @@ public:
     /// least one, and bounces after the first hit ("athenea:pathBounces").
     [[nodiscard]] uint32_t GetPathSamples() const;
     [[nodiscard]] uint32_t GetPathBounces() const;
+    /// When a path stops before its total: "athenea:rouletteDepth" (Russian
+    /// roulette past that many bounces, 0 none, 3 by default).
+    [[nodiscard]] athenea::technique::PathLimits GetPathLimits() const;
     [[nodiscard]] uint32_t GetMotionBuckets() const;
     /// A render product's (or its settings prim's) disableMotionBlur and
     /// disableDepthOfField: "athenea:disableMotionBlur" draws one shutter slice,

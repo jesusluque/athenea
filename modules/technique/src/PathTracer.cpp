@@ -84,6 +84,8 @@ struct PathParams {
     // at the end (`athenea/usd/bake_resolve`). The fit is linear, so the two
     // fitted halves sum to what the fit of the whole gives.
     uint bakeSplit;
+    // Russian roulette past this many bounces (technique::PathLimits); 0: none.
+    uint rouletteDepth;
 };
 
 Texture2D<uint4>               visibility;   // (instance + 1, triangle); row 0 on top
@@ -1332,6 +1334,27 @@ bool pathGoesOn(uint charged, uint crossed, Shaded sh, float3 wi) {
     return charged < path.bounces || (crossed < kFreeCrossings && throughGlass(sh, wi));
 }
 
+/// RUSSIAN ROULETTE, after pbrt-v4 (`rrBeta`, Apache-2.0) and Falcor's
+/// PathTracer: past `rouletteDepth` bounces, a path whose throughput has
+/// fallen below one survives with that probability -- its largest channel --
+/// and is weighed up by its inverse. Unbiased: the mean of what survives,
+/// weighed, is the mean of what would have gone on. A path at or above one
+/// is never cut, so a furnace's white paths run their whole length.
+bool rouletteSurvives(inout float3 throughput, uint bounce, uint2 pixel, uint sample) {
+    if (path.rouletteDepth == 0 || bounce < path.rouletteDepth) {
+        return true;
+    }
+    const float keep = max(max(throughput.x, throughput.y), throughput.z);
+    if (keep >= 1.0) {
+        return true;
+    }
+    if (!(keep > 0.0) || random(pixel, sample, bounce, 97u) >= keep) {
+        return false;
+    }
+    throughput /= keep;
+    return true;
+}
+
 float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint mask, out uint group) {
     group = 0;
     if (lightCount == 0) {
@@ -1654,6 +1677,9 @@ void tracePathsAt(uint2 group, uint index) {
                     if (bounce - crossed >= path.bounces || !kTraces) {
                         break;
                     }
+                    if (!rouletteSurvives(throughput, bounce, tid, sample)) {
+                        break;
+                    }
                     d = hgSample(-d, g, float2(mediumRandom(rng), mediumRandom(rng)));
                     o = p;
                     const PathHit hit = traceNearestFrom(o, d, 1.0e-4 * max(1.0, length(o)), mask, true);
@@ -1946,6 +1972,9 @@ void tracePathsAt(uint2 group, uint index) {
             // read 5 pi times its geometric series.
             throughput *= ms.weight;
             if (!any(throughput > float3(0.0))) {
+                break;
+            }
+            if (!rouletteSurvives(throughput, bounce, tid, sample)) {
                 break;
             }
             const float3 p = cur.inputs.positionWorld;
@@ -2532,6 +2561,7 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         setCamera(cursor["camera"], projection, width, height);
         cursor["path"]["samples"].setData(samples);
         cursor["path"]["bounces"].setData(settings.bounces);
+        cursor["path"]["rouletteDepth"].setData(settings.limits.rouletteDepth);
         cursor["path"]["seed"].setData(settings.seed);
         cursor["path"]["accumulated"].setData(already);
         const bool tree = frame.chooseLights && frame.lightBvh && frame.lights != nullptr && frame.lights->hasBvh();

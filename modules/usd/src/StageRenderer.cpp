@@ -1154,6 +1154,10 @@ void StageRenderer::setPathSamples(uint32_t samples) {
 void StageRenderer::setPathBounces(uint32_t bounces) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathBounces"), VtValue(static_cast<int>(bounces)));
 }
+void StageRenderer::setPathLimits(const technique::PathLimits& limits) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:rouletteDepth"),
+                                      VtValue(static_cast<int>(std::min(limits.rouletteDepth, 1u << 30))));
+}
 void StageRenderer::setRefineLevel(uint32_t level) {
     if (impl_->displayStyle) {
         impl_->displayStyle->SetRefineLevelFallback(level > 0 ? std::optional<int>(static_cast<int>(level))

@@ -221,6 +221,7 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         _engine->setAntialias(_delegate->GetAntialias());
         _engine->setPathSamples(_delegate->GetPathSamples());
         _engine->setPathBounces(_delegate->GetPathBounces());
+        _engine->setPathLimits(_delegate->GetPathLimits());
         _engine->setPathTotal(_delegate->GetPathTotal());
         _engine->setDenoise(_delegate->GetDenoise());
         _engine->setPathAdaptive(_delegate->GetPathAdaptive());
