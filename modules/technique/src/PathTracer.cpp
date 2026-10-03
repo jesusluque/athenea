@@ -1031,6 +1031,31 @@ float3 hgSample(float3 wo, float g, float2 u) { return -wo; }
 )";
 
 const char* kBody = R"(
+/// THE LIGHT A TRANSPARENT SURFACE LETS THROUGH (UsdPreviewSurface 2.6,
+/// opacityMode transparent): what its specular lobes -- every lobe but the
+/// diffuse ones, which the opacity already scales -- do not reflect back
+/// toward `toEye`.
+///
+/// The specification keeps the specular at full weight at any opacity, so a
+/// window at opacity 0 still reflects the sky, and says nothing of what is
+/// behind but that it shows through. Taken as (1 - opacity) of what is
+/// behind, whole, a window reflects its specular and passes everything as
+/// well: one window gains its few per cent, a stack of them gains a few per
+/// cent each. The sparrow's belly is dozens of feather cards, transparent by
+/// default and a quarter metallic: under a dome of radiance one it read 7.
+/// A clear glass sheet passes 1 - F, and so does this.
+float3 transparentPasses(LobeStack stack, float3 toEye) {
+    float3 reflected = float3(0.0);
+    for (uint k = 0; k < stack.count; ++k) {
+        const uint kind = stack.lobes[k].kind;
+        if (kind == kLobeOrenNayar || kind == kLobeBurley || kind == kLobeTranslucent) {
+            continue;
+        }
+        reflected += stack.lobes[k].weight * lobeAlbedo(stack.lobes[k], toEye);
+    }
+    return saturate(float3(1.0) - reflected);
+}
+
 struct Shaded {
     LobeStack      stack;
     MaterialInputs inputs;
@@ -1919,7 +1944,11 @@ void tracePathsAt(uint2 group, uint index) {
                 if (kTraces && shaded.coverage && o < 1.0 && passed < 64 &&
                     random(tid, sample, bounce, 29u + passed) >= keep) {
                     if (shaded.transparent) {
-                        throughput *= (1.0 - o) / (1.0 - keep);
+                        // What goes straight through is what the surface
+                        // neither covers nor reflects: the specular it keeps
+                        // at full weight is light that does not also pass.
+                        throughput *= (1.0 - o) / (1.0 - keep) *
+                                      transparentPasses(shaded.stack, shaded.toEye);
                     }
                     // Coverage: for this sample the surface is not there.
                     // The ray goes on from the hit along its own direction,

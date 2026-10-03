@@ -9790,3 +9790,145 @@ Rec.709; what changes is who knows the rest.
   aopenfx (a kernel given as source, and texture inputs), or functions
   generated at build time for a fixed list of spaces, with their LUTs as
   buffers.
+
+## A transparent surface passes what it does not reflect
+
+UsdPreviewSurface's default `opacityMode` keeps the specular whole at any
+opacity, and the path tracer drew what is behind at `(1 - opacity)` as well:
+a surface that reflected and passed everything. One window gains its few per
+cent; a stack gains them once a sheet. Blender writes a feather card's alpha
+that way, and the sparrow's belly is dozens of cards deep: with Blender's
+quarter-metallic feathers it read 5.6 against a shop wall of 0.3, with single
+pixels at 768 (the original engine, d922ad5, read 2.1; the merge only let
+shadow rays through cut-outs, which is right, and more light reached the
+stack). Twenty clear white metal sheets under a dome of radiance one -- a
+white furnace, which returns at most one -- read 218.5.
+
+A clear glass sheet passes `1 - F`. `transparentPasses` (PathTracer.cpp)
+takes the directional albedo of every lobe but the diffuse ones, which the
+opacity already scales, off the throughput of a sample the lot passed. In
+expectation that is `specular + opacity diffuse + (1 - opacity)(1 - rho_s)
+behind`, which at opacity 0 is `rho_s + (1 - rho_s)`. The furnace reads
+1.021; the uncorrected sparrow's belly 0.34 (wall 0.3).
+
+`athenea_usd_tests` "a stack of transparent sheets returns no more light than
+a dome of radiance one gives it": 218.5 before, 1.021 after.
+
+Not done: a shadow ray passes a transparent surface by `(1 - opacity)` alone,
+a lot with no weight; what its specular takes off is not.
+
+## The sparrow's mesh, the same bird on both routes
+
+The mesh render of the tree sparrow was to be the reference for its clouds,
+and the raster drew something else: red and yellow streaks over the body, a
+black hole in the belly, salt and pepper over every feather. The path tracer
+drew a white bird with the belly blown out. Five causes, all the engine's
+(on the corrected stage, `SparrowBird.usda`, and on Blender's uncorrected
+import alike):
+
+**1. A ray query beside the lobe stack miscompiles on Metal.** The streaks
+were the garbage `MaterialShading` had recorded three times: rows in blocks
+of half a threadgroup, from a kernel that evaluates a material and traces a
+shadow ray. Each workaround (no local copy of the stack, the lobe samples
+before the first ray, no cut-out asked in the walk) had kept its own test
+clean; the sparrow broke them all, because a frame that merely holds a
+cut-out material compiles the opacity walk into the kernel. A grey floor
+under a dome and a sun, with one unbound material of opacity one half in the
+stage: 200 718 of 518 400 pixels differed between shadows on and off at
+960 x 540, and 20 000 to 25 000 of 98 304 words at 192 x 128, a different
+count each run. So the raster's shading is three kernels now:
+
+- `drawLobes` evaluates the material and writes its lobe samples' directions
+  (octahedral, 16 bits a coordinate, `min(lightSamples, 32)` a pixel);
+- `traceShadows` rebuilds the surface, draws the same light samples (the same
+  hash, the same order) and traces each one's shadow ray, then each lobe
+  sample's, into one bit each -- it asks a cut-out occluder's opacity, and no
+  material of its own pixel;
+- `shadeMaterials` holds no intersector and reads the bits.
+
+The light-sample bits cost `ceil(bits / 32)` words a pixel (`bits` is the
+samples, or the samples times the lights where every light is lit at every
+pixel); one sample of two lights and one lobe sample is one word.
+
+**2. A cut-out cast its whole card.** With the walk unable to ask a card's
+material, the raster's shadow rays stopped at every feather card, and the
+belly -- dozens of cards under the body -- was in full shadow from the dome
+and the sun: the black hole. `traceShadows` walks on by the occluder's lot,
+as the path tracer does (`lighting.shadowCutouts` is the frame's `cutouts`).
+A floor under a card of opacity one half, presence: 0.000 of the open sun
+before, 0.507 now.
+
+**3. One lot a pixel for every layer.** The raster's visibility cut a sample
+where its opacity was under the pixel's lot -- the same lot for every surface
+at that pixel, so the layers' coverages were one coverage: two cards of one
+half showed what was behind them half the time instead of a quarter. Three
+emissive cards (red and green at one half, blue opaque) read red 0.486, green
+0.000, blue 0.514; the path tracer reads 0.500, 0.251, 0.250. The lot is now
+hashed with the instance and the triangle (`pixelLot(pixel, seen)`): 0.512,
+0.250, 0.237. On a belly of soft cards this is the difference between fluff
+and the background showing through wherever the front card's edge does.
+
+**4. The raster drew transparent opacity as presence.** UsdPreviewSurface's
+default `opacityMode` keeps the specular whole at any opacity; the path
+tracer has drawn it so since step 1 of the opacity work, the raster cut it by
+lot "in either mode". Blender writes the feathers' alpha that way, so the two
+routes drew two birds: brown feathers on the raster, a sheen of every clear
+card's specular on the tracer. The raster now keeps a transparent sample with
+the tracer's probability, `max(opacity, 1/20)` (`kTransparentKeep`), and the
+shading weighs it as the tracer does (`weighTransparent`: specular and
+emission over p, diffuse times opacity over p). At opacity 0 the raster adds
+1.26 of what the tracer adds over the back square: a passed sample shows the
+back whole where the tracer takes off what the sheet reflected (5), and the
+test's sheet is a white specular.
+
+**5. A stack of transparent sheets made light** in the path tracer: the
+section before this one.
+
+And with the rays out of the shading kernel, two things it could not do:
+
+- **A lobe sample is shadowed.** It traced no ray, so a reflection saw the sky
+  through whatever stood in the way: a polished floor under a plate read
+  0.881 where nothing lights it; 0.000 now. On the sparrow the underside of
+  the belly read 0.26 against the tracer's 0.16.
+- **Both strategies are weighed by their true densities.** A Phong proxy
+  stood in for the stack's density, zero for anything broader than a GGX
+  alpha of about 0.35, so a broad lobe's light samples kept the whole weight:
+  a rough metal floor under a uniform sky had a pixel at 20.75; 1.69 now
+  (power heuristic on `stackPdf`, `lobeDensity`).
+
+The MaterialX warnings the bird prints (`Input 'bias' doesn't match
+declaration`, `Input 'normal' doesn't match declaration`) are hdMtlx's own,
+written before `matchDeclaredTypes` retypes the inputs: the dumped documents
+(`ATHENEA_MTLX_DUMP`) carry scale and bias as color4 and the normal
+connected, and the normal-map test with float4 scale and bias already holds.
+
+Measured on `mesh_wing.usda` over `SparrowBird.usda`, time 1, 960 x 540,
+against the path tracer at 256 paths, denoised: one light sample, the raster's frame mean
+0.2219 against 0.2230 (it was 0.2217), relMSE 3.67 (7.28 before), the
+brightest pixel 208 (322). Over 40 x 40 windows on the head, the breast, the
+belly's underside and the wing the raster is within 10 per cent of the
+tracer at sixteen light samples (the underside 0.154 against 0.158; it was
+0.26). Per pixel they still differ by the raster's one sample (below).
+
+`athenea_usd_tests`: "shadow rays change nothing over an unoccluded floor
+when the frame holds a cut-out material", "a half-clear card casts half a
+shadow on the raster route", "the raster's lot is drawn a layer at a time",
+"a stack of transparent sheets returns no more light...", "the raster shadows
+a lobe's own samples...", and the opacityMode test's raster half, which
+asserted the old reading. Each failed before its change.
+
+What it is not:
+
+- One sample a pixel is still one sample: the raster dithers coverage, a
+  transparent card's clear texels are one pixel in twenty at twenty times
+  their specular, and a frame is not accumulated. Per pixel the raster and a
+  converged tracer differ by that noise; their means over a window agree.
+- The raster has no indirect light: it reads somewhat darker than the tracer
+  wherever bounces matter.
+- A sample the raster's lot passed shows what is behind whole; the tracer
+  takes off the transparent surface's reflection.
+- A lobe sample has one bit for every light at infinity, traced against
+  everything: toward a light whose shadow links leave occluders out it is
+  not asked, and sees that light unshadowed as before.
+- Three kernels cost a second evaluation of the material where lobe samples
+  are drawn. Not timed.
