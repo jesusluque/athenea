@@ -523,7 +523,7 @@ TEST_CASE("Blender's Gaussian-splat points draw as the PLY they were imported fr
         const fs::path path = scratch(name);
         std::ofstream out(path);
         out << "#usda 1.0\n(\n    upAxis = \"Z\"\n    metersPerUnit = 1\n)\n"
-            << "def Xform \"Cloud\" ( prepend references = " << cloud << " )\n{\n" << over << "}\n"
+            << "def \"Cloud\" ( prepend references = " << cloud << " )\n{\n" << over << "}\n"
             << "def Camera \"Camera\"\n{\n"
                "    float2 clippingRange = (0.1, 1000)\n    float focalLength = 30\n"
                "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
@@ -537,7 +537,8 @@ TEST_CASE("Blender's Gaussian-splat points draw as the PLY they were imported fr
     // The control: the hook's half taken away, as Blender's own export leaves it.
     const fs::path withoutBase = stage(
         "blender_points_nobase.usda", blender,
-        "    over \"sh3\"\n    {\n        float4[] primvars:radiance:base = None\n    }\n");
+        "    over \"sh3\"\n    {\n        over \"sh3\"\n        {\n"
+        "            float4[] primvars:radiance:base = None\n        }\n    }\n");
 
     const uint32_t w = 240;
     const uint32_t h = 180;
@@ -572,9 +573,11 @@ TEST_CASE("Blender's Gaussian-splat points draw as the PLY they were imported fr
                 "without radiance:base: p99 %u\n",
                 same->p99, same->max, static_cast<unsigned long long>(drawn->over2), control->p99);
     CHECK(drawn->over2 > uint64_t{w} * h / 20);   // the cloud is in the picture
-    CHECK(same->p99 <= 1);
-    CHECK(same->max <= 2);
-    CHECK(control->p99 > 8 * (same->p99 + 1));
+    // Measured: p99 0, max 0 -- the same floats reach the same records -- and
+    // 100 for the control, which is drawn opaque and grey.
+    CHECK(same->p99 == 0);
+    CHECK(same->max <= 1);
+    CHECK(control->p99 >= 50);
 }
 
 TEST_CASE("a UsdGeomMesh draws through Hydra where, how deep and how lit it analytically is", "[usd][gpu][mesh]") {
