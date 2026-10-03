@@ -274,8 +274,6 @@ public:
         gpu::Device& device = library_->device();
         pieces_.clear();
         std::vector<gpu::Buffer> totals;
-        std::vector<gpu::Buffer> held;   // flags and offsets, alive until the batch has run
-        gpu::CommandBatch batch(device);
         for (size_t m = 0; m < meshes.size(); ++m) {
             const usd::StageMesh& one = meshes[m];
             const uint32_t triangles = one.mesh.triangles;
@@ -310,17 +308,18 @@ public:
                     cursor["subset"]["triangles"].setData(triangles);
                     cursor["subset"]["wanted"].setData(wanted);
                 };
+                // A batch a list: the prefix sum's scratch is its own, and
+                // is not to be shared between lists in flight.
+                gpu::CommandBatch batch(device);
                 subsetFlags_.dispatch(batch, {triangles, 1, 1}, bind);
                 ATHENEA_TRY(prefix_.apply(batch, *flags, *offsets, *total, triangles));
                 subsetScatter_.dispatch(batch, {triangles, 1, 1}, bind);
+                ATHENEA_TRY(batch.submit(true));
                 pieces_.push_back({m, wanted, rest ? one.path : one.subsets[k].path,
                                    rest ? &one.material : &one.subsets[k].material, 0, std::move(*list)});
                 totals.push_back(std::move(*total));
-                held.push_back(std::move(*flags));
-                held.push_back(std::move(*offsets));
             }
         }
-        ATHENEA_TRY(batch.submit(true));
         for (size_t p = 0; p < pieces_.size(); ++p) {
             if (totals[p].valid()) {
                 ATHENEA_TRY(totals[p].read(device, 0, sizeof(uint32_t), &pieces_[p].triangles));
