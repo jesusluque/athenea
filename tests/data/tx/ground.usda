@@ -26,3 +26,16 @@ over "World"
         uniform token subdivisionScheme = "none"
     }
 }
+
+# The camera the TX tests draw by (tests/usd/test_usd.cpp writes the same
+# one), so the stage measures on its own too (`athenea mesh2splat --validate`).
+def Camera "Camera"
+{
+    float focalLength = 35
+    float horizontalAperture = 24.576
+    float verticalAperture = 24.576
+    float2 clippingRange = (0.1, 1000)
+    double3 xformOp:translate = (0, 0.4, 4.2)
+    float3 xformOp:rotateXYZ = (-8, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+}
