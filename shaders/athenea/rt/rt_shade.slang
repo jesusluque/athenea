@@ -239,6 +239,14 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         surface.lit = params.litBody != 0;
         surface.emission = params.hasEmission != 0 ? unpackRgb9e5(emission[i]) : float3(0.0);
         surface.lobes = splatLobesOf(params.hasLobes != 0, lobes, i);
+        // THE INDEX A GAUSSIAN BENDS BY IS ITS OWN where its cloud carries
+        // the layers: the specular's index is the material's, where the
+        // cloud's single `ior` is whichever glass came first (task TX, step 5;
+        // the Corvette's read 1.053 for glass of 1.6). Only where the cloud
+        // bends at all, and only on what transmits.
+        if (params.hasLobes != 0 && surface.ior > 1.0 && surface.transmission > 0.0) {
+            surface.ior = max(surface.lobes.specularIor, 1.0);
+        }
         surface.transferCount = params.transferCount;
         surface.transferBase = i * params.transferWords * 2;
         // `params.shadowBits` is the words a gaussian: two of the first

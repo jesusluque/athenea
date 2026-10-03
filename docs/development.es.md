@@ -985,6 +985,17 @@ de una medida -- y suma `splatLightBounce`: la mitad indirecta leída a lo
 largo de la luz, sobre el cuerpo y el sheen, y el campo reflejado escalado a
 ella donde los lóbulos de la base y del coat están cerrados.
 
+**El vidrio en el transfer.** En el primer vértice de un transfer TX el
+kernel anota si el material transmite (un lóbulo que no sólo refleja, leído
+antes de que `bakeBody` quite el dieléctrico como pulido); si transmite, la
+primera dirección se toma sobre la esfera entera (`bakeSphereDirection`,
+densidad `1/4pi`, el estimador del frente `4 cos`), y una muestra tomada
+detrás alimenta sólo el campo. `relitByDome` lee, para una gaussiana que
+transmite con el campo y sin nada trazado, el cielo donde los bits de detrás
+están abiertos y el campo donde están cerrados, a lo largo de `-wo`. Los
+kernels dan a una gaussiana que transmite su propio índice desde sus capas
+cuando la nube se dobla.
+
 **Decir otra cosa de un prim.** El id de Cryptomatte que lleva una gaussiana
 es también una selección -- todo lo que vino de un mismo prim -- así que
 `render::SplatOverride` es una fila con ese id como clave: metallic,

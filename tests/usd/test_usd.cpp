@@ -11327,6 +11327,107 @@ TEST_CASE("a TX transfer's reflected field reads the wall that stands beside it"
     CHECK(counts[1] == 0);
 }
 
+// WHAT A TX TRANSFER'S GLASS SEES THROUGH ITSELF (step 5).
+//
+// A pane of clear glass over a grey floor, under a white sky. A transmitting
+// gaussian's first directions are drawn over the whole sphere, so its field
+// holds what stands behind it: straight down, the floor, which the sky lights
+// through the pane and which sends back about half; straight up, the open
+// sky, where the field holds next to nothing.
+TEST_CASE("a TX transfer's glass holds what stands behind it", "[usd][gpu][mesh][bake][transfer][field][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const float albedo = 0.5F;
+    const fs::path path = scratch("transfer_field_pane.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-20, -20, -2.5), (20, -20, -2.5), (20, 20, -2.5), (-20, 20, -2.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    color3f[] primvars:displayColor = [("
+            << albedo << ", " << albedo << ", " << albedo << ")]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Mesh \"Pane\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-2, -2, -1.5), (2, -2, -1.5), (2, 2, -1.5), (-2, 2, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Glass>\n}\n"
+               "def Material \"Glass\"\n{\n"
+               "    token outputs:mtlx:surface.connect = </Glass/OpenPBR.outputs:out>\n"
+               "    def Shader \"OpenPBR\"\n    {\n"
+               "        uniform token info:id = \"ND_open_pbr_surface_surfaceshader\"\n"
+               "        float inputs:specular_roughness = 0\n        float inputs:specular_ior = 1.45\n"
+               "        float inputs:transmission_weight = 1\n        token outputs:out\n    }\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t count = 32;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = -0.8F + 0.05F * static_cast<float>(k);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const uint32_t side = 16;
+    auto baked = (*renderer)->bakePoints(rays, count, 0.0, 1024, 3, 2, /*transfer=*/true, nullptr, side);
+    if (!baked) FAIL(baked.error().toString());
+    const uint32_t entries = 9 + technique::transferPlanes(true, side);
+    REQUIRE(baked->size() == size_t{count} * entries * 4);
+    gpu::BufferDesc desc;
+    desc.bytes = baked->size() * 4;
+    desc.elementBytes = 16;
+    auto values = gpu::Buffer::create(*gpu->device, desc, baked->data());
+    REQUIRE(values);
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "pane.stats");
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "fieldBakeCheck");
+    if (!check) FAIL(check.error().toString());
+    // What the floor sends back: its albedo times the white sky through the
+    // pane (a clear dielectric passes about 0.92 at the angles that matter
+    // most) over its upper hemisphere, where the pane is a small part.
+    const float floorRadiance = albedo * 0.95F;
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            for (const char* unused : {"halves", "transfer", "skies", "envSh", "worst"}) {
+                cursor[unused].setBinding(stats.rhi());
+            }
+            cursor["baked"].setBinding(values->rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            p["entries"].setData(entries);
+            p["firstField"].setData(entries - technique::kTransferFieldPlanes);
+            p["wallRadiance"].setData(floorRadiance);
+            p["tolerance"].setData(0.3F);
+            p["openFloor"].setData(floorRadiance * 0.3F);
+            p["roughness"].setData(0.6F);
+            const float towards[3] = {0.0F, 0.0F, -1.0F};
+            p["towardsWall"].setData(towards, sizeof(towards));
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    float worstFloor = 0.0F, mostUp = 0.0F;
+    std::memcpy(&worstFloor, &counts[4], 4);
+    std::memcpy(&mostUp, &counts[5], 4);
+    std::printf("  the field of a glass pane: %u points, %u off the floor's %.3f below (worst %.3f relative), %u "
+                "reading the open sky above (most %.4f)\n",
+                counts[2], counts[0], double(floorRadiance), double(worstFloor), counts[1], double(mostUp));
+    CHECK(counts[2] == count);
+    CHECK(counts[0] == 0);
+    CHECK(counts[1] == 0);
+}
+
 // THE TEST THAT SAYS THE WHOLE CHAIN IS LINEAR.
 //
 // A transfer is worth having only if recombining it with a sky gives what

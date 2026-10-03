@@ -1125,6 +1125,14 @@ además una sombra con un rayo (`--cloud-shadows`), se queda la más oscura de
 las dos. Los bits dicen qué direcciones salen de la escena, no cuáles llegan a
 una lámpara: un objeto más allá de una lámpara que está entre cosas también
 la sombrea.
+Una gaussiana que transmite, en un transfer TX, guarda también la mitad de
+atrás: su campo se hornea sobre la esfera entera, así que el rasterizador
+muestra a través de un parabrisas el cielo donde los bits de detrás están
+abiertos y lo que guarda el campo -- el habitáculo -- donde no, a lo largo de
+la dirección que sigue recta, como la envía una lámina. Donde la nube lleva
+las capas, una gaussiana que transmite se dobla con su propio índice
+(`specularIor`) siempre que el `ior` de la nube diga que se dobla; el `ior`
+único de la nube es el del primer vidrio que encontró la conversión.
 `thinWalled` es distinto de cero donde la gaussiana vino de un vidrio de pared
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077

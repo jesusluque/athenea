@@ -11473,3 +11473,46 @@ open at any size, one below closed, one on the horizon part open, and the
 angles a sphere and a sun subtend ([cells] in athenea_render_tests); the
 balls on a ground under a lamp alone, against the mesh path traced
 (`tx_conversions_render_like_the_mesh`, a third light).
+
+### Step 5: glass
+
+CV2's Corvette: the windscreen, the tinted glass and the headlights came out
+four to nine times too bright and hid the cabin, because the rasteriser bends
+once at the face it enters and shows the sky, and every gaussian of glass bent
+by one index for the whole cloud (1.053, the first glass the conversion met)
+where the material says 1.6.
+
+Proposal 028 says not to bake glass into harmonics, and nothing here does: the
+transmitted half stays the analytic route's. What the transfer adds is what
+that route was missing in the rasteriser, **what stands behind**:
+
+- **The bake** notes at a TX transfer's first vertex whether the material
+  transmits (read before `bakeBody`, which drops a glass's dielectric as
+  polish), and if so draws the first direction over the whole sphere --
+  stratified as before, the height stretched to [-1, 1] and the lower half
+  mirrored (`bakeSphereDirection`). Samples drawn in front keep the transfer's
+  estimator (`4 cos` at density `1/4pi`); those drawn behind feed the
+  reflected field alone, which then holds the cabin behind a windscreen as
+  well as the ground in front of it. The bits were already traced behind
+  (step 1); behind a solid slab they read closed, its own far face.
+- **The frame**, for a transmitting gaussian with the field and nothing
+  traced (the rasteriser), sees through along `-wo` -- straight on, as a
+  slab sends it; the single bend at one face is not what a sheet of glass
+  does -- the sky where the bits behind are open and the field coupled to the
+  sky where they are not.
+- **Its own index.** Where the cloud carries the layers, a transmitting
+  gaussian bends by its specular index whenever the cloud's `ior` says it
+  bends at all. That reaches relit clouds with layers too, which proposal 026
+  made and which were drawn with the cloud's one index until now; a cloud
+  without layers is unchanged.
+
+What it is not: the blend still lets the gaussians behind the glass through
+by its opacity (`--glass-opacity`), and the field is degree 3 -- the cabin
+seen through a windscreen is its colour and brightness, blurred, not its
+seats. The rt route keeps tracing the far face and what is behind, and only
+takes the index.
+
+**Checked** (pending the GPU turn): a clear pane over a grey floor holds the
+floor's closed form in its field straight down and next to nothing straight
+up ([glass] in athenea_usd_tests); the glass ball on a ground in
+`tx_conversions_render_like_the_mesh`.

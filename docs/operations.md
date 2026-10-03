@@ -1102,6 +1102,13 @@ the body and the reflections as the sun's does. Where a frame also measured
 a shadow by ray (`--cloud-shadows`), the darker of the two stands. The bits
 say which ways leave the scene, not which reach a lamp: an object beyond a
 lamp that stands among things still shadows it.
+A transmitting gaussian of a TX transfer keeps the far half too: its field is
+baked over the whole sphere, so the rasteriser shows, through a windscreen,
+the sky where the bits behind are open and what the field holds -- the
+cabin -- where they are not, along the way straight through, as a slab sends
+it. Where a cloud carries the layers, a transmitting gaussian bends by its
+own index (`specularIor`) wherever the cloud's `ior` says it bends at all;
+the cloud's single `ior` is whichever glass the conversion met first.
 `thinWalled` is nonzero where the gaussian came from a thin-walled glass
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame

@@ -583,6 +583,21 @@ float3 bakeDirection(uint at, uint sample) {
     return bakeAim(n, u);
 }
 
+/// THE SAME OVER THE WHOLE SPHERE (task TX, step 5): the stratum's height
+/// stretched to [-1, 1], and a direction below the surface its mirror image
+/// through the tangent plane, so the grid covers both halves evenly. What a
+/// transmitting gaussian's transfer draws its first direction from.
+float3 bakeSphereDirection(uint at, uint sample) {
+    const float3 n = bakeFacing(at);
+    const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
+    const uint side = max(uint(sqrt(float(max(path.samples, 1u))) + 0.5), 1u);
+    const uint2 cell = uint2(sample % side, (sample / side) % side);
+    const float2 u = saturate((float2(cell) + random2(pixel, sample, 0u, 41u)) / float(side));
+    const float z = 2.0 * u.x - 1.0;
+    const float3 up = bakeAim(n, float2(abs(z), u.y));
+    return z >= 0.0 ? up : up - 2.0 * dot(up, n) * n;
+}
+
 /// Whether a sample looks at the surface from the side it faces. Every one of
 /// them does now that they are drawn from that half, and the test stands for
 /// a normal that is not quite the one the ray was built on.
@@ -673,6 +688,7 @@ static const bool kBake = false;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
 LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
+float3 bakeSphereDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float bakeBasisAt(uint at, uint sample, uint basis) { return 0.0; }
 bool bakeRaised(uint at) { return false; }
 float3 bakeSurfaceNormal(uint at) { return float3(0.0, 0.0, 1.0); }
@@ -1645,6 +1661,15 @@ void tracePathsAt(uint2 group, uint index) {
         // A transfer's first direction and what it weighed (the field's).
         float3 firstDirection = float3(0.0, 0.0, 1.0);
         float  firstWeight = 1.0;
+        // THE FAR HALF, where the material lets light through (task TX, step
+        // 5): a TX transfer at a transmitting gaussian draws its first
+        // direction over the whole sphere, so the field holds what stands
+        // behind the glass -- a cabin, a reflector -- as well as in front. A
+        // sample drawn behind feeds the field alone; the two transfer halves
+        // keep their estimator, over the front, from the samples drawn there.
+        bool   firstTransmits = false;
+        bool   backSample = false;
+        float  firstMeasure = 2.0 * 3.14159265358979;
         // The first vertex's opacity is the pixel's, and its depth; a
         // medium's collision is opaque.
         float  opacity = 0.0;
@@ -1723,7 +1748,7 @@ void tracePathsAt(uint2 group, uint index) {
                     // cosine alone (the direct half, a scalar); after a
                     // bounce it carries the colour of whatever it bounced
                     // off, which is the indirect half.
-                    if (transferMode && bounce > 0) {
+                    if (transferMode && bounce > 0 && !backSample) {
                         for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
                             const float basis = shBasisValue(c, d);
                             if (bounce == 1) {
@@ -1740,7 +1765,7 @@ void tracePathsAt(uint2 group, uint index) {
                         // drawn from. In the split's sums, which a transfer
                         // does not keep.
                         if (cellsMode && bounce >= 2) {
-                            const float3 arrived = throughput / max(firstWeight, 1.0e-6) * kBakeMeasure;
+                            const float3 arrived = throughput / max(firstWeight, 1.0e-6) * firstMeasure;
                             for (uint c = 0; c < 16u; ++c) {
                                 indirectCoefficients[c] += arrived * shBasisValue(c, firstDirection);
                             }
@@ -1847,6 +1872,15 @@ void tracePathsAt(uint2 group, uint index) {
                     shaded.stack.emission /= keep;
                 }
                 cur = shaded;
+                if (cellsMode && bounce == 0) {
+                    // Before the body is kept: a glass's transmission is
+                    // its dielectric, which the body drops as polish.
+                    for (uint k = 0; k < shaded.stack.count; ++k) {
+                        const Lobe lobe = shaded.stack.lobes[k];
+                        firstTransmits = firstTransmits ||
+                                         (lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0)));
+                    }
+                }
                 if (kBake && bounce == 0) {
                     // The body of the material, never its polish (bakeBody
                     // says why). Baking the polish into harmonics was tried:
@@ -1991,18 +2025,25 @@ void tracePathsAt(uint2 group, uint index) {
             }
             if (transferMode && bounce == 0) {
                 const float3 n = cur.inputs.normalWorld;
-                const float3 wi = bakeDirection(at, sample);
+                const bool sphere = cellsMode && firstTransmits;
+                const float3 wi = sphere ? bakeSphereDirection(at, sample) : bakeDirection(at, sample);
                 const float cosine = dot(n, wi);
-                if (!(cosine > 0.0)) {
+                backSample = sphere && cosine < 0.0;
+                if (!(cosine > 0.0) && !backSample) {
                     break;
                 }
+                // Over the sphere the density is 1/4pi, so the front's
+                // estimator is 4 cos where it was 2 cos; behind, the weight is
+                // one and the path carries the radiance that arrives.
+                const float weight = backSample ? 1.0 : (sphere ? 4.0 : 2.0) * cosine;
                 ms.valid = true;
                 ms.wi = wi;
                 ms.pdf = 1.0;
                 ms.delta = false;
-                ms.weight = float3(2.0 * cosine);
+                ms.weight = float3(weight);
                 firstDirection = wi;
-                firstWeight = 2.0 * cosine;
+                firstWeight = weight;
+                firstMeasure = (sphere ? 4.0 : 2.0) * 3.14159265358979;
             } else {
                 ms = stackSample(cur.stack, cur.toEye, float3(random2(tid, sample, bounce, 5u),
                                                               random(tid, sample, bounce, 7u)));

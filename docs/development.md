@@ -940,6 +940,16 @@ measured one -- and adds `splatLightBounce`: the indirect half read along the
 light, on the body and the sheen, and the reflected field scaled to it where
 the base's and the coat's lobes are closed.
 
+**Glass in the transfer.** At a TX transfer's first vertex the kernel notes
+whether the material transmits (a lobe that does not only reflect, read
+before `bakeBody` drops the dielectric as polish); if it does, the first
+direction is drawn over the whole sphere (`bakeSphereDirection`, density
+`1/4pi`, the front's estimator `4 cos`), and a sample drawn behind feeds the
+field alone. `relitByDome` reads, for a transmitting gaussian with the field
+and nothing traced, the sky where the bits behind are open and the field
+where they are closed, along `-wo`. The kernels give a transmitting gaussian
+its own index from its layers when the cloud bends at all.
+
 **Saying otherwise about a prim.** The Cryptomatte id a gaussian carries is
 also a selection -- everything that came from one prim -- so
 `render::SplatOverride` is a row keyed on it: metallic, roughness,

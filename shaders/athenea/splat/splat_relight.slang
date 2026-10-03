@@ -875,7 +875,25 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
         // is what every side of a cloud was answered with before a transfer
         // existed. Without this a glass ball that carries one is a dark
         // shell, because half its body has nowhere to take its light from.
-        const float3 behind = transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide);
+        float3 behind = transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide);
+        // WHAT A TX TRANSFER'S GLASS SHOWS THROUGH (step 5). The rasteriser
+        // traces nothing, and one bend at the entry face showed the sky where
+        // a windscreen shows the cabin. A transmitting gaussian's cells were
+        // traced behind it as well and its field drawn over the whole sphere,
+        // so along the way out -- straight on, as a slab sends it, since one
+        // bend at one face is not what a sheet of glass does -- the sky
+        // stands where the bits are open and what the field holds where they
+        // are not. A solid's own far face closes its bits, so through a slab
+        // it is the field that answers, and it saw through that face.
+        if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0) {
+            const float3 through = -wo;
+            const float alpha = max(s.roughness * s.roughness, 1.0e-3);
+            const float openBehind = splatConeOpen(s, cellBits, through, min(1.4 * atan(alpha), 1.2), -s.normal);
+            const float open = openBehind >= 0.0 ? openBehind : 0.0;
+            behind = (open * envRadiance(envTexels, dome, through, s.roughness, envBaseSide) +
+                      (1.0 - open) * coupling * splatFieldAlong(s, transfer, through, s.roughness)) *
+                     s.exitThrough;
+        }
         // WHAT PASSES IS WHAT IS NOT REFLECTED. The reflection is added
         // below whatever the surface does, so a transmitted half at full
         // strength is more light than arrived: a glass ball came back half
