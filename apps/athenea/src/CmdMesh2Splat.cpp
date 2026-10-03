@@ -189,6 +189,13 @@ struct Options {
     /// where the relative variance per cost says they are worth most.
     uint32_t                 bakeExtra = 128;
     uint32_t                 bakePassSamples = 64;
+    /// A-TROUS PASSES of the splat bake filter (0: none), over the whole
+    /// light unless `bakeFilterIndirectOnly`.
+    uint32_t                 bakeFilter = 3;
+    double                   bakeFilterLuminance = 4.0;
+    /// The indirect half alone, as proposal 012 had it, rather than the
+    /// whole light (which is where the grain was, measured on the pawn).
+    bool                     bakeFilterIndirectOnly = false;
     bool                     defaultLights = false;
     /// Carry the skeleton: the gaussians are built in the bind pose and each
     /// keeps the joints that move it.
@@ -1465,7 +1472,11 @@ public:
     /// The path tracer's answer at every gaussian, written into its colour
     /// (below, beside the free functions it replaced).
     [[nodiscard]] Result<void> bake(const std::string& stage, double time, const usd::BakeOptions& bake,
-                                    bool defaultLights);
+                                    bool defaultLights, aofx::Effect* filter);
+    /// THE SPLAT BAKE FILTER over the indirect half (plugins/splatbakefilter):
+    /// the half packed into the two pictures the effect reads, and its answer
+    /// unpacked back over it (`athenea/usd/bake_filter_io`).
+    [[nodiscard]] Result<void> filterIndirect(aofx::Effect& filter, usd::BakeSplit& split);
     /// How much of an environment reaches each gaussian, instead of the light.
     [[nodiscard]] Result<void> transfer(const std::string& stage, double time, uint32_t samples,
                                         uint32_t bounces, bool indirect, std::vector<float>& direct,
@@ -1588,7 +1599,7 @@ private:
 /// What crosses back is the count of gaussians the bake found a surface
 /// under.
 Result<void> Converter::bake(const std::string& stage, double time, const usd::BakeOptions& options,
-                             bool defaultLights) {
+                             bool defaultLights, aofx::Effect* filter) {
     const auto started = std::chrono::steady_clock::now();
     const uint32_t samples = options.samples;
     const uint32_t bounces = options.bounces;
@@ -1600,12 +1611,18 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
         ATHENEA_TRY((*renderer)->setDefaultLights(true));
     }
     // THE BAKE IN TWO HALVES (StageRenderer::bakeSplitOnDevice): direct and
-    // indirect as sums, more paths where they are worth most, then the two
-    // fitted and added.
+    // indirect as sums, more paths where they are worth most, the indirect
+    // half filtered between neighbours, then the two added and fitted.
     auto split = (*renderer)->bakeSplitOnDevice(rays_, count_, time, options);
     if (!split) return std::move(split).error();
     const double traced =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    double filtered = 0.0;
+    if (filter != nullptr && options_->bakeFilter > 0) {
+        const auto from = std::chrono::steady_clock::now();
+        ATHENEA_TRY(filterIndirect(*filter, *split));
+        filtered = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count();
+    }
     auto baked = (*renderer)->combineBake(*split, rays_);
     if (!baked) return std::move(baked).error();
     auto lit = counter();
@@ -1641,13 +1658,104 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
                     options.passSamples,
                     static_cast<double>(split->extraPoints) * options.passSamples / std::max(count_, 1u));
     }
-    std::printf("mesh2splat: traced in %.0f ms\n", traced);
+    std::printf("mesh2splat: traced in %.0f ms, filtered in %.0f ms (%u passes)\n", traced, filtered,
+                filter != nullptr ? options_->bakeFilter : 0u);
     if (found * 2 < count_) {
         std::fprintf(stderr,
                      "mesh2splat: more than half the gaussians found no surface under them; the bake "
                      "is unlikely to be what you want\n");
     }
     return ok();
+}
+
+/// THE INDIRECT HALF, FILTERED BETWEEN NEIGHBOURS, as an AOFX effect: what
+/// it is handed is pictures in the host's own storage, written and read back
+/// by kernels through views of the same memory.
+Result<void> Converter::filterIndirect(aofx::Effect& filter, usd::BakeSplit& split) {
+    gpu::Device& device = library_->device();
+    const uint32_t count = split.count;
+    const uint32_t coefficients = split.coefficients;
+    auto points = image::Image::create(pictureFor(uint64_t{count} * 3));
+    if (!points) return std::move(points).error();
+    auto light = image::Image::create(pictureFor(uint64_t{count} * coefficients));
+    if (!light) return std::move(light).error();
+    auto pointsView = viewOf(*context_, *points, "mesh2splat.filterPoints");
+    if (!pointsView) return std::move(pointsView).error();
+    auto lightView = viewOf(*context_, *light, "mesh2splat.filterIndirect");
+    if (!lightView) return std::move(lightView).error();
+    // The prim each gaussian came from: the matte's ids, which the filter
+    // does not average across. A cloud whose ids do not line up with its
+    // gaussians is filtered as one prim, and says so.
+    std::vector<uint32_t> ids(count, 0);
+    if (cryptoIds_.size() == count) {
+        ids = cryptoIds_;
+    } else {
+        std::fprintf(stderr, "mesh2splat: %zu ids for %u gaussians; the filter takes them as one prim\n",
+                     cryptoIds_.size(), count);
+    }
+    auto idBuffer = gpu::Buffer::fromSpan<uint32_t>(device, ids, "mesh2splat.filterIds");
+    if (!idBuffer) return std::move(idBuffer).error();
+    const auto kernel = [&](const char* entry) {
+        return gpu::ComputeKernel::create(*library_, "athenea/usd/bake_filter_io", entry);
+    };
+    auto pack = kernel("bakeFilterPoints");
+    if (!pack) return std::move(pack).error();
+    auto in = kernel("bakeFilterIn");
+    if (!in) return std::move(in).error();
+    auto out = kernel("bakeFilterOut");
+    if (!out) return std::move(out).error();
+    const auto bind = [&](rhi::ShaderCursor cursor, const gpu::Buffer& picture, const image::ImagePtr& image) {
+        cursor["rays"].setBinding(rays_.rhi());
+        cursor["records"].setBinding(records_.rhi());
+        cursor["io"]["perRecord"].setData(recordFloats());
+        cursor["io"]["size"].setData(uint32_t{4});
+        cursor["ids"].setBinding(idBuffer->rhi());
+        cursor["guides"].setBinding(split.guides.rhi());
+        cursor["indirect"].setBinding(split.indirect.rhi());
+        cursor["direct"].setBinding(split.direct.rhi());
+        cursor["io"]["withDirect"].setData(options_->bakeFilterIndirectOnly ? 0u : 1u);
+        cursor["picture"].setBinding(picture.rhi());
+        cursor["io"]["count"].setData(count);
+        cursor["io"]["coefficients"].setData(coefficients);
+        cursor["io"]["width"].setData(static_cast<uint32_t>(image->bounds().width()));
+        cursor["io"]["stride"].setData(static_cast<uint32_t>(image->stride()));
+    };
+    const uint32_t entries = count * coefficients;
+    {
+        gpu::CommandBatch batch(device);
+        pack->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *pointsView, *points); });
+        in->dispatch(batch, {entries, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *lightView, *light); });
+        ATHENEA_TRY(batch.submit(true));
+        // Written on the device: the host must not hand the effect the
+        // copy it holds.
+        (*points)->deviceWrote();
+        (*light)->deviceWrote();
+    }
+    aofx_host::EffectJob job;
+    job.bounds = pictureFor(uint64_t{count} * coefficients);
+    job.instance = "athenea/mesh2splat/bakefilter";
+    job.inputs.push_back({"Points", *points});
+    job.inputs.push_back({"Indirect", *light});
+    const auto number = [&job](const char* name, double value) {
+        job.params.push_back(aofx::ParamValue{name, {value}, {}});
+    };
+    number("count", static_cast<double>(count));
+    number("coefficients", static_cast<double>(coefficients));
+    number("iterations", static_cast<double>(options_->bakeFilter));
+    number("sigmaLuminance", options_->bakeFilterLuminance);
+    auto rendered = aofx_host::renderEffect(*context_, filter, job);
+    if (!rendered) return std::move(rendered).error();
+    const std::vector<float>* said = (*rendered)->attached("filtered");
+    if (said == nullptr || said->size() < 3) {
+        return Error(ErrorCode::DeviceFailure, "the splat bake filter did not say what it filtered");
+    }
+    std::printf("mesh2splat: the bake filtered over a %.3g cell (%.0f gaussians left out of a full one)\n",
+                static_cast<double>((*said)[2]), static_cast<double>((*said)[1]));
+    auto answer = viewOf(*context_, *rendered, "mesh2splat.filtered");
+    if (!answer) return std::move(answer).error();
+    gpu::CommandBatch batch(device);
+    out->dispatch(batch, {entries, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *answer, *rendered); });
+    return batch.submit(true);
 }
 
 /// HOW MUCH OF AN ENVIRONMENT REACHES EACH GAUSSIAN, baked instead of the
@@ -1820,6 +1928,16 @@ void addMesh2Splat(CLI::App& app) {
                     "sqrt(relative variance / cost)");
     cmd->add_option("--bake-pass-samples", o->bakePassSamples, "paths a gaussian in each adaptive pass")
         ->check(CLI::Range(1u, 4096u));
+    cmd->add_option("--bake-filter", o->bakeFilter,
+                    "a-trous passes of the splat bake filter over the bake's indirect light (0: none); "
+                    "the direct light, which holds the shadows, is never filtered")
+        ->check(CLI::Range(0u, 8u));
+    cmd->add_option("--bake-filter-luminance", o->bakeFilterLuminance,
+                    "the filter's edge: a neighbour whose indirect light differs by this many standard "
+                    "deviations counts e^-1 as much");
+    cmd->add_flag("--bake-filter-indirect-only", o->bakeFilterIndirectOnly,
+                  "filter the indirect light alone and leave the direct as traced (by default the whole "
+                  "light is filtered, weighed by its own noise, which keeps a shadow's edge)");
     cmd->add_option("--bake-degree", o->bakeDegree,
                     "harmonics the bake fits, 0 to 3: 0 is one colour a gaussian and cannot hold a "
                     "reflection, and each degree costs a pass over the paths");
@@ -1881,6 +1999,17 @@ void addMesh2Splat(CLI::App& app) {
         if (effect == nullptr) {
             std::fprintf(stderr, "no Mesh2Splat bundle on the AOFX search path (try `athenea aofx list`)\n");
             throw CLI::RuntimeError(1);
+        }
+        // The filter a bake's indirect light goes through, where it is asked
+        // for: missing, it is a conversion that cannot be what was asked.
+        aofx::Effect* filter = nullptr;
+        if (o->bake && !o->transfer && o->bakeFilter > 0) {
+            filter = registry.find("rt.sparrow.aofx.splatbakefilter");
+            if (filter == nullptr) {
+                std::fprintf(stderr, "no SplatBakeFilter bundle on the AOFX search path (try `athenea aofx "
+                                     "list`), and --bake-filter asks for it\n");
+                throw CLI::RuntimeError(1);
+            }
         }
 
         // Everything that touches the device happens on the host's own GPU
@@ -1989,7 +2118,7 @@ void addMesh2Splat(CLI::App& app) {
                     bake.degree = std::min(o->bakeDegree, 3u);
                     bake.extraSamples = o->bakeExtra;
                     bake.passSamples = o->bakePassSamples;
-                    ATHENEA_TRY(converter.bake(o->stage, o->time, bake, o->defaultLights));
+                    ATHENEA_TRY(converter.bake(o->stage, o->time, bake, o->defaultLights, filter));
                 }
 
                 // THE RIG, WHEN THE CLOUD KEEPS ONE. Four joints a gaussian came

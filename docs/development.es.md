@@ -790,6 +790,27 @@ tamaño de la nube; cada pasada saca sus propios caminos, así que el lote
 cambia el ruido de una respuesta, no su media. Es el mismo integrador que usa un frame,
 compilado con su constante de bake en cierto: no una segunda implementación.
 
+**El bake en dos mitades.** Lo que llama la conversión es
+`StageRenderer::bakeSplitOnDevice`: el mismo tracer con `BakePoints::split`,
+que no ajusta nada y escribe sumas -- cada armónico contra la luz directa (la
+emisión en el primer vértice, la estimación del siguiente evento desde él, y
+lo que su propia muestra encontró de una luz, con MIS a ambos lados) y contra
+la indirecta, y después la muestra más brillante, los momentos de la
+luminancia y los pasos que dieron los caminos (`athenea/usd/bake_resolve`
+tiene la disposición). Las sumas se suman, así que una segunda pasada en las
+gaussianas que la necesitan se añade encima (`allotBakePasses`: sqrt(varianza
+relativa / coste) por gaussiana, MARS con la gaussiana como celda), y el
+ajuste (`common/bake_fit.slang`, el del propio tracer, sacado de él) se hace
+una vez sobre todos los caminos que tomó una gaussiana, cada mitad por su
+cuenta. Entre el ajuste y `combineBake`, que suma las mitades y las acota como
+lo hace el bake del tracer, la conversión puede pasar las mitades al filtro de
+bake de splats (`plugins/splatbakefilter`, un efecto AOFX: à-trous sobre una
+rejilla hash de las gaussianas, con pesos por distancia en el plano tangente,
+normal, id Cryptomatte y el ruido de cada una), empaquetadas en imágenes y de
+vuelta por `athenea/usd/bake_filter_io`. `bakePointsOnDevice` sigue siendo lo
+que era, el ajuste en el tracer, para una transferencia y para los tests que
+lo piden.
+
 **Una gaussiana elevada** se hornea desde el punto plano que tiene debajo,
 bajando por la normal plana — un rayo desde donde está empezaría bajo la
 superficie allí donde el relieve la hundió — con una tercera entrada, su
@@ -1032,6 +1053,9 @@ rechazan, el resto se dice.
 | la celda desde una cámara | los mismos | la tarjeta a tres unidades de la lente tiene más del triple que la que está a siete |
 | salida `.athc` | los mismos | las mismas tarjetas como `.athc` y como escena se dibujan igual (p99 como mucho 1) |
 | los rayos del bake en el dispositivo | `athenea_usd_tests "[mesh2splat]"` | cada rayo empieza a `1e-4` de la diagonal de la caja; el bake del dispositivo responde lo que el del host; las pasadas responden como una |
+| el bake en dos mitades | `athenea_usd_tests "[split]"` | directa e indirecta ajustadas por separado y combinadas responden lo que el bake entero, a 1e-4, y cada punto junto a una pared iluminada tiene luz indirecta |
+| las pasadas adaptativas | `athenea_usd_tests "[adaptive]"` | con sumas cuya varianza difiere cien veces, la mitad ruidosa recibe de 8 a 12 veces las pasadas de la tranquila, y entre las dos el presupuesto con un 5 % |
+| el filtro del bake | `athenea_aofx_tests "[bakefilter]"` | un escalón de luz ruidoso sobre un plano vuelve con menos de una cuarta parte de su error, cada lado del escalón a menos de 0.05 de su propia luz |
 | entero o nada | `athenea_core_tests "[platform]"` | un escritor que falla no deja fichero ni parcial |
 | el mapa de recorte | `athenea_aofx_tests` | un alfa de 0.3 se vuelve una opacidad de 0.3, no una gaussiana o nada |
 | el bake de luz | casos de bake de `athenea_usd_tests` | un plano lambertiano vuelve con la radiancia que dice la aritmética, y un metal no sale negro |

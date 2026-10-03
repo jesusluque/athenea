@@ -396,6 +396,9 @@ recipe is §3.1 below.
 | `--bake-samples` | integer | `128` | paths every gaussian takes first; a transfer takes this plus `--bake-extra` |
 | `--bake-extra` | integer | `128` | paths a gaussian on average added after the first pass, shared out by sqrt(relative variance / cost) of what the first pass saw; 0 traces none |
 | `--bake-pass-samples` | integer, 1 to 4096 | `64` | paths each added pass gives the gaussians it is for; a gaussian gets at most 16 such passes |
+| `--bake-filter` | integer, 0 to 8 | `3` | a-trous iterations of the splat bake filter (the `SplatBakeFilter` bundle) over the baked light; 0 filters nothing. The first reaches a cell of 1.5 gaussians, each doubles it |
+| `--bake-filter-luminance` | number | `4` | the filter's edge: a neighbour whose light differs by this many standard deviations of the gaussian's own noise counts e^-1 as much. Larger smooths more and keeps less of a faint edge |
+| `--bake-filter-indirect-only` | flag | off | filter the indirect light alone and leave the direct as traced |
 | `--bake-bounces` | integer | `3` | after the first hit |
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |
@@ -723,6 +726,15 @@ and `--bake-bounces` are the quality; `--bake-degree` is how much of the
 direction the result keeps — 0 is one colour, 2 is where a highlight starts to
 look like one. `--no-bake` keeps the material instead, and the cloud is relit
 by whatever scene it is put in.
+
+The bake is taken in two halves, the direct light and the indirect, as sums:
+`--bake-samples` paths at every gaussian, then `--bake-extra` more on
+average where the first pass was noisiest for what its paths cost, then the
+light filtered between neighbouring gaussians of one prim by the
+`SplatBakeFilter` bundle, which must be on the AOFX search path while
+`--bake-filter` is above 0. On the pawn under an HDRI the defaults take 10 %
+longer than 256 paths a gaussian and carry half their error against a
+4096-path bake (docs/decisions.md, "The bake's grain").
 
 **A cloud that carries the sky instead of the light.** `--transfer` bakes a
 transfer vector: for every gaussian, how much of an environment arrives from

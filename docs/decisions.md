@@ -10989,5 +10989,98 @@ whole frame against the mesh 0.0107 against 0.105. The paths go to the
 gaussians that a few bright paths make noisy -- the glass head, the gold
 ring -- which are what the whole frame's relMSE was made of (a dozen
 gaussians at 55 where the mesh reads 22), and not to the marble, whose grain
-is spread evenly. In 145.3 s against 132.6 s: ten passes, and a quarter of
-the gaussians traced again in each on average.
+is spread evenly. In 145.3 s against 132.6 s: ten passes, and a fifth of the
+gaussians traced again in each on average.
+
+### 4. The splat bake filter
+
+An AOFX effect, `plugins/splatbakefilter` (`rt.sparrow.aofx.splatbakefilter`):
+it makes new data out of a cloud's records and nothing else, which is what an
+effect is for, as mesh2splat is one; the conversion packs the split bake into
+two pictures and unpacks the answer (`athenea/usd/bake_filter_io`). Inside,
+the gaussians go into a hash grid whose cell is 1.5 median footprints
+(measured by a kernel: a quarter-octave histogram of the footprints), and each
+of `--bake-filter` iterations (default 3) reads the 27 cells around a gaussian
+at a stride of 2^iteration cells: a-trous over the cloud instead of a
+picture's pixels, a hash rather than the Morton order or the LOD octree,
+because the effect sees the gaussians in the order they came and a sort is
+what a counter avoids. A neighbour counts by the B3 spline, by a gaussian of
+its distance on this one's tangent plane (the stride) and off it (half a
+cell: the far side of a thin wall is not a neighbour), by cos^32 of the
+angle between the normals, by whether its Cryptomatte id is this one's, and
+by `exp(-|l_i - l_j| / (sigma sqrt(var_i)))`, with `l` the mean luminance of
+the paths and `var` the variance of that mean, both carried through the
+iterations as SVGF carries them. Not the harmonics' constant term: a fit over
+the half of the sphere a surface faces puts in its constant whatever the far
+half needs, and two neighbours a few degrees apart differ there by more than
+their light -- the first version weighed by it and filtered nothing.
+
+**The whole light, not the indirect alone.** Proposal 012 filters only the
+indirect half so that shadows stay sharp; on the pawn that half holds none of
+the grain (step 2). The filter takes the whole light by default, weighed by
+the whole light's noise, and a shadow survives because its edge is a step
+many times that noise. `--bake-filter-indirect-only` is the proposal's way.
+A third way was tried and dropped: the direct half's harmonics past the
+constant with the indirect, the constant left alone -- weighed by the
+indirect's noise, it made the body's relMSE against the 4096-path bake worse
+(0.0433 against 0.0109 unfiltered).
+
+Checked: `athenea_aofx_tests "[bakefilter]"`, a step of 0.2 to 1.0 across a
+plane of 64 x 64 gaussians with uniform noise of half-width 0.15: the mean
+squared error away from the step falls from 0.0077 to 0.0002, and the
+columns either side of it read 0.220 and 0.965.
+
+### Measured: the pawn (M5 Pro, release)
+
+Degree 3, 3 bounces, 730 559 gaussians, drawn at 768 x 768 (`athenea stage
+--technique rt --path-total 64`). Against the mesh path traced at 1024 paths
+(whole frame) and against the same cloud baked at 4096 paths (the body, the
+pawn below the gold ring, 246 x 270 pixels); grain is the mean
+|difference| from the 4096-path bake in a 50 x 40 window of marble
+(`athenea compare --heatmap --show difference`, then `--window 400 188 450
+228` of that); the penumbra is the 20-80 % rise, in rows, of the shadow
+under the collar on the shaft (a 30-pixel strip). Times are the bake's.
+
+| Bake | Time | relMSE vs mesh | relMSE vs 4096 (body) | Grain | Penumbra |
+|---|---|---|---|---|---|
+| 64 paths (before) | 35 s | 0.0292 | 0.0386 | 0.0384 | 14 |
+| 256 paths (step 1) | 133 s | 0.1050 | 0.0109 | 0.0200 | 18 |
+| 256, indirect filtered | 132 s | 0.0182 | 0.0109 | 0.0200 | |
+| 128 + 128 adaptive | 145 s | 0.0107 | 0.0084 | 0.0205 | |
+| 64, filtered | 35 s | 0.0109 | 0.0124 | 0.0242 | 11 |
+| 256, filtered | 138 s | 0.0162 | 0.0056 | 0.0121 | 18 |
+| 128 + 128 adaptive, filtered (default) | 145 s | 0.0090 to 0.0124 | 0.0046 to 0.0056 | 0.0142 to 0.0146 | 17 |
+| the same, `--bake-filter-luminance 16` | 145 s | 0.0088 | 0.0035 | 0.0140 | 18 |
+| 4096 paths | 2103 s | 0.0107 | 0 | 0 | 17 |
+| the mesh | | 0 | | | 17 |
+
+Two runs of the default differ because which gaussians a pass packs is
+decided by an atomic counter, and with it which paths each draws: the range
+is the two. Five iterations instead of three moved little (the body's
+0.0056 to 0.0053 at 256 paths). The 64-path time is the split bake's; the
+old one was not timed alone.
+
+What it comes to. The target was the 4096-path bake's relMSE against the
+mesh (0.0107, the bias a bake has whatever its paths) with half the grain of
+a 256-path bake, in the same time. The default reaches the first (0.009 to
+0.012) in 145 s against 133 s, and with the body's error against the truth
+at half of 256 paths' (0.005 against 0.011); the grain comes down by 30 %,
+not by half: 0.0142 against 0.0200. Spending the same time without the
+adaptive passes gives less grain (0.0121) and twice the error elsewhere. A
+64-path bake filtered is already at 0.0109 against the mesh in a quarter of
+the time, which is what a draft conversion wants. The penumbra stays within
+the metric's own noise of the mesh's.
+
+### Not done
+
+- Indirect by gather (proposal 012, step 2): one bounce reading the baked
+  harmonics of the gaussian a ray meets. The grain was not in the indirect
+  half here, so it would not have moved these numbers; a scene of
+  interreflection (a room) is where it would.
+- The closed-form part of a transfer (research's step 0: the unoccluded
+  `cos * Y_lm` integrated exactly, only `(1 - V) cos Y_lm` sampled) belongs to
+  `--transfer`, not to the radiance bake measured here, where the integrand
+  is the light leaving the surface and has no closed form.
+- The grain that is left is the harmonics': sixteen coefficients from 256
+  paths. A filter that weighed each band by its own variance, rather than the
+  luminance's, is the next thing to try.
