@@ -834,6 +834,8 @@ cloud (see *Blender's Gaussian splats as `UsdGeomPoints`* in 4.3). Its
 `radiance:base` (DC and opacity), which Blender's writer drops, is written by
 the add-on's USD export hook, `athenea_splat_export`, in every USD export
 made while the scene's render engine is Athenea -- a file export included.
+The export method is the scene's (`scene.hydra.export_method`, `HYDRA` by
+default); a render of a scene with splats under `HYDRA` prints so.
 Volumes (`.vdb`) are off in this build.
 
 ### 4.2 Render settings

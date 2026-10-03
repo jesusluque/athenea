@@ -849,7 +849,9 @@ splats de Blender como `UsdGeomPoints`* en 4.3). Su `radiance:base` (DC y
 opacidad), que el escritor de Blender pierde, lo escribe el hook de
 exportación USD del add-on, `athenea_splat_export`, en toda exportación USD
 hecha mientras el motor de render de la escena es Athenea -- también una
-exportación a archivo. Los volúmenes (`.vdb`) están desactivados en esta
+exportación a archivo. El método de exportación es el de la escena
+(`scene.hydra.export_method`, `HYDRA` por defecto); un render de una escena
+con splats bajo `HYDRA` lo avisa. Los volúmenes (`.vdb`) están desactivados en esta
 compilación.
 
 ### 4.2 Render settings

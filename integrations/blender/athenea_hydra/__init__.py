@@ -85,6 +85,7 @@ class AtheneaHydraRenderEngine(bpy.types.HydraRenderEngine):
     bl_delegate_id = 'HdAtheneaRendererPlugin'
 
     def get_render_settings(self, engine_type):
+        _warn_hidden_splats()
         if engine_type == 'VIEWPORT':
             return {}
         return {
@@ -151,6 +152,19 @@ def _write_splat_base(stage, xform, evaluated):
         primvar = UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
             "radiance:base", Sdf.ValueTypeNames.Float4Array, UsdGeom.Tokens.vertex)
         primvar.Set(Vt.Vec4fArray.FromNumpy(values))
+
+
+def _warn_hidden_splats():
+    """Blender's Hydra export method hands no point cloud to a delegate:
+    a scene with Gaussian splats renders them only with the USD one."""
+    scene = bpy.context.scene
+    hydra = getattr(scene, "hydra", None)
+    if hydra is None or hydra.export_method != 'HYDRA':
+        return
+    if any(o.type == 'POINTCLOUD' and getattr(o.data, "type", None) == 'GAUSSIAN_SPLAT'
+           for o in scene.objects):
+        print("athenea_hydra: Gaussian splats are drawn only with the USD export method "
+              "(Render Properties > Hydra > Export Method, scene.hydra.export_method = 'USD')")
 
 
 def _panels():
