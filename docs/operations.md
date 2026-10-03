@@ -396,7 +396,7 @@ recipe is §3.1 below.
 | `--bake-samples` | integer | `128` | paths every gaussian takes first; a transfer takes this plus `--bake-extra` |
 | `--bake-extra` | integer | `128` | paths a gaussian on average added after the first pass, shared out by sqrt(relative variance / cost) of what the first pass saw; 0 traces none |
 | `--bake-pass-samples` | integer, 1 to 4096 | `64` | paths each added pass gives the gaussians it is for; a gaussian gets at most 16 such passes |
-| `--bake-filter` | integer, 0 to 8 | `3` | a-trous iterations of the splat bake filter (the `SplatBakeFilter` bundle) over the baked light; 0 filters nothing. The first reaches a cell of 1.5 gaussians, each doubles it |
+| `--bake-filter` | integer, 0 to 8 | `3` | a-trous iterations of the splat bake filter (the `SplatBakeFilter` bundle) over the baked light, and over a TX transfer's bounced halves (its indirect half and reflected field); 0 filters nothing. The first reaches a cell of 1.5 gaussians, each doubles it |
 | `--bake-filter-luminance` | number | `4` | the filter's edge: a neighbour whose light differs by this many standard deviations of the gaussian's own noise counts e^-1 as much. Larger smooths more and keeps less of a faint edge |
 | `--bake-filter-indirect-only` | flag | off | filter the indirect light alone and leave the direct as traced |
 | `--bake-bounces` | integer | `3` | after the first hit |

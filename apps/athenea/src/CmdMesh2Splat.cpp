@@ -1523,10 +1523,15 @@ public:
     /// the half packed into the two pictures the effect reads, and its answer
     /// unpacked back over it (`athenea/usd/bake_filter_io`).
     [[nodiscard]] Result<void> filterIndirect(aofx::Effect& filter, usd::BakeSplit& split);
+    /// THE SAME FILTER OVER A TX TRANSFER'S BOUNCED HALVES: the indirect
+    /// half's rgb and the reflected field, in the answer the bake laid out
+    /// (`athenea/usd/transfer_filter_io`).
+    [[nodiscard]] Result<void> filterTransfer(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
+                                              uint32_t entries, uint32_t fieldFirst);
     /// How much of an environment reaches each gaussian, instead of the light.
     [[nodiscard]] Result<void> transfer(const std::string& stage, double time, uint32_t samples,
                                         uint32_t bounces, bool indirect, uint32_t cells, uint32_t degree,
-                                        usd::TransferArrays& out);
+                                        aofx::Effect* filter, usd::TransferArrays& out);
 
 private:
     /// Whether any material of the stage gives off light: the records then
@@ -1820,8 +1825,87 @@ Result<void> Converter::filterIndirect(aofx::Effect& filter, usd::BakeSplit& spl
 /// gathers. The frame then reads `albedo * dot(transfer, sky)` under whatever
 /// sky the cloud is put in. On the device as the bake is; the three arrays
 /// the file keeps come back as bytes.
+Result<void> Converter::filterTransfer(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
+                                       uint32_t entries, uint32_t fieldFirst) {
+    gpu::Device& device = library_->device();
+    const uint32_t count = count_;
+    const uint32_t perGaussian = coefficients + (fieldFirst != 0 ? 16u : 0u);
+    auto points = image::Image::create(pictureFor(uint64_t{count} * 3));
+    if (!points) return std::move(points).error();
+    auto light = image::Image::create(pictureFor(uint64_t{count} * perGaussian));
+    if (!light) return std::move(light).error();
+    auto pointsView = viewOf(*context_, *points, "mesh2splat.transferFilterPoints");
+    if (!pointsView) return std::move(pointsView).error();
+    auto lightView = viewOf(*context_, *light, "mesh2splat.transferFilterIn");
+    if (!lightView) return std::move(lightView).error();
+    std::vector<uint32_t> ids(count, 0);
+    if (cryptoIds_.size() == count) {
+        ids = cryptoIds_;
+    }
+    auto idBuffer = gpu::Buffer::fromSpan<uint32_t>(device, ids, "mesh2splat.transferFilterIds");
+    if (!idBuffer) return std::move(idBuffer).error();
+    const auto kernel = [&](const char* entry) {
+        return gpu::ComputeKernel::create(*library_, "athenea/usd/transfer_filter_io", entry);
+    };
+    auto pack = kernel("transferFilterPoints");
+    if (!pack) return std::move(pack).error();
+    auto in = kernel("transferFilterIn");
+    if (!in) return std::move(in).error();
+    auto out = kernel("transferFilterOut");
+    if (!out) return std::move(out).error();
+    const auto bind = [&](rhi::ShaderCursor cursor, const gpu::Buffer& picture, const image::ImagePtr& image) {
+        cursor["rays"].setBinding(rays_.rhi());
+        cursor["records"].setBinding(records_.rhi());
+        cursor["ids"].setBinding(idBuffer->rhi());
+        cursor["answer"].setBinding(answer.rhi());
+        cursor["picture"].setBinding(picture.rhi());
+        cursor["io"]["count"].setData(count);
+        cursor["io"]["coefficients"].setData(coefficients);
+        cursor["io"]["entries"].setData(entries);
+        cursor["io"]["fieldFirst"].setData(fieldFirst);
+        cursor["io"]["width"].setData(static_cast<uint32_t>(image->bounds().width()));
+        cursor["io"]["stride"].setData(static_cast<uint32_t>(image->stride()));
+        cursor["io"]["perRecord"].setData(recordFloats());
+        cursor["io"]["size"].setData(uint32_t{4});
+    };
+    const uint32_t values = count * perGaussian;
+    {
+        gpu::CommandBatch batch(device);
+        pack->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *pointsView, *points); });
+        in->dispatch(batch, {values, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *lightView, *light); });
+        ATHENEA_TRY(batch.submit(true));
+        (*points)->deviceWrote();
+        (*light)->deviceWrote();
+    }
+    aofx_host::EffectJob job;
+    job.bounds = pictureFor(uint64_t{count} * perGaussian);
+    job.instance = "athenea/mesh2splat/transferfilter";
+    job.inputs.push_back({"Points", *points});
+    job.inputs.push_back({"Indirect", *light});
+    const auto number = [&job](const char* name, double value) {
+        job.params.push_back(aofx::ParamValue{name, {value}, {}});
+    };
+    number("count", static_cast<double>(count));
+    number("coefficients", static_cast<double>(perGaussian));
+    number("iterations", static_cast<double>(options_->bakeFilter));
+    number("sigmaLuminance", options_->bakeFilterLuminance);
+    auto rendered = aofx_host::renderEffect(*context_, filter, job);
+    if (!rendered) return std::move(rendered).error();
+    const std::vector<float>* said = (*rendered)->attached("filtered");
+    if (said != nullptr && said->size() >= 3) {
+        std::printf("mesh2splat: the transfer's bounced halves filtered over a %.3g cell\n",
+                    static_cast<double>((*said)[2]));
+    }
+    auto filtered = viewOf(*context_, *rendered, "mesh2splat.transferFiltered");
+    if (!filtered) return std::move(filtered).error();
+    gpu::CommandBatch batch(device);
+    out->dispatch(batch, {values, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *filtered, *rendered); });
+    return batch.submit(true);
+}
+
 Result<void> Converter::transfer(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
-                                 bool indirect, uint32_t cells, uint32_t degree, usd::TransferArrays& out) {
+                                 bool indirect, uint32_t cells, uint32_t degree, aofx::Effect* filter,
+                                 usd::TransferArrays& out) {
     ATHENEA_TRY(spanRays());
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
@@ -1843,6 +1927,14 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     const double traced =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     gpu::Device& device = library_->device();
+    // THE BOUNCED HALVES FILTERED between neighbours, where the splat bake
+    // filter is on the search path and --bake-filter asks for it: what a
+    // path saw after meeting the scene is the noisiest thing a transfer keeps.
+    if (filter != nullptr && indirect && side > 0 && options_->bakeFilter > 0) {
+        const uint32_t entries = coefficients + technique::transferPlanes(true, side);
+        const uint32_t fieldFirst = field ? entries - technique::kTransferFieldPlanes : 0u;
+        ATHENEA_TRY(filterTransfer(*filter, *baked, coefficients, entries, fieldFirst));
+    }
     const auto made = [&](uint64_t words, const char* label) {
         gpu::BufferDesc desc;
         desc.bytes = std::max<uint64_t>(words, 1) * 4;
@@ -2080,7 +2172,9 @@ void addMesh2Splat(CLI::App& app) {
         // The filter a bake's indirect light goes through, where it is asked
         // for: missing, it is a conversion that cannot be what was asked.
         aofx::Effect* filter = nullptr;
-        if (o->bake && !o->transfer && o->bakeFilter > 0) {
+        // A TX transfer's bounced halves go through it too (a first transfer,
+        // --transfer-cells 0, is kept as it was).
+        if (((o->bake && !o->transfer) || (o->transfer && o->transferCells > 0)) && o->bakeFilter > 0) {
             filter = registry.find("rt.sparrow.aofx.splatbakefilter");
             if (filter == nullptr) {
                 std::fprintf(stderr, "no SplatBakeFilter bundle on the AOFX search path (try `athenea aofx "
@@ -2185,7 +2279,7 @@ void addMesh2Splat(CLI::App& app) {
                     // the frame lights them with whatever sky it has, so the same
                     // file is right under every HDRI rather than under one.
                     ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples + o->bakeExtra, o->bakeBounces, o->indirect,
-                                                   o->transferCells, o->transferDegree, transferred));
+                                                   o->transferCells, o->transferDegree, filter, transferred));
                 } else if (o->bake) {
                     usd::BakeOptions bake;
                     bake.samples = o->bakeSamples;

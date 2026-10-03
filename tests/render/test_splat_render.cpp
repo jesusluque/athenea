@@ -1111,6 +1111,73 @@ TEST_CASE("a TX transfer's reflected field reads back, and couples to a sky line
     CHECK(counts[6] == 0);
 }
 
+// A TX TRANSFER'S BOUNCED HALVES GO TO THE FILTER AND COME BACK WHOLE.
+//
+// The splat bake filter reads pictures; `transfer_filter_io` lays a
+// transfer's indirect half and reflected field into one and back. Out of a
+// picture that nothing changed, the answer must come back as it was -- the
+// direct half in the indirect coefficients' w untouched, the coverage and
+// the cells untouched -- or the filter would be changing what it was never
+// asked to.
+TEST_CASE("a TX transfer's bounced halves go into the filter's picture and back unchanged",
+          "[render][gpu][field][filter]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const uint32_t count = 50, coefficients = 16, entries = 16 + 1 + 2 + 16, fieldFirst = entries - 16;
+    std::vector<float> answer(size_t{count} * entries * 4);
+    for (size_t i = 0; i < answer.size(); ++i) {
+        answer[i] = 0.001F * static_cast<float>(i % 997) + 0.25F;
+    }
+    gpu::BufferDesc desc;
+    desc.bytes = answer.size() * 4;
+    desc.elementBytes = 16;
+    auto values = gpu::Buffer::create(*gpu->device, desc, answer.data());
+    REQUIRE(values);
+    auto before = gpu::Buffer::create(*gpu->device, desc, answer.data());
+    REQUIRE(before);
+    const uint32_t width = 64;
+    const uint32_t pictureEntries = count * (coefficients + 16);
+    desc.bytes = uint64_t{pictureEntries + width} * 16;
+    auto picture = gpu::Buffer::create(*gpu->device, desc);
+    REQUIRE(picture);
+    gpu::Buffer words = test::uintBuffer(*gpu->device, count * 12 + 16, "filterio.words");
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        cursor["rays"].setBinding(words.rhi());
+        cursor["records"].setBinding(words.rhi());
+        cursor["ids"].setBinding(words.rhi());
+        cursor["answer"].setBinding(values->rhi());
+        cursor["picture"].setBinding(picture->rhi());
+        cursor["io"]["count"].setData(count);
+        cursor["io"]["coefficients"].setData(coefficients);
+        cursor["io"]["entries"].setData(entries);
+        cursor["io"]["fieldFirst"].setData(fieldFirst);
+        cursor["io"]["width"].setData(width);
+        cursor["io"]["stride"].setData(width);
+        cursor["io"]["perRecord"].setData(uint32_t{1});
+        cursor["io"]["size"].setData(uint32_t{0});
+    };
+    auto in = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/transfer_filter_io", "transferFilterIn");
+    if (!in) FAIL(in.error().toString());
+    auto out = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/transfer_filter_io", "transferFilterOut");
+    if (!out) FAIL(out.error().toString());
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        in->dispatch(batch, {pictureEntries, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        out->dispatch(batch, {pictureEntries, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    // Compared on the device: an image of `count * entries` texels, the two
+    // answers, which must not differ at all.
+    auto diff = render::compareHdr(*gpu->library, *values, *before, count * entries, 1);
+    REQUIRE(diff);
+    std::printf("  the filter's round trip: max relative %.3g over %u entries\n", diff->maxRelative,
+                count * entries);
+    CHECK(diff->maxRelative == 0.0);
+}
+
 // GLASS SENDS ON WHAT IT DID NOT REFLECT, AND NOT MORE.
 //
 // A transmitting gaussian's body is the light that came through it, and the

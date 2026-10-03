@@ -832,7 +832,10 @@ rejilla hash de las gaussianas, con pesos por distancia en el plano tangente,
 normal, id Cryptomatte y el ruido de cada una), empaquetadas en imágenes y de
 vuelta por `athenea/usd/bake_filter_io`. `bakePointsOnDevice` sigue siendo lo
 que era, el ajuste en el tracer, para una transferencia y para los tests que
-lo piden.
+lo piden. La respuesta de un transfer TX pasa por el mismo filtro antes de
+escribirse (`athenea/usd/transfer_filter_io`): el rgb de la mitad indirecta y
+el campo reflejado, con una varianza dada al filtro que nunca lo detiene, ya
+que un transfer no guarda momentos.
 
 **Una gaussiana elevada** se hornea desde el punto plano que tiene debajo,
 bajando por la normal plana — un rayo desde donde está empezaría bajo la

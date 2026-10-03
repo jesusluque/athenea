@@ -796,7 +796,10 @@ does, the conversion may hand the halves to the splat bake filter
 gaussians, weighed by tangent-plane distance, normal, Cryptomatte id and each
 one's noise), packed into pictures and back by `athenea/usd/bake_filter_io`.
 `bakePointsOnDevice` stays what it was, the fit in the tracer, for a transfer
-and for the tests that ask for it.
+and for the tests that ask for it. A TX transfer's answer goes through the
+same filter before it is written (`athenea/usd/transfer_filter_io`): the
+indirect half's rgb and the reflected field, with a variance handed to the
+filter that never stops it, since a transfer keeps no moments.
 
 **A raised gaussian** is baked from the flat point under it, down the flat
 normal — a ray from where it stands would start under the surface wherever the

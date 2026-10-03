@@ -401,7 +401,7 @@ receta es §3.1.
 | `--bake-samples` | entero | `128` | caminos que toma primero cada gaussiana; una transferencia toma estos más `--bake-extra` |
 | `--bake-extra` | entero | `128` | caminos por gaussiana en promedio añadidos tras la primera pasada, repartidos por sqrt(varianza relativa / coste) de lo que vio la primera; 0 no traza ninguno |
 | `--bake-pass-samples` | entero, 1 a 4096 | `64` | caminos que da cada pasada añadida a las gaussianas para las que es; una gaussiana recibe como mucho 16 de ellas |
-| `--bake-filter` | entero, 0 a 8 | `3` | iteraciones à-trous del filtro de bake de splats (el bundle `SplatBakeFilter`) sobre la luz horneada; 0 no filtra nada. La primera alcanza una celda de 1.5 gaussianas, y cada una la dobla |
+| `--bake-filter` | entero, 0 a 8 | `3` | iteraciones à-trous del filtro de bake de splats (el bundle `SplatBakeFilter`) sobre la luz horneada, y sobre las mitades rebotadas de un transfer TX (su mitad indirecta y su campo reflejado); 0 no filtra nada. La primera alcanza una celda de 1.5 gaussianas, y cada una la dobla |
 | `--bake-filter-luminance` | número | `4` | el borde del filtro: una vecina cuya luz difiere en este número de desviaciones típicas del ruido de la gaussiana cuenta e^-1 veces. Más alto suaviza más y conserva menos un borde tenue |
 | `--bake-filter-indirect-only` | flag | desactivado | filtra solo la luz indirecta y deja la directa como se trazó |
 | `--bake-bounces` | entero | `3` | tras el primer impacto |

@@ -11546,3 +11546,33 @@ Checked (pending the GPU turn): a wide slab of opaque gaussians low over a
 floor under a plain dome, the floor under it seen from the side, darker with
 the cloud's shadows than without by at least two fifths
 (`a cloud shadows a mesh under a dome on the raster route`).
+
+### The transfer's grain
+
+The light bake's grain was fought with two tools (task 8, "The bake's
+grain"): more paths where the noise is, and the splat bake filter between
+neighbours. A transfer had neither, and a TX transfer has more to be noisy
+in: the reflected field is what a path saw after meeting the scene, at 64
+paths a gaussian at the Corvette's settings.
+
+**The filter.** A TX transfer's indirect half (its rgb; the w of the same
+planes is the direct half, which holds the shadows and is left) and its
+reflected field go through `SplatBakeFilter` before they are written, laid
+into its pictures and back by `athenea/usd/transfer_filter_io`, at
+`--bake-filter` iterations (3). The filter's edge-stopping guide is the noise
+of what it filters, and a transfer keeps no moments, so it is handed a
+variance that never stops it: the weights are where a neighbour stands on the
+tangent plane, which way it faces and which prim it came from. A first
+transfer (`--transfer-cells 0`) is written as it was.
+
+**Not done: the adaptive passes.** They share paths out by each gaussian's
+relative variance per cost, which a bake kept as sums can say; a transfer's
+estimator is the stratified projection itself, in one pass, with no sums.
+Kept as sums, a transfer would add passes the way the bake does -- the
+coefficients are means -- but the bits come from the first sample of the
+first pass, and what to weigh the allotment by (the field's noise, the
+indirect half's) is a measurement to make first.
+
+Checked (pending the GPU turn): the pictures' round trip changes nothing,
+the direct half in the w included ([filter] in athenea_render_tests); the
+balls' fixtures convert through the filter.
