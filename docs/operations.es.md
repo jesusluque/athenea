@@ -365,9 +365,9 @@ receta es §3.1.
 | `--max-splats` | entero | `2000000` | el presupuesto, de toda la escena |
 | `--sigma` | número | `1.0` | anchura de la gaussiana en celdas; la de mesh2splat es 0.65 |
 | `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos |
-| `--opacity` | número | `1.0` | de donde arranca cada gaussiana |
-| `--glass-opacity` | número | `0.6` | lo que sigue parando un material que transmite del todo |
-| `--opacity-cut` | número | `0.5` | por debajo de esto, un mapa de recorte dice que no hay superficie: el `opacity` de UsdPreviewSurface, el `opacity` de standard_surface o el `geometry_opacity` de OpenPBR conectado a una imagen |
+| `--opacity` | número, de 0 a 1 | `1.0` | cobertura: cuánto de lo que hay detrás cubre la superficie convertida, multiplicado por la opacidad propia del material. Toda opacidad es cobertura -- esta, la constante del material, el valor de un mapa, lo que conserva un vidrio -- y cada gaussiana toma lo que necesita una de las varias que hay sobre un punto, así que 0.5 cubre la mitad a cualquier tamaño |
+| `--glass-opacity` | número, de 0 a 1 | `0.6` | cobertura que conserva un sólido que transmite del todo. Un vidrio de pared fina (y una opacidad de UsdPreviewSurface menor que uno en su modo `transparent` por defecto) cubre en cambio lo que la lámina refleja con su índice |
+| `--opacity-cut` | número, de 0 a 1 | `0.5` | donde la opacidad de un material es un mapa sin umbral propio (el `opacity` de UsdPreviewSurface, el `opacity` de standard_surface, el `geometry_opacity` de OpenPBR, el `alpha` de glTF en BLEND): por debajo de esto no se escribe ninguna gaussiana; por encima, la superficie cubre lo que lee el mapa. El umbral propio del material (`opacityThreshold`, el `alpha_cutoff` de glTF en MASK) se usa en su lugar, y lo que conserva queda entero |
 | `--max-cells` | entero | `262144` | celdas como mucho que recorre un triángulo |
 | `--texture-size` | entero | `1024` | un mapa se lee no mayor que esto; 0 lo lee a su tamaño |
 | `--no-textures` | flag | apagado | ignorar los mapas; los materiales se quedan con sus valores constantes |

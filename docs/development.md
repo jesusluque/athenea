@@ -361,7 +361,7 @@ runs in openFXplayer. `athenea mesh2splat` is the largest example in the tree, a
 
 ## 5. The test suite
 
-Eighteen binaries, one per area, all under `tests/`.
+Nineteen binaries, one per area, all under `tests/`.
 
 | Binary | Covers |
 |---|---|
@@ -381,11 +381,15 @@ Eighteen binaries, one per area, all under `tests/`.
 | `athenea_view_tests` | the viewer; label `display` |
 | `athenea_gpu_host_tests` | gpe adopting slang-rhi's device; label `gpe` |
 | `athenea_aofx_tests` | the SDK, the host, and the mesh2splat effect; label `gpe` |
+| `athenea_coverage_tests` | what a converted surface covers against its mesh (`tests/data/coverage`); needs the `mesh2splat_coverage` fixture, which ctest runs first, and skips without it; label `gpe` |
 | `athenea_sched_tests` | the frame clock and PTP |
 
-Plus four tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
-`single_tbb` (one TBB in the process), and the two `mesh2splat_density_*`
-that run the real CLI and assert on the line it prints.
+Plus five tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
+`single_tbb` (one TBB in the process), the two `mesh2splat_density_*`
+that run the real CLI and assert on the line it prints, and
+`mesh2splat_coverage`, the real CLI converting the planes
+`athenea_coverage_tests` measures (a fixture: `athenea_test(... FIXTURES
+<name>)` makes every case of a binary require one).
 
 **Why `athenea_host_tests` links nothing.** It drives the plugin the way a host
 does, by name. Were it to link `athenea::usd` as well, a template instantiated in

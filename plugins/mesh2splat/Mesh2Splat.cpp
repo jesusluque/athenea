@@ -127,8 +127,13 @@ struct Mesh2SplatUniforms {
     /// (2^levels cells a side).
     float    simplify = 0.0F;
     uint32_t simplifyLevels = 3;
-    uint32_t simplifyPad0 = 0;
-    uint32_t simplifyPad1 = 0;
+    /// 1: the cut-out is a threshold (UsdPreviewSurface's `opacityThreshold`,
+    /// glTF's MASK), and what it keeps is whole rather than its value.
+    uint32_t opacityBinary = 0;
+    /// 1: `opacity`, the mask and `glassOpacity` are the surface's coverage,
+    /// and each gaussian takes what one of the stack over a point needs for
+    /// it; 0: each gaussian's own opacity, as before.
+    uint32_t coverage = 1;
 
     /// What the surface gives off: the Emission clip, where there is one,
     /// times `emissionColour`, written in a record entry of its own.
@@ -145,8 +150,17 @@ struct Mesh2SplatUniforms {
     uint32_t emissionChannel = 0;
     uint32_t emissionUv2 = 0;
     uint32_t emissionPad = 0;
+
+    /// 1: the glass is a sheet, and covers what it reflects at `ior` rather
+    /// than `glassOpacity`.
+    uint32_t thinWall = 0;
+    float    ior = 1.5F;
+    /// The material's own coverage (its constant opacity), multiplied into
+    /// `opacity`: the user's and the material's are two numbers.
+    float    materialOpacity = 1.0F;
+    uint32_t coveragePad = 0;
 };
-static_assert(sizeof(Mesh2SplatUniforms) == 352, "must match M2sParams exactly");
+static_assert(sizeof(Mesh2SplatUniforms) == 368, "must match M2sParams exactly");
 
 class Mesh2Splat final : public aofx::Effect {
 public:
@@ -213,6 +227,57 @@ public:
         opacityCut.hardMin = {0.0};
         opacityCut.hardMax = {1.0};
         into.params.push_back(opacityCut);
+
+        aofx::ParamDesc opacityBinary;
+        opacityBinary.name = "opacityBinary";
+        opacityBinary.label = "Cut-out is a threshold";
+        opacityBinary.hint =
+            "Where the cut is the material's own threshold (UsdPreviewSurface's opacityThreshold, "
+            "glTF's MASK), what it keeps is the whole surface rather than the value it read.";
+        opacityBinary.type = aofx::ParamType::Boolean;
+        opacityBinary.defaults = {0.0};
+        into.params.push_back(opacityBinary);
+
+        aofx::ParamDesc coverage;
+        coverage.name = "coverage";
+        coverage.label = "Opacity is coverage";
+        coverage.hint =
+            "Opacity, the cut-out's value and the glass opacity say how much of what stands behind "
+            "the surface it covers, and each gaussian takes what one of the several over a point "
+            "needs for that. Off, they are each gaussian's own opacity, and a surface of overlapping "
+            "gaussians covers far more than they say: a mask of 0.5 covered 96%.";
+        coverage.type = aofx::ParamType::Boolean;
+        coverage.defaults = {1.0};
+        into.params.push_back(coverage);
+
+        aofx::ParamDesc thinWall;
+        thinWall.name = "thinWall";
+        thinWall.label = "Thin wall";
+        thinWall.hint =
+            "The glass is a sheet: it sends what it does not reflect straight on, so it covers only what "
+            "it reflects head on at its index, 2R/(1+R), instead of the glass opacity.";
+        thinWall.type = aofx::ParamType::Boolean;
+        thinWall.defaults = {0.0};
+        into.params.push_back(thinWall);
+
+        aofx::ParamDesc ior;
+        ior.name = "ior";
+        ior.label = "Index";
+        ior.hint = "The thin wall's index of refraction.";
+        ior.type = aofx::ParamType::Double;
+        ior.defaults = {1.5};
+        ior.hardMin = {1.0};
+        into.params.push_back(ior);
+
+        aofx::ParamDesc materialOpacity;
+        materialOpacity.name = "materialOpacity";
+        materialOpacity.label = "Material opacity";
+        materialOpacity.hint = "The material's own constant coverage, multiplied into the opacity.";
+        materialOpacity.type = aofx::ParamType::Double;
+        materialOpacity.defaults = {1.0};
+        materialOpacity.hardMin = {0.0};
+        materialOpacity.hardMax = {1.0};
+        into.params.push_back(materialOpacity);
 
         aofx::ParamDesc triangles;
         triangles.name = "triangles";
@@ -305,8 +370,8 @@ public:
         glass.name = "glassOpacity";
         glass.label = "Glass Opacity";
         glass.hint =
-            "What a fully transmitting material still stops, scaled by how much it transmits: 1 "
-            "keeps the opacity whole, which is what a gaussian did before this existed, and low "
+            "What a fully transmitting material still covers, scaled by how much it transmits: 1 "
+            "keeps the surface whole, which is what a gaussian did before this existed, and low "
             "is a window you can see through. A translucent material is not a transparent one, "
             "so the default keeps everything and the caller says otherwise.";
         glass.type = aofx::ParamType::Double;
@@ -689,6 +754,12 @@ public:
         uniforms.opacityChannel =
             hasCut != 0 ? static_cast<uint32_t>(request.number("opacityChannel", 4.0)) : 0U;
         uniforms.opacityCut = static_cast<float>(request.number("opacityCut", 0.5));
+        uniforms.opacityBinary = request.number("opacityBinary", 0.0) >= 0.5 ? 1U : 0U;
+        uniforms.coverage = request.number("coverage", 1.0) >= 0.5 ? 1U : 0U;
+        uniforms.thinWall = request.number("thinWall", 0.0) >= 0.5 ? 1U : 0U;
+        uniforms.ior = static_cast<float>(std::max(request.number("ior", 1.5), 1.0));
+        uniforms.materialOpacity =
+            static_cast<float>(std::clamp(request.number("materialOpacity", 1.0), 0.0, 1.0));
         const aofx::InputPlane* uv2 = request.input("Texcoord2");
         const bool withUv2 = uv2 != nullptr && uv2->buffer.isValid();
         uniforms.hasUv2 = withUv2 ? 1U : 0U;

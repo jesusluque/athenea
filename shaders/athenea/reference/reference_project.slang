@@ -86,10 +86,8 @@ void referenceProject(uint3 tid: SV_DispatchThreadID) {
     if (!(det > 1e-12)) {
         return;
     }
-    float alpha = p.w;
-    if (params.antialias != 0) {
-        alpha *= sqrt(max(before, 0.0) / det);
-    }
+    // As the rasteriser pays for its filter (`paidOpacity`, splat/frame).
+    const float alpha = params.antialias != 0 ? paidOpacity(p.w, sqrt(max(before, 0.0) / det)) : p.w;
     if (!(alpha >= 1.0 / 255.0)) {
         return;
     }

@@ -9932,3 +9932,132 @@ What it is not:
   not asked, and sees that light unshadowed as before.
 - Three kernels cost a second evaluation of the material where lobe samples
   are drawn. Not timed.
+## A converted surface covers what its opacity says
+
+mesh2splat lays a gaussian a cell over a surface, `sigma` cells wide, so a
+point of it is under several at once, and a partial opacity written straight
+into each of them was not the surface's: a mask of 0.5 covered 96% of what
+stood behind it, and `--glass-opacity 0.6` 98%. Every opacity the
+conversion reads is now **coverage** -- `--opacity`, the material's
+constant, a map's value, what a glass keeps -- multiplied as the surface's,
+and only then made into what one gaussian of the stack takes for it.
+
+**The mapping** is the effect's (`m2sCoverageAlpha` in
+plugins/mesh2splat/mesh2splat.slang); nothing is computed on the host. What
+passes the stack is the product of `1 - alpha g`; to second order
+`-ln T = sum alpha g + alpha^2 g^2 / 2`, and on the grid the footprints sum to
+`2 pi sigma^2` and their squares to `pi sigma^2`, so coverage F wants
+`(pi sigma^2 / 2) alpha^2 + 2 pi sigma^2 alpha = -ln(1 - F)`, plus the 1/255
+of its area a faint gaussian is not drawn over (the thin-wall card's
+correction). The first-order term alone (`exp(-alpha 2 pi sigma^2)`) left
+0.25 / 0.5 / 0.75 covering 0.253 / 0.510 / 0.770; the second-order one
+0.251 / 0.501 / 0.752. F of 0.999 and up is 1, so an opaque surface stays
+opaque, and 0 is 0. A thin wall now covers what its sheet reflects,
+`2R/(1+R)` at its index, worked out by the effect (`m2sGlassCovers`); the
+thin-wall card it makes is the one the earlier section measured (0.0778
+against the sheet's 0.0769, both routes).
+
+The effect's new parameters are additive and keep its old behaviour where a
+host does not set them: `coverage` (on by default; off, every opacity is each
+gaussian's own, as before), `opacityBinary`, `thinWall`, `ior` and
+`materialOpacity`.
+
+**What a material says.** `usd::StageMaterial` gains `opacity` (constant
+coverage) and `opacityThreshold`:
+
+- MaterialX `opacity` (color3 on standard_surface, its mean), OpenPBR
+  `geometry_opacity`, and glTF `alpha` in BLEND are coverage, constant or
+  map -- which is what the mesh draws them as, by lot.
+- glTF's `alpha_mode`: OPAQUE (the default) ignores the alpha, MASK cuts at
+  `alpha_cutoff`. Before, any glTF alpha map was a cut-out.
+- UsdPreviewSurface: `opacityThreshold > 0` makes a map a cut-out at the
+  threshold (what it keeps is whole: `opacityBinary`) and decides a
+  constant to 0 or 1; `opacityMode = presence` is coverage; the default
+  `transparent` keeps reading a constant under one as a thin wall's
+  transmission (ebb684a), and a map as coverage.
+- A mesh whose opacity comes out 0 is skipped. A map with no threshold is
+  cut at `--opacity-cut` (no gaussian below it), and above it covers what it
+  reads; a triangle that caught no cell no longer writes a gaussian at its
+  middle where the cut says its middle is not there (an all-cut plane
+  covered 2%).
+
+**MaterialX constant opacity under one** is carried as coverage, not as
+transmission: the mesh renders it as a surface there by lot
+(`MaterialCompiler`'s cut-out flag), and a gaussian that covers F of what is
+behind it is exactly that, on both routes.
+
+**`--opacity-cut` stays 0.5.** The sparrow (wing camera, its alpha without
+the dome): cut at 0.5 / 0.25 / 0.1 wrote 953 242 / 1 003 077 / 1 045 417
+gaussians and covered 0.23669 / 0.23683 / 0.23688 (raster) -- the soft
+fringe under 0.5 is 10% more gaussians for 0.0002 of coverage.
+
+**The rasteriser paid for its filter in energy and not in the cut.**
+Spreading a splat by the antialiasing filter (or the shutter, or the lens)
+lowers its peak to `k alpha` so its energy is kept, but a splat is drawn only
+out to where it falls under 1/255, and what that leaves out is 1/255 of its
+area -- an area the spread made `1/k` times larger. A converted plane of 0.25
+at a twentieth of the screen covered 0.18 under the raster and 0.25 under the
+ray tracer, which draws the sharp splat. `paidOpacity` (splat/frame.slang,
+used by splat_project and the reference's projection alike) draws it at
+`k alpha + (1 - k)/255`, which keeps what the sharp splat keeps, and leaves a
+splat the spread does not touch (`k` 1) as it was -- but only where the spread
+splat was drawn at all (`k alpha >= 1/255`). Paying every splat back drew the
+ones the filter had made too faint for the cut, which is what a distant cloud
+is: the converted pawn at about 80 pixels of a 512 x 512 frame went from 8.7
+to 29.8 ms (debug). As it is, 11.0 ms there and 9.1 against 8.0 ms farther
+out: the drawn splats' footprints grow with their peak.
+
+Measured (`athenea_coverage_tests`, 256 x 256, the planes'
+middle three fifths, alpha with nothing behind and colour over a backdrop of
+1, against the mesh's alpha at full size):
+
+| Plane | Mesh | Raster 1x / 0.25x / 0.05x | Traced alpha 1x / 0.25x / 0.05x |
+|---|---|---|---|
+| constant 0.25 | 0.250 | 0.251 / 0.250 / 0.248 | 0.251 / 0.251 / 0.251 |
+| constant 0.5 | 0.500 | 0.501 / 0.499 / 0.493 | 0.501 / 0.501 / 0.500 |
+| constant 0.75 | 0.750 | 0.752 / 0.749 / 0.736 | 0.752 / 0.752 / 0.752 |
+| map 0.5 | 0.500 | 0.503 / 0.501 / 0.496 | 0.503 / 0.502 / 0.502 |
+| map 0.75 | 0.745 | 0.751 / 0.748 / 0.735 | 0.751 / 0.751 / 0.751 |
+| opaque | 1.000 | 1.000 / 1.000 / 0.999 | 1.000 / 1.000 / 1.000 |
+| cut-out, halves 0.25 / 0.75 at 0.5 | 0 / 1 | 0.000 / 1.000 at every size | the same |
+
+Before, each gaussian took the opacity itself: 0.5 on a stack of
+`2 pi sigma^2 = 6.3` is `1 - exp(-3.1)`, 0.96 (estimated, not rendered).
+Without `paidOpacity` the raster at 0.05x read 0.18 / 0.455 / 0.73 for
+0.25 / 0.5 / 0.75 (with the first-order mapping). The map of 0.25 is under the default cut, so not there.
+
+The pawn and the sparrow (`--no-bake`, against the mesh, both renders by
+this build; alpha without the dome, relMSE with it):
+
+| | Alpha before -> after (mesh) | relMSE before -> after |
+|---|---|---|
+| pawn, raster | 0.0911 -> 0.0881 (0.0879) | 0.0811 -> 0.0723 |
+| pawn, traced | 0.0883 -> 0.0857 (0.0879) | 0.1098 -> 0.0769 |
+| sparrow wing, raster | 0.2395 -> 0.2367 (0.2253) | 0.1742 -> 0.1635 |
+| sparrow wing, traced | 0.2385 -> 0.2358 (0.2462) | 0.1331 -> 0.1247 |
+
+The pawn's glass head now covers its `--glass-opacity` of 0.6 rather than
+98%, and lets the room through as the mesh's refraction does. The wing's
+alpha excess over the mesh's raster is its silhouette, gaussians half a cell
+past every feather's cut, not its coverage. (The mesh's traced alpha counts
+a transparent-mode card whole.)
+
+Not done:
+- A cloud far enough that its gaussians are a few hundredths of a pixel
+  still loses itself in the raster: the pawn at about 80 pixels draws
+  5e-6 of the frame against the mesh's and the tracer's 3e-4. Paying those
+  back is the 3.4x above; levels of detail are the answer.
+- The overlap `2 pi sigma^2` is the grid's. A triangle smaller than a cell
+  writes one gaussian of its own size, and a displaced cell is split, and
+  both overlap otherwise; neither is corrected.
+- The mesh's renderer does not read glTF's `alpha` as a cut-out at all
+  (`cutsOut` looks at `opacity` and `geometry_opacity`), so a glTF MASK
+  converts cut and renders whole.
+- Separating occupancy from optical opacity, so a surface covers without
+  widening sigma (proposal R5, after arXiv 2603.02887, which was not read
+  for this change), was weighed and not done: an occupancy the renderers
+  read beside the opacity is a change to the splat format and to every
+  renderer, for a coverage that is already within 0.015 of the mesh at every
+  size measured here. The second-order transmittance above is this change's
+  own, derived for the conversion's grid.
+
