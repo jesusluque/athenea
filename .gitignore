@@ -38,3 +38,4 @@ compile_commands.json
 
 # Metal shader caches dropped at the root by a run with a relative cache path.
 /0/
+__pycache__/

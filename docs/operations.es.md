@@ -769,6 +769,33 @@ juntos, así que una variable encuentra los dos. El host ofrece entonces el
 renderer con su nombre, y los ajustes de abajo aparecen en su panel de render
 settings.
 
+### 4.1.1 Dentro de Blender
+
+Blender 5.3 dibuja con su propio OpenUSD (26.03, en su `libusd_ms`), así que
+hdAthenea para Blender es una compilación aparte contra ese USD
+(`macos-arm64-blender`, ver el manual de desarrollo). El add-on de
+`integrations/blender/athenea_hydra` registra el motor de render
+**Athenea** (`bl_delegate_id = HdAtheneaRendererPlugin`) y entrega el plugin
+a USD con `pxr.Plug` al activarse, antes del primer render.
+
+| Variable | Qué hace |
+|---|---|
+| `ATHENEA_HYDRA_PLUGIN_DIR` | el directorio `plugin/usd` de una compilación `macos-arm64-blender`. Sin ella el add-on mira en su propio `plugin/usd` y luego en su preferencia. |
+| `ATHENEA_MATERIALX_ROOT` | el add-on la pone en el `plugin/materialx` de la compilación (las bibliotecas de MaterialX 1.39.5) si no está ya definida. |
+
+```sh
+ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
+  /Applications/Blender.app/Contents/MacOS/Blender -b scene.blend \
+  --python-expr "import sys; sys.path.insert(0, '<repo>/integrations/blender'); import athenea_hydra; athenea_hydra.register()" \
+  -E ATHENEA_HYDRA -f 1
+```
+
+Los renders finales (F12, `-f`) funcionan; el viewport está sin probar. El
+método de exportación **Hydra** de Blender no entrega ninguna nube de puntos
+a un delegate; con **USD**, una nube de puntos de Gaussian splats llega como
+un prim `Points` dibujado como puntos: su `radiance:base` (opacidad y DC) no
+se exporta. Los volúmenes (`.vdb`) están desactivados en esta compilación.
+
 ### 4.2 Render settings
 
 Se autorizan en el namespace `athenea:` de un prim `UsdRenderSettings`, o los pone

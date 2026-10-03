@@ -72,6 +72,14 @@ set_target_properties(hdAthenea PROPERTIES
     BUILD_RPATH "${ATHENEA_PLUGIN_ORIGIN};${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib"
     INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN}")
 file(MAKE_DIRECTORY "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources")
+if(ATHENEA_BLENDER_LIB)
+    # Inside Blender: its libraries, which it has loaded already, through
+    # the executable's own path to them -- and not the header build's
+    # prefix, whose libtbb and libMaterialX* would be second copies.
+    set_target_properties(hdAthenea PROPERTIES
+        BUILD_RPATH "${ATHENEA_PLUGIN_ORIGIN};@executable_path/../Resources/lib;${SLANG_ROOT}/lib"
+        INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN};@executable_path/../Resources/lib")
+endif()
 configure_file(plugin/plugInfo.json.in "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources/plugInfo.json" @ONLY)
 else()
     # A tree configured for the desktop and then for the phone would leave

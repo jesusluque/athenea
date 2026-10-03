@@ -1,0 +1,16 @@
+# Copyright (c) 2026 jesus luque.
+schema_version = "1.0.0"
+
+id = "athenea_hydra"
+version = "0.1.0"
+name = "Athenea (Hydra)"
+tagline = "Athenea's Hydra delegate as a Blender render engine"
+maintainer = "jesus luque <jesusluquemuriel@gmail.com>"
+type = "add-on"
+tags = ["Render"]
+blender_version_min = "5.3.0"
+license = ["SPDX:LicenseRef-Proprietary"]
+platforms = ["macos-arm64"]
+
+[permissions]
+files = "Loads the hdAthenea Hydra plugin from disk"

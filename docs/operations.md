@@ -756,6 +756,33 @@ That directory holds the Hydra delegate `hdAthenea` and the codeless schemas
 together, so one variable finds both. A host then offers the renderer under
 its own name, and the settings below appear in its renderer-settings panel.
 
+### 4.1.1 Inside Blender
+
+Blender 5.3 draws through its own OpenUSD (26.03, in its `libusd_ms`), so
+hdAthenea for Blender is a separate build against that USD
+(`macos-arm64-blender`, see the development manual). The add-on in
+`integrations/blender/athenea_hydra` registers the render engine
+**Athenea** (`bl_delegate_id = HdAtheneaRendererPlugin`) and hands the plugin
+to USD with `pxr.Plug` when it is enabled, before the first render.
+
+| Variable | What it does |
+|---|---|
+| `ATHENEA_HYDRA_PLUGIN_DIR` | the `plugin/usd` directory of a `macos-arm64-blender` build. Without it the add-on looks in its own `plugin/usd`, then at its preference. |
+| `ATHENEA_MATERIALX_ROOT` | set by the add-on to the build's `plugin/materialx` (MaterialX 1.39.5's libraries) when it is not already set. |
+
+```sh
+ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
+  /Applications/Blender.app/Contents/MacOS/Blender -b scene.blend \
+  --python-expr "import sys; sys.path.insert(0, '<repo>/integrations/blender'); import athenea_hydra; athenea_hydra.register()" \
+  -E ATHENEA_HYDRA -f 1
+```
+
+Final renders (F12, `-f`) work; the viewport is untested. Blender's
+**Hydra** export method hands no point cloud to a delegate; with **USD**, a
+Gaussian-splat point cloud arrives as a `Points` prim drawn as points: its
+`radiance:base` (opacity and DC) is not exported. Volumes (`.vdb`) are off
+in this build.
+
 ### 4.2 Render settings
 
 These are authored in the `athenea:` namespace on a `UsdRenderSettings` prim, or

@@ -10,8 +10,13 @@ if(NOT ATHENEA_IOS)
     # of OpenUSD (an "embedded" target) names Metal instead.
     find_package(OpenGL REQUIRED)
 endif()
-find_package(pxr CONFIG REQUIRED HINTS "${ATHENEA_USD_ROOT}")
-message(STATUS "OpenUSD: ${pxr_DIR}")
+if(ATHENEA_BLENDER_LIB)
+    # Blender's own USD and what it links (macos-arm64-blender).
+    include("${ATHENEA_ROOT}/cmake/BlenderUsd.cmake")
+else()
+    find_package(pxr CONFIG REQUIRED HINTS "${ATHENEA_USD_ROOT}")
+    message(STATUS "OpenUSD: ${pxr_DIR}")
+endif()
 # MaterialX, which this OpenUSD is built with (scripts/build-usd.sh): the
 # engine's materials are generated from MaterialX documents by its Slang
 # generator.

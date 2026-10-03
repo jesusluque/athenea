@@ -74,7 +74,9 @@ cmake --build build/macos-arm64-debug --target athenea_render_tests   # one test
 - **One Slang, one slang-rhi, one TBB** in the process. `single_tbb` checks
   the TBB count.
 - **Toolchain.** OpenUSD with MaterialX/OpenVDB is built by
-  `scripts/build-usd.sh` into `~/tools/usd-26.08-mx`, OIDN (GPU devices
+  `scripts/build-usd.sh` into `~/tools/usd-26.08-mx` (for Blender's own USD,
+  headers only: `scripts/build-usd-blender.sh` and the
+  `macos-arm64-blender` preset), OIDN (GPU devices
   only) by `scripts/build-oidn.sh`, and OpenColorIO by
   `scripts/build-ocio.sh`.
 - **Roadmap.** The plan for complete USD (milestones M0–M11) is summarised in

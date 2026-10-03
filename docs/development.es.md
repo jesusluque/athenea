@@ -987,6 +987,27 @@ vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 | símbolos del driver de CUDA | un símbolo del driver tapado por el del runtime |
 | estructuras de aceleración en Metal | su manejo en Metal |
 
+**hdAthenea para Blender** (rama `blender`). Blender carga su propio
+OpenUSD, oneTBB, MaterialX, OpenColorIO y OIDN, así que el plugin se compila
+contra cabeceras que coinciden con ellos y se enlaza con las bibliotecas de
+Blender:
+
+1. `scripts/build-usd-blender.sh` (una vez): OpenUSD 26.03 configurado como
+   lo compila Blender -- monolítico, namespace `pxrBlender_v26_03`, Python
+   activado (las cabeceras de 3.13, de `uv python install 3.13`), el
+   `usd_ctor.diff` de Blender como el renombre `pxrctor` -> `pxbctor` -- con
+   oneTBB 2022.3, MaterialX 1.39.4 y OpenSubdiv 3.7.0, en
+   `~/tools/usd-26.03-blender`. Solo se compilan los targets de cabeceras de
+   USD.
+2. `cmake --preset macos-arm64-blender && cmake --build --preset
+   macos-arm64-blender`: `cmake/BlenderUsd.cmake` sustituye a
+   `find_package(pxr)`, cada target de USD un nombre para la `libusd_ms` de
+   Blender, y compila `MaterialXGenSlang` desde las fuentes de 1.39.5 en el
+   namespace de 1.39.4 sobre los shims de `integrations/blender/materialx`.
+   Solo se compilan `hdAthenea` y los shaders; sin tests.
+3. El add-on es `integrations/blender/athenea_hydra` (manual de operaciones,
+   4.1.1).
+
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
 `third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el
 submódulo, no aquí.

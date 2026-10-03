@@ -106,6 +106,23 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
+    },
+    {
+      "name": "macos-arm64-blender",
+      "inherits": "base",
+      "displayName": "macOS arm64 hdAthenea for Blender (Metal)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "ATHENEA_USD_ROOT": "$env{HOME}/tools/usd-26.03-blender",
+        "ATHENEA_BLENDER_LIB": "/Applications/Blender.app/Contents/Resources/lib",
+        "BUILD_TESTING": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -132,6 +149,14 @@
     {
       "name": "ios-arm64-release",
       "configurePreset": "ios-arm64-release"
+    },
+    {
+      "name": "macos-arm64-blender",
+      "configurePreset": "macos-arm64-blender",
+      "targets": [
+        "hdAthenea",
+        "athenea_shaders_copy"
+      ]
     }
   ],
   "testPresets": [

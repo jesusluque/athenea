@@ -9146,3 +9146,83 @@ definitions: a material named `material` is not the typedef of that name.
 Not done: a test of the override itself. It is exercised by the Blender
 spike (the default cube's material compiles and shades); a test would need
 a second MaterialX library tree in the build.
+
+## hdAthenea inside Blender: phase 0
+
+Blender 5.3 renders through Hydra (`bpy.types.HydraRenderEngine`, the
+delegate named by `bl_delegate_id`) with its own OpenUSD: 26.03, one
+monolithic `libusd_ms` in the namespace `pxrBlender_v26_03__pxrReserved__`,
+beside oneTBB 2022.3, MaterialX 1.39.4, OpenColorIO 2.5.0 and OIDN 2.5.0, and
+no USD headers. A plugin built against our 26.08 would be a second USD in the
+process. So the `blender` branch builds hdAthenea against headers that match
+Blender's and links Blender's libraries (`macos-arm64-blender`,
+`scripts/build-usd-blender.sh`, `cmake/BlenderUsd.cmake`).
+
+What has to match, and why:
+- the namespace, or nothing links;
+- Python support: Blender's USD has it, and it changes `VtValue`'s type-info
+  table and `TfAnyWeakPtr`'s vtable. Python 3.13's headers; Python's
+  symbols resolve against Blender's executable at load
+  (`-undefined dynamic_lookup`);
+- Blender's `usd_ctor.diff`: `ARCH_CONSTRUCTOR` entries go in a section
+  `pxbctor`, and Blender's `libusd_ms` runs only those (checked with
+  `otool -l`). A plugin built with the stock header puts its
+  `TF_REGISTRY_FUNCTION`s -- its renderer plugin's `TfType` -- where nothing
+  runs them;
+- the rpath: the header build's prefix holds a libtbb and libMaterialX* of
+  its own, so hdAthenea's rpath in this preset is its own directory,
+  `@executable_path/../Resources/lib` (Blender's) and Slang's, nothing else.
+
+hdAthenea compiled against 26.03 with no change: none of the 26.04-26.08 API
+the engine uses was missing. The gaps were MaterialX's. 1.39.4 has no Slang
+generator (MaterialXGenSlang is 1.39.5's) and keeps the hardware generator
+inside MaterialXGenShader, where 1.39.5 split it into MaterialXGenHw. The
+Slang generator and the seven hardware nodes 1.39.4 lacks (lights, surface,
+material compound) are compiled from 1.39.5's sources into 1.39.4's
+namespace, over shims that give the GenHw names to 1.39.4's classes
+(`integrations/blender/materialx`). Three lines of 1.39.5 name what 1.39.4
+lacks and are rewritten at configure time: `requiresLighting` is not an
+override (the Slang generator is its only caller), `hwAiryFresnelIterations`
+is 1.39.5's default (2), and the `$closureDataConstructor` token, which
+1.39.5's `mx_closure_type.glsl` returns and 1.39.4's HwShaderGenerator does
+not substitute, is registered by the Slang generator itself. The libraries
+are 1.39.5's too (`plugin/materialx`, named to the compiler by
+`$ATHENEA_MATERIALX_ROOT`, which the add-on sets), since the engine's closures
+implement 1.39.5's definitions.
+
+Measured, Blender 5.3.0 alpha (68609be8e23b), M5 Pro, headless
+(`Blender -b --factory-startup`, the add-on registered with
+`pxr.Plug.Registry().RegisterPlugins`):
+- the default scene (cube, point light, camera) renders through F12 and
+  `-f 1` at 320x240; the cube shades with its material (the first material
+  compile takes the frame to 11 s; 2-5 s once the shader cache is warm);
+- after the render the process holds one `libusd_ms`, one `libtbb`, six
+  `libMaterialX*`, one `libOpenColorIO` and the two `libOpenImageDenoise*`,
+  all from `Blender.app/Contents/Resources/lib` (`_dyld_get_image_name`);
+- splats: Blender's PLY import makes a `GAUSSIAN_SPLAT` PointCloud with
+  `position`, `radiance:base` (FLOAT4), `scale`, `rotation` (quaternion) and
+  `radiance:sh_0..14`. With the **Hydra** export method no rprim reaches the
+  delegate (`TF_DEBUG=HD_RPRIM_ADDED`): Blender's scene delegate exports no
+  point clouds. With **USD**, `/usd_scene/<obj>/<obj>` arrives as a `Points`
+  prim with `primvars:radiance:sh_N` (float3[], varying), `primvars:rotation`
+  (quatf[]), `primvars:scale` (float3[]) and constant `widths` 0.02 -- and
+  without `radiance:base`, which the writer drops (it writes no FLOAT4
+  attribute). The delegate draws it as white points. Blender reads
+  `ParticleField3DGaussianSplat` (usd_reader_particlefield.cc) but writes
+  none.
+
+Not done:
+- the viewport (`view_update`/`view_draw`): untestable headless;
+- splats as splats: either the add-on authors a ParticleField from the
+  PointCloud's attributes itself, or the delegate reads Blender's `Points`
+  primvars as a cloud -- and `radiance:base` still has to reach it
+  (Blender's writer, or the add-on);
+- volumes: OpenVDB is off in this build (Blender's `libopenvdb` 13 has no
+  headers in the prefix);
+- packaging: hdAthenea still loads libslang from `~/tools/slang` and libwebp
+  and zstd from Homebrew; a package carries them beside the plugin
+  (`@loader_path`). The shaders are found from the plugin
+  (`platform::moduleDir`);
+- Blender's `main` already builds USD 26.08 (its `versions.cmake`): a later
+  5.3 or 5.4 may ship the same USD the engine is built against, and only
+  the namespace, Python and the constructor section would still differ.

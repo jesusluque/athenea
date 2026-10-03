@@ -47,7 +47,7 @@ endif()
 # where it is; found in cmake/Usd.cmake once the submodules are in.
 set(ATHENEA_USD_ROOT "$ENV{HOME}/tools/usd-26.08-mx"
     CACHE PATH "OpenUSD built with MaterialX's Slang generator (scripts/build-usd.sh)")
-if(NOT EXISTS "${ATHENEA_USD_ROOT}/pxrConfig.cmake")
+if(NOT ATHENEA_BLENDER_LIB AND NOT EXISTS "${ATHENEA_USD_ROOT}/pxrConfig.cmake")
     message(FATAL_ERROR
         "OpenUSD not found at ${ATHENEA_USD_ROOT} (no pxrConfig.cmake). Build it with "
         "scripts/build-usd.sh, or set ATHENEA_USD_ROOT.")

@@ -949,6 +949,25 @@ command on a tree that may already carry them:
 | CUDA driver symbol shadowing | a driver symbol shadowed by the runtime's |
 | Metal acceleration structures | acceleration structure handling on Metal |
 
+**hdAthenea for Blender** (`blender` branch). Blender loads its own
+OpenUSD, oneTBB, MaterialX, OpenColorIO and OIDN, so the plugin is compiled
+against headers that match them and linked against Blender's libraries:
+
+1. `scripts/build-usd-blender.sh` (once): OpenUSD 26.03 configured as Blender
+   builds it -- monolithic, namespace `pxrBlender_v26_03`, Python on (3.13's
+   headers, from `uv python install 3.13`), Blender's `usd_ctor.diff` as
+   the rename `pxrctor` -> `pxbctor` -- with oneTBB 2022.3, MaterialX 1.39.4
+   and OpenSubdiv 3.7.0, into `~/tools/usd-26.03-blender`. Only USD's header
+   targets are built.
+2. `cmake --preset macos-arm64-blender && cmake --build --preset
+   macos-arm64-blender`: `cmake/BlenderUsd.cmake` stands in for
+   `find_package(pxr)`, every USD target a name for Blender's `libusd_ms`,
+   and builds `MaterialXGenSlang` from 1.39.5's sources into 1.39.4's
+   namespace over the shims in `integrations/blender/materialx`. Only
+   `hdAthenea` and the shaders are built; no tests.
+3. The add-on is `integrations/blender/athenea_hydra` (operations manual,
+   4.1.1).
+
 **Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
 tracks `main`. A change to gpe is committed in the submodule, not here.
 
