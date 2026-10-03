@@ -175,7 +175,10 @@ struct Options {
     /// Excludes the radiance bake, which keeps one sky's light instead.
     bool                     transfer = false;
     bool                     indirect = true;
-    uint32_t                 bakeSamples = 64;
+    /// PATHS A GAUSSIAN. 256 since every gaussian is blended in linear
+    /// light: the bake's noise is no longer hidden by an sRGB blend, and at
+    /// 64 the pawn's marble was grain (docs/decisions.md, "The bake's grain").
+    uint32_t                 bakeSamples = 256;
     uint32_t                 bakeBounces = 3;
     /// How much of the direction the light leaves in the cloud carries: 0 is
     /// a colour, 1 to 3 are harmonics. Two is where a highlight starts to
@@ -1581,6 +1584,7 @@ private:
 /// under.
 Result<void> Converter::bake(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
                              bool defaultLights, uint32_t degree) {
+    const auto started = std::chrono::steady_clock::now();
     ATHENEA_TRY(spanRays());
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
@@ -1612,8 +1616,10 @@ Result<void> Converter::bake(const std::string& stage, double time, uint32_t sam
     ATHENEA_TRY(batch.submit(true));
     uint32_t found = 0;
     ATHENEA_TRY(lit->read(library_->device(), 0, sizeof(found), &found));
-    std::printf("mesh2splat: baked %u of %u gaussians (%u paths each, %u bounces, degree %u)\n", found, count_,
-                samples, bounces, degree);
+    const double took =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    std::printf("mesh2splat: baked %u of %u gaussians (%u paths each, %u bounces, degree %u) in %.0f ms\n", found,
+                count_, samples, bounces, degree, took);
     if (found * 2 < count_) {
         std::fprintf(stderr,
                      "mesh2splat: more than half the gaussians found no surface under them; the bake "

@@ -10908,3 +10908,25 @@ Not done, not verified:
   they are only once written back;
 - the BLAS share of the splat shadow estimate is not measured, and a level
   given up is not taken back within a run.
+
+## The bake's grain
+
+Since every gaussian is blended in linear light (above), a radiance bake
+shows its noise: a gaussian is one estimate of a few hundred paths, and its
+neighbour another, and the difference used to be squeezed by an sRGB blend.
+The pawn under the autoshop HDRI, baked at degree 3 and drawn at 768 x 768
+against the mesh path traced at 1024 paths a pixel, reads as salt and pepper
+on the marble. Proposal 012 of the research repository is the plan this
+follows; each step below is a commit.
+
+### 1. 256 paths by default
+
+`--bake-samples` defaults to 256 (it was 64), for a light bake and a
+transfer alike, and the bake prints how long it took. Measured on the pawn
+(730 559 gaussians, M5 Pro, release), the whole conversion took 85 s at 64
+paths and 315 s at 256: the bake is nearly all of it, about 77 s per 64
+paths a gaussian. Four times the paths halve the noise of a mean, and that
+is what it costs: the target of proposal 012 (the grain of a 4096-path bake)
+would take sixteen times as long again, which is why the steps after this
+one spend paths where they are worth it and share the light between
+neighbours instead.
