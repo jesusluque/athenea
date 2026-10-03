@@ -11,6 +11,15 @@
 // receivers, the probe), the shading kernel's texture is the other; both read
 // the header and the texels through the same function, so a probe answers
 // what a floor reads.
+//
+// EVERY READ IS FILTERED BY HAND. Four integer loads and bilinear weights
+// computed here, never a sampler: CUDA's hardware filter carries its weights
+// in nine bits and Metal's in more, and a shadow that differs between the two
+// machines by the filter is a shadow nobody can measure. And the filter is
+// over transmittances, not over what the texels hold: each tap is tested
+// against its own nearest caster and turned into exp(-tau) before the four
+// are blended -- percentage-closer filtering, since depths and Fourier terms
+// do not average into anything meaningful.
 module splat_shadow_read;
 
 public static const float kShadowFixedScale = 4096.0;
@@ -169,6 +178,30 @@ public float shadowTap<S : IShadowMapSource>(ShadowMapFrame f, uint light, int x
     return exp(-max(optical, 0.0));
 }
 
+/// Bilinear weights over the four texels about (u, v), whose centres are at
+/// half-integers.
+public void shadowBilinear(float u, float v, out int2 origin, out float2 weight) {
+    const float x = u - 0.5;
+    const float y = v - 0.5;
+    const float x0 = floor(x);
+    const float y0 = floor(y);
+    origin = int2(int(x0), int(y0));
+    weight = float2(x - x0, y - y0);
+}
+
+/// Level zero, percentage-closer: four taps, each tested and turned into a
+/// transmittance, blended bilinearly.
+public float shadowPcf<S : IShadowMapSource>(ShadowMapFrame f, uint light, float u, float v, float z) {
+    int2 o;
+    float2 w;
+    shadowBilinear(u, v, o, w);
+    const float t00 = shadowTap<S>(f, light, o.x, o.y, z);
+    const float t10 = shadowTap<S>(f, light, o.x + 1, o.y, z);
+    const float t01 = shadowTap<S>(f, light, o.x, o.y + 1, z);
+    const float t11 = shadowTap<S>(f, light, o.x + 1, o.y + 1, z);
+    return lerp(lerp(t00, t10, w.x), lerp(t01, t11, w.x), w.y);
+}
+
 /// THE READ, for every receiver: a floor's, a gaussian's, a probe's.
 public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p) {
     if (f.valid == 0 || f.resolution == 0) {
@@ -176,12 +209,14 @@ public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, f
     }
     const float u = dot(f.rowU.xyz, p) + f.rowU.w;
     const float v = dot(f.rowV.xyz, p) + f.rowV.w;
-    if (!(u >= 0.0 && v >= 0.0 && u < float(f.resolution) && v < float(f.resolution))) {
+    const float r = float(f.resolution);
+    // Within a texel of the border a tap or two still lands inside.
+    if (!(u > -1.0 && v > -1.0 && u < r + 1.0 && v < r + 1.0)) {
         return 1.0;   // beside the cloud: nothing of it is in the way
     }
     const float z = dot(f.rowZ.xyz, p) + f.rowZ.w;
     if (z <= 0.0) {
         return 1.0;   // nearer the light than anything that casts
     }
-    return shadowTap<S>(f, light, int(u), int(v), z);
+    return shadowPcf<S>(f, light, u, v, z);
 }

@@ -11148,3 +11148,35 @@ across the edge of the body's shadow, with one term (behind the cloud) and
 with five (inside the slab). Expected: the same answers in every pose, to one
 unit of fixed point (5e-4). Before the step the texel changed with the wing.
 *To be run in the GPU turn.*
+
+### Step 2: every read is filtered, by hand
+
+**The cause.** Both receivers read the nearest texel (`uint(u)`, `uint(v)`).
+On the sparrow a texel of a 1024 map is about 0.13 mm, less than a pixel of
+the floor: a minification with no prefilter, which sparkles as soon as
+anything moves by part of a texel.
+
+**The read now** is percentage-closer: the four texels about the point, each
+tested against its own nearest caster, its optical depth reconstructed (the
+Fourier terms are linear in the coefficients, but the lit test and the
+exponential are not) and turned into `exp(-tau)`, and the four
+**transmittances** blended with bilinear weights. Depths and Fourier terms
+do not average into anything meaningful; transmittances do. Four integer
+loads and weights computed in the kernel, **never a sampler**: CUDA's
+hardware filter keeps its weights in nine bits, and a shadow that differs
+between the two machines by their filters is one nobody can measure. One
+function (`shadowPcf`) serves the floor, the gaussians and the probe, so a
+probe answers what both receivers read. A point within a texel of the map's
+border reads the taps that exist and counts the others as lit.
+
+`athenea_technique_tests "[shadowmap][filtered]"`: a sheet of gaussians
+smaller than a texel whose straight edge falls on a texel boundary (the grid
+is the world's since step 1), and a receiver walking from one texel's centre
+to the next in quarters. Expected: the two ends differ by more than 0.2,
+halfway reads their mean within 0.02, and the walk is monotonic. Before the
+step halfway read one of the two ends. The analysis moved the cloud by
+fractions of a texel instead; since step 1 the grid is the world's, and a
+cloud moved by part of a texel already changes the texels it lands in
+smoothly, so what a nearest-texel read still steps with is the receiver
+crossing a texel -- which is what the case moves. *To be run in the GPU
+turn.*
