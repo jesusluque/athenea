@@ -9,6 +9,7 @@ import athenea.common.packing;
 import athenea.common.sh;
 import athenea.splat.frame;
 import athenea.common.edit;
+import athenea.common.color;
 
 StructuredBuffer<float4>    positions;
 StructuredBuffer<uint>      shape;
@@ -16,7 +17,7 @@ StructuredBuffer<uint>      sh;
 RWStructuredBuffer<float4>  peakRow0;    // M row 0, centre.x
 RWStructuredBuffer<float4>  peakRow1;    // M row 1, centre.y
 RWStructuredBuffer<float4>  peakRow2;    // M row 2, centre.z
-RWStructuredBuffer<float4>  peakColour;  // rgb (encoded), opacity; w < 0: skipped
+RWStructuredBuffer<float4>  peakColour;  // rgb (linear), opacity; w < 0: skipped
 ConstantBuffer<FrameParams> params;
 
 float3x3 inverse3(float3x3 m) {
@@ -63,7 +64,7 @@ void referencePeakProject(uint3 tid: SV_DispatchThreadID) {
     const float3 base = float3(highHalf(shape[row + 2]), lowHalf(shape[row + 3]), highHalf(shape[row + 3]));
     const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
     const float3 dir = normalize(p.xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
-    float3 colour = max(base + evaluateRest(sh, i * params.shWords, degree, dir), 0.0);
+    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
     if (fate.graded) {
         colour = editGrade(params.edit, colour);
     }

@@ -80,7 +80,6 @@ TEST_CASE("points drawn as discs match the GPU reference", "[render][points][gpu
     render::RenderSettings settings;
     settings.width = 230;
     settings.height = 170;
-    settings.linearise = false;
     render::Camera camera = render::Camera::lookingAt({1.0, 2.0, 6.0}, {0.0, 0.0, 0.0});
 
     for (const auto mode : {render::PointStyle::Size::World, render::PointStyle::Size::Pixels}) {
@@ -110,7 +109,6 @@ TEST_CASE("the raster route draws what the disc route draws", "[render][points][
     render::RenderSettings settings;
     settings.width = 320;
     settings.height = 200;
-    settings.linearise = false;
     render::Camera camera = render::Camera::lookingAt({-1.0, 1.0, 5.0}, {0.0, 0.0, 0.0});
     render::PointInstance instance{&*cloud, render::Mat4::identity(), {}};
     instance.style.size = 0.04F;
@@ -224,7 +222,6 @@ TEST_CASE("eye-dome lighting darkens a depth edge and leaves a flat wall alone",
     render::RenderSettings settings;
     settings.width = 200;
     settings.height = 200;
-    settings.linearise = false;
     render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 6.0}, {0.0, 0.0, 0.0});
     render::PointInstance instance{&*cloud, render::Mat4::identity(), {}};
     instance.style.size = 0.08F;
@@ -273,7 +270,6 @@ TEST_CASE("surface splatting blends points on one surface instead of picking one
     render::RenderSettings settings;
     settings.width = 64;
     settings.height = 64;
-    settings.linearise = false;
     render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 2.0}, {0.0, 0.0, 0.0});
     render::PointInstance instance{&*cloud, render::Mat4::identity(), {}};
     instance.style.size = 0.4F;

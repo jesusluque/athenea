@@ -17,6 +17,9 @@ RWStructuredBuffer<float4>   coefficients; // (1 + keepPerColour) per record: rg
 // The shading normal, unit length and turned as the positions are, where the
 // record carries one (`params.normal`); written only then.
 RWStructuredBuffer<float4>   normalOut;
+// The radiance the record gives off, linear, nothing below zero and nothing
+// that is not a number, where it carries one (`params.emission`).
+RWStructuredBuffer<float4>   emissionOut;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -56,15 +59,20 @@ void splatExport(uint3 tid: SV_DispatchThreadID) {
         n = params.flipYZ != 0 ? float3(n.x, -n.y, -n.z) : n;
         normalOut[i] = float4(dot(n, n) > 1.0e-20 ? normalize(n) : float3(0.0), 0.0);
     }
+    if (params.emission != kNoField) {
+        const float3 e = float3(fieldOf(raw, i, s, params.emission), fieldOf(raw, i, s, params.emission + 1),
+                                fieldOf(raw, i, s, params.emission + 2));
+        emissionOut[i] = float4(e.x > 0.0 ? e.x : 0.0, e.y > 0.0 ? e.y : 0.0, e.z > 0.0 ? e.z : 0.0, 0.0);
+    }
     scaleValid[i] = valid ? float4(exp(ls), 1.0) : float4(0.0, 0.0, 0.0, 0.0);
 
     const uint row = i * (1 + params.keepPerColour);
     float3 dc = float3(fieldOf(raw, i, s, params.dc0), fieldOf(raw, i, s, params.dc1),
                        fieldOf(raw, i, s, params.dc2));
-    if (params.colourMode == 4) {
-        // Light, which the cloud carries in the space it is blended in.
-        dc = (linearToSrgb(dc) - 0.5) / kSH0;
-    } else if (params.colourMode == 1) {
+    if (params.colourMode == 4 || params.colourMode == 1) {
+        // Light (4) is written as it is, and the stage says it is light
+        // (`primvars:athenea:splat:linear`): it is blended in linear light,
+        // as every cloud is, and decoded by nobody.
         dc = (dc - 0.5) / kSH0;
     } else if (params.colourMode == 2) {
         dc = (dc / 255.0 - 0.5) / kSH0;

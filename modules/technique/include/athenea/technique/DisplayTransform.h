@@ -22,6 +22,10 @@ class CommandBatch;
 class ShaderLibrary;
 }
 
+namespace athenea::colour {
+class ColourFunction;
+}
+
 namespace athenea::technique {
 
 /// Standard clips; AgX is Sobotka's sigmoid; Aces2 is the Academy's 2.0
@@ -36,9 +40,10 @@ enum class ViewTransform : uint32_t { Standard = 0, AgX = 1, Aces2 = 2, Ocio = 3
 enum class DisplayEncoding : uint32_t { Srgb = 0, Rec709 = 1, DisplayP3 = 2, LinearP3 = 3 };
 
 /// An OpenColorIO config's display and view, applied to the engine's linear
-/// Rec.709. OCIO is used as a compiler: its shader text becomes a generated
-/// Slang module and its LUTs textures, so every pixel is still a kernel's --
-/// the LUT values are the one thing the host computes (docs/decisions.md).
+/// Rec.709. OCIO is used as a compiler (colour::ColourCompiler): its shader
+/// text becomes a generated Slang module and its LUTs textures, so every
+/// pixel is still a kernel's -- the LUT values are the one thing the host
+/// computes (docs/decisions.md).
 struct OcioView {
     std::string config = "ocio://studio-config-latest";   ///< a path, or one of OCIO's built-in configs
     std::string source = "lin_rec709_scene";              ///< the colour space the engine renders in, as the config names it
@@ -101,6 +106,10 @@ public:
     [[nodiscard]] Result<void> setOcio(const OcioView& view);
     /// "OCIO 2.5.2: <config> / <display> / <view>", empty before setOcio.
     [[nodiscard]] const std::string& ocioDescription() const noexcept;
+    /// The compiled display and view (colour::ColourCompiler::displayView)
+    /// the OCIO kernel imports; null before setOcio. For a check that
+    /// compiles it another way.
+    [[nodiscard]] const colour::ColourFunction* ocioFunction() const noexcept;
 
     struct OcioState;
 

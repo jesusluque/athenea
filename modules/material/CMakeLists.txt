@@ -7,6 +7,7 @@ athenea_add_module(material
     PUBLIC_LIBS
         athenea::core
         athenea::gpu
+        athenea::colour
     PRIVATE_LIBS
         hio usdShade sdf ar tf
         MaterialXCore MaterialXFormat MaterialXGenShader MaterialXGenHw MaterialXGenSlang)

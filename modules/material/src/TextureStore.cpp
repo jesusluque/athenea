@@ -11,6 +11,8 @@
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usdShade/udimUtils.h>
 
+#include <cstdio>
+
 #include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
@@ -89,6 +91,7 @@ rhi::TextureAddressingMode addressOf(Wrap wrap) {
 Result<std::unique_ptr<TextureStore>> TextureStore::create(gpu::ShaderLibrary& library) {
     auto store = std::unique_ptr<TextureStore>(new TextureStore());
     store->device_ = &library.device();
+    store->library_ = &library;
     auto decode = gpu::ComputeKernel::create(library, "athenea/material/texture_decode", "textureDecode");
     if (!decode) return std::move(decode).error();
     store->decode_ = std::move(*decode);
@@ -102,10 +105,10 @@ Result<std::unique_ptr<TextureStore>> TextureStore::create(gpu::ShaderLibrary& l
 
 bool TextureStore::isExternal(const std::string& path) { return path.rfind("aofx://", 0) == 0; }
 
-uint32_t TextureStore::request(const std::string& path, ColourSpace space) {
-    if (isExternal(path)) {
-        space = ColourSpace::Raw;   // one entry, whatever a material says of it
-    }
+uint32_t TextureStore::request(const std::string& path, const std::string& given) {
+    // One entry for an external texture, whatever a material says of it: the
+    // host's working space arrives as it is.
+    const std::string space = isExternal(path) ? std::string("raw") : given;
     const auto key = std::make_pair(path, space);
     if (const auto found = ids_.find(key); found != ids_.end()) {
         return found->second;
@@ -184,13 +187,45 @@ std::filesystem::path TextureStore::besideByName(const std::string& name) const 
     return found != beside_.end() ? found->second : std::filesystem::path();
 }
 
-Result<uint32_t> TextureStore::loadFile(const std::string& path, ColourSpace space, TextureInfo& info) {
+Result<const TextureStore::Decoder*> TextureStore::decoderFor(const std::string& space) {
+    if (const auto found = decoders_.find(space); found != decoders_.end()) {
+        return &found->second;
+    }
+    auto function = colour_->function(space, colour_->names().working());
+    if (!function) return std::move(function).error();
+    // texture_decode's entry with the function between reading a texel and
+    // storing it; alpha is coverage, not colour, and is left as it is.
+    const std::string source = "import athenea.material.texture_decode;\nimport " + function->module() +
+                               ";\n"
+                               "[shader(\"compute\")]\n"
+                               "[numthreads(16, 16, 1)]\n"
+                               "void textureDecodeColour(uint3 tid: SV_DispatchThreadID) {\n"
+                               "    float4 texel;\n"
+                               "    if (!decodeTexel(tid, texel)) {\n"
+                               "        return;\n"
+                               "    }\n"
+                               "    storeTexel(tid, float4(" + function->entry() + "(texel).rgb, texel.a));\n"
+                               "}\n";
+    char name[48];
+    std::snprintf(name, sizeof(name), "athenea_texdec_%016llx",
+                  static_cast<unsigned long long>(colour::fnv1a(source)));
+    auto program = library_->loadSource(name, "module " + std::string(name) + ";\n" + source, {"textureDecodeColour"});
+    if (!program) return std::move(program).error();
+    auto kernel = gpu::ComputeKernel::create(*library_, name, "textureDecodeColour");
+    if (!kernel) return std::move(kernel).error();
+    Decoder decoder;
+    decoder.kernel = std::move(*kernel);
+    decoder.function = std::move(*function);
+    return &decoders_.emplace(space, std::move(decoder)).first->second;
+}
+
+Result<uint32_t> TextureStore::loadFile(const std::string& path, const std::string& space, TextureInfo& info) {
     if (slots_.size() >= kTextureSlots) {
         return Error::make(ErrorCode::OutOfMemory, "more than {} texture files", kTextureSlots);
     }
-    const HioImage::SourceColorSpace source = space == ColourSpace::Raw    ? HioImage::Raw
-                                              : space == ColourSpace::Srgb ? HioImage::SRGB
-                                                                           : HioImage::Auto;
+    // Hio is asked for the file as it is: what its pixels mean is decided
+    // here, by name, and done on the device.
+    const HioImage::SourceColorSpace source = HioImage::Auto;
     // WHAT A PATH MIGHT MEAN, IN ORDER.
     //
     // As given first: an absolute path, a package path (Hio reads inside a
@@ -244,8 +279,30 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, ColourSpace spa
         return Error::make(ErrorCode::Unsupported, "image '{}': pixel format {} not read", path,
                            static_cast<int>(image->GetFormat()));
     }
-    // What the file says, unless the material said otherwise.
-    const bool srgb = space == ColourSpace::Srgb || (space == ColourSpace::Auto && layout.srgb);
+    // WHAT THE NAME MEANS, AND WHAT THE FILE SAYS WHEN THE NAME LEAVES IT.
+    //
+    // Raw and the working space are read as they are. 8-bit sRGB stays 8-bit
+    // behind an sRGB view, which the hardware decodes. Anything else -- a
+    // float file said to be sRGB, ACEScg, a camera's log -- is brought into
+    // the working space by the decode kernel, through the function compiled
+    // for its colour space; a name nothing knows is read as the file says.
+    const bool eightBit = layout.component == 0;
+    const colour::FileEncoding encoding =
+        eightBit && layout.srgb ? colour::FileEncoding::Srgb8 : colour::FileEncoding::Linear;
+    colour::ResolvedSpace resolved = colour_->names().resolve(space, encoding);
+    if (resolved.kind == colour::SpaceKind::Unknown) {
+        info.error = "colour space '" + space + "' is not known; read as the file says";
+        resolved = colour_->names().resolve({}, encoding);
+    }
+    const bool srgbView = resolved.kind == colour::SpaceKind::Srgb && eightBit && srgbFastPath_;
+    const bool convert = resolved.kind == colour::SpaceKind::Other ||
+                         (resolved.kind == colour::SpaceKind::Srgb && !srgbView);
+    const Decoder* decoder = nullptr;
+    if (convert) {
+        auto made = decoderFor(resolved.name);
+        if (!made) return std::move(made).error();
+        decoder = *made;
+    }
     const uint32_t w = static_cast<uint32_t>(image->GetWidth());
     const uint32_t h = static_cast<uint32_t>(image->GetHeight());
     const size_t bytes = size_t{w} * h * layout.channels * layout.componentBytes;
@@ -263,14 +320,13 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, ColourSpace spa
     info.width = w;
     info.height = h;
 
-    // 8-bit sRGB stays 8-bit behind an sRGB view; anything else sRGB is
-    // decoded to light; floats keep their precision.
-    const bool eightBit = layout.component == 0;
+    // 8-bit stays 8-bit when it is read as it is; what a function brings into
+    // the working space is light, in half floats; floats keep their precision.
     gpu::TextureDesc desc;
     desc.width = w;
     desc.height = h;
     desc.mipCount = 0;
-    desc.format = eightBit ? rhi::Format::RGBA8Unorm
+    desc.format = eightBit && !convert ? rhi::Format::RGBA8Unorm
                   : layout.component == 3 ? rhi::Format::RGBA32Float
                                           : rhi::Format::RGBA16Float;
     desc.usage = rhi::TextureUsage::ShaderResource | rhi::TextureUsage::UnorderedAccess |
@@ -304,7 +360,11 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, ColourSpace spa
         packed = std::move(*made);
     }
     gpu::CommandBatch batch(*device_);
-    decode_.dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+    const gpu::ComputeKernel& kernel = decoder != nullptr ? decoder->kernel : decode_;
+    kernel.dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+        if (decoder != nullptr) {
+            decoder->function.bind(cursor);
+        }
         cursor["bytes"].setBinding(buffer->rhi());
         cursor["level"].setBinding((*level0).get());
         cursor["packed"].setBinding(packedKind != 0 ? packed.rhi() : nullptr);
@@ -314,7 +374,6 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, ColourSpace spa
         p["height"].setData(h);
         p["channels"].setData(layout.channels);
         p["component"].setData(layout.component);
-        p["toLinear"].setData(uint32_t{srgb && !eightBit ? 1u : 0u});
         p["rowPixels"].setData(uint32_t{0});
         p["bottomFirst"].setData(uint32_t{0});
     });
@@ -324,11 +383,15 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, ColourSpace spa
                                              uint64_t{rowPitch} * h, rowPitch, {w, h, 1});
         batch.markDirty();
     }
-    ATHENEA_TRY(mips_->generate(batch, *texture, srgb && eightBit));
+    ATHENEA_TRY(mips_->generate(batch, *texture, srgbView));
     ATHENEA_TRY(batch.submit(true));
+    info.decode = srgbView                                ? "srgb view"
+                  : decoder != nullptr                    ? decoder->function.description()
+                  : resolved.kind == colour::SpaceKind::Raw ? "raw"
+                                                          : "working";
 
     Slot slot;
-    if (srgb && eightBit) {
+    if (srgbView) {
         rhi::TextureViewDesc view;
         view.format = rhi::Format::RGBA8UnormSrgb;
         if (SLANG_FAILED(device_->rhi()->createTextureView(texture->rhi(), view, slot.view.writeRef()))) {
@@ -356,6 +419,13 @@ Result<size_t> TextureStore::commit() {
         changed = true;
         if (isExternal(entry.info.path)) {
             continue;   // filled by updateExternal, never read from disk
+        }
+        if (colour_ == nullptr) {
+            // The names, and the functions they compile to, from the studio
+            // config: made once, when the first file is read.
+            auto made = colour::ColourCompiler::create(*library_, colour::kStudioConfig);
+            if (!made) return std::move(made).error();
+            colour_ = std::move(*made);
         }
         if (entry.info.udim) {
             entry.tiles.assign(100, 0);
@@ -405,7 +475,7 @@ Result<void> TextureStore::updateExternal(const std::string& name, const gpu::Bu
         return Error::make(ErrorCode::InvalidArgument, "'{}': a {}x{} plane of {} a row does not fit its buffer",
                            name, width, height, rowPixels);
     }
-    const uint32_t id = request(name, ColourSpace::Raw);
+    const uint32_t id = request(name, "raw");
     Entry& entry = entries_[id];
     const bool reshape = !entry.info.loaded || slots_[entry.slot].texture.width() != width ||
                          slots_[entry.slot].texture.height() != height;
@@ -467,7 +537,6 @@ Result<void> TextureStore::updateExternal(const std::string& name, const gpu::Bu
         p["height"].setData(height);
         p["channels"].setData(uint32_t{4});
         p["component"].setData(uint32_t{3});
-        p["toLinear"].setData(uint32_t{0});
         p["rowPixels"].setData(rowPixels);
         p["bottomFirst"].setData(uint32_t{1});
     });

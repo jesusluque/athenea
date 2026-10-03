@@ -197,16 +197,16 @@ void lambertIrradiance(uint3 tid: SV_DispatchThreadID) {
                 factor = 3.14159265358979;
             } else if (plane.kind == kDistant) {
                 // A disc of angular diameter sizeX around the light's axis,
-                // of radiance intensity / solid angle so that a surface facing
-                // it takes the intensity as irradiance. A spherical cap of
-                // half-angle a has vector irradiance pi sin^2(a) along its
-                // axis, so the plane takes that over the cap's solid angle,
-                // times the cosine to the axis.
+                // of the radiance given (UsdLux's intensity, normalize off).
+                // A spherical cap of half-angle a has vector irradiance
+                // pi sin^2(a) along its axis -- the projected solid angle
+                // normalize divides by -- so the plane takes the radiance
+                // times that, times the cosine to the axis. A disc of no
+                // angle is a direction whose irradiance is the radiance.
                 const float3 towards = normalize(plane.axisY.xyz);
                 const float half = 0.5 * plane.axisX.w;
-                const float solidAngle = 2.0 * 3.14159265358979 * (1.0 - cos(half));
                 const float cap = 3.14159265358979 * sin(half) * sin(half);
-                factor = max(dot(n, towards), 0.0) * (plane.axisX.w > 0.0 ? cap / solidAngle : 1.0);
+                factor = max(dot(n, towards), 0.0) * (plane.axisX.w > 0.0 ? cap : 1.0);
             } else if (plane.kind == kPoint) {
                 const float3 offset = plane.centre.xyz - p;
                 const float distance2 = dot(offset, offset);

@@ -834,30 +834,25 @@ void bakeFit(inout float3 c[16], float e[6][10], uint evens[6], uint ne, uint od
     }
 }
 
-/// THE FIT IS DONE AGAIN WHERE A CLOUD IS BLENDED, bounded by what the paths
-/// saw and defined on the whole sphere.
+/// THE FIT IS BOUNDED BY WHAT THE PATHS SAW AND DEFINED ON THE WHOLE SPHERE.
 ///
-/// A cloud keeps its harmonics in the encoded (sRGB) space it is blended in,
-/// and the linear fit above has to be taken there. It was taken to first
-/// order: the bands scaled by the encoding's slope at the mean. That slope
-/// is 12.92 at black, so a surface whose mean is dark and whose light swings
-/// with the direction -- glass, a dark polished metal -- had its bands
-/// multiplied by up to thirteen. Measured on the pawn under a uniform dome of
-/// 1: degree 1 drew its glass head at a largest 1.7, degree 2 at 1094,
-/// degree 3 at infinity, body included.
+/// A cloud is blended in linear light and a bake writes light, so nothing is
+/// encoded: the series stays in the space it was fitted in. (It used to be
+/// taken to sRGB, when clouds were blended there -- first to first order,
+/// with bands scaled by up to 12.92 at a dark mean, then direction by
+/// direction -- and the bound below is what that taught.)
 ///
-/// Two things were wrong and both are settled here. The fitted radiance is
-/// read back over the half of the sphere the fit is good on, held between
-/// nothing and the brightest sample the paths returned -- a fit is not
-/// entitled to light no path saw -- and encoded direction by direction,
-/// instead of to first order. And the fit only ever knew that half, while a
-/// frame reads the series from every side: a disc seen edge on or from
-/// behind read the extrapolation, which at degree 3 is where the infinities
-/// were. So the far half is given the near half's mirror image across the
-/// surface's plane -- continuous at the rim, bounded like the rest -- and on
-/// the whole sphere the basis is orthonormal: the encoded series is a plain
-/// projection, with no matrix to solve. At degree zero it is exactly the
-/// encoding of the mean, as before.
+/// What is settled here is the series itself. The fitted radiance is read
+/// back over the half of the sphere the fit is good on, held between nothing
+/// and the brightest sample the paths returned -- a fit is not entitled to
+/// light no path saw: the pawn's glass head baked at degree 3 read infinity
+/// without it. And the fit only ever knew that half, while a frame reads the
+/// series from every side: a disc seen edge on or from behind read the
+/// extrapolation. So the far half is given the near half's mirror image
+/// across the surface's plane -- continuous at the rim, bounded like the
+/// rest -- and on the whole sphere the basis is orthonormal: the bounded
+/// series is a plain projection, with no matrix to solve. At degree zero it
+/// is the mean, clamped to the brightest sample.
 void bakeEncode(inout float3 c[16], uint count, float3 n, float3 brightest) {
     float3 b[16];
     for (uint k = 0; k < 16; ++k) {
@@ -875,9 +870,9 @@ void bakeEncode(inout float3 c[16], uint count, float3 n, float3 brightest) {
             for (uint k = 0; k < count; ++k) {
                 radiance += c[k] * shBasisValue(k, towards);
             }
-            const float3 encoded = linearToSrgb(clamp(radiance, float3(0.0), brightest));
+            const float3 bounded = clamp(radiance, float3(0.0), brightest);
             for (uint k = 0; k < count; ++k) {
-                b[k] += encoded * (shBasisValue(k, towards) + shBasisValue(k, mirrored));
+                b[k] += bounded * (shBasisValue(k, towards) + shBasisValue(k, mirrored));
             }
         }
     }
@@ -1036,6 +1031,31 @@ float3 hgSample(float3 wo, float g, float2 u) { return -wo; }
 )";
 
 const char* kBody = R"(
+/// THE LIGHT A TRANSPARENT SURFACE LETS THROUGH (UsdPreviewSurface 2.6,
+/// opacityMode transparent): what its specular lobes -- every lobe but the
+/// diffuse ones, which the opacity already scales -- do not reflect back
+/// toward `toEye`.
+///
+/// The specification keeps the specular at full weight at any opacity, so a
+/// window at opacity 0 still reflects the sky, and says nothing of what is
+/// behind but that it shows through. Taken as (1 - opacity) of what is
+/// behind, whole, a window reflects its specular and passes everything as
+/// well: one window gains its few per cent, a stack of them gains a few per
+/// cent each. The sparrow's belly is dozens of feather cards, transparent by
+/// default and a quarter metallic: under a dome of radiance one it read 7.
+/// A clear glass sheet passes 1 - F, and so does this.
+float3 transparentPasses(LobeStack stack, float3 toEye) {
+    float3 reflected = float3(0.0);
+    for (uint k = 0; k < stack.count; ++k) {
+        const uint kind = stack.lobes[k].kind;
+        if (kind == kLobeOrenNayar || kind == kLobeBurley || kind == kLobeTranslucent) {
+            continue;
+        }
+        reflected += stack.lobes[k].weight * lobeAlbedo(stack.lobes[k], toEye);
+    }
+    return saturate(float3(1.0) - reflected);
+}
+
 struct Shaded {
     LobeStack      stack;
     MaterialInputs inputs;
@@ -1924,7 +1944,11 @@ void tracePathsAt(uint2 group, uint index) {
                 if (kTraces && shaded.coverage && o < 1.0 && passed < 64 &&
                     random(tid, sample, bounce, 29u + passed) >= keep) {
                     if (shaded.transparent) {
-                        throughput *= (1.0 - o) / (1.0 - keep);
+                        // What goes straight through is what the surface
+                        // neither covers nor reflects: the specular it keeps
+                        // at full weight is light that does not also pass.
+                        throughput *= (1.0 - o) / (1.0 - keep) *
+                                      transparentPasses(shaded.stack, shaded.toEye);
                     }
                     // Coverage: for this sample the surface is not there.
                     // The ray goes on from the hit along its own direction,
@@ -2209,20 +2233,14 @@ void tracePathsAt(uint2 group, uint index) {
         hitDepth = depthHere;
         alpha += opacity;
         // A bake fits harmonics: each sample is weighed by the basis where it
-        // looked from, and it is fitted in the space a cloud is blended in
-        // (frame.slang), so that what the renderer decodes is what the tracer
-        // answered.
-        // A BAKE FITS IN LINEAR LIGHT AND IS TAKEN TO THE CLOUD'S SPACE AFTER.
+        // looked from, in linear light, which is the space a cloud is
+        // blended in (frame.slang) and so what the renderer reads back.
         //
         // The samples of one point are estimates of the same radiance, so
-        // their mean is the estimate; encoding each one first and averaging
-        // the encodings is a different quantity, and a smaller one, because
-        // `linearToSrgb` is concave. Where every sample of a point agrees --
-        // an open sky, which is every bake test there was -- the two are the
-        // same. Where they disagree, which is what an occluder does to them,
-        // the encoded mean sinks towards the dark samples: a point beside a
-        // wall, half its hemisphere blocked, was fitted a third under what
-        // the light on it is. The encoding is now done once, to the fit.
+        // their mean is the estimate. (Encoding each one first and averaging
+        // the encodings, as when clouds were blended in sRGB, sank the mean
+        // towards the dark samples: a point beside a wall was fitted a third
+        // under the light on it.)
         const float3 sampleColour = carried;
         if (kBake) {
             for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
@@ -2274,8 +2292,7 @@ void tracePathsAt(uint2 group, uint index) {
         float e[6][10];
         bakeGram(bakeNormalAt(at), e, evens, ne, odds, no);
         bakeFit(coefficients, e, evens, ne, odds, no, kBakeMeasure / float(samples));
-        // Into the space a cloud is blended in: bakeEncode says why this is
-        // a second fit and not a change of variable.
+        // Bounded and made whole: bakeEncode says why this is a second fit.
         bakeEncode(coefficients, min(path.bakeCount, 16u), bakeNormalAt(at), brightest);
         for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
             float3 value = coefficients[c];

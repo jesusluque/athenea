@@ -45,6 +45,7 @@ def Scope "ReadmeLights"
     {
         float inputs:intensity = 3.2
         float inputs:angle = 1.2
+        bool inputs:normalize = 1
         color3f inputs:color = (1, 0.94, 0.82)
         double3 xformOp:rotateXYZ = (-52, 0, 36)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]

@@ -528,7 +528,7 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     light::Light lamp;
     lamp.kind = light::LightKind::Dome;
     lamp.texture = png.string();
-    lamp.textureId = (*textures)->request(png.string(), material::ColourSpace::Auto);
+    lamp.textureId = (*textures)->request(png.string(), "");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
@@ -2883,7 +2883,7 @@ TEST_CASE("a light table's cumulative shares are each light's power, accumulated
     std::array<light::Light, 5> lamps;
     lamps[0].kind = light::LightKind::Sphere;   lamps[0].radius = 0.4F;  lamps[0].intensity = 2.0F;
     lamps[1].kind = light::LightKind::Rect;     lamps[1].width = 1.2F;   lamps[1].height = 0.8F; lamps[1].exposure = 1.0F;
-    lamps[2].kind = light::LightKind::Distant;  lamps[2].intensity = 3.0F;
+    lamps[2].kind = light::LightKind::Distant;  lamps[2].intensity = 3.0F;  lamps[2].angle = 0.2F;
     lamps[3].kind = light::LightKind::Cylinder; lamps[3].radius = 0.3F;  lamps[3].length = 1.4F;
     lamps[4].kind = light::LightKind::Disk;     lamps[4].radius = 0.6F;  lamps[4].normalize = true;
     REQUIRE(table->set(std::span<const light::Light>(lamps.data(), lamps.size())));
@@ -3883,7 +3883,8 @@ TEST_CASE("an albedo-one medium under a uniform dome reads the dome's radiance, 
 // Before, a dome counted L whatever the scene's size, and a kitchen in
 // centimetres chose its dome once in four hundred thousand samples beside a
 // window light. Checked by a kernel that writes the shares again from the
-// records, at two scene radii.
+// records, at two scene radii -- with suns of a disc, normalized or not, and
+// a dome that authors normalize, which UsdLux says a dome ignores.
 TEST_CASE("a dome's and a sun's share of the lights' power grows with the scene they light",
           "[technique][lights][power]") {
     ATHENEA_REQUIRE_GPU(gpu);
@@ -3902,7 +3903,21 @@ TEST_CASE("a dome's and a sun's share of the lights' power grows with the scene 
     window.width = 120.0F;
     window.height = 160.0F;
     window.intensity = 6.0F;
-    const std::vector<light::Light> lights{dome, sun, window};
+    // UsdLux's units: a sun with a disc and no normalize lays its radiance
+    // times the disc's projected solid angle; with normalize, its intensity.
+    // A dome ignores normalize, so its share must not drop its pi R^2.
+    light::Light disc = sun;
+    disc.angle = 0.53F * 3.14159265F / 180.0F;
+    disc.intensity = 50000.0F;
+    light::Light normalizedSun = sun;
+    normalizedSun.angle = 0.2F;
+    normalizedSun.normalize = true;
+    light::Light normalizedDome = dome;
+    normalizedDome.normalize = true;
+    // The window last: its share dwarfs the suns' at a radius of 1, and a
+    // share is a difference of cumulatives, which in float after it would
+    // carry the window's rounding (9e-4 of a sun's).
+    const std::vector<light::Light> lights{dome, sun, disc, normalizedSun, normalizedDome, window};
     for (const float radius : {1.0F, 400.0F}) {
         REQUIRE(table->set(lights, radius));
         gpu::Buffer counts = test::uintBuffer(*gpu->device, 2, "power.counts");
@@ -3911,7 +3926,7 @@ TEST_CASE("a dome's and a sun's share of the lights' power grows with the scene 
             gpu::CommandBatch batch(*gpu->device);
             made->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor c) {
                 c["lights"].setBinding(table->records().rhi());
-                c["check"]["count"].setData(uint32_t{3});
+                c["check"]["count"].setData(uint32_t(lights.size()));
                 c["check"]["sceneRadius"].setData(radius);
                 c["check"]["tolerance"].setData(1e-4F);
                 c["counts"].setBinding(counts.rhi());
@@ -3925,7 +3940,7 @@ TEST_CASE("a dome's and a sun's share of the lights' power grows with the scene 
         REQUIRE(worst.read(*gpu->device, 0, 4, &e));
         std::printf("  scene radius %.0f: %u of %u shares off the written-again powers (worst %.2e)\n",
                     static_cast<double>(radius), n[0], n[1], static_cast<double>(e));
-        CHECK(n[1] == 3);
+        CHECK(n[1] == lights.size());
         CHECK(n[0] == 0);
     }
 }

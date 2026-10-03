@@ -134,6 +134,20 @@ struct M2sParams {
     uint  simplifyLevels;    // the largest block is 2^this cells a side
     uint  simplifyPad0;
     uint  simplifyPad1;
+
+    // THE LIGHT THE SURFACE GIVES OFF (m2sEmissionAt): the colour, times the
+    // Emission picture where there is one, written in an entry of its own.
+    uint  hasEmission;       // the Emission picture is there
+    uint  emissionWidth;
+    uint  emissionHeight;
+    uint  emissionStride;
+
+    float4 emissionColour;   // linear radiance, unbounded; multiplied into the map
+
+    uint  emissionEntry;     // 0: not written; else the entry of a record it goes in
+    uint  emissionChannel;   // 0: the map's rgb; else one channel, 1 r, 2 g, 3 b, 4 a, as grey
+    uint  emissionUv2;
+    uint  emissionPad;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -147,6 +161,7 @@ RWStructuredBuffer<uint>   cellCounts;  // a triangle's covered cells, then wher
 RWStructuredBuffer<float4> records;     // the output plane
 StructuredBuffer<float4>   texcoord2;   // the mesh picture's shape: (u2, v2) a corner, where there is a second set
 StructuredBuffer<float4>   heightMap;   // the displacement, read on one channel
+StructuredBuffer<float4>   emissionMap; // what the surface gives off, rgb or one channel
 ConstantBuffer<M2sParams>  params;
 
 /// The counters start a render, and a buffer the host handed over holds
@@ -570,6 +585,24 @@ float3 m2sMapTangent(const M2sTriangle t, float3 normal) {
 }
 
 /// What the cut-out map reads here: one where there is no map.
+/// WHAT THE SURFACE GIVES OFF at `bary`: the material's emission, times its
+/// map where it has one -- the map's colour, or one of its channels as grey.
+/// Linear: a map of colour was decoded out of sRGB on its way here.
+float3 m2sEmissionAt(const M2sTriangle t, float3 bary) {
+    float3 e = params.emissionColour.xyz;
+    if (params.hasEmission != 0) {
+        const float2 uv = params.emissionUv2 != 0 ? m2sUv2At(t, bary) : m2sUvAt(t, bary);
+        const float4 texel = sampleWrapped(emissionMap, params.emissionWidth, params.emissionHeight,
+                                           params.emissionStride, uv);
+        e *= params.emissionChannel == 0 ? texel.xyz
+           : params.emissionChannel == 1 ? texel.xxx
+           : params.emissionChannel == 2 ? texel.yyy
+           : params.emissionChannel == 3 ? texel.zzz
+                                         : texel.www;
+    }
+    return max(e, float3(0.0));
+}
+
 float m2sMaskAt(const M2sTriangle t, float3 bary) {
     if (params.opacityChannel == 0) {
         return 1.0;
@@ -885,8 +918,9 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     records[recordAt(slot, 1)] = float4(scale, 0.0);
     records[recordAt(slot, 2)] = rotation;
     records[recordAt(slot, 3)] = float4(colour, 0.0);
-    // The entries before the relief's three: 4, 6 or 8.
-    const uint own = params.displaceRefine != 0 ? params.recordPixels - 3 : params.recordPixels;
+    // The entries before the relief's three and the emission's one: 4, 6 or 8.
+    const uint own = params.recordPixels - (params.displaceRefine != 0 ? 3u : 0u) -
+                     (params.emissionEntry != 0 ? 1u : 0u);
     if (own >= 6) {
         records[recordAt(slot, 4)] = float4(shading, metallic);
         records[recordAt(slot, 5)] = float4(roughness, params.transmission, uv.x, uv.y);
@@ -903,6 +937,9 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         records[recordAt(slot, extra)] = float4(flat, height);
         records[recordAt(slot, extra + 1)] = float4(flatNormal, 0.0);
         records[recordAt(slot, extra + 2)] = float4(normal, 0.0);
+    }
+    if (params.emissionEntry != 0) {
+        records[recordAt(slot, params.emissionEntry)] = float4(m2sEmissionAt(t, bary), 0.0);
     }
     return true;
 }
@@ -982,7 +1019,7 @@ bool m2sCellEmit(uint triangle, const M2sTriangle t, float2 centre, float3 bary,
 /// to one -- and a block becomes one gaussian of its own size when it lies
 /// wholly inside the triangle and, over every cell centre in it, what the
 /// maps say moves by no more than `simplify`: the colour, metallic and
-/// roughness, the cut-out (which must also stand above the cut everywhere),
+/// roughness, what it gives off, the cut-out (which must also stand above the cut everywhere),
 /// the shading normal with its normal map, and the relief's normal (with no
 /// cell of it stretched enough to split). Otherwise it goes down to its four
 /// children, and a single cell is what it always was.
@@ -1012,6 +1049,7 @@ struct M2sLook {
     float3 normal;   // the shading normal: interpolated, then the normal map's
     float3 relief;   // the relief's normal, the flat one without a relief
     float  stretch;  // the relief's larger stretch at one cell
+    float3 emission; // what it gives off
 };
 
 M2sLook m2sLookAt(const M2sTriangle t, float2 at) {
@@ -1041,6 +1079,7 @@ M2sLook m2sLookAt(const M2sTriangle t, float2 at) {
         const float3 bitangent = cross(flat, straight);
         l.normal = normalize(straight * fromMap.x + bitangent * fromMap.y + flat * fromMap.z);
     }
+    l.emission = m2sEmissionAt(t, bary);
     l.relief = flat;
     l.stretch = 1.0;
     if (params.displaceRefine != 0) {
@@ -1082,6 +1121,8 @@ bool m2sBlockIsOne(const M2sTriangle t, int2 origin, uint size) {
     float2 mrHigh = float2(-3.4e38);
     float maskLow = 3.4e38;
     float maskHigh = -3.4e38;
+    float3 emissionLow = float3(3.4e38);
+    float3 emissionHigh = float3(-3.4e38);
     float3 normalFirst = float3(0.0);
     float3 reliefFirst = float3(0.0);
     // OVER WHAT THE GAUSSIAN REACHES, NOT ONLY OVER THE BLOCK. A block's
@@ -1121,8 +1162,10 @@ bool m2sBlockIsOne(const M2sTriangle t, int2 origin, uint size) {
             mrHigh = max(mrHigh, l.mr);
             maskLow = min(maskLow, l.mask);
             maskHigh = max(maskHigh, l.mask);
+            emissionLow = min(emissionLow, l.emission);
+            emissionHigh = max(emissionHigh, l.emission);
             if (any(colourHigh - colourLow > tolerance) || any(mrHigh - mrLow > tolerance) ||
-                maskHigh - maskLow > tolerance) {
+                maskHigh - maskLow > tolerance || any(emissionHigh - emissionLow > tolerance)) {
                 return false;
             }
         }

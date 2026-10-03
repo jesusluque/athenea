@@ -10,6 +10,7 @@ RWStructuredBuffer<float4> positions;
 RWStructuredBuffer<uint>   shape;
 RWStructuredBuffer<uint>   sh;
 RWStructuredBuffer<uint>   normals;   // where `params.normals` says the cloud keeps them
+RWStructuredBuffer<uint>   emission;  // where `params.emission` says the cloud keeps it
 ConstantBuffer<LodParams>  params;
 
 /// Cyclic Jacobi on a symmetric 3x3: `a` ends diagonal (the eigenvalues) and
@@ -83,6 +84,11 @@ void lodFinalize(uint3 tid: SV_DispatchThreadID) {
         const uint shortest = s.x <= s.y ? (s.x <= s.z ? 0u : 2u) : (s.y <= s.z ? 1u : 2u);
         const float3 axis = float3(axes[0][shortest], axes[1][shortest], axes[2][shortest]);
         normals[g] = packNormal(dot(sum, sum) > 1.0e-24 * weight * weight ? normalize(sum) : axis);
+    }
+    if (params.emission != 0) {
+        // The mean, as the base colour's is.
+        const uint eb = at + emissionMoments(params);
+        emission[g] = packRgb9e5(float3(moments[eb], moments[eb + 1], moments[eb + 2]) / weight);
     }
     if (params.keep == 0) {
         return;

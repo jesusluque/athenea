@@ -136,7 +136,7 @@ TEST_CASE("a sky of one colour prepares to the closed form a dome always had",
     lamp.kind = light::LightKind::Dome;
     lamp.intensity = 2.0F;
     lamp.texture = png.string();
-    lamp.textureId = (*textures)->request(png.string(), material::ColourSpace::Raw);
+    lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
@@ -176,7 +176,7 @@ TEST_CASE("a sky that varies arrives with its variation, which a cloud could not
     light::Light lamp;
     lamp.kind = light::LightKind::Dome;
     lamp.texture = png.string();
-    lamp.textureId = (*textures)->request(png.string(), material::ColourSpace::Auto);
+    lamp.textureId = (*textures)->request(png.string(), "");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
@@ -252,7 +252,7 @@ TEST_CASE("a sun is found in a sky, taken out of its harmonics and handed over a
     light::Light lamp;
     lamp.kind = light::LightKind::Dome;
     lamp.texture = png.string();
-    lamp.textureId = (*textures)->request(png.string(), material::ColourSpace::Raw);
+    lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
     lamp.intensity = kSunValue;   // so the disc is 20 and the sky 0.4
     lamp.shadow = false;
@@ -326,7 +326,7 @@ TEST_CASE("an even sky has no sun taken out of it", "[technique][environment][su
     light::Light lamp;
     lamp.kind = light::LightKind::Dome;
     lamp.texture = png.string();
-    lamp.textureId = (*textures)->request(png.string(), material::ColourSpace::Raw);
+    lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());

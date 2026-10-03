@@ -394,11 +394,15 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // way, and `hasPbr` is what says whether it is read.
             cursor["params"]["hasPbr"].setData(uint32_t{cloud->hasPbr() ? 1u : 0u});
             cursor["params"]["litBody"].setData(uint32_t{instance.litBody ? 1u : 0u});
+            setCloudSpace(cursor, *cloud);
             cursor["pbr"].setBinding(cloud->hasPbr() ? cloud->pbr.rhi() : cloud->shape.rhi());
             // The shading normal a conversion kept apart from the frame,
             // where the cloud has one: bound either way, read by `hasNormals`.
             cursor["params"]["hasNormals"].setData(uint32_t{cloud->hasNormals() ? 1u : 0u});
             cursor["normals"].setBinding(cloud->hasNormals() ? cloud->normals.rhi() : cloud->shape.rhi());
+            // And the radiance its gaussians give off, where it has any.
+            cursor["params"]["hasEmission"].setData(uint32_t{cloud->hasEmission() ? 1u : 0u});
+            cursor["emission"].setBinding(cloud->hasEmission() ? cloud->emission.rhi() : cloud->shape.rhi());
             // What a pick said this prim is made of. Bound either way, as
             // every name a shader declares; `overrideCount` of 0 is what says
             // the table is not read.

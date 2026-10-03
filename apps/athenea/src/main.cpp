@@ -26,6 +26,7 @@ int main(int argc, char** argv) {
     }
 
     CLI::App app{"athenea: Gaussian splats and point clouds on the GPU"};
+    app.set_version_flag("--version", "athenea " ATHENEA_VERSION);
     app.require_subcommand(1);
     bool verbose = false;
     app.add_flag("-v,--verbose", verbose, "debug logging");

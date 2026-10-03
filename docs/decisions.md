@@ -1855,14 +1855,16 @@ Checked against closed forms that share nothing with the tracer
   at 161 the pixel centres lay on the square's triangle seam, and one lens
   ray in four converging exactly on the seam fell through it.
 
-**A bug the Hydra check found, in the sun.** A distant light with an angle
-handed its intensity out as the disc's radiance, so the irradiance it laid
-was `intensity * solid angle`: UsdLux's default 0.53 degree sun lit a plane
-6.7e-5 of its intensity, 15000 times short, while a sun of angle 0 -- the
-one the closed forms had been checking -- was right. Now the disc's radiance
-is `intensity / solid angle`, and the closed form takes a cap's vector
-irradiance, `pi sin^2(a)` along its axis, over that solid angle: the 0.2
-radian sun reads 0 of 8281 pixels beyond 2%, worst 0.01%.
+**A bug the Hydra check found, in the sun -- fixed the wrong way, then
+right.** A distant light with an angle handed its intensity out as the
+disc's radiance, and UsdLux's default 0.53 degree sun lit a plane 6.7e-5 of
+its intensity. That was read as a bug and the disc's radiance became
+`intensity / solid angle`, so that the intensity was always the irradiance.
+It was the schema that was right: LightAPI's `intensity` is the emitted
+radiance, and only `normalize` divides it by the disc's size, so that 6.7e-5
+(`pi sin^2(0.265 degrees)`) is exactly what an unnormalized default sun lays
+per unit of intensity. The correction, and what it is checked by, is "A
+DistantLight in UsdLux's units" below.
 
 ### Not done
 
@@ -3095,6 +3097,91 @@ off (worst 3e-8). **Not done**: an instance moving without a change of the
 mesh set keeps the old radius, which costs sampling efficiency and not
 correctness.
 
+### A DistantLight in UsdLux's units
+
+`usdLux/schema.usda` says it in three places. LightAPI's `inputs:intensity`
+is "the unmultiplied luminance emitted (L) of the light, in nits", times
+`2^exposure` and the colour. `inputs:normalize` divides that luminance by a
+`sizeFactor`, and for a DistantLight, with `theta = clamp(angle / 2, 0, pi)`:
+
+    sizeFactor = 1                      theta = 0
+               = pi sin^2(theta)        0 < theta <= pi/2
+               = (2 - sin^2(theta)) pi  pi/2 < theta <= pi
+
+-- the disc's projected solid angle, the integral of |cos| over the cap --
+chosen so that "the received illuminance on a surface normal to the light's
+primary direction is held constant when angle changes, and intensity becomes
+a measure of the illuminance, in lux". DistantLight's `inputs:angle` of 0 is
+a perfectly parallel light. So a surface facing the light takes
+
+    E = intensity * 2^exposure * colour * (normalize ? 1 : sizeFactor)
+
+and a sun of angle 0 lays its intensity either way.
+
+**What it was.** The intensity was always the irradiance: the disc's
+radiance was `emission / (2 pi (1 - cos theta))`, whatever `normalize`
+said -- renders with normalize 0 and 1 were identical, an unnormalized
+default sun was `1 / (pi sin^2 theta)` = 14900 times the schema's, and even a
+normalized one was off past small angles, since the solid angle is not the
+projected one (a 90 degree sun laid 0.854 of its intensity).
+
+**What it is.** `lights.slang`: the disc's radiance is `lightEmission`, and
+`normalize` reaches a distant light as it reaches an area light, through
+`lightArea`, which is `distantSizeFactor` for one. `sampleLight` hands that
+radiance out over the cap, `lightHit` returns the same along any direction
+inside it, and `lightPdf` is the cap's uniform density, so MIS weighs the
+two strategies against each other unchanged. The cap is drawn by
+`1 - cos`, kept as `2 sin^2(theta / 2)`: as a difference of two numbers near
+1 it carried 0.6% of rounding at 0.53 degrees. Only an angle of exactly 0 is
+a delta direction; a disc too small for its cosine to differ from 1 is still
+a disc, so the sizeFactor's limit is reached continuously rather than
+jumping to a sizeFactor of 1.
+
+**The choice of a light** (`light_prefix.slang`) weighs a sun by the same
+irradiance, `E R^2`, with `sizeFactor` in E unless normalized. Two shares
+were wrong besides: a normalized sun and a dome that authored `normalize`
+skipped their `R^2` and `pi R^2` -- normalize was read as "divided by its
+area" for every kind, and a dome has none to divide by (the schema: a dome
+ignores normalize, and `lightEmission` already did).
+
+**The sun taken out of a sky** (`env_sun.slang`) is not a DistantLight and
+was not touched: it is the irradiance the dome's own texels deliver, summed
+in the dome's radiance units, and it goes back to a relit cloud as an
+irradiance -- which is what a normalized DistantLight's intensity is now.
+
+**Storm** (`hdSt/light.cpp`) multiplies an unnormalized distant light's
+intensity by the disc's solid angle, `2 pi (1 - cos theta)`, not the
+projected one: the two agree to 1e-5 at 0.53 degrees, 0.8% at 20 and differ
+by 17% at 90 (1.840 against 1.571). A normalized sun is its intensity in
+both.
+
+**What was authored for the old meaning.** Every DistantLight fixture of
+intensity 3 at the default angle (`test_usd.cpp`, `test_host.cpp`) meant its
+intensity as irradiance and now authors `normalize = 1`, which keeps that
+meaning exactly; the ones of angle 0 already meant it. The default sun
+(`setDefaultLights`, 2.5 at 2 degrees) is normalized, and so are the suns of
+`scripts/readme-images.sh` and the sparrow clips. The closed form of
+`lambert_irradiance.slang` takes the disc's radiance times `pi sin^2(a)`.
+
+**Checked.** A white Lambert square facing the light through Hydra, its
+mean over the middle of the frame by `imageStats` against `E / pi`, for
+angles 0, 0.53, 20 and 90 degrees with normalize 0 and 1, in the raster's
+shading (64 light samples) and the path tracer (64 paths, no bounce): all
+16 within 6e-4 (exact to 1e-7 at 0 and 0.53 degrees). Before, the suns
+with an angle and normalize 0 were 14900 and 10.5 times too bright at 0.53
+and 20 degrees and 0.54 of the schema at 90, and the normalized 90 degree
+sun 15% dark. The prefix's shares, written again from
+the records with a 0.53 degree sun of 50000, a normalized 0.2 radian sun and
+a normalized dome beside the rest: 0 of 6 off at scene radii 1 and 400
+(before, 6 of 6), and the five-light prefix check, its sun given a disc, 0
+missing (before, 3).
+
+**Not done.** Area lights take their authored size: a transform's scale
+changes neither the shape that is sampled nor the area `normalize` divides
+by, where the schema asks for the world-space area. Storm's solid angle for
+an unnormalized sun is left as Storm's; `storm_oracle` has no distant light
+with an angle and no normalize.
+
 After both, Kitchen_set lit renders under both techniques from inside the
 kitchen; the path traced frame at 256 paths is clean without the denoiser.
 
@@ -3232,10 +3319,13 @@ fails without its fix where a control was run:
 
 Not defects, and left as they are:
 
-- **McUsd blows out.** Its DistantLight and DomeLight leave intensity
-  unauthored ("no intensity often helps the viewer pick a default"), and
-  UsdLux's default for a distant light is 50000: with its 1 degree angle
-  that is an illuminance of about 12. The renderer follows the schema.
+- **McUsd blew out, and no longer does.** Its DistantLight and DomeLight
+  leave intensity unauthored ("no intensity often helps the viewer pick a
+  default"), and UsdLux's default for a distant light is 50000: with its 1
+  degree angle and no `normalize` that is an illuminance of about 12
+  (`50000 pi sin^2(0.5 degrees)`). This note said the renderer followed the
+  schema; it did not -- it laid the 50000 itself -- until the sun was put in
+  UsdLux's units (below).
 - **The MaterialX texture test's teapot is black**: its `.mtlx` sets
   `fileprefix="./textures/"` and also writes `./textures/` in every value,
   so the path is `./textures/./textures/brass_color.jpg`; its own flattened
@@ -9364,6 +9454,484 @@ definitions: a material named `material` is not the typedef of that name.
 Not done: a test of the override itself. It is exercised by the Blender
 spike (the default cube's material compiles and shades); a test would need
 a second MaterialX library tree in the build.
+
+## Every gaussian is blended in linear light
+
+Clouds used to be blended in the space they were trained in -- sRGB for every
+trainer -- and only the finished splat contribution was linearised
+(`srgbToLinear(rgb / coverage) * coverage`), because linearising each splat
+had turned letters red and skies electric in openFXplayer. Everything else in
+the engine is linear Rec.709: meshes, points, lights, the path tracer. So a
+cloud converted from a mesh, whose colours are light, had to be encoded into
+sRGB on the way in (`Colour::LinearLight` in the decode and the export, the
+bake's `linearToSrgb`) and relit light encoded again before the blend
+(`relitForBlend`) -- and a pixel where two of its gaussians overlap was the
+sRGB mix of two lights, which is not the light of the two.
+
+**Decided: every gaussian is blended in linear light; sRGB appears only where
+an image is shown** (`DisplayTransform`, OpenColorIO). What space a cloud's
+colours are in is the cloud's (`GpuSplats::linear`, `io::RawSplats::linear`,
+`primvars:athenea:splat:linear`, declared by `AtheneaSplatLightingAPI`):
+
+- A capture (PLY, SPZ, SOG, .splat, a ParticleField that does not say) keeps
+  its sRGB harmonics as trained. Each projection -- `splat_project`,
+  `rt_shade`, both references -- evaluates them, clamps at zero and makes the
+  splat linear (`common/color.slang`, `cloudLight`) before anything else
+  touches it. The blends (`splat_blend`, `rt_integrate::writeSegment`,
+  `reference_blend`, `reference_peak_blend`) decode nothing.
+  `RenderSettings::linearise` is gone: there is no other way to blend.
+- A cloud this engine writes holds light and says so: `athenea mesh2splat`
+  (an albedo, a transfer's albedo, a bake), an export of light
+  (`LinearLight` is now stored as it is, like `Linear`, and implies the flag),
+  anything written back from such a cloud (`CloudLoader::records`, a
+  decimation, `.athc`).
+- Relighting works on light and returns light: the albedo is the evaluated
+  colour as it is, `relitForBlend` is gone, and the colours the traced glass
+  pass caches and reads back (`colours`) are linear.
+- The bake (`bakeEncode`) no longer encodes. It still bounds the series --
+  read back over the fitted half, clamped to `[0, brightest]`, mirrored onto
+  the far half, projected on the whole sphere -- in linear light.
+- A `SplatEdit` grade runs on linear colours: physically right (a brightness
+  of 2 is twice the light), and not what the same numbers did before.
+  openFXplayer shares the edit and still grades encoded; it is to follow.
+- The levels of detail average colour in each cloud's own space (as before:
+  the moments are plain means), and the decimation's blob no longer clips the
+  base colour at one -- a lit bake's highlight is 3. `colourTolerance` is an
+  absolute difference in that space: sRGB code values over 255 for a capture,
+  linear light for a converted cloud, where 0.05 is a coarser step in the
+  darks and a finer one in the brights.
+- Copies keep the flag: the LOD's sorted cloud and merged levels, the cut's
+  frame cloud, a decimation's cloud, a posed (skinned) cloud, `.athc` (bit 1
+  of the version 2 header's `flags`, beside bit 0 for the normals; files
+  written before have it clear and read as captures), Hydra
+  (`ParticleFieldArrays::linear` -> `SplatStreams::linear`) and
+  `readParticleFieldRecords`.
+
+Measured:
+
+- `athenea_render_tests "[linear]"`, new: two discs of half opacity, each far
+  wider than the frame, front `(0.8, 0.05, 0.05)` over back
+  `(0.05, 0.05, 0.8)` in linear light, written as a conversion writes them,
+  against the over operator built by a kernel (`test/linear_blend.slang`):
+  rasteriser, reference and ray tracer p99 0, max 0. Before the change, all
+  three p99 26, max 26, every pixel over 2 (the red channel 0.32 where the
+  mix is 0.41).
+- A capture's look, the same test file: 3000 random gaussians, each a random
+  colour, drawn now against the old pipeline emulated exactly (the same sRGB
+  values blended as they are, the finished contribution through the curve:
+  `srgbFinish`): p99 51, max 63 code values. It is the worst case -- a pixel
+  that mixes black and white is 128 blended encoded and 188 blended as light.
+  Real captures, rendered by `athenea render` before and after (960 x 540):
+  train_30k p99 55 (75 073 pixels over 2 of 518 400; mean 0.136 -> 0.157),
+  drjohnson_30k p99 24 (mean 0.066 -> 0.072), beetle.spz p99 14. Where splats
+  overlap, the mean of their light is brighter than the light of their mean:
+  captures come out slightly brighter and their translucent fringes lighter,
+  which is what blending light means; the look was trained against the other
+  blend, and a cloud trained against this one would be right in it.
+- `athenea_usd_tests "a Lambertian surface bakes to the same constant at
+  every degree"`: the plane under a dome of 1 bakes to 0.1800, 0.1795,
+  0.1793 at degrees 0, 2, 3 against 0.18 linear; before, 0.4614 (its sRGB
+  code) and the test, now asking 0.18, failed at every degree.
+- The other numbers that moved, all still within their tests: the relit
+  routes against each other (`[relight]`, rasteriser against tracer p99
+  77 -> 65, 91 -> 73), PLY against SPZ by a code or two, the strong motion
+  blur's energy ratio 0.903 -> 0.971 (its splats are now light, so the
+  shutter's sum is a sum of light).
+
+The chess pawn under the autoshop HDRI (768 x 768, traced at 512 paths,
+against the mesh's render; converted by this build with `--prim
+/World/Subject --no-camera`), relMSE / p99 relative / mean red:
+
+| conversion | before | after |
+|---|---|---|
+| `--no-bake` (relit), traced | 0.0498 / 0.84 / 0.2850 | 0.0550 / 0.92 / 0.2852 |
+| `--no-bake`, rasterised | 0.0097 / 0.71 | 0.0108 / 0.71 |
+| `--transfer`, traced | 0.0470 / 0.77 / 0.2842 | 0.0522 / 0.77 / 0.2845 |
+| `--transfer`, rasterised | 0.0071 / 0.59 | 0.0081 / 0.59 |
+| `--bake-degree 3` (64 paths), traced | 0.0132 / 0.71 / 0.2794 | 0.0372 / 1.30 / 0.2842 |
+| `--bake-degree 3`, 256 paths, traced | 0.0121 / 0.71 / 0.2806 | 0.0250 / 1.00 / 0.2831 |
+
+(The mesh's mean red is 0.2815.) The relit and transferred clouds barely
+move: their gaussians are opaque discs side by side, and an albedo that was
+encoded and decoded around a blend of mostly one splat comes back the same;
+the small rise is the marble's speckle, now mixed as light. The bake is the
+one that changes: its mean is now nearer the mesh (0.2794 -> 0.2842), but its
+error doubles, and the error is noise -- four times the paths take it from
+0.037 to 0.025. A degree-3 series fitted to 64 noisy paths swings, and in
+sRGB the swing was compressed by the curve before anyone saw it; in light it
+is not, and the specular flakes of the marble show as grain.
+
+**R5, the alternative: keep a converted cloud's colours in a compressed
+space and make them linear just before the blend.** That is exactly what a
+capture now gets (sRGB stored, `cloudLight` per splat), so it costs nothing
+but the flag. Measured by baking the same pawn with the series encoded
+(`bakeEncode` through `linearToSrgb`, the cloud not marked linear): 64 paths
+relMSE 0.0200 (p99 0.84, mean 0.2811), 256 paths 0.0149 (p99 0.71, mean
+0.2814) -- between the old pipeline and linear storage, and the mean the
+closest of the three. The blend is linear either way; what differs is the
+space the harmonics are fitted and stored in, and a compressed one keeps a
+noisy fit's overshoots small. Not taken here, because this change was asked
+for with the bake in linear light and the round trip test reads 0.18 either
+way; it is the measured case for doing it next, for bakes only (an albedo is
+bounded and gains nothing), with the flag saying which.
+
+Not done: openFXplayer still grades and blends encoded, so a cloud graded in
+both no longer matches. A capture is not retrained for the linear blend; its
+fringes are what they are. `CloudLoader::records` writes a decoded capture
+back as `Linear` base colours in its own (sRGB) space and keeps the flag
+false, which is right but means "Linear" in the encoding names a layout, not
+a colour space.
+
+## A converted gaussian gives off what its material gave off
+
+`athenea mesh2splat` dropped a material's emission: `usd::StageMaterial` had no
+field for it, so a converted lamp shade or screen, relit (`--no-bake`) or
+transferred, was as dark as its albedo under the scene's light. Only the
+radiance bake kept it, because the path tracer meets the emission at the
+bake's first vertex (`carried += throughput * stack.emission`, which
+`bakeBody` leaves alone: it keeps `stack.emission` while it drops the polish).
+It is now carried end to end, in the shape the shading normal took:
+
+- **Read in four vocabularies** (`materialOf`, MeshStage.cpp):
+  standard_surface `emission` x `emission_color` (white weighed by 0 by
+  default), OpenPBR `emission_luminance` x `emission_color`, glTF `emissive` x
+  `emissive_strength` (black weighed by 1), UsdPreviewSurface `emissiveColor`
+  (black). OpenPBR's luminance is in nits, and its nodedef
+  (`libraries/bxdf/open_pbr_surface.mtlx`, `emission_weight`) multiplies it
+  into the colour as it stands and hands that to a `uniform_edf` -- which is
+  what the mesh is rendered with here, the graph compiled as authored -- so
+  the conversion carries the same number, no conversion of units. A map on the
+  colour is the colour and the weight multiplies it; a map on the weight is
+  read on one channel (`r` unless the connection says) and the colour
+  multiplies it; a map on a material that gives off nothing is dropped.
+  `StageMaterial::emission` is that product, `emissionMap` the map.
+- **The effect** (plugins/mesh2splat) gains an optional `Emission` clip and
+  `writeEmission`, `emissionColour`, `emissionChannel`, `emissionUv2`
+  parameters, all additive: a host that sends none gets the records it got.
+  With `writeEmission` a record has one entry more, the last
+  (`emissionEntry`), the colour times the map at the gaussian; `--simplify`
+  compares it as it compares the colour.
+- **The record and the file.** `io::SplatEncoding::emission`, three floats of
+  linear radiance; mesh2splat keeps `record[20..22]` for it (harmonics from 23)
+  and points the encoding at them only when some material of the stage
+  emits, so no file carries a primvar of zeros. The export writes
+  `primvars:athenea:splat:emission`, `color3f[]`, vertex, declared by
+  `AtheneaSplatLightingAPI`; negative and NaN are cleaned by the export
+  kernel. `readParticleFieldRecords` and Hydra (`ParticleFieldArrays::emission`
+  -> `SplatStreams::emission` -> the streams kernel) read it back.
+- **On the device, one word.** `GpuSplats::emission`, RGB9E5 (`packRgb9e5` /
+  `unpackRgb9e5` in common/packing.slang): unsigned HDR up to 65408, each
+  channel to 1/512 of the brightest, finer than f16 on the channel that is
+  seen, four bytes where three halves would be six. Packed by the decode.
+  Optional, as `pbr` and `normals` are: `hasEmission()`, bound either way.
+- **Shading.** `SplatSurface::emission`, and `relitSplat` starts from it where
+  it started from zero: `lit = s.lit ? s.albedo : s.emission`. So both routes
+  (splat_project, rt_shade), relit and transferred, add it unshadowed and the
+  same from both sides of the disc; a `litBody` cloud does not, since the bake
+  holds it -- the one place the two agree by construction.
+- **Levels of detail, decimation, `.athc`.** The reorder and the cut carry
+  the word; the moments gain three (`emissionMoments`: after the normals'),
+  the merged gaussian gives off their weighted mean, as the base colour is
+  merged. A decimation merges the file's `emission` as a mean (`Mean`, the
+  default for a float). `.athc` takes bit 2 of `flags` (bit 0 the normals,
+  bit 1 left to `linear`): one word an element after the normals; files
+  without it read as before. Skinning does not touch it: it has no direction.
+
+What it costs: nothing for a stage that emits nothing; otherwise twelve bytes
+a gaussian in the file and four on the device, one word read a relit splat a
+frame.
+
+Tests:
+
+- `athenea_usd_tests "a material's emission is read in each vocabulary*"`:
+  nine materials -- each vocabulary's constant, standard_surface with a colour
+  and no weight (nothing), glTF's map times strength, standard_surface's map on
+  the weight (channel r, the colour multiplying), a preview surface's sRGB map,
+  and a map on a weight of zero (dropped).
+- `athenea_usd_tests "a cloud's emission survives*"`: 3000 gaussians with five
+  known emissions, nothing to a hundred, go out and back as records, as
+  Hydra's arrays and through a `.athc`: 0 off the table at 4e-3 of the
+  brightest channel, 0 words apart, 0 changed in the store and the 440 merged;
+  every merge inside the box of what it merged.
+- `emissive_conversions_render_like_the_mesh` (ctest; it runs after the six
+  `mesh2splat_emissive_*` conversions and runs the hidden case
+  `[emissive_conversion]`): two quads under a dome of 0.1, OpenPBR's luminance
+  2 x (0.6, 0.3, 0.15), and glTF's emissive map (a gradient, sRGB) x strength
+  2, converted at `--resolution 256` relit, transferred and baked, drawn
+  raster and traced against the rasterised mesh: p99 relative 0.014 to 0.022,
+  the mean red within 0.6 % of the mesh's in the same route. Without the
+  emission in `relitSplat` the relit and transferred clouds were p99 1.000,
+  mean red 0.054 against 1.250; adding it on a `litBody` cloud as well made
+  the baked ones twice the mesh (checked by changing the one line both ways).
+  The traced mesh is not the pixel reference because it samples the map with
+  each path's jitter: on the gradient a percent of its pixels sit 0.125 off
+  the rasterised mesh, the reference's noise; its mean still is.
+
+**Not done.** An emissive gaussian lights nothing: the mesh's emissive
+triangles are sampled by the path tracer (`EmissiveTable`), a cloud's are not,
+so a converted lamp glows but does not light the table under it unless the
+cloud was baked with the lamp mesh in the scene. An OpenPBR or
+standard_surface coat over the emission (which tints and dims it on the mesh)
+is not carried; neither is a map on both the colour and the weight (the
+colour's is read, and the log says so). The transfer's own bake measures no
+emission (`transferMode` gathers nothing), which is right: the frame adds it.
+
+
+## Colour: OpenColorIO as a compiler, and a texture read in its own colour space
+
+Phases 0 and 1 of the colour plan. The working space is still linear
+Rec.709; what changes is who knows the rest.
+
+### Phase 0: one compiler, below material and technique
+
+- **The module.** `colour` sits between `gpu` and `scene` (material may not
+  link technique, and both need it). It owns the OpenColorIO dependency,
+  PRIVATE and behind `ATHENEA_HAVE_OCIO`, moved from technique.
+- **`ColourCompiler`** (`colour/ColourCompiler.h`). `function(src, dst)`
+  and `displayView(src, display, view, look)` make a processor, extract its
+  HLSL with `setFunctionName("atheneaCs_<hash>")` and
+  `setResourcePrefix("athenea_<hash>_")`, and load it as the Slang module
+  `athenea_cs_<hash>`, the function marked `public` and nothing else. The
+  hash is FNV-1a of the config's cache id and the names, so a pair compiles
+  once per compiler and two functions in one kernel never share a LUT's
+  name. LUTs are filled on the device from OCIO's values
+  (`athenea_colour_fill`); `ColourFunction::bind` binds them and the
+  dynamic properties by name. The host computes the shader text and the LUT
+  values, nothing per pixel.
+- **The display is a client.** `DisplayTransform::setOcio` asks for
+  `displayView` and compiles a second module that imports the function and
+  `athenea.technique.display`. The pixels did not change by a bit: the test
+  builds the old recipe (function text inline in the display module) from
+  the same text and compares both kernels with a tolerance of zero, over
+  sixteen stops, three exposures and three views (ACES 2.0 Rec.709 and P3,
+  un-tone-mapped). The ACES 2.0 agreement test reads what it read before
+  (worst 3.2e-4, 5.5e-4, 2.2e-5).
+- **`ColourNames`** (`colour/ColourNames.h`) is the one resolution of a
+  name. Empty or `auto`: the file decides (8-bit sRGB-tagged, sRGB; the
+  rest, the working space). Data names (`raw`, `Raw`, `data`, `Non-Color`,
+  `none`, `identity`, `Utility - Raw`) and any space the config marks data:
+  Raw. Then a short alias table (UsdUVTexture's `sRGB`, `linear`, the
+  GfColorSpaceNames tokens the studio config does not carry as aliases,
+  such as `g24_rec709_scene`), then the config by name, alias or role, then
+  the built-in studio config -- a function then crosses configs through
+  `GetProcessorFromConfigs`. Nothing knows the name: Unknown, one warning per
+  name, `TextureInfo::error`, and the texture is read as the file says.
+  The studio config already carries MaterialX's (`srgb_texture`,
+  `lin_rec709`, `acescg`, `g22_rec709`) and USD's (`lin_ap1_scene`, ...)
+  names as aliases.
+- **The two ad-hoc tables are gone.** `Material.cpp` hands MaterialX the
+  colour space USD authored, verbatim; `MaterialCompiler` keeps it on the
+  slot as a string. Before, `g22_rec709` was read as sRGB, and `acescg` or
+  any name not in either table was read raw.
+- **Without OpenColorIO** the names resolve by table (sRGB, linear Rec.709,
+  data) and the one function compiled is sRGB to linear, written in the
+  compiler: a 16-bit sRGB file decodes as it did.
+
+### Phase 1: texture input spaces
+
+- **Three routes** in `TextureStore::loadFile`, by what the name resolves
+  to. Raw and the working space: read as they are, as before. 8-bit sRGB:
+  the fast route, unchanged -- RGBA8 behind an `RGBA8UnormSrgb` view, mips
+  averaged as light. Anything else, a 16-bit or float sRGB file included:
+  RGBA16F (RGBA32F for a float32 file), and the decode kernel is
+  `athenea_texdec_<hash>`, generated once per space: texture_decode's
+  `decodeTexel`, the compiled function, `storeTexel`. Alpha is not
+  transformed. The mips are made after, in light, as for any float texture.
+  `texture_decode.slang` lost its `toLinear` parameter.
+- **Keys.** A texture is (path, name as written): `srgb_texture` and `sRGB`
+  of one file are two entries, which costs a second upload and nothing
+  else.
+- **Domes.** A dome's image takes the `colorSpace` authored on
+  `inputs:texture:file`, read from the light's network in the scene index
+  beside the value (`domeColourSpace`, Light.cpp), as a material's file
+  input is. Empty: the file decides, as before. `aofx://` stays raw.
+- **Checked.**
+  - `athenea_colour_tests`: sRGB to linear and back over a 4096-value ramp,
+    worst relative 1.2e-6; linear Rec.709 to ACEScg against aces2.slang's
+    `rgbToRgb(kRec709, kAP1)` over 512 colours, worst relative 9.0e-7;
+    ACEScg reached from a three-space config that lacks it equals the
+    studio config's own function exactly; the names, as bookkeeping.
+    (`compareHdr` bins its maximum at 1.66e-5 and could not certify these;
+    the kernel keeps its own worst as float bits.)
+  - `athenea_material_tests`: one 8-bit sRGB file through the view and
+    through the compiled function, level 0 worst 4.9e-4 in light; the 1x1
+    level 4.9e-3, which is half an 8-bit sRGB code near white where the fast
+    route stores its mips.
+  - `athenea_usd_tests`: a texture authored `acescg` shades as the AP1 to
+    Rec.709 matrix of its colour (0.974 0.578 0.134 for 0.8 0.6 0.2), one
+    authored `Non-Color` as held; a dome authored `raw` shows its code
+    values (0.800 where auto showed 0.604).
+- **Measured** (M5 Pro, debug build, a shared machine; `texture commit time`,
+  hidden `[.timing]` case, eight 2048x2048 files a commit, median of three
+  rounds, per file). Before: 8-bit sRGB 33.0 ms, 8-bit raw 34.0 ms, 16-bit
+  sRGB 49.6 ms. After: 34.5, 34.6 and 49.5 ms; 8-bit sRGB through the
+  compiled function 36.4 ms, 8-bit ACEScg 35.5 ms. The routes cost what
+  they cost before, within this machine's noise. The first commit that
+  needs a new function pays its compile once, about 230 ms for eight files
+  (64 ms a file against 35); each store reads the studio config at its
+  first commit.
+
+### Not done (phases 2 to 5)
+
+- **The working space** is linear Rec.709, fixed (`colour::kWorkingSpace`).
+  Phase 2 makes it a setting; then every function's destination, the
+  display's source, the light and material constants and the MaterialX
+  default space follow it. A MaterialX image node with no colour space is
+  read as `lin_rec709` today, the same as raw; once the working space
+  moves, vector and float image nodes must resolve to Raw.
+- **The config** of textures is the studio config; `--ocio-config` reaches
+  only the display. One config for the stage is phase 2's too.
+- **Colours that are not textures** -- `displayColor`, material constants,
+  light colours, splat SH -- are taken as the working space.
+- **An AOFX colour convert effect** was weighed and not built: an AOFX
+  kernel is a blob compiled when the bundle is built and binds buffers only
+  (aopenfx `KernelDesc`), while a compiled OCIO function is Slang generated
+  at run time that samples textures. It needs an additive ABI extension in
+  aopenfx (a kernel given as source, and texture inputs), or functions
+  generated at build time for a fixed list of spaces, with their LUTs as
+  buffers.
+
+## A transparent surface passes what it does not reflect
+
+UsdPreviewSurface's default `opacityMode` keeps the specular whole at any
+opacity, and the path tracer drew what is behind at `(1 - opacity)` as well:
+a surface that reflected and passed everything. One window gains its few per
+cent; a stack gains them once a sheet. Blender writes a feather card's alpha
+that way, and the sparrow's belly is dozens of cards deep: with Blender's
+quarter-metallic feathers it read 5.6 against a shop wall of 0.3, with single
+pixels at 768 (the original engine, d922ad5, read 2.1; the merge only let
+shadow rays through cut-outs, which is right, and more light reached the
+stack). Twenty clear white metal sheets under a dome of radiance one -- a
+white furnace, which returns at most one -- read 218.5.
+
+A clear glass sheet passes `1 - F`. `transparentPasses` (PathTracer.cpp)
+takes the directional albedo of every lobe but the diffuse ones, which the
+opacity already scales, off the throughput of a sample the lot passed. In
+expectation that is `specular + opacity diffuse + (1 - opacity)(1 - rho_s)
+behind`, which at opacity 0 is `rho_s + (1 - rho_s)`. The furnace reads
+1.021; the uncorrected sparrow's belly 0.34 (wall 0.3).
+
+`athenea_usd_tests` "a stack of transparent sheets returns no more light than
+a dome of radiance one gives it": 218.5 before, 1.021 after.
+
+Not done: a shadow ray passes a transparent surface by `(1 - opacity)` alone,
+a lot with no weight; what its specular takes off is not.
+
+## The sparrow's mesh, the same bird on both routes
+
+The mesh render of the tree sparrow was to be the reference for its clouds,
+and the raster drew something else: red and yellow streaks over the body, a
+black hole in the belly, salt and pepper over every feather. The path tracer
+drew a white bird with the belly blown out. Five causes, all the engine's
+(on the corrected stage, `SparrowBird.usda`, and on Blender's uncorrected
+import alike):
+
+**1. A ray query beside the lobe stack miscompiles on Metal.** The streaks
+were the garbage `MaterialShading` had recorded three times: rows in blocks
+of half a threadgroup, from a kernel that evaluates a material and traces a
+shadow ray. Each workaround (no local copy of the stack, the lobe samples
+before the first ray, no cut-out asked in the walk) had kept its own test
+clean; the sparrow broke them all, because a frame that merely holds a
+cut-out material compiles the opacity walk into the kernel. A grey floor
+under a dome and a sun, with one unbound material of opacity one half in the
+stage: 200 718 of 518 400 pixels differed between shadows on and off at
+960 x 540, and 20 000 to 25 000 of 98 304 words at 192 x 128, a different
+count each run. So the raster's shading is three kernels now:
+
+- `drawLobes` evaluates the material and writes its lobe samples' directions
+  (octahedral, 16 bits a coordinate, `min(lightSamples, 32)` a pixel);
+- `traceShadows` rebuilds the surface, draws the same light samples (the same
+  hash, the same order) and traces each one's shadow ray, then each lobe
+  sample's, into one bit each -- it asks a cut-out occluder's opacity, and no
+  material of its own pixel;
+- `shadeMaterials` holds no intersector and reads the bits.
+
+The light-sample bits cost `ceil(bits / 32)` words a pixel (`bits` is the
+samples, or the samples times the lights where every light is lit at every
+pixel); one sample of two lights and one lobe sample is one word.
+
+**2. A cut-out cast its whole card.** With the walk unable to ask a card's
+material, the raster's shadow rays stopped at every feather card, and the
+belly -- dozens of cards under the body -- was in full shadow from the dome
+and the sun: the black hole. `traceShadows` walks on by the occluder's lot,
+as the path tracer does (`lighting.shadowCutouts` is the frame's `cutouts`).
+A floor under a card of opacity one half, presence: 0.000 of the open sun
+before, 0.507 now.
+
+**3. One lot a pixel for every layer.** The raster's visibility cut a sample
+where its opacity was under the pixel's lot -- the same lot for every surface
+at that pixel, so the layers' coverages were one coverage: two cards of one
+half showed what was behind them half the time instead of a quarter. Three
+emissive cards (red and green at one half, blue opaque) read red 0.486, green
+0.000, blue 0.514; the path tracer reads 0.500, 0.251, 0.250. The lot is now
+hashed with the instance and the triangle (`pixelLot(pixel, seen)`): 0.512,
+0.250, 0.237. On a belly of soft cards this is the difference between fluff
+and the background showing through wherever the front card's edge does.
+
+**4. The raster drew transparent opacity as presence.** UsdPreviewSurface's
+default `opacityMode` keeps the specular whole at any opacity; the path
+tracer has drawn it so since step 1 of the opacity work, the raster cut it by
+lot "in either mode". Blender writes the feathers' alpha that way, so the two
+routes drew two birds: brown feathers on the raster, a sheen of every clear
+card's specular on the tracer. The raster now keeps a transparent sample with
+the tracer's probability, `max(opacity, 1/20)` (`kTransparentKeep`), and the
+shading weighs it as the tracer does (`weighTransparent`: specular and
+emission over p, diffuse times opacity over p). At opacity 0 the raster adds
+1.26 of what the tracer adds over the back square: a passed sample shows the
+back whole where the tracer takes off what the sheet reflected (5), and the
+test's sheet is a white specular.
+
+**5. A stack of transparent sheets made light** in the path tracer: the
+section before this one.
+
+And with the rays out of the shading kernel, two things it could not do:
+
+- **A lobe sample is shadowed.** It traced no ray, so a reflection saw the sky
+  through whatever stood in the way: a polished floor under a plate read
+  0.881 where nothing lights it; 0.000 now. On the sparrow the underside of
+  the belly read 0.26 against the tracer's 0.16.
+- **Both strategies are weighed by their true densities.** A Phong proxy
+  stood in for the stack's density, zero for anything broader than a GGX
+  alpha of about 0.35, so a broad lobe's light samples kept the whole weight:
+  a rough metal floor under a uniform sky had a pixel at 20.75; 1.69 now
+  (power heuristic on `stackPdf`, `lobeDensity`).
+
+The MaterialX warnings the bird prints (`Input 'bias' doesn't match
+declaration`, `Input 'normal' doesn't match declaration`) are hdMtlx's own,
+written before `matchDeclaredTypes` retypes the inputs: the dumped documents
+(`ATHENEA_MTLX_DUMP`) carry scale and bias as color4 and the normal
+connected, and the normal-map test with float4 scale and bias already holds.
+
+Measured on `mesh_wing.usda` over `SparrowBird.usda`, time 1, 960 x 540,
+against the path tracer at 256 paths, denoised: one light sample, the raster's frame mean
+0.2219 against 0.2230 (it was 0.2217), relMSE 3.67 (7.28 before), the
+brightest pixel 208 (322). Over 40 x 40 windows on the head, the breast, the
+belly's underside and the wing the raster is within 10 per cent of the
+tracer at sixteen light samples (the underside 0.154 against 0.158; it was
+0.26). Per pixel they still differ by the raster's one sample (below).
+
+`athenea_usd_tests`: "shadow rays change nothing over an unoccluded floor
+when the frame holds a cut-out material", "a half-clear card casts half a
+shadow on the raster route", "the raster's lot is drawn a layer at a time",
+"a stack of transparent sheets returns no more light...", "the raster shadows
+a lobe's own samples...", and the opacityMode test's raster half, which
+asserted the old reading. Each failed before its change.
+
+What it is not:
+
+- One sample a pixel is still one sample: the raster dithers coverage, a
+  transparent card's clear texels are one pixel in twenty at twenty times
+  their specular, and a frame is not accumulated. Per pixel the raster and a
+  converged tracer differ by that noise; their means over a window agree.
+- The raster has no indirect light: it reads somewhat darker than the tracer
+  wherever bounces matter.
+- A sample the raster's lot passed shows what is behind whole; the tracer
+  takes off the transparent surface's reflection.
+- A lobe sample has one bit for every light at infinity, traced against
+  everything: toward a light whose shadow links leave occluders out it is
+  not asked, and sees that light unshadowed as before.
+- Three kernels cost a second evaluation of the material where lobe samples
+  are drawn. Not timed.
 
 ## hdAthenea inside Blender: phase 0
 
