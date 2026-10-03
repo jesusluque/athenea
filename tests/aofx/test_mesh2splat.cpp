@@ -1562,3 +1562,120 @@ TEST_CASE("a mesh within its share converts bit for bit as without the thinning"
         }
     }));
 }
+
+// A SHARE ABOVE THE TRIANGLE COUNT, AND STILL UNDER WHAT THE MESH WANTS.
+//
+// Found on the Corvette's front-left tyre: 240 684 triangles under
+// `--max-splats 300000` wanted 351 751 after the coarsening, which was only
+// 1.23 times -- `sqrt(wanted / share)` assumes a coarser cell wants
+// quadratically fewer, and a floor of one gaussian a triangle does not
+// shrink. A share over the triangle count is no exception to the thinning:
+// here a strip of 4000 triangles at a cell fine enough that its cells and
+// its smallest triangles' middles want about 8000, given 5000. It keeps
+// about 5000, over its whole length.
+TEST_CASE("a mesh whose share is over its triangle count but under its want is thinned, not cut",
+          "[aofx][mesh2splat][budget]") {
+    gpu_host::Context* gpu = gpu_host::installProcessContext();
+    if (gpu == nullptr || gpu->compute() == nullptr) {
+        SKIP("no gpe device");
+    }
+    aofx_host::EffectRegistry registry;
+    aofx::Effect* effect = conversion(registry, gpu);
+    if (effect == nullptr) {
+        SKIP("the Mesh2Splat bundle is not built here");
+    }
+    gpu::ShaderLibrary library(gpu->deviceShared());
+
+    REQUIRE(gpu->run([&] {
+        auto strip = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sStrip");
+        auto check = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sCheckStrip");
+        REQUIRE(strip);
+        REQUIRE(check);
+
+        constexpr uint32_t kQuads = 2000;
+        constexpr uint32_t kTriangles = kQuads * 2;
+        constexpr float    kLength = 8.0F;
+        constexpr float    kWidth = 0.05F;
+        constexpr uint32_t kStripResolution = 1024;   // a cell of 8 / 1024, six across the strip
+        constexpr float    kCell = kLength / kStripResolution;
+        constexpr uint32_t kShare = 5000;              // over the 4000 triangles
+        constexpr uint32_t kMeshWidth = 4096;
+        const image::ImagePtr mesh = pictureOf(kMeshWidth, (kTriangles * 6 + kMeshWidth - 1) / kMeshWidth);
+        const gpu::Buffer meshView = viewOf(*gpu, mesh);
+        gpu::CommandBatch batch(library.device());
+        strip->dispatch(batch, {kQuads, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["mesh"].setBinding(meshView.rhi());
+            cursor["albedo"].setBinding(meshView.rhi());
+            cursor["records"].setBinding(meshView.rhi());
+            cursor["counts"].setBinding(meshView.rhi());
+            cursor["params"]["meshWidth"].setData(kMeshWidth);
+            cursor["params"]["meshStride"].setData(static_cast<uint32_t>(mesh->stride()));
+            cursor["params"]["stripLength"].setData(kLength);
+            cursor["params"]["stripWidth"].setData(kWidth);
+            cursor["params"]["stripQuads"].setData(kQuads);
+        });
+        REQUIRE(batch.submit(true));
+        mesh->deviceWrote();
+        mesh->attach("bounds", {0.0F, 0.0F, 0.0F, kLength, kWidth, 0.0F});
+
+        // Room for everything it could want; the share is what limits it.
+        const image::ImagePtr records = pictureOf(4096, 16);
+        aofx_host::EffectJob job;
+        job.bounds = records->bounds();
+        job.inputs.push_back({"Mesh", mesh});
+        number(job, "triangles", kTriangles);
+        number(job, "resolution", kStripResolution);
+        number(job, "maxSplats", 16000);
+        number(job, "thinTo", kShare);
+        number(job, "flatness", kFlatness);
+        number(job, "opacity", 1.0);
+        number(job, "writePbr", 0.0);
+        job.params.push_back(aofx::ParamValue{"sigma", {kSigma, kSigma}, {}});
+        auto rendered = aofx_host::renderEffect(*gpu, *effect, job);
+        REQUIRE(rendered);
+        const std::vector<float>* counted = (*rendered)->attached("splats");
+        REQUIRE(counted != nullptr);
+        REQUIRE(counted->size() >= 10);
+        const auto written = static_cast<uint32_t>((*counted)[0]);
+        std::printf("  share over the triangles: %u written, %.0f wanted before\n", written,
+                    static_cast<double>((*counted)[7]));
+        // The case itself: a share over the triangles, a want over the share.
+        REQUIRE((*counted)[7] > static_cast<float>(kShare));
+        CHECK((*counted)[8] == 1.0F);
+        CHECK(written <= kShare);
+        CHECK(written >= kShare - kShare / 50);
+
+        const gpu::Buffer recordView = viewOf(*gpu, *rendered);
+        gpu::BufferDesc desc;
+        desc.bytes = 32 * 4;
+        desc.elementBytes = 4;
+        desc.label = "test.strip";
+        auto counts = gpu::Buffer::create(library.device(), desc);
+        REQUIRE(counts);
+        gpu::CommandBatch second(library.device());
+        check->dispatch(second, {written, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["mesh"].setBinding(meshView.rhi());
+            cursor["albedo"].setBinding(meshView.rhi());
+            cursor["records"].setBinding(recordView.rhi());
+            cursor["counts"].setBinding(counts->rhi());
+            cursor["params"]["splats"].setData(written);
+            cursor["params"]["recordPixels"].setData(uint32_t{4});
+            cursor["params"]["dstWidth"].setData(static_cast<uint32_t>((*rendered)->bounds().width()));
+            cursor["params"]["dstStride"].setData(static_cast<uint32_t>((*rendered)->stride()));
+            cursor["params"]["cell"].setData(kCell * 8.0F);   // the first and last tenth of a unit
+            cursor["params"]["stripLength"].setData(kLength);
+            cursor["params"]["stripWidth"].setData(kWidth);
+        });
+        REQUIRE(second.submit(true));
+        auto seen = counts->readAll<uint32_t>(library.device());
+        REQUIRE(seen);
+        CHECK((*seen)[18] == 0);
+        CHECK((*seen)[0] >= 1);
+        CHECK((*seen)[1] >= 1);
+        for (uint32_t bin = 0; bin < 16; ++bin) {
+            // 312 expected in each sixteenth; cut in order, the last ones held none.
+            CHECK((*seen)[2 + bin] >= 200);
+            CHECK((*seen)[2 + bin] <= 450);
+        }
+    }));
+}

@@ -1020,7 +1020,7 @@ transfer -- the last two are refused, the rest said.
 | per-mesh density | `ctest -R mesh2splat_density` | the small plane of a two-mesh stage gets tens of gaussians per model and hundreds per mesh |
 | GeomSubsets | `athenea_mesh2splat_tests` (after the `mesh2splat_outputs` fixture) | two faces bound red and blue on a green mesh convert to red and blue, as many of each, no green |
 | the budget | the same | two equal meshes under a budget half what they want keep about half each |
-| the thinning | `athenea_aofx_tests "[budget]"` | a strip of 4000 slivers given 400 keeps about 400, its first and last cell occupied and every sixteenth of it near 25 (cut in order it kept the first tenth); a mesh within its share is the same array bit for bit |
+| the thinning | `athenea_aofx_tests "[budget]"` | a strip of 4000 slivers given 400 keeps about 400, its first and last cell occupied and every sixteenth of it near 25 (cut in order it kept the first tenth); the same strip at a cell where it wants about 8000, given 5000 -- a share over its 4000 triangles -- keeps about 5000 as evenly; a mesh within its share is the same array bit for bit |
 | the cell from a camera | the same | the card three units from the lens holds over three times the one seven away |
 | `.athc` output | the same | the same cards as a `.athc` and as a stage draw alike (p99 at most 1) |
 | the bake's rays on the device | `athenea_usd_tests "[mesh2splat]"` | every ray starts `1e-4` of the box's diagonal off; the device bake answers what the host's does; passes answer as one |

@@ -11149,5 +11149,17 @@ first and last cell occupied, every sixteenth of it within 7..45 of the 25
 expected, nothing off the strip; the same strip cut in order with a budget of
 400 has nothing in its last sixteenth. And the unit quad converted with
 `thinTo` exactly what it wants and far over it writes the same array as
-without, bit for bit. Not yet measured: the Corvette at 1 M again, and what
-the extra walks cost on it.
+without, bit for bit.
+
+A share over the triangle count is the same case. The front-left tyre (240 684
+triangles) under `--max-splats 300000` still wanted 351 751 after a
+coarsening of only 1.23: `sqrt(wanted / share)` ignores the floor of one
+gaussian a triangle, which no coarsening lowers. The estimate is left as it
+is (P015 changes the sharing); what the coarsening does not bring under the
+share, the thinning does, since the share is `thinTo` whatever it is against
+the triangle count. Tested by the same strip at a cell where it wants about
+8000, given 5000: about 5000 kept, every sixteenth between 200 and 450 of the
+312 expected.
+
+Not yet measured: the Corvette at 1 M again, and what the extra walks cost on
+it.

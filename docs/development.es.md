@@ -1068,7 +1068,7 @@ rechazan, el resto se dice.
 | densidad por malla | `ctest -R mesh2splat_density` | el plano pequeño de una escena de dos mallas saca decenas de gaussianas por modelo y centenares por malla |
 | GeomSubsets | `athenea_mesh2splat_tests` (tras el fixture `mesh2splat_outputs`) | dos caras enlazadas en rojo y azul sobre una malla verde salen rojas y azules, tantas de cada, nada verde |
 | el presupuesto | los mismos | dos mallas iguales con un presupuesto de la mitad de lo que quieren conservan más o menos la mitad cada una |
-| el aclarado | `athenea_aofx_tests "[budget]"` | una tira de 4000 astillas con 400 conserva unas 400, con su primera y su última celda ocupadas y cada dieciseisavo cerca de 25 (cortada en orden conservaba la primera décima); una malla dentro de su parte es el mismo array bit a bit |
+| el aclarado | `athenea_aofx_tests "[budget]"` | una tira de 4000 astillas con 400 conserva unas 400, con su primera y su última celda ocupadas y cada dieciseisavo cerca de 25 (cortada en orden conservaba la primera décima); la misma tira con una celda a la que quiere unas 8000, con 5000 -- una parte por encima de sus 4000 triángulos -- conserva unas 5000 igual de repartidas; una malla dentro de su parte es el mismo array bit a bit |
 | la celda desde una cámara | los mismos | la tarjeta a tres unidades de la lente tiene más del triple que la que está a siete |
 | salida `.athc` | los mismos | las mismas tarjetas como `.athc` y como escena se dibujan igual (p99 como mucho 1) |
 | los rayos del bake en el dispositivo | `athenea_usd_tests "[mesh2splat]"` | cada rayo empieza a `1e-4` de la diagonal de la caja; el bake del dispositivo responde lo que el del host; las pasadas responden como una |
