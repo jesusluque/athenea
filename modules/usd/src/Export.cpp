@@ -330,22 +330,36 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     // was baked, vertex-interpolated like everything else a gaussian carries.
     // A cloud with these is lit by whatever sky it is put under, which is the
     // whole reason they are here rather than a colour baked under one dome.
-    if (options.transferDirect.size() >= size_t{count} * 9 && count > 0) {
+    // Sixteen and forty-eight at degree 3, a TX transfer's; the count a
+    // record is the layout, as it is for everything else a transfer keeps.
+    const uint32_t transferPer = options.transferCoefficients == 16 ? 16u : 9u;
+    if (options.transferDirect.size() >= size_t{count} * transferPer && count > 0) {
         UsdGeomPrimvarsAPI primvars(splats.GetPrim());
         VtFloatArray direct(options.transferDirect.begin(),
-                            options.transferDirect.begin() + size_t{count} * 9);
+                            options.transferDirect.begin() + size_t{count} * transferPer);
         UsdGeomPrimvar made = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:transferDirect"),
                                                      SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex);
         made.Set(VtValue(direct));
-        made.SetElementSize(9);
-        if (options.transferIndirect.size() >= size_t{count} * 27) {
+        made.SetElementSize(static_cast<int>(transferPer));
+        if (options.transferIndirect.size() >= size_t{count} * transferPer * 3) {
             VtFloatArray indirect(options.transferIndirect.begin(),
-                                  options.transferIndirect.begin() + size_t{count} * 27);
+                                  options.transferIndirect.begin() + size_t{count} * transferPer * 3);
             UsdGeomPrimvar bounced = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:transferIndirect"),
                                                             SdfValueTypeNames->FloatArray,
                                                             UsdGeomTokens->vertex);
             bounced.Set(VtValue(indirect));
-            bounced.SetElementSize(27);
+            bounced.SetElementSize(static_cast<int>(transferPer * 3));
+            // THE REFLECTED FIELD, only beside the indirect half that couples
+            // it to a sky.
+            if (options.transferReflected.size() >= size_t{count} * 48) {
+                VtFloatArray field(options.transferReflected.begin(),
+                                   options.transferReflected.begin() + size_t{count} * 48);
+                UsdGeomPrimvar reflected = primvars.CreatePrimvar(
+                    TfToken("primvars:athenea:splat:transferReflected"), SdfValueTypeNames->FloatArray,
+                    UsdGeomTokens->vertex);
+                reflected.Set(VtValue(field));
+                reflected.SetElementSize(48);
+            }
         }
         // Two ints a record, or eight or thirty-two: the count is the layout.
         const uint32_t words = options.shadowWords == 8 || options.shadowWords == 32 ? options.shadowWords : 2u;

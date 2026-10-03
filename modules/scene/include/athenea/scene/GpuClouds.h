@@ -103,7 +103,9 @@ struct GpuSplats {
     /// or 8 (16 x 16, a TX transfer's).
     uint32_t    shadowWords = 0;
     uint32_t    transferWords = 0;
-    uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9 or 36
+    /// Values a gaussian: 0, or 9, 36, 84, 16, 64 or 112 -- the count is the
+    /// layout (athenea/common/transfer_layout.slang).
+    uint32_t    transferCount = 0;
     /// THE SPACE ITS COLOURS ARE IN (`io::RawSplats::linear`): false for a
     /// capture, whose harmonics are sRGB and are decoded a splat at a time
     /// when they are evaluated; true for a cloud that holds light already.
@@ -139,7 +141,9 @@ struct GpuSplats {
     /// Whether it carries which ways out are open (`shadowBits`).
     [[nodiscard]] bool hasShadowBits() const noexcept { return shadowBits.valid(); }
     /// Whether the indirect half is there as well as the direct one.
-    [[nodiscard]] bool hasIndirect() const noexcept { return transferCount >= 36; }
+    [[nodiscard]] bool hasIndirect() const noexcept {
+        return transferCount == 36 || transferCount == 84 || transferCount == 64 || transferCount == 112;
+    }
     [[nodiscard]] bool hasVisibility() const noexcept {
         return visibilityPartCount > 0 && visibilityParts.valid() && visibilityTexels.valid() &&
                visibilityPartOf.valid();
@@ -196,6 +200,11 @@ struct SplatStreams {
     /// `:transferIndirect`).
     FloatStream transferDirect;
     FloatStream transferIndirect;
+    /// A TX transfer's reflected field (`primvars:athenea:splat:transferReflected`):
+    /// 48 floats a splat, read only beside the indirect half. Sixteen and
+    /// forty-eight in the two before it at degree 3; the counts say which
+    /// (athenea/common/transfer_layout.slang).
+    FloatStream transferReflected;
     /// Two int32 a splat (`primvars:athenea:splat:shadowBits`), read as bits;
     /// or eight, the 256 cells of a TX transfer, which the count says.
     FloatStream shadowBits;

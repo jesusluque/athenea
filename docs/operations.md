@@ -1039,6 +1039,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:ior` | float | `0` |
 | `primvars:athenea:splat:transferDirect` | float[] ‹9 a gaussian› | — |
 | `primvars:athenea:splat:transferIndirect` | float[] ‹27 a gaussian› | — |
+| `primvars:athenea:splat:transferReflected` | float[] ‹48 a gaussian› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 or 32 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
@@ -1081,6 +1082,15 @@ With them a frame shadows the sun and any light that is a direction, and
 narrows every reflection -- the base's and the coat's -- by the share of its
 own lobe that the bits leave open, rather than by one number for the whole
 hemisphere.
+`transferReflected` is what the closed directions show: the light arriving at
+the gaussian by direction after it met the scene, under a white sky of
+radiance one, as sixteen rgb harmonics (degree 3). A frame scales it to the
+sky it has -- by how much more the indirect half gathers under that sky than
+under the white one, the sun's bounce included -- and a reflection shows it
+where the bits say the sky does not reach: the body in the chrome, the
+ground in the paint. It is written with the cells and the indirect half, and
+read only beside them; `athenea:splatTransferIndirect` turns it off with the
+indirect half.
 `thinWalled` is nonzero where the gaussian came from a thin-walled glass
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame

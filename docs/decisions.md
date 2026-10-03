@@ -11370,3 +11370,53 @@ they were converted in and under a window they never saw, TX held to the
 path traced mesh and, for paint and chrome, to doing better than the first
 transfer (`tx_conversions_render_like_the_mesh`, bounds placeholders until
 the run).
+
+### Step 2: what the closed directions show
+
+Step 1 made an occluded direction reflect nothing, which is right for a
+pocket and wrong for chrome beside the body or paint over the ground: they
+reflect what stands there. Proposal 028 asks for that baked, with no ray at
+playback ("variant B"), which is the product's rule anyway -- final playback
+is raster.
+
+**The field.** The transfer's paths already meet the scene and escape from
+it. A path that escapes after its first bounce carries, past its first
+vertex, the radiance that arrived along its first direction under a white
+sky of radiance one; projected onto degree 3 of that direction, uniform over
+the hemisphere it was drawn from (`2 pi Y_j(w_1)` a path), sixteen rgb
+coefficients a gaussian hold what is around it, by direction: the reflected
+field, `primvars:athenea:splat:transferReflected`, 48 floats. It costs no
+ray -- the sums are the bake split's indirect ones, idle in a transfer -- and
+it sees the ground, which stays a mesh, as well as the cloud's own parts.
+
+**Its sky.** What arrives from a wall is that wall's light, which is linear
+in the sky but is not the sky: a 9 x 9 transfer matrix a gaussian would be
+exact (243 numbers, and still blurred to degree 2). The field keeps the
+pattern -- which way, what colour -- and takes its brightness from the
+gaussian's own indirect half: under a sky `L`, `<T_ind, L> + E_sun
+T_ind(w_sun)` over `<T_ind, white>`, per channel (`splatFieldCoupling`). That
+is exact for a gaussian surrounded by surfaces lit alike, and under a sky lit
+from one side it puts the lit ground's mean, not its shape, in the
+reflection. Proposal 028 names two or three spherical Gaussians for this; a
+fit of lobes to 64 noisy paths a gaussian is a nonlinear solve per gaussian,
+where the projection is an accumulation with no fit, and degree 3 holds a
+ground's horizon to about twenty degrees, which is what a 16 x 16 grid of
+bits resolves anyway.
+
+**At the frame.** Where the cloud carries the field (and the frame keeps the
+indirect half, `athenea:splatTransferIndirect`), the base's reflection and
+the coat's read `open x sky(mirror, roughness) + (1 - open) x field(mirror,
+roughness) x coupling`, the field's bands narrowed to the lobe
+(`exp(-l (l + 1) alpha^2)`, a reflected GGX taken as a von Mises-Fisher of
+concentration `1 / 2 alpha^2`). And the sun's bounce, which the first
+transfer lost with the sun it took out of the harmonics, is added to the
+body: the indirect half read along the sun, times its irradiance
+(`splatIndirectAlong`).
+
+**Checked** (pending the GPU turn): a constant field reads back at every
+direction and roughness, and the coupling is one under the white sky and two
+under one twice as bright ([field] in athenea_render_tests); a point on a
+black floor beside a grey wall reads the wall's closed form, half its
+albedo, toward it and next to nothing straight up ([field] in
+athenea_usd_tests); the balls on a ground again (paint and chrome must now
+reflect the ground).

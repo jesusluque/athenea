@@ -160,8 +160,8 @@ public float3 envIrradiance(StructuredBuffer<float4> sh, uint dome, float3 n) {
     return e;
 }
 
-/// The real spherical harmonics to degree 2, in the order this engine keeps
-/// everywhere else (`athenea/common/sh.slang`'s `shBasisValue`, terms 0..8). It
+/// The real spherical harmonics to degree 3, in the order this engine keeps
+/// everywhere else (`athenea/common/sh.slang`'s `shBasisValue`, terms 0..15). It
 /// is repeated here rather than imported so that this module stays free of
 /// anything a splat kernel cannot afford; the test holds the two equal.
 public float envBasisValue(uint k, float3 d) {
@@ -176,6 +176,15 @@ public float envBasisValue(uint k, float3 d) {
     case 6: return 0.31539156525252005 * (2.0 * z * z - x * x - y * y);
     case 7: return -1.0925484305920792 * x * z;
     case 8: return 0.5462742152960396 * (x * x - y * y);
+    // Degree 3, as `shBasisValue` has it: what a TX transfer's direct half,
+    // its indirect one at degree 3 and its reflected field are projected on.
+    case 9: return -0.5900435899266435 * y * (3.0 * x * x - y * y);
+    case 10: return 2.890611442640554 * x * y * z;
+    case 11: return -0.4570457994644658 * y * (4.0 * z * z - x * x - y * y);
+    case 12: return 0.3731763325901154 * z * (2.0 * z * z - 3.0 * x * x - 3.0 * y * y);
+    case 13: return -0.4570457994644658 * x * (4.0 * z * z - x * x - y * y);
+    case 14: return 1.445305721320277 * z * (x * x - y * y);
+    case 15: return -0.5900435899266435 * x * (x * x - 3.0 * y * y);
     default: return 0.0;
     }
 }

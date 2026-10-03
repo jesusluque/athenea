@@ -16,6 +16,7 @@
 // records any other layout gives.
 module streams;
 import athenea.common.packing;
+import athenea.common.transfer_layout;
 
 /// Value `index` of a float array: float32 words, or float16 halves packed two
 /// to a little-endian word, first in the low bits.
@@ -60,6 +61,9 @@ static const uint kCoatIor = 1u << 23;
 static const uint kSheenColour = 1u << 24;
 static const uint kSheenRoughness = 1u << 25;
 static const uint kCoatDarkening = 1u << 26;
+// A TX transfer's reflected field, 48 a splat (GpuSplats::transfer, after the
+// indirect half).
+static const uint kTransferReflected = 1u << 27;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -106,7 +110,8 @@ StructuredBuffer<uint>     roughness;
 StructuredBuffer<uint>     transmission;
 StructuredBuffer<uint>     cryptoObject; // one id a splat, as the prim it came from hashes
 StructuredBuffer<uint>     transferDirect;   // nine a splat
-StructuredBuffer<uint>     transferIndirect; // twenty-seven a splat, rgb a coefficient
+StructuredBuffer<uint>     transferIndirect; // twenty-seven a splat (forty-eight at degree 3), rgb a coefficient
+StructuredBuffer<uint>     transferReflected; // forty-eight a splat, a TX transfer's field
 StructuredBuffer<uint>     shadowBits;       // two words a splat, or eight, bits
 StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a thin wall
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
@@ -229,15 +234,28 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
     // How much of an environment reaches this gaussian: the direct half
     // first, then the indirect one. A cloud that carries neither writes
     // nothing here and the decode writes no buffer.
+    // The count is the layout (transfer_layout.slang): nine or sixteen of the
+    // direct half, three times that of the indirect one, and a TX transfer's
+    // forty-eight of the reflected field after them.
     if (params.transferCount > 0 && params.transferBase != kNoPbr) {
-        for (uint k = 0; k < 9 && k < params.transferCount; ++k) {
+        const uint direct = transferDirectCount(params.transferCount);
+        const uint indirect = transferIndirectCount(params.transferCount);
+        for (uint k = 0; k < direct && k < params.transferCount; ++k) {
             records[r + params.transferBase + k] =
-                present(kTransferDirect) ? streamValue(transferDirect, isHalf(kTransferDirect), e * 9 + k) : 0.0;
+                present(kTransferDirect) ? streamValue(transferDirect, isHalf(kTransferDirect), e * direct + k)
+                                         : 0.0;
         }
-        for (uint k = 9; k < params.transferCount; ++k) {
+        for (uint k = direct; k < direct + indirect; ++k) {
             records[r + params.transferBase + k] =
                 present(kTransferIndirect)
-                    ? streamValue(transferIndirect, isHalf(kTransferIndirect), e * 27 + (k - 9))
+                    ? streamValue(transferIndirect, isHalf(kTransferIndirect), e * indirect + (k - direct))
+                    : 0.0;
+        }
+        for (uint k = direct + indirect; k < params.transferCount; ++k) {
+            records[r + params.transferBase + k] =
+                present(kTransferReflected)
+                    ? streamValue(transferReflected, isHalf(kTransferReflected),
+                                  e * kTransferFieldValues + (k - direct - indirect))
                     : 0.0;
         }
     }

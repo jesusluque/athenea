@@ -22,8 +22,9 @@
 //
 // With `cells` (task TX) the bake kept 256 or 1024 bits over the whole
 // sphere, a float4 of four words for every 128 after the coverage, and the
-// file keeps them as eight or thirty-two ints; and with `coefficients` 16 the
-// two halves are degree 3, sixteen and forty-eight.
+// file keeps them as eight or thirty-two ints; after them sixteen float4 of
+// the reflected field, kept as forty-eight floats; and with `coefficients` 16
+// the two halves are degree 3, sixteen and forty-eight.
 //
 // `counts[0]` counts the gaussians the bake found a surface under: the one
 // number that crosses back, for the log.
@@ -45,6 +46,7 @@ RWStructuredBuffer<float>    records;
 RWStructuredBuffer<float>    direct;     // `coefficients` a gaussian
 RWStructuredBuffer<float>    bounced;    // 3 x `coefficients` a gaussian, where `indirect`
 RWStructuredBuffer<int>      shadowBits; // 2 a gaussian, or `cells`
+RWStructuredBuffer<float>    reflected;  // 48 a gaussian, with `cells` and `indirect`: the reflected field
 RWStructuredBuffer<uint>     counts;
 ConstantBuffer<BakeParams>   bake;
 
@@ -83,7 +85,9 @@ void m2sTransferInto(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint coefficients = bake.coefficients;
-    const uint entries = coefficients + 1u + (bake.cells != 0 ? bake.cells / 4u : 1u);
+    // The coverage, the bits, and with the cells the reflected field's
+    // sixteen (technique::transferPlanes).
+    const uint entries = coefficients + 1u + (bake.cells != 0 ? bake.cells / 4u + 16u : 1u);
     const uint first = k * entries;
     const bool found = baked[first + coefficients].w > 0.0;
     if (!found) {
@@ -102,6 +106,18 @@ void m2sTransferInto(uint3 tid: SV_DispatchThreadID) {
         const float4 bits = baked[first + coefficients + 1];
         shadowBits[k * 2 + 0] = found ? asint(bits.x) : 0;
         shadowBits[k * 2 + 1] = found ? asint(bits.y) : 0;
+    }
+    // THE REFLECTED FIELD (task TX): sixteen rgb coefficients of what
+    // arrives by direction after meeting the scene, under a white sky. Kept
+    // only beside the indirect half, which is what couples it to a sky.
+    if (bake.cells != 0 && bake.indirect != 0) {
+        const uint field = first + coefficients + 1u + bake.cells / 4u;
+        for (uint c = 0; c < 16u; ++c) {
+            const float4 value = baked[field + c];
+            reflected[k * 48 + c * 3] = found ? value.x : 0.0;
+            reflected[k * 48 + c * 3 + 1] = found ? value.y : 0.0;
+            reflected[k * 48 + c * 3 + 2] = found ? value.z : 0.0;
+        }
     }
     for (uint c = 0; c < coefficients; ++c) {
         const float4 value = baked[first + c];

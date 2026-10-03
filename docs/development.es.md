@@ -958,6 +958,19 @@ dejando fuera las que quedan detrás de un eje), `splatLobeOpen` (el centro del
 lóbulo y un anillo al ángulo al que lo abre su roughness) y `splatOpenToward`
 (la dirección de una luz).
 
+**El campo reflejado.** En el mismo modo, un camino que escapa después de su
+primer rebote suma además, en dieciséis sumas rgb, el throughput pasado su
+primer vértice (la radiancia que llegó por su primera dirección bajo un cielo
+blanco) por `Y_j` de esa primera dirección y por `2 pi`: una proyección de la
+luz rebotada que llega, por dirección de llegada. Las sumas son las
+indirectas del bake partido, que un transfer no usa, y salen como dieciséis
+planos después de las celdas. Los valores de un transfer por gaussiana son
+una tirada cuyo número es su disposición
+(`athenea/common/transfer_layout.slang`): 9 o 16 directos, tres veces eso
+indirectos, 48 de campo. `splatFieldCoupling` escala el campo a un cielo,
+`splatFieldAlong` lo lee estrechado a un lóbulo y `splatIndirectAlong` lee la
+mitad indirecta a lo largo de una luz (el rebote del sol).
+
 **Decir otra cosa de un prim.** El id de Cryptomatte que lleva una gaussiana
 es también una selección -- todo lo que vino de un mismo prim -- así que
 `render::SplatOverride` es una fila con ese id como clave: metallic,

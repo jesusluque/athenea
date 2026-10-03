@@ -1014,6 +1014,68 @@ TEST_CASE("a reflection's lobe sees what a TX transfer's bits leave open", "[ren
     }
 }
 
+// WHAT THE CLOSED DIRECTIONS SHOW IS LINEAR IN THE SKY (task TX, step 2).
+//
+// A TX transfer keeps what arrives by direction after meeting the scene,
+// under a white sky of radiance one, and scales it to the sky a frame has by
+// the ratio of what its indirect half gathers under each. On values written
+// on the device: a field that is a constant reads that constant along every
+// direction at every roughness, and the coupling to the white sky is one, to
+// a sky twice as bright two.
+TEST_CASE("a TX transfer's reflected field reads back, and couples to a sky linearly", "[render][gpu][field]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Buffer halves = test::uintBuffer(*gpu->device, 42, "field.transfer");
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "field.stats");
+    gpu::BufferDesc desc;
+    desc.bytes = 64 * 16;
+    desc.elementBytes = 16;
+    desc.label = "field.skies";
+    auto skies = gpu::Buffer::create(*gpu->device, desc);
+    REQUIRE(skies);
+    desc.bytes = 8 * sizeof(float);
+    desc.elementBytes = sizeof(float);
+    desc.label = "field.worst";
+    const std::array<float, 8> zeros{};
+    auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+    REQUIRE(worst);
+    auto fill = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "fieldFill");
+    if (!fill) FAIL(fill.error().toString());
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "fieldCouplingCheck");
+    if (!check) FAIL(check.error().toString());
+    constexpr uint32_t kSteps = 12;
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        cursor["halves"].setBinding(halves.rhi());
+        cursor["transfer"].setBinding(halves.rhi());
+        cursor["baked"].setBinding(skies->rhi());
+        cursor["skies"].setBinding(skies->rhi());
+        cursor["envSh"].setBinding(skies->rhi());
+        cursor["stats"].setBinding(stats.rhi());
+        cursor["worst"].setBinding(worst->rhi());
+        cursor["params"]["steps"].setData(kSteps);
+    };
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        fill->dispatch(batch, {1, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {1, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    std::array<float, 8> readings{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    REQUIRE(worst->read(*gpu->device, 0, sizeof(readings), readings.data()));
+    std::printf("  the field: %u readings, %u off the constant (worst %.5f); coupling off one %u, off two %u "
+                "(worst %.5f)\n",
+                counts[3], counts[0], double(readings[0]), counts[1], counts[2], double(readings[1]));
+    CHECK(counts[3] == kSteps * kSteps);
+    CHECK(counts[0] == 0);
+    CHECK(counts[1] == 0);
+    CHECK(counts[2] == 0);
+}
+
 // GLASS SENDS ON WHAT IT DID NOT REFLECT, AND NOT MORE.
 //
 // A transmitting gaussian's body is the light that came through it, and the

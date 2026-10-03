@@ -1057,6 +1057,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:ior` | float | `0` |
 | `primvars:athenea:splat:transferDirect` | float[] ‹9 por gaussiana› | — |
 | `primvars:athenea:splat:transferIndirect` | float[] ‹27 por gaussiana› | — |
+| `primvars:athenea:splat:transferReflected` | float[] ‹48 por gaussiana› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 o 32 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
@@ -1103,6 +1104,15 @@ que dice cuál; nada más lo dice. Con ellos un frame sombrea el sol y cualquier
 luz que sea una dirección, y estrecha cada reflejo -- el de la base y el del
 coat -- por la parte de su propio lóbulo que los bits dejan abierta, en vez de
 por un número para todo el hemisferio.
+`transferReflected` es lo que muestran las direcciones cerradas: la luz que
+llega a la gaussiana por dirección después de encontrarse con la escena, bajo
+un cielo blanco de radiancia uno, como dieciséis armónicos rgb (grado 3). Un
+frame la escala al cielo que tiene -- por cuánto más recoge la mitad
+indirecta bajo ese cielo que bajo el blanco, contado el rebote del sol -- y un
+reflejo la muestra donde los bits dicen que el cielo no llega: la carrocería
+en el cromo, el suelo en la pintura. Se escribe con las celdas y la mitad
+indirecta, y sólo se lee junto a ellas; `athenea:splatTransferIndirect` la
+apaga con la mitad indirecta.
 `thinWalled` es distinto de cero donde la gaussiana vino de un vidrio de pared
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077

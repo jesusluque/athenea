@@ -1642,6 +1642,9 @@ void tracePathsAt(uint2 group, uint index) {
         // sampling. Everything after is indirect.
         float3 directPart = float3(0.0);
         float3 throughput = float3(1.0);
+        // A transfer's first direction and what it weighed (the field's).
+        float3 firstDirection = float3(0.0, 0.0, 1.0);
+        float  firstWeight = 1.0;
         // The first vertex's opacity is the pixel's, and its depth; a
         // medium's collision is opaque.
         float  opacity = 0.0;
@@ -1727,6 +1730,19 @@ void tracePathsAt(uint2 group, uint index) {
                                 transferDirect[c] += throughput.x * basis;
                             } else {
                                 coefficients[c] += throughput * basis;
+                            }
+                        }
+                        // THE REFLECTED FIELD (task TX): what arrived along
+                        // the path's first direction after it met the scene,
+                        // under a white sky of radiance one -- the throughput
+                        // past the first vertex -- projected onto degree 3 of
+                        // that direction, uniform over the hemisphere it was
+                        // drawn from. In the split's sums, which a transfer
+                        // does not keep.
+                        if (cellsMode && bounce >= 2) {
+                            const float3 arrived = throughput / max(firstWeight, 1.0e-6) * kBakeMeasure;
+                            for (uint c = 0; c < 16u; ++c) {
+                                indirectCoefficients[c] += arrived * shBasisValue(c, firstDirection);
                             }
                         }
                     }
@@ -1985,6 +2001,8 @@ void tracePathsAt(uint2 group, uint index) {
                 ms.pdf = 1.0;
                 ms.delta = false;
                 ms.weight = float3(2.0 * cosine);
+                firstDirection = wi;
+                firstWeight = 2.0 * cosine;
             } else {
                 ms = stackSample(cur.stack, cur.toEye, float3(random2(tid, sample, bounce, 5u),
                                                               random(tid, sample, bounce, 7u)));
@@ -2149,9 +2167,13 @@ void tracePathsAt(uint2 group, uint index) {
         // The bits, carried as the floats they are the bits of: the host
         // reads them back and never does arithmetic on them.
         // With the cells, the planes after the coverage were written as they
-        // were traced.
+        // were traced, and the reflected field's sixteen follow them.
         if (!cellsMode) {
             colour[(count + 1) * pixels + at] = float4(asfloat(shadowBits0), asfloat(shadowBits1), 0.0, 0.0);
+        } else {
+            for (uint c = 0; c < 16u; ++c) {
+                colour[(count + 1 + cellPlanes + c) * pixels + at] = float4(indirectCoefficients[c] * over, 0.0);
+            }
         }
         return;
     }

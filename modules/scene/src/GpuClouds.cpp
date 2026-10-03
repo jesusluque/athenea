@@ -686,7 +686,7 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kBase = 65536, kShPlanes = 131072, kSpecularWeight = 1u << 18,
                    kSpecularColour = 1u << 19, kSpecularIor = 1u << 20, kCoatWeight = 1u << 21,
                    kCoatRoughness = 1u << 22, kCoatIor = 1u << 23, kSheenColour = 1u << 24,
-                   kSheenRoughness = 1u << 25, kCoatDarkening = 1u << 26;
+                   kSheenRoughness = 1u << 25, kCoatDarkening = 1u << 26, kTransferReflected = 1u << 27;
 
 }   // namespace
 
@@ -719,10 +719,17 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     const bool haveCrypto = !in.cryptoObject.empty() && in.cryptoObject.values() >= n;
     // Nine values a gaussian of the direct half, and twenty-seven more where
     // the indirect one is there: a cloud carries both or the direct alone.
+    // Sixteen and forty-eight at degree 3 (a TX transfer's), and its
+    // reflected field's forty-eight after them: the count is the layout
+    // (athenea/common/transfer_layout.slang).
     const bool haveDirect = !in.transferDirect.empty() && in.transferDirect.values() >= uint64_t{n} * 9;
+    const uint32_t directCount = haveDirect && in.transferDirect.values() >= uint64_t{n} * 16 ? 16u : 9u;
     const bool haveIndirect = haveDirect && !in.transferIndirect.empty() &&
-                              in.transferIndirect.values() >= uint64_t{n} * 27;
-    const uint32_t transferCount = haveDirect ? (haveIndirect ? 36u : 9u) : 0u;
+                              in.transferIndirect.values() >= uint64_t{n} * directCount * 3;
+    const bool haveField = haveIndirect && !in.transferReflected.empty() &&
+                           in.transferReflected.values() >= uint64_t{n} * 48;
+    const uint32_t transferCount =
+        haveDirect ? directCount + (haveIndirect ? directCount * 3 : 0u) + (haveField ? 48u : 0u) : 0u;
     // Two words a gaussian of which ways out are open, only beside a transfer.
     const bool haveShadowBits = transferCount > 0 && !in.shadowBits.empty() &&
                                 in.shadowBits.values() >= uint64_t{n} * 2;
@@ -813,6 +820,9 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     note(in.cryptoObject, kCrypto);
     note(in.transferDirect, kTransferDirect);
     note(in.transferIndirect, kTransferIndirect);
+    if (haveField) {
+        note(in.transferReflected, kTransferReflected);
+    }
     if (haveShadowBits) {
         note(in.shadowBits, kShadowBits);
     }
@@ -864,6 +874,9 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!transferDirect) return std::move(transferDirect).error();
     auto transferIndirect = streamBuffer(in.transferIndirect, "splats.stream.transferIndirect");
     if (!transferIndirect) return std::move(transferIndirect).error();
+    auto transferReflected =
+        streamBuffer(haveField ? in.transferReflected : FloatStream{}, "splats.stream.transferReflected");
+    if (!transferReflected) return std::move(transferReflected).error();
     auto thinWalled = streamBuffer(haveThin ? in.thinWalled : FloatStream{}, "splats.stream.thinWalled");
     if (!thinWalled) return std::move(thinWalled).error();
     auto shadowBits = streamBuffer(haveShadowBits ? in.shadowBits : FloatStream{}, "splats.stream.shadowBits");
@@ -903,6 +916,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 cursor["cryptoObject"].setBinding(haveCrypto ? cryptoObject->rhi() : none->rhi());
                 cursor["transferDirect"].setBinding(haveDirect ? transferDirect->rhi() : none->rhi());
                 cursor["transferIndirect"].setBinding(haveIndirect ? transferIndirect->rhi() : none->rhi());
+                cursor["transferReflected"].setBinding(haveField ? transferReflected->rhi() : none->rhi());
                 cursor["shadowBits"].setBinding(haveShadowBits ? shadowBits->rhi() : none->rhi());
                 cursor["thinWalled"].setBinding(haveThin ? thinWalled->rhi() : none->rhi());
                 cursor["normals"].setBinding(haveNormals ? normals->rhi() : none->rhi());

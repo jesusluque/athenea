@@ -45,6 +45,9 @@ struct ParticleFieldArrays {
     /// indirect half was baked too.
     pxr::VtValue transferDirect;   ///< VtFloatArray
     pxr::VtValue transferIndirect; ///< VtFloatArray
+    /// A TX transfer's reflected field: 48 floats a gaussian (sixteen rgb
+    /// coefficients), beside the indirect half.
+    pxr::VtValue transferReflected; ///< VtFloatArray
     /// Which ways out of each gaussian are open: two int32 a gaussian, the
     /// bits of an 8 x 8 octahedral grid, baked beside the transfer.
     pxr::VtValue shadowBits;       ///< VtIntArray

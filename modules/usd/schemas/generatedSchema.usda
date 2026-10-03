@@ -236,8 +236,13 @@ object through the glass wants a ray, which this is not."""
         interpolation = "vertex"
     )
     float[] primvars:athenea:splat:transferIndirect = [] (
-        doc = """The same, for the light that reached this gaussian after bouncing off what stands around it: twenty-seven floats a gaussian (elementSize 27), rgb a coefficient, because what it bounced off has a colour. Optional, and the frame can be asked to leave it out."""
+        doc = """The same, for the light that reached this gaussian after bouncing off what stands around it: twenty-seven floats a gaussian (elementSize 27), rgb a coefficient, because what it bounced off has a colour; forty-eight (elementSize 48) where the direct half is degree 3. Optional, and the frame can be asked to leave it out."""
         elementSize = 27
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:transferReflected = [] (
+        doc = """What a TX transfer's gaussian sees in the directions the scene closes, by direction: the radiance arriving along each after it met the scene, under a white sky of radiance one, projected onto sixteen harmonics (degree 3), rgb a coefficient -- forty-eight floats a gaussian (elementSize 48). Under a real sky it is scaled by how much more the indirect half gathers under that sky than under the white one, and it is what a reflection shows where the open directions (shadowBits) say the sky does not reach. Only read beside transferIndirect."""
+        elementSize = 48
         interpolation = "vertex"
     )
     int[] primvars:athenea:splat:thinWalled = [] (
@@ -245,7 +250,7 @@ object through the glass wants a ray, which this is not."""
         interpolation = "vertex"
     )
     int[] primvars:athenea:splat:shadowBits = [] (
-        doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer."""
+        doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits; or eight or thirty-two (a TX transfer's 16 x 16 or 32 x 32 grid over the whole sphere), which the count says. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer."""
         elementSize = 2
         interpolation = "vertex"
     )

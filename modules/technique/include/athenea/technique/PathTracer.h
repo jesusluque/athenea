@@ -123,12 +123,16 @@ struct BakePoints {
     const uint32_t side = transferCellSide(cellSide);
     return side == 0 ? 2u : side * side / 32u;
 }
+/// The reflected field a TX transfer keeps: sixteen rgb coefficients, a plane
+/// each after the cells (docs/decisions.md, task TX, step 2).
+inline constexpr uint32_t kTransferFieldPlanes = 16;
 /// THE PLANES A TRANSFER WRITES AFTER ITS COEFFICIENTS: the coverage, then the
 /// open directions -- one plane of two words, or a plane of four for every
-/// 128 cells of a finer grid. None for a bake that is not a transfer.
+/// 128 cells of a finer grid and then the reflected field's sixteen. None for
+/// a bake that is not a transfer.
 [[nodiscard]] inline uint32_t transferPlanes(bool transfer, uint32_t cellSide) noexcept {
     const uint32_t side = transferCellSide(cellSide);
-    return !transfer ? 0u : side == 0 ? 2u : 1u + side * side / 128u;
+    return !transfer ? 0u : side == 0 ? 2u : 1u + side * side / 128u + kTransferFieldPlanes;
 }
 [[nodiscard]] inline uint32_t transferPlanes(const BakePoints& bake) noexcept {
     return transferPlanes(bake.transfer, bake.cellSide);

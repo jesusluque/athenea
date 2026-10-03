@@ -47,6 +47,7 @@ __exported import athenea.light.environment;
 import athenea.common.color;
 import athenea.common.octahedral;
 import athenea.common.packing;
+import athenea.common.transfer_layout;
 // The DFG fit the surface lobes use: one definition for both routes. It
 // declares no binding, which is what lets a module below material import it.
 import athenea.material.microfacet;
@@ -443,6 +444,75 @@ float3 transferredBody(SplatSurface s, StructuredBuffer<uint> transfer, Structur
     return sum;
 }
 
+/// THREE VALUES OF A TRANSFER, an rgb, `at` counted in halves.
+float3 transferRgbAt(StructuredBuffer<uint> transfer, uint at) {
+    return float3(transferAt(transfer, at, 0), transferAt(transfer, at, 1), transferAt(transfer, at, 2));
+}
+
+/// THE INDIRECT HALF READ ALONG ONE DIRECTION, rgb: how much a delta of unit
+/// irradiance arriving from `d` brings to this gaussian after bouncing off
+/// what stands around it. What the sun's bounce is, and a light's, which the
+/// first transfer left out because the sun was taken out of the harmonics the
+/// indirect half is dotted with. Zero where the cloud keeps no indirect half.
+public float3 splatIndirectAlong(SplatSurface s, StructuredBuffer<uint> transfer, float3 d) {
+    const uint coefficients = transferIndirectCount(s.transferCount) / 3u;
+    const uint base = s.transferBase + transferDirectCount(s.transferCount);
+    float3 sum = float3(0.0);
+    for (uint k = 0; k < coefficients; ++k) {
+        sum += transferRgbAt(transfer, base + k * 3u) * envBasisValue(k, d);
+    }
+    return max(sum, float3(0.0));
+}
+
+/// HOW MUCH MORE THE SCENE AROUND A GAUSSIAN BOUNCES UNDER THIS SKY THAN UNDER
+/// A WHITE ONE, per channel (task TX, step 2).
+///
+/// The reflected field was baked under a white sky of radiance one: its
+/// pattern is what stands around the gaussian -- which way, how far, of what
+/// colour -- and its brightness is that sky's. Under another sky the pattern
+/// stands and the brightness is the ratio of what the indirect half gathers
+/// under it, the sun's bounce included, to what it gathers under the white
+/// one, `T_ind,0 sqrt(4 pi)`. A rank-one coupling: it is exact for a
+/// gaussian surrounded by one surface lit by one sky, and it puts a lit
+/// ground's colour, not its shape, under a sky lit from one side. Where the
+/// gaussian bounces nothing at all the field is nothing too, and the sky's
+/// mean radiance stands in.
+public float3 splatFieldCoupling(SplatSurface s, StructuredBuffer<uint> transfer, StructuredBuffer<float4> envSh,
+                                 uint dome, float4 disc, float3 irradiance) {
+    const uint coefficients = min(transferIndirectCount(s.transferCount) / 3u, kEnvCoefficients);
+    const uint base = s.transferBase + transferDirectCount(s.transferCount);
+    float3 gathered = float3(0.0);
+    for (uint k = 0; k < coefficients; ++k) {
+        gathered += transferRgbAt(transfer, base + k * 3u) * envSh[dome * kEnvCoefficients + k].rgb;
+    }
+    float3 mean = envSh[dome * kEnvCoefficients].rgb * 0.28209479177387814;
+    if (disc.w > 0.0) {
+        gathered += irradiance * splatIndirectAlong(s, transfer, disc.xyz);
+        mean += irradiance * (1.0 / (4.0 * 3.14159265358979));
+    }
+    const float3 white = transferRgbAt(transfer, base) * 3.5449077018110318;   // sqrt(4 pi)
+    return float3(white.x > 1.0e-4 ? max(gathered.x / white.x, 0.0) : mean.x,
+                  white.y > 1.0e-4 ? max(gathered.y / white.y, 0.0) : mean.y,
+                  white.z > 1.0e-4 ? max(gathered.z / white.z, 0.0) : mean.z);
+}
+
+/// WHAT THE CLOSED DIRECTIONS SHOW ALONG `d`, under a white sky (task TX,
+/// step 2): the reflected field read there, its bands narrowed to a lobe of
+/// this roughness -- a GGX lobe reflected is about a von Mises-Fisher of
+/// concentration `1 / (2 alpha^2)`, whose band l is `exp(-l (l + 1) alpha^2)`.
+/// Times `splatFieldCoupling` it is radiance.
+public float3 splatFieldAlong(SplatSurface s, StructuredBuffer<uint> transfer, float3 d, float roughness) {
+    const uint base = s.transferBase + transferFieldOffset(s.transferCount);
+    const float alpha = roughness * roughness;
+    const float a2 = alpha * alpha;
+    float3 sum = float3(0.0);
+    [unroll] for (uint j = 0; j < 16u; ++j) {
+        const float band = j < 1u ? 0.0 : (j < 4u ? 2.0 : (j < 9u ? 6.0 : 12.0));   // l (l + 1)
+        sum += transferRgbAt(transfer, base + j * 3u) * (exp(-band * a2) * envBasisValue(j, d));
+    }
+    return max(sum, float3(0.0));
+}
+
 /// HOW MUCH OF THE SUN REACHES THIS GAUSSIAN, out of its own transfer.
 ///
 /// The disc was taken out of the harmonics (`env_sun.slang`) and comes back
@@ -770,6 +840,17 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
         const float cosine = max(dot(s.normal, disc.xyz), 0.0);
         const float sunShare = disc.w > 0.0 ? splatOpenToward(s, transfer, cellBits, disc.xyz) : 1.0;
         front += irradiance * (cosine * sunShare * kOverPiSun);
+        // WHAT A TX TRANSFER ADDS (docs/decisions.md, task TX): the open
+        // directions by the lobe (step 1), and what the closed ones show
+        // (step 2) -- the reflected field, scaled to this sky -- and the sun's
+        // bounce, which the first transfer lost with the sun it took out of
+        // the harmonics.
+        const bool cells = s.cellWords >= 8u;
+        const bool field = cells && withIndirect && transferHasField(s.transferCount);
+        if (cells && withIndirect && disc.w > 0.0) {
+            front += irradiance * splatIndirectAlong(s, transfer, disc.xyz);
+        }
+        const float3 coupling = field ? splatFieldCoupling(s, transfer, envSh, dome, disc, irradiance) : float3(0.0);
         // The translucent half faces the other way, and a transfer was
         // measured over the hemisphere the normal faces alone: what arrives
         // behind is answered by the sky's harmonics with no occlusion, which
@@ -796,7 +877,6 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
                                 : envRadiance(envTexels, dome, mirror, s.roughness, envBaseSide);
         // A TX transfer asks its lobe which of its directions are open; the
         // first transfer had one number for the whole hemisphere.
-        const bool cells = s.cellWords >= 8u;
         const float narrowed =
             s.reflectionTraced ? 1.0
             : cells            ? splatLobeOpen(s, cellBits, mirror, s.roughness, s.normal)
@@ -829,12 +909,26 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
             const float3 coatSun = s.hasReflection
                                        ? float3(0.0)
                                        : coatLobe(s, wo, disc.xyz) * irradiance * (cosine * (1.0 - sunShare));
-            coat = max(layers.coat * coatNarrowed * coatSeen - coatNarrowed * coatSun, float3(0.0));
+            coat = field ? max(layers.coat * (coatNarrowed * coatSeen +
+                                              (1.0 - coatNarrowed) * coupling *
+                                                  splatFieldAlong(s, transfer, mirror, s.lobes.coatRoughness)) -
+                                   coatNarrowed * coatSun,
+                               float3(0.0))
+                         : max(layers.coat * coatNarrowed * coatSeen - coatNarrowed * coatSun, float3(0.0));
         }
         // THE SHEEN: a lobe as broad as a body's, so it is answered as one --
         // its albedo at this eye times the light the transfer says reaches
         // the gaussian, shadow and sun included -- under the coat.
         const float3 sheen = layers.belowCoat * layers.sheen * front;
+        if (field) {
+            const float3 closed = coupling * splatFieldAlong(s, transfer, mirror, s.roughness);
+            return body2 +
+                   layers.under * thinWallGain(s) *
+                       max(splatPolish(s, nDotV) * (narrowed * seen + (1.0 - narrowed) * closed) -
+                               narrowed * shadowedSun,
+                           float3(0.0)) +
+                   coat + sheen;
+        }
         return body2 +
                layers.under * thinWallGain(s) *
                    max(splatPolish(s, nDotV) * narrowed * seen - narrowed * shadowedSun, float3(0.0)) +

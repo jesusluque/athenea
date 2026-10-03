@@ -248,6 +248,8 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         static const TfToken kTransferIndirect("athenea:splat:transferIndirect");
         arrays.transferDirect = held(kTransferDirect);
         arrays.transferIndirect = held(kTransferIndirect);
+        static const TfToken kTransferReflected("athenea:splat:transferReflected");
+        arrays.transferReflected = held(kTransferReflected);
         static const TfToken kLodGroup("athenea:lod:group");
         static const TfToken kLodCell("athenea:lod:cell");
         static const TfToken kLodThreshold("athenea:lod:threshold");

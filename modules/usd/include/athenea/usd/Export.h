@@ -106,6 +106,14 @@ struct ExportOptions {
     /// under, so the colours it carries are an albedo and nothing else.
     std::span<const float>          transferDirect;
     std::span<const float>          transferIndirect;
+    /// Coefficients a record of `transferDirect`: 9 (degree 2) or 16 (degree
+    /// 3, a TX transfer's); the indirect half is three times as many.
+    uint32_t                        transferCoefficients = 9;
+    /// THE REFLECTED FIELD of a TX transfer (docs/decisions.md, task TX): 48
+    /// floats a record, sixteen rgb coefficients of what arrives at the
+    /// gaussian by direction after meeting the scene, under a white sky of
+    /// radiance one. Written only beside `transferIndirect`.
+    std::span<const float>          transferReflected;
     /// WHICH WAYS OUT ARE OPEN: two ints a record, sixty-four bits of an
     /// 8 x 8 octahedral grid over the sphere, set where a traced ray found
     /// nothing. What lets a sun cast a hard shadow on a relit cloud.
@@ -119,6 +127,17 @@ struct ExportOptions {
     /// `primvars:athenea:splat:ior` when above 1: the index the cloud's
     /// transmitting gaussians refract by. Not written at 0.
     float                           ior = 0.0F;
+};
+
+/// WHAT A TRANSFER BAKE HANDS THE FILE, as the arrays a stage keeps
+/// (`ExportOptions::transferDirect` and the rest).
+struct TransferArrays {
+    std::vector<float>   direct;
+    std::vector<float>   bounced;
+    std::vector<float>   reflected;
+    std::vector<int32_t> shadowBits;
+    uint32_t             coefficients = 9;
+    uint32_t             shadowWords = 2;
 };
 
 /// Writes `raw` as a UsdVolParticleField3DGaussianSplat at /World/Splats in a

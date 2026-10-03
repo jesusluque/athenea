@@ -11119,7 +11119,7 @@ TEST_CASE("the open directions a TX transfer keeps are the ones a roof leaves, o
         auto baked = (*renderer)->bakePoints(rays, count, 0.0, 64, 1, 2, /*transfer=*/true, nullptr, side);
         if (!baked) FAIL(baked.error().toString());
         const uint32_t entries = coefficients + technique::transferPlanes(true, side);
-        REQUIRE(entries == coefficients + 1 + side * side / 128);
+        REQUIRE(entries == coefficients + 1 + side * side / 128 + technique::kTransferFieldPlanes);
         REQUIRE(baked->size() == size_t{count} * entries * 4);
         gpu::Buffer values = upload(*baked, "cells.baked");
         gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "cells.stats");
@@ -11155,6 +11155,98 @@ TEST_CASE("the open directions a TX transfer keeps are the ones a roof leaves, o
         CHECK(counts[5] > count * side * side / 4);    // the lower half was traced too
         CHECK(counts[3] == 0);                         // and under a sheet it is open
     }
+}
+
+// WHAT A TX TRANSFER'S CLOSED DIRECTIONS SHOW IS WHAT STANDS THERE (step 2).
+//
+// A point on a black floor beside a grey wall, under a white sky. The wall is
+// a vertical surface whose upper half of hemisphere is the sky and whose
+// lower half is the black floor, so it sends back exactly half its albedo,
+// and that is what the field must read toward it; straight up is open, and
+// the field -- which holds only what arrived after meeting the scene --
+// must read next to nothing there.
+TEST_CASE("a TX transfer's reflected field reads the wall that stands beside it", "[usd][gpu][mesh][bake][transfer][field]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const float albedo = 0.5F;
+    const fs::path path = scratch("transfer_field_wall.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    color3f[] primvars:displayColor = [(0, 0, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Mesh \"Wall\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(2, -4, -1.5), (2, -4, 2.5), (2, 4, 2.5), (2, 4, -1.5)]\n"
+               "    normal3f[] normals = [(-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0)] (interpolation = \"vertex\")\n"
+               "    color3f[] primvars:displayColor = [("
+            << albedo << ", " << albedo << ", " << albedo << ")]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t count = 32;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = 1.9F - 0.04F * static_cast<float>(k);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const uint32_t side = 16;
+    auto baked = (*renderer)->bakePoints(rays, count, 0.0, 1024, 3, 2, /*transfer=*/true, nullptr, side);
+    if (!baked) FAIL(baked.error().toString());
+    const uint32_t entries = 9 + technique::transferPlanes(true, side);
+    REQUIRE(baked->size() == size_t{count} * entries * 4);
+    gpu::BufferDesc desc;
+    desc.bytes = baked->size() * 4;
+    desc.elementBytes = 16;
+    auto values = gpu::Buffer::create(*gpu->device, desc, baked->data());
+    REQUIRE(values);
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "field.stats");
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "fieldBakeCheck");
+    if (!check) FAIL(check.error().toString());
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            for (const char* unused : {"halves", "transfer", "skies", "envSh", "worst"}) {
+                cursor[unused].setBinding(stats.rhi());
+            }
+            cursor["baked"].setBinding(values->rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            p["entries"].setData(entries);
+            p["firstField"].setData(entries - technique::kTransferFieldPlanes);
+            p["wallRadiance"].setData(albedo * 0.5F);
+            p["tolerance"].setData(0.25F);
+            p["openFloor"].setData(albedo * 0.5F * 0.3F);
+            p["roughness"].setData(0.6F);
+            const float towards[3] = {1.0F, 0.0F, 0.3F};
+            p["towardsWall"].setData(towards, sizeof(towards));
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    float worstWall = 0.0F, mostUp = 0.0F;
+    std::memcpy(&worstWall, &counts[4], 4);
+    std::memcpy(&mostUp, &counts[5], 4);
+    std::printf("  the field beside a wall: %u points, %u off the wall's %.3f (worst %.3f relative), %u reading "
+                "the open sky (most %.4f)\n",
+                counts[2], counts[0], double(albedo * 0.5F), double(worstWall), counts[1], double(mostUp));
+    CHECK(counts[2] == count);
+    CHECK(counts[0] == 0);
+    CHECK(counts[1] == 0);
 }
 
 // THE TEST THAT SAYS THE WHOLE CHAIN IS LINEAR.

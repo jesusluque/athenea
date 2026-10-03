@@ -181,6 +181,9 @@ struct Options {
     /// what a reflection's occlusion and a glass's view through are read from
     /// (task TX); 0, the first transfer's 64 over the half a gaussian faces.
     uint32_t                 transferCells = 16;
+    /// THE TRANSFER'S DEGREE: 2 (nine coefficients direct, twenty-seven
+    /// indirect, the first transfer's) or 3 (sixteen and forty-eight).
+    uint32_t                 transferDegree = 2;
     /// PATHS A GAUSSIAN, 256 on average since every gaussian is blended in
     /// linear light: these everywhere, then `bakeExtra` more shared out
     /// where the noise is (docs/decisions.md, "The bake's grain"). A transfer
@@ -1521,8 +1524,8 @@ public:
     [[nodiscard]] Result<void> filterIndirect(aofx::Effect& filter, usd::BakeSplit& split);
     /// How much of an environment reaches each gaussian, instead of the light.
     [[nodiscard]] Result<void> transfer(const std::string& stage, double time, uint32_t samples,
-                                        uint32_t bounces, bool indirect, uint32_t cells, std::vector<float>& direct,
-                                        std::vector<float>& bounced, std::vector<int32_t>& shadowBits);
+                                        uint32_t bounces, bool indirect, uint32_t cells, uint32_t degree,
+                                        usd::TransferArrays& out);
 
 private:
     /// Whether any material of the stage gives off light: the records then
@@ -1682,6 +1685,7 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
         cursor["direct"].setBinding(none.rhi());
         cursor["bounced"].setBinding(none.rhi());
         cursor["shadowBits"].setBinding(none.rhi());
+        cursor["reflected"].setBinding(none.rhi());
         cursor["counts"].setBinding(lit->rhi());
         cursor["bake"]["count"].setData(count_);
         cursor["bake"]["coefficients"].setData(coefficients);
@@ -1816,17 +1820,21 @@ Result<void> Converter::filterIndirect(aofx::Effect& filter, usd::BakeSplit& spl
 /// sky the cloud is put in. On the device as the bake is; the three arrays
 /// the file keeps come back as bytes.
 Result<void> Converter::transfer(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
-                                 bool indirect, uint32_t cells, std::vector<float>& direct, std::vector<float>& bounced,
-                                 std::vector<int32_t>& shadowBits) {
+                                 bool indirect, uint32_t cells, uint32_t degree, usd::TransferArrays& out) {
     ATHENEA_TRY(spanRays());
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
     // Degree 2: nine coefficients hold the irradiance of any environment to
     // about a percent, and a transfer is exactly that shape.
+    // Degree 3 for a TX transfer (--transfer-degree): sixteen and forty-eight.
     const uint32_t side = technique::transferCellSide(cells);
+    const uint32_t bakeDegree = degree >= 3 ? 3u : 2u;
+    const uint32_t coefficients = (bakeDegree + 1) * (bakeDegree + 1);
+    // The reflected field is kept only with the cells and the indirect half.
+    const bool field = side > 0 && indirect;
     const auto started = std::chrono::steady_clock::now();
-    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, 2, /*transfer=*/true,
-                                                 /*batch=*/0, side);
+    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, bakeDegree,
+                                                 /*transfer=*/true, /*batch=*/0, side);
     if (!baked) return std::move(baked).error();
     // The rays are the same rays whether the indirect half is kept or not, so
     // this number is what says the second half costs no bake: only the copy
@@ -1841,14 +1849,15 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         desc.label = label;
         return gpu::Buffer::create(device, desc);
     };
-    auto directs = made(uint64_t{count_} * 9, "mesh2splat.transferDirect");
-    auto bounceds = made(indirect ? uint64_t{count_} * 27 : 1, "mesh2splat.transferIndirect");
+    auto directs = made(uint64_t{count_} * coefficients, "mesh2splat.transferDirect");
+    auto bounceds = made(indirect ? uint64_t{count_} * coefficients * 3 : 1, "mesh2splat.transferIndirect");
+    auto fields = made(field ? uint64_t{count_} * 48 : 1, "mesh2splat.transferReflected");
     // Two words of open directions a gaussian, or eight or thirty-two with
     // the cells.
     const uint32_t words = technique::transferCellWords(side);
     auto bits = made(uint64_t{count_} * words, "mesh2splat.shadowBits");
     auto found = counter();
-    if (!directs || !bounceds || !bits || !found) {
+    if (!directs || !bounceds || !fields || !bits || !found) {
         return Error(ErrorCode::OutOfMemory, "transfer: cannot allocate what the file keeps");
     }
     gpu::CommandBatch batch(device);
@@ -1858,9 +1867,10 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         cursor["direct"].setBinding(directs->rhi());
         cursor["bounced"].setBinding(bounceds->rhi());
         cursor["shadowBits"].setBinding(bits->rhi());
+        cursor["reflected"].setBinding(fields->rhi());
         cursor["counts"].setBinding(found->rhi());
         cursor["bake"]["count"].setData(count_);
-        cursor["bake"]["coefficients"].setData(uint32_t{9});
+        cursor["bake"]["coefficients"].setData(coefficients);
         cursor["bake"]["perRecord"].setData(recordFloats());
         cursor["bake"]["opacity"].setData(uint32_t{3});
         cursor["bake"]["dc0"].setData(uint32_t{11});
@@ -1870,13 +1880,19 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     });
     ATHENEA_TRY(batch.submit(true));
     // What a USD array holds, as bytes.
-    direct.resize(size_t{count_} * 9);
-    shadowBits.resize(size_t{count_} * words);
-    bounced.resize(indirect ? size_t{count_} * 27 : 0);
-    ATHENEA_TRY(directs->read(device, 0, direct.size() * sizeof(float), direct.data()));
-    ATHENEA_TRY(bits->read(device, 0, shadowBits.size() * sizeof(int32_t), shadowBits.data()));
+    out.coefficients = coefficients;
+    out.shadowWords = words;
+    out.direct.resize(size_t{count_} * coefficients);
+    out.shadowBits.resize(size_t{count_} * words);
+    out.bounced.resize(indirect ? size_t{count_} * coefficients * 3 : 0);
+    out.reflected.resize(field ? size_t{count_} * 48 : 0);
+    ATHENEA_TRY(directs->read(device, 0, out.direct.size() * sizeof(float), out.direct.data()));
+    ATHENEA_TRY(bits->read(device, 0, out.shadowBits.size() * sizeof(int32_t), out.shadowBits.data()));
     if (indirect) {
-        ATHENEA_TRY(bounceds->read(device, 0, bounced.size() * sizeof(float), bounced.data()));
+        ATHENEA_TRY(bounceds->read(device, 0, out.bounced.size() * sizeof(float), out.bounced.data()));
+    }
+    if (field) {
+        ATHENEA_TRY(fields->read(device, 0, out.reflected.size() * sizeof(float), out.reflected.data()));
     }
     uint32_t reached = 0;
     ATHENEA_TRY(found->read(device, 0, sizeof(reached), &reached));
@@ -2157,17 +2173,14 @@ void addMesh2Splat(CLI::App& app) {
                 // integrator -- and stores what it answers. What that costs is
                 // the light: a baked cloud carries this scene's, and cannot be
                 // put under another.
-                std::vector<float> transferDirect;
-                std::vector<float> transferIndirect;
-                std::vector<int32_t> shadowBits;
+                usd::TransferArrays transferred;
                 if (o->transfer) {
                     // WHAT AN ENVIRONMENT PUTS ON EACH GAUSSIAN, rather than what
                     // this one did. The colours stay the material's albedo and
                     // the frame lights them with whatever sky it has, so the same
                     // file is right under every HDRI rather than under one.
                     ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples + o->bakeExtra, o->bakeBounces, o->indirect,
-                                                   o->transferCells, transferDirect, transferIndirect,
-                                                   shadowBits));
+                                                   o->transferCells, o->transferDegree, transferred));
                 } else if (o->bake) {
                     usd::BakeOptions bake;
                     bake.samples = o->bakeSamples;
@@ -2278,10 +2291,12 @@ void addMesh2Splat(CLI::App& app) {
                 options.cryptoManifest = converter.cryptoManifest();
                 options.thinWalled = converter.thinWalled();
                 options.ior = converter.glassIor();
-                options.transferDirect = transferDirect;
-                options.transferIndirect = transferIndirect;
-                options.shadowBits = shadowBits;
-                options.shadowWords = technique::transferCellWords(o->transferCells);
+                options.transferDirect = transferred.direct;
+                options.transferIndirect = transferred.bounced;
+                options.transferReflected = transferred.reflected;
+                options.transferCoefficients = transferred.coefficients;
+                options.shadowBits = transferred.shadowBits;
+                options.shadowWords = transferred.shadowWords;
                 // WHOLE OR NOT AT ALL: under another name beside it, and
                 // under its own only once it is complete, so a conversion
                 // that fails leaves no stage of half a cloud behind.

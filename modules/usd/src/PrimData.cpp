@@ -184,6 +184,12 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     if (s.transferIndirect.values() < uint64_t{s.count} * 27) {
         s.transferIndirect = {};
     }
+    // A TX transfer's reflected field, 48 floats a gaussian, only beside the
+    // indirect half.
+    s.transferReflected = streamOf(a.transferReflected);
+    if (s.transferIndirect.empty() || s.transferReflected.values() < uint64_t{s.count} * 48) {
+        s.transferReflected = {};
+    }
     // Which gaussians are thin walls: ints, like the ids.
     if (a.thinWalled.IsHolding<pxr::VtIntArray>()) {
         const pxr::VtIntArray& thin = a.thinWalled.UncheckedGet<pxr::VtIntArray>();

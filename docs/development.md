@@ -914,6 +914,18 @@ tells the layout by that count (`GpuSplats::shadowWords`, the frame's
 lobe's centre and a ring at the angle its roughness spreads) and
 `splatOpenToward` (a light's direction).
 
+**The reflected field.** In the same mode a path that escapes after its
+first bounce also adds, to sixteen rgb sums, the throughput past its first
+vertex (the radiance that arrived along its first direction under a white
+sky) times `Y_j` of that first direction and `2 pi`: a projection of the
+incoming bounced light by arrival direction. The sums are the bake split's
+indirect ones, which a transfer does not use, and leave as sixteen planes
+after the cells. A transfer's values a gaussian are one run whose count is
+its layout (`athenea/common/transfer_layout.slang`): 9 or 16 direct, three
+times that indirect, 48 of field. `splatFieldCoupling` scales the field to a
+sky, `splatFieldAlong` reads it narrowed to a lobe, `splatIndirectAlong`
+reads the indirect half along a light (the sun's bounce).
+
 **Saying otherwise about a prim.** The Cryptomatte id a gaussian carries is
 also a selection -- everything that came from one prim -- so
 `render::SplatOverride` is a row keyed on it: metallic, roughness,
