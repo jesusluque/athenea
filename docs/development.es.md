@@ -698,7 +698,11 @@ sobre ellos como si fueran píxeles. `bakePointsOnDevice` es lo mismo con los
 rayos ya en el dispositivo en la disposición de tres `float4` del kernel y la
 respuesta dejada allí, las entradas de un punto juntas
 (`athenea/usd/bake_gather`); la conversión abre el renderer en su propio
-dispositivo y usa esa. Es el mismo integrador que usa un frame,
+dispositivo y usa esa. Traza en pasadas de como mucho
+`StageRenderer::kBakeBatch` puntos (2^19), así que los planos y las sumas del
+tracer tienen el tamaño de la pasada y la respuesta es el único buffer del
+tamaño de la nube; cada pasada saca sus propios caminos, así que el lote
+cambia el ruido de una respuesta, no su media. Es el mismo integrador que usa un frame,
 compilado con su constante de bake en cierto: no una segunda implementación.
 
 **Una gaussiana elevada** se hornea desde el punto plano que tiene debajo,

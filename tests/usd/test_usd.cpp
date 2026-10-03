@@ -7006,6 +7006,82 @@ TEST_CASE("a bake from rays set up on the device answers as the host's did", "[u
     CHECK(seen[1] == 0);
 }
 
+// A BAKE IN PASSES ANSWERS AS A BAKE IN ONE.
+//
+// A cloud of ten million gaussians in one pass had the tracer hold a plane an
+// entry for every one of them at once -- 2.6 GB at degree 3 -- besides its
+// own sums. `bakePointsOnDevice` takes it in passes of at most `batch`
+// points, each laid into the answer at its place. On a Lambertian plane under
+// a dome, where every point's answer is the same: a bake in passes of 7
+// points (so the last is short) against one pass, entry for entry, within
+// what the paths' noise moves an answer by.
+TEST_CASE("a bake taken in passes answers as one taken whole", "[usd][gpu][mesh][bake][mesh2splat]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("bake_batches.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    constexpr uint32_t kCount = 40;
+    std::vector<float> rays(size_t{kCount} * 12, 0.0F);
+    for (uint32_t k = 0; k < kCount; ++k) {
+        float* ray = rays.data() + size_t{k} * 12;
+        ray[0] = -1.5F + 3.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(kCount);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    gpu::Device& device = *gpu->device;
+    gpu::BufferDesc desc;
+    desc.bytes = rays.size() * sizeof(float);
+    desc.elementBytes = 16;
+    desc.label = "test.rays";
+    auto rayBuffer = gpu::Buffer::create(device, desc, rays.data());
+    REQUIRE(rayBuffer);
+    auto compare = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_host_check", "m2sAnswerCompare");
+    REQUIRE(compare);
+    auto renderer = usd::StageRenderer::open(path, gpu->device);
+    if (!renderer) FAIL(renderer.error().toString());
+    constexpr uint32_t kDegree = 2;
+    constexpr uint32_t kEntries = (kDegree + 1) * (kDegree + 1);
+    auto whole = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 1024, 1, kDegree, false, 0);
+    if (!whole) FAIL(whole.error().toString());
+    auto passes = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 1024, 1, kDegree, false, 7);
+    if (!passes) FAIL(passes.error().toString());
+    gpu::Buffer counts = test::uintBuffer(device, 4, "counts");
+    {
+        gpu::CommandBatch batch(device);
+        compare->dispatch(batch, {kCount * kEntries, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["a"].setBinding(whole->rhi());
+            cursor["b"].setBinding(passes->rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["count"].setData(kCount * kEntries);
+            // The constant term is about 0.46 here and the harmonics about
+            // zero; 1024 stratified paths hold both well inside this.
+            cursor["params"]["tolerance"].setData(0.02F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t seen[3] = {0, 0, 0};
+    REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+    float worst = 0.0F;
+    std::memcpy(&worst, &seen[2], sizeof(worst));
+    std::printf("  six passes of 7 and one of 40: %u entries, %u apart, worst %.3g\n", seen[0], seen[1],
+                static_cast<double>(worst));
+    CHECK(seen[0] == kCount * kEntries);
+    CHECK(seen[1] == 0);
+}
+
 // A BAKE GIVES NO MORE LIGHT THAN ANY PATH SAW, FROM ANY SIDE.
 //
 // The surface that broke it: polished metal under one small, bright light,

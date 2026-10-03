@@ -670,7 +670,11 @@ the point with its offset, then its normal — and dispatches the path tracer
 over them as though they were pixels. `bakePointsOnDevice` is the same with
 the rays already on the device in the kernel's three-`float4` layout and the
 answer left there, a point's entries together (`athenea/usd/bake_gather`);
-the conversion opens the renderer on its own device and uses that one. It is the same integrator a frame uses,
+the conversion opens the renderer on its own device and uses that one. It
+traces in passes of at most `StageRenderer::kBakeBatch` points (2^19), so
+the tracer's planes and sums are sized by the pass and the answer is the only
+buffer the size of the cloud; each pass draws its own paths, so a batch
+changes an answer's noise, not its mean. It is the same integrator a frame uses,
 compiled with its bake constant true: not a second implementation.
 
 **A raised gaussian** is baked from the flat point under it, down the flat

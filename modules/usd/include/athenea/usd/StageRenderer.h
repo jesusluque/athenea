@@ -293,9 +293,20 @@ public:
     /// What comes back is on the device too: `count * entries` `float4`, a
     /// point's entries together in the order `bakePoints` returns them --
     /// `(degree + 1)^2` coefficients, and two more for a transfer.
+    ///
+    /// IN PASSES OF AT MOST `batch` POINTS (0: `kBakeBatch`), so what the
+    /// tracer holds at once -- a plane an entry over its grid, and its sums
+    /// -- is bounded whatever the cloud: the answer is the only buffer the
+    /// size of the cloud. Each pass draws its own paths, so a point's answer
+    /// is the same in distribution, not in bits, whatever the batch.
     [[nodiscard]] Result<gpu::Buffer> bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                          uint32_t samples = 64, uint32_t bounces = 3,
-                                                         uint32_t degree = 0, bool transfer = false);
+                                                         uint32_t degree = 0, bool transfer = false,
+                                                         uint32_t batch = 0);
+    /// Points a bake pass traces at most: 2^19, which at degree 3 is 150 MB
+    /// of planes (sixteen float4 a point) where a 10 M-gaussian cloud in one
+    /// pass was 2.6 GB.
+    static constexpr uint32_t kBakeBatch = 1u << 19;
 
     /// Samples per light per pixel: one for an interactive frame, more where
     /// an area light's noise would be read as error.

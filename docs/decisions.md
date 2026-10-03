@@ -9428,3 +9428,17 @@ What still crosses: the values a USD array holds, the transfer's arrays and
 the joints (the file wants host arrays), and a counter or two. The export's
 extent is still folded on the processor over the positions it reads back for
 the file; not changed here.
+
+**The bake in passes.** A bake was one pass over every gaussian: the path
+tracer's grid was the cloud, so it held a plane an entry for all of them at
+once -- sixteen `float4` a point at degree 3, 2.6 GB for ten million -- plus
+its sums, beside the cloud. `bakePointsOnDevice` now takes at most
+`kBakeBatch` (2^19) points a pass: a pass's rays are copied out of the
+cloud's on the device (or are the cloud's, where one pass holds them all),
+traced, and gathered into the answer at their place. 150 MB of planes at
+degree 3 whatever the cloud. Each pass restarts the tracer, so its points
+draw the paths the first pass's did by index: the same distribution, not the
+same bits. `athenea_usd_tests "a bake taken in passes*"`: passes of 7 against
+one pass of 40 on a Lambertian plane, every entry within 0.02 (the paths'
+noise). Not measured yet: the time a pass costs on a large cloud against one
+pass (to be taken on a GPU turn).

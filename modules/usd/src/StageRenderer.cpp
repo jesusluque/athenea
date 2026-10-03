@@ -1396,7 +1396,7 @@ Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& r
 
 Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                       uint32_t samples, uint32_t bounces, uint32_t degree,
-                                                      bool transfer) {
+                                                      bool transfer, uint32_t batch) {
     Impl& impl = *impl_;
     if (count == 0 || !rays.valid() || rays.bytes() < uint64_t{count} * 48) {
         return Error(ErrorCode::InvalidArgument, "bake: three float4 a point, and at least one point");
@@ -1435,30 +1435,53 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
     settings.height = 1;
     const render::Projection projection = render::projectionFor(*framing, 1, 1);
     render::RenderTargets out;
-    athenea::usd::BakeRequest bake;
-    bake.rays = &rays;
-    bake.count = count;
-    bake.samples = samples;
-    bake.bounces = bounces;
-    bake.coefficients = coefficients;
-    bake.transfer = transfer;
-    bake.out = &out;
-    ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
-    if (!out.colour.valid()) {
-        return Error(ErrorCode::InternalError, "bake: the frame wrote nothing");
+    // IN PASSES: a pass's rays are the caller's buffer where one pass holds
+    // them all, and otherwise copied out of it on the device into one buffer
+    // a pass long; the pass's planes are gathered into the answer at its
+    // place. What the tracer allocates is sized by the pass.
+    const uint32_t perPass = std::min(batch > 0 ? batch : kBakeBatch, count);
+    gpu::Buffer passRays;
+    if (perPass < count) {
+        desc.bytes = uint64_t{perPass} * 48;
+        desc.elementBytes = 16;
+        desc.label = "bake.passRays";
+        auto made = gpu::Buffer::create(device, desc);
+        if (!made) return std::move(made).error();
+        passRays = std::move(*made);
     }
-    // The kernel writes a plane an entry over the whole grid; what the
-    // caller wants is a point's entries together, laid out on the device.
-    gpu::CommandBatch batch(device);
-    gather->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
-        cursor["planes"].setBinding(out.colour.rhi());
-        cursor["answer"].setBinding(answer->rhi());
-        cursor["params"]["count"].setData(count);
-        cursor["params"]["first"].setData(uint32_t{0});
-        cursor["params"]["entries"].setData(entries);
-        cursor["params"]["plane"].setData(out.width * out.height);
-    });
-    ATHENEA_TRY(batch.submit(true));
+    for (uint32_t first = 0; first < count; first += perPass) {
+        const uint32_t n = std::min(perPass, count - first);
+        if (passRays.valid()) {
+            gpu::CommandBatch copy(device);
+            copy.encoder()->copyBuffer(passRays.rhi(), 0, rays.rhi(), uint64_t{first} * 48, uint64_t{n} * 48);
+            copy.markDirty();
+            ATHENEA_TRY(copy.submit(true));
+        }
+        athenea::usd::BakeRequest bake;
+        bake.rays = passRays.valid() ? &passRays : &rays;
+        bake.count = n;
+        bake.samples = samples;
+        bake.bounces = bounces;
+        bake.coefficients = coefficients;
+        bake.transfer = transfer;
+        bake.out = &out;
+        ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
+        if (!out.colour.valid()) {
+            return Error(ErrorCode::InternalError, "bake: the frame wrote nothing");
+        }
+        // The kernel writes a plane an entry over the pass's grid; what the
+        // caller wants is a point's entries together, laid out on the device.
+        gpu::CommandBatch laid(device);
+        gather->dispatch(laid, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["planes"].setBinding(out.colour.rhi());
+            cursor["answer"].setBinding(answer->rhi());
+            cursor["params"]["count"].setData(n);
+            cursor["params"]["first"].setData(first);
+            cursor["params"]["entries"].setData(entries);
+            cursor["params"]["plane"].setData(out.width * out.height);
+        });
+        ATHENEA_TRY(laid.submit(true));
+    }
     return std::move(*answer);
 }
 
