@@ -1526,16 +1526,33 @@ bool misWeighs(LightRecord l) {
            l.shadowCategory == kLightUnlinked;
 }
 
+/// WHETHER `wi` GOES THROUGH A GLASS AT THIS VERTEX: the vertex's material
+/// has a dielectric lobe, and the direction crosses the surface or the
+/// surface was met from inside -- where the dielectric was told so
+/// (`kFlagInside`) and a reflection stays in the glass. A back face of
+/// anything else, a room seen from inside its walls, is a surface like any
+/// other: the closed furnace is one, and counted its bounces free.
+bool throughGlass(Shaded sh, float3 wi) {
+    const bool crosses = dot(sh.inputs.normalWorld, wi) < 0.0;
+    for (uint k = 0; k < sh.stack.count; ++k) {
+        const Lobe lobe = sh.stack.lobes[k];
+        if (lobe.kind == kLobeDielectric && any(lobe.weight > float3(0.0)) &&
+            (crosses || (lobe.flags & kFlagInside) != 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// WHETHER A PATH GOES ON FROM A VERTEX ALONG `wi`: while bounces are left,
-/// and through a surface -- into glass, or on inside it -- while free
-/// crossings are (`kFreeCrossings`). `charged` is the bounces spent,
-/// `crossed` the crossings that were not charged.
+/// and through a glass while free crossings are (`kFreeCrossings`).
+/// `charged` is the bounces spent, `crossed` the crossings that were not
+/// charged.
 bool pathGoesOn(uint charged, uint crossed, Shaded sh, float3 wi) {
     if (!kTraces) {
         return false;
     }
-    return charged < path.bounces ||
-           (crossed < kFreeCrossings && (dot(sh.inputs.normalWorld, wi) < 0.0 || sh.inputs.inside));
+    return charged < path.bounces || (crossed < kFreeCrossings && throughGlass(sh, wi));
 }
 
 float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint mask, out uint group) {
@@ -2100,8 +2117,8 @@ void tracePathsAt(uint2 group, uint index) {
             if (!ms.valid || ms.pdf <= 0.0) {
                 break;
             }
-            // Out of bounces, the path goes on only through the surface.
-            const bool through = dot(cur.inputs.normalWorld, ms.wi) < 0.0 || cur.inputs.inside;
+            // Out of bounces, the path goes on only through a glass.
+            const bool through = throughGlass(cur, ms.wi);
             if (!pathGoesOn(bounce - crossed, crossed, cur, ms.wi)) {
                 break;
             }

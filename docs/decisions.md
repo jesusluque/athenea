@@ -8943,9 +8943,16 @@ bend (no far face asked) against the old mesh: relMSE **0.0059**, head 0.050.
 And the mesh with its index raised to 2.0 looked as the cloud did at 1.5.
 
 **A crossing sees back faces.** A bounce ray is traced without culling when
-its direction went through the surface it left (`dot(n, wi) < 0`, with `n`
-facing the side the path came from) or when that surface was met from inside.
-A ray that bounced off a single-sided mesh still culls, as before.
+it goes through a glass (`throughGlass`): the vertex's material has a
+dielectric lobe, and the direction went through the surface it left
+(`dot(n, wi) < 0`, with `n` facing the side the path came from) or the
+dielectric was met from inside (`kFlagInside`), where a reflection stays in
+the glass. A ray that bounced off anything else still culls, as before -- a
+back face of a room seen from inside its walls included. The first version
+of this asked only whether the surface was met from inside, and the closed
+furnace (`athenea_technique_tests "a closed emissive shell*"`), a Lambert
+shell seen from inside, counted every bounce free and read its series 33 %
+high at one bounce.
 
 **A crossing is not a bounce.** With the far face found, a double-sided ball
 -- which was never culled -- showed what the default of one bounce does to a
@@ -8953,8 +8960,8 @@ solid: the ray met the far face with nothing left to leave by, and the ball
 drew black. Crossings are free now, up to `kFreeCrossings` (8) a path, as a
 renderer keeps its transmission depth apart from its diffuse one. Next event
 estimation weighs a light against the material only where the path would go
-on in that direction (`pathGoesOn`): out of bounces, that is through the
-surface alone.
+on in that direction (`pathGoesOn`): out of bounces, that is through a glass
+alone. A diffuse transmission (a translucent leaf) is a bounce as it was.
 
 | pawn, autoshop_01, the transferred cloud, 512 paths | whole relMSE | p99 | head relMSE (x 300-470, y 470-590) |
 |---|---|---|---|
