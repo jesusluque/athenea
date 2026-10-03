@@ -9913,6 +9913,100 @@ TEST_CASE("the raster shadows a lobe's own samples, and weighs them against the 
 // `shadow:enable` turns it off, and `shadow:distance` ends it short of a
 // receiver further from the light than that. All three reach the map the
 // raster reads and the factors a relit cloud reads, through the light record.
+// A CLOUD SHADOWS A MESH UNDER A SKY, ON THE RASTER ROUTE (task TX).
+//
+// The map from the lights had no slot for a dome -- a dome has no direction
+// to build one about -- so a car converted to gaussians cast nothing on the
+// ground under a sky (CV2's Corvette: the ground under the car 0.217 where
+// the path traced mesh reads 0.182, and identical without cloud shadows). The
+// dome now gets maps along its zenith and a ring forty degrees up, and a
+// mesh's dome samples read the nearest. A wide slab of opaque gaussians low
+// over a floor under a plain sky: the floor under it, seen from the side,
+// must go well darker with the cloud's shadows than without.
+TEST_CASE("a cloud shadows a mesh under a dome on the raster route", "[usd][gpu][mesh][splat][lights][dome]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    const fs::path path = scratch("cloud_dome_shadow.usda");
+    {
+        std::ofstream out(path);
+        const int n = 21;
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n    metersPerUnit = 1\n)\n"
+               "def Mesh \"Ground\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-6, -6, 0), (6, -6, 0), (6, 6, 0), (-6, 6, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)] ( interpolation = \"constant\" )\n}\n"
+               "def ParticleField3DGaussianSplat \"Cloud\"\n{\n    point3f[] positions = [";
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                out << ((i || j) ? ", " : "") << "(" << (i - n / 2) * 0.09 << ", " << (j - n / 2) * 0.09 << ", 0.4)";
+            }
+        }
+        out << "]\n    quatf[] orientations = [";
+        for (int k = 0; k < n * n; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
+        out << "]\n    float3[] scales = [";
+        for (int k = 0; k < n * n; ++k) out << (k ? ", " : "") << "(0.07, 0.07, 0.02)";
+        out << "]\n    float[] opacities = [";
+        for (int k = 0; k < n * n; ++k) out << (k ? ", " : "") << "0.99";
+        out << "]\n    int radiance:sphericalHarmonicsDegree = 0\n"
+               "    float3[] radiance:sphericalHarmonicsCoefficients = [";
+        for (int k = 0; k < n * n; ++k) out << (k ? ", " : "") << "(0.5, 0.5, 0.5)";
+        out << "]\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 30\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 100)\n"
+               "    double3 xformOp:translate = (0, -2.5, 0.25)\n    float3 xformOp:rotateXYZ = (85, 0, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t w = 160, h = 120;
+    auto meanKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/patch_mean", "patchMean");
+    if (!meanKernel) FAIL(meanKernel.error().toString());
+    const auto under = [&](bool shadows) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setLightSamples(16);
+        (*renderer)->setCloudShadows(shadows);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto frame = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(frame);
+        const std::array<uint32_t, 4> zero{0, 0, 0, 0};
+        auto sums = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, std::span<const uint32_t>(zero), "dome.sums");
+        REQUIRE(sums);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            meanKernel->dispatch(batch, {12, 12, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["frame"].setBinding(frame->rhi());
+                cursor["sums"].setBinding(sums->rhi());
+                cursor["params"]["width"].setData(w);
+                cursor["params"]["x0"].setData(w / 2 - 6);
+                cursor["params"]["y0"].setData(h / 2 + 4);
+                cursor["params"]["w"].setData(12u);
+                cursor["params"]["h"].setData(12u);
+                cursor["params"]["scale"].setData(4096.0F);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 4> read{};
+        REQUIRE(sums->read(*gpu->device, 0, sizeof(read), read.data()));
+        const double count = std::max<double>(read[3], 1.0) * 4096.0;
+        return (read[0] + read[1] + read[2]) / (3.0 * count);
+    };
+    const double with = under(true);
+    const double without = under(false);
+    std::printf("  the floor under a cloud, under a sky: %.4f with the cloud's shadows, %.4f without\n", with,
+                without);
+    CHECK(without > 0.1);
+    CHECK(with < 0.6 * without);
+}
+
 TEST_CASE("a cloud's shadow on a plane is tinted, switched off and cut short as the light's ShadowAPI says",
           "[usd][gpu][mesh][splat][lights][shadowapi]") {
     ATHENEA_REQUIRE_GPU(gpu);

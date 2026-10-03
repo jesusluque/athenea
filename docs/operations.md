@@ -845,7 +845,10 @@ lights with. The default sun is normalized. A `DomeLight` ignores
 **Shadows.** Meshes shadow by ray on the traced route. A cloud casts through a
 transmittance map at each light, with no ray at all:
 `--cloud-shadow-texels`, `--cloud-shadow-density` and `--cloud-shadow-terms`
-control it, and `--no-cloud-shadows` turns it off. `--splat-shadows` is the
+control it, and `--no-cloud-shadows` turns it off. A `DomeLight` casts too:
+in the map's slots the lights leave (eight in all), six maps along its zenith
+and a ring forty degrees up, and a mesh's sample of the dome reads the one
+nearest its direction. `--splat-shadows` is the
 other direction on the traced route: a relit cloud shadowing itself, one ray a
 splat.
 
@@ -1099,7 +1102,8 @@ A light that is not the sky -- distant, sphere, disk, rect -- lights a cloud
 with the cells through the same lobes, shadowed by the bits over the cone
 the light subtends from each gaussian (its penumbra), and its bounce reaches
 the body and the reflections as the sun's does. Where a frame also measured
-a shadow by ray (`--cloud-shadows`), the darker of the two stands. The bits
+a shadow for it (`--splat-shadows`, or the cloud's shadow map), the darker of
+the two stands. The bits
 say which ways leave the scene, not which reach a lamp: an object beyond a
 lamp that stands among things still shadows it.
 A transmitting gaussian of a TX transfer keeps the far half too: its field is

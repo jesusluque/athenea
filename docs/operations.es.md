@@ -858,7 +858,11 @@ normalizado. Una `DomeLight` ignora `normalize`, como dice el esquema.
 **Sombras.** Las mallas sombrean por rayo en la ruta trazada. Una nube
 proyecta a través de un mapa de transmitancia en cada luz, sin rayo ninguno:
 `--cloud-shadow-texels`, `--cloud-shadow-density` y `--cloud-shadow-terms` lo
-gobiernan, y `--no-cloud-shadows` lo apaga. `--splat-shadows` es la otra
+gobiernan, y `--no-cloud-shadows` lo apaga. Una `DomeLight` también
+proyecta: en los huecos del mapa que dejan las luces (ocho en total), seis
+mapas a lo largo de su cenit y de un anillo a cuarenta grados de altura, y una
+muestra del domo en una malla lee el más cercano a su dirección.
+`--splat-shadows` es la otra
 dirección en la ruta trazada: una nube relit sombreándose a sí misma, un rayo
 por splat.
 
@@ -1121,8 +1125,8 @@ Una luz que no es el cielo -- distante, esfera, disco, rectángulo -- ilumina
 una nube con las celdas por los mismos lóbulos, sombreada por los bits sobre
 el cono que la luz subtiende desde cada gaussiana (su penumbra), y su rebote
 llega al cuerpo y a los reflejos como el del sol. Donde un frame midió
-además una sombra con un rayo (`--cloud-shadows`), se queda la más oscura de
-las dos. Los bits dicen qué direcciones salen de la escena, no cuáles llegan a
+además una sombra para ella (`--splat-shadows`, o el mapa de sombra de la
+nube), se queda la más oscura de las dos. Los bits dicen qué direcciones salen de la escena, no cuáles llegan a
 una lámpara: un objeto más allá de una lámpara que está entre cosas también
 la sombrea.
 Una gaussiana que transmite, en un transfer TX, guarda también la mitad de

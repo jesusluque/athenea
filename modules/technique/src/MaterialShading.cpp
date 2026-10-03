@@ -253,11 +253,21 @@ Texture2DArray<float> cloudShadow;
 float cloudTransmittance(float3 p, uint light, bool casts) {
     return casts ? shadowMapTransmittanceTex(cloudShadow, light, p) : 1.0;
 }
+/// A light along a sample's direction: a dome by the map of its directions
+/// nearest to it, any other light by its own.
+float cloudTransmittanceAlong(float3 p, uint light, LightRecord record, float3 wi, bool casts) {
+    if (!casts) {
+        return 1.0;
+    }
+    return record.kind == kLightDome ? shadowMapDomeTransmittanceTex(cloudShadow, p, wi)
+                                     : shadowMapTransmittanceTex(cloudShadow, light, p);
+}
 )";
 
 const char* kNoShadowMap = R"(
 static const bool kCloudShadows = false;
 float cloudTransmittance(float3 p, uint light, bool casts) { return 1.0; }
+float cloudTransmittanceAlong(float3 p, uint light, LightRecord record, float3 wi, bool casts) { return 1.0; }
 )";
 
 /// THE SHADOW RAYS ARE TRACED BY A KERNEL OF THEIR OWN.
@@ -556,7 +566,11 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
                                                lightPdfImaged(light, inputs.positionWorld, n0, ms.wi);
                     weight = rasterMis(float(lobeCount), ms.pdf, float(lightSampleCount), lightDensity);
                 }
-                const float3 arrived = weight * ms.weight * lh.radiance;
+                // And the clouds in the way, along the lobe's own direction:
+                // a dome by the map of its nearest direction.
+                const float cloudThrough =
+                    cloudTransmittanceAlong(inputs.positionWorld, k, light, ms.wi, (light.flags & kLightShadow) != 0);
+                const float3 arrived = weight * ms.weight * lh.radiance * cloudThrough;
                 lobeSum += arrived;
                 if (kLightGroups && light.group != 0 && light.group <= 8) {
                     groups[light.group - 1] += arrived / float(lobeCount);
@@ -612,7 +626,8 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
             // And what the clouds between this point and the light stopped,
             // tinted and faded as the light's ShadowAPI says.
             const float3 cloudThrough = shadowTint(
-                light, cloudTransmittance(inputs.positionWorld, choice.index, (light.flags & kLightShadow) != 0),
+                light, cloudTransmittanceAlong(inputs.positionWorld, choice.index, light, ls.wi,
+                                               (light.flags & kLightShadow) != 0),
                 ls.distance);
             const float3 arrived = cloudThrough * weight * f * ls.radiance / (ls.pdf * choice.probability);
             sum += arrived;
@@ -652,7 +667,8 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
                 if (shadow && occludedSample(at, k * samples + i)) {
                     continue;
                 }
-                sum += shadowTint(light, cloudTransmittance(inputs.positionWorld, k, shadow), ls.distance) * weight *
+                sum += shadowTint(light, cloudTransmittanceAlong(inputs.positionWorld, k, light, ls.wi, shadow),
+                                  ls.distance) * weight *
                        f * ls.radiance / ls.pdf;
             }
             radiance += sum / float(samples);

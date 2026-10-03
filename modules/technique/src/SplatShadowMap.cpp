@@ -52,6 +52,9 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     if (lights == 0 || job.lights == nullptr || job.casters.empty()) {
         return ok();
     }
+    // The lights' slots, then the dome's directions in what is left.
+    const uint32_t domeSlots = std::min(job.domeSlots, kSlots - lights);
+    const uint32_t slots = lights + domeSlots;
     const uint32_t resolution = std::max(job.resolution, 16u);
     // One, three, five or seven: a total, and Fourier pairs after it.
     const uint32_t coefficients = std::max(job.coefficients | 1u, 1u);
@@ -59,7 +62,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     // nearest caster in it.
     const uint32_t stride = coefficients + 1;
     const uint64_t plane = uint64_t{resolution} * resolution * stride;
-    const uint64_t words = kHeaderWords + plane * lights;
+    const uint64_t words = kHeaderWords + plane * slots;
     if (!map_.valid() || map_.count() < words || resolution_ != resolution || coefficients_ != coefficients) {
         gpu::BufferDesc desc;
         desc.bytes = words * 4;
@@ -72,7 +75,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     // And the same map as a texture, which is how a kernel with no binding
     // slot left reads it: a layer a coefficient a light, and one more at the
     // front for the frames.
-    const uint32_t layers = lights * stride + 1;
+    const uint32_t layers = slots * stride + 1;
     if (!texture_.valid() || texture_.width() != resolution || texture_.desc().arrayLength != layers) {
         gpu::TextureDesc desc;
         desc.type = rhi::TextureType::Texture2DArray;
@@ -103,6 +106,8 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         p["margin"].setData(job.margin);
         p["density"].setData(job.density);
         p["lightCount"].setData(lights);
+        p["domeSlots"].setData(domeSlots);
+        p["slots"].setData(slots);
         cursor["shadowMap"].setBinding(map_.rhi());
         cursor["shadowLights"].setBinding(job.lights->rhi());
     };
@@ -139,7 +144,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     });
     // And then the cloud, once a light. A light with no map of its own -- a
     // dome, one that casts no shadow -- leaves every thread at the first read.
-    for (uint32_t k = 0; k < lights; ++k) {
+    for (uint32_t k = 0; k < slots; ++k) {
         for (const ShadowMapCaster& caster : job.casters) {
             if (caster.cloud == nullptr || caster.cloud->count == 0) {
                 continue;
@@ -156,7 +161,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         setCaster(cursor, job.casters.front());
         cursor["shadowOut"].setBinding(view_.get());
     });
-    resolve_->dispatch(batch, {resolution, resolution, lights * stride}, [&](rhi::ShaderCursor cursor) {
+    resolve_->dispatch(batch, {resolution, resolution, slots * stride}, [&](rhi::ShaderCursor cursor) {
         setCommon(cursor, 0);
         setCaster(cursor, job.casters.front());
         cursor["shadowOut"].setBinding(view_.get());

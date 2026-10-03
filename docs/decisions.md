@@ -11516,3 +11516,33 @@ takes the index.
 floor's closed form in its field straight down and next to nothing straight
 up ([glass] in athenea_usd_tests); the glass ball on a ground in
 `tx_conversions_render_like_the_mesh`.
+
+### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
+
+A car converted to gaussians cast nothing on the ground under a sky: the
+ground under it read 0.217 rasterised where the path traced mesh reads
+0.182, and `--no-cloud-shadows` changed nothing. The transmittance map is
+built at each light about the light's direction, and a dome has none, so its
+slot was left empty and a mesh's dome samples went through the car. The
+ground stays a mesh in the product ("simple ground geometry may stay a
+mesh"), so the cloud's shadow on it is part of a complete transfer.
+
+The map now gives the dome directions of its own, in the slots the lights
+leave (eight in all; `ShadowMapJob::domeSlots`, six asked): its zenith and a
+ring forty degrees above its horizon, the pole being the dome's own +Y
+carried by its transform. Each is built and filled as a sun's would be, and
+marked in its frame (2). A mesh's sample of a dome -- the light sample and the
+lobe's own -- reads the map whose direction is nearest the sample's
+(`shadowMapDomeTransmittanceTex`). Six passes over the gaussians a frame,
+which is the cost; a frame with no dome finds no dome and fills nothing.
+
+What it is not: six directions are a coarse sky. The shadow of a car is
+right in amount, not in shape, near its edge; a sun the environment
+extracted is one of the dome's samples and is shadowed by the nearest of
+the six, not along itself. The grain of the ground (one dome sample a pixel)
+is untouched.
+
+Checked (pending the GPU turn): a wide slab of opaque gaussians low over a
+floor under a plain dome, the floor under it seen from the side, darker with
+the cloud's shadows than without by at least two fifths
+(`a cloud shadows a mesh under a dome on the raster route`).

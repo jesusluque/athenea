@@ -2663,6 +2663,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             const uint32_t asked = cloudShadowTerms_.load();
             job.coefficients = asked != 0 ? asked : (cloudReceives ? 5u : 1u);
             job.density = cloudShadowDensity_.load();
+            // A dome among the lights casts too, along six of its directions
+            // (its zenith and a ring forty degrees up), in the slots the
+            // lights leave: the car on the ground under a sky (task TX).
+            job.domeSlots = 6;
             for (const render::SplatInstance& instance : splats) {
                 if (instance.splats == nullptr || instance.splats->count == 0) {
                     continue;

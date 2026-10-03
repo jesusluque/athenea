@@ -61,6 +61,15 @@ public struct ShadowMapParams {
     /// solid thing, more darkens a thin one.
     public float density;
     public float pad3;
+    /// THE DOME'S DIRECTIONS (docs/decisions.md, task TX: a cloud's shadow on
+    /// a mesh under a sky): how many slots after the lights' are maps along
+    /// directions of the first shadow-casting dome among them -- its zenith
+    /// and a ring forty degrees up -- so a mesh lit by the dome is shadowed by
+    /// the cloud as by a set of suns. 0: none.
+    public uint  domeSlots;
+    public uint  slots;        ///< the lights' and the dome's together, for the resolve
+    public uint  pad4;
+    public uint  pad5;
     /// The caster's box in its own space, and its object-to-world rows: the
     /// box is a bound the host holds from the upload; where it lands is the
     /// device's business (`shadowMapBox`).
@@ -148,11 +157,23 @@ void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint at = k * kShadowFrameWords;
-    if (k >= shadowParams.lightCount) {
+    // A slot after the lights' is one of the dome's directions, if a dome
+    // that casts shadows is among the lights.
+    const bool domeDirection = k >= shadowParams.lightCount && k < shadowParams.lightCount + shadowParams.domeSlots;
+    uint domeAt = 0xFFFFFFFFu;
+    if (domeDirection) {
+        for (uint d = 0; d < shadowParams.lightCount && domeAt == 0xFFFFFFFFu; ++d) {
+            const LightRecord candidate = shadowLights[d];
+            if (candidate.kind == kLightDome && (candidate.flags & kLightShadow) != 0) {
+                domeAt = d;
+            }
+        }
+    }
+    if (k >= shadowParams.lightCount && domeAt == 0xFFFFFFFFu) {
         shadowMap[at + 19] = 0;
         return;
     }
-    const LightRecord light = shadowLights[k];
+    const LightRecord light = shadowLights[domeDirection ? domeAt : k];
     const ShadowMapParams s = shadowParams;
     const float3 boxMin = float3(shadowOrderedFloat(shadowMap[kShadowBoxAt + 0]), shadowOrderedFloat(shadowMap[kShadowBoxAt + 1]),
                                  shadowOrderedFloat(shadowMap[kShadowBoxAt + 2]));
@@ -169,7 +190,23 @@ void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
     const float3 half3 = max(0.5 * (boxMax - boxMin) * (1.0 + s.margin), float3(1.0e-6));
     // Which way the light travels. UsdLux shines down its own -Z.
     float3 axisZ = -lightAxisZ(light);
-    if (light.kind != kLightDistant) {
+    if (domeDirection) {
+        // The dome's pole is its own +Y, carried into the world by its rows
+        // (a Z-up stage turns it there). Slot 0 of the dome's is the zenith,
+        // the rest a ring forty degrees above the horizon.
+        const float3 pole = normalize(float3(light.row0.y, light.row1.y, light.row2.y));
+        const uint j = k - shadowParams.lightCount;
+        float3 towards = pole;
+        if (j > 0u) {
+            const float3 helper = abs(pole.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+            const float3 t = normalize(cross(helper, pole));
+            const float3 b = cross(pole, t);
+            const float phi = 2.0 * kShadowPi * float(j - 1u) / float(max(shadowParams.domeSlots - 1u, 1u));
+            const float elevation = 0.6981317;   // forty degrees
+            towards = normalize(pole * sin(elevation) + (t * cos(phi) + b * sin(phi)) * cos(elevation));
+        }
+        axisZ = -towards;
+    } else if (light.kind != kLightDistant) {
         const float3 origin = lightOrigin(light);
         const float3 toBox = centre - origin;
         const float reach = length(toBox);
@@ -179,7 +216,7 @@ void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
         }
         axisZ = toBox / reach;
     }
-    if (light.kind == kLightDome || (light.flags & kLightShadow) == 0) {
+    if (!domeDirection && (light.kind == kLightDome || (light.flags & kLightShadow) == 0)) {
         // A dome has no direction to build a map about, and a light that casts
         // no shadow casts none here either.
         shadowMap[at + 19] = 0;
@@ -215,7 +252,8 @@ void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
     shadowMap[at + 16] = s.resolution;
     shadowMap[at + 17] = s.coefficients;
     shadowMap[at + 18] = shadowHeaderWords() + k * s.resolution * s.resolution * shadowStrideOf(s.coefficients);
-    shadowMap[at + 19] = 1;
+    // 2 marks a dome's direction, which a reader picks by the way it looks.
+    shadowMap[at + 19] = domeDirection ? 2u : 1u;
 }
 
 /// One thread a gaussian: its optical depth into every texel its footprint
@@ -416,7 +454,7 @@ void shadowMapResolve(uint3 tid: SV_DispatchThreadID) {
     }
     const uint coefficients = shadowParams.coefficients;
     const uint slice = tid.z;
-    if (slice >= shadowParams.lightCount * shadowStrideOf(coefficients)) {
+    if (slice >= shadowParams.slots * shadowStrideOf(coefficients)) {
         return;
     }
     const uint stride = shadowStrideOf(coefficients);

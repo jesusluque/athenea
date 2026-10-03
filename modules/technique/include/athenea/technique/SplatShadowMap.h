@@ -56,6 +56,12 @@ struct ShadowMapJob {
     /// What the optical depth is multiplied by: the shadow's density, as a
     /// compositor means it. 1 is what the cloud's own opacity says.
     float                        density = 1.0F;
+    /// THE DOME'S DIRECTIONS: slots after the lights' given to the first
+    /// shadow-casting dome among them, a map along each of its zenith and a
+    /// ring forty degrees up, which a mesh's dome samples are shadowed by
+    /// (task TX, CV2's Corvette: the car cast nothing on the ground). Capped
+    /// by the slots the lights leave; none where no dome casts.
+    uint32_t                     domeSlots = 0;
 };
 
 class SplatShadowMap {

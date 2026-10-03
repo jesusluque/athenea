@@ -80,6 +80,28 @@ public float shadowOpticalOf(float total, float a, float b, uint k, float z) {
     return (a * sin(angle) + b * (1.0 - cos(angle))) / (kShadowPi * float(k));
 }
 
+/// A DOME'S SAMPLE DIRECTION, shadowed by the cloud: the map among the dome's
+/// directions (frames marked 2) that looks most nearly along `wi`, read at
+/// `p`. 1 where the frame holds no direction of a dome.
+public float shadowMapDomeTransmittanceTex(Texture2DArray<float> tex, float3 p, float3 wi) {
+    float best = -2.0;
+    uint chosen = kShadowSlots;
+    for (uint k = 0; k < kShadowSlots; ++k) {
+        const uint at = k * kShadowFrameWords;
+        if (uint(tex[uint3(at + 19, 0, 0)]) != 2u) {
+            continue;
+        }
+        const float3 towards = -float3(tex[uint3(at + 12, 0, 0)], tex[uint3(at + 13, 0, 0)],
+                                       tex[uint3(at + 14, 0, 0)]);
+        const float alike = dot(towards, wi);
+        if (alike > best) {
+            best = alike;
+            chosen = k;
+        }
+    }
+    return chosen < kShadowSlots ? shadowMapTransmittanceTex(tex, chosen, p) : 1.0;
+}
+
 /// THE READ a shading kernel does, from the texture the pass resolved into:
 /// one array layer a coefficient a light, the frames in layer zero's first
 /// row. Nothing is sampled -- these are integer loads.
