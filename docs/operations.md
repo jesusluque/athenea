@@ -1089,6 +1089,21 @@ cells (`athenea mesh2splat --lod-levels`).
 | `primvars:athenea:edl` | float | `0` |
 | `primvars:athenea:surfaceOffset` | float | `0` |
 
+**Blender's Gaussian splats as `UsdGeomPoints`** — not a schema: the
+attributes of a Blender PointCloud of type Gaussian splat, as Blender's USD
+export writes them. A `Points` prim carrying a quaternion `rotation` and a
+`scale`, and `radiance:base` or `radiance:sh_0`, is drawn as a splat cloud,
+not as points; `widths` and the point styles are then ignored. The values are
+what a ParticleField holds (Blender's importer of one copies them across
+unchanged): the colours are a capture's, sRGB.
+
+| Primvar | Type | Meaning |
+|---|---|---|
+| `primvars:rotation` | quatf[] or quath[] | the gaussian's orientation |
+| `primvars:scale` | float3[] or half3[] | its three standard deviations, linear, in the prim's units |
+| `primvars:radiance:base` | float4[] or half4[] | the DC coefficient (rgb) and the opacity (linear, 0 to 1). Blender's own export drops it; the `athenea_hydra` add-on writes it. Without it the cloud is opaque and its DC is 0 (grey), with a warning |
+| `primvars:radiance:sh_N` | float3[] or half3[] | coefficient N + 1 (rgb), N from 0; 3, 8 or 15 of them make degree 1, 2 or 3, and a degree's incomplete remainder is not read |
+
 **`AtheneaVolumeAPI`** — how a `UsdVol` Volume scatters, where no Material is
 bound to say it.
 

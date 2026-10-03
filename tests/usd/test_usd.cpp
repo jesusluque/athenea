@@ -502,6 +502,86 @@ TEST_CASE("a UsdGeomPoints prim draws through Hydra", "[usd][gpu][points]") {
     CHECK(floatAt(*depth, 2 * 128 + 2) == 1.0F);   // nothing: the far plane
 }
 
+// BLENDER'S SPLATS ARE SPLATS. Blender's Gaussian-splat PointCloud reaches
+// Hydra as a UsdGeomPoints whose primvars are its attributes: `radiance:base`
+// (the DC coefficient and the opacity, written by the athenea_hydra add-on's
+// export hook), `radiance:sh_N` one array a basis function, `rotation` and
+// `scale`. The fixture is `sh3.ply` imported by Blender 5.3 and exported to
+// USD with that hook; it must draw as the same PLY does through a
+// ParticleField athenea wrote itself, the harmonics included.
+TEST_CASE("Blender's Gaussian-splat points draw as the PLY they were imported from", "[usd][gpu][points]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path data = fs::path(ATHENEA_TEST_DATA_DIR) / "splats";
+    auto raw = io::readSplatPly(data / "sh3.ply");
+    REQUIRE(raw);
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.upAxis = 'z';
+    const fs::path field = scratch("blender_field.usdc");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, *raw, field, options));
+
+    // The same camera over each: framing the 3-unit cube the cloud fills.
+    const auto stage = [&](const std::string& name, const std::string& cloud, const std::string& over) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n    metersPerUnit = 1\n)\n"
+            << "def \"Cloud\" ( prepend references = " << cloud << " )\n{\n" << over << "}\n"
+            << "def Camera \"Camera\"\n{\n"
+               "    float2 clippingRange = (0.1, 1000)\n    float focalLength = 30\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    double3 xformOp:translate = (1.2, -6.5, 1.5)\n    double3 xformOp:rotateXYZ = (78, 0, 10)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n";
+        return path;
+    };
+    const std::string blender = "@" + (data / "sh3_blender.usda").string() + "@";
+    const fs::path fromBlender = stage("blender_points.usda", blender, "");
+    const fs::path fromPly = stage("blender_ply.usda", "@" + field.string() + "@</World/Splats>", "");
+    // The control: the hook's half taken away, as Blender's own export leaves it.
+    const fs::path withoutBase = stage(
+        "blender_points_nobase.usda", blender,
+        "    over \"sh3\"\n    {\n        over \"sh3\"\n        {\n"
+        "            float4[] primvars:radiance:base = None\n        }\n    }\n");
+
+    const uint32_t w = 240;
+    const uint32_t h = 180;
+    const auto render = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        auto image = (*renderer)->render("/Camera", 0.0, w, h);
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto buffer = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(buffer);
+        return *buffer;
+    };
+    const gpu::Buffer points = render(fromBlender);
+    const gpu::Buffer ply = render(fromPly);
+    const gpu::Buffer bare = render(withoutBase);
+    std::vector<float> blank(size_t{w} * h * 4, 0.0F);
+    gpu::BufferDesc desc;
+    desc.bytes = blank.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto empty = gpu::Buffer::create(*gpu->device, desc, blank.data());
+    REQUIRE(empty);
+    auto same = render::compareImages(*gpu->library, points, ply, w, h);
+    auto drawn = render::compareImages(*gpu->library, ply, *empty, w, h);
+    auto control = render::compareImages(*gpu->library, bare, ply, w, h);
+    REQUIRE(same);
+    REQUIRE(drawn);
+    REQUIRE(control);
+    std::printf("  Blender's points against the PLY's field: p99 %u, max %u; against nothing: %llu pixels over 2; "
+                "without radiance:base: p99 %u\n",
+                same->p99, same->max, static_cast<unsigned long long>(drawn->over2), control->p99);
+    CHECK(drawn->over2 > uint64_t{w} * h / 20);   // the cloud is in the picture
+    // Measured: p99 0, max 0 -- the same floats reach the same records -- and
+    // 100 for the control, which is drawn opaque and grey.
+    CHECK(same->p99 == 0);
+    CHECK(same->max <= 1);
+    CHECK(control->p99 >= 50);
+}
+
 TEST_CASE("a UsdGeomMesh draws through Hydra where, how deep and how lit it analytically is", "[usd][gpu][mesh]") {
     ATHENEA_REQUIRE_GPU(gpu);
     if (!gpu->device->caps().rasterization) {

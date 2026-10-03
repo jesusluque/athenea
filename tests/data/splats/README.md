@@ -6,6 +6,7 @@
 | `tiny.sog` | `tiny.ply` through PlayCanvas's splat-transform v3.2.0: SOG version 2, no higher harmonics. From openFXplayer's `tests/data`. |
 | `sh3.ply` | 64 splats with degree-3 harmonics, random values (Python, seed 1234). Written for the SOG harmonics palette. |
 | `sh3.sog` | `sh3.ply` through `npx @playcanvas/splat-transform@3.2.0 sh3.ply sh3.sog`: SOG version 2 with a 64-entry harmonics palette: one entry a splat, so the only loss is the 8-bit codebook. |
+| `sh3_blender.usda` | `sh3.ply` imported by Blender 5.3 (`bpy.ops.wm.ply_import`) and exported with `bpy.ops.wm.usd_export` while the `athenea_hydra` add-on (blender branch) was registered and Athenea was the render engine: a `Points` prim with Blender's splat primvars, `radiance:base` written by the add-on's export hook. Z-up, metres. |
 
 The `.sog` files are the reference converter's output, so reading them is a
 compatibility check rather than a self-consistency one. The converter

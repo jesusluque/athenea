@@ -8,6 +8,12 @@
 //   splat record  0..2 position   3 opacity (linear)   4..6 scale (linear)
 //                 7 w  8 x  9 y  10 z   11..13 SH DC   14.. rest, rgb per basis
 //   point record  0..2 position   3..5 colour (linear)
+//
+// Blender holds a splat cloud as a PointCloud whose `radiance:base` is the DC
+// coefficient and the opacity in one float4, and whose `radiance:sh_N` are one
+// array a basis function after DC: `radianceBase` and the planes of `sh`
+// (kShPlanes) take them as they come, and this kernel lays them out as the
+// records any other layout gives.
 module streams;
 import athenea.common.packing;
 
@@ -37,6 +43,12 @@ static const uint kShadowBits = 4096;
 static const uint kThinWalled = 8192;
 static const uint kNormals = 16384;
 static const uint kEmission = 32768;
+// DC rgb and opacity, four floats a splat (Blender's `radiance:base`): in place
+// of `opacities` and of the DC in `sh`.
+static const uint kBase = 65536;
+// `sh` holds planes: one array a basis function after DC, rgb a splat
+// (Blender's `radiance:sh_N`), `planeLength` splats each, back to back.
+static const uint kShPlanes = 131072;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -62,6 +74,8 @@ struct StreamParams {
     uint normalBase;
     // Where the three floats of an emitted radiance go, or kNoPbr.
     uint emissionBase;
+    // kShPlanes: the splats a plane holds (the whole cloud's, not the slice's).
+    uint planeLength;
 };
 
 static const uint kNoPbr = 0xFFFFFFFFu;
@@ -82,6 +96,7 @@ StructuredBuffer<uint>     shadowBits;       // two words a splat, bits
 StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a thin wall
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
 StructuredBuffer<uint>     emission;         // rgb a splat, the radiance it gives off
+StructuredBuffer<uint>     radianceBase;     // DC rgb, opacity: four a splat (kBase)
 RWStructuredBuffer<float>  records;
 ConstantBuffer<StreamParams> params;
 
@@ -101,7 +116,9 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
         records[r + k] = streamValue(positions, isHalf(kPositions), e * 3 + k);
         records[r + 4 + k] = present(kScales) ? streamValue(scales, isHalf(kScales), e * 3 + k) : 1.0;
     }
-    records[r + 3] = present(kOpacities) ? streamValue(opacities, isHalf(kOpacities), e) : 1.0;
+    records[r + 3] = present(kBase)        ? streamValue(radianceBase, isHalf(kBase), e * 4 + 3)
+                     : present(kOpacities) ? streamValue(opacities, isHalf(kOpacities), e)
+                                           : 1.0;
     if (present(kRotations)) {
         records[r + 7] = streamValue(rotations, isHalf(kRotations), e * 4 + 3);
         for (uint k = 0; k < 3; ++k) {
@@ -113,15 +130,20 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
         records[r + 9] = 0.0;
         records[r + 10] = 0.0;
     }
+    const bool planes = present(kShPlanes);
     const bool haveSh = present(kSh) && params.coefficients > 0;
     const uint base = e * params.coefficients;
     for (uint k = 0; k < 3; ++k) {
         // No harmonics: DC 0, which is base colour 0.5, the schema's default.
-        records[r + 11 + k] = haveSh ? streamValue(sh, isHalf(kSh), base * 3 + k) : 0.0;
+        records[r + 11 + k] = present(kBase)        ? streamValue(radianceBase, isHalf(kBase), e * 4 + k)
+                              : haveSh && !planes ? streamValue(sh, isHalf(kSh), base * 3 + k)
+                                                  : 0.0;
     }
     for (uint basis = 0; basis < params.keep; ++basis) {
+        // Interleaved, DC first; or a plane a basis function, DC elsewhere.
+        const uint at = planes ? (basis * params.planeLength + e) * 3 : (base + 1 + basis) * 3;
         for (uint c = 0; c < 3; ++c) {
-            records[r + 14 + basis * 3 + c] = streamValue(sh, isHalf(kSh), (base + 1 + basis) * 3 + c);
+            records[r + 14 + basis * 3 + c] = streamValue(sh, isHalf(kSh), at + c);
         }
     }
     // What the gaussian reflects with, after the harmonics: a cloud converted
