@@ -409,8 +409,9 @@ public:
     /// accumulates, which is what a moving camera wants.
     void setPathSamples(uint32_t samples);
     void setPathBounces(uint32_t bounces);
-    /// When a path stops before its total: Russian roulette
-    /// ("athenea:rouletteDepth"; technique::PathLimits says what it does).
+    /// When a path stops before its total: Russian roulette and the bounce
+    /// limits by kind ("athenea:rouletteDepth", "athenea:diffuseBounces" and
+    /// the rest; technique::PathLimits says what each does).
     void setPathLimits(const technique::PathLimits& limits);
     /// Motion blur's shutter slices for `rt`, 1 to 8; the shutter itself is
     /// the camera's.

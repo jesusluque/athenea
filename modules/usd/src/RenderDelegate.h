@@ -92,7 +92,10 @@ public:
     [[nodiscard]] uint32_t GetPathSamples() const;
     [[nodiscard]] uint32_t GetPathBounces() const;
     /// When a path stops before its total: "athenea:rouletteDepth" (Russian
-    /// roulette past that many bounces, 0 none, 3 by default).
+    /// roulette past that many bounces, 0 none, 3 by default) and the bounce
+    /// limits by kind, "athenea:diffuseBounces", "athenea:glossyBounces",
+    /// "athenea:transmissionBounces" and "athenea:volumeBounces" (negative or
+    /// absent: no limit of its own).
     [[nodiscard]] athenea::technique::PathLimits GetPathLimits() const;
     [[nodiscard]] uint32_t GetMotionBuckets() const;
     /// A render product's (or its settings prim's) disableMotionBlur and

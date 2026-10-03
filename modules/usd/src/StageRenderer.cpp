@@ -1155,8 +1155,16 @@ void StageRenderer::setPathBounces(uint32_t bounces) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathBounces"), VtValue(static_cast<int>(bounces)));
 }
 void StageRenderer::setPathLimits(const technique::PathLimits& limits) {
+    // A limit of a kind travels as an int, and none of its own as -1.
+    const auto asSetting = [](uint32_t limit) {
+        return VtValue(limit == technique::kUnlimitedBounces ? -1 : static_cast<int>(std::min(limit, 1u << 30)));
+    };
     impl_->delegate->SetRenderSetting(TfToken("athenea:rouletteDepth"),
                                       VtValue(static_cast<int>(std::min(limits.rouletteDepth, 1u << 30))));
+    impl_->delegate->SetRenderSetting(TfToken("athenea:diffuseBounces"), asSetting(limits.diffuse));
+    impl_->delegate->SetRenderSetting(TfToken("athenea:glossyBounces"), asSetting(limits.glossy));
+    impl_->delegate->SetRenderSetting(TfToken("athenea:transmissionBounces"), asSetting(limits.transmission));
+    impl_->delegate->SetRenderSetting(TfToken("athenea:volumeBounces"), asSetting(limits.volume));
 }
 void StageRenderer::setRefineLevel(uint32_t level) {
     if (impl_->displayStyle) {

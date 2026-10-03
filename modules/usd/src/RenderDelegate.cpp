@@ -341,6 +341,21 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     roulette.name = "Russian roulette past this many bounces, 0 none (rt)";
     roulette.key = TfToken("athenea:rouletteDepth");
     roulette.defaultValue = VtValue(3);
+    const auto limit = [](const char* name, const char* key) {
+        HdRenderSettingDescriptor d;
+        d.name = name;
+        d.key = TfToken(key);
+        d.defaultValue = VtValue(-1);
+        return d;
+    };
+    const HdRenderSettingDescriptor diffuseLimit =
+        limit("Diffuse bounces at most, -1 the total's (rt)", "athenea:diffuseBounces");
+    const HdRenderSettingDescriptor glossyLimit =
+        limit("Glossy and specular bounces at most, -1 the total's (rt)", "athenea:glossyBounces");
+    const HdRenderSettingDescriptor transmissionLimit =
+        limit("Transmissions at most, -1 the total's and the glass's (rt)", "athenea:transmissionBounces");
+    const HdRenderSettingDescriptor volumeLimit =
+        limit("Scatterings in a medium at most, -1 the total's (rt)", "athenea:volumeBounces");
     HdRenderSettingDescriptor motion;
     motion.name = "Motion blur: shutter slices, 1 to 8 (rt)";
     motion.key = _atheneaSettings->motionBuckets;
@@ -382,7 +397,8 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudDensity.defaultValue = VtValue(1.0f);
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        motion,      transferIndirect, reflectCloud, splatShadows,
-            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, roulette};
+            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, roulette, diffuseLimit, glossyLimit,
+            transmissionLimit, volumeLimit};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -478,8 +494,24 @@ uint32_t HdAtheneaRenderDelegate::GetPathBounces() const {
 }
 
 athenea::technique::PathLimits HdAtheneaRenderDelegate::GetPathLimits() const {
+    // A limit of a kind: a negative int or nothing at all is none of its own.
+    const auto limitOf = [&](const char* key) {
+        const VtValue value = GetRenderSetting(TfToken(key));
+        if (value.IsHolding<int>()) {
+            const int v = value.UncheckedGet<int>();
+            return v < 0 ? athenea::technique::kUnlimitedBounces : static_cast<uint32_t>(v);
+        }
+        if (value.IsHolding<unsigned int>()) {
+            return value.UncheckedGet<unsigned int>();
+        }
+        return athenea::technique::kUnlimitedBounces;
+    };
     athenea::technique::PathLimits limits;
     limits.rouletteDepth = _UintSetting(GetRenderSetting(TfToken("athenea:rouletteDepth")), 3, 0);
+    limits.diffuse = limitOf("athenea:diffuseBounces");
+    limits.glossy = limitOf("athenea:glossyBounces");
+    limits.transmission = limitOf("athenea:transmissionBounces");
+    limits.volume = limitOf("athenea:volumeBounces");
     return limits;
 }
 

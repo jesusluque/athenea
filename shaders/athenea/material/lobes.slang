@@ -81,6 +81,7 @@ public struct LobeSample {
     public float  pdf;      // solid angle; for a delta lobe, its discrete probability
     public bool   delta;
     public bool   valid;
+    public uint   lobe = 0;   // stackSample: which of the stack's lobes drew it
 };
 
 static const float3 kLuminance = float3(0.2126, 0.7152, 0.0722);
@@ -828,6 +829,23 @@ public float stackPdf(LobeStack stack, float3 wo, float3 wi) {
     return total > 0.0 ? weighted / total : 0.0;
 }
 
+/// stackPdf over some of the lobes only, bit k of `lobes` for lobe k: the
+/// density with which stackSample draws `wi` through one of them. A path
+/// that may still bounce by some lobes and not others (bounce limits by
+/// kind) is continued by those alone, and this is what MIS weighs it by.
+public float stackPdfMasked(LobeStack stack, float3 wo, float3 wi, uint lobes) {
+    float total = 0.0;
+    float weighted = 0.0;
+    for (uint k = 0; k < stack.count; ++k) {
+        const float w = selectionWeight(stack.lobes[k], wo);
+        total += w;
+        if ((lobes & (1u << k)) != 0) {
+            weighted += w * lobePdf(stack.lobes[k], wo, wi);
+        }
+    }
+    return total > 0.0 ? weighted / total : 0.0;
+}
+
 public LobeSample stackSample(LobeStack stack, float3 wo, float3 u) {
     LobeSample none;
     none.wi = float3(0.0);
@@ -860,6 +878,7 @@ public LobeSample stackSample(LobeStack stack, float3 wo, float3 u) {
     if (!s.valid) {
         return none;
     }
+    s.lobe = chosen;
     if (s.delta) {
         s.weight *= stack.lobes[chosen].weight / probability;
         s.pdf *= probability;

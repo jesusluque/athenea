@@ -2367,6 +2367,26 @@ TEST_CASE("a closed emissive shell reads the geometric series of its bounces",
         std::snprintf(what, sizeof(what), "%u bounces", bounces);
         checkSeries(out, bounces, what);
     }
+    // BOUNCE LIMITS BY KIND, exact as well: the shell is a diffuse lobe, so a
+    // diffuse limit under the total cuts the series there, and a glossy or a
+    // transmission limit -- kinds this shell never bounces by -- cuts nothing.
+    {
+        technique::PathLimits diffuseTwo = exact;
+        diffuseTwo.diffuse = 2;
+        render::RenderTargets out;
+        traceShell(6, diffuseTwo, 16, out);
+        checkSeries(out, 2, "6 bounces, 2 of them diffuse");
+        technique::PathLimits diffuseNone = exact;
+        diffuseNone.diffuse = 0;
+        traceShell(6, diffuseNone, 16, out);
+        checkSeries(out, 0, "6 bounces, none diffuse");
+        technique::PathLimits otherKinds = exact;
+        otherKinds.glossy = 0;
+        otherKinds.transmission = 0;
+        otherKinds.volume = 0;
+        traceShell(3, otherKinds, 16, out);
+        checkSeries(out, 3, "3 bounces, no glossy, transmission or volume");
+    }
     // RUSSIAN ROULETTE LEAVES THE MEAN WHERE IT WAS. A path whose throughput
     // is rho^k < 1 survives with that probability and is weighed back up, so
     // each pixel is noisy now but the frame's mean is the series; the noise

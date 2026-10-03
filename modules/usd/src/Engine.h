@@ -424,7 +424,7 @@ public:
     /// frame affords.
     void setPathSamples(uint32_t samples);
     void setPathBounces(uint32_t bounces);
-    /// Russian roulette (technique::PathLimits).
+    /// Russian roulette and the bounce limits by kind (technique::PathLimits).
     void setPathLimits(const technique::PathLimits& limits);
     /// Motion blur's shutter slices (1 to 8) for a path traced frame whose
     /// prims move over the camera's shutter; one is no blur.
@@ -734,6 +734,10 @@ private:
     std::atomic<uint32_t>                     pathSamples_{1};
     std::atomic<uint32_t>                     pathBounces_{1};
     std::atomic<uint32_t>                     pathRoulette_{3};
+    std::atomic<uint32_t>                     pathDiffuse_{technique::kUnlimitedBounces};
+    std::atomic<uint32_t>                     pathGlossy_{technique::kUnlimitedBounces};
+    std::atomic<uint32_t>                     pathTransmission_{technique::kUnlimitedBounces};
+    std::atomic<uint32_t>                     pathVolume_{technique::kUnlimitedBounces};
     std::atomic<uint32_t>                     motionBuckets_{4};
     std::atomic<double>                       shutterOpen_{0.0};
     std::atomic<double>                       shutterClose_{0.0};

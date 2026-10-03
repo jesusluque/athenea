@@ -701,8 +701,12 @@ void Engine::setPathBounces(uint32_t bounces) {
 }
 
 void Engine::setPathLimits(const technique::PathLimits& limits) {
-    // It changes what a path gathers, so the mean starts again.
-    const bool changed = pathRoulette_.exchange(limits.rouletteDepth) != limits.rouletteDepth;
+    // Any of them changes what a path gathers, so the mean starts again.
+    bool changed = pathRoulette_.exchange(limits.rouletteDepth) != limits.rouletteDepth;
+    changed = (pathDiffuse_.exchange(limits.diffuse) != limits.diffuse) || changed;
+    changed = (pathGlossy_.exchange(limits.glossy) != limits.glossy) || changed;
+    changed = (pathTransmission_.exchange(limits.transmission) != limits.transmission) || changed;
+    changed = (pathVolume_.exchange(limits.volume) != limits.volume) || changed;
     if (changed) {
         revision_.fetch_add(1);
     }
@@ -2909,6 +2913,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             paths.samples = pathSamples_.load();
             paths.bounces = pathBounces_.load();
             paths.limits.rouletteDepth = pathRoulette_.load();
+            paths.limits.diffuse = pathDiffuse_.load();
+            paths.limits.glossy = pathGlossy_.load();
+            paths.limits.transmission = pathTransmission_.load();
+            paths.limits.volume = pathVolume_.load();
             paths.adaptive = pathAdaptive_.load();
             paths.mis = pathMis_.load();
             paths.errorTarget = pathError_.load();

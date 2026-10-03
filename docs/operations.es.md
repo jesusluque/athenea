@@ -261,6 +261,10 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--path-bounces` | entero | `1` | rt: rebotes tras el primer impacto; atravesar un vidrio (entrar en él, salir de él, dentro de él) no es uno, hasta 8 por camino |
 | `--path-total` | entero | `1` | rt: caminos por píxel hasta los que se dibuja |
 | `--roulette-depth` | entero | `3` | rt: rebotes antes de que la ruleta rusa pueda terminar un camino cuyo throughput es menor que uno; `0` nunca |
+| `--diffuse-bounces` | entero | sin poner: sin límite propio | rt: reflexiones difusas que puede tomar un camino; dentro de `--path-bounces` |
+| `--glossy-bounces` | entero | sin poner: sin límite propio | rt: reflexiones glossy y especulares (todos los lóbulos menos los difusos) |
+| `--transmission-bounces` | entero | sin poner: sin límite propio | rt: direcciones que cruzan una superficie, sea cual sea el lóbulo; limita también los 8 cruces de vidrio gratuitos |
+| `--volume-bounces` | entero | sin poner: sin límite propio | rt: dispersiones en un medio |
 | `--denoise` | flag | apagado | rt: denoise cuando alcanza el total |
 | `--default-lights` | flag | apagado | un dome y un sol en la capa de sesión, para una escena sin luces |
 | `--shutter` | `ABRE:CIERRA` | sin poner | en frames; solo para una cámara hecha con `--eye` |
@@ -315,6 +319,7 @@ están en §5.
 | `--path-bounces` | entero | `4` | atravesar un vidrio no es un rebote, hasta 8 por camino |
 | `--path-total` | entero | `64` | dónde el frame cuenta como convergido, y se denoisea |
 | `--roulette-depth` | entero | `3` | como el de `athenea stage` |
+| `--diffuse-bounces`, `--glossy-bounces`, `--transmission-bounces`, `--volume-bounces` | entero | sin poner: sin límite propio | como los de `athenea stage` |
 | `--denoise` | flag | apagado | |
 | `--no-default-lights` | flag | luces por defecto encendidas | una escena sin luces se queda a oscuras |
 | `--edr` | flag | apagado | rango extendido: superficie float y ACES 2.0 hasta el pico de la pantalla |
@@ -985,6 +990,10 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
 | `athenea:rouletteDepth` | int | `3` | rt: rebotes antes de la ruleta rusa; `0` ninguna. Sin sesgo: la media se queda, los caminos tenues paran |
+| `athenea:diffuseBounces` | int | `-1` | rt: reflexiones difusas que puede tomar un camino; negativo: sin límite propio, decide `athenea:pathBounces` |
+| `athenea:glossyBounces` | int | `-1` | rt: reflexiones glossy y especulares, igual |
+| `athenea:transmissionBounces` | int | `-1` | rt: transmisiones, igual; limita también los cruces de vidrio gratuitos |
+| `athenea:volumeBounces` | int | `-1` | rt: dispersiones en un medio, igual |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
 | `athenea:motionBuckets` | int | `4` | rt: rodajas del obturador, de 1 a 8 |
 | `athenea:antialias` | bool | `true` | un desplazamiento subpíxel por pasada |

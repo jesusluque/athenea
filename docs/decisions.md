@@ -2079,6 +2079,39 @@ measured number goes here.
   weighs the survivors by 1/q, so in expectation it does go on, and the
   weights still sum to one.
 
+**Bounce limits by kind** (`technique::PathLimits`, `athenea:diffuseBounces`,
+`athenea:glossyBounces`, `athenea:transmissionBounces`,
+`athenea:volumeBounces`, and the same as `--diffuse-bounces` and so on),
+after Falcor's PathState (BSD-3): a path counts its diffuse reflections,
+its glossy and specular ones, its transmissions and its scatterings in a
+medium, and leaves a vertex by a lobe only while that kind is under its
+limit. Within the total, which still decides first, with the glass's free
+crossings.
+
+- **Which kind a bounce is**: a direction that crosses the surface is a
+  transmission whatever lobe drew it; otherwise an Oren-Nayar, Burley or
+  translucent lobe's is diffuse and every other lobe's -- dielectric and
+  conductor reflections, Schlick, sheen, a fibre's -- glossy. `stackSample`
+  now says which lobe drew a sample (`LobeSample::lobe`).
+- **MIS with a limit.** Where some lobes may go on and others not, the
+  material's strategy reaches a light along a direction with the density of
+  the lobes going on (`stackPdfMasked`), and that is what next event
+  estimation is weighed against. A light the material's ray meets, drawn
+  with the whole stack's density p of which g went on, is weighed
+  p g / (g^2 + q^2) against next event estimation's q: the two weights then
+  sum to one over the direct light, which is counted once and whole -- as it
+  is at a vertex out of bounces altogether, where next event estimation
+  keeps all of it. What a limit cuts is what lies past that light. With no
+  limit of a kind g is p and this is the power heuristic, unchanged.
+- **Unlimited by default**, so no frame changes unless asked: the gain is a
+  setting's (Cycles' defaults, 4 diffuse and 4 glossy of 12, are a starting
+  point). The proposal's estimate was 10-25% fewer rays with glass kept
+  whole; the measured number goes here.
+- **Checked**, exactly, on the closed shell (a diffuse lobe, no roulette):
+  six bounces of which two may be diffuse read the series to two; none
+  diffuse, the emission alone; and limits on the kinds the shell never
+  bounces by -- glossy, transmission, volume -- cut nothing.
+
 **What each gain needs of the platform**, from the proposal:
 
 | Step | Portable (Metal, CUDA) | Apple Silicon only | Discrete GPU only (L4) |

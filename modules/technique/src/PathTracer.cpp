@@ -84,8 +84,15 @@ struct PathParams {
     // at the end (`athenea/usd/bake_resolve`). The fit is linear, so the two
     // fitted halves sum to what the fit of the whole gives.
     uint bakeSplit;
-    // Russian roulette past this many bounces (technique::PathLimits); 0: none.
+    // WHEN A PATH STOPS BEFORE ITS TOTAL (technique::PathLimits).
+    // Russian roulette past this many bounces; 0: none.
     uint rouletteDepth;
+    // Bounces a path may take of each kind; 0xFFFFFFFF: as many as the
+    // total allows.
+    uint diffuseBounces;
+    uint glossyBounces;
+    uint transmissionBounces;
+    uint volumeBounces;
 };
 
 Texture2D<uint4>               visibility;   // (instance + 1, triangle); row 0 on top
@@ -1334,6 +1341,88 @@ bool pathGoesOn(uint charged, uint crossed, Shaded sh, float3 wi) {
     return charged < path.bounces || (crossed < kFreeCrossings && throughGlass(sh, wi));
 }
 
+/// THE KINDS OF BOUNCE A PATH COUNTS, after Falcor's PathState
+/// (Source/RenderPasses/PathTracer/PathState.slang, BSD-3, NVIDIA): a
+/// direction that crosses the surface is a transmission whatever lobe drew
+/// it; otherwise a diffuse lobe's is diffuse and every other lobe's --
+/// glossy, specular, sheen, a fibre's -- glossy. A medium's scattering is a
+/// volume bounce. `taken` holds the four counts in that order.
+static const uint kBounceDiffuse = 0;
+static const uint kBounceGlossy = 1;
+static const uint kBounceTransmission = 2;
+static const uint kBounceVolume = 3;
+static const uint kBounceUnlimited = 0xFFFFFFFFu;
+
+uint bounceLimit(uint kind) {
+    switch (kind) {
+    case kBounceDiffuse: return path.diffuseBounces;
+    case kBounceGlossy: return path.glossyBounces;
+    case kBounceTransmission: return path.transmissionBounces;
+    default: return path.volumeBounces;
+    }
+}
+
+/// Whether any kind has a limit of its own; without one, the total and the
+/// free crossings decide alone and nothing below costs a thing.
+bool kindsLimited() {
+    return (path.diffuseBounces & path.glossyBounces & path.transmissionBounces) != kBounceUnlimited;
+}
+
+uint bounceKindOf(Lobe lobe, bool crosses) {
+    if (crosses) {
+        return kBounceTransmission;
+    }
+    const bool diffuse = lobe.kind == kLobeOrenNayar || lobe.kind == kLobeBurley || lobe.kind == kLobeTranslucent;
+    return diffuse ? kBounceDiffuse : kBounceGlossy;
+}
+
+/// The lobes a path may still leave `sh` by along `wi`, bit k for lobe k.
+uint lobesGoingOn(Shaded sh, float3 wi, uint4 taken) {
+    const bool crosses = dot(sh.inputs.normalWorld, wi) < 0.0;
+    uint lobes = 0;
+    for (uint k = 0; k < sh.stack.count; ++k) {
+        const uint kind = bounceKindOf(sh.stack.lobes[k], crosses);
+        if (taken[kind] < bounceLimit(kind)) {
+            lobes |= 1u << k;
+        }
+    }
+    return lobes;
+}
+
+/// THE MATERIAL'S DENSITY FOR `wi`, COUNTING ONLY WHAT GOES ON: zero where
+/// the path is out of bounces that way, the density of the lobes still under
+/// their kind's limit otherwise. It is the density with which the material's
+/// strategy reaches a light along `wi`, so it is what next event estimation
+/// is weighed against (and what misMaterial weighs the other side by). With
+/// no limit of a kind this is stackPdf, and the weights are the power
+/// heuristic as before.
+float pdfGoingOn(Shaded sh, float3 wi, uint charged, uint crossed, uint4 taken) {
+    if (!pathGoesOn(charged, crossed, sh, wi)) {
+        return 0.0;
+    }
+    if (!kindsLimited()) {
+        return stackPdf(sh.stack, sh.toEye, wi);
+    }
+    const uint lobes = lobesGoingOn(sh, wi, taken);
+    if (lobes == 0) {
+        return 0.0;
+    }
+    return stackPdfMasked(sh.stack, sh.toEye, wi, lobes);
+}
+
+/// THE WEIGHT OF A LIGHT THE MATERIAL'S RAY MET, drawn with density `pdf`
+/// of which `goingOn` was allowed to go on, against next event estimation's
+/// `other`. With no limit of a kind, goingOn is pdf and this is the power
+/// heuristic. With one, the lobes still going on stand in for the direct
+/// light the others would have reached: the light next event estimation
+/// leaves to the material is counted once, whole, as it is at a vertex that
+/// is out of bounces altogether (where next event estimation keeps it all).
+/// What the limits cut is what lies beyond that light, never the light.
+float misMaterial(float pdf, float goingOn, float other) {
+    const float denominator = goingOn * goingOn + other * other;
+    return denominator > 0.0 ? pdf * goingOn / denominator : 0.0;
+}
+
 /// RUSSIAN ROULETTE, after pbrt-v4 (`rrBeta`, Apache-2.0) and Falcor's
 /// PathTracer: past `rouletteDepth` bounces, a path whose throughput has
 /// fallen below one survives with that probability -- its largest channel --
@@ -1355,7 +1444,8 @@ bool rouletteSurvives(inout float3 throughput, uint bounce, uint2 pixel, uint sa
     return true;
 }
 
-float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint mask, out uint group) {
+float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint4 taken, uint mask,
+                   out uint group) {
     group = 0;
     if (lightCount == 0) {
         // A stage without lights is lit as the raster lights it, when the
@@ -1428,10 +1518,15 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
     // with no complement at all, and a white furnace under an imageless dome
     // -- the dome's density and the Lambert lobe's the same function -- read
     // 0.5453 of what it should; the complement is what makes it whole.
+    // The material's density here is only what goes on from this vertex
+    // (pdfGoingOn): out of bounces of the kind a lobe would take, its share
+    // reaches no light and weighs nothing.
     float weight = 1.0;
-    if (!ls.delta && pathGoesOn(bounce - crossed, crossed, sh, ls.wi) && misWeighs(light)) {
-        const float other = stackPdf(sh.stack, sh.toEye, ls.wi);
-        weight = density * density / (density * density + other * other);
+    if (!ls.delta && misWeighs(light)) {
+        const float other = pdfGoingOn(sh, ls.wi, bounce - crossed, crossed, taken);
+        if (other > 0.0) {
+            weight = density * density / (density * density + other * other);
+        }
     }
     return f * ls.radiance * transmittance * tint * weight / density;
 }
@@ -1644,7 +1739,9 @@ void tracePathsAt(uint2 group, uint index) {
         Found  lightPoint;
         float3 lightScale = float3(0.0);
         float  previousPdf = 0.0;     // the material's density for the direction that reached `found`
+        float  previousGoingOn = 0.0; // and the part of it that was allowed to go on (pdfGoingOn)
         bool   previousWeighs = false;   // and whether emission met there is weighed against it
+        uint4  taken = uint4(0, 0, 0, 0);   // bounces by kind: diffuse, glossy, transmission, volume
         const uint steps = 2 * (path.bounces + kFreeCrossings) + 3;
         uint stepsTaken = 0;   // what the path cost, for a bake that shares its paths out
         for (uint step = 0; step < steps; ++step) {
@@ -1674,12 +1771,13 @@ void tracePathsAt(uint2 group, uint index) {
                     if (kLightGroups) {
                         addGroup(groups, group, throughput * direct * opacity);
                     }
-                    if (bounce - crossed >= path.bounces || !kTraces) {
+                    if (bounce - crossed >= path.bounces || !kTraces || taken[kBounceVolume] >= path.volumeBounces) {
                         break;
                     }
                     if (!rouletteSurvives(throughput, bounce, tid, sample)) {
                         break;
                     }
+                    taken[kBounceVolume] += 1;
                     d = hgSample(-d, g, float2(mediumRandom(rng), mediumRandom(rng)));
                     o = p;
                     const PathHit hit = traceNearestFrom(o, d, 1.0e-4 * max(1.0, length(o)), mask, true);
@@ -1841,7 +1939,7 @@ void tracePathsAt(uint2 group, uint index) {
                 float emissionWeight = 1.0;
                 if (previousWeighs && any(cur.stack.emission > float3(0.0))) {
                     const float other = emissivePdfAt(found.s, found.positionWorld, found.rayOrigin);
-                    emissionWeight = previousPdf * previousPdf / (previousPdf * previousPdf + other * other);
+                    emissionWeight = misMaterial(previousPdf, previousGoingOn, other);
                 }
                 if (!transferMode) {
                     carried += throughput * cur.stack.emission * emissionWeight;
@@ -1871,9 +1969,11 @@ void tracePathsAt(uint2 group, uint index) {
                             !pathOccluded(cur.inputs.positionWorld, cur.inputs.normalWorld, lp.wi,
                                           lp.distance - shortOf, kLightUnlinked, mask)) {
                             float weight = 1.0;
-                            if (pathGoesOn(bounce - crossed, crossed, cur, lp.wi) && path.mis != 0) {
-                                const float other = stackPdf(cur.stack, cur.toEye, lp.wi);
-                                weight = lp.weighPdf * lp.weighPdf / (lp.weighPdf * lp.weighPdf + other * other);
+                            if (path.mis != 0) {
+                                const float other = pdfGoingOn(cur, lp.wi, bounce - crossed, crossed, taken);
+                                if (other > 0.0) {
+                                    weight = lp.weighPdf * lp.weighPdf / (lp.weighPdf * lp.weighPdf + other * other);
+                                }
                             }
                             const float throughSplats =
                                 kSplatShadows ? splatVisibility(cur.inputs.positionWorld,
@@ -1889,7 +1989,7 @@ void tracePathsAt(uint2 group, uint index) {
                         }
                     }
                 } else if (!transferMode) {
-                    const float3 direct = gatherLight(cur, tid, sample, bounce, crossed, mask, group);
+                    const float3 direct = gatherLight(cur, tid, sample, bounce, crossed, taken, mask, group);
                     carried += throughput * direct;
                     if (kLightGroups) {
                         addGroup(groups, group, throughput * direct * opacity);
@@ -1957,6 +2057,20 @@ void tracePathsAt(uint2 group, uint index) {
             if (!pathGoesOn(bounce - crossed, crossed, cur, ms.wi)) {
                 break;
             }
+            // And only while the kind of bounce the lobe takes is under its
+            // limit. A transfer's first step is a white Lambert's.
+            const uint kind = transferMode && bounce == 0
+                                  ? kBounceDiffuse
+                                  : bounceKindOf(cur.stack.lobes[ms.lobe], dot(cur.inputs.normalWorld, ms.wi) < 0.0);
+            if (taken[kind] >= bounceLimit(kind)) {
+                break;
+            }
+            // What of the material's density goes on this way, for the weight
+            // a light or an emitter this ray meets is given: ms.pdf itself
+            // unless a kind has a limit.
+            const float goingOn = ms.delta || !kindsLimited() || (transferMode && bounce == 0)
+                                      ? ms.pdf
+                                      : pdfGoingOn(cur, ms.wi, bounce - crossed, crossed, taken);
             // BELOW THE FLAT SURFACE IS THE RELIEF. A raised gaussian is
             // shaded as the relief faces, and a direction its tilt opens
             // under the flat mesh would meet that mesh from above, lit, a
@@ -1977,6 +2091,7 @@ void tracePathsAt(uint2 group, uint index) {
             if (!rouletteSurvives(throughput, bounce, tid, sample)) {
                 break;
             }
+            taken[kind] += 1;
             const float3 p = cur.inputs.positionWorld;
             const float3 n = cur.inputs.normalWorld;
             const float scale = max(1.0, length(p));
@@ -2015,7 +2130,7 @@ void tracePathsAt(uint2 group, uint index) {
                     float weight = 1.0;
                     if (!ms.delta) {
                         const float other = lightChoiceProbability(k, p, n) * lightPdfImaged(light, p, n, d);
-                        weight = ms.pdf * ms.pdf / (ms.pdf * ms.pdf + other * other);
+                        weight = misMaterial(ms.pdf, goingOn, other);
                     }
                     const float3 reachedLight = throughput * lh.radiance * weight;
                     carried += reachedLight;
@@ -2029,6 +2144,7 @@ void tracePathsAt(uint2 group, uint index) {
             found = foundHit(hit, p, d);
             tHit = hit.seen.x == 0 ? 1.0e30 : hit.t;
             previousPdf = ms.pdf;
+            previousGoingOn = goingOn;
             previousWeighs = path.mis != 0 && !ms.delta;
             // A CROSSING IS NOT A BOUNCE. A solid glass ball is two crossings
             // deep before the ray is out again, and at the default of one
@@ -2562,6 +2678,10 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         cursor["path"]["samples"].setData(samples);
         cursor["path"]["bounces"].setData(settings.bounces);
         cursor["path"]["rouletteDepth"].setData(settings.limits.rouletteDepth);
+        cursor["path"]["diffuseBounces"].setData(settings.limits.diffuse);
+        cursor["path"]["glossyBounces"].setData(settings.limits.glossy);
+        cursor["path"]["transmissionBounces"].setData(settings.limits.transmission);
+        cursor["path"]["volumeBounces"].setData(settings.limits.volume);
         cursor["path"]["seed"].setData(settings.seed);
         cursor["path"]["accumulated"].setData(already);
         const bool tree = frame.chooseLights && frame.lightBvh && frame.lights != nullptr && frame.lights->hasBvh();

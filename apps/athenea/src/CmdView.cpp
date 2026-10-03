@@ -26,6 +26,10 @@ void addView(CLI::App& app) {
     cmd->add_option("--path-bounces", options->pathBounces, "rt: bounces after the first hit");
     cmd->add_option("--roulette-depth", options->pathLimits.rouletteDepth,
                     "rt: bounces before Russian roulette may end a dim path (0: never)");
+    cmd->add_option("--diffuse-bounces", options->pathLimits.diffuse, "rt: diffuse bounces a path may take at most");
+    cmd->add_option("--glossy-bounces", options->pathLimits.glossy, "rt: glossy and specular bounces at most");
+    cmd->add_option("--transmission-bounces", options->pathLimits.transmission, "rt: transmissions at most");
+    cmd->add_option("--volume-bounces", options->pathLimits.volume, "rt: scatterings in a medium at most");
     cmd->add_option("--path-total", options->pathTotal, "rt: paths a pixel at which the frame counts as converged (and is denoised)");
     cmd->add_flag("--denoise", options->denoise, "rt: denoise once converged (OIDN)");
     cmd->add_flag("!--no-default-lights", options->defaultLights,

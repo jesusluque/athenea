@@ -131,6 +131,10 @@ void addStage(CLI::App& app) {
     cmd->add_option("--path-total", o->pathTotal, "rt: paths a pixel the image is drawn until it holds");
     cmd->add_option("--roulette-depth", o->pathLimits.rouletteDepth,
                     "rt: bounces before Russian roulette may end a dim path (0: never)");
+    cmd->add_option("--diffuse-bounces", o->pathLimits.diffuse, "rt: diffuse bounces a path may take at most");
+    cmd->add_option("--glossy-bounces", o->pathLimits.glossy, "rt: glossy and specular bounces at most");
+    cmd->add_option("--transmission-bounces", o->pathLimits.transmission, "rt: transmissions at most");
+    cmd->add_option("--volume-bounces", o->pathLimits.volume, "rt: scatterings in a medium at most");
     cmd->add_flag("--denoise", o->denoise, "rt: denoise the image once it holds its total (OIDN)");
     cmd->add_flag("--default-lights", o->defaultLights,
                   "a dome and a sun in the session layer, for a stage that brings no lights "
