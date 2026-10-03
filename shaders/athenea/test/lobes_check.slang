@@ -83,7 +83,12 @@ void lobesPlainCheck(uint3 tid: SV_DispatchThreadID) {
     s.lobes = plain;
 
     // The polish under a sky, whole: exactly the function every cloud read.
-    if (any(environmentBrdfOf(s, nDotV) != environmentBrdf(albedo, metallic, roughness, nDotV)) ||
+    // To a millionth: the same arithmetic, which a compiler may still fuse
+    // differently once the function has a branch for a Schlick metal (a
+    // bit-for-bit test read 693 of 4096 off by one ulp then).
+    const float3 now = environmentBrdfOf(s, nDotV);
+    const float3 before = environmentBrdf(albedo, metallic, roughness, nDotV);
+    if (any(abs(now - before) > 1.0e-6 * max(abs(before), float3(1.0e-6))) ||
         any(ggxEnvDielectricAt(roughness, nDotV, plain.specularIor) != ggxEnvDielectric(roughness, nDotV))) {
         InterlockedAdd(counts[1], 1u);
     }
