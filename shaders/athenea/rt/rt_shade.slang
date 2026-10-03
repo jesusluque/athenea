@@ -241,8 +241,12 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         surface.lobes = splatLobesOf(params.hasLobes != 0, lobes, i);
         surface.transferCount = params.transferCount;
         surface.transferBase = i * params.transferWords * 2;
-        surface.hasShadowBits = params.shadowBits != 0 && params.transferCount >= 9;
+        // `params.shadowBits` is the words a gaussian: two of the first
+        // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
+        surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;
         surface.shadowBits = surface.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
+        surface.cellWords = params.shadowBits >= 8u && params.transferCount >= 9 ? params.shadowBits : 0u;
+        surface.cellBase = i * surface.cellWords;
         // A traced frame has no shadow pass of its own, but a cloud that
         // carries a baked visibility had its factors measured before the
         // frame, and they are read here exactly as the rasteriser reads its.
@@ -250,7 +254,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
                             params.lightCount, params.categoriesLo, params.categoriesHi,
                             shadowFactors, (params.shadowBase + i) * params.shadowLights,
                             params.shadowLights, envTexels, envSh, envOfLight,
-                            params.envLights, params.envBaseSide, envSun, transfer,
+                            params.envLights, params.envBaseSide, envSun, transfer, shadowBits,
                             params.transferIndirect != 0);
     }
     if (fate.graded) {

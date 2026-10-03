@@ -42,6 +42,9 @@ struct PathParams {
     // cosine, projected onto the same basis, with the surface's own albedo
     // taken as one. What that buys is a cloud that can be lit by a sky it was
     // never baked under: the frame reads `albedo * dot(transfer, sky)`.
+    // 2: the same, and which ways out are open at 16 x 16 cells over the
+    // whole sphere rather than 8 x 8 over the half it faces; 3: at 32 x 32
+    // (BakePoints::cellSide).
     uint transfer;
     uint adaptive;     // 1: a converged pixel takes no more paths
     float errorTarget; // relative standard error of the mean a pixel stops at
@@ -1572,6 +1575,22 @@ void tracePathsAt(uint2 group, uint index) {
     // which nine coefficients of a smooth visibility cannot say.
     uint shadowBits0 = 0u;
     uint shadowBits1 = 0u;
+    // AND SIXTEEN TIMES FINER, where the caller asked (`path.transfer` 2):
+    // 256 bits of a 16 x 16 octahedral grid over the whole sphere, the far
+    // half of it as well, since a glass sends the eye through it and a sheet
+    // is seen from both sides. What a reflection's lobe reads its occlusion
+    // from, not only where a sun is shadowed.
+    const bool cellsMode = transferMode && path.transfer >= 2u;
+    const uint cellSide = path.transfer >= 3u ? 32u : 16u;
+    // Four words a plane after the coverage, written as each is traced; a
+    // point whose first sample never reaches its surface leaves them zero,
+    // not whatever the last pass left there.
+    const uint cellPlanes = cellSide * cellSide / 128u;
+    if (cellsMode) {
+        for (uint plane = 0; plane < cellPlanes; ++plane) {
+            colour[(min(path.bakeCount, 16u) + 1u + plane) * (camera.width * camera.height) + at] = float4(0.0);
+        }
+    }
     if (kBake) {
         for (uint c = 0; c < 16; ++c) {
             coefficients[c] = float3(0.0);
@@ -1917,7 +1936,29 @@ void tracePathsAt(uint2 group, uint index) {
                 // ray, since the body facing away from it receives nothing.
                 const float3 np = cur.inputs.normalWorld;
                 const float3 pp = cur.inputs.positionWorld;
-                for (uint cell = 0; cell < 64u; ++cell) {
+                // 256 cells over the whole sphere: `pathOccluded` starts a ray
+                // below the surface from its far side, so a direction behind
+                // a solid meets the solid and one behind a sheet leaves.
+                // Four words at a time, one plane, so nothing the size of the
+                // grid is held in registers.
+                for (uint plane = 0; cellsMode && plane < cellPlanes; ++plane) {
+                    uint4 words = uint4(0u, 0u, 0u, 0u);
+                    for (uint w = 0; w < 4u; ++w) {
+                        uint word = 0u;
+                        for (uint b = 0; b < 32u; ++b) {
+                            const uint cell = (plane * 4u + w) * 32u + b;
+                            const float2 uv = (float2(float(cell % cellSide), float(cell / cellSide)) + 0.5) /
+                                              float(cellSide);
+                            if (!pathOccluded(pp, np, octDecode(uv), 3.0e38, kLightUnlinked, mask)) {
+                                word |= 1u << b;
+                            }
+                        }
+                        words[w] = word;
+                    }
+                    colour[(min(path.bakeCount, 16u) + 1u + plane) * (camera.width * camera.height) + at] =
+                        asfloat(words);
+                }
+                for (uint cell = 0; !cellsMode && cell < 64u; ++cell) {
                     const float2 uv = (float2(float(cell % 8u), float(cell / 8u)) + 0.5) / 8.0;
                     const float3 wd = octDecode(uv);
                     if (dot(np, wd) <= 0.0) {
@@ -2107,7 +2148,11 @@ void tracePathsAt(uint2 group, uint index) {
         colour[count * pixels + at] = float4(0.0, 0.0, 0.0, alpha / float(samples));
         // The bits, carried as the floats they are the bits of: the host
         // reads them back and never does arithmetic on them.
-        colour[(count + 1) * pixels + at] = float4(asfloat(shadowBits0), asfloat(shadowBits1), 0.0, 0.0);
+        // With the cells, the planes after the coverage were written as they
+        // were traced.
+        if (!cellsMode) {
+            colour[(count + 1) * pixels + at] = float4(asfloat(shadowBits0), asfloat(shadowBits1), 0.0, 0.0);
+        }
         return;
     }
     if (splitMode) {
@@ -2399,7 +2444,7 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     const uint32_t bakeCoefficients = bake != nullptr ? std::clamp(bake->coefficients, 1u, 16u) : 1u;
     const uint64_t planesOut = bake == nullptr ? 1u
                                : bake->split && !bake->transfer ? 2u * bakeCoefficients + 3u
-                                                                : bakeCoefficients + (bake->transfer ? 2u : 0u);
+                                                                : bakeCoefficients + transferPlanes(*bake);
     const bool resized = out.width != width || out.height != height || !out.colour.valid() ||
                          out.colour.bytes() < pixels * 16 * planesOut;
     if (resized) {
@@ -2513,7 +2558,8 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         }
         cursor["path"]["adaptive"].setData(uint32_t{settings.adaptive ? 1u : 0u});
         cursor["path"]["bakeCount"].setData(bake != nullptr ? std::clamp(bake->coefficients, 1u, 16u) : 1u);
-        cursor["path"]["transfer"].setData(uint32_t{bake != nullptr && bake->transfer ? 1u : 0u});
+        cursor["path"]["transfer"].setData(uint32_t{
+            bake == nullptr || !bake->transfer ? 0u : bake->cellSide >= 32 ? 3u : bake->cellSide >= 16 ? 2u : 1u});
         cursor["path"]["headlight"].setData(uint32_t{settings.headlight ? 1u : 0u});
         cursor["path"]["mis"].setData(uint32_t{settings.mis ? 1u : 0u});
         cursor["path"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});

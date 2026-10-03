@@ -403,6 +403,7 @@ recipe is §3.1 below.
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |
 | `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well |
+| `--transfer-cells` | 0, 16 or 32 | 16 | with `--transfer`: cells a side of the grid of open directions over the whole sphere (256 or 1024 bits a gaussian); 0 writes the first transfer's 8 x 8 over the half a gaussian faces |
 | `--skinned` | flag | off | carry the skeleton; forces `--no-bake` |
 | `--range` | `START:END[:STEP]` | the stage's own range | time codes a skinned cloud keeps |
 | `--default-lights` | flag | off | a dome and a sun for the bake, on a stage with none |
@@ -1036,7 +1037,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:ior` | float | `0` |
 | `primvars:athenea:splat:transferDirect` | float[] ‹9 a gaussian› | — |
 | `primvars:athenea:splat:transferIndirect` | float[] ‹27 a gaussian› | — |
-| `primvars:athenea:splat:shadowBits` | int[] ‹2 a gaussian› | — |
+| `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 or 32 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 a gaussian› | — |
@@ -1070,6 +1071,13 @@ an 8 x 8 octahedral grid over the sphere in the cloud's own space, set where
 the bake's ray in that direction left the scene. It is what shadows the sun a
 frame takes out of the sky; it is read only on a cloud that also carries
 `transferDirect`, and without it the sun is shadowed softly by the transfer.
+Eight or thirty-two ints a gaussian are the TX transfer's (`--transfer-cells`
+16 or 32): a 16 x 16 or 32 x 32 grid over the whole sphere, the half behind
+the surface traced as well. The count is what says which; nothing else does.
+With them a frame shadows the sun and any light that is a direction, and
+narrows every reflection -- the base's and the coat's -- by the share of its
+own lobe that the bits leave open, rather than by one number for the whole
+hemisphere.
 `thinWalled` is nonzero where the gaussian came from a thin-walled glass
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame

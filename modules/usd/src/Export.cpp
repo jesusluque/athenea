@@ -344,12 +344,14 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             bounced.Set(VtValue(indirect));
             bounced.SetElementSize(27);
         }
-        if (options.shadowBits.size() >= size_t{count} * 2) {
-            VtIntArray bits(options.shadowBits.begin(), options.shadowBits.begin() + size_t{count} * 2);
+        // Two ints a record, or eight or thirty-two: the count is the layout.
+        const uint32_t words = options.shadowWords == 8 || options.shadowWords == 32 ? options.shadowWords : 2u;
+        if (options.shadowBits.size() >= size_t{count} * words) {
+            VtIntArray bits(options.shadowBits.begin(), options.shadowBits.begin() + size_t{count} * words);
             UsdGeomPrimvar open = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:shadowBits"),
                                                          SdfValueTypeNames->IntArray, UsdGeomTokens->vertex);
             open.Set(VtValue(bits));
-            open.SetElementSize(2);
+            open.SetElementSize(static_cast<int>(words));
         }
     }
 

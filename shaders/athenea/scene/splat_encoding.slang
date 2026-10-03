@@ -24,8 +24,10 @@ public struct DecodeParams {
     // How much of an environment reaches a gaussian: where its values start
     // in a record and how many there are (0, 9 or 36).
     public uint transferBase; public uint transferCount; public uint transferWords;
-    // Where the two words of which ways out are open start, or kNoField.
+    // Where the words of which ways out are open start, or kNoField, and
+    // how many there are: two, or eight for a TX transfer's 256 cells.
     public uint shadowBits;
+    public uint shadowWords;
     // The first record of this slice in the whole cloud, for `origin`.
     public uint recordBase;
     // Where the three fields of a shading normal start, or kNoField.

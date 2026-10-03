@@ -257,6 +257,9 @@ struct BakeRequest {
     /// reaches each point from an environment, with its own albedo taken as
     /// one, so the answer does not depend on the light it was baked under.
     bool               transfer = false;
+    /// And its open directions on a finer grid over the whole sphere, 16 or
+    /// 32 cells a side (technique::BakePoints::cellSide); 0 the first 8 x 8.
+    uint32_t           cellSide = 0;
     /// KEEP THE SUMS, DIRECT APART FROM INDIRECT (technique::BakePoints::split).
     bool               split = false;
     /// Which paths these are: a pass that adds to an earlier one draws

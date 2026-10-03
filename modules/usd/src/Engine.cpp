@@ -2971,6 +2971,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 points.height = (bake->count + points.width - 1) / points.width;
                 points.coefficients = bake->coefficients;
                 points.transfer = bake->transfer;
+                points.cellSide = bake->transfer ? technique::transferCellSide(bake->cellSide) : 0u;
                 points.split = bake->split;
                 paths.seed = bake->seed;
                 paths.accumulate = false;

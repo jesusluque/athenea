@@ -22,7 +22,7 @@ RWStructuredBuffer<uint>     crypto;
 // and, where the file carries them, nine rgb triples after. Always bound;
 // `params.transferCount` is what says whether anything is written.
 RWStructuredBuffer<uint>     transfer;
-// Which ways out are open, two words a splat; `params.shadowBits` says whether
+// Which ways out are open, two words a splat (or eight); `params.shadowBits` says whether
 // the file carries them. Always bound.
 RWStructuredBuffer<uint>     shadowBits;
 // WHICH RECORD EACH KEPT SPLAT CAME FROM. Validation drops what cannot be
@@ -117,8 +117,10 @@ void splatDecode(uint3 tid: SV_DispatchThreadID) {
         lobes[j * 3 + 2] = words.z;
     }
     if (params.shadowBits != kNoField) {
-        shadowBits[j * 2] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits));
-        shadowBits[j * 2 + 1] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits + 1));
+        const uint words = params.shadowWords == 8u ? 8u : 2u;
+        for (uint w = 0; w < words; ++w) {
+            shadowBits[j * words + w] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits + w));
+        }
     }
     // A transfer is written as it stands: it is a number the frame multiplies
     // a sky by, not a colour to decode, and f16 is generous for a quantity

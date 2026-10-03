@@ -50,6 +50,9 @@ struct SplatEncoding {
     /// 8 x 8 octahedral grid over the sphere, carried as the floats their
     /// bits already are. `kNoField` for a cloud that has none.
     uint32_t shadowBits = kNoField;
+    /// How many: 2, or 8 for the 256 bits of a 16 x 16 grid over the whole
+    /// sphere a TX transfer keeps (docs/decisions.md, task TX).
+    uint32_t shadowWords = 2;
     /// WHICH WAY THE SURFACE UNDER IT FACED, apart from its frame: three
     /// consecutive fields (x y z) of a shading normal in the cloud's own
     /// space, the one positions and rotations are in. A conversion from a

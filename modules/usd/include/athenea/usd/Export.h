@@ -110,6 +110,10 @@ struct ExportOptions {
     /// 8 x 8 octahedral grid over the sphere, set where a traced ray found
     /// nothing. What lets a sun cast a hard shadow on a relit cloud.
     std::span<const int32_t>        shadowBits;
+    /// Ints a record of `shadowBits`: 2, or 8 or 32 for the 256 or 1024 bits
+    /// of a 16 x 16 or 32 x 32 grid over the whole sphere (task TX), which a
+    /// reader tells apart by the count.
+    uint32_t                        shadowWords = 2;
     /// One int a record, 1 where the gaussian came from a thin-walled glass.
     std::span<const int32_t>        thinWalled;
     /// `primvars:athenea:splat:ior` when above 1: the index the cloud's

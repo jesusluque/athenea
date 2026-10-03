@@ -107,7 +107,8 @@ public struct FrameParams {
     public uint  transferWords;
     public uint  transferCount;
     public uint  transferIndirect;
-    /// 1 where the cloud carries which ways out are open (`shadowBits`).
+    /// The words a gaussian of which ways out are open (`shadowBits`), 0 where
+    /// the cloud carries none: 2 for 8 x 8 cells, 8 or 32 for a TX transfer.
     public uint  shadowBits;
     /// THE INDEX A TRANSMITTING GAUSSIAN BENDS BY, 0 where it bends nothing.
     ///

@@ -400,7 +400,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["params"]["transferCount"].setData(carried ? cloud->transferCount : 0u);
             const bool open = carried && cloud->hasShadowBits();
             cursor["shadowBits"].setBinding(open ? cloud->shadowBits.rhi() : cloud->shape.rhi());
-            cursor["params"]["shadowBits"].setData(open ? 1u : 0u);
+            // The words a gaussian, which is what says the grid: two of the
+            // first transfer's 64 bits, eight or thirty-two of a TX one's.
+            cursor["params"]["shadowBits"].setData(open ? cloud->shadowWords : 0u);
             cursor["params"]["transferIndirect"].setData(
                 uint32_t{carried && instance.transferIndirect && cloud->hasIndirect() ? 1u : 0u});
             cursor["params"]["ior"].setData(instance.ior);

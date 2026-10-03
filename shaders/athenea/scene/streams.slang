@@ -78,8 +78,10 @@ struct StreamParams {
     // nine of the direct half, and twenty-seven more where the indirect one
     // is there too.
     uint transferBase; uint transferCount;
-    // Where the two words of which ways out are open go, or kNoPbr.
+    // Where the words of which ways out are open go, or kNoPbr, and how
+    // many: two (8 x 8 cells), or eight (16 x 16, a TX transfer's).
     uint shadowBase;
+    uint shadowWords;
     // Where the three floats of a shading normal go, or kNoPbr.
     uint normalBase;
     // Where the three floats of an emitted radiance go, or kNoPbr.
@@ -104,7 +106,7 @@ StructuredBuffer<uint>     transmission;
 StructuredBuffer<uint>     cryptoObject; // one id a splat, as the prim it came from hashes
 StructuredBuffer<uint>     transferDirect;   // nine a splat
 StructuredBuffer<uint>     transferIndirect; // twenty-seven a splat, rgb a coefficient
-StructuredBuffer<uint>     shadowBits;       // two words a splat, bits
+StructuredBuffer<uint>     shadowBits;       // two words a splat, or eight, bits
 StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a thin wall
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
 StructuredBuffer<uint>     emission;         // rgb a splat, the radiance it gives off
@@ -183,9 +185,11 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
     }
     // Which ways out are open: bits, carried as the floats they are.
     if (params.shadowBase != kNoPbr) {
-        records[r + params.shadowBase] = present(kShadowBits) ? bit_cast<float>(shadowBits[e * 2]) : 0.0;
-        records[r + params.shadowBase + 1] =
-            present(kShadowBits) ? bit_cast<float>(shadowBits[e * 2 + 1]) : 0.0;
+        const uint words = params.shadowWords == 8u ? 8u : 2u;
+        for (uint w = 0; w < words; ++w) {
+            records[r + params.shadowBase + w] =
+                present(kShadowBits) ? bit_cast<float>(shadowBits[e * words + w]) : 0.0;
+        }
     }
     // The shading normal, as the stage holds it; the decode normalises it.
     if (params.normalBase != kNoPbr) {

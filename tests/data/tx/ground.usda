@@ -1,0 +1,28 @@
+#usda 1.0
+# Copyright (c) 2026 jesus luque.
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# The ground the balls of tests/data/lobes stand on, for the TX transfer's
+# tests (tests/usd/test_usd.cpp, "[tx_conversion]"): a grey floor touching the
+# ball from below, which the ball reflects, which shadows the ball's lower
+# half and which the conversion does not convert (`--prim /World/Ball`). It
+# stays a mesh, as a car's ground does.
+over "World"
+{
+    def Mesh "Ground"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-8, -1, 8), (8, -1, 8), (8, -1, -8), (-8, -1, -8)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)] (
+            interpolation = "vertex"
+        )
+        color3f[] primvars:displayColor = [(0.45, 0.4, 0.35)] (
+            interpolation = "constant"
+        )
+        uniform token subdivisionScheme = "none"
+    }
+}

@@ -942,6 +942,21 @@ nada. La polish conserva el sol del propio mapa y le quita la parte que no pasa
 como un lóbulo GGX analítico, recortado en cero, así que un metal también
 queda sombreado. Una nube sin transfer recibe el sol de vuelta sin sombra.
 
+**Las celdas del transfer TX** (docs/decisions.md, tarea TX). `BakePoints::cellSide`
+16 o 32 (`path.transfer` 2 o 3 en el kernel) sustituye los 64 rayos por uno
+por celda de una rejilla octaédrica de 16 x 16 o 32 x 32 sobre la esfera
+entera, incluida la mitad de detrás -- `pathOccluded` arranca un rayo bajo la
+superficie desde su lado de atrás --, escritos cuatro palabras por plano, un
+plano por cada 128 celdas, según se trazan, así que nada del tamaño de la
+rejilla se queda en registros (`technique::transferPlanes` dice cuántos
+planos siguen a los coeficientes). `m2sTransferInto` los escribe como 8 o 32
+enteros por gaussiana, y cada lector distingue la disposición por ese número
+(`GpuSplats::shadowWords`, el parámetro `shadowBits` del frame).
+`splat_relight` los lee con `splatCellsOpen` (cuatro celdas bilineales,
+dejando fuera las que quedan detrás de un eje), `splatLobeOpen` (el centro del
+lóbulo y un anillo al ángulo al que lo abre su roughness) y `splatOpenToward`
+(la dirección de una luz).
+
 **Decir otra cosa de un prim.** El id de Cryptomatte que lleva una gaussiana
 es también una selección -- todo lo que vino de un mismo prim -- así que
 `render::SplatOverride` es una fila con ese id como clave: metallic,

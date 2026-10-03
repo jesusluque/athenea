@@ -62,6 +62,7 @@
 #include "athenea/gpu_host/ImageStorage.h"
 #include "athenea/image/Image.h"
 #include "athenea/lod/Athc.h"
+#include "athenea/technique/PathTracer.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/material/TextureStore.h"
 #include "athenea/scene/GpuClouds.h"
@@ -175,6 +176,11 @@ struct Options {
     /// Excludes the radiance bake, which keeps one sky's light instead.
     bool                     transfer = false;
     bool                     indirect = true;
+    /// THE TRANSFER'S OPEN DIRECTIONS, cells a side of an octahedral grid
+    /// over the whole sphere: 16 (256 bits a gaussian) or 32 (1024), which is
+    /// what a reflection's occlusion and a glass's view through are read from
+    /// (task TX); 0, the first transfer's 64 over the half a gaussian faces.
+    uint32_t                 transferCells = 16;
     /// PATHS A GAUSSIAN, 256 on average since every gaussian is blended in
     /// linear light: these everywhere, then `bakeExtra` more shared out
     /// where the noise is (docs/decisions.md, "The bake's grain"). A transfer
@@ -1514,7 +1520,7 @@ public:
     [[nodiscard]] Result<void> filterIndirect(aofx::Effect& filter, usd::BakeSplit& split);
     /// How much of an environment reaches each gaussian, instead of the light.
     [[nodiscard]] Result<void> transfer(const std::string& stage, double time, uint32_t samples,
-                                        uint32_t bounces, bool indirect, std::vector<float>& direct,
+                                        uint32_t bounces, bool indirect, uint32_t cells, std::vector<float>& direct,
                                         std::vector<float>& bounced, std::vector<int32_t>& shadowBits);
 
 private:
@@ -1809,15 +1815,17 @@ Result<void> Converter::filterIndirect(aofx::Effect& filter, usd::BakeSplit& spl
 /// sky the cloud is put in. On the device as the bake is; the three arrays
 /// the file keeps come back as bytes.
 Result<void> Converter::transfer(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
-                                 bool indirect, std::vector<float>& direct, std::vector<float>& bounced,
+                                 bool indirect, uint32_t cells, std::vector<float>& direct, std::vector<float>& bounced,
                                  std::vector<int32_t>& shadowBits) {
     ATHENEA_TRY(spanRays());
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
     // Degree 2: nine coefficients hold the irradiance of any environment to
     // about a percent, and a transfer is exactly that shape.
+    const uint32_t side = technique::transferCellSide(cells);
     const auto started = std::chrono::steady_clock::now();
-    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, 2, /*transfer=*/true);
+    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, 2, /*transfer=*/true,
+                                                 /*batch=*/0, side);
     if (!baked) return std::move(baked).error();
     // The rays are the same rays whether the indirect half is kept or not, so
     // this number is what says the second half costs no bake: only the copy
@@ -1834,7 +1842,10 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     };
     auto directs = made(uint64_t{count_} * 9, "mesh2splat.transferDirect");
     auto bounceds = made(indirect ? uint64_t{count_} * 27 : 1, "mesh2splat.transferIndirect");
-    auto bits = made(uint64_t{count_} * 2, "mesh2splat.shadowBits");
+    // Two words of open directions a gaussian, or eight or thirty-two with
+    // the cells.
+    const uint32_t words = technique::transferCellWords(side);
+    auto bits = made(uint64_t{count_} * words, "mesh2splat.shadowBits");
     auto found = counter();
     if (!directs || !bounceds || !bits || !found) {
         return Error(ErrorCode::OutOfMemory, "transfer: cannot allocate what the file keeps");
@@ -1854,11 +1865,12 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         cursor["bake"]["dc0"].setData(uint32_t{11});
         cursor["bake"]["restBase"].setData(uint32_t{23});
         cursor["bake"]["indirect"].setData(indirect ? 1u : 0u);
+        cursor["bake"]["cells"].setData(side == 0 ? 0u : words);
     });
     ATHENEA_TRY(batch.submit(true));
     // What a USD array holds, as bytes.
     direct.resize(size_t{count_} * 9);
-    shadowBits.resize(size_t{count_} * 2);
+    shadowBits.resize(size_t{count_} * words);
     bounced.resize(indirect ? size_t{count_} * 27 : 0);
     ATHENEA_TRY(directs->read(device, 0, direct.size() * sizeof(float), direct.data()));
     ATHENEA_TRY(bits->read(device, 0, shadowBits.size() * sizeof(int32_t), shadowBits.data()));
@@ -1957,6 +1969,10 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--transfer", o->transfer,
                   "bake how much of an environment reaches each gaussian instead of the light itself, "
                   "so the cloud can be lit by any sky (excludes the radiance bake)");
+    cmd->add_option("--transfer-cells", o->transferCells,
+                    "--transfer: cells a side of the grid of open directions over the whole sphere, 16 or 32; "
+                    "0 keeps the first transfer's 8 x 8 over the half a gaussian faces")
+        ->check(CLI::IsMember({0u, 16u, 32u}));
     cmd->add_flag("!--no-indirect", o->indirect,
                   "--transfer: leave out the interreflection, which costs no bake time and 27 floats a "
                   "gaussian to keep");
@@ -2149,7 +2165,8 @@ void addMesh2Splat(CLI::App& app) {
                     // the frame lights them with whatever sky it has, so the same
                     // file is right under every HDRI rather than under one.
                     ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples + o->bakeExtra, o->bakeBounces, o->indirect,
-                                                   transferDirect, transferIndirect, shadowBits));
+                                                   o->transferCells, transferDirect, transferIndirect,
+                                                   shadowBits));
                 } else if (o->bake) {
                     usd::BakeOptions bake;
                     bake.samples = o->bakeSamples;
@@ -2263,6 +2280,7 @@ void addMesh2Splat(CLI::App& app) {
                 options.transferDirect = transferDirect;
                 options.transferIndirect = transferIndirect;
                 options.shadowBits = shadowBits;
+                options.shadowWords = technique::transferCellWords(o->transferCells);
                 // WHOLE OR NOT AT ALL: under another name beside it, and
                 // under its own only once it is complete, so a conversion
                 // that fails leaves no stage of half a cloud behind.

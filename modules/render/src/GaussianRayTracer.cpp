@@ -929,7 +929,7 @@ Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> inst
             p["transferCount"].setData(carried ? shade.cloud->transferCount : 0u);
             const bool open = carried && shade.cloud->hasShadowBits();
             cursor["shadowBits"].setBinding(open ? shade.cloud->shadowBits.rhi() : shade.cloud->shape.rhi());
-            p["shadowBits"].setData(open ? 1u : 0u);
+            p["shadowBits"].setData(open ? shade.cloud->shadowWords : 0u);   // the words a gaussian
             p["transferIndirect"].setData(
                 uint32_t{carried && shade.transferIndirect && shade.cloud->hasIndirect() ? 1u : 0u});
             p["ior"].setData(shade.ior);

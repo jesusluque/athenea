@@ -11283,3 +11283,58 @@ against each other.
 
 A transfer does not travel through `.athc` and this does not change it: no
 flag bit is taken. Bit 3 stays proposal 009's and bit 4 proposal 026's.
+
+### Step 1: a reflection's occlusion has a direction
+
+**The bake.** `kTransfer` at `path.transfer` 2 or 3 traces one any-hit ray a
+cell of a 16 x 16 or 32 x 32 octahedral grid over the whole sphere, at the
+first sample's first vertex, where the first transfer traced 64 over the half
+the surface faces. The far half is traced as well: `pathOccluded` starts a
+ray from the far side of the surface, so a direction behind a solid meets the
+solid and one behind a sheet leaves -- a windscreen is looked through, and a
+mirror's card seen from behind. The words go out four a plane, as each 128
+cells are traced, so the kernel holds no array the size of the grid: 256 rays
+a gaussian at 16, 1024 at 32, against the 64 x 3 path segments of the
+transfer itself. They reach the file as `shadowBits` with 8 or 32 ints a
+gaussian (`--transfer-cells`, 16 by default), and the count is the layout
+everywhere after -- the stream kernel, the decode, `GpuSplats::shadowWords`,
+the frame's `shadowBits` parameter, which used to be a flag and is now the
+words a gaussian (2 for a first transfer, which every check on it read as
+non-zero and still does).
+
+**The frame.** Where a cloud carries the cells, `relitByDome` narrows the
+base's reflection and the coat's by `splatLobeOpen` -- the bits read at the
+mirror direction and at a ring of six around it, at `1.4 atan(alpha)` (about
+the angle within which GGX reflects half its energy), a third of the weight
+on the centre -- in place of Lagarde and de Rousiers' fit of the transfer's
+constant term. The sun's share is the bits read along it
+(`splatOpenToward`). Cells behind the surface's normal are left out of a
+lookup that is about the side facing the eye, so a lobe grazing the horizon
+reads the cells above it and not the body under it. A cloud without the cells
+takes every line it took before; the 64 bits are read as they were.
+
+This is the defect CV2 measured on the Corvette: the environment's
+reflection was narrowed by a number with no direction, so a rim, a brake disc
+or the inside of a wheel arch reflected the sky through the car that stands
+over them (the rims 2.4 times the path traced mesh, `Metal_rough` 6.5 times,
+the brake discs a hundred), and a metal, which has no body, had nothing else
+to shadow it.
+
+**What it is not, yet.** An occluded direction now reflects nothing; what
+stands there is step 2. Proposal 028 suggests two or three spherical
+Gaussians of visibility fitted in the bake for this; the bits are read
+directly instead, which the proposal names as the alternative ("an average of
+a few cells"), because they are already there for the sun, need no fit, and
+keep the edge a fit would round.
+
+**Checked** (pending the GPU turn): the roof's closed form at 16 and 32 cells
+over the whole sphere, the half under a sheet open
+(`the open directions a TX transfer keeps are the ones a roof leaves, over
+the whole sphere`); the lobe against three skies of bits -- all open, all
+closed, a ground -- whole, nothing, and never opening again as it tilts down
+(`a reflection's lobe sees what a TX transfer's bits leave open`); and the
+balls of tests/data/lobes on a ground converted both ways, under the pale sky
+they were converted in and under a window they never saw, TX held to the
+path traced mesh and, for paint and chrome, to doing better than the first
+transfer (`tx_conversions_render_like_the_mesh`, bounds placeholders until
+the run).

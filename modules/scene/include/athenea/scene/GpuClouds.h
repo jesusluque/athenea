@@ -99,6 +99,9 @@ struct GpuSplats {
     /// which reflects with the plain specular (`plainLobes`); `hasLobes` is
     /// how a kernel asks. Nothing turns it.
     gpu::Buffer lobes;
+    /// Words a gaussian of `shadowBits`: 2 (8 x 8 cells over the sphere),
+    /// or 8 (16 x 16, a TX transfer's).
+    uint32_t    shadowWords = 0;
     uint32_t    transferWords = 0;
     uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9 or 36
     /// THE SPACE ITS COLOURS ARE IN (`io::RawSplats::linear`): false for a
@@ -193,7 +196,8 @@ struct SplatStreams {
     /// `:transferIndirect`).
     FloatStream transferDirect;
     FloatStream transferIndirect;
-    /// Two int32 a splat (`primvars:athenea:splat:shadowBits`), read as bits.
+    /// Two int32 a splat (`primvars:athenea:splat:shadowBits`), read as bits;
+    /// or eight, the 256 cells of a TX transfer, which the count says.
     FloatStream shadowBits;
     /// One int32 a splat, nonzero for a thin-walled glass
     /// (`primvars:athenea:splat:thinWalled`); read only beside the PBR arrays.
@@ -288,7 +292,7 @@ private:
     [[nodiscard]] Result<void> sogSlice(const SogOnDevice& on, uint32_t first, uint32_t n, const gpu::Buffer& into);
     [[nodiscard]] Result<GpuSplats> startSplats(const std::string& source, uint32_t declared, uint32_t keep,
                                                 bool withPbr = false, bool withCrypto = false,
-                                                uint32_t transferCount = 0, bool withShadowBits = false,
+                                                uint32_t transferCount = 0, uint32_t shadowWords = 0,
                                                 bool withNormals = false, bool withEmission = false,
                                                 bool withLobes = false);
     /// Validates and decodes `n` records in `raw` into `splats` after `written`;

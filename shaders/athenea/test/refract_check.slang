@@ -43,6 +43,8 @@ void refractCheck(uint3 tid: SV_DispatchThreadID) {
     s.lobes = plainLobes();
     s.thinWalled = false;
     s.hasShadowBits = false;
+    s.cellWords = 0u;
+    s.cellBase = 0u;
     s.normal = float3(0.0, 0.0, 1.0);
     s.ior = params.ior;
     float worstOff = 0.0;

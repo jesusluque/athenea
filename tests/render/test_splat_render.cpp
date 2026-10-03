@@ -952,6 +952,68 @@ TEST_CASE("an open sky reflects whole, a closed one not at all", "[render][gpu][
     CHECK(counts[3] == 0);
 }
 
+// A REFLECTION'S OCCLUSION HAS A DIRECTION (task TX).
+//
+// The Lagarde fit above narrows a reflection by one number for the whole
+// hemisphere, so a door reflected the open sky where the ground stands in
+// its mirror. A TX transfer's bits say which directions are open, and
+// `splatLobeOpen` reads them over the lobe: under a sky of bits all open it
+// is one, all closed zero, and over a ground a lobe pointing up sees it all,
+// one pointing down none, and tilting it down never opens it again.
+TEST_CASE("a reflection's lobe sees what a TX transfer's bits leave open", "[render][gpu][cells]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    for (const uint32_t side : {16u, 32u}) {
+        const uint32_t words = side * side / 32;
+        gpu::Buffer bits = test::uintBuffer(*gpu->device, words * 3, "lobe.bits");
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "lobe.stats");
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        desc.label = "lobe.worst";
+        const std::array<float, 8> zeros{};
+        auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+        REQUIRE(worst);
+        auto fill = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobe_open_check", "lobeOpenFill");
+        if (!fill) FAIL(fill.error().toString());
+        gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/lobe_open_check");
+        constexpr uint32_t kSteps = 8;
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["fill"].setBinding(bits.rhi());
+            cursor["bits"].setBinding(bits.rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            cursor["worst"].setBinding(worst->rhi());
+            cursor["params"]["side"].setData(side);
+            cursor["params"]["steps"].setData(kSteps);
+            cursor["params"]["tolerance"].setData(1.0e-4F);
+        };
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            fill->dispatch(batch, {words * 3, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            check.dispatch(batch, {1, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 8> counts{};
+        std::array<float, 8> readings{};
+        REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+        REQUIRE(worst->read(*gpu->device, 0, sizeof(readings), readings.data()));
+        std::printf("  %u x %u cells: %u readings; %u not one under an open sky, %u not zero under a closed one, "
+                    "%u wrong at the poles over a ground, %u opening again (largest rise %.4f), %u out of range\n",
+                    side, side, counts[5], counts[0], counts[1], counts[2], counts[3], double(readings[0]),
+                    counts[4]);
+        INFO(side << " cells a side");
+        CHECK(counts[5] == kSteps * (kSteps * 4 + 1));
+        CHECK(counts[0] == 0);
+        CHECK(counts[1] == 0);
+        CHECK(counts[2] == 0);
+        CHECK(counts[3] == 0);
+        CHECK(counts[4] == 0);
+    }
+}
+
 // GLASS SENDS ON WHAT IT DID NOT REFLECT, AND NOT MORE.
 //
 // A transmitting gaussian's body is the light that came through it, and the

@@ -115,6 +115,7 @@ target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="$
                            ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
                            ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive"
                            ATHENEA_LOBES_DIR="${CMAKE_CURRENT_BINARY_DIR}/lobes"
+                           ATHENEA_TX_DIR="${CMAKE_CURRENT_BINARY_DIR}/tx"
                            ATHENEA_TEST_MATERIALX_LIBRARIES="${ATHENEA_USD_ROOT}/libraries")
 # $ATHENEA_MATERIALX_ROOT is read once a process, so the case that sets it is
 # hidden from the discovery above and run here alone, with it set to a
@@ -334,6 +335,34 @@ add_test(NAME lobes_conversions_render_like_the_mesh
 set_tests_properties(lobes_conversions_render_like_the_mesh PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED lobes_clouds
+    LABELS gpe)
+
+# A TRANSFER RIGHT UNDER ANY SKY (task TX). The balls of tests/data/lobes on a
+# ground (tests/data/tx), the ball alone converted with --transfer twice: as
+# TX writes it and as the first transfer did (--transfer-cells 0); then a
+# hidden case of the USD tests draws both under two skies against the mesh
+# path traced, and holds TX to a bound and to doing better than the first.
+set(ATHENEA_TX_DIR ${CMAKE_CURRENT_BINARY_DIR}/tx)
+foreach(material paint chrome rubber glass)
+    foreach(mode tx first)
+        set(flags --transfer --bake-samples 256 --bake-extra 0 --prim /World/Ball)
+        if(mode STREQUAL "first")
+            list(APPEND flags --transfer-cells 0)
+        endif()
+        add_test(NAME mesh2splat_tx_${material}_${mode}
+            COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/${material}.usda ${flags} --no-camera
+                    --resolution 192 -o ${ATHENEA_TX_DIR}/${material}_${mode}.usdc)
+        set_tests_properties(mesh2splat_tx_${material}_${mode} PROPERTIES
+            ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+            FIXTURES_SETUP tx_clouds
+            LABELS gpe)
+    endforeach()
+endforeach()
+add_test(NAME tx_conversions_render_like_the_mesh
+    COMMAND athenea_usd_tests "[tx_conversion]")
+set_tests_properties(tx_conversions_render_like_the_mesh PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED tx_clouds
     LABELS gpe)
 
 # WHAT A CONVERTED SURFACE COVERS: the planes of tests/data/coverage converted

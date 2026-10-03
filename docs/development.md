@@ -899,6 +899,20 @@ nothing occludes. The polish keeps the map's own sun and takes the share that
 does not get through back out as an analytic GGX lobe, clamped at zero, so a
 metal is shadowed too. A cloud with no transfer gets the sun back unshadowed.
 
+**The TX transfer's cells** (docs/decisions.md, task TX). `BakePoints::cellSide`
+16 or 32 (`path.transfer` 2 or 3 in the kernel) replaces the 64 rays with one
+a cell of a 16 x 16 or 32 x 32 octahedral grid over the whole sphere, the far
+half included -- `pathOccluded` starts a ray below the surface from its far
+side -- written four words a plane, a plane for every 128 cells, as they are
+traced, so nothing the size of the grid sits in registers
+(`technique::transferPlanes` says how many planes follow the coefficients).
+`m2sTransferInto` writes them as 8 or 32 ints a gaussian, and every reader
+tells the layout by that count (`GpuSplats::shadowWords`, the frame's
+`shadowBits` parameter). `splat_relight` reads them through `splatCellsOpen`
+(four cells bilinear, those behind an axis left out), `splatLobeOpen` (the
+lobe's centre and a ring at the angle its roughness spreads) and
+`splatOpenToward` (a light's direction).
+
 **Saying otherwise about a prim.** The Cryptomatte id a gaussian carries is
 also a selection -- everything that came from one prim -- so
 `render::SplatOverride` is a row keyed on it: metallic, roughness,

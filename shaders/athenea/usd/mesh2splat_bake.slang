@@ -20,6 +20,11 @@
 // the file keeps them: nine floats of the direct half, twenty-seven of the
 // indirect, two ints of bits.
 //
+// With `cells` (task TX) the bake kept 256 or 1024 bits over the whole
+// sphere, a float4 of four words for every 128 after the coverage, and the
+// file keeps them as eight or thirty-two ints; and with `coefficients` 16 the
+// two halves are degree 3, sixteen and forty-eight.
+//
 // `counts[0]` counts the gaussians the bake found a surface under: the one
 // number that crosses back, for the log.
 module mesh2splat_bake;
@@ -32,14 +37,14 @@ struct BakeParams {
     uint dc0;            ///< the constant term's first field
     uint restBase;       ///< the harmonics' first field
     uint indirect;       ///< the transfer keeps its indirect half
-    uint pad0;
+    uint cells;          ///< words a gaussian of a TX grid, 8 or 32, in entries of four after the coverage; 0 the first two
 };
 
 StructuredBuffer<float4>     baked;
 RWStructuredBuffer<float>    records;
-RWStructuredBuffer<float>    direct;     // 9 a gaussian
-RWStructuredBuffer<float>    bounced;    // 27 a gaussian, where `indirect`
-RWStructuredBuffer<int>      shadowBits; // 2 a gaussian
+RWStructuredBuffer<float>    direct;     // `coefficients` a gaussian
+RWStructuredBuffer<float>    bounced;    // 3 x `coefficients` a gaussian, where `indirect`
+RWStructuredBuffer<int>      shadowBits; // 2 a gaussian, or `cells`
 RWStructuredBuffer<uint>     counts;
 ConstantBuffer<BakeParams>   bake;
 
@@ -77,22 +82,32 @@ void m2sTransferInto(uint3 tid: SV_DispatchThreadID) {
     if (k >= bake.count) {
         return;
     }
-    const uint coefficients = 9;
-    const uint first = k * (coefficients + 2);
+    const uint coefficients = bake.coefficients;
+    const uint entries = coefficients + 1u + (bake.cells != 0 ? bake.cells / 4u : 1u);
+    const uint first = k * entries;
     const bool found = baked[first + coefficients].w > 0.0;
     if (!found) {
         // A transfer of nothing is black under every sky: transparent
         // instead, as the radiance bake does, and its arrays zero.
         records[k * bake.perRecord + bake.opacity] = 0.0;
     }
-    const float4 bits = baked[first + coefficients + 1];
-    shadowBits[k * 2 + 0] = found ? asint(bits.x) : 0;
-    shadowBits[k * 2 + 1] = found ? asint(bits.y) : 0;
+    if (bake.cells != 0) {
+        for (uint plane = 0; plane < bake.cells / 4u; ++plane) {
+            const uint4 words = asuint(baked[first + coefficients + 1 + plane]);
+            [unroll] for (uint w = 0; w < 4; ++w) {
+                shadowBits[k * bake.cells + plane * 4 + w] = found ? asint(words[w]) : 0;
+            }
+        }
+    } else {
+        const float4 bits = baked[first + coefficients + 1];
+        shadowBits[k * 2 + 0] = found ? asint(bits.x) : 0;
+        shadowBits[k * 2 + 1] = found ? asint(bits.y) : 0;
+    }
     for (uint c = 0; c < coefficients; ++c) {
         const float4 value = baked[first + c];
-        direct[k * 9 + c] = found ? value.w : 0.0;
+        direct[k * coefficients + c] = found ? value.w : 0.0;
         if (bake.indirect != 0) {
-            const uint into = k * 27 + c * 3;
+            const uint into = k * coefficients * 3 + c * 3;
             bounced[into] = found ? value.x : 0.0;
             bounced[into + 1] = found ? value.y : 0.0;
             bounced[into + 2] = found ? value.z : 0.0;

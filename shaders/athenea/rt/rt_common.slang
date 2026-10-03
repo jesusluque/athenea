@@ -84,7 +84,8 @@ public struct RtParams {
     public uint  transferWords;
     public uint  transferCount;
     public uint  transferIndirect;
-    /// 1 where the cloud carries which ways out are open (`shadowBits`).
+    /// The words a gaussian of which ways out are open (`shadowBits`), 0 where
+    /// the cloud carries none: 2 for 8 x 8 cells, 8 or 32 for a TX transfer.
     public uint  shadowBits;
     /// The index a transmitting gaussian bends the sky by; 0 bends nothing.
     /// What it does and what it cannot is in splat_relight.slang.

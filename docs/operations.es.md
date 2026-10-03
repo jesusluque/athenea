@@ -408,6 +408,7 @@ receta es §3.1.
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
 | `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó |
+| `--transfer-cells` | 0, 16 o 32 | 16 | con `--transfer`: celdas por lado de la rejilla de direcciones abiertas sobre la esfera entera (256 o 1024 bits por gaussiana); 0 escribe la de 8 x 8 del primer transfer sobre la mitad a la que mira la gaussiana |
 | `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake` |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
 | `--default-lights` | flag | apagado | un dome y un sol para el bake, en una escena sin luces |
@@ -1055,7 +1056,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:ior` | float | `0` |
 | `primvars:athenea:splat:transferDirect` | float[] ‹9 por gaussiana› | — |
 | `primvars:athenea:splat:transferIndirect` | float[] ‹27 por gaussiana› | — |
-| `primvars:athenea:splat:shadowBits` | int[] ‹2 por gaussiana› | — |
+| `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 o 32 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
@@ -1093,6 +1094,13 @@ de la nube, puesto donde el rayo del bake en esa dirección salió de la escena.
 Es lo que sombrea el sol que un frame saca del cielo; sólo se lee en una nube
 que lleva también `transferDirect`, y sin él el transfer sombrea el sol de
 forma suave.
+Ocho o treinta y dos enteros por gaussiana son los del transfer TX
+(`--transfer-cells` 16 o 32): una rejilla de 16 x 16 o 32 x 32 sobre la esfera
+entera, trazada también la mitad de detrás de la superficie. El número es lo
+que dice cuál; nada más lo dice. Con ellos un frame sombrea el sol y cualquier
+luz que sea una dirección, y estrecha cada reflejo -- el de la base y el del
+coat -- por la parte de su propio lóbulo que los bits dejan abierta, en vez de
+por un número para todo el hemisferio.
 `thinWalled` es distinto de cero donde la gaussiana vino de un vidrio de pared
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077

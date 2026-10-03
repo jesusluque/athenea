@@ -42,6 +42,8 @@ void glassEnergyCheck(uint3 tid: SV_DispatchThreadID) {
             s.lobes = plainLobes();
             s.thinWalled = false;
             s.hasShadowBits = false;
+            s.cellWords = 0u;
+            s.cellBase = 0u;
             s.albedo = float3(1.0);
             s.metallic = 0.0;
             s.roughness = roughness;

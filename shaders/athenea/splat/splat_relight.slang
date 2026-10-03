@@ -74,6 +74,13 @@ public struct SplatSurface {
     /// What the sun is shadowed by when they are there (`splatSunOpen`).
     public bool   hasShadowBits;
     public uint2  shadowBits;
+    /// THE OPEN DIRECTIONS OF A TX TRANSFER (docs/decisions.md, task TX):
+    /// `cellWords` words a gaussian of a finer grid over the whole sphere --
+    /// 8 for 16 x 16 cells, 32 for 32 x 32 -- starting at `cellBase` in the
+    /// buffer the caller passes beside the transfer. 0 where the cloud carries
+    /// the 64 bits above or none, and then nothing below reads them.
+    public uint   cellWords;
+    public uint   cellBase;
     /// A THIN WALL: a glass sheet the conversion made as transparent as the
     /// sheet is (its opacity is what the sheet reflects head on), so the
     /// blend is its transmission and what it shades is its reflection alone.
@@ -498,6 +505,97 @@ public float splatSunOpen(SplatSurface s, StructuredBuffer<uint> transfer, float
     return weight > 0.0 ? open / weight : 1.0;
 }
 
+/// THE GRID A TX TRANSFER'S BITS STAND FOR: 16 x 16 octahedral cells over
+/// the whole sphere for eight words a gaussian, 32 x 32 for thirty-two.
+public uint splatCellSide(uint words) {
+    return words >= 32u ? 32u : 16u;
+}
+
+bool splatCellBit(SplatSurface s, StructuredBuffer<uint> cellBits, uint index) {
+    return ((cellBits[s.cellBase + (index >> 5u)] >> (index & 31u)) & 1u) != 0u;
+}
+
+/// HOW OPEN ONE DIRECTION IS, out of a TX transfer's bits: the four cells
+/// around it on the octahedral grid, weighed bilinearly, as the sun's 64 bits
+/// are read (`splatSunOpen`). A cell whose centre lies behind `axis` is left
+/// out of the weights -- its ray left from the far side of the surface, where
+/// a solid's own body stands -- so a direction grazing the horizon reads the
+/// cells above it rather than the body below; a zero `axis` keeps every cell.
+/// -1 where no cell was weighed at all.
+public float splatCellsOpen(SplatSurface s, StructuredBuffer<uint> cellBits, float3 d, float3 axis) {
+    const uint side = splatCellSide(s.cellWords);
+    const float sideF = float(side);
+    const float2 at = octEncode(d) * sideF - 0.5;
+    const float2 lo = floor(at);
+    const float2 f = at - lo;
+    const bool judged = dot(axis, axis) > 0.0;
+    float open = 0.0;
+    float weight = 0.0;
+    [unroll] for (uint k = 0; k < 4; ++k) {
+        const int2 cell = clamp(int2(lo) + int2(k & 1, k >> 1), int2(0), int2(int(side) - 1));
+        const float w = ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
+        if (w <= 0.0) {
+            continue;
+        }
+        if (judged && dot(octDecode((float2(cell) + 0.5) / sideF), axis) <= 0.0) {
+            continue;
+        }
+        open += w * (splatCellBit(s, cellBits, uint(cell.y) * side + uint(cell.x)) ? 1.0 : 0.0);
+        weight += w;
+    }
+    return weight > 0.0 ? open / weight : -1.0;
+}
+
+/// HOW MUCH OF A REFLECTION'S LOBE SEES THE SKY, out of the same bits.
+///
+/// The Lagarde fit narrows a reflection by how much of the whole hemisphere
+/// is open, one number for every direction: a door's mirror read the open
+/// sky where the ground stands in it. Here the lobe itself is asked -- its
+/// centre and a ring of six around it at the angle GGX reflects about half
+/// its energy within (twice the half-vector's `atan(alpha)`, a little under),
+/// a third of the weight on the centre and the rest on the ring. A ring
+/// narrower than half a cell would read the centre's cells again, and is
+/// left out. Where nothing was judged (a lobe wholly behind `axis`) it is
+/// open, as the sun is at the horizon: the cosine has closed it already.
+public float splatLobeOpen(SplatSurface s, StructuredBuffer<uint> cellBits, float3 m, float roughness,
+                           float3 axis) {
+    const float alpha = max(roughness * roughness, 1.0e-3);
+    const float spread = min(1.4 * atan(alpha), 1.2);
+    const float centre = splatCellsOpen(s, cellBits, m, axis);
+    const float halfCell = 3.14159265358979 / float(splatCellSide(s.cellWords) * 2u);
+    if (spread < halfCell) {
+        return centre >= 0.0 ? centre : 1.0;
+    }
+    const float3 helper = abs(m.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+    const float3 t = normalize(cross(helper, m));
+    const float3 b = cross(m, t);
+    const float c = cos(spread);
+    const float sn = sin(spread);
+    float open = centre >= 0.0 ? centre / 3.0 : 0.0;
+    float weight = centre >= 0.0 ? 1.0 / 3.0 : 0.0;
+    [unroll] for (uint k = 0; k < 6; ++k) {
+        const float phi = float(k) * (3.14159265358979 / 3.0);
+        const float3 d = normalize(m * c + (t * cos(phi) + b * sin(phi)) * sn);
+        const float o = splatCellsOpen(s, cellBits, d, axis);
+        if (o >= 0.0) {
+            open += o / 9.0;
+            weight += 1.0 / 9.0;
+        }
+    }
+    return weight > 0.0 ? open / weight : 1.0;
+}
+
+/// THE SUN, OR ANY LIGHT THAT IS A DIRECTION, out of a TX transfer's bits,
+/// and the old ways where the cloud carries those instead.
+public float splatOpenToward(SplatSurface s, StructuredBuffer<uint> transfer, StructuredBuffer<uint> cellBits,
+                             float3 direction) {
+    if (s.cellWords >= 8u) {
+        const float open = splatCellsOpen(s, cellBits, direction, s.normal);
+        return open >= 0.0 ? open : 1.0;
+    }
+    return splatSunOpen(s, transfer, direction);
+}
+
 /// WHERE THE TRANSMITTED HALF LOOKS, WITH AN INDEX.
 ///
 /// Snell at the gaussian's own normal, entering: the normal is already turned
@@ -619,7 +717,8 @@ float3 transmittedShare(SplatSurface s, float nDotV) {
 
 float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
                    StructuredBuffer<uint> envTexels, StructuredBuffer<float4> envSh, uint envBaseSide,
-                   StructuredBuffer<float4> envSun, StructuredBuffer<uint> transfer, bool withIndirect) {
+                   StructuredBuffer<float4> envSun, StructuredBuffer<uint> transfer,
+                   StructuredBuffer<uint> cellBits, bool withIndirect) {
     const float nDotV = max(dot(s.normal, wo), 1.0e-4);
     const float3 mirror = reflect(-wo, s.normal);
     const float3 body = s.lit ? float3(0.0) : s.albedo * (1.0 - s.metallic);
@@ -649,7 +748,7 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
         const float4 disc = envSun[dome * 2];
         const float3 irradiance = disc.w > 0.0 ? envSun[dome * 2 + 1].rgb : float3(0.0);
         const float cosine = max(dot(s.normal, disc.xyz), 0.0);
-        const float sunShare = disc.w > 0.0 ? splatSunOpen(s, transfer, disc.xyz) : 1.0;
+        const float sunShare = disc.w > 0.0 ? splatOpenToward(s, transfer, cellBits, disc.xyz) : 1.0;
         front += irradiance * (cosine * sunShare * kOverPiSun);
         // The translucent half faces the other way, and a transfer was
         // measured over the hemisphere the normal faces alone: what arrives
@@ -675,8 +774,12 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
         const float3 seen = s.hasReflection
                                 ? s.reflectionColour
                                 : envRadiance(envTexels, dome, mirror, s.roughness, envBaseSide);
+        // A TX transfer asks its lobe which of its directions are open; the
+        // first transfer had one number for the whole hemisphere.
+        const bool cells = s.cellWords >= 8u;
         const float narrowed =
             s.reflectionTraced ? 1.0
+            : cells            ? splatLobeOpen(s, cellBits, mirror, s.roughness, s.normal)
                                : specularOpenness(nDotV, splatOpenness(s, transfer), s.roughness);
         // THE SUN IN THE POLISH. The prefiltered map kept its disc, so what
         // the polish reads carries the sun whether or not anything stands in
@@ -701,6 +804,7 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
                                         : envRadiance(envTexels, dome, mirror, s.lobes.coatRoughness, envBaseSide);
             const float coatNarrowed =
                 s.reflectionTraced ? 1.0
+                : cells            ? splatLobeOpen(s, cellBits, mirror, s.lobes.coatRoughness, s.normal)
                                    : specularOpenness(nDotV, splatOpenness(s, transfer), s.lobes.coatRoughness);
             const float3 coatSun = s.hasReflection
                                        ? float3(0.0)
@@ -804,7 +908,7 @@ public float3 relitSplat(SplatSurface s, float3 wo, StructuredBuffer<LightRecord
                          uint shadowBase, uint shadowLights, StructuredBuffer<uint> envTexels,
                          StructuredBuffer<float4> envSh, StructuredBuffer<uint> envOfLight,
                          uint envLights, uint envBaseSide, StructuredBuffer<float4> envSun,
-                         StructuredBuffer<uint> transfer, bool withIndirect) {
+                         StructuredBuffer<uint> transfer, StructuredBuffer<uint> cellBits, bool withIndirect) {
     // A baked body starts from the light it already carries -- its emission
     // in it; an albedo starts from what it gives off by itself and gathers.
     float3 lit = s.lit ? s.albedo : s.emission;
@@ -819,7 +923,7 @@ public float3 relitSplat(SplatSurface s, float3 wo, StructuredBuffer<LightRecord
             // A dome is everywhere and nowhere: no distance to fade over.
             const uint dome = k < envLights ? envOfLight[k] : kEnvNone;
             lit += shadowTint(light, through, 0.0) *
-                   relitByDome(s, wo, light, dome, envTexels, envSh, envBaseSide, envSun, transfer,
+                   relitByDome(s, wo, light, dome, envTexels, envSh, envBaseSide, envSun, transfer, cellBits,
                                withIndirect);
             continue;
         }
