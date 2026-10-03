@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <memory>
 #include <optional>
@@ -8301,6 +8302,87 @@ TEST_CASE("a UsdPreviewSurface at opacity 0 keeps its specular in transparent mo
     REQUIRE(rasterGone);
     std::printf("  raster, transparent at opacity 0 against the back alone: relMSE %.2e\n", rasterGone->relMse);
     CHECK(rasterGone->relMse < 1e-3);
+}
+
+namespace {
+
+/// A stage written from `text`, rendered by `technique` at w x h with the
+/// settings `configure` gives, its colour on the device.
+gpu::Buffer renderStageText(const std::string& name, const std::string& text, const char* technique, uint32_t w,
+                            uint32_t h, const std::function<void(usd::StageRenderer&)>& configure = {}) {
+    const fs::path path = scratch(name);
+    {
+        std::ofstream out(path);
+        out << text;
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    if (configure) configure(**renderer);
+    auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+    if (!image) FAIL(image.error().toString());
+    gpu::BufferDesc desc;
+    desc.bytes = image->rgba.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto made = gpu::Buffer::create(*::athenea::test::gpuOrNull()->device, desc, image->rgba.data());
+    REQUIRE(made);
+    return std::move(*made);
+}
+
+}   // namespace
+
+// A WHITE FURNACE FOR TRANSPARENT OPACITY. Twenty clear mirror sheets one
+// behind the other (UsdPreviewSurface at opacity 0, transparent by default,
+// metallic and white) under a dome of radiance one: nothing in it absorbs
+// and nothing emits, so it returns at most what arrives. The specification
+// keeps each sheet's specular whole; taken as (1 - opacity) of what is behind
+// as well, each sheet reflected and passed everything, and the stack read
+// 206 in the path tracer. What passes is what the sheet does not reflect.
+TEST_CASE("a stack of transparent sheets returns no more light than a dome of radiance one gives it",
+          "[usd][gpu][mesh][materials][opacity][path]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    std::ostringstream out;
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+           "def Mesh \"Sheets\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+           "    uniform bool doubleSided = 1\n    int[] faceVertexCounts = [";
+    for (int i = 0; i < 20; ++i) out << (i ? ", " : "") << 4;
+    out << "]\n    int[] faceVertexIndices = [";
+    for (int i = 0; i < 80; ++i) out << (i ? ", " : "") << i;
+    out << "]\n    point3f[] points = [";
+    for (int i = 0; i < 20; ++i) {
+        const double z = -0.05 * i;
+        out << (i ? ", " : "") << "(-1, -1, " << z << "), (1, -1, " << z << "), (1, 1, " << z << "), (-1, 1, " << z
+            << ")";
+    }
+    out << "]\n    uniform token subdivisionScheme = \"none\"\n    rel material:binding = </Looks/Sheet>\n}\n"
+           "def Scope \"Looks\"\n{\n    def Material \"Sheet\"\n    {\n"
+           "        token outputs:surface.connect = </Looks/Sheet/Surface.outputs:surface>\n"
+           "        def Shader \"Surface\"\n        {\n"
+           "            uniform token info:id = \"UsdPreviewSurface\"\n"
+           "            color3f inputs:diffuseColor = (1, 1, 1)\n"
+           "            float inputs:metallic = 1\n            float inputs:roughness = 0.4\n"
+           "            float inputs:opacity = 0\n"
+           "            token outputs:surface\n        }\n    }\n}\n"
+           "def DomeLight \"Dome\"\n{\n    float inputs:intensity = 1\n}\n"
+           "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+           "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+           "    float2 clippingRange = (0.1, 1000)\n"
+           "    double3 xformOp:translate = (0, 0, 4)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    const uint32_t w = 96, h = 72;
+    const gpu::Buffer frame = renderStageText("transparent_furnace.usda", out.str(), "rt", w, h,
+                                              [](usd::StageRenderer& r) {
+                                                  r.setPathSamples(16);
+                                                  r.setPathTotal(64);
+                                              });
+    // The sheets' middle.
+    auto stats = render::imageStats(*gpu->library, frame, w, h, 38, 26, 58, 46);
+    REQUIRE(stats);
+    std::printf("  twenty transparent mirror sheets under a white dome: mean %.3f (at most 1)\n", stats->mean[0]);
+    CHECK(stats->mean[0] < 1.05);
+    CHECK(stats->mean[0] > 0.5);
 }
 
 // UsdLux ShadowAPI on a cloud's shadow: `shadow:color` tints what the cloud

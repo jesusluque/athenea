@@ -8989,3 +8989,29 @@ Not done: a gaussian keeps no shading normal of its own. Without
 so the relief a map paints is in the bake's light and nowhere else; turning
 the disc instead opens the surface where the relief is steep. Storing the
 shading normal beside the frame, skinned with it, is the next change.
+
+## A transparent surface passes what it does not reflect
+
+UsdPreviewSurface's default `opacityMode` keeps the specular whole at any
+opacity, and the path tracer drew what is behind at `(1 - opacity)` as well:
+a surface that reflected and passed everything. One window gains its few per
+cent; a stack gains them once a sheet. Blender writes a feather card's alpha
+that way, and the sparrow's belly is dozens of cards deep: with Blender's
+quarter-metallic feathers it read 5.6 against a shop wall of 0.3, with single
+pixels at 768 (the original engine, d922ad5, read 2.1; the merge only let
+shadow rays through cut-outs, which is right, and more light reached the
+stack). Twenty clear white metal sheets under a dome of radiance one -- a
+white furnace, which returns at most one -- read 218.5.
+
+A clear glass sheet passes `1 - F`. `transparentPasses` (PathTracer.cpp)
+takes the directional albedo of every lobe but the diffuse ones, which the
+opacity already scales, off the throughput of a sample the lot passed. In
+expectation that is `specular + opacity diffuse + (1 - opacity)(1 - rho_s)
+behind`, which at opacity 0 is `rho_s + (1 - rho_s)`. The furnace reads
+1.021; the uncorrected sparrow's belly 0.34 (wall 0.3).
+
+`athenea_usd_tests` "a stack of transparent sheets returns no more light than
+a dome of radiance one gives it": 218.5 before, 1.021 after.
+
+Not done: a shadow ray passes a transparent surface by `(1 - opacity)` alone,
+a lot with no weight; what its specular takes off is not.
