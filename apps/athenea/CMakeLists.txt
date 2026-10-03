@@ -5,6 +5,7 @@ add_executable(athenea
     src/CmdRender.cpp
     src/CmdStage.cpp
     src/CmdDecimate.cpp
+    src/CmdMigrate.cpp
     src/CmdAofx.cpp
     src/CmdMesh2Splat.cpp
     src/CmdVisibility.cpp

@@ -233,7 +233,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--technique` | `raster` \| `rt` | `raster` | the delegate's `athenea:technique` |
 | `--visibility` | `automatic` \| `raster` \| `rays` \| `bvh` | `automatic` | how meshes are seen |
 | `--path-samples` | integer | `1` | rt: paths a pixel each pass |
-| `--path-bounces` | integer | `1` | rt: bounces after the first hit |
+| `--path-bounces` | integer | `1` | rt: bounces after the first hit; going through a glass (into it, out of it, inside it) is not one, up to 8 a path |
 | `--path-total` | integer | `1` | rt: paths a pixel the image is drawn until it holds |
 | `--denoise` | flag | off | rt: denoise once the total is held |
 | `--default-lights` | flag | off | a dome and a sun in the session layer, for a stage with none |
@@ -285,7 +285,7 @@ Present only in a build with the viewer. The window's controls are in §5.
 | `--light-samples` | integer | `1` | 1 is interactive |
 | `--choose-lights` | flag | off | one light a sample, chosen by power |
 | `--path-samples` | integer | `1` | rt: paths a pixel each frame |
-| `--path-bounces` | integer | `4` | |
+| `--path-bounces` | integer | `4` | going through a glass is not a bounce, up to 8 a path |
 | `--path-total` | integer | `64` | where the frame counts as converged, and is denoised |
 | `--denoise` | flag | off | |
 | `--no-default-lights` | flag | default lights on | a stage with no lights stays unlit |
@@ -447,6 +447,56 @@ mean.
 ```sh
 athenea compare cloud.exr mesh.exr
 athenea compare furnace.exr --window 192 192 320 320
+```
+
+### 2.12 `athenea migrate` — lucabRTrender's files under athenea's names
+
+athenea is lucabRTrender renamed, and a file written before the rename names
+nothing this engine reads: its schemas, its primvars, its settings and its
+`.lrtc` clouds are ignored. `migrate` writes a copy under the new names; the
+input is never written to.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `input` | path, required | — | `.usda`, `.usdc`, `.usd`, `.usdz` or `.lrtc` |
+| `-o`, `--output` | path, required | — | the same kind of file: a layer as `.usda`, `.usdc` or `.usd` (a `.usd` keeps the input's encoding), a package as `.usdz`, a `.lrtc` as `.athc`; never the input |
+| `-r`, `--recursive` | flag | off | also migrates every layer, package and `.lrtc` the file names -- sublayers, references, payloads, value clips, asset-valued attributes -- that lies under `--root`, each to the same place under the output's directory |
+| `--root` | directory | the input's directory | what `--recursive` may copy; it must hold the input, and may not be the output's directory |
+| `-q`, `--quiet` | flag | off | prints the warnings and the totals only |
+
+What is renamed, layer by layer, without composing the stage (each layer
+keeps its own opinions, variants included):
+
+| Before | After |
+|---|---|
+| `LrtSplatEditAPI`, `LrtSplatLightingAPI`, `LrtSplatSkinningAPI`, `LrtPointStyleAPI`, `LrtStreamedAssetAPI`, `LrtSplatVisibilityAPI`, `LrtSplatCryptomatteAPI`, `LrtVolumeAPI` in `apiSchemas` | `Athenea…API` |
+| any property whose name has an `lrt` component: `primvars:lrt:splat:*`, `lrt:*` render settings, `outputs:lrt:*` | the same with `athenea`; value, metadata, time samples and connections kept |
+| a connection or relationship target naming such a property | the renamed property |
+| `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
+| `customData` and `customLayerData` keys with an `lrt` component | the same with `athenea` |
+| an asset path ending `.lrtc` | `.athc` |
+| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 2, no normals); the payload is copied as it is |
+
+Asset paths. A relative path to a file that is not copied (a texture, a layer
+without `--recursive`, one outside `--root`) is made absolute when the output
+is in another directory, so it still resolves (`anchored` in the report).
+With `--recursive`, a path to a migrated copy names the copy: relative as it
+was, or absolute to where the copy is. Inside a `.usdz` every path stays
+relative and a `.lrtc` is converted and renamed in the package; the files keep
+their order, so the first is still the root layer.
+
+Every rename is printed, one a line (`schema`, `property`, `target`, `value`,
+`metadata`, `asset`, `anchored`, `file`, `warning`), and a total. A file
+already migrated is written unchanged and reports no rename. A `warning` is
+something left as it was: a property whose new name is already authored
+beside it (the new one wins), a `.lrtc` the copy names that does not exist
+yet (run `migrate` on it), a `.lrtc` in an expression or a clip template.
+USD does not keep a `.usda`'s `#` comments.
+
+```sh
+athenea migrate old/shot.usda -o new/shot.usda
+athenea migrate ~/assets/Sparrow/FilmGs.usda -o ~/migrated/FilmGs.usda --recursive
+athenea migrate cloud.lrtc -o cloud.athc
 ```
 
 ## 3. Tasks
@@ -798,7 +848,7 @@ found and does not.
 | `athenea:lightSamples` | int | `1` | samples per light |
 | `athenea:chooseLights` | bool | `false` | one light a sample, chosen by power |
 | `athenea:pathSamples` | int | `1` | rt: paths a pixel each pass |
-| `athenea:pathBounces` | int | `1` | rt: bounces after the first hit |
+| `athenea:pathBounces` | int | `1` | rt: bounces after the first hit; up to 8 crossings of a glass a path are not counted |
 | `athenea:pathTotal` | int | `1` | rt: paths a pixel to converge to |
 | `athenea:pathAdaptive` | bool | `false` | stop a pixel once its error is low enough |
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |
@@ -1209,6 +1259,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea mesh2splat` | a USD stage holding the cloud |
 | `athenea visibility` | the cloud's file, edited in place or copied |
 | `athenea aofx run` | one EXR |
+| `athenea migrate` | a copy of the stage, package or cloud; with `--recursive`, of what it names too |
 
 ### 8.4 The scripts
 

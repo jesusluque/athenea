@@ -235,7 +235,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--technique` | `raster` \| `rt` | `raster` | el `athenea:technique` del delegate |
 | `--visibility` | `automatic` \| `raster` \| `rays` \| `bvh` | `automatic` | cómo se ven las mallas |
 | `--path-samples` | entero | `1` | rt: caminos por píxel en cada pasada |
-| `--path-bounces` | entero | `1` | rt: rebotes tras el primer impacto |
+| `--path-bounces` | entero | `1` | rt: rebotes tras el primer impacto; atravesar un vidrio (entrar en él, salir de él, dentro de él) no es uno, hasta 8 por camino |
 | `--path-total` | entero | `1` | rt: caminos por píxel hasta los que se dibuja |
 | `--denoise` | flag | apagado | rt: denoise cuando alcanza el total |
 | `--default-lights` | flag | apagado | un dome y un sol en la capa de sesión, para una escena sin luces |
@@ -288,7 +288,7 @@ están en §5.
 | `--light-samples` | entero | `1` | 1 es interactivo |
 | `--choose-lights` | flag | apagado | una luz por muestra, elegida por potencia |
 | `--path-samples` | entero | `1` | rt: caminos por píxel y frame |
-| `--path-bounces` | entero | `4` | |
+| `--path-bounces` | entero | `4` | atravesar un vidrio no es un rebote, hasta 8 por camino |
 | `--path-total` | entero | `64` | dónde el frame cuenta como convergido, y se denoisea |
 | `--denoise` | flag | apagado | |
 | `--no-default-lights` | flag | luces por defecto encendidas | una escena sin luces se queda a oscuras |
@@ -453,6 +453,57 @@ una media.
 ```sh
 athenea compare cloud.exr mesh.exr
 athenea compare furnace.exr --window 192 192 320 320
+```
+
+### 2.12 `athenea migrate` — los ficheros de lucabRTrender con los nombres de athenea
+
+athenea es lucabRTrender con otro nombre, y un fichero escrito antes del cambio
+no nombra nada de lo que este motor lee: se ignoran sus esquemas, sus primvars,
+sus settings y sus nubes `.lrtc`. `migrate` escribe una copia con los nombres
+nuevos; nunca escribe en la entrada.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `input` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd`, `.usdz` o `.lrtc` |
+| `-o`, `--output` | ruta, obligatoria | — | la misma clase de fichero: una capa como `.usda`, `.usdc` o `.usd` (un `.usd` conserva la codificación de la entrada), un paquete como `.usdz`, un `.lrtc` como `.athc`; nunca la entrada |
+| `-r`, `--recursive` | flag | no | migra también cada capa, paquete y `.lrtc` que el fichero nombra -- sublayers, references, payloads, value clips, atributos de tipo asset -- y que esté bajo `--root`, cada uno al mismo sitio bajo el directorio de la salida |
+| `--root` | directorio | el de la entrada | lo que `--recursive` puede copiar; debe contener la entrada, y no puede ser el directorio de la salida |
+| `-q`, `--quiet` | flag | no | imprime solo los avisos y los totales |
+
+Qué se renombra, capa a capa, sin componer la escena (cada capa conserva sus
+propias opiniones, variantes incluidas):
+
+| Antes | Después |
+|---|---|
+| `LrtSplatEditAPI`, `LrtSplatLightingAPI`, `LrtSplatSkinningAPI`, `LrtPointStyleAPI`, `LrtStreamedAssetAPI`, `LrtSplatVisibilityAPI`, `LrtSplatCryptomatteAPI`, `LrtVolumeAPI` en `apiSchemas` | `Athenea…API` |
+| toda propiedad cuyo nombre tenga un componente `lrt`: `primvars:lrt:splat:*`, los render settings `lrt:*`, `outputs:lrt:*` | lo mismo con `athenea`; se conservan valor, metadatos, time samples y conexiones |
+| un destino de conexión o de relación que nombra una de esas propiedades | la propiedad renombrada |
+| `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
+| claves de `customData` y `customLayerData` con un componente `lrt` | lo mismo con `athenea` |
+| una ruta de asset que acaba en `.lrtc` | `.athc` |
+| un `.lrtc` (`LRTC`, versión 1) | un `.athc` (`ATHC`, versión 2, sin normales); el contenido se copia tal cual |
+
+Rutas de asset. Una ruta relativa a un fichero que no se copia (una textura,
+una capa sin `--recursive`, una fuera de `--root`) se hace absoluta cuando la
+salida está en otro directorio, para que siga resolviendo (`anchored` en el
+informe). Con `--recursive`, una ruta a una copia migrada nombra la copia:
+relativa como lo era, o absoluta hacia donde está la copia. Dentro de un
+`.usdz` toda ruta sigue siendo relativa y un `.lrtc` se convierte y se
+renombra dentro del paquete; los ficheros conservan su orden, así que el
+primero sigue siendo la capa raíz.
+
+Cada renombrado se imprime, uno por línea (`schema`, `property`, `target`,
+`value`, `metadata`, `asset`, `anchored`, `file`, `warning`), y un total. Un
+fichero ya migrado se escribe sin cambios y no informa de ningún renombrado.
+Un `warning` es algo que se dejó como estaba: una propiedad cuyo nombre nuevo
+ya está escrito a su lado (gana la nueva), un `.lrtc` que la copia nombra y
+que aún no existe (ejecute `migrate` sobre él), un `.lrtc` en una expresión o
+en una plantilla de clips. USD no conserva los comentarios `#` de un `.usda`.
+
+```sh
+athenea migrate old/shot.usda -o new/shot.usda
+athenea migrate ~/assets/Sparrow/FilmGs.usda -o ~/migrated/FilmGs.usda --recursive
+athenea migrate cloud.lrtc -o cloud.athc
 ```
 
 ## 3. Tareas
@@ -810,7 +861,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:lightSamples` | int | `1` | muestras por luz |
 | `athenea:chooseLights` | bool | `false` | una luz por muestra, elegida por potencia |
 | `athenea:pathSamples` | int | `1` | rt: caminos por píxel y pasada |
-| `athenea:pathBounces` | int | `1` | rt: rebotes tras el primer impacto |
+| `athenea:pathBounces` | int | `1` | rt: rebotes tras el primer impacto; hasta 8 cruces de un vidrio por camino no cuentan |
 | `athenea:pathTotal` | int | `1` | rt: caminos por píxel hasta converger |
 | `athenea:pathAdaptive` | bool | `false` | parar un píxel cuando su error baja lo suficiente |
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
@@ -1233,6 +1284,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea mesh2splat` | una escena USD con la nube |
 | `athenea visibility` | el fichero de la nube, editado en el sitio o copiado |
 | `athenea aofx run` | un EXR |
+| `athenea migrate` | una copia de la escena, el paquete o la nube; con `--recursive`, también de lo que nombra |
 
 ### 8.4 Los scripts
 

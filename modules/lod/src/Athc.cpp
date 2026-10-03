@@ -394,6 +394,74 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     return ok();
 }
 
+Result<bool> migrateLrtc(const std::filesystem::path& in, const std::filesystem::path& out) {
+    std::error_code ec;
+    if (std::filesystem::equivalent(in, out, ec) ||
+        std::filesystem::weakly_canonical(in, ec) == std::filesystem::weakly_canonical(out, ec)) {
+        return Error(ErrorCode::InvalidArgument, out.string() + " is the input; a migration writes beside it");
+    }
+    auto file = platform::MappedFile::open(in);
+    if (!file) return std::move(file).error();
+    const std::span<const std::byte> bytes = file->bytes();
+    if (bytes.size() < kPage) {
+        return bad(in, "shorter than its header");
+    }
+    FileHeader h{};
+    std::memcpy(&h, bytes.data(), sizeof h);
+    // lucabRTrender's .lrtc is version 1 of this layout under another magic
+    // (its Lrtc.cpp differs from Athc.cpp at e8ef1eb in the magic alone): the
+    // header's last word was padding it always wrote as zero, which is
+    // version 2's `flags` saying no normals. Only the header changes.
+    constexpr char kOldMagic[4] = {'L', 'R', 'T', 'C'};
+    bool converted = false;
+    if (std::memcmp(h.magic, kOldMagic, 4) == 0) {
+        if (h.version != 1) {
+            return bad(in, ".lrtc version " + std::to_string(h.version) + "; lucabRTrender wrote version 1 only");
+        }
+        std::memcpy(h.magic, kMagic, 4);
+        h.version = kVersion;
+        h.flags = 0;
+        converted = true;
+    } else if (std::memcmp(h.magic, kMagic, 4) != 0) {
+        return bad(in, "neither LRTC nor ATHC magic");
+    }
+    std::filesystem::path partial = out;
+    partial += ".partial";
+    {
+        std::ofstream o(partial, std::ios::binary | std::ios::trunc);
+        if (!o) {
+            return Error(ErrorCode::IoFailure, "cannot write " + partial.string());
+        }
+        o.write(reinterpret_cast<const char*>(&h), sizeof h);
+        // The payload as it is, in slices: nothing in it is decoded.
+        constexpr uint64_t kSlice = uint64_t{64} << 20;
+        for (uint64_t at = sizeof h; at < bytes.size(); at += kSlice) {
+            const uint64_t n = std::min<uint64_t>(kSlice, bytes.size() - at);
+            o.write(reinterpret_cast<const char*>(bytes.data() + at), static_cast<std::streamsize>(n));
+        }
+        o.close();
+        if (!o) {
+            return Error(ErrorCode::IoFailure, "writing " + partial.string() + " failed");
+        }
+    }
+    // What was written must parse as any .athc does before it takes the name.
+    {
+        auto written = platform::MappedFile::open(partial);
+        if (!written) return std::move(written).error();
+        auto layout = parse(*written, out);
+        if (!layout) {
+            std::filesystem::remove(partial, ec);
+            return std::move(layout).error();
+        }
+    }
+    std::filesystem::rename(partial, out, ec);
+    if (ec) {
+        return Error(ErrorCode::IoFailure, "cannot move " + partial.string() + " to " + out.string() + ": " +
+                                             ec.message());
+    }
+    return converted;
+}
+
 Result<LodCloud> readAthc(gpu::Device& device, const std::filesystem::path& path) {
     auto file = platform::MappedFile::open(path);
     if (!file) return std::move(file).error();

@@ -8678,6 +8678,29 @@ is the host's, under `aofx.host.channels`; the bundle identifier prefix in
 be put side by side: same tag, same bundles loaded, and a bundle refused in
 one refused in the other with the same sentence.
 
+**What the move to aopenfx's host broke, and what was found by running it.**
+Three of `athenea_aofx_tests` crashed in the first render (Invert, the
+miscount refusal, the reporter's complaint), all at the same line:
+`EffectRunner`'s constructor in `Host.cpp` handed its base
+`capabilities()`, meaning this engine's free function -- but inside a class
+derived from `aofx::host::EffectRunner` that name finds the base's member
+`capabilities() const` first, which reads an `impl_` the base has not built
+yet. It compiled, and it was a null dereference on every render. Qualified as
+`aofx_host::capabilities()`; nothing in aopenfx was wrong, and no bundle
+changes. The registry's constructor has no such member to collide with.
+
+openFXplayer's installed bundles are refused, correctly: its tree pins
+aopenfx at ABI 25 and this host speaks 26. aopenfx's rule is one number and a
+mismatch is a refusal (`sdk/include/aofx/Version.h`), and its
+`HOST_CHANGES.md` for 26 names exactly this check -- *a bundle deliberately
+left at 25 is refused* -- because `Gpu` grew two virtuals and a 25 bundle
+would call through a vtable two slots short. So the host does not accept 25.
+`bundles openFXplayer built load in this host` skips, saying so and listing
+every refusal, only when *every* bundle is refused by the ABI gate naming this
+host's number -- the same treatment as a build with another toolchain. A
+loaded bundle, or any other reason, still fails it; rebuilding openFXplayer on
+aopenfx at 26 turns it back into a check.
+
 ## Embeddable: the same CMakeLists as a subdirectory of the compositor
 
 The compositor builds this engine inside its tree (`OFXP_LRT_DIR`), so the
@@ -9083,6 +9106,201 @@ Not done: a capture has no normal and keeps its axis. `CloudLoader::records`
 (a cloud on the device back into records) does not unpack normals, so a
 splat file decimated without a stage keeps none -- a splat file never has
 them. The merged levels carry the normal but still no PBR channels.
+## A ray that went into a glass meets its far face
+
+The converted pawn's glass head was measured against the mesh path traced
+beside it, and came out 0.050 relMSE from it -- worse than with no index at
+all. The cloud was not what was wrong. The path tracer culled back faces for
+every ray after the first hit (`traceNearestFrom`, both routes), which is what
+a single-sided mesh asks of a ray that bounced off it and wrong for one that
+went through: inside a solid glass ball the far face is a back face, so the
+ray left without bending again, and the ball showed the room bent once -- a
+thick lens drawn as one interface. The cloud, which bends at its far face
+(`rt_glass`), was being held to a picture no glass makes.
+
+Two measurements said so before anything was changed. The cloud's own single
+bend (no far face asked) against the old mesh: relMSE **0.0059**, head 0.050.
+And the mesh with its index raised to 2.0 looked as the cloud did at 1.5.
+
+**A crossing sees back faces.** A bounce ray is traced without culling when
+it goes through a glass (`throughGlass`): the vertex's material has a
+dielectric lobe, and the direction went through the surface it left
+(`dot(n, wi) < 0`, with `n` facing the side the path came from) or the
+dielectric was met from inside (`kFlagInside`), where a reflection stays in
+the glass. A ray that bounced off anything else still culls, as before -- a
+back face of a room seen from inside its walls included. The first version
+of this asked only whether the surface was met from inside, and the closed
+furnace (`athenea_technique_tests "a closed emissive shell*"`), a Lambert
+shell seen from inside, counted every bounce free and read its series 33 %
+high at one bounce.
+
+**A crossing is not a bounce.** With the far face found, a double-sided ball
+-- which was never culled -- showed what the default of one bounce does to a
+solid: the ray met the far face with nothing left to leave by, and the ball
+drew black. Crossings are free now, up to `kFreeCrossings` (8) a path, as a
+renderer keeps its transmission depth apart from its diffuse one. Next event
+estimation weighs a light against the material only where the path would go
+on in that direction (`pathGoesOn`): out of bounces, that is through a glass
+alone. A diffuse transmission (a translucent leaf) is a bounce as it was.
+
+| pawn, autoshop_01, the transferred cloud, 512 paths | whole relMSE | p99 | head relMSE (x 300-470, y 470-590) |
+|---|---|---|---|
+| against the mesh bent once (before) | 0.0498 | 0.771 | 1.32 |
+| against the mesh bent twice (now) | 0.0087 | 0.648 | 0.134 |
+
+The mesh's own frame changes only in the head (relMSE 0.031 between the two,
+p99 0.39) and takes 18.4 s where it took 15.2 (debug build, 768 x 768, 512
+paths): the paths through the ball are longer. The table "What the glass is
+worth" above was measured against the mesh bent once, and its halfway-out and
+rim rows say as much about that mesh as about the cloud.
+
+Test: `athenea_usd_tests "a glass ball bends at its far face*"` -- a smooth
+glass ball under a four-colour checker sky, single-sided against
+double-sided and one bounce against four, all one picture. Before: relMSE 3.6
+and 0.18.
+
+### What a glass cloud's far face lets out
+
+Held to the mesh bent twice, the cloud's head was the right picture a fifth
+too bright in blue and a few per cent in red and green (head means 0.322
+0.348 0.299 against 0.301 0.326 0.258). It bent at both faces and weighed
+only the first: what the near face does not reflect, tinted once by the
+colour mesh2splat folds the transmission colour into. The mesh's dielectric
+lobe reflects its Fresnel share at the far face too, and tints what crosses
+it again -- a ball's yellow is the tint squared.
+
+`SplatSurface::exitThrough` carries both now, from `rt_shade` where the far
+face is found: `1 - F` at the exit (glass to air, at the angle the ray meets
+it) times the colour once more, as much as the gaussian transmits. Past the
+critical angle nothing leaves, the turned ray is all the cloud has, and it
+keeps its whole weight. Where no far face is found -- the rasteriser, the
+hardware route -- it is one.
+
+| pawn head, against the mesh bent twice | relMSE | p99 | means |
+|---|---|---|---|
+| one face weighed (before) | 0.134 | 2.59 | 0.322 0.348 0.299 |
+| and the far face's Fresnel | 0.100 | 2.38 | 0.307 0.332 0.286 |
+| and the tint again | 0.081 | 2.00 | 0.307 0.332 0.261 |
+| the mesh | | | 0.301 0.326 0.258 |
+
+The whole frame: relMSE 0.0087 to 0.0069, p99 0.648 to 0.595.
+
+The tint taken again is the colour, which is the base colour times the
+transmission colour: exact for the pawn (base colour one), and a base colour
+too many for a glass whose base colour is not white. A `standard_surface`'s
+base colour does not tint its transmission at all; a cloud keeps one colour a
+gaussian and cannot say which part of it is which.
+
+Test: `athenea_usd_tests "a glass cloud lets out*"` -- a ball of 60 000
+gaussians at the conversion's glass opacity, tint (1, 1, 0.5), under a sky of
+one colour, against the mesh ball: green and blue through the middle 0.98 and
+0.51 before against the mesh's 0.92 and 0.26, within 3.3 % now.
+
+### The room through a rough glass is sharper than its reflection
+
+With the weights right the head was still a haze where the mesh shows the
+workshop. The transmitted half read the prepared sky at the material's own
+roughness (0.23 on the pawn, from its map), and the sky's levels are
+reflection lobes: a microfacet tilted by `theta` turns a reflected ray by
+`2 theta`, and a ray through an interface by `(1 - 1/ior) theta` going in and
+`(ior - 1) theta` coming out -- the first opened by `ior` again where the ray
+leaves. Through both faces that is `sqrt(2) (ior - 1) theta`, a third of the
+reflection's spread at 1.5. `transmittedRoughness` reads the level that wide:
+a level's width goes as the roughness squared, so the roughness is scaled by
+the root of that ratio, 0.59 at 1.5.
+
+| pawn head, against the mesh bent twice | relMSE | p99 |
+|---|---|---|
+| the reflection's roughness (before) | 0.081 | 2.00 |
+| the factor at 0.8 | 0.061 | 1.83 |
+| at 0.7 | 0.054 | 1.68 |
+| **at sqrt(0.707 (ior - 1)) = 0.59** | **0.048** | **1.54** |
+| at 0.5 | 0.046 | 1.54 |
+
+The test ball (roughness 0.3) is best at 0.59 (0.045 against 0.048 at both 0.5
+and 0.7); the pawn would take a little less. The closed form stays.
+
+Only where both faces were found. The single bend of a route with no tree --
+the rasteriser, the hardware route -- is not the image a lens forms, and
+sharpening it made the rasterised head worse against the mesh (0.138 to
+0.211): there the blur is what hides that it is the wrong picture.
+
+**Where the pawn ends up.** Against the mesh bent twice, the transferred cloud
+under autoshop_01 at 768 x 768 and 512 paths:
+
+| | whole relMSE | p99 | largest | head relMSE | head p99 |
+|---|---|---|---|---|---|
+| before these changes (the mesh bent once) | 0.0498 | 0.771 | 83 | 1.32 | 5.66 |
+| before, against the mesh bent twice | 0.0087 | 0.648 | 76 | 0.134 | 2.59 |
+| now | 0.0057 | 0.545 | 76 | 0.048 | 1.54 |
+
+The body (x 234-534, y 188-448) is 0.0174 throughout: none of this touches
+it. The largest relative value is in the opaque parts, not the glass.
+
+Test: `athenea_usd_tests "a rough glass cloud*"` -- a ball of roughness 0.3
+under a 16 x 8 checker sky, cloud against mesh: relMSE 0.119 before, 0.045
+now.
+
+**Not done.** The rasteriser's glass bends once and shows the sky alone; a
+thick lens there needs the far face without a tree. The mesh has a normal map
+on the glass (scratches) that the cloud does not carry. The glass's own
+opacity was tried: front faces opaque and far faces gone took the head from
+0.047 to 0.055, so the conversion's 0.6 stays.
+
+## lucabRTrender's files, migrated
+
+athenea is lucabRTrender renamed (e8ef1eb), and nothing written before the
+rename read any more: the stages applied `Lrt*API`, named `primvars:lrt:*`
+and `lrt:*` settings, and streamed `.lrtc` files. `athenea migrate`
+(`usd::migrate`, `lod::migrateLrtc`) writes copies under the new names.
+
+- **Layer by layer, not composed.** Each layer is opened, its content moved
+  into an anonymous layer (the cached original is never edited, so a process
+  that opens it afterwards sees the file) and every spec walked, variants
+  included: `apiSchemas` list ops (`Lrt` + capital -> `Athenea`), every
+  property name whose namespace has an `lrt` component (a rename of the spec,
+  so values, metadata, time samples and connections go with it), connection
+  and relationship target paths by the same rule (the rule is a function of
+  the name, so a target in another layer or prim is renamed without knowing
+  where its property was), `propertyOrder`, `customData` and
+  `customLayerData` keys, and `hydra:rendererName`'s value. Then `Export`.
+- **Asset paths.** `.lrtc` -> `.athc`. A relative path to a file not copied is
+  made absolute when the copy lands in another directory, so it resolves; with
+  `--recursive`, layers, packages and `.lrtc` files under `--root` are
+  migrated to the same place under the output's directory and the paths name
+  the copies (absolute paths too: the Sparrow film layers sublayer each other
+  by absolute path). A copy may never land on its original.
+- **.lrtc.** Its `Lrtc.cpp` (lucabRTrender e51ca4a, never changed after)
+  differs from `Athc.cpp` at e8ef1eb in the magic alone, and the last header
+  word was padding written as zero -- version 2's `flags`, no normals. The
+  header is rewritten (`ATHC`, version 2), the payload copied in slices
+  without decoding, and the result parsed before it takes its name.
+- **.usdz.** Extracted beside the output, each member layer migrated as itself
+  (no anchoring: a package names everything relatively), a `.lrtc` member
+  converted and renamed, and the package written in the same order, so the
+  first file is still the root layer.
+
+Measured. A stage written by the test with every old name (a schema, nine
+edit primvars, one time-sampled, one with doc and customData, a connection,
+a relationship, a render setting, a renderer name, layer data) renders after
+migration as the stage authored natively: max 0, over2 0; unmigrated it does
+not (the edit is not read); migrated twice it reports no rename; in a
+package the same. A `.lrtc` made from a written `.athc` (magic and version)
+migrates, reads, cuts and draws as the native file (max 0), and streams
+through a migrated stage as the native stage does (max 0). The user's
+Sparrow assets: `FilmGs.usda` -r (3 files, 10 properties, 4.8 s; 453 MB
+crate), `FilmGsGlass.usda` -r (4 files), `Sparrow60.usdz` (12 properties),
+`SparrowClips.usda` -r (73 files, 84 properties through the clip variants,
+66 s) render skinned and relit; the originals draw the bird in its bind pose,
+unlit.
+
+Not done. A `.athc` inside a `.usdz` is migrated but not drawn: the engine
+maps a `.athc` as a file, and a package member is not one. Clip
+`templateAssetPath`s and asset-path expressions are reported, not
+rewritten. A `.usda`'s `#` comments are not kept (USD's parser drops them).
+A schema a stage lost when it was written (lucabRTrender's mesh2splat without
+its plugins dropped `LrtSplatCryptomatteAPI` as an unknown token, e.g.
+`Sparrow_glass_gs.usdc`) is not there to rename; its primvars are.
 
 ## A plugin finds its files from itself, not from its host
 

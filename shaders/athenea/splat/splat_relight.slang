@@ -110,6 +110,11 @@ public struct SplatSurface {
     /// below is what is left for a route that cannot.
     public bool   hasExit;
     public float3 exitDirection;
+    /// WHAT THE FAR FACE LETS OUT, where a ray found one: what is not
+    /// reflected back into the glass there, and the material's tint a second
+    /// time, since a ray through a solid crosses two interfaces and the mesh
+    /// tints at each. One where nothing was found.
+    public float3 exitThrough;
     /// WHAT THE MIRROR DIRECTION ACTUALLY MEETS, where a ray went and looked.
     ///
     /// The polish reads the prepared sky along the mirror direction, which is
@@ -433,6 +438,28 @@ float transmittedWeight(SplatSurface s) {
     return s.thinWalled ? 0.0 : s.transmission;
 }
 
+/// HOW SOFT THE ROOM IS THROUGH THE GLASS, as the roughness of a reflection.
+///
+/// The prepared sky's levels are reflection lobes: a microfacet tilted by
+/// `theta` turns a mirror ray by `2 theta`. Through an interface it turns the
+/// ray by far less -- `(1 - 1/ior) theta` going in, `(ior - 1) theta` coming
+/// out, and the first of those is opened by `ior` again where the ray leaves
+/// -- so a ball whose two faces are as rough as its polish shows the room
+/// `sqrt(2) (ior - 1) / 2` as wide as it reflects it, a third at 1.5. Read at
+/// the polish's own roughness, the pawn's head (0.23) was a haze where the
+/// mesh beside it shows the workshop: relMSE over the head 0.081 to 0.048.
+/// A level's width goes as the square of the roughness, so the roughness goes
+/// as the root of that ratio.
+///
+/// Only where both faces were found. The single bend a route with no tree
+/// makes is not the image a lens forms at all, and sharpening it made the
+/// rasterised head worse against the mesh (0.138 to 0.211): there the blur
+/// is what hides that it is the wrong picture.
+public float transmittedRoughness(float roughness, float ior) {
+    const float index = max(ior, 1.0);
+    return roughness * sqrt(saturate(0.70710678 * (index - 1.0)));
+}
+
 /// WHAT THE TRANSMITTED HALF SEES: what a ray found behind the gaussian, the
 /// sky along the direction the glass sends it where the route traced one or
 /// an index bends it, and the sky's irradiance from behind -- translucency --
@@ -443,10 +470,12 @@ float3 transmittedBehind(SplatSurface s, float3 wo, uint dome, StructuredBuffer<
                          StructuredBuffer<float4> envSh, uint envBaseSide) {
     return s.hasBehind
                ? s.behindColour
-               : (s.hasExit ? envRadiance(envTexels, dome, s.exitDirection, s.roughness, envBaseSide)
+               : (s.hasExit ? envRadiance(envTexels, dome, s.exitDirection,
+                                          transmittedRoughness(s.roughness, s.ior), envBaseSide)
                             : (s.ior > 1.0
                                    ? envRadiance(envTexels, dome, bentThrough(s, wo), s.roughness, envBaseSide)
-                                   : envIrradiance(envSh, dome, -s.normal) * (1.0 / 3.14159265358979)));
+                                   : envIrradiance(envSh, dome, -s.normal) * (1.0 / 3.14159265358979))) *
+           s.exitThrough;
 }
 
 /// How much of it passes: what the polish does not reflect, and nothing on

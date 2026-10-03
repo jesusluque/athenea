@@ -331,6 +331,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         // the sky alone.
         surface.hasBehind = false;
         surface.behindColour = float3(0.0);
+        surface.exitThrough = float3(1.0);
         surface.hasReflection = false;
         surface.reflectionColour = float3(0.0);
         surface.reflectionTraced = false;
