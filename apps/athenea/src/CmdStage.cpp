@@ -48,14 +48,12 @@ void addConvert(CLI::App& app) {
     cmd->callback([o] {
         auto device = gpu::Device::create();
         if (!device) {
-            std::fprintf(stderr, "%s\n", device.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(device.error());
         }
         gpu::ShaderLibrary library(*device);
         auto loader = scene::CloudLoader::create(library);
         if (!loader) {
-            std::fprintf(stderr, "%s\n", loader.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(loader.error());
         }
         if (lod::isAthc(o->output)) {
             if (o->rotateX != 0.0) {
@@ -65,8 +63,7 @@ void addConvert(CLI::App& app) {
             auto splats = scene::loadSplatFile(*loader, o->input, o->degree);
             auto builder = splats ? lod::LodBuilder::create(library) : Result<lod::LodBuilder>(splats.error());
             if (!builder) {
-                std::fprintf(stderr, "%s\n", builder.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(builder.error());
             }
             lod::LodBuildSettings settings;
             settings.chunkSplats = o->chunkSplats;
@@ -74,16 +71,14 @@ void addConvert(CLI::App& app) {
             auto built = builder->build(*splats, settings);
             auto written = built ? lod::writeAthc(**device, *built, o->output) : Result<void>(built.error());
             if (!written) {
-                std::fprintf(stderr, "%s\n", written.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(written.error());
             }
             std::printf("wrote %s\n", o->output.c_str());
             return;
         }
         auto raw = scene::readSplatRecords(*loader, o->input, o->degree);
         if (!raw) {
-            std::fprintf(stderr, "%s\n", raw.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(raw.error());
         }
         usd::ExportOptions options;
         options.maxDegree = o->degree;
@@ -92,8 +87,7 @@ void addConvert(CLI::App& app) {
         // capture's scale is taken as metres (operations.md, 2.4).
         options.rotateXDegrees = o->rotateX;
         if (auto written = usd::writeParticleFieldStage(library, *raw, o->output, options); !written) {
-            std::fprintf(stderr, "%s\n", written.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(written.error());
         }
         std::printf("wrote %s\n", o->output.c_str());
     });
@@ -202,18 +196,15 @@ void addStage(CLI::App& app) {
         }
         auto renderer = usd::StageRenderer::open(o->stage);
         if (!renderer) {
-            std::fprintf(stderr, "%s\n", renderer.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(renderer.error());
         }
         for (const std::string& selection : o->variants) {
             if (auto set = (*renderer)->setVariantSelection(selection); !set) {
-                std::fprintf(stderr, "%s\n", set.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(set.error());
             }
         }
         if (auto set = (*renderer)->setMeshVisibility(o->visibility); !set) {
-            std::fprintf(stderr, "%s\n", set.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(set.error());
         }
         (*renderer)->setPathSamples(o->pathSamples);
         (*renderer)->setPathBounces(o->pathBounces);
@@ -241,8 +232,7 @@ void addStage(CLI::App& app) {
         (*renderer)->setAntialias(o->antialias);
         if (o->defaultLights) {
             if (auto lit = (*renderer)->setDefaultLights(true); !lit) {
-                std::fprintf(stderr, "%s\n", lit.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(lit.error());
             }
         }
         if (!o->renderSettings.empty()) {
@@ -250,8 +240,7 @@ void addStage(CLI::App& app) {
                 o->output.empty() ? std::filesystem::path() : std::filesystem::path(o->output).parent_path();
             auto written = (*renderer)->renderProducts(o->renderSettings, o->time, directory);
             if (!written) {
-                std::fprintf(stderr, "%s\n", written.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(written.error());
             }
             for (const std::filesystem::path& file : *written) {
                 std::printf("wrote %s\n", file.string().c_str());
@@ -274,8 +263,7 @@ void addStage(CLI::App& app) {
         } else if (o->frameAll || (o->camera.empty() && (*renderer)->cameras().empty())) {
             auto framed = (*renderer)->framingCamera(o->time, o->focal, o->technique);
             if (!framed) {
-                std::fprintf(stderr, "%s\n", framed.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(framed.error());
             }
             own = *framed;
         }
@@ -287,8 +275,7 @@ void addStage(CLI::App& app) {
             auto warm = own ? (*renderer)->render(*own, o->time, 16, 16, "raster")
                             : (*renderer)->render(o->camera, o->time, 16, 16, "raster");
             if (!warm) {
-                std::fprintf(stderr, "%s\n", warm.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(warm.error());
             }
             const std::map<std::string, uint32_t> manifest = (*renderer)->cryptoManifest();
             (*renderer)->requestOutputs({});
@@ -348,12 +335,10 @@ void addStage(CLI::App& app) {
                         steady[steady.size() / 2], steady.front(), steady.size());
         }
         if (!image) {
-            std::fprintf(stderr, "%s\n", image.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(image.error());
         }
         if (auto written = io::writeExr(o->output, width, height, image->rgba, image->depth); !written) {
-            std::fprintf(stderr, "%s\n", written.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(written.error());
         }
         std::printf("wrote %s\n", o->output.c_str());
     });

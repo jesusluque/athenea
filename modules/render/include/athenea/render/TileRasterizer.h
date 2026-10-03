@@ -293,6 +293,12 @@ public:
     /// device has finished, or nothing yet. Never waits.
     [[nodiscard]] std::optional<SplatCounters> latestCounters();
 
+    /// Gives back the buffers a frame grew into (projections, sort keys,
+    /// tile pairs), which the next frame makes again; from then on they
+    /// grow to what a frame needs and no further, rather than half as much
+    /// again. What a device that ran out of memory is asked to do first.
+    void releaseScratch();
+
 private:
     [[nodiscard]] Result<void> countFrame(gpu::CommandBatch& batch, std::span<const SplatInstance> instances,
                                           uint32_t splatSlots, uint32_t all);
@@ -317,6 +323,7 @@ private:
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
 
+    bool     tight_ = false;   ///< grow to the need exactly (after releaseScratch)
     uint32_t splatCapacity_ = 0;
     uint32_t pairCapacity_ = 0;
     uint32_t tileCapacity_ = 0;

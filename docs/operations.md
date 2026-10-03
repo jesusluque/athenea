@@ -47,6 +47,7 @@ the binary runs in.
 | `ATHENEA_MATERIALX_ROOT` | a directory holding MaterialX's `libraries/`, read by hdAthenea's material compiler in place of the libraries the host's USD loaded. Unset by default: the host's are used. For a host whose MaterialX predates the Slang generator (Blender 5.3 ships 1.39.4: no `genslang` implementations, older node definitions), pointed at 1.39.5's. Read once, when the first material compiles; the host's own renderers keep theirs. |
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
+| `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine, whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
 | `ATHENEA_SHADER_CACHE` | where compiled shaders are cached between runs. The default is a directory under the platform's cache directory. Deleting it costs one slow first frame. |
 
 A binary built without `ATHENEA_BUILD_VIEW` has no `athenea view` subcommand; that is
@@ -84,10 +85,20 @@ What differs between them, in practice:
 
 ### 1.5 Exit codes, and where an error is printed
 
-Every subcommand prints its errors to standard error and exits with `1`. A
-successful run exits with `0`. There are no other codes: a pipeline should
-test the exit status and read stderr, not parse stdout, which carries the
-report — timings, counts, the path written.
+Every subcommand prints its errors to standard error and exits with `1`,
+except when the GPU ran out of memory, which exits with `3` and says what to
+ask for less of: the one failure a script can do something about by trying
+again later or smaller. A successful run exits with `0`. There are no other
+codes: a pipeline should test the exit status and read stderr, not parse
+stdout, which carries the report — timings, counts, the path written.
+
+Out of memory is handled before it is reported. A frame that fails with it
+gives back what the engine makes again on demand (the rasteriser's grown
+buffers, the ray tracers' structures, the denoiser), gives up one thing more,
+and is tried again once: splat shadows first, then a level of detail at a time
+(a LOD group's next coarser level, a streamed asset's cut at twice the pixels
+and half its streaming budget), up to four. Each step is a warning naming
+what it gave up. Only a frame that still fails is the command's error.
 
 `-v` (or `--verbose`) before the subcommand turns on debug logging, which goes
 to stderr as well.
@@ -840,7 +851,13 @@ where the `flags` are not zero.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the
-chunks land. `athenea stage` waits for the streams to settle before a still, so a
+chunks land.
+
+The budget is held to the device's (`ATHENEA_GPU_BUDGET`, §1.2): a stream is
+opened with at most half of what the device's budget has left, at 132 bytes
+a splat, and an asset asked to be read whole whose file would take more than
+that half is streamed instead. Either is printed when it happens
+(`streaming budget N splats (~M MiB; asked ...)`). `athenea stage` waits for the streams to settle before a still, so a
 rendered frame is never half-arrived.
 
 ### 3.4 Colour
@@ -1257,6 +1274,12 @@ waits for itself at the end).
 The counts cost four small dispatches and a copy a frame, and are taken only
 while the panel is open: collapsing its window stops them.
 
+**GPU memory** appears at the bottom of the window when the device ran short:
+what the engine gave up (splat shadows, a level of detail) and how many levels
+coarser than asked it now draws, or, where nothing was left to give, that the
+frame was skipped and the next one tries again. The window stays; closing the
+panel dismisses the message until the next time.
+
 ### 5.2.1 Changing what a picked prim is made of
 
 The rasteriser keeps a Cryptomatte in every frame it draws, whether or not
@@ -1447,6 +1470,11 @@ A script's own header says what it needs and where it puts things.
 | a cloud's reflections look softer than the mesh's | the conversion's cell is the blur kernel: a cloud reads as the mesh at `r + 9c/R`, where `c` is the cell and `R` the radius of curvature | convert at a finer `--resolution`: a mirror at roughness `r` wants a cell under `r/9` of that radius. It costs the file, not the frame -- fifteen times the gaussians was 36 % more time a frame and sixteen times the disk |
 | a glass ball shows the room but does not bend it | the cloud has no index | `athenea mesh2splat` writes the glass material's IOR; for a cloud from elsewhere author `primvars:athenea:splat:ior` (1.5 is glass). A cloud keeps one index: with two glasses of different IOR the first is kept and the conversion says so |
 | a cloud renders blunt and then sharpens | chunks are still arriving | raise `--stream-budget`, or wait; a still settles first |
+| `OutOfMemory: ... does not fit in the GPU's memory budget`, exit code 3 | the frame needed more than the device's budget, even after the engine gave back what it could and stepped down | close what else holds the GPU, render smaller, give a streamed asset a smaller budget; `ATHENEA_GPU_BUDGET` raises or lowers the budget |
+| `OutOfMemory: ... does not fit in the memory the system has free` | on Apple silicon, the machine's free memory less its 1.5 GiB reserve would not hold the allocation: other processes hold the rest | close what else runs, or run smaller; the reserve is not configurable |
+| `the GPU ran out of memory running ...` | a command buffer failed on the device itself (Metal's `Insufficient Memory`), with the budget not yet reached -- other jobs hold the rest | the same; lowering `ATHENEA_GPU_BUDGET` keeps this run below what they leave |
+| `trying again with ...; levels of detail N coarser than asked` | the device ran short and the engine stepped down; the frames go on | nothing, or the same as above to get the detail back (a new run starts as asked) |
+| `splat shadows skipped: the proxies of N gaussians need ~M MiB` | splat shadows were asked for a cloud whose proxies would take more than half of what the budget has left (about 1.7 KB a gaussian) | a smaller cloud or its levels of detail; asking again (switching `athenea:splatShadows` off and on) tries again |
 | the Storm oracle tests fail | `HDX_MSAA_SAMPLE_COUNT` is not 1 | ctest sets it; set it by hand if running the binary directly |
 
 ## 10. Glossary

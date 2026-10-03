@@ -501,6 +501,36 @@ public:
     [[nodiscard]] gpu::Device& device() noexcept { return *device_; }
     [[nodiscard]] gpu::ShaderLibrary& library() noexcept { return *library_; }
 
+    /// WHEN THE DEVICE RUNS OUT OF MEMORY.
+    ///
+    /// What a frame that failed with OutOfMemory asks before it is tried
+    /// again (the render pass does, once). Every call gives back what is
+    /// made again on demand -- the rasteriser's grown buffers, the ray
+    /// tracers' structures and proxies, the denoiser -- and gives up one
+    /// thing more, in this order: splat shadows (`athenea:splatShadows`), then
+    /// a level of detail at a time, each one level coarser for a LOD group
+    /// (athenea:lod:group), a cut of twice the pixels for a streamed asset,
+    /// and its streaming budget halved. Returns what it did, for the
+    /// warning and the viewer's panel; empty when nothing is left to give.
+    [[nodiscard]] std::string relieveMemory();
+    /// How many levels coarser than asked the engine draws now (0: as asked).
+    [[nodiscard]] uint32_t lodBias() const noexcept { return lodBias_; }
+    /// How many times memory was given up -- relieveMemory, or splat shadows
+    /// skipped for a budget they would not fit -- and what the last one did.
+    [[nodiscard]] uint32_t reliefs() const noexcept { return reliefs_; }
+    [[nodiscard]] const std::string& lastRelief() const noexcept { return lastRelief_; }
+    /// Whether splat shadows were given up for memory, by relieveMemory or
+    /// because the proxies would not fit the device's budget.
+    [[nodiscard]] bool splatShadowsGivenUp() const noexcept { return memoryNoSplatShadows_.load(); }
+    /// The last frame's failure, kept by the render pass, which Hydra gives
+    /// no way to return (StageRenderer::execute does), once.
+    void noteFrameError(Error error) { frameError_ = std::move(error); }
+    [[nodiscard]] std::optional<Error> takeFrameError() {
+        std::optional<Error> out = std::move(frameError_);
+        frameError_.reset();
+        return out;
+    }
+
     /// The targets the last render drew into (owned by the render pass).
     [[nodiscard]] const render::RenderTargets* lastTargets() const noexcept { return lastTargets_; }
 
@@ -544,6 +574,23 @@ public:
 
 private:
     Engine() = default;
+
+    /// relieveMemory's state: how many levels coarser, and whether the
+    /// splat shadows are given up.
+    uint32_t                                  lodBias_ = 0;
+    std::atomic<bool>                         memoryNoSplatShadows_{false};
+    std::optional<Error>                      frameError_;
+    uint32_t                                  reliefs_ = 0;
+    std::string                               lastRelief_;
+    /// The streaming budget, in splats, a streamed asset is opened with: what
+    /// it asks for (or the whole file where it asks for none), held to half
+    /// of what the device's budget has left, and halved once for every
+    /// level relieveMemory has given up. 0: read the file whole.
+    [[nodiscard]] uint64_t streamBudget(const pxr::SdfPath& id, const StreamedAsset& asset) const;
+    /// Whether the splat shadow proxies of `gaussians` fit what the device's
+    /// budget has left; says once why not.
+    [[nodiscard]] bool splatShadowsFit(uint64_t gaussians);
+    uint64_t                                  shadowGaussians_ = 0;   ///< what the shadow tracer was last prepared for
 
     std::shared_ptr<gpu::Device>              device_;
     std::unique_ptr<gpu::ShaderLibrary>       library_;

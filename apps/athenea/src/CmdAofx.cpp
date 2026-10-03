@@ -199,14 +199,12 @@ void addAofx(CLI::App& app) {
             }
             auto pixels = io::readExr(path);
             if (!pixels) {
-                std::fprintf(stderr, "%s\n", pixels.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(pixels.error());
             }
             auto image = image::Image::create(
                 {0, 0, static_cast<int32_t>(pixels->width), static_cast<int32_t>(pixels->height)});
             if (!image) {
-                std::fprintf(stderr, "%s\n", image.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(image.error());
             }
             {
                 auto floats = (*image)->floats();
@@ -236,8 +234,7 @@ void addAofx(CLI::App& app) {
         }
         auto rendered = aofx_host::renderEffect(*context, *effect, job);
         if (!rendered) {
-            std::fprintf(stderr, "%s\n", rendered.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(rendered.error());
         }
         const image::Image& out = **rendered;
         width = static_cast<uint32_t>(out.bounds().width());
@@ -254,8 +251,7 @@ void addAofx(CLI::App& app) {
             }
         }
         if (auto written = io::writeExr(run->output, width, height, rgba, {}, false); !written) {
-            std::fprintf(stderr, "%s\n", written.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(written.error());
         }
         std::printf("%s: wrote %s (%ux%u)\n", run->effect.c_str(), run->output.c_str(), width, height);
     });

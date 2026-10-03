@@ -10551,3 +10551,124 @@ Not done:
 - a cloud from Blender does not mark its colour space and need not:
   `athenea:splat:linear` unset is a capture's sRGB, which is what Blender
   holds, decoded to linear light a gaussian at a time like any capture's.
+
+## Out of device memory is an error, and the engine steps down
+
+`athenea view` on `Sparrow_gs.usdc` (5 887 323 gaussians), with other jobs
+on the GPU, died with `Metal command buffer error: Insufficient Memory
+(00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)` and an assertion in
+slang-rhi's `metal-command.cpp`: the completion handler of every command
+buffer asserted on any error, on Metal's thread, and the process ended. Splat
+shadows over the same cloud (FilmGs.usda, path traced with
+`--splat-shadows`) ran out the same way: the hardware proxies alone are
+~2.5 GB before their BLAS (the refit section above).
+
+**slang-rhi** (`cmake/patches/slang-rhi-metal-command-buffer-errors.patch`):
+the handler still prints Metal's message and now records the error on the
+queue -- `SLANG_E_OUT_OF_MEMORY` for `MTLCommandBufferErrorOutOfMemory` (8),
+`SLANG_FAIL` for any other -- and the next `submit()` or `waitOnHost()`
+returns it, once. `waitOnHost` waits for every command buffer in flight
+before the tracking event: a buffer that failed is not known to signal the
+event it carries, and after one has failed the host brings the event to the
+last submission itself, so the wait cannot hang. `readBuffer` reports a copy
+that failed instead of handing back the staging buffer unwritten, and a
+buffer or acceleration structure Metal will not make is
+`SLANG_E_OUT_OF_MEMORY` rather than `SLANG_FAIL`. A submit that reports an
+earlier buffer's failure has still committed its own work: fences it signals
+are signalled, so nothing waiting on them (gpu::AsyncReadback) is stranded.
+
+**gpu.** `CommandBatch::submit` turns the queue's results into
+`OutOfMemory` (or `DeviceFailure`), the wait's included -- it was ignored.
+`Device::waitIdle`, which returns nothing, keeps a failure for the next
+submit (`takeQueueError`), and `Buffer::read` waits first so a frame that
+failed is reported rather than read back. The device has a **memory
+budget**: `ATHENEA_GPU_BUDGET` (MiB) where it is set, else Metal's
+`recommendedMaxWorkingSetSize` (18 186 MiB on the M5 Pro), else none --
+CUDA and Vulkan do not say yet. It is printed at start, `Buffer::create`
+refuses an allocation that would take the device past it
+(`Device::admit`, against Metal's `currentAllocatedSize`: every buffer,
+texture and structure of the process, OIDN's and gpe's included), and both
+queries live in Platform. On unified memory that budget is the GPU's and
+not the machine's: four GPU jobs and a whole ctest, each under Metal's
+18 GB recommendation, swapped the M5 Pro until the window server missed its
+watchdog and the machine restarted. So an allocation must also fit
+`Device::systemHeadroom` -- the physical memory the system has free (free,
+inactive and purgeable pages, `platform::availablePhysicalMemory`) less
+1.5 GiB kept for the rest of the machine -- and `memoryAvailable`, which
+sizes streams and splat shadows, is held to it too. A process cannot see
+what another holds on the device, but it can see the machine running out.
+`Device::releaseFreed` exists because a freed
+buffer stays in slang-rhi's residency set, resident and counted, until the
+next submit commits the set: after the first relief below the device read
+630 MiB in use before and after; with an empty submit, 1.
+
+**The engine.** The render pass, which every host goes through, handles
+`OutOfMemory` from the commit or the frame: `Engine::relieveMemory` gives
+back what is made again on demand (the rasteriser's grown buffers, which from
+then on grow to the need exactly; the shadow tracer and its packed scene;
+the ray tracer; the denoiser), gives up one thing more, and the step is
+tried once more. The order: splat shadows, if they were on; then a level of
+detail, up to four -- a LOD group draws the level that many steps coarser
+than its threshold picks, a streamed asset's cut doubles its pixels, and
+every stream is opened again at half its budget. A frame that still fails
+is kept on the engine (`noteFrameError`, since Hydra returns nothing) and
+`StageRenderer::execute` returns it. A cloud, mesh or points prim whose
+upload ran out stays pending and stops the commit, so the retry uploads it
+and a cloud that does not fit is an error rather than an image without it.
+
+Before anything fails, two things are sized against the budget: a streamed
+asset is opened with at most half of what the budget has left, at 132 bytes
+a splat (position and shape, degree-3 harmonics in f16, a normal, an
+emission word), and one asked to be read whole whose file would not fit that
+half is streamed; and splat shadows are skipped, with a warning, where their
+proxies would take more than half of what is left, at 1 712 bytes a
+gaussian -- the proxies' 432, measured by their layout, and 64 bytes a
+triangle of BLAS for twenty triangles, which is an estimate. FilmGs.usda
+under `athenea stage --technique rt --splat-shadows` now says "the proxies
+of 5887323 gaussians need ~9613 MiB, more than half of the 17584 MiB the
+GPU's 18187 MiB budget has left" and writes its image without them, where it
+ran out before.
+
+**The front ends.** `athenea view` keeps its window: a failed frame is not
+shown and the next one is tried, a submit of its own that reports the device
+out of memory asks the stage to relieve it, and a **GPU memory** panel says
+what was given up. Every CLI command prints the error and exits with `3`
+for `OutOfMemory`, `1` for anything else (`cli::report`, `cli::fail`).
+
+Measured (M5 Pro, debug): `athenea stage Sparrow_gs.usdc --size 320x180`
+under `ATHENEA_GPU_BUDGET=600`: the upload refused at 607 of 600 MiB,
+relieved (1 MiB in use after), refused again, exit 3 with the message; at
+1200 MiB the cloud fits and the frame's 1.2 GB of scratch does not, 1199 ->
+585 MiB after the relief and still short, exit 3; at 2000 MiB the image is
+written. `athenea view` on the same cloud at 600 MiB: six frames, each
+refused, the levels given up one a frame up to four and then "nothing is
+left to give back"; the window stayed and the command exited 0.
+
+Tests: `athenea_gpu_tests "[memory]"` -- a buffer past the budget is an
+`OutOfMemory` result naming it, what fits still runs, a buffer of 2^50 bytes
+with no budget is refused by Metal itself and is a result, and the queue's
+codes map as above; `athenea_usd_tests "[memory]"` -- a LOD group drawn
+near (the fine level), the budget set 8 MiB over what is in use, a
+2048x2048 frame refused as `OutOfMemory` after one relief (`memoryRelief`:
+once, one level coarser), and the same 64x64 view under the same budget then
+drawn from the coarse level. Run beside them: all of `athenea_gpu_tests`
+and `athenea_lod_tests`, and `athenea_usd_tests` / `athenea_render_tests`
+for `[lod]` and `[counters]`; the whole ctest was not, on a machine the
+GPU jobs had just brought down.
+
+Not done, not verified:
+- the command-buffer path itself is not exercised by a test: making Metal
+  fail a command buffer on demand means taking the device's memory from the
+  other jobs on a shared GPU. It was read, built and run; the budget is what
+  the tests drive.
+- CUDA and Vulkan have no budget unless `ATHENEA_GPU_BUDGET` gives one
+  (`cuMemGetInfo` would), and their backends were not patched: a CUDA
+  launch that runs out is whatever slang-rhi's CUDA queue reports.
+- a plain cloud (no levels) has nothing to step down to: the relief gives
+  back the scratch and the retry needs it again. Fewer harmonics or a
+  coarser resolution would be the next levers.
+- the system reserve (1.5 GiB) is a constant, not measured against what
+  the window server needs, and inactive pages are counted as free, which
+  they are only once written back;
+- the BLAS share of the splat shadow estimate is not measured, and a level
+  given up is not taken back within a run.

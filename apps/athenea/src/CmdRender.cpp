@@ -71,14 +71,12 @@ int run(const RenderOptions& options, bool bench) {
     }
     auto device = gpu::Device::create();
     if (!device) {
-        std::fprintf(stderr, "%s\n", device.error().toString().c_str());
-        return 1;
+        return cli::report(device.error());
     }
     gpu::ShaderLibrary library(*device);
     auto loader = scene::CloudLoader::create(library);
     if (!loader) {
-        std::fprintf(stderr, "%s\n", loader.error().toString().c_str());
-        return 1;
+        return cli::report(loader.error());
     }
     std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
     scene::Bounds all;
@@ -103,16 +101,14 @@ int run(const RenderOptions& options, bool bench) {
             if (options.streamBudget > 0) {
                 auto pool = lod::StreamingPool::open(**device, path, {options.streamBudget, 2});
                 if (!pool) {
-                    std::fprintf(stderr, "%s\n", pool.error().toString().c_str());
-                    return 1;
+                    return cli::report(pool.error());
                 }
                 grow((*pool)->cloud().splats.bounds);
                 pools.push_back(std::move(*pool));
             } else {
                 auto read = lod::readAthc(**device, path);
                 if (!read) {
-                    std::fprintf(stderr, "%s\n", read.error().toString().c_str());
-                    return 1;
+                    return cli::report(read.error());
                 }
                 grow(read->splats.bounds);
                 athcClouds.push_back(std::make_unique<lod::LodCloud>(std::move(*read)));
@@ -121,8 +117,7 @@ int run(const RenderOptions& options, bool bench) {
         }
         auto splats = scene::loadSplatFile(*loader, path, options.degree);
         if (!splats) {
-            std::fprintf(stderr, "%s\n", splats.error().toString().c_str());
-            return 1;
+            return cli::report(splats.error());
         }
         grow(splats->bounds);
         clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*splats)));
@@ -131,13 +126,11 @@ int run(const RenderOptions& options, bool bench) {
     for (const std::string& path : options.points) {
         auto raw = io::readPoints(path);
         if (!raw) {
-            std::fprintf(stderr, "%s\n", raw.error().toString().c_str());
-            return 1;
+            return cli::report(raw.error());
         }
         auto uploaded = loader->upload(*raw);
         if (!uploaded) {
-            std::fprintf(stderr, "%s\n", uploaded.error().toString().c_str());
-            return 1;
+            return cli::report(uploaded.error());
         }
         grow(uploaded->bounds);
         pointClouds.push_back(std::make_unique<scene::GpuPoints>(std::move(*uploaded)));
@@ -183,8 +176,7 @@ int run(const RenderOptions& options, bool bench) {
 
     auto rasterizer = render::TileRasterizer::create(library);
     if (!rasterizer) {
-        std::fprintf(stderr, "%s\n", rasterizer.error().toString().c_str());
-        return 1;
+        return cli::report(rasterizer.error());
     }
     render::RenderSettings settings;
     settings.width = width;
@@ -198,8 +190,7 @@ int run(const RenderOptions& options, bool bench) {
     if (rasterPoints) {
         auto made = render::PointRasterizer::create(library);
         if (!made) {
-            std::fprintf(stderr, "%s\n", made.error().toString().c_str());
-            return 1;
+            return cli::report(made.error());
         }
         pointRaster.emplace(std::move(*made));
     }
@@ -220,15 +211,13 @@ int run(const RenderOptions& options, bool bench) {
                                                               : render::RayTracingRoute::ComputeBvh;
             auto made = render::GaussianRayTracer::create(library, rtSettings);
             if (!made) {
-                std::fprintf(stderr, "%s\n", made.error().toString().c_str());
-                return 1;
+                return cli::report(made.error());
             }
             tracer.emplace(std::move(*made));
         } else if (options.technique == "reference" || options.technique == "reference-rt") {
             auto made = render::ReferenceRenderer::create(library);
             if (!made) {
-                std::fprintf(stderr, "%s\n", made.error().toString().c_str());
-                return 1;
+                return cli::report(made.error());
             }
             reference.emplace(std::move(*made));
         } else {
@@ -241,8 +230,7 @@ int run(const RenderOptions& options, bool bench) {
             if (tracer) {
                 auto stats = tracer->render(camera, instances, settings, targets);
                 if (!stats) {
-                    std::fprintf(stderr, "%s\n", stats.error().toString().c_str());
-                    return 1;
+                    return cli::report(stats.error());
                 }
                 ms = stats->totalMs;
                 if (bench) {
@@ -256,8 +244,7 @@ int run(const RenderOptions& options, bool bench) {
                                 ? reference->render(camera, instances, settings, targets)
                                 : reference->renderPeaks(camera, instances, settings, targets);
                 if (!over) {
-                    std::fprintf(stderr, "%s\n", over.error().toString().c_str());
-                    return 1;
+                    return cli::report(over.error());
                 }
                 if (*over != 0) {
                     athenea::log::warn("{} pixels had more contributors than the reference holds", *over);
@@ -292,8 +279,7 @@ int run(const RenderOptions& options, bool bench) {
         for (const auto& cloud : clouds) {
             auto built = builder->build(*cloud);
             if (!built) {
-                std::fprintf(stderr, "%s\n", built.error().toString().c_str());
-                return 1;
+                return cli::report(built.error());
             }
             lodClouds.push_back(std::move(*built));
         }
@@ -335,8 +321,7 @@ int run(const RenderOptions& options, bool bench) {
                                            &cutStats);
             auto placed = selected ? feed(cutStats, true) : Result<uint32_t>(selected.error());
             if (!placed) {
-                std::fprintf(stderr, "%s\n", placed.error().toString().c_str());
-                return 1;
+                return cli::report(placed.error());
             }
             if (*placed == 0) {
                 for (const auto& pool : pools) {
@@ -365,28 +350,24 @@ int run(const RenderOptions& options, bool bench) {
             auto selected = cutter->select(render::projectionFor(camera, width, height), lodInstances, options.lod,
                                            &cutStats);
             if (!selected) {
-                std::fprintf(stderr, "%s\n", selected.error().toString().c_str());
-                return 1;
+                return cli::report(selected.error());
             }
             drawn = std::move(*selected);
             cutMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             if (auto fed = feed(cutStats, false); !fed) {
-                std::fprintf(stderr, "%s\n", fed.error().toString().c_str());
-                return 1;
+                return cli::report(fed.error());
             }
         }
         if (rasterPoints) {
             if (auto layered = pointRaster->render(camera, pointInstances, settings, pointLayer); !layered) {
-                std::fprintf(stderr, "%s\n", layered.error().toString().c_str());
-                return 1;
+                return cli::report(layered.error());
             }
         }
         auto stats = rasterPoints
                          ? rasterizer->render(camera, drawn, settings, targets, {}, &pointLayer)
                          : rasterizer->render(camera, drawn, settings, targets, pointInstances);
         if (!stats) {
-            std::fprintf(stderr, "%s\n", stats.error().toString().c_str());
-            return 1;
+            return cli::report(stats.error());
         }
         if (stats->totalMs + cutMs < best.totalMs + bestCutMs) {
             best = *stats;
@@ -422,13 +403,14 @@ int run(const RenderOptions& options, bool bench) {
     if (!bench) {
         auto colour = targets.colour.readAll<float>(**device);
         auto depth = targets.depth.readAll<float>(**device);
-        if (!colour || !depth) {
-            std::fprintf(stderr, "readback failed\n");
-            return 1;
+        if (!colour) {
+            return cli::report(colour.error());
+        }
+        if (!depth) {
+            return cli::report(depth.error());
         }
         if (auto written = io::writeExr(options.output, width, height, *colour, *depth); !written) {
-            std::fprintf(stderr, "%s\n", written.error().toString().c_str());
-            return 1;
+            return cli::report(written.error());
         }
         std::printf("wrote %s\n", options.output.c_str());
     }

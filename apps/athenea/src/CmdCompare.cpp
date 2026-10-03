@@ -55,8 +55,8 @@ void addCompare(CLI::App& app) {
         ->expected(4);
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
-            std::fprintf(stderr, "compare: %s\n", error.toString().c_str());
-            throw CLI::RuntimeError(1);
+            std::fprintf(stderr, "compare: ");
+            cli::fail(error);
         };
         auto device = gpu::Device::create();
         if (!device) fail(device.error());

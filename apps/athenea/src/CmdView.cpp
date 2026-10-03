@@ -68,8 +68,7 @@ void addView(CLI::App& app) {
         }
         auto stats = view::runViewer(*options);
         if (!stats) {
-            std::fprintf(stderr, "%s\n", stats.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(stats.error());
         }
         std::printf("%u frames: draw %.2f ms, frame %.2f ms (medians); %u distinct times, the last %.2f\n",
                     stats->frames, stats->medianDrawMs, stats->medianFrameMs, stats->distinctTimes, stats->lastTime);
