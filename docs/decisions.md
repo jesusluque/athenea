@@ -10092,7 +10092,7 @@ key, and `GaussianRayTracer::sync`, shared by `render` and `prepare`, does:
     every box is exact whatever the buffer held, so the number of dispatches
     is known before the frame and **nothing is read back** -- the build's
     "until a pass changes nothing" is what needed the counter.
-- **every `refitsPerRebuild` refits** (default 32), or when the cloud cannot
+- **every `refitsPerRebuild` refits** (default 240, measured below), or when the cloud cannot
   take one (built before it was posed, or a tree taller than 127): that cloud
   rebuilt in place, in the slots it already holds in every combined buffer.
   A tree shaped for one pose bounds the next ones ever more loosely; the
@@ -10121,3 +10121,47 @@ rebuilding every pose, and refitting twice between in-place rebuilds. Every
 pose after the first refits and nothing is rebuilt (`RayTracerStats::refitted`,
 `rebuilt`), the periodic one rebuilds at poses 0 and 3, and each image is
 compared to the rebuilt one with `compareImages`.
+Measured (M5 Pro): p99 0, max 1 against a rebuild every pose, on both
+routes -- the refitted tree is walked in another order, and near-equal
+peaks land a code value apart. With the refit skipped (a stale tree) the
+same comparison reads p99 255 over ~17000 pixels, so the bound is one a
+broken refit cannot meet. The structure's own cost in that test, 9681
+gaussians: 6-10 ms a pose rebuilt, 2-3 ms (hardware) and ~1.8 ms
+(compute) refitted, CPU wall clock with the waits.
+
+**Timings.** `athenea view <stage> --technique rt --play --every-frame
+--frames 120 --size 1280x720`, release, draw medians; the machine is shared
+with other sessions, so three runs each, alternated before/after:
+
+| stage | before (main 125043e) | after | |
+|---|---|---|---|
+| sparrow, `mesh2splat SparrowBird.usda --skinned --resolution 256`, 300862 gaussians, splats only (ComputeBvh) | 140.9 / 143.1 / 135.6 ms | 84.7 / 83.9 / 83.7 ms | **-40 %** |
+| FilmGs.usda (5.9 M gaussians and the film's meshes) | 82.9 / 85.3 / 103.5 ms | 89.1 / 89.1 / 106.3 ms | the same |
+
+The bird alone is drawn by the ray tracer, and the ~57 ms that went is the
+rebuild (Morton sort, hierarchy, the refit passes and their read-backs).
+FilmGs under `view --technique rt` path traces its meshes and composes the
+splats from the rasteriser; the cloud's ray tracing structure is built only
+for splat shadows (`athenea:splatShadows`, off in `view`), so neither binary
+builds one there and the difference is noise. With the shadows asked for
+(over MCP, `render` with `splatShadows`), both binaries run out of device
+memory on that cloud: the hardware proxies of 5.9 M gaussians are ~2.5 GB
+before their BLAS. That is not this change's and not fixed by it.
+
+**Choosing `refitsPerRebuild`.** The same bird, draw medians over 120
+frames, two runs each: N = 0 (rebuild every pose) 133/129 ms; 4: 83/79;
+8: 78/81; 16: 111/81; 32: 82/84; 64: 80/82; never: 83/80. Per frame, over
+240 frames with refits never reset, the trace after 220-240 refits is what
+it was after 1-30 (60-80 ms either way; the bursts of 200-400 ms in that
+run came and went with no rebuild between them -- other sessions on the
+GPU). The wing beat of this rig does not loosen the tree measurably, and an
+in-place rebuild is a ~50 ms hitch on top of a frame (125 against 75 ms),
+which the medians hide and a viewer does not: so rarely, 240 refits, eight
+seconds of a 30 fps timeline. A rig that throws parts far from where the
+tree was shaped would want it lower; no such asset is measured yet.
+
+Not done: a rule from measured bound growth (a GPU reduction of the
+refitted tree's surface area against the built one's) instead of a count;
+the meshes' compute BVH (`BvhScene::settle`) still refits by passes with a
+read-back every eight, which the same heights would remove; and splat
+shadows on a 5.9 M cloud do not fit in memory on the hardware route.

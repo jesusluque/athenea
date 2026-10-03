@@ -57,9 +57,11 @@ struct RayTracerSettings {
     float    splitAt = 0.0F;
     /// A posed cloud (one whose `revision` moved while its particles stayed
     /// the same) refits its structure; every this many refits it is rebuilt
-    /// in place instead, since a tree shaped for one pose bounds the next
-    /// ones ever more loosely. 0: never refit, rebuild every pose.
-    uint32_t refitsPerRebuild = 32;
+    /// in place instead, since a tree shaped for one pose may bound the next
+    /// ones ever more loosely. Measured on the flying sparrow (docs/
+    /// decisions.md): no slower trace after 240 refits, and a rebuild is a
+    /// ~50 ms hitch, so it is rare. 0: never refit, rebuild every pose.
+    uint32_t refitsPerRebuild = 240;
 };
 
 struct RayTracerStats {
