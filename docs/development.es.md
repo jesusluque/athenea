@@ -582,8 +582,9 @@ una y las celdas se calculan otra vez con cada pieza engrosada por
 
 ### 6.4 Un solo kernel: contar, escanear, emitir
 
-`plugins/mesh2splat/mesh2splat.slang` es un port de la conversión mesh2splat
-de Electronic Arts, de su pipeline de OpenGL a un kernel de compute. El suyo
+`plugins/mesh2splat/mesh2splat.slang` deriva de la conversión de mesh2splat
+(Electronic Arts, BSD 3-Clause con una cláusula sobre las marcas de EA),
+portada de su pipeline de OpenGL a un kernel de compute. El suyo
 es un geometry shader y un fragment shader; aquí no hay rasterizador, así que
 los fragmentos se recorren — las mismas muestras que habría producido el
 rasterizador, a la misma densidad, conservando el append atómico que hace que
@@ -1190,6 +1191,19 @@ Blender:
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
 `third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el
 submódulo, no aquí.
+
+**Licencias.** athenea es Apache-2.0: `LICENSE` y `NOTICE` en la raíz. Cada
+componente de terceros que el árbol contiene, compila dentro o enlaza está en
+`THIRD_PARTY_NOTICES.md` con el texto de su licencia literal, y una
+dependencia nueva o un fichero derivado del código de otro añade su entrada
+ahí en el mismo commit. Un fichero derivado conserva en su cabecera el aviso
+de copyright y la licencia del original, como
+`plugins/mesh2splat/mesh2splat.slang` conserva los de mesh2splat (BSD
+3-Clause con una cláusula sobre las marcas de EA), y su propia línea
+`// Copyright (c) 2026 jesus luque.` para los cambios. El build copia los tres
+ficheros junto a `bin/`, dentro del `Contents/Resources` de cada bundle AOFX y
+en `hdAthenea/resources`, y `cmake --install` los pone en `share/doc/athenea`
+y dentro de los bundles instalados.
 
 ## 8. El registro de diseño
 

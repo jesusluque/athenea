@@ -1,4 +1,5 @@
-# Electronic Arts' mesh2splat as an effect: a mesh in, gaussian splats out.
+# mesh2splat's conversion (Electronic Arts, BSD-3-Clause+) as an effect: a mesh
+# in, gaussian splats out.
 # Four entries out of one blob, which is why KERNELS names all of them: the
 # counters are cleared by one thread, then a thread counts each triangle's
 # cells, then one workgroup settles where each triangle's gaussians start, and

@@ -11347,3 +11347,36 @@ Not done:
   and the delegate may be drawing at the same time;
 - Blender's own engines show a referenced cloud as the Empty's box; a cloud
   imported as points they draw as Blender draws splats.
+
+## Licences: Apache-2.0, and what is owed to whom
+
+athenea is Apache-2.0 (`LICENSE`, `NOTICE`). `THIRD_PARTY_NOTICES.md` lists
+every third-party component the tree holds, compiles in or links, with each
+licence text copied verbatim from the component's own file at the version
+pinned; an Apache-2.0 component's text is the root `LICENSE` (the official
+text, identical to theirs) and is not repeated.
+
+- **mesh2splat.** `plugins/mesh2splat/mesh2splat.slang` is derived from EA's
+  GLSL conversion. Its header now carries EA's `LICENSE.txt` verbatim:
+  the 2025 copyright line (the old header said 2024, which nothing upstream
+  says), the four conditions -- the fourth, on EA's and SEED's marks, was
+  missing -- and the full disclaimer, which had been summarised. Clause 2 is
+  why the notices are copied into every bundle and beside `bin/`; clause 3 is
+  why the help text and the effect's description say "based on mesh2splat
+  (Electronic Arts, BSD-3-Clause+)" rather than leading with EA's name. The
+  BSD terms sit under Apache-2.0 without conflict: the derived file keeps
+  them, and the changes made here are Apache-2.0.
+- **ACES.** `technique/aces2.slang` is ported from aces-core (Apache-2.0); its
+  header now keeps the reference's copyright line, as section 4(c) asks.
+
+### Not done
+
+- Neither `athenea`, `athenea-mcp` nor `hdAthenea` has an install rule; the
+  notices are copied beside them in the build tree, and installed to
+  `share/doc/athenea` and inside the installed bundles. A package made from
+  the build tree carries them from there.
+- The libraries linked from the toolchain installs (OpenUSD, MaterialX,
+  OpenVDB, oneTBB, OIDN, OpenColorIO, Slang) are not shipped by this build. A
+  package that ships them also ships their own licence files and third-party
+  lists; `THIRD_PARTY_NOTICES.md` names them but does not reproduce
+  OpenUSD's or OpenVDB's long texts.

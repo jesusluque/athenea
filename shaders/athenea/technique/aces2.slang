@@ -16,6 +16,11 @@
 // ref_luminance folded into the CAM matrices); a 1000-nit peak comes out
 // as 10.0. Matrices are row-vector ones, `mul(v, M)`, as the reference's
 // mult_f3_f33(v, M).
+//
+// The reference's notice, which the code ported from it keeps:
+//   SPDX-License-Identifier: Apache-2.0
+//   Copyright Contributors to the ACES Project.
+// (THIRD_PARTY_NOTICES.md; the licence text is the repository's LICENSE.)
 module aces2;
 
 public struct Chromaticities {

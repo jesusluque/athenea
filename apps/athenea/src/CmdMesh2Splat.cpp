@@ -1,7 +1,8 @@
 // Copyright (c) 2026 jesus luque.
 //
 // `athenea mesh2splat`: a USD stage of meshes in, a stage of gaussian splats out,
-// converted by Electronic Arts' mesh2splat running as an AOFX effect.
+// converted by the mesh2splat effect (based on mesh2splat, Electronic Arts,
+// BSD-3-Clause+) running as an AOFX effect.
 //
 // WHO DOES WHAT, AND WHY IT IS SPLIT THIS WAY
 //
@@ -1844,7 +1845,9 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
 void addMesh2Splat(CLI::App& app) {
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand(
-        "mesh2splat", "convert a USD stage of meshes into gaussian splats (Electronic Arts' mesh2splat)");
+        "mesh2splat",
+        "convert a USD stage of meshes into gaussian splats; based on mesh2splat "
+        "(Electronic Arts, BSD-3-Clause+)");
     cmd->add_option("stage", o->stage, ".usd / .usda / .usdc holding meshes")->required();
     cmd->add_option("-o,--output", o->output,
                     "the ParticleField stage to write (.usda, .usdc, .usd), or a .athc with levels of detail");

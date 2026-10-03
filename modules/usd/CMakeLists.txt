@@ -81,6 +81,11 @@ if(ATHENEA_BLENDER_LIB)
         INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN};@executable_path/../Resources/lib")
 endif()
 configure_file(plugin/plugInfo.json.in "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources/plugInfo.json" @ONLY)
+# The plugin is what a package of it carries, so it carries what it owes.
+foreach(legal IN LISTS ATHENEA_LEGAL_FILES)
+    get_filename_component(legal_name "${legal}" NAME)
+    configure_file("${legal}" "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources/${legal_name}" COPYONLY)
+endforeach()
 else()
     # A tree configured for the desktop and then for the phone would leave
     # hdAthenea's plugInfo behind, and USD would go looking for a library that is

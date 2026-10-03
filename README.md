@@ -34,8 +34,8 @@ this frame's, not baked.*
 - **Splats as geometry, not as a viewer.** Meshes, points and clouds are
   composited by view z in both routes; a cloud is relit by the scene's lights
   or shows the radiance it was baked with.
-- **`athenea mesh2splat`**: a textured mesh becomes a cloud (Electronic Arts'
-  algorithm, below), and a **skinned** mesh becomes a cloud bound to its
+- **`athenea mesh2splat`**: a textured mesh becomes a cloud (based on
+  mesh2splat, below), and a **skinned** mesh becomes a cloud bound to its
   Skeleton by `SkelBindingAPI`, as a mesh is, and deformed on the device
   from the Skeleton's animation — with the joints' transforms cached beside
   it, 3 MB of rig instead of a pose a frame.
@@ -280,12 +280,13 @@ are the two glTF features it does not implement.
 
 ## What it owes to mesh2splat
 
-[mesh2splat](https://github.com/electronicarts/mesh2splat), Electronic Arts'
-mesh-to-gaussian converter, is the algorithm behind `athenea mesh2splat` and the
-`Mesh2Splat` AOFX plugin under `plugins/mesh2splat`. It is **BSD-3-Clause**
-(Copyright (c) 2024-2025 Electronic Arts Inc.), and what was taken is the
-conversion itself, ported from its OpenGL pipeline -- a vertex, geometry and
-fragment shader -- into one Slang compute kernel:
+[mesh2splat](https://github.com/electronicarts/mesh2splat), a mesh-to-gaussian
+converter published by Electronic Arts, is the algorithm behind `athenea
+mesh2splat` and the `Mesh2Splat` AOFX plugin under `plugins/mesh2splat`. Its
+licence is BSD 3-Clause with a fourth clause on EA's marks (Copyright (c) 2025
+Electronic Arts Inc.). The plugin's kernel is derived from its conversion,
+ported to Slang from its OpenGL pipeline -- a vertex, geometry and fragment
+shader -- into one compute kernel:
 
 - a triangle is projected onto the plane its normal points along least, with
   the position taken relative to the model's box and over the wider of that
@@ -317,14 +318,18 @@ the set of texture coordinates its material names; and the value of a cut-out
 map becomes the gaussian's opacity rather than a yes or a no, which is what
 keeps a feather's barb soft.
 
-The copyright notice and the three conditions are at the head of
-`plugins/mesh2splat/mesh2splat.slang`, which is the file the algorithm lives
-in. No code was copied: their shaders are GLSL and this is Slang, their
-density comes from a rasteriser and here the cells are walked. What is not
-theirs is marked in that file -- transmission, which their conversion has no
-channel for, and which a gaussian answers with a tint rather than a lens.
+The copyright notice, the four conditions and the disclaimer are reproduced
+verbatim at the head of `plugins/mesh2splat/mesh2splat.slang`, the file
+derived from their shaders, and in `THIRD_PARTY_NOTICES.md`, which is
+installed with the binaries and inside every plugin bundle. The port is a
+translation from GLSL to Slang with changes: their density comes from a
+rasteriser and here the cells are walked. What is not theirs is marked in
+that file -- transmission, which their conversion has no channel for, and
+which a gaussian answers with a tint rather than a lens.
 
-EA's name and marks are not used to endorse anything here.
+Electronic Arts' name is used here only to say where the algorithm comes
+from; it does not endorse this project, and none of EA's or SEED's marks or
+logos are distributed with it.
 
 ## Status
 
@@ -356,3 +361,12 @@ What is not done, or not verified:
 
 Why things are the way they are, with the measurements, is in
 [docs/decisions.md](docs/decisions.md).
+
+## Licence
+
+athenea is licensed under the [Apache License, Version 2.0](LICENSE);
+`NOTICE` carries its copyright line. The third-party code it holds, compiles
+in or links -- mesh2splat's BSD licence among them, which the derived file
+keeps under its own terms -- is listed with each licence's text in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The three files are
+installed with the binaries and inside every AOFX bundle.

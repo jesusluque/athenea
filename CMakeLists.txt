@@ -210,6 +210,26 @@ endif()
 # found it and both modules/ and tests/ name it.
 find_package(ZLIB REQUIRED)
 
+# The licence, the NOTICE and the third parties' notices go wherever a binary
+# built here goes: beside bin/, into every AOFX bundle's Contents/Resources
+# (modules/aofx/sdk/cmake/AofxBundle.cmake) and into hdAthenea/resources
+# (modules/usd), and `cmake --install` puts them in share/doc/athenea and
+# inside the installed bundles. A binary distribution owes them (THIRD_PARTY_NOTICES.md says whose).
+set(ATHENEA_LEGAL_FILES
+    "${ATHENEA_ROOT}/LICENSE"
+    "${ATHENEA_ROOT}/NOTICE"
+    "${ATHENEA_ROOT}/THIRD_PARTY_NOTICES.md")
+if(NOT ATHENEA_IOS)
+    include(GNUInstallDirs)
+    if(NOT ATHENEA_EMBEDDED)
+        foreach(legal IN LISTS ATHENEA_LEGAL_FILES)
+            get_filename_component(legal_name "${legal}" NAME)
+            configure_file("${legal}" "${ATHENEA_BUILD}/bin/${legal_name}" COPYONLY)
+        endforeach()
+    endif()
+    install(FILES ${ATHENEA_LEGAL_FILES} DESTINATION "${CMAKE_INSTALL_DOCDIR}")
+endif()
+
 # OpenUSD and MaterialX, seen by the modules that read them, the apps and tests.
 include("${ATHENEA_ROOT}/cmake/Usd.cmake")
 add_subdirectory(modules)
