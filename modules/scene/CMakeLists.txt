@@ -1,6 +1,7 @@
 athenea_add_module(scene
     SOURCES
         src/GpuClouds.cpp
+        src/SplatInfluences.cpp
         src/SplatSkinner.cpp
     PUBLIC_LIBS
         athenea::core

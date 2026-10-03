@@ -1087,6 +1087,19 @@ brillante); una captura no tiene.
 | `primvars:athenea:splat:jointWeightGradients` | half[] | seis por gaussiana: los gradientes de peso de los tres primeros joints a lo largo de sus dos ejes de reposo, por unidad del espacio de la nube; el del cuarto es menos su suma. Opcional |
 | `primvars:athenea:splat:skeleton` | string | de dónde vino |
 
+En el dispositivo los joints y los pesos ocupan 4 bytes por influencia (16
+por gaussiana de cuatro) donde el esqueleto tiene como mucho 65536 joints, y 8
+por encima. Un peso se guarda a 1/65535 y en [0, 1]; los pesos de una
+gaussiana conservan su suma a media unidad de ese paso. Un índice -1 es el
+joint 0. Un índice que el esqueleto no tiene no lleva nada, y cada nube que
+tenga alguno registra
+
+```
+'<prim>': <n> influences name a joint the skeleton's <joints> have not; they hold nothing
+```
+
+y un peso fuera de [0, 1] registra `'<prim>': <n> joint weights outside [0, 1]`.
+
 **`AtheneaSplatVisibilityAPI`** — lo que proyecta una nube con esqueleto, horneado
 por partes.
 

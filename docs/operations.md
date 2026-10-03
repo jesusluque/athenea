@@ -1064,6 +1064,18 @@ brightest); a capture has none.
 | `primvars:athenea:splat:jointWeightGradients` | half[] | six a gaussian: the first three joints' weight gradients along its two rest axes, per unit of the cloud's space; the fourth's is minus their sum. Optional |
 | `primvars:athenea:splat:skeleton` | string | where it came from |
 
+On the device the joints and weights take 4 bytes an influence (16 a
+gaussian of four) where the skeleton has at most 65536 joints, and 8 past
+that. A weight is held to 1/65535 and in [0, 1]; a gaussian's weights keep
+their sum to half that step. An index of -1 is joint 0. An index the skeleton
+does not have holds nothing, and each cloud that has any logs
+
+```
+'<prim>': <n> influences name a joint the skeleton's <joints> have not; they hold nothing
+```
+
+and a weight outside [0, 1] logs `'<prim>': <n> joint weights outside [0, 1]`.
+
 **`AtheneaSplatVisibilityAPI`** — what a skinned cloud casts, baked by part.
 
 | Attribute | Type | Note |

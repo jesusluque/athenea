@@ -44,6 +44,7 @@
 #include "athenea/technique/SplatVisibility.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/world/VolumeSet.h"
+#include "athenea/scene/SplatInfluences.h"
 #include "athenea/scene/SplatSkinner.h"
 #include "athenea/world/GpuScene.h"
 #include "athenea/world/Instancing.h"
@@ -136,8 +137,13 @@ struct SplatEntry {
     /// frame draws. Its buffers outlive the frame, so the cloud a renderer
     /// holds never changes identity between them.
     std::unique_ptr<scene::GpuSplats>   posed;
-    gpu::Buffer                         influences;   ///< float2 (joint, weight), `perSplat` a gaussian
+    /// `perSplat` influences a kept gaussian, packed on the device from the
+    /// file's two arrays (scene::InfluencePacker): a word each (joint u16 |
+    /// weight unorm16), or a float2 pair each for a skeleton past 65536
+    /// joints.
+    gpu::Buffer                         influences;
     uint32_t                            perSplat = 4; ///< influences a gaussian (SkelBindingAPI's elementSize)
+    scene::InfluenceLayout              influenceLayout = scene::InfluenceLayout::Packed;
     /// The weights' gradients across each gaussian, `perSplat - 1` words of
     /// two halves a kept gaussian; empty for a cloud converted without them.
     gpu::Buffer                         weightGradients;
@@ -564,6 +570,11 @@ public:
     /// The level of each LOD group a view draws (athenea:lod:group).
     [[nodiscard]] std::set<const SplatEntry*> lodLevelsFor(const render::Projection& projection) const;
     [[nodiscard]] uint64_t cloudUploads() const noexcept { return cloudUploads_.load(); }
+    /// What the skinned clouds' influences hold on the device now, in bytes,
+    /// over every cloud; and the influences their files named a joint the
+    /// skeleton has not, over every upload (held as weight 0).
+    [[nodiscard]] uint64_t skinInfluenceBytes() const;
+    [[nodiscard]] uint64_t jointsOutOfRange() const noexcept { return jointsOutOfRange_.load(); }
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
     }
@@ -651,6 +662,7 @@ private:
     /// Measures the frame's factors into `into`, once, for either route.
     [[nodiscard]] Result<void> measureVisibility(render::SplatLights& into);
     std::optional<scene::SplatSkinner>        splatSkinner_;
+    std::optional<scene::InfluencePacker>     influencePacker_;
     std::optional<technique::VisibilityRaster> visibilityRaster_;   ///< each made on first use
     std::optional<world::RayTracingScene>      rayTracingScene_;
     std::optional<technique::VisibilityTrace>  visibilityTrace_;
@@ -737,6 +749,7 @@ private:
     /// what it holds changed (tests hold a time step to it).
     double                                    lastCommitMs_ = 0.0;   ///< ATHENEA_STAGES: the last commit's time
     std::atomic<uint64_t>                     cloudUploads_{0};
+    std::atomic<uint64_t>                     jointsOutOfRange_{0};
     std::atomic<bool>                         splatReflections_{false};
     /// The per-prim material table and the buffer it is uploaded into. The
     /// rows are the host's; `splatOverrideRows_` is what the frame bound.

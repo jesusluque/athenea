@@ -996,6 +996,18 @@ uint64_t StageRenderer::cloudUploads() const {
     return engine != nullptr ? engine->cloudUploads() : 0;
 }
 
+uint64_t StageRenderer::skinInfluenceBytes() const {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
+    return engine != nullptr ? engine->skinInfluenceBytes() : 0;
+}
+
+uint64_t StageRenderer::jointsOutOfRange() const {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
+    return engine != nullptr ? engine->jointsOutOfRange() : 0;
+}
+
 std::map<std::string, uint32_t> StageRenderer::cryptoManifest() const {
     auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
     Engine* engine = param != nullptr ? param->GetEngine() : nullptr;

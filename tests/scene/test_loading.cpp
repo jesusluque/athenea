@@ -21,6 +21,7 @@
 
 #include "athenea/io/Readers.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/scene/SplatInfluences.h"
 #include "athenea/scene/SplatSkinner.h"
 
 using namespace athenea;
@@ -892,4 +893,303 @@ TEST_CASE("a bake's basis is the one a renderer reads, term for term", "[scene][
     CHECK(counts[1] == kTerms * kDirections);
     CHECK(counts[0] == 0);
     CHECK(counts[3] > 100000u);   // a basis of order one was actually compared
+}
+
+// A RIG'S JOINTS AND WEIGHTS GO UP AS THE FILE HOLDS THEM, AND ARE PAIRED AND
+// PACKED ON THE DEVICE.
+//
+// The host used to interleave UsdSkel's two arrays into float pairs, a record
+// each, and the device packed those to the gaussians validation kept. Now the
+// arrays go up as bytes and one kernel does both, into a word an influence
+// (joint u16 | weight unorm16) or, for a skeleton past 16 bits, the same
+// pairs. Against the old path -- its loop run as a kernel, then the real
+// keptOnly -- the joints must be the same, each packed weight within one step
+// of the float, a gaussian's steps must add up to its weights to half a step,
+// and the pairs must be the same bits. A pad (-1) is joint 0, and the one
+// joint past the skeleton holds nothing and is counted. Both a weight a
+// record and the constant binding (one set for every gaussian).
+TEST_CASE("a rig's influences are packed on the device as the host paired them",
+          "[scene][gpu][skinning][influences]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = gpu->library->device();
+    const auto kernel = [&](const char* entry) {
+        auto made = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_influences_check", entry);
+        if (!made) FAIL(made.error().toString());
+        return std::move(*made);
+    };
+    gpu::ComputeKernel make = kernel("infMake");
+    gpu::ComputeKernel origin = kernel("infOrigin");
+    gpu::ComputeKernel oldPairs = kernel("infOldPairs");
+    gpu::ComputeKernel compare = kernel("infCompare");
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    auto packer = scene::InfluencePacker::create(*gpu->library);
+    if (!packer) FAIL(packer.error().toString());
+
+    constexpr uint32_t kCount = 50000;
+    constexpr uint32_t kDeclared = kCount * 2;
+    constexpr uint32_t kPerSplat = 4;
+    constexpr uint32_t kJoints = 609;   // the sparrow's
+    const auto buffer = [&](uint64_t count, uint32_t element, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(count, 1) * element;
+        desc.elementBytes = element;
+        desc.label = label;
+        auto made = gpu::Buffer::create(device, desc);
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    scene::GpuSplats splats;
+    splats.count = kCount;
+    splats.declared = kDeclared;
+    splats.origin = buffer(kCount, 4, "influences.origin");
+    gpu::Buffer counts = buffer(8, 4, "influences.counts");
+
+    struct Case {
+        const char* name;
+        bool        constant;
+    };
+    for (const Case one : {Case{"a set a record", false}, Case{"one set for all", true}}) {
+        const uint32_t held = one.constant ? kPerSplat : kDeclared * kPerSplat;
+        // Record 2 * 5 + 1 is kept (gaussian 5): its third slot is the one
+        // past the skeleton. The constant set has none -- it would be every
+        // gaussian's.
+        const uint32_t badRecord = one.constant ? ~0u : 11u;
+        gpu::Buffer indices = buffer(held, 4, "influences.jointIndices");
+        gpu::Buffer weights = buffer(held, 4, "influences.jointWeights");
+        gpu::Buffer pairsByRecord = buffer(uint64_t{kDeclared} * kPerSplat, 8, "influences.pairsByRecord");
+        const auto bind = [&](rhi::ShaderCursor cursor, const gpu::Buffer& reference, const gpu::Buffer& packed,
+                              scene::InfluenceLayout layout) {
+            cursor["jointIndices"].setBinding(indices.rhi());
+            cursor["jointWeights"].setBinding(weights.rhi());
+            cursor["origin"].setBinding(splats.origin.rhi());
+            cursor["pairsByRecord"].setBinding(pairsByRecord.rhi());
+            cursor["reference"].setBinding(reference.rhi());
+            cursor["packed"].setBinding(packed.rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(kCount);
+            p["declared"].setData(kDeclared);
+            p["perSplat"].setData(kPerSplat);
+            p["held"].setData(held);
+            p["joints"].setData(kJoints);
+            p["badRecord"].setData(badRecord);
+            p["badSlot"].setData(uint32_t{2});
+            p["layout"].setData(static_cast<uint32_t>(layout));
+        };
+        {
+            gpu::CommandBatch batch(device);
+            const auto inputs = [&](rhi::ShaderCursor c) {
+                bind(c, pairsByRecord, pairsByRecord, scene::InfluenceLayout::Pairs);
+            };
+            make.dispatch(batch, {held / kPerSplat, 1, 1}, inputs);
+            origin.dispatch(batch, {kCount, 1, 1}, inputs);
+            REQUIRE(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(device);
+            oldPairs.dispatch(batch, {kDeclared * kPerSplat, 1, 1}, [&](rhi::ShaderCursor c) {
+                bind(c, pairsByRecord, pairsByRecord, scene::InfluenceLayout::Pairs);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        // The old path's second half, the real one.
+        auto reference = loader->keptOnly(splats, pairsByRecord, kPerSplat * 2, "influences.reference");
+        if (!reference) FAIL(reference.error().toString());
+
+        scene::InfluenceSource source;
+        source.jointIndices = &indices;
+        source.jointWeights = &weights;
+        source.held = held;
+        source.perSplat = kPerSplat;
+        source.joints = kJoints;
+        for (const scene::InfluenceLayout layout : {scene::InfluenceLayout::Packed, scene::InfluenceLayout::Pairs}) {
+            const bool isPacked = layout == scene::InfluenceLayout::Packed;
+            INFO(one.name << (isPacked ? ", packed" : ", pairs"));
+            auto packed = packer->pack(splats, source, layout, "influences.packed");
+            if (!packed) FAIL(packed.error().toString());
+            CHECK(packed->words.bytes() == uint64_t{kCount} * kPerSplat * scene::influenceBytes(layout));
+            CHECK(packed->jointsOutOfRange == (one.constant ? 0u : 1u));
+            CHECK(packed->weightsOutOfRange == 0);
+            const std::array<uint32_t, 8> zero{};
+            REQUIRE(counts.write(device, 0, sizeof(zero), zero.data()));
+            {
+                gpu::CommandBatch batch(device);
+                compare.dispatch(batch, {kCount, 1, 1},
+                                 [&](rhi::ShaderCursor c) { bind(c, *reference, packed->words, layout); });
+                REQUIRE(batch.submit(true));
+            }
+            std::array<uint32_t, 8> seen{};
+            REQUIRE(counts.read(device, 0, sizeof(seen), seen.data()));
+            std::printf("  %-16s %-6s %u compared, %u joints differ, %u weights off, %u sums off, "
+                        "%u past the skeleton (%u holding something); %llu bytes (%u a gaussian)\n",
+                        one.name, isPacked ? "packed" : "pairs", seen[0], seen[1], seen[2], seen[3], seen[4],
+                        seen[5], static_cast<unsigned long long>(packed->words.bytes()),
+                        kPerSplat * scene::influenceBytes(layout));
+            CHECK(seen[0] == kCount * kPerSplat);
+            CHECK(seen[1] == 0);
+            CHECK(seen[2] == 0);
+            CHECK(seen[3] == 0);
+            CHECK(seen[4] == (one.constant ? 0u : 1u));
+            CHECK(seen[5] == 0);
+        }
+    }
+}
+
+// AND A CLOUD SKINNED FROM THE PACKED WORDS IS WHERE THE PAIRS PUT IT.
+//
+// The same helix of gaussians, blended between four of sixty joints that
+// each turn and slide their own way, with its weights' gradients (the elastic
+// term of the whole Jacobian): skinned once from the old pairs and once from
+// the packed words, and the two posed clouds compared on the device. The
+// bound is the weights' step: a weight a step off moves a point by the step
+// times how far its joint disagrees with the blend, a few units here at most,
+// so 5e-4 of a cloud some four units across; sizes to 2e-3 relatively; axes
+// to the frame's own 10-bit quantisation. The largest difference comes back
+// as a number.
+TEST_CASE("a cloud skinned from packed influences is where the pairs put it",
+          "[scene][gpu][skinning][influences]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = gpu->library->device();
+    const auto kernel = [&](const char* entry) {
+        auto made = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_influences_check", entry);
+        if (!made) FAIL(made.error().toString());
+        return std::move(*made);
+    };
+    gpu::ComputeKernel make = kernel("infMake");
+    gpu::ComputeKernel origin = kernel("infOrigin");
+    gpu::ComputeKernel oldPairs = kernel("infOldPairs");
+    gpu::ComputeKernel rest = kernel("infRest");
+    gpu::ComputeKernel joints = kernel("infJoints");
+    gpu::ComputeKernel compare = kernel("infSkinCompare");
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    auto packer = scene::InfluencePacker::create(*gpu->library);
+    if (!packer) FAIL(packer.error().toString());
+    auto skinner = scene::SplatSkinner::create(*gpu->library);
+    if (!skinner) FAIL(skinner.error().toString());
+
+    constexpr uint32_t kCount = 16384;
+    constexpr uint32_t kDeclared = kCount * 2;
+    constexpr uint32_t kPerSplat = 4;
+    constexpr uint32_t kJoints = 60;
+    constexpr float kPosition = 5.0e-4F;
+    constexpr float kSize = 2.0e-3F;
+    constexpr float kAxes = 4.0e-3F;
+    const auto buffer = [&](uint64_t count, uint32_t element, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(count, 1) * element;
+        desc.elementBytes = element;
+        desc.label = label;
+        auto made = gpu::Buffer::create(device, desc);
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    scene::GpuSplats cloud;
+    cloud.count = kCount;
+    cloud.declared = kDeclared;
+    cloud.origin = buffer(kCount, 4, "skinpack.origin");
+    cloud.positions = buffer(kCount, 16, "skinpack.restPositions");
+    cloud.shape = buffer(uint64_t{kCount} * 4, 4, "skinpack.restShape");
+    const uint32_t held = kDeclared * kPerSplat;
+    gpu::Buffer indices = buffer(held, 4, "skinpack.jointIndices");
+    gpu::Buffer weights = buffer(held, 4, "skinpack.jointWeights");
+    gpu::Buffer pairsByRecord = buffer(held, 8, "skinpack.pairsByRecord");
+    gpu::Buffer gradients = buffer(uint64_t{kCount} * (kPerSplat - 1), 4, "skinpack.gradients");
+    gpu::Buffer xforms = buffer(uint64_t{kJoints} * 4, 16, "skinpack.xforms");
+    gpu::Buffer positionsA = buffer(kCount, 16, "skinpack.positionsA");
+    gpu::Buffer shapeA = buffer(uint64_t{kCount} * 4, 4, "skinpack.shapeA");
+    gpu::Buffer positionsB = buffer(kCount, 16, "skinpack.positionsB");
+    gpu::Buffer shapeB = buffer(uint64_t{kCount} * 4, 4, "skinpack.shapeB");
+    gpu::Buffer counts = buffer(8, 4, "skinpack.counts");
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        cursor["jointIndices"].setBinding(indices.rhi());
+        cursor["jointWeights"].setBinding(weights.rhi());
+        cursor["origin"].setBinding(cloud.origin.rhi());
+        cursor["pairsByRecord"].setBinding(pairsByRecord.rhi());
+        cursor["reference"].setBinding(pairsByRecord.rhi());
+        cursor["packed"].setBinding(indices.rhi());
+        cursor["counts"].setBinding(counts.rhi());
+        cursor["restPositions"].setBinding(cloud.positions.rhi());
+        cursor["restShape"].setBinding(cloud.shape.rhi());
+        cursor["xforms"].setBinding(xforms.rhi());
+        cursor["gradients"].setBinding(gradients.rhi());
+        cursor["positionsA"].setBinding(positionsA.rhi());
+        cursor["shapeA"].setBinding(shapeA.rhi());
+        cursor["positionsB"].setBinding(positionsB.rhi());
+        cursor["shapeB"].setBinding(shapeB.rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        p["count"].setData(kCount);
+        p["declared"].setData(kDeclared);
+        p["perSplat"].setData(kPerSplat);
+        p["held"].setData(held);
+        p["joints"].setData(kJoints);
+        p["badRecord"].setData(~0u);
+        p["badSlot"].setData(uint32_t{0});
+        p["layout"].setData(static_cast<uint32_t>(scene::InfluenceLayout::Pairs));
+        p["positionTolerance"].setData(kPosition);
+        p["sizeTolerance"].setData(kSize);
+        p["axisTolerance"].setData(kAxes);
+    };
+    {
+        gpu::CommandBatch batch(device);
+        make.dispatch(batch, {held / kPerSplat, 1, 1}, bind);
+        origin.dispatch(batch, {kCount, 1, 1}, bind);
+        rest.dispatch(batch, {kCount, 1, 1}, bind);
+        joints.dispatch(batch, {kJoints, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    {
+        gpu::CommandBatch batch(device);
+        oldPairs.dispatch(batch, {held, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    auto pairs = loader->keptOnly(cloud, pairsByRecord, kPerSplat * 2, "skinpack.pairs");
+    if (!pairs) FAIL(pairs.error().toString());
+    scene::InfluenceSource source;
+    source.jointIndices = &indices;
+    source.jointWeights = &weights;
+    source.held = held;
+    source.perSplat = kPerSplat;
+    source.joints = kJoints;
+    auto packed = packer->pack(cloud, source, scene::InfluenceLayout::Packed, "skinpack.packed");
+    if (!packed) FAIL(packed.error().toString());
+
+    for (const bool withGradients : {true, false}) {
+        INFO((withGradients ? "with gradients" : "the blend alone"));
+        {
+            gpu::CommandBatch batch(device);
+            scene::SplatSkinInput input;
+            input.rest = &cloud;
+            input.perSplat = kPerSplat;
+            input.skinningXforms = &xforms;
+            input.weightGradients = withGradients ? &gradients : nullptr;
+            input.influences = &*pairs;
+            input.layout = scene::InfluenceLayout::Pairs;
+            REQUIRE(skinner->skin(batch, input, positionsA, shapeA));
+            input.influences = &packed->words;
+            input.layout = scene::InfluenceLayout::Packed;
+            REQUIRE(skinner->skin(batch, input, positionsB, shapeB));
+            REQUIRE(batch.submit(true));
+        }
+        const std::array<uint32_t, 8> zero{};
+        REQUIRE(counts.write(device, 0, sizeof(zero), zero.data()));
+        {
+            gpu::CommandBatch batch(device);
+            compare.dispatch(batch, {kCount, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 8> seen{};
+        REQUIRE(counts.read(device, 0, sizeof(seen), seen.data()));
+        float largest = 0.0F;
+        std::memcpy(&largest, &seen[6], sizeof(largest));
+        std::printf("  %-16s %u compared, %u moved, %u resized, %u turned; largest position difference %.3g\n",
+                    withGradients ? "with gradients" : "the blend alone", seen[0], seen[1], seen[2], seen[3],
+                    double(largest));
+        CHECK(seen[0] == kCount);
+        CHECK(seen[1] == 0);
+        CHECK(seen[2] == 0);
+        CHECK(seen[3] == 0);
+        CHECK(largest <= kPosition);
+    }
 }

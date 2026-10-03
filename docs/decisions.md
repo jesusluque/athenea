@@ -5812,6 +5812,10 @@ four values a gaussian and a buffer of eight floats each -- **137 MB** for that
 bird -- none of which changes between instants. It is now rebuilt only when the
 cloud was uploaded.
 
+*Later* ("A rig's joints, packed on the device" below): the host does not
+interleave them at all. The two arrays go up as the file holds them and a
+kernel pairs and packs them, to 16 bytes a gaussian.
+
 Measured on the viewer, 400 frames playing at 1280x720:
 
 | | before | after |
@@ -5826,6 +5830,72 @@ The rasteriser is at 75 fps on 4.27 M skinned gaussians. The traced route
 improves in the median and not in its warm frame, so its remaining cost is
 elsewhere -- the proxies and the acceleration structure the posed cloud is
 traced through, which is the next thing to look at.
+
+## A rig's joints, packed on the device
+
+What R9 left was the interleave itself: on every upload of a skinned cloud the
+host walked `jointIndices` and `jointWeights` and wrote a `(joint, weight)`
+float pair for each influence -- a `std::vector` of **137 MB** for the
+sparrow's 4 269 858 gaussians, uploaded as 137 MB more and then packed to the
+gaussians validation kept by `keptOnly`. That is a CPU loop over data, which
+this codebase does not do, and twice the bytes the influences need.
+
+**The arrays go up as their bytes.** `Engine::carryCloud` hands the two
+`VtArray`s' storage to `scene::InfluencePacker` (`SplatInfluences.h`), which
+copies them into two device buffers and runs one kernel,
+`scene/splat_influences.slang` (`splatInfluencesPack`), one thread a kept
+gaussian. It reads the record the gaussian came from through
+`GpuSplats::origin` -- the interleave and `keptOnly` in one pass -- takes
+`k % held` as the host's loop did (a constant binding is one set for all),
+makes a negative index joint 0 (UsdSkel pads with -1 and weight 0), and
+writes the layout below.
+
+**Packed: a word an influence**, joint u16 in the low half and the weight as
+unorm16 in the high (`common/influences.slang`, shifts on a `uint`, since a
+16-bit type in a structured buffer is not portable between Metal and CUDA).
+Four influences are **16 bytes a gaussian against 32**: on the sparrow 68 MB
+on the device instead of 137, and nothing on the host instead of 137. A
+skeleton past 65536 joints cannot name its joints in 16 bits and keeps the
+float pairs, made by the same kernel (`InfluencePacker::layoutFor`); the
+skinner and the bake's `visPartOf` read either (`SplatSkinInput::layout`).
+
+**The weights' running sum is what is rounded**, not each weight: a weight's
+steps are `round(65535 S_k) - round(65535 S_{k-1})` with `S_k` the sum of the
+first `k`. Each is within one step (1.5e-5) of its float, and a gaussian's add
+up to its sum within half a step -- so weights that summed to one still sum to
+exactly one. Rounding each would let the sum drift by up to two steps, and the
+blend `sum w_j X_j q`, which is not divided by the sum, would pull the point
+toward the skeleton's origin by that fraction of its distance: 30 µm at a
+metre. A weight's step moves a point by the step times how far its joint
+disagrees with the blend -- under a micrometre on the sparrow's wing, whose
+joints disagree by centimetres.
+
+**What a file gets wrong is counted, not read past.** An index at or past the
+skeleton's joint count used to index past the transforms' buffer; it now
+holds nothing (joint 0, weight 0), is counted on the device and logged once a
+cloud, and `StageRenderer::jointsOutOfRange` returns the total. A weight
+outside [0, 1] is counted and logged too; the packed layout holds it clamped.
+
+The weights' gradients (task 18) are untouched: they were already uploaded as
+the file holds them and packed by `keptOnly`, and the skinner pairs them with
+the k-th influence as before. They now count toward a cloud's device bytes in
+the stage report, which left them out.
+
+**Tests** (not yet run: written while the GPU was taken by another job).
+`tests/scene/test_loading.cpp`: "a rig's influences are packed on the device
+as the host paired them" -- 50 000 kept gaussians of 100 000 records, four
+influences of 609 joints, against the old loop run as a kernel and the real
+`keptOnly`: joints equal, each weight within a step, each gaussian's sum within
+half, the pairs layout bit for bit, a pad as joint 0, one joint past the
+skeleton held as nothing and counted, a set a record and the constant binding.
+"a cloud skinned from packed influences is where the pairs put it" -- 16 384
+gaussians between four of 60 joints, with and without gradients, positions
+within 5e-4 of a cloud four units across, sizes within 2e-3, axes within the
+frame's quantisation. `tests/usd/test_usd.cpp`: "a skinned cloud's
+influences are packed on the device, and it draws as the pairs drew" -- the
+same file under three joints (packed) and under 65537 (pairs): frames p99 0,
+no pixel over 2 code values, the device bytes halved, the bad joint counted
+once each.
 
 ## A cloud shadows itself by part: baked once, read every frame, no ray
 

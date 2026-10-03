@@ -131,7 +131,8 @@ Result<SplatVisibility> SplatVisibility::create(gpu::ShaderLibrary& library) {
 }
 
 Result<void> SplatVisibility::bake(scene::GpuSplats& cloud, const gpu::Buffer& influences, uint32_t perSplat,
-                                   const VisibilityParts& parts, const VisibilityBakeOptions& options) {
+                                   const VisibilityParts& parts, const VisibilityBakeOptions& options,
+                                   scene::InfluenceLayout layout) {
     const uint32_t count = cloud.count;
     const auto partCount = static_cast<uint32_t>(parts.partJoint.size());
     if (count == 0 || partCount == 0 || parts.jointToPart.empty()) {
@@ -162,6 +163,7 @@ Result<void> SplatVisibility::bake(scene::GpuSplats& cloud, const gpu::Buffer& i
             cursor["partOf"].setBinding(partOf->rhi());
             cursor["partParams"]["count"].setData(count);
             cursor["partParams"]["perSplat"].setData(perSplat);
+            cursor["partParams"]["layout"].setData(static_cast<uint32_t>(layout));
         });
         ATHENEA_TRY(batch.submit(true));
     }

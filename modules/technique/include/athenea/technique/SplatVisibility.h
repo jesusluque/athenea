@@ -28,6 +28,7 @@
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/render/GaussianRayTracer.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/scene/SplatInfluences.h"
 
 namespace athenea::technique {
 
@@ -77,10 +78,12 @@ public:
     [[nodiscard]] static Result<SplatVisibility> create(gpu::ShaderLibrary& library);
 
     /// Bakes every part's field into `cloud`'s visibility buffers. `cloud`
-    /// is the bind pose; `influences` are `(joint, weight)` pairs, `perSplat`
-    /// each. Waits for the device: a bake is not a frame.
+    /// is the bind pose; `influences` are `perSplat` a gaussian, laid out
+    /// as `layout` says (`scene::InfluenceLayout`). Waits for the device: a
+    /// bake is not a frame.
     [[nodiscard]] Result<void> bake(scene::GpuSplats& cloud, const gpu::Buffer& influences, uint32_t perSplat,
-                                    const VisibilityParts& parts, const VisibilityBakeOptions& options);
+                                    const VisibilityParts& parts, const VisibilityBakeOptions& options,
+                                    scene::InfluenceLayout layout = scene::InfluenceLayout::Pairs);
 
     /// Queued into `batch`: `factors[(base + i) * lightCount + k]` for every
     /// gaussian i and light k.

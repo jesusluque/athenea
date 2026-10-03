@@ -32,6 +32,7 @@
 // the next -- so a ray tracer refits rather than rebuilds.
 module splat_skin;
 import athenea.common.packing;
+import athenea.common.influences;
 
 struct SplatSkinParams {
     uint   count;          ///< gaussians
@@ -39,7 +40,7 @@ struct SplatSkinParams {
     uint   motionOut;      ///< 1: also write what the shutter moved this gaussian
     uint   normalsOut;     ///< 1: the cloud keeps shading normals, and they are turned too
     uint   gradientsIn;    ///< 1: `weightGradients` holds the weights' tangential gradients
-    uint   pad0;
+    uint   influenceLayout; ///< kInfluencePairs or kInfluencePacked (common/influences.slang)
     uint   pad1;
     uint   pad2;
     float4 geomBind0;      ///< rows of a 4x4, as geom/skinning.slang takes them
@@ -58,7 +59,10 @@ struct SplatSkinParams {
 
 StructuredBuffer<float4>   restPositions;   // xyz, w opacity
 StructuredBuffer<uint>     restShape;       // 4 words: rotation, log scales, base colour
-StructuredBuffer<float2>   influences;      // (joint, weight), perSplat a gaussian
+// The joints and weights, perSplat a gaussian, in either layout of
+// common/influences.slang: one word an influence packed (joint u16 | weight
+// unorm16), or two as a float2 pair.
+StructuredBuffer<uint>     influences;
 StructuredBuffer<float4>   skinningXforms;  // 4 rows a joint (row-major 4x4)
 // The same joints at the shutter's other end. Bound to `skinningXforms` when
 // nothing asks for motion, since a name a shader declares must be bound.
@@ -130,7 +134,7 @@ void splatSkin(uint3 tid: SV_DispatchThreadID) {
     const uint offset = at * params.perSplat;
     const uint gradientWords = params.perSplat > 0 ? params.perSplat - 1 : 0;
     for (uint k = 0; k < params.perSplat; ++k) {
-        const float2 influence = influences[offset + k];
+        const float2 influence = influenceAt(influences, params.influenceLayout, offset, k);
         const float weight = influence.y;
         float2 gradient = float2(0.0, 0.0);
         if (params.gradientsIn != 0) {

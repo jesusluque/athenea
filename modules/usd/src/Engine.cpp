@@ -885,7 +885,8 @@ void Engine::noteGaussians(const std::string& route, std::span<const render::Spl
         if (entry.posed != nullptr) {
             c.bytes += bytesOf(*entry.posed);
         }
-        for (const gpu::Buffer* b : {&entry.influences, &entry.xforms, &entry.xformsEnd, &entry.motion}) {
+        for (const gpu::Buffer* b :
+             {&entry.influences, &entry.weightGradients, &entry.xforms, &entry.xformsEnd, &entry.motion}) {
             c.bytes += b->valid() ? b->bytes() : 0;
         }
         g.cloudBytes += c.bytes;
@@ -3297,6 +3298,15 @@ CloudIdentity Engine::identityOf(const ParticleFieldArrays& arrays) {
     return identity;
 }
 
+uint64_t Engine::skinInfluenceBytes() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    uint64_t bytes = 0;
+    for (const auto& [id, entry] : splats_) {
+        bytes += entry.influences.valid() ? entry.influences.bytes() : 0;
+    }
+    return bytes;
+}
+
 Result<Engine::BakedVisibility> Engine::bakeVisibility(const pxr::SdfPath& id,
                                                        const technique::VisibilityParts& parts,
                                                        const technique::VisibilityBakeOptions& options) {
@@ -3319,7 +3329,8 @@ Result<Engine::BakedVisibility> Engine::bakeVisibility(const pxr::SdfPath& id,
         if (!made) return std::move(made).error();
         splatVisibility_.emplace(std::move(*made));
     }
-    ATHENEA_TRY(splatVisibility_->bake(*entry.gpu, entry.influences, entry.perSplat, parts, options));
+    ATHENEA_TRY(splatVisibility_->bake(*entry.gpu, entry.influences, entry.perSplat, parts, options,
+                                       entry.influenceLayout));
     BakedVisibility out;
     out.partCount = entry.gpu->visibilityPartCount;
     out.parts.resize(size_t{out.partCount} * 12);
@@ -3479,27 +3490,40 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
         splatSkinner_.emplace(std::move(*made));
     }
     // The joints and their weights do not change over time, so they are
-    // uploaded with the cloud; `(joint, weight)` pairs is the layout every
-    // skinner here reads, and pairing them is a rearrangement of values the
-    // file holds.
+    // uploaded with the cloud, ONLY WHEN THE CLOUD WAS UPLOADED: none of it
+    // changes from one instant to the next, and every frame of the timeline
+    // used to pay for it.
     //
-    // ONLY WHEN THE CLOUD WAS UPLOADED. Interleaving them is a loop over four
-    // values a gaussian on the CPU and a buffer of eight floats each -- 137 MB
-    // for the sparrow -- and none of it changes from one instant to the next.
-    // Every frame of the timeline used to pay for it.
-    if (reuploaded || !entry.influences.valid() || entry.perSplat != perSplat) {
-        std::vector<float> pairs(size_t{count} * perSplat * 2);
-        const size_t held = indices->size();
-        for (size_t k = 0; k < size_t{count} * perSplat; ++k) {
-            pairs[k * 2] = static_cast<float>(std::max((*indices)[k % held], 0));
-            pairs[k * 2 + 1] = (*weights)[k % held];
+    // AS THE FILE HOLDS THEM. The two arrays go up as their bytes, and one
+    // kernel pairs them, packs them to the kept gaussians and to a word an
+    // influence (joint u16 | weight unorm16). The host used to interleave
+    // them into float pairs first -- 137 MB on the sparrow, on the host and
+    // again on the device; the device now holds 68 MB and the host nothing.
+    // A skeleton past 65536 joints keeps the pairs, made the same way.
+    const uint32_t jointCount = static_cast<uint32_t>(joints.size() / 16);
+    const scene::InfluenceLayout layout = scene::InfluencePacker::layoutFor(jointCount);
+    if (reuploaded || !entry.influences.valid() || entry.perSplat != perSplat ||
+        entry.influenceLayout != layout) {
+        if (!influencePacker_.has_value()) {
+            auto made = scene::InfluencePacker::create(*library_);
+            if (!made) return std::move(made).error();
+            influencePacker_.emplace(std::move(*made));
         }
-        auto influences = gpu::Buffer::fromSpan<float>(*device_, pairs, "splat.influences");
-        if (!influences) return std::move(influences).error();
-        auto kept = loader_->keptOnly(*entry.gpu, *influences, static_cast<uint32_t>(perSplat * 2),
-                                      "splat.influences.kept");
-        if (!kept) return std::move(kept).error();
-        entry.influences = std::move(*kept);
+        auto packed = influencePacker_->pack(*entry.gpu, indices->cdata(), weights->cdata(),
+                                             static_cast<uint32_t>(indices->size()),
+                                             static_cast<uint32_t>(perSplat), jointCount, layout,
+                                             "splat.influences");
+        if (!packed) return std::move(packed).error();
+        if (packed->jointsOutOfRange > 0) {
+            log::warn("'{}': {} influences name a joint the skeleton's {} have not; they hold nothing",
+                      id.GetString(), packed->jointsOutOfRange, jointCount);
+            jointsOutOfRange_.fetch_add(packed->jointsOutOfRange);
+        }
+        if (packed->weightsOutOfRange > 0) {
+            log::warn("'{}': {} joint weights outside [0, 1]", id.GetString(), packed->weightsOutOfRange);
+        }
+        entry.influences = std::move(packed->words);
+        entry.influenceLayout = layout;
         entry.perSplat = static_cast<uint32_t>(perSplat);
 
         // AND HOW THE WEIGHTS CHANGE ACROSS EACH GAUSSIAN, where the
@@ -3603,6 +3627,7 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     input.rest = entry.gpu.get();
     input.influences = &entry.influences;
     input.perSplat = entry.perSplat;
+    input.layout = entry.influenceLayout;
     input.weightGradients = entry.weightGradients.valid() ? &entry.weightGradients : nullptr;
     input.skinningXforms = &entry.xforms;
     input.skinningXformsEnd = moves ? &entry.xformsEnd : nullptr;

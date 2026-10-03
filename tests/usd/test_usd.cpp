@@ -8549,6 +8549,118 @@ TEST_CASE("a skinned cloud stepping through time is uploaded once", "[usd][gpu][
     CHECK(boxes.back().min[0] - boxes.front().min[0] == Catch::Approx(2.0).margin(1e-3));
 }
 
+// A SKINNED CLOUD'S INFLUENCES ARE PACKED ON THE DEVICE, AND IT DRAWS AS IT DID.
+//
+// The engine used to interleave the file's joint indices and weights on the
+// host into float pairs (137 MB on the sparrow, and as much on the device);
+// now the two arrays go up as bytes and a kernel packs them into a word an
+// influence. A skeleton past 65536 joints cannot name its joints in 16 bits
+// and keeps the pairs -- made the same way, on the device -- which is what
+// lets the one cloud be drawn both ways here: once under three joints
+// (packed) and once under the same three and 65534 more that nothing uses
+// (pairs). The frames must agree to the weights' step: p99 0, no pixel more
+// than 2 code values apart. The device holds half the bytes packed, and one
+// influence names a joint neither skeleton has (it holds nothing, and is
+// counted, where it used to be read past the skeleton's transforms).
+TEST_CASE("a skinned cloud's influences are packed on the device, and it draws as the pairs drew",
+          "[usd][gpu][skinning][influences]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const io::RawSplats raw = cloud(2048);
+    const auto rigged = [&](uint32_t joints, const char* name) {
+        usd::SplatSkinning rig;
+        rig.skeleton = "/Root/Skel";
+        rig.joints = joints;
+        rig.influences.resize(size_t{raw.count} * 8, 0.0F);
+        for (uint32_t k = 0; k < raw.count; ++k) {
+            // Three joints of uneven weights, and a pad in the fourth slot of
+            // every other gaussian, as UsdSkel pads: index -1, weight 0.
+            float* one = rig.influences.data() + size_t{k} * 8;
+            const float a = 0.2F + 0.6F * static_cast<float>(k % 7) / 7.0F;
+            const float b = (1.0F - a) * 0.7F;
+            one[0] = static_cast<float>(k % 3);        one[1] = a;
+            one[2] = static_cast<float>((k + 1) % 3);  one[3] = b;
+            one[4] = static_cast<float>((k + 2) % 3);  one[5] = 1.0F - a - b;
+            one[6] = k % 2 == 0 ? -1.0F : 0.0F;        one[7] = 0.0F;
+        }
+        // Past both skeletons.
+        rig.influences[size_t{5} * 8 + 6] = 70000.0F;
+        rig.times = {0.0, 1.0};
+        rig.xforms.resize(rig.times.size() * rig.joints * 16, 0.0F);
+        for (size_t frame = 0; frame < rig.times.size(); ++frame) {
+            for (uint32_t joint = 0; joint < rig.joints; ++joint) {
+                float* m = rig.xforms.data() + (frame * rig.joints + joint) * 16;
+                m[0] = m[5] = m[10] = m[15] = 1.0F;
+                if (joint < 3 && frame > 0) {
+                    // Each of the three turned about its own axis and slid.
+                    const float angle = 0.3F * static_cast<float>(joint + 1);
+                    const float c = std::cos(angle), s = std::sin(angle);
+                    const int u = static_cast<int>(joint), v = static_cast<int>((joint + 1) % 3);
+                    m[u * 4 + u] = c;  m[u * 4 + v] = s;
+                    m[v * 4 + u] = -s; m[v * 4 + v] = c;
+                    m[12] = 0.3F * static_cast<float>(joint);
+                    m[13] = -0.2F;
+                }
+            }
+        }
+        REQUIRE(rig.valid());
+        const fs::path path = scratch(name);
+        fs::remove(path);
+        usd::ExportOptions options;
+        options.addCamera = false;
+        options.skinning = &rig;
+        REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, path, options));
+        return path;
+    };
+    const fs::path packedFile = rigged(3, "cloud-influences-packed.usdc");
+    const fs::path pairsFile = rigged(65537, "cloud-influences-pairs.usdc");
+
+    constexpr uint32_t w = 160, h = 120;
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.5, 7.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+    camera.lens.focal = 35.0;
+    struct Drawn {
+        gpu::Buffer frame;
+        uint64_t    bytes = 0;
+        uint64_t    outOfRange = 0;
+    };
+    const auto draw = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        auto image = (*renderer)->render(camera, 1.0, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        Drawn out;
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        out.frame = std::move(*made);
+        out.bytes = (*renderer)->skinInfluenceBytes();
+        out.outOfRange = (*renderer)->jointsOutOfRange();
+        return out;
+    };
+    const Drawn packed = draw(packedFile);
+    const Drawn pairs = draw(pairsFile);
+    auto same = render::compareImages(*gpu->library, packed.frame, pairs.frame, w, h);
+    REQUIRE(same);
+    std::printf("  packed %llu bytes, pairs %llu bytes (%u gaussians); %llu and %llu joints out of range; "
+                "frames p99 %u, max %u, %llu over 2\n",
+                static_cast<unsigned long long>(packed.bytes), static_cast<unsigned long long>(pairs.bytes),
+                raw.count, static_cast<unsigned long long>(packed.outOfRange),
+                static_cast<unsigned long long>(pairs.outOfRange), same->p99, same->max,
+                static_cast<unsigned long long>(same->over2));
+    // Four influences a gaussian: 16 bytes packed against 32 as pairs, for
+    // every gaussian validation kept.
+    CHECK(packed.bytes > 0);
+    CHECK(packed.bytes % 16 == 0);
+    CHECK(pairs.bytes == packed.bytes * 2);
+    CHECK(packed.bytes <= uint64_t{raw.count} * 16);
+    CHECK(packed.outOfRange == 1);
+    CHECK(pairs.outOfRange == 1);
+    CHECK(same->p99 == 0);
+    CHECK(same->max <= 2);
+    CHECK(same->over2 == 0);
+}
+
 TEST_CASE("a cloud a skeleton carries still moves when validation drops some of its gaussians",
           "[usd][gpu][skinning]") {
     ATHENEA_REQUIRE_GPU(gpu);

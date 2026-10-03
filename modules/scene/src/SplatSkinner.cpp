@@ -78,6 +78,7 @@ Result<void> SplatSkinner::skin(gpu::CommandBatch& batch, const SplatSkinInput& 
         p["motionOut"].setData(uint32_t{moves ? 1u : 0u});
         p["normalsOut"].setData(uint32_t{turnsNormals ? 1u : 0u});
         p["gradientsIn"].setData(uint32_t{gradients ? 1u : 0u});
+        p["influenceLayout"].setData(static_cast<uint32_t>(input.layout));
         setRows(p, "geomBind", input.geomBindTransform);
         setRows(p, "skelToWorld", input.skelLocalToWorld);
         setRows(p, "worldToPrim", input.primWorldToLocal);

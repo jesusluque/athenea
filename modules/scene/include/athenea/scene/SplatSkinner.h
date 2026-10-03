@@ -14,6 +14,7 @@
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/ComputeKernel.h"
+#include "athenea/scene/SplatInfluences.h"
 
 namespace athenea::gpu {
 class ShaderLibrary;
@@ -28,9 +29,12 @@ struct GpuSplats;
 /// the cloud's own space to the skeleton's and back.
 struct SplatSkinInput {
     const GpuSplats*   rest = nullptr;
-    /// `(joint, weight)` float2s, `perSplat` of them a gaussian.
+    /// `perSplat` influences a gaussian, laid out as `layout` says: a word
+    /// each packed (joint u16 | weight unorm16, what `InfluencePacker`
+    /// writes), or a `(joint, weight)` float2 each as pairs.
     const gpu::Buffer* influences = nullptr;
     uint32_t           perSplat = 4;
+    InfluenceLayout    layout = InfluenceLayout::Pairs;
     /// The weights' gradients across each gaussian, which is what makes its
     /// frame follow the whole Jacobian of the blend and not only the blend of
     /// the joints' linear parts: `perSplat - 1` words a gaussian, each two

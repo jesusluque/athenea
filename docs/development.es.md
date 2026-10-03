@@ -43,7 +43,7 @@ coinciden, la cabecera tiene razón.
 | 6 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre), `gpu/AsyncReadback.h` (números de un frame sin esperarlo) |
 | 7 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
 | 8 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
-| 9 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
+| 9 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers; `scene/SplatInfluences.h` — las influencias de un rig, empaquetadas en el dispositivo |
 | 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |

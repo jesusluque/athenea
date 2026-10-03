@@ -25,6 +25,7 @@
 module splat_visibility;
 import athenea.common.packing;
 import athenea.common.octahedral;
+import athenea.common.influences;
 import athenea.splat.splat_visibility_common;
 
 StructuredBuffer<VisibilityPart> parts;
@@ -36,11 +37,11 @@ RWStructuredBuffer<uint>         texels;     // two f16 a word
 struct PartOfParams {
     uint count;       // gaussians
     uint perSplat;    // influences each carries
-    uint pad0;
+    uint layout;      // kInfluencePairs or kInfluencePacked (common/influences.slang)
     uint pad1;
 };
 
-StructuredBuffer<float2>      influences;    // (joint, weight), perSplat a gaussian
+StructuredBuffer<uint>        influences;    // (joint, weight), perSplat a gaussian, either layout
 StructuredBuffer<uint>        jointToPart;   // a part index a joint
 RWStructuredBuffer<uint>      partOf;        // a part a gaussian
 ConstantBuffer<PartOfParams>  partParams;
@@ -55,7 +56,7 @@ void visPartOf(uint3 tid: SV_DispatchThreadID) {
     float best = -1.0;
     uint joint = 0;
     for (uint k = 0; k < partParams.perSplat; ++k) {
-        const float2 influence = influences[i * partParams.perSplat + k];
+        const float2 influence = influenceAt(influences, partParams.layout, i * partParams.perSplat, k);
         if (influence.y > best) {
             best = influence.y;
             joint = uint(influence.x);

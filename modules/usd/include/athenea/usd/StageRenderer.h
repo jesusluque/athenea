@@ -404,6 +404,13 @@ public:
     /// How many times a splat cloud's arrays have been uploaded: once a cloud
     /// unless what it holds changes. What a time step is held to.
     [[nodiscard]] uint64_t cloudUploads() const;
+    /// What the skinned clouds' joints and weights hold on the device, in
+    /// bytes: four an influence, packed (joint u16 | weight unorm16), or eight
+    /// for a skeleton past 65536 joints.
+    [[nodiscard]] uint64_t skinInfluenceBytes() const;
+    /// Influences a file named a joint its skeleton has not, over every
+    /// upload: they hold nothing, and are logged.
+    [[nodiscard]] uint64_t jointsOutOfRange() const;
 
     /// WHAT THE LAST FRAME HELD: splats handed over, splats a tile kept, the
     /// pairs the blend walked, the scene's instances and the frame's lights.
