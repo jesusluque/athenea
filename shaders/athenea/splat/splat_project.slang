@@ -69,12 +69,12 @@ StructuredBuffer<uint>      shadowBits;
 // be.
 StructuredBuffer<uint>      motion;
 
-void cull(uint slot) {
+void cull(uint slot, uint reason) {
     // Every early return zeroes the record first: a slot keeps last frame's
     // splat otherwise (openFXplayer learned this one the hard way).
     tilesTouched[slot] = 0;
     visible[slot] = 0;
-    depthKeys[slot] = 0x00FFFFFFu;
+    depthKeys[slot] = kCulledKey | reason;
     tileRects[slot * 4] = 1;
     tileRects[slot * 4 + 1] = 1;
     tileRects[slot * 4 + 2] = 0;
@@ -97,14 +97,14 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
     // The SplatEdit, in the cloud's own space, before anything is projected.
     const EditFate fate = editFate(params.edit, posOpacity.xyz, posOpacity.w, scale);
     if (fate.removed) {
-        cull(slot);
+        cull(slot, kCullEdit);
         return;
     }
     posOpacity.w = fate.opacity;
 
     const float3 t = toView(params, posOpacity.xyz);
     if (!(t.z > params.nearZ) || t.z > params.farZ) {
-        cull(slot);
+        cull(slot, kCullDepth);
         return;
     }
 
@@ -238,7 +238,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
     c += 0.3;
     const float det = a * c - b * b;
     if (!(det > 1e-12)) {
-        cull(slot);
+        cull(slot, kCullDegenerate);
         return;
     }
     // `detBefore` is the still covariance's, so this one square root pays
@@ -249,7 +249,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
     const float paid = params.antialias != 0 ? sqrt(max(detBefore, 0.0) / det) : spreadPaid;
     const float alpha = paidOpacity(posOpacity.w, paid);
     if (!(alpha >= 1.0 / 255.0)) {
-        cull(slot);
+        cull(slot, kCullFaint);
         return;
     }
     const float3 conic = float3(c / det, -b / det, a / det);
@@ -258,7 +258,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
     uint4 rect;
     tileRect(params, centre, extent, rect);
     if (rect.x > rect.z || rect.y > rect.w) {
-        cull(slot);
+        cull(slot, kCullOffscreen);
         return;
     }
 
@@ -272,7 +272,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         }
     }
     if (touched == 0) {
-        cull(slot);
+        cull(slot, kCullNoTile);
         return;
     }
 

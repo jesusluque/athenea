@@ -1458,3 +1458,87 @@ TEST_CASE("a capture keeps its look when its splats are blended in linear light"
     CHECK(diff->p99 <= 55);
     CHECK(diff->max <= 70);
 }
+
+TEST_CASE("the counters a panel reads say how many splats were kept and why the rest were not",
+          "[render][gpu][counters]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    // A camera at the origin looking down -Z, and splats placed so that
+    // each one's fate is known: kept, behind the eye, too small to leave a
+    // mark, and well outside the frustum's sides.
+    CloudBuilder first;
+    for (int k = 0; k < 10; ++k) {   // kept
+        first.add(-0.9F + 0.2F * float(k), 0.0F, -10.0F, 0.8F, 0.05F, 0.05F, 0.05F, {1, 0, 0, 0}, {1, 1, 1});
+    }
+    for (int k = 0; k < 4; ++k) {    // behind the eye
+        first.add(0.1F * float(k), 0.0F, 5.0F, 0.8F, 0.05F, 0.05F, 0.05F, {1, 0, 0, 0}, {1, 1, 1});
+    }
+    // Too small to see: the pixel filter spreads each over a pixel and pays
+    // for it in opacity, which leaves less than 1/255. (A splat faint in the
+    // file never gets this far: the loader drops it.)
+    for (int k = 0; k < 3; ++k) {
+        first.add(0.1F * float(k), 0.3F, -10.0F, 0.8F, 1.0e-5F, 1.0e-5F, 1.0e-5F, {1, 0, 0, 0}, {1, 1, 1});
+    }
+    for (int k = 0; k < 5; ++k) {    // far to the side
+        first.add(200.0F + float(k), 0.0F, -10.0F, 0.8F, 0.05F, 0.05F, 0.05F, {1, 0, 0, 0}, {1, 1, 1});
+    }
+    CloudBuilder second;
+    for (int k = 0; k < 6; ++k) {    // kept, the second cloud's
+        second.add(-0.5F + 0.2F * float(k), -0.4F, -8.0F, 0.8F, 0.05F, 0.05F, 0.05F, {1, 0, 0, 0}, {1, 1, 1});
+    }
+    auto a = h->loader.upload(first.raw);
+    auto b = h->loader.upload(second.raw);
+    REQUIRE(a);
+    REQUIRE(b);
+    REQUIRE(a->count == 22);
+    REQUIRE(b->count == 6);
+    const std::vector<render::SplatInstance> instances{{&*a, render::Mat4::identity()},
+                                                       {&*b, render::Mat4::identity()}};
+    render::Camera camera;
+    camera.lens.focal = camera.lens.haperture;
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    settings.countSplats = true;
+    render::RenderTargets targets;
+
+    // Nothing is there before a frame has counted anything.
+    CHECK_FALSE(h->raster.latestCounters().has_value());
+
+    for (uint64_t tag : {41u, 42u}) {
+        settings.countersTag = tag;
+        auto stats = h->raster.render(camera, instances, settings, targets);
+        REQUIRE(stats);
+        // The frame waits for itself, so its counts are the newest finished.
+        auto counted = h->raster.latestCounters();
+        REQUIRE(counted.has_value());
+        CHECK(counted->tag == tag);
+        CHECK(counted->slots == 28);
+        CHECK(counted->visible == 16);
+        CHECK(counted->visible == stats->visible);
+        CHECK(counted->pairs == stats->pairs);
+        CHECK(counted->maxTiles >= 1);
+        CHECK(counted->culled[render::SplatCounters::Depth] == 4);
+        CHECK(counted->culled[render::SplatCounters::Faint] == 3);
+        CHECK(counted->culled[render::SplatCounters::Offscreen] == 5);
+        CHECK(counted->culled[render::SplatCounters::Edit] == 0);
+        CHECK(counted->culled[render::SplatCounters::Unprojected] == 0);
+        uint32_t culled = 0;
+        for (uint32_t n : counted->culled) {
+            culled += n;
+        }
+        CHECK(culled + counted->visible == counted->slots);
+        REQUIRE(counted->clouds.size() == 2);
+        CHECK(counted->clouds[0].visible == 10);
+        CHECK(counted->clouds[1].visible == 6);
+        CHECK(counted->clouds[0].pairs + counted->clouds[1].pairs == counted->pairs);
+    }
+
+    // A frame that does not ask leaves the last count where it was.
+    settings.countSplats = false;
+    auto quiet = h->raster.render(camera, instances, settings, targets);
+    REQUIRE(quiet);
+    auto still = h->raster.latestCounters();
+    REQUIRE(still.has_value());
+    CHECK(still->tag == 42);
+}

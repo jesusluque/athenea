@@ -1159,7 +1159,7 @@ ImGui dibuja encima. No vuelve nada salvo el píxel picado y un snapshot.
 
 ### 5.2 Los paneles
 
-Dos paneles, contados por su papel y no widget a widget, porque se mueven
+Los paneles, contados por su papel y no widget a widget, porque se mueven
 según crece el motor.
 
 **View** lleva el frame: qué cámara (la libre, o cualquiera de la escena) y su
@@ -1227,6 +1227,42 @@ cuesta la reconstrucción que cuesta un cielo nuevo.
 **Picked** es en qué resultó ser un píxel, y se abre con la ventana en vez de
 esperar a que lo encuentres: el prim y la instancia que nombra Hydra, la matte
 que nombra una nube, y de qué están hechas las gaussianas de ese prim.
+
+**Gaussians** es qué son los splats en pantalla y qué hizo el frame con ellos,
+plegable sección a sección, con los números separados por miles. Sobre una
+escena sin nubes dice *no gaussians in this stage* y nada más. Se describe una
+vez en `modules/ui` (`ui::gaussianPanel`) y se dibuja después del frame, así que
+su primera fila es el frame en pantalla.
+
+Lleva dos clases de número, y el panel dice a qué frame pertenece cada una. Lo
+que recibió el frame -- las nubes de la escena, lo que conservó el nivel de
+detalle, lo que lleva y ocupa cada una -- es exacto para el frame en pantalla.
+Lo que contó el dispositivo se lee sin esperar, así que pertenece al frame que
+nombra la fila **Counted**, que puede ir uno o dos frames por detrás (bajo la
+ruta raster hoy es el mismo frame, porque el rasterizador ya se espera a sí
+mismo al final).
+
+| Fila | Qué es | Unidad, y cuándo se muestra |
+|---|---|---|
+| Frame | la cuenta de frames dibujados del motor, y la ruta: *rasterised*, *splats traced* o *meshes traced, splats rasterised* | siempre, en una escena con nubes |
+| Counted | el frame al que pertenecen las cuentas del dispositivo de abajo, y cuánto va por detrás | rutas raster |
+| In the stage | las gaussianas de todas las nubes, dibujadas o no | gaussianas |
+| Submitted | entregadas al renderer: tras el nivel de detalle, los prims ocultos y los niveles de variante no elegidos; la parte de *In the stage* | gaussianas |
+| Visible | conservadas por la proyección, el tamaño del orden por profundidad; la parte de lo entregado en el frame contado | gaussianas, rutas raster |
+| Culled, y una fila por razón | *Removed by an edit*, *Outside near/far*, *No area*, *Too faint* (bajo 1/255 una vez repartida por su huella: en lo que se convierte una gaussiana demasiado pequeña), *Off screen* (fuera de los lados del frustum), *Touch no tile*; una razón es fila solo donde descartó algo | gaussianas, rutas raster |
+| Tile pairs | pares (tile, gaussiana), el tamaño del orden por tile, y la media por gaussiana visible | pares |
+| Most tiles | el mayor número de tiles que tocó una gaussiana | tiles |
+| Sort sizes | las claves del orden por profundidad y del orden por tile | claves |
+| Traced | lo que dibujó el trazador de rayos: no descarta nada que contar | gaussianas, `rt` solo |
+| Time each stage | un interruptor: cada etapa del rasterizador espera entonces al dispositivo, y el frame va más lento por esas esperas | apagado por defecto |
+| Project ... Total | las etapas del rasterizador | ms, mientras *Time each stage* está encendido |
+| Structures, Build, Trace, Total | el trazador de rayos: si sus estructuras se reconstruyeron o se conservaron, su ruta, y sus tiempos | ms, `rt` solo |
+| Clouds (memoria) | los arrays de todas las nubes en el dispositivo, incluidas una copia posada y su esqueleto | bytes |
+| Levels of detail | los assets de los que se toman los cortes, y los almacenes de streaming | bytes, donde los hay |
+| una fila por nube | el prim; sus gaussianas, cuántas se entregaron, y las visibles y los pares que contó el dispositivo para ella; su nivel (*level 1 of 3 in 'bird'*, o *cut* con sus gaussianas propias y fusionadas); para un `.athc` en streaming, los chunks en el dispositivo, pedidos, ausentes y cargando; lo que lleva (grado SH, lineal o sRGB de captura, reiluminada, lit body, transfer, con esqueleto, normales, emisión, PBR, ids, visibilidad horneada, ior); lo que ocupa | hasta 24 nubes; el resto entra en los totales |
+
+Las cuentas cuestan cuatro dispatches pequeños y una copia por frame, y solo se
+toman mientras el panel está abierto: plegar su ventana las detiene.
 
 ### 5.2.1 Cambiar de qué está hecho el prim picado
 

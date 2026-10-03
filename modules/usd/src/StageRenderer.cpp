@@ -1012,6 +1012,23 @@ StageRenderer::Counters StageRenderer::counters() const {
     return {c.splats, c.visibleSplats, c.splatPairs, c.meshInstances, c.lights, c.cryptomatte};
 }
 
+void StageRenderer::setGaussianStats(bool on) {
+    if (Engine* engine = engineBehind(*impl_->delegate); engine != nullptr) {
+        engine->setCountSplats(on);
+    }
+}
+
+void StageRenderer::setTimeSplatStages(bool on) {
+    if (Engine* engine = engineBehind(*impl_->delegate); engine != nullptr) {
+        engine->setTimeSplatStages(on);
+    }
+}
+
+GaussianStats StageRenderer::gaussianStats() const {
+    const Engine* engine = engineBehind(*impl_->delegate);
+    return engine != nullptr ? engine->gaussianStats() : GaussianStats{};
+}
+
 void StageRenderer::requestOutputs(const std::vector<std::string>& aovs) {
     TfTokenVector outputs{HdAovTokens->color, HdAovTokens->depth};
     for (const std::string& aov : aovs) {

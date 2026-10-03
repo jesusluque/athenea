@@ -19,6 +19,7 @@
 #include "athenea/render/Camera.h"
 #include "athenea/render/SplatQuery.h"
 #include "athenea/render/TileRasterizer.h"
+#include "athenea/usd/GaussianStats.h"
 #include "athenea/usd/PrimData.h"
 #include "athenea/usd/RenderSettings.h"
 #include "athenea/render/TileRasterizer.h"
@@ -416,6 +417,15 @@ public:
         bool     cryptomatte = false;
     };
     [[nodiscard]] Counters counters() const;
+
+    /// THE GAUSSIANS ON SCREEN (GaussianStats): the stage's clouds, what the
+    /// level of detail kept, what each carries and holds, and what the device
+    /// counted of the frame -- a frame or two late, never waited for.
+    /// Gathered only while `setGaussianStats(true)`.
+    void setGaussianStats(bool on);
+    /// Time each rasteriser stage for the panel; each then waits for the device.
+    void setTimeSplatStages(bool on);
+    [[nodiscard]] GaussianStats gaussianStats() const;
 
     /// Every camera prim on the stage.
     [[nodiscard]] std::vector<std::string> cameras() const;

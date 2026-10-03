@@ -14,7 +14,7 @@ build/macos-arm64-debug/bin/athenea_lod_tests "chunks*"       # one Catch2 case 
 cmake --build build/macos-arm64-debug --target athenea_render_tests   # one test binary
 ```
 
-- **Test binaries** are `athenea_<area>_tests` (core, gpu, scene, render,
+- **Test binaries** are `athenea_<area>_tests` (core, ui, gpu, scene, render,
   colour, geom, material, technique, lod, volume, usd, coverage, mcp, view,
   gpu_host, aofx, sched), declared in `tests/CMakeLists.txt` (`athenea_test`), sources in
   `tests/<area>/`. `athenea_host_tests` (tests/usd/test_host.cpp) drives the
@@ -89,11 +89,11 @@ the ones above it.
 | Module | What it holds |
 |---|---|
 | core | `Result`, logging, Platform |
-| ui | the viewer's panels as a description (`Controls.h`), walked by `athenea view` and the iOS app |
+| ui | the viewer's panels as a description (`Controls.h`; `GaussianPanel.h` over the `GaussianReport` the engine fills), walked by `athenea view` and the iOS app |
 | sched | `FrameClock`: genlock PTP and ST 2059-1 alignment, timecode |
 | image | `Image`: float32 RGBA premultiplied, bottom-left origin, pluggable storage; what gpe and aofx exchange |
 | io | CPU file readers (PLY header, SPZ, SOG zip/WebP), EXR with attributes |
-| gpu | slang-rhi device, `ShaderLibrary`, `ComputeKernel`, `CommandBatch`, `Buffer`; `gpu/algo` for PrefixSum and RadixSort |
+| gpu | slang-rhi device, `ShaderLibrary`, `ComputeKernel`, `CommandBatch`, `Buffer`, `AsyncReadback` (counts from a frame, never waited for); `gpu/algo` for PrefixSum and RadixSort |
 | gpu_host | gpe adopting slang-rhi's device: one `MTLDevice` or CUDA context, buffers shared without copies; the crossing as free functions (`Views.h`) for a program with a context of its own |
 | colour | `ColourCompiler` (OpenColorIO as a compiler: a colour space or a display and view into a generated Slang function `athenea_cs_<hash>` and its LUTs), `ColourNames` (what a colour space's name means) |
 | scene | `CloudLoader`: raw records uploaded, decoded on the GPU into `GpuSplats` / `GpuPoints` |

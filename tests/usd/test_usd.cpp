@@ -8292,6 +8292,81 @@ TEST_CASE("a cloud in levels of detail draws the coarsest one whose cell a pixel
     CHECK(farAway == coarse.count);
 }
 
+TEST_CASE("the Gaussians panel's numbers say which level a view drew and what the device kept of it",
+          "[usd][gpu][lod][counters]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const io::RawSplats fine = cloud(4096);
+    const io::RawSplats coarse = cloud(256);
+    const fs::path fineFile = scratch("stats-fine.usda");
+    const fs::path coarseFile = scratch("stats-coarse.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, fine, fineFile, options));
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, coarse, coarseFile, options));
+    const fs::path assembly = scratch("stats-assembly.usda");
+    REQUIRE(usd::writeLodAssembly(assembly, {{fineFile, 0.01}, {coarseFile, 0.16}}, "test"));
+    auto renderer = usd::StageRenderer::open(assembly);
+    if (!renderer) FAIL(renderer.error().toString());
+    // Not asked for, not gathered.
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 4000.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+    camera.lens.focal = 35.0;
+    REQUIRE((*renderer)->draw(camera, 0.0, 400, 300, "raster"));
+    CHECK((*renderer)->gaussianStats().clouds.empty());
+
+    (*renderer)->setGaussianStats(true);
+    REQUIRE((*renderer)->draw(camera, 0.0, 400, 300, "raster"));
+    const usd::GaussianStats far = (*renderer)->gaussianStats();
+    CHECK(far.route == "raster");
+    CHECK(far.inStage == fine.count + coarse.count);
+    CHECK(far.submitted == coarse.count);
+    REQUIRE(far.clouds.size() == 2);
+    uint32_t drawnClouds = 0;
+    for (const usd::GaussianCloudStats& c : far.clouds) {
+        CHECK(c.lod.find("in 'test'") != std::string::npos);
+        CHECK(c.bytes > 0);
+        if (c.drawn) {
+            ++drawnClouds;
+            CHECK(c.gaussians == coarse.count);
+            CHECK(c.submitted == coarse.count);
+            CHECK(c.lod.rfind("level 1 of 2", 0) == 0);
+            CHECK(c.counted);
+            CHECK(c.visible == far.visible);
+        }
+    }
+    CHECK(drawnClouds == 1);
+    // The device's counts: of the frame just drawn here, since the
+    // rasteriser waits for itself; and they add up.
+    REQUIRE(far.counted);
+    CHECK(far.countedFrame == far.frame);
+    CHECK(far.countedSlots == coarse.count);
+    uint32_t culled = 0;
+    for (uint32_t n : far.culled) {
+        culled += n;
+    }
+    CHECK(far.visible + culled == far.countedSlots);
+    CHECK(far.cloudBytes > 0);
+    std::printf("  far: %u visible of %u, %u pairs\n", far.visible, far.countedSlots, far.pairs);
+
+    // Near: the fine level, and most of it kept.
+    camera = render::Camera::lookingAt({0.0, 0.0, 6.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+    camera.lens.focal = 35.0;
+    REQUIRE((*renderer)->draw(camera, 0.0, 400, 300, "raster"));
+    const usd::GaussianStats near = (*renderer)->gaussianStats();
+    CHECK(near.frame > far.frame);
+    CHECK(near.submitted == fine.count);
+    CHECK(near.countedSlots == fine.count);
+    CHECK(near.visible > 0);
+    CHECK(near.pairs >= near.visible);
+    for (const usd::GaussianCloudStats& c : near.clouds) {
+        if (c.drawn) {
+            CHECK(c.lod.rfind("level 0 of 2", 0) == 0);
+            CHECK(c.visible == near.visible);
+            CHECK(c.pairs == near.pairs);
+        }
+    }
+    std::printf("  near: %u visible of %u, %u pairs\n", near.visible, near.countedSlots, near.pairs);
+}
+
 TEST_CASE("a skinned cloud stepping through time is uploaded once", "[usd][gpu][skinning]") {
     ATHENEA_REQUIRE_GPU(gpu);
     const io::RawSplats raw = cloud(512);

@@ -1137,7 +1137,7 @@ Nothing but a picked pixel and a snapshot comes back.
 
 ### 5.2 The panels
 
-Two panels, by role rather than by widget, since they move as the engine
+The panels, by role rather than by widget, since they move as the engine
 grows.
 
 **View** holds the frame: which camera (the free one, or any on the stage) and
@@ -1205,6 +1205,42 @@ on; switching a dome back costs the rebuild a new sky costs.
 **Picked** is what a pixel turned out to be, and it opens with the window
 rather than waiting to be found: the prim and instance Hydra names, the matte
 that names a cloud, and what that prim's gaussians are made of.
+
+**Gaussians** is what the splats on screen are and what the frame did with
+them, collapsible section by section, numbers with thousands separators. Over
+a stage with no clouds it says *no gaussians in this stage* and nothing else.
+It is described once in `modules/ui` (`ui::gaussianPanel`) and drawn after the
+frame, so its first row is the frame on screen.
+
+Two kinds of number sit in it, and the panel says which frame each belongs
+to. What the frame was handed -- the stage's clouds, what the level of detail
+kept, what each carries and holds -- is exact for the frame on screen. What
+the device counted is read back without waiting, so it belongs to the frame
+named on the **Counted** row, which may be a frame or two behind (under the
+raster route today it is the same frame, because the rasteriser already
+waits for itself at the end).
+
+| Row | What it is | Unit, and when it is shown |
+|---|---|---|
+| Frame | the engine's count of frames drawn, and the route: *rasterised*, *splats traced*, or *meshes traced, splats rasterised* | always, over a stage with clouds |
+| Counted | the frame the device's counts below belong to, and how far behind it is | raster routes |
+| In the stage | every cloud's gaussians, drawn or not | gaussians |
+| Submitted | handed to the renderer: after the level of detail, the hidden prims and the variant levels not chosen; the share of *In the stage* | gaussians |
+| Visible | kept by the projection, the depth sort's size; the share of the counted frame's submitted | gaussians, raster routes |
+| Culled, and a row a reason | *Removed by an edit*, *Outside near/far*, *No area*, *Too faint* (under 1/255 once spread over its footprint: what a too-small gaussian becomes), *Off screen* (outside the frustum's sides), *Touch no tile*; a reason is a row only where it culled something | gaussians, raster routes |
+| Tile pairs | (tile, gaussian) pairs, the tile sort's size, and the mean a visible gaussian | pairs |
+| Most tiles | the most tiles one gaussian touched | tiles |
+| Sort sizes | the depth sort's and the tile sort's keys | keys |
+| Traced | what the ray tracer drew: it culls nothing to count | gaussians, `rt` alone |
+| Time each stage | a switch: each rasteriser stage then waits for the device, and the frame is slower by those waits | off by default |
+| Project ... Total | the rasteriser's stages | ms, while *Time each stage* is on |
+| Structures, Build, Trace, Total | the ray tracer: whether its structures were rebuilt or kept, its route, and its times | ms, `rt` alone |
+| Clouds (memory) | every cloud's arrays on the device, a posed copy and its skeleton included | bytes |
+| Levels of detail | the assets cuts are taken from, and the streaming stores | bytes, where there are any |
+| one row a cloud | the prim; its gaussians, how many were submitted, and the device's visible and pairs for it; its level (*level 1 of 3 in 'bird'*, or *cut* with its own and merged gaussians); for a streamed `.athc`, chunks on the device, wanted, missing and loading; what it carries (SH degree, linear or capture sRGB, relit, lit body, transfer, skinned, normals, emission, PBR, ids, baked visibility, ior); what it holds | up to 24 clouds; the rest are in the totals |
+
+The counts cost four small dispatches and a copy a frame, and are taken only
+while the panel is open: collapsing its window stops them.
 
 ### 5.2.1 Changing what a picked prim is made of
 

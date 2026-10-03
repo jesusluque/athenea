@@ -10413,3 +10413,75 @@ refitted tree's surface area against the built one's) instead of a count;
 the meshes' compute BVH (`BvhScene::settle`) still refits by passes with a
 read-back every eight, which the same heights would remove; and splat
 shadows on a 5.9 M cloud do not fit in memory on the hardware route.
+## The Gaussians panel: what is on screen, counted where it happened
+
+`athenea view` has a **Gaussians** panel (docs/operations.md §5.2): the
+stage's clouds and what each carries, what the level of detail kept, what the
+frame submitted, how many the projection kept and why it culled the rest,
+the tile pairs and sort sizes, each cloud's share, the device memory the
+clouds and the LOD stores hold, and -- asked for -- each rasteriser stage's
+time. It is described once in `modules/ui` (`ui::gaussianPanel`, over a
+`ui::GaussianReport`), so the iOS app gets it by setting
+`ViewerFacts::gaussians`; `athenea view` draws it with a walker over the
+description (`drawPanel`), the first of its panels drawn that way.
+
+**Two kinds of number, labelled by frame.** What the frame was handed is
+bookkeeping the engine already has (`Engine::noteGaussians`: the entries,
+`StreamingPool::status`, the cut's `CutStats`, buffer sizes) and is exact for
+the frame on screen. What the device counted is copied out without waiting,
+so it is labelled with the frame it belongs to (*Counted: frame 811, 1
+behind*). The engine's frame number is the tag; the prims of each frame's
+instances are kept until its counts arrive, since a count is by instance.
+
+**Why each splat was culled costs the projection nothing.** A culled slot's
+depth key is never read (the compaction reads keys only where `visible` is
+1), so `splat_project` writes the reason there -- `kCulledKey | reason`,
+numbered in `frame.slang`: removed by an edit, outside near/far, no area,
+too faint once spread over its footprint (which is where a too-small
+gaussian ends up: there is no separate size test), off screen, touches no
+tile. `splat_frame_counters.slang` then reduces `visible`, `tilesTouched` and
+those keys in group-shared memory, one atomic a group a counter, and reads
+each cloud's visible and pairs out of the prefix sums the compaction already
+took (one single-thread dispatch a cloud, the first 64). The ray tracer
+culls nothing it could count, and the panel says so instead of showing zeros.
+
+**`gpu::AsyncReadback`** is new: a few readback buffers and a fence. The copy
+rides the frame's last submit (`CommandBatch::submitSignalling`), and
+`latest` asks the fence how far the device has got and copies out the newest
+finished slot -- never waiting; a slot written again is not read until that
+copy has finished too. On Metal and CUDA a readback buffer maps without a
+copy. Today the rasteriser waits for itself at the end of a frame anyway, so
+under the raster route the counts are those of the frame on screen; the
+readback is what keeps that true of no route by accident.
+
+**Per-stage times are opt-in.** slang-rhi's Metal backend does not implement
+`writeTimestamp` (the call is a no-op there), so the only stage times there
+are `RenderSettings::timeStages`, which waits after every stage. The panel's
+*Time each stage* switch turns it on and says what it costs.
+
+**Measured** (debug build, M-series, FilmGs.usda, 5.9 M gaussians, 30
+frames): draw 72.95 ms median with the panel open and counting, against
+75.41 ms for the same stage on main -- inside the run-to-run spread. The
+counting is four dispatches over the frame's slots and a 576-byte copy. The
+panel showed at once what the frame at that framing was doing: every one of
+the 5 887 323 gaussians culled as *too faint*, the bird a speck in a stage
+framed for its ground.
+
+**Tests.** `athenea_render_tests "[counters]"`: two synthetic clouds with a
+known fate for each splat (kept, behind the eye, too small, far to the
+side): the counts per reason, per cloud, against the rasteriser's own totals,
+and the tag of the newest frame. `athenea_usd_tests "[counters]"`: through
+`StageRenderer`, over a two-level LOD assembly, nothing gathered until asked;
+far away the coarse level is the one drawn and submitted (*level 1 of 2*),
+near the fine one, and the device's per-cloud counts are the frame's totals
+(near: 3 984 of 4 096 kept, 61 867 pairs). `athenea_ui_tests` (new, CPU, since a panel
+description is bookkeeping): the panel over an empty stage says *no
+gaussians in this stage* and shows nothing else; with clouds, its rows follow
+the report as it changes, reasons appear only where they culled, the switch
+writes the front end's flag, the traced route hides what it cannot count;
+`viewerPanels` gains the panel only where a front end has the numbers.
+
+**Not done.** The count of splats under the cursor's pixel (it is in the
+blend's walk, and wants a per-pixel counter the blend does not keep). GPU
+timestamps on Metal, which would make the stage times free. The iOS app has
+not been given `ViewerFacts::gaussians` in this branch.
