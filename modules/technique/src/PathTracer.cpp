@@ -1748,8 +1748,9 @@ void tracePathsAt(uint2 group, uint index) {
                     // cosine alone (the direct half, a scalar); after a
                     // bounce it carries the colour of whatever it bounced
                     // off, which is the indirect half.
-                    if (transferMode && bounce > 0 && !backSample) {
-                        for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
+                    if (transferMode && bounce > 0) {
+                        // A sample drawn behind a glass feeds the field alone.
+                        for (uint c = 0; c < min(path.bakeCount, 16u) && !backSample; ++c) {
                             const float basis = shBasisValue(c, d);
                             if (bounce == 1) {
                                 transferDirect[c] += throughput.x * basis;
