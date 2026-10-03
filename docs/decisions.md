@@ -9699,8 +9699,7 @@ copies `radiance:base = (coefficient 0, opacity)`, `scale`, `rotation` and
 `sh_k = coefficient k + 1` across with no arithmetic. So nothing about the
 values needs converting; only the layout differs. The colours are what a
 trainer gives, sRGB: a cloud from Blender says nothing of its colour space,
-and one that says nothing is a capture (`athenea:splat:linear` unset, in the
-linear-blending work).
+and one that says nothing is a capture (`athenea:splat:linear` unset).
 
 **Where it is done.** Two routes were weighed: an export hook that authors a
 ParticleField, or the delegate reading Blender's `Points` as a cloud. Either
@@ -9727,16 +9726,19 @@ reads, one more pair of indices in it, inside the upload every cloud takes.
 mesh2splat is a bundle because it makes new data out of a model; this makes
 none.
 
-Not measured yet (the GPU was out when this was written): the test
-"Blender's Gaussian-splat points draw as the PLY they were imported from"
-(`athenea_usd_tests`, fixture `tests/data/splats/sh3_blender.usda`: Blender's
-export of `sh3.ply` with the hook) renders that stage against a
-ParticleField athenea wrote from the PLY itself, and against the same Points
-without `radiance:base` as the control.
+Measured (M5 Pro, debug): the test "Blender's Gaussian-splat points draw
+as the PLY they were imported from" (`athenea_usd_tests`, fixture
+`tests/data/splats/sh3_blender.usda`: Blender's export of `sh3.ply` with the
+hook) renders that stage and a ParticleField athenea wrote from the PLY
+itself, 240x180: p99 0, max 0 -- the same floats reach the same records.
+The control, the same Points with `radiance:base` blocked (opaque, DC 0,
+with the warning), is p99 100 from it. Both stages reference their cloud
+under a typeless prim: a `def Xform` there is a stronger opinion than the
+referenced ParticleField's type, and draws nothing.
 
 Not done:
 - half-precision planes of an odd total of halves are refused (a plane would
   start inside a word); Blender writes float32;
-- a cloud from Blender does not mark its colour space; that waits for
-  `athenea:splat:linear` (the linear-blending branch), where unset is sRGB,
-  which is what Blender holds.
+- a cloud from Blender does not mark its colour space and need not:
+  `athenea:splat:linear` unset is a capture's sRGB, which is what Blender
+  holds, decoded to linear light a gaussian at a time like any capture's.
