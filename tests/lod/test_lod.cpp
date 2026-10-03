@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -344,6 +345,38 @@ TEST_CASE("chunks not on the device are drawn merged, and chunks not wanted chan
             CHECK(diff.max == 0);
         }
     }
+}
+
+// No device: the header is read on the CPU, and migrateLrtc parses what it
+// copies as readAthc and StreamingPool do, before any upload.
+TEST_CASE("a .athc header with a flag bit this reader does not know is refused, naming the bit", "[lod][athc]") {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "athenea_test_athc_flags";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path in = dir / "future.athc";
+    const std::filesystem::path out = dir / "copied.athc";
+    std::filesystem::remove(out);
+    // A version 2 header, page-sized, whose flags hold normals (bit 0) and a
+    // bit 3 nothing defines yet. Offsets as FileHeader: version at 4, flags at 76.
+    std::vector<char> page(4096, 0);
+    std::memcpy(page.data(), "ATHC", 4);
+    const uint32_t version = 2;
+    const uint32_t flags = 1u | (1u << 3);
+    std::memcpy(page.data() + 4, &version, 4);
+    std::memcpy(page.data() + 76, &flags, 4);
+    {
+        std::ofstream o(in, std::ios::binary | std::ios::trunc);
+        o.write(page.data(), static_cast<std::streamsize>(page.size()));
+        REQUIRE(o);
+    }
+    auto refused = lod::migrateLrtc(in, out);
+    REQUIRE_FALSE(refused);
+    const std::string message = refused.error().toString();
+    INFO(message);
+    CHECK(message.find(out.string()) != std::string::npos);
+    CHECK(message.find("unknown flag bits 3;") != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(out));
+    CHECK_FALSE(std::filesystem::exists(dir / "copied.athc.partial"));
+    std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("a .athc reads back as it was built, and a stream settles on the same image", "[lod][gpu]") {

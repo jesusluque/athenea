@@ -14,6 +14,7 @@
 // colours are linear light (GpuSplats::linear) rather than a capture's sRGB,
 // and bit 2 that the emitted radiance follows them (one RGB9E5 word an
 // element, GpuSplats::emission). Version 1 files, which have none, are still read.
+// A flag bit the reader does not know is refused: it may add a block.
 //
 // Every block starts on a 4096-byte page, so a chunk maps and faults in alone.
 // Little-endian, the device's own packing (athenea/common/packing.slang).
