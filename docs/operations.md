@@ -189,7 +189,7 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `input` | path, required | — | a stage (`.usd`, `.usda`, `.usdc`: its first gaussian ParticleField), or `.ply`, `.splat`, `.spz`, `.sog` |
 | `output` | path, required | — | `.usda`, `.usdc`, `.usd` |
 | `--prim` | path | the first | the ParticleField to read, where a stage has more than one |
-| `--colour-tolerance` | 0..1 | `0.05` | how far a gaussian's colour or opacity may be from the one replacing it before it counts as different |
+| `--colour-tolerance` | 0..1 | `0.05` | how far a gaussian's colour or opacity may be from the one replacing it before it counts as different. The colour is compared in the cloud's own space: sRGB for a capture, linear light for a cloud that says `primvars:athenea:splat:linear` -- where the same number is a coarser step in the darks and a finer one in the brights |
 | `--outliers` | 0..1 | `0.05` | the share of the gaussians a merge stands for that may be different |
 | `--flat-tolerance` | 0..1 | `0.08` | where the gaussians are discs, how much thicker than they are a merge may be, against its width |
 | `--reach` | 0.1..10 | `1.5` | how many of its standard deviations a gaussian may stand from the merge that replaces it |
@@ -705,7 +705,10 @@ finest where none does -- and only that level is posed.
 A cloud that keeps shading normals (a conversion's, `primvars:athenea:splat:normal`)
 keeps them in its `.athc`: four bytes more a gaussian, the merged levels'
 the weighted mean of what they stand for made unit again. That is version 2
-of the format; a version 1 file, which has none, is still read.
+of the format; a version 1 file, which has none, is still read. The same
+version keeps whether the colours are linear light (`primvars:athenea:splat:linear`)
+in its header's flags (bit 1, beside bit 0 for the normals); a file written
+before has it clear and is read as a capture, sRGB.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the
@@ -809,6 +812,7 @@ showing the radiance it carries.
 |---|---|---|
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
+| `primvars:athenea:splat:linear` | bool | `false` |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
@@ -853,6 +857,16 @@ the frame keeps answering everything geometric (the footprint, where a ray
 meets the disc). `athenea mesh2splat` always writes it (twelve bytes a
 gaussian in the file, four on the device); a skeleton that carries the cloud
 turns it as it turns the frame; a capture has none.
+`linear` says the colours (the harmonics, every degree) are linear light,
+linear Rec.709 -- the working space every gaussian is blended in -- and are
+drawn as they are. Without it they are taken for a capture's: the sRGB every
+trainer fits, made linear a gaussian at a time when the harmonics are
+evaluated, before the blend. sRGB appears nowhere else until an image is
+shown (the view transform, OpenColorIO). `athenea mesh2splat` writes it on
+every cloud it makes -- an albedo, a transfer's albedo, a bake -- and a cloud
+written again (`athenea decimate`, an export) keeps it. A capture's look
+moves a little: where splats overlap, the mean of their light is brighter
+than the light of their mean (decisions.md has the measurement).
 
 **`AtheneaSplatSkinningAPI`** — the joints that carry a cloud.
 
@@ -897,6 +911,10 @@ prim: keep what is inside a volume, remove it, or grade it.
 | `primvars:athenea:edit:minOpacity` | float | `0` |
 | `primvars:athenea:edit:maxScale` | float | `0` |
 | `primvars:athenea:edit:invert` | bool | `false` |
+
+A grade (`tint`, `saturation`, `brightness`) works on each splat's colour in
+linear light, as the blend does: a brightness of 2 doubles the light, and a
+capture graded here does not match the same numbers applied to its sRGB.
 
 **`AtheneaStreamedAssetAPI`** — a cloud drawn from a `.athc`.
 

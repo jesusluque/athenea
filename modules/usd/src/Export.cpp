@@ -293,6 +293,13 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
         static const TfToken kIor("primvars:athenea:splat:ior");
         splats.GetPrim().CreateAttribute(kIor, SdfValueTypeNames->Float, false).Set(options.ior);
     }
+    if (options.linear || raw.linear || raw.encoding.colour == io::SplatEncoding::Colour::LinearLight) {
+        // Its colours are linear light, which is what every cloud is blended
+        // in; without this a reader takes them for a capture's sRGB and
+        // decodes them a second time.
+        static const TfToken kLinear("primvars:athenea:splat:linear");
+        splats.GetPrim().CreateAttribute(kLinear, SdfValueTypeNames->Bool, true).Set(true);
+    }
     if (options.litBody) {
         // Its colours are light, not an albedo: what a frame adds is the
         // reflection, which is the part a single colour cannot hold.
@@ -311,7 +318,7 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
             TfToken("primvars:athenea:splat:roughness"),    TfToken("primvars:athenea:splat:transmission"),
             TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
             TfToken("primvars:athenea:splat:thinWalled"),   TfToken("primvars:athenea:splat:shadowBits"),
-            TfToken("primvars:athenea:splat:normal")};
+            TfToken("primvars:athenea:splat:normal"),       TfToken("primvars:athenea:splat:linear")};
         const UsdPrim prim = splats.GetPrim();
         if (std::any_of(std::begin(kLighting), std::end(kLighting),
                         [&](const TfToken& name) { return prim.GetAttribute(name).HasAuthoredValue(); })) {
@@ -533,6 +540,13 @@ Result<io::RawSplats> readParticleFieldRecords(const std::filesystem::path& path
     }
     io::RawSplats raw;
     raw.source = path.string();
+    // The space its colours are in: light where the stage says so, the sRGB
+    // of a capture where it does not.
+    {
+        bool linear = false;
+        const UsdAttribute said = field.GetPrim().GetAttribute(TfToken("primvars:athenea:splat:linear"));
+        raw.linear = said && said.Get(&linear) && linear;
+    }
     io::SplatEncoding& e = raw.encoding;
     const uint32_t keep = perSplat - 1;
     e.floatsPerRecord = 14 + 3 * keep + (normals.empty() ? 0 : 3);

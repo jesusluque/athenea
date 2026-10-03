@@ -26,6 +26,10 @@ constexpr uint64_t kPage = 4096;
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kOldestVersion = 1;
 constexpr uint32_t kHasNormals = 1;
+/// Bit 1: the colours are linear light (`GpuSplats::linear`), which is
+/// nothing a block carries but how every block's colours are read. Clear in
+/// every file written before it, which were all captures' or encoded.
+constexpr uint32_t kLinear = 2;
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'C'};
 /// Uploads staged before a submit: the staging heap holds them until then.
 constexpr uint64_t kStageBytes = uint64_t{256} << 20;
@@ -171,6 +175,7 @@ scene::GpuSplats splatsLike(const FileHeader& h, const std::filesystem::path& pa
     s.source = path.filename().string();
     s.restPerColour = h.restPerColour;
     s.shWords = h.shWords;
+    s.linear = (h.flags & kLinear) != 0;
     std::copy(h.boundsMin, h.boundsMin + 3, s.bounds.min.begin());
     std::copy(h.boundsMax, h.boundsMax + 3, s.bounds.max.begin());
     return s;
@@ -295,7 +300,7 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     FileHeader h{};
     std::memcpy(h.magic, kMagic, 4);
     h.version = kVersion;
-    h.flags = normals ? kHasNormals : 0u;
+    h.flags = (normals ? kHasNormals : 0u) | (cloud.splats.linear ? kLinear : 0u);
     h.count = cloud.count;
     h.restPerColour = cloud.splats.restPerColour;
     h.shWords = shWords;

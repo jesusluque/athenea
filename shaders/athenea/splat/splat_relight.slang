@@ -40,19 +40,6 @@ import athenea.common.packing;
 // declares no binding, which is what lets a module below material import it.
 import athenea.material.microfacet;
 
-/// Relit light put where the blend expects a splat's colour.
-///
-/// A cloud is blended in the encoded space it was trained in and the finished
-/// pixel is linearised (frame.slang). Relighting does not produce a trained
-/// colour, it produces light -- so it goes in encoded, and the blend's own
-/// linearise gives back exactly this. Without it every relit cloud was put
-/// through the sRGB curve a second time: 0.5 came out 0.214 and a dark
-/// material, where the curve is steepest, came out ten times too dark. That
-/// is what made a converted mesh black.
-public float3 relitForBlend(float3 lit, bool linearising) {
-    return linearising ? linearToSrgb(lit) : lit;
-}
-
 /// What a splat reflects with.
 /// One value of a gaussian's transfer, f16 pairs, `base` counted in halves.
 public float transferAt(StructuredBuffer<uint> transfer, uint base, uint k) {

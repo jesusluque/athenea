@@ -9083,3 +9083,130 @@ Not done: a capture has no normal and keeps its axis. `CloudLoader::records`
 (a cloud on the device back into records) does not unpack normals, so a
 splat file decimated without a stage keeps none -- a splat file never has
 them. The merged levels carry the normal but still no PBR channels.
+
+## Every gaussian is blended in linear light
+
+Clouds used to be blended in the space they were trained in -- sRGB for every
+trainer -- and only the finished splat contribution was linearised
+(`srgbToLinear(rgb / coverage) * coverage`), because linearising each splat
+had turned letters red and skies electric in openFXplayer. Everything else in
+the engine is linear Rec.709: meshes, points, lights, the path tracer. So a
+cloud converted from a mesh, whose colours are light, had to be encoded into
+sRGB on the way in (`Colour::LinearLight` in the decode and the export, the
+bake's `linearToSrgb`) and relit light encoded again before the blend
+(`relitForBlend`) -- and a pixel where two of its gaussians overlap was the
+sRGB mix of two lights, which is not the light of the two.
+
+**Decided: every gaussian is blended in linear light; sRGB appears only where
+an image is shown** (`DisplayTransform`, OpenColorIO). What space a cloud's
+colours are in is the cloud's (`GpuSplats::linear`, `io::RawSplats::linear`,
+`primvars:athenea:splat:linear`, declared by `AtheneaSplatLightingAPI`):
+
+- A capture (PLY, SPZ, SOG, .splat, a ParticleField that does not say) keeps
+  its sRGB harmonics as trained. Each projection -- `splat_project`,
+  `rt_shade`, both references -- evaluates them, clamps at zero and makes the
+  splat linear (`common/color.slang`, `cloudLight`) before anything else
+  touches it. The blends (`splat_blend`, `rt_integrate::writeSegment`,
+  `reference_blend`, `reference_peak_blend`) decode nothing.
+  `RenderSettings::linearise` is gone: there is no other way to blend.
+- A cloud this engine writes holds light and says so: `athenea mesh2splat`
+  (an albedo, a transfer's albedo, a bake), an export of light
+  (`LinearLight` is now stored as it is, like `Linear`, and implies the flag),
+  anything written back from such a cloud (`CloudLoader::records`, a
+  decimation, `.athc`).
+- Relighting works on light and returns light: the albedo is the evaluated
+  colour as it is, `relitForBlend` is gone, and the colours the traced glass
+  pass caches and reads back (`colours`) are linear.
+- The bake (`bakeEncode`) no longer encodes. It still bounds the series --
+  read back over the fitted half, clamped to `[0, brightest]`, mirrored onto
+  the far half, projected on the whole sphere -- in linear light.
+- A `SplatEdit` grade runs on linear colours: physically right (a brightness
+  of 2 is twice the light), and not what the same numbers did before.
+  openFXplayer shares the edit and still grades encoded; it is to follow.
+- The levels of detail average colour in each cloud's own space (as before:
+  the moments are plain means), and the decimation's blob no longer clips the
+  base colour at one -- a lit bake's highlight is 3. `colourTolerance` is an
+  absolute difference in that space: sRGB code values over 255 for a capture,
+  linear light for a converted cloud, where 0.05 is a coarser step in the
+  darks and a finer one in the brights.
+- Copies keep the flag: the LOD's sorted cloud and merged levels, the cut's
+  frame cloud, a decimation's cloud, a posed (skinned) cloud, `.athc` (bit 1
+  of the version 2 header's `flags`, beside bit 0 for the normals; files
+  written before have it clear and read as captures), Hydra
+  (`ParticleFieldArrays::linear` -> `SplatStreams::linear`) and
+  `readParticleFieldRecords`.
+
+Measured:
+
+- `athenea_render_tests "[linear]"`, new: two discs of half opacity, each far
+  wider than the frame, front `(0.8, 0.05, 0.05)` over back
+  `(0.05, 0.05, 0.8)` in linear light, written as a conversion writes them,
+  against the over operator built by a kernel (`test/linear_blend.slang`):
+  rasteriser, reference and ray tracer p99 0, max 0. Before the change, all
+  three p99 26, max 26, every pixel over 2 (the red channel 0.32 where the
+  mix is 0.41).
+- A capture's look, the same test file: 3000 random gaussians, each a random
+  colour, drawn now against the old pipeline emulated exactly (the same sRGB
+  values blended as they are, the finished contribution through the curve:
+  `srgbFinish`): p99 51, max 63 code values. It is the worst case -- a pixel
+  that mixes black and white is 128 blended encoded and 188 blended as light.
+  Real captures, rendered by `athenea render` before and after (960 x 540):
+  train_30k p99 55 (75 073 pixels over 2 of 518 400; mean 0.136 -> 0.157),
+  drjohnson_30k p99 24 (mean 0.066 -> 0.072), beetle.spz p99 14. Where splats
+  overlap, the mean of their light is brighter than the light of their mean:
+  captures come out slightly brighter and their translucent fringes lighter,
+  which is what blending light means; the look was trained against the other
+  blend, and a cloud trained against this one would be right in it.
+- `athenea_usd_tests "a Lambertian surface bakes to the same constant at
+  every degree"`: the plane under a dome of 1 bakes to 0.1800, 0.1795,
+  0.1793 at degrees 0, 2, 3 against 0.18 linear; before, 0.4614 (its sRGB
+  code) and the test, now asking 0.18, failed at every degree.
+- The other numbers that moved, all still within their tests: the relit
+  routes against each other (`[relight]`, rasteriser against tracer p99
+  77 -> 65, 91 -> 73), PLY against SPZ by a code or two, the strong motion
+  blur's energy ratio 0.903 -> 0.971 (its splats are now light, so the
+  shutter's sum is a sum of light).
+
+The chess pawn under the autoshop HDRI (768 x 768, traced at 512 paths,
+against the mesh's render; converted by this build with `--prim
+/World/Subject --no-camera`), relMSE / p99 relative / mean red:
+
+| conversion | before | after |
+|---|---|---|
+| `--no-bake` (relit), traced | 0.0498 / 0.84 / 0.2850 | 0.0550 / 0.92 / 0.2852 |
+| `--no-bake`, rasterised | 0.0097 / 0.71 | 0.0108 / 0.71 |
+| `--transfer`, traced | 0.0470 / 0.77 / 0.2842 | 0.0522 / 0.77 / 0.2845 |
+| `--transfer`, rasterised | 0.0071 / 0.59 | 0.0081 / 0.59 |
+| `--bake-degree 3` (64 paths), traced | 0.0132 / 0.71 / 0.2794 | 0.0372 / 1.30 / 0.2842 |
+| `--bake-degree 3`, 256 paths, traced | 0.0121 / 0.71 / 0.2806 | 0.0250 / 1.00 / 0.2831 |
+
+(The mesh's mean red is 0.2815.) The relit and transferred clouds barely
+move: their gaussians are opaque discs side by side, and an albedo that was
+encoded and decoded around a blend of mostly one splat comes back the same;
+the small rise is the marble's speckle, now mixed as light. The bake is the
+one that changes: its mean is now nearer the mesh (0.2794 -> 0.2842), but its
+error doubles, and the error is noise -- four times the paths take it from
+0.037 to 0.025. A degree-3 series fitted to 64 noisy paths swings, and in
+sRGB the swing was compressed by the curve before anyone saw it; in light it
+is not, and the specular flakes of the marble show as grain.
+
+**R5, the alternative: keep a converted cloud's colours in a compressed
+space and make them linear just before the blend.** That is exactly what a
+capture now gets (sRGB stored, `cloudLight` per splat), so it costs nothing
+but the flag. Measured by baking the same pawn with the series encoded
+(`bakeEncode` through `linearToSrgb`, the cloud not marked linear): 64 paths
+relMSE 0.0200 (p99 0.84, mean 0.2811), 256 paths 0.0149 (p99 0.71, mean
+0.2814) -- between the old pipeline and linear storage, and the mean the
+closest of the three. The blend is linear either way; what differs is the
+space the harmonics are fitted and stored in, and a compressed one keeps a
+noisy fit's overshoots small. Not taken here, because this change was asked
+for with the bake in linear light and the round trip test reads 0.18 either
+way; it is the measured case for doing it next, for bakes only (an albedo is
+bounded and gains nothing), with the flag saying which.
+
+Not done: openFXplayer still grades and blends encoded, so a cloud graded in
+both no longer matches. A capture is not retrained for the linear blend; its
+fringes are what they are. `CloudLoader::records` writes a decoded capture
+back as `Linear` base colours in its own (sRGB) space and keeps the flag
+false, which is right but means "Linear" in the encoding names a layout, not
+a colour space.

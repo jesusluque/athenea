@@ -12,6 +12,7 @@ import athenea.common.packing;
 import athenea.common.sh;
 import athenea.splat.frame;
 import athenea.common.edit;
+import athenea.common.color;
 
 StructuredBuffer<float4>    positions;
 StructuredBuffer<uint>      shape;
@@ -97,7 +98,7 @@ void referenceProject(uint3 tid: SV_DispatchThreadID) {
     const float3 dir = normalize(p.xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
     refScreen[slot] = float4(centre, v.z, cutoffPower(alpha));
     refConic[slot] = float4(c / det, -b / det, a / det, alpha);
-    float3 colour = max(base + evaluateRest(sh, i * params.shWords, degree, dir), 0.0);
+    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
     if (fate.graded) {
         colour = editGrade(params.edit, colour);
     }

@@ -16,8 +16,8 @@
 //     mode 1 remove: inside  -> gone
 //     mode 2 grade:  nothing goes
 //   inside and still there: opacity *= opacity (gone below 1/255), and the
-//   colour, in the encoded space the cloud was trained in, *= tint *
-//   brightness, then lerped from its Rec.709 luma by saturation.
+//   colour, in linear light (whatever space the cloud keeps it in), *= tint *
+//   brightness, then lerped from its Rec.709 luminance by saturation.
 module edit;
 
 public struct EditParams {
@@ -77,7 +77,12 @@ public EditFate editFate(EditParams e, float3 position, float opacity, float3 sc
     return fate;
 }
 
-/// The grade, on a colour in the cloud's encoded space.
+/// The grade, on a splat's colour in linear light: every splat is made
+/// linear before it is graded and blended (common/color.slang, `cloudLight`),
+/// so a brightness of 2 is twice the light, and the Rec.709 weights below are
+/// a luminance and not a luma of encoded values. (It used to run on a
+/// capture's sRGB; the same numbers now grade a little differently, and
+/// openFXplayer, which shares the edit, grades encoded until it follows.)
 public float3 editGrade(EditParams e, float3 colour) {
     float3 c = colour * float3(e.tintR, e.tintG, e.tintB) * e.brightness;
     const float luma = dot(c, float3(0.2126, 0.7152, 0.0722));

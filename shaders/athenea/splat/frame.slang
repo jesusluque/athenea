@@ -23,8 +23,11 @@
 //   - the kernel's frame: +z forward, x right, y up; screen origin bottom-left;
 //     pixel centres at +0.5. The -Z camera of D36 is folded into the view.
 //   - square pixels: focalY == focalX unless a window scale says otherwise.
-//   - colour is blended in the encoded space the cloud was trained in, and the
-//     finished pixel is linearised.
+//   - colour is blended in linear light (the working space, linear Rec.709).
+//     A capture's colours are sRGB, as its photographs were, and each splat
+//     is decoded when its harmonics are evaluated (common/color.slang,
+//     `cloudLight`); a cloud that holds light already (`linearCloud`) is
+//     taken as it is. sRGB appears only where an image is shown.
 module frame;
 import athenea.common.edit;
 
@@ -58,7 +61,7 @@ public struct FrameParams {
     public uint  depthMode;      // 0 alpha-weighted mean, 1 first crossing
     public float depthThreshold;
     public float bgR; public float bgG; public float bgB; public float bgA;
-    public uint  linearise;      // 1: finished pixel sRGB -> linear
+    public uint  linearCloud;    // 1: this cloud's colours are linear light; 0: sRGB, decoded per splat
     public uint  hasUnder;       // 1: an opaque layer (raster points) is under the splats
     public uint  relight;        // 1: light these splats rather than show them as baked
     public uint  lightCount;     // lights in `lights`, 0 when nothing is relit
@@ -144,7 +147,7 @@ public struct FrameParams {
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power
     public float4 conic;    // a, b, c, alpha
-    public float4 colour;   // rgb (encoded), 0
+    public float4 colour;   // rgb (linear), 0
 };
 
 public float3 toView(FrameParams f, float3 p) {

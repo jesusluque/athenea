@@ -117,6 +117,7 @@ Result<io::RawSplats> CloudLoader::records(const GpuSplats& splats) {
     e.opacity_ = io::SplatEncoding::Opacity::Linear;
     e.scale_ = io::SplatEncoding::Scale::Log;
     e.colour = io::SplatEncoding::Colour::Linear;   // the base colour, as the shape keeps it
+    raw.linear = splats.linear;                      // in the space the cloud keeps it in
     raw.count = splats.count;
     if (splats.count == 0) {
         return raw;
@@ -348,6 +349,7 @@ Result<GpuSplats> CloudLoader::upload(const io::RawSplats& raw, uint32_t maxDegr
                               e.shadowBits != io::SplatEncoding::kNoField,
                               e.normal != io::SplatEncoding::kNoField);
     if (!splats) return std::move(splats).error();
+    splats->linear = raw.linear || e.colour == io::SplatEncoding::Colour::LinearLight;
 
     const uint64_t recordBytes = uint64_t{e.floatsPerRecord} * 4;
     const uint32_t perSlice = static_cast<uint32_t>(std::max<uint64_t>(1, kSliceBytes / recordBytes));
@@ -723,6 +725,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!normals) return std::move(normals).error();
     auto splats = startSplats(in.source, n, keep, havePbr, haveCrypto, transferCount, haveShadowBits, haveNormals);
     if (!splats) return std::move(splats).error();
+    splats->linear = in.linear;
     const uint32_t perSlice = static_cast<uint32_t>(std::max<uint64_t>(1, kSliceBytes / (uint64_t{e.floatsPerRecord} * 4)));
     uint32_t written = 0;
     for (uint32_t first = 0; first < n; first += perSlice) {

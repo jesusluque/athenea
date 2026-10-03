@@ -56,6 +56,9 @@ void lodLeafMoments(uint3 tid: SV_DispatchThreadID) {
         moments[at + 7] += weight * (cov[1][1] + p.y * p.y);
         moments[at + 8] += weight * (cov[1][2] + p.y * p.z);
         moments[at + 9] += weight * (cov[2][2] + p.z * p.z);
+        // The colour is averaged in the space the cloud keeps it in -- a
+        // capture's sRGB, a conversion's linear light (GpuSplats::linear) --
+        // and the merged Gaussian is in that space too.
         moments[at + 10] += weight * highHalf(shape[row + 2]);
         moments[at + 11] += weight * lowHalf(shape[row + 3]);
         moments[at + 12] += weight * highHalf(shape[row + 3]);

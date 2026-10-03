@@ -6433,10 +6433,11 @@ TEST_CASE("a Lambertian surface bakes to the same constant at every degree", "[u
         ray[3] = 1.0e-3F;   // how far off the surface the rays start
         ray[6] = 1.0F;      // the normal, +z
     }
-    // What the surface sends, in the space a cloud is blended in: the plane
-    // reads 0.18 in a frame (the test above measures it) and a bake fits
-    // there, not in linear light.
-    const float expected = static_cast<float>(1.055 * std::pow(0.18, 1.0 / 2.4) - 0.055);
+    // What the surface sends, in linear light, which is where a cloud is
+    // blended and so where a bake fits: the plane reads 0.18 in a frame (the
+    // test above measures it). It was 0.461, the sRGB code of 0.18, while
+    // clouds were blended encoded.
+    const float expected = 0.18F;
     auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/bake_check", "bakeCheck");
     if (!check) FAIL(check.error().toString());
 
