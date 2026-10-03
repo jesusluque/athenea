@@ -9364,3 +9364,20 @@ definitions: a material named `material` is not the typedef of that name.
 Not done: a test of the override itself. It is exercised by the Blender
 spike (the default cube's material compiles and shades); a test would need
 a second MaterialX library tree in the build.
+
+## mesh2splat's host side: on the device, by subset, and fair to every mesh
+
+`athenea mesh2splat`'s effect did its work on the device and the command around
+it undid part of that: the records came back to host vectors and were
+repacked a splat at a time, the bake's box and rays were computed over them
+on the processor, a mesh whose GeomSubsets bind several materials was
+converted as one, and the budget was spent in mesh order. What changed, item
+by item:
+
+**Said, not left to be noticed.** Two things the conversion used to do in
+silence now print a warning on stderr: cells past `--max-cells` on their
+triangle (the effect's fourth counter, which it always counted and nobody
+read -- a triangle walks at most that many cells and the rest of it is bare),
+and a budget exhausted, with how many splats did not fit and how many meshes
+the budget ran out before. Both lines were in the Codex conversion of
+lucabRTrender and were lost in the move.

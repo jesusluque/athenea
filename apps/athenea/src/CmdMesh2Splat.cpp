@@ -595,6 +595,8 @@ public:
         uint64_t wanted = 0;
         uint64_t degenerate = 0;
         uint64_t capped = 0;   ///< cells the relief wanted split finer than --displace-refine
+        uint64_t beyond = 0;   ///< cells a triangle had past --max-cells, left unwalked
+        size_t   unconverted = 0;   ///< meshes the budget ran out before
         uint32_t reruns = 0;
         // THE CELL'S BOUNDS, DERIVED ONCE. Per mesh, no mesh is coarser than
         // the model's cell (nothing loses density against per-model) and none
@@ -623,6 +625,11 @@ public:
             }
             const uint64_t room = options_->maxSplats > written ? options_->maxSplats - written : 0;
             if (room == 0) {
+                // Said, not left to be noticed: every mesh from here on is
+                // missing from the cloud.
+                for (size_t rest = k; rest < meshes.size(); ++rest) {
+                    unconverted += triangles_[rest] > 0 ? 1 : 0;
+                }
                 break;
             }
             const uint32_t meshCrypto = athenea::core::cryptomatteId(meshes[k].path);
@@ -688,6 +695,7 @@ public:
                 if (slices == 0) {
                     meshWanted = out->wanted;   // the first run counts everything from here on
                     capped += out->capped;      // and so every cell the relief asked of
+                    beyond += out->beyond;      // and every cell past the per-triangle bound
                 }
                 ++slices;
                 written += out->written;
@@ -763,10 +771,24 @@ public:
             return Error(ErrorCode::InvalidArgument, "the conversion produced no splats");
         }
         if (wanted > written) {
-            std::printf("mesh2splat: %llu splats did not fit the budget of %llu; "
-                        "raise --max-splats, lower --resolution, or with --density per-mesh raise --cell-min\n",
-                        static_cast<unsigned long long>(wanted - written),
-                        static_cast<unsigned long long>(options_->maxSplats));
+            std::fprintf(stderr,
+                         "mesh2splat: warning: the budget is exhausted: %llu splats did not fit --max-splats %llu; "
+                         "raise --max-splats, lower --resolution, or with --density per-mesh raise --cell-min\n",
+                         static_cast<unsigned long long>(wanted - written),
+                         static_cast<unsigned long long>(options_->maxSplats));
+        }
+        if (unconverted > 0) {
+            std::fprintf(stderr, "mesh2splat: warning: the budget ran out before %zu mesh(es), which are not in "
+                                 "the cloud\n",
+                         unconverted);
+        }
+        if (beyond > 0) {
+            // A triangle walks at most --max-cells cells; the rest of a large
+            // one is left bare, which reads as a hole in the cloud.
+            std::fprintf(stderr,
+                         "mesh2splat: warning: %llu cells lay past --max-cells %u on their triangles and were "
+                         "not sampled; raise --max-cells or lower --resolution\n",
+                         static_cast<unsigned long long>(beyond), options_->maxCells);
         }
         if (reruns > 0) {
             std::printf("mesh2splat: %u mesh run(s) wanted more than the first guess and ran again\n", reruns);
@@ -801,6 +823,9 @@ private:
         uint64_t           degenerate = 0;
         /// Cells the relief would have split finer than `--displace-refine`.
         uint64_t           capped = 0;
+        /// Cells past `--max-cells` on their triangle, left unwalked (the
+        /// effect's fourth counter).
+        uint64_t           beyond = 0;
         /// The first triangle the budget cut into; the triangle count when
         /// everything fit. Where the next slice starts.
         uint64_t           done = 0;
@@ -983,6 +1008,7 @@ private:
         answer.written = static_cast<uint64_t>(std::max((*counted)[0], 0.0F));
         answer.wanted = static_cast<uint64_t>(std::max((*counted)[1], 0.0F));
         answer.degenerate = static_cast<uint64_t>(std::max((*counted)[2], 0.0F));
+        answer.beyond = static_cast<uint64_t>(std::max((*counted)[3], 0.0F));
         answer.done = counted->size() >= 6 ? static_cast<uint64_t>(std::max((*counted)[5], 0.0F))
                                            : uint64_t{triangles_[at]};
         answer.written = std::min(answer.written, budget);

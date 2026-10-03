@@ -1266,6 +1266,8 @@ A script's own header says what it needs and where it puts things.
 | a host does not offer the renderer | the plugin was not found | set `PXR_PLUGINPATH_NAME` to `<build>/plugin/usd` |
 | `render product '<path>' has no resolution` / `no vars` | the settings prim is incomplete | give the product a resolution and ordered vars |
 | a converted cloud is missing its last meshes | the budget ran out in mesh order | raise `--max-splats`, or with `--density per-mesh` raise `--cell-min` |
+| `warning: the budget is exhausted` or `the budget ran out before N mesh(es)` | `--max-splats` was smaller than what the meshes wanted | raise `--max-splats`, lower `--resolution`, or with `--density per-mesh` raise `--cell-min` |
+| `warning: N cells lay past --max-cells` | a triangle wanted more cells than one triangle may walk; the rest of it is bare | raise `--max-cells`, or lower `--resolution` |
 | a converted cloud is black | the bake found no light | give the stage lights, or `--default-lights`, or `--no-bake` |
 | a cloud's reflections look flatter than the mesh's | it carries no shading normal (`primvars:athenea:splat:normal`): converted before conversions wrote one | convert it again; `--normal-map-turns` also turns the discs themselves |
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |
