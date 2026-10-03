@@ -90,4 +90,18 @@ struct ImageStats {
                                                     const gpu::Buffer& a, const gpu::Buffer& b,
                                                     uint32_t width, uint32_t height);
 
+/// FLICKER: the temporal second difference of three consecutive frames --
+/// `current` against the mean of `previous` and `next`, built on the device
+/// (reference/image_midpoint.slang) and compared both as radiance and as
+/// code values. A smooth motion is nearly linear over three frames, so its
+/// second difference is small; flicker is not. Linear float4 frames of one
+/// size, with the camera still.
+struct FlickerDifference {
+    HdrDifference   hdr;
+    ImageDifference codes;
+};
+[[nodiscard]] Result<FlickerDifference> compareFlicker(gpu::ShaderLibrary& library, const gpu::Buffer& previous,
+                                                       const gpu::Buffer& current, const gpu::Buffer& next,
+                                                       uint32_t width, uint32_t height);
+
 }   // namespace athenea::render
