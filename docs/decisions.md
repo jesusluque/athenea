@@ -12103,3 +12103,19 @@ deactivates every other light. Under a constant white dome a transfer's
 error is its occlusion's and its reflection's alone, with no sky detail to
 hide in -- the experiment proposals 030 and 031 ask for. The conversion is
 the stage's own; a transfer does not depend on the light it is baked under.
+
+### The direct half without grain (proposal 032's first part)
+
+A TX transfer traces one ray a cell of its grid over the sphere for the open
+directions, and that set of rays is a quadrature: each cell is worth its
+solid angle, which for the octahedral map is `4 / side^2` over `|p|^3`, `p`
+the point of the octahedron the cell's centre decodes from (an area element
+of the facet, `sqrt(3) dx dy`, seen from the centre at `|p|` along a
+direction at `1 / sqrt(3) |p|` to the facet's normal). With the cells, the
+direct half is now `sum V Y_k cos dOmega / pi` over them instead of the
+stratified paths' escapes: deterministic, so the grain the direct light
+carried -- the shadows' -- is gone, at 256 directions a gaussian (1024 at
+32 cells), half of them above the surface. The indirect half and the field
+are still the paths'. Checked (pending the GPU turn): the unoccluded
+point's sixteen coefficients against the clamped cosine's, at 16 cells
+(`[degree3]`).

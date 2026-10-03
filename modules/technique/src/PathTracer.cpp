@@ -1753,7 +1753,9 @@ void tracePathsAt(uint2 group, uint index) {
                         for (uint c = 0; c < min(path.bakeCount, 16u) && !backSample; ++c) {
                             const float basis = shBasisValue(c, d);
                             if (bounce == 1) {
-                                transferDirect[c] += throughput.x * basis;
+                                // With the cells the direct half is their
+                                // quadrature (above), not these samples.
+                                transferDirect[c] += cellsMode ? 0.0 : throughput.x * basis;
                             } else {
                                 coefficients[c] += throughput * basis;
                             }
@@ -2000,8 +2002,25 @@ void tracePathsAt(uint2 group, uint index) {
                             const uint cell = (plane * 4u + w) * 32u + b;
                             const float2 uv = (float2(float(cell % cellSide), float(cell / cellSide)) + 0.5) /
                                               float(cellSide);
-                            if (!pathOccluded(pp, np, octDecode(uv), 3.0e38, kLightUnlinked, mask)) {
+                            const float3 wd = octDecode(uv);
+                            if (!pathOccluded(pp, np, wd, 3.0e38, kLightUnlinked, mask)) {
                                 word |= 1u << b;
+                                // THE DIRECT HALF BY QUADRATURE (proposal 032):
+                                // the same rays, each worth its cell's solid
+                                // angle -- the octahedral map's own, 4 / side^2
+                                // over |p|^3 for the point p of the octahedron
+                                // it decodes from -- times the cosine over pi.
+                                // No grain: what the sampled direct half had
+                                // is gone, and it is not summed below.
+                                const float cosine = dot(np, wd);
+                                if (cosine > 0.0) {
+                                    const float l1 = abs(wd.x) + abs(wd.y) + abs(wd.z);
+                                    const float solid = 4.0 / float(cellSide * cellSide) * l1 * l1 * l1;
+                                    const float worth = cosine * solid / 3.14159265358979 * float(samples);
+                                    for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
+                                        transferDirect[c] += worth * shBasisValue(c, wd);
+                                    }
+                                }
                             }
                         }
                         words[w] = word;
