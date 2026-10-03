@@ -1,4 +1,6 @@
 // Copyright (c) 2026 jesus luque.
+// Copyright Contributors to the ACES Project. (ported from aces-core)
+// SPDX-License-Identifier: Apache-2.0
 //
 // The kernels that build an ACES 2.0 output transform's parameters and
 // tables for one peak luminance and one set of limiting primaries: what

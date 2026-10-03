@@ -59,6 +59,11 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 | [MaterialX](https://github.com/AcademySoftwareFoundation/MaterialX) Slang generator | Apache-2.0 (text in `LICENSE`) | Copyright Contributors to the MaterialX Project | `modules/material` (`MaterialCompiler`) builds on `MaterialXGenSlang` and emits its node implementations |
 | [spz](https://github.com/nianticlabs/spz) (vendored in `third_party/spz`) | MIT (below) | Copyright (c) 2024 Niantic Labs; the source files carry Copyright (c) 2025 Niantic Labs and Copyright (c) 2025 Adobe Inc. | `io::readSpz`, compiled into the binaries |
 
+The ACES and SOG files above carry, under athenea's own copyright line, the
+upstream one and an SPDX identifier (`Apache-2.0` for ACES, `Apache-2.0 AND
+MIT` for SOG: athenea's code on PlayCanvas's format). spz's files keep their
+own headers.
+
 PlayCanvas (MIT):
 
 ```text
