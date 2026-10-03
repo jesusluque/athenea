@@ -19,6 +19,11 @@
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/ComputeKernel.h"
+#include "athenea/lod/Athc.h"
+#include "athenea/lod/Lod.h"
+#include "athenea/render/ReferenceRenderer.h"
+#include "athenea/render/TileRasterizer.h"
+#include "athenea/scene/GpuClouds.h"
 #include "athenea/usd/Export.h"
 
 using namespace athenea;
@@ -107,4 +112,53 @@ TEST_CASE("a camera's pixel decides each mesh's cell", "[mesh2splat][gpu]") {
     std::printf("  from the camera: %u red, %u blue of %u\n", c.red, c.blue, c.there);
     CHECK(c.blue > 0);
     CHECK(c.red > 3 * c.blue);
+}
+
+// `-o x.athc` WRITES WHAT `-o x.usda` WRITES, WITH ITS LEVELS OF DETAIL. The
+// two cards converted both ways: the stage read back and decoded onto the
+// device, the .athc read whole, and both drawn by the rasteriser from the
+// same camera -- the .athc through a cut that keeps every splat. The same
+// image, but for splats whose depths tie and draw in the other order
+// (Morton order against the conversion's; tests/lod measures that at p99 1).
+TEST_CASE("a cloud written as a .athc draws as the one written as a stage", "[mesh2splat][gpu][lod]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path stage = output("two_cards.usda");
+    const fs::path athc = output("two_cards.athc");
+    REQUIRE(fs::exists(stage));
+    REQUIRE(fs::exists(athc));
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto cut = lod::CutSelector::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!cut) FAIL(cut.error().toString());
+
+    auto raw = usd::readParticleFieldRecords(stage);
+    if (!raw) FAIL(raw.error().toString());
+    auto fromStage = loader->upload(*raw, 3);
+    if (!fromStage) FAIL(fromStage.error().toString());
+    auto fromAthc = lod::readAthc(*gpu->device, athc);
+    if (!fromAthc) FAIL(fromAthc.error().toString());
+    std::printf("  %u gaussians in the stage, %u in the .athc (%zu levels)\n", fromStage->count, fromAthc->count,
+                fromAthc->levels.size());
+    CHECK(fromAthc->count == fromStage->count);
+
+    render::RenderSettings settings;
+    settings.width = 160;
+    settings.height = 120;
+    const render::Projection projection = render::projectionFor(
+        render::Camera::lookingAt({1.25, 0.5, 3.0}, {1.25, 0.5, -2.0}), settings.width, settings.height);
+    render::RenderTargets a, b;
+    REQUIRE(raster->render(projection, std::vector<render::SplatInstance>{{&*fromStage, render::Mat4::identity()}},
+                           settings, a));
+    const std::vector<lod::LodInstance> instances{{&*fromAthc, render::Mat4::identity()}};
+    auto selected = cut->select(projection, instances, 0.0F, nullptr);
+    if (!selected) FAIL(selected.error().toString());
+    REQUIRE(raster->render(projection, *selected, settings, b));
+    auto diff = render::compareImages(*gpu->library, a.colour, b.colour, settings.width, settings.height);
+    REQUIRE(diff);
+    std::printf("  .athc against stage: p99 %u, max %u, %llu of %llu over 2\n", diff->p99, diff->max,
+                static_cast<unsigned long long>(diff->over2), static_cast<unsigned long long>(diff->pixels));
+    CHECK(diff->p99 <= 1);
+    CHECK(diff->over2 * 100 <= diff->pixels);
 }

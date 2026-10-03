@@ -345,7 +345,7 @@ recipe is §3.1 below.
 | Option | Value | Default | Notes |
 |---|---|---|---|
 | `stage` | path, required | — | a stage holding meshes |
-| `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd` |
+| `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd`, or `.athc` with levels of detail: the gaussians and their shading normals only (no metallic/roughness/transmission, Cryptomatte ids, glass index, up axis or unit); `--skinned`, `--transfer` and `--lod-levels` are refused with it |
 | `--prim` | prim path | every mesh | only meshes at or under this path |
 | `--hide` | prim path, repeatable | none | left out with all beneath it, as if invisible (a session opinion; the file is untouched) |
 | `--resolution` | integer | `512` | cells across the longest side of the box the density is measured over |

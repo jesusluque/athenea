@@ -935,6 +935,15 @@ slots es lo que mantiene los arrays por gaussiana índice a índice, que es lo
 que permite leer las influencias del esqueleto, los ids y los armónicos con el
 mismo índice.
 
+**O un `.athc`.** Con `-o x.athc` los registros van del dispositivo a una nube
+en el dispositivo (`CloudLoader::upload` de un buffer del dispositivo), a
+niveles de detalle allí (`lod::LodBuilder`), y fuera como los bytes del
+fichero (`lod::writeAthc`). Un `.athc` guarda posiciones, forma, armónicos y
+las normales de sombreado; no tiene sitio para el material con que refleja
+una nube reiluminada, los ids Cryptomatte, el índice de un vidrio, el eje
+vertical y la unidad, un esqueleto o un transfer -- los dos últimos se
+rechazan, el resto se dice.
+
 ### 6.10 Cómo se comprueba cada fase, y qué midió
 
 | Fase | Lo comprueba | Qué afirma |
@@ -942,6 +951,12 @@ mismo índice.
 | la proyección y la celda | `athenea_aofx_tests "[mesh2splat]"` | un cuadrado unidad a una resolución conocida da una cuenta conocida, y cada gaussiana tiene un ancho conocido |
 | la celda acotada | los mismos, casos `[cell]` | un límite que muerde cambia la cuenta, y uno que no la deja bit a bit |
 | densidad por malla | `ctest -R mesh2splat_density` | el plano pequeño de una escena de dos mallas saca decenas de gaussianas por modelo y centenares por malla |
+| GeomSubsets | `athenea_mesh2splat_tests` (tras el fixture `mesh2splat_outputs`) | dos caras enlazadas en rojo y azul sobre una malla verde salen rojas y azules, tantas de cada, nada verde |
+| el presupuesto | los mismos | dos mallas iguales con un presupuesto de la mitad de lo que quieren conservan más o menos la mitad cada una |
+| la celda desde una cámara | los mismos | la tarjeta a tres unidades de la lente tiene más del triple que la que está a siete |
+| salida `.athc` | los mismos | las mismas tarjetas como `.athc` y como escena se dibujan igual (p99 como mucho 1) |
+| los rayos del bake en el dispositivo | `athenea_usd_tests "[mesh2splat]"` | cada rayo empieza a `1e-4` de la diagonal de la caja; el bake del dispositivo responde lo que el del host; las pasadas responden como una |
+| entero o nada | `athenea_core_tests "[platform]"` | un escritor que falla no deja fichero ni parcial |
 | el mapa de recorte | `athenea_aofx_tests` | un alfa de 0.3 se vuelve una opacidad de 0.3, no una gaussiana o nada |
 | el bake de luz | casos de bake de `athenea_usd_tests` | un plano lambertiano vuelve con la radiancia que dice la aritmética, y un metal no sale negro |
 | el ajuste de armónicos | los mismos | el ajuste reproduce una función direccional conocida dentro de tolerancia |

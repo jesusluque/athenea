@@ -220,6 +220,11 @@ athenea_m2s_output(two_cards_budget ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.u
 # The cell from the stage's camera, 64 pixels across.
 athenea_m2s_output(two_cards_camera ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
     --cell-from-camera /World/Camera --camera-pixels 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards_camera.usda)
+# The same cards as a .athc and as a stage, to be drawn side by side.
+athenea_m2s_output(two_cards_athc ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.athc)
+athenea_m2s_output(two_cards_usd ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.usda)
 athenea_test(athenea_mesh2splat_tests
     SOURCES mesh2splat/test_outputs.cpp
     LIBS athenea::usd athenea::lod athenea::render athenea::scene

@@ -9507,3 +9507,22 @@ with `--max-splats 800`, about 1 300 wanted -- each holds at least 300
 (spent in mesh order the second held about 145); and with the stage's camera
 three units from the red card and seven from the blue, 64 pixels across, the
 red holds more than three times the blue's gaussians (5.4 expected).
+
+**`-o x.athc`.** A converted cloud went through a USD stage and `athenea stage
+convert` to become a `.athc`, the records crossing to the processor and back.
+Now the conversion writes one itself: `CloudLoader::upload` takes the device
+records (a new overload: the same validate and decode, the slices copied out
+of the buffer on the device), `lod::LodBuilder` builds the levels, and
+`lod::writeAthc` writes them, atomically. What a `.athc` carries: positions,
+shape (opacity, sizes, rotation, DC), harmonics, and the shading normals
+(version 2). What it cannot: the metallic, roughness and transmission a relit
+cloud reflects with (`GpuSplats::pbr` is not in the format, so a relit
+`.athc` reflects as a capture does), the Cryptomatte ids, the thin-wall flags
+and the glass's index, the stage's up axis and unit, a rig and a transfer.
+The last two would make a wrong cloud rather than a poorer one, so
+`--skinned` and `--transfer` are refused with a `.athc`, and so is
+`--lod-levels` (the format builds its own); the rest is said when it is
+written. `athenea_mesh2splat_tests "a cloud written as a .athc*"` (GPU turn):
+the two cards written both ways, the stage decoded and drawn whole, the
+`.athc` read and drawn through a cut that keeps every splat -- p99 at most 1,
+the order of tied depths being the one difference tests/lod already measures.

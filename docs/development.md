@@ -897,6 +897,14 @@ it stands. Keeping the slots means the per-gaussian arrays stay index for
 index alike, which is what lets the skinning influences, the ids and the
 harmonics all be read by the same index.
 
+**Or a `.athc`.** With `-o x.athc` the records go from the device into a
+cloud on the device (`CloudLoader::upload` of a device buffer), into levels
+of detail there (`lod::LodBuilder`), and out as the file's bytes
+(`lod::writeAthc`). A `.athc` keeps positions, shape, harmonics and the
+shading normals; it has no room for the material a relit cloud reflects with,
+the Cryptomatte ids, a glass's index, the up axis and unit, a rig or a
+transfer -- the last two are refused, the rest said.
+
 ### 6.10 How each phase is checked, and what it measured
 
 | Phase | Checked by | What it asserts |
@@ -904,6 +912,12 @@ harmonics all be read by the same index.
 | the projection and the cell | `athenea_aofx_tests "[mesh2splat]"` | a unit quad at a known resolution yields a known count, and each gaussian is a known width |
 | the bounded cell | the same, `[cell]` cases | a bound that bites changes the count, and one that does not leaves it bit for bit |
 | per-mesh density | `ctest -R mesh2splat_density` | the small plane of a two-mesh stage gets tens of gaussians per model and hundreds per mesh |
+| GeomSubsets | `athenea_mesh2splat_tests` (after the `mesh2splat_outputs` fixture) | two faces bound red and blue on a green mesh convert to red and blue, as many of each, no green |
+| the budget | the same | two equal meshes under a budget half what they want keep about half each |
+| the cell from a camera | the same | the card three units from the lens holds over three times the one seven away |
+| `.athc` output | the same | the same cards as a `.athc` and as a stage draw alike (p99 at most 1) |
+| the bake's rays on the device | `athenea_usd_tests "[mesh2splat]"` | every ray starts `1e-4` of the box's diagonal off; the device bake answers what the host's does; passes answer as one |
+| whole or not at all | `athenea_core_tests "[platform]"` | a failing writer leaves no file and no partial one |
 | the cut-out map | `athenea_aofx_tests` | an alpha of 0.3 becomes an opacity of 0.3, not a gaussian or nothing |
 | the light bake | `athenea_usd_tests` bake cases | a Lambertian plane comes back at the radiance arithmetic says, and a metal is not black |
 | the harmonic fit | the same | the fit reproduces a known directional function within tolerance |

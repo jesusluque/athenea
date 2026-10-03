@@ -349,7 +349,7 @@ receta es §3.1.
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `stage` | ruta, obligatoria | — | una escena con mallas |
-| `-o`, `--output` | ruta | `splats.usda` | `.usda`, `.usdc`, `.usd` |
+| `-o`, `--output` | ruta | `splats.usda` | `.usda`, `.usdc`, `.usd`, o `.athc` con niveles de detalle: solo las gaussianas y sus normales de sombreado (sin metallic/roughness/transmission, ids Cryptomatte, índice del vidrio, eje vertical ni unidad); con él se rechazan `--skinned`, `--transfer` y `--lod-levels` |
 | `--prim` | ruta de prim | todas las mallas | solo las que cuelgan de esa ruta |
 | `--hide` | ruta de prim, repetible | ninguna | se deja fuera con todo lo que cuelga de ella, como invisible (opinión de sesión; el fichero no cambia) |
 | `--resolution` | entero | `512` | celdas a lo largo del lado largo de la caja sobre la que se mide la densidad |

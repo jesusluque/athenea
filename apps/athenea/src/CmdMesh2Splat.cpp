@@ -62,7 +62,10 @@
 #include "athenea/gpu_host/Context.h"
 #include "athenea/gpu_host/ImageStorage.h"
 #include "athenea/image/Image.h"
+#include "athenea/lod/Athc.h"
+#include "athenea/lod/Lod.h"
 #include "athenea/material/TextureStore.h"
+#include "athenea/scene/GpuClouds.h"
 #include "athenea/usd/Export.h"
 #include "athenea/usd/MeshStage.h"
 #include "athenea/usd/StageRenderer.h"
@@ -1624,7 +1627,8 @@ void addMesh2Splat(CLI::App& app) {
     auto* cmd = app.add_subcommand(
         "mesh2splat", "convert a USD stage of meshes into gaussian splats (Electronic Arts' mesh2splat)");
     cmd->add_option("stage", o->stage, ".usd / .usda / .usdc holding meshes")->required();
-    cmd->add_option("-o,--output", o->output, "the ParticleField stage to write (.usda, .usdc, .usd)");
+    cmd->add_option("-o,--output", o->output,
+                    "the ParticleField stage to write (.usda, .usdc, .usd), or a .athc with levels of detail");
     cmd->add_option("--prim", o->prim, "only meshes at or under this prim path");
     cmd->add_option("--hide", o->hidden, "a prim to leave out with all beneath it, as if invisible (repeatable)");
     cmd->add_option("--lod-levels", o->lodLevels,
@@ -1719,6 +1723,26 @@ void addMesh2Splat(CLI::App& app) {
         if (o->density != "per-model" && o->density != "per-mesh") {
             std::fprintf(stderr, "--density wants per-model or per-mesh, not '%s'\n", o->density.c_str());
             throw CLI::RuntimeError(1);
+        }
+        // WHAT A .ATHC CAN CARRY: the gaussians -- position, opacity, sizes,
+        // rotation, harmonics -- and the shading normal. It has no room for
+        // a rig, a transfer, the material a relit cloud reflects with, the
+        // matte's ids, a glass's index or the stage's up axis and unit, so a
+        // conversion that needs one of the first two is refused rather than
+        // written without it, and the rest is said.
+        if (lod::isAthc(o->output)) {
+            if (o->lodLevels > 1) {
+                std::fprintf(stderr, "a .athc builds its own levels of detail: drop --lod-levels\n");
+                throw CLI::RuntimeError(1);
+            }
+            if (o->skinned || o->transfer) {
+                std::fprintf(stderr, "a .athc cannot carry %s: write a USD stage (.usda, .usdc, .usd)\n",
+                             o->skinned ? "a skeleton (--skinned)" : "a transfer (--transfer)");
+                throw CLI::RuntimeError(1);
+            }
+            std::printf("mesh2splat: a .athc keeps the gaussians and their shading normals; the metallic, "
+                        "roughness and transmission a relit cloud reflects with, the Cryptomatte ids, the glass "
+                        "index and the stage's up axis and unit stay out\n");
         }
         gpu_host::Context* context = gpu_host::installProcessContext();
         if (context == nullptr || context->compute() == nullptr) {
@@ -1885,6 +1909,26 @@ void addMesh2Splat(CLI::App& app) {
                     std::printf("mesh2splat: carried by %s, %u joints over %zu instants at %g fps\n",
                                 rig.skeleton.c_str(), rig.joints, rig.times.size(),
                                 rig.timeCodesPerSecond);
+                }
+
+                // A .ATHC: the cloud with its levels of detail, straight from
+                // the device -- decoded into a cloud there (`CloudLoader`),
+                // built into levels there (`LodBuilder`), and written as the
+                // bytes they are. What it keeps is what a .athc has room
+                // for: positions, shape, harmonics and shading normals.
+                if (lod::isAthc(o->output)) {
+                    auto loader = scene::CloudLoader::create(library);
+                    if (!loader) return std::move(loader).error();
+                    auto splats = loader->upload(raw->records, raw->count, raw->encoding, raw->source,
+                                                 o->bake ? std::min(o->bakeDegree, 3u) : 0u);
+                    if (!splats) return std::move(splats).error();
+                    auto builder = lod::LodBuilder::create(library);
+                    if (!builder) return std::move(builder).error();
+                    auto built = builder->build(*splats);
+                    if (!built) return std::move(built).error();
+                    return platform::writeAtomically(o->output, [&](const std::filesystem::path& partial) {
+                        return lod::writeAthc(library.device(), *built, partial);
+                    });
                 }
 
                 usd::ExportOptions options;
