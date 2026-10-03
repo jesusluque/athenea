@@ -6918,8 +6918,9 @@ TEST_CASE("what a glass cloud shows behind it leaves through the far face as the
     REQUIRE(c[1] > 0.0);
     const double meshRatio = m[2] / m[1];
     const double cloudRatio = c[2] / c[1];
-    CHECK(std::abs(cloudRatio - meshRatio) < 0.15 * meshRatio);
-    CHECK(std::abs(c[1] - m[1]) < 0.15 * m[1]);
+    // 1.6 % and 4.5 % measured; 84 % and 8.6 % before.
+    CHECK(std::abs(cloudRatio - meshRatio) < 0.06 * meshRatio);
+    CHECK(std::abs(c[1] - m[1]) < 0.08 * m[1]);
 }
 
 // A COMPILER GIVEN MATERIALX LIBRARIES OF ITS OWN READS ITS DEFINITIONS THERE.
@@ -6932,9 +6933,10 @@ TEST_CASE("what a glass cloud shows behind it leaves through the far face as the
 // UsdPreviewSurface authors no colour must come out red. Grey is what either
 // half missing gives: the variable not read, or the host's node definition
 // kept from the document. Hidden: ctest runs it as `materialx_root`, with the
-// variable set, since the engine reads it once for the process.
+// variable set, since the engine reads it once for the process; its one tag
+// keeps a run by any other tag ([usd], [materials]) from selecting it.
 TEST_CASE("a material compiler given its own MaterialX libraries takes its definitions from them",
-          "[.materialx_root][usd][gpu][materials]") {
+          "[.materialx_root]") {
     ATHENEA_REQUIRE_GPU(gpu);
     const std::string root = platform::env("ATHENEA_MATERIALX_ROOT");
     REQUIRE_FALSE(root.empty());
@@ -6990,9 +6992,10 @@ TEST_CASE("a material compiler given its own MaterialX libraries takes its defin
     REQUIRE(frame);
     const std::array<double, 3> m = middleMean(gpu, *frame, w, h, 16);
     std::printf("  an unauthored diffuseColor under the compiler's own libraries: %.4f %.4f %.4f\n", m[0], m[1], m[2]);
-    CHECK(m[0] > 0.1);
-    CHECK(m[0] > 4.0 * m[1]);
-    CHECK(m[0] > 4.0 * m[2]);
+    // 0.810 0.063 0.063 measured: the red default, lit by a dome of one.
+    CHECK(m[0] > 0.7);
+    CHECK(m[0] > 8.0 * m[1]);
+    CHECK(m[0] > 8.0 * m[2]);
 }
 
 // THE ROOM THROUGH A ROUGH GLASS IS SHARPER THAN ITS REFLECTION.
@@ -10997,8 +11000,9 @@ TEST_CASE("a relit card's stored normal under a scale that is not uniform leans 
         std::printf("  %s: the stretched card against the stretched mesh p99 %.3f relMSE %.2e\n", technique,
                     diff->p99Relative, diff->relMse);
         CHECK(diff->pixels == uint64_t{w} * h);
-        // As a direction the card was a cosine of 0.58 where the mesh is 0.94.
-        CHECK(diff->p99Relative < 0.08);
+        // 0.014 on both routes; 0.386 turned as a direction (a cosine of 0.58
+        // where the mesh is 0.94).
+        CHECK(diff->p99Relative < 0.04);
     }
 }
 

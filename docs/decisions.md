@@ -9198,8 +9198,8 @@ Tests, each failing without its half of the change (checked by reverting it):
 - `athenea_usd_tests "a relit card's stored normal under a scale*"`: the same
   card and the same tilted mesh under a prim scaled (2, 1, 1), lit from
   straight above, raster and traced: the card against the mesh p99 relative
-  under 0.08. Turned as a direction the card's cosine is 0.58 where the mesh's
-  is 0.94. (Pending a GPU run for the measured figures.)
+  0.014 on both routes (held at 0.04); turned as a direction, 0.386 -- the
+  card's cosine 0.58 where the mesh's is 0.94.
 - `athenea_scene_tests "[normals]"`: 4096 discs whose normals lean 0.4 rad off
   their axes, skinned by a turn and by a stretch with shear; 0 of 4096 off the
   inverse transpose, 0 on the other side of their disc. Not turned, 4096 were
@@ -9325,8 +9325,9 @@ multiplied. Test: `athenea_usd_tests "what a glass cloud shows behind it*"`
 -- a grey card (0.8) in the same cloud, behind a ball of tint (1, 1, 0.5),
 against the mesh ball and a diffuse card: the cloud's blue over green through
 the middle against the mesh's (the tint squared, whatever either card's
-shading), within 15 %, and green within 15 %. Before, the ratio was about
-the tint once, twice the mesh's.
+shading) and green. Mesh 0.750 / 0.214, cloud 0.783 / 0.227: the ratio
+1.6 % and green 4.5 % from the mesh's, held at 6 % and 8 %. Before, the
+cloud read 0.814 / 0.428 -- the ratio 84 % off, about the tint once.
 
 **Pending: the tint is the whole colour.** The second tint is
 `lerp(1, albedo, T)`, and the albedo is the base colour times the
@@ -9503,23 +9504,27 @@ definitions: a material named `material` is not the typedef of that name.
 - `athenea_material_tests`: all pass (513 assertions, 9 cases).
 - `athenea_usd_tests "[materials]"`: all pass (281 assertions, 10 cases).
 
-Tests, both pending a GPU run:
+Tests:
 
 - `athenea_material_tests "a document's own definitions give way*"`: a
   standard_surface document that also carries an implementation under the
   library's own name (`IMPL_standard_surface_surfaceshader_101`) drawing a
   blue diffuse -- an older host's definition, as the compiler sees it --
-  compiles to the module and source its XML alone compiles to. Before the
-  precedence, the document's implementation stayed and the import skipped
-  the library's.
+  compiles to the module and source its XML alone compiles to
+  (`athenea_mat_de437b03806a1b17` both). Under the old rule the document's
+  implementation stayed, the import skipped the library's, and the module
+  was another (`athenea_mat_94abdab1c87a2a51`).
 - `ctest -R materialx_root` (`athenea_usd_tests "[materialx_root]"`, hidden
   from discovery, run with the variable set since the engine reads it once
   a process): the root is a copy of the build's libraries in which
   UsdPreviewSurface's `diffuseColor` defaults to red, filled by the case
   itself, and a quad whose UsdPreviewSurface authors no colour must come
-  out red (red over four times green and blue) through Hydra. Grey is what
-  either half missing gives: the variable not read, or the host's node
-  definition kept from hdMtlx's document.
+  out red through Hydra: 0.810 0.063 0.063 measured, held at red over 0.7
+  and over eight times green and blue. Grey (0.18) is the variable not read;
+  under the old precedence the host's implementations stayed beside the
+  root's and the generated module did not load, so the pass drew nothing.
+  The case's only tag is the hidden one, so `[usd]` or `[materials]` runs,
+  which have the variable unset, do not select it.
 
 ## Every gaussian is blended in linear light
 
