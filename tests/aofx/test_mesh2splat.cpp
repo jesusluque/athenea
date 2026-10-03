@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -615,6 +616,120 @@ TEST_CASE("a cut-out map leaves no gaussian where there is no surface",
         std::printf("  from where the budget cut: %u written; %u + %u == %u\n", rest[0], starved[0], rest[0],
                     full);
         CHECK(starved[0] + rest[0] == full);
+    }));
+}
+
+// A NORMAL MAP IS READ IN THE FRAME ITS UVS GIVE, as the mesh reads it.
+//
+// The conversion took the tangent from the triangle's longest edge, which is
+// the gaussian's own axis and nothing the map was painted against: on this
+// quad that edge is the diagonal, while u runs along x. A constant map
+// leaning towards +u must turn every gaussian towards +x, as the mesh's
+// shading (dP/du, technique/material_surface.slang) turns its normal; read
+// along the diagonal it leaned 20 degrees the wrong way.
+TEST_CASE("a normal map turns a gaussian in the frame its UVs give", "[aofx][mesh2splat]") {
+    gpu_host::Context* gpu = gpu_host::installProcessContext();
+    if (gpu == nullptr || gpu->compute() == nullptr) {
+        SKIP("no gpe device");
+    }
+    aofx_host::EffectRegistry registry;
+    aofx::Effect* effect = conversion(registry, gpu);
+    if (effect == nullptr) {
+        SKIP("the Mesh2Splat bundle is not built here");
+    }
+    gpu::ShaderLibrary library(gpu->deviceShared());
+
+    REQUIRE(gpu->run([&] {
+        auto quad = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sQuad");
+        auto fill = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sFill");
+        auto check = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sCheckQuad");
+        REQUIRE(quad);
+        REQUIRE(fill);
+        REQUIRE(check);
+
+        constexpr uint32_t kMeshWidth = 64;
+        constexpr int32_t  kMapSize = 16;
+        const image::ImagePtr mesh = pictureOf(kMeshWidth, 1);
+        const image::ImagePtr normals = pictureOf(kMapSize, kMapSize);
+        const gpu::Buffer meshView = viewOf(*gpu, mesh);
+        const gpu::Buffer normalView = viewOf(*gpu, normals);
+        const uint32_t budget = kResolution * kResolution * 2;
+        const image::ImagePtr records = pictureOf(static_cast<int32_t>(budget * 6), 1);
+        // Tangent space (0.5, 0, 1): towards +u, away from the surface.
+        const std::array<float, 4> texel{0.75F, 0.5F, 1.0F, 1.0F};
+
+        gpu::CommandBatch batch(library.device());
+        quad->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["mesh"].setBinding(meshView.rhi());
+            cursor["albedo"].setBinding(normalView.rhi());
+            cursor["records"].setBinding(meshView.rhi());
+            cursor["counts"].setBinding(meshView.rhi());
+            cursor["params"]["meshWidth"].setData(kMeshWidth);
+            cursor["params"]["meshStride"].setData(static_cast<uint32_t>(mesh->stride()));
+        });
+        fill->dispatch(batch, {kMapSize, kMapSize, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["mesh"].setBinding(meshView.rhi());
+            cursor["albedo"].setBinding(normalView.rhi());
+            cursor["records"].setBinding(meshView.rhi());
+            cursor["counts"].setBinding(meshView.rhi());
+            cursor["params"]["albedoWidth"].setData(static_cast<uint32_t>(kMapSize));
+            cursor["params"]["albedoHeight"].setData(static_cast<uint32_t>(kMapSize));
+            cursor["params"]["albedoStride"].setData(static_cast<uint32_t>(normals->stride()));
+            cursor["params"]["colour"].setData(texel.data(), 16);
+        });
+        REQUIRE(batch.submit(true));
+        mesh->deviceWrote();
+        normals->deviceWrote();
+
+        mesh->attach("bounds", {0.0F, 0.0F, 0.0F, 1.0F, 1.0F, 0.0F});
+        aofx_host::EffectJob job;
+        job.bounds = records->bounds();
+        job.inputs.push_back({"Mesh", mesh});
+        job.inputs.push_back({"Normal", normals});
+        number(job, "triangles", 2);
+        number(job, "resolution", kResolution);
+        number(job, "maxSplats", budget);
+        number(job, "useNormalMap", 1.0);
+        auto rendered = aofx_host::renderEffect(*gpu, *effect, job);
+        REQUIRE(rendered);
+        const std::vector<float>* counted = (*rendered)->attached("splats");
+        REQUIRE(counted != nullptr);
+        const auto written = static_cast<uint32_t>((*counted)[0]);
+        REQUIRE(written >= kResolution * kResolution);
+        const auto recordPixels = static_cast<uint32_t>((*counted)[4]);
+
+        const gpu::Buffer recordView = viewOf(*gpu, *rendered);
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * 4;
+        desc.elementBytes = 4;
+        desc.label = "test.counts";
+        auto counts = gpu::Buffer::create(library.device(), desc);
+        REQUIRE(counts);
+        const float length = std::sqrt(1.25F);
+        const std::array<float, 4> axis{0.5F / length, 0.0F, 1.0F / length, 0.0F};
+        gpu::CommandBatch second(library.device());
+        check->dispatch(second, {written, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["mesh"].setBinding(meshView.rhi());
+            cursor["albedo"].setBinding(normalView.rhi());
+            cursor["records"].setBinding(recordView.rhi());
+            cursor["counts"].setBinding(counts->rhi());
+            cursor["params"]["splats"].setData(written);
+            cursor["params"]["recordPixels"].setData(recordPixels);
+            cursor["params"]["dstWidth"].setData(static_cast<uint32_t>((*rendered)->bounds().width()));
+            cursor["params"]["dstStride"].setData(static_cast<uint32_t>((*rendered)->stride()));
+            cursor["params"]["resolution"].setData(kResolution);
+            cursor["params"]["sigma"].setData(kSigma);
+            cursor["params"]["flatness"].setData(kFlatness);
+            cursor["params"]["tolerance"].setData(5.0e-3F);
+            cursor["params"]["axis"].setData(axis.data(), 16);
+        });
+        REQUIRE(second.submit(true));
+        auto violations = counts->readAll<uint32_t>(library.device());
+        REQUIRE(violations);
+        // Only the turn is this test's: the quad's other claims assume an
+        // untilted frame.
+        INFO("turned the wrong way: " << (*violations)[2] << " of " << written);
+        CHECK((*violations)[2] == 0);
     }));
 }
 

@@ -388,3 +388,14 @@ void m2sCheckBlocks(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(counts[3], 1u);
     }
 }
+
+/// One texel everywhere in the albedo picture, which a test also binds as a
+/// normal map: `colour` is the texel.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void m2sFill(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= params.albedoWidth || tid.y >= params.albedoHeight) {
+        return;
+    }
+    albedo[tid.y * params.albedoStride + tid.x] = params.colour;
+}

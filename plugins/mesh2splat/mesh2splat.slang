@@ -541,6 +541,34 @@ float2 m2sUv2At(const M2sTriangle t, float3 bary) {
     return t.t0 * bary.x + t.t1 * bary.y + t.t2 * bary.z;
 }
 
+/// THE FRAME A NORMAL MAP IS READ IN: dP/du, as the mesh's own shading builds
+/// it (technique/material_surface.slang) -- the same formula, orthonormalised
+/// against the same normal, and the same frame where the UVs say nothing.
+/// The conversion used the triangle's longest edge, which is the gaussian's
+/// own axis and has nothing to do with how the map was painted: every
+/// triangle turned the relief by its own angle, and the pawn's marble came
+/// out with its veins lit from a different side on every facet.
+float3 m2sMapTangent(const M2sTriangle t, float3 normal) {
+    const bool second = params.normalUv2 != 0;
+    const float2 st0 = second ? t.t0 : float2(t.p0.w, t.n0.w);
+    const float2 st1 = second ? t.t1 : float2(t.p1.w, t.n1.w);
+    const float2 st2 = second ? t.t2 : float2(t.p2.w, t.n2.w);
+    const float2 d1 = st1 - st0;
+    const float2 d2 = st2 - st0;
+    const float det = d1.x * d2.y - d1.y * d2.x;
+    float3 tangent = float3(0.0);
+    if (abs(det) > 1e-12) {
+        tangent = ((t.p1.xyz - t.p0.xyz) * d2.y - (t.p2.xyz - t.p0.xyz) * d1.y) / det;
+    }
+    tangent -= dot(tangent, normal) * normal;
+    if (dot(tangent, tangent) < 1e-20) {
+        const float sign = normal.z >= 0.0 ? 1.0 : -1.0;
+        const float a = -1.0 / (sign + normal.z);
+        tangent = float3(1.0 + sign * normal.x * normal.x * a, sign * normal.x * normal.y * a, -sign * normal.x);
+    }
+    return normalize(tangent);
+}
+
 /// What the cut-out map reads here: one where there is no map.
 float m2sMaskAt(const M2sTriangle t, float3 bary) {
     if (params.opacityChannel == 0) {
@@ -824,8 +852,8 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         const float4 texel = sampleWrapped(normalMap, params.normalWidth, params.normalHeight,
                                            params.normalStride, params.normalUv2 != 0 ? uv2 : uv);
         const float3 fromMap = normalize(texel.xyz * 2.0 - 1.0);
-        const float3 bitangent = normalize(cross(normal, tangent));
-        const float3 straight = normalize(cross(bitangent, normal));
+        const float3 straight = m2sMapTangent(t, normal);
+        const float3 bitangent = cross(normal, straight);
         shading = normalize(straight * fromMap.x + bitangent * fromMap.y + normal * fromMap.z);
     }
 
@@ -1009,8 +1037,8 @@ M2sLook m2sLookAt(const M2sTriangle t, float2 at) {
         const float4 texel = sampleWrapped(normalMap, params.normalWidth, params.normalHeight,
                                            params.normalStride, params.normalUv2 != 0 ? uv2 : uv);
         const float3 fromMap = normalize(texel.xyz * 2.0 - 1.0);
-        const float3 bitangent = normalize(cross(flat, t.tangent));
-        const float3 straight = normalize(cross(bitangent, flat));
+        const float3 straight = m2sMapTangent(t, flat);
+        const float3 bitangent = cross(flat, straight);
         l.normal = normalize(straight * fromMap.x + bitangent * fromMap.y + flat * fromMap.z);
     }
     l.relief = flat;

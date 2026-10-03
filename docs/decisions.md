@@ -8966,3 +8966,26 @@ transferred cloud of a lamp is dark; a radiance bake keeps it), specular
 weight and colour (F0 is 0.04 for every gaussian), coat, sheen, and the
 normal map's tangent frame (the conversion builds it from the triangle's
 longest edge, not from the UVs). Those need fields a gaussian does not have.
+
+## A normal map is read in the frame its UVs give
+
+mesh2splat read a normal map against the triangle's longest edge -- the
+gaussian's own first axis, and nothing the map was painted against. The mesh
+reads it against dP/du (`technique/material_surface.slang`), so every facet
+of a converted surface turned its relief by its own angle: the pawn's marble
+veins were lit from a different side on each triangle. `m2sMapTangent` is
+the mesh's formula -- dP/du from the triangle's positions and UVs (the set
+the map is read with), orthonormalised against the normal, and the same
+frame where the UVs are degenerate -- used wherever the conversion reads a
+map: the gaussian's turn with `--normal-map-turns`, and the shading normal a
+bake and a transfer orient their hemisphere by.
+
+Test: a quad whose longest edge is its diagonal, u along x, a constant map
+leaning to +u. Before, 272 of 272 gaussians turned towards the diagonal (20
+degrees off); now none.
+
+Not done: a gaussian keeps no shading normal of its own. Without
+`--normal-map-turns` a relit or transferred cloud shades by its disc's axis,
+so the relief a map paints is in the bake's light and nowhere else; turning
+the disc instead opens the surface where the relief is steep. Storing the
+shading normal beside the frame, skinned with it, is the next change.
