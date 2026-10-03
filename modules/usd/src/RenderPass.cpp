@@ -52,6 +52,10 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         athenea::log::warn("hdAthenea: {}; trying again with {}", error.toString(), did);
         return true;
     };
+    // The working space and the config, before the commit that reads colours in them.
+    if (_delegate != nullptr) {
+        _engine->setWorkingSpace(_delegate->GetWorkingSpace(), _delegate->GetOcioConfig());
+    }
     if (auto uploaded = _engine->commit(); !uploaded) {
         athenea::Error error = std::move(uploaded).error();
         bool recovered = false;

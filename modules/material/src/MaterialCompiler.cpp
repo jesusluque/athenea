@@ -235,6 +235,14 @@ public:
     /// is what both sides have: two nodes reading one file in two colour
     /// spaces would be a document contradicting itself.
     mutable std::map<std::string, std::string> fileColourSpaces;
+    /// AND EVERY COLOUR CONSTANT'S: a color3 or color4 input's colorspace (its
+    /// own, or the document's), by the input's path, which is what a uniform
+    /// port keeps (ShaderPort::getPath). The value goes into the material's
+    /// row as authored and a kernel brings it into the working space there
+    /// (colour::ColourCompiler::convertWords): the space is data, so it is
+    /// no part of the module's hash and materials that differ only in it
+    /// still share one module.
+    mutable std::map<std::string, std::string> valueColourSpaces;
 
     mx::ShaderPtr generate(const std::string& name, mx::ElementPtr element, mx::GenContext& context) const override {
         slots.clear();
@@ -489,7 +497,16 @@ private:
                     // explicit sRGB wins over a document's default.
                     slot.space = usd == "sRGB" || space.empty() ? (usd.empty() ? std::string("auto") : usd) : space;
                 } else {
-                    slot.space = space.empty() ? std::string("lin_rec709") : space;
+                    // A MaterialX image reads its file in a colour space only
+                    // where it gives a colour (color3, color4), as MaterialX's
+                    // own colour management does; a vector or a float -- a
+                    // normal map, a roughness -- is data whatever the document
+                    // says, which matters once the working space is not the
+                    // document's lin_rec709. A colour with no space is lin_rec709.
+                    const mx::ShaderOutput* output = node != nullptr ? node->getOutput() : nullptr;
+                    const bool colour = output == nullptr || output->getType() == mx::Type::COLOR3 ||
+                                        output->getType() == mx::Type::COLOR4;
+                    slot.space = !colour ? std::string("raw") : space.empty() ? std::string("lin_rec709") : space;
                 }
                 const auto wrap = [](int mode) {
                     // MaterialX address modes: 0 constant, 1 clamp, 2 periodic, 3 mirror.
@@ -509,6 +526,14 @@ private:
             }
             MaterialSlot& slot = addSlot(MaterialSlot::Kind::Value, variable, count);
             slot.value = valueOf(port->getValue(), type);
+            if (type == mx::Type::COLOR3 || type == mx::Type::COLOR4) {
+                slot.colour = true;
+                slot.space = port->getColorSpace();
+                if (const auto found = valueColourSpaces.find(port->getPath());
+                    slot.space.empty() && found != valueColourSpaces.end()) {
+                    slot.space = found->second;
+                }
+            }
             emitLine(variable + " = " + readOf(type, slot.offset), stage);
         }
 
@@ -883,6 +908,12 @@ std::optional<VolumeCoefficients> MaterialCompiler::volumeCoefficients(const std
             const mx::NodePtr edf = edfInput->getConnectedNode();
             if (edf && edf->getCategory() == "uniform_edf") {
                 vec3(edf, "color", out.emission);
+                // A colour, unlike the vdf's absorption and scattering
+                // (vector3, which MaterialX does not colour-manage): its space
+                // goes with it, and the volume set converts it on the device.
+                if (const mx::InputPtr colour = edf->getInput("color")) {
+                    out.emissionSpace = colour->getActiveColorSpace();
+                }
             } else if (edf) {
                 athenea::log::warn("material: edf '{}' is not uniform_edf; the medium emits nothing", edf->getCategory());
             }
@@ -972,10 +1003,18 @@ Result<CompiledMaterial> MaterialCompiler::compileDocument(const std::shared_ptr
         // What each file's colour space is, read off the document while it is
         // still a document (see `fileColourSpaces`).
         generator->fileColourSpaces.clear();
+        generator->valueColourSpaces.clear();
         const std::function<void(const mx::ElementPtr&)> readSpaces = [&](const mx::ElementPtr& parent) {
             for (const mx::ElementPtr& child : parent->getChildren()) {
                 if (const mx::NodePtr node = child->asA<mx::Node>()) {
                     for (const mx::InputPtr& input : node->getInputs()) {
+                        if ((input->getType() == "color3" || input->getType() == "color4") && input->getValue()) {
+                            const std::string space = input->getActiveColorSpace();
+                            if (!space.empty()) {
+                                generator->valueColourSpaces[input->getNamePath()] = space;
+                            }
+                            continue;
+                        }
                         if (input->getType() != "filename" || !input->getValue()) {
                             continue;
                         }
@@ -984,7 +1023,14 @@ Result<CompiledMaterial> MaterialCompiler::compileDocument(const std::shared_ptr
                             generator->fileColourSpaces[input->getValue()->getValueString()] = space;
                         }
                     }
-                } else if (child->isA<mx::NodeGraph>()) {
+                } else if (const mx::NodeGraphPtr graph = child->asA<mx::NodeGraph>()) {
+                    // A graph's interface inputs carry values too.
+                    for (const mx::InputPtr& input : graph->getInputs()) {
+                        if ((input->getType() == "color3" || input->getType() == "color4") && input->getValue() &&
+                            !input->getActiveColorSpace().empty()) {
+                            generator->valueColourSpaces[input->getNamePath()] = input->getActiveColorSpace();
+                        }
+                    }
                     readSpaces(child);
                 }
             }

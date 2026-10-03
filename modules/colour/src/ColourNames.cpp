@@ -83,9 +83,13 @@ ResolvedSpace ColourNames::resolve(const std::string& given, FileEncoding file) 
     const std::string name = trimmed(given);
     ResolvedSpace out;
     if (name.empty() || name == "auto" || name == "unknown") {
-        // The file decides: what Hio says of an 8-bit image, linear otherwise.
-        out.kind = file == FileEncoding::Srgb8 ? SpaceKind::Srgb : SpaceKind::Working;
-        out.name = file == FileEncoding::Srgb8 ? srgb_ : working_;
+        // The file decides: what Hio says of an 8-bit image; linear Rec.709
+        // otherwise -- USD's default, which is the working space only where
+        // the working space is linear Rec.709.
+        out.kind = file == FileEncoding::Srgb8 ? SpaceKind::Srgb
+                   : workingIsRec709()         ? SpaceKind::Working
+                                               : SpaceKind::Other;
+        out.name = file == FileEncoding::Srgb8 ? srgb_ : rec709_;
         return out;
     }
     if (isDataName(name)) {
@@ -115,9 +119,11 @@ ResolvedSpace ColourNames::resolve(const std::string& given, FileEncoding file) 
         }
         out.name = space->getName();
         out.builtin = builtin;
-        out.kind = !builtin && out.name == working_ ? SpaceKind::Working
-                   : !builtin && out.name == srgb_  ? SpaceKind::Srgb
-                                                    : SpaceKind::Other;
+        // The working space by its name in whichever config holds it: one
+        // only the studio config knows is still the space rendered in.
+        out.kind = out.name == working_            ? SpaceKind::Working
+                   : !builtin && out.name == srgb_ ? SpaceKind::Srgb
+                                                   : SpaceKind::Other;
         return out;
     }
 #else

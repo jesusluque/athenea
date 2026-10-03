@@ -87,6 +87,11 @@ public:
     [[nodiscard]] uint32_t GetCloudShadowTerms() const;
     [[nodiscard]] float GetCloudShadowDensity() const;
     [[nodiscard]] bool GetAntialias() const;
+    /// `athenea:workingSpace`, else ATHENEA_WORKING_SPACE; empty: unsaid
+    /// (the stage's renderingColorSpace, then lin_rec709_scene).
+    [[nodiscard]] std::string GetWorkingSpace() const;
+    /// `athenea:ocioConfig`; empty: the studio config.
+    [[nodiscard]] std::string GetOcioConfig() const;
     /// Paths a pixel a path traced frame gathers ("athenea:pathSamples"), at
     /// least one, and bounces after the first hit ("athenea:pathBounces").
     [[nodiscard]] uint32_t GetPathSamples() const;

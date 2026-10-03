@@ -10057,9 +10057,8 @@ working space (`color.slang`'s `cloudLight`, `points_decode.slang`).
   `renderingColorSpace` reaches `Engine` from the settings bprim's Sync and
   is resolved at the next commit by `colour::workingSpaceRecord`, through
   `ColourNames` like any other name. Linear Rec.709 under any of its names
-  gives the table; anything else is warned of once (`hdAthenea:
-  renderingColorSpace: colour: 'acescg' as the working space is not linear
-  Rec.709; rendering in lin_rec709_scene`) and the frame is drawn as before.
+  gives the table; in this phase anything else was warned of once and the
+  frame drawn as before (phase 2b renders in it).
 - **Checked** (to run on a device: written while the GPU was another job's).
   - `athenea_colour_tests` "the working-space record of lin_rec709_scene
     holds the constants the kernels held, to the bit": the record the device
@@ -10081,23 +10080,196 @@ working space (`color.slang`'s `cloudLight`, `points_decode.slang`).
     twice in one process and must match itself, so a frame that does not
     repeat is not taken for a changed pixel.
 
-### Not done (phases 2 to 5)
+### Phase 2b: the working space is a setting, and one config is the stage's
 
-- **The working space** is linear Rec.709, fixed (`colour::kWorkingSpace`);
-  the kernels read it from the record (phase 2a), but only Rec.709's record
-  exists. Phase 2b makes it a setting; then every function's destination,
-  the display's source, the textures (a matrix after the filter for the
-  fast sRGB route) and the MaterialX default space follow it. A record of
-  another space has to reach the uniform without a readback: built by a
-  kernel, as the plan has it, it lands in a buffer, and the uniform route
-  then wants the values on the host -- the matrix OCIO gives a processor is
-  the host-side way, and is the one exception to weigh. A MaterialX image node with no colour space is
-  read as `lin_rec709` today, the same as raw; once the working space
-  moves, vector and float image nodes must resolve to Raw.
-- **The config** of textures is the studio config; `--ocio-config` reaches
-  only the display. One config for the stage is phase 2's too.
-- **Colours that are not textures** -- `displayColor`, material constants,
-  light colours, splat SH -- are taken as the working space.
+- **What is asked, and in which order.** `athenea:workingSpace` (the
+  `--working-space` of `athenea stage` and `athenea view`, or
+  `ATHENEA_WORKING_SPACE`), then the active UsdRenderSettings prim's
+  `renderingColorSpace` -- now honoured, no longer only warned of -- then
+  `lin_rec709_scene`. Any name a config or GfColorSpaceNames gives a space
+  (`acescg`, `lin_ap1_scene`, `ACEScg`), or a role (`role:scene_linear`,
+  which in the studio config is ACEScg). `athenea:ocioConfig`
+  (`--ocio-config`) is **the** config of the stage: the `Engine` owns one
+  `ColourCompiler` (`colour::chooseWorkingSpace`) and hands the same one to
+  the texture store, the light table, the scene's records, the volume set
+  and the cloud conversion. The second item of phase 1's *Not done* closes.
+- **The record of a space that is not Rec.709 is built on the device.**
+  `ColourCompiler::matrix(src, dst)` compiles the function and a generated
+  kernel (`athenea_cm_<hash>`, `colour/colour_matrix.slang`) evaluates it at
+  the basis -- the matrix OCIO would apply to a pixel -- and at two probes,
+  `e_r + e_g` and `2 e_g`, whose distance from what a matrix gives says
+  whether the function is linear at all. `colour/working_space_build.slang`
+  takes two of them, linear Rec.709 into the working space and back, and
+  composes the record from them and from Rec.709's table: `toXyz` is the
+  table's composed with the way back, `fromXyz` the way in composed with the
+  table's, the luminance `toXyz`'s second row, and the new `toSrgb` rows
+  (working to linear Rec.709, for the display's own views) the way back. It
+  counts a probe that is not linear (a working space is linear and
+  scene-referred: `srgb_texture`, `ACEScct` are refused with a sentence) and
+  a way back that is not the inverse. **The record and the two counts are
+  read back, once, when the working space is chosen** -- 224 bytes: the
+  record is a uniform in every kernel's global constant block (phase 2a's
+  reason: the path tracer at Metal's 31 buffers), and a uniform is set from
+  the host. That readback is the exception this phase adds; the arithmetic
+  is all the kernel's. Linear Rec.709 under any of its names stays the
+  table, so the default does not compile anything and moves no bit.
+- **What follows the working space.** `ColourNames` resolves against it:
+  `SpaceKind::Working` is whatever is rendered in, and a file that leaves
+  its space to the file (`auto`, empty) is linear Rec.709 -- USD's default
+  -- rather than "the working space": the same unsaid EXR reads the same
+  light in any working space. Every function's destination is the working
+  space, so the converted texture route needs nothing else.
+- **8-bit sRGB stays 8-bit.** The fast route keeps its `RGBA8UnormSrgb`
+  view and mips averaged as light; the entry's record says so (flag bit 2)
+  and `texture_table.slang`'s `sampleTexture` brings what the view filtered
+  -- linear Rec.709 -- into the working space with `workingFromSrgbLinear`,
+  after the filter. A filter and a 3x3 are both linear and commute, so this
+  is exact, and the texture takes no more memory. Under Rec.709 the flag is
+  set and nothing is multiplied (the record's own flag skips it), so the
+  bits are those of before.
+- **A MaterialX image node gives a colour space to colours only.** One whose
+  output is not `color3`/`color4` -- a normal map, a roughness -- is read
+  raw whatever the document says, as MaterialX's own colour management
+  treats it; one that is a colour and says nothing is `lin_rec709`, the
+  engine's documents' default. Under Rec.709 raw and `lin_rec709` read the
+  same texels; under ACEScg the second is converted and the first must not be.
+- **The display.** Standard, AgX and ACES 2.0 are Rec.709's (AgX's inset
+  and outset, ACES 2.0's input, the P3 matrix), so `displayColour` brings
+  the working space to linear Rec.709 first (`workingToSrgbLinear`,
+  nothing under Rec.709). For ACES 2.0 that is the same as handing the
+  working primaries to `initAces2Params`, since both are linear. An OCIO view
+  takes the working space as its source: `athenea view` compiles it again
+  when the stage's commit chooses a working space other than the one asked.
+- **Changing it under a running stage.** A commit with another working space
+  or config sets the record, gives the texture store the new compiler -- which
+  drops every file read and reads them again -- writes the material rows
+  again, and brings every decoded cloud from the space it was last brought
+  into (`colourSpace` names it) into the new one; a streamed store is opened
+  again. Lights and instance records are converted every frame anyway.
+- **Checked** (to run on a device: written while the GPU was another job's).
+  - `athenea_colour_tests` "a working space is named as any colour space,
+    and one no 3x3 reaches is refused": the Rec.709 names give the table;
+    `acescg`, `lin_ap1_scene`, `ACEScg` and `role:scene_linear` the same
+    record, built on the device; `raw`, `srgb_texture`, `ACEScct` and an
+    unknown name are refused.
+  - "the record of ACEScg holds Rec.709 to AP1 as the reference's
+    chromaticities give it": the record set on the device, a generated
+    kernel against `aces2.slang`'s `rgbToRgb(kRec709, kAP1)` and back
+    (bound 1e-4, phase 1's for the same matrix), the round trip (1e-5), and
+    the luminance against AP1's Y row (2e-3: the reference's is D60's, the
+    record's Rec.709's D65 row through the config's adaptation).
+  - `athenea_usd_tests` "lin_rec709_scene asked for by any of its names
+    draws the frames the default draws, word for word": the lit and splat
+    stages against `tests/data/working_space` with the setting given as
+    `lin_rec709_scene`, `lin_rec709` and `Linear Rec.709 (sRGB)`;
+    `countDifferent` 0, as phase 2a's cases without it.
+  - "a grey stage drawn in ACEScg and brought to Rec.709 is the stage drawn
+    in Rec.709": achromatic surfaces, coloured lights, an 8-bit sRGB texture
+    and a linear cloud; the ACEScg frame brought to Rec.709 on the device
+    (`convertWords`) against the Rec.709 frame, compareHdr p99 1e-3 and max
+    2e-2 (the bound the cloud's halves set; to be tightened to what is
+    measured), and the frame not brought back over 1e-2, so the conversion
+    is what joins them.
+
+### Phase 2c: a linear cloud names its space
+
+- **Where the name is.** `GpuSplats::colourSpace` beside `linear`: for a
+  linear cloud, the space its light is in; empty is `lin_rec709_scene`;
+  copied by everything that copies `linear` (the levels of detail, the cut,
+  a pose, a decimation). In USD, `primvars:athenea:splat:colorSpace` (a
+  token, declared by `AtheneaSplatLightingAPI`), written by an export and by
+  `athenea mesh2splat` beside the prim's own `ColorSpaceAPI`
+  `colorSpace:name`. Not ColorSpaceAPI alone: Hydra hands a delegate a colour
+  space only beside a colour-role attribute (`HdPrimvarSchema`), and a
+  ParticleField's harmonics are `float3`. In `.athc`, 64 bytes after the
+  header's 104 in page 0 -- padding every writer zeroed, so an older file is
+  `lin_rec709_scene` and an older reader skips it; no flag, no version.
+- **Blender's trap.** Blender writes `colorSpace:name = "lin_rec709_scene"`
+  at the root of a stage whose splats are sRGB captures
+  (`tests/data/splats/sh3_blender.usda`). The name is read only where
+  `athenea:splat:linear` is set: a cloud without the flag is a capture with
+  Rec.709's primaries whatever an ancestor says.
+- **How it is converted.** A linear cloud in a space that is not the working
+  space is brought into it **once, as it is decoded**
+  (`scene::CloudColour`, `scene/cloud_to_working.slang`): the 3x3 between
+  the two (`ColourCompiler::matrix`) applied to the base colour, to every
+  rest coefficient, to the emission and to a transfer's indirect half.
+  Evaluating harmonics is linear in the coefficients, so this is exact but
+  for the halves the result is stored in (2^-11 relative). Then
+  `colourSpace` names the working space, so a second call does nothing --
+  which is also how a change of working space brings it on. A `.athc` read
+  whole is converted with its levels; a streamed one converts its merged
+  levels when it opens and each chunk in the batch that places it
+  (`StreamingPool::onPlaced`). A **capture** is converted where it is
+  evaluated, as phase 2a left it (`cloudLight`: the curve, then
+  `fromSrgb`), since the curve comes after the harmonics.
+- **Checked** (to run on a device). `athenea_scene_tests` "a linear cloud in
+  ACEScg is brought into Rec.709 once, as it is decoded": a cloud converted
+  and the same cloud decoded and left alone, the matrix applied in a check
+  kernel as the conversion applies it: 0 base colours and 0 rest halves
+  differ; the second call, a capture and a cloud already in Rec.709 are not
+  converted. `athenea_usd_tests` "Blender's captured splats stay captures in
+  ACEScg": `sh3_blender.usda` against the PLY's field, both rendered in
+  ACEScg, compareImages p99 0 as in Rec.709.
+
+### Phase 3: colours that are not textures, converted on the device
+
+The host notes where each colour lies and what space it was authored in;
+`convertColourWords` converts it where it lies, in the buffer the commit
+has just uploaded. Generated per source space by
+`ColourCompiler::convertWords` (`athenea_cw_<hash>`):
+`colour/convert_words.slang`'s run -- strided floats, four halves in two
+words, or a list of first words -- around the compiled function, alpha
+untouched. Linear or not: a constant authored in `srgb_texture` goes
+through the curve as a texel would. A colour that says nothing is
+`lin_rec709_scene`, USD's default (`kDefaultColourSpace`), so under Rec.709
+nothing is dispatched and no bit moves.
+
+| What | Where it lies | Where its space comes from |
+|---|---|---|
+| a material's `color3`/`color4` constant | the material blob, by a list of words | the MaterialX input's `colorspace`, or the document's (`MaterialSlot::space`, read off the document by the input's path, which a uniform port keeps); USD's through the scene index (`applyColourSpaces`) |
+| a light's `color` and `shadow:color` | the light records, strided (every instanced copy) | the light's network in the scene index: the attribute's `colorSpace`, else an ancestor's ColorSpaceAPI |
+| `displayColor` | the instance and set records every frame, and their motion copies | the primvar's `HdPrimvarSchema` colour space |
+| any colour-role primvar of a mesh | its `GpuPrimvar`, float4 an element, as built | the same, `lin_rec709_scene` for a colour that says none |
+| a UsdGeomPoints' `displayColor` | `GpuPoints::colours`, four halves | the same |
+| a volume material's `uniform_edf` colour | the volume record | the input's `colorspace` (the vdf's absorption and scattering are `vector3`, which MaterialX does not colour-manage) |
+| a blackbody | evaluated in the kernel | XYZ to the working space through the record (phase 2a) |
+
+- **Never twice.** Each conversion is part of the commit that uploads fresh
+  data -- the material blob is written whole whenever it is written; light,
+  instance and set records every frame; a mesh's primvars as it is built --
+  never of data that was already there.
+- **Not in the module's hash.** `MaterialSlot::space` is data: two
+  materials that differ only in the space of a constant share their module.
+- **Checked** (to run on a device). `athenea_colour_tests` "colour
+  constants are brought into the working space as the compiled function
+  brings them, to the bit": strided floats, halves and a list, from
+  `acescg` and `srgb_texture`, against the function called in a check
+  kernel: 0 colour words differ, 0 other words touched; an unsaid or
+  Rec.709 space dispatches nothing. `athenea_usd_tests` "colours authored
+  in ACEScg draw as the same colours converted beforehand": a
+  UsdPreviewSurface's diffuse colour, a standard_surface's base colour, a
+  rect light's colour and a cube's `displayColor` authored with `colorSpace
+  = "acescg"`, against the same stage with the colours converted to
+  Rec.709 in the file (AP1 to Rec.709, Bradford D60 to D65, to seven
+  digits): compareHdr p99 1e-3, max 1e-2, far below the 30 per cent a
+  colour read in the wrong space is off by.
+
+### Not done (phases 4 and 5)
+
+- **Outputs** (phase 4): the AOVs are in the working space and say nothing
+  of it. An EXR with `chromaticities` and a `colorInteropID`, an output
+  space or a display and view per product, and Hydra's `color` AOV in a
+  space a host asks for are phase 4's. `athenea render` (splat files) keeps
+  the default working space.
+- **Blender** (phase 5): `athenea:ocioConfig` and `athenea:workingSpace` from
+  the add-on.
+- **The prim's own volume primvars** (`albedo`, a Volume without a material)
+  are taken as the working space, as the albedo derived from a vdf's
+  vectors is.
+- **A record built on the host** from the matrix OCIO gives a processor
+  would spare the readback; it is not taken, so the host does no arithmetic
+  on a colour.
 - **An AOFX colour convert effect** was weighed and not built: an AOFX
   kernel is a blob compiled when the bundle is built and binds buffers only
   (aopenfx `KernelDesc`), while a compiled OCIO function is Slang generated

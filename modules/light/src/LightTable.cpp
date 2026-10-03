@@ -1,6 +1,8 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/light/LightTable.h"
 
+#include <cstddef>
+
 #include <algorithm>
 #include <array>
 
@@ -135,6 +137,14 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
     };
     std::vector<Expansion> expansions;
     std::vector<const io::IesProfile*> profiles;
+    // Each light's records, by the space its colours were authored in: the
+    // colour and the shadow's tint are converted where they lie.
+    struct ColourRun {
+        const std::string* space;
+        uint32_t           first;
+        uint32_t           count;
+    };
+    std::vector<ColourRun> colourRuns;
     std::vector<IesRecord> iesRecords;
     std::vector<float> iesValues;
     for (const Light& light : lights) {
@@ -161,6 +171,11 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
                 iesRecords.push_back(ies);
             }
             record.ies = static_cast<uint32_t>(row);
+        }
+        if (colour_ != nullptr && colour_->converts(light.colourSpace)) {
+            const uint32_t copies =
+                light.instanceRows != nullptr && light.instanceCount > 0 ? light.instanceCount : 1u;
+            colourRuns.push_back({&light.colourSpace, static_cast<uint32_t>(records.size()), copies});
         }
         if (light.instanceRows != nullptr && light.instanceCount > 0) {
             // Once per instance; the placements are the device's to write.
@@ -284,6 +299,20 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
     // that, an instanced light's copies are placed.
     if (count_ > 0) {
         gpu::CommandBatch batch(*device_);
+        // The colours as authored, into the working space: before anything
+        // weighs a light by them.
+        constexpr uint32_t kRecordWords = sizeof(LightRecord) / 4;
+        for (const ColourRun& run : colourRuns) {
+            for (const uint32_t at : {static_cast<uint32_t>(offsetof(LightRecord, colour) / 4),
+                                      static_cast<uint32_t>(offsetof(LightRecord, shadowColour) / 4)}) {
+                colour::ColourWordsRun words;
+                words.first = run.first * kRecordWords + at;
+                words.count = run.count;
+                words.stride = kRecordWords;
+                auto converted = colour_->convertWords(batch, records_, *run.space, words);
+                if (!converted) return std::move(converted).error();
+            }
+        }
         for (const Expansion& e : expansions) {
             instances_->dispatch(batch, {e.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                 cursor["records"].setBinding(records_.rhi());

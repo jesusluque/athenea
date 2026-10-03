@@ -26,6 +26,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 
@@ -84,6 +85,14 @@ public:
         uint64_t evictions = 0;
     };
     [[nodiscard]] Status status() const;
+
+    /// What the store's owner records after a chunk lands, in the batch that
+    /// placed it: the chunk's splats lie at `first` .. `first + count` of the
+    /// store (`cloud().splats`). A linear cloud's colours are brought into the
+    /// working space this way, as each chunk arrives (scene::CloudColour).
+    using PlacedHook = std::function<void(gpu::CommandBatch& batch, const LodCloud& cloud, uint32_t first,
+                                          uint32_t count)>;
+    void onPlaced(PlacedHook hook);
 
 private:
     StreamingPool();

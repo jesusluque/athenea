@@ -106,6 +106,16 @@ public:
     [[nodiscard]] Result<void> updateExternal(const std::string& name, const gpu::Buffer& rgba,
                                               uint32_t width, uint32_t height, uint32_t rowPixels);
 
+    /// THE CONFIG AND THE WORKING SPACE THE FILES ARE READ INTO: the
+    /// compiler the stage's renderer owns, shared with whatever else brings
+    /// colours into the working space. Without one, the first commit makes
+    /// the studio config's, rendering in lin_rec709_scene. A compiler other
+    /// than the one in use drops every file read so far, and the next commit
+    /// reads them again into its working space; an external texture is made
+    /// again at its next fill.
+    void setColour(std::shared_ptr<colour::ColourCompiler> compiler);
+    [[nodiscard]] const std::shared_ptr<colour::ColourCompiler>& colour() const noexcept { return colour_; }
+
     /// Binds the table under `table` (a TextureTable parameter block).
     void bind(rhi::ShaderCursor table) const;
 
@@ -118,6 +128,9 @@ private:
     struct Slot {
         gpu::Texture                   texture;
         rhi::ComPtr<rhi::ITextureView> view;   ///< sRGB for 8-bit colour, else the texture's own
+        /// Read through the sRGB view: what it gives is linear Rec.709, which
+        /// the sampler brings into the working space after it has filtered.
+        bool                           srgbView = false;
     };
     struct Entry {
         TextureInfo           info;
@@ -144,9 +157,9 @@ private:
     gpu::Device*                                          device_ = nullptr;
     gpu::ShaderLibrary*                                   library_ = nullptr;
     gpu::ComputeKernel                                    decode_;
-    /// Made at the first commit that reads a file: the studio config's names
-    /// and the functions compiled from it.
-    std::unique_ptr<colour::ColourCompiler>               colour_;
+    /// Given (setColour), or made at the first commit that reads a file: the
+    /// studio config's names and the functions compiled from it.
+    std::shared_ptr<colour::ColourCompiler>               colour_;
     std::map<std::string, Decoder>                        decoders_;
     bool                                                  srgbFastPath_ = true;
     std::unique_ptr<gpu::MipGenerator>                    mips_;

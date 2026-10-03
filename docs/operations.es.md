@@ -47,6 +47,7 @@ el que corre el binario.
 | `AOFX_PLUGIN_PATH` | directorios extra de bundles AOFX, buscados antes que la ruta del sistema y antes que `--path`. |
 | `ATHENEA_BACKEND` | qué dispositivo abrir, como un orden separado por comas: `metal,cuda,vulkan,d3d12`. Las palabras desconocidas avisan y se saltan. |
 | `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina, diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
+| `ATHENEA_WORKING_SPACE` | el espacio de color en que se renderiza una escena cuando no se da `athenea:workingSpace` (§3.4): cualquier nombre que un config le dé, o `role:scene_linear`. Por encima del `renderingColorSpace` de la propia escena; por debajo de `--working-space`. Sin ella: el de la escena, si no `lin_rec709_scene`. |
 | `ATHENEA_SHADER_CACHE` | dónde se cachean los shaders compilados entre ejecuciones. Por defecto, un directorio bajo el de caché de la plataforma. Borrarla cuesta un primer frame lento. |
 
 Un binario compilado sin `ATHENEA_BUILD_VIEW` no tiene el subcomando `athenea view`:
@@ -288,6 +289,8 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más `Z` |
 | `--render-settings` | ruta de prim | sin poner | renderiza los productos de ese prim y para |
 | `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido |
+| `--working-space` | nombre de espacio de color, o `role:scene_linear` | el `renderingColorSpace` de la escena, si no `lin_rec709_scene` | lineal y de escena, o se avisa y se usa `lin_rec709_scene`; el EXR se escribe en él |
+| `--ocio-config` | ruta o URI | `ocio://studio-config-latest` | el config en que se leen todos los colores de la escena |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr
@@ -317,6 +320,7 @@ están en §5.
 | `--no-default-lights` | flag | luces por defecto encendidas | una escena sin luces se queda a oscuras |
 | `--edr` | flag | apagado | rango extendido: superficie float y ACES 2.0 hasta el pico de la pantalla |
 | `--ocio-config` | ruta o URI | ninguno; `ocio://studio-config-latest` si se da display o view | |
+| `--working-space` | nombre de espacio de color, o `role:scene_linear` | el `renderingColorSpace` de la escena, si no `lin_rec709_scene` | como el de `athenea stage`; `--ocio-config` es también el config en que se leen los colores de la escena |
 | `--ocio-display` | nombre | el del config | |
 | `--ocio-view` | nombre | el del display | |
 | `--snapshot` | ruta | ninguna | con `--frames`: el último frame tal como se ve, paneles incluidos, a ese EXR |
@@ -886,7 +890,11 @@ se lee como una captura, sRGB. Una nube que emite luz
 gaussiana (una palabra RGB9E5, tras las normales donde están las dos), y en los
 niveles fundidos la media ponderada de lo que representan; es el bit 2 de los
 `flags` de la cabecera (el bit 0 son las normales), así que un fichero sin ella
-se lee como antes. Una nube sin normales, sin emisión y en sRGB se sigue escribiendo como versión
+se lee como antes. El espacio de color de una nube lineal
+(`primvars:athenea:splat:colorSpace`) se escribe en los 64 bytes que siguen a
+los 104 de la cabecera, rellenos con NUL, en el relleno de la página de la
+cabecera: un fichero escrito antes tiene ceros ahí y es `lin_rec709_scene`, y
+un lector anterior se lo salta. Una nube sin normales, sin emisión y en sRGB se sigue escribiendo como versión
 1, de modo que un lector que solo conoce la versión 1 la abre: la versión 2 se
 escribe solo donde los `flags` no son cero. Un bit de los `flags` que esta
 compilación no conoce (cualquiera pasado el bit 2) se rechaza, nombrando el
@@ -922,22 +930,41 @@ pantalla normal es la misma imagen que sin él.
 Una textura se lee en el espacio de color que nombra su material o su luz
 -- el `colorspace` de MaterialX, el `sourceColorSpace` de un UsdUVTexture, el
 `colorSpace` de USD en la entrada de archivo, el `colorSpace` de un domo en
-`inputs:texture:file` -- y se lleva al espacio de trabajo (Rec.709 lineal) en
-el dispositivo. Los nombres son los del studio config de OpenColorIO
+`inputs:texture:file` -- y se lleva al espacio de trabajo en el dispositivo. Los nombres son los del studio config de OpenColorIO
 (`srgb_texture`, `lin_rec709`, `acescg`, `g22_rec709`, ...), sus alias y
 roles, los de USD (`lin_ap1_scene`, `srgb_rec709_scene`, ...) y los de
 UsdUVTexture (`sRGB`, `raw`, `auto`). `raw`, `data`, `Non-Color`, `none`,
 `identity` y `Utility - Raw` leen el archivo como datos. Sin nombre, o con
 `auto`: una imagen de 8 bits es sRGB salvo que el archivo diga otra cosa, y
-cualquier otra, lineal. Un nombre que nadie conoce se avisa una vez y el
+cualquier otra, Rec.709 lineal. Una imagen de MaterialX que da un vector o un
+float (un mapa de normales, una rugosidad) se lee como datos diga lo que diga
+su documento. Un nombre que nadie conoce se avisa una vez y el
 archivo se lee como él dice. Sin OpenColorIO en la compilación solo se
 conocen sRGB, Rec.709 lineal y datos.
 
-El espacio de trabajo es Rec.709 lineal (`lin_rec709_scene`). El
-`renderingColorSpace` de un prim `UsdRenderSettings` se lee, con los mismos
-nombres: Rec.709 lineal con cualquiera de ellos, o sin autorar, renderiza
-como siempre; otro espacio aún no se renderiza, y se avisa una vez mientras
-el frame se dibuja en Rec.709.
+**El espacio de trabajo** es el espacio de color en que se calcula la luz.
+Es, por orden: `athenea:workingSpace` (`--working-space`,
+`ATHENEA_WORKING_SPACE`), el `renderingColorSpace` del prim `UsdRenderSettings`
+activo, y `lin_rec709_scene`. Vale cualquier nombre de los de arriba, y un rol:
+`role:scene_linear` es ACEScg en el studio config. Tiene que ser lineal y de
+escena -- un log o una codificación de pantalla se avisa una vez, y el frame
+se dibuja en `lin_rec709_scene`. Los EXR escritos, y la salida `color` de
+Hydra, están en él; las vistas propias del viewer (AgX, ACES 2.0, Standard) y
+una vista de OpenColorIO lo toman como origen. `athenea:ocioConfig`
+(`--ocio-config`) es el config de toda la escena: texturas, constantes y
+pantalla.
+
+Un color que no es una textura se lee también en el espacio en que se
+autoró, y se lleva al espacio de trabajo en el dispositivo: las constantes de
+color de un material (el `colorspace` de MaterialX, el `colorSpace` de USD),
+el `color` y el `shadow:color` de una luz, un `displayColor` y cualquier
+primvar con rol de color, la emisión de un material de volumen. Uno que no
+dice nada es `lin_rec709_scene`, como lo tiene USD, así que una escena que no
+dice nada se ve igual en cualquier espacio de trabajo. Una nube lineal dice su
+espacio con `primvars:athenea:splat:colorSpace` (§4.3) y se convierte una vez
+al leerse; una captura es sRGB con primarios Rec.709 diga lo que diga el
+`ColorSpaceAPI` de un ancestro -- Blender escribe `lin_rec709_scene` en la
+raíz de escenas cuyos splats son capturas.
 
 `athenea view --snapshot` escribe el frame **tal como se ve**, codificado para
 pantalla y con los paneles dentro. Es una captura de pantalla, no una salida
@@ -998,6 +1025,8 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:cloudShadowResolution` | int | `1024` | texels por lado, por luz |
 | `athenea:cloudShadowTerms` | int | `0` | 1 es solo el total; 3, 5, 7 añaden pares de Fourier; 0 deja decidir a quien recibe |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplicador de la profundidad óptica de la nube |
+| `athenea:workingSpace` | string | vacío: el `renderingColorSpace` de la escena, si no `lin_rec709_scene` | el espacio en que se calcula la luz (§3.4) |
+| `athenea:ocioConfig` | string | vacío: `ocio://studio-config-latest` | el config en que se leen todos los colores de la escena |
 
 Leídos pero no declarados:
 
@@ -1023,6 +1052,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
+| `primvars:athenea:splat:colorSpace` | token | vacío: `lin_rec709_scene` ‹solo se lee con `linear`› |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
@@ -1330,7 +1360,7 @@ mismo al final).
 | Structures, Build, Trace, Total | el trazador de rayos: si sus estructuras se reconstruyeron o se conservaron, su ruta, y sus tiempos | ms, `rt` solo |
 | Clouds (memoria) | los arrays de todas las nubes en el dispositivo, incluidas una copia posada y su esqueleto | bytes |
 | Levels of detail | los assets de los que se toman los cortes, y los almacenes de streaming | bytes, donde los hay |
-| una fila por nube | el prim; sus gaussianas, cuántas se entregaron, y las visibles y los pares que contó el dispositivo para ella; su nivel (*level 1 of 3 in 'bird'*, o *cut* con sus gaussianas propias y fusionadas); para un `.athc` en streaming, los chunks en el dispositivo, pedidos, ausentes y cargando; lo que lleva (grado SH, lineal o sRGB de captura, reiluminada, lit body, transfer, con esqueleto, normales, emisión, PBR, ids, visibilidad horneada, ior); lo que ocupa | hasta 24 nubes; el resto entra en los totales |
+| una fila por nube | el prim; sus gaussianas, cuántas se entregaron, y las visibles y los pares que contó el dispositivo para ella; su nivel (*level 1 of 3 in 'bird'*, o *cut* con sus gaussianas propias y fusionadas); para un `.athc` en streaming, los chunks en el dispositivo, pedidos, ausentes y cargando; lo que lleva (grado SH, lineal -- y en qué espacio una vez leída -- o sRGB de captura, reiluminada, lit body, transfer, con esqueleto, normales, emisión, PBR, ids, visibilidad horneada, ior); lo que ocupa | hasta 24 nubes; el resto entra en los totales |
 
 Las cuentas cuestan cuatro dispatches pequeños y una copia por frame, y solo se
 toman mientras el panel está abierto: plegar su ventana las detiene.
@@ -1550,7 +1580,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 |---|---|---|
 | `no GPU device` (los tests se saltan) | no se pudo abrir dispositivo | mira `athenea info`; en Linux pon `ATHENEA_BACKEND` |
 | `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
-| `hdAthenea: renderingColorSpace: colour: '<nombre>' as the working space is ...; rendering in lin_rec709_scene` | los render settings del stage piden un espacio de trabajo distinto de Rec.709 lineal, que aún no se renderiza | nada: el frame es Rec.709 lineal, como sin el ajuste. Autora `lin_rec709_scene`, o nada, para callarlo |
+| `hdAthenea: working space '<nombre>' (<config>): colour: '<nombre>' as the working space is ...; rendering in lin_rec709_scene` | `--working-space`, `athenea:workingSpace`, `ATHENEA_WORKING_SPACE` o el `renderingColorSpace` de la escena nombra datos, un nombre que ningún config conoce, o un espacio que no es lineal (un log, una codificación sRGB) | nombra un espacio lineal de escena (`acescg`, `lin_rec709_scene`, `role:scene_linear`); mientras, el frame se dibuja en `lin_rec709_scene` |
 | `no Measure bundle on the AOFX search path` | `athenea compare` no encontró `rt.sparrow.aofx.measure` | compila el target `athenea_aofx_measure`, o da su directorio con `--path` |
 | `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |

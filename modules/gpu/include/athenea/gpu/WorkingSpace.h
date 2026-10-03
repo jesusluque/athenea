@@ -6,8 +6,10 @@
 // BT.709's luminance weights where a lobe, a light or a pixel is weighed by
 // its brightness, the XYZ-to-sRGB matrix of a blackbody, a capture's sRGB
 // decoded straight into the working space -- they read from this record.
-// Three 3x3s and a row of weights: every linear RGB space is a 3x3 from
-// every other, so no kernel imports an OCIO function for it.
+// Four 3x3s and a row of weights: every linear RGB space is a 3x3 from
+// every other, so no kernel imports an OCIO function for it. Linear Rec.709's
+// record is a table (linRec709Scene); any other's is built on the device from
+// the functions OCIO compiles (colour::workingSpaceRecord).
 //
 // It is the Slang `WorkingSpace` of shaders/athenea/common/working_space.slang,
 // field for field, and reaches a kernel as the uniform `gWorkingSpace` in the
@@ -30,8 +32,9 @@
 namespace athenea::gpu {
 
 /// flags.x: the working space's primaries are Rec.709's, so sRGB once
-/// decoded is already the working space and `fromSrgb` is not applied (an
-/// identity is not even multiplied by: the bits stay those of the curve).
+/// decoded is already the working space and neither `fromSrgb` nor `toSrgb`
+/// is applied (an identity is not even multiplied by: the bits stay those of
+/// the curve).
 inline constexpr uint32_t kWorkingSpaceRec709Primaries = 1u;
 
 struct WorkingSpace {
@@ -42,6 +45,9 @@ struct WorkingSpace {
     /// sRGB decoded (linear Rec.709) to working RGB: a capture's splats, a
     /// PLY's 8-bit point colours.
     std::array<float, 4> fromSrgb0{}, fromSrgb1{}, fromSrgb2{};
+    /// Working RGB to linear Rec.709: what the display's own views (Standard,
+    /// AgX, ACES 2.0) take, since their matrices are Rec.709's.
+    std::array<float, 4> toSrgb0{}, toSrgb1{}, toSrgb2{};
     /// The weights of a luminance, in xyz; w is 0.
     std::array<float, 4> luminance{};
     /// x: kWorkingSpaceRec709Primaries. y, z, w: 0.
@@ -49,7 +55,7 @@ struct WorkingSpace {
 
     friend bool operator==(const WorkingSpace&, const WorkingSpace&) = default;
 };
-static_assert(sizeof(WorkingSpace) == 176, "WorkingSpace is eleven 16-byte rows, as the Slang struct");
+static_assert(sizeof(WorkingSpace) == 224, "WorkingSpace is fourteen 16-byte rows, as the Slang struct");
 
 /// The record of `lin_rec709_scene`: the constants the kernels held before
 /// the record existed, written down -- BT.709's weights as 0.2126, 0.7152,

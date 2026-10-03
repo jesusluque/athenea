@@ -48,6 +48,7 @@ the binary runs in.
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine, whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
+| `ATHENEA_WORKING_SPACE` | the colour space a stage is rendered in when `athenea:workingSpace` is not set (§3.4): any name a config gives one, or `role:scene_linear`. Over the stage's own `renderingColorSpace`; under `--working-space`. Unset: the stage's, else `lin_rec709_scene`. |
 | `ATHENEA_SHADER_CACHE` | where compiled shaders are cached between runs. The default is a directory under the platform's cache directory. Deleting it costs one slow first frame. |
 
 A binary built without `ATHENEA_BUILD_VIEW` has no `athenea view` subcommand; that is
@@ -285,6 +286,8 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `-o`, `--output` | path | `out.exr` | half RGBA plus `Z` |
 | `--render-settings` | prim path | unset | render that prim's products instead, and stop |
 | `--frames` | integer | `1` | repeat, and report first, median and fastest |
+| `--working-space` | colour space name, or `role:scene_linear` | the stage's `renderingColorSpace`, else `lin_rec709_scene` | linear and scene-referred, or it is warned of and `lin_rec709_scene` is used; the EXR is written in it |
+| `--ocio-config` | path or URI | `ocio://studio-config-latest` | the config every colour of the stage is read in |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr
@@ -313,6 +316,7 @@ Present only in a build with the viewer. The window's controls are in §5.
 | `--no-default-lights` | flag | default lights on | a stage with no lights stays unlit |
 | `--edr` | flag | off | extended range: a float surface and ACES 2.0 to the screen's peak |
 | `--ocio-config` | path or URI | none; `ocio://studio-config-latest` when a display or view is given | |
+| `--working-space` | colour space name, or `role:scene_linear` | the stage's `renderingColorSpace`, else `lin_rec709_scene` | as `athenea stage`'s; `--ocio-config` is also the config the stage's colours are read in |
 | `--ocio-display` | name | the config's default | |
 | `--ocio-view` | name | the display's default | |
 | `--snapshot` | path | none | with `--frames`: the last frame as shown, panels included, to this EXR |
@@ -871,7 +875,10 @@ gives off light (`primvars:athenea:splat:emission`) keeps that too, four bytes
 more a gaussian (one RGB9E5 word, after the normals where both are there),
 the merged levels' the weighted mean of what they stand for; it is bit 2 of
 the header's `flags` (bit 0 is the normals), so a file without it reads as
-before. A cloud without normals, without emission and in sRGB is still written as
+before. A linear cloud's colour space (`primvars:athenea:splat:colorSpace`)
+is written in the 64 bytes after the 104 of the header, NUL-padded, in the
+header page's padding: a file written before has zeros there and is
+`lin_rec709_scene`, and a reader before skips it. A cloud without normals, without emission and in sRGB is still written as
 version 1, so a reader of version 1 alone opens it: version 2 is written only
 where the `flags` are not zero. A `flags` bit this build does not know (any
 past bit 2) is refused, file named: a later bit may add a block, and a reader
@@ -906,21 +913,38 @@ image as without it.
 A texture is read in the colour space its material or light names --
 MaterialX's `colorspace`, a UsdUVTexture's `sourceColorSpace`, USD's
 `colorSpace` on the file input, a dome's `colorSpace` on
-`inputs:texture:file` -- and brought into the working space (linear
-Rec.709) on the device. Names are those of OpenColorIO's studio config
+`inputs:texture:file` -- and brought into the working space on the device. Names are those of OpenColorIO's studio config
 (`srgb_texture`, `lin_rec709`, `acescg`, `g22_rec709`, ...), its aliases and
 roles, USD's (`lin_ap1_scene`, `srgb_rec709_scene`, ...) and UsdUVTexture's
 (`sRGB`, `raw`, `auto`). `raw`, `data`, `Non-Color`, `none`, `identity` and
 `Utility - Raw` read the file as data. No name, or `auto`: an 8-bit image is
-sRGB unless the file says otherwise, anything else linear. A name nothing
+sRGB unless the file says otherwise, anything else linear Rec.709. A
+MaterialX image that gives a vector or a float (a normal map, a roughness)
+is read as data whatever its document says. A name nothing
 knows is warned of once and the file is read as it says. Without OpenColorIO
 in the build only sRGB, linear Rec.709 and data are known.
 
-The working space is linear Rec.709 (`lin_rec709_scene`). A
-`UsdRenderSettings` prim's `renderingColorSpace` is read, by the same names:
-linear Rec.709 under any of them, or none authored, renders as always;
-another space is not rendered in yet, and is warned of once while the frame
-is drawn in Rec.709.
+**The working space** is the colour space light is computed in. It is, in
+order: `athenea:workingSpace` (`--working-space`, `ATHENEA_WORKING_SPACE`), the
+active `UsdRenderSettings` prim's `renderingColorSpace`, and `lin_rec709_scene`.
+Any name above works, and a role: `role:scene_linear` is ACEScg in the studio
+config. It must be linear and scene-referred -- a log or a display encoding
+is warned of once, and the frame is drawn in `lin_rec709_scene`. The EXRs
+written, and Hydra's `color` output, are in it; the viewer's own views (AgX,
+ACES 2.0, Standard) and an OpenColorIO view take it as their source.
+`athenea:ocioConfig` (`--ocio-config`) is the config of the whole stage:
+textures, constants and the display.
+
+A colour that is not a texture is read in the space it was authored in, too,
+and brought into the working space on the device: a material's colour
+constants (MaterialX's `colorspace`, USD's `colorSpace`), a light's `color`
+and `shadow:color`, a `displayColor` and any primvar of the colour role, a
+volume material's emission. One that says nothing is `lin_rec709_scene`, as
+USD has it, so a stage that says nothing looks the same in any working
+space. A linear cloud says its space with `primvars:athenea:splat:colorSpace`
+(§4.3) and is converted once when it is read; a capture is sRGB with Rec.709
+primaries whatever an ancestor's `ColorSpaceAPI` says -- Blender writes
+`lin_rec709_scene` at the root of stages whose splats are captures.
 
 `athenea view --snapshot` writes the frame **as shown**, display-encoded and with
 the panels in it. It is a screenshot, not a render output.
@@ -980,6 +1004,8 @@ found and does not.
 | `athenea:cloudShadowResolution` | int | `1024` | texels a side, per light |
 | `athenea:cloudShadowTerms` | int | `0` | 1 is the total; 3, 5, 7 add Fourier pairs; 0 lets what receives decide |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplier on the cloud's optical depth |
+| `athenea:workingSpace` | string | empty: the stage's `renderingColorSpace`, else `lin_rec709_scene` | the space light is computed in (§3.4) |
+| `athenea:ocioConfig` | string | empty: `ocio://studio-config-latest` | the config every colour of the stage is read in |
 
 Read but not declared:
 
@@ -1005,6 +1031,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
+| `primvars:athenea:splat:colorSpace` | token | empty: `lin_rec709_scene` ‹read only with `linear`› |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
@@ -1304,7 +1331,7 @@ waits for itself at the end).
 | Structures, Build, Trace, Total | the ray tracer: whether its structures were rebuilt or kept, its route, and its times | ms, `rt` alone |
 | Clouds (memory) | every cloud's arrays on the device, a posed copy and its skeleton included | bytes |
 | Levels of detail | the assets cuts are taken from, and the streaming stores | bytes, where there are any |
-| one row a cloud | the prim; its gaussians, how many were submitted, and the device's visible and pairs for it; its level (*level 1 of 3 in 'bird'*, or *cut* with its own and merged gaussians); for a streamed `.athc`, chunks on the device, wanted, missing and loading; what it carries (SH degree, linear or capture sRGB, relit, lit body, transfer, skinned, normals, emission, PBR, ids, baked visibility, ior); what it holds | up to 24 clouds; the rest are in the totals |
+| one row a cloud | the prim; its gaussians, how many were submitted, and the device's visible and pairs for it; its level (*level 1 of 3 in 'bird'*, or *cut* with its own and merged gaussians); for a streamed `.athc`, chunks on the device, wanted, missing and loading; what it carries (SH degree, linear -- and in which space once read -- or capture sRGB, relit, lit body, transfer, skinned, normals, emission, PBR, ids, baked visibility, ior); what it holds | up to 24 clouds; the rest are in the totals |
 
 The counts cost four small dispatches and a copy a frame, and are taken only
 while the panel is open: collapsing its window stops them.
@@ -1518,7 +1545,7 @@ A script's own header says what it needs and where it puts things.
 |---|---|---|
 | `no GPU device` (tests skip) | no device could be opened | check `athenea info`; on Linux set `ATHENEA_BACKEND` |
 | `colour: no colour space '<name>' in <config>; read as the file says` | a texture names a colour space neither the config nor the studio config knows | correct the name (`athenea info` says whether OpenColorIO is built in); the texture is read as if no colour space were given |
-| `hdAthenea: renderingColorSpace: colour: '<name>' as the working space is ...; rendering in lin_rec709_scene` | the stage's render settings ask for a working space other than linear Rec.709, which is not rendered in yet | nothing: the frame is linear Rec.709, as without the setting. Author `lin_rec709_scene`, or none, to silence it |
+| `hdAthenea: working space '<name>' (<config>): colour: '<name>' as the working space is ...; rendering in lin_rec709_scene` | `--working-space`, `athenea:workingSpace`, `ATHENEA_WORKING_SPACE` or the stage's `renderingColorSpace` names data, a name no config knows, or a space that is not linear (a log, an sRGB encoding) | name a linear scene-referred space (`acescg`, `lin_rec709_scene`, `role:scene_linear`); the frame is drawn in `lin_rec709_scene` meanwhile |
 | `no Measure bundle on the AOFX search path` | `athenea compare` found no `rt.sparrow.aofx.measure` | build the `athenea_aofx_measure` target, or give its directory with `--path` |
 | `measure: an empty window` | `athenea compare --window` (or the effect's `window`) holds no pixel | give X0 < X1 and Y0 < Y1 inside the image |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |

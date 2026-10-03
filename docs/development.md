@@ -42,8 +42,8 @@ document, the header is right.
 | 5 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — one per format, each with its own layout |
 | 6 | gpu | `gpu/Device.h` (backends, the shader directory, the cache), `gpu/ComputeKernel.h` (binding by name), `gpu/AsyncReadback.h` (numbers from a frame without waiting for it) |
 | 7 | gpu_host | `gpu_host/Context.h` — one device, two runtimes on it, one thread that talks to it |
-| 8 | colour | `colour/ColourCompiler.h` (OpenColorIO as a compiler of Slang functions and LUTs), `colour/ColourNames.h` (what a colour space's name means) |
-| 9 | scene | `scene/GpuClouds.h` — the cloud layout every renderer reads |
+| 8 | colour | `colour/ColourCompiler.h` (OpenColorIO as a compiler of Slang functions and LUTs), `colour/ColourNames.h` (what a colour space's name means), `colour/WorkingSpace.h` (the working space's record, built on the device) |
+| 9 | scene | `scene/GpuClouds.h` — the cloud layout every renderer reads; `scene/CloudColour.h` — a linear cloud into the working space |
 | 10 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h` |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
@@ -147,7 +147,9 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   every projection -- the rasteriser's, the ray tracer's shade, the
   references'. Nothing after that decodes or encodes a colour: not the
   blend, not relighting, not a grade, not a bake. Anything that copies a
-  cloud copies the flag.
+  cloud copies the flag, and `GpuSplats::colourSpace` with it: a linear
+  cloud names the space its light is in, and one that is not the working
+  space is brought into it once, as it is decoded (`scene::CloudColour`).
 - **No kernel writes Rec.709 in.** A luminance, a colour given in CIE XYZ,
   a capture's decoded sRGB: a kernel asks `common/working_space.slang`
   (`workingLuminance`, `workingFromXyz`, `workingFromSrgbLinear`), which
@@ -156,7 +158,21 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   kernel does nothing to get it. It is a uniform and not a buffer: it sits
   in the global constant block the kernel's own uniforms fill, and a kernel
   at Metal's 31 buffers does not feel it. A check kernel comparing within
-  one space may keep its own weights.
+  one space may keep its own weights. Linear Rec.709's record is a table;
+  any other's is built on the device from OCIO's functions
+  (`colour::workingSpaceRecord`) and read back once, when it is chosen.
+- **A colour is uploaded as it was authored and converted where it lies.**
+  Whatever brings a colour that is not a texture to the device -- a
+  material's constant, a light's colour, a primvar of the colour role --
+  notes the space it was authored in (empty is `lin_rec709_scene`) and, in
+  the same commit, hands the buffer, where the colours lie and that space to
+  `ColourCompiler::convertWords`, which records `convertColourWords` around
+  the compiled function. The host computes nothing on the colour, and a
+  colour is converted only as part of the upload that made it, never twice.
+  `converts(space)` says beforehand whether there is anything to do: under
+  Rec.709 with nothing authored there never is. The compiler is the
+  `Engine`'s, one a stage, handed to every module that converts
+  (`setColour`).
 - A file declares `module <basename>;` matching its filename. A sibling is
   imported bare (`import frame;`), another area by its dotted path (`import
   athenea.common.packing;`). Anything another module uses is `public`, buffers

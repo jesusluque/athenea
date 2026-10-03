@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "Points.h"
+#include "SceneColour.h"
 #include "Instancer.h"
 
 #include <pxr/imaging/hd/changeTracker.h>
@@ -122,6 +123,12 @@ void HdAtheneaPoints::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam
         athenea::usd::PointsArrays arrays;
         arrays.positions = delegate->Get(id, HdTokens->points);
         arrays.colours = delegate->Get(id, HdTokens->displayColor);
+        {
+            const std::map<std::string, std::string> spaces = primvarColourSpaces(delegate, id);
+            if (const auto found = spaces.find(HdTokens->displayColor.GetString()); found != spaces.end()) {
+                arrays.colourSpace = found->second;
+            }
+        }
         raw = std::move(arrays);
 
         athenea::render::PointStyle s;

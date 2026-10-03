@@ -95,6 +95,15 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
     auto madeWords = gpu::Buffer::fromSpan<uint32_t>(*device_, words, "volumes.words");
     if (!madeWords) return std::move(madeWords).error();
     words_ = std::move(*madeWords);
+    // An emission authored in a space not the working one, converted where
+    // the record holds it.
+    for (uint32_t v = 0; v < count && colour_ != nullptr; ++v) {
+        colour::ColourWordsRun run;
+        run.first = kHeaderWords + v * kRecordWords + 28;
+        run.count = 1;
+        auto converted = colour_->convertWords(batch, words_, volumes[v].emissionSpace, run);
+        if (!converted) return std::move(converted).error();
+    }
     // Bounds start from the empty box, so the first leaf sets them.
     std::vector<int32_t> bounds;
     for (size_t g = 0; g < std::max<size_t>(count, 1); ++g) {

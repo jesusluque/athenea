@@ -30,6 +30,9 @@ void addView(CLI::App& app) {
                   "a stage with no lights of its own stays unlit, rather than getting a sky and a sun");
     cmd->add_flag("--edr", options->edr, "extended dynamic range: a float surface and ACES 2.0 up to the screen's peak");
     cmd->add_option("--ocio-config", options->ocioConfig, "an OpenColorIO config (default with --ocio-display/--ocio-view: ocio://studio-config-latest)");
+    cmd->add_option("--working-space", options->workingSpace,
+                    "the colour space to render in: acescg, lin_rec709_scene, role:scene_linear... (default: the "
+                    "stage's renderingColorSpace, else lin_rec709_scene)");
     cmd->add_option("--ocio-display", options->ocioDisplay, "the OCIO display (default: the config's)");
     cmd->add_option("--ocio-view", options->ocioView, "the OCIO view (default: the display's)");
     cmd->add_option("--snapshot", options->snapshot, "with --frames: the last frame as shown, to this EXR");

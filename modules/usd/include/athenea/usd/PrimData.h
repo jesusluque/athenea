@@ -57,6 +57,10 @@ struct ParticleFieldArrays {
     /// `primvars:athenea:splat:linear`: the colours are linear light. False
     /// for a capture, whose colours are the sRGB it was trained in.
     bool         linear = false;
+    /// `primvars:athenea:splat:colorSpace`: the linear space it holds
+    /// light in. Empty: lin_rec709_scene. Read only where `linear` is set:
+    /// a capture is sRGB whatever an ancestor's ColorSpaceAPI says.
+    std::string  colourSpace;
     /// The radiance each gaussian gives off by itself
     /// (`primvars:athenea:splat:emission`), linear. Empty for a capture and
     /// for a conversion of materials that emit nothing.
@@ -130,6 +134,7 @@ struct VolumeArrays {
 struct PointsArrays {
     pxr::VtValue positions;   ///< VtVec3fArray or VtVec3hArray
     pxr::VtValue colours;     ///< displayColor: VtVec3fArray (one or per point) or GfVec3f; linear
+    std::string  colourSpace; ///< the space displayColor was authored in; empty: lin_rec709_scene
 };
 
 /// A primvar as Hydra holds it.
@@ -138,6 +143,9 @@ struct PrimvarArrays {
     uint32_t           interpolation = 0;   ///< geom::Interpolation's values
     pxr::VtValue       values;
     pxr::VtArray<int>  indices;             ///< empty unless indexed
+    /// A colour-role primvar's space as USD resolved it (the scene index's
+    /// HdPrimvarSchema colorSpace); empty for none said, or not a colour.
+    std::string        colourSpace;
 };
 
 /// A numeric primvar's bytes (float, half or double; scalar or array) and
@@ -267,6 +275,10 @@ struct CoordSysBinding {
 /// What a mesh looks like before materials: displayColor, displayOpacity.
 struct MeshLook {
     std::array<float, 3> displayColor{0.18F, 0.18F, 0.18F};
+    /// The space displayColor was authored in; empty: lin_rec709_scene.
+    /// The instance records carry it as authored and the scene converts it
+    /// on the device (world::GpuScene::setColour).
+    std::string          displayColourSpace;
     float                displayOpacity = 1.0F;
     bool                 doubleSided = false;
     pxr::SdfPath         material;   ///< the bound material; empty: displayColor

@@ -41,6 +41,7 @@
 #include "RenderSettings.h"
 #include "Volume.h"
 #include "athenea/core/Log.h"
+#include "athenea/core/Platform.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -371,13 +372,24 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     antialias.name = "Antialias a gathered frame (a sub-pixel offset a pass)";
     antialias.key = TfToken("athenea:antialias");
     antialias.defaultValue = VtValue(true);
+    // The working space and the config every colour is read in: empty is
+    // unsaid (the stage's renderingColorSpace, then lin_rec709_scene; the
+    // studio config).
+    HdRenderSettingDescriptor workingSpace;
+    workingSpace.name = "Working space (a colour space, or role:scene_linear; empty: the stage's, else lin_rec709_scene)";
+    workingSpace.key = TfToken("athenea:workingSpace");
+    workingSpace.defaultValue = VtValue(std::string());
+    HdRenderSettingDescriptor ocioConfig;
+    ocioConfig.name = "OpenColorIO config every colour is read in (empty: the studio config)";
+    ocioConfig.key = TfToken("athenea:ocioConfig");
+    ocioConfig.defaultValue = VtValue(std::string());
     HdRenderSettingDescriptor cloudDensity;
     cloudDensity.name = "Cloud shadow density (1 is what the cloud's opacity says)";
     cloudDensity.key = TfToken("athenea:cloudShadowDensity");
     cloudDensity.defaultValue = VtValue(1.0f);
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        motion,      transferIndirect, reflectCloud, splatShadows,
-            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias};
+            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, workingSpace, ocioConfig};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -433,6 +445,25 @@ bool HdAtheneaRenderDelegate::GetAntialias() const {
     // is the one who has to say so.
     const VtValue value = GetRenderSetting(TfToken("athenea:antialias"));
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+namespace {
+
+std::string stringSetting(const VtValue& value) {
+    if (value.IsHolding<std::string>()) return value.UncheckedGet<std::string>();
+    if (value.IsHolding<TfToken>()) return value.UncheckedGet<TfToken>().GetString();
+    return {};
+}
+
+}   // namespace
+
+std::string HdAtheneaRenderDelegate::GetWorkingSpace() const {
+    const std::string set = stringSetting(GetRenderSetting(TfToken("athenea:workingSpace")));
+    return !set.empty() ? set : athenea::platform::env("ATHENEA_WORKING_SPACE");
+}
+
+std::string HdAtheneaRenderDelegate::GetOcioConfig() const {
+    return stringSetting(GetRenderSetting(TfToken("athenea:ocioConfig")));
 }
 
 bool HdAtheneaRenderDelegate::GetChooseLights() const {

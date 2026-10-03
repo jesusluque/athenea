@@ -202,11 +202,22 @@ and relighting lights them."""
         interpolation = "constant"
     )
     bool primvars:athenea:splat:linear = 0 (
-        doc = """The colours are linear light (linear Rec.709, the working space),
-which is what `athenea mesh2splat`, an export and a bake write. Off, they are
+        doc = """The colours are linear light (in the space `colorSpace` names,
+linear Rec.709 where it names none), which is what `athenea mesh2splat`, an
+export and a bake write. Off, they are
 the sRGB a capture was trained in -- every trainer's -- and are decoded one
 gaussian at a time when drawn. Either way gaussians are blended in linear
 light, and sRGB appears only where an image is shown."""
+        interpolation = "constant"
+    )
+    token primvars:athenea:splat:colorSpace = "" (
+        doc = """Which linear space the colours of a cloud with `linear` set are
+in, as any OpenColorIO config or GfColorSpaceNames names it (lin_rec709_scene,
+lin_ap1_scene, acescg). Empty is lin_rec709_scene. A cloud in a space that is
+not the working space is brought into it once, as it is read. Ignored without
+`linear`: a capture is sRGB whatever an ancestor's ColorSpaceAPI says. Written
+beside the prim's own ColorSpaceAPI colorSpace:name, which Hydra does not hand
+a ParticleField's delegate."""
         interpolation = "constant"
     )
     float primvars:athenea:splat:ior = 0 (

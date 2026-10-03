@@ -370,6 +370,10 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     auto opened = usd::StageRenderer::open(options.stage);
     if (!opened) return std::move(opened).error();
     usd::StageRenderer& stage = **opened;
+    // The working space and the one config the stage's colours are read in,
+    // before the first commit (StageRenderer::setWorkingSpace).
+    stage.setWorkingSpace(options.workingSpace);
+    stage.setOcioConfig(options.ocioConfig);
     gpu::Device& device = stage.device();
     gpu::ShaderLibrary& library = stage.library();
 
@@ -425,14 +429,19 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     auto display = technique::DisplayTransform::create(library);
     if (!display) return std::move(display).error();
     const bool ocio = !options.ocioConfig.empty() || !options.ocioDisplay.empty() || !options.ocioView.empty();
+    technique::OcioView ocioChosen;
     if (ocio) {
-        technique::OcioView chosen;
         if (!options.ocioConfig.empty()) {
-            chosen.config = options.ocioConfig;
+            ocioChosen.config = options.ocioConfig;
         }
-        chosen.display = options.ocioDisplay;
-        chosen.view = options.ocioView;
-        ATHENEA_TRY(display->setOcio(chosen));
+        ocioChosen.display = options.ocioDisplay;
+        ocioChosen.view = options.ocioView;
+        // From the working space the stage renders in: the one asked for, or
+        // -- once a commit has chosen it from the stage -- the stage's.
+        if (!options.workingSpace.empty()) {
+            ocioChosen.source = options.workingSpace;
+        }
+        ATHENEA_TRY(display->setOcio(ocioChosen));
         athenea::log::info("athenea view: {}", display->ocioDescription());
     }
 
@@ -1281,6 +1290,16 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
         ImGui::Render();
         if (!image) {
             continue;
+        }
+        if (ocio && drawn) {
+            // The OCIO view takes the working space a commit chose (a stage's
+            // renderingColorSpace among them): compiled again when it moves.
+            const std::string working = stage.workingSpace();
+            if (working != ocioChosen.source) {
+                ocioChosen.source = working;
+                ATHENEA_TRY(display->setOcio(ocioChosen));
+                athenea::log::info("athenea view: {}", display->ocioDescription());
+            }
         }
         gpu::CommandBatch batch(device);
         if (drawn) {

@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <cmath>
 
+#include <pxr/usd/usd/colorSpaceAPI.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/base/gf/matrix4d.h>
@@ -62,7 +63,7 @@ namespace {
 using RecordSlice = std::function<Result<gpu::Buffer>(uint32_t first, uint32_t n)>;
 
 Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e, uint32_t count, bool linear,
-                        const RecordSlice& slice, const std::filesystem::path& path,
+                        const std::string& colourSpace, const RecordSlice& slice, const std::filesystem::path& path,
                         const ExportOptions& options) {
     if (count == 0) {
         return Error(ErrorCode::InvalidArgument, "nothing to export");
@@ -328,6 +329,16 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         // decodes them a second time.
         static const TfToken kLinear("primvars:athenea:splat:linear");
         splats.GetPrim().CreateAttribute(kLinear, SdfValueTypeNames->Bool, true).Set(true);
+        // And which linear space: the athenea primvar, which Hydra hands a
+        // delegate (a ParticleField's harmonics are float3, so no colour
+        // space reaches it beside them), and USD's ColorSpaceAPI on the prim,
+        // so the cloud says its space itself rather than inheriting a stage's.
+        const std::string space = !options.colourSpace.empty() ? options.colourSpace
+                                  : !colourSpace.empty()        ? colourSpace
+                                                                : std::string("lin_rec709_scene");
+        static const TfToken kColourSpace("primvars:athenea:splat:colorSpace");
+        splats.GetPrim().CreateAttribute(kColourSpace, SdfValueTypeNames->Token, false).Set(TfToken(space));
+        UsdColorSpaceAPI::Apply(splats.GetPrim()).CreateColorSpaceNameAttr(VtValue(TfToken(space)));
     }
     if (options.litBody) {
         // Its colours are light, not an albedo: what a frame adds is the
@@ -493,7 +504,7 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
     }
     gpu::Device& device = library.device();
     return writeStage(
-        library, e, raw.count, raw.linear,
+        library, e, raw.count, raw.linear, raw.colourSpace,
         [&](uint32_t first, uint32_t n) {
             return buffer(device, uint64_t{n} * e.floatsPerRecord, 4, "export.raw",
                           raw.records.data() + size_t{first} * e.floatsPerRecord);
@@ -510,7 +521,7 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const DeviceSp
     }
     gpu::Device& device = library.device();
     return writeStage(
-        library, e, records.count, records.linear,
+        library, e, records.count, records.linear, records.colourSpace,
         [&](uint32_t first, uint32_t n) -> Result<gpu::Buffer> {
             // The whole cloud in one slice is the buffer itself; a slice of
             // a larger one is copied out of it on the device.
@@ -646,6 +657,11 @@ Result<io::RawSplats> readParticleFieldRecords(const std::filesystem::path& path
         bool linear = false;
         const UsdAttribute said = field.GetPrim().GetAttribute(TfToken("primvars:athenea:splat:linear"));
         raw.linear = said && said.Get(&linear) && linear;
+        TfToken space;
+        const UsdAttribute named = field.GetPrim().GetAttribute(TfToken("primvars:athenea:splat:colorSpace"));
+        if (raw.linear && named && named.Get(&space)) {
+            raw.colourSpace = space.GetString();
+        }
     }
     io::SplatEncoding& e = raw.encoding;
     const uint32_t keep = perSplat - 1;

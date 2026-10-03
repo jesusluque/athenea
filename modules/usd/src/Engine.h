@@ -50,6 +50,7 @@
 #include "athenea/lod/Athc.h"
 #include "athenea/material/MaterialCompiler.h"
 #include "athenea/material/TextureStore.h"
+#include "athenea/scene/CloudColour.h"
 #include "athenea/io/Ies.h"
 #include "athenea/light/LightTable.h"
 #include "athenea/technique/MaterialShading.h"
@@ -426,6 +427,19 @@ public:
     /// yet: another name is warned of once and the frame stays in Rec.709.
     void setRenderingColorSpace(const std::string& name);
     [[nodiscard]] std::string renderingColorSpace() const;
+    /// `athenea:workingSpace` and `athenea:ocioConfig`, from the render
+    /// pass: the working space asked for (a colour space as any config names
+    /// it, or `role:scene_linear`), which wins over renderingColorSpace, and
+    /// the config every colour of the stage is read in. Empty: unsaid.
+    /// Resolved at the next commit (colour::chooseWorkingSpace); one that
+    /// cannot be rendered in is warned of once and lin_rec709_scene is used.
+    void setWorkingSpace(const std::string& name, const std::string& ocioConfig);
+    /// The working space as the config names it, once a commit has chosen
+    /// it; lin_rec709_scene before.
+    [[nodiscard]] std::string workingSpace() const;
+    /// The compiler every colour of the stage goes through; null before the
+    /// first commit.
+    [[nodiscard]] std::shared_ptr<colour::ColourCompiler> colourCompiler() const;
     /// Paths a pixel a path traced frame gathers, and how many bounces each
     /// one takes after its first hit. One of each is what an interactive
     /// frame affords.
@@ -834,13 +848,25 @@ private:
     bool                                      compilerFailed_ = false;
     std::unique_ptr<material::TextureStore>   textures_;
     std::string                               renderingColorSpace_;          ///< as authored; under guard_
+    std::string                               workingSpaceSetting_;          ///< athenea:workingSpace; under guard_
+    std::string                               ocioConfigSetting_;            ///< athenea:ocioConfig; under guard_
     bool                                      renderingColorSpacePending_ = false;
-    std::set<std::string>                     colourSpacesWarned_;           ///< renderingColorSpace names refused
-    /// What the names of renderingColorSpace mean: the studio config's, as
-    /// the texture store's. Made at the first commit that has a name.
-    std::unique_ptr<colour::ColourCompiler>   colourNames_;
-    /// The renderingColorSpace pending, resolved; on the render thread.
+    std::set<std::string>                     colourSpacesWarned_;           ///< config + space refused
+    /// THE ONE CONFIG AND WORKING SPACE of the stage: every function a
+    /// texture, a constant, a light or a cloud is brought into the working
+    /// space by. Made at the first commit; again when the setting, the
+    /// stage's renderingColorSpace or the config changes.
+    std::shared_ptr<colour::ColourCompiler>   colour_;
+    std::string                               colourKey_;   ///< config + space it was made for
+    /// The working space pending, resolved; on the render thread.
     void commitWorkingSpace();
+    /// The clouds decoded into an old working space, brought into the new one.
+    void reconvertClouds();
+    /// A linear cloud's colours into the working space, once (scene::CloudColour).
+    [[nodiscard]] Result<void> intoWorkingSpace(scene::GpuSplats& splats);
+    /// A streamed store's: its merged levels now, its chunks as they land.
+    [[nodiscard]] Result<void> poolIntoWorkingSpace(lod::StreamingPool& pool);
+    std::optional<scene::CloudColour>         cloudColour_;
     std::map<pxr::SdfPath, uint32_t>          materialRows_;     ///< into materialRecords_; absent: row 0, the fallback
     std::vector<std::string>                  materialSlotNames_;   ///< the extra primvar slots the blob was written for
     gpu::Buffer                               materialRecords_;

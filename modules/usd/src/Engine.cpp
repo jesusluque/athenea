@@ -1,6 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 #include "Engine.h"
 #include "athenea/colour/WorkingSpace.h"
+#include "athenea/colour/ColourCompiler.h"
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/pxOsd/tokens.h>
 #include <pxr/base/gf/vec4f.h>
@@ -460,6 +461,7 @@ Result<void> Engine::updateExternalTexture(const std::string& name, const gpu::B
         if (!made) return std::move(made).error();
         textures_ = std::move(*made);
         textures_->setSearchPath(assetSearchPath_);
+        textures_->setColour(colour_);
     }
     return textures_->updateExternal(name, rgba, width, height, rowPixels);
 }
@@ -698,37 +700,156 @@ std::string Engine::renderingColorSpace() const {
     return renderingColorSpace_;
 }
 
+Result<void> Engine::intoWorkingSpace(scene::GpuSplats& splats) {
+    if (!splats.linear || colour_ == nullptr) {
+        return ok();
+    }
+    if (!cloudColour_.has_value()) {
+        auto made = scene::CloudColour::create(*library_);
+        if (!made) return std::move(made).error();
+        cloudColour_.emplace(std::move(*made));
+    }
+    auto converted = cloudColour_->toWorking(splats, *colour_);
+    if (!converted) return std::move(converted).error();
+    if (*converted) {
+        log::debug("hdAthenea: {}: colours brought into {}", splats.source, colour_->names().working());
+    }
+    return ok();
+}
+
+Result<void> Engine::poolIntoWorkingSpace(lod::StreamingPool& pool) {
+    if (!pool.cloud().splats.linear || colour_ == nullptr) {
+        return ok();
+    }
+    if (!cloudColour_.has_value()) {
+        auto made = scene::CloudColour::create(*library_);
+        if (!made) return std::move(made).error();
+        cloudColour_.emplace(std::move(*made));
+    }
+    auto matrix = cloudColour_->matrixFor(pool.cloud().splats, *colour_);
+    if (!matrix) return std::move(matrix).error();
+    if (!matrix->has_value()) {
+        return ok();
+    }
+    // The merged levels are on the device from the start: now. The chunks,
+    // as each lands in the store, in the batch that placed it.
+    {
+        gpu::CommandBatch batch(*device_);
+        for (const lod::LodLevel& level : pool.cloud().levels) {
+            cloudColour_->record(batch, level.gaussians, **matrix, 0, level.gaussians.count);
+        }
+        ATHENEA_TRY(batch.submit(true));
+    }
+    const scene::CloudColour* converter = &*cloudColour_;
+    pool.onPlaced([converter, rows = **matrix](gpu::CommandBatch& batch, const lod::LodCloud& cloud, uint32_t first,
+                                               uint32_t count) { converter->record(batch, cloud.splats, rows, first, count); });
+    return ok();
+}
+
+void Engine::reconvertClouds() {
+    // From the space each was last brought into (`colourSpace` names it) into
+    // the new one; a streamed store is opened again, since its chunks come
+    // from the file as they were.
+    for (auto& [id, entry] : splats_) {
+        if (entry.gpu != nullptr) {
+            if (auto done = intoWorkingSpace(*entry.gpu); !done) {
+                log::warn("hdAthenea: {}: {}", id.GetString(), done.error().toString());
+            }
+        }
+        if (entry.lodCloud != nullptr) {
+            for (scene::GpuSplats* splats : {&entry.lodCloud->splats}) {
+                if (auto done = intoWorkingSpace(*splats); !done) {
+                    log::warn("hdAthenea: {}: {}", id.GetString(), done.error().toString());
+                }
+            }
+            for (lod::LodLevel& level : entry.lodCloud->levels) {
+                if (auto done = intoWorkingSpace(level.gaussians); !done) {
+                    log::warn("hdAthenea: {}: {}", id.GetString(), done.error().toString());
+                }
+            }
+        }
+        if (entry.pool != nullptr && !entry.asset.path.empty() && !entry.assetPending.has_value()) {
+            entry.assetPending = entry.asset;
+            entry.asset.path.clear();
+        }
+    }
+}
+
+void Engine::setWorkingSpace(const std::string& name, const std::string& ocioConfig) {
+    const std::lock_guard<std::mutex> held(guard_);
+    if (name != workingSpaceSetting_ || ocioConfig != ocioConfigSetting_) {
+        workingSpaceSetting_ = name;
+        ocioConfigSetting_ = ocioConfig;
+        renderingColorSpacePending_ = true;
+    }
+}
+
+std::string Engine::workingSpace() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    return colour_ != nullptr ? colour_->names().working() : std::string(colour::kWorkingSpace);
+}
+
+std::shared_ptr<colour::ColourCompiler> Engine::colourCompiler() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    return colour_;
+}
+
 void Engine::commitWorkingSpace() {
-    if (!renderingColorSpacePending_) {
+    if (!renderingColorSpacePending_ && colour_ != nullptr) {
         return;
     }
     renderingColorSpacePending_ = false;
-    // THE WORKING SPACE A STAGE ASKS FOR. UsdRenderSettings'
-    // renderingColorSpace is USD's way of saying it; the record it names is
-    // what the device binds to every kernel. Only lin_rec709_scene is
-    // rendered in yet, so anything else is said once and the frame is drawn
-    // as before -- the record set is the same one either way.
-    gpu::WorkingSpace record = gpu::linRec709Scene();
-    if (!renderingColorSpace_.empty()) {
-        if (!colourNames_) {
-            auto made = colour::ColourCompiler::create(*library_);
-            if (!made) {
-                log::warn("hdAthenea: renderingColorSpace '{}' not resolved: {}", renderingColorSpace_,
-                          made.error().toString());
-            } else {
-                colourNames_ = std::move(*made);
-            }
+    // THE WORKING SPACE, AND THE ONE CONFIG EVERY COLOUR OF THE STAGE IS
+    // READ IN: textures, constants, lights, clouds. `athenea:workingSpace`
+    // (the command line's --working-space, ATHENEA_WORKING_SPACE) first, then
+    // the stage's own UsdRenderSettings renderingColorSpace, then
+    // lin_rec709_scene; `athenea:ocioConfig`, or the studio config. The record
+    // the device binds to every kernel follows (colour::workingSpaceRecord).
+    const std::string wanted = !workingSpaceSetting_.empty()   ? workingSpaceSetting_
+                               : !renderingColorSpace_.empty() ? renderingColorSpace_
+                                                               : std::string(colour::kWorkingSpace);
+    const std::string config = ocioConfigSetting_.empty() ? std::string(colour::kStudioConfig) : ocioConfigSetting_;
+    const std::string key = config + "\n" + wanted;
+    if (colour_ != nullptr && key == colourKey_) {
+        return;
+    }
+    auto chosen = colour::chooseWorkingSpace(*library_, config, wanted);
+    if (!chosen) {
+        if (colourSpacesWarned_.insert(key).second) {
+            log::warn("hdAthenea: working space '{}' ({}): {}; rendering in {}", wanted, config,
+                      chosen.error().message(), colour::kWorkingSpace);
         }
-        if (colourNames_) {
-            auto resolved = colour::workingSpaceRecord(colourNames_->names(), renderingColorSpace_);
-            if (resolved) {
-                record = *resolved;
-            } else if (colourSpacesWarned_.insert(renderingColorSpace_).second) {
-                log::warn("hdAthenea: renderingColorSpace: {}", resolved.error().message());
-            }
+        // The default in the config asked for, and in the studio config if
+        // that is what failed.
+        chosen = colour::chooseWorkingSpace(*library_, config, colour::kWorkingSpace);
+        if (!chosen) {
+            chosen = colour::chooseWorkingSpace(*library_, colour::kStudioConfig, colour::kWorkingSpace);
+        }
+        if (!chosen) {
+            log::warn("hdAthenea: no colour config: {}", chosen.error().message());
+            device_->setWorkingSpace(gpu::linRec709Scene());
+            colourKey_ = key;
+            return;
         }
     }
-    device_->setWorkingSpace(record);
+    const bool changed = colour_ != nullptr && chosen->compiler->names().working() != colour_->names().working();
+    const bool replaced = colour_ != nullptr;
+    colour_ = chosen->compiler;
+    colourKey_ = key;
+    device_->setWorkingSpace(chosen->record);
+    if (textures_) {
+        textures_->setColour(colour_);
+    }
+    if (!colour_->names().workingIsRec709() || changed) {
+        log::info("hdAthenea: working space {} ({})", colour_->names().working(), colour_->configUri());
+    }
+    if (replaced) {
+        // Everything brought into the old space is brought into the new one:
+        // the material rows are written again (lights are every frame's),
+        // and the clouds are decoded again.
+        materialsChanged_ = true;
+        reconvertClouds();
+    }
 }
 
 void Engine::setCloudShadowDensity(float density) {
@@ -916,6 +1037,7 @@ void Engine::noteGaussians(const std::string& route, std::span<const render::Spl
         c.gaussians = entry.gpu != nullptr ? entry.gpu->count : lodCloud->count;
         c.shDegree = data->degree();
         c.linear = data->linear;
+        c.colourSpace = data->colourSpace;
         c.relit = entry.relight;
         c.litBody = entry.litBody;
         c.transfer = data->hasTransfer() ? data->transferCount : 0u;
@@ -1336,6 +1458,30 @@ Result<size_t> Engine::commit() {
             }
             if (mesh) {
                 entry.gpu = std::make_shared<const geom::GpuMesh>(std::move(*mesh));
+                // Its colour primvars (displayColor and any of the colour
+                // role), from the space each was authored in into the
+                // working space, where the builder left them: float4 an
+                // element, alpha untouched. Fresh from the build, so once.
+                if (colour_ != nullptr) {
+                    gpu::CommandBatch batch(*device_);
+                    bool any = false;
+                    for (const PrimvarArrays& p : a.primvars) {
+                        const geom::GpuPrimvar* built = entry.gpu->primvar(p.name);
+                        if (p.colourSpace.empty() || built == nullptr || built->components < 3 ||
+                            !colour_->converts(p.colourSpace)) {
+                            continue;
+                        }
+                        colour::ColourWordsRun run;
+                        run.count = built->count;
+                        run.stride = 4;
+                        auto converted = colour_->convertWords(batch, built->values, p.colourSpace, run);
+                        if (!converted) return std::move(converted).error();
+                        any = any || *converted;
+                    }
+                    if (any) {
+                        ATHENEA_TRY(batch.submit(true));
+                    }
+                }
             } else {
                 log::warn("hdAthenea: {}: {}", id.GetString(), mesh.error().toString());
             }
@@ -1377,6 +1523,7 @@ Result<size_t> Engine::commit() {
                         auto pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
                         if (pool) {
                             entry.pool = std::move(*pool);
+                            ATHENEA_TRY(poolIntoWorkingSpace(*entry.pool));
                         } else {
                             log::warn("hdAthenea: {}: {}", id.GetString(), pool.error().toString());
                         }
@@ -1384,6 +1531,10 @@ Result<size_t> Engine::commit() {
                         auto read = lod::readAthc(*device_, asset.path);
                         if (read) {
                             entry.lodCloud = std::make_unique<lod::LodCloud>(std::move(*read));
+                            ATHENEA_TRY(intoWorkingSpace(entry.lodCloud->splats));
+                            for (lod::LodLevel& level : entry.lodCloud->levels) {
+                                ATHENEA_TRY(intoWorkingSpace(level.gaussians));
+                            }
                         } else {
                             log::warn("hdAthenea: {}: {}", id.GetString(), read.error().toString());
                         }
@@ -1440,6 +1591,8 @@ Result<size_t> Engine::commit() {
                     entry.gpu.reset();
                 } else {
                     entry.gpu = std::make_unique<scene::GpuSplats>(std::move(*splats));
+                    // A linear cloud's colours, into the working space once.
+                    ATHENEA_TRY(intoWorkingSpace(*entry.gpu));
                     // THE BAKED FIELDS, where the file carries them: two
                     // arrays that go up as they are, the same words the bake
                     // wrote (`athenea visibility`), and nothing computed here.
@@ -1528,6 +1681,18 @@ Result<size_t> Engine::commit() {
                 entry.gpu.reset();
             } else {
                 entry.gpu = std::make_unique<scene::GpuPoints>(std::move(*points));
+                // Their displayColor, from the space it was authored in: four
+                // halves a point, alpha untouched.
+                if (colour_ != nullptr && streams.colours.values() > 0 && colour_->converts(entry.pending->colourSpace)) {
+                    gpu::CommandBatch batch(*device_);
+                    colour::ColourWordsRun run;
+                    run.count = entry.gpu->count;
+                    run.stride = 2;
+                    run.halves = true;
+                    auto converted = colour_->convertWords(batch, entry.gpu->colours, entry.pending->colourSpace, run);
+                    if (!converted) return std::move(converted).error();
+                    ATHENEA_TRY(batch.submit(true));
+                }
             }
         }
         entry.pending.reset();
@@ -1612,6 +1777,7 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
         if (!made) return std::move(made).error();
         textures_ = std::move(*made);
         textures_->setSearchPath(assetSearchPath_);
+        textures_->setColour(colour_);
     }
     if (!materialPrograms_.has_value()) {
         auto made = technique::MaterialPrograms::create(*library_);
@@ -1650,6 +1816,9 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
     std::vector<material::CompiledMaterial> opacities;
     std::vector<technique::MaterialRecord> rows{{0, 0, 0, 0}};
     std::vector<float> blob;
+    // Where each colour constant lies in the blob, by the space it was
+    // authored in: converted there once the blob is up (phase 3).
+    std::map<std::string, std::vector<uint32_t>> colourWords;
     materialRows_.clear();
     materialCutouts_ = false;
     for (const auto& [id, entry] : materials_) {
@@ -1688,6 +1857,12 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
                                (entry.transparent ? technique::kMaterialTransparent : 0u);
         materialCutouts_ = materialCutouts_ || entry.cutout;
         rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, 0});
+        for (const material::MaterialSlot& slot : entry.compiled->slots) {
+            if (slot.kind == material::MaterialSlot::Kind::Value && slot.colour && slot.words >= 3 && colour_ &&
+                colour_->converts(slot.space)) {
+                colourWords[slot.space].push_back(static_cast<uint32_t>(blob.size()) + slot.offset);
+            }
+        }
         blob.insert(blob.end(), words.begin(), words.end());
     }
     if (blob.empty()) {
@@ -1702,6 +1877,25 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
     if (!words) return std::move(words).error();
     materialRecords_ = std::move(*records);
     materialBlob_ = std::move(*words);
+    // THE CONSTANTS, INTO THE WORKING SPACE, in the blob just made from the
+    // documents -- never twice, since the blob is written again whole
+    // whenever it is written. Nothing to do where every colour is unsaid or
+    // in the working space already.
+    if (!colourWords.empty()) {
+        gpu::CommandBatch batch(*device_);
+        std::vector<gpu::Buffer> lists;
+        for (const auto& [space, at] : colourWords) {
+            auto list = gpu::Buffer::fromSpan<uint32_t>(*device_, at, "materials.colourWords");
+            if (!list) return std::move(list).error();
+            colour::ColourWordsRun run;
+            run.count = static_cast<uint32_t>(at.size());
+            run.list = &*list;
+            auto converted = colour_->convertWords(batch, materialBlob_, space, run);
+            if (!converted) return std::move(converted).error();
+            lists.push_back(std::move(*list));
+        }
+        ATHENEA_TRY(batch.submit(true));
+    }
     ATHENEA_TRY(materialPrograms_->setModules(modules, opacities));
     ATHENEA_TRY(materialShading_->setPrograms(*materialPrograms_));
     materialsChanged_ = false;
@@ -1892,6 +2086,7 @@ Result<void> Engine::prepareLightImages(std::vector<light::Light>& lamps) {
         if (!made) return std::move(made).error();
         textures_ = std::move(*made);
         textures_->setSearchPath(assetSearchPath_);
+        textures_->setColour(colour_);
     }
     bool domeTextures = false;
     for (light::Light& lamp : lamps) {
@@ -1954,6 +2149,7 @@ Result<void> Engine::prepareSplatLights(std::vector<light::Light>& lamps,
         }
         lightSceneRadius_ = std::max(radius, 1.0e-3F);
     }
+    lightTable_->setColour(colour_);
     ATHENEA_TRY(lightTable_->set(lamps, lightSceneRadius_));
     return prepareEnvironment(lamps);
 }
@@ -2374,6 +2570,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 set.prototype = entry.objectToWorld;
                 set.primId = entry.primId;
                 set.displayColor = entry.look.displayColor;
+                set.displayColourSpace = entry.look.displayColourSpace;
                 set.displayOpacity = entry.look.displayOpacity;
                 set.doubleSided = entry.look.doubleSided;
                 set.material = rowOf(entry.look.material);
@@ -2407,6 +2604,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
             instance.primId = entry.primId;
             instance.displayColor = entry.look.displayColor;
+            instance.displayColourSpace = entry.look.displayColourSpace;
             instance.displayOpacity = entry.look.displayOpacity;
             instance.doubleSided = entry.look.doubleSided;
             instance.material = rowOf(entry.look.material);
@@ -2604,6 +2802,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                     return l.movesUnderShutter();
                                 });
         if (meshLayer) {
+            scene_->setColour(colour_);
             ATHENEA_TRY(scene_->update(meshInstances, projection, meshSets, motionBuckets, shutterOpen, shutterClose,
                                    lightsMove));
         }
@@ -2634,6 +2833,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 lightSceneRadius_ = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 1.0e-3F);
             }
         }
+        lightTable_->setColour(colour_);
         ATHENEA_TRY(lightTable_->set(lamps, lightSceneRadius_));
         ATHENEA_TRY(prepareEnvironment(lamps));
         // A path traced surface needs a structure whatever the lights do --
@@ -2834,6 +3034,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                 input.densityScale = extinction;
                                 input.g = c.anisotropy;
                                 input.emission = c.emission;
+                                input.emissionSpace = c.emissionSpace;
                             }
                         }
                         inputs.push_back(input);
@@ -2848,6 +3049,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                     volumeSet_.emplace(std::move(*made));
                 }
                 gpu::CommandBatch volumeBatch(*device_);
+                volumeSet_->setColour(colour_);
                 ATHENEA_TRY(volumeSet_->set(volumeBatch, inputs));
                 ATHENEA_TRY(volumeBatch.submit(true));
                 volumesDrawn_ = static_cast<uint32_t>(inputs.size());
@@ -3639,6 +3841,7 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     // The space its colours are in is the cloud's, whichever pose it is in:
     // a posed cloud kept from before a reupload takes the new one's.
     entry.posed->linear = entry.gpu->linear;
+    entry.posed->colourSpace = entry.gpu->colourSpace;
     if (moves && (!entry.motion.valid() || entry.motion.count() < uint64_t{kept} * 2)) {
         gpu::BufferDesc desc;
         desc.bytes = uint64_t{kept} * 2 * 4;

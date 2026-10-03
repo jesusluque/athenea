@@ -109,7 +109,9 @@ std::string describeCloud(const GaussianCloud& cloud, const GaussianReport& repo
     // What it carries.
     std::vector<std::string> carries;
     carries.push_back("SH degree " + std::to_string(cloud.shDegree));
-    carries.push_back(cloud.linear ? "linear" : "capture sRGB");
+    carries.push_back(!cloud.linear              ? std::string("capture sRGB")
+                      : cloud.colourSpace.empty() ? std::string("linear")
+                                                  : "linear (" + cloud.colourSpace + ")");
     if (cloud.relit) {
         carries.push_back("relit");
     }

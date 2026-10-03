@@ -79,6 +79,13 @@ struct ExportOptions {
     /// or colours encoded as `LinearLight`), so a cloud read back and written
     /// again keeps its space.
     bool     linear = false;
+    /// The linear space those colours are in, written beside the flag as
+    /// `primvars:athenea:splat:colorSpace` and as the prim's ColorSpaceAPI
+    /// `colorSpace:name` (USD's own way to say it, which a reader that knows
+    /// no athenea primvar can read). Empty: the records' own
+    /// (`io::RawSplats::colourSpace`), else lin_rec709_scene, which is
+    /// written too: a cloud's space is said, never left to an ancestor.
+    std::string colourSpace;
     /// Which way the stage the gaussians came from stood: 'y' or 'z'. They
     /// are in that stage's world space, so a cloud written as Y-up when they
     /// were laid out Z-up lies on its side -- which is what every asset out
@@ -135,6 +142,7 @@ struct DeviceSplatRecords {
     io::SplatEncoding encoding;
     gpu::Buffer       records;   ///< count * encoding.floatsPerRecord floats
     bool              linear = false;   ///< as io::RawSplats::linear
+    std::string       colourSpace;      ///< as io::RawSplats::colourSpace
 };
 
 /// The same stage from records on the device.

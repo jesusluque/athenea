@@ -6,4 +6,5 @@ athenea_add_module(light
         athenea::core
         athenea::gpu
         athenea::render
-        athenea::io)
+        athenea::io
+        athenea::colour)

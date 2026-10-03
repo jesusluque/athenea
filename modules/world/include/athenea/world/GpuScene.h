@@ -16,6 +16,7 @@
 #include <string_view>
 #include <vector>
 
+#include "athenea/colour/ColourCompiler.h"
 #include "athenea/core/Result.h"
 #include "athenea/geom/Mesh.h"
 #include "athenea/gpu/Buffer.h"
@@ -53,6 +54,9 @@ struct MeshInstance {
     uint32_t                             primId = 0;       ///< the primId AOV
     uint32_t                             instanceId = 0;   ///< the instanceId AOV
     std::array<float, 3>                 displayColor{0.18F, 0.18F, 0.18F};
+    /// The space `displayColor` was authored in; empty: lin_rec709_scene.
+    /// Converted into the working space in the records (setColour).
+    std::string                          displayColourSpace;
     float                                displayOpacity = 1.0F;
     bool                                 doubleSided = true;
     uint32_t                             material = 0;     ///< its row in the frame's material records; 0 none
@@ -72,6 +76,9 @@ struct InstanceSet {
     render::Mat4                         prototype = render::Mat4::identity();
     uint32_t                             primId = 0;
     std::array<float, 3>                 displayColor{0.18F, 0.18F, 0.18F};
+    /// The space `displayColor` was authored in; empty: lin_rec709_scene.
+    /// Converted into the working space in the records (setColour).
+    std::string                          displayColourSpace;
     float                                displayOpacity = 1.0F;
     bool                                 doubleSided = true;
     uint32_t                             material = 0;
@@ -168,7 +175,20 @@ public:
     [[nodiscard]] const gpu::Buffer& meshRecords() const noexcept { return meshRecords_; }
     [[nodiscard]] const gpu::Buffer& instanceRecords() const noexcept { return instanceRecords_; }
 
+    /// The compiler that brings an instance's displayColor from the space it
+    /// was authored in into the working space, in the records `update`
+    /// uploads every frame. Without one, colours are taken as they are.
+    void setColour(std::shared_ptr<colour::ColourCompiler> compiler) { colour_ = std::move(compiler); }
+
 private:
+    std::shared_ptr<colour::ColourCompiler>            colour_;
+    /// Records `stride` words each in `buffer`, the colour at word `at` of
+    /// each, the k-th authored in `*spaces[k]` (null: as it is): converted
+    /// into the working space in `batch`. `keep` holds the lists until the
+    /// batch is submitted.
+    [[nodiscard]] Result<void> convertColours(gpu::CommandBatch& batch, const gpu::Buffer& buffer, uint32_t stride,
+                                              uint32_t at, std::span<const std::string* const> spaces,
+                                              std::vector<gpu::Buffer>& keep) const;
     struct Range {
         uint32_t firstPoint = 0;
         uint32_t firstTriangle = 0;

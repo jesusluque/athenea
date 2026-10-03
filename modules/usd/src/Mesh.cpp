@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "Mesh.h"
+#include "SceneColour.h"
 #include "Instancer.h"
 
 #include <algorithm>
@@ -179,7 +180,9 @@ void HdAtheneaMesh::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam, 
         }
         // Smooth normals where Storm computes them: a subdivision scheme that
         // is not none or bilinear, and no flat shading asked for.
-        // Every numeric primvar, as it is (indices resolved on the device).
+        // Every numeric primvar, as it is (indices resolved on the device),
+        // and the colour space of any that is a colour.
+        const std::map<std::string, std::string> spaces = primvarColourSpaces(delegate, id);
         for (const HdInterpolation interpolation : {HdInterpolationConstant, HdInterpolationUniform,
                                                     HdInterpolationVarying, HdInterpolationVertex,
                                                     HdInterpolationFaceVarying}) {
@@ -195,6 +198,9 @@ void HdAtheneaMesh::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam, 
                                      : GetPrimvar(delegate, descriptor.name);
                 uint32_t components = 0;
                 if (!athenea::usd::primvarStreamOf(primvar.values, &components).empty()) {
+                    if (const auto found = spaces.find(primvar.name); found != spaces.end()) {
+                        primvar.colourSpace = found->second;
+                    }
                     a.primvars.push_back(std::move(primvar));
                 }
             }
@@ -220,6 +226,10 @@ void HdAtheneaMesh::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam, 
         GfVec3f colour;
         if (firstVec3(delegate->Get(id, HdTokens->displayColor), &colour)) {
             l.displayColor = {colour[0], colour[1], colour[2]};
+            const std::map<std::string, std::string> spaces = primvarColourSpaces(delegate, id);
+            if (const auto found = spaces.find(HdTokens->displayColor.GetString()); found != spaces.end()) {
+                l.displayColourSpace = found->second;
+            }
         }
         float opacity = 1.0F;
         if (firstFloat(delegate->Get(id, HdTokens->displayOpacity), &opacity)) {

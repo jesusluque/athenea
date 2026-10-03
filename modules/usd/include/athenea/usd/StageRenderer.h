@@ -393,6 +393,18 @@ public:
     /// pixel rather than sampled at its middle. On by default; off is what
     /// two frames compared pixel by pixel need.
     void setAntialias(bool on);
+    /// `athenea:workingSpace`: the space the stage is rendered in -- a colour
+    /// space as any config names it (`acescg`, `lin_ap1_scene`, `ACEScg`), or
+    /// `role:scene_linear`. Wins over the stage's own renderingColorSpace;
+    /// empty leaves it to that, then lin_rec709_scene. Linear and
+    /// scene-referred, or it is warned of and lin_rec709_scene is used.
+    void setWorkingSpace(const std::string& name);
+    /// `athenea:ocioConfig`: the OpenColorIO config every colour of the stage
+    /// is read in, textures and constants alike (a path, or `ocio://...`).
+    /// Empty: the studio config.
+    void setOcioConfig(const std::string& uri);
+    /// The working space the last commit chose, as the config names it.
+    [[nodiscard]] std::string workingSpace() const;
 
     /// Bakes the per-part visibility of the ParticleField at `prim` (a cloud
     /// a skeleton carries), commits the stage first so it is on the device,

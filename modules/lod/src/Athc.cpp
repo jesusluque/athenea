@@ -62,6 +62,11 @@ struct FileHeader {
     uint64_t levelTable;      // LevelEntry[levels]
     uint64_t chunkTable;      // ChunkEntry[chunks]
     uint64_t starts;          // uint[finestGroups]
+    /// Where `flags` has kLinear: the linear space the colours are in, as
+    /// named (GpuSplats::colourSpace), NUL-padded; all zero is
+    /// lin_rec709_scene. Past the 104 bytes a reader before it read, in the
+    /// header page's padding, which every writer zeroed: no flag, no version.
+    char     colourSpace[64];
 };
 struct LevelEntry {
     uint32_t level;
@@ -73,7 +78,7 @@ struct ChunkEntry {
     uint32_t count;
     uint32_t pad;
 };
-static_assert(sizeof(FileHeader) == 104);
+static_assert(sizeof(FileHeader) == 168);
 static_assert(sizeof(LevelEntry) == 16);
 static_assert(sizeof(ChunkEntry) == 16);
 
@@ -205,6 +210,9 @@ scene::GpuSplats splatsLike(const FileHeader& h, const std::filesystem::path& pa
     s.restPerColour = h.restPerColour;
     s.shWords = h.shWords;
     s.linear = (h.flags & kLinear) != 0;
+    if (s.linear) {
+        s.colourSpace.assign(h.colourSpace, strnlen(h.colourSpace, sizeof(h.colourSpace)));
+    }
     std::copy(h.boundsMin, h.boundsMin + 3, s.bounds.min.begin());
     std::copy(h.boundsMax, h.boundsMax + 3, s.bounds.max.begin());
     return s;
@@ -348,6 +356,13 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     h.version = kVersion;
     h.flags = (normals ? kHasNormals : 0u) | (cloud.splats.linear ? kLinear : 0u) |
               (emission ? kHasEmission : 0u);
+    if (cloud.splats.linear && !cloud.splats.colourSpace.empty()) {
+        if (cloud.splats.colourSpace.size() >= sizeof(h.colourSpace)) {
+            return Error::make(ErrorCode::InvalidArgument, "{}: colour space name '{}' is longer than {} bytes",
+                               path.string(), cloud.splats.colourSpace, sizeof(h.colourSpace) - 1);
+        }
+        std::memcpy(h.colourSpace, cloud.splats.colourSpace.data(), cloud.splats.colourSpace.size());
+    }
     h.count = cloud.count;
     h.restPerColour = cloud.splats.restPerColour;
     h.shWords = shWords;
@@ -558,6 +573,7 @@ struct StreamingPool::Impl {
     std::vector<uint8_t>  inFlight;       // per chunk: queued, loading, or loaded and not placed
     uint64_t              frame = 1;
     Status                counters;
+    PlacedHook            placedHook;
 
     // Shared with the loaders.
     std::mutex                                            mutex;
@@ -752,6 +768,9 @@ Result<uint32_t> StreamingPool::update(bool wait) {
             ++p.counters.evictions;
         }
         place(batch, lod, chunk, slot, bytes.data());
+        if (p.placedHook) {
+            p.placedHook(batch, lod, slot * lod.chunkSplats, lod.chunkCount(chunk));
+        }
         p.owner[slot] = static_cast<int32_t>(chunk);
         ++placed;
     }
@@ -769,6 +788,10 @@ Result<uint32_t> StreamingPool::update(bool wait) {
     std::fill(p.wantedNow.begin(), p.wantedNow.end(), 0);
     ++p.frame;
     return placed;
+}
+
+void StreamingPool::onPlaced(PlacedHook hook) {
+    impl_->placedHook = std::move(hook);
 }
 
 StreamingPool::Status StreamingPool::status() const {

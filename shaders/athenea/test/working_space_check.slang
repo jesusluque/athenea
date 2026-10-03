@@ -68,6 +68,9 @@ void workingSpaceCheck(uint3 tid: SV_DispatchThreadID) {
         wrong += differs4(gWorkingSpace.fromSrgb0, float4(1.0, 0.0, 0.0, 0.0));
         wrong += differs4(gWorkingSpace.fromSrgb1, float4(0.0, 1.0, 0.0, 0.0));
         wrong += differs4(gWorkingSpace.fromSrgb2, float4(0.0, 0.0, 1.0, 0.0));
+        wrong += differs4(gWorkingSpace.toSrgb0, float4(1.0, 0.0, 0.0, 0.0));
+        wrong += differs4(gWorkingSpace.toSrgb1, float4(0.0, 1.0, 0.0, 0.0));
+        wrong += differs4(gWorkingSpace.toSrgb2, float4(0.0, 0.0, 1.0, 0.0));
         wrong += differs4(gWorkingSpace.luminance, float4(0.2126, 0.7152, 0.0722, 0.0));
         wrong += any(gWorkingSpace.flags != uint4(kWorkingSpaceRec709Primaries, 0u, 0u, 0u)) ? 1u : 0u;
         InterlockedAdd(counts[0], wrong);
@@ -95,6 +98,7 @@ void workingSpaceCheck(uint3 tid: SV_DispatchThreadID) {
     const float3 rgb = float3(dot(float3(3.2404542, -1.5371385, -0.4985314), c),
                               dot(float3(-0.9692660, 1.8760108, 0.0415560), c),
                               dot(float3(0.0556434, -0.2040259, 1.0572252), c));
-    InterlockedAdd(counts[5], differs(workingFromXyz(c), rgb) + differs(workingFromSrgbLinear(c), c));
+    InterlockedAdd(counts[5], differs(workingFromXyz(c), rgb) + differs(workingFromSrgbLinear(c), c) +
+                              differs(workingToSrgbLinear(c), c));
     InterlockedAdd(counts[6], 1u);
 }

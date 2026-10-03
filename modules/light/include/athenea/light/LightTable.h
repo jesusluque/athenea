@@ -13,6 +13,7 @@
 #include <slang-rhi.h>
 #include <slang-rhi/shader-cursor.h>
 
+#include "athenea/colour/ColourCompiler.h"
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
@@ -45,6 +46,10 @@ struct Light {
     LightKind    kind = LightKind::Distant;
     render::Mat4 lightToWorld = render::Mat4::identity();
     float        colour[3] = {1.0F, 1.0F, 1.0F};
+    /// The space `colour` (and `shadowColour`) was authored in, as USD names
+    /// it; empty: lin_rec709_scene. The record holds the colour as authored
+    /// and the table brings it into the working space on the device.
+    std::string  colourSpace;
     float        intensity = 1.0F;
     float        exposure = 0.0F;
     float        radius = 0.5F;        ///< sphere and disk
@@ -196,6 +201,12 @@ public:
     /// an area light's, is its radiance over the scene's cross-section.
     [[nodiscard]] Result<void> set(std::span<const Light> lights, float sceneRadius = 1.0F);
 
+    /// The compiler that brings a light's colour from the space it was
+    /// authored in (Light::colourSpace) into the working space, on the device,
+    /// in the records `set` uploads -- before each light's share of the power
+    /// is accumulated from it. Without one, colours are taken as they are.
+    void setColour(std::shared_ptr<colour::ColourCompiler> compiler) { colour_ = std::move(compiler); }
+
     [[nodiscard]] uint32_t count() const noexcept { return count_; }
     [[nodiscard]] bool     anyShadow() const noexcept { return shadows_; }
     /// Whether any of them is a dome, which a frame paints where it drew nothing.
@@ -219,6 +230,7 @@ public:
     [[nodiscard]] static LightRecord recordOf(const Light& light);
 
 private:
+    std::shared_ptr<colour::ColourCompiler> colour_;
     gpu::Device* device_ = nullptr;
     gpu::Buffer  records_;
     std::optional<gpu::ComputeKernel> prefix_;   ///< light_prefix: each light's cumulative share, on the device

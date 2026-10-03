@@ -2,7 +2,9 @@ athenea_add_module(scene
     SOURCES
         src/GpuClouds.cpp
         src/SplatSkinner.cpp
+        src/CloudColour.cpp
     PUBLIC_LIBS
         athenea::core
         athenea::gpu
-        athenea::io)
+        athenea::io
+        athenea::colour)

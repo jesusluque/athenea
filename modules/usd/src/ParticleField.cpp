@@ -265,6 +265,13 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         // sRGB where it does not (common/color.slang, `cloudLight`).
         static const TfToken kLinear("athenea:splat:linear");
         arrays.linear = boolOf(held(kLinear), false);
+        // And which linear space. Not ColorSpaceAPI's `colorSpace:name`: Hydra
+        // hands a colour space only beside a colour-role attribute, and a
+        // ParticleField's harmonics are float3; nor would an ancestor's be
+        // the cloud's -- Blender writes lin_rec709_scene at the root of a
+        // stage whose splats are sRGB captures. A capture has no say here.
+        static const TfToken kColourSpace("athenea:splat:colorSpace");
+        arrays.colourSpace = arrays.linear ? tokenOf(held(kColourSpace)).GetString() : std::string();
         // And the light it gives off by itself, a lamp's shade or a screen.
         static const TfToken kEmission("athenea:splat:emission");
         arrays.emission = held(kEmission);

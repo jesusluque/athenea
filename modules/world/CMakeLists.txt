@@ -12,4 +12,5 @@ athenea_add_module(world
         athenea::gpu
         athenea::io
         athenea::geom
-        athenea::render)
+        athenea::render
+        athenea::colour)

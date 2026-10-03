@@ -1,4 +1,5 @@
 // Copyright (c) 2026 jesus luque.
+#include "SceneColour.h"
 #include "Curves.h"
 #include "Instancer.h"
 
@@ -82,6 +83,12 @@ void HdAtheneaBasisCurves::Sync(HdSceneDelegate* delegate, HdRenderParam* render
         } else if (colour.IsHolding<GfVec3f>()) {
             const GfVec3f c = colour.UncheckedGet<GfVec3f>();
             l.displayColor = {c[0], c[1], c[2]};
+        }
+        {
+            const std::map<std::string, std::string> spaces = primvarColourSpaces(delegate, id);
+            if (const auto found = spaces.find(HdTokens->displayColor.GetString()); found != spaces.end()) {
+                l.displayColourSpace = found->second;
+            }
         }
         l.doubleSided = true;   // a tube has no back to cull
         const VtArray<TfToken> categories = delegate->GetCategories(id);

@@ -404,8 +404,34 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, const std::stri
         }
     }
     slot.texture = std::move(*texture);
+    slot.srgbView = srgbView;
     slots_.push_back(std::move(slot));
     return static_cast<uint32_t>(slots_.size() - 1);
+}
+
+void TextureStore::setColour(std::shared_ptr<colour::ColourCompiler> compiler) {
+    if (compiler == colour_) {
+        return;
+    }
+    const bool hadFiles = colour_ != nullptr;
+    colour_ = std::move(compiler);
+    decoders_.clear();
+    if (!hadFiles) {
+        return;
+    }
+    // Every file was brought into the old working space: read again into
+    // the new one. The slots go with them; an external texture is made again
+    // when it is next filled.
+    slots_.clear();
+    for (Entry& entry : entries_) {
+        entry.pending = !isExternal(entry.info.path);
+        entry.slot = 0;
+        entry.tiles.clear();
+        entry.info.loaded = false;
+        entry.info.error.clear();
+        entry.info.decode.clear();
+    }
+    (void)writeRecords();
 }
 
 Result<size_t> TextureStore::commit() {
@@ -425,7 +451,7 @@ Result<size_t> TextureStore::commit() {
             // config: made once, when the first file is read.
             auto made = colour::ColourCompiler::create(*library_, colour::kStudioConfig);
             if (!made) return std::move(made).error();
-            colour_ = std::move(*made);
+            colour_ = std::shared_ptr<colour::ColourCompiler>(std::move(*made));
         }
         if (entry.info.udim) {
             entry.tiles.assign(100, 0);
@@ -564,14 +590,22 @@ Result<void> TextureStore::writeRecords() {
             continue;
         }
         record.flags = 1;
+        bool srgbView = false;
         if (entry.info.udim) {
             record.flags |= 2;
             entry.udimBase = static_cast<uint32_t>(cells.size());
             record.udimBase = entry.udimBase;
             cells.insert(cells.end(), entry.tiles.begin(), entry.tiles.end());
+            for (const uint32_t tile : entry.tiles) {
+                srgbView = srgbView || (tile != 0 && slots_[tile - 1].srgbView);
+            }
         } else {
             record.slot = entry.slot;
+            srgbView = slots_[entry.slot].srgbView;
         }
+        // Bit 2: what the sRGB view gives is linear Rec.709, brought into the
+        // working space after the filter (texture_table.slang).
+        record.flags |= srgbView ? 4u : 0u;
     }
     cells.resize(std::max<size_t>(cells.size(), 1), 0);
     auto made = gpu::Buffer::fromSpan<TextureRecord>(*device_, records, "textures.records");

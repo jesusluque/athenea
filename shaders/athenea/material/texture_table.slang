@@ -5,6 +5,7 @@
 // holds it -- or, for a UDIM set, which slot holds each of its tiles.
 // See modules/material/src/TextureStore.cpp.
 module texture_table;
+import athenea.common.working_space;
 
 public static const uint kTextureSlots = 1024;
 public static const uint kSamplerSlots = 16;
@@ -12,7 +13,7 @@ public static const uint kSamplerSlots = 16;
 public struct TextureRecord {
     public uint  slot;       // the texture's slot; a UDIM set's: unused
     public uint  udimBase;   // a UDIM set: its 100 cells in `udim` (tiles 1001..1100), each slot + 1 or 0
-    public uint  flags;      // bit 0: loaded, bit 1: a UDIM set
+    public uint  flags;      // bit 0: loaded, bit 1: a UDIM set, bit 2: read through an sRGB view
     public uint  pad0;
     public float width;
     public float height;
@@ -64,11 +65,20 @@ public float4 sampleTexture(TextureTable table, uint id, uint sampler, float2 uv
     // A footprint, filtered as the target can: with gradients where a compute
     // entry point may ask for them, and otherwise from the level the wider
     // side of the footprint lands on. CUDA has no SampleGrad in compute.
+    float4 texel;
     __target_switch {
     case cuda:
-        return table.textures[slot].SampleLevel(table.samplers[sampler], uv,
-                                                footprintLod(record, dx, dy));
+        texel = table.textures[slot].SampleLevel(table.samplers[sampler], uv, footprintLod(record, dx, dy));
     default:
-        return table.textures[slot].SampleGrad(table.samplers[sampler], uv, dx, dy);
+        texel = table.textures[slot].SampleGrad(table.samplers[sampler], uv, dx, dy);
     }
+    // AN 8-BIT sRGB FILE STAYS 8-BIT, and the view decodes it to linear
+    // Rec.709; the working space's primaries are brought in here, after the
+    // filter -- exact, since a filter and a 3x3 are both linear and commute --
+    // so the texture takes no more memory for a working space that is not
+    // Rec.709. Where it is, nothing is multiplied.
+    if ((record.flags & 4u) != 0) {
+        texel.rgb = workingFromSrgbLinear(texel.rgb);
+    }
+    return texel;
 }

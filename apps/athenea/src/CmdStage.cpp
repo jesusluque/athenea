@@ -116,6 +116,8 @@ void addStage(CLI::App& app) {
         uint32_t cloudShadowTexels = 1024;
         uint32_t cloudShadowTerms = 0;
         double cloudShadowDensity = 1.0;
+        std::string workingSpace;
+        std::string ocioConfig;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("stage", "render a USD stage through the engine's Hydra delegate");
@@ -170,6 +172,11 @@ void addStage(CLI::App& app) {
     cmd->add_option("--cloud-shadow-terms", o->cloudShadowTerms,
                     "terms a texel keeps: 1 the total optical depth (a floor under a cloud), 3/5/7 "
                     "with Fourier pairs so a cloud shadows itself. 0: chosen by what receives");
+    cmd->add_option("--working-space", o->workingSpace,
+                    "the colour space to render in: acescg, lin_rec709_scene, role:scene_linear... (default: the "
+                    "stage's renderingColorSpace, else lin_rec709_scene); the EXR is written in it");
+    cmd->add_option("--ocio-config", o->ocioConfig,
+                    "the OpenColorIO config every colour of the stage is read in (default: the studio config)");
     cmd->add_option("--eye", o->eye, "a camera of its own at x y z (with --target), not one on the stage")->expected(3);
     cmd->add_option("--target", o->target, "where that camera looks")->expected(3);
     cmd->add_option("--up", o->up, "its up vector")->expected(3);
@@ -230,6 +237,8 @@ void addStage(CLI::App& app) {
         (*renderer)->setCloudShadowTerms(o->cloudShadowTerms);
         (*renderer)->setCloudShadowDensity(static_cast<float>(o->cloudShadowDensity));
         (*renderer)->setAntialias(o->antialias);
+        (*renderer)->setWorkingSpace(o->workingSpace);
+        (*renderer)->setOcioConfig(o->ocioConfig);
         if (o->defaultLights) {
             if (auto lit = (*renderer)->setDefaultLights(true); !lit) {
                 cli::fail(lit.error());

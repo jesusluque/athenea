@@ -1,4 +1,5 @@
 // Copyright (c) 2026 jesus luque.
+#include "athenea/colour/ColourNames.h"
 #include "athenea/usd/StageRenderer.h"
 
 #include "athenea/core/Log.h"
@@ -1130,6 +1131,21 @@ void StageRenderer::setCloudShadowTerms(uint32_t terms) {
 
 void StageRenderer::setAntialias(bool on) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:antialias"), VtValue(on));
+}
+
+void StageRenderer::setWorkingSpace(const std::string& name) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:workingSpace"), VtValue(name));
+}
+
+void StageRenderer::setOcioConfig(const std::string& uri) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:ocioConfig"), VtValue(uri));
+}
+
+std::string StageRenderer::workingSpace() const {
+    if (Engine* engine = engineBehind(*impl_->delegate); engine != nullptr) {
+        return engine->workingSpace();
+    }
+    return colour::kWorkingSpace;
 }
 
 void StageRenderer::setCloudShadowDensity(float density) {

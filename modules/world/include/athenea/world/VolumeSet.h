@@ -17,6 +17,7 @@
 
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
+#include "athenea/colour/ColourCompiler.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/render/Camera.h"
@@ -39,6 +40,9 @@ struct VolumeInput {
     /// so a medium of albedo one emits nothing and one of albedo zero glows
     /// `emission` where it is opaque (a Material's `uniform_edf`).
     std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
+    /// The space `emission` was authored in; empty: lin_rec709_scene.
+    /// Brought into the working space in the record (VolumeSet::setColour).
+    std::string          emissionSpace;
 };
 
 /// Where one grid sits in the words, for a kernel that reads it.
@@ -55,6 +59,9 @@ public:
     /// Lays the volumes out and runs the bounds, leaf maximum and finish
     /// kernels over them.
     [[nodiscard]] Result<void> set(gpu::CommandBatch& batch, std::span<const VolumeInput> volumes);
+    /// The compiler a volume's emission is brought into the working space by,
+    /// in the records `set` writes. Without one it is taken as it is.
+    void setColour(std::shared_ptr<colour::ColourCompiler> compiler) { colour_ = std::move(compiler); }
 
     [[nodiscard]] uint32_t count() const noexcept { return static_cast<uint32_t>(placements_.size()); }
     [[nodiscard]] const VolumeGridPlacement& placement(uint32_t i) const noexcept { return placements_[i]; }
@@ -69,6 +76,7 @@ public:
     static constexpr uint32_t kRecordWords = 32;
 
 private:
+    std::shared_ptr<colour::ColourCompiler> colour_;
     gpu::Device*                     device_ = nullptr;
     gpu::ComputeKernel               boundsKernel_, leafMaxKernel_, finishKernel_;
     gpu::Buffer                      words_, bounds_, majorant_;

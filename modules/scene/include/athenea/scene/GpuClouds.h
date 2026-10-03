@@ -99,6 +99,12 @@ struct GpuSplats {
     /// whatever copies a cloud (the levels of detail, the cut, a pose, a
     /// decimation, `.athc`) copies it.
     bool        linear = false;
+    /// AND WHICH LINEAR SPACE, for a linear cloud: as its file or prim names
+    /// it (`primvars:athenea:splat:colorSpace`, an .athc's header); empty is
+    /// lin_rec709_scene. Brought into the working space once, as it is
+    /// decoded (scene::cloudToWorking), after which this names the working
+    /// space. A capture's is empty and means nothing.
+    std::string colourSpace;
     /// WHAT THIS CLOUD CASTS ON THE SPACE AROUND IT, baked by part (a part is
     /// what one joint carries) and read as a product over parts. Empty for a
     /// cloud nothing baked; `hasVisibility` is how a kernel asks. The layout
@@ -193,6 +199,8 @@ struct SplatStreams {
     /// `primvars:athenea:splat:linear`: the colours are linear light
     /// (`GpuSplats::linear`). A field that does not say is a capture, sRGB.
     bool        linear = false;
+    /// `primvars:athenea:splat:colorSpace`: which linear space (GpuSplats::colourSpace).
+    std::string colourSpace;
     /// Three floats a splat, the radiance it gives off
     /// (`primvars:athenea:splat:emission`).
     FloatStream emission;

@@ -110,6 +110,9 @@ struct RawSplats {
     /// `athenea mesh2splat` writes, `primvars:athenea:splat:linear` -- whose
     /// colours are drawn as they are.
     bool               linear = false;
+    /// The space linear colours are in, as named (`primvars:athenea:splat:colorSpace`,
+    /// an .athc's header). Empty: lin_rec709_scene. Nothing for a capture.
+    std::string        colourSpace;
     std::vector<float> records;   ///< count * encoding.floatsPerRecord
 };
 

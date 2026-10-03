@@ -422,6 +422,10 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
 
     std::vector<InstanceRecord> records;
     records.reserve(instances.size());
+    // The space each record's displayColor was authored in, in the records'
+    // order; null where nothing is to convert.
+    std::vector<const std::string*> recordSpaces;
+    bool anySpace = false;
     draws_.clear();
     for (uint32_t m = 0; m < meshes_.size(); ++m) {
         DrawRange draw{m, static_cast<uint32_t>(records.size()), 0};
@@ -455,6 +459,9 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
             record.mask = 0xFFu;
             record.pointsOffset = 0;
             records.push_back(record);
+            const bool converts = colour_ != nullptr && colour_->converts(instance.displayColourSpace);
+            recordSpaces.push_back(converts ? &instance.displayColourSpace : nullptr);
+            anySpace = anySpace || converts;
             ++draw.instances;
         }
         draws_.push_back(draw);
@@ -581,6 +588,13 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
     }
     if (!records.empty()) {
         ATHENEA_TRY(instanceRecords_.write(*device_, 0, records.size() * sizeof(InstanceRecord), records.data()));
+        if (anySpace) {
+            gpu::CommandBatch batch(*device_);
+            std::vector<gpu::Buffer> keep;
+            ATHENEA_TRY(convertColours(batch, instanceRecords_, sizeof(InstanceRecord) / 4,
+                                       offsetof(InstanceRecord, colour) / 4, recordSpaces, keep));
+            ATHENEA_TRY(batch.submit(true));
+        }
     }
     if (buckets_ > 1 && !motionInputs.empty()) {
         if (motionInputs_.count() < motionInputs.size()) {
@@ -592,6 +606,11 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
         const std::array<float, 12> view = projection.worldToView.rows3x4();
         const uint32_t count = static_cast<uint32_t>(motionInputs.size());
         gpu::CommandBatch batch(*device_);
+        std::vector<gpu::Buffer> keep;
+        if (anySpace) {
+            ATHENEA_TRY(convertColours(batch, motionInputs_, sizeof(MotionInput) / 4, offsetof(MotionInput, colour) / 4,
+                                       recordSpaces, keep));
+        }
         motionRecords_.dispatch(batch, {count * buckets_, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["motionInputs"].setBinding(motionInputs_.rhi());
             cursor["records"].setBinding(instanceRecords_.rhi());
@@ -615,6 +634,8 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
     // own records (a prim's matrix and look each) go up.
     const uint32_t singles = static_cast<uint32_t>(records.size());
     std::vector<SetRecord> setRecords;
+    std::vector<const std::string*> setSpaces;
+    bool anySetSpace = false;
     std::vector<std::pair<gpu::Buffer, uint32_t>> layout;
     uint32_t setInstances = 0;
     for (const InstanceSet* setPtr : ordered) {
@@ -636,6 +657,9 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
         record.time0 = static_cast<float>(set.timeStart);
         record.time1 = static_cast<float>(set.timeEnd);
         setRecords.push_back(record);
+        const bool converts = colour_ != nullptr && colour_->converts(set.displayColourSpace);
+        setSpaces.push_back(converts ? &set.displayColourSpace : nullptr);
+        anySetSpace = anySetSpace || converts;
         layout.emplace_back(set.chainRows, set.count);
         draws_.push_back({mesh, singles + setInstances, set.count});
         setInstances += set.count;
@@ -667,6 +691,11 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
         setRecords_ = std::move(*made);
     }
     ATHENEA_TRY(setRecords_.write(*device_, 0, setRecords.size() * sizeof(SetRecord), setRecords.data()));
+    std::vector<gpu::Buffer> keep;
+    if (anySetSpace) {
+        ATHENEA_TRY(convertColours(batch, setRecords_, sizeof(SetRecord) / 4, offsetof(SetRecord, colour) / 4,
+                                   setSpaces, keep));
+    }
     const std::array<float, 12> view = projection.worldToView.rows3x4();
     records_.dispatch(batch, {setInstances, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["sets"].setBinding(setRecords_.rhi());
@@ -705,6 +734,10 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
         }
         batch.markDirty();
         ATHENEA_TRY(motionSetRecords_.write(*device_, 0, movingSets * sizeof(SetRecord), setRecords.data()));
+        if (anySetSpace) {
+            ATHENEA_TRY(convertColours(batch, motionSetRecords_, sizeof(SetRecord) / 4, offsetof(SetRecord, colour) / 4,
+                                       std::span<const std::string* const>(setSpaces.data(), movingSets), keep));
+        }
         const uint32_t count = static_cast<uint32_t>(movingInstances * buckets_);
         recordsMotion_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["sets"].setBinding(motionSetRecords_.rhi());
@@ -726,6 +759,30 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
         });
     }
     ATHENEA_TRY(batch.submit(true));
+    return ok();
+}
+
+Result<void> GpuScene::convertColours(gpu::CommandBatch& batch, const gpu::Buffer& buffer, uint32_t stride,
+                                      uint32_t at, std::span<const std::string* const> spaces,
+                                      std::vector<gpu::Buffer>& keep) const {
+    // A list of colours a space: the records' order is the frame's, and a
+    // space is usually one prim's or a stage's.
+    std::map<std::string, std::vector<uint32_t>> bySpace;
+    for (size_t k = 0; k < spaces.size(); ++k) {
+        if (spaces[k] != nullptr) {
+            bySpace[*spaces[k]].push_back(static_cast<uint32_t>(k) * stride + at);
+        }
+    }
+    for (const auto& [space, words] : bySpace) {
+        auto list = gpu::Buffer::fromSpan<uint32_t>(*device_, words, "scene.colourWords");
+        if (!list) return std::move(list).error();
+        colour::ColourWordsRun run;
+        run.count = static_cast<uint32_t>(words.size());
+        run.list = &*list;
+        auto converted = colour_->convertWords(batch, buffer, space, run);
+        if (!converted) return std::move(converted).error();
+        keep.push_back(std::move(*list));
+    }
     return ok();
 }
 

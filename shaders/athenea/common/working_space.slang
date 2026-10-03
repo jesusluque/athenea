@@ -6,7 +6,7 @@
 // needs of it -- a luminance, a colour given in CIE XYZ, a capture's sRGB --
 // it asks this module rather than writing Rec.709's numbers in. The record
 // is gpu::WorkingSpace (modules/gpu/include/athenea/gpu/WorkingSpace.h),
-// field for field: three 3x3s as float4 rows and the luminance weights.
+// field for field: four 3x3s as float4 rows and the luminance weights.
 //
 // `gWorkingSpace` is a uniform, so it lands in the kernel's global constant
 // block beside the kernel's own uniforms and takes no buffer of its own; the
@@ -25,6 +25,9 @@ public struct WorkingSpace {
     public float4 fromSrgb0;   // sRGB decoded (linear Rec.709) to working RGB, rows
     public float4 fromSrgb1;
     public float4 fromSrgb2;
+    public float4 toSrgb0;     // working RGB to linear Rec.709, rows
+    public float4 toSrgb1;
+    public float4 toSrgb2;
     public float4 luminance;   // xyz: the weights of a luminance
     public uint4  flags;       // x: kWorkingSpaceRec709Primaries
 };
@@ -65,4 +68,14 @@ public float3 workingFromSrgbLinear(float3 c) {
     }
     return float3(dot(gWorkingSpace.fromSrgb0.xyz, c), dot(gWorkingSpace.fromSrgb1.xyz, c),
                   dot(gWorkingSpace.fromSrgb2.xyz, c));
+}
+
+/// A working-space colour in linear Rec.709: what the display's own views
+/// take. Where the primaries are Rec.709's, the colour as it is.
+public float3 workingToSrgbLinear(float3 c) {
+    if ((gWorkingSpace.flags.x & kWorkingSpaceRec709Primaries) != 0u) {
+        return c;
+    }
+    return float3(dot(gWorkingSpace.toSrgb0.xyz, c), dot(gWorkingSpace.toSrgb1.xyz, c),
+                  dot(gWorkingSpace.toSrgb2.xyz, c));
 }

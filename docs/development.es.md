@@ -42,8 +42,8 @@ coinciden, la cabecera tiene razón.
 | 5 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout |
 | 6 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre), `gpu/AsyncReadback.h` (números de un frame sin esperarlo) |
 | 7 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
-| 8 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
-| 9 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
+| 8 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color), `colour/WorkingSpace.h` (el registro del espacio de trabajo, construido en el dispositivo) |
+| 9 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers; `scene/CloudColour.h` — una nube lineal al espacio de trabajo |
 | 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
@@ -151,7 +151,9 @@ comprobación.
   en toda proyección -- la del rasterizador, el shade del trazador de rayos,
   las de las referencias. Nada después decodifica ni codifica un color: ni la
   mezcla, ni la reiluminación, ni un grade, ni un bake. Todo lo que copia una
-  nube copia el flag.
+  nube copia el flag, y `GpuSplats::colourSpace` con él: una nube lineal
+  nombra el espacio en que está su luz, y una que no está en el espacio de
+  trabajo se lleva a él una vez, al decodificarse (`scene::CloudColour`).
 - **Ningún kernel escribe Rec.709 dentro.** Una luminancia, un color dado en
   CIE XYZ, el sRGB decodificado de una captura: un kernel se lo pide a
   `common/working_space.slang` (`workingLuminance`, `workingFromXyz`,
@@ -161,7 +163,21 @@ comprobación.
   Es un uniform y no un buffer: va en el bloque de constantes global que
   llenan los uniforms del propio kernel, y un kernel en el límite de 31
   buffers de Metal no lo nota. Un kernel de comprobación que compara dentro
-  de un mismo espacio puede quedarse con sus propios pesos.
+  de un mismo espacio puede quedarse con sus propios pesos. El registro de
+  Rec.709 lineal es una tabla; el de cualquier otro se construye en el
+  dispositivo a partir de las funciones de OCIO (`colour::workingSpaceRecord`)
+  y se lee una vez, cuando se elige.
+- **Un color se sube como se autoró y se convierte donde está.** Lo que lleva
+  al dispositivo un color que no es una textura -- la constante de un
+  material, el color de una luz, una primvar con rol de color -- anota el
+  espacio en que se autoró (vacío es `lin_rec709_scene`) y, en el mismo
+  commit, pasa a `ColourCompiler::convertWords` el buffer, dónde están los
+  colores y ese espacio, y éste graba `convertColourWords` alrededor de la
+  función compilada. El host no calcula nada sobre el color, y un color se
+  convierte sólo como parte de la subida que lo hizo, nunca dos veces.
+  `converts(space)` dice antes si hay algo que hacer: en Rec.709 sin nada
+  autorado nunca lo hay. El compilador es el del `Engine`, uno por escena, y
+  se da a cada módulo que convierte (`setColour`).
 - Un fichero declara `module <nombre>;` igual que su nombre de fichero. Un
   hermano se importa a secas (`import frame;`), otra área por su ruta con
   puntos (`import athenea.common.packing;`). Todo lo que use otro módulo va

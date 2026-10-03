@@ -22,6 +22,9 @@ WorkingSpace makeLinRec709Scene() {
     s.fromSrgb0 = {1.0F, 0.0F, 0.0F, 0.0F};
     s.fromSrgb1 = {0.0F, 1.0F, 0.0F, 0.0F};
     s.fromSrgb2 = {0.0F, 0.0F, 1.0F, 0.0F};
+    s.toSrgb0 = s.fromSrgb0;
+    s.toSrgb1 = s.fromSrgb1;
+    s.toSrgb2 = s.fromSrgb2;
     // BT.709's weights as every kernel wrote them.
     s.luminance = {0.2126F, 0.7152F, 0.0722F, 0.0F};
     s.flags = {kWorkingSpaceRec709Primaries, 0u, 0u, 0u};

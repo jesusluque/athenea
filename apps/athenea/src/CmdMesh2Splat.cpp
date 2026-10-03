@@ -47,6 +47,7 @@
 
 #include "Commands.h"
 #include "aofx/Effect.h"
+#include "athenea/colour/ColourNames.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
 #include "athenea/core/Hash.h"
@@ -799,6 +800,9 @@ public:
         raw.encoding.colour = options_->bake ? io::SplatEncoding::Colour::ShDc
                                              : io::SplatEncoding::Colour::LinearLight;
         raw.linear = true;
+        // In the space the conversion read its materials into: the working
+        // space a TextureStore of its own renders in, lin_rec709_scene.
+        raw.colourSpace = colour::kWorkingSpace;
         raw.encoding.rest = io::SplatEncoding::Rest::Float;
         raw.encoding.rotation = io::SplatEncoding::Rotation::Float;
 
@@ -2215,6 +2219,7 @@ void addMesh2Splat(CLI::App& app) {
                 options.litBody = o->bake && !o->transfer;
                 // Light, all of it: the albedo, the transfer's and the bake's.
                 options.linear = true;
+                options.colourSpace = colour::kWorkingSpace;
                 // The matte's ancestry, gaussian by gaussian, as the conversion
                 // inherited it from the prims it read.
                 options.cryptoObject = converter.cryptoIds();

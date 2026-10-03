@@ -45,6 +45,7 @@ struct GaussianCloud {
     // What it carries: static facts of the data.
     uint32_t shDegree = 0;
     bool     linear = false;      ///< its colours are linear light, not a capture's sRGB
+    std::string colourSpace;      ///< and in which space, as it is drawn: the working space once read
     bool     relit = false;       ///< AtheneaSplatLightingAPI
     bool     litBody = false;
     uint32_t transfer = 0;        ///< transfer values a gaussian (0, 9, 36)

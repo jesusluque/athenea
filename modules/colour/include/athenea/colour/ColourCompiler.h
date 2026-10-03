@@ -19,7 +19,11 @@
 #include "athenea/colour/ColourNames.h"
 #include "athenea/core/Result.h"
 
+#include "athenea/gpu/Buffer.h"
+#include "athenea/gpu/ComputeKernel.h"
+
 namespace athenea::gpu {
+class CommandBatch;
 class Device;
 class ShaderLibrary;
 }
@@ -56,12 +60,38 @@ private:
     std::shared_ptr<const State> state_;
 };
 
+/// A compiled function as a 3x3, taken on the device at the basis
+/// (colour/colour_matrix.slang): four float4 rows, the matrix's three and,
+/// in the fourth's x, how far the function is from linear.
+struct ColourMatrix {
+    gpu::Buffer rows;
+};
+
+/// Where colours lie in a buffer of words (`convertWords`): `count` of them,
+/// the first at word `first`, each `stride` words after the one before;
+/// three floats each, or four halves in two words (`halves`: r|g, b|a).
+struct ColourWordsRun {
+    uint32_t first = 0;
+    uint32_t count = 0;
+    uint32_t stride = 3;
+    bool     halves = false;
+    /// Where the colours are scattered: `count` uints, the first word of
+    /// each (`first` and `stride` then unused).
+    const gpu::Buffer* list = nullptr;
+};
+
 class ColourCompiler {
 public:
     /// `configUri`: a path, or one of OCIO's built-in configs (`ocio://...`).
     /// Without OpenColorIO the config is ignored and the names resolve by table.
+    /// `workingSpace`: the space the engine renders in, as any config names
+    /// it, or one of the config's roles (`role:scene_linear`, or the role's
+    /// bare name). Every function's destination and the meaning of
+    /// SpaceKind::Working follow it. A data space, or a name neither this
+    /// config nor the studio config knows, is InvalidArgument.
     [[nodiscard]] static Result<std::unique_ptr<ColourCompiler>> create(gpu::ShaderLibrary& library,
-                                                                       const std::string& configUri = kStudioConfig);
+                                                                       const std::string& configUri = kStudioConfig,
+                                                                       const std::string& workingSpace = kWorkingSpace);
 
     /// `src` into `dst`, both as the config (or the built-in studio config)
     /// names them. Compiled once per (config, src, dst): the module is
@@ -74,8 +104,27 @@ public:
     [[nodiscard]] Result<ColourFunction> displayView(const std::string& src, const std::string& display,
                                                      const std::string& view, const std::string& look);
 
+    /// `src` into `dst` as a 3x3 (ColourMatrix), built on the device by a
+    /// generated kernel that evaluates the compiled function; cached.
+    [[nodiscard]] Result<ColourMatrix> matrix(const std::string& src, const std::string& dst);
+
+    /// Converts the colours `run` places in `words` from `space` -- as a
+    /// material, a light or a primvar names it; empty is lin_rec709_scene,
+    /// USD's default -- into the working space, recorded into `batch`. False
+    /// when nothing is to do: the space is the working space, data, or a name
+    /// no config knows (warned of once). The function's LUTs and the kernel
+    /// stay alive in this compiler, which must outlive the batch's submit.
+    [[nodiscard]] Result<bool> convertWords(gpu::CommandBatch& batch, const gpu::Buffer& words,
+                                            const std::string& space, const ColourWordsRun& run);
+    /// Whether a colour authored in `space` (empty: lin_rec709_scene) is
+    /// converted by `convertWords`: what a caller asks before it gathers runs.
+    [[nodiscard]] bool converts(const std::string& space) const;
+
     [[nodiscard]] const ColourNames& names() const noexcept { return names_; }
+    [[nodiscard]] gpu::ShaderLibrary& library() const noexcept { return *library_; }
     [[nodiscard]] const std::string& configUri() const noexcept { return uri_; }
+    /// The working space as it was asked for (`create`'s `workingSpace`).
+    [[nodiscard]] const std::string& workingAsked() const noexcept { return workingAsked_; }
 
 private:
     ColourCompiler() = default;
@@ -86,6 +135,18 @@ private:
     std::shared_ptr<const ColourConfig>       config_;
     ColourNames                               names_;
     std::map<uint64_t, ColourFunction>        cache_;
+    std::string                               workingAsked_;
+    struct MatrixKernel {
+        ColourFunction     function;
+        ColourMatrix       matrix;
+    };
+    std::map<uint64_t, MatrixKernel>          matrices_;
+    struct WordsKernel {
+        ColourFunction     function;
+        gpu::ComputeKernel kernel;
+    };
+    std::map<std::string, WordsKernel>        words_;   ///< by the source space's resolved name
+    mutable std::map<std::string, bool>       converts_;   ///< `converts`, by the name as given
 };
 
 /// FNV-1a, 64 bits: what generated modules are named by.

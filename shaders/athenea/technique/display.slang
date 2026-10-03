@@ -3,9 +3,10 @@
 // An engine image onto a display: what athenea view shows, on the device, with no
 // readback. Engine images are bottom row first; a window's are top row first.
 //
-//   colour   linear premultiplied Rec.709 over a background, times 2^exposure,
-//            through a view transform, into the display's gamut and its
-//            transfer function
+//   colour   linear premultiplied, in the working space, over a background,
+//            times 2^exposure, brought into linear Rec.709 (the working
+//            space's record, `toSrgb`; nothing where it is Rec.709), through a
+//            view transform, into the display's gamut and its transfer function
 //   depth    view z, grey on a log scale from near (white) to far (black)
 //   ids      a colour per id, from a hash; -1 (nothing) is the background
 //   vector   float4 entries shown as rgb * scale + bias (normals, primvars)
@@ -19,6 +20,7 @@
 module display;
 
 import athenea.technique.aces2;
+import athenea.common.working_space;
 
 struct DisplayParams {
     uint  width;
@@ -102,6 +104,9 @@ public float3 agx(float3 c) {
 public float3 displayColour(float4 premultiplied, float3 background, float exposure, uint view, uint display) {
     float3 c = premultiplied.rgb + background * (1.0 - saturate(premultiplied.a));
     c *= pow(2.0, exposure);
+    // The views here are Rec.709's -- AgX's inset and outset, ACES 2.0's
+    // input, the P3 matrix -- so the working space is brought to it first.
+    c = workingToSrgbLinear(c);
     if (view == 1) {
         c = agx(c);
     }
@@ -220,7 +225,7 @@ void displayTransform(uint3 tid: SV_DispatchThreadID) {
         shown = displayColour(colour[pixel * params.stride + params.offset], background, params.exposure, params.view,
                               params.display);
     } else {
-        shown = displayOther(pixel, transferEncode(background, params.display));
+        shown = displayOther(pixel, transferEncode(workingToSrgbLinear(background), params.display));
     }
     output[tid.xy] = float4(shown, 1.0);
 }

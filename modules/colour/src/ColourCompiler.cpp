@@ -142,7 +142,8 @@ Result<void> loadModule(gpu::ShaderLibrary& library, const ColourFunction::State
 // float file said to be sRGB.
 
 Result<std::unique_ptr<ColourCompiler>> ColourCompiler::create(gpu::ShaderLibrary& library,
-                                                               const std::string& configUri) {
+                                                               const std::string& configUri,
+                                                               const std::string& workingSpace) {
     auto compiler = std::unique_ptr<ColourCompiler>(new ColourCompiler());
     compiler->library_ = &library;
     compiler->device_ = &library.device();
@@ -154,7 +155,15 @@ Result<std::unique_ptr<ColourCompiler>> ColourCompiler::create(gpu::ShaderLibrar
     compiler->config_ = config;
     compiler->names_.config_ = config;
     compiler->names_.working_ = "lin_rec709";
+    compiler->names_.rec709_ = "lin_rec709";
     compiler->names_.srgb_ = "srgb_texture";
+    compiler->workingAsked_ = workingSpace;
+    const ResolvedSpace working = compiler->names_.resolve(workingSpace, FileEncoding::Linear);
+    if (working.kind != SpaceKind::Working) {
+        return Error::make(ErrorCode::Unsupported,
+                           "colour: '{}' as the working space needs OpenColorIO (scripts/build-ocio.sh); this build "
+                           "renders in lin_rec709_scene only", workingSpace);
+    }
     return compiler;
 }
 
@@ -402,7 +411,8 @@ std::string nameIn(const OCIO::ConstConfigRcPtr& config, const char* wanted) {
 }   // namespace
 
 Result<std::unique_ptr<ColourCompiler>> ColourCompiler::create(gpu::ShaderLibrary& library,
-                                                               const std::string& configUri) {
+                                                               const std::string& configUri,
+                                                               const std::string& workingSpace) {
     auto compiler = std::unique_ptr<ColourCompiler>(new ColourCompiler());
     compiler->library_ = &library;
     compiler->device_ = &library.device();
@@ -422,13 +432,35 @@ Result<std::unique_ptr<ColourCompiler>> ColourCompiler::create(gpu::ShaderLibrar
     // The working space and sRGB as the config in use names them. A config
     // without them leaves them to the studio config's names, which the
     // functions then reach across configs.
-    compiler->names_.working_ = nameIn(config->config, kWorkingSpace);
-    if (compiler->names_.working_.empty()) {
-        compiler->names_.working_ = nameIn(config->studio, kWorkingSpace);
+    compiler->names_.rec709_ = nameIn(config->config, kWorkingSpace);
+    if (compiler->names_.rec709_.empty()) {
+        compiler->names_.rec709_ = nameIn(config->studio, kWorkingSpace);
     }
     compiler->names_.srgb_ = nameIn(config->config, "srgb_texture");
     if (compiler->names_.srgb_.empty()) {
         compiler->names_.srgb_ = nameIn(config->studio, "srgb_texture");
+    }
+    // THE WORKING SPACE, AS THE CONFIG NAMES IT. Resolved as any other name
+    // is -- an alias, a GfColorSpaceNames token, a role (`role:scene_linear`,
+    // which OCIO answers by the bare role's name) -- against Rec.709 first,
+    // so that a name for linear Rec.709 comes back as Working.
+    compiler->names_.working_ = compiler->names_.rec709_;
+    compiler->workingAsked_ = workingSpace;
+    std::string asked = workingSpace;
+    if (asked.rfind("role:", 0) == 0) {
+        asked.erase(0, 5);
+    }
+    if (!asked.empty() && asked != "auto") {
+        const ResolvedSpace working = compiler->names_.resolve(asked, FileEncoding::Linear);
+        if (working.kind == SpaceKind::Raw) {
+            return Error::make(ErrorCode::InvalidArgument, "colour: '{}' as the working space is data, not a colour "
+                                                           "space", workingSpace);
+        }
+        if (working.kind == SpaceKind::Unknown) {
+            return Error::make(ErrorCode::InvalidArgument, "colour: '{}' as the working space is a name no config "
+                                                           "here knows ({})", workingSpace, config->label);
+        }
+        compiler->names_.working_ = working.name;
     }
     return compiler;
 }
@@ -501,5 +533,125 @@ Result<ColourFunction> ColourCompiler::displayView(const std::string& src, const
 }
 
 #endif
+
+// SHARED BY BOTH BUILDS: what a function becomes on the device besides a
+// texel's or a pixel's transform.
+
+namespace {
+
+/// The generated module of a matrix: the function at the basis and at the
+/// two probes of its linearity, handed to colour_matrix.slang.
+std::string matrixSource(const ColourFunction& function) {
+    const std::string& f = function.entry();
+    return "import athenea.colour.colour_matrix;\nimport " + function.module() +
+           ";\n"
+           "[shader(\"compute\")]\n"
+           "[numthreads(1, 1, 1)]\n"
+           "void colourMatrix(uint3 tid: SV_DispatchThreadID) {\n"
+           "    colourMatrixWrite(" + f + "(float4(1.0, 0.0, 0.0, 1.0)).rgb, " + f + "(float4(0.0, 1.0, 0.0, 1.0)).rgb,\n"
+           "                      " + f + "(float4(0.0, 0.0, 1.0, 1.0)).rgb, " + f + "(float4(1.0, 1.0, 0.0, 1.0)).rgb,\n"
+           "                      " + f + "(float4(0.0, 2.0, 0.0, 1.0)).rgb);\n"
+           "}\n";
+}
+
+/// The generated entry of `convertWords`: convert_words.slang's run around
+/// the function, alpha untouched.
+std::string wordsSource(const ColourFunction& function) {
+    return "import athenea.colour.convert_words;\nimport " + function.module() +
+           ";\n"
+           "[shader(\"compute\")]\n"
+           "[numthreads(64, 1, 1)]\n"
+           "void convertColourWords(uint3 tid: SV_DispatchThreadID) {\n"
+           "    uint word;\n"
+           "    if (!colourWordsAt(tid, word)) {\n"
+           "        return;\n"
+           "    }\n"
+           "    storeColourWords(word, " + function.entry() + "(float4(loadColourWords(word), 1.0)).rgb);\n"
+           "}\n";
+}
+
+/// A generated module loaded under a name of its text's hash, and its one
+/// entry as a kernel.
+Result<gpu::ComputeKernel> generatedKernel(gpu::ShaderLibrary& library, const char* prefix, const std::string& source,
+                                           const char* entry) {
+    char name[48];
+    std::snprintf(name, sizeof(name), "%s%016llx", prefix, static_cast<unsigned long long>(fnv1a(source)));
+    auto program = library.loadSource(name, "module " + std::string(name) + ";\n" + source, {entry});
+    if (!program) return std::move(program).error();
+    return gpu::ComputeKernel::create(library, name, entry);
+}
+
+}   // namespace
+
+Result<ColourMatrix> ColourCompiler::matrix(const std::string& src, const std::string& dst) {
+    const uint64_t key = fnv1a(config_->cacheId + "\nmatrix\n" + src + "\n" + dst);
+    if (const auto found = matrices_.find(key); found != matrices_.end()) {
+        return found->second.matrix;
+    }
+    auto function = this->function(src, dst);
+    if (!function) return std::move(function).error();
+    auto kernel = generatedKernel(*library_, "athenea_cm_", matrixSource(*function), "colourMatrix");
+    if (!kernel) return std::move(kernel).error();
+    gpu::BufferDesc desc;
+    desc.bytes = 4 * 16;
+    desc.elementBytes = 16;
+    desc.label = "colour.matrix";
+    auto rows = gpu::Buffer::create(*device_, desc);
+    if (!rows) return std::move(rows).error();
+    gpu::CommandBatch batch(*device_);
+    kernel->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        function->bind(cursor);
+        cursor["matrixRows"].setBinding(rows->rhi());
+    });
+    ATHENEA_TRY(batch.submit(true));
+    MatrixKernel made;
+    made.function = std::move(*function);
+    made.matrix.rows = std::move(*rows);
+    return matrices_.emplace(key, std::move(made)).first->second.matrix;
+}
+
+bool ColourCompiler::converts(const std::string& space) const {
+    // Asked for every instance of every frame: a name is resolved once.
+    if (const auto known = converts_.find(space); known != converts_.end()) {
+        return known->second;
+    }
+    const ResolvedSpace resolved = names_.resolve(space.empty() ? std::string(kDefaultColourSpace) : space,
+                                                  FileEncoding::Linear);
+    const bool converts = resolved.kind == SpaceKind::Srgb || resolved.kind == SpaceKind::Other;
+    converts_.emplace(space, converts);
+    return converts;
+}
+
+Result<bool> ColourCompiler::convertWords(gpu::CommandBatch& batch, const gpu::Buffer& words,
+                                          const std::string& space, const ColourWordsRun& run) {
+    if (run.count == 0 || !converts(space)) {
+        return false;
+    }
+    const ResolvedSpace resolved = names_.resolve(space.empty() ? std::string(kDefaultColourSpace) : space,
+                                                  FileEncoding::Linear);
+    auto found = words_.find(resolved.name);
+    if (found == words_.end()) {
+        auto function = this->function(resolved.name, names_.working());
+        if (!function) return std::move(function).error();
+        auto kernel = generatedKernel(*library_, "athenea_cw_", wordsSource(*function), "convertColourWords");
+        if (!kernel) return std::move(kernel).error();
+        WordsKernel made;
+        made.function = std::move(*function);
+        made.kernel = std::move(*kernel);
+        found = words_.emplace(resolved.name, std::move(made)).first;
+    }
+    const WordsKernel& k = found->second;
+    k.kernel.dispatch(batch, {run.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        k.function.bind(cursor);
+        cursor["colourWords"].setBinding(words.rhi());
+        cursor["colourFirst"].setData(run.first);
+        cursor["colourCount"].setData(run.count);
+        cursor["colourStride"].setData(run.stride);
+        cursor["colourHalves"].setData(uint32_t{run.halves ? 1u : 0u});
+        cursor["colourList"].setBinding(run.list != nullptr ? run.list->rhi() : words.rhi());
+        cursor["colourListed"].setData(uint32_t{run.list != nullptr ? 1u : 0u});
+    });
+    return true;
+}
 
 }   // namespace athenea::colour

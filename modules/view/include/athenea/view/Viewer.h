@@ -52,6 +52,11 @@ struct ViewOptions {
     /// config's display and view into the display kernel (empty config:
     /// OCIO's built-in studio config; empty display or view: its defaults).
     std::string           ocioConfig;
+    /// The space the stage is rendered in (StageRenderer::setWorkingSpace):
+    /// empty leaves it to the stage's renderingColorSpace, then
+    /// lin_rec709_scene. `ocioConfig` is also the config the stage's colours
+    /// are read in.
+    std::string           workingSpace;
     std::string           ocioDisplay;
     std::string           ocioView;
     bool                  visible = true;

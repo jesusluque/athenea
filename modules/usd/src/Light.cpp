@@ -53,7 +53,8 @@ bool kindOf(const TfToken& type, athenea::light::LightKind& kind) {
 /// scene index carries the colour space beside it, in the light's network
 /// (as it does for a material's file inputs, Material.cpp). Empty: none said,
 /// and the file decides.
-std::string domeColourSpace(HdSceneDelegate* sceneDelegate, const SdfPath& id) {
+std::string parameterColourSpace(HdSceneDelegate* sceneDelegate, const SdfPath& id,
+                                 std::initializer_list<const char*> names) {
     const HdSceneIndexBaseRefPtr index = sceneDelegate->GetRenderIndex().GetTerminalSceneIndex();
     if (!index) {
         return {};
@@ -69,7 +70,11 @@ std::string domeColourSpace(HdSceneDelegate* sceneDelegate, const SdfPath& id) {
             const HdMaterialNodeParameterContainerSchema parameters = nodes.Get(nodeName).GetParameters();
             for (const TfToken& name : parameters.GetNames()) {
                 const std::string& text = name.GetString();
-                if (text != "texture:file" && text != "inputs:texture:file") {
+                bool wanted = false;
+                for (const char* n : names) {
+                    wanted = wanted || text == n;
+                }
+                if (!wanted) {
                     continue;
                 }
                 const HdMaterialNodeParameterSchema parameter = parameters.Get(name);
@@ -147,6 +152,11 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
         }
     }
     const VtValue colour = sceneDelegate->GetLightParamValue(id, HdLightTokens->color);
+    // The space `color` was authored in, as the scene index carries it
+    // beside the value (USD's colorSpace on the attribute, or an ancestor's
+    // ColorSpaceAPI); empty is lin_rec709_scene. Converted on the device
+    // (light::LightTable::set), as the shadow's tint is.
+    lamp.colourSpace = parameterColourSpace(sceneDelegate, id, {"color", "inputs:color"});
     if (colour.IsHolding<GfVec3f>()) {
         const GfVec3f& c = colour.UncheckedGet<GfVec3f>();
         lamp.colour[0] = c[0];
@@ -213,7 +223,7 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
         if (file.IsHolding<SdfAssetPath>()) {
             const SdfAssetPath& asset = file.UncheckedGet<SdfAssetPath>();
             lamp.texture = !asset.GetResolvedPath().empty() ? asset.GetResolvedPath() : asset.GetAssetPath();
-            lamp.textureColourSpace = domeColourSpace(sceneDelegate, id);
+            lamp.textureColourSpace = parameterColourSpace(sceneDelegate, id, {"texture:file", "inputs:texture:file"});
         }
     }
     engine->setLight(id, lamp, std::move(instancing));

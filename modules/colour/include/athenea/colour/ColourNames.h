@@ -14,9 +14,15 @@
 
 namespace athenea::colour {
 
-/// The space the engine renders in. Linear Rec.709 in this phase; the name is
-/// the studio config's (and GfColorSpaceNames') for it.
+/// The space the engine renders in unless it is told otherwise
+/// (`athenea:workingSpace`, a stage's renderingColorSpace): linear Rec.709,
+/// as the studio config (and GfColorSpaceNames) names it. Also the space of
+/// every colour that does not say -- a material's constant, a light, a
+/// displayColor, a linear file -- which is USD's default.
 inline constexpr const char* kWorkingSpace = "lin_rec709_scene";
+/// The space a colour is in when nothing says: USD's (GfColorSpace's) and
+/// the engine's MaterialX documents' default.
+inline constexpr const char* kDefaultColourSpace = "lin_rec709_scene";
 /// The config used when none is named: OCIO's built-in studio config, which
 /// carries MaterialX's and USD's names as aliases.
 inline constexpr const char* kStudioConfig = "ocio://studio-config-latest";
@@ -46,19 +52,26 @@ struct ColourConfig;
 class ColourNames {
 public:
     /// `name` as the config in use names it, or by the file for an empty one
-    /// or `auto`. Data names (`raw`, `Raw`, `data`, `Non-Color`, `none`,
+    /// or `auto`: 8-bit colour is sRGB, anything else linear Rec.709 -- the
+    /// working space only where the working space is linear Rec.709. Data names (`raw`, `Raw`, `data`, `Non-Color`, `none`,
     /// `identity`, `Utility - Raw`, any space the config marks data) are Raw.
     /// A name the config does not know is looked for in the built-in studio
     /// config; one neither knows is Unknown and is warned of once.
     [[nodiscard]] ResolvedSpace resolve(const std::string& name, FileEncoding file) const;
     /// The working space as the config in use names it.
     [[nodiscard]] const std::string& working() const noexcept { return working_; }
+    /// Linear Rec.709 as the config in use (or the studio config) names it.
+    [[nodiscard]] const std::string& rec709() const noexcept { return rec709_; }
+    /// Whether the working space is linear Rec.709: then decoded sRGB and an
+    /// unsaid linear colour are already in it.
+    [[nodiscard]] bool workingIsRec709() const noexcept { return working_ == rec709_; }
 
 private:
     friend class ColourCompiler;
     std::shared_ptr<const ColourConfig>   config_;
     std::string                           working_;
     std::string                           srgb_;
+    std::string                           rec709_;
     mutable std::set<std::string>         warned_;
 };
 

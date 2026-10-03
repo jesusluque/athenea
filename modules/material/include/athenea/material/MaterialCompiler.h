@@ -36,7 +36,12 @@ struct MaterialSlot {
     uint32_t           words = 0;
     std::vector<float> value;      ///< Value: the document's
     std::string        name;       ///< Texture: the file; Primvar: the primvar
-    std::string        space;      ///< Texture: the colour space as named (TextureInfo::space)
+    /// Texture: the colour space as named (TextureInfo::space). A colour
+    /// Value: the space it was authored in (MaterialX's `colorspace`, the
+    /// document's, or USD's through the scene index), empty for unsaid --
+    /// lin_rec709_scene -- and brought into the working space in the row.
+    std::string        space;
+    bool               colour = false;   ///< Value: a color3 or color4, which `space` applies to
     Wrap               wrapS = Wrap::Repeat;
     Wrap               wrapT = Wrap::Repeat;
     Filter             filter = Filter::Linear;
@@ -49,6 +54,7 @@ struct VolumeCoefficients {
     std::array<float, 3> scattering{0.0F, 0.0F, 0.0F};
     float                anisotropy = 0.0F;   ///< Henyey-Greenstein g
     std::array<float, 3> emission{0.0F, 0.0F, 0.0F};   ///< `uniform_edf`'s colour: radiance of the absorbing part
+    std::string          emissionSpace;   ///< the space that colour was authored in; empty: lin_rec709_scene
 };
 
 /// What a graph's BSDF nodes become.
