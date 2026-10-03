@@ -714,6 +714,18 @@ interactivo. `--default-lights` pone un dome y un sol en la capa de sesión
 para una escena que no declara ninguna, que es lo que hace visible un asset
 sin editarlo.
 
+**Una `DistantLight` está en las unidades de UsdLux.** `intensity` (por
+`2^exposure` y `color`) es la radiancia del disco del sol, en nits; con
+`normalize = 1` se divide por el ángulo sólido proyectado del disco,
+`pi sin^2(angle / 2)`, y pasa a ser la iluminancia sobre una superficie
+que mira a la luz, en lux. Un `angle` de 0 es una luz paralela cuya
+irradiancia es la intensidad en ambos casos. Así, un sol escrito sin
+`normalize` deja `intensity * pi sin^2(angle / 2)`: el sol por defecto de
+UsdLux (50000 a 0.53 grados) deja unos 3.4, y uno de intensidad 3 con el
+ángulo por defecto queda casi negro -- escribe `normalize = 1` para un sol
+cuya intensidad sea aquello con lo que ilumina. El sol por defecto está
+normalizado. Una `DomeLight` ignora `normalize`, como dice el esquema.
+
 **Sombras.** Las mallas sombrean por rayo en la ruta trazada. Una nube
 proyecta a través de un mapa de transmitancia en cada luz, sin rayo ninguno:
 `--cloud-shadow-texels`, `--cloud-shadow-density` y `--cloud-shadow-terms` lo
