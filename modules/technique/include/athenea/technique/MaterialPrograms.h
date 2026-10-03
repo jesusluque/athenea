@@ -120,6 +120,10 @@ struct MaterialFrame {
     /// Null and nothing is dimmed, which is what a frame without clouds does.
     /// A texture because the shading kernel has no buffer slot left.
     rhi::ITextureView*            cloudShadow = nullptr;
+    /// And its transmittance chain (SplatShadowMap::chainView): what a floor
+    /// far from the map reads at the level of its pixel's footprint. Bound
+    /// with `cloudShadow`, which says whether either is.
+    rhi::ITextureView*            cloudShadowChain = nullptr;
     /// Samples per light. One is the interactive choice; a test that wants
     /// an area light's irradiance without noise asks for more.
     uint32_t                      samples = 1;

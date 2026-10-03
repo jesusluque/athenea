@@ -51,7 +51,9 @@ public uint shadowStrideOf(uint coefficients) { return coefficients + 1; }
 
 /// The texture layer of light `light`'s value `which` (0 the total, 1.. the
 /// Fourier terms, `coefficients` the nearest depth). Layer zero is the
-/// header's.
+/// header's. The transmittance chain is a texture of its own, a layer a
+/// light: mips of every layer here would have cost a third more of the whole
+/// map, where only the total wants them.
 public uint shadowLayerOf(uint light, uint coefficients, uint which) {
     return 1 + light * shadowStrideOf(coefficients) + which;
 }
@@ -134,7 +136,18 @@ public interface IShadowMapSource {
     /// total optical depth, 1.. the Fourier terms, `f.coefficients` the depth
     /// of the nearest caster. In range: the caller has checked.
     static float texel(ShadowMapFrame f, uint light, int x, int y, uint which);
+    /// How many levels the transmittance chain has: 1 where there is none.
+    static uint levels(ShadowMapFrame f);
+    /// exp(-total) at texel (x, y) of the chain's `level`, which is at least
+    /// 1, in range: the mean of the transmittances under it.
+    static float transmittanceAt(ShadowMapFrame f, uint light, uint level, int x, int y);
 };
+
+/// The levels a full chain over a map `resolution` texels a side has, as
+/// gpu::mipChain counts them.
+public uint shadowChainLevels(uint resolution) {
+    return resolution == 0 ? 1u : uint(firstbithigh(resolution)) + 1u;
+}
 
 /// The header, read in one place for every source.
 public ShadowMapFrame shadowFrameOf<S : IShadowMapSource>(uint light) {
@@ -202,8 +215,34 @@ public float shadowPcf<S : IShadowMapSource>(ShadowMapFrame f, uint light, float
     return lerp(lerp(t00, t10, w.x), lerp(t01, t11, w.x), w.y);
 }
 
-/// THE READ, for every receiver: a floor's, a gaussian's, a probe's.
-public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p) {
+/// A level of the transmittance chain, bilinear, at the same (u, v) level
+/// zero is addressed in. Outside the level nothing is in the way.
+public float shadowChainAt<S : IShadowMapSource>(ShadowMapFrame f, uint light, uint level, float u, float v) {
+    const uint size = max(f.resolution >> level, 1u);
+    const float scale = float(size) / float(f.resolution);
+    int2 o;
+    float2 w;
+    shadowBilinear(u * scale, v * scale, o, w);
+    float t[4];
+    for (uint k = 0; k < 4; ++k) {
+        const int x = o.x + int(k & 1u);
+        const int y = o.y + int(k >> 1u);
+        t[k] = (x < 0 || y < 0 || x >= int(size) || y >= int(size)) ? 1.0 : S.transmittanceAt(f, light, level, x, y);
+    }
+    return lerp(lerp(t[0], t[1], w.x), lerp(t[2], t[3], w.x), w.y);
+}
+
+/// THE READ, for every receiver. `dpdx` and `dpdy` are how far the receiver's
+/// footprint spans in the world: a pixel's, for a floor; zero for a gaussian
+/// or a probe, which read level zero.
+///
+/// A receiver behind the whole slab (a floor under a bird, z >= 1) whose
+/// footprint covers more than a texel reads the transmittance chain at the
+/// level of its footprint -- the mean of the transmittances under it, which is
+/// what a pixel sees, where level zero alone is a sample of it that aliases.
+/// Inside the slab, and under a texel, it is level zero with PCF; the two
+/// blend over the first octave, so nothing switches.
+public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p, float3 dpdx, float3 dpdy) {
     if (f.valid == 0 || f.resolution == 0) {
         return 1.0;
     }
@@ -218,5 +257,30 @@ public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, f
     if (z <= 0.0) {
         return 1.0;   // nearer the light than anything that casts
     }
-    return shadowPcf<S>(f, light, u, v, z);
+    const float pcf = shadowPcf<S>(f, light, u, v, z);
+    const uint levels = S.levels(f);
+    if (z < 1.0 || levels <= 1) {
+        return pcf;
+    }
+    // The footprint in texels: the longer of the pixel's two axes, carried
+    // into the map -- linear, so the rows' own vectors do it.
+    const float2 ax = float2(dot(f.rowU.xyz, dpdx), dot(f.rowV.xyz, dpdx));
+    const float2 ay = float2(dot(f.rowU.xyz, dpdy), dot(f.rowV.xyz, dpdy));
+    const float footprint = max(length(ax), length(ay));
+    if (!(footprint > 1.0)) {
+        return pcf;   // under a texel, no footprint at all, or a NaN
+    }
+    const float level = min(log2(footprint), float(levels - 1));
+    const uint lo = uint(floor(level));
+    const float t = level - float(lo);
+    const float below = lo == 0 ? pcf : shadowChainAt<S>(f, light, lo, u, v);
+    if (lo + 1 >= levels) {
+        return below;
+    }
+    return lerp(below, shadowChainAt<S>(f, light, lo + 1, u, v), t);
+}
+
+/// The same read with no footprint: a point, at level zero.
+public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p) {
+    return shadowMapRead<S>(f, light, p, float3(0.0), float3(0.0));
 }

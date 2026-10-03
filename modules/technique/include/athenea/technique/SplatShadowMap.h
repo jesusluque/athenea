@@ -87,6 +87,11 @@ public:
     [[nodiscard]] const gpu::Texture& texture() const noexcept { return texture_; }
     /// That texture's view, made with it and kept: what a frame binds.
     [[nodiscard]] rhi::ITextureView* textureView() const noexcept { return view_.get(); }
+    /// THE TRANSMITTANCE CHAIN: exp(-total), a layer a light, with a full mip
+    /// chain -- what a floor far from the map reads at its pixel's footprint
+    /// (the mean of the transmittances under it). A view of every level.
+    [[nodiscard]] const gpu::Texture& chain() const noexcept { return chain_; }
+    [[nodiscard]] rhi::ITextureView* chainView() const noexcept { return chainView_.get(); }
     [[nodiscard]] uint32_t resolution() const noexcept { return resolution_; }
     [[nodiscard]] uint32_t coefficients() const noexcept { return coefficients_; }
 
@@ -138,12 +143,16 @@ private:
     std::optional<gpu::ComputeKernel> probe_;
     std::optional<gpu::ComputeKernel> header_;
     std::optional<gpu::ComputeKernel> resolve_;
+    std::optional<gpu::ComputeKernel> chainLevel_;
     std::optional<gpu::ComputeKernel> factors_;
     std::optional<gpu::ComputeKernel> clear_factors_;
     gpu::Buffer                       map_;
     gpu::Buffer                       total_;
     gpu::Texture                      texture_;
     rhi::ComPtr<rhi::ITextureView>    view_;
+    gpu::Texture                      chain_;
+    rhi::ComPtr<rhi::ITextureView>    chainView_;     ///< every level, for reading
+    std::vector<rhi::ComPtr<rhi::ITextureView>> chainLevels_;   ///< one a level, for writing
     uint32_t                          resolution_ = 0;
     uint32_t                          coefficients_ = 0;
     uint32_t                          lights_ = 0;

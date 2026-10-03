@@ -11180,3 +11180,44 @@ cloud moved by part of a texel already changes the texels it lands in
 smoothly, so what a nearest-texel read still steps with is the receiver
 crossing a texel -- which is what the case moves. *To be run in the GPU
 turn.*
+
+### Step 3: a floor far from the map reads its footprint's mean
+
+**The cause.** Filtering four texels is enough while a pixel covers about
+one. A floor under a bird is far from the camera and the map is fine, so a
+pixel covers several texels: four taps are still a sample of what the pixel
+sees, and the speckle of a cloud of small gaussians aliases.
+
+**What is read now.** The resolve also writes `exp(-total)` into a **chain**
+of its own -- `SplatShadowMap::chain()`, a layer a light with every mip down
+to one texel, each level the mean of four texels of the one before
+(`shadowMapChain`). It is the mean of the *transmittances*, not exp of the
+mean optical depth, which would be darker. A receiver behind the whole slab
+(`z >= 1`, the floor) whose footprint covers more than a texel reads the
+chain bilinearly at `log2(footprint)`, blended between two levels; under a
+texel, or inside the slab, it reads level zero with PCF as before, and the
+first octave blends the two so nothing switches. Gaussians and the probe
+have no footprint and read level zero.
+
+- **The footprint** is the pixel's, by ray differentials: the rays through
+  the next pixel over and the next pixel up, met on the plane of the surface
+  (`cloudPixelSpan` in `MaterialShading`), carried into the map by the rows
+  of its frame, and the longer of the two axes taken. The analysis proposed
+  the quad's differences, as bump takes them; the light loops that read the
+  map are not uniform across a quad, and `materialInputsAt` already takes a
+  texture's footprint the same way. A grazing pixel gets no footprint and
+  reads level zero.
+- **A texture of its own**, not mips of the map's texture: the map's layers
+  hold Fourier terms and depths, which no mip means anything for, and a
+  chain on every layer would have cost a third more of all of them. The
+  chain is 5.6 MB a light at 1024 texels. It costs the shading kernel a
+  texture slot (`cloudShadowChain`), of which it has plenty; no buffer.
+
+`athenea_usd_tests "[shadowmap][mips]"`: sixteen thousand gaussians smaller
+than a texel scattered over half a unit two units up, a sun at 45 degrees,
+and a camera straight over the floor where their shadow falls, four texels a
+pixel. Its 128-pixel frame is compared on the device with the same view at
+512 pixels boxed down by four (`test/box_reduce.slang`). Expected: p99 at
+most 8 codes, where the frame without any cloud shadow differs from it by
+more than 20. *To be run in the GPU turn*, measured before the step as well,
+and the threshold set from the two with margin.

@@ -246,11 +246,12 @@ bool occluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory
 const char* kShadowMap = R"(
 import athenea.technique.splat_shadow_read;
 static const bool kCloudShadows = true;
-// As a texture, not a buffer: this kernel is at Metal's limit of thirty-one
-// buffers, and a texture slot it still has.
+// As textures, not buffers: this kernel is at Metal's limit of thirty-one
+// buffers, and texture slots it still has.
 Texture2DArray<float> cloudShadow;
+Texture2DArray<float> cloudShadowChain;   // exp(-total) a layer a light, with its mips
 
-// The texture as a source splat_shadow_read understands: the same read the
+// The textures as a source splat_shadow_read understands: the same read the
 // pass's probe and the gaussian receivers do through its buffer.
 struct CloudShadowTexture : IShadowMapSource {
     static float headerReal(uint word) { return cloudShadow.Load(shadowHeaderTexel(word)); }
@@ -258,19 +259,51 @@ struct CloudShadowTexture : IShadowMapSource {
     static float texel(ShadowMapFrame f, uint light, int x, int y, uint which) {
         return cloudShadow.Load(int4(x, y, int(shadowLayerOf(light, f.coefficients, which)), 0));
     }
+    static uint levels(ShadowMapFrame f) { return shadowChainLevels(f.resolution); }
+    static float transmittanceAt(ShadowMapFrame f, uint light, uint level, int x, int y) {
+        return cloudShadowChain.Load(int4(x, y, int(light), int(level)));
+    }
 };
 
-float cloudTransmittance(float3 p, uint light, bool casts) {
+/// Where the rays through the next pixel over and the next pixel up meet the
+/// plane of the surface at `p`: how far a pixel spans there, which is the
+/// footprint the map's transmittance chain is read at. Ray differentials, as
+/// materialInputsAt takes a texture's -- not the quad's, since the light loops
+/// below are not uniform across it. Grazing, the span is left at nothing and
+/// the read is level zero's.
+float3 cloudOnPlane(float3 origin, float3 direction, float3 p, float3 n) {
+    const float facing = dot(direction, n);
+    if (!(abs(facing) > 1.0e-6)) {
+        return p;
+    }
+    const float t = dot(p - origin, n) / facing;
+    return t > 0.0 ? origin + direction * t : p;
+}
+
+void cloudPixelSpan(CameraParams c, ViewToWorld w, uint2 px, float3 p, float3 n, out float3 dx, out float3 dy) {
+    float3 origin;
+    float3 direction;
+    viewRay(c, float2(px) + float2(1.5, 0.5), origin, direction);
+    dx = cloudOnPlane(applyRows(w, origin, 1.0), applyRows(w, direction, 0.0), p, n) - p;
+    viewRay(c, float2(px) + float2(0.5, 1.5), origin, direction);
+    dy = cloudOnPlane(applyRows(w, origin, 1.0), applyRows(w, direction, 0.0), p, n) - p;
+}
+
+float cloudTransmittance(float3 p, float3 dx, float3 dy, uint light, bool casts) {
     if (!casts || light >= kShadowSlots) {
         return 1.0;
     }
-    return shadowMapRead<CloudShadowTexture>(shadowFrameOf<CloudShadowTexture>(light), light, p);
+    return shadowMapRead<CloudShadowTexture>(shadowFrameOf<CloudShadowTexture>(light), light, p, dx, dy);
 }
 )";
 
 const char* kNoShadowMap = R"(
 static const bool kCloudShadows = false;
-float cloudTransmittance(float3 p, uint light, bool casts) { return 1.0; }
+void cloudPixelSpan(CameraParams c, ViewToWorld w, uint2 px, float3 p, float3 n, out float3 dx, out float3 dy) {
+    dx = float3(0.0);
+    dy = float3(0.0);
+}
+float cloudTransmittance(float3 p, float3 dx, float3 dy, uint light, bool casts) { return 1.0; }
 )";
 
 /// THE SHADOW RAYS ARE TRACED BY A KERNEL OF THEIR OWN.
@@ -522,6 +555,11 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     // densities, at every lobe: broad lobes too (lobeDensity says why).
     const uint lightSampleCount = max(lighting.samples, 1u);
     const uint lobeCount = lobeLookups();
+    // How far this pixel spans on the surface: the footprint a cloud's shadow
+    // map is read with (cloudPixelSpan). Nothing where no cloud casts.
+    float3 cloudDx;
+    float3 cloudDy;
+    cloudPixelSpan(camera, toWorld, tid, inputs.positionWorld, inputs.normalWorld, cloudDx, cloudDy);
     if (lobeCount != 0) {
         const float3 n0 = inputs.normalWorld;
         const float eyeSide = dot(toEye, n0);
@@ -625,7 +663,8 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
             // And what the clouds between this point and the light stopped,
             // tinted and faded as the light's ShadowAPI says.
             const float3 cloudThrough = shadowTint(
-                light, cloudTransmittance(inputs.positionWorld, choice.index, (light.flags & kLightShadow) != 0),
+                light,
+                cloudTransmittance(inputs.positionWorld, cloudDx, cloudDy, choice.index, (light.flags & kLightShadow) != 0),
                 ls.distance);
             const float3 arrived = cloudThrough * weight * f * ls.radiance / (ls.pdf * choice.probability);
             sum += arrived;
@@ -665,7 +704,7 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
                 if (shadow && occludedSample(at, k * samples + i)) {
                     continue;
                 }
-                sum += shadowTint(light, cloudTransmittance(inputs.positionWorld, k, shadow), ls.distance) * weight *
+                sum += shadowTint(light, cloudTransmittance(inputs.positionWorld, cloudDx, cloudDy, k, shadow), ls.distance) * weight *
                        f * ls.radiance / ls.pdf;
             }
             radiance += sum / float(samples);
@@ -878,6 +917,7 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
         }
         if (clouds) {
             cursor["cloudShadow"].setBinding(frame.cloudShadow);
+            cursor["cloudShadowChain"].setBinding(frame.cloudShadowChain);
         }
         cursor["visibility"].setBinding((*ids).get());
         cursor["colour"].setBinding(out.colour.rhi());

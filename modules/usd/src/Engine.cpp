@@ -2885,6 +2885,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frame.splatShadows = meshSplatShadows;
         frame.cloudShadow =
             cloudShadowMap_.has_value() && cloudShadowMap_->valid() ? cloudShadowMap_->textureView() : nullptr;
+        frame.cloudShadowChain =
+            cloudShadowMap_.has_value() && cloudShadowMap_->valid() ? cloudShadowMap_->chainView() : nullptr;
         if (pathTracing) {
             if (!pathTracer_.has_value()) {
                 auto made = technique::PathTracer::create(*library_);

@@ -88,6 +88,11 @@ struct ShadowBufferSource : IShadowMapSource {
                : which == 0            ? float(raw) / kShadowFixedScale
                                        : float(int(raw)) / kShadowFixedScale;
     }
+    // The buffer has no chain: a receiver read from it is a point.
+    static uint levels(ShadowMapFrame f) { return 1u; }
+    static float transmittanceAt(ShadowMapFrame f, uint light, uint level, int x, int y) {
+        return exp(-max(texel(f, light, x, y, 0), 0.0));
+    }
 };
 
 float3 toWorld(float3 p) {
@@ -410,6 +415,14 @@ void shadowMapProbe(uint3 tid: SV_DispatchThreadID) {
 // slot, and of those there are plenty.
 
 public RWTexture2DArray<float> shadowOut;
+/// THE TRANSMITTANCE CHAIN: exp(-total) a layer a light, and its mips. A
+/// floor far from the map covers several texels a pixel, and what it should
+/// read is the mean of the transmittances under it -- not exp of the mean
+/// optical depth, which is darker, and not one texel, which aliases. Level
+/// zero is written with the rest of the texture; each level after it is the
+/// mean of four of the one before (`shadowMapChain`).
+public RWTexture2DArray<float> shadowChainOut;
+public RWTexture2DArray<float> shadowChainSource;
 
 /// Layer zero, sixteen words a row: light k's frame, word by word, as floats.
 [shader("compute")]
@@ -450,6 +463,30 @@ void shadowMapResolve(uint3 tid: SV_DispatchThreadID) {
                         : which == 0          ? float(shadowMap[word]) / kShadowFixedScale
                                               : float(int(shadowMap[word])) / kShadowFixedScale;
     shadowOut[uint3(tid.x, tid.y, shadowLayerOf(light, coefficients, which))] = value;
+    if (which == 0) {
+        shadowChainOut[uint3(tid.x, tid.y, light)] = exp(-max(value, 0.0));
+    }
+}
+
+/// One level of the chain from the one before: the mean of the four texels
+/// it covers, clamped where a level of odd size has no fourth. `level` is the
+/// one written; the source is bound as its own view.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void shadowMapChain(uint3 tid: SV_DispatchThreadID) {
+    const uint level = shadowParams.level;
+    const uint size = max(shadowParams.resolution >> level, 1u);
+    const uint below = max(shadowParams.resolution >> (level - 1), 1u);
+    if (tid.x >= size || tid.y >= size || tid.z >= shadowParams.lightCount) {
+        return;
+    }
+    const uint x0 = min(tid.x * 2, below - 1);
+    const uint y0 = min(tid.y * 2, below - 1);
+    const uint x1 = min(tid.x * 2 + 1, below - 1);
+    const uint y1 = min(tid.y * 2 + 1, below - 1);
+    const float sum = shadowChainSource[uint3(x0, y0, tid.z)] + shadowChainSource[uint3(x1, y0, tid.z)] +
+                      shadowChainSource[uint3(x0, y1, tid.z)] + shadowChainSource[uint3(x1, y1, tid.z)];
+    shadowChainOut[uint3(tid.x, tid.y, tid.z)] = 0.25 * sum;
 }
 
 // --- the other receiver: the gaussians themselves ------------------------

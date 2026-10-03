@@ -43,6 +43,7 @@ Result<SplatShadowMap> SplatShadowMap::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(map.probe_, "shadowMapProbe"));
     ATHENEA_TRY(make(map.header_, "shadowMapHeader"));
     ATHENEA_TRY(make(map.resolve_, "shadowMapResolve"));
+    ATHENEA_TRY(make(map.chainLevel_, "shadowMapChain"));
     ATHENEA_TRY(make(map.factors_, "shadowMapFactors"));
     ATHENEA_TRY(make(map.clear_factors_, "shadowFactorsClear"));
     return map;
@@ -90,6 +91,31 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         auto made_view = texture_.view(0);
         if (!made_view) return std::move(made_view).error();
         view_ = std::move(*made_view);
+    }
+    // The transmittance chain: a layer a light, every level down to one
+    // texel, written as level zero is and then averaged a level at a time.
+    if (!chain_.valid() || chain_.width() != resolution || chain_.desc().arrayLength != lights) {
+        gpu::TextureDesc desc;
+        desc.type = rhi::TextureType::Texture2DArray;
+        desc.width = resolution;
+        desc.height = resolution;
+        desc.arrayLength = lights;
+        desc.mipCount = 0;   // the whole chain
+        desc.format = rhi::Format::R32Float;
+        desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+        desc.label = "splat.shadowMap.chain";
+        auto made = gpu::Texture::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        chain_ = std::move(*made);
+        auto all = chain_.view(0, chain_.mipCount());
+        if (!all) return std::move(all).error();
+        chainView_ = std::move(*all);
+        chainLevels_.clear();
+        for (uint32_t level = 0; level < chain_.mipCount(); ++level) {
+            auto one = chain_.view(level);
+            if (!one) return std::move(one).error();
+            chainLevels_.push_back(std::move(*one));
+        }
     }
     resolution_ = resolution;
     coefficients_ = coefficients;
@@ -168,7 +194,17 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         setCommon(cursor, 0);
         setCaster(cursor, job.casters.front());
         cursor["shadowOut"].setBinding(view_.get());
+        cursor["shadowChainOut"].setBinding(chainLevels_.front().get());
     });
+    for (uint32_t level = 1; level < chain_.mipCount(); ++level) {
+        const uint32_t size = chain_.width(level);
+        chainLevel_->dispatch(batch, {size, size, lights}, [&](rhi::ShaderCursor cursor) {
+            setCommon(cursor, 0);
+            cursor["shadowParams"]["level"].setData(level);
+            cursor["shadowChainSource"].setBinding(chainLevels_[level - 1].get());
+            cursor["shadowChainOut"].setBinding(chainLevels_[level].get());
+        });
+    }
     valid_ = true;
     return ok();
 }
