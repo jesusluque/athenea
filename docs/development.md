@@ -965,6 +965,17 @@ What belongs there and not here: a number, a defeat, a rejected alternative, a
 measurement. What belongs here and not there: how the thing works now, and how
 to change it.
 
+### 8.1 Versions
+
+One version, in the top-level `project(athenea VERSION X.Y.Z)` line; the CLI
+takes it from there (`athenea --version`, `athenea info`). A release is a tag
+`vX.Y.Z` on `main`, made only after the whole `ctest` passes with the GPU
+present -- a test that skips for want of a device is not a pass, so the count
+of skipped tests is read before tagging -- with an entry in `CHANGELOG.md`
+naming what it brings and the commits. A minor version is a set of merged
+work; a patch version fixes what a minor one shipped. The tag and `main` are
+pushed to the private repository together.
+
 ## 9. Known debts
 
 - **Windows.** The port has not started. `core/Platform.h` is the file it

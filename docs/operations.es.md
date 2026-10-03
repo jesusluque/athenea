@@ -99,6 +99,10 @@ abajo con su tabla completa.
 
 ### 2.1 `athenea info` — el dispositivo, y qué sabe hacer
 
+Su primera línea es la versión, tal como la imprime `athenea --version`: la del
+proyecto, y la etiqueta `vX.Y.Z` de la que salió el build cuando salió de una
+versión publicada (`CHANGELOG.md`).
+
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `--backend` | `metal` \| `cuda` \| `vulkan` | la preferencia de la plataforma | un backend, no una lista |

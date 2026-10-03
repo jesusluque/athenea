@@ -1003,6 +1003,18 @@ añadirse como uno nuevo.
 Qué va ahí y no aquí: un número, una derrota, una alternativa rechazada, una
 medida. Qué va aquí y no ahí: cómo funciona la cosa ahora, y cómo se cambia.
 
+### 8.1 Versiones
+
+Una sola versión, en la línea `project(athenea VERSION X.Y.Z)` del CMakeLists
+principal; el CLI la toma de ahí (`athenea --version`, `athenea info`). Una
+versión publicada es una etiqueta `vX.Y.Z` en `main`, hecha solo después de que
+el `ctest` entero pase con la GPU presente -- un test que se salta por no tener
+dispositivo no es un aprobado, así que antes de etiquetar se lee el número de
+tests saltados -- y con una entrada en `CHANGELOG.md` que nombra lo que trae y
+sus commits. Una versión menor es un conjunto de trabajo unido; una de parche
+arregla lo que publicó una menor. La etiqueta y `main` se suben juntas al
+repositorio privado.
+
 ## 9. Deudas conocidas
 
 - **Windows.** El port no ha empezado. `core/Platform.h` es el fichero por el

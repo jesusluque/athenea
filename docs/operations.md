@@ -99,6 +99,10 @@ below with its full option table.
 
 ### 2.1 `athenea info` — the device, and what it can do
 
+Its first line is the version, as `athenea --version` prints it: the project's
+own, and the tag `vX.Y.Z` the build came from when it came from a release
+(`CHANGELOG.md`).
+
 | Option | Value | Default | Notes |
 |---|---|---|---|
 | `--backend` | `metal` \| `cuda` \| `vulkan` | the platform's preference | one backend, not a list |
