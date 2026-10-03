@@ -8971,3 +8971,40 @@ Test: `athenea_usd_tests "a glass ball bends at its far face*"` -- a smooth
 glass ball under a four-colour checker sky, single-sided against
 double-sided and one bounce against four, all one picture. Before: relMSE 3.6
 and 0.18.
+
+### What a glass cloud's far face lets out
+
+Held to the mesh bent twice, the cloud's head was the right picture a fifth
+too bright in blue and a few per cent in red and green (head means 0.322
+0.348 0.299 against 0.301 0.326 0.258). It bent at both faces and weighed
+only the first: what the near face does not reflect, tinted once by the
+colour mesh2splat folds the transmission colour into. The mesh's dielectric
+lobe reflects its Fresnel share at the far face too, and tints what crosses
+it again -- a ball's yellow is the tint squared.
+
+`SplatSurface::exitThrough` carries both now, from `rt_shade` where the far
+face is found: `1 - F` at the exit (glass to air, at the angle the ray meets
+it) times the colour once more, as much as the gaussian transmits. Past the
+critical angle nothing leaves, the turned ray is all the cloud has, and it
+keeps its whole weight. Where no far face is found -- the rasteriser, the
+hardware route -- it is one.
+
+| pawn head, against the mesh bent twice | relMSE | p99 | means |
+|---|---|---|---|
+| one face weighed (before) | 0.134 | 2.59 | 0.322 0.348 0.299 |
+| and the far face's Fresnel | 0.100 | 2.38 | 0.307 0.332 0.286 |
+| and the tint again | 0.081 | 2.00 | 0.307 0.332 0.261 |
+| the mesh | | | 0.301 0.326 0.258 |
+
+The whole frame: relMSE 0.0087 to 0.0069, p99 0.648 to 0.595.
+
+The tint taken again is the colour, which is the base colour times the
+transmission colour: exact for the pawn (base colour one), and a base colour
+too many for a glass whose base colour is not white. A `standard_surface`'s
+base colour does not tint its transmission at all; a cloud keeps one colour a
+gaussian and cannot say which part of it is which.
+
+Test: `athenea_usd_tests "a glass cloud lets out*"` -- a ball of 60 000
+gaussians at the conversion's glass opacity, tint (1, 1, 0.5), under a sky of
+one colour, against the mesh ball: green and blue through the middle 0.98 and
+0.51 before against the mesh's 0.92 and 0.26, within 3.3 % now.

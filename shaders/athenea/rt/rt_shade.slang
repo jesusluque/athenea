@@ -21,6 +21,7 @@ import athenea.splat.splat_relight;
 import rt_glass;
 import athenea.common.color;
 import athenea.common.splat_override;
+import athenea.material.microfacet;
 import rt_common;
 
 StructuredBuffer<float4>   positions;
@@ -113,6 +114,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         surface.ior = params.ior;
         surface.hasExit = false;
         surface.exitDirection = float3(0.0, 0.0, 1.0);
+        surface.exitThrough = float3(1.0);
         surface.backFacing = splatFacing(rotation, scale, p.xyz, eye) < 0.0;
         surface.hasBehind = false;
         surface.behindColour = float3(0.0);
@@ -180,10 +182,26 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
                     // glass: the far face's own normal points the other way.
                     const float3 back = -exit.normal;
                     const float3 outside = refract(d1, back, params.ior);
-                    const float3 d2 =
-                        dot(outside, outside) > 1.0e-8 ? normalize(outside) : reflect(d1, back);
+                    const bool leaves = dot(outside, outside) > 1.0e-8;
+                    const float3 d2 = leaves ? normalize(outside) : reflect(d1, back);
                     surface.hasExit = true;
                     surface.exitDirection = normalize(relightDirectionToWorld(w0, w1, w2, d2));
+                    // WHAT THE FAR FACE KEEPS. Coming out is a second
+                    // interface: it reflects its Fresnel share back into the
+                    // glass, and the material tints what crosses it a second
+                    // time -- the mesh's dielectric lobe tints at every
+                    // crossing, so a ball's yellow is the tint squared. The
+                    // colour carries the tint once (mesh2splat folds the
+                    // transmission colour into it), and that once is what is
+                    // taken again here. Past the critical angle nothing
+                    // leaves and the turned ray is all there is; it keeps
+                    // what it had. Measured on the pawn's head against the
+                    // mesh path traced with its far face: relMSE 0.134 to
+                    // 0.100 with the Fresnel, to 0.081 with the tint too.
+                    const float reflectedBack =
+                        leaves ? fresnelDielectric(saturate(dot(d1, exit.normal)), 1.0 / params.ior) : 0.0;
+                    surface.exitThrough = (1.0 - reflectedBack) *
+                                          lerp(float3(1.0), saturate(surface.albedo), surface.transmission);
                     // WHAT STANDS BEHIND THE GLASS, when the pass before this
                     // one has already shaded it. A ball shows the room, and
                     // this cloud's room is its own particles: the collar under

@@ -107,6 +107,11 @@ public struct SplatSurface {
     /// below is what is left for a route that cannot.
     public bool   hasExit;
     public float3 exitDirection;
+    /// WHAT THE FAR FACE LETS OUT, where a ray found one: what is not
+    /// reflected back into the glass there, and the material's tint a second
+    /// time, since a ray through a solid crosses two interfaces and the mesh
+    /// tints at each. One where nothing was found.
+    public float3 exitThrough;
     /// WHAT THE MIRROR DIRECTION ACTUALLY MEETS, where a ray went and looked.
     ///
     /// The polish reads the prepared sky along the mirror direction, which is
@@ -443,7 +448,8 @@ float3 transmittedBehind(SplatSurface s, float3 wo, uint dome, StructuredBuffer<
                : (s.hasExit ? envRadiance(envTexels, dome, s.exitDirection, s.roughness, envBaseSide)
                             : (s.ior > 1.0
                                    ? envRadiance(envTexels, dome, bentThrough(s, wo), s.roughness, envBaseSide)
-                                   : envIrradiance(envSh, dome, -s.normal) * (1.0 / 3.14159265358979)));
+                                   : envIrradiance(envSh, dome, -s.normal) * (1.0 / 3.14159265358979))) *
+           s.exitThrough;
 }
 
 /// How much of it passes: what the polish does not reflect, and nothing on
