@@ -49,6 +49,16 @@ static const uint kBase = 65536;
 // `sh` holds planes: one array a basis function after DC, rgb a splat
 // (Blender's `radiance:sh_N`), `planeLength` splats each, back to back.
 static const uint kShPlanes = 131072;
+// The layers over the base, one array each (GpuSplats::lobes): one value a
+// splat, three for a colour.
+static const uint kSpecularWeight = 1u << 18;
+static const uint kSpecularColour = 1u << 19;
+static const uint kSpecularIor = 1u << 20;
+static const uint kCoatWeight = 1u << 21;
+static const uint kCoatRoughness = 1u << 22;
+static const uint kCoatIor = 1u << 23;
+static const uint kSheenColour = 1u << 24;
+static const uint kSheenRoughness = 1u << 25;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -74,6 +84,8 @@ struct StreamParams {
     uint normalBase;
     // Where the three floats of an emitted radiance go, or kNoPbr.
     uint emissionBase;
+    // Where the twelve floats of the layers over the base go, or kNoPbr.
+    uint lobesBase;
     // kShPlanes: the splats a plane holds (the whole cloud's, not the slice's).
     uint planeLength;
 };
@@ -97,6 +109,14 @@ StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a t
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
 StructuredBuffer<uint>     emission;         // rgb a splat, the radiance it gives off
 StructuredBuffer<uint>     radianceBase;     // DC rgb, opacity: four a splat (kBase)
+StructuredBuffer<uint>     specularWeight;   // the layers over the base, one array each
+StructuredBuffer<uint>     specularColour;   // rgb a splat
+StructuredBuffer<uint>     specularIor;
+StructuredBuffer<uint>     coatWeight;
+StructuredBuffer<uint>     coatRoughness;
+StructuredBuffer<uint>     coatIor;
+StructuredBuffer<uint>     sheenColour;      // rgb a splat
+StructuredBuffer<uint>     sheenRoughness;
 RWStructuredBuffer<float>  records;
 ConstantBuffer<StreamParams> params;
 
@@ -180,6 +200,24 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
             records[r + params.emissionBase + k] =
                 present(kEmission) ? streamValue(emission, isHalf(kEmission), e * 3 + k) : 0.0;
         }
+    }
+    // The layers over the base, in packing's record order; an array the stage
+    // does not carry is its default (`plainLobes`).
+    if (params.lobesBase != kNoPbr) {
+        const uint b = r + params.lobesBase;
+        records[b] = present(kSpecularWeight) ? streamValue(specularWeight, isHalf(kSpecularWeight), e) : 1.0;
+        for (uint k = 0; k < 3; ++k) {
+            records[b + 1 + k] =
+                present(kSpecularColour) ? streamValue(specularColour, isHalf(kSpecularColour), e * 3 + k) : 1.0;
+            records[b + 8 + k] =
+                present(kSheenColour) ? streamValue(sheenColour, isHalf(kSheenColour), e * 3 + k) : 0.0;
+        }
+        records[b + 4] = present(kSpecularIor) ? streamValue(specularIor, isHalf(kSpecularIor), e) : 1.5;
+        records[b + 5] = present(kCoatWeight) ? streamValue(coatWeight, isHalf(kCoatWeight), e) : 0.0;
+        records[b + 6] = present(kCoatRoughness) ? streamValue(coatRoughness, isHalf(kCoatRoughness), e) : 0.0;
+        records[b + 7] = present(kCoatIor) ? streamValue(coatIor, isHalf(kCoatIor), e) : 1.5;
+        records[b + 11] =
+            present(kSheenRoughness) ? streamValue(sheenRoughness, isHalf(kSheenRoughness), e) : 0.0;
     }
     // How much of an environment reaches this gaussian: the direct half
     // first, then the indirect one. A cloud that carries neither writes

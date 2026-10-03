@@ -27,6 +27,17 @@
 // the surface lobes use, driven by a metallic and a roughness the splat
 // carries where its cloud was converted from a mesh.
 //
+// WHAT A MATERIAL LAYERS OVER ITS BASE (`SplatSurface::lobes`, proposal 026).
+// Where the conversion read them, a gaussian also carries what OpenPBR,
+// standard_surface and UsdPreviewSurface put over the base: a weight, colour
+// and index for the dielectric reflection, a clear coat, and a sheen. None of
+// it is a new lobe -- the coat is the same GGX dielectric the polish is, at
+// its own roughness and index, and the sheen is the lobe library's Imageworks
+// sheen -- and each is layered the way MaterialX's `layer` node layers: what
+// lies on top takes from what reaches the layer below it the share it
+// reflects at the eye (`SplatLayers`). A gaussian that carries none of it
+// reflects with `plainLobes()`, which is this module as it was before.
+//
 // One sample at the middle of each light, no second sample, and a shadow only
 // where the caller measured one beforehand. That is what a splat gets: it has
 // no BSDF to importance sample and no ray of its own in the rasteriser.
@@ -149,35 +160,105 @@ public struct SplatSurface {
     /// `lit` -- a radiance bake met the emission at its first vertex and
     /// holds it already, and adding it again would be it twice.
     public float3 emission;
+    /// WHAT THE MATERIAL LAYERED OVER ITS BASE: the specular's weight,
+    /// colour and index, the coat, the sheen (packing.slang's `SplatLobes`).
+    /// `plainLobes()` where the cloud carries none (`splatLobesOf`).
+    public SplatLobes lobes;
 };
 
-/// GGX, as the surface lobes write it: D, Smith's height-correlated V, and
-/// Schlick's F folded into one weight for a light in direction `wi`.
-float3 specularLobe(SplatSurface s, float3 wo, float3 wi) {
+/// A gaussian's layers, or the plain ones where its cloud carries none.
+public SplatLobes splatLobesOf(bool has, StructuredBuffer<uint> lobes, uint i) {
+    return has ? unpackLobes(uint3(lobes[i * 3], lobes[i * 3 + 1], lobes[i * 3 + 2])) : plainLobes();
+}
+
+/// A dielectric's reflectivity head on, at an index: 0.04 at 1.5 exactly,
+/// which is the number every cloud before an index was reflected with.
+float dielectricF0(float ior) {
+    return abs(ior - 1.5) < 1.0e-6 ? 0.04 : iorToF0(max(ior, 1.0));
+}
+
+/// What tints the dielectric reflection: the specular's weight times its
+/// colour, one for a gaussian that carries neither.
+float3 specularTint(SplatSurface s) {
+    return s.lobes.specularWeight * s.lobes.specularColour;
+}
+
+/// GGX's D times Smith's height-correlated V for a light in `wi`, at
+/// `roughness`: the shape every reflection here shares, the coat's as much
+/// as the polish's. Zero below the surface.
+float ggxShape(float3 n, float3 wo, float3 wi, float roughness) {
     const float3 h = normalize(wo + wi);
-    const float nDotV = max(dot(s.normal, wo), 1.0e-4);
-    const float nDotL = max(dot(s.normal, wi), 0.0);
-    const float nDotH = max(dot(s.normal, h), 0.0);
-    const float vDotH = max(dot(wo, h), 0.0);
+    const float nDotV = max(dot(n, wo), 1.0e-4);
+    const float nDotL = max(dot(n, wi), 0.0);
+    const float nDotH = max(dot(n, h), 0.0);
     if (nDotL <= 0.0) {
-        return float3(0.0);
+        return 0.0;
     }
     // A perfectly smooth splat would be a mirror the size of a texel, which
     // at one sample a light is a spike nothing resolves; the floor is the
     // same one an interactive frame puts on a surface.
-    const float alpha = max(s.roughness * s.roughness, 1.0e-3);
+    const float alpha = max(roughness * roughness, 1.0e-3);
     const float a2 = alpha * alpha;
     const float d = nDotH * nDotH * (a2 - 1.0) + 1.0;
     const float distribution = a2 / max(3.14159265358979 * d * d, 1.0e-9);
     const float lambdaV = nDotL * sqrt(nDotV * nDotV * (1.0 - a2) + a2);
     const float lambdaL = nDotV * sqrt(nDotL * nDotL * (1.0 - a2) + a2);
-    const float visibility = 0.5 / max(lambdaV + lambdaL, 1.0e-9);
-    // A dielectric reflects 4% head on; a metal reflects its own colour --
-    // except where the metal is already baked, and then there is nothing of
-    // it left to add.
-    const float3 f0 = s.lit ? float3(0.04 * (1.0 - s.metallic)) : lerp(float3(0.04), s.albedo, s.metallic);
-    const float3 fresnel = f0 + (float3(1.0) - f0) * pow(1.0 - vDotH, 5.0);
-    return distribution * visibility * fresnel;
+    return distribution * 0.5 / max(lambdaV + lambdaL, 1.0e-9);
+}
+
+/// GGX, as the surface lobes write it: D, Smith's height-correlated V, and
+/// Schlick's F folded into one weight for a light in direction `wi`.
+public float3 specularLobe(SplatSurface s, float3 wo, float3 wi) {
+    const float shape = ggxShape(s.normal, wo, wi, s.roughness);
+    if (shape <= 0.0) {
+        return float3(0.0);
+    }
+    const float vDotH = max(dot(wo, normalize(wo + wi)), 0.0);
+    const float p5 = pow(1.0 - vDotH, 5.0);
+    // A dielectric reflects 4% head on (at 1.5), tinted by the specular's
+    // weight and colour; a metal reflects its own colour, turning to the
+    // specular colour at grazing -- except where the metal is already baked,
+    // and then there is nothing of it left to add. With the plain lobes both
+    // are what they were: `f0 + (1 - f0) (1 - v.h)^5`.
+    const float3 tint = specularTint(s);
+    const float f0d = dielectricF0(s.lobes.specularIor);
+    float3 fresnel;
+    if (s.lit) {
+        const float3 f0 = f0d * tint * (1.0 - s.metallic);
+        fresnel = f0 + (tint - f0) * p5;
+    } else {
+        const float3 dielectric = f0d * tint + (tint - f0d * tint) * p5;
+        const float3 metal = s.albedo + (s.lobes.specularColour - s.albedo) * p5;
+        fresnel = lerp(dielectric, metal, s.metallic);
+    }
+    return shape * fresnel;
+}
+
+/// The coat's reflection of a light in `wi`: the same GGX at the coat's
+/// roughness, with a dielectric's Schlick at the coat's index, by its weight.
+float3 coatLobe(SplatSurface s, float3 wo, float3 wi) {
+    if (s.lobes.coatWeight <= 0.0) {
+        return float3(0.0);
+    }
+    const float shape = ggxShape(s.normal, wo, wi, s.lobes.coatRoughness);
+    const float vDotH = max(dot(wo, normalize(wo + wi)), 0.0);
+    const float f0 = dielectricF0(s.lobes.coatIor);
+    return float3(s.lobes.coatWeight * shape * (f0 + (1.0 - f0) * pow(1.0 - vDotH, 5.0)));
+}
+
+/// The sheen's reflection of a light in `wi`, Imageworks' (Conty and
+/// Kulla's) as the lobe library has it: its colour times the BRDF.
+float3 sheenLobe(SplatSurface s, float3 wo, float3 wi) {
+    if (all(s.lobes.sheenColour <= float3(0.0))) {
+        return float3(0.0);
+    }
+    const float nDotL = dot(s.normal, wi);
+    if (nDotL <= 0.0) {
+        return float3(0.0);
+    }
+    const float nDotV = max(dot(s.normal, wo), 1.0e-4);
+    const float nDotH = max(dot(s.normal, normalize(wo + wi)), 0.0);
+    return s.lobes.sheenColour * imageworksSheen(nDotL, nDotV, nDotH, max(s.lobes.sheenRoughness, 0.01));
 }
 
 /// What a lobe of this roughness reflects of everything around it, as
@@ -206,13 +287,22 @@ float3 specularLobe(SplatSurface s, float3 wo, float3 wi) {
 /// gaussian is darker than the rough mesh beside it by everything the second
 /// bounce carries, which at alpha 0.5 is a tenth and climbing.
 public float3 ggxEnvDielectric(float roughness, float nDotV) {
+    return ggxEnvDielectricAt(roughness, nDotV, 1.5);
+}
+
+/// The same at an index of its own: a specular's `specular_ior`, a coat's.
+public float3 ggxEnvDielectricAt(float roughness, float nDotV, float ior) {
     const float alpha = max(roughness * roughness, 1.0e-4);
-    const float3 F = float3(fresnelDielectric(nDotV, 1.5));
-    return ggxDirectionalAlbedo(nDotV, alpha, float3(0.04), float3(1.0)) *
+    const float3 F = float3(fresnelDielectric(nDotV, max(ior, 1.0)));
+    return ggxDirectionalAlbedo(nDotV, alpha, float3(dielectricF0(ior)), float3(1.0)) *
            ggxEnergyCompensation(nDotV, alpha, F);
 }
 
 float3 ggxEnvConductor(float3 albedo, float roughness, float nDotV) {
+    return ggxEnvConductorEdged(albedo, float3(1.0), roughness, nDotV);
+}
+
+float3 ggxEnvConductorEdged(float3 albedo, float3 edge, float roughness, float nDotV) {
     const float alpha = max(roughness * roughness, 1.0e-4);
     // A conductor's Fresnel stands for both ends of the fit, and it is taken
     // the way the surface takes it: MaterialX's artistic index out of the
@@ -226,7 +316,7 @@ float3 ggxEnvConductor(float3 albedo, float roughness, float nDotV) {
     // in blue against the mesh beside it.
     float3 index;
     float3 extinction;
-    mxArtisticIor(saturate(albedo), float3(1.0), index, extinction);
+    mxArtisticIor(saturate(albedo), saturate(edge), index, extinction);
     const float3 F = fresnelConductor(nDotV, index, extinction);
     return ggxDirectionalAlbedo(nDotV, alpha, F, F) * ggxEnergyCompensation(nDotV, alpha, F);
 }
@@ -235,6 +325,47 @@ float3 ggxEnvConductor(float3 albedo, float roughness, float nDotV) {
 public float3 environmentBrdf(float3 albedo, float metallic, float roughness, float nDotV) {
     return lerp(ggxEnvDielectric(roughness, nDotV), ggxEnvConductor(albedo, roughness, nDotV),
                 saturate(metallic));
+}
+
+/// The two with a gaussian's own layers: the dielectric at the specular's
+/// index and tinted by its weight and colour, the metal turning to the
+/// specular colour at grazing (standard_surface's `specular_color` on a
+/// metal). The plain lobes make it `environmentBrdf`.
+public float3 environmentBrdfOf(SplatSurface s, float nDotV) {
+    return lerp(ggxEnvDielectricAt(s.roughness, nDotV, s.lobes.specularIor) * specularTint(s),
+                ggxEnvConductorEdged(s.albedo, s.lobes.specularColour, s.roughness, nDotV), saturate(s.metallic));
+}
+
+/// WHAT THE LAYERS OVER THE BASE TAKE AND GIVE AT THE EYE.
+///
+/// MaterialX's `layer` weighs the base by the top's throughput at the view
+/// direction, `1 - weight x directional albedo`, and the bake's lobe stack
+/// does the same (material_runtime.slang): so a coat of weight one at 1.5
+/// takes 4% from everything under it head on and most of it at grazing, and
+/// gives it back as its own reflection. The coat is over the sheen and the
+/// sheen over the base, as OpenPBR stacks them. The sheen's weight is its
+/// colour's largest channel -- exact for the white sheen every surface
+/// defaults to -- since a gaussian carries the two multiplied.
+public struct SplatLayers {
+    public float3 coat;       ///< the coat's directional albedo, times its weight
+    public float3 sheen;      ///< the sheen's, times its colour
+    public float3 under;      ///< what reaches the base: through the coat and the sheen
+    public float3 belowCoat;  ///< what reaches the sheen: through the coat
+};
+
+public SplatLayers splatLayers(SplatSurface s, float nDotV) {
+    SplatLayers l;
+    l.coat = s.lobes.coatWeight > 0.0
+                 ? s.lobes.coatWeight * ggxEnvDielectricAt(s.lobes.coatRoughness, nDotV, s.lobes.coatIor)
+                 : float3(0.0);
+    const float sheenAlbedo = any(s.lobes.sheenColour > float3(0.0))
+                                  ? imageworksSheenDirectionalAlbedo(nDotV, max(s.lobes.sheenRoughness, 0.01))
+                                  : 0.0;
+    l.sheen = s.lobes.sheenColour * sheenAlbedo;
+    const float sheenWeight = max(max(s.lobes.sheenColour.x, s.lobes.sheenColour.y), s.lobes.sheenColour.z);
+    l.belowCoat = saturate(float3(1.0) - l.coat);
+    l.under = l.belowCoat * saturate(1.0 - sheenWeight * sheenAlbedo);
+    return l;
 }
 
 /// A dome, answered whole rather than sampled.
@@ -412,8 +543,8 @@ public float specularOpenness(float nDotV, float openness, float roughness) {
 /// keeps a conductor's reflection in the body it fits -- what is left is the
 /// dielectric polish, and only as much of it as the surface is not metal.
 public float3 splatPolish(SplatSurface s, float nDotV) {
-    return s.lit ? ggxEnvDielectric(s.roughness, nDotV) * (1.0 - s.metallic)
-                 : environmentBrdf(s.albedo, s.metallic, s.roughness, nDotV);
+    return s.lit ? ggxEnvDielectricAt(s.roughness, nDotV, s.lobes.specularIor) * specularTint(s) * (1.0 - s.metallic)
+                 : environmentBrdfOf(s, nDotV);
 }
 
 /// What a thin wall's reflection is scaled by: the sheet reflects `2/(1+R0)`
@@ -480,8 +611,10 @@ float3 transmittedBehind(SplatSurface s, float3 wo, uint dome, StructuredBuffer<
 /// How much of it passes: what the polish does not reflect, and nothing on
 /// the far face of a solid, whose share the near face already sent on.
 float3 transmittedShare(SplatSurface s, float nDotV) {
-    return s.backFacing && s.ior > 1.0 ? float3(0.0)
-                                       : saturate(float3(1.0) - ggxEnvDielectric(s.roughness, nDotV));
+    return s.backFacing && s.ior > 1.0
+               ? float3(0.0)
+               : saturate(float3(1.0) - ggxEnvDielectricAt(s.roughness, nDotV, s.lobes.specularIor) *
+                                            s.lobes.specularWeight);
 }
 
 float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
@@ -490,6 +623,12 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
     const float nDotV = max(dot(s.normal, wo), 1.0e-4);
     const float3 mirror = reflect(-wo, s.normal);
     const float3 body = s.lit ? float3(0.0) : s.albedo * (1.0 - s.metallic);
+    // The layers over the base: what they take from what reaches it, and
+    // what they give back. A baked body was baked under them already (the
+    // bake's stack weighs its body by the same throughput), so it is the
+    // polish and the albedo alone that pass through them here.
+    const SplatLayers layers = splatLayers(s, nDotV);
+    const bool coated = s.lobes.coatWeight > 0.0;
     // A dome is on both sides of a splat at once, so the translucent half
     // sees exactly what the facing half sees and the two sum to the whole
     // body: a glass ball under a sky is its own colour, not a dark shell.
@@ -528,7 +667,7 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
         // The far face of a solid transmits nothing of its own: its share of
         // the light is what the near face already sent on.
         const float3 passes = transmittedShare(s, nDotV);
-        const float3 body2 = s.albedo * (1.0 - s.metallic) *
+        const float3 body2 = layers.under * s.albedo * (1.0 - s.metallic) *
                              ((1.0 - s.transmission) * front + transmittedWeight(s) * passes * behind);
         // What the reflection sees: the cloud itself where a ray found it,
         // and the sky narrowed by how much of it this gaussian can see where
@@ -552,8 +691,30 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
         const float3 shadowedSun = s.hasReflection
                                        ? float3(0.0)
                                        : specularLobe(s, wo, disc.xyz) * irradiance * (cosine * (1.0 - sunShare));
-        return body2 + thinWallGain(s) *
-                           max(splatPolish(s, nDotV) * narrowed * seen - narrowed * shadowedSun, float3(0.0));
+        // THE COAT: the same reflection at its own roughness and index, over
+        // everything, narrowed by what this gaussian sees of the sky at that
+        // roughness, and with its own share of a shadowed sun taken back out.
+        float3 coat = float3(0.0);
+        if (coated) {
+            const float3 coatSeen = s.hasReflection
+                                        ? s.reflectionColour
+                                        : envRadiance(envTexels, dome, mirror, s.lobes.coatRoughness, envBaseSide);
+            const float coatNarrowed =
+                s.reflectionTraced ? 1.0
+                                   : specularOpenness(nDotV, splatOpenness(s, transfer), s.lobes.coatRoughness);
+            const float3 coatSun = s.hasReflection
+                                       ? float3(0.0)
+                                       : coatLobe(s, wo, disc.xyz) * irradiance * (cosine * (1.0 - sunShare));
+            coat = max(layers.coat * coatNarrowed * coatSeen - coatNarrowed * coatSun, float3(0.0));
+        }
+        // THE SHEEN: a lobe as broad as a body's, so it is answered as one --
+        // its albedo at this eye times the light the transfer says reaches
+        // the gaussian, shadow and sun included -- under the coat.
+        const float3 sheen = layers.belowCoat * layers.sheen * front;
+        return body2 +
+               layers.under * thinWallGain(s) *
+                   max(splatPolish(s, nDotV) * narrowed * seen - narrowed * shadowedSun, float3(0.0)) +
+               coat + sheen;
     }
     float3 above, behind, reflected;
     if (dome == kEnvNone) {
@@ -584,8 +745,19 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
     if (dome != kEnvNone && (s.hasBehind || s.hasExit || s.ior > 1.0)) {
         behind = transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide) * transmittedShare(s, nDotV);
     }
-    return body * ((1.0 - s.transmission) * above + transmittedWeight(s) * behind) +
-           thinWallGain(s) * splatPolish(s, nDotV) * (s.hasReflection ? s.reflectionColour : reflected);
+    // The coat reflects along the same mirror, read at its own roughness.
+    float3 coat = float3(0.0);
+    if (coated) {
+        const float3 coatSeen = s.hasReflection     ? s.reflectionColour
+                                : dome == kEnvNone ? reflected
+                                                   : envRadiance(envTexels, dome, mirror, s.lobes.coatRoughness,
+                                                                 envBaseSide);
+        coat = layers.coat * coatSeen;
+    }
+    return layers.under * body * ((1.0 - s.transmission) * above + transmittedWeight(s) * behind) +
+           layers.under * thinWallGain(s) * splatPolish(s, nDotV) *
+               (s.hasReflection ? s.reflectionColour : reflected) +
+           coat + layers.belowCoat * layers.sheen * above;
 }
 
 /// The light `light` puts on `s`, seen from `wo`, with `through` of it
@@ -613,8 +785,12 @@ public float3 relitByOne(SplatSurface s, float3 wo, LightSample ls, float3 throu
     // or wax rather than as a window.
     const float kWrap = 0.5;
     const float wrapped = saturate((back + kWrap) / (1.0 + kWrap));
-    const float3 diffuse = body * ((1.0 - s.transmission) * front + transmittedWeight(s) * wrapped);
-    const float3 specular = specularLobe(s, wo, ls.wi) * front * thinWallGain(s);
+    // Under the coat and the sheen, which take their share at the eye and
+    // add their own lobes on the lit side.
+    const SplatLayers layers = splatLayers(s, max(dot(s.normal, wo), 1.0e-4));
+    const float3 diffuse = layers.under * body * ((1.0 - s.transmission) * front + transmittedWeight(s) * wrapped);
+    const float3 specular = layers.under * specularLobe(s, wo, ls.wi) * front * thinWallGain(s) +
+                            (coatLobe(s, wo, ls.wi) + layers.belowCoat * sheenLobe(s, wo, ls.wi)) * front;
     return through * (diffuse + specular) * ls.radiance / ls.pdf;
 }
 

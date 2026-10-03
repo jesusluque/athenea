@@ -26,6 +26,9 @@ StructuredBuffer<uint>      normals;
 // The radiance a splat gives off, RGB9E5, where the cloud carries it
 // (`params.hasEmission`).
 StructuredBuffer<uint>      emission;
+// What its material layered over the base, three words a splat, where the
+// cloud carries it (`params.hasLobes`).
+StructuredBuffer<uint>      lobes;
 // Per-prim material overrides, keyed on the id each gaussian carries:
 // `params.overrideCount` of 0 is what says there are none.
 StructuredBuffer<float4>    splatOverrides;
@@ -337,6 +340,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         surface.exitDirection = float3(0.0, 0.0, 1.0);
         surface.lit = params.litBody != 0;
         surface.emission = params.hasEmission != 0 ? unpackRgb9e5(emission[i]) : float3(0.0);
+        surface.lobes = splatLobesOf(params.hasLobes != 0, lobes, i);
         surface.transferCount = params.transferCount;
         surface.transferBase = i * params.transferWords * 2;
         surface.hasShadowBits = params.shadowBits != 0 && params.transferCount >= 9;

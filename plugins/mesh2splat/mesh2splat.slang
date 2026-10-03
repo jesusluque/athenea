@@ -155,6 +155,16 @@ struct M2sParams {
     float ior;               // the sheet's index
     float materialOpacity;   // the material's own coverage, multiplied into `opacity`
     uint  coveragePad;
+
+    // WHAT THE MATERIAL LAYERS OVER ITS BASE, three entries of their own
+    // after everything else: constants of the material.
+    float4 specular;         // colour, weight
+    float4 coat;             // weight, roughness, index, the specular's index
+    float4 sheen;            // colour (times its weight), roughness
+    uint  lobesEntry;        // 0: not written; else the first of the three
+    uint  lobesPad0;
+    uint  lobesPad1;
+    uint  lobesPad2;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -1060,7 +1070,7 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     records[recordAt(slot, 3)] = float4(colour, 0.0);
     // The entries before the relief's three and the emission's one: 4, 6 or 9.
     const uint own = params.recordPixels - (params.displaceRefine != 0 ? 3u : 0u) -
-                     (params.emissionEntry != 0 ? 1u : 0u);
+                     (params.emissionEntry != 0 ? 1u : 0u) - (params.lobesEntry != 0 ? 3u : 0u);
     if (own >= 6) {
         records[recordAt(slot, 4)] = float4(shading, metallic);
         records[recordAt(slot, 5)] = float4(roughness, params.transmission, uv.x, uv.y);
@@ -1091,6 +1101,11 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     }
     if (params.emissionEntry != 0) {
         records[recordAt(slot, params.emissionEntry)] = float4(m2sEmissionAt(t, bary), 0.0);
+    }
+    if (params.lobesEntry != 0) {
+        records[recordAt(slot, params.lobesEntry)] = params.specular;
+        records[recordAt(slot, params.lobesEntry + 1)] = params.coat;
+        records[recordAt(slot, params.lobesEntry + 2)] = params.sheen;
     }
     return true;
 }

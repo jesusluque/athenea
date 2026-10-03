@@ -128,10 +128,11 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
 
 - **The cross-module contract is `common/packing.slang`**: how a splat's
   opacity, scale, quaternion and DC colour are packed into four words, the
-  optional shading normal into one (`packNormal`) and the optional emission
-  into one (`packRgb9e5`). Anything that writes a cloud and anything that
-  reads one goes through it. An optional buffer of `GpuSplats` (`pbr`,
-  `normals`, `emission`) is bound whether or not the cloud has it --
+  optional shading normal into one (`packNormal`), the optional emission
+  into one (`packRgb9e5`) and the optional layers over the base -- specular,
+  coat, sheen -- into three (`packLobes`). Anything that writes a cloud and
+  anything that reads one goes through it. An optional buffer of `GpuSplats`
+  (`pbr`, `normals`, `emission`, `lobes`) is bound whether or not the cloud has it --
   the shape in its place -- and a flag in the parameters says which.
 - **A splat's index is not its record's.** Validation drops what cannot be
   drawn; `GpuSplats::origin` says which record each kept splat came from.
@@ -705,6 +706,26 @@ gaussian carries means the same five places: `StageMaterial` and `materialOf`,
 a clip or a parameter of the effect, the kernel's `m2sWrite` (and `m2sLookAt`,
 so `--simplify` compares it), the record layout in `convert`/`recordFloats`,
 and the encoding field the export and the decode read.
+
+**What the material layers over its base**, where some material of the stage
+layers anything (`StageMaterial::layered`): the specular's weight, colour and
+index, the coat's weight, roughness and index, the sheen's colour and
+roughness, constants of the material, sent to the effect as `writeLobes` and
+eight parameters and written in three entries of their own after everything
+else; the gather puts them in the record's last twelve floats, after the
+harmonics (`io::SplatEncoding::lobes`, packing.slang's `SplatLobes` order).
+On the device they are `GpuSplats::lobes`, three words a splat
+(`packLobes`), and `splat_relight` reads them for both routes
+(`splatLobesOf`): the coat and the specular are the same GGX it already had,
+the sheen the lobe library's Imageworks, each layered by MaterialX's `layer`
+rule (`splatLayers`). The plain lobes (`plainLobes`) are what a cloud without
+them reads, and must reflect bit for bit as before (the lobes check).
+
+**The bake's metalness.** The gather also writes a quarter of each gaussian's
+metalness into the w of its third ray entry (`1 + m/4` raised, `m/4` flat), so
+`w > 0.5` still says raised; `bakeBody` reads it (`bakeMetalness`) and keeps a
+Schlick lobe as the metal it is wherever the material is metal at all and was
+not written with a conductor, whatever its reflectivity.
 
 **Joints and weights**, with `--skinned`: four of each a gaussian, blended
 from the triangle's corners, so the cloud deforms with the skeleton that

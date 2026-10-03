@@ -131,6 +131,33 @@ struct StageMaterial {
     [[nodiscard]] bool emits() const noexcept {
         return emission[0] > 0.0F || emission[1] > 0.0F || emission[2] > 0.0F;
     }
+    /// WHAT IT LAYERS OVER ITS BASE (proposal 026), as constants: the
+    /// dielectric reflection's weight and tint (OpenPBR `specular_weight`
+    /// and `specular_color`, standard_surface `specular` and
+    /// `specular_color`, glTF `specular` and `specular_color`; the tint is
+    /// also a metal's edge colour); a clear coat (`coat_weight` /`coat` /
+    /// `clearcoat`, its roughness and index); and a sheen, its colour times
+    /// its weight. The specular's index is `ior`. A map on any of these is
+    /// not read -- the constant the input would have stands, and the log
+    /// says so. Each surface's own defaults, which is what the mesh is
+    /// rendered with.
+    float                  specularWeight = 1.0F;
+    std::array<float, 3>   specularColour{1.0F, 1.0F, 1.0F};
+    float                  coatWeight = 0.0F;
+    float                  coatRoughness = 0.0F;
+    float                  coatIor = 1.5F;
+    std::array<float, 3>   sheenColour{0.0F, 0.0F, 0.0F};
+    float                  sheenRoughness = 0.3F;
+    /// Whether any of it differs from the plain specular every gaussian has
+    /// without them (weight one, white, an index of 1.5, no coat, no sheen):
+    /// the conversion then writes them (`io::SplatEncoding::lobes`).
+    [[nodiscard]] bool layered() const noexcept {
+        const auto white = [](const std::array<float, 3>& c) {
+            return c[0] == 1.0F && c[1] == 1.0F && c[2] == 1.0F;
+        };
+        return specularWeight != 1.0F || !white(specularColour) || ior != 1.5F || coatWeight > 0.0F ||
+               sheenColour[0] > 0.0F || sheenColour[1] > 0.0F || sheenColour[2] > 0.0F;
+    }
 };
 
 /// WHAT CARRIES A MESH WHEN ITS SKELETON MOVES.

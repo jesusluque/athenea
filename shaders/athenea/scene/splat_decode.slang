@@ -37,6 +37,9 @@ RWStructuredBuffer<uint>     normals;
 // `packRgb9e5`); `params.emission` says whether the file carries it. Always
 // bound.
 RWStructuredBuffer<uint>     emission;
+// The layers over the base, three words a splat (packing's `packLobes`);
+// `params.lobes` says whether the file carries them. Always bound.
+RWStructuredBuffer<uint>     lobes;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -104,6 +107,14 @@ void splatDecode(uint3 tid: SV_DispatchThreadID) {
     if (params.emission != kNoField) {
         emission[j] = packRgb9e5(float3(fieldOf(raw, i, s, params.emission), fieldOf(raw, i, s, params.emission + 1),
                                         fieldOf(raw, i, s, params.emission + 2)));
+    }
+    // WHAT THE MATERIAL LAYERED OVER ITS BASE: a byte a value, packed here
+    // once. An index outside 1 to 3 is clamped into it.
+    if (params.lobes != kNoField) {
+        const uint3 words = packLobes(lobesOfRecord(raw, i, s, params.lobes));
+        lobes[j * 3] = words.x;
+        lobes[j * 3 + 1] = words.y;
+        lobes[j * 3 + 2] = words.z;
     }
     if (params.shadowBits != kNoField) {
         shadowBits[j * 2] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits));

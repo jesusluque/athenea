@@ -786,7 +786,13 @@ public:
         emits_ = std::any_of(pieces_.begin(), pieces_.end(),
                              [](const Piece& piece) { return piece.material->emits(); });
         raw.encoding.emission = emits_ ? 20u : io::SplatEncoding::kNoField;
-        raw.encoding.floatsPerRecord = 23 + raw.encoding.restPerColour * 3;
+        // AND WHAT THE MATERIALS LAYER OVER THEIR BASE -- a car's lacquer, a
+        // specular's tint, a sheen -- where any of the stage's does: twelve
+        // floats more, last, after the harmonics the bake writes.
+        layered_ = std::any_of(pieces_.begin(), pieces_.end(),
+                               [](const Piece& piece) { return piece.material->layered(); });
+        raw.encoding.floatsPerRecord = recordFloats();
+        raw.encoding.lobes = layered_ ? raw.encoding.floatsPerRecord - 12 : io::SplatEncoding::kNoField;
         raw.encoding.opacity_ = io::SplatEncoding::Opacity::Linear;
         raw.encoding.scale_ = io::SplatEncoding::Scale::Linear;
         // LINEAR LIGHT, BAKED OR NOT. Not baked, the colours are a
@@ -913,6 +919,17 @@ public:
                                         (what.emissionMap.empty() ? "" : " x '" + what.emissionMap.file + "'"))
                                            .c_str()
                                      : "");
+            if (what.layered()) {
+                std::printf("mesh2splat: %s layers specular %.2f x (%.2f %.2f %.2f) at %.3f, coat %.2f rough %.2f "
+                            "at %.3f, sheen (%.2f %.2f %.2f) rough %.2f\n",
+                            piece.path.c_str(), static_cast<double>(what.specularWeight),
+                            static_cast<double>(what.specularColour[0]), static_cast<double>(what.specularColour[1]),
+                            static_cast<double>(what.specularColour[2]), static_cast<double>(what.ior),
+                            static_cast<double>(what.coatWeight), static_cast<double>(what.coatRoughness),
+                            static_cast<double>(what.coatIor), static_cast<double>(what.sheenColour[0]),
+                            static_cast<double>(what.sheenColour[1]), static_cast<double>(what.sheenColour[2]),
+                            static_cast<double>(what.sheenRoughness));
+            }
             // A surface whose material says it is not there -- an opacity of
             // nothing, or a constant under its own threshold -- has no
             // gaussian worth writing.
@@ -1092,7 +1109,8 @@ private:
     /// reflects with, the shading normal, the emission, and the harmonics
     /// where a bake writes them.
     [[nodiscard]] uint32_t recordFloats() const {
-        return 23 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3;
+        return 23 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3 +
+               (layered_ ? 12u : 0u);
     }
 
     struct OneMesh {
@@ -1185,7 +1203,9 @@ private:
                 : image::ImagePtr{};
         const uint32_t ownEntries = kRecordEntries;
         // AND ONE FOR WHAT IT GIVES OFF, the last, where the stage emits.
-        const uint32_t recordEntries = kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U);
+        // AND THREE FOR WHAT THE MATERIAL LAYERS OVER ITS BASE, after it.
+        const uint32_t recordEntries =
+            kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U) + (layered_ ? 3U : 0U);
         const image::PixelRect bounds = pictureFor(budget * recordEntries);
 
         // The box the density is measured over: the model's, or this mesh's
@@ -1306,6 +1326,20 @@ private:
                                                        : 0.0);
         }
 
+        if (layered_) {
+            // Every piece writes them once one does, so the records stay one
+            // layout; a material that names none writes the plain ones.
+            number("writeLobes", 1.0);
+            number("specularWeight", static_cast<double>(material.specularWeight));
+            colour("specularColour", material.specularColour);
+            number("specularIor", static_cast<double>(material.ior));
+            number("coatWeight", static_cast<double>(material.coatWeight));
+            number("coatRoughness", static_cast<double>(material.coatRoughness));
+            number("coatIor", static_cast<double>(material.coatIor));
+            colour("sheenColour", material.sheenColour);
+            number("sheenRoughness", static_cast<double>(material.sheenRoughness));
+        }
+
         auto rendered = aofx_host::renderEffect(*context_, effect, job);
         if (!rendered) return std::move(rendered).error();
         const image::Image& out = **rendered;
@@ -1398,6 +1432,7 @@ private:
             cursor["gather"]["carried"].setData(carried ? 1u : 0u);
             cursor["gather"]["overArea"].setData(options_->simplify > 0.0 ? 1u : 0u);
             cursor["gather"]["emits"].setData(emits_ ? 1u : 0u);
+            cursor["gather"]["lobes"].setData(layered_ ? 1u : 0u);
         };
         const uint32_t threads = static_cast<uint32_t>(run.written);
         gather_.dispatch(batch, {threads, 1, 1}, bind);
@@ -1486,6 +1521,10 @@ private:
     /// Whether any material of the stage gives off light: the records then
     /// carry it (`io::SplatEncoding::emission`).
     bool                                     emits_ = false;
+    /// Whether any material of the stage layers anything over its base
+    /// (`usd::StageMaterial::layered`): the records then carry the twelve
+    /// floats of `io::SplatEncoding::lobes`, last.
+    bool                                     layered_ = false;
     /// The Cryptomatte id of the prim each splat came from, in the same order,
     /// and what those ids are called.
     std::vector<uint32_t>                    cryptoIds_;

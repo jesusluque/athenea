@@ -418,6 +418,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // And the radiance its gaussians give off, where it has any.
             cursor["params"]["hasEmission"].setData(uint32_t{cloud->hasEmission() ? 1u : 0u});
             cursor["emission"].setBinding(cloud->hasEmission() ? cloud->emission.rhi() : cloud->shape.rhi());
+            // And what its material layered over the base: specular, coat,
+            // sheen, where the conversion met any.
+            cursor["params"]["hasLobes"].setData(uint32_t{cloud->hasLobes() ? 1u : 0u});
+            cursor["lobes"].setBinding(cloud->hasLobes() ? cloud->lobes.rhi() : cloud->shape.rhi());
             // What a pick said this prim is made of. Bound either way, as
             // every name a shader declares; `overrideCount` of 0 is what says
             // the table is not read.

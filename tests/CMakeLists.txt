@@ -114,6 +114,7 @@ add_dependencies(athenea_usd_tests hdAthenea)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
                            ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
                            ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive"
+                           ATHENEA_LOBES_DIR="${CMAKE_CURRENT_BINARY_DIR}/lobes"
                            ATHENEA_TEST_MATERIALX_LIBRARIES="${ATHENEA_USD_ROOT}/libraries")
 # $ATHENEA_MATERIALX_ROOT is read once a process, so the case that sets it is
 # hidden from the discovery above and run here alone, with it set to a
@@ -304,6 +305,35 @@ add_test(NAME emissive_conversions_render_like_the_mesh
 set_tests_properties(emissive_conversions_render_like_the_mesh PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED emissive_clouds
+    LABELS gpe)
+
+# WHAT A MATERIAL LAYERS OVER ITS BASE, MATERIAL BY MATERIAL (proposal 026).
+# A ball of each -- a car's coated paint, chrome, rubber with a sheen, a
+# plastic whose specular is weighed and tinted, glass -- converted relit
+# (--no-bake) and baked; then a hidden case of the USD tests draws each
+# cloud rasterised against the mesh path traced and holds it to a bound a
+# material.
+set(ATHENEA_LOBES_DIR ${CMAKE_CURRENT_BINARY_DIR}/lobes)
+foreach(material paint chrome rubber plastic glass)
+    foreach(mode relit baked)
+        set(flags --bake-samples 64 --bake-degree 2)
+        if(mode STREQUAL "relit")
+            set(flags --no-bake)
+        endif()
+        add_test(NAME mesh2splat_lobes_${material}_${mode}
+            COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/${material}.usda ${flags} --no-camera
+                    --resolution 192 -o ${ATHENEA_LOBES_DIR}/${material}_${mode}.usda)
+        set_tests_properties(mesh2splat_lobes_${material}_${mode} PROPERTIES
+            ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+            FIXTURES_SETUP lobes_clouds
+            LABELS gpe)
+    endforeach()
+endforeach()
+add_test(NAME lobes_conversions_render_like_the_mesh
+    COMMAND athenea_usd_tests "[lobes_conversion]")
+set_tests_properties(lobes_conversions_render_like_the_mesh PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED lobes_clouds
     LABELS gpe)
 
 # WHAT A CONVERTED SURFACE COVERS: the planes of tests/data/coverage converted

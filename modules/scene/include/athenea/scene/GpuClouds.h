@@ -90,6 +90,15 @@ struct GpuSplats {
     /// materials that give off nothing; `hasEmission` is how a kernel asks.
     /// Nothing turns it: it has no direction.
     gpu::Buffer emission;
+    /// WHAT THE MATERIAL LAYERED OVER ITS BASE: three uint a splat, the
+    /// specular's weight, colour and index, the coat's weight, roughness and
+    /// index, the sheen's colour and roughness, a byte each (packing.slang's
+    /// `packLobes`). What a relit gaussian reflects with on top of `pbr`'s
+    /// base -- a car's lacquer over its metal flake, velvet's sheen. Empty
+    /// for a capture and for a conversion whose materials name none of it,
+    /// which reflects with the plain specular (`plainLobes`); `hasLobes` is
+    /// how a kernel asks. Nothing turns it.
+    gpu::Buffer lobes;
     uint32_t    transferWords = 0;
     uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9 or 36
     /// THE SPACE ITS COLOURS ARE IN (`io::RawSplats::linear`): false for a
@@ -122,6 +131,7 @@ struct GpuSplats {
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
     [[nodiscard]] bool hasNormals() const noexcept { return normals.valid(); }
     [[nodiscard]] bool hasEmission() const noexcept { return emission.valid(); }
+    [[nodiscard]] bool hasLobes() const noexcept { return lobes.valid(); }
     [[nodiscard]] bool hasTransfer() const noexcept { return transfer.valid() && transferCount >= 9; }
     /// Whether it carries which ways out are open (`shadowBits`).
     [[nodiscard]] bool hasShadowBits() const noexcept { return shadowBits.valid(); }
@@ -196,6 +206,20 @@ struct SplatStreams {
     /// Three floats a splat, the radiance it gives off
     /// (`primvars:athenea:splat:emission`).
     FloatStream emission;
+    /// The layers over the base, one array each, one value (or three, for a
+    /// colour) a splat: `primvars:athenea:splat:specularWeight`,
+    /// `:specularColor`, `:specularIor`, `:coatWeight`, `:coatRoughness`,
+    /// `:coatIor`, `:sheenColor`, `:sheenRoughness`. The cloud carries the
+    /// lobes where any of them is there; one that is missing takes its
+    /// default (packing.slang's `plainLobes`).
+    FloatStream specularWeight;
+    FloatStream specularColour;
+    FloatStream specularIor;
+    FloatStream coatWeight;
+    FloatStream coatRoughness;
+    FloatStream coatIor;
+    FloatStream sheenColour;
+    FloatStream sheenRoughness;
     /// BLENDER'S LAYOUT. Four floats a splat, the DC coefficient's rgb and the
     /// opacity (a Gaussian-splat PointCloud's `radiance:base`); where present
     /// it stands for `opacities` and for the DC of `sh`.
@@ -265,7 +289,8 @@ private:
     [[nodiscard]] Result<GpuSplats> startSplats(const std::string& source, uint32_t declared, uint32_t keep,
                                                 bool withPbr = false, bool withCrypto = false,
                                                 uint32_t transferCount = 0, bool withShadowBits = false,
-                                                bool withNormals = false, bool withEmission = false);
+                                                bool withNormals = false, bool withEmission = false,
+                                                bool withLobes = false);
     /// Validates and decodes `n` records in `raw` into `splats` after `written`;
     /// `recordBase` is the first of them in the whole cloud, for `origin`.
     [[nodiscard]] Result<uint32_t> decodeSlice(const gpu::Buffer& raw, const io::SplatEncoding& e, uint32_t n,

@@ -11084,3 +11084,99 @@ the metric's own noise of the mesh's.
 - The grain that is left is the harmonics': sixteen coefficients from 256
   paths. A filter that weighed each band by its own variance, rather than the
   luminance's, is the next thing to try.
+
+## A gaussian carries what its material layers over the base (proposal 026)
+
+The Corvette converted with `athenea mesh2splat` and rasterised came out with
+its paint nearly black. The paint is OpenPBR at metalness 1 over a base of
+0.047/0.06/0.047 under a clear coat of weight 1 (`Car_Paint_Main`): its metal
+reflects five per cent, and everything the eye sees of it on the mesh is the
+lacquer's reflection of the sky. A gaussian carried a base colour, metallic,
+roughness and transmission, and nothing of the coat, so a relit cloud showed
+the dark metal alone; and a baked one showed nothing at all, because
+`bakeBody` told a metal from a polish by its reflectivity (a Schlick lobe of
+F0 above 0.2) and dropped the paint's 0.05 metal as polish -- the body baked
+to black, and the coat was dropped with it, as polish is. Proposal 026
+(research, accepted) and backlog task 7 ask for per-gaussian specular weight
+and colour, coat and sheen on the existing lobes, without a lobe of its own
+per gaussian; this is that, in the order the user asked for, material by
+material: car paint, chrome, rubber, plastic, glass.
+
+- **What a gaussian carries** (`SplatLobes`, common/packing.slang): the
+  specular's weight, colour and index; the coat's weight, roughness and
+  index; the sheen's colour times its weight, and its roughness -- OpenPBR's
+  units. Three words a splat on the device (`GpuSplats::lobes`, a byte a
+  value, an index as `1 + byte/128`, so 1.5 and 1.25 are exact), twelve floats
+  in a record (`io::SplatEncoding::lobes`), eight primvars in a stage
+  (`primvars:athenea:splat:specularWeight` ... `:sheenRoughness`, declared by
+  `AtheneaSplatLightingAPI`), read back by Hydra (`ParticleFieldArrays` ->
+  `SplatStreams` -> the streams kernel, a missing one at its default). The
+  coat's normal is the gaussian's shading normal; a coat normal of its own
+  (the proposal's 6 bytes) is not carried.
+- **The plain lobes** (`plainLobes`: weight one, white, 1.5, no coat, no
+  sheen) are what a cloud without them reads, and they reflect bit for bit as
+  before: `environmentBrdfOf` is `environmentBrdf`, `ggxEnvDielectricAt(.., 1.5)`
+  is `ggxEnvDielectric` (`dielectricF0` returns 0.04 itself at 1.5 rather than
+  `iorToF0`'s 0.040000003), the layers take nothing and give nothing, and a
+  light's lobe is the old formula rearranged -- `lerp(f0d t + (t - f0d t) p,
+  a + (e - a) p, m)` is `f0 + (1 - f0) p` with `t = e = 1` -- which the check
+  kernel holds to 1e-5 (lobes_check.slang). A baked body's old Fresnel was
+  `f0 + (1 - f0) p` with `f0 = 0.04 (1 - m)`, and is kept as `f0 + (t - f0) p`.
+- **Evaluated, both routes alike** (`splat_relight.slang`, which the raster's
+  `splat_project` and the ray path's `rt_shade` share): the specular's weight
+  and colour tint the dielectric reflection and its index sets the
+  reflectivity (and what glass passes); the colour is a metal's edge
+  (`mxArtisticIor` with the specular colour for edge, which is
+  standard_surface's metal); the coat is the same GGX dielectric at its own
+  roughness and index -- the prepared sky at the coat's roughness along the
+  mirror, narrowed by the gaussian's own openness at that roughness, with its
+  share of a shadowed sun taken back out, and `coatLobe` for a light; the
+  sheen is the lobe library's Imageworks (Conty-Kulla) lobe for a light and its
+  directional albedo times the light reaching the body for a sky. Layering is
+  MaterialX's `layer`: the base weighed by `1 - weight x directional albedo` of
+  what lies over it at the eye, the coat over the sheen over the base
+  (`splatLayers`). A baked body is not weighed again: the bake's stack weighs
+  its body by the same throughput.
+- **Read from the materials** (`materialOf`): OpenPBR `specular_weight`,
+  `specular_color`, `coat_weight`/`coat_roughness`/`coat_ior` (1.6 by
+  default), `sheen_weight` x `sheen_color`, `sheen_roughness`;
+  standard_surface `specular`, `specular_color`, `coat` (0.1 rough at 1.5 by
+  default), `sheen` x `sheen_color`; UsdPreviewSurface `clearcoat`,
+  `clearcoatRoughness` at its own `ior`, and in its specular workflow the
+  index whose reflectivity is `specularColor`'s brightest channel, tinted by
+  the colour over it, with no metal; glTF `clearcoat`, `sheen_color`,
+  `specular`. Constants only: a map on any of them is logged and its constant
+  stands. The mesh2splat AOFX effect gains `writeLobes` and eight parameters,
+  additively, written in three record entries after everything else; the host
+  writes them only where some material of the stage is not plain
+  (`StageMaterial::layered`), and then for every gaussian.
+- **The bake's metal by the material's metalness.** mesh2splat's gather writes
+  a quarter of each gaussian's metalness into the w of its third ray entry
+  (`1 + m/4` raised, `m/4` flat; every reader of the raised flag reads `w >
+  0.5` unchanged), and `bakeBody` keeps every Schlick lobe as metal where the
+  material is metal at all and wrote its metal with no conductor -- OpenPBR
+  and standard_surface write their dielectric and their coat as
+  `dielectric_bsdf`, so their Schlick lobes are their metal; UsdPreviewSurface
+  writes its metal as `conductor_bsdf`, and its Schlick lobes are then its
+  dielectric and coat, which stay dropped. The coat is dropped from the bake
+  with the rest of the polish and comes back at render time from the lobes.
+
+Measured: **pending the GPU turn** -- the five balls of tests/data/lobes,
+relit and baked, rasterised against the mesh path traced
+(`lobes_conversions_render_like_the_mesh`), the plain-lobes check and the
+round trip (`[lobes]` in athenea_render_tests), the vocabularies and the USD
+round trip (`[lobes]` in athenea_usd_tests), and the Corvette again. The
+bounds written in the test (mean 15 %, p99 0.6; glass 25 %, 0.9) are
+placeholders until then.
+
+**Not done.** The levels of detail and `.athc` carry no lobes, as they carry
+no metallic and roughness either (a bit 4 for the material -- `pbr` and the
+lobes, four words an element -- is the next step there; bit 3 is P009's).
+Maps on the layers. The deferred layer of proposal 001 does not exist yet:
+the layers are evaluated per gaussian, as the base is, and mixed already
+lit. OpenPBR's coat darkening and coat colour, its Zeltner sheen (the mesh
+uses it, the gaussian Imageworks'), the specular's relative index under a
+coat, and a sheen's weight apart from its colour (its largest channel stands
+for it) are not carried. `readParticleFieldRecords` (the decimation's
+records) reads no lobes; a decimation merges the eight primvars as means, as
+it merges every float array.

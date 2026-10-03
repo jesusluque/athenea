@@ -26,6 +26,11 @@ RWStructuredBuffer<float4>   pbrOut;
 // The radiance the record gives off, linear, nothing below zero and nothing
 // that is not a number, where it carries one (`params.emission`).
 RWStructuredBuffer<float4>   emissionOut;
+// The layers over the base, three float4 a record -- (specular weight,
+// specular colour), (specular index, coat weight, roughness, index), (sheen
+// colour, roughness) -- each value inside the range the cloud reads it in,
+// where the record carries them (`params.lobes`); written only then.
+RWStructuredBuffer<float4>   lobesOut;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -69,6 +74,14 @@ void splatExport(uint3 tid: SV_DispatchThreadID) {
         const float3 e = float3(fieldOf(raw, i, s, params.emission), fieldOf(raw, i, s, params.emission + 1),
                                 fieldOf(raw, i, s, params.emission + 2));
         emissionOut[i] = float4(e.x > 0.0 ? e.x : 0.0, e.y > 0.0 ? e.y : 0.0, e.z > 0.0 ? e.z : 0.0, 0.0);
+    }
+    if (params.lobes != kNoField) {
+        const SplatLobes l = lobesOfRecord(raw, i, s, params.lobes);
+        const float kIorTop = 1.0 + 255.0 / 128.0;   // packing's byte: 1 to 2.99
+        lobesOut[i * 3] = float4(saturate(l.specularWeight), saturate(l.specularColour));
+        lobesOut[i * 3 + 1] = float4(clamp(l.specularIor, 1.0, kIorTop), saturate(l.coatWeight),
+                                     saturate(l.coatRoughness), clamp(l.coatIor, 1.0, kIorTop));
+        lobesOut[i * 3 + 2] = float4(saturate(l.sheenColour), saturate(l.sheenRoughness));
     }
     scaleValid[i] = valid ? float4(exp(ls), 1.0) : float4(0.0, 0.0, 0.0, 0.0);
     if (params.metallic != kNoField || params.roughness != kNoField || params.transmission != kNoField) {

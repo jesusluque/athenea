@@ -131,10 +131,11 @@ comprobación.
 
 - **El contrato entre módulos es `common/packing.slang`**: cómo se empaquetan
   en cuatro palabras la opacidad, la escala, el cuaternión y el color DC de un
-  splat, en una la normal de sombreado opcional (`packNormal`) y en una la
-  emisión opcional (`packRgb9e5`). Todo lo que escribe una nube y todo lo que
-  la lee pasa por ahí. Un buffer opcional de `GpuSplats` (`pbr`, `normals`,
-  `emission`) se enlaza tenga o no la nube -- la forma en
+  splat, en una la normal de sombreado opcional (`packNormal`), en una la
+  emisión opcional (`packRgb9e5`) y en tres las capas opcionales sobre la base
+  -- specular, coat, sheen -- (`packLobes`). Todo lo que escribe una nube y
+  todo lo que la lee pasa por ahí. Un buffer opcional de `GpuSplats` (`pbr`,
+  `normals`, `emission`, `lobes`) se enlaza tenga o no la nube -- la forma en
   su lugar -- y un flag en los parámetros dice cuál.
 - **El índice de un splat no es el de su registro.** La validación descarta
   lo que no se puede dibujar; `GpuSplats::origin` dice de qué registro vino
@@ -734,6 +735,27 @@ de material que lleve una gaussiana son los mismos cinco sitios:
 del kernel (y `m2sLookAt`, para que `--simplify` la compare), la disposición
 del registro en `convert`/`recordFloats`, y el campo del encoding que leen la
 exportación y la decodificación.
+
+**Lo que el material pone sobre su base**, donde algún material de la escena
+pone algo (`StageMaterial::layered`): el peso, el color y el índice del
+specular, el peso, la roughness y el índice del coat, el color y la roughness
+del sheen, constantes del material, enviadas al efecto como `writeLobes` y
+ocho parámetros y escritas en tres entradas propias después de todo lo demás;
+el gather las pone en los doce últimos floats del registro, tras los armónicos
+(`io::SplatEncoding::lobes`, en el orden de `SplatLobes` de packing.slang). En
+el dispositivo son `GpuSplats::lobes`, tres palabras por splat (`packLobes`),
+y `splat_relight` las lee para las dos rutas (`splatLobesOf`): el coat y el
+specular son el mismo GGX que ya tenía, el sheen el Imageworks de la librería
+de lóbulos, cada uno en capa según la regla del `layer` de MaterialX
+(`splatLayers`). Los lóbulos simples (`plainLobes`) son lo que lee una nube
+sin ellos, y deben reflejar bit a bit como antes (la comprobación de lóbulos).
+
+**La metalness del bake.** El gather escribe además un cuarto de la metalness
+de cada gaussiana en la w de la tercera entrada de su rayo (`1 + m/4` en
+relieve, `m/4` plana), así que `w > 0.5` sigue diciendo relieve; `bakeBody`
+la lee (`bakeMetalness`) y conserva un lóbulo Schlick como el metal que es
+siempre que el material sea metal en algo y no esté escrito con un conductor,
+sea cual sea su reflectividad.
 
 **Joints y pesos**, con `--skinned`: cuatro de cada por gaussiana, mezclados
 desde las esquinas del triángulo, para que la nube se deforme con el esqueleto

@@ -672,6 +672,37 @@ does not do is light anything: the mesh's emissive triangles are a light for
 the path tracer, the cloud's gaussians are not. An OpenPBR coat over the
 emission, which tints and dims it on the mesh, is not carried.
 
+**What it layers over its base.** What a material puts over its colour,
+metalness and roughness is carried as constants of the material: the
+dielectric reflection's weight and tint (OpenPBR `specular_weight` and
+`specular_color`, standard_surface `specular` and `specular_color`, glTF
+`specular` and `specular_color`; the tint is also a metal's edge colour) at
+the specular's index (`specular_ior`, `specular_IOR`, `ior`); a clear coat
+(`coat_weight`, `coat`, UsdPreviewSurface `clearcoat`, glTF `clearcoat`, with
+its roughness and index; UsdPreviewSurface's coat is at its own `ior`); and a
+sheen, its colour times its weight (`sheen_weight` x `sheen_color`, `sheen` x
+`sheen_color`, glTF `sheen_color`) with its roughness. A UsdPreviewSurface in
+its specular workflow (`useSpecularWorkflow` 1) is carried as the index whose
+reflectivity head on is its `specularColor`'s brightest channel, tinted by the
+colour over it, and no metal. A map on any of these is not read: the input's
+constant stands, and the log says so. Each surface's own defaults are what is
+assumed where nothing is authored (an OpenPBR coat at 1.6, a standard_surface
+one 0.1 rough at 1.5). The log line of a mesh whose material layers anything
+says what:
+
+```
+mesh2splat: /World/Ball layers specular 1.00 x (1.00 1.00 1.00) at 1.500, coat 1.00 rough 0.00 at 1.450, sheen (0.00 0.00 0.00) rough 0.30
+```
+
+They are written (the eight primvars of §4.3 from `specularWeight` on) only
+where some material of the stage differs from the plain specular -- weight
+one, white, an index of 1.5, no coat, no sheen -- and then for every
+gaussian. Relit, transferred and baked clouds alike reflect with them when
+they are drawn: a bake keeps the body and leaves the reflections to the frame.
+The bake tells a metal from a polish by the material's metalness, so a dark
+metal under a lacquer (a car's paint, a 0.05 base) bakes as the metal it is
+rather than as nothing.
+
 **Fewer gaussians where the surface is the same.** A gaussian a cell is what
 the surface costs wherever it is, and most of a surface -- a painted panel, a
 wall, a floor -- is the same from one cell to the next. `--simplify` walks each
@@ -1009,6 +1040,14 @@ showing the radiance it carries.
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:specularWeight` | float[] ‹1 a gaussian, 0 to 1› | `1` |
+| `primvars:athenea:splat:specularColor` | color3f[] ‹1 a gaussian, 0 to 1› | `(1, 1, 1)` |
+| `primvars:athenea:splat:specularIor` | float[] ‹1 a gaussian, 1 to 2.99› | `1.5` |
+| `primvars:athenea:splat:coatWeight` | float[] ‹1 a gaussian, 0 to 1› | `0` |
+| `primvars:athenea:splat:coatRoughness` | float[] ‹1 a gaussian, 0 to 1› | `0` |
+| `primvars:athenea:splat:coatIor` | float[] ‹1 a gaussian, 1 to 2.99› | `1.5` |
+| `primvars:athenea:splat:sheenColor` | color3f[] ‹1 a gaussian, 0 to 1› | `(0, 0, 0)` |
+| `primvars:athenea:splat:sheenRoughness` | float[] ‹1 a gaussian, 0 to 1› | `0` |
 
 `relight` says the colours are an albedo the scene's lights must light.
 `litBody` says they are already the light on the material's body, so what a
@@ -1067,7 +1106,22 @@ gaussian in the file, four on the device as RGB9E5: three 9-bit mantissas
 under a shared exponent, up to 65408, each channel to 1/512 of the
 brightest); a capture has none.
 
-**`AtheneaSplatSkinningAPI`** — the joints that carry a cloud.
+The eight from `specularWeight` to `sheenRoughness` are what the material
+layered over its base, in OpenPBR's units: the dielectric reflection's weight,
+tint and index (the tint is also a metal's edge colour), a clear coat over
+everything -- a GGX dielectric of its own roughness and index -- and a sheen
+(its colour times its weight, Imageworks' lobe). Each layer takes from what
+lies under it the share it reflects at the eye, as MaterialX's `layer` does, so
+a coat makes the body under it darker at grazing and gives that light back as
+its own reflection. A cloud carries them where any is authored and reads a
+missing one at the default in the table; one with none of them reflects with
+the plain specular, exactly as before they existed. They are clamped into
+their ranges, and on the device they are three words a gaussian, a byte a
+value (an index in steps of 1/128). `athenea mesh2splat` writes all eight
+where some material of the stage layers anything (48 bytes a gaussian in the
+file, twelve on the device). Neither the levels of detail nor a `.athc` carry
+them yet, as they do not carry metallic and roughness either.
+ — the joints that carry a cloud.
 
 | Attribute | Type | Note |
 |---|---|---|

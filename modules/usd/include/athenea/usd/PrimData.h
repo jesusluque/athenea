@@ -61,6 +61,19 @@ struct ParticleFieldArrays {
     /// (`primvars:athenea:splat:emission`), linear. Empty for a capture and
     /// for a conversion of materials that emit nothing.
     pxr::VtValue emission;         ///< VtVec3fArray or VtVec3hArray, one a gaussian
+    /// What the material layered over its base (`primvars:athenea:splat:
+    /// specularWeight`, `:specularColor`, `:specularIor`, `:coatWeight`,
+    /// `:coatRoughness`, `:coatIor`, `:sheenColor`, `:sheenRoughness`), one
+    /// value or one colour a gaussian. Empty for a capture and for a
+    /// conversion whose materials name none of it.
+    pxr::VtValue specularWeight;   ///< VtFloatArray or VtHalfArray
+    pxr::VtValue specularColour;   ///< VtVec3fArray or VtVec3hArray
+    pxr::VtValue specularIor;
+    pxr::VtValue coatWeight;
+    pxr::VtValue coatRoughness;
+    pxr::VtValue coatIor;
+    pxr::VtValue sheenColour;      ///< VtVec3fArray or VtVec3hArray
+    pxr::VtValue sheenRoughness;
     std::string  cryptoManifest;   ///< {"<path>":"<hex8>"} as the primvar holds it
     /// A LEVEL OF DETAIL OF A CLOUD THAT MOVES: the same cloud converted at
     /// several cells, each its own prim with its own rig, named alike by

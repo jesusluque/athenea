@@ -682,6 +682,38 @@ no hace es iluminar nada: los triángulos emisivos de la malla son una luz para
 el path tracer, las gaussianas de la nube no. Una capa de coat de OpenPBR sobre
 la emisión, que en la malla la tiñe y la atenúa, no se lleva.
 
+**Lo que pone sobre su base.** Lo que un material pone sobre su color, su
+metalness y su roughness se lleva como constantes del material: el peso y el
+tinte del reflejo dieléctrico (`specular_weight` y `specular_color` de
+OpenPBR, `specular` y `specular_color` de standard_surface, `specular` y
+`specular_color` de glTF; el tinte es también el color del borde de un metal)
+al índice del specular (`specular_ior`, `specular_IOR`, `ior`); una capa de
+coat transparente (`coat_weight`, `coat`, `clearcoat` de UsdPreviewSurface,
+`clearcoat` de glTF, con su roughness y su índice; el coat de
+UsdPreviewSurface está a su propio `ior`); y un sheen, su color por su peso
+(`sheen_weight` x `sheen_color`, `sheen` x `sheen_color`, `sheen_color` de
+glTF) con su roughness. Un UsdPreviewSurface en su flujo specular
+(`useSpecularWorkflow` 1) se lleva como el índice cuya reflectividad de frente
+es el canal más brillante de su `specularColor`, teñido por el color dividido
+por él, y sin metal. Un mapa sobre cualquiera de ellos no se lee: queda la
+constante de la entrada, y el log lo dice. Donde no hay nada escrito se toman
+los valores por defecto de cada superficie (un coat de OpenPBR a 1.6, uno de
+standard_surface de roughness 0.1 a 1.5). La línea de log de una malla cuyo
+material pone algo encima dice qué:
+
+```
+mesh2splat: /World/Ball layers specular 1.00 x (1.00 1.00 1.00) at 1.500, coat 1.00 rough 0.00 at 1.450, sheen (0.00 0.00 0.00) rough 0.30
+```
+
+Se escriben (los ocho primvars de §4.3 desde `specularWeight`) sólo donde
+algún material de la escena difiere del specular simple -- peso uno, blanco,
+índice 1.5, sin coat, sin sheen -- y entonces para cada gaussiana. Las nubes
+reiluminadas, con transfer y horneadas reflejan con ellos al dibujarse: un
+bake guarda el cuerpo y deja los reflejos al frame. El bake distingue un metal
+de un pulido por la metalness del material, así que un metal oscuro bajo una
+laca (la pintura de un coche, una base de 0.05) se hornea como el metal que es
+y no como nada.
+
 **Menos gaussianas donde la superficie es igual.** Una gaussiana por celda es lo
 que cuesta la superficie esté donde esté, y casi toda una superficie -- un panel
 pintado, una pared, un suelo -- es igual de una celda a la siguiente.
@@ -1027,6 +1059,14 @@ la radiancia que lleva.
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:specularWeight` | float[] ‹1 por gaussiana, 0 a 1› | `1` |
+| `primvars:athenea:splat:specularColor` | color3f[] ‹1 por gaussiana, 0 a 1› | `(1, 1, 1)` |
+| `primvars:athenea:splat:specularIor` | float[] ‹1 por gaussiana, 1 a 2.99› | `1.5` |
+| `primvars:athenea:splat:coatWeight` | float[] ‹1 por gaussiana, 0 a 1› | `0` |
+| `primvars:athenea:splat:coatRoughness` | float[] ‹1 por gaussiana, 0 a 1› | `0` |
+| `primvars:athenea:splat:coatIor` | float[] ‹1 por gaussiana, 1 a 2.99› | `1.5` |
+| `primvars:athenea:splat:sheenColor` | color3f[] ‹1 por gaussiana, 0 a 1› | `(0, 0, 0)` |
+| `primvars:athenea:splat:sheenRoughness` | float[] ‹1 por gaussiana, 0 a 1› | `0` |
 
 `relight` dice que los colores son un albedo que las luces de la escena tienen
 que iluminar. `litBody` dice que ya son la luz sobre el cuerpo del material,
@@ -1091,7 +1131,22 @@ gaussiana en el fichero, cuatro en el dispositivo como RGB9E5: tres mantisas de
 9 bits bajo un exponente compartido, hasta 65408, cada canal a 1/512 del más
 brillante); una captura no tiene.
 
-**`AtheneaSplatSkinningAPI`** — los joints que llevan una nube.
+Los ocho de `specularWeight` a `sheenRoughness` son lo que el material puso
+sobre su base, en las unidades de OpenPBR: el peso, el tinte y el índice del
+reflejo dieléctrico (el tinte es también el color del borde de un metal), un
+coat transparente sobre todo -- un dieléctrico GGX de su propia roughness e
+índice -- y un sheen (su color por su peso, el lóbulo de Imageworks). Cada capa
+le quita a lo que tiene debajo la parte que refleja hacia el ojo, como hace el
+`layer` de MaterialX, así que un coat oscurece en rasante el cuerpo que cubre y
+devuelve esa luz como reflejo propio. Una nube los lleva donde alguno está
+escrito y lee uno que falte con el valor por defecto de la tabla; una sin
+ninguno refleja con el specular simple, exactamente como antes de que
+existieran. Se recortan a sus rangos, y en el dispositivo son tres palabras por
+gaussiana, un byte por valor (un índice en pasos de 1/128). `athenea mesh2splat`
+escribe los ocho donde algún material de la escena pone algo encima (48 bytes
+por gaussiana en el fichero, doce en el dispositivo). Ni los niveles de detalle
+ni un `.athc` los llevan todavía, igual que no llevan metallic ni roughness.
+ — los joints que llevan una nube.
 
 | Atributo | Tipo | Nota |
 |---|---|---|

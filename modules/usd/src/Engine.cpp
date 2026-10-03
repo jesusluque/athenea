@@ -812,7 +812,7 @@ namespace {
 /// Device memory a cloud's arrays hold: every buffer it carries.
 uint64_t bytesOf(const scene::GpuSplats& cloud) {
     uint64_t n = 0;
-    for (const gpu::Buffer* b : {&cloud.positions, &cloud.shape, &cloud.sh, &cloud.pbr, &cloud.crypto, &cloud.transfer,
+    for (const gpu::Buffer* b : {&cloud.positions, &cloud.shape, &cloud.sh, &cloud.pbr, &cloud.lobes, &cloud.crypto, &cloud.transfer,
                                  &cloud.shadowBits, &cloud.origin, &cloud.normals, &cloud.emission,
                                  &cloud.visibilityParts, &cloud.visibilityTexels, &cloud.visibilityPartOf,
                                  &cloud.visibilityAmbient}) {

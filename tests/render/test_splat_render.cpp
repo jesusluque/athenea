@@ -995,6 +995,67 @@ TEST_CASE("what glass passes and what it reflects never add to more than arrived
     CHECK(counts[2] == 0);
 }
 
+// WHAT A MATERIAL LAYERS OVER ITS BASE CHANGES NOTHING WHERE IT LAYERS NOTHING.
+//
+// A gaussian carries its specular's weight, colour and index, a coat and a
+// sheen where its conversion read them (`GpuSplats::lobes`), and the plain
+// lobes where it did not: every cloud written before them. Those must be
+// reflected exactly as before -- the environment's reflection bit for bit,
+// a light's lobe to rounding, nothing taken by a coat and nothing given by a
+// sheen -- and a coat over anything gives back no more than it takes. The
+// twelve values go into three words and come back within a byte's step.
+TEST_CASE("the plain lobes reflect as before, and the layers pack into three words",
+          "[render][gpu][lobes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 8, "lobes.counts");
+    constexpr uint32_t kSteps = 16;
+    constexpr uint32_t kPacked = 100000;
+    {
+        auto plain = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobes_check", "lobesPlainCheck");
+        if (!plain) FAIL(plain.error().toString());
+        gpu::CommandBatch batch(*gpu->device);
+        plain->dispatch(batch, {kSteps * kSteps * kSteps, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["steps"].setData(kSteps);
+            cursor["params"]["count"].setData(0u);
+            cursor["params"]["tolerance"].setData(1.0e-5F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> seen{};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(seen), seen.data()));
+    std::printf("  plain lobes: %u points; %u reflections of a sky changed, %u layers not nothing, %u lobes off "
+                "the old one, %u plain lobes not themselves packed, %u coats that gave back more than they took\n",
+                seen[0], seen[1], seen[2], seen[3], seen[4], seen[5]);
+    CHECK(seen[0] == kSteps * kSteps * kSteps);
+    CHECK(seen[1] == 0);
+    CHECK(seen[2] == 0);
+    CHECK(seen[3] == 0);
+    CHECK(seen[4] == 0);
+    CHECK(seen[5] == 0);
+
+    gpu::Buffer packed = test::uintBuffer(*gpu->device, 8, "lobes.packed");
+    {
+        auto trip = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobes_check", "lobesRoundTrip");
+        if (!trip) FAIL(trip.error().toString());
+        gpu::CommandBatch batch(*gpu->device);
+        trip->dispatch(batch, {kPacked, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(packed.rhi());
+            cursor["params"]["steps"].setData(0u);
+            cursor["params"]["count"].setData(kPacked);
+            cursor["params"]["tolerance"].setData(0.0F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    REQUIRE(packed.read(*gpu->device, 0, sizeof(seen), seen.data()));
+    std::printf("  packed: %u sets of twelve; %u with a weight, colour or roughness off by more than half a "
+                "byte, %u with an index off by more than half its step\n",
+                seen[0], seen[1], seen[2]);
+    CHECK(seen[0] == kPacked);
+    CHECK(seen[1] == 0);
+    CHECK(seen[2] == 0);
+}
+
 // A RAY THAT STARTS ON A SURFACE MUST NOT MEET THAT SURFACE.
 //
 // A convex cloud is a shell of overlapping gaussians, and a mirror ray leaving

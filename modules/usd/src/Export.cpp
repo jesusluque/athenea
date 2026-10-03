@@ -91,6 +91,11 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     // below zero.
     VtVec3fArray emissions;
     const bool withEmission = e.emission != io::SplatEncoding::kNoField;
+    // What the material layered over the base, as the kernel leaves it:
+    // each value inside the range the cloud reads it in.
+    VtFloatArray specularWeights, specularIors, coatWeights, coatRoughnesses, coatIors, sheenRoughnesses;
+    VtVec3fArray specularColours, sheenColours;
+    const bool withLobes = e.lobes != io::SplatEncoding::kNoField;
     const bool pbr = e.metallic != io::SplatEncoding::kNoField ||
                      e.roughness != io::SplatEncoding::kNoField ||
                      e.transmission != io::SplatEncoding::kNoField;
@@ -113,7 +118,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto normal = buffer(device, withNormals ? n : 1, 16, "export.normal");
         auto material = buffer(device, pbr ? n : 1, 16, "export.pbr");
         auto emitted = buffer(device, withEmission ? n : 1, 16, "export.emission");
-        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material || !emitted) {
+        auto layered = buffer(device, withLobes ? uint64_t{n} * 3 : 1, 16, "export.lobes");
+        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material || !emitted || !layered) {
             return Error(ErrorCode::OutOfMemory, "cannot allocate export buffers");
         }
         gpu::CommandBatch batch(device);
@@ -126,6 +132,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             cursor["normalOut"].setBinding(normal->rhi());
             cursor["pbrOut"].setBinding(material->rhi());
             cursor["emissionOut"].setBinding(emitted->rhi());
+            cursor["lobesOut"].setBinding(layered->rhi());
             scene::setDecodeParams(cursor, e, n, 0, keep, 1);
         });
         ATHENEA_TRY(batch.submit(true));
@@ -136,7 +143,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto no = normal->readAll<float>(device);
         auto pb = material->readAll<float>(device);
         auto eo = emitted->readAll<float>(device);
-        if (!po || !ro || !sv || !co || !no || !pb || !eo) {
+        auto lo3 = layered->readAll<float>(device);
+        if (!po || !ro || !sv || !co || !no || !pb || !eo || !lo3) {
             return Error(ErrorCode::DeviceFailure, "cannot read export values back");
         }
         for (uint32_t i = 0; i < n; ++i) {
@@ -172,6 +180,17 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             if (withEmission) {
                 const float* ee = eo->data() + size_t{i} * 4;
                 emissions.push_back(GfVec3f(ee[0], ee[1], ee[2]));
+            }
+            if (withLobes) {
+                const float* ll = lo3->data() + size_t{i} * 12;
+                specularWeights.push_back(ll[0]);
+                specularColours.push_back(GfVec3f(ll[1], ll[2], ll[3]));
+                specularIors.push_back(ll[4]);
+                coatWeights.push_back(ll[5]);
+                coatRoughnesses.push_back(ll[6]);
+                coatIors.push_back(ll[7]);
+                sheenColours.push_back(GfVec3f(ll[8], ll[9], ll[10]));
+                sheenRoughnesses.push_back(ll[11]);
             }
             if (there) {
                 for (int axis = 0; axis < 3; ++axis) {
@@ -247,6 +266,30 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .CreatePrimvar(TfToken("primvars:athenea:splat:emission"), SdfValueTypeNames->Color3fArray,
                            UsdGeomTokens->vertex)
             .Set(VtValue(emissions));
+    }
+
+    // WHAT ITS MATERIAL LAYERED OVER THE BASE (AtheneaSplatLightingAPI): the
+    // specular's weight, colour and index, the coat, the sheen -- one array
+    // each, in OpenPBR's units. Written only where the conversion met a
+    // material that names any of it.
+    if (withLobes) {
+        UsdGeomPrimvarsAPI primvars(splats.GetPrim());
+        const auto floats = [&](const char* name, const VtFloatArray& values) {
+            primvars.CreatePrimvar(TfToken(name), SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex)
+                .Set(VtValue(values));
+        };
+        const auto colours = [&](const char* name, const VtVec3fArray& values) {
+            primvars.CreatePrimvar(TfToken(name), SdfValueTypeNames->Color3fArray, UsdGeomTokens->vertex)
+                .Set(VtValue(values));
+        };
+        floats("primvars:athenea:splat:specularWeight", specularWeights);
+        colours("primvars:athenea:splat:specularColor", specularColours);
+        floats("primvars:athenea:splat:specularIor", specularIors);
+        floats("primvars:athenea:splat:coatWeight", coatWeights);
+        floats("primvars:athenea:splat:coatRoughness", coatRoughnesses);
+        floats("primvars:athenea:splat:coatIor", coatIors);
+        colours("primvars:athenea:splat:sheenColor", sheenColours);
+        floats("primvars:athenea:splat:sheenRoughness", sheenRoughnesses);
     }
 
     // WHICH PRIM EACH GAUSSIAN CAME FROM (AtheneaSplatCryptomatteAPI). One id a
@@ -348,7 +391,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
             TfToken("primvars:athenea:splat:thinWalled"),   TfToken("primvars:athenea:splat:shadowBits"),
             TfToken("primvars:athenea:splat:normal"),       TfToken("primvars:athenea:splat:linear"),
-            TfToken("primvars:athenea:splat:emission")};
+            TfToken("primvars:athenea:splat:emission"),     TfToken("primvars:athenea:splat:coatWeight"),
+            TfToken("primvars:athenea:splat:specularWeight"), TfToken("primvars:athenea:splat:sheenColor")};
         const UsdPrim prim = splats.GetPrim();
         if (std::any_of(std::begin(kLighting), std::end(kLighting),
                         [&](const TfToken& name) { return prim.GetAttribute(name).HasAuthoredValue(); })) {

@@ -71,6 +71,7 @@ void setDecodeParams(rhi::ShaderCursor cursor, const io::SplatEncoding& e, uint3
     p["recordBase"].setData(recordBase);
     p["normal"].setData(e.normal);
     p["emission"].setData(e.emission);
+    p["lobes"].setData(e.lobes);
 }
 
 
@@ -183,7 +184,8 @@ Result<Bounds> CloudLoader::boundsOf(const gpu::Buffer& positions, uint32_t coun
 
 Result<GpuSplats> CloudLoader::startSplats(const std::string& source, uint32_t declared, uint32_t keep,
                                            bool withPbr, bool withCrypto, uint32_t transferCount,
-                                           bool withShadowBits, bool withNormals, bool withEmission) {
+                                           bool withShadowBits, bool withNormals, bool withEmission,
+                                           bool withLobes) {
     GpuSplats splats;
     splats.source = source;
     splats.declared = declared;
@@ -233,6 +235,11 @@ Result<GpuSplats> CloudLoader::startSplats(const std::string& source, uint32_t d
         if (!emission) return std::move(emission).error();
         splats.emission = *emission;
     }
+    if (withLobes) {
+        auto lobes = deviceBuffer(*device_, uint64_t{declared} * 3, 4, "splats.lobes");
+        if (!lobes) return std::move(lobes).error();
+        splats.lobes = *lobes;
+    }
     return splats;
 }
 
@@ -273,12 +280,16 @@ Result<uint32_t> CloudLoader::decodeSlice(const gpu::Buffer& raw, const io::Spla
         // A cloud allocated without normals reads none, whatever the
         // encoding says: the buffer bound in their place is the shape.
         cursor["emission"].setBinding(splats.hasEmission() ? splats.emission.rhi() : splats.shape.rhi());
+        cursor["lobes"].setBinding(splats.hasLobes() ? splats.lobes.rhi() : splats.shape.rhi());
         io::SplatEncoding decoded = e;
         if (!splats.hasNormals()) {
             decoded.normal = io::SplatEncoding::kNoField;
         }
         if (!splats.hasEmission()) {
             decoded.emission = io::SplatEncoding::kNoField;
+        }
+        if (!splats.hasLobes()) {
+            decoded.lobes = io::SplatEncoding::kNoField;
         }
         setDecodeParams(cursor, decoded, n, written, keep, splats.shWords, recordBase);
     });
@@ -358,7 +369,8 @@ Result<GpuSplats> CloudLoader::upload(const io::RawSplats& raw, uint32_t maxDegr
                               e.cryptoObject != io::SplatEncoding::kNoField, e.transferCount,
                               e.shadowBits != io::SplatEncoding::kNoField,
                               e.normal != io::SplatEncoding::kNoField,
-                              e.emission != io::SplatEncoding::kNoField);
+                              e.emission != io::SplatEncoding::kNoField,
+                              e.lobes != io::SplatEncoding::kNoField);
     if (!splats) return std::move(splats).error();
     splats->linear = raw.linear || e.colour == io::SplatEncoding::Colour::LinearLight;
 
@@ -391,7 +403,9 @@ Result<GpuSplats> CloudLoader::upload(const gpu::Buffer& records, uint32_t count
                      e.transmission != io::SplatEncoding::kNoField;
     auto splats = startSplats(source, count, keep, pbr, e.cryptoObject != io::SplatEncoding::kNoField,
                               e.transferCount, e.shadowBits != io::SplatEncoding::kNoField,
-                              e.normal != io::SplatEncoding::kNoField);
+                              e.normal != io::SplatEncoding::kNoField,
+                              e.emission != io::SplatEncoding::kNoField,
+                              e.lobes != io::SplatEncoding::kNoField);
     if (!splats) return std::move(splats).error();
     // Slices as the host upload takes them; a slice of a larger buffer is
     // copied out of it on the device, and one that is the whole is the
@@ -666,7 +680,10 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kMetallic = 64, kRoughness = 128, kTransmission = 256, kCrypto = 512,
                    kTransferDirect = 1024, kTransferIndirect = 2048, kShadowBits = 4096,
                    kThinWalled = 8192, kNormals = 16384, kEmission = 32768,
-                   kBase = 65536, kShPlanes = 131072;
+                   kBase = 65536, kShPlanes = 131072, kSpecularWeight = 1u << 18,
+                   kSpecularColour = 1u << 19, kSpecularIor = 1u << 20, kCoatWeight = 1u << 21,
+                   kCoatRoughness = 1u << 22, kCoatIor = 1u << 23, kSheenColour = 1u << 24,
+                   kSheenRoughness = 1u << 25;
 
 }   // namespace
 
@@ -710,9 +727,32 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     const bool haveNormals = !in.normals.empty() && in.normals.values() >= uint64_t{n} * 3;
     // The radiance it gives off, three floats a gaussian, where the stage carries it.
     const bool haveEmission = !in.emission.empty() && in.emission.values() >= uint64_t{n} * 3;
+    // The layers over the base, one array each: each is read where it is
+    // whole, and the cloud carries them where any one is.
+    const auto whole = [n](const FloatStream& stream, uint32_t per) {
+        return !stream.empty() && stream.values() >= uint64_t{n} * per;
+    };
+    struct LobeArray {
+        const FloatStream* stream;
+        uint32_t           per;
+        uint32_t           bit;
+        const char*        label;
+    };
+    const LobeArray lobeArrays[] = {
+        {&in.specularWeight, 1, kSpecularWeight, "splats.stream.specularWeight"},
+        {&in.specularColour, 3, kSpecularColour, "splats.stream.specularColor"},
+        {&in.specularIor, 1, kSpecularIor, "splats.stream.specularIor"},
+        {&in.coatWeight, 1, kCoatWeight, "splats.stream.coatWeight"},
+        {&in.coatRoughness, 1, kCoatRoughness, "splats.stream.coatRoughness"},
+        {&in.coatIor, 1, kCoatIor, "splats.stream.coatIor"},
+        {&in.sheenColour, 3, kSheenColour, "splats.stream.sheenColor"},
+        {&in.sheenRoughness, 1, kSheenRoughness, "splats.stream.sheenRoughness"}};
+    const bool haveLobes = std::any_of(std::begin(lobeArrays), std::end(lobeArrays),
+                                       [&](const LobeArray& a) { return whole(*a.stream, a.per); });
     io::SplatEncoding e;
     e.floatsPerRecord = 14 + keep * 3 + (havePbr ? 3 : 0) + (haveCrypto ? 1 : 0) + transferCount +
-                        (haveShadowBits ? 2 : 0) + (haveNormals ? 3 : 0) + (haveEmission ? 3 : 0);
+                        (haveShadowBits ? 2 : 0) + (haveNormals ? 3 : 0) + (haveEmission ? 3 : 0) +
+                        (haveLobes ? 12 : 0);
     e.x = 0; e.y = 1; e.z = 2; e.opacity = 3;
     e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
     e.rotW = 7; e.rotX = 8; e.rotY = 9; e.rotZ = 10;
@@ -740,6 +780,10 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (haveEmission) {
         e.emission = 14 + keep * 3 + (havePbr ? 3 : 0) + (haveCrypto ? 1 : 0) + transferCount +
                      (haveShadowBits ? 2 : 0) + (haveNormals ? 3 : 0);
+    }
+    if (haveLobes) {
+        e.lobes = 14 + keep * 3 + (havePbr ? 3 : 0) + (haveCrypto ? 1 : 0) + transferCount +
+                  (haveShadowBits ? 2 : 0) + (haveNormals ? 3 : 0) + (haveEmission ? 3 : 0);
     }
     e.opacity_ = io::SplatEncoding::Opacity::Linear;
     e.scale_ = io::SplatEncoding::Scale::Linear;
@@ -779,6 +823,11 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (haveEmission) {
         note(in.emission, kEmission);
     }
+    for (const LobeArray& a : lobeArrays) {
+        if (whole(*a.stream, a.per)) {
+            note(*a.stream, a.bit);
+        }
+    }
     auto positions = streamBuffer(in.positions, "splats.stream.positions");
     if (!positions) return std::move(positions).error();
     auto rotations = streamBuffer(in.rotations, "splats.stream.rotations");
@@ -815,8 +864,14 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!normals) return std::move(normals).error();
     auto emission = streamBuffer(haveEmission ? in.emission : FloatStream{}, "splats.stream.emission");
     if (!emission) return std::move(emission).error();
+    std::vector<gpu::Buffer> lobeBuffers;
+    for (const LobeArray& a : lobeArrays) {
+        auto made = streamBuffer(whole(*a.stream, a.per) ? *a.stream : FloatStream{}, a.label);
+        if (!made) return std::move(made).error();
+        lobeBuffers.push_back(std::move(*made));
+    }
     auto splats = startSplats(in.source, n, keep, havePbr, haveCrypto, transferCount, haveShadowBits, haveNormals,
-                              haveEmission);
+                              haveEmission, haveLobes);
     if (!splats) return std::move(splats).error();
     splats->linear = in.linear;
     const uint32_t perSlice = static_cast<uint32_t>(std::max<uint64_t>(1, kSliceBytes / (uint64_t{e.floatsPerRecord} * 4)));
@@ -844,6 +899,16 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 cursor["thinWalled"].setBinding(haveThin ? thinWalled->rhi() : none->rhi());
                 cursor["normals"].setBinding(haveNormals ? normals->rhi() : none->rhi());
                 cursor["emission"].setBinding(haveEmission ? emission->rhi() : none->rhi());
+                {
+                    static constexpr const char* kLobeNames[] = {"specularWeight", "specularColour", "specularIor",
+                                                                 "coatWeight",     "coatRoughness",  "coatIor",
+                                                                 "sheenColour",    "sheenRoughness"};
+                    for (size_t k = 0; k < lobeBuffers.size(); ++k) {
+                        cursor[kLobeNames[k]].setBinding(whole(*lobeArrays[k].stream, lobeArrays[k].per)
+                                                             ? lobeBuffers[k].rhi()
+                                                             : none->rhi());
+                    }
+                }
                 cursor["radianceBase"].setBinding(radianceBase->rhi());
                 cursor["records"].setBinding(records->rhi());
                 rhi::ShaderCursor p = cursor["params"];
@@ -863,6 +928,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 p["shadowBase"].setData(haveShadowBits ? e.shadowBits : io::SplatEncoding::kNoField);
                 p["normalBase"].setData(haveNormals ? e.normal : io::SplatEncoding::kNoField);
                 p["emissionBase"].setData(haveEmission ? e.emission : io::SplatEncoding::kNoField);
+                p["lobesBase"].setData(haveLobes ? e.lobes : io::SplatEncoding::kNoField);
             });
             ATHENEA_TRY(batch.submit(true));
         }

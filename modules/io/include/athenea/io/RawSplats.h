@@ -62,6 +62,15 @@ struct SplatEncoding {
     /// radiance bake already holds it. `kNoField` for a capture, and for a
     /// conversion of materials that give off nothing.
     uint32_t emission = kNoField;
+    /// WHAT THE MATERIAL LAYERED OVER ITS BASE: twelve consecutive fields --
+    /// the specular's weight, colour (r g b) and index; the coat's weight,
+    /// roughness and index; the sheen's colour (r g b, times its weight) and
+    /// roughness -- in the units OpenPBR's own inputs take
+    /// (packing.slang's `SplatLobes`). A relit gaussian reflects with them
+    /// instead of the plain specular. `kNoField` for a capture and for a
+    /// conversion whose materials name none of it, which is then drawn
+    /// exactly as before.
+    uint32_t lobes = kNoField;
     /// First rest coefficient and how many basis functions per colour the file
     /// carries (0, 3, 8 or 15).
     uint32_t restBase = 0;

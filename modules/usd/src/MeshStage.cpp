@@ -503,6 +503,93 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         }
     }
 
+    // WHAT IT LAYERS OVER ITS BASE: the dielectric reflection's weight and
+    // tint, a clear coat, a sheen (proposal 026). Constants only: a map on
+    // one of them is a value a gaussian could carry and does not yet, so the
+    // input's own default stands and the log says which.
+    {
+        const auto constant = [&](const char* name, float& into) {
+            const Resolved in = read(name);
+            takeFloat(in, into);
+            if (!in.texture.empty()) {
+                athenea::log::info("mesh2splat: '{}' maps '{}'; a gaussian carries its constant ({})", out.path,
+                                   name, into);
+            }
+        };
+        const auto colourOf = [&](const char* name, std::array<float, 3>& into) {
+            const Resolved in = read(name);
+            takeColour(in, into);
+            if (!in.texture.empty()) {
+                athenea::log::info("mesh2splat: '{}' maps '{}'; a gaussian carries its constant", out.path, name);
+            }
+        };
+        if (preview) {
+            // UsdPreviewSurface's coat is a Schlick of the surface's own
+            // index (`coat_F0` is `R_sq`), and its default roughness 0.01.
+            out.coatRoughness = 0.01F;
+            constant("clearcoat", out.coatWeight);
+            constant("clearcoatRoughness", out.coatRoughness);
+            out.coatIor = out.ior;
+            // THE SPECULAR WORKFLOW: `specularColor` is the reflectivity head
+            // on, and the metalness is not read. Carried as an index whose
+            // reflectivity is the colour's brightest channel, tinted by the
+            // colour over it -- the head-on reflection exactly, a white edge.
+            if (takeInt(read("useSpecularWorkflow"), 0) == 1) {
+                std::array<float, 3> f0{0.0F, 0.0F, 0.0F};
+                colourOf("specularColor", f0);
+                const float top = std::max({f0[0], f0[1], f0[2]});
+                out.metallic = 0.0F;
+                out.metallicMap = {};
+                if (top > 0.0F) {
+                    const float s = std::sqrt(std::clamp(top, 0.0F, 0.99F));
+                    out.ior = (1.0F + s) / (1.0F - s);
+                    out.specularColour = {f0[0] / top, f0[1] / top, f0[2] / top};
+                } else {
+                    out.specularWeight = 0.0F;
+                }
+            }
+        } else {
+            constant(openPbr ? "specular_weight" : gltf ? "specular" : "specular", out.specularWeight);
+            colourOf("specular_color", out.specularColour);
+            if (gltf) {
+                constant("clearcoat", out.coatWeight);
+                out.coatRoughness = 0.0F;
+                constant("clearcoat_roughness", out.coatRoughness);
+            } else {
+                // OpenPBR's coat sits at 1.6 and standard_surface's at 1.5,
+                // the roughness of either at 0 and 0.1.
+                out.coatIor = openPbr ? 1.6F : 1.5F;
+                out.coatRoughness = openPbr ? 0.0F : 0.1F;
+                constant(openPbr ? "coat_weight" : "coat", out.coatWeight);
+                constant("coat_roughness", out.coatRoughness);
+                constant(openPbr ? "coat_ior" : "coat_IOR", out.coatIor);
+            }
+            // The sheen: a colour and a weight (glTF's has the colour alone).
+            float sheenWeight = gltf ? 1.0F : 0.0F;
+            std::array<float, 3> sheenColour = gltf ? std::array<float, 3>{0.0F, 0.0F, 0.0F}
+                                                    : std::array<float, 3>{1.0F, 1.0F, 1.0F};
+            if (!gltf) {
+                constant(openPbr ? "sheen_weight" : "sheen", sheenWeight);
+            }
+            colourOf("sheen_color", sheenColour);
+            constant("sheen_roughness", out.sheenRoughness);
+            out.sheenColour = {sheenColour[0] * sheenWeight, sheenColour[1] * sheenWeight,
+                               sheenColour[2] * sheenWeight};
+        }
+        // Inside what a gaussian keeps: weights and colours 0 to 1, an index
+        // 1 to 3 (packing.slang's byte).
+        const auto unit = [](float v) { return std::clamp(v, 0.0F, 1.0F); };
+        out.specularWeight = unit(out.specularWeight);
+        out.coatWeight = unit(out.coatWeight);
+        out.coatRoughness = unit(out.coatRoughness);
+        out.sheenRoughness = unit(out.sheenRoughness);
+        for (int k = 0; k < 3; ++k) {
+            out.specularColour[k] = unit(out.specularColour[k]);
+            out.sheenColour[k] = unit(out.sheenColour[k]);
+        }
+        out.coatIor = std::clamp(out.coatIor, 1.0F, 2.99F);
+    }
+
     // DISPLACEMENT: a height along the normal, which a gaussian can carry for
     // almost nothing -- it is where it stands -- and a mesh only by being cut
     // into triangles finer than the relief.

@@ -257,6 +257,38 @@ object through the glass wants a ray, which this is not."""
         doc = """The light each gaussian gives off by itself, linear radiance in the scene's units: what its material's emission was where it stood (standard_surface's `emission` times `emission_color`, OpenPBR's `emission_luminance` times `emission_color`, glTF's `emissive` times `emissive_strength`, UsdPreviewSurface's `emissiveColor`, each with its map). One a gaussian. A relit gaussian -- its colours an albedo, transferred or not -- adds it to what it reflects, unshadowed and the same from every side; one whose body was baked (`litBody`) does not, since the bake already holds it. It lights nothing else: an emissive gaussian is not a light. A capture has none."""
         interpolation = "vertex"
     )
+    float[] primvars:athenea:splat:specularWeight = [] (
+        doc = """How much of the dielectric reflection each gaussian keeps, 0 to 1: OpenPBR's `specular_weight`, standard_surface's `specular`. One a gaussian, and one where it is not authored. With the other layers below it is what a relit gaussian reflects with on top of its metallic and roughness; a cloud that carries none of them reflects with weight one, white, at an index of 1.5."""
+        interpolation = "vertex"
+    )
+    color3f[] primvars:athenea:splat:specularColor = [] (
+        doc = """The tint of each gaussian's dielectric reflection and the edge colour of its metal, 0 to 1: OpenPBR's and standard_surface's `specular_color`. White where it is not authored."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:specularIor = [] (
+        doc = """The index of refraction each gaussian's dielectric reflection is taken at, 1 to 3: OpenPBR's `specular_ior`, standard_surface's `specular_IOR`, UsdPreviewSurface's `ior`. 1.5 where it is not authored. The bend of a converted glass is the field's own `ior`."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:coatWeight = [] (
+        doc = """How much of a clear coat lies over each gaussian, 0 to 1: OpenPBR's `coat_weight`, standard_surface's `coat`, UsdPreviewSurface's `clearcoat`. A dielectric layer of `coatRoughness` at `coatIor` that reflects over everything else and takes what it reflects from what reaches the base -- a car's lacquer over its metal. 0 where it is not authored."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:coatRoughness = [] (
+        doc = """The coat's roughness, 0 to 1: `coat_roughness`, UsdPreviewSurface's `clearcoatRoughness`."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:coatIor = [] (
+        doc = """The coat's index of refraction, 1 to 3: `coat_ior` (`coat_IOR`); 1.5 where it is not authored, which is UsdPreviewSurface's clear coat."""
+        interpolation = "vertex"
+    )
+    color3f[] primvars:athenea:splat:sheenColor = [] (
+        doc = """The sheen over each gaussian, its colour times its weight, 0 to 1: OpenPBR's `sheen_weight` times `sheen_color`, standard_surface's `sheen` times `sheen_color`. A retroreflective fuzz over the base that takes what it reflects from it -- velvet, dust, a tyre's bloom. Black where it is not authored."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:sheenRoughness = [] (
+        doc = """The sheen's roughness, 0 to 1: `sheen_roughness`."""
+        interpolation = "vertex"
+    )
 }
 
 class "AtheneaSplatVisibilityAPI" (

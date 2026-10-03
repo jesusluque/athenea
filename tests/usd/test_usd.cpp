@@ -12054,3 +12054,328 @@ TEST_CASE("an emissive quad converted relit, transferred or baked renders as the
         }
     }
 }
+
+// WHAT A MATERIAL LAYERS OVER ITS BASE IS READ IN EACH VOCABULARY.
+//
+// Proposal 026: a gaussian carries its specular's weight, colour and index,
+// a clear coat and a sheen, read from the material as constants. OpenPBR
+// says `specular_weight`, `coat_weight`, `sheen_weight` times `sheen_color`
+// (its coat at 1.6 by default); standard_surface `specular`, `coat` (0.1
+// rough at 1.5), `sheen`; UsdPreviewSurface `clearcoat` and
+// `clearcoatRoughness` at its own `ior`, and in its specular workflow a
+// `specularColor` that is the reflectivity head on; glTF `clearcoat` and a
+// `sheen_color` with no weight. A material that names none of it is plain,
+// and its conversion carries none.
+TEST_CASE("a material's specular, coat and sheen are read in each vocabulary", "[usd][mesh][materials][lobes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path path = scratch("splat_lobes_read.usda");
+    const char* names[] = {"Open", "OpenPlain", "Standard", "Preview", "PreviewSpecular", "Gltf"};
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n)\n";
+        for (const char* name : names) {
+            out << "def Mesh \"" << name << "\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                << "    int[] faceVertexCounts = [3]\n    int[] faceVertexIndices = [0, 1, 2]\n"
+                   "    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n"
+                   "    uniform token subdivisionScheme = \"none\"\n"
+                << "    rel material:binding = </Looks/" << name << ">\n}\n";
+        }
+        const auto mx = [&out](const char* name, const char* id, const std::string& inputs) {
+            out << "    def Material \"" << name << "\"\n    {\n"
+                << "        token outputs:mtlx:surface.connect = </Looks/" << name << "/S.outputs:out>\n"
+                << "        def Shader \"S\"\n        {\n"
+                << "            uniform token info:id = \"" << id << "\"\n" << inputs
+                << "            token outputs:out\n        }\n    }\n";
+        };
+        const auto preview = [&out](const char* name, const std::string& inputs) {
+            out << "    def Material \"" << name << "\"\n    {\n"
+                << "        token outputs:surface.connect = </Looks/" << name << "/S.outputs:surface>\n"
+                << "        def Shader \"S\"\n        {\n"
+                << "            uniform token info:id = \"UsdPreviewSurface\"\n" << inputs
+                << "            token outputs:surface\n        }\n    }\n";
+        };
+        out << "def Scope \"Looks\"\n{\n";
+        mx("Open", "ND_open_pbr_surface_surfaceshader",
+           "            float inputs:specular_weight = 0.5\n"
+           "            color3f inputs:specular_color = (1, 0.5, 0.25)\n"
+           "            float inputs:specular_ior = 1.45\n"
+           "            float inputs:coat_weight = 1\n            float inputs:coat_roughness = 0.2\n"
+           "            float inputs:coat_ior = 1.45\n"
+           "            float inputs:sheen_weight = 0.5\n            color3f inputs:sheen_color = (1, 1, 0)\n"
+           "            float inputs:sheen_roughness = 0.4\n");
+        mx("OpenPlain", "ND_open_pbr_surface_surfaceshader", "            float inputs:base_metalness = 1\n");
+        mx("Standard", "ND_standard_surface_surfaceshader",
+           "            float inputs:specular = 0.8\n            float inputs:coat = 0.7\n"
+           "            float inputs:sheen = 1\n            color3f inputs:sheen_color = (0.2, 0.4, 0.6)\n");
+        preview("Preview", "            float inputs:clearcoat = 1\n            float inputs:clearcoatRoughness = 0.05\n"
+                           "            float inputs:ior = 1.45\n            float inputs:metallic = 1\n");
+        preview("PreviewSpecular", "            int inputs:useSpecularWorkflow = 1\n"
+                                   "            color3f inputs:specularColor = (0.08, 0.04, 0.02)\n"
+                                   "            float inputs:metallic = 1\n");
+        mx("Gltf", "ND_gltf_pbr_surfaceshader",
+           "            float inputs:clearcoat = 0.5\n            float inputs:clearcoat_roughness = 0.3\n"
+           "            color3f inputs:sheen_color = (0.3, 0.3, 0.3)\n");
+        out << "}\n";
+    }
+    auto builder = geom::MeshBuilder::create(*gpu->library);
+    if (!builder) FAIL(builder.error().toString());
+    auto stage = usd::MeshStage::open(path);
+    if (!stage) FAIL(stage.error().toString());
+    auto meshes = stage->read(*builder, usd::MeshStageOptions{});
+    if (!meshes) FAIL(meshes.error().toString());
+    REQUIRE(meshes->size() == std::size(names));
+    const auto colour = [](const std::array<float, 3>& c, float r, float g, float b) {
+        CHECK(c[0] == Catch::Approx(r));
+        CHECK(c[1] == Catch::Approx(g));
+        CHECK(c[2] == Catch::Approx(b));
+    };
+    for (const usd::StageMesh& mesh : *meshes) {
+        INFO(mesh.path);
+        const usd::StageMaterial& m = mesh.material;
+        if (mesh.path == "/Open") {
+            CHECK(m.layered());
+            CHECK(m.specularWeight == Catch::Approx(0.5F));
+            colour(m.specularColour, 1.0F, 0.5F, 0.25F);
+            CHECK(m.ior == Catch::Approx(1.45F));
+            CHECK(m.coatWeight == Catch::Approx(1.0F));
+            CHECK(m.coatRoughness == Catch::Approx(0.2F));
+            CHECK(m.coatIor == Catch::Approx(1.45F));
+            colour(m.sheenColour, 0.5F, 0.5F, 0.0F);
+            CHECK(m.sheenRoughness == Catch::Approx(0.4F));
+        } else if (mesh.path == "/OpenPlain") {
+            // A dark metal names no layer: plain, and no conversion of it
+            // carries any.
+            CHECK_FALSE(m.layered());
+            CHECK(m.coatIor == Catch::Approx(1.6F));
+        } else if (mesh.path == "/Standard") {
+            CHECK(m.layered());
+            CHECK(m.specularWeight == Catch::Approx(0.8F));
+            CHECK(m.coatWeight == Catch::Approx(0.7F));
+            CHECK(m.coatRoughness == Catch::Approx(0.1F));
+            CHECK(m.coatIor == Catch::Approx(1.5F));
+            colour(m.sheenColour, 0.2F, 0.4F, 0.6F);
+        } else if (mesh.path == "/Preview") {
+            CHECK(m.coatWeight == Catch::Approx(1.0F));
+            CHECK(m.coatRoughness == Catch::Approx(0.05F));
+            CHECK(m.coatIor == Catch::Approx(1.45F));
+            colour(m.sheenColour, 0.0F, 0.0F, 0.0F);
+        } else if (mesh.path == "/PreviewSpecular") {
+            // The reflectivity head on: 0.08 at the index that gives it,
+            // tinted by the colour over its brightest channel; no metal.
+            CHECK(m.metallic == 0.0F);
+            colour(m.specularColour, 1.0F, 0.5F, 0.25F);
+            const float r = (m.ior - 1.0F) / (m.ior + 1.0F);
+            CHECK(r * r == Catch::Approx(0.08F));
+        } else {
+            CHECK(m.coatWeight == Catch::Approx(0.5F));
+            CHECK(m.coatRoughness == Catch::Approx(0.3F));
+            colour(m.sheenColour, 0.3F, 0.3F, 0.3F);
+        }
+    }
+}
+
+namespace {
+
+/// The layers record `i % 5` of a table: plain, a car's lacquer, a tinted
+/// half specular with a coat and a sheen, the ends of every range, a dim
+/// sheen. Twelve floats more a record, as `athenea mesh2splat` writes them.
+io::RawSplats withTableLobes(const io::RawSplats& raw) {
+    static const float kTable[5][12] = {
+        {1.0F, 1.0F, 1.0F, 1.0F, 1.5F, 0.0F, 0.0F, 1.5F, 0.0F, 0.0F, 0.0F, 0.3F},
+        {1.0F, 1.0F, 1.0F, 1.0F, 1.5F, 1.0F, 0.0F, 1.45F, 0.0F, 0.0F, 0.0F, 0.3F},
+        {0.5F, 1.0F, 0.5F, 0.25F, 1.45F, 0.25F, 0.4F, 1.6F, 0.2F, 0.4F, 0.6F, 0.5F},
+        {0.0F, 0.0F, 0.0F, 0.0F, 2.0F, 0.75F, 1.0F, 2.5F, 1.0F, 1.0F, 1.0F, 1.0F},
+        {0.8F, 0.9F, 0.9F, 0.9F, 1.33F, 0.0F, 0.0F, 1.5F, 0.05F, 0.05F, 0.05F, 0.1F}};
+    io::RawSplats out = raw;
+    const uint32_t stride = raw.encoding.floatsPerRecord;
+    out.records.clear();
+    for (uint32_t i = 0; i < raw.count; ++i) {
+        const float* from = raw.records.data() + size_t{i} * stride;
+        out.records.insert(out.records.end(), from, from + stride);
+        out.records.insert(out.records.end(), kTable[i % 5], kTable[i % 5] + 12);
+    }
+    out.encoding.floatsPerRecord = stride + 12;
+    out.encoding.lobes = stride;
+    return out;
+}
+
+}   // namespace
+
+// WHAT A MATERIAL LAYERS OVER ITS BASE GOES OUT AND COMES BACK.
+//
+// Eight primvars of AtheneaSplatLightingAPI in a stage (`specularWeight`,
+// `specularColor`, `specularIor`, `coatWeight`, `coatRoughness`, `coatIor`,
+// `sheenColor`, `sheenRoughness`), three words a splat on the device. The
+// stage read as Hydra reads it must give back the words that went out, and a
+// cloud written without them must come back without them.
+TEST_CASE("a cloud's specular, coat and sheen survive USD", "[usd][gpu][export][lobes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    const io::RawSplats raw = withTableLobes(cloud(3000));
+    auto direct = loader->upload(raw, 0);
+    REQUIRE(direct);
+    REQUIRE(direct->hasLobes());
+    REQUIRE(direct->count == raw.count);
+
+    const fs::path path = scratch("splat_lobes.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.relight = true;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, path, options));
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    REQUIRE(stage);
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath("/World/Splats"));
+    REQUIRE(prim);
+    CHECK(prim.HasAPI(TfToken("AtheneaSplatLightingAPI")));
+    usd::ParticleFieldArrays arrays;
+    const UsdVolParticleField3DGaussianSplat field(prim);
+    field.GetPositionsAttr().Get(&arrays.positions);
+    field.GetOrientationsAttr().Get(&arrays.orientations);
+    field.GetScalesAttr().Get(&arrays.scales);
+    field.GetOpacitiesAttr().Get(&arrays.opacities);
+    int degree = 0;
+    field.GetRadianceSphericalHarmonicsDegreeAttr().Get(&degree);
+    arrays.shDegree = degree;
+    field.GetRadianceSphericalHarmonicsCoefficientsAttr().Get(&arrays.shCoefficients);
+    const auto primvar = [&](const char* name, pxr::VtValue& into, const SdfValueTypeName& type) {
+        const UsdGeomPrimvar written = UsdGeomPrimvarsAPI(prim).GetPrimvar(TfToken(name));
+        REQUIRE(written);
+        CHECK(written.GetTypeName() == type);
+        CHECK(written.GetInterpolation() == UsdGeomTokens->vertex);
+        // Declared by the schema, so it is not a custom attribute.
+        CHECK_FALSE(written.GetAttr().IsCustom());
+        written.Get(&into);
+    };
+    primvar("athenea:splat:specularWeight", arrays.specularWeight, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:specularColor", arrays.specularColour, SdfValueTypeNames->Color3fArray);
+    primvar("athenea:splat:specularIor", arrays.specularIor, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:coatWeight", arrays.coatWeight, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:coatRoughness", arrays.coatRoughness, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:coatIor", arrays.coatIor, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:sheenColor", arrays.sheenColour, SdfValueTypeNames->Color3fArray);
+    primvar("athenea:splat:sheenRoughness", arrays.sheenRoughness, SdfValueTypeNames->FloatArray);
+    const scene::SplatStreams streams = usd::splatStreams(arrays, "lobes streams");
+    auto back = loader->upload(streams, 0);
+    REQUIRE(back);
+    REQUIRE(back->hasLobes());
+    REQUIRE(back->count == direct->count);
+    auto apart = render::countDifferent(*gpu->library, back->lobes, direct->lobes, direct->count * 3);
+    REQUIRE(apart);
+    std::printf("  through Hydra's arrays: %llu of %u words apart from the cloud written\n",
+                static_cast<unsigned long long>(*apart), direct->count * 3);
+    CHECK(*apart == 0);
+
+    // Without them: nothing written, nothing carried.
+    const io::RawSplats plain = cloud(300);
+    const fs::path bare = scratch("splat_lobes_bare.usda");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, plain, bare, options));
+    UsdStageRefPtr bareStage = UsdStage::Open(bare.string());
+    REQUIRE(bareStage);
+    CHECK_FALSE(UsdGeomPrimvarsAPI(bareStage->GetPrimAtPath(SdfPath("/World/Splats")))
+                    .GetPrimvar(TfToken("athenea:splat:coatWeight")));
+    auto none = loader->upload(plain, 0);
+    REQUIRE(none);
+    CHECK_FALSE(none->hasLobes());
+}
+
+// A BALL OF EACH MATERIAL, CONVERTED, RASTERISED, AGAINST THE MESH PATH TRACED.
+//
+// Proposal 026, material by material: what the user wants of a conversion is
+// the mesh's look in the gaussian rasteriser, and the mesh path traced is
+// the ground truth. Five balls under a pale sky and a sun
+// (tests/data/lobes/*.usda) -- a car's coated dark metal, chrome, rubber with
+// a sheen, a plastic whose specular is weighed and tinted, clear glass --
+// converted relit (--no-bake) and baked by ctest beforehand
+// (mesh2splat_lobes_*), are drawn here rasterised and held, each, to the mesh
+// path traced: the mean within a bound, and the 99th percentile of the
+// relative error within another. The paint is what this was written for: its
+// metal is a 0.05 green that reflects next to nothing, its colour is the
+// lacquer's reflection of the sky, and both a cloud with no coat and a bake
+// that dropped its dark metal as polish (`bakeBody`) came out black.
+//
+// Hidden: it reads what those conversions wrote, so ctest runs it after them
+// (lobes_conversions_render_like_the_mesh).
+TEST_CASE("a ball of each material converted relit or baked rasterises as the mesh path traces",
+          "[.][lobes_conversion][usd][gpu][splat][lobes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path data = fs::path(ATHENEA_TEST_DATA_DIR) / "lobes";
+    const fs::path converted(ATHENEA_LOBES_DIR);
+    const auto composed = [&](const std::string& name, const fs::path& source, const fs::path& cloud) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    subLayers = [";
+        if (!cloud.empty()) {
+            out << "@" << cloud.string() << "@, ";
+        }
+        out << "@" << source.string() << "@]\n    upAxis = \"Y\"\n)\n";
+        if (!cloud.empty()) {
+            out << "over \"World\"\n{\n    over \"Ball\" (\n        active = false\n    )\n    {\n    }\n}\n";
+        }
+        out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 3.6)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+        return path;
+    };
+    const uint32_t w = 192, h = 192;
+    const auto draw = [&](const fs::path& path, const char* technique, const std::string& keep) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        if (std::string(technique) == "rt") {
+            (*renderer)->setPathSamples(64);
+            (*renderer)->setPathTotal(1024);
+            (*renderer)->setPathBounces(6);
+        }
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+        if (!image) FAIL(image.error().toString());
+        // Kept beside the run, for a person to look at (EXR, linear).
+        const fs::path picture = scratch(keep + ".exr");
+        (void)io::writeExr(picture, w, h, image->rgba);
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    const auto mean = [&](const gpu::Buffer& image) {
+        auto stats = render::imageStats(*gpu->library, image, w, h);
+        REQUIRE(stats);
+        return (stats->mean[0] + stats->mean[1] + stats->mean[2]) / 3.0;
+    };
+    // THE BOUNDS, A MATERIAL: the mean of the cloud against the mesh's, and
+    // the 99th percentile of the relative error over the frame.
+    struct Bound {
+        const char* material;
+        double      mean;
+        double      p99;
+    };
+    const Bound bounds[] = {{"paint", 0.15, 0.6}, {"chrome", 0.15, 0.6}, {"rubber", 0.15, 0.6},
+                            {"plastic", 0.15, 0.6}, {"glass", 0.25, 0.9}};
+    for (const Bound& bound : bounds) {
+        const fs::path source = data / (std::string(bound.material) + ".usda");
+        const fs::path mesh = composed(std::string("lobes_mesh_") + bound.material + ".usda", source, {});
+        const gpu::Buffer meshTraced = draw(mesh, "rt", std::string("lobes_mesh_") + bound.material);
+        const double meshMean = mean(meshTraced);
+        for (const char* mode : {"relit", "baked"}) {
+            const fs::path cloudFile = converted / (std::string(bound.material) + "_" + mode + ".usda");
+            if (!fs::exists(cloudFile)) {
+                SKIP("'" << cloudFile.string() << "' is not there: ctest converts it first "
+                     "(lobes_conversions_render_like_the_mesh)");
+            }
+            const std::string name = std::string("lobes_cloud_") + bound.material + "_" + mode;
+            const fs::path card = composed(name + ".usda", source, cloudFile);
+            const gpu::Buffer c = draw(card, "raster", name);
+            auto diff = render::compareHdr(*gpu->library, c, meshTraced, w, h);
+            REQUIRE(diff);
+            const double cloudMean = mean(c);
+            std::printf("  %-8s %-6s raster: p99 %.3f relMSE %.2e against the mesh path traced; mean %.4f against "
+                        "the mesh's %.4f\n",
+                        bound.material, mode, diff->p99Relative, diff->relMse, cloudMean, meshMean);
+            INFO(bound.material << " " << mode);
+            CHECK(diff->p99Relative < bound.p99);
+            CHECK(cloudMean == Catch::Approx(meshMean).epsilon(bound.mean));
+        }
+    }
+}

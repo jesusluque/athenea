@@ -32,7 +32,26 @@ public struct DecodeParams {
     public uint normal;
     // Where the three fields of an emitted radiance start, or kNoField.
     public uint emission;
+    // Where the twelve fields of the layers over the base start
+    // (packing's `SplatLobes`, in its record order), or kNoField.
+    public uint lobes;
 };
+
+/// The twelve fields of a record's layers, in packing's record order.
+public SplatLobes lobesOfRecord(StructuredBuffer<float> raw, uint record, uint stride, uint field) {
+    SplatLobes l;
+    l.specularWeight = fieldOf(raw, record, stride, field);
+    l.specularColour = float3(fieldOf(raw, record, stride, field + 1), fieldOf(raw, record, stride, field + 2),
+                              fieldOf(raw, record, stride, field + 3));
+    l.specularIor = fieldOf(raw, record, stride, field + 4);
+    l.coatWeight = fieldOf(raw, record, stride, field + 5);
+    l.coatRoughness = fieldOf(raw, record, stride, field + 6);
+    l.coatIor = fieldOf(raw, record, stride, field + 7);
+    l.sheenColour = float3(fieldOf(raw, record, stride, field + 8), fieldOf(raw, record, stride, field + 9),
+                           fieldOf(raw, record, stride, field + 10));
+    l.sheenRoughness = fieldOf(raw, record, stride, field + 11);
+    return l;
+}
 
 public float fieldOf(StructuredBuffer<float> raw, uint record, uint stride, uint field) {
     return raw[record * stride + field];

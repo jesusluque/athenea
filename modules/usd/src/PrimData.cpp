@@ -202,6 +202,20 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     if (s.emission.values() < uint64_t{s.count} * 3) {
         s.emission = {};
     }
+    // The layers over the base: one value or one colour a gaussian each, or
+    // nothing.
+    const auto wholeOr = [&s](const pxr::VtValue& value, uint32_t per) {
+        scene::FloatStream stream = streamOf(value);
+        return stream.values() < uint64_t{s.count} * per ? scene::FloatStream{} : stream;
+    };
+    s.specularWeight = wholeOr(a.specularWeight, 1);
+    s.specularColour = wholeOr(a.specularColour, 3);
+    s.specularIor = wholeOr(a.specularIor, 1);
+    s.coatWeight = wholeOr(a.coatWeight, 1);
+    s.coatRoughness = wholeOr(a.coatRoughness, 1);
+    s.coatIor = wholeOr(a.coatIor, 1);
+    s.sheenColour = wholeOr(a.sheenColour, 3);
+    s.sheenRoughness = wholeOr(a.sheenRoughness, 1);
     // Which ways out are open: bits, like the ids, and only beside a transfer.
     if (!s.transferDirect.empty() && a.shadowBits.IsHolding<pxr::VtIntArray>()) {
         const pxr::VtIntArray& bits = a.shadowBits.UncheckedGet<pxr::VtIntArray>();

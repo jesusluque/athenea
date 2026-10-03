@@ -268,6 +268,23 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         // And the light it gives off by itself, a lamp's shade or a screen.
         static const TfToken kEmission("athenea:splat:emission");
         arrays.emission = held(kEmission);
+        // And what its material layered over the base: specular, coat, sheen.
+        static const TfToken kSpecularWeight("athenea:splat:specularWeight");
+        static const TfToken kSpecularColour("athenea:splat:specularColor");
+        static const TfToken kSpecularIor("athenea:splat:specularIor");
+        static const TfToken kCoatWeight("athenea:splat:coatWeight");
+        static const TfToken kCoatRoughness("athenea:splat:coatRoughness");
+        static const TfToken kCoatIor("athenea:splat:coatIor");
+        static const TfToken kSheenColour("athenea:splat:sheenColor");
+        static const TfToken kSheenRoughness("athenea:splat:sheenRoughness");
+        arrays.specularWeight = held(kSpecularWeight);
+        arrays.specularColour = held(kSpecularColour);
+        arrays.specularIor = held(kSpecularIor);
+        arrays.coatWeight = held(kCoatWeight);
+        arrays.coatRoughness = held(kCoatRoughness);
+        arrays.coatIor = held(kCoatIor);
+        arrays.sheenColour = held(kSheenColour);
+        arrays.sheenRoughness = held(kSheenRoughness);
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();

@@ -11,6 +11,7 @@
 // sum: reflected plus transmitted, over roughness and angle, never above one.
 module glass_energy_check;
 import athenea.splat.splat_relight;
+import athenea.common.packing;
 
 struct GlassEnergyParams {
     uint  steps;
@@ -38,6 +39,7 @@ void glassEnergyCheck(uint3 tid: SV_DispatchThreadID) {
         for (uint j = 0; j < params.steps; ++j) {
             const float nDotV = (float(j) + 0.5) / float(params.steps);
             SplatSurface s;
+            s.lobes = plainLobes();
             s.thinWalled = false;
             s.hasShadowBits = false;
             s.albedo = float3(1.0);

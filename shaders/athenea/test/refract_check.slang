@@ -15,6 +15,7 @@
 // existed.
 module refract_check;
 import athenea.splat.splat_relight;
+import athenea.common.packing;
 
 struct RefractCheckParams {
     uint  angles;       ///< incidences tried between 0 and 89 degrees
@@ -39,6 +40,7 @@ void refractCheck(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     SplatSurface s;
+    s.lobes = plainLobes();
     s.thinWalled = false;
     s.hasShadowBits = false;
     s.normal = float3(0.0, 0.0, 1.0);

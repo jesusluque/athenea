@@ -13,6 +13,9 @@
 //                             2 x 16 bits (`packNormal`), apart from the frame
 //   emission   uint           optional: the radiance the surface gives off by
 //                             itself, linear RGB9E5 (`packRgb9e5`)
+//   lobes      uint * 3       optional: the layers over the base a material
+//                             names -- specular weight and colour, coat,
+//                             sheen -- a byte a value (`packLobes`)
 //
 // 32 bytes before harmonics, against openFXplayer's 64 float32. Why each
 // field is what it is:
@@ -162,6 +165,99 @@ public float3 unpackRgb9e5(uint word) {
     const float step = exp2(float(int(word >> 27) - 24));
     return float3(float(word & 511u), float((word >> 9) & 511u), float((word >> 18) & 511u)) * step;
 }
+
+/// WHAT A MATERIAL LAYERS OVER ITS BASE, PER GAUSSIAN (`GpuSplats::lobes`).
+///
+/// The base -- colour, metallic, roughness, transmission -- is `pbr`'s word.
+/// What OpenPBR, standard_surface and UsdPreviewSurface put over it is here,
+/// in the units their own inputs take, for the lobes `splat_relight` already
+/// evaluates: no lobe is new, these are the weights and parameters of the
+/// dielectric, conductor and sheen it has.
+///
+///   specularWeight  0..1   scales the dielectric reflection
+///   specularColour  0..1   tints the dielectric reflection; a metal's edge
+///   specularIor     1..3   the dielectric's index (0.04 head on at 1.5)
+///   coatWeight      0..1   a clear dielectric layer over all of it
+///   coatRoughness   0..1
+///   coatIor         1..3
+///   sheenColour     0..1   the sheen's colour times its weight
+///   sheenRoughness  0..1
+public struct SplatLobes {
+    public float  specularWeight;
+    public float3 specularColour;
+    public float  specularIor;
+    public float  coatWeight;
+    public float  coatRoughness;
+    public float  coatIor;
+    public float3 sheenColour;
+    public float  sheenRoughness;
+};
+
+/// What a gaussian with no lobes reflects with: the specular of every
+/// cloud before these existed -- weight one, white, an index of 1.5 -- and
+/// no coat and no sheen. Packed, it unpacks to exactly this (1.5 is a whole
+/// step of the index's byte), so a cloud that carries it and one that does
+/// not are the same picture.
+public SplatLobes plainLobes() {
+    SplatLobes l;
+    l.specularWeight = 1.0;
+    l.specularColour = float3(1.0);
+    l.specularIor = 1.5;
+    l.coatWeight = 0.0;
+    l.coatRoughness = 0.0;
+    l.coatIor = 1.5;
+    l.sheenColour = float3(0.0);
+    l.sheenRoughness = 0.0;
+    return l;
+}
+
+uint lobeByte(float v) {
+    return uint(saturate(v) * 255.0 + 0.5);
+}
+
+/// An index of refraction in a byte: `1 + byte / 128`, 1 to 2.99 in steps of
+/// 0.008 -- 1.5 and 1.25 exactly, every glass and lacquer there is.
+uint iorByte(float ior) {
+    return uint(clamp((ior - 1.0) * 128.0 + 0.5, 0.0, 255.0));
+}
+
+float byteIor(uint b) {
+    return 1.0 + float(b & 0xFFu) / 128.0;
+}
+
+/// Three words: (specular colour, weight), (coat weight, roughness, index,
+/// the specular's index), (sheen colour, roughness).
+public uint3 packLobes(SplatLobes l) {
+    const uint w0 = lobeByte(l.specularColour.x) | (lobeByte(l.specularColour.y) << 8) |
+                    (lobeByte(l.specularColour.z) << 16) | (lobeByte(l.specularWeight) << 24);
+    const uint w1 = lobeByte(l.coatWeight) | (lobeByte(l.coatRoughness) << 8) | (iorByte(l.coatIor) << 16) |
+                    (iorByte(l.specularIor) << 24);
+    const uint w2 = lobeByte(l.sheenColour.x) | (lobeByte(l.sheenColour.y) << 8) |
+                    (lobeByte(l.sheenColour.z) << 16) | (lobeByte(l.sheenRoughness) << 24);
+    return uint3(w0, w1, w2);
+}
+
+float byteOf(uint word, uint at) {
+    return float((word >> (at * 8)) & 0xFFu) / 255.0;
+}
+
+public SplatLobes unpackLobes(uint3 w) {
+    SplatLobes l;
+    l.specularColour = float3(byteOf(w.x, 0), byteOf(w.x, 1), byteOf(w.x, 2));
+    l.specularWeight = byteOf(w.x, 3);
+    l.coatWeight = byteOf(w.y, 0);
+    l.coatRoughness = byteOf(w.y, 1);
+    l.coatIor = byteIor(w.y >> 16);
+    l.specularIor = byteIor(w.y >> 24);
+    l.sheenColour = float3(byteOf(w.z, 0), byteOf(w.z, 1), byteOf(w.z, 2));
+    l.sheenRoughness = byteOf(w.z, 3);
+    return l;
+}
+
+/// The twelve floats a record keeps them in (`io::SplatEncoding::lobes`), in
+/// this order: specular weight, colour (3), index; coat weight, roughness,
+/// index; sheen colour (3), roughness.
+public static const uint kLobeFields = 12;
 
 public uint packHalves(float a, float b) {
     return (f32tof16(a) & 0xFFFFu) | ((f32tof16(b) & 0xFFFFu) << 16);
