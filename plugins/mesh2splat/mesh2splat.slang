@@ -176,8 +176,9 @@ struct M2sParams {
     uint4 layerWidth;
     uint4 layerHeight;
     uint4 layerStride;
-    float sheenWeight;       // the sheen's weight alone
-    float3 sheenColourAlone; // and its colour alone
+    // The sheen's weight alone, then its colour alone: one float4, since a
+    // float3 after a float is aligned to sixteen on Metal (560 bytes, not 544).
+    float4 sheenAlone;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -721,9 +722,9 @@ void m2sLayersAt(const M2sTriangle t, float3 bary, inout float4 specular, inout 
         } else if (target == 4) {
             coat.y = v.x;
         } else if (target == 5) {
-            sheen.xyz = v * params.sheenWeight;
+            sheen.xyz = v * params.sheenAlone.x;
         } else if (target == 6) {
-            sheen.xyz = params.sheenColourAlone * v.x;
+            sheen.xyz = params.sheenAlone.yzw * v.x;
         } else if (target == 7) {
             sheen.w = v.x;
         }
