@@ -123,6 +123,7 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
     const bool normals = cloud.hasNormals();
     auto splats = packed(device, n, cloud.restPerColour, cloud.shWords, "lod.splats", normals);
     if (!splats) return std::move(splats).error();
+    splats->linear = cloud.linear;   // reordered, in the space they were in
     {
         gpu::CommandBatch batch(device);
         morton_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -225,6 +226,8 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
         if (!moments) return std::move(moments).error();
         auto gaussians = packed(device, level.groups, keep, cloud.shWords, "lod.merged", normals);
         if (!gaussians) return std::move(gaussians).error();
+        // Merged in the space the cloud keeps its colours in (lod_leaf_moments).
+        gaussians->linear = cloud.linear;
         gpu::CommandBatch batch(device);
         if (r == finest) {
             leafMoments_.dispatch(batch, {level.groups, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -519,6 +522,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             frame.capacity = std::max(capacity, 1u);
         }
         frame.cloud.source = lod.splats.source;
+        frame.cloud.linear = lod.splats.linear;
         frame.cloud.count = drawn;
         frame.cloud.declared = lod.count;
         frame.cloud.bounds = lod.splats.bounds;
@@ -785,6 +789,7 @@ Result<DecimateResult> Decimator::decimate(const LodCloud& lod, const gpu::Buffe
     auto ranges = buffer(device, std::max(kept, 1u), 8, "decimate.ranges");
     if (!ranges) return std::move(ranges).error();
     out->source = lod.splats.source;
+    out->linear = lod.splats.linear;
     out->count = kept;
     out->declared = kept;
     out->bounds = lod.splats.bounds;

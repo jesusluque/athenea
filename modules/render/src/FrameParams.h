@@ -55,7 +55,9 @@ inline void setFrame(rhi::ShaderCursor cursor, const FrameCommon& f) {
     p["bgG"].setData(f.settings->background[1]);
     p["bgB"].setData(f.settings->background[2]);
     p["bgA"].setData(f.settings->background[3]);
-    p["linearise"].setData(uint32_t{f.settings->linearise ? 1u : 0u});
+    // Every splat is blended in linear light; what space a cloud's colours
+    // are in is the cloud's (setCloudSpace), set at its own projection.
+    p["linearCloud"].setData(uint32_t{0});
     p["hasUnder"].setData(uint32_t{0});
     // No sky prepared unless the dispatch that has one says so after this.
     p["envLights"].setData(uint32_t{0});
@@ -86,6 +88,13 @@ inline void setObject(rhi::ShaderCursor cursor, const Mat4& objectToView, const 
     p["eyeZ"].setData(static_cast<float>(eyeObject.z));
 }
 
+
+/// The space a cloud's colours are in (`scene::GpuSplats::linear`), set at
+/// every projection dispatch: the projection makes a capture's sRGB light a
+/// splat at a time, and takes a cloud that holds light as it is.
+inline void setCloudSpace(rhi::ShaderCursor cursor, const scene::GpuSplats& splats) {
+    cursor["params"]["linearCloud"].setData(uint32_t{splats.linear ? 1u : 0u});
+}
 
 /// What moves during the shutter, per instance. Called at every projection
 /// dispatch, including a still one: a constant buffer reused between

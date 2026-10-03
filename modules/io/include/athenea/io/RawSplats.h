@@ -67,10 +67,10 @@ struct SplatEncoding {
     /// SpzByte: log scale = byte / 16 - 10.
     enum class Scale : uint32_t { Log = 0, Linear = 1, SpzByte = 2 };
     /// SpzByte: SH DC = (byte / 255 - 0.5) / 0.15.
-    /// LinearLight: the record holds light, not a trained colour. A cloud is
-    /// carried and blended in the space it was trained in -- sRGB for every
-    /// trainer there is -- so a conversion, whose colours come from a
-    /// material in linear light, says so here and the decode encodes them.
+    /// LinearLight: the record holds light, not a trained colour: a
+    /// conversion's, whose colours come from a material in linear light. It
+    /// is stored as it is, like Linear, and makes the cloud linear
+    /// (`RawSplats::linear`) whatever that says.
     enum class Colour : uint32_t { ShDc = 0, Linear = 1, Byte = 2, SpzByte = 3, LinearLight = 4 };
     /// Byte: w x y z bytes, (v - 128) / 128.
     /// FirstThree: x y z bytes at rotX..rotZ, v / 127.5 - 1, w from unit length (SPZ v2).
@@ -97,6 +97,13 @@ struct RawSplats {
     std::string        source;
     uint32_t           count = 0;
     SplatEncoding      encoding;
+    /// WHICH SPACE THE COLOURS ARE IN. Every gaussian is blended in linear
+    /// light; a capture (PLY, SPZ, SOG, .splat) was trained on sRGB
+    /// photographs and its colours are sRGB, decoded a splat at a time when
+    /// they are drawn. True for a cloud that holds light already -- what
+    /// `athenea mesh2splat` writes, `primvars:athenea:splat:linear` -- whose
+    /// colours are drawn as they are.
+    bool               linear = false;
     std::vector<float> records;   ///< count * encoding.floatsPerRecord
 };
 

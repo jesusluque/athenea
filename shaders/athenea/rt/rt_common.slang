@@ -45,7 +45,7 @@ public struct RtParams {
     public float v10; public float v11; public float v12; public float v13;
     public float v20; public float v21; public float v22; public float v23;
     public uint  shLimit;
-    public uint  linearise;
+    public uint  linearCloud;    // shade: 1 this cloud's colours are linear light, 0 sRGB (common/color.slang)
     public float bgR; public float bgG; public float bgB; public float bgA;
     public uint  restPerColour;  // shade: this cloud's harmonics
     public uint  instances;      // bvh render: instances to traverse

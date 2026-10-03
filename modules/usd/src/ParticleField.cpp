@@ -261,6 +261,10 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         // The shading normal a conversion keeps apart from the frame.
         static const TfToken kNormal("athenea:splat:normal");
         arrays.normals = held(kNormal);
+        // The space its colours are in: light where it says so, a capture's
+        // sRGB where it does not (common/color.slang, `cloudLight`).
+        static const TfToken kLinear("athenea:splat:linear");
+        arrays.linear = boolOf(held(kLinear), false);
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();

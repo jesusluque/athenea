@@ -194,7 +194,7 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `input` | ruta, obligatoria | — | una escena (`.usd`, `.usda`, `.usdc`: su primer ParticleField gaussiano), o `.ply`, `.splat`, `.spz`, `.sog` |
 | `output` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd` |
 | `--prim` | ruta | el primero | el ParticleField que leer, donde la escena tiene más de uno |
-| `--colour-tolerance` | 0..1 | `0.05` | cuánto puede alejarse el color o la opacidad de una gaussiana de la que la sustituye antes de contar como distinta |
+| `--colour-tolerance` | 0..1 | `0.05` | cuánto puede alejarse el color o la opacidad de una gaussiana de la que la sustituye antes de contar como distinta. El color se compara en el espacio propio de la nube: sRGB para una captura, luz lineal para una nube que dice `primvars:athenea:splat:linear` -- donde el mismo número es un paso más grueso en las sombras y más fino en las luces |
 | `--outliers` | 0..1 | `0.05` | la fracción de las gaussianas que representa una fusión que puede ser distinta |
 | `--flat-tolerance` | 0..1 | `0.08` | donde las gaussianas son discos, cuánto más gruesa que ellos puede ser una fusión, frente a su anchura |
 | `--reach` | 0.1..10 | `1.5` | a cuántas de sus desviaciones típicas puede estar una gaussiana de la fusión que la sustituye |
@@ -784,7 +784,10 @@ Una nube que guarda normales de sombreado (las de una conversión,
 `primvars:athenea:splat:normal`) las guarda en su `.athc`: cuatro bytes más por
 gaussiana, y en los niveles fundidos la media ponderada de lo que representan
 hecha unitaria de nuevo. Es la versión 2 del formato; un fichero de la versión
-1, que no tiene, se sigue leyendo.
+1, que no tiene, se sigue leyendo. La misma versión guarda si los colores son
+luz lineal (`primvars:athenea:splat:linear`) en los flags de su cabecera (bit
+1, junto al bit 0 de las normales); un fichero escrito antes lo tiene a cero y
+se lee como una captura, sRGB.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
 dibujan su gaussiana fundida, así que la nube está pero roma, y se afina según
@@ -889,6 +892,7 @@ la radiancia que lleva.
 |---|---|---|
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
+| `primvars:athenea:splat:linear` | bool | `false` |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
@@ -938,6 +942,17 @@ a todo lo geométrico (la huella, dónde corta un rayo al disco). `athenea
 mesh2splat` la escribe siempre (doce bytes por gaussiana en el fichero, cuatro
 en el dispositivo); un esqueleto que lleva la nube la gira igual que gira el
 marco; una captura no tiene.
+`linear` dice que los colores (los armónicos, de todo grado) son luz lineal,
+Rec.709 lineal -- el espacio de trabajo en el que se mezcla toda gaussiana -- y
+se dibujan tal cual. Sin él se toman por los de una captura: el sRGB que ajusta
+todo entrenador, hecho lineal gaussiana a gaussiana al evaluar los armónicos,
+antes de la mezcla. El sRGB no aparece en ningún otro sitio hasta que se
+enseña una imagen (la transformada de vista, OpenColorIO). `athenea
+mesh2splat` lo escribe en toda nube que hace -- un albedo, el albedo de un
+transfer, un bake -- y una nube que se vuelve a escribir (`athenea decimate`,
+un export) lo conserva. El aspecto de una captura se mueve un poco: donde se
+solapan splats, la media de su luz es más clara que la luz de su media
+(decisions.md tiene la medida).
 
 **`AtheneaSplatSkinningAPI`** — los joints que llevan una nube.
 
@@ -983,6 +998,10 @@ de un prim: conservar lo que está dentro de un volumen, quitarlo, o graduarlo.
 | `primvars:athenea:edit:minOpacity` | float | `0` |
 | `primvars:athenea:edit:maxScale` | float | `0` |
 | `primvars:athenea:edit:invert` | bool | `false` |
+
+Un grade (`tint`, `saturation`, `brightness`) trabaja sobre el color de cada
+splat en luz lineal, como la mezcla: un brillo de 2 dobla la luz, y una
+captura graduada aquí no coincide con los mismos números aplicados a su sRGB.
 
 **`AtheneaStreamedAssetAPI`** — una nube dibujada desde un `.athc`.
 

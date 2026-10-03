@@ -150,7 +150,11 @@ private:
 /// HOW MUCH A DECIMATION MAY LOSE, and what it did.
 struct DecimateSettings {
     /// How far a gaussian's colour or opacity may be from the one that
-    /// replaces it, on 0..1, before it counts as one that differs.
+    /// replaces it, before it counts as one that differs: an absolute
+    /// difference of the base colour in the cloud's own space -- sRGB code
+    /// values over 255 for a capture, linear light for a cloud that holds it
+    /// (`GpuSplats::linear`), where 0.05 is a coarser step in the darks and a
+    /// finer one in the brights than it is in sRGB -- and of opacity.
     float colourTolerance = 0.05F;
     /// The share of what a merge stands for -- its reach, weighted by its
     /// density -- that may differ: a few is noise, many is an edge.

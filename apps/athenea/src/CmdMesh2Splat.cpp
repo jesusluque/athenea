@@ -581,13 +581,16 @@ public:
         raw.encoding.floatsPerRecord = 20 + raw.encoding.restPerColour * 3;
         raw.encoding.opacity_ = io::SplatEncoding::Opacity::Linear;
         raw.encoding.scale_ = io::SplatEncoding::Scale::Linear;
-        // Not baked, the colours come from a material in linear light and the
-        // export encodes them into the space a cloud is blended in. Baked,
-        // the harmonics are already fitted in that space and already in the
-        // form a cloud keeps them (the kernel shifted the constant term), so
-        // they pass through as they are.
+        // LINEAR LIGHT, BAKED OR NOT. Not baked, the colours are a
+        // material's albedo; baked, the harmonics are fitted to the light the
+        // paths returned, already in the form a cloud keeps them (the kernel
+        // shifted the constant term). Neither is a capture's sRGB, and the
+        // file says so (`primvars:athenea:splat:linear`): every cloud is
+        // blended in linear light, and this one's colours are drawn as they
+        // are.
         raw.encoding.colour = options_->bake ? io::SplatEncoding::Colour::ShDc
                                              : io::SplatEncoding::Colour::LinearLight;
+        raw.linear = true;
         raw.encoding.rest = io::SplatEncoding::Rest::Float;
         raw.encoding.rotation = io::SplatEncoding::Rotation::Float;
 
@@ -1595,6 +1598,8 @@ void addMesh2Splat(CLI::App& app) {
                 // frame lights it whole; a radiance bake keeps the light on the
                 // body and the frame adds only the polish.
                 options.litBody = o->bake && !o->transfer;
+                // Light, all of it: the albedo, the transfer's and the bake's.
+                options.linear = true;
                 // The matte's ancestry, gaussian by gaussian, as the conversion
                 // inherited it from the prims it read.
                 options.cryptoObject = converter.cryptoIds();

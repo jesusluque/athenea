@@ -284,7 +284,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
                                highHalf(shape[row + 3]));
     const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
     const float3 dir = normalize(posOpacity.xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
-    float3 colour = max(base + evaluateRest(sh, i * params.shWords, degree, dir), 0.0);
+    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
     if (params.relight != 0) {
         // AtheneaSplatLightingAPI: the radiance a capture was baked with replaced
         // by what this scene's lights put on it. What that means is in
@@ -301,12 +301,11 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         SplatSurface surface;
         surface.position = relightToWorld(w0, w1, w2, posOpacity.xyz);
         surface.normal = relightDirectionToWorld(w0, w1, w2, cloudNormal);
-        // What the cloud shows in this direction, decoded: the stored colours
-        // are in the space a cloud is blended in and an albedo is light. The
-        // harmonics are part of it -- a baked cloud keeps the body's own
+        // What the cloud shows in this direction, in linear light already.
+        // The harmonics are part of it -- a baked cloud keeps the body's own
         // change with direction in them -- so it is the evaluated colour and
         // not the constant term alone.
-        surface.albedo = params.linearise != 0 ? srgbToLinear(colour) : max(colour, 0.0);
+        surface.albedo = colour;
         surface.metallic = params.hasPbr != 0 ? pbrMetallic(pbr[i]) : 0.0;
         surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[i]) : 1.0;
         surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
@@ -343,13 +342,12 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         surface.hasShadowBits = params.shadowBits != 0 && params.transferCount >= 9;
         surface.shadowBits = surface.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
         const uint shadowLights = params.shadowRays != 0 ? params.shadowLights : 0;
-        colour = relitForBlend(relitSplat(surface, normalize(eye - surface.position), lights,
-                                          params.lightCount, params.categoriesLo, params.categoriesHi,
-                                          shadowFactors, slot * params.shadowLights, shadowLights,
-                                          envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
-                                          envSun, transfer,
-                                          params.transferIndirect != 0),
-                               params.linearise != 0);
+        colour = relitSplat(surface, normalize(eye - surface.position), lights,
+                            params.lightCount, params.categoriesLo, params.categoriesHi,
+                            shadowFactors, slot * params.shadowLights, shadowLights,
+                            envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
+                            envSun, transfer,
+                            params.transferIndirect != 0);
     }
     if (fate.graded) {
         colour = editGrade(params.edit, colour);

@@ -167,6 +167,7 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
             s.thinWalled = {std::as_bytes(std::span<const int>(thin.cdata(), thin.size())), false, false};
         }
     }
+    s.linear = a.linear;
     // The shading normal: three floats a gaussian, or nothing.
     s.normals = streamOf(a.normals);
     if (s.normals.values() < uint64_t{s.count} * 3) {

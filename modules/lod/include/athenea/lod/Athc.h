@@ -10,8 +10,9 @@
 //   aligned       each chunk: positions, shape, SH, finest group (per splat)[, normals]
 //
 // Version 2 adds the header's `flags`; bit 0 says every block ends with the
-// shading normals (one word an element, GpuSplats::normals). Version 1 files,
-// which have none, are still read.
+// shading normals (one word an element, GpuSplats::normals), and bit 1 that
+// the colours are linear light (GpuSplats::linear) rather than a capture's
+// sRGB. Version 1 files, which have neither, are still read.
 //
 // Every block starts on a 4096-byte page, so a chunk maps and faults in alone.
 // Little-endian, the device's own packing (athenea/common/packing.slang).

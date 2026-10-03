@@ -90,8 +90,9 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
 4. Los puntos, donde los haya, se rasterizan en una capa propia y se componen
    con las mallas por z de vista (`layers_nearest.slang`).
 5. Esa capa opaca se le entrega a `render::TileRasterizer` como su `under`, y
-   los splats se proyectan, ordenan, reparten por tiles y mezclan encima. Las
-   etapas del pipeline están nombradas en `shaders/athenea/splat/frame.slang`.
+   los splats se proyectan, ordenan, reparten por tiles y mezclan encima, en
+   luz lineal como la capa que tienen debajo. Las etapas del pipeline están
+   nombradas en `shaders/athenea/splat/frame.slang`.
 6. Los domes se pintan detrás, se aplica la exposición y el frame está. Lo que
    lo convierte en algo que mirar es `technique::DisplayTransform`, y solo lo
    llaman un viewer o una vista previa.
@@ -124,6 +125,16 @@ comprobación.
   cada splat conservado. Cualquier otra cosa que un fichero guarde por
   gaussiana y un kernel lea por splat pasa por `CloudLoader::keptOnly`, y de
   vuelta por `toRecords` para escribirse.
+- **Todo splat se mezcla en luz lineal**, Rec.709 lineal, como las mallas, los
+  puntos y las luces; el sRGB sólo aparece donde se enseña una imagen
+  (`DisplayTransform`, OpenColorIO). Una nube dice en qué espacio están sus
+  colores (`GpuSplats::linear`, `primvars:athenea:splat:linear`): los de una
+  captura son el sRGB en el que se entrenó y se hacen lineales splat a splat,
+  justo después de evaluar los armónicos (`common/color.slang`, `cloudLight`),
+  en toda proyección -- la del rasterizador, el shade del trazador de rayos,
+  las de las referencias. Nada después decodifica ni codifica un color: ni la
+  mezcla, ni la reiluminación, ni un grade, ni un bake. Todo lo que copia una
+  nube copia el flag.
 - Un fichero declara `module <nombre>;` igual que su nombre de fichero. Un
   hermano se importa a secas (`import frame;`), otra área por su ruta con
   puntos (`import athenea.common.packing;`). Todo lo que use otro módulo va
@@ -747,15 +758,17 @@ discos, así que uno de ellos visto de canto en una silueta es una astilla
 negra — que es lo que el anillo de oro del peón tenía por fleco, cuarenta y
 cuatro de ellas en 729 073.
 
-**El fit se hace en luz lineal**, y sólo el resultado ajustado se lleva al
-espacio en el que se blendea una nube: el término constante por la curva sRGB,
-y las bandas que le dan forma por su pendiente ahí. Se hizo sample a sample
-durante un tiempo, que es otra cantidad — la curva es cóncava, así que la
-media de los samples codificados es más oscura que la codificación de su media
-allí donde los samples difieren. Donde coinciden, que es un cielo abierto, las
-dos son la misma, y por eso pasaban todos los tests del bake. Donde un
-occluder los hace diferir, un punto junto a un muro con medio hemisferio
-tapado se ajustaba en 0.2098 contra los 0.309 de luz que realmente tiene.
+**El fit se hace en luz lineal, y se queda ahí**: una nube se mezcla en luz
+lineal, así que el bake escribe luz y el fichero lo dice
+(`primvars:athenea:splat:linear`). Lo que sigue haciendo `bakeEncode` es acotar
+la serie: se relee sobre la mitad de la esfera ajustada, se recorta entre nada
+y el sample más brillante que devolvieron los caminos, se refleja sobre la
+otra mitad y se proyecta sobre la esfera entera. Mientras las nubes se
+mezclaban en sRGB el fit también se codificaba — sample a sample al
+principio, que es otra cantidad (la curva es cóncava, así que un punto junto a
+un muro con medio hemisferio tapado se ajustaba en 0.2098 contra los 0.309 de
+luz que tiene), y luego el fit entero. Ninguna de las dos codificaciones
+existe ya.
 
 **Un bake que mide el cielo en vez de la luz.** `--transfer` lanza los mismos
 rayos con una tercera variante del kernel, `kTransfer`. El primer vértice no
@@ -882,7 +895,8 @@ armónicos y sus coeficientes, el extent — y una cámara que lo encuadra salvo
 `--no-camera`.
 
 Al lado, los primvars que dicen lo que necesita este motor y los schemas que
-los declaran: `AtheneaSplatLightingAPI` (`relight`, `litBody`, y metallic,
+los declaran: `AtheneaSplatLightingAPI` (`relight`, `litBody`, `linear` --
+los colores de toda conversión son luz lineal -- y metallic,
 roughness, transmission y la normal de sombreado por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
 tiene esqueleto, `AtheneaSplatCryptomatteAPI` con un id por gaussiana y el
 manifest que los nombra, y `AtheneaSplatVisibilityAPI` una vez que ha corrido `athenea

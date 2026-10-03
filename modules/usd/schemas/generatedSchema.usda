@@ -35,7 +35,7 @@ authored nearer a cloud overrides it."""
         interpolation = "constant"
     )
     color3f primvars:athenea:edit:tint = (1, 1, 1) (
-        doc = "Multiplies the colour of graded splats, in the encoded space the cloud was trained in."
+        doc = "Multiplies the colour of graded splats, in linear light."
         interpolation = "constant"
     )
     float primvars:athenea:edit:saturation = 1 (
@@ -183,6 +183,14 @@ no standard base to stand on, and says so in its own doc."""
 scene's light on it, which is what `athenea mesh2splat` bakes -- so relighting adds
 the polish (the reflection) and nothing else. Off, the colours are an albedo
 and relighting lights them."""
+        interpolation = "constant"
+    )
+    bool primvars:athenea:splat:linear = 0 (
+        doc = """The colours are linear light (linear Rec.709, the working space),
+which is what `athenea mesh2splat`, an export and a bake write. Off, they are
+the sRGB a capture was trained in -- every trainer's -- and are decoded one
+gaussian at a time when drawn. Either way gaussians are blended in linear
+light, and sRGB appears only where an image is shown."""
         interpolation = "constant"
     )
     float primvars:athenea:splat:ior = 0 (
