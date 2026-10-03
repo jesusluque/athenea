@@ -164,6 +164,17 @@ struct StageMesh {
     std::vector<StageSubset> subsets;
 };
 
+/// A camera of the stage, as a conversion that sizes its cells by what that
+/// camera sees reads it: where it stands and the lens it looks through.
+struct StageCamera {
+    /// Camera to world, row major: three rows of four, the position in the
+    /// fourth column (as `StageMesh::toWorld`).
+    std::array<float, 12> toWorld{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+    float                 focalLength = 50.0F;          ///< in the aperture's units (tenths of a scene unit)
+    float                 horizontalAperture = 20.955F;
+    float                 nearClip = 1.0F;              ///< the clipping range's near end, scene units
+};
+
 struct MeshStageOptions {
     /// A prim path: only meshes at or under it are read. Empty is the lot.
     std::string prim;
@@ -227,6 +238,10 @@ public:
     [[nodiscard]] char upAxis() const;
     /// The stage's metersPerUnit, USD's fallback included.
     [[nodiscard]] double metersPerUnit() const;
+
+    /// The `UsdGeomCamera` at `path`, at `time`: its world transform, focal
+    /// length, horizontal aperture and near clip, as authored.
+    [[nodiscard]] Result<StageCamera> camera(const std::string& path, double time) const;
 
     /// The layers the stage was opened from, for a message.
     [[nodiscard]] std::string source() const;

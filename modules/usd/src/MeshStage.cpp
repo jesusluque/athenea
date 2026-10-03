@@ -17,6 +17,7 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/pointInstancer.h>
@@ -620,6 +621,30 @@ double MeshStage::metersPerUnit() const {
         return 1.0;
     }
     return UsdGeomGetStageMetersPerUnit(impl_->stage);
+}
+
+Result<StageCamera> MeshStage::camera(const std::string& path, double time) const {
+    if (impl_ == nullptr) {
+        return Error(ErrorCode::InvalidArgument, "no stage");
+    }
+    const SdfPath at(path);
+    if (!at.IsAbsolutePath()) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': not an absolute prim path", path);
+    }
+    const UsdGeomCamera camera(impl_->stage->GetPrimAtPath(at));
+    if (!camera) {
+        return Error::make(ErrorCode::NotFound, "'{}': no camera there", path);
+    }
+    const UsdTimeCode when(time);
+    StageCamera out;
+    camera.GetFocalLengthAttr().Get(&out.focalLength, when);
+    camera.GetHorizontalApertureAttr().Get(&out.horizontalAperture, when);
+    GfVec2f clipping(1.0F, 1000000.0F);
+    camera.GetClippingRangeAttr().Get(&clipping, when);
+    out.nearClip = clipping[0];
+    UsdGeomXformCache transforms(when);
+    out.toWorld = rowsOf(transforms.GetLocalToWorldTransform(camera.GetPrim()));
+    return out;
 }
 
 std::string MeshStage::source() const {

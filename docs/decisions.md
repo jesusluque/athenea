@@ -9468,3 +9468,42 @@ carries red and blue, within 10 % of each other, and no green. Before, it was
 all green. The new binary reads what the command wrote, since the conversion
 is the command's: ctest runs the commands first (`FIXTURES_SETUP`) and every
 number is counted by `test/mesh2splat_output_check`.
+
+**The budget is shared, and a camera can decide the cell.** `--max-splats`
+was spent in mesh order: the first meshes whole, the last not at all, and a
+car whose wheels came after its body had none. Every piece is now counted
+before any is converted -- a run of the effect with room for one gaussian,
+since its count and scan cover everything a run would write -- and where the
+total is over the budget each gets `budget x wanted / total` (and one at
+least) and walks a cell `sqrt(wanted / share)` times coarser
+(`usd/mesh2splat_cells` hands the effect the resolution and bounds divided and
+multiplied by that). Proportional shares and one density floor are the same
+thing here: a cell `f` times coarser covers the surface with `f^2` fewer
+gaussians, so dividing the budget in proportion is coarsening every piece
+alike. A piece the coarsening leaves a little over its share keeps its first
+triangles' gaussians, as before; the warning and the log line say so. The
+count costs one short run a piece -- a count, a scan and one emit -- and was
+not timed here (to be measured on the Mustang on a GPU turn).
+
+The cell's arithmetic moved with it: the model's cell, the bounds derived per
+mesh and the cell each piece walks were three operations on six numbers read
+back, and are now `mesh2splat_cells` over the boxes the device folded; the
+host relays the answer.
+
+**From a camera (Mesh2GS, arXiv 2606.21898).** `--cell-from-camera <prim>`
+makes each piece's cell what one pixel of that camera covers where its mesh's
+box is nearest: `z * (aperture / pixels) / focal`, `z` the distance to the
+box held to the near clip, bounded by the user's `--cell-min`/`--cell-max`
+and nothing derived. Every triangle of the piece walks exactly that cell
+(`cellByLongest`, both bounds the cell). Mesh2GS takes `z_min` over the box
+inside the frustum and over the camera's time samples; this takes the
+Euclidean distance to the box at `--time`, which is the same for a box in
+view and finer (never coarser) for one beside the frustum. Their third size,
+`rz = Dw^2 / 4 z_min`, is not adopted: the width a converted gaussian needs
+was measured here ("The width of a converted gaussian") and differs.
+
+`athenea_mesh2splat_tests` (to run on a GPU turn): two equal cards converted
+with `--max-splats 800`, about 1 300 wanted -- each holds at least 300
+(spent in mesh order the second held about 145); and with the stage's camera
+three units from the red card and seven from the blue, 64 pixels across, the
+red holds more than three times the blue's gaussians (5.4 expected).

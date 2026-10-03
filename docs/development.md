@@ -491,6 +491,18 @@ is `StageMaterial::displacementMap`, `displacementScale` and
 `displacementBias`; `StageMesh::displacementUnit` is the cube root of the
 transform's volume, since a height is authored in the mesh's own units.
 
+**The cells and the budget, before anything is converted.** What each piece
+will walk is worked out on the device over the boxes the packing folded
+(`athenea/usd/mesh2splat_cells`): the model's cell, the bounds derived per
+mesh, the cell each piece walks -- from `--cell-from-camera`'s camera where
+one is given -- and what the effect is handed for it. Then every piece is
+counted (a run with room for one gaussian: the effect counts everything a run
+would write), and where the total is over `--max-splats` the budget is shared
+in proportion to what each wants and the cells are worked out again with each
+piece coarsened by `sqrt(wanted / share)`. The host does the shares' integer
+arithmetic -- counts and slots -- and relays the kernel's numbers to the
+effect.
+
 ### 6.4 The one kernel: count, scan, emit
 
 `plugins/mesh2splat/mesh2splat.slang` is a port of Electronic Arts'

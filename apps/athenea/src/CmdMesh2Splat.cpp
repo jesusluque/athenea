@@ -41,6 +41,7 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -128,6 +129,10 @@ struct Options {
     double                   cellMin = 0.0;
     double                   cellMax = 0.0;
     uint64_t                 maxSplats = 2000000;
+    /// A CAMERA DECIDES THE CELL: one cell, one pixel of it where each mesh
+    /// is nearest (Mesh2GS). Empty: the density's box does.
+    std::string              cellFromCamera;
+    uint32_t                 cameraPixels = 1920;
     // Their 0.65 is the width they chose for their own renderer; traced here
     // it leaves a converted surface 30% transparent (docs/decisions.md has
     // the table). 1.0 closes it to 91%, 1.2 to 96%.
@@ -234,6 +239,7 @@ public:
         ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sTransferInto", transferInto_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetFlags", subsetFlags_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetScatter", subsetScatter_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_cells", "m2sCells", cells_));
         auto prefix = gpu::PrefixSum::create(*library_);
         if (!prefix) return std::move(prefix).error();
         prefix_ = std::move(*prefix);
@@ -536,6 +542,69 @@ public:
                 }
             }
         }
+        boxes_ = std::move(*bounds);
+        return ok();
+    }
+
+    /// The camera a conversion sizes its cells by (`--cell-from-camera`),
+    /// and how many pixels across its image is.
+    void setCamera(const usd::StageCamera& camera, uint32_t pixels) {
+        camera_ = camera;
+        cameraPixels_ = pixels;
+    }
+
+    /// Every piece's cell, its factor and what the effect is given for it,
+    /// worked out on the device (`athenea/usd/mesh2splat_cells` says what
+    /// each value is); read back as the answer.
+    [[nodiscard]] Result<void> deriveCells() {
+        gpu::Device& device = library_->device();
+        const uint32_t pieces = static_cast<uint32_t>(pieces_.size());
+        std::vector<uint32_t> meshOf(pieces, 0);
+        for (uint32_t p = 0; p < pieces; ++p) {
+            meshOf[p] = static_cast<uint32_t>(pieces_[p].mesh);
+        }
+        auto meshBuffer = gpu::Buffer::fromSpan<uint32_t>(device, meshOf, "mesh2splat.pieceMesh");
+        auto wantBuffer = gpu::Buffer::fromSpan<uint32_t>(device, wantedBy_, "mesh2splat.wanted");
+        auto shareBuffer = gpu::Buffer::fromSpan<uint32_t>(device, shareOf_, "mesh2splat.share");
+        gpu::BufferDesc desc;
+        desc.bytes = (3 + uint64_t{pieces} * 5) * 4;
+        desc.elementBytes = 4;
+        desc.label = "mesh2splat.cells";
+        auto cells = gpu::Buffer::create(device, desc);
+        if (!meshBuffer || !wantBuffer || !shareBuffer || !cells) {
+            return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot work out the cells");
+        }
+        gpu::CommandBatch batch(device);
+        cells_.dispatch(batch, {std::max(pieces, 1u), 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["bounds"].setBinding(boxes_.rhi());
+            cursor["pieceMesh"].setBinding(meshBuffer->rhi());
+            cursor["wanted"].setBinding(wantBuffer->rhi());
+            cursor["share"].setBinding(shareBuffer->rhi());
+            cursor["cells"].setBinding(cells->rhi());
+            rhi::ShaderCursor c = cursor["params"];
+            c["pieces"].setData(pieces);
+            c["resolution"].setData(options_->resolution);
+            c["cellMin"].setData(static_cast<float>(options_->cellMin));
+            c["cellMax"].setData(static_cast<float>(options_->cellMax));
+            c["perMesh"].setData(perMesh_ ? 1u : 0u);
+            c["camera"].setData(camera_ ? 1u : 0u);
+            if (camera_) {
+                c["aperture"].setData(camera_->horizontalAperture);
+                c["focal"].setData(camera_->focalLength);
+                c["pixels"].setData(static_cast<float>(cameraPixels_));
+                c["near"].setData(camera_->nearClip);
+                c["toWorld0"].setData(camera_->toWorld.data(), 16);
+                c["toWorld1"].setData(camera_->toWorld.data() + 4, 16);
+                c["toWorld2"].setData(camera_->toWorld.data() + 8, 16);
+            }
+        });
+        ATHENEA_TRY(batch.submit(true));
+        auto read = cells->readAll<float>(device);
+        if (!read) return std::move(read).error();
+        cellValues_ = std::move(*read);
+        modelCell_ = static_cast<double>(cellValues_[0]);
+        cellMin_ = static_cast<double>(cellValues_[1]);
+        cellMax_ = static_cast<double>(cellValues_[2]);
         return ok();
     }
 
@@ -714,21 +783,63 @@ public:
         // finer than an eighth of it: a density ratio of 64 between the
         // finest part and the coarsest, which is about what a floor and the
         // car on it are apart, and which keeps a bolt from walking a grid
-        // sixteen hundred times finer than the body's. Three operations on
-        // six numbers already read back; the kernel is what applies them.
+        // sixteen hundred times finer than the body's. Worked out on the
+        // device over the boxes it folded (`mesh2splat_cells`), with the
+        // cell each piece walks -- from a camera, where one is given.
         perMesh_ = options_->density == "per-mesh";
-        {
-            const float modelLongest = std::max({boundsMax_[0] - boundsMin_[0], boundsMax_[1] - boundsMin_[1],
-                                                 boundsMax_[2] - boundsMin_[2], 1.0e-20F});
-            const double modelCell = static_cast<double>(modelLongest) / std::max(options_->resolution, 1u);
-            modelCell_ = modelCell;
-            cellMax_ = options_->cellMax > 0.0 ? options_->cellMax : (perMesh_ ? modelCell : 0.0);
-            cellMin_ = options_->cellMin > 0.0 ? options_->cellMin : (perMesh_ ? cellMax_ / 8.0 : 0.0);
-            if (perMesh_) {
-                std::printf("mesh2splat: density per mesh: %u cells across each mesh's longest side, the cell "
-                            "held between %.4g and %.4g (the model's is %.4g)\n",
-                            options_->resolution, cellMin_, cellMax_, modelCell);
+        const size_t pieces = pieces_.size();
+        wantedBy_.assign(pieces, 0);
+        shareOf_.assign(pieces, 0);
+        ATHENEA_TRY(deriveCells());
+        if (perMesh_ && !camera_) {
+            std::printf("mesh2splat: density per mesh: %u cells across each mesh's longest side, the cell "
+                        "held between %.4g and %.4g (the model's is %.4g)\n",
+                        options_->resolution, cellMin_, cellMax_, modelCell_);
+        }
+
+        // WHAT EVERY PIECE WANTS, BEFORE ANY IS CONVERTED.
+        //
+        // The budget used to be spent in mesh order: a budget too small kept
+        // the first meshes whole and the last ones not at all -- a car whose
+        // wheels came after its body had none. So every piece is counted
+        // first: the effect counts everything a run would write whatever its
+        // budget, so a run with room for one gaussian is the count, and
+        // costs a count and a scan. Then the budget is shared in proportion
+        // to what each wants -- which is the same as one density floor for
+        // all of them: every piece walks a cell sqrt(wanted / budget) times
+        // coarser, so every mesh loses density alike and none is dropped.
+        uint64_t total = 0;
+        for (size_t k = 0; k < pieces; ++k) {
+            if (triangles_[k] == 0) {
+                continue;
             }
+            auto counted = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0);
+            if (!counted) return std::move(counted).error();
+            wantedBy_[k] = static_cast<uint32_t>(std::min<uint64_t>(counted->wanted, 0xFFFFFFFFu));
+            total += wantedBy_[k];
+        }
+        if (total > options_->maxSplats) {
+            // A slot for every piece that wants any, and the rest of the
+            // budget in proportion: counts, not values.
+            uint64_t wanting = 0;
+            for (size_t k = 0; k < pieces; ++k) {
+                wanting += wantedBy_[k] > 0 ? 1 : 0;
+            }
+            const uint64_t spread = options_->maxSplats > wanting ? options_->maxSplats - wanting : 0;
+            for (size_t k = 0; k < pieces; ++k) {
+                if (wantedBy_[k] > 0) {
+                    const uint64_t part = spread * wantedBy_[k] / total;
+                    shareOf_[k] = static_cast<uint32_t>(std::min<uint64_t>(part + 1, wantedBy_[k]));
+                }
+            }
+            ATHENEA_TRY(deriveCells());
+            std::fprintf(stderr,
+                         "mesh2splat: warning: the meshes want %llu splats and --max-splats is %llu: the budget "
+                         "is shared in proportion, every piece's cell coarsened alike\n",
+                         static_cast<unsigned long long>(total),
+                         static_cast<unsigned long long>(options_->maxSplats));
+        } else {
+            shareOf_ = wantedBy_;
         }
         for (size_t k = 0; k < pieces_.size(); ++k) {
             if (triangles_[k] == 0) {
@@ -738,7 +849,10 @@ public:
             const usd::StageMesh& owner = meshes[piece.mesh];
             const usd::StageMaterial& material = *piece.material;
             const uint64_t room = options_->maxSplats > written ? options_->maxSplats - written : 0;
-            if (room == 0) {
+            if (room == 0 || shareOf_[k] == 0) {
+                if (room > 0) {
+                    continue;   // it wanted nothing
+                }
                 // Said, not left to be noticed: every mesh from here on is
                 // missing from the cloud.
                 for (size_t rest = k; rest < pieces_.size(); ++rest) {
@@ -793,12 +907,15 @@ public:
             uint32_t first = 0;
             uint32_t slices = 0;
             while (first < triangles_[k]) {
-                const uint64_t left = options_->maxSplats > written ? options_->maxSplats - written : 0;
+                // This piece's share, and never past the whole budget.
+                const uint64_t global = options_->maxSplats > written ? options_->maxSplats - written : 0;
+                const uint64_t mine = shareOf_[k] > meshWritten ? shareOf_[k] - meshWritten : 0;
+                const uint64_t left = std::min(global, mine);
                 if (left == 0) {
                     break;
                 }
-                const uint64_t guess = std::clamp<uint64_t>(uint64_t{triangles_[k] - first} * 128, 4096,
-                                                            std::min(left, kRunCeiling));
+                // The count said how many: the first run is sized for them.
+                const uint64_t guess = std::clamp<uint64_t>(left, 1, kRunCeiling);
                 auto out = runOne(effect, owner, k, guess, first);
                 if (!out) return std::move(out).error();
                 if (out->wanted > out->written && out->written < std::min(left, kRunCeiling)) {
@@ -864,20 +981,18 @@ public:
                 first = static_cast<uint32_t>(out->done);
             }
             wanted += meshWanted;
-            // The cell this mesh walked, as the kernel works it out: the box
-            // it was measured over, its longest side over the resolution, held
-            // to the bounds. Said here so a log reads what a part got.
-            const std::array<float, 6>& box = perMesh_ ? meshBounds_[piece.mesh]
-                                                       : std::array<float, 6>{boundsMin_[0], boundsMin_[1], boundsMin_[2],
-                                                                              boundsMax_[0], boundsMax_[1], boundsMax_[2]};
-            const double longest = std::max({box[3] - box[0], box[4] - box[1], box[5] - box[2], 1.0e-20F});
-            double cell = longest / std::max(options_->resolution, 1u);
-            if (cellMin_ > 0.0) cell = std::max(cell, cellMin_);
-            if (cellMax_ > 0.0) cell = std::min(cell, cellMax_);
-            std::printf("mesh2splat: %s -> %llu splats of %llu wanted (%u triangles%s, cell %.4g over %.3g)%s\n",
+            // The cell this piece walked, as `mesh2splat_cells` worked it
+            // out: the box it was measured over (or the camera), its longest
+            // side over the resolution, held to the bounds, and coarsened to
+            // fit its share. Said here so a log reads what a part got.
+            const double cell = static_cast<double>(cellValues_[3 + k]);
+            const double factor = static_cast<double>(cellValues_[3 + pieces + k]);
+            std::printf("mesh2splat: %s -> %llu splats of %llu wanted (%u triangles%s, cell %.4g%s)%s\n",
                         piece.path.c_str(), static_cast<unsigned long long>(meshWritten),
                         static_cast<unsigned long long>(meshWanted), triangles_[k],
-                        slices > 1 ? (", " + std::to_string(slices) + " slices").c_str() : "", cell, longest,
+                        slices > 1 ? (", " + std::to_string(slices) + " slices").c_str() : "", cell,
+                        factor > 1.0 ? (", " + std::to_string(factor).substr(0, 4) + "x coarser for the budget").c_str()
+                                     : "",
                         carried ? (", carried by " + owner.skinning.skeleton).c_str() : "");
         }
         if (written == 0) {
@@ -1044,7 +1159,9 @@ private:
             job.params.push_back(aofx::ParamValue{name, {value}, {}});
         };
         number("triangles", static_cast<double>(triangles_[at]));
-        number("resolution", static_cast<double>(options_->resolution));
+        // The piece's own: its share of the budget may coarsen it, and a
+        // camera may decide its cell (`mesh2splat_cells`).
+        number("resolution", static_cast<double>(cellValues_[3 + 2 * pieces_.size() + at]));
         number("maxSplats", static_cast<double>(budget));
         number("firstTriangle", static_cast<double>(firstTriangle));
         number("flatness", options_->flatness);
@@ -1059,9 +1176,9 @@ private:
         // `--glass-opacity`.
         number("glassOpacity", thinGlass(material) ? athenea::scene::thinWallOpacity(material.ior, options_->sigma) : options_->minOpacity);
         number("maxCells", static_cast<double>(options_->maxCells));
-        number("cellMin", cellMin_);
-        number("cellMax", cellMax_);
-        number("cellByLongest", perMesh_ ? 1.0 : 0.0);
+        number("cellMin", static_cast<double>(cellValues_[3 + 3 * pieces_.size() + at]));
+        number("cellMax", static_cast<double>(cellValues_[3 + 4 * pieces_.size() + at]));
+        number("cellByLongest", perMesh_ || camera_ ? 1.0 : 0.0);
         number("useNormalMap", options_->normalMapTurns ? 1.0 : 0.0);
         number("simplify", options_->simplify);
         number("simplifyLevels", static_cast<double>(options_->simplifyLevels));
@@ -1333,6 +1450,13 @@ private:
                                              transferInto_, subsetFlags_, subsetScatter_;
     gpu::PrefixSum                           prefix_;
     std::vector<Piece>                       pieces_;
+    gpu::ComputeKernel                       cells_;
+    gpu::Buffer                              boxes_;        ///< the model's box, then each mesh's
+    std::vector<uint32_t>                    wantedBy_;     ///< what each piece wants, counted
+    std::vector<uint32_t>                    shareOf_;      ///< what the budget gives it
+    std::vector<float>                       cellValues_;   ///< mesh2splat_cells' answer
+    std::optional<usd::StageCamera>          camera_;
+    uint32_t                                 cameraPixels_ = 1920;
     std::unique_ptr<material::TextureStore>  textures_;
     std::map<std::string, uint32_t>          ids_;
     std::map<MapKey, image::ImagePtr>        maps_;
@@ -1519,7 +1643,13 @@ void addMesh2Splat(CLI::App& app) {
                     "no cell coarser than this many world units (per-mesh: 0 is the model's cell, so "
                     "nothing is coarser than per-model; per-model: 0 is no bound). The same number "
                     "for both is one cell for the whole stage");
-    cmd->add_option("--max-splats", o->maxSplats, "the budget, over the whole stage");
+    cmd->add_option("--max-splats", o->maxSplats,
+                    "the budget, over the whole stage, shared in proportion to what each mesh wants");
+    cmd->add_option("--cell-from-camera", o->cellFromCamera,
+                    "a camera prim: each mesh's cell is what one pixel of it covers where the mesh is "
+                    "nearest to it, bounded by --cell-min and --cell-max (replaces --density)");
+    cmd->add_option("--camera-pixels", o->cameraPixels, "--cell-from-camera: pixels across the camera's image")
+        ->check(CLI::Range(1u, 65536u));
     cmd->add_option("--sigma", o->sigma,
                     "how wide a gaussian is against its cell; mesh2splat's own number is 0.65, which "
                     "leaves a traced surface 30% transparent");
@@ -1678,6 +1808,13 @@ void addMesh2Splat(CLI::App& app) {
                 Converter converter(*context, library, *o);
                 ATHENEA_TRY(converter.prepare());
                 ATHENEA_TRY(converter.packMeshes(*meshes));
+                if (!o->cellFromCamera.empty()) {
+                    auto camera = (*stage).camera(o->cellFromCamera, o->time);
+                    if (!camera) return std::move(camera).error();
+                    converter.setCamera(*camera, o->cameraPixels);
+                    std::printf("mesh2splat: the cell is a pixel of %s, %u across\n", o->cellFromCamera.c_str(),
+                                o->cameraPixels);
+                }
                 ATHENEA_TRY(converter.loadTextures());
                 auto raw = converter.convert(*effect, *meshes);
                 if (!raw) return std::move(raw).error();

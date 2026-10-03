@@ -507,6 +507,18 @@ MaterialX al que apunte el terminal de displacement del material, por su
 raíz cúbica del volumen de la transformación, porque una altura se escribe en
 las unidades de la propia malla.
 
+**Las celdas y el presupuesto, antes de convertir nada.** Lo que recorrerá
+cada pieza se calcula en el dispositivo sobre las cajas que plegó el
+empaquetado (`athenea/usd/mesh2splat_cells`): la celda del modelo, las cotas
+derivadas por malla, la celda que recorre cada pieza -- desde la cámara de
+`--cell-from-camera` si se da una -- y lo que se le pasa al efecto para ella.
+Después se cuenta cada pieza (una pasada con sitio para una gaussiana: el
+efecto cuenta todo lo que escribiría una pasada), y si el total pasa de
+`--max-splats` el presupuesto se reparte en proporción a lo que quiere cada
+una y las celdas se calculan otra vez con cada pieza engrosada por
+`sqrt(quiere / parte)`. El host hace la aritmética entera de las partes
+-- cuentas y huecos -- y le pasa al efecto los números del kernel.
+
 ### 6.4 Un solo kernel: contar, escanear, emitir
 
 `plugins/mesh2splat/mesh2splat.slang` es un port de la conversión mesh2splat

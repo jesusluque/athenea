@@ -81,3 +81,30 @@ TEST_CASE("a mesh's GeomSubsets are converted each with its own material", "[mes
     CHECK(c.red * 10 >= c.blue * 9);
     CHECK(c.blue * 10 >= c.red * 9);
 }
+
+// THE BUDGET IS SHARED, NOT SPENT IN MESH ORDER. tests/data/two_cards.usda:
+// two equal cards, red first and blue second, under one grid at resolution
+// 64 -- about nine hundred gaussians each -- converted with --max-splats 800.
+// Spent in mesh order the red card took all 800 and the blue one none; shared
+// in proportion, each walks a cell coarsened alike and takes about half.
+TEST_CASE("a budget too small is shared between the meshes, not spent on the first", "[mesh2splat][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const Colours c = coloursOf(*gpu, output("two_cards_budget.usda"));
+    std::printf("  budget 800: %u red, %u blue, %u other of %u\n", c.red, c.blue, c.green + c.other, c.there);
+    CHECK(c.there <= 800);
+    CHECK(c.red >= 300);
+    CHECK(c.blue >= 300);
+}
+
+// A CAMERA'S PIXEL DECIDES EACH MESH'S CELL (`--cell-from-camera`, Mesh2GS).
+// The red card stands three units from the lens and the blue one about seven:
+// a pixel covers 2.3 times as much at the blue card, so its cell is that much
+// coarser and it holds about a fifth of the red card's gaussians -- where one
+// grid over the pair gave them as many each.
+TEST_CASE("a camera's pixel decides each mesh's cell", "[mesh2splat][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const Colours c = coloursOf(*gpu, output("two_cards_camera.usda"));
+    std::printf("  from the camera: %u red, %u blue of %u\n", c.red, c.blue, c.there);
+    CHECK(c.blue > 0);
+    CHECK(c.red > 3 * c.blue);
+}
