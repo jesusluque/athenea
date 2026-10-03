@@ -32,8 +32,12 @@ struct TransferFilterIo {
     /// field's sixteen. Apart, since the filter takes at most sixteen
     /// entries a gaussian.
     uint part;
-    uint pad0;
-    uint pad1;
+    /// AND WHICH OF ITS VALUES: `chunk` of them from `first`. A picture of a
+    /// whole half of a car is half a gigabyte, more than the device pool
+    /// serves; the filter weighs every value of a gaussian alike, so a few at
+    /// a time is the same answer.
+    uint first;
+    uint chunk;
     uint pad2;
 };
 
@@ -50,12 +54,12 @@ uint at(uint entry) {
 
 /// Values a gaussian handed over: the indirect half's, or the field's.
 uint perGaussian() {
-    return io.part == 0u ? io.coefficients : 16u;
+    return io.chunk;
 }
 
-/// Where value j of gaussian k is in the answer.
+/// Where value j of the chunk of gaussian k is in the answer.
 uint answerAt(uint k, uint j) {
-    return k * io.entries + (io.part == 0u ? j : io.fieldFirst + j);
+    return k * io.entries + (io.part == 0u ? 0u : io.fieldFirst) + io.first + j;
 }
 
 [shader("compute")]
@@ -73,7 +77,7 @@ void transferFilterPoints(uint3 tid: SV_DispatchThreadID) {
     const float3 facing = own.w > 0.5 ? normalize(own.xyz) : normalize(rays[k * 3 + 1].xyz);
     picture[at(k * 3 + 1)] = float4(facing, asfloat(ids[k]));
     // The luminance of what bounced, and a variance no step in it exceeds.
-    const float3 bounced = answer[answerAt(k, 0u)].rgb;
+    const float3 bounced = answer[k * io.entries + (io.part == 0u ? 0u : io.fieldFirst)].rgb;
     picture[at(k * 3 + 2)] = float4(dot(bounced, float3(0.2126, 0.7152, 0.0722)), 1.0e12, 0.0, 0.0);
 }
 

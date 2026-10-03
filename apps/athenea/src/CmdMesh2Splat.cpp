@@ -1605,7 +1605,8 @@ public:
     [[nodiscard]] Result<void> filterTransfer(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
                                               uint32_t entries, uint32_t fieldFirst);
     [[nodiscard]] Result<void> filterTransferPart(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
-                                                  uint32_t entries, uint32_t fieldFirst, uint32_t part);
+                                                  uint32_t entries, uint32_t fieldFirst, uint32_t part,
+                                                  uint32_t first, uint32_t chunk);
     /// How much of an environment reaches each gaussian, instead of the light.
     /// With `zonal`, the cloud is posed where its skeleton stands at `time`
     /// before the bake traces it, and what the file keeps is `zonalOut` --
@@ -1929,17 +1930,25 @@ Result<void> Converter::filterTransfer(aofx::Effect& filter, gpu::Buffer& answer
                                        uint32_t entries, uint32_t fieldFirst) {
     // The indirect half, then the field: apart, since the filter takes at
     // most sixteen entries a gaussian.
+    // And a few values at a time: a picture of a whole half of a car (2.3
+    // million gaussians, sixteen values) is more than the device pool serves.
+    constexpr uint32_t kChunk = 4;
     for (uint32_t part = 0; part < (fieldFirst != 0 ? 2u : 1u); ++part) {
-        ATHENEA_TRY(filterTransferPart(filter, answer, coefficients, entries, fieldFirst, part));
+        const uint32_t values = part == 0 ? coefficients : 16u;
+        for (uint32_t first = 0; first < values; first += kChunk) {
+            ATHENEA_TRY(filterTransferPart(filter, answer, coefficients, entries, fieldFirst, part, first,
+                                           std::min(kChunk, values - first)));
+        }
     }
     return ok();
 }
 
 Result<void> Converter::filterTransferPart(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
-                                           uint32_t entries, uint32_t fieldFirst, uint32_t part) {
+                                           uint32_t entries, uint32_t fieldFirst, uint32_t part, uint32_t first,
+                                           uint32_t chunk) {
     gpu::Device& device = library_->device();
     const uint32_t count = count_;
-    const uint32_t perGaussian = part == 0 ? coefficients : 16u;
+    const uint32_t perGaussian = chunk;
     auto points = image::Image::create(pictureFor(uint64_t{count} * 3));
     if (!points) return std::move(points).error();
     auto light = image::Image::create(pictureFor(uint64_t{count} * perGaussian));
@@ -1978,6 +1987,8 @@ Result<void> Converter::filterTransferPart(aofx::Effect& filter, gpu::Buffer& an
         cursor["io"]["perRecord"].setData(recordFloats());
         cursor["io"]["size"].setData(uint32_t{4});
         cursor["io"]["part"].setData(part);
+        cursor["io"]["first"].setData(first);
+        cursor["io"]["chunk"].setData(chunk);
     };
     const uint32_t values = count * perGaussian;
     {
