@@ -25,7 +25,9 @@
 //               (`technique::BakePoints`): the point of the surface under it,
 //               w left for the ray's offset (mesh2splat_span), that
 //               surface's normal with the gaussian's footprint in w where
-//               `overArea`, and the way the relief turned it (w 1) or zeros
+//               `overArea`, and the way the relief turned it (w 1) or zeros;
+//               that w plus a quarter of the material's metalness, which the
+//               bake reads to tell a dark metal from a polish (`bakeBody`)
 //   influences  two float4 a gaussian, (joint, weight) four times, where a
 //               skeleton carries it
 //   gradients   three words a gaussian, the record's ninth entry's bits: two
@@ -144,11 +146,11 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
         const float4 relief = entryOf(splat, gather.ownEntries + 2);
         rays[out * 3 + 0] = float4(flat.xyz, 0.0);
         rays[out * 3 + 1] = float4(flatNormal.xyz, footprint);
-        rays[out * 3 + 2] = float4(relief.xyz, 1.0);
+        rays[out * 3 + 2] = float4(relief.xyz, 1.0 + 0.25 * saturate(shading.w));
     } else {
         rays[out * 3 + 0] = float4(position.xyz, 0.0);
         rays[out * 3 + 1] = float4(shading.xyz, footprint);
-        rays[out * 3 + 2] = float4(0.0);
+        rays[out * 3 + 2] = float4(0.0, 0.0, 0.0, 0.25 * saturate(shading.w));
     }
 
     if (gather.carried != 0) {

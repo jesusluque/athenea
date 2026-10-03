@@ -81,7 +81,7 @@ struct PathAux {
 /// Where a bake starts from: one ray a point, and the grid they are dispatched
 /// over (the kernel indexes them as it indexes pixels).
 struct BakePoints {
-    const gpu::Buffer* rays = nullptr;   ///< 3 float4 a point: the point + how far off to start, the surface's normal, the gaussian's facing (w 1 where it has one)
+    const gpu::Buffer* rays = nullptr;   ///< 3 float4 a point: the point + how far off to start, the surface's normal, the gaussian's facing (w 1 where it has one, plus a quarter of the material's metalness: `bakeMetalness`)
     uint32_t           count = 0;
     uint32_t           width = 0;        ///< the grid; `count` <= width * height
     uint32_t           height = 0;

@@ -457,7 +457,8 @@ static const bool kBake = true;
 // the surface under it, which the ray is sent down to find that surface; and
 // the way the gaussian itself faces, w 1 where it is not the surface's -- a
 // displaced gaussian stands off the mesh, tilted by the relief, and is lit and
-// projected as the relief faces rather than as the flat mesh under it.
+// projected as the relief faces rather than as the flat mesh under it. That w
+// carries a quarter of the material's metalness too (`bakeMetalness`).
 StructuredBuffer<float4> bakeRays;
 
 /// Whether the gaussian stands off the surface, turned by a relief.
@@ -468,6 +469,16 @@ bool bakeRaised(uint at) {
 /// The normal of the flat surface under it.
 float3 bakeSurfaceNormal(uint at) {
     return normalize(bakeRays[at * 3 + 1].xyz);
+}
+
+/// THE METALNESS OF THE MATERIAL UNDER THE GAUSSIAN, as the conversion read
+/// it: carried in the quarter below the raised flag of the third entry's w
+/// (`1 + m / 4` raised, `m / 4` flat), so `w > 0.5` still says raised and
+/// every reader of that flag reads it as it did. Zero from a caller that
+/// writes no metalness, which then leaves the decision to the lobes alone.
+float bakeMetalness(uint at) {
+    const float w = bakeRays[at * 3 + 2].w;
+    return saturate((w > 0.5 ? w - 1.0 : w) * 4.0);
 }
 
 /// Which way the gaussian faces: its own where it said one, else the surface's.
@@ -491,9 +502,23 @@ float3 bakeFacing(uint at) {
 /// gold black. What it drops is the dielectric polish and the sheen, which
 /// `splat_relight` puts back at render time, from the metallic and roughness
 /// the gaussian carries, and puts back *with a direction in it*.
-LobeStack bakeBody(LobeStack stack) {
+LobeStack bakeBody(LobeStack stack, uint at) {
     LobeStack body = stack;
     body.count = 0;
+    // A METAL IS WHAT THE MATERIAL SAYS IS ONE, not only what reflects like
+    // one. The test below by reflectivity drops a dark metal: a car's paint
+    // is OpenPBR at metalness 1 over a base of 0.05, its metal a Schlick of
+    // F0 0.05, and every one of its gaussians baked to black. Where the
+    // conversion says the material is metal at all, and the material did not
+    // write its metal as a conductor (UsdPreviewSurface does, and then its
+    // Schlick lobes are its dielectric and its coat), the Schlick lobes are
+    // the metal: OpenPBR and standard_surface write their dielectric and
+    // their coat as `dielectric_bsdf`, never as a Schlick.
+    bool conductor = false;
+    for (uint k = 0; k < stack.count; ++k) {
+        conductor = conductor || stack.lobes[k].kind == kLobeConductor;
+    }
+    const bool saidMetal = bakeMetalness(at) > 0.0 && !conductor;
     for (uint k = 0; k < stack.count; ++k) {
         const Lobe lobe = stack.lobes[k];
         const bool diffuse = lobe.kind == kLobeOrenNayar || lobe.kind == kLobeBurley ||
@@ -515,7 +540,7 @@ LobeStack bakeBody(LobeStack stack) {
         // A conductor's is half the light or more, and coloured with it. So a
         // Schlick whose F0 stands above a fifth is the metal it stands for.
         const float f0 = max(max(lobe.colour0.x, lobe.colour0.y), lobe.colour0.z);
-        const bool metal = lobe.kind == kLobeConductor || (lobe.kind == kLobeSchlick && f0 > 0.2);
+        const bool metal = lobe.kind == kLobeConductor || (lobe.kind == kLobeSchlick && (f0 > 0.2 || saidMetal));
         const bool through = lobe.scatter == kScatterTransmit;
         if (diffuse || metal || through) {
             body.lobes[body.count] = lobe;
@@ -643,7 +668,7 @@ float3 bakeNormalAt(uint at) {
 const char* kNoBake = R"(
 static const bool kBake = false;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
-LobeStack bakeBody(LobeStack stack) { return stack; }
+LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float bakeBasisAt(uint at, uint sample, uint basis) { return 0.0; }
 bool bakeRaised(uint at) { return false; }
@@ -1796,7 +1821,7 @@ void tracePathsAt(uint2 group, uint index) {
                     // harmonics hold is how the body's own light changes with
                     // the direction; the reflection stays a lobe, which knows
                     // where the eye is.
-                    cur.stack = bakeBody(cur.stack);
+                    cur.stack = bakeBody(cur.stack, at);
                 }
                 if (kAux && bounce == 0 && path.writeAux != 0 && !auxWritten) {
                     writeAuxAt(at, pixels, float4(stackAlbedo(cur.stack, cur.toEye), 1.0),
