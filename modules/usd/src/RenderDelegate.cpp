@@ -1,4 +1,5 @@
 // Copyright (c) 2026 jesus luque.
+#include <algorithm>
 #include <pxr/imaging/hd/visibilitySchema.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/coordSys.h>
@@ -286,6 +287,21 @@ TF_DEFINE_PRIVATE_TOKENS(_atheneaSettings, ((technique, "athenea:technique"))((s
                                            ((visibility, "athenea:visibility"))((lightSamples, "athenea:lightSamples"))((chooseLights, "athenea:chooseLights"))
                                            ((pathSamples, "athenea:pathSamples"))((pathBounces, "athenea:pathBounces"))((pathTotal, "athenea:pathTotal"))((denoise, "athenea:denoise"))((pathAdaptive, "athenea:pathAdaptive"))((pathMis, "athenea:pathMis"))((pathError, "athenea:pathError"))((motionBuckets, "athenea:motionBuckets"))((shutter, "athenea:shutter"))((disableMotionBlur, "athenea:disableMotionBlur"))((disableDepthOfField, "athenea:disableDepthOfField"))
                                            (raster)(rt)(automatic)(rays)(bvh));
+
+VtDictionary HdAtheneaRenderDelegate::GetRenderStats() const {
+    VtDictionary stats;
+    if (_engine == nullptr) {
+        return stats;
+    }
+    const athenea::usd::Engine::PathStatus status = _engine->pathStatus();
+    const double share = status.total > 0 ? 100.0 * std::min(status.accumulated, status.total) / status.total : 100.0;
+    stats["percentDone"] = VtValue(status.converged ? 100.0 : share);
+    stats["athenea:pathAccumulated"] = VtValue(static_cast<int>(status.accumulated));
+    stats["athenea:pathTotal"] = VtValue(static_cast<int>(status.total));
+    stats["athenea:pathPasses"] = VtValue(static_cast<int>(status.passes));
+    stats["athenea:converged"] = VtValue(status.converged);
+    return stats;
+}
 
 HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescriptors() const {
     HdRenderSettingDescriptor technique;

@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "athenea/core/Progress.h"
 #include "athenea/core/Result.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/SplatQuery.h"
@@ -434,6 +435,14 @@ public:
     /// to gather and reads as finished.
     [[nodiscard]] uint32_t pathAccumulated() const;
     [[nodiscard]] bool pathConverged() const;
+    /// PROGRESS of what this renderer is drawing: after each path traced
+    /// pass ("render", paths a pixel of the total), around the denoiser
+    /// ("denoise"), and after each batch of a bake ("bake", then "bake extra"
+    /// for the adaptive passes, in points). Called on the thread that
+    /// renders, from counts already read back -- never adding a wait. What
+    /// `athenea stage` and `athenea mesh2splat` print (progress::Printer),
+    /// and the hook a viewer or a host's progress bar takes. Empty: none.
+    void setProgress(progress::Callback callback);
     /// The mesh pools' generation and positions revision (Engine's): a
     /// deformation raises the second and not the first.
     [[nodiscard]] uint64_t meshGeneration() const;

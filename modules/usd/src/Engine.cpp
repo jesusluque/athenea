@@ -717,6 +717,31 @@ void Engine::setMotionBuckets(uint32_t buckets) {
 
 void Engine::setPathTotal(uint32_t total) { pathTotal_.store(std::max(total, 1u)); }
 
+void Engine::setProgress(progress::Callback callback) {
+    const std::lock_guard<std::mutex> held(progressGuard_);
+    progress_ = std::move(callback);
+}
+
+Engine::PathStatus Engine::pathStatus() const noexcept {
+    PathStatus status;
+    status.accumulated = statusAccumulated_.load();
+    status.total = pathTotal_.load();
+    status.passes = statusPasses_.load();
+    status.converged = statusConverged_.load();
+    return status;
+}
+
+void Engine::reportProgress(const progress::Report& report) {
+    progress::Callback callback;
+    {
+        const std::lock_guard<std::mutex> held(progressGuard_);
+        callback = progress_;
+    }
+    if (callback) {
+        callback(report);
+    }
+}
+
 void Engine::setDenoise(bool denoise) { denoise_.store(denoise); }
 
 void Engine::setPathAdaptive(bool adaptive) { pathAdaptive_.store(adaptive); }
@@ -3027,6 +3052,27 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             if (!progress) return std::move(progress).error();
             pathProgress_ = *progress;
         }
+        // PROGRESS, from the counts the pass holds: the batch above was
+        // waited for, so nothing here waits. A total of one is a viewport's
+        // frame, which gathers nothing to report.
+        if (pathTracing) {
+            const uint32_t perPass = std::max(pathSamples_.load(), 1u);
+            const uint32_t total = pathTotal_.load();
+            progress::Report report;
+            report.task = "render";
+            report.unit = "paths/px";
+            report.done = pathTracer_->accumulated();
+            report.total = total;
+            report.pass = static_cast<uint32_t>((report.done + perPass - 1) / perPass);
+            report.passes = (total + perPass - 1) / perPass;
+            report.finished = pathConverged();
+            statusAccumulated_.store(static_cast<uint32_t>(report.done));
+            statusPasses_.store(report.pass);
+            statusConverged_.store(report.finished);
+            if (total > 1) {
+                reportProgress(report);
+            }
+        }
         // After the frame's batch, never inside it: the denoiser submits work
         // of its own and waits for OIDN. It runs on a path traced frame that
         // has gathered what it was asked for, in place over the mean -- the
@@ -3042,12 +3088,20 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 }
             }
             if (denoiser_.has_value()) {
+                progress::Report report;
+                report.task = "denoise";
+                report.unit = "frames";
+                report.total = 1;
+                reportProgress(report);
                 if (auto ran = denoiser_->denoise(meshLayer_.colour, &pathAux_.planes, 0, pathAux_.normalOffsetBytes(),
                                                  meshLayer_.colour, settings.width, settings.height);
                     !ran) {
                     denoiserFailed_ = true;
                     log::warn("hdAthenea: denoising stopped: {}", ran.error().toString());
                 }
+                report.done = 1;
+                report.finished = true;
+                reportProgress(report);
             }
         }
     }

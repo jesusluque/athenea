@@ -65,6 +65,11 @@ public:
 
     /// `athenea:technique`: "raster" (default) or "rt".
     HdRenderSettingDescriptorList GetRenderSettingDescriptors() const override;
+    /// PROGRESS for a host's progress bar (Blender's, usdview's): Hydra's
+    /// `percentDone` (0 to 100), and `athenea:pathAccumulated`,
+    /// `athenea:pathTotal`, `athenea:pathPasses` and `athenea:converged`, as
+    /// the last path traced pass left them. Any thread; nothing waits.
+    VtDictionary GetRenderStats() const override;
     TfTokenVector GetMaterialRenderContexts() const override;
     /// The binding purpose a mesh's material is resolved with, falling back
     /// to the all-purpose binding: a renderer's "full", not Storm's "preview".

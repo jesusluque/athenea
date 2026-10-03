@@ -81,6 +81,14 @@ struct StageRenderer::Impl {
     UsdImagingSceneIndices                 sceneIndices;
     std::unique_ptr<HdxTaskController>     controller;
     HdEngine                               engine;
+    progress::Callback                     progress;   ///< setProgress: handed to the engine, and the bakes'
+
+    /// A bake's report, if anyone asked for them.
+    void report(const progress::Report& report) const {
+        if (progress) {
+            progress(report);
+        }
+    }
 
     ~Impl() {
         controller.reset();
@@ -1183,6 +1191,13 @@ void StageRenderer::setDenoise(bool denoise) {
 void StageRenderer::setPathTotal(uint32_t total) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathTotal"), VtValue(static_cast<int>(std::max(total, 1u))));
 }
+void StageRenderer::setProgress(progress::Callback callback) {
+    impl_->progress = std::move(callback);
+    if (impl_->delegate->HasEngine()) {
+        impl_->delegate->GetEngine().setProgress(impl_->progress);
+    }
+}
+
 uint32_t StageRenderer::pathAccumulated() const {
     auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
     const Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
@@ -1501,6 +1516,16 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
             cursor["params"]["plane"].setData(out.width * out.height);
         });
         ATHENEA_TRY(laid.submit(true));
+        // Waited for above: the points traced so far, and nothing waits here.
+        progress::Report report;
+        report.task = "bake";
+        report.unit = "points";
+        report.done = uint64_t{first} + n;
+        report.total = count;
+        report.pass = first / perPass + 1;
+        report.passes = (count + perPass - 1) / perPass;
+        report.finished = first + n >= count;
+        impl.report(report);
     }
     return std::move(*answer);
 }
@@ -1645,6 +1670,11 @@ Result<BakeSplit> StageRenderer::bakeSplitOnDevice(const gpu::Buffer& rays, uint
     // ONE PASS of `samples` paths at the points `from` holds (the cloud's own
     // rays, or a packed selection of them), in batches, its sums written at
     // their gaussians or added to them.
+    // PROGRESS: a report after each batch, from counts already known and the
+    // batch's sums already waited for. The first pass counts its points; the
+    // extra passes count theirs against the budget they were allotted, which
+    // is what they spend at most.
+    progress::Report report;
     const auto tracePass = [&](const gpu::Buffer& from, uint32_t points, uint32_t samples, uint32_t seed,
                                bool accumulate, const gpu::Buffer* slots) -> Result<void> {
         for (uint32_t first = 0; first < points; first += perPass) {
@@ -1682,10 +1712,18 @@ Result<BakeSplit> StageRenderer::bakeSplitOnDevice(const gpu::Buffer& rays, uint
                 cursor["params"]["accumulate"].setData(accumulate ? 1u : 0u);
             });
             ATHENEA_TRY(add.submit(true));
+            report.done += n;
+            impl.report(report);
         }
         return ok();
     };
+    report.task = "bake";
+    report.unit = "points";
+    report.total = count;
+    report.pass = 1;
     ATHENEA_TRY(tracePass(rays, count, std::max(options.samples, 1u), options.seed, false, nullptr));
+    report.finished = true;
+    impl.report(report);
 
     if (options.extraSamples > 0 && options.passSamples > 0 && options.maxPasses > 0) {
         // WHERE THE REST OF THE BUDGET GOES. Each gaussian weighed from its
@@ -1702,7 +1740,13 @@ Result<BakeSplit> StageRenderer::bakeSplitOnDevice(const gpu::Buffer& rays, uint
             cursor["counter"].setBinding(counter->rhi());
             cursor["params"]["count"].setData(count);
         };
+        report = {};
+        report.task = "bake extra";
+        report.unit = "points";
+        report.total = static_cast<uint64_t>(static_cast<double>(options.extraSamples) * count / options.passSamples);
+        report.passes = options.maxPasses;
         for (uint32_t pass = 1; pass <= options.maxPasses; ++pass) {
+            report.pass = pass;
             const uint32_t zero[4] = {0, 0, 0, 0};
             ATHENEA_TRY(counter->write(device, 0, sizeof(zero), zero));
             gpu::CommandBatch batch(device);
@@ -1721,6 +1765,11 @@ Result<BakeSplit> StageRenderer::bakeSplitOnDevice(const gpu::Buffer& rays, uint
             split.extraPoints += selected;
             split.extraPasses = pass;
         }
+        // What was spent is the total now: the passes stop where the
+        // allotment does, short of the budget's estimate or past it.
+        report.total = report.done;
+        report.finished = true;
+        impl.report(report);
     }
 
     // Each half fitted over every path its gaussian took.

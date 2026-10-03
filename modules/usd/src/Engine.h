@@ -30,6 +30,7 @@
 #include <pxr/base/tf/token.h>
 #include <pxr/usd/sdf/path.h>
 
+#include "athenea/core/Progress.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/technique/Environment.h"
@@ -449,6 +450,23 @@ public:
     /// path traced one has nothing to gather and is always finished.
     [[nodiscard]] uint32_t pathAccumulated() const noexcept;
     [[nodiscard]] bool pathConverged() const noexcept;
+    /// PROGRESS: called on the render thread after each path traced pass
+    /// ("render": paths a pixel gathered of `pathTotal`, the pass) and around
+    /// the denoiser ("denoise"), with the counts the pass already holds --
+    /// after the frame's batch has been waited for, never adding a wait. Any
+    /// thread may set it; an empty one reports nothing. What `athenea stage`
+    /// prints, and what a viewer or a host's progress bar shows.
+    void setProgress(progress::Callback callback);
+    /// What the last path traced pass left, for a host that asks rather
+    /// than listens (the delegate's GetRenderStats): atomics the render
+    /// thread writes, so any thread may read them.
+    struct PathStatus {
+        uint32_t accumulated = 0;
+        uint32_t total = 1;
+        uint32_t passes = 0;
+        bool     converged = true;
+    };
+    [[nodiscard]] PathStatus pathStatus() const noexcept;
     /// The mesh pools' generation (a repack each) and positions revision (a
     /// deformation in place each), so a host can tell which one a change was.
     [[nodiscard]] uint64_t meshGeneration() const noexcept;
@@ -735,6 +753,13 @@ private:
     std::atomic<double>                       shutterOpen_{0.0};
     std::atomic<double>                       shutterClose_{0.0};
     std::atomic<uint32_t>                     pathTotal_{1};
+    mutable std::mutex                        progressGuard_;
+    std::atomic<uint32_t>                     statusAccumulated_{0};
+    std::atomic<uint32_t>                     statusPasses_{0};
+    std::atomic<bool>                         statusConverged_{true};
+    progress::Callback                        progress_;
+    /// Hands `report` to the callback, if one is set.
+    void reportProgress(const progress::Report& report);
     std::atomic<bool>                         pathAdaptive_{false};
     std::atomic<bool>                         pathMis_{true};
     std::atomic<bool>                         transferIndirect_{true};

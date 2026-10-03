@@ -19,6 +19,7 @@
 #include <imgui.h>
 
 #include "athenea/core/Platform.h"
+#include "athenea/core/Progress.h"
 #include <imgui_impl_glfw.h>
 
 #include "athenea/core/Log.h"
@@ -370,6 +371,14 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     auto opened = usd::StageRenderer::open(options.stage);
     if (!opened) return std::move(opened).error();
     usd::StageRenderer& stage = **opened;
+    // PROGRESS of a frame gathering towards its --path-total: the engine's
+    // reports, timed here and shown under the path tracer's settings. The
+    // camera moving starts the count over, and the clock with it.
+    progress::Tracker pathClock;
+    std::string pathLine;
+    stage.setProgress([&pathClock, &pathLine](const progress::Report& report) {
+        pathLine = progress::format(report, pathClock.update(report, progress::Clock::now()));
+    });
     gpu::Device& device = stage.device();
     gpu::ShaderLibrary& library = stage.library();
 
@@ -922,6 +931,9 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
                 // A viewport keeps gathering while the camera is still and
                 // starts again when it moves; the count says which.
                 ImGui::Text("%u paths a pixel", stage.pathAccumulated());
+                if (!pathLine.empty()) {
+                    ImGui::TextUnformatted(pathLine.c_str());
+                }
                 ImGui::Unindent();
             }
             if (combo("Mesh visibility", visibility, kVisibility)) {
