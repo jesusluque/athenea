@@ -984,6 +984,21 @@ ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
   -E ATHENEA_HYDRA -f 1
 ```
 
+Un paquete para instalar desde disco lo hace
+`scripts/package-blender-addon.sh [build] [salida]` (por defecto
+`build/macos-arm64-blender` y `build/blender-addon`): el directorio del
+add-on con `plugin/usd` (hdAthenea, con libslang al lado),
+`plugin/materialx`, `plugin/aofx` (Mesh2Splat, SplatBakeFilter) y `shaders`,
+y `athenea_hydra-<versión>.zip` con él. El add-on lo encuentra todo desde su
+propio directorio, sin definir nada. Junto a `LICENSE`, `NOTICE` y
+`THIRD_PARTY_NOTICES.md` de athenea lleva `THIRD_PARTY_LICENSES.md` y
+`licenses/<componente>/`: los ficheros de licencia de lo que lleva (Slang,
+MaterialX 1.39.5, OpenVDB cuando los shaders contienen `PNanoVDB.h`) y de
+aquello contra lo que se compila pero deja a Blender (OpenUSD, oneTBB,
+OpenColorIO, OIDN), copiados de los árboles del toolchain. El script se para
+si falta alguno. zstd y libwebp se cargan desde las rutas de Homebrew y no se
+llevan, así que el paquete corre donde Homebrew los tiene.
+
 Los renders finales (F12, `-f`) funcionan; el viewport no se prueba sin ventana. El
 método de exportación **Hydra** de Blender no entrega ninguna nube de puntos
 a un delegate; con **USD**, una nube de puntos de Gaussian splats llega como
@@ -1607,6 +1622,7 @@ assets que enseña el README.
 | `sketchfab-to-usd.sh <zip> [nombre]` | un archivo de Sketchfab a un asset USD |
 | `readme-images.sh [salida]` | las imágenes del README, desde el asset del gorrión |
 | `remote-test.sh [user@host] [preset]` | compila y corre la suite en otra máquina y trae el log |
+| `package-blender-addon.sh [build] [salida]` | el add-on de Blender como directorio y zip, con los ficheros de licencia de cada tercero (4.1.1) |
 | `scripts/film/` | la película del gorrión: sus frames, su cámara y su sombra |
 | `bmw-to-usd.py`, `sparrow-*.py` | ayudas de autoría para esos assets |
 

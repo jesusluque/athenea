@@ -965,6 +965,21 @@ ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
   -E ATHENEA_HYDRA -f 1
 ```
 
+A package to install from disk is made by
+`scripts/package-blender-addon.sh [build] [out]` (defaults
+`build/macos-arm64-blender` and `build/blender-addon`): the add-on directory
+with `plugin/usd` (hdAthenea, with libslang beside it), `plugin/materialx`,
+`plugin/aofx` (Mesh2Splat, SplatBakeFilter) and `shaders`, and
+`athenea_hydra-<version>.zip` of it. The add-on finds all of it from its own
+directory, with nothing set. Beside athenea's `LICENSE`, `NOTICE` and
+`THIRD_PARTY_NOTICES.md` it carries `THIRD_PARTY_LICENSES.md` and
+`licenses/<component>/`: the licence files of what it carries (Slang,
+MaterialX 1.39.5, OpenVDB when the shaders hold `PNanoVDB.h`) and of what it
+is compiled against but leaves to Blender (OpenUSD, oneTBB, OpenColorIO,
+OIDN), copied from the toolchain's trees. The script stops if one is missing.
+zstd and libwebp are loaded from Homebrew's paths and not carried, so the
+package runs where Homebrew has them.
+
 Final renders (F12, `-f`) work; the viewport is not tested headless. Blender's
 **Hydra** export method hands no point cloud to a delegate; with **USD**, a
 Gaussian-splat point cloud arrives as a `Points` prim and is drawn as a splat
@@ -1572,6 +1587,7 @@ the README shows.
 | `sketchfab-to-usd.sh <zip> [name]` | a Sketchfab archive into a USD asset |
 | `readme-images.sh [outdir]` | the images in the README, from the sparrow asset |
 | `remote-test.sh [user@host] [preset]` | builds and runs the suite on another machine and brings the log back |
+| `package-blender-addon.sh [build] [out]` | the Blender add-on as a directory and a zip, with every third party's licence files (4.1.1) |
 | `scripts/film/` | the sparrow film: its frames, its camera and its shadow |
 | `bmw-to-usd.py`, `sparrow-*.py` | authoring helpers for those assets |
 

@@ -1187,6 +1187,13 @@ Blender:
    así que hace falta el `athenea` de una compilación de escritorio:
    `ATHENEA_CLI`); `viewport_readback.py` mide el mapeo del color en float
    frente a media. Los dos usan la GPU.
+5. El paquete es `scripts/package-blender-addon.sh` (manual de operaciones,
+   4.1.1). `integrations/blender/THIRD_PARTY_LICENSES.md` es su lista de
+   terceros: lo que lleva el paquete, lo que deja a Blender, lo que carga del
+   sistema. Una biblioteca añadida al paquete, o una dependencia de cabeceras
+   nueva, añade su fila ahí y su línea `licence <componente> <ficheros>` al
+   script en el mismo commit; el script se para ante un fichero de licencia
+   que no encuentra, nunca sale sin él.
 
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
 `third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el

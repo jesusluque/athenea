@@ -1134,6 +1134,13 @@ against headers that match them and linked against Blender's libraries:
    a desktop build's `athenea` is needed: `ATHENEA_CLI`);
    `viewport_readback.py` times the colour's map float against half. Both
    use the GPU.
+5. The package is `scripts/package-blender-addon.sh` (operations manual,
+   4.1.1). `integrations/blender/THIRD_PARTY_LICENSES.md` is its list of
+   third parties: what the package carries, what it leaves to Blender, what
+   it loads from the system. A library added to the package, or a new header
+   dependency, adds its row there and its `licence <component> <files>` line
+   to the script in the same commit; the script stops on a licence file it
+   cannot find, never ships without one.
 
 **Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
 tracks `main`. A change to gpe is committed in the submodule, not here.

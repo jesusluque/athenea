@@ -11380,3 +11380,44 @@ text, identical to theirs) and is not repeated.
   package that ships them also ships their own licence files and third-party
   lists; `THIRD_PARTY_NOTICES.md` names them but does not reproduce
   OpenUSD's or OpenVDB's long texts.
+
+## The Blender add-on's package carries every licence it owes
+
+`scripts/package-blender-addon.sh` makes the add-on a directory and a zip
+from a `macos-arm64-blender` build: the Python, `plugin/usd` (hdAthenea with
+`libslang-compiler` and `libslang-glsl-module` beside it, which its
+`@loader_path` rpath loads first), `plugin/materialx`, `plugin/aofx` and
+`shaders` -- each where the add-on and hdAthenea already look from their own
+directory. Before it there was no package, only a build tree pointed at.
+
+The licences: athenea's `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md` at
+the add-on's root, and `integrations/blender/THIRD_PARTY_LICENSES.md` beside
+them, which sorts the rest three ways.
+
+- **Carried:** Slang 2026.14.1 (`LICENSE` and its `LICENSES/`), MaterialX
+  1.39.5 (GenSlang compiled in, `libraries/` shipped: `LICENSE`,
+  `THIRD-PARTY.md`), and OpenVDB's `LICENSE` (MPL-2.0) when the shaders hold
+  `PNanoVDB.h` -- the Blender build has no OpenVDB, so today it does not.
+- **Blender's, not redistributed:** OpenUSD (`libusd_ms`), oneTBB,
+  MaterialX 1.39.4's libraries, OpenColorIO, OIDN. hdAthenea is compiled
+  against their headers, and inlined header code is in it, so their licence
+  files (OpenUSD's `LICENSE.txt` and `NOTICE.txt`, oneTBB's and OIDN's
+  `third-party-programs*.txt`, OpenColorIO's `THIRD-PARTY.md`) go with the
+  package anyway.
+- **The system's, not carried:** zstd and libwebp, named by their Homebrew
+  paths.
+
+Each licence file is copied from the toolchain's source and install trees
+(`~/tools/src`, `~/tools/slang`, `~/tools/oidn-2.5.1`), and the script stops on
+one it cannot find. The manifest's licence is now `SPDX:Apache-2.0`.
+
+Checked: the package built from this branch's `macos-arm64-blender` build
+(16 MB zipped), with every file the list names in `licenses/`. It was not
+loaded in Blender here (that opens the GPU).
+
+### Not done
+
+- zstd and libwebp are not carried: a package for a machine without Homebrew
+  copies them beside hdAthenea, renames them to `@loader_path` with
+  `install_name_tool`, re-signs, and adds their `LICENSE`/`COPYING`.
+- The zip is not signed or notarised.
