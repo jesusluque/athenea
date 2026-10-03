@@ -106,9 +106,7 @@ void addCompare(CLI::App& app) {
         for (const std::string& path : o->paths) {
             registry.addSearchPath(path);
         }
-#ifdef ATHENEA_AOFX_BUNDLE_DIR
-        registry.addSearchPath(ATHENEA_AOFX_BUNDLE_DIR);
-#endif
+        registry.addSearchPath(engineBundleDir());
         registry.scan(context);
         aofx::Effect* effect = registry.find("rt.sparrow.aofx.measure");
         if (effect == nullptr) {

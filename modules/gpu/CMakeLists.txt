@@ -17,7 +17,8 @@ athenea_add_module(gpu
         athenea::core
         slang-rhi)
 target_compile_definitions(athenea_gpu PRIVATE
-    ATHENEA_BUILD_SHADER_DIR="${ATHENEA_SHADER_OUTPUT_DIR}")
+    ATHENEA_BUILD_SHADER_DIR="${ATHENEA_SHADER_OUTPUT_DIR}"
+    ATHENEA_INSTALL_SHADER_DIR="${ATHENEA_SHADER_INSTALL_DIR}")
 if(ATHENEA_OPTIX_INCLUDE_DIR)
     target_compile_definitions(athenea_gpu PRIVATE ATHENEA_OPTIX_INCLUDE_DIR="${ATHENEA_OPTIX_INCLUDE_DIR}")
 endif()

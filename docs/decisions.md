@@ -11106,12 +11106,47 @@ text, identical to theirs) and is not repeated.
 - **ACES.** `technique/aces2.slang` is ported from aces-core (Apache-2.0); its
   header now keeps the reference's copyright line, as section 4(c) asks.
 
+- **gpe and genlock** (the author's submodules) are Apache-2.0 as well, each
+  with `LICENSE` and a `NOTICE` holding its own copyright line ("gpe
+  contributors", "genlock contributors"); the notices list them with that line.
+- **Derived files' headers.** `Sog.cpp` and `sog_decode.slang` carry
+  PlayCanvas's copyright line and `SPDX-License-Identifier: Apache-2.0 AND
+  MIT`; `aces2.slang` and `aces2_prepare.slang` the ACES Project's and
+  `Apache-2.0` -- under athenea's own line, which stays first.
+
+### The install
+
+`cmake --install` lays out the build tree's shape under the prefix:
+`bin/{athenea,athenea-mcp,genlock-cli}`, `share/athenea/shaders`,
+`plugin/usd/{plugInfo.json,hdAthenea,atheneaSchemas}`, `aofx/*.aofx.bundle`,
+`share/doc/athenea/{LICENSE,NOTICE,THIRD_PARTY_NOTICES.md}`. The one place it
+differs is the shaders, under `share/` as an install wants them;
+`gpu::findShaderDirectory` asks `share/athenea/shaders` after `shaders` at
+each level, which reaches it from `bin/` and from
+`plugin/usd/hdAthenea` (three levels). `athenea` registers
+`<exe>/../plugin/usd` as before, and looks for its bundles in `<exe>/../aofx`
+before the build directory it recorded -- in a build tree the two are the
+same. The toolchain libraries are not copied: `INSTALL_RPATH` is
+`<prefix>/lib`, `SLANG_ROOT/lib`, then the linked directories
+(`CMAKE_INSTALL_RPATH_USE_LINK_PATH`). On macOS the install rewrites only the
+rpath entries that differ from the build's and appends the new ones, so a
+program's `BUILD_RPATH` starts with `<prefix>/lib` too, or the installed one
+would ask the toolchain before the prefix.
+
+Checked: `cmake --install build/macos-arm64-debug --prefix <scratch>`, then
+`<prefix>/bin/athenea --version` (0.2.0) and `athenea info`, which named
+`<prefix>/share/athenea/shaders` as the shaders in use and opened Metal, OIDN
+and OpenColorIO through the installed rpaths. `athenea_gpu_tests "[paths]"`
+gains the install layout's case (built; this change ran no tests).
+
 ### Not done
 
-- Neither `athenea`, `athenea-mcp` nor `hdAthenea` has an install rule; the
-  notices are copied beside them in the build tree, and installed to
-  `share/doc/athenea` and inside the installed bundles. A package made from
-  the build tree carries them from there.
+- The install does not carry the toolchain libraries, so it runs on the
+  machine that built it (or one with the same toolchain prefixes). A
+  relocatable package puts them in `<prefix>/lib`, which the rpath already
+  asks first, and their licence files beside them.
+- Bundles found from an install were not exercised (`athenea aofx list`
+  opens the GPU); the lookup is `<exe>/../aofx`, the build tree's own shape.
 - The libraries linked from the toolchain installs (OpenUSD, MaterialX,
   OpenVDB, oneTBB, OIDN, OpenColorIO, Slang) are not shipped by this build. A
   package that ships them also ships their own licence files and third-party

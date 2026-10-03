@@ -4,6 +4,7 @@
 // bundle declares, why one was refused, and one effect over EXR files.
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -15,10 +16,21 @@
 #include "aofx_host/Capabilities.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
+#include "athenea/core/Platform.h"
 #include "athenea/gpu_host/Context.h"
 #include "athenea/io/Exr.h"
 
 namespace athenea::cli {
+
+std::filesystem::path engineBundleDir() {
+    std::error_code missing;
+    const std::filesystem::path beside = platform::executableDir() / ".." / ATHENEA_AOFX_INSTALL_DIR;
+    if (std::filesystem::is_directory(beside, missing)) {
+        return std::filesystem::weakly_canonical(beside, missing);
+    }
+    return ATHENEA_AOFX_BUNDLE_DIR;
+}
+
 namespace {
 
 const char* typeName(aofx::ParamType type) {
@@ -50,9 +62,7 @@ void scan(aofx_host::EffectRegistry& registry, const Common& common, gpu_host::C
     for (const std::string& path : common.paths) {
         registry.addSearchPath(path);
     }
-#ifdef ATHENEA_AOFX_BUNDLE_DIR
-    registry.addSearchPath(ATHENEA_AOFX_BUNDLE_DIR);
-#endif
+    registry.addSearchPath(engineBundleDir());
     registry.scan(context);
 }
 

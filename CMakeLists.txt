@@ -230,6 +230,40 @@ if(NOT ATHENEA_IOS)
     install(FILES ${ATHENEA_LEGAL_FILES} DESTINATION "${CMAKE_INSTALL_DOCDIR}")
 endif()
 
+# --- the install ------------------------------------------------------------------
+#
+# `cmake --install <build> --prefix <p>` lays out what a build tree lays out,
+# so the paths the programs look along hold for both:
+#
+#   <p>/bin/athenea, athenea-mcp, genlock-cli
+#   <p>/share/athenea/shaders/athenea/...       (found from <exe>/.. or the plugin)
+#   <p>/plugin/usd/{plugInfo.json, hdAthenea/, atheneaSchemas/}
+#   <p>/aofx/<Name>.aofx.bundle                 (AOFX_BUNDLE_INSTALL_DIR)
+#   <p>/share/doc/athenea/{LICENSE, NOTICE, THIRD_PARTY_NOTICES.md}
+#
+# The libraries are not copied: an installed binary finds them through its
+# rpath -- <p>/lib first, for a package that carries them, then SLANG_ROOT and
+# the toolchain directories it was linked against.
+if(APPLE)
+    set(ATHENEA_ORIGIN "@loader_path")
+else()
+    set(ATHENEA_ORIGIN "$ORIGIN")
+endif()
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set(ATHENEA_SHADER_INSTALL_DIR "share/athenea/shaders" CACHE STRING
+    "Install destination of the shader tree, relative to the prefix")
+set(ATHENEA_PLUGIN_INSTALL_DIR "plugin/usd" CACHE STRING
+    "Install destination of hdAthenea and the schemas, relative to the prefix")
+if(NOT ATHENEA_IOS AND NOT ATHENEA_EMBEDDED)
+    # The copied tree, not the source one: PNanoVDB.h joins it at build time.
+    # The test kernels stay behind with the tests.
+    install(DIRECTORY "${ATHENEA_SHADER_OUTPUT_DIR}/" DESTINATION "${ATHENEA_SHADER_INSTALL_DIR}"
+            PATTERN "test" EXCLUDE)
+    if(TARGET genlock-cli)
+        install(TARGETS genlock-cli RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    endif()
+endif()
+
 # OpenUSD and MaterialX, seen by the modules that read them, the apps and tests.
 include("${ATHENEA_ROOT}/cmake/Usd.cmake")
 add_subdirectory(modules)

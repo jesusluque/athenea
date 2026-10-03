@@ -144,8 +144,11 @@ std::filesystem::path findShaderDirectory(std::span<const std::filesystem::path>
         }
         std::filesystem::path at = start;
         for (int level = 0; level <= kLevelsUp; ++level) {
-            if (auto candidate = at / "shaders"; std::filesystem::is_directory(candidate / "athenea", ignored)) {
-                return std::filesystem::weakly_canonical(candidate, ignored);
+            // A build tree's `shaders`, then an install's share/athenea/shaders.
+            for (const std::filesystem::path& candidate : {at / "shaders", at / ATHENEA_INSTALL_SHADER_DIR}) {
+                if (std::filesystem::is_directory(candidate / "athenea", ignored)) {
+                    return std::filesystem::weakly_canonical(candidate, ignored);
+                }
             }
             if (!at.has_parent_path() || at.parent_path() == at) {
                 break;

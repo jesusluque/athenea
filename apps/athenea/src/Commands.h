@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdio>
+#include <filesystem>
 
 #include <CLI/CLI.hpp>
 
@@ -33,6 +34,11 @@ inline constexpr int kExitOutOfMemory = 3;
 [[noreturn]] inline void fail(const Error& error) {
     throw CLI::RuntimeError(report(error));
 }
+
+/// Where this program's own AOFX bundles are: <exe>/../aofx (the install's
+/// layout, AOFX_BUNDLE_INSTALL_DIR, which is also the build tree's), else the
+/// build directory recorded at build time. Searched after any --path.
+[[nodiscard]] std::filesystem::path engineBundleDir();
 
 /// Each subcommand registers itself on the app and returns the callback to run
 /// when it was the one chosen.

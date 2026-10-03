@@ -22,8 +22,10 @@ if(TARGET MaterialXCore)
     target_link_libraries(athenea PRIVATE MaterialXCore)
     target_compile_definitions(athenea PRIVATE ATHENEA_HAVE_MATERIALX=1)
 endif()
-# Bundles built in this tree are found without a --path.
-target_compile_definitions(athenea PRIVATE ATHENEA_AOFX_BUNDLE_DIR="${AOFX_BUNDLE_DIR}")
+# Bundles built in this tree, or installed beside it, are found without a
+# --path: <exe>/../${AOFX_BUNDLE_INSTALL_DIR} first, else the build's own.
+target_compile_definitions(athenea PRIVATE ATHENEA_AOFX_BUNDLE_DIR="${AOFX_BUNDLE_DIR}"
+                           ATHENEA_AOFX_INSTALL_DIR="${AOFX_BUNDLE_INSTALL_DIR}")
 # The one version, the project's (the top-level project() line): what
 # `athenea --version` and `athenea info` print and what a release is tagged.
 target_compile_definitions(athenea PRIVATE ATHENEA_VERSION="${athenea_VERSION}")
@@ -38,6 +40,12 @@ athenea_copy_shaders(athenea)
 
 # slang-rhi loads libslang-compiler at run time from beside the binary on some
 # platforms and through the rpath on others; both are pointed at SLANG_ROOT.
+# Installed, the prefix's lib/ comes first (a package that carries the
+# libraries), then SLANG_ROOT, then -- CMAKE_INSTALL_RPATH_USE_LINK_PATH --
+# the toolchain directories it was linked against (USD, OIDN, OCIO). The
+# build rpath starts the same way: on macOS the install rewrites only the
+# entries that differ, and appends what is new at the end.
 set_target_properties(athenea PROPERTIES
-    BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib"
-    INSTALL_RPATH "@loader_path/../lib;${SLANG_ROOT}/lib")
+    BUILD_RPATH "${ATHENEA_ORIGIN}/../${CMAKE_INSTALL_LIBDIR};${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib"
+    INSTALL_RPATH "${ATHENEA_ORIGIN}/../${CMAKE_INSTALL_LIBDIR};${SLANG_ROOT}/lib")
+install(TARGETS athenea RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
