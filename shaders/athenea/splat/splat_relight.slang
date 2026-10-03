@@ -697,6 +697,11 @@ public float splatSunOpen(SplatSurface s, StructuredBuffer<uint> transfer, float
     // frame, so the sun and the horizon are looked up there.
     const float3 sun = transferLocal(s, sunDirection);
     const float3 normal = transferLocal(s, s.normal);
+    // In the frame a cell on the equator of a normal along an axis sits at a
+    // rounding's distance from the horizon, on one side or the other as the
+    // frame turns: held off it, so a turned gaussian reads the cells the
+    // unturned one does. In the world it stays exactly zero, as it was.
+    const float horizon = splatTransferZonal(s) ? 1.0e-4 : 0.0;
     const float2 at = octEncode(sun) * 8.0 - 0.5;
     const float2 lo = floor(at);
     const float2 f = at - lo;
@@ -706,7 +711,7 @@ public float splatSunOpen(SplatSurface s, StructuredBuffer<uint> transfer, float
         const int2 cell = clamp(int2(lo) + int2(k & 1, k >> 1), int2(0), int2(7));
         const float w = ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
         const float3 towards = octDecode((float2(cell) + 0.5) / 8.0);
-        if (dot(towards, normal) <= 0.0 || w <= 0.0) {
+        if (dot(towards, normal) <= horizon || w <= 0.0) {
             continue;
         }
         const uint index = uint(cell.y) * 8u + uint(cell.x);
