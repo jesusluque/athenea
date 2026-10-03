@@ -11221,3 +11221,29 @@ pixel. Its 128-pixel frame is compared on the device with the same view at
 most 8 codes, where the frame without any cloud shadow differs from it by
 more than 20. *To be run in the GPU turn*, measured before the step as well,
 and the threshold set from the two with margin.
+
+### Step 4: the lit side is a ramp, in the world
+
+**The cause.** `z <= nearest + bias ? 1 : exp(-tau)`: a gaussian crossing
+the threshold jumped from 1 to almost 0 between two frames. It touches the
+clouds with no field of their own and any receiver inside the slab.
+
+**The ramp.** `lit = 1 - smoothstep(nearest + bias, nearest + 2 bias, z)`,
+and the tap reads `lerp(exp(-tau), 1, lit)`: all of a receiver up to the
+bias behind the first caster stands on it, none from twice that, and in
+between it darkens over a length that is fixed in the world (the bias of
+step 1). It is applied in each of the four taps before they are blended
+(`shadowLitOf`). Where the bias was two per cent of the slab and lit stopped
+there, it now starts there and fades out by four per cent: a cloud with no
+field reads a little lighter just behind its first surface than it did,
+which is the direction the soot measured above wants, not the other.
+
+`athenea_technique_tests "[shadowmap][ramp]"`: a stack of four opaque
+gaussians on the light's axis and a receiver walking down through the first
+in 48 steps, from in front of it to three biases behind, read through
+`factors()`; a kernel (`test/shadow_steps.slang`) counts the steps of the
+walk that jump by more than 0.15. Expected: none, with the walk lit in front
+(1.0) and shadowed at its end (under 0.5). Before the step, the step at the
+bias jumped from 1 to the reconstruction's 0.1 or so. The existing
+`[shadowmap]` case is the regression: four and eight stacked particles still
+let `(1 - alpha)^n` through. *To be run in the GPU turn.*

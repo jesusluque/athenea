@@ -15,11 +15,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <vector>
 
 #include <catch2/catch_approx.hpp>
 
 #include "../render/SplatFixtures.h"
+#include "athenea/gpu/ComputeKernel.h"
 #include "athenea/light/LightTable.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/technique/SplatShadowMap.h"
@@ -63,7 +65,7 @@ TEST_CASE("a cloud's shadow map answers the product of the opacities along the l
     REQUIRE(cloud);
 
     technique::ShadowMapJob job;
-    job.casters.push_back({&*cloud, &cloud->positions, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, 0});
+    job.casters.push_back({&*cloud, &cloud->positions, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, 0, std::nullopt});
     job.lights = &table->records();
     job.lightCount = 1;
     job.resolution = 512;
@@ -111,7 +113,7 @@ TEST_CASE("a cloud's shadow map answers the product of the opacities along the l
     auto taller = loader->upload(twice.raw, 0);
     REQUIRE(taller);
     job.casters.clear();
-    job.casters.push_back({&*taller, &taller->positions, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, 0});
+    job.casters.push_back({&*taller, &taller->positions, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, 0, std::nullopt});
     {
         gpu::CommandBatch batch(*gpu->device);
         REQUIRE(map->build(batch, job));
@@ -291,7 +293,7 @@ TEST_CASE("a receiver crossing a texel reads the shadow's edge continuously",
     auto sheet = loader->upload(built.raw, 0);
     REQUIRE(sheet);
     technique::ShadowMapJob job;
-    job.casters.push_back({&*sheet, &sheet->positions, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, 0});
+    job.casters.push_back({&*sheet, &sheet->positions, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, 0, std::nullopt});
     job.lights = &table->records();
     job.lightCount = 1;
     job.resolution = 256;
@@ -341,4 +343,90 @@ TEST_CASE("a receiver crossing a texel reads the shadow's edge continuously",
     for (size_t k = 1; k < T.size(); ++k) {
         CHECK(sign * (T[k] - T[k - 1]) >= -1.0e-5F);
     }
+}
+
+// A GAUSSIAN CROSSING THE FIRST SURFACE DARKENS OVER A DISTANCE.
+//
+// A stack of four opaque gaussians on the light's axis, and a receiver
+// walking down through the first of them in 48 steps, from in front of it to
+// well behind. The lit side was a step -- nearer than the first caster plus
+// the bias, 1; past it, exp(-tau) -- so one step of the walk jumped from 1 to
+// a fraction between two frames. As a ramp of a fixed length in the world it
+// darkens over several steps, and no step of the walk jumps by more than
+// 0.15. What is counted is counted by a kernel (`test/shadow_steps.slang`).
+TEST_CASE("a gaussian crossing the first caster of a stack darkens continuously",
+          "[technique][gpu][shadowmap][ramp]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto table = light::LightTable::create(*gpu->library);
+    auto map = technique::SplatShadowMap::create(*gpu->library);
+    auto steps = gpu::ComputeKernel::create(*gpu->library, "athenea/test/shadow_steps", "shadowSteps");
+    if (!loader) FAIL(loader.error().toString());
+    if (!table) FAIL(table.error().toString());
+    if (!map) FAIL(map.error().toString());
+    if (!steps) FAIL(steps.error().toString());
+    sunDown(*table);
+
+    test::CloudBuilder stack;
+    for (int k = 0; k < 4; ++k) {
+        stack.add(0.0F, 0.0F, -0.1F * float(k), 0.9F, 0.02F, 0.02F, 0.02F, {1, 0, 0, 0}, {0.8F, 0.8F, 0.8F});
+    }
+    auto caster = loader->upload(stack.raw, 0);
+    REQUIRE(caster);
+    // The receivers: one gaussian a step of the walk, from 0.05 in front of
+    // the first caster to 0.15 behind it -- three times the bias.
+    const uint32_t walk = 48;
+    test::CloudBuilder walker;
+    for (uint32_t k = 0; k < walk; ++k) {
+        walker.add(0.0F, 0.0F, 0.05F - 0.2F * float(k) / float(walk - 1), 0.5F, 0.001F, 0.001F, 0.001F, {1, 0, 0, 0},
+                   {0.8F, 0.8F, 0.8F});
+    }
+    auto receivers = loader->upload(walker.raw, 0);
+    REQUIRE(receivers);
+
+    technique::ShadowMapJob job;
+    job.casters.push_back({&*caster, &caster->positions, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, 0, std::nullopt});
+    job.lights = &table->records();
+    job.lightCount = 1;
+    job.resolution = 256;
+    job.coefficients = 5;
+    job.selfBias = 0.05F;   // world units
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{walk} * 4;
+    desc.elementBytes = 4;
+    desc.label = "test.factors";
+    auto factors = gpu::Buffer::create(*gpu->device, desc);
+    REQUIRE(factors);
+    const std::array<uint32_t, 2> zero{0, 0};
+    auto counted = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, std::span<const uint32_t>(zero), "test.steps");
+    REQUIRE(counted);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(map->build(batch, job));
+        REQUIRE(map->clearFactors(batch, *factors, walk));
+        technique::ShadowMapCaster receiver;
+        receiver.cloud = &*receivers;
+        receiver.positions = &receivers->positions;
+        REQUIRE(map->factors(batch, receiver, 0, *factors));
+        steps->dispatch(batch, {walk, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["series"].setBinding(factors->rhi());
+            cursor["steps"].setBinding(counted->rhi());
+            cursor["stepParams"]["count"].setData(walk);
+            cursor["stepParams"]["threshold"].setData(0.15F);
+            cursor["stepParams"]["scale"].setData(65536.0F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 2> read{};
+    REQUIRE(counted->read(*gpu->device, 0, sizeof(read), read.data()));
+    // And where the walk ends: well behind the first caster, in its shadow.
+    const std::vector<std::array<float, 4>> behind{{0.0F, 0.0F, -0.15F, 1.0F}, {0.0F, 0.0F, 0.05F, 1.0F}};
+    auto ends = map->probe(0, behind);
+    if (!ends) FAIL(ends.error().toString());
+    std::printf("  a gaussian walking through the first caster: %u steps beyond 0.15, the largest %.4f; "
+                "%.4f in front, %.4f behind\n",
+                read[0], double(read[1]) / 65536.0, double((*ends)[1]), double((*ends)[0]));
+    CHECK((*ends)[1] == Catch::Approx(1.0F));
+    CHECK((*ends)[0] < 0.5F);
+    CHECK(read[0] == 0);
 }

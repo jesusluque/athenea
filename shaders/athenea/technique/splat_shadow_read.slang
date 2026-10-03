@@ -112,6 +112,23 @@ public float shadowOpticalOf(float total, float a, float b, uint k, float z) {
     return (a * sin(angle) + b * (1.0 - cos(angle))) / (kShadowPi * float(k));
 }
 
+/// HOW MUCH OF A RECEIVER STANDS ON THE LIT SIDE of the first caster in a
+/// texel: all of it up to `bias` behind that caster, none from twice that,
+/// and a smoothstep in between. It was a step, and a gaussian crossing it
+/// jumped from 1 to exp(-tau) between two frames; a ramp of a fixed length in
+/// the world darkens it over a distance instead. Applied in every tap of the
+/// filter, before the taps are blended.
+public float shadowLitOf(float nearest, float bias, float z) {
+    if (z <= nearest + bias) {
+        return 1.0;   // also an untouched texel, whose nearest is 1e30
+    }
+    if (!(bias > 0.0)) {
+        return 0.0;
+    }
+    const float t = saturate((z - nearest - bias) / bias);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+
 /// Which header words are numbers rather than counts: what the texture's
 /// header rows store as the float itself rather than as a count converted.
 public bool shadowHeaderIsReal(uint word) {
@@ -172,9 +189,8 @@ public float shadowTap<S : IShadowMapSource>(ShadowMapFrame f, uint light, int x
     if (x < 0 || y < 0 || x >= int(f.resolution) || y >= int(f.resolution)) {
         return 1.0;
     }
-    // Nearer than the first thing that cast into this texel: lit. An
-    // untouched texel's nearest is 1e30, so it is lit too.
-    if (z <= S.texel(f, light, x, y, f.coefficients) + f.bias) {
+    const float lit = shadowLitOf(S.texel(f, light, x, y, f.coefficients), f.bias, z);
+    if (lit >= 1.0) {
         return 1.0;
     }
     const float total = S.texel(f, light, x, y, 0);
@@ -188,7 +204,7 @@ public float shadowTap<S : IShadowMapSource>(ShadowMapFrame f, uint light, int x
         }
         optical = clamp(sum, 0.0, max(total, 0.0));
     }
-    return exp(-max(optical, 0.0));
+    return lerp(exp(-max(optical, 0.0)), 1.0, lit);
 }
 
 /// Bilinear weights over the four texels about (u, v), whose centres are at
