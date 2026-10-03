@@ -11951,3 +11951,31 @@ conversion.
 - **Four influences.** The posing at the bake uses the cloud's four joints,
   as the frame does; where the mesh has more (27 % of the wing, P014C) the
   posed gaussians stand a little off the surface the bake traces.
+
+### The levels of detail and `.athc` (planned, not built)
+
+A TX transfer, its layers and its material do not travel through a level of
+detail or a `.athc` yet: `packed()` and the cut copy positions, shape and
+harmonics, so a streamed or cut cloud is drawn relit with no transfer. The
+plan, so the flag bits are spoken for:
+
+- **The flag bits.** Bit 3 stays proposal 009's and bit 4 proposal 026's
+  (`pbr` and the lobes, four words an element) -- proposal 014 B's section
+  above also named bit 4, for its zonal transfer, and gave it back untaken;
+  a zonal transfer goes under bit 5 with the rest. **Bit 5 is the transfer's**:
+  every block then ends with the transfer's words (f16 pairs, the count in the
+  header's spare word: 9, 36, 84, 16, 64 or 112 values, or 10 for zonal
+  lobes) and its open directions (2, 8 or 32 words, also in the header), after
+  bit 4's words where both are set. A reader that does not know bit 5 refuses
+  the file, as the format's rule says.
+- **The merged levels.** A level's group is a run of the Morton order, as a
+  decimation's kept gaussian is a run of the store, so the merge is
+  `lodMergeAttribute` over those runs: the transfer and the field as means
+  weighed as the moments weigh (linear in the sky, so the mean of transfers
+  is the transfer of the mean), the open directions as bits set where half
+  the weight has them, the layers as means.
+- **The cut** gathers the same words beside positions and shape into the
+  per-frame cloud, so `SplatInstance` carries a transfer whatever drew it.
+
+Until then a cloud with a transfer is written to `.athc` without it, and says
+so; `--transfer` with an `.athc` output stays refused.
