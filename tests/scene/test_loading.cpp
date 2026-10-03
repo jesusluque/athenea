@@ -20,6 +20,8 @@
 #endif
 
 #include "athenea/io/Readers.h"
+#include "athenea/colour/ColourCompiler.h"
+#include "athenea/scene/CloudColour.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/scene/SplatSkinner.h"
 
@@ -892,4 +894,151 @@ TEST_CASE("a bake's basis is the one a renderer reads, term for term", "[scene][
     CHECK(counts[1] == kTerms * kDirections);
     CHECK(counts[0] == 0);
     CHECK(counts[3] > 100000u);   // a basis of order one was actually compared
+}
+
+namespace {
+
+/// `count` linear gaussians of degree 1 from a fixed sequence, said to be in
+/// `space`: what an export of a bake in that working space writes.
+io::RawSplats linearCloud(uint32_t count, const std::string& space) {
+    io::RawSplats raw;
+    raw.source = "linear cloud";
+    raw.linear = true;
+    raw.colourSpace = space;
+    io::SplatEncoding& e = raw.encoding;
+    e.floatsPerRecord = 23;
+    e.x = 0; e.y = 1; e.z = 2; e.opacity = 3; e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
+    e.rotW = 7; e.rotX = 8; e.rotY = 9; e.rotZ = 10; e.dc0 = 11; e.dc1 = 12; e.dc2 = 13;
+    e.restBase = 14; e.restPerColour = 3; e.restColourOuter = 1;
+    uint64_t state = 77;
+    const auto next = [&] {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<float>((state >> 40) & 0xFFFFFF) / 16777216.0F;
+    };
+    for (uint32_t i = 0; i < count; ++i) {
+        raw.records.resize(raw.records.size() + 23, 0.0F);
+        float* r = raw.records.data() + raw.records.size() - 23;
+        r[0] = next(); r[1] = next(); r[2] = next(); r[3] = 3.0F;
+        r[4] = -3.0F; r[5] = -3.0F; r[6] = -3.0F;
+        r[7] = 1.0F; r[8] = 0.0F; r[9] = 0.0F; r[10] = 0.0F;
+        for (int k = 11; k < 23; ++k) {
+            r[k] = next() * 2 - 1;
+        }
+        raw.count += 1;
+    }
+    return raw;
+}
+
+}   // namespace
+
+/// Phase 2c: a cloud that holds light in a space that is not the working
+/// space is brought into it once, as it is decoded -- the base colour, every
+/// rest coefficient -- by the 3x3 between the two, which OCIO's function
+/// gives on the device. The same cloud decoded and left alone, and the
+/// matrix applied in a check kernel the way the conversion applies it, give
+/// the very halves the conversion stored; a second call converts nothing; a
+/// capture, and a cloud already in the working space, are not touched.
+TEST_CASE("a linear cloud in ACEScg is brought into Rec.709 once, as it is decoded",
+          "[scene][gpu][working_space]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!colour::ocioBuilt()) {
+        SKIP("no OpenColorIO in this build");
+    }
+    auto compiler = colour::ColourCompiler::create(*gpu->library);
+    if (!compiler) FAIL(compiler.error().toString());
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    auto colourOf = scene::CloudColour::create(*gpu->library);
+    if (!colourOf) FAIL(colourOf.error().toString());
+    const io::RawSplats raw = linearCloud(4000, "lin_ap1_scene");
+    auto converted = loader->upload(raw);
+    auto kept = loader->upload(raw);
+    REQUIRE(converted);
+    REQUIRE(kept);
+    auto done = colourOf->toWorking(*converted, **compiler);
+    REQUIRE(done);
+    CHECK(*done);
+    CHECK(converted->colourSpace == (*compiler)->names().working());
+    auto again = colourOf->toWorking(*converted, **compiler);
+    REQUIRE(again);
+    CHECK(!*again);
+    // A capture, and a cloud in the working space already: nothing.
+    io::RawSplats capture = raw;
+    capture.linear = false;
+    auto captured = loader->upload(capture);
+    REQUIRE(captured);
+    auto none = colourOf->toWorking(*captured, **compiler);
+    REQUIRE(none);
+    CHECK(!*none);
+    io::RawSplats rec709 = raw;
+    rec709.colourSpace = "lin_rec709_scene";
+    auto inWorking = loader->upload(rec709);
+    REQUIRE(inWorking);
+    auto nothing = colourOf->toWorking(*inWorking, **compiler);
+    REQUIRE(nothing);
+    CHECK(!*nothing);
+
+    auto matrix = (*compiler)->matrix("ACEScg", (*compiler)->names().working());
+    if (!matrix) FAIL(matrix.error().toString());
+    const std::string source =
+        "StructuredBuffer<float4> rows;\n"
+        "StructuredBuffer<uint> shapeA;\nStructuredBuffer<uint> shapeB;\n"
+        "StructuredBuffer<uint> shA;\nStructuredBuffer<uint> shB;\n"
+        "RWStructuredBuffer<uint> counts;   // [base off, rest off, splats]\n"
+        "uniform uint count;\nuniform uint shWords;\nuniform uint rest;\n"
+        "float3 m(float3 c) { return float3(dot(rows[0].xyz, c), dot(rows[1].xyz, c), dot(rows[2].xyz, c)); }\n"
+        "float h(StructuredBuffer<uint> b, uint base, uint k) {\n"
+        "    const uint w = b[base + k / 2];\n    return f16tof32((k & 1u) == 0u ? (w & 0xFFFFu) : (w >> 16));\n}\n"
+        "uint hb(StructuredBuffer<uint> b, uint base, uint k) {\n"
+        "    const uint w = b[base + k / 2];\n    return (k & 1u) == 0u ? (w & 0xFFFFu) : (w >> 16);\n}\n"
+        "[shader(\"compute\")]\n[numthreads(64, 1, 1)]\n"
+        "void cloudCheck(uint3 tid: SV_DispatchThreadID) {\n"
+        "    const uint i = tid.x;\n    if (i >= count) {\n        return;\n    }\n"
+        "    const uint r = i * 4;\n"
+        "    const float3 b = float3(f16tof32(shapeB[r + 2] >> 16), f16tof32(shapeB[r + 3] & 0xFFFFu), "
+        "f16tof32(shapeB[r + 3] >> 16));\n"
+        "    const float3 w = m(b);\n"
+        "    const uint3 want = uint3(f32tof16(w.x) & 0xFFFFu, f32tof16(w.y) & 0xFFFFu, f32tof16(w.z) & 0xFFFFu);\n"
+        "    const uint3 got = uint3(shapeA[r + 2] >> 16, shapeA[r + 3] & 0xFFFFu, shapeA[r + 3] >> 16);\n"
+        "    InterlockedAdd(counts[0], any(want != got) || (shapeA[r + 2] & 0xFFFFu) != (shapeB[r + 2] & 0xFFFFu) "
+        "? 1u : 0u);\n"
+        "    uint off = 0;\n"
+        "    for (uint k = 0; k < rest; ++k) {\n"
+        "        const float3 c = m(float3(h(shB, i * shWords, k * 3), h(shB, i * shWords, k * 3 + 1), "
+        "h(shB, i * shWords, k * 3 + 2)));\n"
+        "        off += (f32tof16(c.x) & 0xFFFFu) != hb(shA, i * shWords, k * 3) ? 1u : 0u;\n"
+        "        off += (f32tof16(c.y) & 0xFFFFu) != hb(shA, i * shWords, k * 3 + 1) ? 1u : 0u;\n"
+        "        off += (f32tof16(c.z) & 0xFFFFu) != hb(shA, i * shWords, k * 3 + 2) ? 1u : 0u;\n"
+        "    }\n"
+        "    InterlockedAdd(counts[1], off);\n"
+        "    InterlockedAdd(counts[2], 1u);\n"
+        "}\n";
+    auto program = gpu->library->loadSource("athenea_test_cloud_colour", "module athenea_test_cloud_colour;\n" + source,
+                                            {"cloudCheck"});
+    if (!program) FAIL(program.error().toString());
+    auto kernel = gpu::ComputeKernel::create(*gpu->library, "athenea_test_cloud_colour", "cloudCheck");
+    if (!kernel) FAIL(kernel.error().toString());
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 3, "cloud.counts");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kernel->dispatch(batch, {converted->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["rows"].setBinding(matrix->rows.rhi());
+            cursor["shapeA"].setBinding(converted->shape.rhi());
+            cursor["shapeB"].setBinding(kept->shape.rhi());
+            cursor["shA"].setBinding(converted->sh.rhi());
+            cursor["shB"].setBinding(kept->sh.rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["count"].setData(converted->count);
+            cursor["shWords"].setData(converted->shWords);
+            cursor["rest"].setData(converted->restPerColour);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t c[3] = {};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+    std::printf("  %u gaussians: %u base colours and %u rest halves differ from the matrix applied here\n", c[2],
+                c[0], c[1]);
+    CHECK(c[2] == converted->count);
+    CHECK(c[0] == 0);
+    CHECK(c[1] == 0);
 }

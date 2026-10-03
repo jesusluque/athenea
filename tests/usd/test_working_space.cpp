@@ -25,6 +25,7 @@
 #include <pxr/base/plug/registry.h>
 #include <pxr/imaging/hio/image.h>
 
+#include "athenea/colour/ColourCompiler.h"
 #include "athenea/io/Exr.h"
 #include "athenea/io/Readers.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -227,10 +228,14 @@ struct Frame {
     std::vector<float> rgba;
 };
 
-Frame renderFrame(const fs::path& stage, const std::string& technique) {
+Frame renderFrame(const fs::path& stage, const std::string& technique, const std::string& working = {},
+                  bool chooseLights = true) {
     auto renderer = usd::StageRenderer::open(stage);
     if (!renderer) FAIL(renderer.error().toString());
-    (*renderer)->setChooseLights(true);
+    if (!working.empty()) {
+        (*renderer)->setWorkingSpace(working);
+    }
+    (*renderer)->setChooseLights(chooseLights);
     (*renderer)->setLightSamples(2);
     (*renderer)->setPathSamples(4);
     (*renderer)->setPathBounces(3);
@@ -347,4 +352,274 @@ TEST_CASE("lin_rec709_scene as the working space draws a capture's splats as it 
     if (caps.rayQuery && caps.accelerationStructure) {
         matchReference(*gpu, "splats_rt", renderTwice(*gpu, scene.splats, "rt"));
     }
+}
+
+// PHASES 2B, 2C AND 3: A WORKING SPACE THAT IS NOT REC.709, AND COLOURS
+// AUTHORED IN ANOTHER SPACE THAN THE ONE RENDERED IN.
+
+TEST_CASE("lin_rec709_scene asked for by any of its names draws the frames the default draws, word for word",
+          "[usd][gpu][working_space][mesh]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    const Scene scene = writeScenes(*gpu);
+    for (const char* name : {"lin_rec709_scene", "lin_rec709", "Linear Rec.709 (sRGB)"}) {
+        INFO(name);
+        matchReference(*gpu, "lit_raster", renderFrame(scene.lit, "raster", name));
+        matchReference(*gpu, "splats_raster", renderFrame(scene.splats, "raster", name));
+    }
+}
+
+namespace {
+
+/// What phase 3 converts, authored in ACEScg -- a UsdPreviewSurface's
+/// diffuse colour, a MaterialX standard_surface's base colour, a rect
+/// light's colour, a mesh's displayColor -- or (`literal`) the same colours
+/// converted to linear Rec.709 beforehand: AP1 to Rec.709 with a Bradford
+/// adaptation from D60 to D65 (colour-science's matrix), to seven digits.
+fs::path writeAuthoredStage(const fs::path& dir, bool literal) {
+    const fs::path path = dir / (literal ? "authored_rec709.usda" : "authored_acescg.usda");
+    const auto colour = [&](const char* type, const char* name, const char* acescg, const char* rec709) {
+        return std::string("    ") + type + " " + name + " = " + (literal ? rec709 : acescg) +
+               (literal ? "\n" : " (\n        colorSpace = \"acescg\"\n    )\n");
+    };
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+           "def Mesh \"Floor\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+           "    int[] faceVertexCounts = [4]\n"
+           "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+           "    point3f[] points = [(-6, 0, 3), (6, 0, 3), (6, 0, -9), (-6, 0, -9)]\n"
+           "    uniform token subdivisionScheme = \"none\"\n"
+           "    rel material:binding = </Materials/Preview>\n}\n"
+           "def Sphere \"Ball\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+           "    double radius = 0.6\n"
+           "    double3 xformOp:translate = (-1.1, 0.6, -2.5)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+           "    rel material:binding = </Materials/Standard>\n}\n"
+           "def Cube \"Box\"\n{\n"
+           "    double size = 0.8\n"
+           "    double3 xformOp:translate = (1.2, 0.4, -3)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+        << colour("color3f[]", "primvars:displayColor", "[(0.3, 0.7, 0.2)]", "[(0.0596090, 0.7573767, 0.1331152)]")
+        << "}\n"
+           "def RectLight \"Panel\"\n{\n"
+           "    float inputs:intensity = 4\n    float inputs:width = 2\n    float inputs:height = 1\n"
+        << colour("color3f", "inputs:color", "(0.3, 0.6, 1)", "(0.0551812, 0.6348576, 1.0683899)")
+        << "    double3 xformOp:translate = (1.5, 2.5, -3)\n"
+           "    double xformOp:rotateX = -90\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateX\"]\n}\n"
+           "def SphereLight \"Bulb\"\n{\n"
+           "    float inputs:intensity = 10\n    float inputs:radius = 0.3\n"
+           "    double3 xformOp:translate = (-1.5, 2.2, -1.5)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n"
+        << kCamera
+        << "def Scope \"Materials\"\n{\n"
+           "    def Material \"Preview\"\n    {\n"
+           "        token outputs:surface.connect = </Materials/Preview/Shader.outputs:surface>\n"
+           "        def Shader \"Shader\"\n        {\n"
+           "            uniform token info:id = \"UsdPreviewSurface\"\n        "
+        << colour("color3f", "inputs:diffuseColor", "(0.8, 0.6, 0.2)", "(0.9743137, 0.5781680, 0.1340104)")
+        << "            float inputs:roughness = 0.4\n"
+           "            token outputs:surface\n        }\n    }\n"
+           "    def Material \"Standard\"\n    {\n"
+           "        token outputs:mtlx:surface.connect = </Materials/Standard/Surface.outputs:out>\n"
+           "        def Shader \"Surface\"\n        {\n"
+           "            uniform token info:id = \"ND_standard_surface_surfaceshader\"\n        "
+        << colour("color3f", "inputs:base_color", "(0.2, 0.5, 0.8)", "(-0.0364930, 0.5359124, 0.8530927)")
+        << "            float inputs:specular_roughness = 0.3\n"
+           "            token outputs:out\n        }\n    }\n}\n";
+    return path;
+}
+
+/// A grey stage: achromatic surfaces, coloured lights and an 8-bit sRGB
+/// texture whose colour nobody said, and a linear cloud in lin_rec709_scene.
+/// A grey times a colour commutes with a 3x3, so drawn in ACEScg and brought
+/// to Rec.709 it is the stage drawn in Rec.709, but for rounding -- and the
+/// halves a converted cloud keeps.
+fs::path writeGreyStage(const fs::path& dir, const fs::path& texture, const fs::path& cloud) {
+    const fs::path path = dir / "grey.usda";
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+           "def Mesh \"Floor\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+           "    int[] faceVertexCounts = [4]\n"
+           "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+           "    point3f[] points = [(-6, 0, 3), (6, 0, 3), (6, 0, -9), (-6, 0, -9)]\n"
+           "    texCoord2f[] primvars:st = [(0, 0), (4, 0), (4, 4), (0, 4)] ( interpolation = \"vertex\" )\n"
+           "    uniform token subdivisionScheme = \"none\"\n"
+           "    rel material:binding = </Materials/Textured>\n}\n"
+           "def Sphere \"Ball\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+           "    double radius = 0.6\n"
+           "    double3 xformOp:translate = (-1.1, 0.6, -2.5)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+           "    rel material:binding = </Materials/Grey>\n}\n"
+           "def \"Cloud\" ( references = @" << cloud.string() << "@</World/Splats> )\n{\n"
+           "    double3 xformOp:translate = (0.6, 0.3, -2.2)\n"
+           "    double3 xformOp:scale = (0.5, 0.5, 0.5)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:scale\"]\n}\n"
+           "def RectLight \"Panel\"\n{\n"
+           "    float inputs:intensity = 4\n    float inputs:width = 2\n    float inputs:height = 1\n"
+           "    color3f inputs:color = (0.3, 0.6, 1)\n"
+           "    double3 xformOp:translate = (1.5, 2.5, -3)\n"
+           "    double xformOp:rotateX = -90\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateX\"]\n}\n"
+           "def SphereLight \"Bulb\"\n{\n"
+           "    float inputs:intensity = 10\n    float inputs:radius = 0.3\n"
+           "    color3f inputs:color = (1, 0.6, 0.3)\n"
+           "    double3 xformOp:translate = (-1.5, 2.2, -1.5)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n"
+        << kCamera
+        << "def Scope \"Materials\"\n{\n"
+           "    def Material \"Grey\"\n    {\n"
+           "        token outputs:surface.connect = </Materials/Grey/Shader.outputs:surface>\n"
+           "        def Shader \"Shader\"\n        {\n"
+           "            uniform token info:id = \"UsdPreviewSurface\"\n"
+           "            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
+           "            float inputs:roughness = 0.4\n"
+           "            token outputs:surface\n        }\n    }\n"
+           "    def Material \"Textured\"\n    {\n"
+           "        token outputs:surface.connect = </Materials/Textured/Shader.outputs:surface>\n"
+           "        def Shader \"Shader\"\n        {\n"
+           "            uniform token info:id = \"UsdPreviewSurface\"\n"
+           "            color3f inputs:diffuseColor.connect = </Materials/Textured/Image.outputs:rgb>\n"
+           "            float inputs:roughness = 0.6\n"
+           "            token outputs:surface\n        }\n"
+           "        def Shader \"Reader\"\n        {\n"
+           "            uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+           "            string inputs:varname = \"st\"\n"
+           "            float2 outputs:result\n        }\n"
+           "        def Shader \"Image\"\n        {\n"
+           "            uniform token info:id = \"UsdUVTexture\"\n"
+           "            asset inputs:file = @" << texture.string() << "@\n"
+           "            float2 inputs:st.connect = </Materials/Textured/Reader.outputs:result>\n"
+           "            float3 outputs:rgb\n        }\n    }\n}\n";
+    return path;
+}
+
+/// `frame`'s pixels from `space` into linear Rec.709, on the device.
+gpu::Buffer toRec709(test::Gpu& gpu, const Frame& frame, const std::string& space) {
+    gpu::Buffer pixels = upload(*gpu.device, frame.rgba);
+    auto compiler = colour::ColourCompiler::create(*gpu.library);
+    if (!compiler) FAIL(compiler.error().toString());
+    gpu::CommandBatch batch(*gpu.device);
+    colour::ColourWordsRun run;
+    run.count = frame.width * frame.height;
+    run.stride = 4;
+    auto converted = (*compiler)->convertWords(batch, pixels, space, run);
+    if (!converted) FAIL(converted.error().toString());
+    REQUIRE(*converted);
+    REQUIRE(batch.submit(true));
+    return pixels;
+}
+
+}   // namespace
+
+/// Phase 3: colours authored in ACEScg -- a material's constants, a light's
+/// colour, a displayColor -- drawn in Rec.709 are the same colours converted
+/// beforehand and authored in Rec.709. The literals are the reference's
+/// matrix to seven digits, and OCIO's adaptation is its own: the bound is
+/// what those two leave, far below the 30 percent a colour taken as the
+/// wrong space is off by.
+TEST_CASE("colours authored in ACEScg draw as the same colours converted beforehand",
+          "[usd][gpu][working_space][mesh][phase3]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    if (!colour::ocioBuilt()) {
+        SKIP("no OpenColorIO in this build");
+    }
+    const fs::path dir = scratchDir();
+    const Frame authored = renderFrame(writeAuthoredStage(dir, false), "raster", {}, false);
+    const Frame literal = renderFrame(writeAuthoredStage(dir, true), "raster", {}, false);
+    const gpu::Buffer a = upload(*gpu->device, authored.rgba);
+    const gpu::Buffer b = upload(*gpu->device, literal.rgba);
+    auto hdr = render::compareHdr(*gpu->library, a, b, authored.width, authored.height);
+    REQUIRE(hdr);
+    std::printf("  authored in ACEScg against converted beforehand: compareHdr max %.3g, p99 %.3g\n",
+                hdr->maxRelative, hdr->p99Relative);
+    CHECK(hdr->p99Relative <= 1e-3);
+    CHECK(hdr->maxRelative <= 1e-2);
+}
+
+/// Phase 2b/2c: ACEScg as the working space. A grey stage drawn in it, its
+/// frame brought to Rec.709 on the device, is the stage drawn in Rec.709:
+/// a grey times a colour commutes with a 3x3. What is left is rounding, the
+/// sRGB texture's matrix after the filter, and the halves the linear cloud's
+/// converted coefficients are stored in (2^-11 relative).
+TEST_CASE("a grey stage drawn in ACEScg and brought to Rec.709 is the stage drawn in Rec.709",
+          "[usd][gpu][working_space][mesh][splat][acescg]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    if (!colour::ocioBuilt()) {
+        SKIP("no OpenColorIO in this build");
+    }
+    const fs::path dir = scratchDir();
+    const fs::path cloud = dir / "linear_cloud.usdc";
+    fs::remove(cloud);
+    io::RawSplats raw = fixedCloud(2000);
+    raw.linear = true;   // light in lin_rec709_scene, as a bake writes it
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, cloud, {.addCamera = false}));
+    const fs::path stage = writeGreyStage(dir, writeSky(dir), cloud);
+    const Frame rec709 = renderFrame(stage, "raster", "lin_rec709_scene", false);
+    const Frame acescg = renderFrame(stage, "raster", "acescg", false);
+    const gpu::Buffer a = upload(*gpu->device, rec709.rgba);
+    const gpu::Buffer b = toRec709(*gpu, acescg, "acescg");
+    const gpu::Buffer untouched = upload(*gpu->device, acescg.rgba);
+    auto hdr = render::compareHdr(*gpu->library, b, a, rec709.width, rec709.height);
+    auto apart = render::compareHdr(*gpu->library, untouched, a, rec709.width, rec709.height);
+    REQUIRE(hdr);
+    REQUIRE(apart);
+    std::printf("  ACEScg brought to Rec.709 against Rec.709: max %.3g, p99 %.3g; not brought: p99 %.3g\n",
+                hdr->maxRelative, hdr->p99Relative, apart->p99Relative);
+    CHECK(hdr->p99Relative <= 1e-3);
+    CHECK(hdr->maxRelative <= 2e-2);
+    CHECK(apart->p99Relative > 1e-2);   // the frames are in two spaces: the conversion is what joins them
+}
+
+/// The trap Blender sets: its stages carry ColorSpaceAPI lin_rec709_scene at
+/// the root, while its splats are sRGB captures. A cloud without
+/// `athenea:splat:linear` is a capture whatever an ancestor says, so in
+/// ACEScg as in Rec.709 Blender's points draw as the PLY they came from.
+TEST_CASE("Blender's captured splats stay captures in ACEScg, whatever the root's ColorSpaceAPI says",
+          "[usd][gpu][working_space][splat][blender]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!colour::ocioBuilt()) {
+        SKIP("no OpenColorIO in this build");
+    }
+    const fs::path data = fs::path(ATHENEA_TEST_DATA_DIR) / "splats";
+    auto raw = io::readSplatPly(data / "sh3.ply");
+    REQUIRE(raw);
+    const fs::path dir = scratchDir();
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.upAxis = 'z';
+    const fs::path field = dir / "blender_field.usdc";
+    fs::remove(field);
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, *raw, field, options));
+    const auto stage = [&](const std::string& name, const std::string& cloud) {
+        const fs::path path = dir / name;
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n    metersPerUnit = 1\n)\n"
+            << "def \"Cloud\" ( prepend references = " << cloud << " )\n{\n}\n"
+            << "def Camera \"Camera\"\n{\n"
+               "    float2 clippingRange = (0.1, 1000)\n    float focalLength = 30\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    double3 xformOp:translate = (1.2, -6.5, 1.5)\n    double3 xformOp:rotateXYZ = (78, 0, 10)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n";
+        return path;
+    };
+    const fs::path fromBlender = stage("ws_blender_points.usda", "@" + (data / "sh3_blender.usda").string() + "@");
+    const fs::path fromPly = stage("ws_blender_ply.usda", "@" + field.string() + "@</World/Splats>");
+    const Frame points = renderFrame(fromBlender, "raster", "acescg");
+    const Frame ply = renderFrame(fromPly, "raster", "acescg");
+    const gpu::Buffer a = upload(*gpu->device, points.rgba);
+    const gpu::Buffer b = upload(*gpu->device, ply.rgba);
+    auto same = render::compareImages(*gpu->library, a, b, points.width, points.height);
+    REQUIRE(same);
+    std::printf("  in ACEScg, Blender's points against the PLY's field: p99 %u, max %u\n", same->p99, same->max);
+    CHECK(same->p99 == 0);
+    CHECK(same->max <= 1);
 }
