@@ -5,11 +5,13 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 
 #include "aofx/Effect.h"
+#include "aofx/Version.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
 #include "athenea/aofx/EffectRunner.h"
@@ -170,6 +172,23 @@ TEST_CASE("bundles openFXplayer built load in this host", "[aofx][compat]") {
     INFO(refusals);
     if (loaded == 0 && refusals.find("built with") != std::string::npos) {
         SKIP("openFXplayer's bundles were built with another toolchain; rebuild it:\n" + refusals);
+    }
+    // A build pinned to another aopenfx ABI is refused, by design: the number
+    // is one number and a mismatch is a refusal (aopenfx sdk/include/aofx/
+    // Version.h; HOST_CHANGES.md, ABI 26: "a bundle deliberately left at 25 is
+    // refused"). A host that accepted 25 would call through a vtable two slots
+    // short. So that case is a build of openFXplayer to bring up to date, not
+    // a failure of this host -- and only when *every* refusal is that one
+    // sentence, naming this host's number; anything else still fails below.
+    const std::string speaks = "and this host speaks " + std::to_string(::aofx::kAbiVersion);
+    if (loaded == 0 && !registry.reports().empty() &&
+        std::all_of(registry.reports().begin(), registry.reports().end(), [&](const auto& report) {
+            return report.reason.find("built against AOFX ABI") != std::string::npos &&
+                   report.reason.find(speaks) != std::string::npos;
+        })) {
+        SKIP("openFXplayer's bundles were built against another AOFX ABI; this host speaks " +
+             std::to_string(::aofx::kAbiVersion) + " -- rebuild openFXplayer on aopenfx at that ABI:\n" +
+             refusals);
     }
     CHECK(loaded > 0);
     CHECK(registry.find("tv.mediapro.aofx.invert") != nullptr);

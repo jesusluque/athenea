@@ -8678,6 +8678,29 @@ is the host's, under `aofx.host.channels`; the bundle identifier prefix in
 be put side by side: same tag, same bundles loaded, and a bundle refused in
 one refused in the other with the same sentence.
 
+**What the move to aopenfx's host broke, and what was found by running it.**
+Three of `athenea_aofx_tests` crashed in the first render (Invert, the
+miscount refusal, the reporter's complaint), all at the same line:
+`EffectRunner`'s constructor in `Host.cpp` handed its base
+`capabilities()`, meaning this engine's free function -- but inside a class
+derived from `aofx::host::EffectRunner` that name finds the base's member
+`capabilities() const` first, which reads an `impl_` the base has not built
+yet. It compiled, and it was a null dereference on every render. Qualified as
+`aofx_host::capabilities()`; nothing in aopenfx was wrong, and no bundle
+changes. The registry's constructor has no such member to collide with.
+
+openFXplayer's installed bundles are refused, correctly: its tree pins
+aopenfx at ABI 25 and this host speaks 26. aopenfx's rule is one number and a
+mismatch is a refusal (`sdk/include/aofx/Version.h`), and its
+`HOST_CHANGES.md` for 26 names exactly this check -- *a bundle deliberately
+left at 25 is refused* -- because `Gpu` grew two virtuals and a 25 bundle
+would call through a vtable two slots short. So the host does not accept 25.
+`bundles openFXplayer built load in this host` skips, saying so and listing
+every refusal, only when *every* bundle is refused by the ABI gate naming this
+host's number -- the same treatment as a build with another toolchain. A
+loaded bundle, or any other reason, still fails it; rebuilding openFXplayer on
+aopenfx at 26 turns it back into a check.
+
 ## Embeddable: the same CMakeLists as a subdirectory of the compositor
 
 The compositor builds this engine inside its tree (`OFXP_LRT_DIR`), so the

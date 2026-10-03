@@ -37,7 +37,11 @@ void EffectRegistry::scan(gpu_host::Context* context) {
     aofx::host::EffectRegistry::scan(context != nullptr ? context->compute() : nullptr);
 }
 
+// Qualified, and it has to be: inside this class `capabilities()` finds the
+// base's member before the namespace's function, and the base's reads an
+// `impl_` its constructor has not made yet -- a null dereference on every
+// render, not a compile error.
 EffectRunner::EffectRunner(gpu_host::Context& context)
-    : aofx::host::EffectRunner(*context.compute(), capabilities()) {}
+    : aofx::host::EffectRunner(*context.compute(), aofx_host::capabilities()) {}
 
 }   // namespace athenea::aofx_host
