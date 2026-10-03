@@ -64,6 +64,10 @@ static const uint kCoatDarkening = 1u << 26;
 // A TX transfer's reflected field, 48 a splat (GpuSplats::transfer, after the
 // indirect half).
 static const uint kTransferReflected = 1u << 27;
+// Ten floats a splat, a zonal transfer: two lobes, each an axis in the
+// gaussian's frame and three coefficients (`primvars:athenea:splat:transferZonal`),
+// in place of the harmonics of `transferDirect`.
+static const uint kTransferZonal = 1u << 28;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -81,7 +85,7 @@ struct StreamParams {
     uint cryptoBase;     // where the Cryptomatte id goes, or kNoPbr: its bits, carried as a float
     // Where a gaussian's transfer goes in a record and how many values it is:
     // nine of the direct half, and twenty-seven more where the indirect one
-    // is there too.
+    // is there too; or ten, a zonal transfer (kTransferZonal).
     uint transferBase; uint transferCount;
     // Where the words of which ways out are open go, or kNoPbr, and how
     // many: two (8 x 8 cells), or eight (16 x 16, a TX transfer's).
@@ -112,6 +116,7 @@ StructuredBuffer<uint>     cryptoObject; // one id a splat, as the prim it came 
 StructuredBuffer<uint>     transferDirect;   // nine a splat
 StructuredBuffer<uint>     transferIndirect; // twenty-seven a splat (forty-eight at degree 3), rgb a coefficient
 StructuredBuffer<uint>     transferReflected; // forty-eight a splat, a TX transfer's field
+StructuredBuffer<uint>     transferZonal;    // ten a splat: two lobes in the gaussian's frame
 StructuredBuffer<uint>     shadowBits;       // two words a splat, or eight, bits
 StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a thin wall
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
@@ -234,10 +239,11 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
     // How much of an environment reaches this gaussian: the direct half
     // first, then the indirect one. A cloud that carries neither writes
     // nothing here and the decode writes no buffer.
-    // The count is the layout (transfer_layout.slang): nine or sixteen of the
-    // direct half, three times that of the indirect one, and a TX transfer's
-    // forty-eight of the reflected field after them.
-    if (params.transferCount > 0 && params.transferBase != kNoPbr) {
+    if (params.transferCount > 0 && params.transferBase != kNoPbr && present(kTransferZonal)) {
+        for (uint k = 0; k < params.transferCount; ++k) {
+            records[r + params.transferBase + k] = streamValue(transferZonal, isHalf(kTransferZonal), e * 10 + k);
+        }
+    } else if (params.transferCount > 0 && params.transferBase != kNoPbr) {
         const uint direct = transferDirectCount(params.transferCount);
         const uint indirect = transferIndirectCount(params.transferCount);
         for (uint k = 0; k < direct && k < params.transferCount; ++k) {

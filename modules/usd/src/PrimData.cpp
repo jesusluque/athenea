@@ -190,6 +190,11 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     if (s.transferIndirect.empty() || s.transferReflected.values() < uint64_t{s.count} * 48) {
         s.transferReflected = {};
     }
+    // Or the direct half as zonal lobes: ten floats a gaussian.
+    s.transferZonal = streamOf(a.transferZonal);
+    if (s.transferZonal.values() < uint64_t{s.count} * scene::GpuSplats::kTransferZonalCount) {
+        s.transferZonal = {};
+    }
     // Which gaussians are thin walls: ints, like the ids.
     if (a.thinWalled.IsHolding<pxr::VtIntArray>()) {
         const pxr::VtIntArray& thin = a.thinWalled.UncheckedGet<pxr::VtIntArray>();
@@ -224,7 +229,7 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     s.sheenRoughness = wholeOr(a.sheenRoughness, 1);
     s.coatDarkening = wholeOr(a.coatDarkening, 1);
     // Which ways out are open: bits, like the ids, and only beside a transfer.
-    if (!s.transferDirect.empty() && a.shadowBits.IsHolding<pxr::VtIntArray>()) {
+    if ((!s.transferDirect.empty() || !s.transferZonal.empty()) && a.shadowBits.IsHolding<pxr::VtIntArray>()) {
         const pxr::VtIntArray& bits = a.shadowBits.UncheckedGet<pxr::VtIntArray>();
         if (bits.size() >= size_t{s.count} * 2 && s.count > 0) {
             s.shadowBits = {std::as_bytes(std::span<const int>(bits.cdata(), bits.size())), false, false};

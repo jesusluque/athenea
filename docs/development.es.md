@@ -1069,6 +1069,40 @@ se dobla con él.
 Un bake se rechaza con `--skinned`, porque la luz horneada en una pose está
 mal en todas las demás.
 
+**Un transfer que gira con la gaussiana** (propuesta 014 B). Un transfer no se
+rechaza: con `--skinned` (o `--transfer-lobes`) se guarda como lóbulos zonales
+en el marco propio de cada gaussiana, que una pose gira. Los pasos, en
+`Converter::transfer`:
+
+1. `framesForBake` decodifica los registros como los decodifica un frame
+   (`CloudLoader`), así que el marco contra el que se escriben los lóbulos es el
+   cuaternión empaquetado que lee un renderizador. Para una nube con esqueleto
+   luego la posa en `--time` con `SplatSkinner` -- las transformaciones de los
+   joints en ese instante, `MeshStage::skeletonTransforms` -- y mueve cada rayo
+   del bake con su gaussiana (`athenea/usd/transfer_zonal_io`, `zonalPoseRays`:
+   el punto posado, y el giro del marco de reposo al posado), porque la escena
+   que traza el bake está posada en `--time` y la nube se construyó en la pose
+   de bind.
+2. `kTransfer` hornea los nueve armónicos como para cualquier transfer, sólo la
+   mitad directa.
+3. `fitZonal` los empaqueta, con los bits y el marco de cada gaussiana, en una
+   imagen (`zonalPack`) para el bundle `SplatTransferZonal`
+   (`plugins/splattransferzonal`, un efecto AOFX), que ajusta uno o dos lóbulos
+   buscando el eje que conserva más energía de los armónicos y proyectando
+   sobre él, reajusta los dos uno contra otro, escribe los ejes en el marco de
+   la gaussiana, dispone los sesenta y cuatro bits sobre ese marco, y adjunta
+   un histograma de su error relativo; `zonalUnpack` escribe la respuesta como
+   `transferZonal` (diez floats por gaussiana) y los bits.
+
+El frame los lee con `splatTransferFrame` (`splat_relight.slang`), que llaman
+los dos kernels de sombreado con la rotación actual de la gaussiana y las filas
+de la instancia: cada eje pasa al mundo por el marco y las filas, los lóbulos
+se convierten en nueve armónicos (`z_l sqrt(4 pi / (2l + 1)) Y_lm(a)`, cerrado),
+y todo lo que viene después -- el producto del cuerpo con el cielo, la parte
+del sol, la apertura -- lee esos como leía los guardados. `splatSunOpen` busca
+el sol en el marco donde los bits son del marco. Un `transferCount` de 10 es lo
+que dice que el transfer de una nube es zonal (`GpuSplats::isZonal`).
+
 ### 6.8 El horneado de visibilidad
 
 Una nube con esqueleto no puede llevar una visibilidad horneada, porque el ala

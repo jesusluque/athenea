@@ -407,10 +407,11 @@ receta es §3.1.
 | `--bake-bounces` | entero | `3` | tras el primer impacto |
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
-| `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó |
+| `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó; un transfer zonal guarda sólo la mitad directa |
 | `--transfer-degree` | 2 o 3 | 3 | con `--transfer`: el grado de los armónicos, 16 coeficientes directos y 48 indirectos con 3, los 9 y 27 del primer transfer con 2 |
 | `--transfer-cells` | 0, 16 o 32 | 16 | con `--transfer`: celdas por lado de la rejilla de direcciones abiertas sobre la esfera entera (256 o 1024 bits por gaussiana); 0 escribe la de 8 x 8 del primer transfer sobre la mitad a la que mira la gaussiana |
-| `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake` |
+| `--transfer-lobes` | 0 a 2 | `0` | con `--transfer`: guardarlo como este número de lóbulos zonales en el marco propio de cada gaussiana (el bundle `SplatTransferZonal`); 0 es dos lóbulos con `--skinned` y nueve armónicos en el mundo en otro caso |
+| `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
 | `--default-lights` | flag | apagado | un dome y un sol para el bake, en una escena sin luces |
 | `--time` | número | `0` | el instante en que se posa la escena y traza el bake |
@@ -418,7 +419,8 @@ receta es §3.1.
 
 `--skinned` y un bake se rechazan juntos: una nube que se mueve no puede
 llevar luz horneada en una pose, así que la conversión lo dice y conserva el
-material.
+material. `--skinned` y `--transfer` van juntos: el transfer se guarda como
+lóbulos zonales en el marco de cada gaussiana, que giran con ella (abajo).
 
 Una malla cuyos GeomSubsets (familia `materialBind`) enlazan materiales
 propios se convierte un subset cada vez, cada uno con su material, y las caras
@@ -796,6 +798,27 @@ mitad no cuesta bake, y `athenea:splatTransferIndirect` la apaga al renderizar s
 volver a hornear. Un transfer y un light bake son excluyentes: uno es lo que
 hizo la luz, el otro lo que haría cualquiera.
 
+**Un transfer que gira con la gaussiana.** Nueve armónicos están en el mundo y
+se quedan allí cuando un esqueleto gira la gaussiana. `--transfer-lobes 1` o
+`2` -- y `--skinned`, donde dos es el valor por defecto -- guarda en cambio la
+mitad directa como uno o dos lóbulos zonales por gaussiana, cada uno un eje
+escrito en el marco propio de la gaussiana y tres coeficientes: diez floats por
+gaussiana frente a nueve, sin mitad indirecta, y los bits de sombra dispuestos
+sobre el marco de la gaussiana. Cada frame gira los ejes con el marco que tenga
+la gaussiana, así que el transfer sigue al ala. Una nube con esqueleto se posa
+en `--time` antes de que el bake la trace, porque la escena que traza está
+posada ahí; lo que guardan los lóbulos es lo que esa pose dejó pasar alrededor
+de cada gaussiana, así que la oclusión de otra extremidad en otra pose no está
+en ellos. El ajuste es el bundle `SplatTransferZonal`, que tiene que estar en
+la ruta de búsqueda AOFX, y el log dice su error relativo frente a los nueve
+armónicos que sustituye, `|f - g| / |f|` sobre la esfera, como una mediana, un
+percentil 90 y un percentil 99 (cada uno el borde superior de un cuarto de
+octava):
+
+```
+mesh2splat: transfer kept as 2 zonal lobes in each gaussian's frame for <n> gaussians in <t> ms; relative error against the nine harmonics: median <a>, p90 <b>, p99 <c>
+```
+
 **Una nube que se mueve.** `--skinned` construye las gaussianas en la pose de
 bind y le da a cada una los joints que la llevan, así que la nube se deforma
 al renderizar con el Skeleton al que está atada. Un bake se rechaza con él,
@@ -1063,6 +1086,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:transferDirect` | float[] ‹9 o 16 por gaussiana› | — |
 | `primvars:athenea:splat:transferIndirect` | float[] ‹27 o 48 por gaussiana› | — |
 | `primvars:athenea:splat:transferReflected` | float[] ‹48 por gaussiana› | — |
+| `primvars:athenea:splat:transferZonal` | float[] ‹10 por gaussiana› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 o 32 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
@@ -1099,12 +1123,22 @@ dice. Dieciséis y cuarenta y ocho por gaussiana son grado 3
 (`--transfer-degree 3`, el valor por omisión), multiplicados por dieciséis
 armónicos del cielo; nueve y veintisiete son los del primer transfer, que se
 leen como siempre.
+`transferZonal` es la mitad directa como dos lóbulos zonales en el marco propio
+de cada gaussiana, escrita en lugar de `transferDirect` (`--transfer-lobes`,
+`--skinned`): por cada lóbulo, el (u, v) del cuadrado octaédrico de su eje en el
+marco que da la orientación de la gaussiana, y luego sus coeficientes zonales de
+las bandas 0, 1 y 2 (un ajuste de un lóbulo escribe el segundo como ceros).
+Donde están los dos, es el que se lee. Un lector que no lo conoce dibuja la nube
+reiluminada sin transfer, y eso es todo su versionado: es un primvar nuevo, no
+un significado nuevo de uno viejo, y un `.athc` no lleva transfer de ninguna de
+las dos clases.
 `shadowBits` se escribe a su lado: sesenta y cuatro bits por gaussiana, uno por
 celda de una rejilla octaédrica de 8 x 8 sobre la esfera en el espacio propio
-de la nube, puesto donde el rayo del bake en esa dirección salió de la escena.
-Es lo que sombrea el sol que un frame saca del cielo; sólo se lee en una nube
-que lleva también `transferDirect`, y sin él el transfer sombrea el sol de
-forma suave.
+de la nube -- sobre el marco propio de la gaussiana junto a `transferZonal` --,
+puesto donde el rayo del bake en esa dirección salió de la escena. Es lo que
+sombrea el sol que un frame saca del cielo; sólo se lee en una nube que lleva
+también `transferDirect` o `transferZonal`, y sin él el transfer sombrea el sol
+de forma suave.
 Ocho o treinta y dos enteros por gaussiana son los del transfer TX
 (`--transfer-cells` 16 o 32): una rejilla de 16 x 16 o 32 x 32 sobre la esfera
 entera, trazada también la mitad de detrás de la superficie. El número es lo

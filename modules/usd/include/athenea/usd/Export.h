@@ -114,9 +114,16 @@ struct ExportOptions {
     /// gaussian by direction after meeting the scene, under a white sky of
     /// radiance one. Written only beside `transferIndirect`.
     std::span<const float>          transferReflected;
+    /// THE SAME, AS ZONAL LOBES IN EACH GAUSSIAN'S FRAME: ten floats a record,
+    /// two lobes of an axis (the octahedral square's u, v) and three zonal
+    /// coefficients. Written in place of `transferDirect` -- what a cloud a
+    /// skeleton carries keeps, since the lobes turn with the gaussian.
+    std::span<const float>          transferZonal;
     /// WHICH WAYS OUT ARE OPEN: two ints a record, sixty-four bits of an
     /// 8 x 8 octahedral grid over the sphere, set where a traced ray found
-    /// nothing. What lets a sun cast a hard shadow on a relit cloud.
+    /// nothing. What lets a sun cast a hard shadow on a relit cloud. Over the
+    /// world's sphere beside `transferDirect`, over the gaussian's own frame
+    /// beside `transferZonal`.
     std::span<const int32_t>        shadowBits;
     /// Ints a record of `shadowBits`: 2, or 8 or 32 for the 256 or 1024 bits
     /// of a 16 x 16 or 32 x 32 grid over the whole sphere (task TX), which a
@@ -136,6 +143,9 @@ struct TransferArrays {
     std::vector<float>   bounced;
     std::vector<float>   reflected;
     std::vector<int32_t> shadowBits;
+    /// Zonal lobes in each gaussian's frame, ten floats a gaussian, in place
+    /// of the rest (`ExportOptions::transferZonal`).
+    std::vector<float>   zonal;
     uint32_t             coefficients = 9;
     uint32_t             shadowWords = 2;
 };

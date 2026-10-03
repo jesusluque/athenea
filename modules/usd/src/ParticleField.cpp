@@ -250,6 +250,10 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.transferIndirect = held(kTransferIndirect);
         static const TfToken kTransferReflected("athenea:splat:transferReflected");
         arrays.transferReflected = held(kTransferReflected);
+        // The direct half as zonal lobes in each gaussian's frame, which turn
+        // with it: what a cloud a skeleton carries keeps.
+        static const TfToken kTransferZonal("athenea:splat:transferZonal");
+        arrays.transferZonal = held(kTransferZonal);
         static const TfToken kLodGroup("athenea:lod:group");
         static const TfToken kLodCell("athenea:lod:cell");
         static const TfToken kLodThreshold("athenea:lod:threshold");

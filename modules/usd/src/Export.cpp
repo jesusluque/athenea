@@ -370,6 +370,26 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             open.Set(VtValue(bits));
             open.SetElementSize(static_cast<int>(words));
         }
+    } else if (options.transferZonal.size() >= size_t{count} * 10 && count > 0) {
+        // THE SAME, AS ZONAL LOBES IN EACH GAUSSIAN'S FRAME: ten floats a
+        // record, which turn with the gaussian. What a cloud a skeleton
+        // carries keeps (proposal 014 B); a reader that does not know the
+        // primvar draws the cloud relit with no transfer, which is what it
+        // drew before there was one. The shadow bits beside it are over the
+        // gaussian's own frame.
+        UsdGeomPrimvarsAPI primvars(splats.GetPrim());
+        VtFloatArray zonal(options.transferZonal.begin(), options.transferZonal.begin() + size_t{count} * 10);
+        UsdGeomPrimvar made = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:transferZonal"),
+                                                     SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex);
+        made.Set(VtValue(zonal));
+        made.SetElementSize(10);
+        if (options.shadowBits.size() >= size_t{count} * 2) {
+            VtIntArray bits(options.shadowBits.begin(), options.shadowBits.begin() + size_t{count} * 2);
+            UsdGeomPrimvar open = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:shadowBits"),
+                                                         SdfValueTypeNames->IntArray, UsdGeomTokens->vertex);
+            open.Set(VtValue(bits));
+            open.SetElementSize(2);
+        }
     }
 
     if (options.relight) {

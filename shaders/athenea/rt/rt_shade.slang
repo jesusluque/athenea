@@ -249,6 +249,9 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         }
         surface.transferCount = params.transferCount;
         surface.transferBase = i * params.transferWords * 2;
+        // The frame the gaussian has now -- posed, for a cloud a skeleton
+        // carries -- which is what a zonal transfer's lobes turn with.
+        splatTransferFrame(surface, transfer, rotation, w0, w1, w2);
         // `params.shadowBits` is the words a gaussian: two of the first
         // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
         surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;

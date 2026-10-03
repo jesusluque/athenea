@@ -117,7 +117,8 @@ std::string describeCloud(const GaussianCloud& cloud, const GaussianReport& repo
         carries.push_back("lit body");
     }
     if (cloud.transfer > 0) {
-        carries.push_back("transfer " + std::to_string(cloud.transfer));
+        carries.push_back(cloud.transfer == 10 ? std::string("transfer zonal")
+                                               : "transfer " + std::to_string(cloud.transfer));
     }
     if (cloud.skinned) {
         carries.push_back("skinned");

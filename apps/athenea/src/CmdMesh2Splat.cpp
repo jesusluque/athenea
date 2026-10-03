@@ -66,6 +66,7 @@
 #include "athenea/lod/Lod.h"
 #include "athenea/material/TextureStore.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/scene/SplatSkinner.h"
 #include "athenea/usd/Export.h"
 #include "athenea/usd/MeshStage.h"
 #include "athenea/usd/StageRenderer.h"
@@ -185,6 +186,11 @@ struct Options {
     /// indirect: task TX, step 3), or 2 (nine and twenty-seven, the first
     /// transfer's).
     uint32_t                 transferDegree = 3;
+    /// THE TRANSFER AS ZONAL LOBES in each gaussian's own frame (proposal 014
+    /// B): 1 or 2 lobes, which turn with the gaussian; 0 is nine harmonics in
+    /// the world for a still cloud and two lobes for one a skeleton carries,
+    /// whose gaussians turn every frame.
+    uint32_t                 transferLobes = 0;
     /// PATHS A GAUSSIAN, 256 on average since every gaussian is blended in
     /// linear light: these everywhere, then `bakeExtra` more shared out
     /// where the noise is (docs/decisions.md, "The bake's grain"). A transfer
@@ -231,6 +237,22 @@ struct MapKey {
     }
 };
 
+/// A TRANSFER KEPT AS ZONAL LOBES IN EACH GAUSSIAN'S FRAME (proposal 014 B):
+/// the effect that fits them, how many, how the records are laid out (the
+/// cloud is decoded to learn each gaussian's frame as a frame will draw it),
+/// and -- for a cloud a skeleton carries -- the joints' transforms at the
+/// bake's instant, which pose the cloud onto the stage the bake traces.
+struct ZonalTransfer {
+    aofx::Effect*         effect = nullptr;
+    uint32_t              lobes = 2;
+    io::SplatEncoding     encoding;
+    /// Sixteen floats a joint at `--time`, as `MeshStage::skeletonTransforms`
+    /// gives them; empty for a cloud nothing carries.
+    std::vector<float>    xforms;
+    std::array<float, 16> geomBind{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+                                   0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+};
+
 class Converter {
 public:
     Converter(gpu_host::Context& context, gpu::ShaderLibrary& library, const Options& options)
@@ -264,6 +286,9 @@ public:
         ATHENEA_TRY(make("athenea/usd/mesh2splat_span", "m2sRaySpan", raySpan_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sBakeInto", bakeInto_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sTransferInto", transferInto_));
+        ATHENEA_TRY(make("athenea/usd/transfer_zonal_io", "zonalPoseRays", zonalPoseRays_));
+        ATHENEA_TRY(make("athenea/usd/transfer_zonal_io", "zonalPack", zonalPack_));
+        ATHENEA_TRY(make("athenea/usd/transfer_zonal_io", "zonalUnpack", zonalUnpack_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetFlags", subsetFlags_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetScatter", subsetScatter_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_cells", "m2sCells", cells_));
@@ -1529,9 +1554,27 @@ public:
     [[nodiscard]] Result<void> filterTransfer(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
                                               uint32_t entries, uint32_t fieldFirst);
     /// How much of an environment reaches each gaussian, instead of the light.
+    /// With `zonal`, the cloud is posed where its skeleton stands at `time`
+    /// before the bake traces it, and what the file keeps is `zonalOut` --
+    /// ten floats a gaussian -- and the bits in each gaussian's frame, in
+    /// place of `direct` and `bounced`.
     [[nodiscard]] Result<void> transfer(const std::string& stage, double time, uint32_t samples,
                                         uint32_t bounces, bool indirect, uint32_t cells, uint32_t degree,
-                                        aofx::Effect* filter, usd::TransferArrays& out);
+                                        aofx::Effect* filter, const ZonalTransfer* zonal,
+                                        usd::TransferArrays& out);
+private:
+    /// The frame each gaussian has at the bake, a record each (its `shape`'s
+    /// four words; word 0 the rotation): the rest one, or for a cloud a
+    /// skeleton carries the posed one -- and then the bake's rays are moved
+    /// with their gaussians onto the posed stage.
+    [[nodiscard]] Result<gpu::Buffer> framesForBake(const ZonalTransfer& zonal);
+    /// The bake's nine harmonics and bits through the splat transfer zonal
+    /// fit (plugins/splattransferzonal), and its answer back as the file's.
+    [[nodiscard]] Result<void> fitZonal(const ZonalTransfer& zonal, const gpu::Buffer& frames,
+                                        const gpu::Buffer& directs, const gpu::Buffer& bits,
+                                        std::vector<float>& zonalOut, std::vector<int32_t>& shadowBits);
+
+public:
 
 private:
     /// Whether any material of the stage gives off light: the records then
@@ -1607,6 +1650,7 @@ private:
     gpu::ComputeKernel                       pack_, chunks_, reduce_, reduceSlices_, rows_;
     gpu::ComputeKernel                       gather_, noInfluence_, recordChunks_, raySpan_, bakeInto_,
                                              transferInto_, subsetFlags_, subsetScatter_;
+    gpu::ComputeKernel                       zonalPoseRays_, zonalPack_, zonalUnpack_;
     gpu::PrefixSum                           prefix_;
     std::vector<Piece>                       pieces_;
     gpu::ComputeKernel                       cells_;
@@ -1905,8 +1949,22 @@ Result<void> Converter::filterTransfer(aofx::Effect& filter, gpu::Buffer& answer
 
 Result<void> Converter::transfer(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
                                  bool indirect, uint32_t cells, uint32_t degree, aofx::Effect* filter,
-                                 usd::TransferArrays& out) {
+                                 const ZonalTransfer* zonal, usd::TransferArrays& out) {
     ATHENEA_TRY(spanRays());
+    // Zonal: each gaussian's frame at the bake, and -- carried by a skeleton
+    // -- the rays posed where the stage the bake traces stands.
+    gpu::Buffer frames;
+    if (zonal != nullptr) {
+        auto made = framesForBake(*zonal);
+        if (!made) return std::move(made).error();
+        frames = std::move(*made);
+        // The lobes are fitted to the first transfer's nine harmonics and its
+        // 64 bits, with no indirect half: a TX transfer's cells, degree 3 and
+        // field are in the world and do not turn with a limb.
+        indirect = false;
+        cells = 0;
+        degree = 2;
+    }
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
     // Degree 2: nine coefficients hold the irradiance of any environment to
@@ -1972,6 +2030,22 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         cursor["bake"]["cells"].setData(side == 0 ? 0u : words);
     });
     ATHENEA_TRY(batch.submit(true));
+    uint32_t reached = 0;
+    ATHENEA_TRY(found->read(device, 0, sizeof(reached), &reached));
+    std::printf("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
+                reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
+    if (reached * 2 < count_) {
+        std::fprintf(stderr,
+                     "mesh2splat: more than half the gaussians found no surface under them; the "
+                     "transfer is unlikely to be what you want\n");
+    }
+    if (zonal != nullptr) {
+        out.direct.clear();
+        out.bounced.clear();
+        out.reflected.clear();
+        out.shadowWords = 2;
+        return fitZonal(*zonal, frames, *directs, *bits, out.zonal, out.shadowBits);
+    }
     // What a USD array holds, as bytes.
     out.coefficients = coefficients;
     out.shadowWords = words;
@@ -1987,15 +2061,192 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     if (field) {
         ATHENEA_TRY(fields->read(device, 0, out.reflected.size() * sizeof(float), out.reflected.data()));
     }
-    uint32_t reached = 0;
-    ATHENEA_TRY(found->read(device, 0, sizeof(reached), &reached));
-    std::printf("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
-                reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
-    if (reached * 2 < count_) {
-        std::fprintf(stderr,
-                     "mesh2splat: more than half the gaussians found no surface under them; the "
-                     "transfer is unlikely to be what you want\n");
+    return ok();
+}
+
+/// EACH GAUSSIAN'S FRAME AT THE BAKE, AND FOR A SKINNED CLOUD THE POSE.
+///
+/// The records are decoded as a frame decodes them (`CloudLoader`), so the
+/// frame the fit writes the lobes against is the one the renderer turns them
+/// with -- the packed quaternion, not the conversion's floats. A cloud a
+/// skeleton carries was built in the bind pose while the bake traces the
+/// stage posed at `--time`: the skinner poses the cloud there exactly as a
+/// frame will (`SplatSkinner`, the blend's whole Jacobian), each ray is
+/// carried by its gaussian's own motion, and the frames are the posed ones.
+/// The lobes then hold, in the gaussian's own frame, what the pose that was
+/// traced let through; every other pose turns them with the gaussian.
+Result<gpu::Buffer> Converter::framesForBake(const ZonalTransfer& zonal) {
+    gpu::Device& device = library_->device();
+    auto loader = scene::CloudLoader::create(*library_);
+    if (!loader) return std::move(loader).error();
+    auto rest = loader->upload(records_, count_, zonal.encoding, options_->stage, 0);
+    if (!rest) return std::move(rest).error();
+    auto restShape = loader->toRecords(*rest, rest->shape, 4, 0u, "mesh2splat.zonalRestShape");
+    if (!restShape) return std::move(restShape).error();
+    const bool carried = !zonal.xforms.empty() && influences_.valid();
+    if (!carried) {
+        return std::move(*restShape);
     }
+    auto skinner = scene::SplatSkinner::create(*library_);
+    if (!skinner) return std::move(skinner).error();
+    auto influences = loader->keptOnly(*rest, influences_, 8, "mesh2splat.zonalInfluences");
+    if (!influences) return std::move(influences).error();
+    std::optional<gpu::Buffer> gradients;
+    if (gradients_.valid()) {
+        auto kept = loader->keptOnly(*rest, gradients_, 3, "mesh2splat.zonalGradients");
+        if (!kept) return std::move(kept).error();
+        gradients = std::move(*kept);
+    }
+    auto xforms = gpu::Buffer::fromSpan<float>(device, zonal.xforms, "mesh2splat.zonalXforms");
+    if (!xforms) return std::move(xforms).error();
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{rest->count} * 16;
+    desc.elementBytes = 16;
+    desc.label = "mesh2splat.zonalPosedPositions";
+    auto positions = gpu::Buffer::create(device, desc);
+    if (!positions) return std::move(positions).error();
+    desc.elementBytes = 4;
+    desc.label = "mesh2splat.zonalPosedShape";
+    auto shape = gpu::Buffer::create(device, desc);
+    if (!shape) return std::move(shape).error();
+    {
+        scene::SplatSkinInput input;
+        input.rest = &*rest;
+        input.influences = &*influences;
+        input.perSplat = 4;
+        input.weightGradients = gradients ? &*gradients : nullptr;
+        input.skinningXforms = &*xforms;
+        input.geomBindTransform = zonal.geomBind;
+        gpu::CommandBatch batch(device);
+        ATHENEA_TRY(skinner->skin(batch, input, *positions, *shape));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    // A record each again; a record validation dropped reads as a NaN.
+    constexpr uint32_t kDropped = 0x7FC00000u;
+    auto restPositions = loader->toRecords(*rest, rest->positions, 4, kDropped, "mesh2splat.zonalRestPositions");
+    if (!restPositions) return std::move(restPositions).error();
+    auto posedPositions = loader->toRecords(*rest, *positions, 4, kDropped, "mesh2splat.zonalPosedPositions");
+    if (!posedPositions) return std::move(posedPositions).error();
+    auto posedShape = loader->toRecords(*rest, *shape, 4, 0u, "mesh2splat.zonalPosedShape");
+    if (!posedShape) return std::move(posedShape).error();
+    auto none = counter();
+    if (!none) return std::move(none).error();
+    gpu::CommandBatch batch(device);
+    zonalPoseRays_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["restPositions"].setBinding(restPositions->rhi());
+        cursor["posedPositions"].setBinding(posedPositions->rhi());
+        cursor["restShape"].setBinding(restShape->rhi());
+        cursor["frames"].setBinding(posedShape->rhi());
+        cursor["rays"].setBinding(rays_.rhi());
+        // Declared by the module and not read here.
+        cursor["direct"].setBinding(none->rhi());
+        cursor["bitsIn"].setBinding(none->rhi());
+        cursor["picture"].setBinding(none->rhi());
+        cursor["zonal"].setBinding(none->rhi());
+        cursor["bitsOut"].setBinding(none->rhi());
+        cursor["io"]["count"].setData(count_);
+        cursor["io"]["width"].setData(uint32_t{1});
+        cursor["io"]["stride"].setData(uint32_t{1});
+    });
+    ATHENEA_TRY(batch.submit(true));
+    std::printf("mesh2splat: the cloud posed at the bake's instant (%u gaussians, %zu joints) so the transfer is "
+                "traced on the pose the stage holds\n",
+                rest->count, zonal.xforms.size() / 16);
+    return std::move(*posedShape);
+}
+
+/// THE FIT, AS AN AOFX EFFECT: the bake packed into the picture the effect
+/// reads, its answer unpacked into the ten floats and two words a gaussian
+/// the file keeps, and the error it measured said.
+Result<void> Converter::fitZonal(const ZonalTransfer& zonal, const gpu::Buffer& frames, const gpu::Buffer& directs,
+                                 const gpu::Buffer& bits, std::vector<float>& zonalOut,
+                                 std::vector<int32_t>& shadowBits) {
+    gpu::Device& device = library_->device();
+    const auto started = std::chrono::steady_clock::now();
+    auto picture = image::Image::create(pictureFor(uint64_t{count_} * 4));
+    if (!picture) return std::move(picture).error();
+    auto view = viewOf(*context_, *picture, "mesh2splat.zonalTransfer");
+    if (!view) return std::move(view).error();
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{count_} * 10 * 4;
+    desc.elementBytes = 4;
+    desc.label = "mesh2splat.transferZonal";
+    auto values = gpu::Buffer::create(device, desc);
+    if (!values) return std::move(values).error();
+    desc.bytes = uint64_t{count_} * 2 * 4;
+    desc.label = "mesh2splat.zonalBits";
+    auto localBits = gpu::Buffer::create(device, desc);
+    if (!localBits) return std::move(localBits).error();
+    auto none = counter();
+    if (!none) return std::move(none).error();
+    const auto bind = [&](rhi::ShaderCursor cursor, const gpu::Buffer& into, const image::ImagePtr& image) {
+        cursor["direct"].setBinding(directs.rhi());
+        cursor["bitsIn"].setBinding(bits.rhi());
+        cursor["frames"].setBinding(frames.rhi());
+        cursor["restPositions"].setBinding(none->rhi());
+        cursor["posedPositions"].setBinding(none->rhi());
+        cursor["restShape"].setBinding(none->rhi());
+        cursor["rays"].setBinding(none->rhi());
+        cursor["picture"].setBinding(into.rhi());
+        cursor["zonal"].setBinding(values->rhi());
+        cursor["bitsOut"].setBinding(localBits->rhi());
+        cursor["io"]["count"].setData(count_);
+        cursor["io"]["width"].setData(static_cast<uint32_t>(image->bounds().width()));
+        cursor["io"]["stride"].setData(static_cast<uint32_t>(image->stride()));
+    };
+    {
+        gpu::CommandBatch batch(device);
+        zonalPack_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *view, *picture); });
+        ATHENEA_TRY(batch.submit(true));
+        // Written on the device: the host must not hand the effect the copy
+        // it holds.
+        (*picture)->deviceWrote();
+    }
+    aofx_host::EffectJob job;
+    job.bounds = pictureFor(uint64_t{count_} * 3);
+    job.instance = "athenea/mesh2splat/transferzonal";
+    job.inputs.push_back({"Transfer", *picture});
+    job.params.push_back(aofx::ParamValue{"count", {static_cast<double>(count_)}, {}});
+    job.params.push_back(aofx::ParamValue{"lobes", {static_cast<double>(zonal.lobes)}, {}});
+    job.params.push_back(aofx::ParamValue{"rebin", {1.0}, {}});
+    auto rendered = aofx_host::renderEffect(*context_, *zonal.effect, job);
+    if (!rendered) return std::move(rendered).error();
+    const std::vector<float>* said = (*rendered)->attached("fitted");
+    if (said == nullptr || said->size() < 49) {
+        return Error(ErrorCode::DeviceFailure, "the splat transfer zonal fit did not say what it fitted");
+    }
+    auto answer = viewOf(*context_, *rendered, "mesh2splat.zonalFitted");
+    if (!answer) return std::move(answer).error();
+    {
+        gpu::CommandBatch batch(device);
+        zonalUnpack_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *answer, *rendered); });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    zonalOut.resize(size_t{count_} * 10);
+    shadowBits.resize(size_t{count_} * 2);
+    ATHENEA_TRY(values->read(device, 0, zonalOut.size() * sizeof(float), zonalOut.data()));
+    ATHENEA_TRY(localBits->read(device, 0, shadowBits.size() * sizeof(int32_t), shadowBits.data()));
+    // THE ERROR AGAINST THE NINE HARMONICS, from the effect's histogram: the
+    // relative L2 distance between the lobes and the bake's own nine (over
+    // the sphere, which is the distance of the coefficients), by quarter
+    // octave from 2^-10. A percentile is the upper edge of its bucket.
+    const auto fitted = static_cast<uint64_t>((*said)[0]);
+    const auto percentile = [&](double fraction) {
+        uint64_t seen = 0;
+        for (uint32_t b = 0; b < 48; ++b) {
+            seen += static_cast<uint64_t>((*said)[1 + b]);
+            if (fitted > 0 && static_cast<double>(seen) >= fraction * static_cast<double>(fitted)) {
+                return std::exp2((static_cast<double>(b) - 40.0 + 1.0) / 4.0);
+            }
+        }
+        return std::exp2((47.0 - 40.0 + 1.0) / 4.0);
+    };
+    const double took =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    std::printf("mesh2splat: transfer kept as %u zonal lobe%s in each gaussian's frame for %llu gaussians in %.0f ms; "
+                "relative error against the nine harmonics: median %.3g, p90 %.3g, p99 %.3g\n",
+                zonal.lobes, zonal.lobes == 1 ? "" : "s", static_cast<unsigned long long>(fitted), took,
+                percentile(0.5), percentile(0.9), percentile(0.99));
     return ok();
 }
 
@@ -2087,6 +2338,11 @@ void addMesh2Splat(CLI::App& app) {
                     "--transfer: cells a side of the grid of open directions over the whole sphere, 16 or 32; "
                     "0 keeps the first transfer's 8 x 8 over the half a gaussian faces")
         ->check(CLI::IsMember({0u, 16u, 32u}));
+    cmd->add_option("--transfer-lobes", o->transferLobes,
+                    "--transfer: keep it as this many zonal lobes in each gaussian's own frame, which turn "
+                    "with the gaussian, rather than nine harmonics in the world (0: two for --skinned, "
+                    "nine harmonics otherwise)")
+        ->check(CLI::Range(0u, 2u));
     cmd->add_flag("!--no-indirect", o->indirect,
                   "--transfer: leave out the interreflection, which costs no bake time and 27 floats a "
                   "gaussian to keep");
@@ -2113,7 +2369,8 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--skinned", o->skinned,
                   "carry the skeleton: the gaussians are built in the bind pose and each keeps the "
                   "four joints that move it, so the cloud deforms with the rig instead of being one "
-                  "pose. Forces --no-bake: a baked radiance does not turn with a limb");
+                  "pose. Forces --no-bake: a baked radiance does not turn with a limb (a --transfer does, "
+                  "kept as zonal lobes in each gaussian's frame)");
     cmd->add_option("--range", o->range,
                     "START:END[:STEP] in time codes: the instants a skinned cloud keeps its "
                     "skeleton's transforms at. The stage's own range by default, a code a step");
@@ -2183,6 +2440,23 @@ void addMesh2Splat(CLI::App& app) {
             }
         }
 
+        // THE ZONAL FIT a transfer goes through where it is kept as lobes in
+        // each gaussian's frame: asked for, or a skeleton carries the cloud.
+        const uint32_t lobes = !o->transfer ? 0u : o->transferLobes > 0 ? o->transferLobes : o->skinned ? 2u : 0u;
+        aofx::Effect* zonalFit = nullptr;
+        if (lobes > 0) {
+            zonalFit = registry.find("rt.sparrow.aofx.splattransferzonal");
+            if (zonalFit == nullptr) {
+                std::fprintf(stderr, "no SplatTransferZonal bundle on the AOFX search path (try `athenea aofx "
+                                     "list`), and a transfer kept as zonal lobes needs it\n");
+                throw CLI::RuntimeError(1);
+            }
+            if (o->indirect) {
+                std::printf("mesh2splat: a zonal transfer keeps the direct half alone; the indirect one stays in "
+                            "the world and would not turn with the gaussian\n");
+            }
+        }
+
         // Everything that touches the device happens on the host's own GPU
         // thread, because that is the thread the AOFX host renders on and a
         // device with two callers is the one bug this whole interface exists
@@ -2230,10 +2504,13 @@ void addMesh2Splat(CLI::App& app) {
                 o->bake = false;
             }
             if (o->skinned && o->transfer) {
-                // A transfer moves with the limb no better than a baked radiance
-                // does: what it holds is the visibility of a pose.
-                std::printf("mesh2splat: --skinned carries the material, not a transfer\n");
-                o->transfer = false;
+                // A TRANSFER IN THE WORLD DOES NOT TURN WITH A LIMB, but one
+                // kept as zonal lobes in each gaussian's own frame does: the
+                // frame the skeleton gives the gaussian every frame takes the
+                // lobes with it (proposal 014 B). What it holds is what the
+                // pose at `--time` let through around each gaussian; what other
+                // limbs cast on it in another pose it does not know.
+                std::printf("mesh2splat: --skinned keeps its transfer as zonal lobes in each gaussian's frame\n");
             }
             if (o->skinned && o->bake) {
                 // A BAKED RADIANCE DOES NOT TURN WITH A LIMB. What the harmonics
@@ -2278,8 +2555,33 @@ void addMesh2Splat(CLI::App& app) {
                     // this one did. The colours stay the material's albedo and
                     // the frame lights them with whatever sky it has, so the same
                     // file is right under every HDRI rather than under one.
-                    ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples + o->bakeExtra, o->bakeBounces, o->indirect,
-                                                   o->transferCells, o->transferDegree, filter, transferred));
+                    //
+                    // As zonal lobes in each gaussian's own frame where they are
+                    // asked for or where a skeleton turns the gaussians; then
+                    // a skinned cloud is posed at `--time`, the instant the
+                    // bake traces, before it is.
+                    std::optional<ZonalTransfer> zonal;
+                    if (lobes > 0) {
+                        zonal.emplace();
+                        zonal->effect = zonalFit;
+                        zonal->lobes = lobes;
+                        zonal->encoding = raw->encoding;
+                        if (o->skinned) {
+                            for (const usd::StageMesh& one : *meshes) {
+                                if (!one.skinning.bound) {
+                                    continue;
+                                }
+                                auto at = (*stage).skeletonTransforms(one.skinning.skeleton, {o->time});
+                                if (!at) return std::move(at).error();
+                                zonal->xforms = std::move(*at);
+                                zonal->geomBind = one.skinning.geomBindTransform;
+                                break;
+                            }
+                        }
+                    }
+                    ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples + o->bakeExtra, o->bakeBounces,
+                                                   o->indirect, o->transferCells, o->transferDegree, filter,
+                                                   zonal ? &*zonal : nullptr, transferred));
                 } else if (o->bake) {
                     usd::BakeOptions bake;
                     bake.samples = o->bakeSamples;
@@ -2396,6 +2698,7 @@ void addMesh2Splat(CLI::App& app) {
                 options.transferCoefficients = transferred.coefficients;
                 options.shadowBits = transferred.shadowBits;
                 options.shadowWords = transferred.shadowWords;
+                options.transferZonal = transferred.zonal;
                 // WHOLE OR NOT AT ALL: under another name beside it, and
                 // under its own only once it is complete, so a conversion
                 // that fails leaves no stage of half a cloud behind.

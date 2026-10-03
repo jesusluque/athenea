@@ -686,7 +686,8 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kBase = 65536, kShPlanes = 131072, kSpecularWeight = 1u << 18,
                    kSpecularColour = 1u << 19, kSpecularIor = 1u << 20, kCoatWeight = 1u << 21,
                    kCoatRoughness = 1u << 22, kCoatIor = 1u << 23, kSheenColour = 1u << 24,
-                   kSheenRoughness = 1u << 25, kCoatDarkening = 1u << 26, kTransferReflected = 1u << 27;
+                   kSheenRoughness = 1u << 25, kCoatDarkening = 1u << 26, kTransferReflected = 1u << 27,
+                   kTransferZonal = 1u << 28;
 
 }   // namespace
 
@@ -728,8 +729,13 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                               in.transferIndirect.values() >= uint64_t{n} * directCount * 3;
     const bool haveField = haveIndirect && !in.transferReflected.empty() &&
                            in.transferReflected.values() >= uint64_t{n} * 48;
+    // A ZONAL TRANSFER, ten values a gaussian, wins where both are there: it
+    // turns with the gaussian, which harmonics in the world do not.
+    const bool haveZonal = !in.transferZonal.empty() &&
+                           in.transferZonal.values() >= uint64_t{n} * GpuSplats::kTransferZonalCount;
     const uint32_t transferCount =
-        haveDirect ? directCount + (haveIndirect ? directCount * 3 : 0u) + (haveField ? 48u : 0u) : 0u;
+        haveZonal ? GpuSplats::kTransferZonalCount
+                  : (haveDirect ? directCount + (haveIndirect ? directCount * 3 : 0u) + (haveField ? 48u : 0u) : 0u);
     // Two words a gaussian of which ways out are open, only beside a transfer.
     const bool haveShadowBits = transferCount > 0 && !in.shadowBits.empty() &&
                                 in.shadowBits.values() >= uint64_t{n} * 2;
@@ -818,10 +824,14 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     note(in.roughness, kRoughness);
     note(in.transmission, kTransmission);
     note(in.cryptoObject, kCrypto);
-    note(in.transferDirect, kTransferDirect);
-    note(in.transferIndirect, kTransferIndirect);
-    if (haveField) {
-        note(in.transferReflected, kTransferReflected);
+    if (haveZonal) {
+        note(in.transferZonal, kTransferZonal);
+    } else {
+        note(in.transferDirect, kTransferDirect);
+        note(in.transferIndirect, kTransferIndirect);
+        if (haveField) {
+            note(in.transferReflected, kTransferReflected);
+        }
     }
     if (haveShadowBits) {
         note(in.shadowBits, kShadowBits);
@@ -877,6 +887,8 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     auto transferReflected =
         streamBuffer(haveField ? in.transferReflected : FloatStream{}, "splats.stream.transferReflected");
     if (!transferReflected) return std::move(transferReflected).error();
+    auto transferZonal = streamBuffer(haveZonal ? in.transferZonal : FloatStream{}, "splats.stream.transferZonal");
+    if (!transferZonal) return std::move(transferZonal).error();
     auto thinWalled = streamBuffer(haveThin ? in.thinWalled : FloatStream{}, "splats.stream.thinWalled");
     if (!thinWalled) return std::move(thinWalled).error();
     auto shadowBits = streamBuffer(haveShadowBits ? in.shadowBits : FloatStream{}, "splats.stream.shadowBits");
@@ -917,6 +929,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 cursor["transferDirect"].setBinding(haveDirect ? transferDirect->rhi() : none->rhi());
                 cursor["transferIndirect"].setBinding(haveIndirect ? transferIndirect->rhi() : none->rhi());
                 cursor["transferReflected"].setBinding(haveField ? transferReflected->rhi() : none->rhi());
+                cursor["transferZonal"].setBinding(haveZonal ? transferZonal->rhi() : none->rhi());
                 cursor["shadowBits"].setBinding(haveShadowBits ? shadowBits->rhi() : none->rhi());
                 cursor["thinWalled"].setBinding(haveThin ? thinWalled->rhi() : none->rhi());
                 cursor["normals"].setBinding(haveNormals ? normals->rhi() : none->rhi());

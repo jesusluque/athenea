@@ -31,6 +31,8 @@ struct FieldParams {
 
     float3 towardsWall;
     float  pad0;
+    float3 awayFromWall;   ///< a direction the sky fills, well inside it
+    float  pad1;
 };
 
 RWStructuredBuffer<uint>   halves;   ///< a fake gaussian's transfer, f16 pairs
@@ -120,7 +122,7 @@ void fieldCouplingCheck(uint3 tid: SV_DispatchThreadID) {
 }
 
 /// stats[0] points whose field toward the wall is off its radiance
-/// stats[1] points whose field straight up reads more than `openFloor`
+/// stats[1] points whose field away from the wall reads more than `openFloor`
 /// stats[2] points judged
 /// stats[4] the worst relative error toward the wall, stats[5] the most read
 /// up, both as the bits of a float (positive, so they order as uints)
@@ -142,7 +144,7 @@ void fieldBakeCheck(uint3 tid: SV_DispatchThreadID) {
         const float band = j < 1u ? 0.0 : (j < 4u ? 2.0 : (j < 9u ? 6.0 : 12.0));
         const float g = exp(-band * alpha * alpha);
         wall += c * g * envBasisValue(j, normalize(params.towardsWall));
-        up += c * g * envBasisValue(j, float3(0.0, 0.0, 1.0));
+        up += c * g * envBasisValue(j, normalize(params.awayFromWall));
     }
     const float error = abs(dot(wall, float3(1.0 / 3.0)) - params.wallRadiance) / params.wallRadiance;
     if (error > params.tolerance) {
