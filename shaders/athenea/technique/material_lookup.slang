@@ -19,6 +19,10 @@ public static const uint kMaterialCutout = 1u;   // its opacity says whether a s
 /// A UsdPreviewSurface in transparent opacity mode: the path tracer keeps the
 /// specular whole and lets (1 - opacity) straight through (MaterialPrograms.h).
 public static const uint kMaterialTransparent = 2u;
+/// The least probability a transparent surface is kept with, by a raster
+/// pixel's lot or a path's: held off zero so a window at opacity 0 still
+/// reflects, one sample in twenty at twenty times the weight.
+public static const float kTransparentKeep = 0.05;
 
 public struct MaterialLookupParams {
     public float time;

@@ -7152,9 +7152,9 @@ TEST_CASE("an OpenPBR geometry_opacity of zero cuts the surface away, and its sh
                    "            float inputs:geometry_opacity = 0\n"
                    "            token outputs:out\n        }\n    }\n}\n";
         }
-        // With shadows on the traced route: a card that is not there casts
-        // none either. The rasteriser does not ask a shadow's cut-out yet
-        // (docs/decisions.md), so there only the card is looked for.
+        // With shadows on: a card that is not there casts
+        // none either, on both routes: the raster asks a shadow's cut-out in
+        // traceShadows, a kernel apart from the shading.
         out << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 2\n"
             << (shadows ? "" : "    bool inputs:shadow:enable = 0\n") << "}\n"
                "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
@@ -7180,7 +7180,7 @@ TEST_CASE("an OpenPBR geometry_opacity of zero cuts the surface away, and its sh
     };
     for (const char* technique : {"raster", "rt"}) {
         INFO(technique);
-        const bool shadows = std::string(technique) == "rt";
+        const bool shadows = true;
         const gpu::Buffer a = frame(stage("openpbr_cut.usda", true, shadows), technique);
         const gpu::Buffer b = frame(stage("openpbr_cut_none.usda", false, shadows), technique);
         auto same = render::compareHdr(*gpu->library, a, b, w, h);
@@ -8152,8 +8152,7 @@ TEST_CASE("a path traced frame antialiases its edges as it gathers, and one pass
 // down in favour of what is behind while the specular and the emission stay
 // whole: a window at opacity 0 still reflects the sky. `presence` scales the
 // whole response, and the surface is there by lot. The path tracer draws the
-// first as the specification says; the raster can only cut by lot, and does,
-// in either mode.
+// first as the specification says, and the raster by the same lot.
 TEST_CASE("a UsdPreviewSurface at opacity 0 keeps its specular in transparent mode and vanishes in presence mode",
           "[usd][gpu][mesh][materials][opacity][path]") {
     ATHENEA_REQUIRE_GPU(gpu);
@@ -8294,14 +8293,30 @@ TEST_CASE("a UsdPreviewSurface at opacity 0 keeps its specular in transparent mo
     CHECK(half / whole > 0.42);
     CHECK(half / whole < 0.58);
 
-    // The raster cuts by lot in either mode: at opacity 0 the front is gone
-    // both ways, as it always was.
+    // The raster draws the same two readings. Presence at opacity 0 is gone,
+    // as it always was. Transparent is kept by the tracer's lot, one pixel in
+    // twenty at twenty times its specular: what it adds over the back alone
+    // is, over the frame, what the tracer's transparent card adds. It used
+    // to be cut away like presence -- a feather card's clear texels
+    // reflected nothing under the raster and a glass sheet's worth under the
+    // tracer, and the sparrow came out two different birds.
     const gpu::Buffer rasterAlone = frame("raster_alone", "", "raster");
+    const gpu::Buffer rasterPresence =
+        frame("raster_presence", "            float inputs:opacity = 0\n            int inputs:opacityMode = 1\n",
+              "raster");
     const gpu::Buffer rasterTransparent = frame("raster_transparent", "            float inputs:opacity = 0\n", "raster");
-    auto rasterGone = render::compareHdr(*gpu->library, rasterTransparent, rasterAlone, w, h);
+    auto rasterGone = render::compareHdr(*gpu->library, rasterPresence, rasterAlone, w, h);
     REQUIRE(rasterGone);
-    std::printf("  raster, transparent at opacity 0 against the back alone: relMSE %.2e\n", rasterGone->relMse);
+    const double rasterAdded = double(energy(rasterTransparent)) - double(energy(rasterAlone));
+    std::printf("  raster: presence at opacity 0 against the back alone relMSE %.2e; transparent adds %.3f of what "
+                "it adds path traced\n",
+                rasterGone->relMse, rasterAdded / whole);
     CHECK(rasterGone->relMse < 1e-3);
+    // Within what one thing the raster cannot draw: a sample its lot passed
+    // shows the back whole, where the tracer takes off what the sheet
+    // reflected (transparentPasses) -- here a white specular, nearly all.
+    CHECK(rasterAdded / whole > 0.8);
+    CHECK(rasterAdded / whole < 1.4);
 }
 
 namespace {
@@ -8329,6 +8344,188 @@ gpu::Buffer renderStageText(const std::string& name, const std::string& text, co
 }
 
 }   // namespace
+
+// THE RASTER'S SHADOW RAYS IN A KERNEL OF THEIR OWN.
+//
+// The shading kernel with a ray query in it miscompiled on Metal (Apple M5
+// Pro): rows of garbage in blocks of half a threadgroup. A copy of the lobe
+// stack kept out of it, and the shadow walk kept from asking a cut-out's
+// opacity, kept the floor of the test above clean -- and the sparrow's frame
+// striped red and yellow all the same, because it merely *held* a cut-out
+// material. One unbound card material of opacity one half beside the same
+// grey floor is enough: 200 718 of 518 400 pixels differed at 960 x 540 with
+// the shadows on against off. Now the rays are traceShadows' and the frames
+// are the same word for word.
+TEST_CASE("shadow rays change nothing over an unoccluded floor when the frame holds a cut-out material",
+          "[usd][gpu][mesh][lights][shadows]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    const auto stage = [](bool shadows) {
+        std::ostringstream out;
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-6, -1, -2), (6, -1, -2), (6, -1, -14), (-6, -1, -14)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Looks/Grey>\n}\n"
+               "def Scope \"Looks\"\n{\n"
+               "    def Material \"Grey\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Grey/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:diffuseColor = (0.8, 0.8, 0.8)\n"
+               "            token outputs:surface\n        }\n    }\n"
+               // Bound to nothing: it is in the frame's materials, and that is all.
+               "    def Material \"Card\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Card/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            float inputs:opacity = 0.5\n"
+               "            token outputs:surface\n        }\n    }\n}\n"
+               "def DomeLight \"Dome\"\n{\n    float inputs:intensity = 0.5\n"
+            << (shadows ? "" : "    bool inputs:shadow:enable = 0\n")
+            << "}\n"
+               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    float inputs:angle = 2\n"
+            << (shadows ? "" : "    bool inputs:shadow:enable = 0\n")
+            << "    float3 xformOp:rotateXYZ = (-60, 0, 25)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 24\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 16.384\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 1.5, 0)\n    double xformOp:rotateX = -18\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateX\"]\n}\n";
+        return out.str();
+    };
+    const uint32_t w = 192, h = 128;
+    const gpu::Buffer off = renderStageText("cutmaterial_shadows_off.usda", stage(false), "raster", w, h);
+    for (int k = 0; k < 3; ++k) {
+        const gpu::Buffer on = renderStageText("cutmaterial_shadows_on.usda", stage(true), "raster", w, h);
+        auto words = render::countDifferent(*gpu->library, on, off, w * h * 4);
+        REQUIRE(words);
+        std::printf("  a cut-out material in the frame, shadows on against off, run %d: %llu of %u words differ\n",
+                    k + 1, static_cast<unsigned long long>(*words), w * h * 4);
+        CHECK(*words == 0);
+    }
+}
+
+// A CUT-OUT'S SHADOW IS ITS COVERAGE, ON THE RASTER ROUTE TOO. A card at
+// opacity one half (presence) between the sun and a floor, behind the
+// camera: the floor under it gets half the sun, by the shadow rays' lots.
+// While the shadow ray shared the shading kernel it could not ask the card's
+// material, and a card cast its whole shadow -- the black hole in the
+// sparrow's belly, under dozens of soft feather cards.
+TEST_CASE("a half-clear card casts half a shadow on the raster route", "[usd][gpu][mesh][lights][shadows][coverage]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    const auto stage = [](bool card) {
+        std::ostringstream out;
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-20, 0, 20), (20, 0, 20), (20, 0, -20), (-20, 0, -20)]\n"
+               "    color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n";
+        if (card) {
+            out << "def Mesh \"Card\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                   "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                   "    point3f[] points = [(-20, 3, 20), (20, 3, 20), (20, 3, -20), (-20, 3, -20)]\n"
+                   "    uniform token subdivisionScheme = \"none\"\n"
+                   "    rel material:binding = </Looks/Half>\n}\n"
+                   "def Scope \"Looks\"\n{\n    def Material \"Half\"\n    {\n"
+                   "        token outputs:surface.connect = </Looks/Half/Surface.outputs:surface>\n"
+                   "        def Shader \"Surface\"\n        {\n"
+                   "            uniform token info:id = \"UsdPreviewSurface\"\n"
+                   "            float inputs:opacity = 0.5\n            int inputs:opacityMode = 1\n"
+                   "            token outputs:surface\n        }\n    }\n}\n";
+        }
+        // The sun straight down; the camera at height 1 looking down, under
+        // the card, which it does not see.
+        out << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 2\n"
+               "    double3 xformOp:rotateXYZ = (-90, 0, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 1, 0)\n    double xformOp:rotateX = -90\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateX\"]\n}\n";
+        return out.str();
+    };
+    const uint32_t w = 128, h = 96;
+    const gpu::Buffer lit = renderStageText("half_shadow_none.usda", stage(false), "raster", w, h);
+    const gpu::Buffer half = renderStageText("half_shadow_card.usda", stage(true), "raster", w, h);
+    auto open = render::imageStats(*gpu->library, lit, w, h);
+    auto under = render::imageStats(*gpu->library, half, w, h);
+    REQUIRE(open);
+    REQUIRE(under);
+    const double ratio = under->mean[0] / std::max(open->mean[0], 1e-9);
+    std::printf("  a floor under a card at opacity 1/2 gets %.3f of the open sun (0.5 wanted)\n", ratio);
+    CHECK(std::abs(ratio - 0.5) < 0.05);
+}
+
+// EVERY LAYER DRAWS ITS OWN LOT. Three emissive cards one behind the other --
+// red at opacity one half, green at one half, an opaque blue back -- seen
+// through by the raster's lot: red half the frame, green a quarter, blue a
+// quarter, which is what the path tracer draws. One lot a pixel for every
+// layer drew blue half the frame and green never: a sample the front's lot
+// cut was cut from the middle card too.
+TEST_CASE("the raster's lot is drawn a layer at a time: two half-clear cards let a quarter through",
+          "[usd][gpu][mesh][materials][coverage]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    std::ostringstream out;
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
+    const auto card = [&](const char* name, double z, double half, const char* emit, const char* opacity) {
+        out << "def Mesh \"" << name << "\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+            << "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+            << "    point3f[] points = [(" << -half << ", " << -half << ", " << z << "), (" << half << ", " << -half
+            << ", " << z << "), (" << half << ", " << half << ", " << z << "), (" << -half << ", " << half << ", "
+            << z << ")]\n"
+            << "    uniform token subdivisionScheme = \"none\"\n"
+            << "    rel material:binding = </" << name << "/Look>\n"
+            << "    def Material \"Look\"\n    {\n"
+            << "        token outputs:surface.connect = </" << name << "/Look/Surface.outputs:surface>\n"
+            << "        def Shader \"Surface\"\n        {\n"
+            << "            uniform token info:id = \"UsdPreviewSurface\"\n"
+            << "            color3f inputs:diffuseColor = (0, 0, 0)\n"
+            << "            int inputs:useSpecularWorkflow = 1\n"
+            << "            color3f inputs:specularColor = (0, 0, 0)\n"
+            << "            color3f inputs:emissiveColor = " << emit << "\n"
+            << "            float inputs:opacity = " << opacity << "\n"
+            << "            int inputs:opacityMode = 1\n"
+            << "            token outputs:surface\n        }\n    }\n}\n";
+    };
+    card("Front", -3.0, 1.0, "(1, 0, 0)", "0.5");
+    card("Middle", -4.0, 2.0, "(0, 1, 0)", "0.5");
+    card("Back", -5.0, 3.0, "(0, 0, 1)", "1");
+    out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+           "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+           "    float2 clippingRange = (0.1, 1000)\n}\n";
+    const uint32_t w = 160, h = 120;
+    // The middle of the frame, inside the front card's square.
+    const uint32_t x0 = 60, y0 = 40, x1 = 100, y1 = 80;
+    for (const char* technique : {"raster", "rt"}) {
+        INFO(technique);
+        const gpu::Buffer frame = renderStageText(std::string("layer_lots_") + technique + ".usda", out.str(),
+                                                  technique, w, h, [](usd::StageRenderer& r) {
+                                                      r.setPathSamples(16);
+                                                      r.setPathTotal(64);
+                                                  });
+        auto stats = render::imageStats(*gpu->library, frame, w, h, x0, y0, x1, y1);
+        REQUIRE(stats);
+        std::printf("  %s: red %.3f, green %.3f, blue %.3f of the window (0.5, 0.25, 0.25 wanted)\n", technique,
+                    stats->mean[0], stats->mean[1], stats->mean[2]);
+        CHECK(std::abs(stats->mean[0] - 0.5) < 0.05);
+        CHECK(std::abs(stats->mean[1] - 0.25) < 0.05);
+        CHECK(std::abs(stats->mean[2] - 0.25) < 0.05);
+    }
+}
 
 // A WHITE FURNACE FOR TRANSPARENT OPACITY. Twenty clear mirror sheets one
 // behind the other (UsdPreviewSurface at opacity 0, transparent by default,
@@ -8383,6 +8580,71 @@ TEST_CASE("a stack of transparent sheets returns no more light than a dome of ra
     std::printf("  twenty transparent mirror sheets under a white dome: mean %.3f (at most 1)\n", stats->mean[0]);
     CHECK(stats->mean[0] < 1.05);
     CHECK(stats->mean[0] > 0.5);
+}
+
+// A LOBE SAMPLE IS SHADOWED. A polished metal floor under a plate far wider
+// than the view, a dome of radiance one above both: the floor sees the
+// plate's underside, which nothing lights, so the raster -- direct light
+// only -- draws it black. While the trace shared the shading kernel a lobe's
+// sample traced no shadow ray, so the floor reflected the sky through the
+// plate; a sparrow's belly, under the bird, read 0.26 where the tracer
+// reads 0.16. And a broad lobe's light samples are weighed against its own
+// samples by their true densities: the same floor at roughness one half
+// under the open sky returns at most the sky's one, not a dome sample at
+// forty times it at a grazing pixel.
+TEST_CASE("the raster shadows a lobe's own samples, and weighs them against the light's at any roughness",
+          "[usd][gpu][mesh][lights][shadows]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    const auto stage = [](bool plate, const char* roughness) {
+        std::ostringstream out;
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-60, 0, 60), (60, 0, 60), (60, 0, -60), (-60, 0, -60)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Looks/Metal>\n}\n";
+        if (plate) {
+            out << "def Mesh \"Plate\"\n{\n"
+                   "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                   "    point3f[] points = [(-60, 1, 60), (-60, 1, -60), (60, 1, -60), (60, 1, 60)]\n"
+                   "    color3f[] primvars:displayColor = [(0, 0, 0)]\n"
+                   "    uniform token subdivisionScheme = \"none\"\n}\n";
+        }
+        out << "def Scope \"Looks\"\n{\n    def Material \"Metal\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Metal/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:diffuseColor = (1, 1, 1)\n"
+               "            float inputs:metallic = 1\n"
+               "            float inputs:roughness = "
+            << roughness
+            << "\n            token outputs:surface\n        }\n    }\n}\n"
+               "def DomeLight \"Dome\"\n{\n    float inputs:intensity = 1\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 24\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 16.384\n"
+               "    float2 clippingRange = (0.01, 1000)\n"
+               "    double3 xformOp:translate = (0, 0.5, 0)\n    double xformOp:rotateX = -30\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateX\"]\n}\n";
+        return out.str();
+    };
+    const uint32_t w = 128, h = 96;
+    const gpu::Buffer covered = renderStageText("lobe_shadow_plate.usda", stage(true, "0.1"), "raster", w, h);
+    auto under = render::imageStats(*gpu->library, covered, w, h, 0, 0, w, h / 2);
+    REQUIRE(under);
+    std::printf("  a polished floor under a plate, raster: mean %.4f (black wanted)\n", under->mean[0]);
+    CHECK(under->mean[0] < 0.02);
+
+    const gpu::Buffer open = renderStageText("lobe_mis_open.usda", stage(false, "0.5"), "raster", w, h);
+    auto sky = render::imageStats(*gpu->library, open, w, h, 0, 0, w, h / 2);
+    REQUIRE(sky);
+    std::printf("  a rough metal floor under the open sky, raster: mean %.3f, brightest pixel %.2f\n",
+                sky->mean[0], static_cast<double>(sky->max[0]));
+    CHECK(sky->mean[0] < 1.05);
+    CHECK(sky->max[0] < 4.0F);
 }
 
 // UsdLux ShadowAPI on a cloud's shadow: `shadow:color` tints what the cloud

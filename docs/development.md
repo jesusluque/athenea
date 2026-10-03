@@ -84,7 +84,12 @@ a pool of its own and wants only the crossing.
    `VisibilityRaster`, `VisibilityTrace`, `VisibilityBvh` — and a test holds
    them to it.
 3. `technique::MaterialShading` (or `HeadlightShading`) rebuilds the surface
-   from that buffer and shades it. `AovShading` rebuilds the same surface for
+   from that buffer and shades it. Where the device traces rays it is three
+   kernels: `drawLobes` evaluates the material and writes its lobe samples'
+   directions, `traceShadows` traces every light and lobe sample's shadow ray
+   into a bit, and `shadeMaterials` lights the pixel by those bits. A kernel
+   that evaluates a material holds no ray query: on Metal the two together
+   wrote rows of garbage. `AovShading` rebuilds the same surface for
    the ids, the normals and the primvars; `CryptoShading` for the matte's id
    plane.
 4. Points, where there are any, are rasterised into a layer of their own and

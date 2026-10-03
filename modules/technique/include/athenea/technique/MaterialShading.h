@@ -8,12 +8,19 @@
 // chosen a sample by its power. A frame with no lights at all falls back to
 // the headlight, a unit light from the eye, as HeadlightShading draws
 // unshaded meshes.
+//
+// Where the device traces rays it is three kernels a frame: drawLobes
+// evaluates the material and writes its lobe samples' directions,
+// traceShadows traces every light sample's and lobe sample's shadow ray into
+// one bit each, and shadeMaterials -- which holds no intersector -- lights
+// the pixel by them. A ray query beside the lobe stack miscompiled on Metal.
 #pragma once
 
 #include <optional>
 #include <string>
 
 #include "athenea/core/Result.h"
+#include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/TileRasterizer.h"
@@ -48,10 +55,18 @@ private:
     gpu::ShaderLibrary*              library_ = nullptr;
     gpu::Device*                     device_ = nullptr;
     std::optional<gpu::ComputeKernel> kernel_;
+    /// The shadow rays' kernel (traceShadows), and the materials it was made for.
+    std::optional<gpu::ComputeKernel> trace_;
+    std::string                      traceModule_;
+    /// One bit a light sample a pixel: what traceShadows found blocked.
+    gpu::Buffer                      shadowBits_;
+    /// The kernel that draws the lobe samples' directions (drawLobes), and them.
+    std::optional<gpu::ComputeKernel> lobes_;
+    gpu::Buffer                      lobeDirs_;
     std::string                      module_;
     bool                             groups_ = false;
     bool                             clouds_ = false;
-    /// Whether the kernel in use traces shadow rays.
+    /// Whether the kernel in use reads the shadow rays' answers (traceShadows').
     bool                             shadowed_ = false;
     /// The device would not make the shadowed kernel: every kernel after is
     /// made without shadow rays (setPrograms).

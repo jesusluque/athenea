@@ -84,7 +84,13 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
    `VisibilityRaster`, `VisibilityTrace`, `VisibilityBvh` — y un test las
    obliga a ello.
 3. `technique::MaterialShading` (o `HeadlightShading`) reconstruye la
-   superficie desde ese buffer y la sombrea. `AovShading` reconstruye la misma
+   superficie desde ese buffer y la sombrea. Donde el dispositivo traza rayos
+   son tres kernels: `drawLobes` evalúa el material y escribe las direcciones
+   de las muestras de sus lóbulos, `traceShadows` traza el rayo de sombra de
+   cada muestra de luz y de lóbulo en un bit, y `shadeMaterials` ilumina el
+   píxel con esos bits. Un kernel que evalúa un material no contiene ninguna
+   ray query: en Metal las dos cosas juntas escribían filas de basura.
+   `AovShading` reconstruye la misma
    superficie para los ids, las normales y los primvars; `CryptoShading` para
    el plano de ids de la matte.
 4. Los puntos, donde los haya, se rasterizan en una capa propia y se componen
