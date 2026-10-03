@@ -9581,3 +9581,97 @@ fringes are what they are. `CloudLoader::records` writes a decoded capture
 back as `Linear` base colours in its own (sRGB) space and keeps the flag
 false, which is right but means "Linear" in the encoding names a layout, not
 a colour space.
+
+## A converted gaussian gives off what its material gave off
+
+`athenea mesh2splat` dropped a material's emission: `usd::StageMaterial` had no
+field for it, so a converted lamp shade or screen, relit (`--no-bake`) or
+transferred, was as dark as its albedo under the scene's light. Only the
+radiance bake kept it, because the path tracer meets the emission at the
+bake's first vertex (`carried += throughput * stack.emission`, which
+`bakeBody` leaves alone: it keeps `stack.emission` while it drops the polish).
+It is now carried end to end, in the shape the shading normal took:
+
+- **Read in four vocabularies** (`materialOf`, MeshStage.cpp):
+  standard_surface `emission` x `emission_color` (white weighed by 0 by
+  default), OpenPBR `emission_luminance` x `emission_color`, glTF `emissive` x
+  `emissive_strength` (black weighed by 1), UsdPreviewSurface `emissiveColor`
+  (black). OpenPBR's luminance is in nits, and its nodedef
+  (`libraries/bxdf/open_pbr_surface.mtlx`, `emission_weight`) multiplies it
+  into the colour as it stands and hands that to a `uniform_edf` -- which is
+  what the mesh is rendered with here, the graph compiled as authored -- so
+  the conversion carries the same number, no conversion of units. A map on the
+  colour is the colour and the weight multiplies it; a map on the weight is
+  read on one channel (`r` unless the connection says) and the colour
+  multiplies it; a map on a material that gives off nothing is dropped.
+  `StageMaterial::emission` is that product, `emissionMap` the map.
+- **The effect** (plugins/mesh2splat) gains an optional `Emission` clip and
+  `writeEmission`, `emissionColour`, `emissionChannel`, `emissionUv2`
+  parameters, all additive: a host that sends none gets the records it got.
+  With `writeEmission` a record has one entry more, the last
+  (`emissionEntry`), the colour times the map at the gaussian; `--simplify`
+  compares it as it compares the colour.
+- **The record and the file.** `io::SplatEncoding::emission`, three floats of
+  linear radiance; mesh2splat keeps `record[20..22]` for it (harmonics from 23)
+  and points the encoding at them only when some material of the stage
+  emits, so no file carries a primvar of zeros. The export writes
+  `primvars:athenea:splat:emission`, `color3f[]`, vertex, declared by
+  `AtheneaSplatLightingAPI`; negative and NaN are cleaned by the export
+  kernel. `readParticleFieldRecords` and Hydra (`ParticleFieldArrays::emission`
+  -> `SplatStreams::emission` -> the streams kernel) read it back.
+- **On the device, one word.** `GpuSplats::emission`, RGB9E5 (`packRgb9e5` /
+  `unpackRgb9e5` in common/packing.slang): unsigned HDR up to 65408, each
+  channel to 1/512 of the brightest, finer than f16 on the channel that is
+  seen, four bytes where three halves would be six. Packed by the decode.
+  Optional, as `pbr` and `normals` are: `hasEmission()`, bound either way.
+- **Shading.** `SplatSurface::emission`, and `relitSplat` starts from it where
+  it started from zero: `lit = s.lit ? s.albedo : s.emission`. So both routes
+  (splat_project, rt_shade), relit and transferred, add it unshadowed and the
+  same from both sides of the disc; a `litBody` cloud does not, since the bake
+  holds it -- the one place the two agree by construction.
+- **Levels of detail, decimation, `.athc`.** The reorder and the cut carry
+  the word; the moments gain three (`emissionMoments`: after the normals'),
+  the merged gaussian gives off their weighted mean, as the base colour is
+  merged. A decimation merges the file's `emission` as a mean (`Mean`, the
+  default for a float). `.athc` takes bit 2 of `flags` (bit 0 the normals,
+  bit 1 left to `linear`): one word an element after the normals; files
+  without it read as before. Skinning does not touch it: it has no direction.
+
+What it costs: nothing for a stage that emits nothing; otherwise twelve bytes
+a gaussian in the file and four on the device, one word read a relit splat a
+frame.
+
+Tests:
+
+- `athenea_usd_tests "a material's emission is read in each vocabulary*"`:
+  nine materials -- each vocabulary's constant, standard_surface with a colour
+  and no weight (nothing), glTF's map times strength, standard_surface's map on
+  the weight (channel r, the colour multiplying), a preview surface's sRGB map,
+  and a map on a weight of zero (dropped).
+- `athenea_usd_tests "a cloud's emission survives*"`: 3000 gaussians with five
+  known emissions, nothing to a hundred, go out and back as records, as
+  Hydra's arrays and through a `.athc`: 0 off the table at 4e-3 of the
+  brightest channel, 0 words apart, 0 changed in the store and the 440 merged;
+  every merge inside the box of what it merged.
+- `emissive_conversions_render_like_the_mesh` (ctest; it runs after the six
+  `mesh2splat_emissive_*` conversions and runs the hidden case
+  `[emissive_conversion]`): two quads under a dome of 0.1, OpenPBR's luminance
+  2 x (0.6, 0.3, 0.15), and glTF's emissive map (a gradient, sRGB) x strength
+  2, converted at `--resolution 256` relit, transferred and baked, drawn
+  raster and traced against the rasterised mesh: p99 relative 0.014 to 0.022,
+  the mean red within 0.6 % of the mesh's in the same route. Without the
+  emission in `relitSplat` the relit and transferred clouds were p99 1.000,
+  mean red 0.054 against 1.250; adding it on a `litBody` cloud as well made
+  the baked ones twice the mesh (checked by changing the one line both ways).
+  The traced mesh is not the pixel reference because it samples the map with
+  each path's jitter: on the gradient a percent of its pixels sit 0.125 off
+  the rasterised mesh, the reference's noise; its mean still is.
+
+**Not done.** An emissive gaussian lights nothing: the mesh's emissive
+triangles are sampled by the path tracer (`EmissiveTable`), a cloud's are not,
+so a converted lamp glows but does not light the table under it unless the
+cloud was baked with the lamp mesh in the scene. An OpenPBR or
+standard_surface coat over the emission (which tints and dims it on the mesh)
+is not carried; neither is a map on both the colour and the weight (the
+colour's is read, and the log says so). The transfer's own bake measures no
+emission (`transferMode` gathers nothing), which is right: the frame adds it.

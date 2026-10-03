@@ -36,6 +36,7 @@ static const uint kTransferIndirect = 2048;
 static const uint kShadowBits = 4096;
 static const uint kThinWalled = 8192;
 static const uint kNormals = 16384;
+static const uint kEmission = 32768;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -59,6 +60,8 @@ struct StreamParams {
     uint shadowBase;
     // Where the three floats of a shading normal go, or kNoPbr.
     uint normalBase;
+    // Where the three floats of an emitted radiance go, or kNoPbr.
+    uint emissionBase;
 };
 
 static const uint kNoPbr = 0xFFFFFFFFu;
@@ -78,6 +81,7 @@ StructuredBuffer<uint>     transferIndirect; // twenty-seven a splat, rgb a coef
 StructuredBuffer<uint>     shadowBits;       // two words a splat, bits
 StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a thin wall
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
+StructuredBuffer<uint>     emission;         // rgb a splat, the radiance it gives off
 RWStructuredBuffer<float>  records;
 ConstantBuffer<StreamParams> params;
 
@@ -146,6 +150,13 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
         for (uint k = 0; k < 3; ++k) {
             records[r + params.normalBase + k] =
                 present(kNormals) ? streamValue(normals, isHalf(kNormals), e * 3 + k) : 0.0;
+        }
+    }
+    // The radiance it gives off, as the stage holds it; the decode packs it.
+    if (params.emissionBase != kNoPbr) {
+        for (uint k = 0; k < 3; ++k) {
+            records[r + params.emissionBase + k] =
+                present(kEmission) ? streamValue(emission, isHalf(kEmission), e * 3 + k) : 0.0;
         }
     }
     // How much of an environment reaches this gaussian: the direct half

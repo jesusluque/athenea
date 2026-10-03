@@ -57,6 +57,10 @@ struct ParticleFieldArrays {
     /// `primvars:athenea:splat:linear`: the colours are linear light. False
     /// for a capture, whose colours are the sRGB it was trained in.
     bool         linear = false;
+    /// The radiance each gaussian gives off by itself
+    /// (`primvars:athenea:splat:emission`), linear. Empty for a capture and
+    /// for a conversion of materials that emit nothing.
+    pxr::VtValue emission;         ///< VtVec3fArray or VtVec3hArray, one a gaussian
     std::string  cryptoManifest;   ///< {"<path>":"<hex8>"} as the primvar holds it
     /// A LEVEL OF DETAIL OF A CLOUD THAT MOVES: the same cloud converted at
     /// several cells, each its own prim with its own rig, named alike by

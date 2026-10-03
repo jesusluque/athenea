@@ -265,6 +265,9 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         // sRGB where it does not (common/color.slang, `cloudLight`).
         static const TfToken kLinear("athenea:splat:linear");
         arrays.linear = boolOf(held(kLinear), false);
+        // And the light it gives off by itself, a lamp's shade or a screen.
+        static const TfToken kEmission("athenea:splat:emission");
+        arrays.emission = held(kEmission);
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();

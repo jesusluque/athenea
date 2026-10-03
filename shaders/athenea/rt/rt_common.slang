@@ -66,6 +66,7 @@ public struct RtParams {
     public uint  categoriesLo; public uint categoriesHi;
     public uint  hasPbr;         // 1: `pbr` holds this cloud's metallic and roughness
     public uint  hasNormals;     // 1: `normals` holds this cloud's shading normals
+    public uint  hasEmission;    // 1: `emission` holds the radiance this cloud's gaussians give off
     public uint  litBody;        // 1: the colours are light already, and only the polish is added
     /// Lights an environment was prepared for: `envOfLight[k]` is the slice
     /// of light k, or `kEnvNone`. Zero: no sky prepared, and a dome is its
