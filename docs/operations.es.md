@@ -454,6 +454,57 @@ athenea compare cloud.exr mesh.exr
 athenea compare furnace.exr --window 192 192 320 320
 ```
 
+### 2.12 `athenea migrate` — los ficheros de lucabRTrender con los nombres de athenea
+
+athenea es lucabRTrender con otro nombre, y un fichero escrito antes del cambio
+no nombra nada de lo que este motor lee: se ignoran sus esquemas, sus primvars,
+sus settings y sus nubes `.lrtc`. `migrate` escribe una copia con los nombres
+nuevos; nunca escribe en la entrada.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `input` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd`, `.usdz` o `.lrtc` |
+| `-o`, `--output` | ruta, obligatoria | — | la misma clase de fichero: una capa como `.usda`, `.usdc` o `.usd` (un `.usd` conserva la codificación de la entrada), un paquete como `.usdz`, un `.lrtc` como `.athc`; nunca la entrada |
+| `-r`, `--recursive` | flag | no | migra también cada capa, paquete y `.lrtc` que el fichero nombra -- sublayers, references, payloads, value clips, atributos de tipo asset -- y que esté bajo `--root`, cada uno al mismo sitio bajo el directorio de la salida |
+| `--root` | directorio | el de la entrada | lo que `--recursive` puede copiar; debe contener la entrada, y no puede ser el directorio de la salida |
+| `-q`, `--quiet` | flag | no | imprime solo los avisos y los totales |
+
+Qué se renombra, capa a capa, sin componer la escena (cada capa conserva sus
+propias opiniones, variantes incluidas):
+
+| Antes | Después |
+|---|---|
+| `LrtSplatEditAPI`, `LrtSplatLightingAPI`, `LrtSplatSkinningAPI`, `LrtPointStyleAPI`, `LrtStreamedAssetAPI`, `LrtSplatVisibilityAPI`, `LrtSplatCryptomatteAPI`, `LrtVolumeAPI` en `apiSchemas` | `Athenea…API` |
+| toda propiedad cuyo nombre tenga un componente `lrt`: `primvars:lrt:splat:*`, los render settings `lrt:*`, `outputs:lrt:*` | lo mismo con `athenea`; se conservan valor, metadatos, time samples y conexiones |
+| un destino de conexión o de relación que nombra una de esas propiedades | la propiedad renombrada |
+| `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
+| claves de `customData` y `customLayerData` con un componente `lrt` | lo mismo con `athenea` |
+| una ruta de asset que acaba en `.lrtc` | `.athc` |
+| un `.lrtc` (`LRTC`, versión 1) | un `.athc` (`ATHC`, versión 2, sin normales); el contenido se copia tal cual |
+
+Rutas de asset. Una ruta relativa a un fichero que no se copia (una textura,
+una capa sin `--recursive`, una fuera de `--root`) se hace absoluta cuando la
+salida está en otro directorio, para que siga resolviendo (`anchored` en el
+informe). Con `--recursive`, una ruta a una copia migrada nombra la copia:
+relativa como lo era, o absoluta hacia donde está la copia. Dentro de un
+`.usdz` toda ruta sigue siendo relativa y un `.lrtc` se convierte y se
+renombra dentro del paquete; los ficheros conservan su orden, así que el
+primero sigue siendo la capa raíz.
+
+Cada renombrado se imprime, uno por línea (`schema`, `property`, `target`,
+`value`, `metadata`, `asset`, `anchored`, `file`, `warning`), y un total. Un
+fichero ya migrado se escribe sin cambios y no informa de ningún renombrado.
+Un `warning` es algo que se dejó como estaba: una propiedad cuyo nombre nuevo
+ya está escrito a su lado (gana la nueva), un `.lrtc` que la copia nombra y
+que aún no existe (ejecute `migrate` sobre él), un `.lrtc` en una expresión o
+en una plantilla de clips. USD no conserva los comentarios `#` de un `.usda`.
+
+```sh
+athenea migrate old/shot.usda -o new/shot.usda
+athenea migrate ~/assets/Sparrow/FilmGs.usda -o ~/migrated/FilmGs.usda --recursive
+athenea migrate cloud.lrtc -o cloud.athc
+```
+
 ## 3. Tareas
 
 ### 3.1 Un modelo en una nube
@@ -1205,6 +1256,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea mesh2splat` | una escena USD con la nube |
 | `athenea visibility` | el fichero de la nube, editado en el sitio o copiado |
 | `athenea aofx run` | un EXR |
+| `athenea migrate` | una copia de la escena, el paquete o la nube; con `--recursive`, también de lo que nombra |
 
 ### 8.4 Los scripts
 
