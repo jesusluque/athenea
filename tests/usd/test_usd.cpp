@@ -6842,6 +6842,98 @@ TEST_CASE("a MaterialX glass's opacity map is a cut-out, by its own UV set", "[u
     }
 }
 
+// EACH SURFACE IS READ IN ITS OWN WORDS AND AT ITS OWN DEFAULTS. glTF's
+// `gltf_pbr` calls its inputs `metallic`, `roughness` and `ior`, which read
+// as standard_surface's were simply not there; and an input nobody authored
+// is worth what that surface says, which is what the mesh renders with --
+// standard_surface a 0.8 grey of roughness 0.2, OpenPBR 0.3, glTF a fully
+// rough metal, UsdPreviewSurface 0.18 at 0.5. And a packed map's missing
+// channel is a factor of one: the kernel multiplies it into the value.
+TEST_CASE("a surface's inputs are read in its own vocabulary and at its own defaults", "[usd][mesh][materials]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path path = scratch("vocabulary_read.usda");
+    const char* names[] = {"Standard", "Open", "Gltf", "Preview", "GltfAuthored", "Weighted", "Clear"};
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n)\n";
+        for (const char* name : names) {
+            out << "def Mesh \"" << name << "\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                << "    int[] faceVertexCounts = [3]\n    int[] faceVertexIndices = [0, 1, 2]\n"
+                   "    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n"
+                   "    uniform token subdivisionScheme = \"none\"\n"
+                << "    rel material:binding = </Looks/" << name << ">\n}\n";
+        }
+        const auto mx = [&out](const char* name, const char* id, const char* inputs) {
+            out << "    def Material \"" << name << "\"\n    {\n"
+                << "        token outputs:mtlx:surface.connect = </Looks/" << name << "/S.outputs:out>\n"
+                << "        def Shader \"S\"\n        {\n"
+                << "            uniform token info:id = \"" << id << "\"\n" << inputs
+                << "            token outputs:out\n        }\n    }\n";
+        };
+        out << "def Scope \"Looks\"\n{\n";
+        mx("Standard", "ND_standard_surface_surfaceshader", "");
+        mx("Open", "ND_open_pbr_surface_surfaceshader", "");
+        mx("Gltf", "ND_gltf_pbr_surfaceshader", "");
+        mx("GltfAuthored", "ND_gltf_pbr_surfaceshader",
+           "            float inputs:metallic = 0\n            float inputs:roughness = 0.25\n"
+           "            float inputs:ior = 1.7\n            float inputs:transmission = 1\n");
+        mx("Weighted", "ND_standard_surface_surfaceshader",
+           "            float inputs:base = 0.5\n            color3f inputs:base_color = (1, 0.5, 0)\n");
+        out << "    def Material \"Preview\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Preview/S.outputs:surface>\n"
+               "        def Shader \"S\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            token outputs:surface\n        }\n    }\n"
+               "    def Material \"Clear\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Clear/S.outputs:surface>\n"
+               "        def Shader \"S\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            float inputs:opacity = 0.4\n"
+               "            token outputs:surface\n        }\n    }\n}\n";
+    }
+    auto builder = geom::MeshBuilder::create(*gpu->library);
+    if (!builder) FAIL(builder.error().toString());
+    auto stage = usd::MeshStage::open(path);
+    if (!stage) FAIL(stage.error().toString());
+    auto meshes = stage->read(*builder, usd::MeshStageOptions{});
+    if (!meshes) FAIL(meshes.error().toString());
+    REQUIRE(meshes->size() == std::size(names));
+    for (const usd::StageMesh& mesh : *meshes) {
+        INFO(mesh.path);
+        const usd::StageMaterial& m = mesh.material;
+        if (mesh.path == "/Standard") {
+            CHECK(m.baseColour[0] == Catch::Approx(0.8F));
+            CHECK(m.metallic == 0.0F);
+            CHECK(m.roughness == Catch::Approx(0.2F));
+        } else if (mesh.path == "/Open") {
+            CHECK(m.baseColour[1] == Catch::Approx(0.8F));
+            CHECK(m.roughness == Catch::Approx(0.3F));
+        } else if (mesh.path == "/Gltf") {
+            CHECK(m.baseColour[2] == 1.0F);
+            CHECK(m.metallic == 1.0F);
+            CHECK(m.roughness == 1.0F);
+        } else if (mesh.path == "/Preview") {
+            CHECK(m.baseColour[0] == Catch::Approx(0.18F));
+            CHECK(m.roughness == Catch::Approx(0.5F));
+        } else if (mesh.path == "/GltfAuthored") {
+            CHECK(m.metallic == 0.0F);
+            CHECK(m.roughness == Catch::Approx(0.25F));
+            CHECK(m.ior == Catch::Approx(1.7F));
+            CHECK(m.transmission == 1.0F);
+        } else if (mesh.path == "/Clear") {
+            // A preview surface's opacity is a coverage: seen through, not
+            // bent, which is a thin wall's transmission.
+            CHECK(m.transmission == Catch::Approx(0.6F));
+            CHECK(m.thinWalled);
+        } else {
+            // base 0.5 over (1, 0.5, 0): the weight scales the colour.
+            CHECK(m.baseColour[0] == Catch::Approx(0.5F));
+            CHECK(m.baseColour[1] == Catch::Approx(0.25F));
+            CHECK(m.baseColour[2] == 0.0F);
+        }
+    }
+}
+
 // A HEIGHT IS READ WHICHEVER WAY IT IS WRITTEN. UsdPreviewSurface puts it on
 // the surface's `displacement`, read through UsdUVTexture's own scale and
 // bias on the channel connected; MaterialX puts it on a `displacement` node

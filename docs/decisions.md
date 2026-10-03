@@ -8925,3 +8925,44 @@ The lighting primvars (relight, litBody, ior, the PBR arrays, the transfer
 and its shadow bits) were also written without AtheneaSplatLightingAPI
 applied, so `relight` came out as a custom attribute nobody declared. The
 API is applied whenever any of them is written.
+
+## A material is read in its own words, at its own defaults
+
+An audit of what a mesh renders with against what reaches a converted cloud
+found the converter reading every surface with one vocabulary and one set of
+defaults:
+
+- **glTF.** MaterialX's `gltf_pbr` calls its inputs `metallic`, `roughness`
+  and `ior`; read with standard_surface's names they were not there, and a
+  glTF metal arrived a dielectric of roughness 0.5. Its `alpha` is the
+  cut-out, and its transmission takes the base colour as its tint.
+- **Defaults.** An input nobody authored is worth what its surface says,
+  because that is what the mesh renders with: standard_surface 0.8 grey and
+  roughness 0.2 (version 1.0.1, the default, whose `base` is 1), OpenPBR
+  roughness 0.3, glTF a fully rough metal, UsdPreviewSurface 0.18 at 0.5.
+  The converter used white, a dielectric and 0.5 for all of them. A
+  connected colour is the map, and its constant is one.
+- **The base weight** (`base`, `base_weight`) scales the colour.
+- **A packed map's missing channel** is a factor of one. The kernel
+  multiplies the map into the material's value, and the picture held
+  (roughness 0.5, metallic 0) where no map wrote: a metal with only a
+  roughness map became a dielectric, 1 x 0. No test drives it yet: it lives
+  in the CLI's map composition, which no test runs.
+- **UsdPreviewSurface's opacity** below one was read as transmission, which
+  is right, and as a solid's, which is not: the mesh blends the surface over
+  what is behind it and bends nothing. It is a thin wall's now --
+  `(1 - T) surface + T behind`, untinted -- and only glasses that are not
+  thin walls give the cloud its index. Without this, the index the previous
+  change exports would have made a translucent plastic refract.
+
+Measured by the audit's claim that would have mattered most: the pawn's
+standard_surface was said to lose a quarter of its albedo to a default `base`
+of 0.8. It does not -- 0.8 is version 1.0.0's, and an unversioned node gets
+1.0.1 -- and the relit pawn's mean already matched the mesh's (0.287 against
+0.281).
+
+What a cloud still cannot carry, and the mesh renders: emission (a relit or
+transferred cloud of a lamp is dark; a radiance bake keeps it), specular
+weight and colour (F0 is 0.04 for every gaussian), coat, sheen, and the
+normal map's tangent frame (the conversion builds it from the triangle's
+longest edge, not from the UVs). Those need fields a gaussian does not have.

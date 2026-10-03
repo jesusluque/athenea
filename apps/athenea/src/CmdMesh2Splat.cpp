@@ -512,10 +512,13 @@ public:
 
         gpu::CommandBatch batch(library_->device());
         const uint32_t stride = static_cast<uint32_t>((*picture)->stride());
-        // `fallback` is what the picture holds where no texture wrote: the
-        // defaults a material has when it names no map. Metallic is nothing
-        // and roughness is a half, which is what the conversion assumes.
-        const std::array<float, 4> defaults{1.0F, 0.5F, 0.0F, 1.0F};
+        // `fallback` is what the picture holds where no texture wrote, and
+        // the kernel multiplies it into the material's own value: a channel
+        // with no map leaves that value as it is, so it is one. It was
+        // (roughness 0.5, metallic 0), which made a metal with only a
+        // roughness map a dielectric -- 1 x 0 -- and halved a roughness that
+        // came with only a metallic map.
+        const std::array<float, 4> defaults{1.0F, 1.0F, 1.0F, 1.0F};
         const auto write = [&](const std::string& file, uint32_t channels, bool clear) {
             const auto id = ids_.find(file);
             const uint32_t which = id != ids_.end() ? id->second : 0;
@@ -701,7 +704,7 @@ public:
                 // refracts only with an index (rt_shade: `ior > 1`), and a
                 // cloud keeps one: without it the pawn's glass head was a
                 // milky ball in every mode, relit, transferred or baked.
-                if (out->written > 0 && meshes[k].material.transmission > 0.0F) {
+                if (out->written > 0 && meshes[k].material.transmission > 0.0F && !meshes[k].material.thinWalled) {
                     const float ior = meshes[k].material.ior;
                     if (glassIor_ > 0.0F && glassIor_ != ior) {
                         std::fprintf(stderr,

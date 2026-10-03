@@ -265,11 +265,40 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     const bool preview = id == TfToken("UsdPreviewSurface");
     const bool openPbr = id == TfToken("ND_open_pbr_surface_surfaceshader") ||
                          id == TfToken("open_pbr_surface");
+    // And glTF's, which MaterialX carries as `gltf_pbr`: `metallic`,
+    // `roughness`, `ior`. Read as standard_surface's they were not there,
+    // and a glTF metal arrived a dielectric of roughness 0.5.
+    const bool gltf = id == TfToken("ND_gltf_pbr_surfaceshader") || id == TfToken("gltf_pbr");
+
+    // WHAT AN INPUT NOBODY AUTHORED IS WORTH: each surface's own default,
+    // which is what the mesh is rendered with. One set for all of them
+    // (white, a dielectric, roughness 0.5) made a standard_surface left at
+    // its defaults a matte white where the mesh is a 0.8 grey of roughness
+    // 0.2, and a glTF material -- metal and fully rough by default -- the
+    // opposite of what it is.
+    const float colourDefault = preview ? 0.18F : gltf ? 1.0F : 0.8F;
+    out.baseColour = {colourDefault, colourDefault, colourDefault};
+    out.metallic = gltf ? 1.0F : 0.0F;
+    out.roughness = preview ? 0.5F : gltf ? 1.0F : openPbr ? 0.3F : 0.2F;
 
     const auto read = [&surface](const char* name) { return resolve(surface.GetInput(TfToken(name))); };
     const Resolved colour = read(preview ? "diffuseColor" : "base_color");
     takeColour(colour, out.baseColour);
     out.albedo = colour.texture;
+    if (!out.albedo.empty()) {
+        // Connected, the map is the colour and the constant is one, as for
+        // metallic and roughness below.
+        out.baseColour = {1.0F, 1.0F, 1.0F};
+    }
+    if (!preview && !gltf) {
+        // The base layer's weight (`base`, OpenPBR's `base_weight`) scales
+        // the colour it reflects, diffuse and metal alike.
+        float weight = 1.0F;
+        takeFloat(read(openPbr ? "base_weight" : "base"), weight);
+        for (float& c : out.baseColour) {
+            c *= weight;
+        }
+    }
 
     // A MAP IS THE VALUE, NOT A FACTOR ON THE DEFAULT. The conversion
     // multiplies a material's constant into its map, which is glTF's
@@ -280,14 +309,14 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     // runs to 1, was halved everywhere, and its head shone like a marble.
     // A metallic map with the default of 0 in front of it would have been
     // erased outright. Connected, the constant is one.
-    const Resolved metallic = read(preview ? "metallic" : (openPbr ? "base_metalness" : "metalness"));
+    const Resolved metallic = read(preview || gltf ? "metallic" : (openPbr ? "base_metalness" : "metalness"));
     takeFloat(metallic, out.metallic);
     out.metallicMap = metallic.texture;
     if (!out.metallicMap.empty()) {
         out.metallic = 1.0F;
     }
 
-    const Resolved roughness = read(preview ? "roughness" : "specular_roughness");
+    const Resolved roughness = read(preview || gltf ? "roughness" : "specular_roughness");
     takeFloat(roughness, out.roughness);
     out.roughnessMap = roughness.texture;
     if (!out.roughnessMap.empty()) {
@@ -305,6 +334,12 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         float opacity = 1.0F;
         takeFloat(resolved, opacity);
         out.transmission = std::clamp(1.0F - opacity, 0.0F, 1.0F);
+        // And it is a COVERAGE, which bends nothing: the mesh blends the
+        // surface over what stands behind it. A thin wall is that --
+        // `(1 - T) surface + T behind`, untinted -- where a solid glass would
+        // refract it, which a converted cloud does now that it carries an
+        // index.
+        out.thinWalled = out.transmission > 0.0F;
         // A MAP ON THE OPACITY IS A CUT-OUT, NOT A TRANSMISSION. Where it
         // reads low the surface is not there; where it reads high it is
         // opaque. Carrying it as transmission would make a feather a pane of
@@ -312,7 +347,7 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         out.opacityMap = resolved.texture;
         takeFloat(read("ior"), out.ior);
     } else {
-        takeFloat(read(openPbr ? "specular_ior" : "specular_IOR"), out.ior);
+        takeFloat(read(gltf ? "ior" : openPbr ? "specular_ior" : "specular_IOR"), out.ior);
         if (openPbr) {
             const Resolved thin = read("geometry_thin_walled");
             if (thin.hasValue && thin.value.IsHolding<bool>()) {
@@ -322,14 +357,18 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
             }
         }
         takeFloat(read(openPbr ? "transmission_weight" : "transmission"), out.transmission);
-        takeColour(read("transmission_color"), out.transmissionColour);
+        if (!gltf) {
+            // glTF's transmission takes the base colour as its tint and has
+            // no input of its own for it.
+            takeColour(read("transmission_color"), out.transmissionColour);
+        }
         // THE SAME CUT-OUT, IN MATERIALX. `opacity` (`geometry_opacity` in
         // OpenPBR) is coverage there too -- where it reads low the surface is
         // not there -- and it is not transmission, which has an input of its
         // own. So a glass feather keeps its shape: the transmission makes it
         // glass and the map still cuts the card. An image node gives its
         // first channel, not an alpha, so that is the channel read.
-        StageTexture cut = read(openPbr ? "geometry_opacity" : "opacity").texture;
+        StageTexture cut = read(gltf ? "alpha" : openPbr ? "geometry_opacity" : "opacity").texture;
         if (!cut.empty() && cut.channel == 0) {
             cut.channel = 'r';
         }
