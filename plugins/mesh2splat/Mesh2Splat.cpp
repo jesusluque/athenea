@@ -1,9 +1,10 @@
 // Copyright (c) 2026 jesus luque.
 //
-// Electronic Arts' mesh2splat, as an AOFX effect: a textured mesh in, gaussian
-// splats out. The algorithm is theirs (BSD-3; the notice and the conditions
-// are at the head of mesh2splat.slang, where the port lives); this file is the
-// declaration and the plumbing.
+// mesh2splat's conversion, as an AOFX effect: a textured mesh in, gaussian
+// splats out. The algorithm is mesh2splat's (Electronic Arts; BSD 3-Clause
+// with a clause on EA's marks -- the notice and the licence are at the head of
+// mesh2splat.slang, the file derived from it, and in THIRD_PARTY_NOTICES.md);
+// this file is the declaration and the plumbing.
 //
 // WHY A MESH ARRIVES AS A PICTURE
 //
@@ -169,9 +170,9 @@ public:
         into.label = "Mesh to Splats";
         into.grouping = "Convert";
         into.description =
-            "Turns a textured mesh into 3D gaussian splats, after Electronic Arts' mesh2splat: "
-            "a gaussian per texel of the triangle's own projection, as wide as that texel is in "
-            "the world.";
+            "Turns a textured mesh into 3D gaussian splats: a gaussian per texel of the "
+            "triangle's own projection, as wide as that texel is in the world. Based on "
+            "mesh2splat (Electronic Arts, BSD-3-Clause+).";
 
         // The mesh is a picture of numbers, not a picture: the host packs it,
         // and nothing upstream of this node should be asked to show it.

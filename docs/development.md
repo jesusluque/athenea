@@ -549,8 +549,9 @@ effect.
 
 ### 6.4 The one kernel: count, scan, emit
 
-`plugins/mesh2splat/mesh2splat.slang` is a port of Electronic Arts'
-mesh2splat from its OpenGL pipeline into one compute kernel. Theirs is a
+`plugins/mesh2splat/mesh2splat.slang` is derived from mesh2splat
+(Electronic Arts, BSD 3-Clause with a clause on EA's marks), ported from its
+OpenGL pipeline into one compute kernel. Theirs is a
 geometry shader and a fragment shader; there is no rasteriser here, so the
 fragments are walked — the same samples the rasteriser would have produced, at
 the same density, keeping the atomic append that makes the output's order
@@ -1095,6 +1096,18 @@ command on a tree that may already carry them:
 
 **Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
 tracks `main`. A change to gpe is committed in the submodule, not here.
+
+**Licences.** athenea is Apache-2.0: `LICENSE` and `NOTICE` at the root. Every
+third-party component the tree holds, compiles in or links is listed in
+`THIRD_PARTY_NOTICES.md` with its licence text verbatim, and a new dependency
+or a file derived from someone else's code adds its entry there in the same
+commit. A derived file keeps the original's copyright notice and licence in
+its header, as `plugins/mesh2splat/mesh2splat.slang` keeps mesh2splat's (BSD
+3-Clause with a clause on EA's marks), and its own
+`// Copyright (c) 2026 jesus luque.` line for the changes. The build copies
+the three files beside `bin/`, into every AOFX bundle's `Contents/Resources`
+and into `hdAthenea/resources`, and `cmake --install` puts them in
+`share/doc/athenea` and inside the installed bundles.
 
 ## 8. The design record
 

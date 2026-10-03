@@ -12,6 +12,10 @@
 #
 # KERNELS takes one kernel per `KERNELS <name> ENTRY <e> [ENTRY <e>...]` group;
 # call aofx_add_kernel yourself for several blobs.
+#
+# Every bundle carries the files listed in ATHENEA_LEGAL_FILES (the licence,
+# NOTICE and THIRD_PARTY_NOTICES.md) in Contents/Resources: a bundle is
+# distributed on its own, and a binary distribution owes those notices.
 
 # A cache entry, not a directory variable: bundles are declared from other
 # directories than the one that included this file.
@@ -27,6 +31,10 @@ set(AOFX_BUNDLE_DIR "${ATHENEA_BUILD}/aofx" CACHE PATH "Where bundles built here
 # program that builds this engine's bundles beside its own can name them
 # under its own prefix.
 set(AOFX_BUNDLE_ID_PREFIX "rt.sparrow.aofxp." CACHE STRING "CFBundleIdentifier prefix for bundles built here")
+# Where `cmake --install` puts the bundles built into AOFX_BUNDLE_DIR (the
+# plugins; a bundle given an OUTPUT_DIR of its own, as the tests' are, is not
+# installed).
+set(AOFX_BUNDLE_INSTALL_DIR "aofx" CACHE STRING "Install destination of the bundles, relative to the prefix")
 
 function(aofx_add_bundle target)
     cmake_parse_arguments(ARG "" "NAME;OUTPUT_DIR" "SOURCES;LIBRARIES;KERNELS" ${ARGN})
@@ -52,6 +60,23 @@ function(aofx_add_bundle target)
         list(GET ARG_KERNELS 0 kernel)
         list(REMOVE_AT ARG_KERNELS 0)
         aofx_add_kernel(${target} ${kernel} ${ARG_KERNELS})
+    endif()
+
+    if(ATHENEA_LEGAL_FILES)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${contents}/Resources"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ATHENEA_LEGAL_FILES} "${contents}/Resources/"
+            VERBATIM)
+    endif()
+    if(NOT ARG_OUTPUT_DIR)
+        set(installed "${AOFX_BUNDLE_INSTALL_DIR}/${ARG_NAME}.aofx.bundle/Contents")
+        install(TARGETS ${target} LIBRARY DESTINATION "${installed}/${AOFX_ARCH_DIR}")
+        if(ATHENEA_LEGAL_FILES)
+            install(FILES ${ATHENEA_LEGAL_FILES} DESTINATION "${installed}/Resources")
+        endif()
+        if(APPLE)
+            install(FILES "${contents}/Info.plist" DESTINATION "${installed}")
+        endif()
     endif()
 
     if(APPLE)
