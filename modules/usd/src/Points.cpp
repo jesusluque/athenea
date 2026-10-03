@@ -5,8 +5,13 @@
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
 #include <pxr/imaging/hd/tokens.h>
+#include <pxr/base/tf/staticTokens.h>
+
+#include <optional>
+#include <string>
 
 #include "RenderParam.h"
+#include "athenea/core/Log.h"
 #include "athenea/usd/HydraCamera.h"
 #include "athenea/usd/PrimData.h"
 
@@ -19,6 +24,55 @@ TF_DEFINE_PRIVATE_TOKENS(_atheneaTokens,
     ((edl, "athenea:edl"))
     ((surfaceOffset, "athenea:surfaceOffset"))
 );
+
+// Blender's Gaussian-splat PointCloud, as its USD export writes one: a
+// UsdGeomPoints whose primvars are the cloud's own attributes.
+TF_DEFINE_PRIVATE_TOKENS(_blenderTokens,
+    (rotation)(scale)
+    ((radianceBase, "radiance:base"))
+    ((sh0, "radiance:sh_0"))
+);
+
+bool holdsArray(VtValue const& value) {
+    return !athenea::usd::streamOf(value).empty();
+}
+
+/// A Gaussian-splat PointCloud out of Blender: a rotation and a scale a
+/// point, and its radiance (`radiance:base`, or harmonics past DC). Its
+/// arrays as they are; their layout is the decode's (scene/streams.slang).
+std::optional<athenea::usd::ParticleFieldArrays> blenderSplats(HdSceneDelegate* delegate, SdfPath const& id) {
+    VtValue rotation = delegate->Get(id, _blenderTokens->rotation);
+    if (!rotation.IsHolding<VtQuatfArray>() && !rotation.IsHolding<VtQuathArray>()) {
+        return std::nullopt;
+    }
+    VtValue scale = delegate->Get(id, _blenderTokens->scale);
+    VtValue base = delegate->Get(id, _blenderTokens->radianceBase);
+    VtValue sh0 = delegate->Get(id, _blenderTokens->sh0);
+    if (!holdsArray(scale) || (!holdsArray(base) && !holdsArray(sh0))) {
+        return std::nullopt;
+    }
+    athenea::usd::ParticleFieldArrays arrays;
+    arrays.positions = delegate->Get(id, HdTokens->points);
+    arrays.orientations = std::move(rotation);
+    arrays.scales = std::move(scale);
+    arrays.radianceBase = std::move(base);
+    if (holdsArray(sh0)) {
+        arrays.shPlanes.push_back(std::move(sh0));
+        for (int k = 1; k < 15; ++k) {
+            VtValue plane = delegate->Get(id, TfToken("radiance:sh_" + std::to_string(k)));
+            if (!holdsArray(plane)) {
+                break;
+            }
+            arrays.shPlanes.push_back(std::move(plane));
+        }
+    }
+    if (arrays.radianceBase.IsEmpty()) {
+        athenea::log::warn("hdAthenea: {}: a Gaussian-splat point cloud without radiance:base, drawn opaque and "
+                           "grey (Blender's USD export drops it; the athenea_hydra add-on writes it)",
+                           id.GetString());
+    }
+    return arrays;
+}
 
 float firstFloat(VtValue const& value, float fallback) {
     if (value.IsHolding<float>()) return value.UncheckedGet<float>();
@@ -50,9 +104,21 @@ void HdAtheneaPoints::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam
         return;
     }
     std::optional<athenea::usd::PointsArrays> raw;
+    std::optional<athenea::usd::ParticleFieldArrays> splats;
     std::optional<athenea::render::PointStyle> style;
-    if ((*dirtyBits & (HdChangeTracker::DirtyPoints | HdChangeTracker::DirtyPrimvar |
-                       HdChangeTracker::DirtyWidths)) != 0) {
+    const bool arraysDirty = (*dirtyBits & (HdChangeTracker::DirtyPoints | HdChangeTracker::DirtyPrimvar |
+                                            HdChangeTracker::DirtyWidths)) != 0;
+    if (arraysDirty) {
+        // BLENDER'S SPLATS ARE SPLATS. Its Gaussian-splat point cloud reaches
+        // a delegate as Points; drawn as a cloud, under this prim's id. A
+        // prim that turns from one into the other leaves the old entry.
+        splats = blenderSplats(delegate, id);
+        if (splats.has_value() != _splats) {
+            engine->remove(id);
+            _splats = splats.has_value();
+        }
+    }
+    if (arraysDirty && !_splats) {
         athenea::usd::PointsArrays arrays;
         arrays.positions = delegate->Get(id, HdTokens->points);
         arrays.colours = delegate->Get(id, HdTokens->displayColor);
@@ -79,7 +145,13 @@ void HdAtheneaPoints::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam
         _UpdateVisibility(delegate, dirtyBits);
         visible = IsVisible() && HdAtheneaInstancersVisible(delegate, GetInstancerId());
     }
-    engine->setPoints(id, std::move(raw), transformDirty ? &transform : nullptr, visible, style);
+    if (_splats) {
+        // A capture: the colours are the sRGB it was trained in, which is
+        // what a cloud that does not say otherwise is taken to hold.
+        engine->setSplats(id, std::move(splats), transformDirty ? &transform : nullptr, visible);
+    } else {
+        engine->setPoints(id, std::move(raw), transformDirty ? &transform : nullptr, visible, style);
+    }
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }
 

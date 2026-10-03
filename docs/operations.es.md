@@ -1020,6 +1020,22 @@ varias celdas (`athenea mesh2splat --lod-levels`).
 | `primvars:athenea:edl` | float | `0` |
 | `primvars:athenea:surfaceOffset` | float | `0` |
 
+**Los Gaussian splats de Blender como `UsdGeomPoints`** — no es un esquema:
+los atributos de un PointCloud de Blender de tipo Gaussian splat, tal como los
+escribe la exportación USD de Blender. Un prim `Points` que lleva una
+`rotation` cuaternión y una `scale`, y `radiance:base` o `radiance:sh_0`, se
+dibuja como una nube de splats, no como puntos; `widths` y los estilos de
+punto se ignoran entonces. Los valores son los que guarda un ParticleField (el
+importador de Blender los copia sin cambiarlos): los colores son los de una
+captura, sRGB.
+
+| Primvar | Tipo | Significado |
+|---|---|---|
+| `primvars:rotation` | quatf[] o quath[] | la orientación de la gaussiana |
+| `primvars:scale` | float3[] o half3[] | sus tres desviaciones típicas, lineales, en las unidades del prim |
+| `primvars:radiance:base` | float4[] o half4[] | el coeficiente DC (rgb) y la opacidad (lineal, de 0 a 1). La exportación propia de Blender lo pierde; lo escribe el add-on `athenea_hydra`. Sin él la nube es opaca y su DC es 0 (gris), con un aviso |
+| `primvars:radiance:sh_N` | float3[] o half3[] | el coeficiente N + 1 (rgb), N desde 0; 3, 8 o 15 de ellos hacen grado 1, 2 o 3, y el resto incompleto de un grado no se lee |
+
 **`AtheneaVolumeAPI`** — cómo dispersa un Volume de `UsdVol`, cuando no hay
 Material que lo diga.
 
