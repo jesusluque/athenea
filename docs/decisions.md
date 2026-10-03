@@ -9393,3 +9393,38 @@ Windows port's are `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` and
 `DeleteFileW`. `athenea_core_tests "a file written atomically*"`: a writer
 that fails leaves nothing, nor its partial file; one over an existing file
 leaves that file as it was.
+
+**The records stay on the device, and so do the bake's box and rays.** Each
+run's picture was read back and repacked a splat at a time into host vectors
+(records, the bake's points, normals and facings, the joints), the bake then
+folded the cloud's box over those records and wrote a ray a splat on the
+processor, `bakePoints` uploaded them, and the answer came back to be copied
+into the records a coefficient at a time. Now:
+
+- `athenea/usd/mesh2splat_gather` lays a run's picture into the cloud's own
+  device buffers at its place -- `perRecord` floats a record, three `float4`
+  a ray in the tracer's own layout (footprint in the normal's `w` where
+  `--simplify`), two of joints -- and zero joints for a mesh nothing carries
+  in a skinned cloud. The buffers grow by doubling, copied on the device.
+- `mesh2splat_span` folds the box over the records (a corner pair a chunk,
+  then `scene/bounds_reduce`) and writes `1e-4` of its diagonal into every
+  ray's `w`: the same rule, the same records, the same float arithmetic.
+- `StageRenderer::bakePointsOnDevice` takes the rays where they are and
+  leaves the answer on the device, a point's entries together
+  (`usd/bake_gather`). The renderer is opened on the conversion's device
+  (`StageRenderer::open(stage, device)`), so the buffers are the tracer's.
+  `bakePoints` is now that, with the host rays uploaded and the answer read
+  back -- its per-point reordering on the processor went with it.
+- `mesh2splat_bake` writes the answer into the records (and, for a transfer,
+  into the three arrays the file keeps), zeroing the opacity of a gaussian
+  the bake found nothing under; the count it found crosses back for the log.
+- `usd::writeParticleFieldStage` takes `DeviceSplatRecords`: the export's
+  decode reads the slices out of the device buffer (copied on the device
+  where the cloud is larger than one slice), and the metallic, roughness and
+  transmission now come out of `splat_export` (`pbrOut`) rather than out of
+  host records, for both overloads.
+
+What still crosses: the values a USD array holds, the transfer's arrays and
+the joints (the file wants host arrays), and a counter or two. The export's
+extent is still folded on the processor over the positions it reads back for
+the file; not changed here.

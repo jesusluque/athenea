@@ -422,10 +422,16 @@ vuelve como un `UsdVolParticleField3DGaussianSplat`.
 
 Las imágenes viven en el almacenamiento de imágenes del propio host AOFX, que
 en un dispositivo de memoria unificada es la memoria que lee un kernel. Los
-triángulos se escriben donde los va a leer el efecto y no se copia nada. Lo
-que cruza de vuelta al procesador son los registros, una vez, porque el
-escritor de USD los toma como un `io::RawSplats` — y los valores de un fichero
-USD son asunto del procesador por definición.
+triángulos se escriben donde los va a leer el efecto y no se copia nada. Los
+registros se quedan en el dispositivo desde ahí hasta el fichero: la imagen de
+cada pasada se coloca en los buffers de la propia nube con
+`athenea/usd/mesh2splat_gather` (registros, los rayos del bake, las
+articulaciones), el desplazamiento de los rayos sale de la caja de la nube con
+`mesh2splat_span`, el bake responde en un buffer del dispositivo que
+`mesh2splat_bake` escribe en los registros, y la exportación los decodifica
+donde están (`usd::DeviceSplatRecords`). Lo que cruza al procesador son
+cuentas y, al final, los valores que guarda un array de USD — que son asunto
+del procesador por definición.
 
 ### 6.2 La vida de una gaussiana, en quince líneas
 
@@ -688,7 +694,11 @@ del bloque.
 
 **Quién los traza.** `StageRenderer::bakePoints` toma dos `float4` por punto —
 el punto con su desplazamiento, y luego su normal — y despacha el path tracer
-sobre ellos como si fueran píxeles. Es el mismo integrador que usa un frame,
+sobre ellos como si fueran píxeles. `bakePointsOnDevice` es lo mismo con los
+rayos ya en el dispositivo en la disposición de tres `float4` del kernel y la
+respuesta dejada allí, las entradas de un punto juntas
+(`athenea/usd/bake_gather`); la conversión abre el renderer en su propio
+dispositivo y usa esa. Es el mismo integrador que usa un frame,
 compilado con su constante de bake en cierto: no una segunda implementación.
 
 **Una gaussiana elevada** se hornea desde el punto plano que tiene debajo,

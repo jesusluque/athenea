@@ -411,10 +411,15 @@ the effect once per mesh, and write what comes back as a
 
 The pictures live in the AOFX host's own image storage, which on a device with
 unified memory is the memory a kernel reads. The triangles are written where
-the effect will read them and nothing is copied. What crosses back to the
-processor is the records, once, because the USD writer takes them as an
-`io::RawSplats` — and the values in a USD file are the processor's business by
-definition.
+the effect will read them and nothing is copied. The records stay on the
+device from there to the file: each run's picture is laid out into the
+cloud's own buffers by `athenea/usd/mesh2splat_gather` (records, the bake's
+rays, the joints), the rays' offset is set from the cloud's box by
+`mesh2splat_span`, the bake answers into a device buffer that
+`mesh2splat_bake` writes into the records, and the export decodes them where
+they are (`usd::DeviceSplatRecords`). What crosses to the processor is counts
+and, at the end, the values a USD array holds — which are the processor's
+business by definition.
 
 ### 6.2 One gaussian's life, in fifteen lines
 
@@ -662,7 +667,10 @@ disc half that wide instead of onto the centre. The conversion sets it when
 
 **What traces them.** `StageRenderer::bakePoints` takes two `float4` a point —
 the point with its offset, then its normal — and dispatches the path tracer
-over them as though they were pixels. It is the same integrator a frame uses,
+over them as though they were pixels. `bakePointsOnDevice` is the same with
+the rays already on the device in the kernel's three-`float4` layout and the
+answer left there, a point's entries together (`athenea/usd/bake_gather`);
+the conversion opens the renderer on its own device and uses that one. It is the same integrator a frame uses,
 compiled with its bake constant true: not a second implementation.
 
 **A raised gaussian** is baked from the flat point under it, down the flat

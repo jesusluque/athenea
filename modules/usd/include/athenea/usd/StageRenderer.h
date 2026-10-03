@@ -284,6 +284,19 @@ public:
                                                         bool transfer = false,
                                                         const std::vector<float>* facing = nullptr);
 
+    /// THE SAME BAKE, WITH NOTHING CROSSING TO THE PROCESSOR. `rays` is on
+    /// this renderer's device (open it with the device the caller's buffers
+    /// live on) in the kernel's own layout, three `float4` a point: where its
+    /// ray starts and how near it may hit, which way it goes (and in w how
+    /// wide the gaussian is, for a bake spread over its footprint), and the
+    /// way the point faces where that is not the surface's (w 1) or zeros.
+    /// What comes back is on the device too: `count * entries` `float4`, a
+    /// point's entries together in the order `bakePoints` returns them --
+    /// `(degree + 1)^2` coefficients, and two more for a transfer.
+    [[nodiscard]] Result<gpu::Buffer> bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
+                                                         uint32_t samples = 64, uint32_t bounces = 3,
+                                                         uint32_t degree = 0, bool transfer = false);
+
     /// Samples per light per pixel: one for an interactive frame, more where
     /// an area light's noise would be read as error.
     void setLightSamples(uint32_t samples);

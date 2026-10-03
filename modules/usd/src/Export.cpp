@@ -4,6 +4,7 @@
 #include "athenea/scene/DecodeParams.h"
 
 #include <algorithm>
+#include <functional>
 #include <cstring>
 #include <set>
 #include <type_traits>
@@ -54,11 +55,16 @@ Result<gpu::Buffer> buffer(gpu::Device& device, uint64_t count, uint32_t element
 
 }   // namespace
 
-Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawSplats& raw,
-                                     const std::filesystem::path& path,
-                                     const ExportOptions& options) {
-    const io::SplatEncoding& e = raw.encoding;
-    if (raw.count == 0) {
+namespace {
+
+/// `count` records, a slice of them at a time: `slice(first, n)` hands back a
+/// buffer holding records `first` to `first + n`, from wherever they are.
+using RecordSlice = std::function<Result<gpu::Buffer>(uint32_t first, uint32_t n)>;
+
+Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e, uint32_t count,
+                        const RecordSlice& slice, const std::filesystem::path& path,
+                        const ExportOptions& options) {
+    if (count == 0) {
         return Error(ErrorCode::InvalidArgument, "nothing to export");
     }
     static constexpr uint32_t kPerDegree[] = {0, 3, 8, 15};
@@ -84,7 +90,7 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
     const bool pbr = e.metallic != io::SplatEncoding::kNoField ||
                      e.roughness != io::SplatEncoding::kNoField ||
                      e.transmission != io::SplatEncoding::kNoField;
-    positions.reserve(raw.count);
+    positions.reserve(count);
     const uint32_t perRecord = 1 + keep;
     GfVec3d lo(1e30), hi(-1e30);
     uint32_t empty = 0;   ///< slots kept that hold no splat
@@ -92,17 +98,17 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
     // Slices, as the loader does, so a very large cloud still fits a buffer.
     const uint64_t recordBytes = uint64_t{e.floatsPerRecord} * 4;
     const uint32_t perSlice = static_cast<uint32_t>(std::max<uint64_t>(1, (uint64_t{256} << 20) / recordBytes));
-    for (uint32_t first = 0; first < raw.count; first += perSlice) {
-        const uint32_t n = std::min(perSlice, raw.count - first);
-        auto rawBuffer = buffer(device, uint64_t{n} * e.floatsPerRecord, 4, "export.raw",
-                                raw.records.data() + size_t{first} * e.floatsPerRecord);
+    for (uint32_t first = 0; first < count; first += perSlice) {
+        const uint32_t n = std::min(perSlice, count - first);
+        auto rawBuffer = slice(first, n);
         if (!rawBuffer) return std::move(rawBuffer).error();
         auto posOpacity = buffer(device, n, 16, "export.posOpacity");
         auto rotation = buffer(device, n, 16, "export.rotation");
         auto scaleValid = buffer(device, n, 16, "export.scaleValid");
         auto coeff = buffer(device, uint64_t{n} * perRecord, 16, "export.coefficients");
         auto normal = buffer(device, withNormals ? n : 1, 16, "export.normal");
-        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal) {
+        auto material = buffer(device, pbr ? n : 1, 16, "export.pbr");
+        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material) {
             return Error(ErrorCode::OutOfMemory, "cannot allocate export buffers");
         }
         gpu::CommandBatch batch(device);
@@ -113,6 +119,7 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
             cursor["scaleValid"].setBinding(scaleValid->rhi());
             cursor["coefficients"].setBinding(coeff->rhi());
             cursor["normalOut"].setBinding(normal->rhi());
+            cursor["pbrOut"].setBinding(material->rhi());
             scene::setDecodeParams(cursor, e, n, 0, keep, 1);
         });
         ATHENEA_TRY(batch.submit(true));
@@ -121,7 +128,8 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
         auto sv = scaleValid->readAll<float>(device);
         auto co = coeff->readAll<float>(device);
         auto no = normal->readAll<float>(device);
-        if (!po || !ro || !sv || !co || !no) {
+        auto pb = material->readAll<float>(device);
+        if (!po || !ro || !sv || !co || !no || !pb) {
             return Error(ErrorCode::DeviceFailure, "cannot read export values back");
         }
         for (uint32_t i = 0; i < n; ++i) {
@@ -142,13 +150,13 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
                 coefficients.push_back(GfVec3f(cc[0], cc[1], cc[2]));
             }
             if (pbr) {
-                // Straight out of the record: both are already 0 to 1, and a
-                // value is not a thing this file decodes.
-                const float* record = raw.records.data() + size_t{first + i} * e.floatsPerRecord;
-                metallics.push_back(e.metallic != io::SplatEncoding::kNoField ? record[e.metallic] : 0.0F);
-                roughnesses.push_back(e.roughness != io::SplatEncoding::kNoField ? record[e.roughness] : 1.0F);
-                transmissions.push_back(
-                    e.transmission != io::SplatEncoding::kNoField ? record[e.transmission] : 0.0F);
+                // Straight out of the record, as the kernel copied them: all
+                // three are already 0 to 1, and a value is not a thing this
+                // file decodes.
+                const float* mm = pb->data() + size_t{i} * 4;
+                metallics.push_back(mm[0]);
+                roughnesses.push_back(mm[1]);
+                transmissions.push_back(mm[2]);
             }
             if (withNormals) {
                 const float* nn = no->data() + size_t{i} * 4;
@@ -165,11 +173,11 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
     if (positions.empty()) {
         return Error(ErrorCode::InvalidArgument, "no splat survived export");
     }
-    if (empty == raw.count) {
+    if (empty == count) {
         return Error(ErrorCode::InvalidArgument, "no splat survived export");
     }
     if (empty > 0) {
-        log::info("export: {} of {} slots hold no splat and are written empty", empty, raw.count);
+        log::info("export: {} of {} slots hold no splat and are written empty", empty, count);
     }
 
     UsdStageRefPtr stage = UsdStage::CreateNew(path.string());
@@ -223,9 +231,9 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
     // WHICH PRIM EACH GAUSSIAN CAME FROM (AtheneaSplatCryptomatteAPI). One id a
     // record, empty slots included, so the primvar and the cloud's own arrays
     // stay index for index alike; the manifest says what the ids are called.
-    if (options.cryptoObject.size() >= raw.count && raw.count > 0) {
-        VtIntArray ids(raw.count);
-        for (uint32_t i = 0; i < raw.count; ++i) {
+    if (options.cryptoObject.size() >= count && count > 0) {
+        VtIntArray ids(count);
+        for (uint32_t i = 0; i < count; ++i) {
             ids[i] = static_cast<int>(options.cryptoObject[i]);
         }
         UsdGeomPrimvarsAPI primvars(splats.GetPrim());
@@ -240,10 +248,10 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
 
     // WHICH GAUSSIANS ARE THIN WALLS: a glass sheet whose transmission is its
     // own transparency. Written only where there is one.
-    if (options.thinWalled.size() >= raw.count && raw.count > 0 &&
-        std::any_of(options.thinWalled.begin(), options.thinWalled.begin() + raw.count,
+    if (options.thinWalled.size() >= count && count > 0 &&
+        std::any_of(options.thinWalled.begin(), options.thinWalled.begin() + count,
                     [](int32_t v) { return v != 0; })) {
-        VtIntArray thin(options.thinWalled.begin(), options.thinWalled.begin() + raw.count);
+        VtIntArray thin(options.thinWalled.begin(), options.thinWalled.begin() + count);
         UsdGeomPrimvarsAPI(splats.GetPrim())
             .CreatePrimvar(TfToken("primvars:athenea:splat:thinWalled"), SdfValueTypeNames->IntArray,
                            UsdGeomTokens->vertex)
@@ -255,25 +263,25 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
     // was baked, vertex-interpolated like everything else a gaussian carries.
     // A cloud with these is lit by whatever sky it is put under, which is the
     // whole reason they are here rather than a colour baked under one dome.
-    if (options.transferDirect.size() >= size_t{raw.count} * 9 && raw.count > 0) {
+    if (options.transferDirect.size() >= size_t{count} * 9 && count > 0) {
         UsdGeomPrimvarsAPI primvars(splats.GetPrim());
         VtFloatArray direct(options.transferDirect.begin(),
-                            options.transferDirect.begin() + size_t{raw.count} * 9);
+                            options.transferDirect.begin() + size_t{count} * 9);
         UsdGeomPrimvar made = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:transferDirect"),
                                                      SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex);
         made.Set(VtValue(direct));
         made.SetElementSize(9);
-        if (options.transferIndirect.size() >= size_t{raw.count} * 27) {
+        if (options.transferIndirect.size() >= size_t{count} * 27) {
             VtFloatArray indirect(options.transferIndirect.begin(),
-                                  options.transferIndirect.begin() + size_t{raw.count} * 27);
+                                  options.transferIndirect.begin() + size_t{count} * 27);
             UsdGeomPrimvar bounced = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:transferIndirect"),
                                                             SdfValueTypeNames->FloatArray,
                                                             UsdGeomTokens->vertex);
             bounced.Set(VtValue(indirect));
             bounced.SetElementSize(27);
         }
-        if (options.shadowBits.size() >= size_t{raw.count} * 2) {
-            VtIntArray bits(options.shadowBits.begin(), options.shadowBits.begin() + size_t{raw.count} * 2);
+        if (options.shadowBits.size() >= size_t{count} * 2) {
+            VtIntArray bits(options.shadowBits.begin(), options.shadowBits.begin() + size_t{count} * 2);
             UsdGeomPrimvar open = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:shadowBits"),
                                                          SdfValueTypeNames->IntArray, UsdGeomTokens->vertex);
             open.Set(VtValue(bits));
@@ -425,6 +433,52 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
         return Error::make(ErrorCode::IoFailure, "cannot save '{}'", path.string());
     }
     return ok();
+}
+
+}   // namespace
+
+Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawSplats& raw,
+                                     const std::filesystem::path& path, const ExportOptions& options) {
+    const io::SplatEncoding& e = raw.encoding;
+    if (raw.records.size() < size_t{raw.count} * e.floatsPerRecord) {
+        return Error(ErrorCode::InvalidArgument, "export: fewer records than the count says");
+    }
+    gpu::Device& device = library.device();
+    return writeStage(
+        library, e, raw.count,
+        [&](uint32_t first, uint32_t n) {
+            return buffer(device, uint64_t{n} * e.floatsPerRecord, 4, "export.raw",
+                          raw.records.data() + size_t{first} * e.floatsPerRecord);
+        },
+        path, options);
+}
+
+Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const DeviceSplatRecords& records,
+                                     const std::filesystem::path& path, const ExportOptions& options) {
+    const io::SplatEncoding& e = records.encoding;
+    const uint64_t recordBytes = uint64_t{e.floatsPerRecord} * 4;
+    if (!records.records.valid() || records.records.bytes() < uint64_t{records.count} * recordBytes) {
+        return Error(ErrorCode::InvalidArgument, "export: fewer records on the device than the count says");
+    }
+    gpu::Device& device = library.device();
+    return writeStage(
+        library, e, records.count,
+        [&](uint32_t first, uint32_t n) -> Result<gpu::Buffer> {
+            // The whole cloud in one slice is the buffer itself; a slice of
+            // a larger one is copied out of it on the device.
+            if (first == 0 && n == records.count) {
+                return records.records;
+            }
+            auto part = buffer(device, uint64_t{n} * e.floatsPerRecord, 4, "export.raw");
+            if (!part) return std::move(part).error();
+            gpu::CommandBatch batch(device);
+            batch.encoder()->copyBuffer(part->rhi(), 0, records.records.rhi(), uint64_t{first} * recordBytes,
+                                        uint64_t{n} * recordBytes);
+            batch.markDirty();
+            ATHENEA_TRY(batch.submit(true));
+            return part;
+        },
+        path, options);
 }
 
 Result<void> writeVisibility(const std::filesystem::path& path, const std::string& prim,

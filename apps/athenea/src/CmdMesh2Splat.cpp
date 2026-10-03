@@ -23,9 +23,14 @@
 // share of the work is opening files and counting, and every number is a
 // kernel's.
 //
-// What crosses back to the processor is the records, once, because
-// `writeParticleFieldStage` takes them as a `io::RawSplats` -- and the values
-// in a USD file are the processor's business by definition.
+// And the records stay there. Each run's picture is laid out into the
+// cloud's own buffers by a kernel (`athenea/usd/mesh2splat_gather`), the bake's
+// rays are set up from them on the device (`mesh2splat_span`), the path
+// tracer answers into a device buffer that a kernel writes back into the
+// records (`mesh2splat_bake`), and the export decodes them where they are
+// (`usd::DeviceSplatRecords`). What crosses to the processor is counts, and
+// at the very end the values a USD array holds -- which are the processor's
+// business by definition.
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -193,19 +198,6 @@ struct MapKey {
     }
 };
 
-/// WHERE EACH GAUSSIAN'S BAKE STARTS, in the order the records are in: the
-/// point of the surface under it and that surface's normal (xyz each), and
-/// the way the gaussian faces where the relief turned it (xyzw, w 1; zero on
-/// a flat mesh). A displaced gaussian stands off the mesh, and the tracer
-/// only holds the flat one: sent down from where the gaussian is, a ray from
-/// a point the relief sank would start under the surface and find nothing.
-struct BakeFrom {
-    std::vector<float> points;
-    std::vector<float> normals;
-    std::vector<float> facing;
-    bool               displaced = false;
-};
-
 class Converter {
 public:
     Converter(gpu_host::Context& context, gpu::ShaderLibrary& library, const Options& options)
@@ -227,6 +219,18 @@ public:
         auto rows = gpu::ComputeKernel::create(*library_, "athenea/usd/texture_rows", "textureRows");
         if (!rows) return std::move(rows).error();
         rows_ = std::move(*rows);
+        const auto make = [&](const char* module, const char* entry, gpu::ComputeKernel& into) -> Result<void> {
+            auto made = gpu::ComputeKernel::create(*library_, module, entry);
+            if (!made) return std::move(made).error();
+            into = std::move(*made);
+            return ok();
+        };
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_gather", "m2sGather", gather_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_gather", "m2sNoInfluence", noInfluence_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_span", "m2sRecordChunks", recordChunks_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_span", "m2sRaySpan", raySpan_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sBakeInto", bakeInto_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sTransferInto", transferInto_));
         auto textures = material::TextureStore::create(*library_);
         if (!textures) return std::move(textures).error();
         textures_ = std::move(*textures);
@@ -558,8 +562,9 @@ public:
         return *picture;
     }
 
-    [[nodiscard]] Result<io::RawSplats> convert(aofx::Effect& effect, std::vector<usd::StageMesh>& meshes) {
-        io::RawSplats raw;
+    [[nodiscard]] Result<usd::DeviceSplatRecords> convert(aofx::Effect& effect,
+                                                          std::vector<usd::StageMesh>& meshes) {
+        usd::DeviceSplatRecords raw;
         raw.source = options_->stage;
         raw.encoding.x = 0; raw.encoding.y = 1; raw.encoding.z = 2; raw.encoding.opacity = 3;
         raw.encoding.scale0 = 4; raw.encoding.scale1 = 5; raw.encoding.scale2 = 6;
@@ -702,11 +707,11 @@ public:
                 written += out->written;
                 meshWritten += out->written;
                 degenerate += out->degenerate;
-                raw.records.insert(raw.records.end(), out->records.begin(), out->records.end());
-                bakeFrom_.points.insert(bakeFrom_.points.end(), out->points.begin(), out->points.end());
-                bakeFrom_.normals.insert(bakeFrom_.normals.end(), out->normals.begin(), out->normals.end());
-                bakeFrom_.facing.insert(bakeFrom_.facing.end(), out->facing.begin(), out->facing.end());
-                bakeFrom_.displaced = bakeFrom_.displaced || meshDisplaced(meshes[k]);
+                // Into the cloud's own buffers, after everything before it,
+                // on the device: the records, where the bake starts from,
+                // and the joints.
+                ATHENEA_TRY(keep(*out, written - out->written));
+                displaced_ = displaced_ || (out->written > 0 && meshDisplaced(meshes[k]));
                 // WHICH PRIM THESE GAUSSIANS CAME FROM. The conversion knows
                 // it -- this run is one mesh -- so the ancestry a matte needs
                 // is inherited here and nowhere else (AtheneaSplatCryptomatteAPI).
@@ -740,12 +745,8 @@ public:
                 // who. Those gaussians get four joints of no weight, which
                 // is what the skinner reads as "leave this one where the
                 // bind pose put it".
-                if (options_->skinned && out->influences.empty()) {
-                    influences_.insert(influences_.end(), out->written * 8, 0.0F);
-                } else {
-                    influences_.insert(influences_.end(), out->influences.begin(), out->influences.end());
-                    carried = carried || !out->influences.empty();
-                }
+                // (`keep` wrote them: the mesh's own, or four of no weight.)
+                carried = carried || (out->carried && out->written > 0);
                 if (out->wanted <= out->written || out->done <= first || out->done >= triangles_[k]) {
                     break;   // everything from here fit, or nothing more can
                 }
@@ -804,6 +805,8 @@ public:
                         static_cast<unsigned long long>(capped), options_->displaceRefine);
         }
         raw.count = static_cast<uint32_t>(written);
+        raw.records = records_;
+        count_ = raw.count;
         return raw;
     }
 
@@ -830,18 +833,17 @@ private:
         /// The first triangle the budget cut into; the triangle count when
         /// everything fit. Where the next slice starts.
         uint64_t           done = 0;
-        std::vector<float> records;
-        /// Where the bake starts from, a splat at a time: the point of the
-        /// surface under it and that surface's normal (xyz each), and the way
-        /// the gaussian faces where the relief turned it (xyzw, w 1; zero on
-        /// a flat mesh).
-        std::vector<float> points;
-        std::vector<float> normals;
-        std::vector<float> facing;
-        /// The joints a gaussian is carried by: (joint, weight) four times a
-        /// splat. Beside the record rather than in it, as the normals are --
+        /// What the effect wrote, as it wrote it: `recordEntries` float4
+        /// entries a gaussian, the record's own `ownEntries` and, where the
+        /// material displaces, three more (`mesh2splat_gather` reads them).
+        image::ImagePtr    picture;
+        uint32_t           recordEntries = 0;
+        uint32_t           ownEntries = 0;
+        bool               displaced = false;
+        /// The gaussians carry the joints that move them: (joint, weight)
+        /// four times a gaussian, beside the record rather than in it --
         /// `io::SplatEncoding` has no field for a skeleton.
-        std::vector<float> influences;
+        bool               carried = false;
     };
 
     [[nodiscard]] Result<OneMesh> runOne(aofx::Effect& effect, const usd::StageMesh& mesh, size_t at,
@@ -1015,75 +1017,159 @@ private:
         answer.written = std::min(answer.written, budget);
         answer.capped = counted->size() >= 7 ? static_cast<uint64_t>(std::max((*counted)[6], 0.0F)) : 0;
 
-        // The records as `io::RawSplats` wants them: fourteen floats a splat
-        // rather than sixteen, the two lanes the picture pads with left out.
-        // A rearrangement, not a decode -- every value here was computed on
-        // the device and goes to the exporter's kernel untouched.
-        const auto floats = out.floats();
-        const auto stride = static_cast<size_t>(out.stride());
-        const auto width = static_cast<size_t>(out.bounds().width());
-        const uint32_t perRecord = recordFloats();
-        answer.records.resize(answer.written * perRecord);
-        for (uint64_t splat = 0; splat < answer.written; ++splat) {
-            float* record = answer.records.data() + splat * perRecord;
-            const auto entry = [&](uint32_t component) {
-                const uint64_t index = splat * recordEntries + component;
-                return floats.data() + ((index / width) * stride + index % width) * 4;
-            };
-            const float* position = entry(0);
-            const float* sizes = entry(1);
-            const float* rotation = entry(2);
-            const float* rgb = entry(3);
-            record[0] = position[0]; record[1] = position[1]; record[2] = position[2];
-            record[3] = position[3];
-            record[4] = sizes[0]; record[5] = sizes[1]; record[6] = sizes[2];
-            record[7] = rotation[0]; record[8] = rotation[1]; record[9] = rotation[2];
-            record[10] = rotation[3];
-            record[11] = rgb[0]; record[12] = rgb[1]; record[13] = rgb[2];
-            // The fifth entry is (shading normal, metallic) and the sixth
-            // (roughness, transmission, u, v). The texture coordinate has
-            // nowhere to live in a ParticleField; the normal now does
-            // (`primvars:athenea:splat:normal`).
-            const float* shading = entry(4);
-            const float* surface = entry(5);
-            record[14] = shading[3];
-            record[15] = surface[0];
-            record[16] = surface[1];
-            record[17] = shading[0];
-            record[18] = shading[1];
-            record[19] = shading[2];
-            // Where the bake stands and which way it looks, kept beside the
-            // record rather than in it: the file has no field for a normal.
-            // A displaced gaussian is baked from the flat surface under it --
-            // the only one the tracer holds -- and faces as the relief does.
-            if (displaced) {
-                const float* flat = entry(ownEntries);
-                const float* flatNormal = entry(ownEntries + 1);
-                const float* relief = entry(ownEntries + 2);
-                answer.points.insert(answer.points.end(), flat, flat + 3);
-                answer.normals.insert(answer.normals.end(), flatNormal, flatNormal + 3);
-                answer.facing.insert(answer.facing.end(), {relief[0], relief[1], relief[2], 1.0F});
-            } else {
-                answer.points.insert(answer.points.end(), position, position + 3);
-                answer.normals.insert(answer.normals.end(), shading, shading + 3);
-                answer.facing.insert(answer.facing.end(), {0.0F, 0.0F, 0.0F, 0.0F});
-            }
-            if (carried) {
-                const float* low = entry(6);
-                const float* high = entry(7);
-                for (uint32_t k = 0; k < 4; ++k) {
-                    answer.influences.push_back(low[k]);
-                }
-                for (uint32_t k = 0; k < 4; ++k) {
-                    answer.influences.push_back(high[k]);
-                }
-            }
-        }
+        answer.picture = *rendered;
+        answer.recordEntries = recordEntries;
+        answer.ownEntries = ownEntries;
+        answer.displaced = displaced;
+        answer.carried = carried;
         return answer;
     }
 
-    /// Where every splat's bake starts, in the order the records are in.
-    BakeFrom                                 bakeFrom_;
+    /// Room on the device for `splats` gaussians, what is there kept. The
+    /// buffers grow by doubling, so a conversion of many runs copies each
+    /// record a few times at most, on the device.
+    [[nodiscard]] Result<void> reserve(uint64_t splats) {
+        if (splats <= capacity_) {
+            return ok();
+        }
+        gpu::Device& device = library_->device();
+        const uint64_t room = std::max<uint64_t>({splats, capacity_ * 2, uint64_t{1} << 16});
+        const uint32_t perRecord = recordFloats();
+        const auto grown = [&](gpu::Buffer& held, uint64_t perSplat, uint32_t element,
+                               const char* label) -> Result<void> {
+            gpu::BufferDesc desc;
+            desc.bytes = room * perSplat;
+            desc.elementBytes = element;
+            desc.label = label;
+            auto made = gpu::Buffer::create(device, desc);
+            if (!made) return std::move(made).error();
+            if (held.valid() && used_ > 0) {
+                gpu::CommandBatch batch(device);
+                batch.encoder()->copyBuffer(made->rhi(), 0, held.rhi(), 0, used_ * perSplat);
+                batch.markDirty();
+                ATHENEA_TRY(batch.submit(true));
+            }
+            held = std::move(*made);
+            return ok();
+        };
+        ATHENEA_TRY(grown(records_, uint64_t{perRecord} * 4, 4, "mesh2splat.records"));
+        ATHENEA_TRY(grown(rays_, 48, 16, "mesh2splat.rays"));
+        if (options_->skinned) {
+            ATHENEA_TRY(grown(influences_, 32, 16, "mesh2splat.influences"));
+        }
+        capacity_ = room;
+        return ok();
+    }
+
+    /// One run's gaussians into the cloud's buffers, from `destFirst` on: the
+    /// records, where each one's bake starts, and the joints that carry it.
+    [[nodiscard]] Result<void> keep(const OneMesh& run, uint64_t destFirst) {
+        if (run.written == 0) {
+            return ok();
+        }
+        ATHENEA_TRY(reserve(destFirst + run.written));
+        auto view = viewOf(*context_, run.picture, "mesh2splat.records");
+        if (!view) return std::move(view).error();
+        const bool carried = run.carried && options_->skinned;
+        gpu::CommandBatch batch(library_->device());
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["picture"].setBinding(view->rhi());
+            cursor["records"].setBinding(records_.rhi());
+            cursor["rays"].setBinding(rays_.rhi());
+            // Bound whether or not there is a skeleton: a kernel's buffers
+            // are all bound, and `carried` is what stops it being written.
+            cursor["influences"].setBinding(influences_.valid() ? influences_.rhi() : rays_.rhi());
+            cursor["gather"]["count"].setData(static_cast<uint32_t>(run.written));
+            cursor["gather"]["destFirst"].setData(static_cast<uint32_t>(destFirst));
+            cursor["gather"]["recordEntries"].setData(run.recordEntries);
+            cursor["gather"]["ownEntries"].setData(run.ownEntries);
+            cursor["gather"]["width"].setData(static_cast<uint32_t>(run.picture->bounds().width()));
+            cursor["gather"]["stride"].setData(static_cast<uint32_t>(run.picture->stride()));
+            cursor["gather"]["perRecord"].setData(recordFloats());
+            cursor["gather"]["displaced"].setData(run.displaced ? 1u : 0u);
+            cursor["gather"]["carried"].setData(carried ? 1u : 0u);
+            cursor["gather"]["overArea"].setData(options_->simplify > 0.0 ? 1u : 0u);
+        };
+        const uint32_t threads = static_cast<uint32_t>(run.written);
+        gather_.dispatch(batch, {threads, 1, 1}, bind);
+        // A MESH NOTHING CARRIES STILL TAKES ITS PLACE IN THE RIG. A stage's
+        // skinned meshes are rarely all of them -- the sparrow comes with a
+        // cylinder and a plane beside the bird -- and the influences have to
+        // stay one to one with the gaussians or the cloud and its rig
+        // disagree about who is who: four joints of no weight, which the
+        // skinner reads as "leave this one where the bind pose put it".
+        if (options_->skinned && !carried) {
+            noInfluence_.dispatch(batch, {threads, 1, 1}, bind);
+        }
+        ATHENEA_TRY(batch.submit(true));
+        used_ = std::max<uint64_t>(used_, destFirst + run.written);
+        return ok();
+    }
+
+    /// THE RAYS' OFFSET, ON THE DEVICE: the cloud's box folded from its
+    /// records (a low and a high corner a chunk, then the lot), and a
+    /// ten-thousandth of its diagonal written into every ray
+    /// (`athenea/usd/mesh2splat_span` says why that and not the scene's unit).
+    [[nodiscard]] Result<void> spanRays() {
+        if (count_ == 0) {
+            return Error(ErrorCode::InternalError, "bake: no gaussians to start rays from");
+        }
+        gpu::Device& device = library_->device();
+        const uint32_t chunks = (count_ + kChunkEntries - 1) / kChunkEntries;
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{chunks} * 2 * 16;
+        desc.elementBytes = 16;
+        desc.label = "mesh2splat.recordExtents";
+        auto extents = gpu::Buffer::create(device, desc);
+        if (!extents) return std::move(extents).error();
+        desc.bytes = 2 * 16;
+        desc.label = "mesh2splat.cloudBox";
+        auto box = gpu::Buffer::create(device, desc);
+        if (!box) return std::move(box).error();
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["records"].setBinding(records_.rhi());
+            cursor["extents"].setBinding(extents->rhi());
+            cursor["box"].setBinding(box->rhi());
+            cursor["rays"].setBinding(rays_.rhi());
+            cursor["span"]["count"].setData(count_);
+            cursor["span"]["perRecord"].setData(recordFloats());
+            cursor["span"]["chunkSize"].setData(kChunkEntries);
+            cursor["span"]["chunkCount"].setData(chunks);
+        };
+        gpu::CommandBatch batch(device);
+        recordChunks_.dispatch(batch, {chunks, 1, 1}, bind);
+        reduce_.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["extents"].setBinding(extents->rhi());
+            cursor["result"].setBinding(box->rhi());
+            cursor["params"]["count"].setData(count_);
+            cursor["params"]["chunkSize"].setData(kChunkEntries);
+            cursor["params"]["chunkCount"].setData(chunks);
+        });
+        raySpan_.dispatch(batch, {count_, 1, 1}, bind);
+        return batch.submit(true);
+    }
+
+    /// One counter, cleared.
+    [[nodiscard]] Result<gpu::Buffer> counter() {
+        const uint32_t zero[4] = {0, 0, 0, 0};
+        gpu::BufferDesc desc;
+        desc.bytes = sizeof(zero);
+        desc.elementBytes = 4;
+        desc.label = "mesh2splat.counter";
+        return gpu::Buffer::create(library_->device(), desc, zero);
+    }
+
+public:
+    /// The path tracer's answer at every gaussian, written into its colour
+    /// (below, beside the free functions it replaced).
+    [[nodiscard]] Result<void> bake(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
+                                    bool defaultLights, uint32_t degree);
+    /// How much of an environment reaches each gaussian, instead of the light.
+    [[nodiscard]] Result<void> transfer(const std::string& stage, double time, uint32_t samples,
+                                        uint32_t bounces, bool indirect, std::vector<float>& direct,
+                                        std::vector<float>& bounced, std::vector<int32_t>& shadowBits);
+
+private:
     /// The Cryptomatte id of the prim each splat came from, in the same order,
     /// and what those ids are called.
     std::vector<uint32_t>                    cryptoIds_;
@@ -1093,11 +1179,19 @@ private:
     /// met's. 0 while there is none.
     float                                    glassIor_ = 0.0F;
     std::map<std::string, uint32_t>          cryptoManifest_;
-    std::vector<float>                       influences_;
     std::set<std::string>                    refused_;   ///< maps the device would not hold
+    /// THE CLOUD, ON THE DEVICE, every run's gaussians at their place:
+    /// `recordFloats()` floats a record, three float4 a ray, two float4 of
+    /// joints where a skeleton carries it.
+    gpu::Buffer                              records_;
+    gpu::Buffer                              rays_;
+    gpu::Buffer                              influences_;
+    uint64_t                                 capacity_ = 0;   ///< gaussians the buffers hold
+    uint64_t                                 used_ = 0;       ///< gaussians written into them
+    uint32_t                                 count_ = 0;      ///< gaussians the conversion kept
+    bool                                     displaced_ = false;   ///< a ray faces as its relief does
 
 public:
-    [[nodiscard]] const BakeFrom& bakeFrom() const noexcept { return bakeFrom_; }
     [[nodiscard]] bool meshDisplaced(const usd::StageMesh& mesh) const noexcept {
         return !options_->noDisplacement && mesh.material.displaces();
     }
@@ -1108,14 +1202,24 @@ public:
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
     }
-    /// (joint, weight) four times a gaussian, empty when nothing carries it.
-    [[nodiscard]] const std::vector<float>& influences() const noexcept { return influences_; }
+    /// (joint, weight) four times a gaussian, empty when nothing carries it:
+    /// read back for the file, which wants them as an array.
+    [[nodiscard]] Result<std::vector<float>> influences() const {
+        if (!influences_.valid() || count_ == 0) {
+            return std::vector<float>{};
+        }
+        std::vector<float> out(size_t{count_} * 8);
+        ATHENEA_TRY(influences_.read(library_->device(), 0, out.size() * sizeof(float), out.data()));
+        return out;
+    }
 
 private:
     gpu_host::Context*                       context_ = nullptr;
     gpu::ShaderLibrary*                      library_ = nullptr;
     const Options*                           options_ = nullptr;
     gpu::ComputeKernel                       pack_, chunks_, reduce_, reduceSlices_, rows_;
+    gpu::ComputeKernel                       gather_, noInfluence_, recordChunks_, raySpan_, bakeInto_,
+                                             transferInto_;
     std::unique_ptr<material::TextureStore>  textures_;
     std::map<std::string, uint32_t>          ids_;
     std::map<MapKey, image::ImagePtr>        maps_;
@@ -1134,8 +1238,6 @@ private:
     double                                   modelCell_ = 0.0;   ///< the model's longest side over the resolution
 };
 
-}   // namespace
-
 /// The path tracer's answer at every gaussian, written into its colour.
 ///
 /// One ray a gaussian: from a little way along its normal, back down onto the
@@ -1148,95 +1250,49 @@ private:
 /// A direction had to be chosen, since one colour cannot be view-dependent,
 /// and the surface's own normal is the one that needs no camera. What it
 /// costs is the highlight that would only be seen from elsewhere.
-[[nodiscard]] Result<void> bakeInto(io::RawSplats& raw, const BakeFrom& from,
-                                    const std::string& stage, double time, uint32_t samples,
-                                    uint32_t bounces, bool defaultLights, uint32_t degree, bool overArea) {
-    if (raw.count == 0 || from.normals.size() < size_t{raw.count} * 3) {
-        return Error(ErrorCode::InternalError, "bake: a normal a gaussian is what it stands on");
-    }
-    // How far off the surface the ray starts: far enough that it does not
-    // begin inside the triangle it is about to hit, and near enough that
-    // nothing else fits in between.
-    //
-    // It is a fraction of the MODEL, and of nothing else. Taken as a fraction
-    // of the scene's unit instead -- a thousandth, floored at one -- the
-    // chess pawn, which is 66 mm tall in a stage whose unit is a metre, began
-    // its rays a millimetre off the surface: thicker than the gold ring under
-    // the glass ball and high enough to start inside the ball, so the ray
-    // came down onto the wrong surface and the ring baked grey, the marble
-    // body's colour, where the mesh reads gold.
-    float low[3] = {raw.records[0], raw.records[1], raw.records[2]};
-    float high[3] = {low[0], low[1], low[2]};
-    for (uint32_t k = 0; k < raw.count; ++k) {
-        const float* record = raw.records.data() + size_t{k} * raw.encoding.floatsPerRecord;
-        for (int axis = 0; axis < 3; ++axis) {
-            low[axis] = std::min(low[axis], record[axis]);
-            high[axis] = std::max(high[axis], record[axis]);
-        }
-    }
-    const float span = std::sqrt((high[0] - low[0]) * (high[0] - low[0]) +
-                                 (high[1] - low[1]) * (high[1] - low[1]) +
-                                 (high[2] - low[2]) * (high[2] - low[2]));
-    const float step = (span > 0.0F ? span : 1.0F) * 1.0e-4F;
-    std::vector<float> rays(size_t{raw.count} * 8);
-    for (uint32_t k = 0; k < raw.count; ++k) {
-        const float* point = from.points.data() + size_t{k} * 3;
-        const float* n = from.normals.data() + size_t{k} * 3;
-        float* ray = rays.data() + size_t{k} * 8;
-        for (int axis = 0; axis < 3; ++axis) {
-            ray[axis] = point[axis];         // where the surface under the gaussian is
-            ray[4 + axis] = n[axis];         // and which way it faces
-        }
-        ray[3] = step;   // how far off the surface a ray starts
-        // How wide the gaussian is: where it stands for a block, its samples
-        // are spread over its footprint (PathTracer's foundBaked).
-        ray[7] = overArea ? raw.records[size_t{k} * raw.encoding.floatsPerRecord + raw.encoding.scale0] : 0.0F;
-    }
-    auto renderer = usd::StageRenderer::open(stage);
+///
+/// ALL OF IT ON THE DEVICE. The rays are the cloud's own buffer, their offset
+/// set from the cloud's box by a kernel; the renderer is opened on the
+/// conversion's device, so it traces those rays where they are and answers
+/// into a device buffer; and a kernel writes the answer into the records.
+/// What crosses back is the count of gaussians the bake found a surface
+/// under.
+Result<void> Converter::bake(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
+                             bool defaultLights, uint32_t degree) {
+    ATHENEA_TRY(spanRays());
+    auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
     if (defaultLights) {
         ATHENEA_TRY((*renderer)->setDefaultLights(true));
     }
-    auto baked = (*renderer)->bakePoints(rays, raw.count, time, samples, bounces, degree, false,
-                                         from.displaced ? &from.facing : nullptr);
+    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, degree, false);
     if (!baked) return std::move(baked).error();
+    auto lit = counter();
+    if (!lit) return std::move(lit).error();
     const uint32_t coefficients = (degree + 1) * (degree + 1);
-    // Straight into the record. The constant term is the DC the cloud keeps
-    // its colour in -- the kernel already shifted it to where 3DGS keeps its
-    // own -- and the rest are the harmonics, rgb per basis, which is the
-    // layout the encoding below declares. Nothing is computed here.
-    uint32_t lit = 0;
-    for (uint32_t k = 0; k < raw.count; ++k) {
-        float* record = raw.records.data() + size_t{k} * raw.encoding.floatsPerRecord;
-        const float* point = baked->data() + size_t{k} * coefficients * 4;
-        // A GAUSSIAN THE BAKE FOUND NOTHING UNDER IS NOT A BLACK GAUSSIAN.
-        //
-        // Its coefficients come back as zeros, and zero is not "no colour":
-        // the constant term is kept shifted to where 3DGS trains it, so a
-        // zero there decodes as `0.5 - 0.5`, which is black. A cloud out of
-        // mesh2splat is nearly all discs (the third axis is 1e-7), so one of
-        // those seen edge on at a silhouette is a black splinter -- which is
-        // what the pawn's gold ring had a fringe of, forty-four of them in
-        // 729073. It stands for nothing, so it draws nothing.
-        if (!(point[3] > 0.0F)) {
-            record[raw.encoding.opacity] = 0.0F;
-            continue;
-        }
-        record[raw.encoding.dc0] = point[0];
-        record[raw.encoding.dc1] = point[1];
-        record[raw.encoding.dc2] = point[2];
-        for (uint32_t c = 1; c < coefficients; ++c) {
-            const float* value = point + size_t{c} * 4;
-            float* rest = record + raw.encoding.restBase + (c - 1) * 3;
-            rest[0] = value[0];
-            rest[1] = value[1];
-            rest[2] = value[2];
-        }
-        lit += point[3] > 0.0F ? 1u : 0u;
-    }
-    std::printf("mesh2splat: baked %u of %u gaussians (%u paths each, %u bounces, degree %u)\n", lit,
-                raw.count, samples, bounces, degree);
-    if (lit * 2 < raw.count) {
+    gpu::Buffer& none = *lit;   // what the radiance bake has no use for, bound all the same
+    gpu::CommandBatch batch(library_->device());
+    bakeInto_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["baked"].setBinding(baked->rhi());
+        cursor["records"].setBinding(records_.rhi());
+        cursor["direct"].setBinding(none.rhi());
+        cursor["bounced"].setBinding(none.rhi());
+        cursor["shadowBits"].setBinding(none.rhi());
+        cursor["counts"].setBinding(lit->rhi());
+        cursor["bake"]["count"].setData(count_);
+        cursor["bake"]["coefficients"].setData(coefficients);
+        cursor["bake"]["perRecord"].setData(recordFloats());
+        cursor["bake"]["opacity"].setData(uint32_t{3});
+        cursor["bake"]["dc0"].setData(uint32_t{11});
+        cursor["bake"]["restBase"].setData(uint32_t{20});
+        cursor["bake"]["indirect"].setData(uint32_t{0});
+    });
+    ATHENEA_TRY(batch.submit(true));
+    uint32_t found = 0;
+    ATHENEA_TRY(lit->read(library_->device(), 0, sizeof(found), &found));
+    std::printf("mesh2splat: baked %u of %u gaussians (%u paths each, %u bounces, degree %u)\n", found, count_,
+                samples, bounces, degree);
+    if (found * 2 < count_) {
         std::fprintf(stderr,
                      "mesh2splat: more than half the gaussians found no surface under them; the bake "
                      "is unlikely to be what you want\n");
@@ -1253,92 +1309,78 @@ private:
 /// which is the same rays, the same stratification and the same ray offset,
 /// with the projection done where the path escapes rather than where it
 /// gathers. The frame then reads `albedo * dot(transfer, sky)` under whatever
-/// sky the cloud is put in.
-[[nodiscard]] Result<void> transferInto(io::RawSplats& raw, const BakeFrom& from,
-                                        const std::string& stage, double time, uint32_t samples,
-                                        uint32_t bounces, bool indirect, std::vector<float>& direct,
-                                        std::vector<float>& bounced, std::vector<int32_t>& shadowBits,
-                                        bool overArea) {
-    if (raw.count == 0 || from.normals.size() < size_t{raw.count} * 3) {
-        return Error(ErrorCode::InternalError, "transfer: a normal a gaussian is what it stands on");
-    }
-    float low[3] = {raw.records[0], raw.records[1], raw.records[2]};
-    float high[3] = {low[0], low[1], low[2]};
-    for (uint32_t k = 0; k < raw.count; ++k) {
-        const float* record = raw.records.data() + size_t{k} * raw.encoding.floatsPerRecord;
-        for (int axis = 0; axis < 3; ++axis) {
-            low[axis] = std::min(low[axis], record[axis]);
-            high[axis] = std::max(high[axis], record[axis]);
-        }
-    }
-    const float span = std::sqrt((high[0] - low[0]) * (high[0] - low[0]) +
-                                 (high[1] - low[1]) * (high[1] - low[1]) +
-                                 (high[2] - low[2]) * (high[2] - low[2]));
-    const float step = (span > 0.0F ? span : 1.0F) * 1.0e-4F;
-    std::vector<float> rays(size_t{raw.count} * 8);
-    for (uint32_t k = 0; k < raw.count; ++k) {
-        const float* point = from.points.data() + size_t{k} * 3;
-        const float* n = from.normals.data() + size_t{k} * 3;
-        float* ray = rays.data() + size_t{k} * 8;
-        for (int axis = 0; axis < 3; ++axis) {
-            ray[axis] = point[axis];
-            ray[4 + axis] = n[axis];
-        }
-        ray[3] = step;
-        ray[7] = overArea ? raw.records[size_t{k} * raw.encoding.floatsPerRecord + raw.encoding.scale0] : 0.0F;
-    }
-    auto renderer = usd::StageRenderer::open(stage);
+/// sky the cloud is put in. On the device as the bake is; the three arrays
+/// the file keeps come back as bytes.
+Result<void> Converter::transfer(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
+                                 bool indirect, std::vector<float>& direct, std::vector<float>& bounced,
+                                 std::vector<int32_t>& shadowBits) {
+    ATHENEA_TRY(spanRays());
+    auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
     // Degree 2: nine coefficients hold the irradiance of any environment to
     // about a percent, and a transfer is exactly that shape.
     const auto started = std::chrono::steady_clock::now();
-    auto baked = (*renderer)->bakePoints(rays, raw.count, time, samples, bounces, 2, /*transfer=*/true,
-                                         from.displaced ? &from.facing : nullptr);
+    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, 2, /*transfer=*/true);
     if (!baked) return std::move(baked).error();
     // The rays are the same rays whether the indirect half is kept or not, so
     // this number is what says the second half costs no bake: only the copy
     // below and the file differ.
     const double traced =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-    const uint32_t coefficients = 9;
-    // The coefficients, the coverage, and the sixty-four bits of which ways
-    // out are open, as two floats whose bits they are.
-    const uint32_t entries = coefficients + 2;
-    direct.assign(size_t{raw.count} * 9, 0.0F);
-    shadowBits.assign(size_t{raw.count} * 2, 0);
-    bounced.assign(indirect ? size_t{raw.count} * 27 : 0, 0.0F);
-    uint32_t found = 0;
-    for (uint32_t k = 0; k < raw.count; ++k) {
-        const float* point = baked->data() + size_t{k} * entries * 4;
-        // A gaussian the bake found nothing under transfers nothing, and a
-        // transfer of nothing is black under every sky: it is made
-        // transparent instead, as the radiance bake does.
-        if (!(point[coefficients * 4 + 3] > 0.0F)) {
-            raw.records[size_t{k} * raw.encoding.floatsPerRecord + raw.encoding.opacity] = 0.0F;
-            continue;
-        }
-        ++found;
-        shadowBits[size_t{k} * 2 + 0] = std::bit_cast<int32_t>(point[(coefficients + 1) * 4 + 0]);
-        shadowBits[size_t{k} * 2 + 1] = std::bit_cast<int32_t>(point[(coefficients + 1) * 4 + 1]);
-        for (uint32_t c = 0; c < coefficients; ++c) {
-            direct[size_t{k} * 9 + c] = point[c * 4 + 3];
-            if (indirect) {
-                float* into = bounced.data() + size_t{k} * 27 + c * 3;
-                into[0] = point[c * 4 + 0];
-                into[1] = point[c * 4 + 1];
-                into[2] = point[c * 4 + 2];
-            }
-        }
+    gpu::Device& device = library_->device();
+    const auto made = [&](uint64_t words, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(words, 1) * 4;
+        desc.elementBytes = 4;
+        desc.label = label;
+        return gpu::Buffer::create(device, desc);
+    };
+    auto directs = made(uint64_t{count_} * 9, "mesh2splat.transferDirect");
+    auto bounceds = made(indirect ? uint64_t{count_} * 27 : 1, "mesh2splat.transferIndirect");
+    auto bits = made(uint64_t{count_} * 2, "mesh2splat.shadowBits");
+    auto found = counter();
+    if (!directs || !bounceds || !bits || !found) {
+        return Error(ErrorCode::OutOfMemory, "transfer: cannot allocate what the file keeps");
     }
+    gpu::CommandBatch batch(device);
+    transferInto_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["baked"].setBinding(baked->rhi());
+        cursor["records"].setBinding(records_.rhi());
+        cursor["direct"].setBinding(directs->rhi());
+        cursor["bounced"].setBinding(bounceds->rhi());
+        cursor["shadowBits"].setBinding(bits->rhi());
+        cursor["counts"].setBinding(found->rhi());
+        cursor["bake"]["count"].setData(count_);
+        cursor["bake"]["coefficients"].setData(uint32_t{9});
+        cursor["bake"]["perRecord"].setData(recordFloats());
+        cursor["bake"]["opacity"].setData(uint32_t{3});
+        cursor["bake"]["dc0"].setData(uint32_t{11});
+        cursor["bake"]["restBase"].setData(uint32_t{20});
+        cursor["bake"]["indirect"].setData(indirect ? 1u : 0u);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    // What a USD array holds, as bytes.
+    direct.resize(size_t{count_} * 9);
+    shadowBits.resize(size_t{count_} * 2);
+    bounced.resize(indirect ? size_t{count_} * 27 : 0);
+    ATHENEA_TRY(directs->read(device, 0, direct.size() * sizeof(float), direct.data()));
+    ATHENEA_TRY(bits->read(device, 0, shadowBits.size() * sizeof(int32_t), shadowBits.data()));
+    if (indirect) {
+        ATHENEA_TRY(bounceds->read(device, 0, bounced.size() * sizeof(float), bounced.data()));
+    }
+    uint32_t reached = 0;
+    ATHENEA_TRY(found->read(device, 0, sizeof(reached), &reached));
     std::printf("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
-                found, raw.count, samples, bounces, indirect ? ", with the indirect half" : "", traced);
-    if (found * 2 < raw.count) {
+                reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
+    if (reached * 2 < count_) {
         std::fprintf(stderr,
                      "mesh2splat: more than half the gaussians found no surface under them; the "
                      "transfer is unlikely to be what you want\n");
     }
     return ok();
 }
+
+}   // namespace
 
 void addMesh2Splat(CLI::App& app) {
     auto o = std::make_shared<Options>();
@@ -1546,13 +1588,11 @@ void addMesh2Splat(CLI::App& app) {
                     // this one did. The colours stay the material's albedo and
                     // the frame lights them with whatever sky it has, so the same
                     // file is right under every HDRI rather than under one.
-                    ATHENEA_TRY(transferInto(*raw, converter.bakeFrom(), o->stage, o->time, o->bakeSamples,
-                                         o->bakeBounces, o->indirect, transferDirect, transferIndirect,
-                                         shadowBits, o->simplify > 0.0));
+                    ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples, o->bakeBounces, o->indirect,
+                                                   transferDirect, transferIndirect, shadowBits));
                 } else if (o->bake) {
-                    ATHENEA_TRY(bakeInto(*raw, converter.bakeFrom(), o->stage, o->time, o->bakeSamples,
-                                     o->bakeBounces, o->defaultLights, std::min(o->bakeDegree, 3u),
-                                     o->simplify > 0.0));
+                    ATHENEA_TRY(converter.bake(o->stage, o->time, o->bakeSamples, o->bakeBounces,
+                                               o->defaultLights, std::min(o->bakeDegree, 3u)));
                 }
 
                 // THE RIG, WHEN THE CLOUD KEEPS ONE. Four joints a gaussian came
@@ -1560,7 +1600,9 @@ void addMesh2Splat(CLI::App& app) {
                 // own transforms at each instant of the range, which is the only
                 // thing about an animated cloud that changes from frame to frame.
                 usd::SplatSkinning rig;
-                if (o->skinned && !converter.influences().empty()) {
+                auto carriedBy = o->skinned ? converter.influences() : Result<std::vector<float>>(std::vector<float>{});
+                if (!carriedBy) return std::move(carriedBy).error();
+                if (o->skinned && !carriedBy->empty()) {
                     for (const usd::StageMesh& one : *meshes) {
                         if (one.skinning.bound) {
                             rig.skeleton = one.skinning.skeleton;
@@ -1570,7 +1612,7 @@ void addMesh2Splat(CLI::App& app) {
                             break;
                         }
                     }
-                    rig.influences = converter.influences();
+                    rig.influences = std::move(*carriedBy);
                     const auto [begin, end] = (*stage).timeRange();
                     double from = begin;
                     double to = end;
