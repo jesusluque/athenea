@@ -7464,6 +7464,163 @@ TEST_CASE("a bake taken in passes answers as one taken whole", "[usd][gpu][mesh]
     CHECK(seen[1] == 0);
 }
 
+// A BAKE SPLIT IN TWO SUMS TO THE BAKE WHOLE.
+//
+// `bakeSplitOnDevice` keeps the direct light's sums apart from the indirect's
+// and fits each on its own; `combineBake` adds them and bounds the sum as the
+// tracer's own bake does. The fit is linear and the paths are the same paths
+// (the same seed), so the two must agree to rounding. A floor beside a wall
+// under a dome, so the indirect half is not nothing: the floor sees the wall
+// lit, and the check also counts the points whose indirect light is there.
+TEST_CASE("a bake split into direct and indirect sums to the bake whole", "[usd][gpu][mesh][bake][split]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("bake_split.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, 0), (4, -4, 0), (4, 4, 0), (-4, 4, 0)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Mesh \"Wall\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, 0.5, 0), (4, 0.5, 0), (4, 0.5, 4), (-4, 0.5, 4)]\n"
+               "    normal3f[] normals = [(0, -1, 0), (0, -1, 0), (0, -1, 0), (0, -1, 0)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    constexpr uint32_t kCount = 32;
+    std::vector<float> rays(size_t{kCount} * 12, 0.0F);
+    for (uint32_t k = 0; k < kCount; ++k) {
+        float* ray = rays.data() + size_t{k} * 12;
+        ray[0] = -1.5F + 3.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(kCount);
+        ray[1] = 0.25F;
+        ray[2] = 0.0F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    gpu::Device& device = *gpu->device;
+    gpu::BufferDesc desc;
+    desc.bytes = rays.size() * sizeof(float);
+    desc.elementBytes = 16;
+    desc.label = "test.rays";
+    auto rayBuffer = gpu::Buffer::create(device, desc, rays.data());
+    REQUIRE(rayBuffer);
+    auto compare = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_host_check", "m2sAnswerCompare");
+    REQUIRE(compare);
+    auto seen = gpu::ComputeKernel::create(*gpu->library, "athenea/test/bake_split_check", "splitIndirectSeen");
+    REQUIRE(seen);
+    auto renderer = usd::StageRenderer::open(path, gpu->device);
+    if (!renderer) FAIL(renderer.error().toString());
+    constexpr uint32_t kDegree = 2;
+    constexpr uint32_t kEntries = (kDegree + 1) * (kDegree + 1);
+    auto whole = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 256, 2, kDegree);
+    if (!whole) FAIL(whole.error().toString());
+    usd::BakeOptions options;
+    options.samples = 256;
+    options.bounces = 2;
+    options.degree = kDegree;
+    auto split = (*renderer)->bakeSplitOnDevice(*rayBuffer, kCount, 0.0, options);
+    if (!split) FAIL(split.error().toString());
+    auto combined = (*renderer)->combineBake(*split, *rayBuffer);
+    if (!combined) FAIL(combined.error().toString());
+    gpu::Buffer counts = test::uintBuffer(device, 4, "counts");
+    gpu::Buffer lit = test::uintBuffer(device, 4, "lit");
+    {
+        gpu::CommandBatch batch(device);
+        compare->dispatch(batch, {kCount * kEntries, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["a"].setBinding(whole->rhi());
+            cursor["b"].setBinding(combined->rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["count"].setData(kCount * kEntries);
+            cursor["params"]["tolerance"].setData(1.0e-4F);
+        });
+        seen->dispatch(batch, {kCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["guides"].setBinding(split->guides.rhi());
+            cursor["sums"].setBinding(split->sums.rhi());
+            cursor["allot"].setBinding(split->allot.rhi());
+            cursor["counts"].setBinding(lit.rhi());
+            cursor["check"]["count"].setData(kCount);
+            cursor["check"]["threshold"].setData(1.0e-3F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t got[3] = {0, 0, 0};
+    REQUIRE(counts.read(device, 0, sizeof(got), got));
+    uint32_t indirect = 0;
+    REQUIRE(lit.read(device, 0, sizeof(indirect), &indirect));
+    float worst = 0.0F;
+    std::memcpy(&worst, &got[2], sizeof(worst));
+    std::printf("  split against whole: %u entries, %u apart, worst %.3g; %u of %u points with indirect light\n",
+                got[0], got[1], static_cast<double>(worst), indirect, kCount);
+    CHECK(got[0] == kCount * kEntries);
+    CHECK(got[1] == 0);
+    CHECK(indirect == kCount);
+}
+
+// THE EXTRA PATHS GO WHERE THE NOISE IS.
+//
+// `allotBakePasses` shares a budget out by sqrt(relative variance / cost). On
+// made-up sums whose answer is known -- every gaussian's mean the same, its
+// cost the same, the first half's variance a hundred times smaller than the
+// second's -- the second half must get ten times the passes (sqrt of a
+// hundred), and the whole the budget asked for.
+TEST_CASE("an adaptive bake allots its extra paths where the variance is", "[usd][gpu][bake][adaptive]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = *gpu->device;
+    constexpr uint32_t kCount = 4096;
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{kCount} * 5 * 16;
+    desc.elementBytes = 16;
+    desc.label = "test.sums";
+    auto sums = gpu::Buffer::create(device, desc);
+    REQUIRE(sums);
+    gpu::Buffer allot = test::uintBuffer(device, kCount, "allot");
+    gpu::Buffer halves = test::uintBuffer(device, 4, "halves");
+    auto synth = gpu::ComputeKernel::create(*gpu->library, "athenea/test/bake_split_check", "allotSynth");
+    REQUIRE(synth);
+    auto count = gpu::ComputeKernel::create(*gpu->library, "athenea/test/bake_split_check", "allotHalves");
+    REQUIRE(count);
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        cursor["guides"].setBinding(sums->rhi());
+        cursor["sums"].setBinding(sums->rhi());
+        cursor["allot"].setBinding(allot.rhi());
+        cursor["counts"].setBinding(halves.rhi());
+        cursor["check"]["count"].setData(kCount);
+        cursor["check"]["low"].setData(0.001F);
+        cursor["check"]["high"].setData(0.1F);
+    };
+    {
+        gpu::CommandBatch batch(device);
+        synth->dispatch(batch, {kCount, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    usd::BakeOptions options;
+    options.extraSamples = 128;   // two passes of 64 a gaussian on average
+    options.passSamples = 64;
+    options.maxPasses = 64;
+    REQUIRE(usd::allotBakePasses(*gpu->library, *sums, kCount, 1, options, allot));
+    {
+        gpu::CommandBatch batch(device);
+        count->dispatch(batch, {kCount, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t got[2] = {0, 0};
+    REQUIRE(halves.read(device, 0, sizeof(got), got));
+    const double quiet = static_cast<double>(got[0]);
+    const double noisy = static_cast<double>(got[1]);
+    std::printf("  passes allotted: %.0f to the quiet half, %.0f to the noisy one (budget %u)\n", quiet, noisy,
+                kCount * 2);
+    CHECK(noisy > 8.0 * quiet);
+    CHECK(noisy < 12.0 * quiet);
+    CHECK(std::abs(quiet + noisy - kCount * 2.0) < kCount * 2.0 * 0.05);
+}
+
 // A BAKE GIVES NO MORE LIGHT THAN ANY PATH SAW, FROM ANY SIDE.
 //
 // The surface that broke it: polished metal under one small, bright light,

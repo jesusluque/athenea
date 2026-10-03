@@ -10930,3 +10930,36 @@ is what it costs: the target of proposal 012 (the grain of a 4096-path bake)
 would take sixteen times as long again, which is why the steps after this
 one spend paths where they are worth it and share the light between
 neighbours instead.
+
+### 2. Direct and indirect, kept apart as sums
+
+`BakePoints::split` (`PathParams.bakeSplit`) makes the tracer write sums and
+fit nothing: each harmonic against the direct light -- emission at the first
+vertex, next event estimation from it, what its own sample met of a light
+and the emission that sample found on a surface, the two halves of the same
+MIS -- and against everything after (the indirect), then the brightest
+sample with the opacity summed, the sums of each half's luminance, of its
+square and of their product, and the steps the paths took. Sums add, which
+is what the next two steps need: a second pass is added on, and a filter
+can take one half and leave the other. The fit (`common/bake_fit.slang`,
+moved out of the tracer's source so both use one) is made once over every
+path, each half on its own (`athenea/usd/bake_resolve`, `bakeSplitFit`); it
+is linear, so `combineBake` -- the halves added, then bounded by the
+brightest sample and made whole as the tracer's own bake does -- answers
+what the bake whole answers.
+
+Checked: `athenea_usd_tests "[split]"`, a floor beside a lit wall under a
+dome, the same seed both ways: 288 entries, worst difference 1.2e-7, and all
+32 points with indirect light. On the pawn the split bake at 256 paths reads
+what the old one did to the sixth figure (relMSE against the 4096-path bake,
+over the body, 0.0109156 against 0.0109157), and in the same time: 132.9 s
+for the bake, where the old command took 132.9 s for the whole conversion.
+
+**Where the pawn's grain is.** Not where proposal 012 expected it. The
+indirect half is small on a pawn standing alone under an HDRI, and filtering
+it alone changed nothing that can be seen: the body's relMSE against the
+4096-path bake went from 0.01092 to 0.01087 at 256 paths, the grain in a
+marble patch from 0.01999 to 0.01998. The grain is the direct light's, and
+mostly its harmonics': sixteen coefficients fitted from a few hundred paths,
+each of them a different direction and a sample of a sky with a sun in it.
+What does help the whole light, measured, is in step 4.
