@@ -4,6 +4,7 @@
 athenea_add_module(ui
     SOURCES
         src/Controls.cpp
+        src/GaussianPanel.cpp
         src/ViewerPanels.cpp
     PUBLIC_LIBS
         athenea::core)

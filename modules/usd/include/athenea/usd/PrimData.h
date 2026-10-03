@@ -96,6 +96,13 @@ struct ParticleFieldArrays {
     pxr::VtValue visibilityTexels; ///< VtIntArray (words)
     pxr::VtValue visibilityPartOf; ///< VtIntArray, one a gaussian
     pxr::VtValue visibilityAmbient;///< VtIntArray (words), a probe's mean, for domes
+    /// BLENDER'S GAUSSIAN-SPLAT POINT CLOUD, arriving as a UsdGeomPoints
+    /// (HdAtheneaPoints): `primvars:radiance:base`, the DC coefficient and
+    /// the opacity a splat, in place of `opacities` and the DC; and
+    /// `primvars:radiance:sh_N`, one array a basis function after DC, in
+    /// place of `shCoefficients`. Empty for a ParticleField.
+    pxr::VtValue              radianceBase;   ///< VtVec4fArray or VtVec4hArray
+    std::vector<pxr::VtValue> shPlanes;       ///< VtVec3fArray or VtVec3hArray each
 };
 
 /// A volume's field asset, as UsdVolOpenVDBAsset names it.

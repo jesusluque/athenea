@@ -646,8 +646,10 @@ float bakeBasisAt(uint at, uint sample, uint basis) {
     return shBasisValue(basis, -bakeDirection(at, sample));
 }
 
-/// The measure a uniform sample of the sphere stands for: the estimator of
-/// `integral(L * Y)` over N of them is `(4 pi / N) * sum(L * Y)`.
+/// The measure a uniform sample of the hemisphere stands for: `bakeAim`
+/// draws directions uniformly over the half of the sphere the surface faces
+/// (2 pi steradians), so the estimator of `integral(L * Y)` over that half
+/// from N of them is `(2 pi / N) * sum(L * Y)`.
 static const float kBakeMeasure = 2.0 * 3.14159265358979;
 
 /// Which way the surface under a gaussian faces.

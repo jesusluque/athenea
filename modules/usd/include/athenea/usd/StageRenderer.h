@@ -19,6 +19,7 @@
 #include "athenea/render/Camera.h"
 #include "athenea/render/SplatQuery.h"
 #include "athenea/render/TileRasterizer.h"
+#include "athenea/usd/GaussianStats.h"
 #include "athenea/usd/PrimData.h"
 #include "athenea/usd/RenderSettings.h"
 #include "athenea/render/TileRasterizer.h"
@@ -284,6 +285,30 @@ public:
                                                         bool transfer = false,
                                                         const std::vector<float>* facing = nullptr);
 
+    /// THE SAME BAKE, WITH NOTHING CROSSING TO THE PROCESSOR. `rays` is on
+    /// this renderer's device (open it with the device the caller's buffers
+    /// live on) in the kernel's own layout, three `float4` a point: where its
+    /// ray starts and how near it may hit, which way it goes (and in w how
+    /// wide the gaussian is, for a bake spread over its footprint), and the
+    /// way the point faces where that is not the surface's (w 1) or zeros.
+    /// What comes back is on the device too: `count * entries` `float4`, a
+    /// point's entries together in the order `bakePoints` returns them --
+    /// `(degree + 1)^2` coefficients, and two more for a transfer.
+    ///
+    /// IN PASSES OF AT MOST `batch` POINTS (0: `kBakeBatch`), so what the
+    /// tracer holds at once -- a plane an entry over its grid, and its sums
+    /// -- is bounded whatever the cloud: the answer is the only buffer the
+    /// size of the cloud. Each pass draws its own paths, so a point's answer
+    /// is the same in distribution, not in bits, whatever the batch.
+    [[nodiscard]] Result<gpu::Buffer> bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
+                                                         uint32_t samples = 64, uint32_t bounces = 3,
+                                                         uint32_t degree = 0, bool transfer = false,
+                                                         uint32_t batch = 0);
+    /// Points a bake pass traces at most: 2^19, which at degree 3 is 150 MB
+    /// of planes (sixteen float4 a point) where a 10 M-gaussian cloud in one
+    /// pass was 2.6 GB.
+    static constexpr uint32_t kBakeBatch = 1u << 19;
+
     /// Samples per light per pixel: one for an interactive frame, more where
     /// an area light's noise would be read as error.
     void setLightSamples(uint32_t samples);
@@ -392,6 +417,15 @@ public:
         bool     cryptomatte = false;
     };
     [[nodiscard]] Counters counters() const;
+
+    /// THE GAUSSIANS ON SCREEN (GaussianStats): the stage's clouds, what the
+    /// level of detail kept, what each carries and holds, and what the device
+    /// counted of the frame -- a frame or two late, never waited for.
+    /// Gathered only while `setGaussianStats(true)`.
+    void setGaussianStats(bool on);
+    /// Time each rasteriser stage for the panel; each then waits for the device.
+    void setTimeSplatStages(bool on);
+    [[nodiscard]] GaussianStats gaussianStats() const;
 
     /// Every camera prim on the stage.
     [[nodiscard]] std::vector<std::string> cameras() const;

@@ -33,6 +33,19 @@ import athenea.common.edit;
 
 public static const uint kTile = 16;
 
+// WHY A SPLAT WAS CULLED, kept where a culled slot's depth key would be: the
+// compaction reads a key only where `visible` is 1, so the word is free, and
+// a panel's counters (splat_frame_counters.slang) read the reason from it
+// rather than the projection paying a counter of its own.
+public static const uint kCulledKey     = 0xFF000000u;   // | the reason
+public static const uint kCullEdit      = 1;   // removed by the prim's SplatEdit
+public static const uint kCullDepth     = 2;   // nearer than the near plane or past the far one
+public static const uint kCullDegenerate = 3;  // a footprint of no area
+public static const uint kCullFaint     = 4;   // under 1/255 of opacity, once paid for its spread
+public static const uint kCullOffscreen = 5;   // its footprint's tiles lie outside the frame
+public static const uint kCullNoTile    = 6;   // in the frame, but no tile meets its ellipse
+public static const uint kCullReasons   = 7;   // 0 is a slot no splat projection wrote (points)
+
 public struct FrameParams {
     public uint  width;
     public uint  height;

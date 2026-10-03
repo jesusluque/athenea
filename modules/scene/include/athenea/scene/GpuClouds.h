@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
@@ -195,6 +196,14 @@ struct SplatStreams {
     /// Three floats a splat, the radiance it gives off
     /// (`primvars:athenea:splat:emission`).
     FloatStream emission;
+    /// BLENDER'S LAYOUT. Four floats a splat, the DC coefficient's rgb and the
+    /// opacity (a Gaussian-splat PointCloud's `radiance:base`); where present
+    /// it stands for `opacities` and for the DC of `sh`.
+    FloatStream radianceBase;
+    /// One array a basis function after DC, rgb a splat (`radiance:sh_0`
+    /// onwards), in place of `sh`: `coefficients` is then their count plus
+    /// one. All float, or all half. Laid out on the device as `sh` is.
+    std::vector<FloatStream> shPlanes;
 };
 
 /// A point cloud as separate arrays, the way UsdGeomPoints stores one.
@@ -213,6 +222,12 @@ public:
 
     /// `maxDegree` caps the harmonics kept (0..3).
     [[nodiscard]] Result<GpuSplats> upload(const io::RawSplats& raw, uint32_t maxDegree = 3);
+    /// The same decode of records that are already on the device: `count`
+    /// of them in `records`, laid out as `encoding` says. Nothing crosses to
+    /// the processor (`athenea mesh2splat -o x.athc`).
+    [[nodiscard]] Result<GpuSplats> upload(const gpu::Buffer& records, uint32_t count,
+                                           const io::SplatEncoding& encoding, const std::string& source,
+                                           uint32_t maxDegree = 3);
     /// A SOG's images, decoded on the device into records that then take the
     /// same validate and decode as any other format -- nothing crosses back.
     [[nodiscard]] Result<GpuSplats> upload(const io::RawSog& sog, uint32_t maxDegree = 3);
@@ -261,6 +276,9 @@ private:
                                                 uint32_t colourKind, float detail, uint32_t written,
                                                 GpuPoints& points);
     [[nodiscard]] Result<gpu::Buffer> streamBuffer(const FloatStream& stream, const char* label);
+    /// `SplatStreams::shPlanes` end to end in one buffer, `count` rgb a plane.
+    [[nodiscard]] Result<gpu::Buffer> planeBuffer(const std::vector<FloatStream>& planes, uint32_t count,
+                                                  const char* label);
 
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel sogDecode_;

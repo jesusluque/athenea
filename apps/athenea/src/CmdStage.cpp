@@ -88,6 +88,8 @@ void addConvert(CLI::App& app) {
         usd::ExportOptions options;
         options.maxDegree = o->degree;
         options.addCamera = !o->noCamera;
+        // metersPerUnit stays 1: no splat file says what its unit is, and a
+        // capture's scale is taken as metres (operations.md, 2.4).
         options.rotateXDegrees = o->rotateX;
         if (auto written = usd::writeParticleFieldStage(library, *raw, o->output, options); !written) {
             std::fprintf(stderr, "%s\n", written.error().toString().c_str());

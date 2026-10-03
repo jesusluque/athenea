@@ -182,6 +182,11 @@ emit, tile sort and blend times separately.
 A `.athc` output refuses a non-zero `--rotate-x`: the container holds the
 cloud as it is, and the turn belongs on the prim that references it.
 
+A stage written here says `metersPerUnit = 1`: none of the input formats
+records a unit, and a capture's scale is taken to be metres. A cloud in
+another unit is scaled where it is referenced, or the stage's
+`metersPerUnit` edited.
+
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
@@ -220,7 +225,8 @@ as a direction (the weighted mean made a unit vector again); any other float
 -- metallic, roughness, a transfer, `primvars:athenea:splat:emission` -- as a
 mean. Metallic, roughness and transmission are
 also compared as colour is. An array sampled in time is merged a sample at a
-time. A splat file is written as a new stage, as `athenea convert` writes one.
+time. The copy keeps the source's `metersPerUnit` and `upAxis`. A splat
+file is written as a new stage, as `athenea convert` writes one, in metres.
 
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
@@ -350,7 +356,7 @@ recipe is §3.1 below.
 | Option | Value | Default | Notes |
 |---|---|---|---|
 | `stage` | path, required | — | a stage holding meshes |
-| `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd` |
+| `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd`, or `.athc` with levels of detail: the gaussians and their shading normals only (no metallic/roughness/transmission, Cryptomatte ids, glass index, up axis or unit); `--skinned`, `--transfer` and `--lod-levels` are refused with it |
 | `--prim` | prim path | every mesh | only meshes at or under this path |
 | `--hide` | prim path, repeatable | none | left out with all beneath it, as if invisible (a session opinion; the file is untouched) |
 | `--resolution` | integer | `512` | cells across the longest side of the box the density is measured over |
@@ -358,7 +364,9 @@ recipe is §3.1 below.
 | `--density` | `per-model` \| `per-mesh` | `per-model` | which box that is |
 | `--cell-min` | number | `0`, derived | world units; per-mesh, the finest a cell may be |
 | `--cell-max` | number | `0`, derived | world units; per-mesh, the coarsest |
-| `--max-splats` | integer | `2000000` | the budget, over the whole stage |
+| `--max-splats` | integer | `2000000` | the budget, over the whole stage, shared between the meshes in proportion to what each wants |
+| `--cell-from-camera` | camera prim path | none | each mesh's cell is what one pixel of that camera covers where the mesh's box is nearest to it (held to the near plane), at `--time`; replaces `--density`. `--cell-min`/`--cell-max` bound it, given; nothing is derived |
+| `--camera-pixels` | integer, 1 to 65536 | `1920` | with `--cell-from-camera`: pixels across the camera's horizontal aperture |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
 | `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
 | `--opacity` | number, 0 to 1 | `1.0` | coverage: how much of what stands behind it the converted surface covers, multiplied into the material's own opacity. Every opacity is coverage -- this, the material's constant, a map's value, what a glass keeps -- and each gaussian takes what one of the several over a point needs for it, so 0.5 covers half at any size |
@@ -387,6 +395,17 @@ recipe is §3.1 below.
 
 `--skinned` and a bake are refused together: a cloud that moves cannot carry
 light baked in one pose, so the conversion says so and keeps the material.
+
+A mesh whose GeomSubsets (`materialBind` family) bind materials of their own
+is converted a subset at a time, each with its material, and the faces no
+subset claims with the mesh's; the log names each subset's prim. Their
+gaussians keep the mesh's Cryptomatte id.
+
+The output is written whole or not at all: under `.<name>.partial-<pid>.<ext>`
+in the same directory, and renamed to `-o` once it is complete. A conversion
+that fails leaves nothing under `-o` -- or the file that was there before, as
+it was -- and removes its partial file. With `--lod-levels`, each level and
+the stage that draws them are written so.
 
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part
 
@@ -480,7 +499,7 @@ keeps its own opinions, variants included):
 | `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
 | `customData` and `customLayerData` keys with an `lrt` component | the same with `athenea` |
 | an asset path ending `.lrtc` | `.athc` |
-| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 2, no normals); the payload is copied as it is |
+| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 1, no normals); the payload is copied as it is |
 
 Asset paths. A relative path to a file that is not copied (a texture, a layer
 without `--recursive`, one outside `--root`) is made absolute when the output
@@ -550,11 +569,25 @@ in it:
 The ground is at its budget in both: it is two triangles and the cell ceiling
 decides it, not the density.
 
-**The budget.** `--max-splats` is a ceiling over the whole stage, taken in
-mesh order, so a budget too small keeps the first meshes whole and drops the
-last ones entirely. The log says how many wanted more than they were given.
-Raise the budget, or with `--density per-mesh` raise `--cell-min` so every
-mesh costs less.
+**The budget.** `--max-splats` is a ceiling over the whole stage. Every mesh
+(every GeomSubset of one) is counted first -- a run of the effect with room
+for one gaussian, which counts everything and writes nothing -- and when they
+want more than the budget it is shared in proportion: each gets
+`budget × wanted / total` (and one at least), and walks a cell
+`sqrt(wanted / share)` times coarser so that it wants about that. That is one
+density floor for the whole stage: every mesh loses density alike and none is
+dropped. The warning says how many were wanted, and each mesh's log line how
+much coarser it walked. A mesh that still wants a little more than its share
+after the coarsening keeps its first triangles' gaussians, in the mesh's
+order. The count costs one short run a mesh.
+
+**From a camera.** `--cell-from-camera` sizes each mesh's cell by the camera
+that will look at it (Mesh2GS's rule): `z × (aperture / pixels) / focal`,
+`z` the distance from the camera to the nearest point of the mesh's box (its
+near clip at least, and zero inside the box), so one cell covers about one
+pixel where the mesh is nearest. Every triangle of the mesh walks exactly
+that cell. A free camera that is not in the stage is not known to the
+conversion, so this is an option and not the default.
 
 **Textures.** Each map travels to the device as float4, sixteen bytes a texel,
 so a 4k map is 268 MB and a car with fifteen of them does not fit. The
@@ -800,14 +833,14 @@ the weighted mean of what they stand for made unit again. That is version 2
 of the format; a version 1 file, which has none, is still read. The same
 version keeps whether the colours are linear light (`primvars:athenea:splat:linear`)
 in its header's flags (bit 1, beside bit 0 for the normals); a file written
-before has it clear and is read as a capture, sRGB.
-
-of the format; a version 1 file, which has none, is still read. A cloud that
+before has it clear and is read as a capture, sRGB. A cloud that
 gives off light (`primvars:athenea:splat:emission`) keeps that too, four bytes
 more a gaussian (one RGB9E5 word, after the normals where both are there),
 the merged levels' the weighted mean of what they stand for; it is bit 2 of
 the header's `flags` (bit 0 is the normals), so a file without it reads as
-before.
+before. A cloud without normals, without emission and in sRGB is still written as
+version 1, so a reader of version 1 alone opens it: version 2 is written only
+where the `flags` are not zero.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the
@@ -1067,6 +1100,21 @@ cells (`athenea mesh2splat --lod-levels`).
 | `primvars:athenea:edl` | float | `0` |
 | `primvars:athenea:surfaceOffset` | float | `0` |
 
+**Blender's Gaussian splats as `UsdGeomPoints`** — not a schema: the
+attributes of a Blender PointCloud of type Gaussian splat, as Blender's USD
+export writes them. A `Points` prim carrying a quaternion `rotation` and a
+`scale`, and `radiance:base` or `radiance:sh_0`, is drawn as a splat cloud,
+not as points; `widths` and the point styles are then ignored. The values are
+what a ParticleField holds (Blender's importer of one copies them across
+unchanged): the colours are a capture's, sRGB.
+
+| Primvar | Type | Meaning |
+|---|---|---|
+| `primvars:rotation` | quatf[] or quath[] | the gaussian's orientation |
+| `primvars:scale` | float3[] or half3[] | its three standard deviations, linear, in the prim's units |
+| `primvars:radiance:base` | float4[] or half4[] | the DC coefficient (rgb) and the opacity (linear, 0 to 1). Blender's own export drops it; the `athenea_hydra` add-on writes it. Without it the cloud is opaque and its DC is 0 (grey), with a warning |
+| `primvars:radiance:sh_N` | float3[] or half3[] | coefficient N + 1 (rgb), N from 0; 3, 8 or 15 of them make degree 1, 2 or 3, and a degree's incomplete remainder is not read |
+
 **`AtheneaVolumeAPI`** — how a `UsdVol` Volume scatters, where no Material is
 bound to say it.
 
@@ -1109,7 +1157,7 @@ Nothing but a picked pixel and a snapshot comes back.
 
 ### 5.2 The panels
 
-Two panels, by role rather than by widget, since they move as the engine
+The panels, by role rather than by widget, since they move as the engine
 grows.
 
 **View** holds the frame: which camera (the free one, or any on the stage) and
@@ -1177,6 +1225,42 @@ on; switching a dome back costs the rebuild a new sky costs.
 **Picked** is what a pixel turned out to be, and it opens with the window
 rather than waiting to be found: the prim and instance Hydra names, the matte
 that names a cloud, and what that prim's gaussians are made of.
+
+**Gaussians** is what the splats on screen are and what the frame did with
+them, collapsible section by section, numbers with thousands separators. Over
+a stage with no clouds it says *no gaussians in this stage* and nothing else.
+It is described once in `modules/ui` (`ui::gaussianPanel`) and drawn after the
+frame, so its first row is the frame on screen.
+
+Two kinds of number sit in it, and the panel says which frame each belongs
+to. What the frame was handed -- the stage's clouds, what the level of detail
+kept, what each carries and holds -- is exact for the frame on screen. What
+the device counted is read back without waiting, so it belongs to the frame
+named on the **Counted** row, which may be a frame or two behind (under the
+raster route today it is the same frame, because the rasteriser already
+waits for itself at the end).
+
+| Row | What it is | Unit, and when it is shown |
+|---|---|---|
+| Frame | the engine's count of frames drawn, and the route: *rasterised*, *splats traced*, or *meshes traced, splats rasterised* | always, over a stage with clouds |
+| Counted | the frame the device's counts below belong to, and how far behind it is | raster routes |
+| In the stage | every cloud's gaussians, drawn or not | gaussians |
+| Submitted | handed to the renderer: after the level of detail, the hidden prims and the variant levels not chosen; the share of *In the stage* | gaussians |
+| Visible | kept by the projection, the depth sort's size; the share of the counted frame's submitted | gaussians, raster routes |
+| Culled, and a row a reason | *Removed by an edit*, *Outside near/far*, *No area*, *Too faint* (under 1/255 once spread over its footprint: what a too-small gaussian becomes), *Off screen* (outside the frustum's sides), *Touch no tile*; a reason is a row only where it culled something | gaussians, raster routes |
+| Tile pairs | (tile, gaussian) pairs, the tile sort's size, and the mean a visible gaussian | pairs |
+| Most tiles | the most tiles one gaussian touched | tiles |
+| Sort sizes | the depth sort's and the tile sort's keys | keys |
+| Traced | what the ray tracer drew: it culls nothing to count | gaussians, `rt` alone |
+| Time each stage | a switch: each rasteriser stage then waits for the device, and the frame is slower by those waits | off by default |
+| Project ... Total | the rasteriser's stages | ms, while *Time each stage* is on |
+| Structures, Build, Trace, Total | the ray tracer: whether its structures were rebuilt or kept, its route, and its times | ms, `rt` alone |
+| Clouds (memory) | every cloud's arrays on the device, a posed copy and its skeleton included | bytes |
+| Levels of detail | the assets cuts are taken from, and the streaming stores | bytes, where there are any |
+| one row a cloud | the prim; its gaussians, how many were submitted, and the device's visible and pairs for it; its level (*level 1 of 3 in 'bird'*, or *cut* with its own and merged gaussians); for a streamed `.athc`, chunks on the device, wanted, missing and loading; what it carries (SH degree, linear or capture sRGB, relit, lit body, transfer, skinned, normals, emission, PBR, ids, baked visibility, ior); what it holds | up to 24 clouds; the rest are in the totals |
+
+The counts cost four small dispatches and a copy a frame, and are taken only
+while the panel is open: collapsing its window stops them.
 
 ### 5.2.1 Changing what a picked prim is made of
 
@@ -1359,7 +1443,9 @@ A script's own header says what it needs and where it puts things.
 | `mesh visibility by rays: the device has no ray tracing` | `--visibility rays` on a device without it | use `automatic`, which picks what the device has |
 | a host does not offer the renderer | the plugin was not found | set `PXR_PLUGINPATH_NAME` to `<build>/plugin/usd` |
 | `render product '<path>' has no resolution` / `no vars` | the settings prim is incomplete | give the product a resolution and ordered vars |
-| a converted cloud is missing its last meshes | the budget ran out in mesh order | raise `--max-splats`, or with `--density per-mesh` raise `--cell-min` |
+| a converted cloud is coarser than asked, and `warning: the meshes want N splats` | `--max-splats` was below what the meshes wanted, and every mesh was coarsened alike to share it | raise `--max-splats`, or lower `--resolution` to choose the coarseness yourself |
+| `warning: the budget is exhausted` or `the budget ran out before N mesh(es)` | `--max-splats` was smaller than what the meshes wanted | raise `--max-splats`, lower `--resolution`, or with `--density per-mesh` raise `--cell-min` |
+| `warning: N cells lay past --max-cells` | a triangle wanted more cells than one triangle may walk; the rest of it is bare | raise `--max-cells`, or lower `--resolution` |
 | a converted cloud is black | the bake found no light | give the stage lights, or `--default-lights`, or `--no-bake` |
 | a cloud's reflections look flatter than the mesh's | it carries no shading normal (`primvars:athenea:splat:normal`): converted before conversions wrote one | convert it again; `--normal-map-turns` also turns the discs themselves |
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |

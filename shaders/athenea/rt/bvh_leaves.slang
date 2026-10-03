@@ -25,14 +25,10 @@ void bvhLeaves(uint3 tid: SV_DispatchThreadID) {
     }
     const float4 p = positions[i];
     const uint row = i * 4;
-    const float3 s = exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2])));
-    const float3x3 rs = mul(rotationOf(decodeQuaternion(shape[row])),
-                            float3x3(s.x, 0.0, 0.0, 0.0, s.y, 0.0, 0.0, 0.0, s.z));
-    // The ellipsoid x = c + (R S) u, |u| <= r, reaches r |row a of R S| along axis a.
-    const float r = sqrt(rtCutoff(p.w));
-    const float3 half = r * float3(length(rs[0]), length(rs[1]), length(rs[2]));
-    leafBoxes[i * 2] = float4(p.xyz - half, 0.0);
-    leafBoxes[i * 2 + 1] = float4(p.xyz + half, 0.0);
+    float3 boxLo, boxHi;
+    rtParticleBox(p, shape[row], shape[row + 1], shape[row + 2], boxLo, boxHi);
+    leafBoxes[i * 2] = float4(boxLo, 0.0);
+    leafBoxes[i * 2 + 1] = float4(boxHi, 0.0);
 
     const float3 lo = float3(params.boundsLoX, params.boundsLoY, params.boundsLoZ);
     const float3 hi = float3(params.boundsHiX, params.boundsHiY, params.boundsHiZ);

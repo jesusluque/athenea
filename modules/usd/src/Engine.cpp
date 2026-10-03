@@ -662,6 +662,177 @@ void Engine::remove(const pxr::SdfPath& id) {
 /// coarsest whose cell, at the nearest point of its bounds, spans no more than
 /// its threshold in pixels -- the finest where none is that fine. The others
 /// are not drawn, and cost the frame nothing but their memory.
+namespace {
+
+/// Device memory a cloud's arrays hold: every buffer it carries.
+uint64_t bytesOf(const scene::GpuSplats& cloud) {
+    uint64_t n = 0;
+    for (const gpu::Buffer* b : {&cloud.positions, &cloud.shape, &cloud.sh, &cloud.pbr, &cloud.crypto, &cloud.transfer,
+                                 &cloud.shadowBits, &cloud.origin, &cloud.normals, &cloud.emission,
+                                 &cloud.visibilityParts, &cloud.visibilityTexels, &cloud.visibilityPartOf,
+                                 &cloud.visibilityAmbient}) {
+        n += b->valid() ? b->bytes() : 0;
+    }
+    return n;
+}
+
+/// And a level of detail's: the store, its merged levels and its tables.
+uint64_t bytesOf(const lod::LodCloud& cloud) {
+    uint64_t n = bytesOf(cloud.splats);
+    for (const gpu::Buffer* b : {&cloud.groups, &cloud.resident, &cloud.starts, &cloud.order}) {
+        n += b->valid() ? b->bytes() : 0;
+    }
+    for (const lod::LodLevel& level : cloud.levels) {
+        n += bytesOf(level.gaussians) + (level.cells.valid() ? level.cells.bytes() : 0);
+    }
+    return n;
+}
+
+}   // namespace
+
+void Engine::noteGaussians(const std::string& route, std::span<const render::SplatInstance> splats,
+                           std::span<const std::string> prims, std::span<const lod::CutStats> cutStats,
+                           std::span<const std::string> cutPrims, const std::set<const SplatEntry*>& levels) {
+    GaussianStats g;
+    g.frame = frameSerial_;
+    g.route = route;
+    for (const render::SplatInstance& instance : splats) {
+        g.submitted += instance.splats != nullptr ? instance.splats->count : 0u;
+    }
+    // A variant level's place among its group's, finest first, for the words.
+    std::map<std::string, std::vector<std::pair<float, const SplatEntry*>>> groups;
+    const std::lock_guard<std::mutex> held(guard_);
+    for (const auto& [id, entry] : splats_) {
+        if (!entry.lodGroup.empty() && entry.gpu != nullptr) {
+            groups[entry.lodGroup].push_back({entry.lodCell, &entry});
+        }
+    }
+    for (auto& [name, members] : groups) {
+        std::sort(members.begin(), members.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+    }
+    for (const auto& [id, entry] : splats_) {
+        GaussianCloudStats c;
+        c.prim = id.GetString();
+        const lod::LodCloud* lodCloud = entry.pool != nullptr ? &entry.pool->cloud() : entry.lodCloud.get();
+        const scene::GpuSplats* data = entry.gpu != nullptr ? entry.gpu.get()
+                                       : lodCloud != nullptr ? &lodCloud->splats
+                                                             : nullptr;
+        if (data == nullptr) {
+            continue;   // synced, not yet uploaded
+        }
+        c.gaussians = entry.gpu != nullptr ? entry.gpu->count : lodCloud->count;
+        c.shDegree = data->degree();
+        c.linear = data->linear;
+        c.relit = entry.relight;
+        c.litBody = entry.litBody;
+        c.transfer = data->hasTransfer() ? data->transferCount : 0u;
+        c.skinned = entry.posed != nullptr;
+        c.normals = data->hasNormals();
+        c.emission = data->hasEmission();
+        c.pbr = data->hasPbr();
+        c.crypto = data->hasCrypto();
+        c.visibility = data->hasVisibility();
+        c.ior = entry.ior;
+        if (entry.gpu != nullptr) {
+            c.bytes += bytesOf(*entry.gpu);
+        }
+        if (entry.posed != nullptr) {
+            c.bytes += bytesOf(*entry.posed);
+        }
+        for (const gpu::Buffer* b : {&entry.influences, &entry.xforms, &entry.xformsEnd, &entry.motion}) {
+            c.bytes += b->valid() ? b->bytes() : 0;
+        }
+        g.cloudBytes += c.bytes;
+        if (lodCloud != nullptr) {
+            g.poolBytes += bytesOf(*lodCloud);
+        }
+        if (!entry.lodGroup.empty()) {
+            const auto& members = groups[entry.lodGroup];
+            size_t at = 0;
+            for (size_t k = 0; k < members.size(); ++k) {
+                if (members[k].second == &entry) {
+                    at = k;
+                }
+            }
+            c.lod = "level " + std::to_string(at) + " of " + std::to_string(members.size()) + " in '" +
+                    entry.lodGroup + "'";
+        }
+        c.drawn = entry.visible && (entry.lodGroup.empty() || levels.count(&entry) != 0);
+        if (entry.pool != nullptr) {
+            const lod::StreamingPool::Status status = entry.pool->status();
+            c.streamed = true;
+            c.chunks = lodCloud->chunks();
+            c.chunksResident = status.resident;
+            c.chunksMissing = status.missing;
+            c.chunksInFlight = status.inFlight;
+        }
+        if (lodCloud != nullptr && entry.gpu == nullptr) {
+            c.lod = "cut";
+            for (size_t k = 0; k < cutPrims.size() && k < cutStats.size(); ++k) {
+                if (cutPrims[k] == c.prim) {
+                    c.lodOwn = cutStats[k].splats;
+                    c.lodMerged = cutStats[k].merged;
+                    c.chunksWanted = static_cast<uint32_t>(
+                        std::count_if(cutStats[k].needs.begin(), cutStats[k].needs.end(),
+                                      [](uint32_t need) { return need != 0; }));
+                }
+            }
+        }
+        for (size_t k = 0; k < prims.size() && k < splats.size(); ++k) {
+            if (prims[k] == c.prim && splats[k].splats != nullptr) {
+                c.submitted += splats[k].splats->count;
+            }
+        }
+        g.inStage += c.gaussians;
+        g.clouds.push_back(std::move(c));
+    }
+    gaussianStats_ = std::move(g);
+    // The last counts the device finished, until newer ones arrive: they are
+    // labelled with the frame they belong to.
+    takeSplatCounters();
+}
+
+void Engine::takeSplatCounters() {
+    if (rasterizer_.has_value()) {
+        if (std::optional<render::SplatCounters> latest = rasterizer_->latestCounters();
+            latest && (!lastCounted_ || latest->tag != lastCounted_->tag)) {
+            const auto frame = std::find_if(countedFrames_.begin(), countedFrames_.end(),
+                                            [&](const CountedFrame& f) { return f.tag == latest->tag; });
+            lastCountedPrims_ = frame != countedFrames_.end() ? frame->prims : std::vector<std::string>();
+            lastCounted_ = std::move(latest);
+            // Frames older than the one counted will not be asked for again.
+            countedFrames_.erase(countedFrames_.begin(), frame != countedFrames_.end() ? frame : countedFrames_.begin());
+        }
+    }
+    if (!lastCounted_) {
+        return;
+    }
+    GaussianStats& g = gaussianStats_;
+    const render::SplatCounters& c = *lastCounted_;
+    g.counted = true;
+    g.countedFrame = c.tag;
+    g.countedSlots = c.slots;
+    g.visible = c.visible;
+    g.pairs = c.pairs;
+    g.maxTiles = c.maxTiles;
+    for (size_t k = 0; k < g.culled.size() && k < c.culled.size(); ++k) {
+        g.culled[k] = c.culled[k];
+    }
+    for (GaussianCloudStats& cloud : g.clouds) {
+        cloud.counted = false;
+        cloud.visible = 0;
+        cloud.pairs = 0;
+        for (size_t k = 0; k < c.clouds.size() && k < lastCountedPrims_.size(); ++k) {
+            if (lastCountedPrims_[k] == cloud.prim) {
+                cloud.counted = true;
+                cloud.visible += c.clouds[k].visible;
+                cloud.pairs += c.clouds[k].pairs;
+            }
+        }
+    }
+}
+
 std::set<const SplatEntry*> Engine::lodLevelsFor(const render::Projection& projection) const {
     std::map<std::string, std::vector<const SplatEntry*>> groups;
     for (const auto& [id, entry] : splats_) {
@@ -1748,6 +1919,13 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     std::vector<render::PointInstance> points;
     std::vector<lod::LodInstance> cuts;
     std::vector<lod::StreamingPool*> poolOf;   // per cut: its pool, if streamed
+    // Which prim each instance and each cut came from, for the Gaussians
+    // panel: the device counts by instance, and only this says whose it was.
+    ++frameSerial_;
+    std::vector<std::string> instancePrims;
+    std::vector<std::string> cutPrims;
+    std::vector<lod::CutStats> cutStats;
+    std::set<const SplatEntry*> drawnLevels;
     const uint32_t motionBuckets = technique == Technique::RayTraced ? motionBuckets_.load() : 1u;
     // OBJECT TO VIEW, AND WHAT THE SHUTTER CHANGES OF IT: the camera's motion
     // and the prim's in one 3x4, which is what the rasteriser smears a
@@ -1846,6 +2024,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frameClouds_.clear();
         frameSlots_ = 0;
         const std::set<const SplatEntry*> levels = lodLevelsFor(projection);
+        drawnLevels = levels;
         // The levels this view draws are posed now, with the latest joints
         // their prims were given; the others keep theirs for when they are.
         for (auto& [id, entry] : splats_) {
@@ -1873,6 +2052,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 const scene::GpuSplats* drawn = entry.posed != nullptr ? entry.posed.get() : entry.gpu.get();
                 splats.push_back({drawn, entry.objectToWorld, entry.edit, entry.relight,
                                   entry.litBody, categoryMask(entry.categories)});
+                instancePrims.push_back(id.GetString());
                 splats.back().transferIndirect = transferIndirect_.load();
                 splats.back().reflectCloud = splatReflections_.load();
                 splats.back().ior = entry.ior;
@@ -1915,6 +2095,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 if (entry.lodCloud != nullptr) {
                     splats.push_back({&entry.lodCloud->splats, entry.objectToWorld, entry.edit, entry.relight,
                                       entry.litBody, categoryMask(entry.categories)});
+                    instancePrims.push_back(id.GetString());
                     splats.back().transferIndirect = transferIndirect_.load();
                     splats.back().reflectCloud = splatReflections_.load();
                     splats.back().ior = entry.ior;
@@ -1926,6 +2107,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
             cuts.push_back({cloud, entry.objectToWorld, entry.edit, entry.asset.threshold});
             poolOf.push_back(entry.pool.get());
+            cutPrims.push_back(id.GetString());
         }
         for (const auto& [id, entry] : meshes_) {
             if (!entry.visible || entry.gpu == nullptr) {
@@ -2038,12 +2220,18 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             cutter_.emplace(std::move(*made));
         }
         const bool streamed = std::any_of(poolOf.begin(), poolOf.end(), [](auto* p) { return p != nullptr; });
-        std::vector<lod::CutStats> stats;
+        std::vector<lod::CutStats>& stats = cutStats;
+        const auto placeCuts = [&](const std::vector<render::SplatInstance>& selected) {
+            splats.insert(splats.end(), selected.begin(), selected.end());
+            for (size_t k = 0; k < selected.size(); ++k) {
+                instancePrims.push_back(k < cutPrims.size() ? cutPrims[k] : std::string());
+            }
+        };
         for (int round = 0;; ++round) {
             auto selected = cutter_->select(projection, cuts, 0.0F, streamed ? &stats : nullptr);
             if (!selected) return std::move(selected).error();
             if (!streamed) {
-                splats.insert(splats.end(), selected->begin(), selected->end());
+                placeCuts(*selected);
                 break;
             }
             for (size_t k = 0; k < poolOf.size(); ++k) {
@@ -2062,7 +2250,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 }
             }
             if (!settleStreams || placed == 0 || round >= 64) {
-                splats.insert(splats.end(), selected->begin(), selected->end());
+                placeCuts(*selected);
                 break;
             }
         }
@@ -2090,6 +2278,11 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         }
     }
     const gpu::Caps& caps = device_->caps();
+    if (countSplats_.load()) {
+        const bool tracedAlone = technique == Technique::RayTraced && !drawMeshes && !volumesInFrame;
+        noteGaussians(tracedAlone ? "rt" : technique == Technique::RayTraced ? "rt+raster" : "raster", splats,
+                      instancePrims, cutStats, cutPrims, drawnLevels);
+    }
     // A frame of nothing but splats is GaussianRayTracer's, and it writes the
     // whole image: there is no layer to compose under it, so it returns here.
     // With meshes in the frame the traced technique means something else --
@@ -2124,7 +2317,26 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
         }
         ATHENEA_TRY(measureVisibility(tracedLights));
-        ATHENEA_TRY(rayTracer_->render(projection, splats, settings, targets, &tracedLights));
+        auto tracedStats = rayTracer_->render(projection, splats, settings, targets, &tracedLights);
+        if (!tracedStats) return std::move(tracedStats).error();
+        counters_ = {tracedStats->splats, 0u, 0u, 0u,
+                     lightTable_.has_value() ? lightTable_->count() : 0u, false};
+        if (countSplats_.load()) {
+            GaussianStats& g = gaussianStats_;
+            g.traced = true;
+            g.rebuilt = tracedStats->rebuilt;
+            g.buildMs = tracedStats->buildMs;
+            g.traceMs = tracedStats->renderMs;
+            g.tracedMs = tracedStats->totalMs;
+            g.tracedSplats = tracedStats->splats;
+            g.tracedChunks = tracedStats->chunks;
+            g.traceRoute = tracedStats->route == render::RayTracingRoute::Hardware ? "hardware" : "compute BVH";
+            // The counts a raster frame left are not this frame's.
+            g.counted = false;
+            for (GaussianCloudStats& cloud : g.clouds) {
+                cloud.counted = false;
+            }
+        }
         // What every other route does when it has finished drawing, and what
         // this one used to return without: the sky behind the frame, and the
         // camera's exposure. A stage of nothing but splats came back over
@@ -2783,7 +2995,16 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     // copy, since the frame's settings are the caller's.
     render::RenderSettings splatSettings = settings;
     splatSettings.cryptomatte = aovRequest.cryptomatte;
-    splatSettings.timeStages = splatSettings.timeStages || stages;
+    splatSettings.timeStages = splatSettings.timeStages || stages || timeSplatStages_.load();
+    splatSettings.countSplats = countSplats_.load();
+    splatSettings.countersTag = frameSerial_;
+    if (splatSettings.countSplats) {
+        // The prims of this frame's instances, kept until its counts arrive.
+        countedFrames_.push_back({frameSerial_, instancePrims});
+        if (countedFrames_.size() > 8) {
+            countedFrames_.erase(countedFrames_.begin());
+        }
+    }
     // The counts the frame already had, kept for whoever draws a panel: the
     // rasteriser hands them back and nothing here measures anything for it.
     const auto drawn = under != nullptr
@@ -2796,6 +3017,18 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                   "emit {:.1f}, tile sort {:.1f}, blend {:.1f}; {} splats, {} visible, {} pairs",
                   lastCommitMs_, visibilityMs, drawn->projectMs, drawn->countsMs, drawn->depthSortMs,
                   drawn->emitMs, drawn->tileSortMs, drawn->blendMs, drawn->splats, drawn->visible, drawn->pairs);
+    }
+    if (splatSettings.countSplats) {
+        GaussianStats& g = gaussianStats_;
+        g.stagesTimed = splatSettings.timeStages;
+        g.projectMs = drawn->projectMs;
+        g.countsMs = drawn->countsMs;
+        g.depthSortMs = drawn->depthSortMs;
+        g.emitMs = drawn->emitMs;
+        g.tileSortMs = drawn->tileSortMs;
+        g.blendMs = drawn->blendMs;
+        g.totalMs = drawn->totalMs;
+        takeSplatCounters();
     }
     counters_ = {drawn->splats,
                  drawn->visible,
@@ -2880,18 +3113,21 @@ namespace {
 }   // namespace
 
 CloudIdentity Engine::identityOf(const ParticleFieldArrays& arrays) {
-    const pxr::VtValue* const held[15] = {
+    // Blender's planes come and go together: the first stands for them all.
+    static const pxr::VtValue kNone;
+    const pxr::VtValue* const held[17] = {
         &arrays.positions,   &arrays.orientations, &arrays.scales,       &arrays.opacities,
         &arrays.shCoefficients, &arrays.metallic,  &arrays.roughness,    &arrays.transmission,
         &arrays.jointIndices,   &arrays.jointWeights, &arrays.visibilityParts, &arrays.visibilityTexels,
-        &arrays.visibilityPartOf, &arrays.visibilityAmbient, &arrays.jointWeightGradients};
+        &arrays.visibilityPartOf, &arrays.visibilityAmbient, &arrays.radianceBase,
+        arrays.shPlanes.empty() ? &kNone : &arrays.shPlanes.front(), &arrays.jointWeightGradients};
     CloudIdentity identity;
-    for (size_t k = 0; k < 15; ++k) {
+    for (size_t k = 0; k < 17; ++k) {
         const auto [data, bytes] = arrayIdentity(*held[k]);
         identity.data[k] = data;
         identity.bytes[k] = bytes;
     }
-    identity.shDegree = arrays.shDegree;
+    identity.shDegree = arrays.shPlanes.empty() ? arrays.shDegree : 100 + static_cast<int>(arrays.shPlanes.size());
     return identity;
 }
 

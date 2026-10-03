@@ -33,6 +33,7 @@
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/technique/Environment.h"
+#include "athenea/usd/GaussianStats.h"
 #include "athenea/usd/PrimData.h"
 #include "athenea/geom/Curves.h"
 #include "athenea/geom/Mesh.h"
@@ -83,8 +84,8 @@ struct StreamedAsset {
 /// actually changed. `skinningXforms` is deliberately not among them -- it is
 /// the one array that does change every frame, and no decode depends on it.
 struct CloudIdentity {
-    std::array<const void*, 15> data{};
-    std::array<size_t, 15>      bytes{};
+    std::array<const void*, 17> data{};
+    std::array<size_t, 17>      bytes{};
     int                         shDegree = -1;
 
     [[nodiscard]] bool operator==(const CloudIdentity& other) const noexcept {
@@ -518,6 +519,15 @@ public:
     /// What the last frame held (`FrameCounters`).
     [[nodiscard]] const FrameCounters& frameCounters() const noexcept { return counters_; }
 
+    /// THE GAUSSIANS ON SCREEN, for a panel (GaussianStats): gathered only
+    /// while a panel asks for them, since the device counts a few things more
+    /// for it -- four small dispatches and a copy that nothing waits for.
+    void setCountSplats(bool on) { countSplats_.store(on); }
+    /// Time each stage of the rasteriser: every stage then waits for the
+    /// device, so the frame is slower by what the waits cost.
+    void setTimeSplatStages(bool on) { timeSplatStages_.store(on); }
+    [[nodiscard]] const GaussianStats& gaussianStats() const noexcept { return gaussianStats_; }
+
     /// What the last frame's Cryptomatte ids are called: path -> id, for the
     /// manifest an EXR carries and for anything that has to name an id.
     /// How many times a splat cloud's arrays have been uploaded, in all.
@@ -826,6 +836,27 @@ private:
                                           render::RenderTargets& targets);
     technique::VisibilityTargets              visibility_;
     FrameCounters                             counters_;
+    /// The Gaussians panel's numbers (`gaussianStats`), and what gathers them.
+    std::atomic<bool>                         countSplats_{false};
+    std::atomic<bool>                         timeSplatStages_{false};
+    uint64_t                                  frameSerial_ = 0;
+    GaussianStats                             gaussianStats_;
+    /// The prims of the frames whose counts are still on their way, by tag:
+    /// a count arrives by instance, and only the frame it was drawn in says
+    /// which prim each instance was.
+    struct CountedFrame {
+        uint64_t                 tag = 0;
+        std::vector<std::string> prims;
+    };
+    std::vector<CountedFrame>                 countedFrames_;
+    std::optional<render::SplatCounters>      lastCounted_;
+    std::vector<std::string>                  lastCountedPrims_;
+    /// This frame's clouds, levels and submissions into `gaussianStats_`.
+    void noteGaussians(const std::string& route, std::span<const render::SplatInstance> splats,
+                       std::span<const std::string> prims, std::span<const lod::CutStats> cutStats,
+                       std::span<const std::string> cutPrims, const std::set<const SplatEntry*>& levels);
+    /// Whatever counts the device has finished since, into `gaussianStats_`.
+    void takeSplatCounters();
     std::optional<technique::Environment>     environment_;
     /// The dome records the environment was prepared from: a frame whose
     /// domes read the same builds nothing.

@@ -9170,7 +9170,15 @@ Before, 26, 9 and 21 of 64 points decoded beyond the light, the worst to
 Also found on the pawn: the written ParticleField stage carried no
 `metersPerUnit`, so an application honouring units read a cloud converted in
 metres at a hundredth of its size (USD's fallback is centimetres); it is
-written now, from the source stage. And `athenea` registers its own plugin
+written now, from the source stage. Of the other writers, `athenea
+decimate` of a stage copies the source's root layer, its `metersPerUnit`
+with it (the stage of gaussians it writes on the way is read for its arrays
+alone, so its unit is never seen; a test keeps a centimetre stage in
+centimetres), and `athenea convert` and `decimate` of a splat file read
+`.ply`, `.splat`, `.spz` and `.sog`, none of which says what its unit is: a
+capture is written as metres (`metersPerUnit = 1`), which is what a 3DGS
+trainer's scale is taken to be, and a cloud in another unit wants the stage
+that references it to say so. And `athenea` registers its own plugin
 directory at start-up: without `PXR_PLUGINPATH_NAME` the schema a converted
 cloud applies (`AtheneaSplatCryptomatteAPI`) was an unknown token and was
 dropped from the file.
@@ -9303,6 +9311,14 @@ clear), so the surface does not open where the relief is steep, which is what
   lobe, the dome's irradiance, the transfer's sun share (`splatSunShare`,
   whose open hemisphere was the disc's while the transfer was baked over the
   shading normal's) and the shadow bits' horizon now read the same normal.
+  It goes to the world as a normal (`relightNormalToWorld`): the cofactor of
+  the instance's linear part -- columns `b x c`, `c x a`, `a x b` -- with the
+  determinant's sign put back for a mirror, made unit. Turned by the rows as
+  a direction (`relightDirectionToWorld`, as it first was), a prim scaled
+  (2, 1, 1) leant a 35-degree normal to 54 degrees where the mesh's inverse
+  transpose leans it to 19; the disc's axis, the normal where none is stored,
+  had the same fault. Both routes take it; directions -- the way out of a
+  glass -- stay directions.
 - **Skinning.** The skinner turns it by the same blend as the frame, and as a
   normal: `(M a) x (M b)` for two directions in its surface, which is
   `cof(M) n` -- the inverse transpose up to scale, and the same construction
@@ -9317,6 +9333,13 @@ clear), so the surface does not open where the relief is steep, which is what
   disagreed (all 256 kept gaussians of the test floor). `.athc` is version 2:
   the header's former padding is `flags`, bit 0 says every block ends with the
   normals, and a version 1 file -- whose padding was zero -- is read as before.
+  A file is written as version 2 if and only if `flags` is not zero: a cloud
+  without normals is binary for binary a version 1 file and is written as
+  one, so a reader that knows version 1 alone -- an embedded engine older than
+  this -- still opens it; the migration of a `.lrtc` writes version 1 too.
+  Every flag bit that follows (emission, a linear colour) keeps the rule.
+  Test: the header of `normals.athc` reads 2 and 1, that of a cloud without
+  normals 1 and 0, and that one reads back.
 
 What it costs: four bytes a gaussian on the device and twelve in the file
 (the pawn's relit conversion, 730 559 gaussians, 40.9 -> 49.7 MB), one word
@@ -9337,6 +9360,11 @@ Tests, each failing without its half of the change (checked by reverting it):
   card against the flat mesh 0.324. With the shading taking the disc's axis,
   the card against the tilted mesh was 0.229 and against the flat one 0.020:
   it rendered like a quad with no map.
+- `athenea_usd_tests "a relit card's stored normal under a scale*"`: the same
+  card and the same tilted mesh under a prim scaled (2, 1, 1), lit from
+  straight above, raster and traced: the card against the mesh p99 relative
+  0.014 on both routes (held at 0.04); turned as a direction, 0.386 -- the
+  card's cosine 0.58 where the mesh's is 0.94.
 - `athenea_scene_tests "[normals]"`: 4096 discs whose normals lean 0.4 rad off
   their axes, skinned by a turn and by a stretch with shear; 0 of 4096 off the
   inverse transpose, 0 on the other side of their disc. Not turned, 4096 were
@@ -9451,6 +9479,31 @@ gaussians at the conversion's glass opacity, tint (1, 1, 0.5), under a sky of
 one colour, against the mesh ball: green and blue through the middle 0.98 and
 0.51 before against the mesh's 0.92 and 0.26, within 3.3 % now.
 
+**What a ray meets behind the glass leaves by the far face too.** The colour
+a ray through the glass meets behind it (`behindColour`, the colour the
+particle it met was shaded with: the collar under the pawn's head) crosses
+the far face as the sky does. `transmittedBehind` was written
+`hasBehind ? behindColour : (...) * exitThrough`, and `?:` binds looser than
+`*`, so the far face's Fresnel and second tint weighed only the sky and what
+stood behind the glass came through tinted once. The whole choice is now
+multiplied. Test: `athenea_usd_tests "what a glass cloud shows behind it*"`
+-- a grey card (0.8) in the same cloud, behind a ball of tint (1, 1, 0.5),
+against the mesh ball and a diffuse card: the cloud's blue over green through
+the middle against the mesh's (the tint squared, whatever either card's
+shading) and green. Mesh 0.750 / 0.214, cloud 0.783 / 0.227: the ratio
+1.6 % and green 4.5 % from the mesh's, held at 6 % and 8 %. Before, the
+cloud read 0.814 / 0.428 -- the ratio 84 % off, about the tint once.
+
+**Pending: the tint is the whole colour.** The second tint is
+`lerp(1, albedo, T)`, and the albedo is the base colour times the
+transmission colour (mesh2splat.slang), so a glass whose `base_color` is not
+white is tinted by it twice in the cloud where the mesh's dielectric lobe
+tints by `transmission_color` alone and not at all by `base_color`. Fixing it
+needs a per-gaussian transmission colour apart from the colour (a primvar or
+a pbr channel) that the conversion writes and both routes read; until then a
+coloured base under clear transmission is darker and more saturated through
+a cloud than through the mesh.
+
 ### The room through a rough glass is sharper than its reflection
 
 With the weights right the head was still a haze where the mesh shows the
@@ -9528,7 +9581,7 @@ and `lrt:*` settings, and streamed `.lrtc` files. `athenea migrate`
 - **.lrtc.** Its `Lrtc.cpp` (lucabRTrender e51ca4a, never changed after)
   differs from `Athc.cpp` at e8ef1eb in the magic alone, and the last header
   word was padding written as zero -- version 2's `flags`, no normals. The
-  header is rewritten (`ATHC`, version 2), the payload copied in slices
+  header is rewritten (`ATHC`, version 1: no flags), the payload copied in slices
   without decoding, and the result parsed before it takes its name.
 - **.usdz.** Extracted beside the output, each member layer migrated as itself
   (no anchoring: a package names everything relatively), a `.lrtc` member
@@ -9616,9 +9669,27 @@ definitions: a material named `material` is not the typedef of that name.
 - `athenea_material_tests`: all pass (513 assertions, 9 cases).
 - `athenea_usd_tests "[materials]"`: all pass (281 assertions, 10 cases).
 
-Not done: a test of the override itself. It is exercised by the Blender
-spike (the default cube's material compiles and shades); a test would need
-a second MaterialX library tree in the build.
+Tests:
+
+- `athenea_material_tests "a document's own definitions give way*"`: a
+  standard_surface document that also carries an implementation under the
+  library's own name (`IMPL_standard_surface_surfaceshader_101`) drawing a
+  blue diffuse -- an older host's definition, as the compiler sees it --
+  compiles to the module and source its XML alone compiles to
+  (`athenea_mat_de437b03806a1b17` both). Under the old rule the document's
+  implementation stayed, the import skipped the library's, and the module
+  was another (`athenea_mat_94abdab1c87a2a51`).
+- `ctest -R materialx_root` (`athenea_usd_tests "[materialx_root]"`, hidden
+  from discovery, run with the variable set since the engine reads it once
+  a process): the root is a copy of the build's libraries in which
+  UsdPreviewSurface's `diffuseColor` defaults to red, filled by the case
+  itself, and a quad whose UsdPreviewSurface authors no colour must come
+  out red through Hydra: 0.810 0.063 0.063 measured, held at red over 0.7
+  and over eight times green and blue. Grey (0.18) is the variable not read;
+  under the old precedence the host's implementations stayed beside the
+  root's and the generated module did not load, so the pass drew nothing.
+  The case's only tag is the hidden one, so `[usd]` or `[materials]` runs,
+  which have the variable unset, do not select it.
 
 ## Every gaussian is blended in linear light
 
@@ -10226,3 +10297,422 @@ Not done:
   size measured here. The second-order transmittance above is this change's
   own, derived for the conversion's grid.
 
+
+## mesh2splat's host side: on the device, by subset, and fair to every mesh
+
+`athenea mesh2splat`'s effect did its work on the device and the command around
+it undid part of that: the records came back to host vectors and were
+repacked a splat at a time, the bake's box and rays were computed over them
+on the processor, a mesh whose GeomSubsets bind several materials was
+converted as one, and the budget was spent in mesh order. What changed, item
+by item:
+
+**Said, not left to be noticed.** Two things the conversion used to do in
+silence now print a warning on stderr: cells past `--max-cells` on their
+triangle (the effect's fourth counter, which it always counted and nobody
+read -- a triangle walks at most that many cells and the rest of it is bare),
+and a budget exhausted, with how many splats did not fit and how many meshes
+the budget ran out before. Both lines were in the Codex conversion of
+lucabRTrender and were lost in the move.
+
+**Whole or not at all.** The output went straight to `-o`, so a conversion
+that died in the export -- the device out of memory, a killed process -- left
+a stage of part of a cloud under the name the next step reads. It is now
+written under `.<name>.partial-<pid>.<ext>` beside it and renamed when
+complete (`platform::writeAtomically`: the same directory, so the rename is
+one step; the same extension, so USD writes the format it was asked for).
+The rename and the removal are OS calls and live in `core/Platform`; the
+Windows port's are `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` and
+`DeleteFileW`. `athenea_core_tests "a file written atomically*"`: a writer
+that fails leaves nothing, nor its partial file; one over an existing file
+leaves that file as it was.
+
+**The records stay on the device, and so do the bake's box and rays.** Each
+run's picture was read back and repacked a splat at a time into host vectors
+(records, the bake's points, normals and facings, the joints), the bake then
+folded the cloud's box over those records and wrote a ray a splat on the
+processor, `bakePoints` uploaded them, and the answer came back to be copied
+into the records a coefficient at a time. Now:
+
+- `athenea/usd/mesh2splat_gather` lays a run's picture into the cloud's own
+  device buffers at its place -- `perRecord` floats a record, three `float4`
+  a ray in the tracer's own layout (footprint in the normal's `w` where
+  `--simplify`), two of joints -- and zero joints for a mesh nothing carries
+  in a skinned cloud. The buffers grow by doubling, copied on the device.
+- `mesh2splat_span` folds the box over the records (a corner pair a chunk,
+  then `scene/bounds_reduce`) and writes `1e-4` of its diagonal into every
+  ray's `w`: the same rule, the same records, the same float arithmetic.
+- `StageRenderer::bakePointsOnDevice` takes the rays where they are and
+  leaves the answer on the device, a point's entries together
+  (`usd/bake_gather`). The renderer is opened on the conversion's device
+  (`StageRenderer::open(stage, device)`), so the buffers are the tracer's.
+  `bakePoints` is now that, with the host rays uploaded and the answer read
+  back -- its per-point reordering on the processor went with it.
+- `mesh2splat_bake` writes the answer into the records (and, for a transfer,
+  into the three arrays the file keeps), zeroing the opacity of a gaussian
+  the bake found nothing under; the count it found crosses back for the log.
+- `usd::writeParticleFieldStage` takes `DeviceSplatRecords`: the export's
+  decode reads the slices out of the device buffer (copied on the device
+  where the cloud is larger than one slice), and the metallic, roughness and
+  transmission now come out of `splat_export` (`pbrOut`) rather than out of
+  host records, for both overloads.
+
+What still crosses: the values a USD array holds, the transfer's arrays and
+the joints (the file wants host arrays), and a counter or two. The export's
+extent is still folded on the processor over the positions it reads back for
+the file; not changed here.
+
+**The bake in passes.** A bake was one pass over every gaussian: the path
+tracer's grid was the cloud, so it held a plane an entry for all of them at
+once -- sixteen `float4` a point at degree 3, 2.6 GB for ten million -- plus
+its sums, beside the cloud. `bakePointsOnDevice` now takes at most
+`kBakeBatch` (2^19) points a pass: a pass's rays are copied out of the
+cloud's on the device (or are the cloud's, where one pass holds them all),
+traced, and gathered into the answer at their place. 150 MB of planes at
+degree 3 whatever the cloud. Each pass restarts the tracer, so its points
+draw the paths the first pass's did by index: the same distribution, not the
+same bits. `athenea_usd_tests "a bake taken in passes*"`: passes of 7 against
+one pass of 40 on a Lambertian plane, every entry within 0.01 (measured
+worst 0.0053 on the M5 Pro). Not measured yet: the time a pass costs on a large cloud against one
+pass (to be taken on a GPU turn).
+
+**A mesh of several materials, converted as several.** `usd::MeshStage` read a
+mesh's one bound material and the conversion ran the whole mesh with it, so a
+car body whose GeomSubsets bind paint, chrome and rubber came out all paint.
+The `materialBind` subsets are now read with their materials
+(`StageMesh::subsets`; a subset that binds none takes the mesh's, as
+`ComputeBoundMaterial` answers) and given to `geom::MeshBuilder`, which
+already said on the device which subset each triangle is in -- the renderer
+has used it since M5. The conversion's unit is a *piece*: a whole mesh, or
+one subset's triangles, or those no subset claims. A piece's triangles are
+listed in the mesh's order on the device (`usd/mesh2splat_subset`: flag,
+`gpu::PrefixSum`, scatter; the count crosses back to size the picture) and
+`mesh_pack` packs the list (`listed`, `triangleList`) as if it were a mesh,
+so the effect, its parameters and its record layout are untouched. A mesh's
+box is still its own -- the fold runs over its pieces' chunks -- so
+`--density per-mesh` measures a subset against the mesh it belongs to. The
+Cryptomatte id stays the mesh's: the matte names prims as Hydra names them,
+and a GeomSubset is not a prim Hydra draws.
+
+`athenea_mesh2splat_tests "a mesh's GeomSubsets*"` (to run on a GPU turn),
+over `tests/data/two_subsets.usda` converted by the `mesh2splat_outputs`
+fixture: two faces bound red and blue by subsets, the mesh green; the cloud
+carries red and blue, within 10 % of each other, and no green. Before, it was
+all green. The new binary reads what the command wrote, since the conversion
+is the command's: ctest runs the commands first (`FIXTURES_SETUP`) and every
+number is counted by `test/mesh2splat_output_check`.
+
+**The budget is shared, and a camera can decide the cell.** `--max-splats`
+was spent in mesh order: the first meshes whole, the last not at all, and a
+car whose wheels came after its body had none. Every piece is now counted
+before any is converted -- a run of the effect with room for one gaussian,
+since its count and scan cover everything a run would write -- and where the
+total is over the budget each gets `budget x wanted / total` (and one at
+least) and walks a cell `sqrt(wanted / share)` times coarser
+(`usd/mesh2splat_cells` hands the effect the resolution and bounds divided and
+multiplied by that). Proportional shares and one density floor are the same
+thing here: a cell `f` times coarser covers the surface with `f^2` fewer
+gaussians, so dividing the budget in proportion is coarsening every piece
+alike. A piece the coarsening leaves a little over its share keeps its first
+triangles' gaussians, as before; the warning and the log line say so. The
+count costs one short run a piece -- a count, a scan and one emit -- and was
+not timed here (to be measured on the Mustang on a GPU turn).
+
+The cell's arithmetic moved with it: the model's cell, the bounds derived per
+mesh and the cell each piece walks were three operations on six numbers read
+back, and are now `mesh2splat_cells` over the boxes the device folded; the
+host relays the answer.
+
+**From a camera (Mesh2GS, arXiv 2606.21898).** `--cell-from-camera <prim>`
+makes each piece's cell what one pixel of that camera covers where its mesh's
+box is nearest: `z * (aperture / pixels) / focal`, `z` the distance to the
+box held to the near clip, bounded by the user's `--cell-min`/`--cell-max`
+and nothing derived. Every triangle of the piece walks exactly that cell
+(`cellByLongest`, both bounds the cell). Mesh2GS takes `z_min` over the box
+inside the frustum and over the camera's time samples; this takes the
+Euclidean distance to the box at `--time`, which is the same for a box in
+view and finer (never coarser) for one beside the frustum. Their third size,
+`rz = Dw^2 / 4 z_min`, is not adopted: the width a converted gaussian needs
+was measured here ("The width of a converted gaussian") and differs.
+
+`athenea_mesh2splat_tests` (to run on a GPU turn): two equal cards converted
+with `--max-splats 800`, about 1 300 wanted -- each holds at least 300
+(spent in mesh order the second held about 145); and with the stage's camera
+three units from the red card and seven from the blue, 64 pixels across, the
+red holds more than three times the blue's gaussians (5.4 expected).
+
+**`-o x.athc`.** A converted cloud went through a USD stage and `athenea stage
+convert` to become a `.athc`, the records crossing to the processor and back.
+Now the conversion writes one itself: `CloudLoader::upload` takes the device
+records (a new overload: the same validate and decode, the slices copied out
+of the buffer on the device), `lod::LodBuilder` builds the levels, and
+`lod::writeAthc` writes them, atomically. What a `.athc` carries: positions,
+shape (opacity, sizes, rotation, DC), harmonics, and the shading normals
+(version 2). What it cannot: the metallic, roughness and transmission a relit
+cloud reflects with (`GpuSplats::pbr` is not in the format, so a relit
+`.athc` reflects as a capture does), the Cryptomatte ids, the thin-wall flags
+and the glass's index, the stage's up axis and unit, a rig and a transfer.
+The last two would make a wrong cloud rather than a poorer one, so
+`--skinned` and `--transfer` are refused with a `.athc`, and so is
+`--lod-levels` (the format builds its own); the rest is said when it is
+written. `athenea_mesh2splat_tests "a cloud written as a .athc*"` (GPU turn):
+the two cards written both ways, the stage decoded and drawn whole, the
+`.athc` read and drawn through a cut that keeps every splat -- p99 at most 1,
+the order of tied depths being the one difference tests/lod already measures.
+
+**Measured on the M5 Pro (Metal), after merging emission and coverage.** The
+device bake answers the host bake bit for bit (576 entries, worst 0). Two
+subsets: 272 red, 272 blue, no green. The budget of 800 over two cards that
+want about 1 300: 356 and 361 (717 written -- the shares round down and the
+coarsened resolution is truncated to an integer, so a shared budget is a
+little under-spent). From the camera: 930 gaussians on the near card, 169 on
+the far one (5.5, against 5.4 expected). `.athc` against the stage: 1 352
+gaussians each, p99 0, max 0. The emission merged into the gather
+(`mesh2splat_gather`'s last entry into fields 20 to 22, the harmonics from
+23) and the coverage per piece (a piece whose material covers nothing gets
+no share and is skipped): `ctest -R "mesh2splat|platform|emissive|emission|
+covers what|opacity is read"` 20 of 20, `athenea_coverage_tests` and
+`athenea_render_tests` all pass, no case skipped. A `.athc` does not carry the
+emission either.
+## A posed cloud refits its ray tracing structure
+
+A skinned cloud is posed into the same two buffers every frame, and
+`Engine::carryCloud` raises `GpuSplats::revision` so that whatever was built
+over the last pose knows. The ray tracer took the revision as part of the
+cloud's identity, so every pose was a different cloud and a full `rebuild`:
+on the hardware route twenty proxy triangles a gaussian and a BLAS per chunk
+built from nothing, on the compute route a Morton sort, the hierarchy and a
+refit that read a counter back from the host every eight passes. That was
+most of the ~0.9 s a frame of the rigged tube above, and half the sparrow's
+traced frame (athenea-cuda-analysis §3, item 2).
+
+A pose does not change which particles there are or their order, so the
+structure's shape still holds them and only its bounds are stale. The
+revision is now kept beside the cloud (`Cloud::revision`) rather than in its
+key, and `GaussianRayTracer::sync`, shared by `render` and `prepare`, does:
+
+- **the clouds are not those built** (another cloud, a count, a buffer):
+  `rebuild`, as before;
+- **a cloud's revision moved**: a refit of that cloud alone --
+  - *Hardware*: the frames and the proxies again over the new pose, and each
+    chunk's BLAS updated in place (`BuildMode::Update`; built with
+    `AllowUpdate` when the cloud was posed, `updateScratch_` sized from
+    `updateScratchSize`). Metal's `refitAccelerationStructure` underneath.
+  - *ComputeBvh*: the frames again, and the tree refitted **a height at a
+    time, bottom up** (`bvh_refit_level.slang`): one dispatch per height,
+    each over that height's nodes only, a leaf's box made from the posed
+    particle with the build's own `rtParticleBox`. After the last height
+    every box is exact whatever the buffer held, so the number of dispatches
+    is known before the frame and **nothing is read back** -- the build's
+    "until a pass changes nothing" is what needed the counter.
+- **every `refitsPerRebuild` refits** (default 240, measured below), or when the cloud cannot
+  take one (built before it was posed, or a tree taller than 127): that cloud
+  rebuilt in place, in the slots it already holds in every combined buffer.
+  A tree shaped for one pose bounds the next ones ever more loosely; the
+  rebuild puts the shape back. `refitsPerRebuild` 0 is the old behaviour.
+
+The heights are worked out at build, only for a posed cloud: `bvhHeights`
+runs beside the build's refit passes and sets the same `changed` flag, so the
+two settle together; `bvhLevelKeys` gives each node its height as a key and
+counts the heights, an 8-bit radix sort orders the nodes into `levelNodes_`
+(a word a node, a cloud's at its `nodeBase`), and the 128 counts are read
+back -- at build, where the build already reads back -- into
+`Cloud::levelStarts`. Memory: four bytes a node for a posed cloud, nothing
+for a still one.
+
+What reads the cloud's own tree reads it refitted: the glass and reflection
+rays of `rt_glass.slang` (`glassExit`, `glassNearest`) walk `bvhBoxes_` and
+`frames_`, both written in place; the packed shadow query
+(technique::SplatShadows) reads the TLAS built every frame over the updated
+BLAS.
+
+Tests (`athenea_render_tests`, "a posed cloud refits its ray tracing
+structure and draws what a rebuilt one draws", both routes): the reflection
+test's gold ball and plate in one cloud, the plate on a still joint and the
+ball turned and slid on another, six poses, three tracers -- refitting,
+rebuilding every pose, and refitting twice between in-place rebuilds. Every
+pose after the first refits and nothing is rebuilt (`RayTracerStats::refitted`,
+`rebuilt`), the periodic one rebuilds at poses 0 and 3, and each image is
+compared to the rebuilt one with `compareImages`.
+Measured (M5 Pro): p99 0, max 1 against a rebuild every pose, on both
+routes -- the refitted tree is walked in another order, and near-equal
+peaks land a code value apart. With the refit skipped (a stale tree) the
+same comparison reads p99 255 over ~17000 pixels, so the bound is one a
+broken refit cannot meet. The structure's own cost in that test, 9681
+gaussians: 6-10 ms a pose rebuilt, 2-3 ms (hardware) and ~1.8 ms
+(compute) refitted, CPU wall clock with the waits.
+
+**Timings.** `athenea view <stage> --technique rt --play --every-frame
+--frames 120 --size 1280x720`, release, draw medians; the machine is shared
+with other sessions, so three runs each, alternated before/after:
+
+| stage | before (main 125043e) | after | |
+|---|---|---|---|
+| sparrow, `mesh2splat SparrowBird.usda --skinned --resolution 256`, 300862 gaussians, splats only (ComputeBvh) | 140.9 / 143.1 / 135.6 ms | 84.7 / 83.9 / 83.7 ms | **-40 %** |
+| FilmGs.usda (5.9 M gaussians and the film's meshes) | 82.9 / 85.3 / 103.5 ms | 89.1 / 89.1 / 106.3 ms | the same |
+
+The bird alone is drawn by the ray tracer, and the ~57 ms that went is the
+rebuild (Morton sort, hierarchy, the refit passes and their read-backs).
+FilmGs under `view --technique rt` path traces its meshes and composes the
+splats from the rasteriser; the cloud's ray tracing structure is built only
+for splat shadows (`athenea:splatShadows`, off in `view`), so neither binary
+builds one there and the difference is noise. With the shadows asked for
+(over MCP, `render` with `splatShadows`), both binaries run out of device
+memory on that cloud: the hardware proxies of 5.9 M gaussians are ~2.5 GB
+before their BLAS. That is not this change's and not fixed by it.
+
+**Choosing `refitsPerRebuild`.** The same bird, draw medians over 120
+frames, two runs each: N = 0 (rebuild every pose) 133/129 ms; 4: 83/79;
+8: 78/81; 16: 111/81; 32: 82/84; 64: 80/82; never: 83/80. Per frame, over
+240 frames with refits never reset, the trace after 220-240 refits is what
+it was after 1-30 (60-80 ms either way; the bursts of 200-400 ms in that
+run came and went with no rebuild between them -- other sessions on the
+GPU). The wing beat of this rig does not loosen the tree measurably, and an
+in-place rebuild is a ~50 ms hitch on top of a frame (125 against 75 ms),
+which the medians hide and a viewer does not: so rarely, 240 refits, eight
+seconds of a 30 fps timeline. A rig that throws parts far from where the
+tree was shaped would want it lower; no such asset is measured yet.
+
+Not done: a rule from measured bound growth (a GPU reduction of the
+refitted tree's surface area against the built one's) instead of a count;
+the meshes' compute BVH (`BvhScene::settle`) still refits by passes with a
+read-back every eight, which the same heights would remove; and splat
+shadows on a 5.9 M cloud do not fit in memory on the hardware route.
+## The Gaussians panel: what is on screen, counted where it happened
+
+`athenea view` has a **Gaussians** panel (docs/operations.md §5.2): the
+stage's clouds and what each carries, what the level of detail kept, what the
+frame submitted, how many the projection kept and why it culled the rest,
+the tile pairs and sort sizes, each cloud's share, the device memory the
+clouds and the LOD stores hold, and -- asked for -- each rasteriser stage's
+time. It is described once in `modules/ui` (`ui::gaussianPanel`, over a
+`ui::GaussianReport`), so the iOS app gets it by setting
+`ViewerFacts::gaussians`; `athenea view` draws it with a walker over the
+description (`drawPanel`), the first of its panels drawn that way.
+
+**Two kinds of number, labelled by frame.** What the frame was handed is
+bookkeeping the engine already has (`Engine::noteGaussians`: the entries,
+`StreamingPool::status`, the cut's `CutStats`, buffer sizes) and is exact for
+the frame on screen. What the device counted is copied out without waiting,
+so it is labelled with the frame it belongs to (*Counted: frame 811, 1
+behind*). The engine's frame number is the tag; the prims of each frame's
+instances are kept until its counts arrive, since a count is by instance.
+
+**Why each splat was culled costs the projection nothing.** A culled slot's
+depth key is never read (the compaction reads keys only where `visible` is
+1), so `splat_project` writes the reason there -- `kCulledKey | reason`,
+numbered in `frame.slang`: removed by an edit, outside near/far, no area,
+too faint once spread over its footprint (which is where a too-small
+gaussian ends up: there is no separate size test), off screen, touches no
+tile. `splat_frame_counters.slang` then reduces `visible`, `tilesTouched` and
+those keys in group-shared memory, one atomic a group a counter, and reads
+each cloud's visible and pairs out of the prefix sums the compaction already
+took (one single-thread dispatch a cloud, the first 64). The ray tracer
+culls nothing it could count, and the panel says so instead of showing zeros.
+
+**`gpu::AsyncReadback`** is new: a few readback buffers and a fence. The copy
+rides the frame's last submit (`CommandBatch::submitSignalling`), and
+`latest` asks the fence how far the device has got and copies out the newest
+finished slot -- never waiting; a slot written again is not read until that
+copy has finished too. On Metal and CUDA a readback buffer maps without a
+copy. Today the rasteriser waits for itself at the end of a frame anyway, so
+under the raster route the counts are those of the frame on screen; the
+readback is what keeps that true of no route by accident.
+
+**Per-stage times are opt-in.** slang-rhi's Metal backend does not implement
+`writeTimestamp` (the call is a no-op there), so the only stage times there
+are `RenderSettings::timeStages`, which waits after every stage. The panel's
+*Time each stage* switch turns it on and says what it costs.
+
+**Measured** (debug build, M-series, FilmGs.usda, 5.9 M gaussians, 30
+frames): draw 72.95 ms median with the panel open and counting, against
+75.41 ms for the same stage on main -- inside the run-to-run spread. The
+counting is four dispatches over the frame's slots and a 576-byte copy. The
+panel showed at once what the frame at that framing was doing: every one of
+the 5 887 323 gaussians culled as *too faint*, the bird a speck in a stage
+framed for its ground.
+
+**Tests.** `athenea_render_tests "[counters]"`: two synthetic clouds with a
+known fate for each splat (kept, behind the eye, too small, far to the
+side): the counts per reason, per cloud, against the rasteriser's own totals,
+and the tag of the newest frame. `athenea_usd_tests "[counters]"`: through
+`StageRenderer`, over a two-level LOD assembly, nothing gathered until asked;
+far away the coarse level is the one drawn and submitted (*level 1 of 2*),
+near the fine one, and the device's per-cloud counts are the frame's totals
+(near: 3 984 of 4 096 kept, 61 867 pairs). `athenea_ui_tests` (new, CPU, since a panel
+description is bookkeeping): the panel over an empty stage says *no
+gaussians in this stage* and shows nothing else; with clouds, its rows follow
+the report as it changes, reasons appear only where they culled, the switch
+writes the front end's flag, the traced route hides what it cannot count;
+`viewerPanels` gains the panel only where a front end has the numbers.
+
+**Not done.** The count of splats under the cursor's pixel (it is in the
+blend's walk, and wants a per-pixel counter the blend does not keep). GPU
+timestamps on Metal, which would make the stage times free. The iOS app has
+not been given `ViewerFacts::gaussians` in this branch.
+## Blender's Gaussian splats, drawn as splats
+
+Blender 5.3 keeps a Gaussian-splat cloud as a PointCloud of type
+`GAUSSIAN_SPLAT`: `position`, `radiance:base` (FLOAT4), `scale`, `rotation`
+(quaternion) and `radiance:sh_0..14`. Its USD export -- the one a Hydra
+render with the USD export method runs too -- writes it as a `Points` prim
+with those attributes as primvars, except `radiance:base`, which it has no
+USD type for (*"Attribute 'radiance:base' (Blender domain 0, type 13) cannot
+be converted to USD"*). It writes no ParticleField.
+
+**The conventions, measured.** `sh3.ply` imported headless
+(`bpy.ops.wm.ply_import`), every attribute against the file's own values:
+position as stored (no axis change, the object's matrix the identity);
+`radiance:base.rgb` = `f_dc_*` exactly (the DC coefficient, not a colour);
+`radiance:base.a` = sigmoid(`opacity`) (linear opacity); `scale` =
+exp(`scale_*`) (linear); `rotation` = `rot_0..3` normalised, w first;
+`radiance:sh_k` = (`f_rest_k`, `f_rest_{k+15}`, `f_rest_{k+30}`), one array a
+basis function, rgb -- all to 0 or one float32 ulp. These are exactly
+ParticleField's: Blender's own reader of one (`usd_reader_particlefield.cc`)
+copies `radiance:base = (coefficient 0, opacity)`, `scale`, `rotation` and
+`sh_k = coefficient k + 1` across with no arithmetic. So nothing about the
+values needs converting; only the layout differs. The colours are what a
+trainer gives, sRGB: a cloud from Blender says nothing of its colour space,
+and one that says nothing is a capture (`athenea:splat:linear` unset).
+
+**Where it is done.** Two routes were weighed: an export hook that authors a
+ParticleField, or the delegate reading Blender's `Points` as a cloud. Either
+needs `radiance:base`, which only Blender's side can supply, so the add-on
+(`blender` branch) has a `USDHook` whose `on_export` -- Blender calls it at
+the end of `export_to_stage`, which Hydra's USD scene index uses -- copies
+the evaluated attribute onto the Points prim as `primvars:radiance:base`
+(float4[], vertex), bytes as they are. The rest is the delegate's, so a
+`Points` prim out of any Blender export draws as a cloud wherever hdAthenea
+runs, not only inside Blender:
+- `HdAtheneaPoints` asks for `rotation`, `scale`, `radiance:base` and
+  `radiance:sh_N`; a quaternion rotation, a scale and either radiance make it
+  a cloud, handed to `Engine::setSplats` under the prim's id (a prim that
+  changes kind leaves the old entry);
+- `SplatStreams` takes Blender's layout as it is: `radianceBase` (four floats
+  a splat) and `shPlanes` (one array a basis function). The CPU uploads the
+  planes end to end into one buffer and reads none of them;
+  `scene/streams.slang` takes opacity and DC from `radianceBase` (`kBase`)
+  and the rest from the planes (`kShPlanes`, `planeLength`), into the same
+  records every other layout gives, then the same decode.
+
+Not an AOFX bundle: this is a layout the cloud loader's own stream kernel
+reads, one more pair of indices in it, inside the upload every cloud takes.
+mesh2splat is a bundle because it makes new data out of a model; this makes
+none.
+
+Measured (M5 Pro, debug): the test "Blender's Gaussian-splat points draw
+as the PLY they were imported from" (`athenea_usd_tests`, fixture
+`tests/data/splats/sh3_blender.usda`: Blender's export of `sh3.ply` with the
+hook) renders that stage and a ParticleField athenea wrote from the PLY
+itself, 240x180: p99 0, max 0 -- the same floats reach the same records.
+The control, the same Points with `radiance:base` blocked (opaque, DC 0,
+with the warning), is p99 100 from it. Both stages reference their cloud
+under a typeless prim: a `def Xform` there is a stronger opinion than the
+referenced ParticleField's type, and draws nothing.
+
+Not done:
+- half-precision planes of an odd total of halves are refused (a plane would
+  start inside a word); Blender writes float32;
+- a cloud from Blender does not mark its colour space and need not:
+  `athenea:splat:linear` unset is a capture's sRGB, which is what Blender
+  holds, decoded to linear light a gaussian at a time like any capture's.
