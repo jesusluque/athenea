@@ -378,7 +378,16 @@ Un bundle bajo `plugins/<nombre>`, compilado con el helper de CMake del SDK.
 El efecto declara sus entradas y sus parámetros y recibe imágenes y números —
 no ve USD, ni una escena, ni una API de dispositivo, que es justo por lo que
 el mismo binario corre en openFXplayer. `athenea mesh2splat` es el ejemplo más
-grande del árbol, y el §6 de este documento es lo que hace.
+grande del árbol, y el §6 de este documento es lo que hace. `plugins/measure`
+es el más pequeño que sustituye código del motor: `athenea compare` lo corre
+por el host (`aofx_host::renderEffect`) en vez de llamar a
+`render::imageStats`, `compareHdr` y `compareImages`, así que el comando y un
+nodo de QC del compositor son una sola implementación. Sus kernels son los de
+esas tres, reescritos para el binding por orden -- las mismas sumas en el
+mismo orden, así que los dígitos impresos son los mismos -- y
+`athenea_aofx_tests "[measure]"` sujeta cada número que adjunta a los suyos.
+Un port de kernels del motor a un bundle se sujeta así a los originales: los
+originales se quedan, como referencia de los tests.
 
 ## 5. El banco de pruebas
 
@@ -401,13 +410,16 @@ Diecinueve binarios, uno por área, todos bajo `tests/`.
 | `athenea_host_tests` | el plugin por `UsdImagingGLEngine`; **no enlaza `athenea::usd` a propósito** |
 | `athenea_view_tests` | el viewer; etiqueta `display` |
 | `athenea_gpu_host_tests` | gpe adoptando el dispositivo de slang-rhi; etiqueta `gpe` |
-| `athenea_aofx_tests` | el SDK, el host y el efecto mesh2splat; etiqueta `gpe` |
+| `athenea_aofx_tests` | el SDK, el host, el efecto mesh2splat, y el efecto Measure frente a la comparación de render; etiqueta `gpe` |
 | `athenea_coverage_tests` | lo que cubre una superficie convertida frente a su malla (`tests/data/coverage`); necesita el fixture `mesh2splat_coverage`, que ctest corre antes, y sin él se salta; etiqueta `gpe` |
 | `athenea_sched_tests` | el reloj de frame y PTP |
 
-Y cinco tests que no son de Catch2: `aofx_sdk_manifest` (los hashes del SDK),
+Y nueve tests que no son de Catch2: `aofx_sdk_manifest` (los hashes del SDK),
 `single_tbb` (un TBB en el proceso), los dos `mesh2splat_density_*`, que
-corren el CLI de verdad y afirman sobre la línea que imprime, y
+corren el CLI de verdad y afirman sobre la línea que imprime, los cuatro
+`compare_cli_*`, que corren `athenea compare` sobre dos renders de fixture
+(`tests/data/compare`) y sujetan lo que imprime al texto que imprimía antes de
+correr el efecto Measure (`tests/aofx/CheckCompare.cmake`), y
 `mesh2splat_coverage`, el CLI de verdad convirtiendo los planos que mide
 `athenea_coverage_tests` (un fixture: `athenea_test(... FIXTURES <nombre>)`
 hace que todos los casos de un binario lo requieran). Y un caso de

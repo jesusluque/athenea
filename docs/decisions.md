@@ -10551,3 +10551,69 @@ Not done:
 - a cloud from Blender does not mark its colour space and need not:
   `athenea:splat:linear` unset is a capture's sRGB, which is what Blender
   holds, decoded to linear light a gaussian at a time like any capture's.
+
+## Measure: `athenea compare` as an AOFX effect
+
+`athenea compare` called `render::imageStats`, `compareHdr` and
+`compareImages`; a compositor that wanted the same numbers on a frame -- a
+render against its golden, a delivery against what was approved -- had
+nothing but a download to the CPU. `plugins/measure` is that comparison as an
+effect (`rt.sparrow.aofx.measure`): `Source` and an optional `Reference` in, a
+heatmap out, and the numbers attached to the output (`source`, `reference`,
+`hdr`, `codes`; operations.md §7.1). `athenea compare` now runs it through
+`aofx_host::renderEffect`, as `athenea mesh2splat` runs its bundle, so there
+is one implementation and the engine's command and openFXplayer's node cannot
+disagree.
+
+- **The kernels are render's, rewritten for binding by order** (one blob, four
+  entries; `plugins/measure/measure.slang`). `measureRows` is a thread a row:
+  the window's Kahan sums and maxes for both pictures, the row's 8-bit and
+  relative histograms (512 bins a row) and its relative squared error, the
+  same arithmetic in the same order as `image_stats`, `image_compare` and
+  `image_compare_hdr`. `measureReduce` is a thread a bin over the rows, and
+  one more thread adds the rows' sums (Kahan, rows in order) and maxes.
+  `measureFinish`, one thread, walks the 256 bins of each histogram for the
+  largest, the count over the threshold and the 99th percentile -- what
+  render's functions did on the CPU after reading the histogram back -- and
+  divides; the effect reads back 33 words and nothing else. `measureHeatmap`
+  is a thread a pixel.
+- **The digits are the same, and that is held, not hoped.** A float mean is
+  the double the command printed rounded once more, so the attachments carry
+  the sums as well, and the command divides them in double as it always did.
+  A count is two floats (`high × 2^24 + low`) because one float stops being
+  exact at 16.7 million pixels. The relative percentiles are bin bounds,
+  computed from a table of the eight eighths of an octave and `ldexp` rather
+  than `exp2`: the correctly rounded float of `2^(k/8 - 16)`, which prints
+  with `%.4g` as the double `pow` did for all 256 bins (checked once,
+  exhaustively, when this was written).
+- **Render's comparison stays.** The tests across the tree compare with it,
+  and it is the reference the effect is held to: `athenea_aofx_tests
+  "[measure]"` writes two pictures with a kernel (radiance above 1, below 0,
+  zero; pixels that agree, differ by a code value, or differ a great deal),
+  measures them both ways over the same memory and requires the sums, maxes,
+  counts and code values to be equal and the float means and percentiles to
+  be within 1e-6, whole picture and windowed; and the picture out without a
+  Reference is Source to the code value.
+- `--heatmap`, `--show`, `--gain` and `--path` are new on the command; the
+  rest of its interface and its output are as they were. The one printed
+  difference is the empty window's error, now the effect's
+  (`measure: an empty window`).
+
+Measured (M5 Pro, debug): `compare_cli_pair`, `_swapped`, `_window` and
+`_single` run the command on two 96×64 renders of `sh3.ply` (degree 3 against
+degree 0 without the 2D filter, `tests/data/compare`) and hold its output to
+the text the command printed before this change, recorded from it: equal,
+digit for digit, all four. `athenea_aofx_tests "[measure]"`: 192 assertions,
+all equal.
+
+Not done:
+- no `Mask` input: the inventory proposed one, and a window covers what the
+  command needs; a mask would weight the means and the histograms per pixel;
+- `threshold` changes the count the effect attaches, but the command does not
+  expose it and still prints "over 2";
+- not timed against render's functions: the work is the same reads in the
+  same order plus a heatmap pass, and at the command's sizes the EXR read
+  dominates;
+- the effect's reference image is bound in the Source's place when there is
+  none, as Invert binds its mask, since every buffer a kernel declares must be
+  bound.

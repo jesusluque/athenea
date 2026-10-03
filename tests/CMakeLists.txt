@@ -184,15 +184,30 @@ athenea_test(athenea_gpu_host_tests
 
 add_subdirectory(aofx/bundles)
 athenea_test(athenea_aofx_tests
-    SOURCES aofx/test_aofx.cpp aofx/test_mesh2splat.cpp
-    LIBS athenea::aofx_host athenea::gpu
+    SOURCES aofx/test_aofx.cpp aofx/test_mesh2splat.cpp aofx/test_measure.cpp
+    LIBS athenea::aofx_host athenea::render athenea::gpu
     LABELS gpe)
 # The conversion's own bundle, checked through the host like any other.
-add_dependencies(athenea_aofx_tests aofx_test_bundles athenea_aofx_mesh2splat)
+add_dependencies(athenea_aofx_tests aofx_test_bundles athenea_aofx_mesh2splat athenea_aofx_measure)
 target_compile_definitions(athenea_aofx_tests PRIVATE
     ATHENEA_AOFX_TEST_BUNDLES="${ATHENEA_AOFX_TEST_BUNDLES}"
     ATHENEA_AOFX_TEST_RUN_BUNDLES="${ATHENEA_AOFX_TEST_RUN_BUNDLES}"
     ATHENEA_AOFX_BUNDLES="${AOFX_BUNDLE_DIR}")
+# `athenea compare` runs the Measure effect now, and prints what it printed
+# when it called render's comparison itself: two fixture renders (sh3.ply,
+# 96x64, degree 3 against degree 0 without the 2D filter), both ways round,
+# with a window, and one image alone.
+foreach(case "pair;a.exr;b.exr" "swapped;b.exr;a.exr" "window;a.exr;b.exr;--window;10;5;70;50" "single;b.exr")
+    list(GET case 0 expected)
+    list(REMOVE_AT case 0)
+    string(REPLACE ";" "\\;" arguments "${case}")
+    add_test(NAME compare_cli_${expected}
+        COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea> -DDATA=${CMAKE_CURRENT_SOURCE_DIR}/data/compare
+                -DEXPECTED=${expected} -DARGS=${arguments} -P ${CMAKE_CURRENT_SOURCE_DIR}/aofx/CheckCompare.cmake)
+    set_tests_properties(compare_cli_${expected} PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        LABELS gpe)
+endforeach()
 # The SDK headers against their recorded hashes: aofx compatibility is mandatory.
 add_test(NAME aofx_sdk_manifest
     COMMAND ${CMAKE_COMMAND} -DSDK_DIR=${ATHENEA_AOFX_DIR}/sdk/include/aofx

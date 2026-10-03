@@ -28,7 +28,7 @@ target_compile_definitions(athenea PRIVATE ATHENEA_AOFX_BUNDLE_DIR="${AOFX_BUNDL
 # `athenea --version` and `athenea info` print and what a release is tagged.
 target_compile_definitions(athenea PRIVATE ATHENEA_VERSION="${athenea_VERSION}")
 if(TARGET athenea_aofx_invert)
-    add_dependencies(athenea athenea_aofx_invert athenea_aofx_mesh2splat)
+    add_dependencies(athenea athenea_aofx_invert athenea_aofx_mesh2splat athenea_aofx_measure)
 endif()
 target_include_directories(athenea PRIVATE src)
 athenea_set_target_defaults(athenea)

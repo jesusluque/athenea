@@ -367,7 +367,15 @@ A bundle under `plugins/<name>` built by the SDK's CMake helper. The effect
 declares its inputs and parameters and is handed pictures and numbers — it
 never sees USD, a scene or a device API, which is exactly why the same binary
 runs in openFXplayer. `athenea mesh2splat` is the largest example in the tree, and
-§5 of this document is what it does.
+§5 of this document is what it does. `plugins/measure` is the smallest that
+replaces engine code: `athenea compare` runs it through the host
+(`aofx_host::renderEffect`) instead of calling `render::imageStats`,
+`compareHdr` and `compareImages`, so the command and a compositor's QC node
+are one implementation. Its kernels are those three's, rewritten for binding
+by order -- the same sums in the same order, so the digits printed are the
+same -- and `athenea_aofx_tests "[measure]"` holds every number it attaches to
+theirs. A port of engine kernels into a bundle is held to the originals that
+way: the originals stay, as the tests' reference.
 
 ## 5. The test suite
 
@@ -390,13 +398,16 @@ Nineteen binaries, one per area, all under `tests/`.
 | `athenea_host_tests` | the plugin through `UsdImagingGLEngine`; **links no `athenea::usd` on purpose** |
 | `athenea_view_tests` | the viewer; label `display` |
 | `athenea_gpu_host_tests` | gpe adopting slang-rhi's device; label `gpe` |
-| `athenea_aofx_tests` | the SDK, the host, and the mesh2splat effect; label `gpe` |
+| `athenea_aofx_tests` | the SDK, the host, the mesh2splat effect, and the Measure effect against render's comparison; label `gpe` |
 | `athenea_coverage_tests` | what a converted surface covers against its mesh (`tests/data/coverage`); needs the `mesh2splat_coverage` fixture, which ctest runs first, and skips without it; label `gpe` |
 | `athenea_sched_tests` | the frame clock and PTP |
 
-Plus five tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
+Plus nine tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
 `single_tbb` (one TBB in the process), the two `mesh2splat_density_*`
-that run the real CLI and assert on the line it prints, and
+that run the real CLI and assert on the line it prints, the four
+`compare_cli_*`, which run `athenea compare` on two fixture renders
+(`tests/data/compare`) and hold what it prints to the text it printed before
+it ran the Measure effect (`tests/aofx/CheckCompare.cmake`), and
 `mesh2splat_coverage`, the real CLI converting the planes
 `athenea_coverage_tests` measures (a fixture: `athenea_test(... FIXTURES
 <name>)` makes every case of a binary require one). And one Catch2 case
