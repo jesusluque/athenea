@@ -984,7 +984,7 @@ ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
   -E ATHENEA_HYDRA -f 1
 ```
 
-Los renders finales (F12, `-f`) funcionan; el viewport está sin probar. El
+Los renders finales (F12, `-f`) funcionan; el viewport no se prueba sin ventana. El
 método de exportación **Hydra** de Blender no entrega ninguna nube de puntos
 a un delegate; con **USD**, una nube de puntos de Gaussian splats llega como
 un prim `Points` y se dibuja como una nube de splats (véase *Los Gaussian
@@ -996,6 +996,43 @@ exportación a archivo. El método de exportación es el de la escena
 (`scene.hydra.export_method`, `HYDRA` por defecto); un render de una escena
 con splats bajo `HYDRA` lo avisa. Los volúmenes (`.vdb`) están desactivados en esta
 compilación.
+
+En el viewport el add-on pide el color en media precisión
+(`athenea:colourHalf`, 4.2): Blender copia el frame por memoria del host para
+mostrarlo, y en media son la mitad de bytes. Un render final sigue en float.
+
+**Mallas a gaussianas.** *View3D > Sidebar > Athenea > Gaussian Splats*
+convierte los objetos malla seleccionados con mesh2splat, ejecutado dentro de
+Blender a través de hdAthenea (`athenea_mesh2splat`, el mismo comando que
+2.8, en la GPU; un plugin compilado sin `ATHENEA_HYDRA_COMMANDS` se rechaza, y
+el panel lo dice). El .blend tiene que estar guardado: todo se escribe a su
+lado.
+
+| Opción | Por defecto | Qué es |
+|---|---|---|
+| Budget | `2000000` | `--max-splats`, sobre toda la selección |
+| Resolution | `512` | `--resolution` |
+| Bake light | activado | desactivado es `--no-bake`: la nube lleva el material y se reilumina cada frame |
+| Degree, Samples | `2`, `128` | `--bake-degree`, `--bake-samples` |
+| Lights | Scene | Scene exporta con las mallas las luces visibles de la escena y su world; Default es `--default-lights` |
+| LOD levels | `1` | `--lod-levels`; solo USD |
+| Skinned | desactivado | `--skinned`: los armatures que deforman las mallas se exportan con su animación; sin bake |
+| Format | USD (.usdc) | o `.athc`, que no lleva rig, ni material reiluminado, ni más niveles que los suyos |
+| Bring in as | Referenced USD | un Empty, `<malla>_splats`, cuya propiedad `athenea_cloud` nombra el archivo; el hook de exportación USD del add-on lo referencia bajo el Empty (un `.athc` mediante `AtheneaStreamedAssetAPI`), así que hdAthenea dibuja todo lo que escribió la conversión y Blender dibuja una caja. O Gaussian-splat points: la nube de puntos propia de Blender, importada, que guarda posiciones, tamaños, rotaciones y armónicos y nada más, y se marca `athenea_linear` para que el hook diga que sus colores son luz |
+| Directory | `//splats/` | donde se escriben `<blend>_<malla>_mesh.usdc` (las mallas exportadas, que se conservan) y `<blend>_<malla>.usdc` o `.athc`; una selección de varias se llama `selection` |
+| Hide the meshes | activado | las mallas convertidas se ocultan en el viewport y en los renders |
+
+Se rechaza antes de ejecutar nada: sin .blend guardado, sin malla
+seleccionada, un `.athc` con Skinned o con LOD levels por encima de 1, un
+`.athc` o una nube skinned o de varios niveles traída como puntos. La
+conversión corre en un hilo; el panel y la barra de estado muestran su última
+línea y un progreso estimado a partir de ellas (un nivel leído, convertido,
+horneado, escrito), y la ventana sigue viva. No se puede cancelar. Sus avisos
+se notifican y sus líneas se imprimen en el terminal; un error se notifica
+con la última línea del comando (la salida 3, la GPU sin memoria, lo dice).
+El método de exportación de la escena pasa a USD, que la nube necesita. En
+segundo plano (`blender -b`, un script) `bpy.ops.athenea.mesh_to_splats()`
+corre hasta el final antes de volver.
 
 ### 4.2 Render settings
 

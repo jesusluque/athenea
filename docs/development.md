@@ -1121,9 +1121,18 @@ against headers that match them and linked against Blender's libraries:
    `find_package(pxr)`, every USD target a name for Blender's `libusd_ms`,
    and builds `MaterialXGenSlang` from 1.39.5's sources into 1.39.4's
    namespace over the shims in `integrations/blender/materialx`. Only
-   `hdAthenea` and the shaders are built; no tests.
+   `hdAthenea` (with mesh2splat inside, `ATHENEA_HYDRA_COMMANDS`), the
+   shaders and the Mesh2Splat and SplatBakeFilter bundles are built; no
+   ctest.
 3. The add-on is `integrations/blender/athenea_hydra` (operations manual,
-   4.1.1).
+   4.1.1): `__init__.py` the render engine and the USD export hook,
+   `convert.py` the mesh2splat operator and its panel.
+4. Its tests are headless Blender scripts, `tests/blender/run.sh [out]`:
+   `convert_and_render.py` converts the default cube three ways through the
+   operator and compares each render with the mesh's (`athenea compare`, so
+   a desktop build's `athenea` is needed: `ATHENEA_CLI`);
+   `viewport_readback.py` times the colour's map float against half. Both
+   use the GPU.
 
 **Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
 tracks `main`. A change to gpe is committed in the submodule, not here.

@@ -11226,3 +11226,124 @@ frames instead of allocating both on every map.
 Not measured yet (a GPU turn): the conversion through the entry against the
 binary on the same stage, which should be the same file; the half colour's
 readback against float.
+
+## hdAthenea inside Blender: phase 2
+
+**Meshes into gaussians, in Blender** (`integrations/blender/athenea_hydra/
+convert.py`). An operator, `athenea.mesh_to_splats`, and a sidebar panel
+(*Athenea > Gaussian Splats*) with mesh2splat's main options (operations
+manual 4.1.1). It runs the command inside Blender through the plugin's entry
+point (*mesh2splat inside hdAthenea* above), which was the point: the
+alternative, the `athenea` binary as a subprocess, is a second USD in a second
+process and a binary to ship beside the plugin. Weighed and not taken:
+- *the AOFX effect called from Python*: the effect knows triangles in a
+  picture, not a stage; everything around it (reading the meshes and
+  materials, textures, the budget, the bake, the export) is the command's
+  2 000 lines, which would have had to be written again in Python or moved;
+- *a second library beside hdAthenea* with `athenea_usd` in it: a second
+  slang-rhi and a second copy of the delegate's classes in the process.
+
+What the add-on does is bookkeeping: it exports the selection with Blender's
+own USD exporter (the meshes; the armatures that deform them for a skinned
+conversion; the scene's visible lights and its world for a bake under the
+scene's light), hands the arguments over, and relays the lines. The worker
+thread is Python's; ctypes lets go of the GIL for the call, and the sink,
+called on that thread, only queues. A modal timer drains the queue into the
+panel and the status bar (a progress estimated from the lines: a level's
+textures, its meshes, its bake, its file), so the window stays live; without
+a window (`-b`) the operator runs to its end. mesh2splat has no way to be
+stopped, so neither has the operator.
+
+**Bringing the cloud in.** Two ways, because Blender keeps less of a cloud
+than a conversion writes:
+- *Referenced USD* (default): an Empty whose custom property names the file;
+  the add-on's USD export hook defines `cloud` under the Empty's prim with a
+  reference to it (a `.athc` through a ParticleField with
+  `AtheneaStreamedAssetAPI`). Hydra's USD export method composes it, and
+  hdAthenea draws what the file holds: rig, levels of detail, relit material,
+  normals, emission, Cryptomatte. The Empty moves the cloud. Blender's own
+  engines see a box.
+- *Gaussian-splat points*: `wm.usd_import` of the ParticleField, which
+  Blender reads into its own GAUSSIAN_SPLAT point cloud: positions, sizes,
+  rotations and harmonics, nothing else (no relit material, no normals, no
+  rig). The conversion's colours are linear light and the import keeps no
+  flag for it, so the object carries `athenea_linear` and the hook writes
+  `primvars:athenea:splat:linear`, which `HdAtheneaPoints` now reads.
+
+Either needs the USD export method (Hydra's hands no point cloud to a
+delegate and runs no hook), so the operator sets it.
+
+**The viewport's path, read from Blender 5.3's source** (`render/hydra/
+viewport_engine.cc`, `render_task_delegate.cc`, `engine.cc`; the viewport
+cannot be driven headless here). Blender picks a `GPURenderTaskDelegate` --
+render into Blender's own GPU textures through Hgi -- only for an engine with
+`bl_use_gpu_context` *and* the OpenGL backend; on macOS the backend is Metal,
+so every non-Storm delegate gets `RenderTaskDelegate`, whose AOVs are Hydra
+render buffers. Each viewport frame `ViewportEngine::render` executes the
+tasks, then `DrawTexture::create_from_buffer(color buffer)`:
+`buffer->Map()`, `GPU_texture_update(texture, FLOAT or HALF_FLOAT, data)`,
+`Unmap()`, and draws the texture. For hdAthenea that is:
+
+1. the frame on the device (the composited colour buffer);
+2. `Map()` runs the pending fill: the `aov_convert` kernel into a device
+   buffer, a submit and a wait, and `Buffer::read` -- slang-rhi's readback,
+   a copy into a staging buffer and a memcpy into the render buffer's
+   `std::vector`;
+3. Blender's `GPU_texture_update`: the bytes copied into a Metal texture
+   (through Blender's staging upload).
+
+So the frame crosses host memory twice and the CPU touches it two or three
+times, 16 bytes a pixel at float (33 MB a frame at 1920 x 1080), with a
+device wait in the middle. A zero-copy path -- our MTLTexture or MTLBuffer
+handed to Blender's GPU module, or an IOSurface both sides open -- needs
+Blender to take a texture from a delegate on Metal: `get_aov_texture` exists
+only in the OpenGL `GPURenderTaskDelegate`, `HdRenderBuffer::GetResource` is
+never asked for, and Python's `gpu` module cannot wrap a foreign texture. It
+is therefore a Blender change, not an add-on's, and not done here. The
+proposal, for Blender upstream: in `ViewportEngine::render`, when the render
+buffer answers `GetResource(false)` with an `HgiTextureHandle` on the same
+Metal device (`HgiMetal`), wrap its `MTLTexture` as a `gpu::Texture` (the
+Metal backend has no public call for that today; it is the piece to add) and
+draw it instead of `Map`; hdAthenea would
+hand its colour target as an `HgiMetalTexture` over the `MTLTexture` slang-rhi
+already holds (`rhi::NativeHandle`), with a fence for the frame.
+
+What is done instead, inside what Blender asks: the viewport asks for the
+colour as half floats (`athenea:colourHalf`; Blender's `DrawTexture` takes
+`HdFormatFloat16Vec4` as `SFLOAT_16_16_16_16` and uploads the halves as they
+are), which halves every copy, and `writeAov` no longer allocates two device
+buffers a map. Final renders keep float.
+
+Tests (`tests/blender/run.sh`, headless, GPU; to run on a GPU turn):
+- `convert_and_render.py`: the default cube, its material red, under its
+  point light, rendered through hdAthenea as a mesh; then converted by the
+  operator (budget 400 000, resolution 128, bake degree 2, 64 paths) as a
+  referenced `.usdc`, as imported points and as a referenced `.athc`, each
+  rendered with the cube hidden and compared with the mesh by `athenea
+  compare`: the cloud drawn, its alpha mean within 0.03 of the mesh's,
+  relMSE under 0.25, 8-bit p99 under 40 (bounds for a gross failure -- the
+  colour space, the place, nothing drawn -- not for the conversion's quality,
+  which tests/mesh2splat measures); and a `.athc` asked for as points
+  refused before anything runs. Renders saved under
+  `athenea-renders/blender-phase2/` (PNG and EXR).
+- `viewport_readback.py`: F12 at 1280 x 720 and 1920 x 1080, colour float
+  and half, median of the frames: the half picture against the float one
+  (8-bit p99 at most 1). The final path converts the halves to float on the
+  CPU after the map (`read_aov`), which the viewport does not, so the half
+  timing is an upper bound on the viewport's.
+
+Measured without the GPU (`blender -b`, CPU only): the entry point answers
+from Blender's process (`--help` through the sink, exit 0; a missing stage,
+106, CLI11's message through the sink); the export of the default cube
+writes `/root/Cube/Cube` (Mesh), its material, the point light and the world
+as a DomeLight; the arguments built are the command's.
+
+Not done:
+- the viewport itself, drawn and timed in a window (needs a session with a
+  display and the GPU);
+- cancelling a conversion (mesh2splat has no stop);
+- the engine's log lines during a conversion (`athenea::log`, a delegate's
+  warning) still go to stderr, not the panel: `log::setSink` is process-wide
+  and the delegate may be drawing at the same time;
+- Blender's own engines show a referenced cloud as the Empty's box; a cloud
+  imported as points they draw as Blender draws splats.

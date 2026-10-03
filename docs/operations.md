@@ -965,7 +965,7 @@ ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
   -E ATHENEA_HYDRA -f 1
 ```
 
-Final renders (F12, `-f`) work; the viewport is untested. Blender's
+Final renders (F12, `-f`) work; the viewport is not tested headless. Blender's
 **Hydra** export method hands no point cloud to a delegate; with **USD**, a
 Gaussian-splat point cloud arrives as a `Points` prim and is drawn as a splat
 cloud (see *Blender's Gaussian splats as `UsdGeomPoints`* in 4.3). Its
@@ -975,6 +975,41 @@ made while the scene's render engine is Athenea -- a file export included.
 The export method is the scene's (`scene.hydra.export_method`, `HYDRA` by
 default); a render of a scene with splats under `HYDRA` prints so.
 Volumes (`.vdb`) are off in this build.
+
+In the viewport the add-on asks for the colour as half floats
+(`athenea:colourHalf`, 4.2): Blender copies the frame through host memory to
+show it, and halves are half the bytes. A final render keeps float.
+
+**Meshes into gaussians.** *View3D > Sidebar > Athenea > Gaussian Splats*
+converts the selected mesh objects with mesh2splat, run inside Blender
+through hdAthenea (`athenea_mesh2splat`, the same command as 2.8, on the
+GPU; a plugin built without `ATHENEA_HYDRA_COMMANDS` is refused, said in the
+panel). The .blend must be saved: everything is written beside it.
+
+| Option | Default | What it is |
+|---|---|---|
+| Budget | `2000000` | `--max-splats`, over the whole selection |
+| Resolution | `512` | `--resolution` |
+| Bake light | on | off is `--no-bake`: the cloud carries the material and is relit every frame |
+| Degree, Samples | `2`, `128` | `--bake-degree`, `--bake-samples` |
+| Lights | Scene | Scene exports the scene's visible lights and its world with the meshes; Default is `--default-lights` |
+| LOD levels | `1` | `--lod-levels`; USD only |
+| Skinned | off | `--skinned`: the armatures that deform the meshes are exported with their animation; no bake |
+| Format | USD (.usdc) | or `.athc`, which carries no rig, no relit material and no levels other than its own |
+| Bring in as | Referenced USD | an Empty, `<mesh>_splats`, whose custom property `athenea_cloud` names the file; the add-on's USD export hook references it under the Empty (a `.athc` through `AtheneaStreamedAssetAPI`), so hdAthenea draws everything the conversion wrote and Blender draws a box. Or Gaussian-splat points: Blender's own point cloud, imported, which keeps positions, sizes, rotations and harmonics and nothing else, and is marked `athenea_linear` so the hook says its colours are light |
+| Directory | `//splats/` | where `<blend>_<mesh>_mesh.usdc` (the exported meshes, kept) and `<blend>_<mesh>.usdc` or `.athc` are written; a selection of several is named `selection` |
+| Hide the meshes | on | the converted meshes are hidden in the viewport and in renders |
+
+Refused before anything runs: no saved .blend, no mesh selected, a `.athc`
+with Skinned or LOD levels over 1, a `.athc` or a skinned or multi-level
+cloud brought in as points. The conversion runs on a thread; the panel and
+the status bar show its last line and a progress estimated from them (a
+level read, converted, baked, written), and the window stays live. It cannot
+be cancelled. Its warnings are reported, its lines printed to the terminal;
+an error is reported with the command's last line (exit 3, the GPU out of
+memory, says so). The scene's export method is set to USD, which the cloud
+needs. In the background (`blender -b`, a script) `bpy.ops.athenea.
+mesh_to_splats()` runs to its end before it returns.
 
 ### 4.2 Render settings
 

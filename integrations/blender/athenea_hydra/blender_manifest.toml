@@ -2,7 +2,7 @@
 schema_version = "1.0.0"
 
 id = "athenea_hydra"
-version = "0.1.0"
+version = "0.2.0"
 name = "Athenea (Hydra)"
 tagline = "Athenea's Hydra delegate as a Blender render engine"
 maintainer = "jesus luque <jesusluquemuriel@gmail.com>"

@@ -155,7 +155,9 @@
       "configurePreset": "macos-arm64-blender",
       "targets": [
         "hdAthenea",
-        "athenea_shaders_copy"
+        "athenea_shaders_copy",
+        "athenea_aofx_mesh2splat",
+        "athenea_aofx_splatbakefilter"
       ]
     }
   ],

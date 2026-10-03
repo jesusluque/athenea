@@ -16,6 +16,8 @@ import os
 
 import bpy
 
+from . import convert
+
 _registered_plugin_dir = None
 
 
@@ -34,7 +36,7 @@ def plugin_dir():
         pass
     for candidate in candidates:
         if candidate and os.path.isfile(os.path.join(candidate, "hdAthenea", "resources", "plugInfo.json")):
-            return candidate
+            return os.path.abspath(candidate)
     return None
 
 
@@ -87,7 +89,11 @@ class AtheneaHydraRenderEngine(bpy.types.HydraRenderEngine):
     def get_render_settings(self, engine_type):
         _warn_hidden_splats()
         if engine_type == 'VIEWPORT':
-            return {}
+            # Blender draws a non-Storm delegate's viewport by mapping its
+            # colour buffer and uploading it to a texture (DrawTexture::
+            # create_from_buffer, every frame): half floats are half the
+            # bytes read back and uploaded, and Blender takes them as such.
+            return {'athenea:colourHalf': True}
         return {
             'aovToken:Combined': "color",
             'aovToken:Depth': "depth",
@@ -126,13 +132,44 @@ class AtheneaSplatExportHook(bpy.types.USDHook):
         stage = export_context.get_stage()
         for path, ids in export_context.get_prim_map().items():
             for owner in ids:
-                if isinstance(owner, bpy.types.Object) and owner.type == 'POINTCLOUD':
-                    _write_splat_base(stage, stage.GetPrimAtPath(path), owner.evaluated_get(depsgraph))
+                if not isinstance(owner, bpy.types.Object):
+                    continue
+                if owner.type == 'POINTCLOUD':
+                    _write_splat_base(stage, stage.GetPrimAtPath(path), owner.evaluated_get(depsgraph),
+                                      bool(owner.get(convert.LINEAR_PROPERTY, False)))
+                elif owner.type == 'EMPTY' and convert.CLOUD_PROPERTY in owner:
+                    _reference_cloud(stage, stage.GetPrimAtPath(path), owner[convert.CLOUD_PROPERTY])
         return True
 
 
-def _write_splat_base(stage, xform, evaluated):
-    """`radiance:base` onto the Points prim the writer made under `xform`."""
+def _reference_cloud(stage, xform, file):
+    """The cloud a conversion wrote, under the Empty that stands for it.
+
+    A USD file is referenced whole (its default prim: the ParticleField, its
+    rig, its levels of detail); a `.athc` is named by a ParticleField with
+    AtheneaStreamedAssetAPI, which hdAthenea streams. Nothing is read here.
+    """
+    from pxr import Sdf, UsdGeom
+    if not xform:
+        return
+    path = bpy.path.abspath(file)
+    if not os.path.isfile(path):
+        print(f"athenea_hydra: {xform.GetPath()}: the cloud {path} is not there; not referenced")
+        return
+    at = xform.GetPath().AppendChild("cloud")
+    if path.endswith(".athc"):
+        prim = stage.DefinePrim(at, "ParticleField3DGaussianSplat")
+        prim.AddAppliedSchema("AtheneaStreamedAssetAPI")
+        primvar = UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
+            "athenea:asset", Sdf.ValueTypeNames.Asset, UsdGeom.Tokens.constant)
+        primvar.Set(Sdf.AssetPath(path))
+    else:
+        stage.DefinePrim(at).GetReferences().AddReference(path)
+
+
+def _write_splat_base(stage, xform, evaluated, linear=False):
+    """`radiance:base` onto the Points prim the writer made under `xform`,
+    and, for a converted cloud, that its colours are linear light."""
     import numpy
     from pxr import Sdf, UsdGeom, Vt
     cloud = evaluated.data
@@ -152,6 +189,9 @@ def _write_splat_base(stage, xform, evaluated):
         primvar = UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
             "radiance:base", Sdf.ValueTypeNames.Float4Array, UsdGeom.Tokens.vertex)
         primvar.Set(Vt.Vec4fArray.FromNumpy(values))
+        if linear:
+            UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
+                "athenea:splat:linear", Sdf.ValueTypeNames.Bool, UsdGeom.Tokens.constant).Set(True)
 
 
 def _warn_hidden_splats():
@@ -184,6 +224,7 @@ _classes = (AtheneaPreferences, AtheneaHydraRenderEngine, AtheneaSplatExportHook
 def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
+    convert.register()
     register_plugin()
     for panel in _panels():
         panel.COMPAT_ENGINES.add(AtheneaHydraRenderEngine.bl_idname)
@@ -192,5 +233,6 @@ def register():
 def unregister():
     for panel in _panels():
         panel.COMPAT_ENGINES.discard(AtheneaHydraRenderEngine.bl_idname)
+    convert.unregister()
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
