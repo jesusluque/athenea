@@ -127,10 +127,13 @@ AOFX bundles.
 | [Dear ImGui](https://github.com/ocornut/imgui) | v1.92.9 | MIT (below) |
 | [aopenfx](https://github.com/jesusluque/aopenfx) (submodule) | `sparrow` branch | BSD 3-Clause (below) |
 | [spz](https://github.com/nianticlabs/spz) | vendored | MIT (section 2) |
+| [gpe](https://github.com/jesusluque/gpe) (submodule) | `lrt-fixes` branch | Apache-2.0 (text in `LICENSE`), Copyright (c) 2026 gpe contributors. |
+| [genlock](https://github.com/jesusluque/genlock) (submodule) | `main` branch | Apache-2.0 (text in `LICENSE`), Copyright (c) 2026 genlock contributors. |
 
-`gpe` and `genlock` (submodules) are by athenea's author and carry no
-third-party licence of their own; gpe's copy of metal-cpp is the Apple
-component listed above.
+`gpe` and `genlock` (submodules) are by athenea's author and are licensed,
+like athenea, under the Apache License, Version 2.0: each carries that text as
+`LICENSE` and its copyright line in `NOTICE`, whose content is the line given
+in the table. gpe's copy of metal-cpp is the Apple component listed above.
 
 slang-rhi (`LICENSE`; its full Apache-2.0 text is the one in `LICENSE`):
 
