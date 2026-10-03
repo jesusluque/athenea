@@ -372,6 +372,20 @@ callback lanza `CLI::RuntimeError(1)`. Y luego se documenta: una opción que no
 esté en [`operations.es.md`](operations.es.md) no existe para quien ejecuta el
 motor.
 
+Un comando imprime con `cli::out` y `cli::err` (`Output.h`), con el formato
+de printf, no con `std::printf`: en el binario son stdout y stderr, y
+ejecutado dentro de otro proceso van al sumidero de ese host. `athenea
+mesh2splat` también se compila dentro de hdAthenea cuando
+`ATHENEA_HYDRA_COMMANDS` está activo (lo está por defecto en la compilación
+para Blender): `Embedded.cpp` exporta `athenea_embedded_abi()` (1) y
+`athenea_mesh2splat(argc, argv, sink, user)`, los argumentos del comando sin
+`athenea mesh2splat`, que devuelve su código de salida (2 si ya hay una
+conversión en curso) y manda sus líneas a `sink(error, text, user)`. Así es
+como un host con un USD propio (Blender) convierte sin cargar un segundo: el
+stage que lee y escribe es el USD del plugin, que es el del host. hdAthenea
+compila entonces `StageRenderer`, `Export`, `MeshStage` y `BindingPurposes`
+junto a las fuentes del delegate, y enlaza `aofx_host` y CLI11.
+
 ### 4.7 Un plugin aofx
 
 Un bundle bajo `plugins/<nombre>`, compilado con el helper de CMake del SDK.

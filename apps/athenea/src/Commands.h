@@ -5,6 +5,7 @@
 
 #include <CLI/CLI.hpp>
 
+#include "Output.h"
 #include "athenea/core/Error.h"
 
 namespace athenea::cli {
@@ -18,12 +19,11 @@ inline constexpr int kExitOutOfMemory = 3;
 /// Prints `error` to stderr -- and for the GPU out of memory, what to do
 /// about it -- and returns the code to exit with.
 [[nodiscard]] inline int report(const Error& error) {
-    std::fprintf(stderr, "%s\n", error.toString().c_str());
+    err("%s\n", error.toString().c_str());
     if (error.code() == ErrorCode::OutOfMemory) {
-        std::fprintf(stderr,
-                     "athenea: the GPU ran out of memory. Free what other programs hold on it, or ask for less: "
-                     "a smaller --size, a streamed asset's smaller budget, no splat shadows; ATHENEA_GPU_BUDGET "
-                     "holds a run to a size in MiB.\n");
+        err("athenea: the GPU ran out of memory. Free what other programs hold on it, or ask for less: "
+            "a smaller --size, a streamed asset's smaller budget, no splat shadows; ATHENEA_GPU_BUDGET "
+            "holds a run to a size in MiB.\n");
         return kExitOutOfMemory;
     }
     return kExitFailure;

@@ -1034,6 +1034,7 @@ Leídos pero no declarados:
 | `athenea:shutter` | double2 | prim de settings | apertura y cierre, en frames |
 | `athenea:lens` | double2 | cámara | radio de apertura y distancia de enfoque |
 | `athenea:exrHalf` | bool | prim de settings | escribir los productos en media en vez de float |
+| `athenea:colourHalf` | bool (o un int, distinto de cero) | el host, a través del delegate | el AOV `color` es de media precisión (`Float16Vec4`) en vez de float; para un host que copia el color por memoria del host para mostrarlo (el viewport de Blender). Se lee cuando el host pide el formato del AOV, así que se pone antes del primer frame. Los grupos de luz y las demás salidas siguen en float |
 | `athenea:disableMotionBlur` | bool | settings o producto | para ese producto |
 | `athenea:disableDepthOfField` | bool | settings o producto | para ese producto |
 | `athenea:lightGroup` | string | un prim de luz | el grupo bajo el que se reúne su aportación |
@@ -1207,7 +1208,9 @@ escribe la exportación USD de Blender. Un prim `Points` que lleva una
 dibuja como una nube de splats, no como puntos; `widths` y los estilos de
 punto se ignoran entonces. Los valores son los que guarda un ParticleField (el
 importador de Blender los copia sin cambiarlos): los colores son los de una
-captura, sRGB.
+captura, sRGB, salvo que el prim diga otra cosa con
+`primvars:athenea:splat:linear` (bool, constante), como hace un
+ParticleField -- que el add-on escribe en una nube que trajo una conversión.
 
 | Primvar | Tipo | Significado |
 |---|---|---|

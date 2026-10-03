@@ -11170,3 +11170,59 @@ the metric's own noise of the mesh's.
 - The grain that is left is the harmonics': sixteen coefficients from 256
   paths. A filter that weighed each band by its own variance, rather than the
   luminance's, is the next thing to try.
+
+## mesh2splat inside hdAthenea, and the colour a host copies
+
+A host that draws through hdAthenea has loaded a USD of its own, and the
+plugin is built against it. Blender cannot load a second (its `libusd_ms` is
+in a namespace of its own, and a second USD in the process is two type
+registries), so converting a model there with `athenea mesh2splat` meant a
+separate process with a separate USD and an exported stage between them.
+
+**The command in the plugin.** With `ATHENEA_HYDRA_COMMANDS` (on by default
+where `ATHENEA_BLENDER_LIB` is set, off elsewhere) hdAthenea also compiles
+`CmdMesh2Splat.cpp` and exports two C functions (`apps/athenea/src/
+Embedded.cpp`): `athenea_embedded_abi()` and `athenea_mesh2splat(argc, argv,
+sink, user)`, which builds the same CLI11 subcommand, parses the arguments
+and runs it. One implementation, so the add-on and the command cannot
+disagree, and every option is there. The plugin then compiles the stage
+reading and writing the command uses (`StageRenderer`, `Export`,
+`MeshStage`, `BindingPurposes`) beside the delegate's sources, rather than
+linking `athenea_usd`, whose copies of the delegate's sources would collide
+with its own; and it links `aofx_host` and CLI11. One slang-rhi still: the
+conversion opens its device through the process's `gpu_host::Context`, as
+the command does, and the delegate keeps its own device on the same GPU.
+
+The command's lines were `printf`s, which a host shows nobody. They now go
+through `cli::out` / `cli::err` (`Output.h`): stdout and stderr in the
+binary, the host's sink in the plugin. The entry serialises conversions (a
+second call while one runs returns 2); the command's options and the sink
+are process state for its duration. A parse error comes back as CLI11's exit
+code with its message through the sink.
+
+**Blender's 26.03.** `StageRenderer` used four things newer than the USD
+Blender 5.3 ships: `UsdHydraRenderPassAPI` (its `hydra:rendererName` is read
+by name where the header is missing), `HdRenderSettings::GetCamera` /
+`GetDisable*` (the report leaves them unset before 26.08), the
+`rayHitDistance` sorting hint (not counted) and the display-style scene
+index's `SetRefineLevelFallback` (26.03's `SetRefineLevel` with its
+`OptionalInt`). All behind `PXR_VERSION >= 2608` or `__has_include`; the
+26.08 build compiles what it did.
+
+**The colour a host copies.** Blender's viewport shows a delegate other than
+Storm by mapping its colour buffer and uploading the bytes to a texture,
+every frame (`DrawTexture::create_from_buffer` in Blender's
+`render/hydra/viewport_engine.cc`). `athenea:colourHalf` (a host's
+setting, read when the AOV's format is asked for) makes the `color` AOV
+`Float16Vec4`: the conversion kernel already wrote halves, and the read back
+and the host's upload carry 8 bytes a pixel instead of 16. And
+`Engine::writeAov` keeps its conversion buffer and its placeholder between
+frames instead of allocating both on every map.
+
+**A converted cloud brought in as Blender points** is linear light, and a
+`Points` prim said nothing of its colours' space. `HdAtheneaPoints` reads
+`primvars:athenea:splat:linear` as a ParticleField does.
+
+Not measured yet (a GPU turn): the conversion through the entry against the
+binary on the same stage, which should be the same file; the half colour's
+readback against float.

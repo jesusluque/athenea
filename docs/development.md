@@ -361,6 +361,19 @@ callback throws `CLI::RuntimeError(1)`. Then document it: an option that is
 not in [`operations.md`](operations.md) does not exist for whoever runs the
 engine.
 
+A command prints through `cli::out` and `cli::err` (`Output.h`), printf's
+format, not `std::printf`: in the binary they are stdout and stderr, and run
+inside another program they go to that host's sink. `athenea mesh2splat` is built
+into hdAthenea as well when `ATHENEA_HYDRA_COMMANDS` is on (the default for
+the Blender build): `Embedded.cpp` exports `athenea_embedded_abi()` (1) and
+`athenea_mesh2splat(argc, argv, sink, user)`, the command's arguments without
+`athenea mesh2splat`, its exit code back (2 when a conversion is already
+running), its lines to `sink(error, text, user)`. That is how a host with one
+USD of its own (Blender) converts without loading a second: the stage it
+reads and writes is the plugin's USD, which is the host's. hdAthenea then
+compiles `StageRenderer`, `Export`, `MeshStage` and `BindingPurposes` beside
+the delegate's sources, and links `aofx_host` and CLI11.
+
 ### 4.7 An aofx plugin
 
 A bundle under `plugins/<name>` built by the SDK's CMake helper. The effect

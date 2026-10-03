@@ -40,7 +40,13 @@
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usd/editContext.h>
 #include <pxr/usd/usdGeom/imageable.h>
+// UsdHydraRenderPassAPI is newer than the USD Blender 5.3 ships (26.03),
+// which hdAthenea for Blender is built against; there the attribute is read
+// by its name.
+#if __has_include(<pxr/usd/usdHydra/renderPassAPI.h>)
 #include <pxr/usd/usdHydra/renderPassAPI.h>
+#define ATHENEA_HAVE_HYDRA_RENDER_PASS_API 1
+#endif
 #include <pxr/usd/usdLux/distantLight.h>
 #include <pxr/usd/usdLux/domeLight.h>
 #include <pxr/usd/usdLux/lightAPI.h>
@@ -191,7 +197,9 @@ Result<std::unique_ptr<StageRenderer>> StageRenderer::open(const std::filesystem
             cloud.GetSortingModeHintAttr().Get(&sorting);
             tangential += projection == UsdVolTokens->tangential ? 1 : 0;
             byDistance += sorting == UsdVolTokens->cameraDistance ? 1 : 0;
+#if PXR_VERSION >= 2608
             byRay += sorting == UsdVolTokens->rayHitDistance ? 1 : 0;
+#endif
         }
         if (tangential > 0) {
             athenea::log::info("hdAthenea: {} cloud(s) hint a tangential projection; the rasteriser projects in perspective",
@@ -789,11 +797,14 @@ Result<RenderSettingsInfo> StageRenderer::renderSettings(const std::string& path
         info.materialBindingPurposes.push_back(purpose.GetString());
     }
     info.renderingColorSpace = prim->GetRenderingColorSpace().GetString();
+#if PXR_VERSION >= 2608
+    // Not in HdRenderSettings before 26.08 (Blender 5.3's 26.03): left unset.
     if (prim->GetCamera().IsHolding<SdfPath>()) {
         info.camera = prim->GetCamera().UncheckedGet<SdfPath>().GetString();
     }
     info.disableMotionBlur = prim->GetDisableMotionBlur();
     info.disableDepthOfField = prim->GetDisableDepthOfField();
+#endif
     for (const auto& [key, value] : prim->GetNamespacedSettings()) {
         info.settings[key] = textOf(value);
     }
@@ -818,11 +829,19 @@ Result<RenderSettingsInfo> StageRenderer::renderSettings(const std::string& path
         TfToken passType;
         pass.GetPassTypeAttr().Get(&passType);
         one.passType = passType.GetString();
+#ifdef ATHENEA_HAVE_HYDRA_RENDER_PASS_API
         if (candidate.HasAPI<UsdHydraRenderPassAPI>()) {
             TfToken renderer;
             UsdHydraRenderPassAPI(candidate).GetHydraRendererNameAttr().Get(&renderer);
             one.rendererName = renderer.GetString();
         }
+#else
+        if (const UsdAttribute attribute = candidate.GetAttribute(TfToken("hydra:rendererName"))) {
+            TfToken renderer;
+            attribute.Get(&renderer);
+            one.rendererName = renderer.GetString();
+        }
+#endif
         one.forThisRenderer = one.rendererName.empty() || one.rendererName == "athenea" ||
                               one.rendererName == "HdAtheneaRendererPlugin";
         if (!one.forThisRenderer) {
@@ -1156,8 +1175,15 @@ void StageRenderer::setPathBounces(uint32_t bounces) {
 }
 void StageRenderer::setRefineLevel(uint32_t level) {
     if (impl_->displayStyle) {
+#if PXR_VERSION >= 2608
         impl_->displayStyle->SetRefineLevelFallback(level > 0 ? std::optional<int>(static_cast<int>(level))
                                                                : std::nullopt);
+#else
+        HdsiLegacyDisplayStyleOverrideSceneIndex::OptionalInt refine;
+        refine.hasValue = level > 0;
+        refine.value = static_cast<int>(level);
+        impl_->displayStyle->SetRefineLevel(refine);
+#endif
     }
 }
 void StageRenderer::setMotionBuckets(uint32_t buckets) {

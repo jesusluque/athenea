@@ -9,7 +9,8 @@ add_executable(athenea
     src/CmdAofx.cpp
     src/CmdMesh2Splat.cpp
     src/CmdVisibility.cpp
-    src/CmdLive.cpp)
+    src/CmdLive.cpp
+    src/Output.cpp)
 target_link_libraries(athenea PRIVATE athenea::usd athenea::lod athenea::sched athenea::technique athenea::aofx_host CLI11::CLI11)
 if(ATHENEA_BUILD_VIEW)
     target_sources(athenea PRIVATE src/CmdView.cpp)
@@ -41,3 +42,29 @@ athenea_copy_shaders(athenea)
 set_target_properties(athenea PROPERTIES
     BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib"
     INSTALL_RPATH "@loader_path/../lib;${SLANG_ROOT}/lib")
+
+# `athenea mesh2splat` inside hdAthenea, as a C entry point (src/Embedded.cpp),
+# for a host that cannot load a second USD and would convert with the one it
+# has: Blender's add-on calls it through ctypes. On for the Blender build.
+if(ATHENEA_BLENDER_LIB)
+    set(_hydra_commands_default ON)
+else()
+    set(_hydra_commands_default OFF)
+endif()
+option(ATHENEA_HYDRA_COMMANDS "athenea mesh2splat built into hdAthenea, called by a host in process"
+       ${_hydra_commands_default})
+if(ATHENEA_HYDRA_COMMANDS AND TARGET hdAthenea)
+    # The stage reading and writing the command uses, which athenea_usd has
+    # beside the delegate's sources and hdAthenea compiles itself.
+    set(_usd_src "${ATHENEA_ROOT}/modules/usd/src")
+    target_sources(hdAthenea PRIVATE
+        src/Embedded.cpp src/Output.cpp src/CmdMesh2Splat.cpp
+        ${_usd_src}/StageRenderer.cpp ${_usd_src}/BindingPurposes.cpp ${_usd_src}/Export.cpp
+        ${_usd_src}/MeshStage.cpp)
+    target_include_directories(hdAthenea PRIVATE src)
+    target_link_libraries(hdAthenea PRIVATE athenea::aofx_host CLI11::CLI11)
+    target_compile_definitions(hdAthenea PRIVATE ATHENEA_AOFX_BUNDLE_DIR="${AOFX_BUNDLE_DIR}")
+    if(TARGET athenea_aofx_mesh2splat)
+        add_dependencies(hdAthenea athenea_aofx_mesh2splat athenea_aofx_splatbakefilter)
+    endif()
+endif()

@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "Commands.h"
+#include "Output.h"
 #include "aofx/Effect.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
@@ -660,11 +661,11 @@ public:
         auto loaded = textures_->commit();
         if (!loaded) return std::move(loaded).error();
         sampler_ = textures_->sampler(material::Wrap::Repeat, material::Wrap::Repeat);
-        std::printf("mesh2splat: %zu of %zu textures decoded\n", *loaded, ids_.size());
+        cli::out("mesh2splat: %zu of %zu textures decoded\n", *loaded, ids_.size());
         for (const auto& [file, id] : ids_) {
             const material::TextureInfo& info = textures_->info(id);
             if (!info.loaded) {
-                std::fprintf(stderr, "mesh2splat: '%s' did not decode: %s\n", file.c_str(),
+                cli::err("mesh2splat: '%s' did not decode: %s\n", file.c_str(),
                              info.error.c_str());
             }
         }
@@ -823,7 +824,7 @@ public:
         shareOf_.assign(pieces, 0);
         ATHENEA_TRY(deriveCells());
         if (perMesh_ && !camera_) {
-            std::printf("mesh2splat: density per mesh: %u cells across each mesh's longest side, the cell "
+            cli::out("mesh2splat: density per mesh: %u cells across each mesh's longest side, the cell "
                         "held between %.4g and %.4g (the model's is %.4g)\n",
                         options_->resolution, cellMin_, cellMax_, modelCell_);
         }
@@ -864,7 +865,7 @@ public:
                 }
             }
             ATHENEA_TRY(deriveCells());
-            std::fprintf(stderr,
+            cli::err(
                          "mesh2splat: warning: the meshes want %llu splats and --max-splats is %llu: the budget "
                          "is shared in proportion, every piece's cell coarsened alike\n",
                          static_cast<unsigned long long>(total),
@@ -897,7 +898,7 @@ public:
             const uint32_t meshCrypto = athenea::core::cryptomatteId(owner.path);
             cryptoManifest_[owner.path] = meshCrypto;
             const usd::StageMaterial& what = material;
-            std::printf("mesh2splat: %s uses %s (colour %.2f %.2f %.2f, albedo '%s', metallic %.2f, "
+            cli::out("mesh2splat: %s uses %s (colour %.2f %.2f %.2f, albedo '%s', metallic %.2f, "
                         "roughness %.2f, transmission %.3f, opacity %.3f%s%s)\n",
                         piece.path.c_str(), what.path.empty() ? "no material" : what.path.c_str(),
                         static_cast<double>(what.baseColour[0]), static_cast<double>(what.baseColour[1]),
@@ -918,7 +919,7 @@ public:
             // gaussian worth writing.
             // (The count gave it no share.)
             if (coversNothing(what)) {
-                std::printf("mesh2splat: %s covers nothing (opacity 0), skipped\n", piece.path.c_str());
+                cli::out("mesh2splat: %s covers nothing (opacity 0), skipped\n", piece.path.c_str());
                 continue;
             }
             // A PICTURE FOR WHAT THIS MESH CAN WANT, NOT FOR THE WHOLE
@@ -1003,7 +1004,7 @@ public:
                 if (out->written > 0 && material.transmission > 0.0F && !material.thinWalled) {
                     const float ior = material.ior;
                     if (glassIor_ > 0.0F && glassIor_ != ior) {
-                        std::fprintf(stderr,
+                        cli::err(
                                      "mesh2splat: %s bends by %.3f and an earlier glass by %.3f; a cloud keeps "
                                      "one index, the first\n",
                                      piece.path.c_str(), static_cast<double>(ior),
@@ -1035,7 +1036,7 @@ public:
             // fit its share. Said here so a log reads what a part got.
             const double cell = static_cast<double>(cellValues_[3 + k]);
             const double factor = static_cast<double>(cellValues_[3 + pieces + k]);
-            std::printf("mesh2splat: %s -> %llu splats of %llu wanted (%u triangles%s, cell %.4g%s)%s\n",
+            cli::out("mesh2splat: %s -> %llu splats of %llu wanted (%u triangles%s, cell %.4g%s)%s\n",
                         piece.path.c_str(), static_cast<unsigned long long>(meshWritten),
                         static_cast<unsigned long long>(meshWanted), triangles_[k],
                         slices > 1 ? (", " + std::to_string(slices) + " slices").c_str() : "", cell,
@@ -1047,34 +1048,34 @@ public:
             return Error(ErrorCode::InvalidArgument, "the conversion produced no splats");
         }
         if (wanted > written) {
-            std::fprintf(stderr,
+            cli::err(
                          "mesh2splat: warning: the budget is exhausted: %llu splats did not fit --max-splats %llu; "
                          "raise --max-splats, lower --resolution, or with --density per-mesh raise --cell-min\n",
                          static_cast<unsigned long long>(wanted - written),
                          static_cast<unsigned long long>(options_->maxSplats));
         }
         if (unconverted > 0) {
-            std::fprintf(stderr, "mesh2splat: warning: the budget ran out before %zu mesh(es), which are not in "
+            cli::err("mesh2splat: warning: the budget ran out before %zu mesh(es), which are not in "
                                  "the cloud\n",
                          unconverted);
         }
         if (beyond > 0) {
             // A triangle walks at most --max-cells cells; the rest of a large
             // one is left bare, which reads as a hole in the cloud.
-            std::fprintf(stderr,
+            cli::err(
                          "mesh2splat: warning: %llu cells lay past --max-cells %u on their triangles and were "
                          "not sampled; raise --max-cells or lower --resolution\n",
                          static_cast<unsigned long long>(beyond), options_->maxCells);
         }
         if (reruns > 0) {
-            std::printf("mesh2splat: %u mesh run(s) wanted more than the first guess and ran again\n", reruns);
+            cli::out("mesh2splat: %u mesh run(s) wanted more than the first guess and ran again\n", reruns);
         }
         if (degenerate > 0) {
-            std::printf("mesh2splat: %llu triangles had no frame to stand a gaussian on\n",
+            cli::out("mesh2splat: %llu triangles had no frame to stand a gaussian on\n",
                         static_cast<unsigned long long>(degenerate));
         }
         if (capped > 0) {
-            std::printf("mesh2splat: %llu cells of relief wanted more than %u gaussians along an axis and "
+            cli::out("mesh2splat: %llu cells of relief wanted more than %u gaussians along an axis and "
                         "were left thinner (--displace-refine)\n",
                         static_cast<unsigned long long>(capped), options_->displaceRefine);
         }
@@ -1135,7 +1136,7 @@ private:
                 return *picture;
             }
             if (refused_.insert(first + "|" + second).second) {
-                std::fprintf(stderr, "mesh2splat: '%s' is left out: %s\n",
+                cli::err("mesh2splat: '%s' is left out: %s\n",
                              (first.empty() ? second : first).c_str(), picture.error().toString().c_str());
             }
             return image::ImagePtr{};
@@ -1650,18 +1651,18 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
     ATHENEA_TRY(lit->read(library_->device(), 0, sizeof(found), &found));
     const double took =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-    std::printf("mesh2splat: baked %u of %u gaussians (%u paths each, %u bounces, degree %u) in %.0f ms\n", found,
+    cli::out("mesh2splat: baked %u of %u gaussians (%u paths each, %u bounces, degree %u) in %.0f ms\n", found,
                 count_, samples, bounces, degree, took);
     if (split->extraPasses > 0) {
-        std::printf("mesh2splat: %llu more paths in %u adaptive passes of %u (%.1f a gaussian on average)\n",
+        cli::out("mesh2splat: %llu more paths in %u adaptive passes of %u (%.1f a gaussian on average)\n",
                     static_cast<unsigned long long>(split->extraPoints) * options.passSamples, split->extraPasses,
                     options.passSamples,
                     static_cast<double>(split->extraPoints) * options.passSamples / std::max(count_, 1u));
     }
-    std::printf("mesh2splat: traced in %.0f ms, filtered in %.0f ms (%u passes)\n", traced, filtered,
+    cli::out("mesh2splat: traced in %.0f ms, filtered in %.0f ms (%u passes)\n", traced, filtered,
                 filter != nullptr ? options_->bakeFilter : 0u);
     if (found * 2 < count_) {
-        std::fprintf(stderr,
+        cli::err(
                      "mesh2splat: more than half the gaussians found no surface under them; the bake "
                      "is unlikely to be what you want\n");
     }
@@ -1690,7 +1691,7 @@ Result<void> Converter::filterIndirect(aofx::Effect& filter, usd::BakeSplit& spl
     if (cryptoIds_.size() == count) {
         ids = cryptoIds_;
     } else {
-        std::fprintf(stderr, "mesh2splat: %zu ids for %u gaussians; the filter takes them as one prim\n",
+        cli::err("mesh2splat: %zu ids for %u gaussians; the filter takes them as one prim\n",
                      cryptoIds_.size(), count);
     }
     auto idBuffer = gpu::Buffer::fromSpan<uint32_t>(device, ids, "mesh2splat.filterIds");
@@ -1749,7 +1750,7 @@ Result<void> Converter::filterIndirect(aofx::Effect& filter, usd::BakeSplit& spl
     if (said == nullptr || said->size() < 3) {
         return Error(ErrorCode::DeviceFailure, "the splat bake filter did not say what it filtered");
     }
-    std::printf("mesh2splat: the bake filtered over a %.3g cell (%.0f gaussians left out of a full one)\n",
+    cli::out("mesh2splat: the bake filtered over a %.3g cell (%.0f gaussians left out of a full one)\n",
                 static_cast<double>((*said)[2]), static_cast<double>((*said)[1]));
     auto answer = viewOf(*context_, *rendered, "mesh2splat.filtered");
     if (!answer) return std::move(answer).error();
@@ -1828,10 +1829,10 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     }
     uint32_t reached = 0;
     ATHENEA_TRY(found->read(device, 0, sizeof(reached), &reached));
-    std::printf("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
+    cli::out("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
                 reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
     if (reached * 2 < count_) {
-        std::fprintf(stderr,
+        cli::err(
                      "mesh2splat: more than half the gaussians found no surface under them; the "
                      "transfer is unlikely to be what you want\n");
     }
@@ -1957,7 +1958,7 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_option("--path", o->paths, "extra AOFX bundle directories");
     cmd->callback([o] {
         if (o->density != "per-model" && o->density != "per-mesh") {
-            std::fprintf(stderr, "--density wants per-model or per-mesh, not '%s'\n", o->density.c_str());
+            cli::err("--density wants per-model or per-mesh, not '%s'\n", o->density.c_str());
             throw CLI::RuntimeError(1);
         }
         // WHAT A .ATHC CAN CARRY: the gaussians -- position, opacity, sizes,
@@ -1968,21 +1969,21 @@ void addMesh2Splat(CLI::App& app) {
         // written without it, and the rest is said.
         if (lod::isAthc(o->output)) {
             if (o->lodLevels > 1) {
-                std::fprintf(stderr, "a .athc builds its own levels of detail: drop --lod-levels\n");
+                cli::err("a .athc builds its own levels of detail: drop --lod-levels\n");
                 throw CLI::RuntimeError(1);
             }
             if (o->skinned || o->transfer) {
-                std::fprintf(stderr, "a .athc cannot carry %s: write a USD stage (.usda, .usdc, .usd)\n",
+                cli::err("a .athc cannot carry %s: write a USD stage (.usda, .usdc, .usd)\n",
                              o->skinned ? "a skeleton (--skinned)" : "a transfer (--transfer)");
                 throw CLI::RuntimeError(1);
             }
-            std::printf("mesh2splat: a .athc keeps the gaussians and their shading normals; the metallic, "
+            cli::out("mesh2splat: a .athc keeps the gaussians and their shading normals; the metallic, "
                         "roughness and transmission a relit cloud reflects with, the Cryptomatte ids, the glass "
                         "index and the stage's up axis and unit stay out\n");
         }
         gpu_host::Context* context = gpu_host::installProcessContext();
         if (context == nullptr || context->compute() == nullptr) {
-            std::fprintf(stderr, "no GPU compute device for AOFX kernels (gpe has no backend here)\n");
+            cli::err("no GPU compute device for AOFX kernels (gpe has no backend here)\n");
             throw CLI::RuntimeError(1);
         }
         gpu::ShaderLibrary library(context->deviceShared());
@@ -1997,7 +1998,7 @@ void addMesh2Splat(CLI::App& app) {
         registry.scan(context);
         aofx::Effect* effect = registry.find("rt.sparrow.aofx.mesh2splat");
         if (effect == nullptr) {
-            std::fprintf(stderr, "no Mesh2Splat bundle on the AOFX search path (try `athenea aofx list`)\n");
+            cli::err("no Mesh2Splat bundle on the AOFX search path (try `athenea aofx list`)\n");
             throw CLI::RuntimeError(1);
         }
         // The filter a bake's indirect light goes through, where it is asked
@@ -2006,7 +2007,7 @@ void addMesh2Splat(CLI::App& app) {
         if (o->bake && !o->transfer && o->bakeFilter > 0) {
             filter = registry.find("rt.sparrow.aofx.splatbakefilter");
             if (filter == nullptr) {
-                std::fprintf(stderr, "no SplatBakeFilter bundle on the AOFX search path (try `athenea aofx "
+                cli::err("no SplatBakeFilter bundle on the AOFX search path (try `athenea aofx "
                                      "list`), and --bake-filter asks for it\n");
                 throw CLI::RuntimeError(1);
             }
@@ -2061,7 +2062,7 @@ void addMesh2Splat(CLI::App& app) {
             if (o->skinned && o->transfer) {
                 // A transfer moves with the limb no better than a baked radiance
                 // does: what it holds is the visibility of a pose.
-                std::printf("mesh2splat: --skinned carries the material, not a transfer\n");
+                cli::out("mesh2splat: --skinned carries the material, not a transfer\n");
                 o->transfer = false;
             }
             if (o->skinned && o->bake) {
@@ -2070,7 +2071,7 @@ void addMesh2Splat(CLI::App& app) {
                 // paw is in them -- and carrying that up with the leg is the
                 // mistake of rotating a lightmap. A cloud a skeleton moves is
                 // relit every frame instead, which is right by construction.
-                std::printf("mesh2splat: --skinned carries the material, not a bake\n");
+                cli::out("mesh2splat: --skinned carries the material, not a bake\n");
                 o->bake = false;
             }
                 auto meshes = stage->read(*builder, read);
@@ -2083,7 +2084,7 @@ void addMesh2Splat(CLI::App& app) {
                     auto camera = (*stage).camera(o->cellFromCamera, o->time);
                     if (!camera) return std::move(camera).error();
                     converter.setCamera(*camera, o->cameraPixels);
-                    std::printf("mesh2splat: the cell is a pixel of %s, %u across\n", o->cellFromCamera.c_str(),
+                    cli::out("mesh2splat: the cell is a pixel of %s, %u across\n", o->cellFromCamera.c_str(),
                                 o->cameraPixels);
                 }
                 ATHENEA_TRY(converter.loadTextures());
@@ -2161,7 +2162,7 @@ void addMesh2Splat(CLI::App& app) {
                     if (!moved) return std::move(moved).error();
                     rig.xforms = std::move(*moved);
                     rig.timeCodesPerSecond = (*stage).timeCodesPerSecond();
-                    std::printf("mesh2splat: carried by %s, %u joints over %zu instants at %g fps\n",
+                    cli::out("mesh2splat: carried by %s, %u joints over %zu instants at %g fps\n",
                                 rig.skeleton.c_str(), rig.joints, rig.times.size(),
                                 rig.timeCodesPerSecond);
                 }
@@ -2238,7 +2239,7 @@ void addMesh2Splat(CLI::App& app) {
             if (!inside) {
                 cli::fail(inside.error());
             }
-            std::printf("mesh2splat: wrote %s (%u splats)\n", o->output.c_str(), count);
+            cli::out("mesh2splat: wrote %s (%u splats)\n", o->output.c_str(), count);
             levelFiles.push_back({o->output, levelCell});
         }
         if (lodLevels > 1) {
@@ -2253,7 +2254,7 @@ void addMesh2Splat(CLI::App& app) {
                 !made) {
                 cli::fail(made.error());
             }
-            std::printf("mesh2splat: wrote %s, %u levels of detail\n", assemblyPath.c_str(), lodLevels);
+            cli::out("mesh2splat: wrote %s, %u levels of detail\n", assemblyPath.c_str(), lodLevels);
         }
     });
 }

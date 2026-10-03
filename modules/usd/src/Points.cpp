@@ -66,6 +66,10 @@ std::optional<athenea::usd::ParticleFieldArrays> blenderSplats(HdSceneDelegate* 
             arrays.shPlanes.push_back(std::move(plane));
         }
     }
+    // Light, where the cloud says so (a conversion's, brought into Blender);
+    // a capture's sRGB where it does not, which is what Blender holds.
+    const VtValue linear = delegate->Get(id, TfToken("athenea:splat:linear"));
+    arrays.linear = linear.IsHolding<bool>() && linear.UncheckedGet<bool>();
     if (arrays.radianceBase.IsEmpty()) {
         athenea::log::warn("hdAthenea: {}: a Gaussian-splat point cloud without radiance:base, drawn opaque and "
                            "grey (Blender's USD export drops it; the athenea_hydra add-on writes it)",

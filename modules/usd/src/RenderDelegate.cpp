@@ -663,7 +663,19 @@ HdAovDescriptor HdAtheneaRenderDelegate::GetDefaultAovDescriptor(TfToken const& 
     if (name.GetString().rfind("CryptoObject", 0) == 0) {
         return HdAovDescriptor(HdFormatFloat32Vec4, false, VtValue(GfVec4f(0.0F)));
     }
-    if (name == HdAovTokens->color || name.GetString().rfind("lightGroup:", 0) == 0) {
+    // A host that only shows the colour, and copies it through host memory
+    // to do so (Blender's viewport maps it and uploads it every frame), asks
+    // for half floats with `athenea:colourHalf`: half the bytes each way. A
+    // light group stays float, as an output is.
+    if (name == HdAovTokens->color) {
+        const VtValue half = GetRenderSetting(TfToken("athenea:colourHalf"));
+        // A bool, or the int a Python host's True can arrive as.
+        const bool wantsHalf = (half.IsHolding<bool>() && half.UncheckedGet<bool>()) ||
+                               (half.IsHolding<int>() && half.UncheckedGet<int>() != 0);
+        return HdAovDescriptor(wantsHalf ? HdFormatFloat16Vec4 : HdFormatFloat32Vec4, false,
+                               VtValue(GfVec4f(0.0F)));
+    }
+    if (name.GetString().rfind("lightGroup:", 0) == 0) {
         return HdAovDescriptor(HdFormatFloat32Vec4, false, VtValue(GfVec4f(0.0F)));
     }
     if (name == HdAovTokens->depth) {

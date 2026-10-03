@@ -1014,6 +1014,7 @@ Read but not declared:
 | `athenea:shutter` | double2 | settings prim | open and close, in frames |
 | `athenea:lens` | double2 | camera | aperture radius and focus distance |
 | `athenea:exrHalf` | bool | settings prim | write products as half rather than float |
+| `athenea:colourHalf` | bool (or an int, non-zero) | the host, through the delegate | the `color` AOV is half float (`Float16Vec4`) rather than float; for a host that copies the colour through host memory to show it (Blender's viewport). Read when the host asks for the AOV's format, so it is set before the first frame. Light groups and other outputs stay float |
 | `athenea:disableMotionBlur` | bool | settings or product | for this product |
 | `athenea:disableDepthOfField` | bool | settings or product | for this product |
 | `athenea:lightGroup` | string | a light prim | the group a light's contribution is gathered under |
@@ -1179,7 +1180,10 @@ export writes them. A `Points` prim carrying a quaternion `rotation` and a
 `scale`, and `radiance:base` or `radiance:sh_0`, is drawn as a splat cloud,
 not as points; `widths` and the point styles are then ignored. The values are
 what a ParticleField holds (Blender's importer of one copies them across
-unchanged): the colours are a capture's, sRGB.
+unchanged): the colours are a capture's, sRGB, unless the prim says
+otherwise with `primvars:athenea:splat:linear` (bool, constant), as a
+ParticleField does -- which the add-on writes on a cloud a conversion brought
+in.
 
 | Primvar | Type | Meaning |
 |---|---|---|

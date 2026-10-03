@@ -1783,18 +1783,26 @@ Result<void> Engine::writeAov(const render::RenderTargets& targets, AovSource ao
         aovConvert_.emplace(std::move(*made));
     }
     const uint32_t words = static_cast<uint32_t>((bytes + 3) / 4);
-    gpu::BufferDesc desc;
-    desc.bytes = uint64_t{words} * 4;
-    desc.elementBytes = 4;
-    desc.label = "hydra.aov";
-    auto out = gpu::Buffer::create(*device_, desc);
-    if (!out) return std::move(out).error();
-    gpu::BufferDesc one;
-    one.bytes = 16;
-    one.elementBytes = 16;
-    one.label = "hydra.placeholder";
-    auto placeholder = gpu::Buffer::create(*device_, one);
-    if (!placeholder) return std::move(placeholder).error();
+    if (aovWords_.bytes() < uint64_t{words} * 4) {
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{words} * 4;
+        desc.elementBytes = 4;
+        desc.label = "hydra.aov";
+        auto made = gpu::Buffer::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        aovWords_ = std::move(*made);
+    }
+    if (!aovPlaceholder_.valid()) {
+        gpu::BufferDesc one;
+        one.bytes = 16;
+        one.elementBytes = 16;
+        one.label = "hydra.placeholder";
+        auto made = gpu::Buffer::create(*device_, one);
+        if (!made) return std::move(made).error();
+        aovPlaceholder_ = std::move(*made);
+    }
+    gpu::Buffer* const out = &aovWords_;
+    gpu::Buffer* const placeholder = &aovPlaceholder_;
     gpu::CommandBatch batch(*device_);
     aovConvert_->dispatch(batch, {words, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["colour"].setBinding(kind == 0 ? source->rhi() : placeholder->rhi());

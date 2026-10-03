@@ -608,6 +608,10 @@ private:
     std::optional<render::GaussianRayTracer>  rayTracer_;   ///< made on first use
     std::optional<lod::CutSelector>           cutter_;      ///< made on first use
     std::optional<gpu::ComputeKernel>         aovConvert_;  ///< made on first use
+    /// What `writeAov` converts into, kept between frames: a host that maps
+    /// every frame (Blender's viewport) allocated two buffers a frame before.
+    gpu::Buffer                               aovWords_;
+    gpu::Buffer                               aovPlaceholder_;
     const render::RenderTargets*              lastTargets_ = nullptr;
     render::RenderTargets                     pointLayer_;
 
