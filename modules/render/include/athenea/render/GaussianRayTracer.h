@@ -7,6 +7,11 @@
 //   per cloud, when it changes    particle frames (GPU), and
 //                                   Hardware: proxies (GPU) -> one BLAS per chunk
 //                                   ComputeBvh: boxes, Morton sort, hierarchy, refit (GPU)
+//   per cloud, when it is posed   the same particles moved (scene::GpuSplats::revision):
+//                                   frames again, and the structure refitted, not rebuilt
+//                                   Hardware: proxies again -> each BLAS updated in place
+//                                   ComputeBvh: one pass per tree height, bottom up (GPU)
+//                                 and rebuilt in place every `refitsPerRebuild` poses
 //   per frame                     colours per instance (GPU), and
 //                                   Hardware: TLAS over instances x chunks
 //                                   ComputeBvh: the instance list
@@ -50,6 +55,13 @@ struct RayTracerSettings {
     /// It is the segment query's own check: a ray cut in two and put back
     /// together must be the ray.
     float    splitAt = 0.0F;
+    /// A posed cloud (one whose `revision` moved while its particles stayed
+    /// the same) refits its structure; every this many refits it is rebuilt
+    /// in place instead, since a tree shaped for one pose may bound the next
+    /// ones ever more loosely. Measured on the flying sparrow (docs/
+    /// decisions.md): no slower trace after 240 refits, and a rebuild is a
+    /// ~50 ms hitch, so it is rare. 0: never refit, rebuild every pose.
+    uint32_t refitsPerRebuild = 240;
 };
 
 struct RayTracerStats {
@@ -58,6 +70,7 @@ struct RayTracerStats {
     uint32_t instances = 0;
     RayTracingRoute route = RayTracingRoute::Hardware;
     bool     rebuilt = false;   ///< per-cloud structures were built this frame
+    uint32_t refitted = 0;      ///< clouds whose structure was refitted to a new pose this frame
     double   buildMs = 0;       ///< structures (and BLAS when rebuilt) and colours
     double   renderMs = 0;      ///< the traced pass
     double   totalMs = 0;
@@ -111,27 +124,47 @@ public:
     [[nodiscard]] ShadowScene shadowScene() const noexcept;
 
 private:
+    /// Which cloud, and what its structure's shape depends on. Not the pose:
+    /// a cloud posed anew keeps its key and refits (`Cloud::revision`).
     struct CloudKey {
         const scene::GpuSplats* cloud = nullptr;
         rhi::IBuffer*           positions = nullptr;
         uint32_t                count = 0;
         uint32_t                restPerColour = 0;
-        uint32_t                revision = 0;   ///< scene::GpuSplats::revision: the pose the proxies were built over
         bool operator==(const CloudKey&) const = default;
     };
     struct Cloud {
         CloudKey key;
+        uint32_t revision = 0;      ///< scene::GpuSplats::revision the structure stands over
         uint32_t base = 0;          ///< first particle in `frames_` (and leaf in `bvhLeaves_`)
         uint32_t firstChunk = 0;    ///< Hardware
         uint32_t chunks = 0;        ///< Hardware
         uint32_t nodeBase = 0;      ///< ComputeBvh: first internal node
+        uint32_t refits = 0;        ///< refits since it was last built
+        /// Whether a new pose can refit it: Hardware, its BLAS allow updates;
+        /// ComputeBvh, `levelStarts` is filled. Only a cloud built posed
+        /// (revision != 0) is, since the levels cost a word a node.
+        bool     refittable = false;
+        /// ComputeBvh: where each tree height starts in `levelNodes_`
+        /// (cloud-local), heights 1 .. size() - 2; the last is the node count.
+        std::vector<uint32_t> levelStarts;
     };
 
     [[nodiscard]] Result<void> rebuild(std::span<const SplatInstance> instances);
-    [[nodiscard]] Result<void> buildHardware(const Cloud& cloud,
+    /// Brings the structures to `instances`: a rebuild when the clouds are
+    /// not those built, otherwise a refit (or an in-place rebuild) of each
+    /// cloud posed since.
+    [[nodiscard]] Result<void> sync(std::span<const SplatInstance> instances, RayTracerStats& stats);
+    [[nodiscard]] Result<void> writeFrames(gpu::CommandBatch& batch, const Cloud& cloud);
+    [[nodiscard]] Result<void> buildHardware(Cloud& cloud,
                                              std::vector<rhi::ComPtr<rhi::IAccelerationStructure>>& blas);
-    [[nodiscard]] Result<void> buildBvh(const Cloud& cloud, gpu::Buffer& boxes, gpu::Buffer& children,
+    [[nodiscard]] Result<void> buildBvh(Cloud& cloud, gpu::Buffer& boxes, gpu::Buffer& children,
                                         gpu::Buffer& leaves);
+    /// ComputeBvh, a posed cloud: its nodes in height order, for refitBvh.
+    [[nodiscard]] Result<void> buildLevels(Cloud& cloud, const gpu::Buffer& heights);
+    [[nodiscard]] Result<void> reserveUpdateScratch();
+    [[nodiscard]] Result<void> refitHardware(const Cloud& cloud);
+    [[nodiscard]] Result<void> refitBvh(const Cloud& cloud);
     [[nodiscard]] Result<void> prepareFrame(std::span<const SplatInstance> instances,
                                             const Vec3& eyeWorld, uint32_t shLimit,
                                             const SplatLights* lights);
@@ -151,6 +184,9 @@ private:
     gpu::ComputeKernel bvhRefit_;
     gpu::ComputeKernel count_;
     gpu::ComputeKernel bvhRender_;
+    gpu::ComputeKernel bvhHeights_;
+    gpu::ComputeKernel bvhLevelKeys_;
+    gpu::ComputeKernel bvhRefitLevel_;
 
     std::vector<Cloud> clouds_;
     std::vector<rhi::ComPtr<rhi::IAccelerationStructure>> blas_;
@@ -167,6 +203,10 @@ private:
     gpu::Buffer bvhChildren_;       ///< uint * 2 per internal node
     gpu::Buffer bvhLeaves_buffer_;  ///< uint per particle: sorted leaf -> particle in cloud
     gpu::Buffer bvhInstances_;      ///< per instance: node base, leaf base, particles
+    gpu::Buffer levelNodes_;        ///< per internal node, by height: the refit's order (posed clouds)
+    gpu::Buffer updateScratch_;     ///< Hardware: scratch for a BLAS update, the largest any needs
+    uint64_t    updateScratchBytes_ = 0;      ///< the largest update scratch a built BLAS asked for
+    uint64_t    updateScratchCapacity_ = 0;   ///< what updateScratch_ holds
     // One record of nothing, for a frame that relights nothing: a name the
     // shader declares must be bound whether it is read or not.
     gpu::Buffer emptyLights_;

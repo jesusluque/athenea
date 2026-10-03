@@ -10238,3 +10238,107 @@ no share and is skipped): `ctest -R "mesh2splat|platform|emissive|emission|
 covers what|opacity is read"` 20 of 20, `athenea_coverage_tests` and
 `athenea_render_tests` all pass, no case skipped. A `.athc` does not carry the
 emission either.
+## A posed cloud refits its ray tracing structure
+
+A skinned cloud is posed into the same two buffers every frame, and
+`Engine::carryCloud` raises `GpuSplats::revision` so that whatever was built
+over the last pose knows. The ray tracer took the revision as part of the
+cloud's identity, so every pose was a different cloud and a full `rebuild`:
+on the hardware route twenty proxy triangles a gaussian and a BLAS per chunk
+built from nothing, on the compute route a Morton sort, the hierarchy and a
+refit that read a counter back from the host every eight passes. That was
+most of the ~0.9 s a frame of the rigged tube above, and half the sparrow's
+traced frame (athenea-cuda-analysis §3, item 2).
+
+A pose does not change which particles there are or their order, so the
+structure's shape still holds them and only its bounds are stale. The
+revision is now kept beside the cloud (`Cloud::revision`) rather than in its
+key, and `GaussianRayTracer::sync`, shared by `render` and `prepare`, does:
+
+- **the clouds are not those built** (another cloud, a count, a buffer):
+  `rebuild`, as before;
+- **a cloud's revision moved**: a refit of that cloud alone --
+  - *Hardware*: the frames and the proxies again over the new pose, and each
+    chunk's BLAS updated in place (`BuildMode::Update`; built with
+    `AllowUpdate` when the cloud was posed, `updateScratch_` sized from
+    `updateScratchSize`). Metal's `refitAccelerationStructure` underneath.
+  - *ComputeBvh*: the frames again, and the tree refitted **a height at a
+    time, bottom up** (`bvh_refit_level.slang`): one dispatch per height,
+    each over that height's nodes only, a leaf's box made from the posed
+    particle with the build's own `rtParticleBox`. After the last height
+    every box is exact whatever the buffer held, so the number of dispatches
+    is known before the frame and **nothing is read back** -- the build's
+    "until a pass changes nothing" is what needed the counter.
+- **every `refitsPerRebuild` refits** (default 240, measured below), or when the cloud cannot
+  take one (built before it was posed, or a tree taller than 127): that cloud
+  rebuilt in place, in the slots it already holds in every combined buffer.
+  A tree shaped for one pose bounds the next ones ever more loosely; the
+  rebuild puts the shape back. `refitsPerRebuild` 0 is the old behaviour.
+
+The heights are worked out at build, only for a posed cloud: `bvhHeights`
+runs beside the build's refit passes and sets the same `changed` flag, so the
+two settle together; `bvhLevelKeys` gives each node its height as a key and
+counts the heights, an 8-bit radix sort orders the nodes into `levelNodes_`
+(a word a node, a cloud's at its `nodeBase`), and the 128 counts are read
+back -- at build, where the build already reads back -- into
+`Cloud::levelStarts`. Memory: four bytes a node for a posed cloud, nothing
+for a still one.
+
+What reads the cloud's own tree reads it refitted: the glass and reflection
+rays of `rt_glass.slang` (`glassExit`, `glassNearest`) walk `bvhBoxes_` and
+`frames_`, both written in place; the packed shadow query
+(technique::SplatShadows) reads the TLAS built every frame over the updated
+BLAS.
+
+Tests (`athenea_render_tests`, "a posed cloud refits its ray tracing
+structure and draws what a rebuilt one draws", both routes): the reflection
+test's gold ball and plate in one cloud, the plate on a still joint and the
+ball turned and slid on another, six poses, three tracers -- refitting,
+rebuilding every pose, and refitting twice between in-place rebuilds. Every
+pose after the first refits and nothing is rebuilt (`RayTracerStats::refitted`,
+`rebuilt`), the periodic one rebuilds at poses 0 and 3, and each image is
+compared to the rebuilt one with `compareImages`.
+Measured (M5 Pro): p99 0, max 1 against a rebuild every pose, on both
+routes -- the refitted tree is walked in another order, and near-equal
+peaks land a code value apart. With the refit skipped (a stale tree) the
+same comparison reads p99 255 over ~17000 pixels, so the bound is one a
+broken refit cannot meet. The structure's own cost in that test, 9681
+gaussians: 6-10 ms a pose rebuilt, 2-3 ms (hardware) and ~1.8 ms
+(compute) refitted, CPU wall clock with the waits.
+
+**Timings.** `athenea view <stage> --technique rt --play --every-frame
+--frames 120 --size 1280x720`, release, draw medians; the machine is shared
+with other sessions, so three runs each, alternated before/after:
+
+| stage | before (main 125043e) | after | |
+|---|---|---|---|
+| sparrow, `mesh2splat SparrowBird.usda --skinned --resolution 256`, 300862 gaussians, splats only (ComputeBvh) | 140.9 / 143.1 / 135.6 ms | 84.7 / 83.9 / 83.7 ms | **-40 %** |
+| FilmGs.usda (5.9 M gaussians and the film's meshes) | 82.9 / 85.3 / 103.5 ms | 89.1 / 89.1 / 106.3 ms | the same |
+
+The bird alone is drawn by the ray tracer, and the ~57 ms that went is the
+rebuild (Morton sort, hierarchy, the refit passes and their read-backs).
+FilmGs under `view --technique rt` path traces its meshes and composes the
+splats from the rasteriser; the cloud's ray tracing structure is built only
+for splat shadows (`athenea:splatShadows`, off in `view`), so neither binary
+builds one there and the difference is noise. With the shadows asked for
+(over MCP, `render` with `splatShadows`), both binaries run out of device
+memory on that cloud: the hardware proxies of 5.9 M gaussians are ~2.5 GB
+before their BLAS. That is not this change's and not fixed by it.
+
+**Choosing `refitsPerRebuild`.** The same bird, draw medians over 120
+frames, two runs each: N = 0 (rebuild every pose) 133/129 ms; 4: 83/79;
+8: 78/81; 16: 111/81; 32: 82/84; 64: 80/82; never: 83/80. Per frame, over
+240 frames with refits never reset, the trace after 220-240 refits is what
+it was after 1-30 (60-80 ms either way; the bursts of 200-400 ms in that
+run came and went with no rebuild between them -- other sessions on the
+GPU). The wing beat of this rig does not loosen the tree measurably, and an
+in-place rebuild is a ~50 ms hitch on top of a frame (125 against 75 ms),
+which the medians hide and a viewer does not: so rarely, 240 refits, eight
+seconds of a 30 fps timeline. A rig that throws parts far from where the
+tree was shaped would want it lower; no such asset is measured yet.
+
+Not done: a rule from measured bound growth (a GPU reduction of the
+refitted tree's surface area against the built one's) instead of a count;
+the meshes' compute BVH (`BvhScene::settle`) still refits by passes with a
+read-back every eight, which the same heights would remove; and splat
+shadows on a 5.9 M cloud do not fit in memory on the hardware route.

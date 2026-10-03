@@ -5,6 +5,7 @@
 #include "SplatFixtures.h"
 
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cstring>
 
 #include <cmath>
@@ -19,6 +20,7 @@
 #include "athenea/light/LightTable.h"
 #include "athenea/render/GaussianRayTracer.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/scene/SplatSkinner.h"
 
 using namespace athenea;
 using test::CloudBuilder;
@@ -1115,6 +1117,206 @@ TEST_CASE("a convex cloud does not reflect itself, and still reflects what stand
     // front now reflects it.
     CHECK(self.over2 == 0);
     CHECK(lidSeen.over2 > 50);
+}
+
+// A POSED CLOUD REFITS WHAT IT IS TRACED THROUGH, AND DRAWS WHAT A REBUILT ONE DRAWS.
+//
+// A skinned cloud is the same particles in the same order every frame, only
+// moved; its ray tracing structure keeps its shape and has its bounds
+// refitted (GaussianRayTracer::sync), where it used to be built again from
+// nothing each pose. The scene is the reflection test's ball with a plate in
+// the same cloud: the plate stands still on one joint while the ball turns
+// and slides on another, so a stale box would lose the ball where it went,
+// and the ball's reflection of the plate -- a ray walked through the cloud's
+// own tree (rt_glass.slang, glassNearest) on the compute route -- would come
+// out of a tree that no longer bounds it. Three tracers draw every pose: one
+// that refits, one that rebuilds every pose (refitsPerRebuild 0, the old
+// behaviour, and the reference), and one that refits twice and then rebuilds
+// in place. Only the stats' counters and compareImages' metrics come back.
+TEST_CASE("a posed cloud refits its ray tracing structure and draws what a rebuilt one draws",
+          "[render][gpu][rt][skinning][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rayQuery || !gpu->device->caps().accelerationStructure) {
+        SKIP("no ray queries on this device");
+    }
+    const render::RayTracingRoute route =
+        GENERATE(render::RayTracingRoute::Hardware, render::RayTracingRoute::ComputeBvh);
+    std::printf("  route: %s\n", route == render::RayTracingRoute::Hardware ? "hardware" : "compute BVH");
+    auto h = harness(gpu);
+    const auto tracer = [&](uint32_t refitsPerRebuild) {
+        render::RayTracerSettings settings;
+        settings.route = route;
+        settings.refitsPerRebuild = refitsPerRebuild;
+        auto made = render::GaussianRayTracer::create(*gpu->library, settings);
+        if (!made) FAIL(made.error().toString());
+        return std::move(*made);
+    };
+    render::GaussianRayTracer refitting = tracer(64);
+    render::GaussianRayTracer rebuilding = tracer(0);
+    render::GaussianRayTracer periodic = tracer(2);
+    auto skinner = scene::SplatSkinner::create(*gpu->library);
+    if (!skinner) FAIL(skinner.error().toString());
+
+    const auto facing = [](float nx, float ny, float nz) {
+        const float w = 1.0F + nz;
+        const float x = -ny, y = nx;
+        const float len = std::sqrt(w * w + x * x + y * y);
+        if (len < 1.0e-6F) {
+            return std::array<float, 4>{0.0F, 1.0F, 0.0F, 0.0F};
+        }
+        return std::array<float, 4>{w / len, x / len, y / len, 0.0F};
+    };
+    CloudBuilder built;
+    constexpr uint32_t kBall = 8000;
+    {
+        const float golden = 2.39996322972865332F;
+        const float size = 0.04F * 0.65F;
+        for (uint32_t i = 0; i < kBall; ++i) {
+            const float z = 1.0F - 2.0F * (float(i) + 0.5F) / float(kBall);
+            const float r = std::sqrt(std::max(1.0F - z * z, 0.0F));
+            const float phi = golden * float(i);
+            const float nx = r * std::cos(phi), ny = r * std::sin(phi), nz = z;
+            built.add(nx, ny, nz, 0.99F, size, size, size / 11.0F, facing(nx, ny, nz), {0.944F, 0.776F, 0.373F});
+        }
+        for (int i = -20; i <= 20; ++i) {
+            for (int j = -20; j <= 20; ++j) {
+                built.add(float(i) * 0.1F, float(j) * 0.1F, 6.5F, 0.99F, 0.08F, 0.08F, 0.008F,
+                          facing(0.0F, 0.0F, -1.0F), {0.05F, 0.05F, 0.05F});
+            }
+        }
+    }
+    {
+        // Flat gold: metallic and smooth, two more floats a record.
+        built.raw.encoding.metallic = built.raw.encoding.floatsPerRecord;
+        built.raw.encoding.roughness = built.raw.encoding.floatsPerRecord + 1;
+        built.raw.encoding.floatsPerRecord += 2;
+        const uint32_t was = built.raw.encoding.floatsPerRecord - 2;
+        std::vector<float> widened;
+        for (uint32_t k = 0; k < built.raw.count; ++k) {
+            widened.insert(widened.end(), built.raw.records.begin() + k * was,
+                           built.raw.records.begin() + (k + 1) * was);
+            widened.push_back(1.0F);
+            widened.push_back(0.05F);
+        }
+        built.raw.records = std::move(widened);
+    }
+    auto rest = h->loader.upload(built.raw, 3);
+    REQUIRE(rest);
+    const uint32_t count = rest->count;
+    REQUIRE(count == built.raw.count);
+
+    // The ball on joint 1, the plate on joint 0: one (joint, weight) a gaussian.
+    std::vector<float> pairs(size_t{count} * 2);
+    for (uint32_t k = 0; k < count; ++k) {
+        pairs[size_t{k} * 2] = k < kBall ? 1.0F : 0.0F;
+        pairs[size_t{k} * 2 + 1] = 1.0F;
+    }
+    auto influences = gpu::Buffer::fromSpan<float>(*gpu->device, pairs, "test.influences");
+    REQUIRE(influences);
+
+    // The posed cloud, as the engine keeps one: the rest's channels, its own
+    // positions and shape, the same handles every pose.
+    scene::GpuSplats posed = *rest;
+    {
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{count} * 16;
+        desc.elementBytes = 16;
+        desc.label = "test.posed.positions";
+        auto positions = gpu::Buffer::create(*gpu->device, desc);
+        desc.bytes = uint64_t{count} * 16;
+        desc.elementBytes = 4;
+        desc.label = "test.posed.shape";
+        auto shape = gpu::Buffer::create(*gpu->device, desc);
+        REQUIRE(positions);
+        REQUIRE(shape);
+        posed.positions = std::move(*positions);
+        posed.shape = std::move(*shape);
+    }
+
+    auto table = light::LightTable::create(*gpu->library);
+    if (!table) FAIL(table.error().toString());
+    light::Light sky;
+    sky.kind = light::LightKind::Dome;
+    sky.intensity = 1.0F;
+    sky.shadow = false;
+    sky.lightCategory = light::kLightUnlinked;
+    REQUIRE(table->set(std::span<const light::Light>(&sky, 1)));
+    render::SplatLights lights;
+    lights.records = &table->records();
+    lights.count = table->count();
+
+    render::RenderSettings settings;
+    settings.width = 160;
+    settings.height = 160;
+    const render::Camera camera = render::Camera::lookingAt({0.0, 0.6, 4.5}, {0.0, 0.0, 0.0});
+    std::vector<render::SplatInstance> instances{{&posed, render::Mat4::identity()}};
+    instances[0].relight = true;
+    instances[0].reflectCloud = true;
+
+    constexpr uint32_t kPoses = 6;
+    uint32_t refitsSeen = 0, rebuildsOfRefitting = 0, periodicRebuilds = 0;
+    for (uint32_t pose = 0; pose < kPoses; ++pose) {
+        // Joint 0 where it was; joint 1 turned about y and slid. Row major,
+        // as GfMatrix4f holds them: the translation is the last row.
+        const float a = 0.3F * float(pose);
+        const float c = std::cos(a), s = std::sin(a);
+        const std::array<float, 32> joints{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+                                           0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F,
+                                           c, 0.0F, -s, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+                                           s, 0.0F, c, 0.0F, 0.15F * float(pose), -0.1F * float(pose), 0.0F, 1.0F};
+        auto xforms = gpu::Buffer::fromSpan<float>(*gpu->device, joints, "test.joints");
+        REQUIRE(xforms);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            scene::SplatSkinInput input;
+            input.rest = &*rest;
+            input.influences = &*influences;
+            input.perSplat = 1;
+            input.skinningXforms = &*xforms;
+            REQUIRE(skinner->skin(batch, input, posed.positions, posed.shape));
+            REQUIRE(batch.submit(true));
+        }
+        auto box = h->loader.boundsOf(posed.positions, count);
+        REQUIRE(box);
+        posed.bounds = *box;
+        posed.revision += 1;
+
+        render::RenderTargets a1, b1, c1;
+        auto sa = refitting.render(camera, instances, settings, a1, &lights);
+        auto sb = rebuilding.render(camera, instances, settings, b1, &lights);
+        auto sc = periodic.render(camera, instances, settings, c1, &lights);
+        if (!sa) FAIL(sa.error().toString());
+        if (!sb) FAIL(sb.error().toString());
+        if (!sc) FAIL(sc.error().toString());
+        refitsSeen += sa->refitted;
+        rebuildsOfRefitting += sa->rebuilt ? 1u : 0u;
+        periodicRebuilds += sc->rebuilt ? 1u : 0u;
+        CHECK(sb->rebuilt);
+        CHECK(sb->refitted == 0);
+        auto refitted = render::compareImages(*gpu->library, a1.colour, b1.colour, settings.width, settings.height);
+        auto inPlace = render::compareImages(*gpu->library, c1.colour, b1.colour, settings.width, settings.height);
+        REQUIRE(refitted);
+        REQUIRE(inPlace);
+        std::printf("  pose %u: refit %s (%.2f ms build), rebuild %.2f ms build, periodic %s; "
+                    "refit against rebuild p99 %u, max %u, %llu over 2; periodic p99 %u, max %u\n",
+                    pose, sa->rebuilt ? "rebuilt" : (sa->refitted != 0 ? "refitted" : "kept"), sa->buildMs,
+                    sb->buildMs, sc->rebuilt ? "rebuilt" : "refitted", refitted->p99, refitted->max,
+                    static_cast<unsigned long long>(refitted->over2), inPlace->p99, inPlace->max);
+        // Measured (M5 Pro, both routes): p99 0, max 1, nothing over 2 --
+        // a refitted tree is walked in another order than a rebuilt one, and
+        // near-equal peaks land a code value apart. A tree left stale (the
+        // refit skipped) reads p99 255 and ~17000 pixels over 2.
+        CHECK(refitted->p99 == 0);
+        CHECK(refitted->max <= 1);
+        CHECK(inPlace->p99 == 0);
+        CHECK(inPlace->max <= 1);
+    }
+    // The first pose builds; every one after it refits, and nothing is
+    // rebuilt. The periodic tracer builds, refits twice, rebuilds in place,
+    // refits twice: poses 0 and 3.
+    CHECK(rebuildsOfRefitting == 1);
+    CHECK(refitsSeen == kPoses - 1);
+    CHECK(periodicRebuilds == 2);
 }
 
 namespace {
