@@ -112,6 +112,19 @@ struct ParticleFieldArrays {
     /// place of `shCoefficients`. Empty for a ParticleField.
     pxr::VtValue              radianceBase;   ///< VtVec4fArray or VtVec4hArray
     std::vector<pxr::VtValue> shPlanes;       ///< VtVec3fArray or VtVec3hArray each
+    /// A BOUND MATERIAL'S BASE COLOUR (usd::SplatMaterialChannels): one
+    /// colour a particle, or one for all of them, in place of the DC. Empty
+    /// where no material says one.
+    pxr::VtValue baseColour;                  ///< VtVec3fArray or VtVec3hArray
+    /// The space it is in, as Hydra resolved it for the primvar (a colour
+    /// primvar carries one): sRGB where it says so, linear light otherwise,
+    /// USD's default.
+    bool         baseColourSrgb = false;
+    /// Which of the arrays a material's value filled -- one element standing
+    /// for every particle -- as `kUniform*` bits.
+    uint32_t     uniform = 0;
+    static constexpr uint32_t kUniformMetallic = 1, kUniformRoughness = 2, kUniformTransmission = 4,
+                              kUniformEmission = 8, kUniformBaseColour = 16;
 };
 
 /// A volume's field asset, as UsdVolOpenVDBAsset names it.

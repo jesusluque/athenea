@@ -49,6 +49,9 @@ static const uint kBase = 65536;
 // `sh` holds planes: one array a basis function after DC, rgb a splat
 // (Blender's `radiance:sh_N`), `planeLength` splats each, back to back.
 static const uint kShPlanes = 131072;
+// A bound material's base colour, rgb a splat (or one for all of them): the
+// colour of the DC, in place of the DC the harmonics carry.
+static const uint kBaseColour = 262144;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -76,6 +79,9 @@ struct StreamParams {
     uint emissionBase;
     // kShPlanes: the splats a plane holds (the whole cloud's, not the slice's).
     uint planeLength;
+    // Which streams hold one value for every splat (k* bits): a bound
+    // material's input that is a value rather than a primvar.
+    uint uniform;
 };
 
 static const uint kNoPbr = 0xFFFFFFFFu;
@@ -97,11 +103,16 @@ StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a t
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
 StructuredBuffer<uint>     emission;         // rgb a splat, the radiance it gives off
 StructuredBuffer<uint>     radianceBase;     // DC rgb, opacity: four a splat (kBase)
+StructuredBuffer<uint>     baseColour;       // rgb a splat, a colour (kBaseColour)
 RWStructuredBuffer<float>  records;
 ConstantBuffer<StreamParams> params;
 
 bool present(uint stream) { return (params.present & stream) != 0; }
 bool isHalf(uint stream) { return (params.halves & stream) != 0; }
+
+/// Where value `k` of element `e` is in a stream of `width` values an
+/// element: the first element's, for a stream that holds one for all.
+uint at(uint stream, uint e, uint width, uint k) { return (params.uniform & stream) != 0 ? k : e * width + k; }
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -135,9 +146,14 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
     const uint base = e * params.coefficients;
     for (uint k = 0; k < 3; ++k) {
         // No harmonics: DC 0, which is base colour 0.5, the schema's default.
-        records[r + 11 + k] = present(kBase)        ? streamValue(radianceBase, isHalf(kBase), e * 4 + k)
-                              : haveSh && !planes ? streamValue(sh, isHalf(kSh), base * 3 + k)
-                                                  : 0.0;
+        // A bound material's base colour stands for the DC: the colour back
+        // into the coefficient the DC is (0.5 + SH0 * dc), here as for a
+        // file's colours (splat_encoding).
+        records[r + 11 + k] =
+            present(kBaseColour) ? (streamValue(baseColour, isHalf(kBaseColour), at(kBaseColour, e, 3, k)) - 0.5) / kSH0
+            : present(kBase)     ? streamValue(radianceBase, isHalf(kBase), e * 4 + k)
+            : haveSh && !planes  ? streamValue(sh, isHalf(kSh), base * 3 + k)
+                                 : 0.0;
     }
     for (uint basis = 0; basis < params.keep; ++basis) {
         // Interleaved, DC first; or a plane a basis function, DC elsewhere.
@@ -149,12 +165,15 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
     // What the gaussian reflects with, after the harmonics: a cloud converted
     // from a mesh brings them, a capture does not.
     if (params.pbrBase != kNoPbr) {
-        records[r + params.pbrBase] = present(kMetallic) ? streamValue(metallic, isHalf(kMetallic), e) : 0.0;
-        records[r + params.pbrBase + 1] = present(kRoughness) ? streamValue(roughness, isHalf(kRoughness), e) : 1.0;
+        records[r + params.pbrBase] =
+            present(kMetallic) ? streamValue(metallic, isHalf(kMetallic), at(kMetallic, e, 1, 0)) : 0.0;
+        records[r + params.pbrBase + 1] =
+            present(kRoughness) ? streamValue(roughness, isHalf(kRoughness), at(kRoughness, e, 1, 0)) : 1.0;
         // A thin wall rides on the transmission, two higher (splat_encoding).
         const float thin = present(kThinWalled) && thinWalled[e] != 0u ? kThinWalledMark : 0.0;
         records[r + params.pbrBase + 2] =
-            (present(kTransmission) ? streamValue(transmission, isHalf(kTransmission), e) : 0.0) + thin;
+            (present(kTransmission) ? streamValue(transmission, isHalf(kTransmission), at(kTransmission, e, 1, 0))
+                                    : 0.0) + thin;
     }
     // The id's bits, as the float they already are (the fixup made sure of
     // it): the record is floats, and the decode takes them back as bits.
@@ -171,14 +190,14 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
     if (params.normalBase != kNoPbr) {
         for (uint k = 0; k < 3; ++k) {
             records[r + params.normalBase + k] =
-                present(kNormals) ? streamValue(normals, isHalf(kNormals), e * 3 + k) : 0.0;
+                present(kNormals) ? streamValue(normals, isHalf(kNormals), at(kNormals, e, 3, k)) : 0.0;
         }
     }
     // The radiance it gives off, as the stage holds it; the decode packs it.
     if (params.emissionBase != kNoPbr) {
         for (uint k = 0; k < 3; ++k) {
             records[r + params.emissionBase + k] =
-                present(kEmission) ? streamValue(emission, isHalf(kEmission), e * 3 + k) : 0.0;
+                present(kEmission) ? streamValue(emission, isHalf(kEmission), at(kEmission, e, 3, k)) : 0.0;
         }
     }
     // How much of an environment reaches this gaussian: the direct half

@@ -235,18 +235,18 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     }
     // One value a particle, or nothing: a shorter array is no array, as the
     // harmonics above are.
-    s.metallic = streamOf(a.metallic);
-    s.roughness = streamOf(a.roughness);
-    s.transmission = streamOf(a.transmission);
-    if (s.metallic.values() < s.count) {
-        s.metallic = {};
-    }
-    if (s.roughness.values() < s.count) {
-        s.roughness = {};
-    }
-    if (s.transmission.values() < s.count) {
-        s.transmission = {};
-    }
+    // A bound material's value stands for every particle: one element, read
+    // as the first by each (`uniform`).
+    const auto uniformOf = [&](scene::FloatStream stream, uint32_t bit, uint64_t width) {
+        stream.uniform = (a.uniform & bit) != 0;
+        if (stream.values() < (stream.uniform ? 1 : uint64_t{s.count}) * width) {
+            return scene::FloatStream{};
+        }
+        return stream;
+    };
+    s.metallic = uniformOf(streamOf(a.metallic), ParticleFieldArrays::kUniformMetallic, 1);
+    s.roughness = uniformOf(streamOf(a.roughness), ParticleFieldArrays::kUniformRoughness, 1);
+    s.transmission = uniformOf(streamOf(a.transmission), ParticleFieldArrays::kUniformTransmission, 1);
     // The Cryptomatte ids: int32 words read as the bits they are, never as
     // numbers, so they travel as a stream of 32-bit values like any other.
     if (a.cryptoObject.IsHolding<pxr::VtIntArray>()) {
@@ -280,10 +280,22 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     if (s.normals.values() < uint64_t{s.count} * 3) {
         s.normals = {};
     }
-    // The radiance it gives off: three floats a gaussian, or nothing.
-    s.emission = streamOf(a.emission);
-    if (s.emission.values() < uint64_t{s.count} * 3) {
-        s.emission = {};
+    // The radiance it gives off: three floats a gaussian, one for all, or nothing.
+    s.emission = uniformOf(streamOf(a.emission), ParticleFieldArrays::kUniformEmission, 3);
+    // A BOUND MATERIAL'S BASE COLOUR, in place of the DC. The cloud takes the
+    // colour's space: where that is the harmonics' own the rest of them stay,
+    // the view-dependent part of the same light; where it is not, they are in
+    // another space than the colour that now stands for their DC, and are
+    // dropped -- a base colour is an albedo, the same from every side.
+    s.baseColour = uniformOf(streamOf(a.baseColour), ParticleFieldArrays::kUniformBaseColour, 3);
+    if (!s.baseColour.empty()) {
+        const bool colourLinear = !a.baseColourSrgb;
+        if (colourLinear != s.linear) {
+            s.sh = {};
+            s.shPlanes.clear();
+            s.coefficients = 1;
+        }
+        s.linear = colourLinear;
     }
     // Which ways out are open: bits, like the ids, and only beside a transfer.
     if (!s.transferDirect.empty() && a.shadowBits.IsHolding<pxr::VtIntArray>()) {

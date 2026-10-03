@@ -15,6 +15,7 @@ set(ATHENEA_USD_SOURCES
     src/RenderPass.cpp
     src/Resample.cpp
     src/SkelSplat.cpp
+    src/SplatMaterial.cpp
     src/RenderDelegate.cpp)
 set(ATHENEA_USD_LIBS usd usdGeom usdVol usdShade usdLux usdRender usdHydra usdSkel usdImaging usdSkelImaging usdUtils
     hd hdx hdsi hdMtlx hio cameraUtil gf tf vt sdf plug athenea::gpu)

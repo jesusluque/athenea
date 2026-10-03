@@ -21,6 +21,10 @@
 #include <pxr/usd/usdSkel/bindingAPI.h>
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xform.h>
+#include <pxr/usd/usdGeom/scope.h>
+#include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdGeom/xformCommonAPI.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/xformCache.h>
@@ -97,6 +101,11 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     const bool pbr = e.metallic != io::SplatEncoding::kNoField ||
                      e.roughness != io::SplatEncoding::kNoField ||
                      e.transmission != io::SplatEncoding::kNoField;
+    // A MATERIAL IS BOUND WHERE THE CLOUD SAYS WHAT ITS GAUSSIANS ARE MADE
+    // OF: a UsdPreviewSurface reading these same arrays, and the colour of
+    // the DC as `displayColor` for its base colour (computed on the device).
+    const bool bindMaterial = pbr || withNormals || withEmission;
+    VtVec3fArray baseColours;
     positions.reserve(count);
     const uint32_t perRecord = 1 + keep;
     GfVec3d lo(1e30), hi(-1e30);
@@ -116,7 +125,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto normal = buffer(device, withNormals ? n : 1, 16, "export.normal");
         auto material = buffer(device, pbr ? n : 1, 16, "export.pbr");
         auto emitted = buffer(device, withEmission ? n : 1, 16, "export.emission");
-        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material || !emitted) {
+        auto baseColour = buffer(device, bindMaterial ? n : 1, 16, "export.baseColour");
+        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material || !emitted || !baseColour) {
             return Error(ErrorCode::OutOfMemory, "cannot allocate export buffers");
         }
         gpu::CommandBatch batch(device);
@@ -129,6 +139,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             cursor["normalOut"].setBinding(normal->rhi());
             cursor["pbrOut"].setBinding(material->rhi());
             cursor["emissionOut"].setBinding(emitted->rhi());
+            cursor["baseColourOut"].setBinding(baseColour->rhi());
+            cursor["baseColourWanted"].setData(uint32_t{bindMaterial ? 1u : 0u});
             scene::setDecodeParams(cursor, e, n, 0, keep, 1);
         });
         ATHENEA_TRY(batch.submit(true));
@@ -139,7 +151,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto no = normal->readAll<float>(device);
         auto pb = material->readAll<float>(device);
         auto eo = emitted->readAll<float>(device);
-        if (!po || !ro || !sv || !co || !no || !pb || !eo) {
+        auto bo = baseColour->readAll<float>(device);
+        if (!po || !ro || !sv || !co || !no || !pb || !eo || !bo) {
             return Error(ErrorCode::DeviceFailure, "cannot read export values back");
         }
         for (uint32_t i = 0; i < n; ++i) {
@@ -175,6 +188,10 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             if (withEmission) {
                 const float* ee = eo->data() + size_t{i} * 4;
                 emissions.push_back(GfVec3f(ee[0], ee[1], ee[2]));
+            }
+            if (bindMaterial) {
+                const float* bb = bo->data() + size_t{i} * 4;
+                baseColours.push_back(GfVec3f(bb[0], bb[1], bb[2]));
             }
             if (there) {
                 for (int axis = 0; axis < 3; ++axis) {
@@ -316,13 +333,15 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         }
     }
 
-    if (options.relight) {
+    if (options.relight || bindMaterial) {
         // The cloud's colours are an albedo, not radiance: a mesh's material
         // said what the surface reflects, and nothing has lit it yet. The
         // scene's lights do that (AtheneaSplatLightingAPI), which is what makes a
         // converted mesh sit under the same lights the mesh would have.
+        // Said either way where a material is bound below, since a bound
+        // material relights a field that does not say.
         static const TfToken kRelight("primvars:athenea:splat:relight");
-        splats.GetPrim().CreateAttribute(kRelight, SdfValueTypeNames->Bool, true).Set(true);
+        splats.GetPrim().CreateAttribute(kRelight, SdfValueTypeNames->Bool, true).Set(options.relight);
     }
     if (options.ior > 1.0F) {
         static const TfToken kIor("primvars:athenea:splat:ior");
@@ -372,6 +391,55 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
                         [&](const TfToken& name) { return prim.GetAttribute(name).HasAuthoredValue(); })) {
             prim.ApplyAPI(TfToken("AtheneaSplatLightingAPI"));
         }
+    }
+
+    // THE MATERIAL, IN THE STANDARD'S PLACE FOR IT. OpenUSD's ParticleField:
+    // "if a material is bound to a ParticleField location, a renderer may
+    // opt to use the material description instead of the locally defined
+    // radiance". A UsdPreviewSurface -- what every USD renderer reads --
+    // whose inputs read the arrays above by name through primvar readers:
+    // nothing is written twice but the base colour, which is the DC's colour
+    // in the cloud's own space (`displayColor`, also what a points fallback
+    // shows). Transmission has no UsdPreviewSurface input and stays
+    // AtheneaSplatLightingAPI's alone.
+    if (bindMaterial) {
+        const UsdPrim prim = splats.GetPrim();
+        UsdGeomPrimvarsAPI(prim)
+            .CreatePrimvar(UsdGeomTokens->primvarsDisplayColor, SdfValueTypeNames->Color3fArray,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(baseColours));
+        UsdGeomScope::Define(stage, SdfPath("/World/Looks"));
+        const SdfPath materialPath("/World/Looks/SplatSurface");
+        UsdShadeMaterial material = UsdShadeMaterial::Define(stage, materialPath);
+        UsdShadeShader surface = UsdShadeShader::Define(stage, materialPath.AppendChild(TfToken("Surface")));
+        surface.CreateIdAttr(VtValue(TfToken("UsdPreviewSurface")));
+        material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), TfToken("surface"));
+        const auto readInto = [&](const char* input, const SdfValueTypeName& inputType, const char* reader,
+                                  const SdfValueTypeName& outputType, const char* primvar) {
+            UsdShadeShader node =
+                UsdShadeShader::Define(stage, materialPath.AppendChild(TfToken(std::string("Read_") + input)));
+            node.CreateIdAttr(VtValue(TfToken(reader)));
+            node.CreateInput(TfToken("varname"), SdfValueTypeNames->Token).Set(TfToken(primvar));
+            const UsdShadeOutput result = node.CreateOutput(TfToken("result"), outputType);
+            surface.CreateInput(TfToken(input), inputType).ConnectToSource(result);
+        };
+        readInto("diffuseColor", SdfValueTypeNames->Color3f, "UsdPrimvarReader_float3", SdfValueTypeNames->Float3,
+                 "displayColor");
+        if (pbr) {
+            readInto("metallic", SdfValueTypeNames->Float, "UsdPrimvarReader_float", SdfValueTypeNames->Float,
+                     "athenea:splat:metallic");
+            readInto("roughness", SdfValueTypeNames->Float, "UsdPrimvarReader_float", SdfValueTypeNames->Float,
+                     "athenea:splat:roughness");
+        }
+        if (withNormals) {
+            readInto("normal", SdfValueTypeNames->Normal3f, "UsdPrimvarReader_normal", SdfValueTypeNames->Normal3f,
+                     "athenea:splat:normal");
+        }
+        if (withEmission) {
+            readInto("emissiveColor", SdfValueTypeNames->Color3f, "UsdPrimvarReader_float3",
+                     SdfValueTypeNames->Float3, "athenea:splat:emission");
+        }
+        UsdShadeMaterialBindingAPI::Apply(prim).Bind(material);
     }
 
     // THE RIG, WHEN THE CLOUD IS CARRIED BY ONE.

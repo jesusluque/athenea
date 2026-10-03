@@ -666,14 +666,14 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kMetallic = 64, kRoughness = 128, kTransmission = 256, kCrypto = 512,
                    kTransferDirect = 1024, kTransferIndirect = 2048, kShadowBits = 4096,
                    kThinWalled = 8192, kNormals = 16384, kEmission = 32768,
-                   kBase = 65536, kShPlanes = 131072;
+                   kBase = 65536, kShPlanes = 131072, kBaseColour = 262144;
 
 }   // namespace
 
 Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree) {
     const uint32_t n = in.count;
     const auto holds = [&](const FloatStream& stream, uint64_t perElement) {
-        return stream.empty() || stream.values() >= uint64_t{n} * perElement;
+        return stream.empty() || stream.values() >= (stream.uniform ? 1 : uint64_t{n}) * perElement;
     };
     const bool shapes = in.coefficients == 0 || in.coefficients == 1 || in.coefficients == 4 ||
                         in.coefficients == 9 || in.coefficients == 16;
@@ -687,7 +687,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                     plane.half == in.shPlanes.front().half && (!plane.half || (uint64_t{n} * 3) % 2 == 0);
     }
     if (n == 0 || in.positions.values() < uint64_t{n} * 3 || !holds(in.rotations, 4) || !holds(in.scales, 3) ||
-        !holds(in.opacities, 1) || !holds(in.radianceBase, 4) || !shapes || !planesFit ||
+        !holds(in.opacities, 1) || !holds(in.radianceBase, 4) || !holds(in.baseColour, 3) || !shapes || !planesFit ||
         (!planes && !holds(in.sh, uint64_t{in.coefficients} * 3))) {
         return Error::make(ErrorCode::InvalidArgument, "'{}': splat arrays of the wrong lengths", in.source);
     }
@@ -707,9 +707,10 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     const bool haveShadowBits = transferCount > 0 && !in.shadowBits.empty() &&
                                 in.shadowBits.values() >= uint64_t{n} * 2;
     // The shading normal, three floats a gaussian, where the stage carries it.
-    const bool haveNormals = !in.normals.empty() && in.normals.values() >= uint64_t{n} * 3;
+    const bool haveNormals = !in.normals.empty() && in.normals.values() >= (in.normals.uniform ? 1 : uint64_t{n}) * 3;
     // The radiance it gives off, three floats a gaussian, where the stage carries it.
-    const bool haveEmission = !in.emission.empty() && in.emission.values() >= uint64_t{n} * 3;
+    const bool haveEmission =
+        !in.emission.empty() && in.emission.values() >= (in.emission.uniform ? 1 : uint64_t{n}) * 3;
     io::SplatEncoding e;
     e.floatsPerRecord = 14 + keep * 3 + (havePbr ? 3 : 0) + (haveCrypto ? 1 : 0) + transferCount +
                         (haveShadowBits ? 2 : 0) + (haveNormals ? 3 : 0) + (haveEmission ? 3 : 0);
@@ -748,10 +749,13 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
 
     uint32_t present = kPositions;
     uint32_t halves = in.positions.half ? kPositions : 0;
+    uint32_t uniform = 0;
     const auto note = [&](const FloatStream& stream, uint32_t bit) {
         present |= stream.empty() ? 0 : bit;
         halves |= (!stream.empty() && stream.half) ? bit : 0;
+        uniform |= (!stream.empty() && stream.uniform) ? bit : 0;
     };
+    note(in.baseColour, kBaseColour);
     note(in.rotations, kRotations);
     note(in.scales, kScales);
     note(in.opacities, kOpacities);
@@ -792,6 +796,8 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!sh) return std::move(sh).error();
     auto radianceBase = streamBuffer(in.radianceBase, "splats.stream.radianceBase");
     if (!radianceBase) return std::move(radianceBase).error();
+    auto baseColour = streamBuffer(in.baseColour, "splats.stream.baseColour");
+    if (!baseColour) return std::move(baseColour).error();
     auto none = streamBuffer({}, "splats.stream.none");
     if (!none) return std::move(none).error();
 
@@ -845,11 +851,13 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 cursor["normals"].setBinding(haveNormals ? normals->rhi() : none->rhi());
                 cursor["emission"].setBinding(haveEmission ? emission->rhi() : none->rhi());
                 cursor["radianceBase"].setBinding(radianceBase->rhi());
+                cursor["baseColour"].setBinding(baseColour->rhi());
                 cursor["records"].setBinding(records->rhi());
                 rhi::ShaderCursor p = cursor["params"];
                 p["count"].setData(count);
                 p["first"].setData(first);
                 p["planeLength"].setData(n);
+                p["uniform"].setData(uniform);
                 p["stride"].setData(e.floatsPerRecord);
                 p["keep"].setData(keep);
                 p["coefficients"].setData(in.coefficients);
@@ -911,7 +919,8 @@ Result<GpuPoints> CloudLoader::upload(const PointStreams& in, float detail) {
                 cursor["positions"].setBinding(positions->rhi());
                 cursor["colours"].setBinding(colourStream->rhi());
                 for (const char* unused :
-                     {"rotations", "scales", "opacities", "sh", "metallic", "roughness", "transmission", "radianceBase"}) {
+                     {"rotations", "scales", "opacities", "sh", "metallic", "roughness", "transmission", "radianceBase",
+                      "baseColour"}) {
                     cursor[unused].setBinding(none->rhi());
                 }
                 cursor["records"].setBinding(records->rhi());

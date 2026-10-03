@@ -1100,6 +1100,53 @@ athenea writes says both: the primvar where it is light, and `colorSpace:name`
 always, `lin_rec709_scene` or `srgb_rec709_scene`; its `emission` says
 `lin_rec709_scene` on the attribute.
 
+**A material bound to a ParticleField** — the standard place to say what a
+gaussian is made of. OpenUSD: "if a material is bound to a ParticleField
+location, a renderer may opt to use the material description instead of the
+locally defined radiance". The engine reads the bound material's surface --
+`UsdPreviewSurface`, OpenPBR Surface or Standard Surface, in the `surface`
+terminal -- input by input. An input connected to a primvar reader
+(`UsdPrimvarReader_*`'s `varname`, MaterialX `geompropvalue`'s `geomprop`)
+reads that primvar of the field, one value a particle; an input that is a
+value stands for every particle; an input connected to anything else (a
+texture, a graph) is not read, with a message, since a gaussian has no
+coordinates to look a texture up with.
+
+| Channel | UsdPreviewSurface | OpenPBR Surface | Standard Surface | What it replaces |
+|---|---|---|---|---|
+| base colour | `diffuseColor` | `base_color` | `base_color` | the DC: the colour, back into the coefficient on the device |
+| metallic | `metallic` | `base_metalness` | `metalness` | `primvars:athenea:splat:metallic` |
+| roughness | `roughness` | `specular_roughness` | `specular_roughness` | `primvars:athenea:splat:roughness` |
+| transmission | — | `transmission_weight` | `transmission` | `primvars:athenea:splat:transmission` |
+| normal | `normal` (primvar only) | `geometry_normal` (primvar only) | `normal` (primvar only) | `primvars:athenea:splat:normal` |
+| emission | `emissiveColor` | — | — | `primvars:athenea:splat:emission` |
+
+Precedence, channel by channel: what the bound material says -- a primvar
+long enough for every particle, or a value -- then the AtheneaSplat primvar,
+then the default (metallic 0, roughness 1, transmission 0, the frame's normal,
+no emission, the harmonics' DC). A primvar the material names that is shorter
+than the particles is warned of and the AtheneaSplat one stands. A field with
+a material that says anything is relit unless it authors
+`primvars:athenea:splat:relight` itself; a material that says nothing a
+gaussian uses (a surface of another kind, every input a texture) changes
+nothing. The base colour is in the space USD resolves for its primvar (a
+colour primvar carries one; none is linear Rec.709); where that is not the
+harmonics' space the cloud takes the colour's and the rest of the harmonics
+are dropped. A normal is read as a direction in the field's own space, not
+in a tangent frame; a value for every particle is ignored. The emission
+weights of OpenPBR and Standard Surface are not folded into a radiance, so
+their emission is not read. Editing the bound material's network is seen
+the next time the field's own primvars or binding change.
+
+A cloud athenea writes that carries PBR, a normal or an emission binds
+`/World/Looks/SplatSurface`, a `UsdPreviewSurface` whose inputs read its own
+`athenea:splat:*` arrays by name and whose `diffuseColor` reads
+`primvars:displayColor`, the colour of each DC (`0.5 + 0.2820948 * dc`) in the
+cloud's space -- twelve bytes a gaussian more in the file, the only array
+written twice. Transmission has no UsdPreviewSurface input and stays
+AtheneaSplatLightingAPI's. `relight` is then always authored, `false` where
+the cloud is not relit, so that the bound material does not relight it.
+
 **`AtheneaSplatSkinningAPI`** — the joints that carry a cloud.
 
 | Attribute | Type | Note |

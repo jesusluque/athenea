@@ -13,6 +13,8 @@
 #include <pxr/base/tf/staticTokens.h>
 #include <pxr/base/gf/quath.h>
 #include <pxr/imaging/hd/changeTracker.h>
+#include <pxr/imaging/hd/material.h>
+#include <pxr/imaging/hd/primvarSchema.h>
 #include <pxr/imaging/hd/primvarsSchema.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/sceneIndex.h>
@@ -23,6 +25,7 @@
 #include "RenderParam.h"
 #include "athenea/usd/HydraCamera.h"
 #include "athenea/usd/PrimData.h"
+#include "athenea/usd/SplatMaterial.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -119,10 +122,27 @@ athenea::render::SplatEdit editOf(HdSceneDelegate* delegate, SdfPath const& id) 
 }
 
 /// AtheneaSplatLightingAPI: whether this cloud is relit rather than shown as it
-/// was baked.
-bool relightOf(HdSceneDelegate* delegate, SdfPath const& id) {
+/// was baked. Nothing where it is not authored: a bound material then says.
+std::optional<bool> relightOf(HdSceneDelegate* delegate, SdfPath const& id) {
     static const TfToken kRelight("athenea:splat:relight");
-    return boolOf(delegate->Get(id, kRelight), false);
+    const VtValue said = delegate->Get(id, kRelight);
+    if (said.IsEmpty()) {
+        return std::nullopt;
+    }
+    return boolOf(said, false);
+}
+
+/// The colour space Hydra resolved for primvar `key` of `id`: a colour
+/// primvar carries one (usdImaging's UsdColorSpaceAPI resolution). Empty
+/// where it does not.
+std::string primvarColourSpace(HdSceneDelegate* delegate, SdfPath const& id, TfToken const& key) {
+    const HdSceneIndexBaseRefPtr index = delegate->GetRenderIndex().GetTerminalSceneIndex();
+    if (!index) {
+        return {};
+    }
+    const HdTokenDataSourceHandle space =
+        HdPrimvarsSchema::GetFromParent(index->GetPrim(id).dataSource).GetPrimvar(key).GetColorSpace();
+    return space ? space->GetTypedValue(0.0F).GetString() : std::string();
 }
 
 /// Whether its colours are light already: what a conversion bakes into them
@@ -169,7 +189,7 @@ athenea::usd::StreamedAsset assetOf(HdSceneDelegate* delegate, SdfPath const& id
 HdDirtyBits HdAtheneaParticleField::GetInitialDirtyBitsMask() const {
     return HdChangeTracker::Clean | HdChangeTracker::InitRepr | HdChangeTracker::DirtyPoints |
            HdChangeTracker::DirtyPrimvar | HdChangeTracker::DirtyTransform |
-           HdChangeTracker::DirtyVisibility;
+           HdChangeTracker::DirtyVisibility | HdChangeTracker::DirtyMaterialId;
 }
 
 void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam,
@@ -212,7 +232,100 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         }
         return value;
     };
-    if ((*dirtyBits & (HdChangeTracker::DirtyPoints | HdChangeTracker::DirtyPrimvar)) != 0) {
+    // WHAT THE BOUND MATERIAL SAYS, over AtheneaSplatLightingAPI's arrays
+    // wherever it says something: the primvar a reader names, one value a
+    // particle, or the input's own value, one for all of them (held, so the
+    // same value is the same array and nothing is uploaded again). Which
+    // array is which is all that is decided here; the values go to the
+    // device as they are. True where it said anything.
+    const auto applyMaterial = [&](athenea::usd::ParticleFieldArrays& arrays) {
+        const SdfPath material = GetMaterialId();
+        if (material.IsEmpty()) {
+            return false;
+        }
+        const VtValue resource = delegate->GetMaterialResource(material);
+        if (!resource.IsHolding<HdMaterialNetworkMap>()) {
+            return false;
+        }
+        const athenea::usd::SplatMaterialChannels channels = athenea::usd::splatMaterialChannels(
+            HdConvertToHdMaterialNetwork2(resource.UncheckedGet<HdMaterialNetworkMap>()));
+        if (channels.surface.empty()) {
+            return false;
+        }
+        size_t particles = 0;
+        (void)athenea::usd::streamOf(arrays.positions, &particles);
+        bool said = false;
+        // A constant, as the one-element array the streams read for all.
+        const auto constant = [&](const char* name, VtValue made) {
+            const TfToken key(std::string("__material:") + name);
+            if (const auto found = _held.find(key); found != _held.end() && found->second == made) {
+                return found->second;
+            }
+            _held[key] = made;
+            return made;
+        };
+        const auto read = [&](const athenea::usd::SplatMaterialInput& input, const char* name, uint32_t width,
+                              uint32_t uniformBit, VtValue& into) {
+            if (input.unreadable) {
+                athenea::log::info("hdAthenea: {}: the material's {} is not a primvar reader; a gaussian is not "
+                                   "textured, and keeps its own",
+                                   id.GetString(), name);
+                return;
+            }
+            if (!input.primvar.empty()) {
+                VtValue value = held(TfToken(input.primvar));
+                if (athenea::usd::streamOf(value).values() < uint64_t{particles} * width) {
+                    athenea::log::warn("hdAthenea: {}: the material's {} reads '{}', which is not {} float(s) a "
+                                       "particle; not read",
+                                       id.GetString(), name, input.primvar, width);
+                    return;
+                }
+                into = std::move(value);
+                arrays.uniform &= ~uniformBit;
+                said = true;
+                return;
+            }
+            if (input.constant.IsEmpty() || uniformBit == 0) {
+                return;
+            }
+            VtValue one;
+            if (width == 1 && input.constant.CanCast<float>()) {
+                one = VtValue(VtFloatArray(1, VtValue::Cast<float>(input.constant).UncheckedGet<float>()));
+            } else if (width == 3 && input.constant.CanCast<GfVec3f>()) {
+                one = VtValue(VtVec3fArray(1, VtValue::Cast<GfVec3f>(input.constant).UncheckedGet<GfVec3f>()));
+            }
+            if (one.IsEmpty()) {
+                return;
+            }
+            into = constant(name, std::move(one));
+            arrays.uniform |= uniformBit;
+            said = true;
+        };
+        using Arrays = athenea::usd::ParticleFieldArrays;
+        read(channels.metallic, "metallic", 1, Arrays::kUniformMetallic, arrays.metallic);
+        read(channels.roughness, "roughness", 1, Arrays::kUniformRoughness, arrays.roughness);
+        read(channels.transmission, "transmission", 1, Arrays::kUniformTransmission, arrays.transmission);
+        read(channels.normal, "normal", 3, 0, arrays.normals);
+        read(channels.emission, "emission", 3, Arrays::kUniformEmission, arrays.emission);
+        read(channels.baseColour, "base colour", 3, Arrays::kUniformBaseColour, arrays.baseColour);
+        if (!arrays.baseColour.IsEmpty() && !channels.baseColour.primvar.empty()) {
+            // A colour primvar carries the space USD resolved for it; none is
+            // USD's linear Rec.709. A value is the material's, linear.
+            const std::optional<bool> linear = athenea::usd::cloudColoursLinear(
+                primvarColourSpace(delegate, id, TfToken(channels.baseColour.primvar)));
+            arrays.baseColourSrgb = linear.has_value() && !*linear;
+        }
+        return said;
+    };
+    // A BOUND MATERIAL: what the field says a gaussian is made of, in the
+    // standard's place for it (usdVol: "a renderer may opt to use the
+    // material description instead of the locally defined radiance").
+    const bool materialDirty = (*dirtyBits & HdChangeTracker::DirtyMaterialId) != 0;
+    if (materialDirty) {
+        SetMaterialId(delegate->GetMaterialId(id));
+    }
+    bool materialSays = false;
+    if ((*dirtyBits & (HdChangeTracker::DirtyPoints | HdChangeTracker::DirtyPrimvar)) != 0 || materialDirty) {
         // The float attribute, or its half twin: kept as they come, halves
         // turned into floats on the device.
         const auto either = [&](TfToken const& full, TfToken const& half) {
@@ -344,10 +457,18 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.visibilityPartOf = held(kVisibilityPartOf);
         static const TfToken kVisibilityAmbient("athenea:splat:visibilityAmbient");
         arrays.visibilityAmbient = held(kVisibilityAmbient);
+        materialSays = applyMaterial(arrays);
         raw = std::move(arrays);
     }
     std::optional<athenea::render::SplatEdit> edit;
     std::optional<athenea::usd::StreamedAsset> asset;
+    // Relit where the field says so; where it does not, where a bound
+    // material says what its gaussians are made of. Only when the arrays were
+    // read again, since that is when a material is looked at.
+    std::optional<bool> relight;
+    if (raw.has_value()) {
+        relight = relightOf(delegate, id).value_or(materialSays);
+    }
     if ((*dirtyBits & HdChangeTracker::DirtyPrimvar) != 0) {
         edit = editOf(delegate, id);
         asset = assetOf(delegate, id);
@@ -387,7 +508,7 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         visible = IsVisible() && HdAtheneaInstancersVisible(delegate, GetInstancerId());
     }
     engine->setSplats(id, std::move(raw), transformDirty ? &transform : nullptr, visible, edit, std::move(asset),
-                      relightOf(delegate, id),
+                      relight,
                       [&] {
                           const VtArray<TfToken> cats = delegate->GetCategories(id);
                           return std::vector<TfToken>(cats.begin(), cats.end());

@@ -11144,3 +11144,51 @@ an in-memory stage, the degree and short-array bookkeeping, and on the GPU the
 exported stage's declaration and three frames -- degree unauthored, space
 said only by `UsdColorSpaceAPI`, as written -- that must be the same image
 (max 0), with a control said to be sRGB that must not.
+
+### A material bound to the field, as the standard place for a gaussian's surface
+
+The schema's hook ("a renderer may opt to use the material description
+instead of the locally defined radiance") is read, not invented: the bound
+material's surface (`UsdPreviewSurface`, OpenPBR Surface, Standard Surface)
+input by input (`usd::splatMaterialChannels`, over the `HdMaterialNetwork2`
+the delegate already gets). A primvar reader's primvar is one value a
+particle; an input's value is one for all, which the stream kernel reads as
+the first element (`StreamParams::uniform`) rather than the CPU filling an
+array; the base colour replaces the DC, turned back into the coefficient on
+the device (`(c - 0.5) / SH0`, `streams.slang`). Which array is which is the
+only thing decided on the CPU. Precedence is the material where it says
+something, then AtheneaSplatLightingAPI, then the defaults; a material that
+says anything relights a field that does not author `relight`. That keeps
+AtheneaSplat*API as the extension -- transmission under UsdPreviewSurface,
+the transfer, `litBody`, `ior`, thin walls, Cryptomatte, the rig -- and the
+material as the place another renderer looks.
+
+The writer binds `/World/Looks/SplatSurface` to every cloud that carries PBR,
+a normal or an emission, its readers naming the `athenea:splat:*` arrays
+themselves, so nothing is written twice except `displayColor` (the DC's
+colour, computed in `splat_export.slang`, twelve bytes a gaussian), which is
+what the base colour reads and what Storm's points fallback shows. A cloud
+read back through its material is the cloud read through its primvars: the
+round trip is a base colour to a coefficient and back, under a float ulp.
+
+What another renderer does with it is its own: OpenUSD's
+`HdsiParticleFieldConversionSceneIndex` (Storm, hdPrman) makes points with a
+default material that shows coefficient 0 as emission when none is bound,
+and uses a bound one; Blender 5.3's importer reads the radiance and not the
+material. Not checked by hand here: what usdview and Blender draw for a
+mesh2splat stage now that it binds one (the proposal's experiment 2).
+
+Not done:
+- a material's network edited in place is seen at the field's next primvar
+  or binding change; the rprim is not dirtied by its material's sprim;
+- OpenPBR's and Standard Surface's emission (a colour times a luminance or a
+  weight) are not read; UsdPreviewSurface's `emissiveColor` is;
+- a texture-connected input is not read (a gaussian has no UV);
+- a constant normal is ignored; a normal primvar is in the field's space,
+  not a tangent frame.
+
+Tests: the network reading and the stream bookkeeping without a device; on
+the GPU an exported cloud's binding and readers, its frame with the material
+bound against unbound (the round trip), and the same relit cloud with its
+arrays under its own names read only through the material against the
+AtheneaSplat primvars, with a control of one roughness for all.

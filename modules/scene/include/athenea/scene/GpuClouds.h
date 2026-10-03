@@ -152,6 +152,10 @@ struct FloatStream {
     std::span<const std::byte> bytes;
     bool                       half = false;
     bool                       isDouble = false;   ///< float64 (matrix4d, point3d); `half` then false
+    /// One element for every element of the cloud: a bound material's input
+    /// that is a value, not a primvar. Read by the splat streams' metallic,
+    /// roughness, transmission, normals, emission and base colour only.
+    bool                       uniform = false;
 
     [[nodiscard]] bool   empty() const noexcept { return bytes.empty(); }
     [[nodiscard]] size_t values() const noexcept { return bytes.size() / (isDouble ? 8 : half ? 2 : 4); }
@@ -204,6 +208,11 @@ struct SplatStreams {
     /// onwards), in place of `sh`: `coefficients` is then their count plus
     /// one. All float, or all half. Laid out on the device as `sh` is.
     std::vector<FloatStream> shPlanes;
+    /// A BOUND MATERIAL'S BASE COLOUR, three floats a splat (or one for all,
+    /// `uniform`): the colour of the DC, in place of the DC of `sh`, turned
+    /// back into the coefficient on the device. In the cloud's space,
+    /// `linear` (usd::splatStreams makes them agree).
+    FloatStream baseColour;
 };
 
 /// A point cloud as separate arrays, the way UsdGeomPoints stores one.

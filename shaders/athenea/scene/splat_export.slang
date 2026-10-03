@@ -26,6 +26,11 @@ RWStructuredBuffer<float4>   pbrOut;
 // The radiance the record gives off, linear, nothing below zero and nothing
 // that is not a number, where it carries one (`params.emission`).
 RWStructuredBuffer<float4>   emissionOut;
+// The colour of the DC, 0.5 + SH0 * dc, in the cloud's own space: what a
+// bound material's base colour reads (`primvars:displayColor`), where the
+// export binds one (`baseColourWanted`); written only then.
+RWStructuredBuffer<float4>   baseColourOut;
+uniform uint                 baseColourWanted;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -92,6 +97,9 @@ void splatExport(uint3 tid: SV_DispatchThreadID) {
         dc = (dc / 255.0 - 0.5) / 0.15;   // SPZ's DC scale
     }
     coefficients[row] = valid ? float4(dc, 0.0) : float4(0.0, 0.0, 0.0, 0.0);
+    if (baseColourWanted != 0u) {
+        baseColourOut[i] = valid ? float4(float3(0.5) + kSH0 * dc, 0.0) : float4(0.0, 0.0, 0.0, 0.0);
+    }
     for (uint basis = 0; basis < params.keepPerColour; ++basis) {
         float3 c = float3(0.0);
         for (uint colour = 0; colour < 3; ++colour) {

@@ -84,12 +84,15 @@ struct StreamedAsset {
 /// actually changed. `skinningXforms` is deliberately not among them -- it is
 /// the one array that does change every frame, and no decode depends on it.
 struct CloudIdentity {
-    std::array<const void*, 17> data{};
-    std::array<size_t, 17>      bytes{};
+    std::array<const void*, 20> data{};
+    std::array<size_t, 20>      bytes{};
     int                         shDegree = -1;
+    /// What says how the arrays are read: which a material's value filled,
+    /// and the spaces the colours are in.
+    uint32_t                    flags = 0;
 
     [[nodiscard]] bool operator==(const CloudIdentity& other) const noexcept {
-        return data == other.data && bytes == other.bytes && shDegree == other.shDegree;
+        return data == other.data && bytes == other.bytes && shDegree == other.shDegree && flags == other.flags;
     }
 };
 

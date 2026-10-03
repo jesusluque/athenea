@@ -3283,14 +3283,16 @@ namespace {
 CloudIdentity Engine::identityOf(const ParticleFieldArrays& arrays) {
     // Blender's planes come and go together: the first stands for them all.
     static const pxr::VtValue kNone;
-    const pxr::VtValue* const held[17] = {
+    const pxr::VtValue* const held[20] = {
         &arrays.positions,   &arrays.orientations, &arrays.scales,       &arrays.opacities,
         &arrays.shCoefficients, &arrays.metallic,  &arrays.roughness,    &arrays.transmission,
         &arrays.jointIndices,   &arrays.jointWeights, &arrays.visibilityParts, &arrays.visibilityTexels,
         &arrays.visibilityPartOf, &arrays.visibilityAmbient, &arrays.radianceBase,
-        arrays.shPlanes.empty() ? &kNone : &arrays.shPlanes.front(), &arrays.jointWeightGradients};
+        arrays.shPlanes.empty() ? &kNone : &arrays.shPlanes.front(), &arrays.jointWeightGradients,
+        &arrays.baseColour, &arrays.normals, &arrays.emission};
     CloudIdentity identity;
-    for (size_t k = 0; k < 17; ++k) {
+    identity.flags = arrays.uniform | (arrays.linear ? 1u << 8 : 0u) | (arrays.baseColourSrgb ? 1u << 9 : 0u);
+    for (size_t k = 0; k < 20; ++k) {
         const auto [data, bytes] = arrayIdentity(*held[k]);
         identity.data[k] = data;
         identity.bytes[k] = bytes;
