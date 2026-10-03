@@ -158,7 +158,10 @@ boundary and turned into an `Error`.
 
 **The operating system lives in `core/Platform`.** Every OS call the engine
 makes outside its dependencies is behind one header, so the Windows port has
-one file to start from rather than a search.
+one file to start from rather than a search. A file a command writes for
+another step to read is written through `platform::writeAtomically`: under a
+partial name beside it, renamed when complete, so a failure leaves no half
+file under the name asked for.
 
 **aofx changes only additively.** openFXplayer's bundles must keep loading, so
 the SDK headers are copied verbatim from their own repository and frozen by

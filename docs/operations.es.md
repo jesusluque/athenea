@@ -388,6 +388,12 @@ receta es §3.1.
 llevar luz horneada en una pose, así que la conversión lo dice y conserva el
 material.
 
+La salida se escribe entera o no se escribe: como `.<nombre>.partial-<pid>.<ext>`
+en el mismo directorio, y renombrada a `-o` cuando está completa. Una
+conversión que falla no deja nada en `-o` -- o deja el fichero que ya había,
+tal como estaba -- y borra su fichero parcial. Con `--lod-levels`, cada nivel
+y la escena que los dibuja se escriben así.
+
 ### 2.9 `athenea visibility` — lo que proyecta una nube con esqueleto, por partes
 
 | Opción | Valor | Por defecto | Notas |

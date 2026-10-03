@@ -383,6 +383,12 @@ recipe is §3.1 below.
 `--skinned` and a bake are refused together: a cloud that moves cannot carry
 light baked in one pose, so the conversion says so and keeps the material.
 
+The output is written whole or not at all: under `.<name>.partial-<pid>.<ext>`
+in the same directory, and renamed to `-o` once it is complete. A conversion
+that fails leaves nothing under `-o` -- or the file that was there before, as
+it was -- and removes its partial file. With `--lod-levels`, each level and
+the stage that draws them are written so.
+
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part
 
 | Option | Value | Default | Notes |

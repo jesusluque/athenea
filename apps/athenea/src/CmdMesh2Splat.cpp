@@ -45,6 +45,7 @@
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
 #include "athenea/core/Hash.h"
+#include "athenea/core/Platform.h"
 #include "athenea/geom/Mesh.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/CommandBatch.h"
@@ -1630,7 +1631,12 @@ void addMesh2Splat(CLI::App& app) {
                 options.transferDirect = transferDirect;
                 options.transferIndirect = transferIndirect;
                 options.shadowBits = shadowBits;
-                return usd::writeParticleFieldStage(library, *raw, o->output, options);
+                // WHOLE OR NOT AT ALL: under another name beside it, and
+                // under its own only once it is complete, so a conversion
+                // that fails leaves no stage of half a cloud behind.
+                return platform::writeAtomically(o->output, [&](const std::filesystem::path& partial) {
+                    return usd::writeParticleFieldStage(library, *raw, partial, options);
+                });
             };
             auto ran = context->run([&] { inside = work(); });
             if (!ran) {
@@ -1647,8 +1653,12 @@ void addMesh2Splat(CLI::App& app) {
         if (lodLevels > 1) {
             o->output = assemblyPath;
             o->resolution = baseResolution;
-            if (auto made = usd::writeLodAssembly(assemblyPath, levelFiles,
-                                                  std::filesystem::path(assemblyPath).stem().string());
+            if (auto made = platform::writeAtomically(assemblyPath,
+                                                      [&](const std::filesystem::path& partial) {
+                                                          return usd::writeLodAssembly(
+                                                              partial, levelFiles,
+                                                              std::filesystem::path(assemblyPath).stem().string());
+                                                      });
                 !made) {
                 std::fprintf(stderr, "%s\n", made.error().toString().c_str());
                 throw CLI::RuntimeError(1);

@@ -9381,3 +9381,15 @@ read -- a triangle walks at most that many cells and the rest of it is bare),
 and a budget exhausted, with how many splats did not fit and how many meshes
 the budget ran out before. Both lines were in the Codex conversion of
 lucabRTrender and were lost in the move.
+
+**Whole or not at all.** The output went straight to `-o`, so a conversion
+that died in the export -- the device out of memory, a killed process -- left
+a stage of part of a cloud under the name the next step reads. It is now
+written under `.<name>.partial-<pid>.<ext>` beside it and renamed when
+complete (`platform::writeAtomically`: the same directory, so the rename is
+one step; the same extension, so USD writes the format it was asked for).
+The rename and the removal are OS calls and live in `core/Platform`; the
+Windows port's are `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` and
+`DeleteFileW`. `athenea_core_tests "a file written atomically*"`: a writer
+that fails leaves nothing, nor its partial file; one over an existing file
+leaves that file as it was.

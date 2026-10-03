@@ -161,7 +161,10 @@ captura en el borde de ese módulo y se convierte en un `Error`.
 
 **El sistema operativo vive en `core/Platform`.** Cada llamada al sistema que
 hace el motor fuera de sus dependencias está detrás de una cabecera, así que
-el port a Windows tiene un fichero por el que empezar y no una búsqueda.
+el port a Windows tiene un fichero por el que empezar y no una búsqueda. Un
+fichero que un comando escribe para que otro paso lo lea se escribe con
+`platform::writeAtomically`: con un nombre parcial a su lado, renombrado al
+completarse, así que un fallo no deja medio fichero con el nombre pedido.
 
 **aofx solo cambia de manera aditiva.** Los bundles de openFXplayer tienen que
 seguir cargando, así que las cabeceras del SDK se copian literales de su
