@@ -182,6 +182,11 @@ emit, tile sort and blend times separately.
 A `.athc` output refuses a non-zero `--rotate-x`: the container holds the
 cloud as it is, and the turn belongs on the prim that references it.
 
+A stage written here says `metersPerUnit = 1`: none of the input formats
+records a unit, and a capture's scale is taken to be metres. A cloud in
+another unit is scaled where it is referenced, or the stage's
+`metersPerUnit` edited.
+
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
@@ -220,7 +225,8 @@ as a direction (the weighted mean made a unit vector again); any other float
 -- metallic, roughness, a transfer, `primvars:athenea:splat:emission` -- as a
 mean. Metallic, roughness and transmission are
 also compared as colour is. An array sampled in time is merged a sample at a
-time. A splat file is written as a new stage, as `athenea convert` writes one.
+time. The copy keeps the source's `metersPerUnit` and `upAxis`. A splat
+file is written as a new stage, as `athenea convert` writes one, in metres.
 
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
@@ -493,7 +499,7 @@ keeps its own opinions, variants included):
 | `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
 | `customData` and `customLayerData` keys with an `lrt` component | the same with `athenea` |
 | an asset path ending `.lrtc` | `.athc` |
-| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 2, no normals); the payload is copied as it is |
+| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 1, no normals); the payload is copied as it is |
 
 Asset paths. A relative path to a file that is not copied (a texture, a layer
 without `--recursive`, one outside `--root`) is made absolute when the output
@@ -823,14 +829,14 @@ the weighted mean of what they stand for made unit again. That is version 2
 of the format; a version 1 file, which has none, is still read. The same
 version keeps whether the colours are linear light (`primvars:athenea:splat:linear`)
 in its header's flags (bit 1, beside bit 0 for the normals); a file written
-before has it clear and is read as a capture, sRGB.
-
-of the format; a version 1 file, which has none, is still read. A cloud that
+before has it clear and is read as a capture, sRGB. A cloud that
 gives off light (`primvars:athenea:splat:emission`) keeps that too, four bytes
 more a gaussian (one RGB9E5 word, after the normals where both are there),
 the merged levels' the weighted mean of what they stand for; it is bit 2 of
 the header's `flags` (bit 0 is the normals), so a file without it reads as
-before.
+before. A cloud without normals, without emission and in sRGB is still written as
+version 1, so a reader of version 1 alone opens it: version 2 is written only
+where the `flags` are not zero.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the

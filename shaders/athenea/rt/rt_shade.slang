@@ -98,7 +98,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         const float3 eyeWorld = float3(params.eyeWorldX, params.eyeWorldY, params.eyeWorldZ);
         SplatSurface surface;
         surface.position = relightToWorld(w0, w1, w2, p.xyz);
-        surface.normal = relightDirectionToWorld(w0, w1, w2, cloudNormal);
+        surface.normal = relightNormalToWorld(w0, w1, w2, cloudNormal);
         // What the cloud shows in this direction, in linear light already.
         // The harmonics are part of it -- a baked cloud keeps the body's own
         // change with direction in them -- so it is the evaluated colour and

@@ -43,6 +43,7 @@
 
 #include "athenea/technique/Visibility.h"
 #include "athenea/core/Hash.h"
+#include "athenea/core/Platform.h"
 #include "athenea/io/Exr.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/io/Readers.h"
@@ -320,6 +321,9 @@ TEST_CASE("a decimated stage keeps everything, every array a gaussian long as lo
             .Set(1);
         field.CreateAttribute(TfToken("athenea:test:texture"), SdfValueTypeNames->Asset)
             .Set(SdfAssetPath("./floor_texture.png"));
+        // In centimetres, which the copy must keep: the gaussians' own stage
+        // on the way is written in metres.
+        UsdGeomSetStageMetersPerUnit(stage, 0.01);
         REQUIRE(stage->GetRootLayer()->Save());
     }
     { std::ofstream(folder / "floor_texture.png") << "not an image, only a file that is there"; }
@@ -359,6 +363,7 @@ TEST_CASE("a decimated stage keeps everything, every array a gaussian long as lo
     SdfAssetPath texture;
     REQUIRE(field.GetAttribute(TfToken("athenea:test:texture")).Get(&texture));
     CHECK(!texture.GetResolvedPath().empty());   // found from the other folder
+    CHECK(UsdGeomGetStageMetersPerUnit(stage) == 0.01);
 }
 
 TEST_CASE("splats and points behind a mesh leave it as it is; in front of it they show", "[usd][gpu][mesh][layers]") {
@@ -6703,8 +6708,13 @@ namespace {
 /// transmitting and as rough as the material. Written as the conversion
 /// writes it -- relit, with the index -- and placed with the mesh's camera
 /// and `sky` in a stage of its own. Fibonacci points: evenly spaced, no seam.
+///
+/// With `card`, the cloud also holds an opaque square of that colour behind
+/// the ball -- 6 wide at z = -6, facing the camera -- which is what a ray
+/// through the glass meets instead of the sky.
 fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t count,
-                             const std::array<float, 3>& tint, float roughness, const std::string& sky) {
+                             const std::array<float, 3>& tint, float roughness, const std::string& sky,
+                             const std::array<float, 3>* card = nullptr) {
     io::RawSplats raw;
     raw.source = "glass ball";
     io::SplatEncoding& e = raw.encoding;
@@ -6739,6 +6749,21 @@ fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t c
         raw.records.insert(raw.records.end(), record, record + 17);
         raw.count += 1;
     }
+    if (card != nullptr) {
+        const uint32_t side = 120;
+        const float cell = 6.0F / side;
+        for (uint32_t j = 0; j < side; ++j) {
+            for (uint32_t i = 0; i < side; ++i) {
+                const float record[17] = {-3.0F + cell * (i + 0.5F), -3.0F + cell * (j + 0.5F), -6.0F, 0.99F,
+                                          cell, cell, 0.1F * cell,
+                                          1.0F, 0.0F, 0.0F, 0.0F,
+                                          (*card)[0], (*card)[1], (*card)[2],
+                                          0.0F, 1.0F, 0.0F};
+                raw.records.insert(raw.records.end(), record, record + 17);
+                raw.count += 1;
+            }
+        }
+    }
     const fs::path cloud = scratch(name + "_splats.usda");
     usd::ExportOptions options;
     options.addCamera = false;
@@ -6755,14 +6780,32 @@ fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t c
 
 /// The same ball as a mesh with a `standard_surface` glass of that tint and
 /// roughness, under the same `sky`.
+///
+/// With `card`, the square glassBallCloudStage puts behind the ball, as a
+/// mesh with a diffuse UsdPreviewSurface of that colour.
 fs::path glassBallMeshStage(const std::string& name, const std::string& tint, float roughness,
-                            const std::string& sky) {
+                            const std::string& sky, const std::string& card = "") {
     glassLook(name, roughness, tint);
     const fs::path path = scratch(name + ".usda");
     std::ofstream out(path);
     out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
            "def Scope \"Looks\" (\n    prepend references = @./" << name << ".mtlx@</MaterialX/Materials>\n)\n{\n}\n"
         << ballMesh("Ball", "/Looks/M_Glass", false) << sky << kBallCamera;
+    if (!card.empty()) {
+        out << "def Material \"Card\"\n{\n"
+               "    token outputs:surface.connect = </Card/Surface.outputs:surface>\n"
+               "    def Shader \"Surface\"\n    {\n"
+               "        uniform token info:id = \"UsdPreviewSurface\"\n"
+               "        color3f inputs:diffuseColor = (" << card << ")\n"
+               "        float inputs:roughness = 1\n"
+               "        token outputs:surface\n    }\n}\n"
+               "def Mesh \"Back\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    rel material:binding = </Card>\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-3, -3, -6), (3, -3, -6), (3, 3, -6), (-3, 3, -6)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n}\n";
+    }
     return path;
 }
 
@@ -6840,6 +6883,119 @@ TEST_CASE("a glass cloud lets out at its far face what the mesh's glass does", "
     // 0.98 and 0.51 before, against 0.92 and 0.26; 2.6 % and 3.3 % now.
     CHECK(std::abs(c[1] - m[1]) < 0.045 * m[1]);
     CHECK(std::abs(c[2] - m[2]) < 0.045 * m[2]);
+}
+
+// WHAT A RAY MEETS BEHIND THE GLASS LEAVES THROUGH THE FAR FACE TOO.
+//
+// The colour a ray through a glass cloud meets behind it -- a gold collar
+// under a pawn's glass head -- is the colour that particle was shaded with,
+// and it crosses the far face as the sky does: its Fresnel and a second
+// tint. By the precedence of `?:` the far face weighed only the sky, so a
+// grey card behind a ball of tint (1, 1, 0.5) came through at half its blue
+// where the mesh's glass lets a quarter of it through. The ratio of blue to
+// green is the tint squared whatever the card's own shading, which is what
+// is held to the mesh; green is held too, more loosely, since a relit card
+// and a path-traced one need not agree to the percent.
+TEST_CASE("what a glass cloud shows behind it leaves through the far face as the mesh's does",
+          "[usd][gpu][splat][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const std::string sky = "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    const uint32_t w = 96, h = 96;
+    const std::array<float, 3> grey{0.8F, 0.8F, 0.8F};
+    const gpu::Buffer mesh =
+        renderBall(gpu, glassBallMeshStage("behind_mesh", "1, 1, 0.5", 0.0F, sky, "0.8, 0.8, 0.8"), w, h, 512);
+    const gpu::Buffer cloud = renderBall(
+        gpu, glassBallCloudStage(gpu, "behind_cloud", 60000, {1.0F, 1.0F, 0.5F}, 0.0F, sky, &grey), w, h, 16);
+    const std::array<double, 3> m = middleMean(gpu, mesh, w, h, 16);
+    const std::array<double, 3> c = middleMean(gpu, cloud, w, h, 16);
+    std::printf("  a grey card through a ball of tint (1, 1, 0.5): mesh %.4f %.4f %.4f, cloud %.4f %.4f %.4f\n",
+                m[0], m[1], m[2], c[0], c[1], c[2]);
+    REQUIRE(m[1] > 0.0);
+    REQUIRE(c[1] > 0.0);
+    const double meshRatio = m[2] / m[1];
+    const double cloudRatio = c[2] / c[1];
+    // 1.6 % and 4.5 % measured; 84 % and 8.6 % before.
+    CHECK(std::abs(cloudRatio - meshRatio) < 0.06 * meshRatio);
+    CHECK(std::abs(c[1] - m[1]) < 0.08 * m[1]);
+}
+
+// A COMPILER GIVEN MATERIALX LIBRARIES OF ITS OWN READS ITS DEFINITIONS THERE.
+//
+// $ATHENEA_MATERIALX_ROOT names the libraries hdAthenea's material compiler
+// loads in place of the host USD's, and the document hdMtlx builds carries
+// the host's: the compiler's definitions must win over the document's. The
+// root here is a copy of the build's own libraries in which UsdPreviewSurface's
+// diffuseColor defaults to red instead of 0.18 grey, and a quad whose
+// UsdPreviewSurface authors no colour must come out red. Grey is what either
+// half missing gives: the variable not read, or the host's node definition
+// kept from the document. Hidden: ctest runs it as `materialx_root`, with the
+// variable set, since the engine reads it once for the process; its one tag
+// keeps a run by any other tag ([usd], [materials]) from selecting it.
+TEST_CASE("a material compiler given its own MaterialX libraries takes its definitions from them",
+          "[.materialx_root]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const std::string root = platform::env("ATHENEA_MATERIALX_ROOT");
+    REQUIRE_FALSE(root.empty());
+    const fs::path libraries = fs::path(root) / "libraries";
+    std::error_code ec;
+    fs::remove_all(libraries, ec);
+    fs::create_directories(root);
+    fs::copy(ATHENEA_TEST_MATERIALX_LIBRARIES, libraries, fs::copy_options::recursive);
+    const fs::path preview = libraries / "bxdf" / "usd_preview_surface.mtlx";
+    std::string text;
+    {
+        std::ifstream in(preview);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::string grey = "name=\"diffuseColor\" type=\"color3\" value=\"0.18, 0.18, 0.18\"";
+    const size_t at = text.find(grey);
+    REQUIRE(at != std::string::npos);
+    text.replace(at, grey.size(), "name=\"diffuseColor\" type=\"color3\" value=\"0.8, 0.05, 0.05\"");
+    {
+        std::ofstream out(preview, std::ios::trunc);
+        out << text;
+    }
+    const fs::path path = scratch("materialx_root.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Looks/Paint>\n}\n"
+               "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            float inputs:roughness = 1\n"
+               "            token outputs:surface\n        }\n    }\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    }
+    const uint32_t w = 64, h = 64;
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+    if (!image) FAIL(image.error().toString());
+    gpu::BufferDesc desc;
+    desc.bytes = image->rgba.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto frame = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+    REQUIRE(frame);
+    const std::array<double, 3> m = middleMean(gpu, *frame, w, h, 16);
+    std::printf("  an unauthored diffuseColor under the compiler's own libraries: %.4f %.4f %.4f\n", m[0], m[1], m[2]);
+    // 0.810 0.063 0.063 measured: the red default, lit by a dome of one.
+    CHECK(m[0] > 0.7);
+    CHECK(m[0] > 8.0 * m[1]);
+    CHECK(m[0] > 8.0 * m[2]);
 }
 
 // THE ROOM THROUGH A ROUGH GLASS IS SHARPER THAN ITS REFLECTION.
@@ -10864,6 +11020,18 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         REQUIRE(built->splats.hasNormals());
         const fs::path file = scratch("normals.athc");
         REQUIRE(lod::writeAthc(*gpu->device, *built, file));
+        // The header's version and flags words: version 2 where a block
+        // carries anything besides its four arrays, and only there.
+        const auto header = [](const fs::path& path) {
+            std::ifstream in(path, std::ios::binary);
+            std::array<char, 80> bytes{};
+            in.read(bytes.data(), bytes.size());
+            uint32_t version = 0, flags = 0;
+            std::memcpy(&version, bytes.data() + 4, 4);
+            std::memcpy(&flags, bytes.data() + 76, 4);
+            return std::pair{version, flags};
+        };
+        CHECK(header(file) == std::pair{2u, 1u});
         auto read = lod::readAthc(*gpu->device, file);
         if (!read) FAIL(read.error().toString());
         REQUIRE(read->splats.hasNormals());
@@ -10886,8 +11054,8 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         CHECK(*store == 0);
         CHECK(levelsApart == 0);
 
-        // A cloud with none writes a file the version before would have, but
-        // for its version number; put that back and it must still read.
+        // A cloud with none writes the file the version before wrote, version
+        // number included, so a reader of version 1 alone still opens it.
         auto plain = loader->upload(cloud(3000), 0);
         REQUIRE(plain);
         REQUIRE_FALSE(plain->hasNormals());
@@ -10895,13 +11063,7 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         if (!plainLod) FAIL(plainLod.error().toString());
         const fs::path old = scratch("normals_v1.athc");
         REQUIRE(lod::writeAthc(*gpu->device, *plainLod, old));
-        {
-            std::fstream bytes(old, std::ios::in | std::ios::out | std::ios::binary);
-            REQUIRE(bytes);
-            const uint32_t one = 1;
-            bytes.seekp(4);
-            bytes.write(reinterpret_cast<const char*>(&one), 4);
-        }
+        CHECK(header(old) == std::pair{1u, 0u});
         auto oldRead = lod::readAthc(*gpu->device, old);
         if (!oldRead) FAIL(oldRead.error().toString());
         CHECK_FALSE(oldRead->splats.hasNormals());
@@ -10912,6 +11074,90 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         CHECK(*oldStore == 0);
     }
 }
+
+namespace {
+
+/// THE CARD AND THE QUAD the shading normal tests draw: a 4 x 4 square at
+/// z = 0, as a relit cloud (`card`) of gaussians a cell wide and flat or as a
+/// mesh of a grey diffuse paint, carrying the normal `kTiltedNormal` where
+/// `tilted`, under a prim scaled `scaleX` in x where that is not one, lit by
+/// a distant light turned `lightDegrees` about y, seen from z = 3.
+const char* const kTiltedNormal = "(0.573576, 0, 0.819152)";   // 35 degrees towards +x
+
+fs::path tiltedCardStage(const char* name, bool card, bool tilted, float scaleX = 1.0F,
+                         float lightDegrees = 40.0F) {
+    const char* kTilted = kTiltedNormal;
+    const fs::path path = scratch(name);
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
+    // Under a prim of that scale, where it is not one.
+    const bool scaled = scaleX != 1.0F;
+    if (scaled) {
+        out << "def Xform \"Scaled\"\n{\n    float3 xformOp:scale = (" << scaleX << ", 1, 1)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:scale\"]\n";
+    }
+    if (card) {
+        // A gaussian a cell, sigma a cell wide and flat, its albedo the
+        // mesh's 0.5 kept as a cloud keeps a colour (encoded, so
+        // 0.5 + SH0 * dc = 0.735357), relit.
+        const int side = 160;
+        const double cell = 4.0 / side;
+        out << "def ParticleField3DGaussianSplat \"Card\"\n{\n    point3f[] positions = [";
+        for (int k = 0; k < side * side; ++k) {
+            out << (k ? ", " : "") << "(" << (-2.0 + ((k % side) + 0.5) * cell) << ", "
+                << (-2.0 + ((k / side) + 0.5) * cell) << ", 0)";
+        }
+        out << "]\n    quatf[] orientations = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
+        out << "]\n    float3[] scales = [";
+        for (int k = 0; k < side * side; ++k) {
+            out << (k ? ", " : "") << "(" << cell << ", " << cell << ", " << 1.0e-4 * cell << ")";
+        }
+        out << "]\n    float[] opacities = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "0.99";
+        out << "]\n    uniform int radiance:sphericalHarmonicsDegree = 0\n"
+               "    float3[] radiance:sphericalHarmonicsCoefficients = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(0.834321, 0.834321, 0.834321)";
+        out << "]\n    bool primvars:athenea:splat:relight = 1\n";
+        if (tilted) {
+            out << "    normal3f[] primvars:athenea:splat:normal = [";
+            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << kTilted;
+            out << "] (\n        interpolation = \"vertex\"\n    )\n";
+        }
+        out << "}\n";
+        if (scaled) out << "}\n";
+    } else {
+        out << "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n";
+        if (tilted) {
+            out << "    normal3f[] normals = [" << kTilted << ", " << kTilted << ", " << kTilted << ", "
+                << kTilted << "] (\n        interpolation = \"vertex\"\n    )\n";
+        }
+        out << "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Looks/Paint>\n}\n";
+        if (scaled) out << "}\n";
+        out << "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
+               "            float inputs:roughness = 1\n"
+               "            float inputs:metallic = 0\n"
+               "            token outputs:surface\n        }\n    }\n}\n";
+    }
+    out << "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 2\n"
+           "    bool inputs:shadow:enable = 0\n"
+           "    float3 xformOp:rotateXYZ = (0, " << lightDegrees << ", 0)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
+           "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+           "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+           "    float2 clippingRange = (0.1, 1000)\n"
+           "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    return path;
+}
+
+}   // namespace
 
 // A RELIT CONVERSION KEEPS THE RELIEF ITS NORMAL MAP DREW.
 //
@@ -10929,69 +11175,7 @@ TEST_CASE("a relit card with a tilted shading normal renders like the tilted mes
     ATHENEA_REQUIRE_GPU(gpu);
     // A tilt of 35 degrees towards +x, and a light from 40 degrees that way:
     // the cosine is 0.996 with the tilt and 0.766 without.
-    const char* kTilted = "(0.573576, 0, 0.819152)";
-    const auto stage = [&](const char* name, bool card, bool tilted) {
-        const fs::path path = scratch(name);
-        std::ofstream out(path);
-        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
-        if (card) {
-            // A gaussian a cell, sigma a cell wide and flat, its albedo the
-            // mesh's 0.5 kept as a cloud keeps a colour (encoded, so
-            // 0.5 + SH0 * dc = 0.735357), relit.
-            const int side = 160;
-            const double cell = 4.0 / side;
-            out << "def ParticleField3DGaussianSplat \"Card\"\n{\n    point3f[] positions = [";
-            for (int k = 0; k < side * side; ++k) {
-                out << (k ? ", " : "") << "(" << (-2.0 + ((k % side) + 0.5) * cell) << ", "
-                    << (-2.0 + ((k / side) + 0.5) * cell) << ", 0)";
-            }
-            out << "]\n    quatf[] orientations = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
-            out << "]\n    float3[] scales = [";
-            for (int k = 0; k < side * side; ++k) {
-                out << (k ? ", " : "") << "(" << cell << ", " << cell << ", " << 1.0e-4 * cell << ")";
-            }
-            out << "]\n    float[] opacities = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "0.99";
-            out << "]\n    uniform int radiance:sphericalHarmonicsDegree = 0\n"
-                   "    float3[] radiance:sphericalHarmonicsCoefficients = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(0.834321, 0.834321, 0.834321)";
-            out << "]\n    bool primvars:athenea:splat:relight = 1\n";
-            if (tilted) {
-                out << "    normal3f[] primvars:athenea:splat:normal = [";
-                for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << kTilted;
-                out << "] (\n        interpolation = \"vertex\"\n    )\n";
-            }
-            out << "}\n";
-        } else {
-            out << "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
-                   "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
-                   "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n";
-            if (tilted) {
-                out << "    normal3f[] normals = [" << kTilted << ", " << kTilted << ", " << kTilted << ", "
-                    << kTilted << "] (\n        interpolation = \"vertex\"\n    )\n";
-            }
-            out << "    uniform token subdivisionScheme = \"none\"\n"
-                   "    rel material:binding = </Looks/Paint>\n}\n"
-                   "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
-                   "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
-                   "        def Shader \"Surface\"\n        {\n"
-                   "            uniform token info:id = \"UsdPreviewSurface\"\n"
-                   "            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
-                   "            float inputs:roughness = 1\n"
-                   "            float inputs:metallic = 0\n"
-                   "            token outputs:surface\n        }\n    }\n}\n";
-        }
-        out << "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 2\n"
-               "    bool inputs:shadow:enable = 0\n"
-               "    float3 xformOp:rotateXYZ = (0, 40, 0)\n"
-               "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
-               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
-               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
-               "    float2 clippingRange = (0.1, 1000)\n"
-               "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
-        return path;
-    };
+    const auto stage = [&](const char* name, bool card, bool tilted) { return tiltedCardStage(name, card, tilted); };
     const fs::path meshTilted = stage("normals_mesh_tilted.usda", false, true);
     const fs::path meshFlat = stage("normals_mesh_flat.usda", false, false);
     const fs::path cardTilted = stage("normals_card_tilted.usda", true, true);
@@ -11032,6 +11216,46 @@ TEST_CASE("a relit card with a tilted shading normal renders like the tilted mes
         CHECK(flatPair.p99Relative < 0.08);
         // ... and the tilt is what tells the two meshes apart.
         CHECK(tiltedAgainstFlat.p99Relative > 0.2);
+    }
+}
+
+// A STORED NORMAL GOES TO THE WORLD AS A NORMAL.
+//
+// A prim scaled (2, 1, 1) stretches its card in x, and a normal tilted 35
+// degrees towards +x on it leans 19 degrees in the world -- the inverse
+// transpose, which is what the mesh's normals take -- where turned by the
+// rows as a direction it leant 54. Lit from straight above, that is a cosine
+// of 0.94 against 0.58: the stretched card must render like the stretched
+// mesh on both routes.
+TEST_CASE("a relit card's stored normal under a scale that is not uniform leans as the scaled mesh's",
+          "[usd][gpu][splat][relight][normals]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path mesh = tiltedCardStage("normals_mesh_stretched.usda", false, true, 2.0F, 0.0F);
+    const fs::path card = tiltedCardStage("normals_card_stretched.usda", true, true, 2.0F, 0.0F);
+    const uint32_t w = 160, h = 160;
+    for (const char* technique : {"raster", "rt"}) {
+        const auto draw = [&](const fs::path& path) {
+            auto renderer = usd::StageRenderer::open(path);
+            if (!renderer) FAIL(renderer.error().toString());
+            auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+            if (!image) FAIL(image.error().toString());
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(made);
+            return std::move(*made);
+        };
+        const gpu::Buffer m = draw(mesh);
+        const gpu::Buffer c = draw(card);
+        auto diff = render::compareHdr(*gpu->library, c, m, w, h);
+        REQUIRE(diff);
+        std::printf("  %s: the stretched card against the stretched mesh p99 %.3f relMSE %.2e\n", technique,
+                    diff->p99Relative, diff->relMse);
+        CHECK(diff->pixels == uint64_t{w} * h);
+        // 0.014 on both routes; 0.386 turned as a direction (a cosine of 0.58
+        // where the mesh is 0.94).
+        CHECK(diff->p99Relative < 0.04);
     }
 }
 

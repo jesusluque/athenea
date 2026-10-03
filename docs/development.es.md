@@ -402,7 +402,11 @@ Y cinco tests que no son de Catch2: `aofx_sdk_manifest` (los hashes del SDK),
 corren el CLI de verdad y afirman sobre la línea que imprime, y
 `mesh2splat_coverage`, el CLI de verdad convirtiendo los planos que mide
 `athenea_coverage_tests` (un fixture: `athenea_test(... FIXTURES <nombre>)`
-hace que todos los casos de un binario lo requieran).
+hace que todos los casos de un binario lo requieran). Y un caso de
+Catch2 que ctest corre aparte, `materialx_root`: `athenea_usd_tests
+"[materialx_root]"` con `ATHENEA_MATERIALX_ROOT` definida, porque el motor lee
+la variable una vez por proceso. El caso está oculto (`[.materialx_root]`), así
+que el descubrimiento que registra todos los demás casos lo deja fuera.
 
 **Por qué `athenea_host_tests` no enlaza nada.** Conduce el plugin como lo hace un
 host, por su nombre. Si además enlazara `athenea::usd`, una plantilla instanciada

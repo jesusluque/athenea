@@ -9005,7 +9005,15 @@ Before, 26, 9 and 21 of 64 points decoded beyond the light, the worst to
 Also found on the pawn: the written ParticleField stage carried no
 `metersPerUnit`, so an application honouring units read a cloud converted in
 metres at a hundredth of its size (USD's fallback is centimetres); it is
-written now, from the source stage. And `athenea` registers its own plugin
+written now, from the source stage. Of the other writers, `athenea
+decimate` of a stage copies the source's root layer, its `metersPerUnit`
+with it (the stage of gaussians it writes on the way is read for its arrays
+alone, so its unit is never seen; a test keeps a centimetre stage in
+centimetres), and `athenea convert` and `decimate` of a splat file read
+`.ply`, `.splat`, `.spz` and `.sog`, none of which says what its unit is: a
+capture is written as metres (`metersPerUnit = 1`), which is what a 3DGS
+trainer's scale is taken to be, and a cloud in another unit wants the stage
+that references it to say so. And `athenea` registers its own plugin
 directory at start-up: without `PXR_PLUGINPATH_NAME` the schema a converted
 cloud applies (`AtheneaSplatCryptomatteAPI`) was an unknown token and was
 dropped from the file.
@@ -9138,6 +9146,14 @@ clear), so the surface does not open where the relief is steep, which is what
   lobe, the dome's irradiance, the transfer's sun share (`splatSunShare`,
   whose open hemisphere was the disc's while the transfer was baked over the
   shading normal's) and the shadow bits' horizon now read the same normal.
+  It goes to the world as a normal (`relightNormalToWorld`): the cofactor of
+  the instance's linear part -- columns `b x c`, `c x a`, `a x b` -- with the
+  determinant's sign put back for a mirror, made unit. Turned by the rows as
+  a direction (`relightDirectionToWorld`, as it first was), a prim scaled
+  (2, 1, 1) leant a 35-degree normal to 54 degrees where the mesh's inverse
+  transpose leans it to 19; the disc's axis, the normal where none is stored,
+  had the same fault. Both routes take it; directions -- the way out of a
+  glass -- stay directions.
 - **Skinning.** The skinner turns it by the same blend as the frame, and as a
   normal: `(M a) x (M b)` for two directions in its surface, which is
   `cof(M) n` -- the inverse transpose up to scale, and the same construction
@@ -9152,6 +9168,13 @@ clear), so the surface does not open where the relief is steep, which is what
   disagreed (all 256 kept gaussians of the test floor). `.athc` is version 2:
   the header's former padding is `flags`, bit 0 says every block ends with the
   normals, and a version 1 file -- whose padding was zero -- is read as before.
+  A file is written as version 2 if and only if `flags` is not zero: a cloud
+  without normals is binary for binary a version 1 file and is written as
+  one, so a reader that knows version 1 alone -- an embedded engine older than
+  this -- still opens it; the migration of a `.lrtc` writes version 1 too.
+  Every flag bit that follows (emission, a linear colour) keeps the rule.
+  Test: the header of `normals.athc` reads 2 and 1, that of a cloud without
+  normals 1 and 0, and that one reads back.
 
 What it costs: four bytes a gaussian on the device and twelve in the file
 (the pawn's relit conversion, 730 559 gaussians, 40.9 -> 49.7 MB), one word
@@ -9172,6 +9195,11 @@ Tests, each failing without its half of the change (checked by reverting it):
   card against the flat mesh 0.324. With the shading taking the disc's axis,
   the card against the tilted mesh was 0.229 and against the flat one 0.020:
   it rendered like a quad with no map.
+- `athenea_usd_tests "a relit card's stored normal under a scale*"`: the same
+  card and the same tilted mesh under a prim scaled (2, 1, 1), lit from
+  straight above, raster and traced: the card against the mesh p99 relative
+  0.014 on both routes (held at 0.04); turned as a direction, 0.386 -- the
+  card's cosine 0.58 where the mesh's is 0.94.
 - `athenea_scene_tests "[normals]"`: 4096 discs whose normals lean 0.4 rad off
   their axes, skinned by a turn and by a stretch with shear; 0 of 4096 off the
   inverse transpose, 0 on the other side of their disc. Not turned, 4096 were
@@ -9286,6 +9314,31 @@ gaussians at the conversion's glass opacity, tint (1, 1, 0.5), under a sky of
 one colour, against the mesh ball: green and blue through the middle 0.98 and
 0.51 before against the mesh's 0.92 and 0.26, within 3.3 % now.
 
+**What a ray meets behind the glass leaves by the far face too.** The colour
+a ray through the glass meets behind it (`behindColour`, the colour the
+particle it met was shaded with: the collar under the pawn's head) crosses
+the far face as the sky does. `transmittedBehind` was written
+`hasBehind ? behindColour : (...) * exitThrough`, and `?:` binds looser than
+`*`, so the far face's Fresnel and second tint weighed only the sky and what
+stood behind the glass came through tinted once. The whole choice is now
+multiplied. Test: `athenea_usd_tests "what a glass cloud shows behind it*"`
+-- a grey card (0.8) in the same cloud, behind a ball of tint (1, 1, 0.5),
+against the mesh ball and a diffuse card: the cloud's blue over green through
+the middle against the mesh's (the tint squared, whatever either card's
+shading) and green. Mesh 0.750 / 0.214, cloud 0.783 / 0.227: the ratio
+1.6 % and green 4.5 % from the mesh's, held at 6 % and 8 %. Before, the
+cloud read 0.814 / 0.428 -- the ratio 84 % off, about the tint once.
+
+**Pending: the tint is the whole colour.** The second tint is
+`lerp(1, albedo, T)`, and the albedo is the base colour times the
+transmission colour (mesh2splat.slang), so a glass whose `base_color` is not
+white is tinted by it twice in the cloud where the mesh's dielectric lobe
+tints by `transmission_color` alone and not at all by `base_color`. Fixing it
+needs a per-gaussian transmission colour apart from the colour (a primvar or
+a pbr channel) that the conversion writes and both routes read; until then a
+coloured base under clear transmission is darker and more saturated through
+a cloud than through the mesh.
+
 ### The room through a rough glass is sharper than its reflection
 
 With the weights right the head was still a haze where the mesh shows the
@@ -9363,7 +9416,7 @@ and `lrt:*` settings, and streamed `.lrtc` files. `athenea migrate`
 - **.lrtc.** Its `Lrtc.cpp` (lucabRTrender e51ca4a, never changed after)
   differs from `Athc.cpp` at e8ef1eb in the magic alone, and the last header
   word was padding written as zero -- version 2's `flags`, no normals. The
-  header is rewritten (`ATHC`, version 2), the payload copied in slices
+  header is rewritten (`ATHC`, version 1: no flags), the payload copied in slices
   without decoding, and the result parsed before it takes its name.
 - **.usdz.** Extracted beside the output, each member layer migrated as itself
   (no anchoring: a package names everything relatively), a `.lrtc` member
@@ -9451,9 +9504,27 @@ definitions: a material named `material` is not the typedef of that name.
 - `athenea_material_tests`: all pass (513 assertions, 9 cases).
 - `athenea_usd_tests "[materials]"`: all pass (281 assertions, 10 cases).
 
-Not done: a test of the override itself. It is exercised by the Blender
-spike (the default cube's material compiles and shades); a test would need
-a second MaterialX library tree in the build.
+Tests:
+
+- `athenea_material_tests "a document's own definitions give way*"`: a
+  standard_surface document that also carries an implementation under the
+  library's own name (`IMPL_standard_surface_surfaceshader_101`) drawing a
+  blue diffuse -- an older host's definition, as the compiler sees it --
+  compiles to the module and source its XML alone compiles to
+  (`athenea_mat_de437b03806a1b17` both). Under the old rule the document's
+  implementation stayed, the import skipped the library's, and the module
+  was another (`athenea_mat_94abdab1c87a2a51`).
+- `ctest -R materialx_root` (`athenea_usd_tests "[materialx_root]"`, hidden
+  from discovery, run with the variable set since the engine reads it once
+  a process): the root is a copy of the build's libraries in which
+  UsdPreviewSurface's `diffuseColor` defaults to red, filled by the case
+  itself, and a quad whose UsdPreviewSurface authors no colour must come
+  out red through Hydra: 0.810 0.063 0.063 measured, held at red over 0.7
+  and over eight times green and blue. Grey (0.18) is the variable not read;
+  under the old precedence the host's implementations stayed beside the
+  root's and the generated module did not load, so the pass drew nothing.
+  The case's only tag is the hidden one, so `[usd]` or `[materials]` runs,
+  which have the variable unset, do not select it.
 
 ## Every gaussian is blended in linear light
 

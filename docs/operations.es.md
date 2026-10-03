@@ -182,6 +182,11 @@ sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 Un `.athc` de salida rechaza un `--rotate-x` distinto de cero: el contenedor
 guarda la nube como está, y el giro pertenece al prim que lo referencia.
 
+Una escena escrita aquí dice `metersPerUnit = 1`: ninguno de los formatos de
+entrada registra una unidad, y la escala de una captura se toma como metros.
+Una nube en otra unidad se escala donde se referencia, o se edita el
+`metersPerUnit` de la escena.
+
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
@@ -220,9 +225,10 @@ puede fundir entre sí; `primvars:athenea:splat:normal` como una dirección (la
 media ponderada hecha de nuevo un vector unitario); cualquier otro float --
 metallic, roughness, un transfer, `primvars:athenea:splat:emission` -- como una
 media. Metallic, roughness y transmisión también se comparan
-como el color. Un array muestreado en el tiempo se funde muestra a muestra. Un
-fichero de splats se escribe como una escena nueva, como la escribe
-`athenea convert`.
+como el color. Un array muestreado en el tiempo se funde muestra a muestra. La
+copia conserva el `metersPerUnit` y el `upAxis` de la fuente. Un fichero de
+splats se escribe como una escena nueva, como la escribe `athenea convert`, en
+metros.
 
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
@@ -499,7 +505,7 @@ propias opiniones, variantes incluidas):
 | `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
 | claves de `customData` y `customLayerData` con un componente `lrt` | lo mismo con `athenea` |
 | una ruta de asset que acaba en `.lrtc` | `.athc` |
-| un `.lrtc` (`LRTC`, versión 1) | un `.athc` (`ATHC`, versión 2, sin normales); el contenido se copia tal cual |
+| un `.lrtc` (`LRTC`, versión 1) | un `.athc` (`ATHC`, versión 1, sin normales); el contenido se copia tal cual |
 
 Rutas de asset. Una ruta relativa a un fichero que no se copia (una textura,
 una capa sin `--recursive`, una fuera de `--root`) se hace absoluta cuando la
@@ -836,14 +842,14 @@ hecha unitaria de nuevo. Es la versión 2 del formato; un fichero de la versión
 1, que no tiene, se sigue leyendo. La misma versión guarda si los colores son
 luz lineal (`primvars:athenea:splat:linear`) en los flags de su cabecera (bit
 1, junto al bit 0 de las normales); un fichero escrito antes lo tiene a cero y
-se lee como una captura, sRGB.
-
-1, que no tiene, se sigue leyendo. Una nube que emite luz
+se lee como una captura, sRGB. Una nube que emite luz
 (`primvars:athenea:splat:emission`) también la guarda, cuatro bytes más por
 gaussiana (una palabra RGB9E5, tras las normales donde están las dos), y en los
 niveles fundidos la media ponderada de lo que representan; es el bit 2 de los
 `flags` de la cabecera (el bit 0 son las normales), así que un fichero sin ella
-se lee como antes.
+se lee como antes. Una nube sin normales, sin emisión y en sRGB se sigue escribiendo como versión
+1, de modo que un lector que solo conoce la versión 1 la abre: la versión 2 se
+escribe solo donde los `flags` no son cero.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
 dibujan su gaussiana fundida, así que la nube está pero roma, y se afina según

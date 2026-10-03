@@ -392,7 +392,11 @@ Plus five tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
 that run the real CLI and assert on the line it prints, and
 `mesh2splat_coverage`, the real CLI converting the planes
 `athenea_coverage_tests` measures (a fixture: `athenea_test(... FIXTURES
-<name>)` makes every case of a binary require one).
+<name>)` makes every case of a binary require one). And one Catch2 case
+ctest runs on its own, `materialx_root`: `athenea_usd_tests
+"[materialx_root]"` with `ATHENEA_MATERIALX_ROOT` set, since the engine reads
+the variable once a process. The case is hidden (`[.materialx_root]`), so the
+discovery that registers every other case leaves it out.
 
 **Why `athenea_host_tests` links nothing.** It drives the plugin the way a host
 does, by name. Were it to link `athenea::usd` as well, a template instantiated in
