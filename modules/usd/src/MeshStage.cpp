@@ -215,6 +215,40 @@ void takeFloat(const Resolved& resolved, float& into) {
     }
 }
 
+/// A coverage: a float, or a colour (standard_surface's `opacity` is
+/// color3), whose mean is what it covers of a grey.
+void takeCoverage(const Resolved& resolved, float& into) {
+    if (!resolved.hasValue) {
+        return;
+    }
+    if (resolved.value.IsHolding<GfVec3f>()) {
+        const GfVec3f& v = resolved.value.UncheckedGet<GfVec3f>();
+        into = (v[0] + v[1] + v[2]) / 3.0F;
+    } else if (resolved.value.IsHolding<GfVec3d>()) {
+        const GfVec3d& v = resolved.value.UncheckedGet<GfVec3d>();
+        into = static_cast<float>((v[0] + v[1] + v[2]) / 3.0);
+    } else {
+        takeFloat(resolved, into);
+    }
+    into = std::clamp(into, 0.0F, 1.0F);
+}
+
+/// An integer input (glTF's `alpha_mode`, UsdPreviewSurface's `opacityMode`
+/// as MaterialX carries it), or a token that names one.
+[[nodiscard]] int takeInt(const Resolved& resolved, int fallback) {
+    if (!resolved.hasValue) {
+        return fallback;
+    }
+    if (resolved.value.IsHolding<int>()) {
+        return resolved.value.UncheckedGet<int>();
+    }
+    if (resolved.value.IsHolding<TfToken>()) {
+        const TfToken& token = resolved.value.UncheckedGet<TfToken>();
+        return token == TfToken("presence") ? 1 : token == TfToken("transparent") ? 0 : fallback;
+    }
+    return fallback;
+}
+
 void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     if (!resolved.hasValue) {
         return;
@@ -326,25 +360,46 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     out.normal = read(openPbr ? "geometry_normal" : "normal").texture;
 
     if (preview) {
-        // UsdPreviewSurface has no transmission. What it has is an opacity,
-        // and a surface you can see through is one whose opacity is less than
-        // one -- so that is read as transmission, which is the only place a
-        // gaussian can put it.
         const Resolved resolved = read("opacity");
         float opacity = 1.0F;
-        takeFloat(resolved, opacity);
-        out.transmission = std::clamp(1.0F - opacity, 0.0F, 1.0F);
-        // And it is a COVERAGE, which bends nothing: the mesh blends the
-        // surface over what stands behind it. A thin wall is that --
-        // `(1 - T) surface + T behind`, untinted -- where a solid glass would
-        // refract it, which a converted cloud does now that it carries an
-        // index.
-        out.thinWalled = out.transmission > 0.0F;
-        // A MAP ON THE OPACITY IS A CUT-OUT, NOT A TRANSMISSION. Where it
-        // reads low the surface is not there; where it reads high it is
-        // opaque. Carrying it as transmission would make a feather a pane of
-        // glass shaped like a rectangle, which is what the wings were.
-        out.opacityMap = resolved.texture;
+        takeCoverage(resolved, opacity);
+        float threshold = 0.0F;
+        takeFloat(read("opacityThreshold"), threshold);
+        // A THRESHOLD MAKES IT A CUT-OUT, in either mode: where the opacity
+        // reads at least the threshold the surface is whole, and below it is
+        // not there. A map keeps the threshold for the conversion to cut by;
+        // a constant is decided here.
+        if (threshold > 0.0F) {
+            out.opacityMap = resolved.texture;
+            if (!out.opacityMap.empty()) {
+                out.opacityThreshold = threshold;
+            } else {
+                out.opacity = opacity >= threshold ? 1.0F : 0.0F;
+            }
+        } else if (takeInt(read("opacityMode"), 0) == 1) {
+            // `presence`: the older reading, where the whole response scales
+            // and the surface is there by lot -- coverage, as MaterialX's.
+            out.opacity = opacity;
+            out.opacityMap = resolved.texture;
+        } else {
+            // `transparent`, the default. UsdPreviewSurface has no
+            // transmission. What it has is an opacity, and a surface you can
+            // see through is one whose opacity is less than one -- so that is
+            // read as transmission, which is the only place a gaussian can
+            // put it.
+            out.transmission = std::clamp(1.0F - opacity, 0.0F, 1.0F);
+            // And it is a COVERAGE, which bends nothing: the mesh blends the
+            // surface over what stands behind it. A thin wall is that --
+            // `(1 - T) surface + T behind`, untinted -- where a solid glass
+            // would refract it, which a converted cloud does now that it
+            // carries an index.
+            out.thinWalled = out.transmission > 0.0F;
+            // A MAP ON THE OPACITY IS COVERAGE, NOT A TRANSMISSION. Where it
+            // reads low the surface is not there. Carrying it as transmission
+            // would make a feather a pane of glass shaped like a rectangle,
+            // which is what the wings were.
+            out.opacityMap = resolved.texture;
+        }
         takeFloat(read("ior"), out.ior);
     } else {
         takeFloat(read(gltf ? "ior" : openPbr ? "specular_ior" : "specular_IOR"), out.ior);
@@ -362,17 +417,88 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
             // no input of its own for it.
             takeColour(read("transmission_color"), out.transmissionColour);
         }
-        // THE SAME CUT-OUT, IN MATERIALX. `opacity` (`geometry_opacity` in
-        // OpenPBR) is coverage there too -- where it reads low the surface is
-        // not there -- and it is not transmission, which has an input of its
-        // own. So a glass feather keeps its shape: the transmission makes it
-        // glass and the map still cuts the card. An image node gives its
-        // first channel, not an alpha, so that is the channel read.
-        StageTexture cut = read(gltf ? "alpha" : openPbr ? "geometry_opacity" : "opacity").texture;
+        // THE SAME COVERAGE, IN MATERIALX. `opacity` (`geometry_opacity` in
+        // OpenPBR, `alpha` in glTF) is coverage there too -- where it reads
+        // low the surface is not there -- and it is not transmission, which
+        // has an input of its own. So a glass feather keeps its shape: the
+        // transmission makes it glass and the map still cuts the card. A
+        // constant under one is the surface drawn by that lot, which is what
+        // the mesh does with it (`MaterialCompiler`'s cut-out), so it is
+        // carried as the coverage it is. An image node gives its first
+        // channel, not an alpha, so that is the channel read.
+        const Resolved coverage = read(gltf ? "alpha" : openPbr ? "geometry_opacity" : "opacity");
+        float opacity = 1.0F;
+        takeCoverage(coverage, opacity);
+        StageTexture cut = coverage.texture;
         if (!cut.empty() && cut.channel == 0) {
             cut.channel = 'r';
         }
-        out.opacityMap = cut;
+        // glTF says what its alpha is: OPAQUE (0, the default) ignores it,
+        // MASK (1) cuts at `alpha_cutoff`, BLEND (2) is coverage.
+        const int alphaMode = gltf ? takeInt(read("alpha_mode"), 0) : 2;
+        if (alphaMode == 0) {
+            // Opaque: neither the constant nor the map is the surface's.
+        } else if (alphaMode == 1) {
+            float cutoff = 0.5F;
+            takeFloat(read("alpha_cutoff"), cutoff);
+            if (!cut.empty()) {
+                out.opacityMap = cut;
+                out.opacityThreshold = std::max(cutoff, 1e-6F);
+            } else {
+                out.opacity = opacity >= cutoff ? 1.0F : 0.0F;
+            }
+        } else {
+            out.opacity = opacity;
+            out.opacityMap = cut;
+        }
+    }
+
+    // THE LIGHT IT GIVES OFF. A colour and a weight, which the four
+    // vocabularies name four ways and give four defaults: standard_surface
+    // and OpenPBR weigh a white colour by nothing (`emission`,
+    // `emission_luminance`, both 0), glTF a black colour by one
+    // (`emissive`, `emissive_strength`), and UsdPreviewSurface has the
+    // colour alone (`emissiveColor`, black). OpenPBR's luminance is in nits
+    // and its graph multiplies it into the colour as it stands -- which is
+    // the radiance the mesh is rendered with here, so it is carried as that.
+    // A map on either is the value: connected, the colour is one (or the
+    // weight is), and what is left multiplies the map.
+    {
+        const char* colourName = preview ? "emissiveColor" : gltf ? "emissive" : "emission_color";
+        const char* weightName = preview ? nullptr
+                                 : gltf  ? "emissive_strength"
+                                 : openPbr ? "emission_luminance"
+                                           : "emission";
+        std::array<float, 3> colour = preview || gltf ? std::array<float, 3>{0.0F, 0.0F, 0.0F}
+                                                      : std::array<float, 3>{1.0F, 1.0F, 1.0F};
+        float weight = preview ? 1.0F : gltf ? 1.0F : 0.0F;
+        const Resolved colourIn = read(colourName);
+        takeColour(colourIn, colour);
+        Resolved weightIn;
+        if (weightName != nullptr) {
+            weightIn = read(weightName);
+            takeFloat(weightIn, weight);
+        }
+        if (!colourIn.texture.empty()) {
+            out.emissionMap = colourIn.texture;
+            colour = {1.0F, 1.0F, 1.0F};
+            if (!weightIn.texture.empty()) {
+                athenea::log::info("mesh2splat: '{}' maps both the emission's colour and its weight; the "
+                                   "weight's map is not read", out.path);
+            }
+        } else if (!weightIn.texture.empty()) {
+            // A grey map on the weight: one channel, the first unless the
+            // connection says which.
+            out.emissionMap = weightIn.texture;
+            if (out.emissionMap.channel == 0) {
+                out.emissionMap.channel = 'r';
+            }
+            weight = 1.0F;
+        }
+        out.emission = {colour[0] * weight, colour[1] * weight, colour[2] * weight};
+        if (out.emissionMap.empty() || !out.emits()) {
+            out.emissionMap = {};   // a map on nothing gives off nothing
+        }
     }
 
     // DISPLACEMENT: a height along the normal, which a gaussian can carry for

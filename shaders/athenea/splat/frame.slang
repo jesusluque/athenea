@@ -23,8 +23,11 @@
 //   - the kernel's frame: +z forward, x right, y up; screen origin bottom-left;
 //     pixel centres at +0.5. The -Z camera of D36 is folded into the view.
 //   - square pixels: focalY == focalX unless a window scale says otherwise.
-//   - colour is blended in the encoded space the cloud was trained in, and the
-//     finished pixel is linearised.
+//   - colour is blended in linear light (the working space, linear Rec.709).
+//     A capture's colours are sRGB, as its photographs were, and each splat
+//     is decoded when its harmonics are evaluated (common/color.slang,
+//     `cloudLight`); a cloud that holds light already (`linearCloud`) is
+//     taken as it is. sRGB appears only where an image is shown.
 module frame;
 import athenea.common.edit;
 
@@ -58,7 +61,7 @@ public struct FrameParams {
     public uint  depthMode;      // 0 alpha-weighted mean, 1 first crossing
     public float depthThreshold;
     public float bgR; public float bgG; public float bgB; public float bgA;
-    public uint  linearise;      // 1: finished pixel sRGB -> linear
+    public uint  linearCloud;    // 1: this cloud's colours are linear light; 0: sRGB, decoded per splat
     public uint  hasUnder;       // 1: an opaque layer (raster points) is under the splats
     public uint  relight;        // 1: light these splats rather than show them as baked
     public uint  lightCount;     // lights in `lights`, 0 when nothing is relit
@@ -70,6 +73,7 @@ public struct FrameParams {
     public float shadowCut;      // and where the ray gives up
     public uint  hasPbr;         // 1: `pbr` holds this cloud's metallic and roughness
     public uint  hasNormals;     // 1: `normals` holds this cloud's shading normals
+    public uint  hasEmission;    // 1: `emission` holds the radiance this cloud's gaussians give off
     public uint  litBody;        // 1: the colours are light already, and only the polish is added
     /// Lights an environment was prepared for: `envOfLight[k]` is the slice
     /// of light k, or `kEnvNone`. Zero: no sky prepared, and a dome is its
@@ -144,7 +148,7 @@ public struct FrameParams {
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power
     public float4 conic;    // a, b, c, alpha
-    public float4 colour;   // rgb (encoded), 0
+    public float4 colour;   // rgb (linear), 0
 };
 
 public float3 toView(FrameParams f, float3 p) {
@@ -155,6 +159,34 @@ public float3 toView(FrameParams f, float3 p) {
 
 public float3x3 viewLinear(FrameParams f) {
     return float3x3(f.m00, f.m01, f.m02, f.m10, f.m11, f.m12, f.m20, f.m21, f.m22);
+}
+
+/// THE PEAK A SPREAD SPLAT IS DRAWN WITH, so that what it draws is what the
+/// still, sharp one draws. Spreading a gaussian (the antialiasing filter, the
+/// shutter, the lens) by a determinant ratio `paid^2` keeps its energy when
+/// its peak goes to `paid * alpha`. But a splat is drawn only out to where it
+/// falls under 1/255 (`cutoffPower`), and what that leaves out is 1/255 of
+/// peak times its area -- an area the spread made `1/paid` times larger. So a
+/// splat a fraction of a pixel wide lost most of itself: a converted surface
+/// meant to cover 0.25 covered 0.18 at a twentieth of the screen, where the
+/// ray tracer, which draws the sharp splat, kept 0.25 at every size. Drawn at
+/// `paid * alpha + (1 - paid) / 255` the spread splat keeps `alpha - 1/255`
+/// of the sharp one's area, exactly what the sharp one keeps, and a splat the
+/// spread does not touch (`paid` 1) is unchanged. Under the three-sigma cap a
+/// splat keeps 98.9% of itself whatever its peak, and the term is under a
+/// 255th either way.
+///
+/// ONLY WHERE THE SPREAD SPLAT IS DRAWN AT ALL (`paid * alpha >= 1/255`), as
+/// before. Paying every splat back would draw the ones the spread had made
+/// too faint to be drawn, and those are what a distant cloud is made of: the
+/// converted chess pawn at 80 pixels of a 512 x 512 frame went from 8.7 to
+/// 29.8 ms (debug build) for 730 thousand gaussians a few hundredths of a
+/// pixel wide. Paid back only where drawn it costs 11.0 ms, and that pawn
+/// still all but vanishes from the raster (the ray tracer keeps it): such a
+/// cloud wants its levels of detail.
+public float paidOpacity(float alpha, float paid) {
+    const float spread = paid * alpha;
+    return spread >= 1.0 / 255.0 ? spread + (1.0 - paid) * (1.0 / 255.0) : spread;
 }
 
 /// The squared Mahalanobis radius a splat is cut at: where its own

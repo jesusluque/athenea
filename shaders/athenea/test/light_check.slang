@@ -577,7 +577,16 @@ void lightPrefixCheck(uint3 tid: SV_DispatchThreadID) {
     for (uint k = 0; k < prefixCount; ++k) {
         const LightRecord l = lights[k];
         float power = max(0.2126 * l.colour.r + 0.7152 * l.colour.g + 0.0722 * l.colour.b, 0.0) * exp2(l.exposure);
-        if ((l.flags & kLightNormalize) == 0) {
+        // The table's scene radius is 1 here: a dome's pi R^2 is pi, a sun's
+        // R^2 is 1, and a sun's irradiance is its radiance times its disc's
+        // projected solid angle unless normalize has divided that out (a
+        // half angle under 90 degrees: pi sin^2).
+        if (l.kind == kLightDome) {
+            power *= kPiCheck;
+        } else if (l.kind == kLightDistant) {
+            const float s = sin(0.5 * l.sizeX);
+            if ((l.flags & kLightNormalize) == 0 && l.sizeX > 0.0) power *= kPiCheck * s * s;
+        } else if ((l.flags & kLightNormalize) == 0) {
             if (l.kind == kLightSphere) power *= 4.0 * kPiCheck * l.sizeX * l.sizeX;
             else if (l.kind == kLightDisk) power *= kPiCheck * l.sizeX * l.sizeX;
             else if (l.kind == kLightRect) power *= l.sizeX * l.sizeY;

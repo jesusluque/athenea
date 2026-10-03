@@ -92,7 +92,7 @@ void setProjection(rhi::ShaderCursor p, const Projection& projection, const Rend
     for (size_t k = 0; k < 12; ++k) {
         p[kNames[k]].setData(rows[k]);
     }
-    p["linearise"].setData(uint32_t{settings.linearise ? 1u : 0u});
+    p["linearCloud"].setData(uint32_t{0});   // per cloud, where a cloud is shaded
     p["bgR"].setData(settings.background[0]);
     p["bgG"].setData(settings.background[1]);
     p["bgB"].setData(settings.background[2]);
@@ -429,7 +429,7 @@ Result<void> GaussianRayTracer::buildBvh(const Cloud& cloud, gpu::Buffer& boxes,
 
 Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> instances,
                                              const Vec3& eyeWorld, uint32_t shLimit,
-                                             const SplatLights* lights, bool linearise) {
+                                             const SplatLights* lights) {
     gpu::Device& device = *device_;
     const bool hardware = settings_.route == RayTracingRoute::Hardware;
     std::vector<rhi::AccelerationStructureInstanceDescGeneric> generic;
@@ -588,6 +588,8 @@ Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> inst
             cursor["pbr"].setBinding(shade.cloud->hasPbr() ? shade.cloud->pbr.rhi() : shade.cloud->shape.rhi());
             cursor["normals"].setBinding(shade.cloud->hasNormals() ? shade.cloud->normals.rhi()
                                                                    : shade.cloud->shape.rhi());
+            cursor["emission"].setBinding(shade.cloud->hasEmission() ? shade.cloud->emission.rhi()
+                                                                     : shade.cloud->shape.rhi());
             // Which prim each gaussian came from, and what a pick said that
             // prim is made of. Both bound either way; `overrideCount` of 0
             // says the table is not read.
@@ -629,6 +631,7 @@ Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> inst
             p["categoriesHi"].setData(static_cast<uint32_t>(shade.categories >> 32));
             p["hasPbr"].setData(uint32_t{shade.cloud->hasPbr() ? 1u : 0u});
             p["hasNormals"].setData(uint32_t{shade.cloud->hasNormals() ? 1u : 0u});
+            p["hasEmission"].setData(uint32_t{shade.cloud->hasEmission() ? 1u : 0u});
             p["litBody"].setData(uint32_t{shade.litBody ? 1u : 0u});
             p["envLights"].setData(sky ? lights->envLights : 0u);
             p["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
@@ -663,10 +666,9 @@ Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> inst
             p["eyeWorldX"].setData(static_cast<float>(eyeWorld.x));
             p["eyeWorldY"].setData(static_cast<float>(eyeWorld.y));
             p["eyeWorldZ"].setData(static_cast<float>(eyeWorld.z));
-            // Which space this kernel's answer goes into. The blend reads it
-            // too, and a relit colour that did not know about it was put
-            // through the sRGB curve twice.
-            p["linearise"].setData(uint32_t{linearise ? 1u : 0u});
+            // Which space the cloud's colours are in: a capture's sRGB is
+            // made light here, a splat at a time, and the blend is linear.
+            p["linearCloud"].setData(uint32_t{shade.cloud->linear ? 1u : 0u});
             p["glassPass"].setData(pass);
         });
     }
@@ -712,7 +714,7 @@ Result<RayTracerStats> GaussianRayTracer::prepare(const Projection& projection,
     for (const Cloud& cloud : clouds_) {
         stats.chunks += cloud.chunks;
     }
-    ATHENEA_TRY(prepareFrame(instances, projection.eyeWorld, maxShDegree, lights, true));
+    ATHENEA_TRY(prepareFrame(instances, projection.eyeWorld, maxShDegree, lights));
     stats.buildMs = msSince(start);
     stats.totalMs = stats.buildMs;
     return stats;
@@ -772,7 +774,7 @@ Result<RayTracerStats> GaussianRayTracer::render(const Projection& projection,
         targets.width = settings.width;
         targets.height = settings.height;
     }
-    ATHENEA_TRY(prepareFrame(instances, projection.eyeWorld, settings.maxShDegree, lights, settings.linearise));
+    ATHENEA_TRY(prepareFrame(instances, projection.eyeWorld, settings.maxShDegree, lights));
     stats.buildMs = msSince(start);
 
     const auto renderStart = Clock::now();

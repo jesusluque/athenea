@@ -40,7 +40,6 @@
 #include <vector>
 
 #include "Commands.h"
-#include "athenea/scene/ThinWall.h"
 #include "aofx/Effect.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
@@ -439,7 +438,7 @@ public:
         const auto ask = [&](const usd::StageTexture& texture) {
             if (!texture.empty() && !ids_.contains(texture.file)) {
                 ids_[texture.file] = textures_->request(
-                    texture.file, texture.srgb ? material::ColourSpace::Srgb : material::ColourSpace::Raw);
+                    texture.file, texture.srgb ? "srgb_texture" : "raw");
             }
         };
         for (const usd::StageMesh& mesh : meshes) {
@@ -452,6 +451,9 @@ public:
             // read their alpha off it). With the normal map repaired into a
             // file of its own, the cut silently went.
             ask(mesh.material.opacityMap);
+            // What it gives off, where that is a map. sRGB where the file
+            // says so: a map of light is a colour like any other.
+            ask(mesh.material.emissionMap);
             if (!options_->noDisplacement) {
                 ask(mesh.material.displacementMap);
             }
@@ -564,7 +566,7 @@ public:
         raw.encoding.scale0 = 4; raw.encoding.scale1 = 5; raw.encoding.scale2 = 6;
         raw.encoding.rotW = 7; raw.encoding.rotX = 8; raw.encoding.rotY = 9; raw.encoding.rotZ = 10;
         raw.encoding.dc0 = 11; raw.encoding.dc1 = 12; raw.encoding.dc2 = 13;
-        raw.encoding.restBase = 20;
+        raw.encoding.restBase = 23;
         raw.encoding.restPerColour = options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0;
         raw.encoding.restColourOuter = 0;   // rgb per basis, which is how the bake writes them
         // What the gaussian reflects with, which is what lets a relit cloud
@@ -578,16 +580,27 @@ public:
         // out for every gaussian -- and what lets a relit cloud keep the
         // relief its mesh had.
         raw.encoding.normal = 17;
-        raw.encoding.floatsPerRecord = 20 + raw.encoding.restPerColour * 3;
+        // AND THE LIGHT IT GIVES OFF, where any material of the stage gives
+        // off any: linear radiance, which a relit or transferred cloud adds
+        // and a baked one already holds. The three floats are there either
+        // way and say nothing when no material emits, so no file carries an
+        // emission of zeros.
+        emits_ = std::any_of(meshes.begin(), meshes.end(),
+                             [](const usd::StageMesh& m) { return m.material.emits(); });
+        raw.encoding.emission = emits_ ? 20u : io::SplatEncoding::kNoField;
+        raw.encoding.floatsPerRecord = 23 + raw.encoding.restPerColour * 3;
         raw.encoding.opacity_ = io::SplatEncoding::Opacity::Linear;
         raw.encoding.scale_ = io::SplatEncoding::Scale::Linear;
-        // Not baked, the colours come from a material in linear light and the
-        // export encodes them into the space a cloud is blended in. Baked,
-        // the harmonics are already fitted in that space and already in the
-        // form a cloud keeps them (the kernel shifted the constant term), so
-        // they pass through as they are.
+        // LINEAR LIGHT, BAKED OR NOT. Not baked, the colours are a
+        // material's albedo; baked, the harmonics are fitted to the light the
+        // paths returned, already in the form a cloud keeps them (the kernel
+        // shifted the constant term). Neither is a capture's sRGB, and the
+        // file says so (`primvars:athenea:splat:linear`): every cloud is
+        // blended in linear light, and this one's colours are drawn as they
+        // are.
         raw.encoding.colour = options_->bake ? io::SplatEncoding::Colour::ShDc
                                              : io::SplatEncoding::Colour::LinearLight;
+        raw.linear = true;
         raw.encoding.rest = io::SplatEncoding::Rest::Float;
         raw.encoding.rotation = io::SplatEncoding::Rotation::Float;
 
@@ -629,12 +642,28 @@ public:
             cryptoManifest_[meshes[k].path] = meshCrypto;
             const usd::StageMaterial& what = meshes[k].material;
             std::printf("mesh2splat: %s uses %s (colour %.2f %.2f %.2f, albedo '%s', metallic %.2f, "
-                        "roughness %.2f, transmission %.3f)\n",
+                        "roughness %.2f, transmission %.3f, opacity %.3f%s%s)\n",
                         meshes[k].path.c_str(), what.path.empty() ? "no material" : what.path.c_str(),
                         static_cast<double>(what.baseColour[0]), static_cast<double>(what.baseColour[1]),
                         static_cast<double>(what.baseColour[2]), what.albedo.file.c_str(),
                         static_cast<double>(what.metallic), static_cast<double>(what.roughness),
-                        static_cast<double>(what.transmission));
+                        static_cast<double>(what.transmission), static_cast<double>(what.opacity),
+                        what.opacityMap.empty() ? ""
+                        : what.opacityThreshold > 0.0F
+                            ? (", cut-out at " + std::to_string(what.opacityThreshold)).c_str()
+                            : ", coverage map",
+                        what.emits() ? (", emission " + std::to_string(what.emission[0]) + " " +
+                                        std::to_string(what.emission[1]) + " " + std::to_string(what.emission[2]) +
+                                        (what.emissionMap.empty() ? "" : " x '" + what.emissionMap.file + "'"))
+                                           .c_str()
+                                     : "");
+            // A surface whose material says it is not there -- an opacity of
+            // nothing, or a constant under its own threshold -- has no
+            // gaussian worth writing.
+            if (what.opacity <= 0.0F || options_->opacity <= 0.0) {
+                std::printf("mesh2splat: %s covers nothing (opacity 0), skipped\n", meshes[k].path.c_str());
+                continue;
+            }
             // A PICTURE FOR WHAT THIS MESH CAN WANT, NOT FOR THE WHOLE
             // BUDGET.
             //
@@ -789,10 +818,10 @@ private:
     static constexpr uint32_t kNoPrimvar = 0xFFFFFFFF;
 
     /// Floats a record: the canonical fourteen, the three the material
-    /// reflects with, the shading normal, and the harmonics where a bake
-    /// writes them.
+    /// reflects with, the shading normal, the emission, and the harmonics
+    /// where a bake writes them.
     [[nodiscard]] uint32_t recordFloats() const {
-        return 20 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3;
+        return 23 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3;
     }
 
     struct OneMesh {
@@ -856,6 +885,11 @@ private:
             options_->noTextures || material.opacityMap.empty()
                 ? image::ImagePtr{}
                 : mapOrNone(material.opacityMap.file, {}, false);
+        // What it gives off, where that is a map.
+        const image::ImagePtr emissionMap =
+            options_->noTextures || !emits_ || material.emissionMap.empty()
+                ? image::ImagePtr{}
+                : mapOrNone(material.emissionMap.file, {}, false);
         const image::ImagePtr* albedo = &albedoMap;
         const image::ImagePtr* normal = &normalMap;
         const image::ImagePtr* mr = &mrMap;
@@ -876,7 +910,8 @@ private:
                 ? mapOrNone(material.displacementMap.file, {}, false)
                 : image::ImagePtr{};
         const uint32_t ownEntries = kRecordEntries;
-        const uint32_t recordEntries = kRecordEntries + (displaced ? 3U : 0U);
+        // AND ONE FOR WHAT IT GIVES OFF, the last, where the stage emits.
+        const uint32_t recordEntries = kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U);
         const image::PixelRect bounds = pictureFor(budget * recordEntries);
 
         // The box the density is measured over: the model's, or this mesh's
@@ -900,6 +935,7 @@ private:
         if (carried) job.inputs.push_back({"Influences", skins_[at]});
         if (uv2s_[at]) job.inputs.push_back({"Texcoord2", uv2s_[at]});
         if (heightMap) job.inputs.push_back({"Displacement", heightMap});
+        if (emissionMap) job.inputs.push_back({"Emission", emissionMap});
 
         const auto number = [&job](const char* name, double value) {
             job.params.push_back(aofx::ParamValue{name, {value}, {}});
@@ -909,16 +945,22 @@ private:
         number("maxSplats", static_cast<double>(budget));
         number("firstTriangle", static_cast<double>(firstTriangle));
         number("flatness", options_->flatness);
+        // EVERY OPACITY HERE IS COVERAGE: how much of what stands behind the
+        // surface it covers. The effect multiplies them -- `--opacity`, the
+        // material's constant, the map's value, what a glass keeps -- and
+        // only then gives each gaussian what one of the several over a point
+        // needs for that (`m2sCoverageAlpha`).
+        // Written straight into each gaussian, a mask of 0.5 covered 96% and
+        // a glass kept at 0.6 covered 98%.
+        number("coverage", 1.0);
         number("opacity", options_->opacity);
-        // A THIN WALL IS ITS OWN TRANSPARENCY. A sheet sends what it does not
-        // reflect straight on, which is what blending a gaussian over what
-        // stands behind it already does -- through any number of cards, on
-        // both routes. So a thin-walled glass keeps, of each gaussian, only
-        // what the sheet reflects head on, 2R/(1+R), spread over the
-        // gaussians that overlap at a point (`scene::thinWallOpacity`), and the frame
-        // shades it as that reflection and nothing else. A solid keeps
-        // `--glass-opacity`.
-        number("glassOpacity", thinGlass(material) ? athenea::scene::thinWallOpacity(material.ior, options_->sigma) : options_->minOpacity);
+        number("materialOpacity", static_cast<double>(material.opacity));
+        // A THIN WALL IS ITS OWN TRANSPARENCY: it covers what the sheet
+        // reflects head on at its index, which the effect works out
+        // (`m2sGlassCovers`). A solid covers `--glass-opacity`.
+        number("glassOpacity", options_->minOpacity);
+        number("thinWall", thinGlass(material) ? 1.0 : 0.0);
+        number("ior", static_cast<double>(material.ior));
         number("maxCells", static_cast<double>(options_->maxCells));
         number("cellMin", cellMin_);
         number("cellMax", cellMax_);
@@ -933,7 +975,12 @@ private:
                                  : channel == 'b' ? 3.0
                                                   : 4.0;
             number("opacityChannel", which);
-            number("opacityCut", options_->opacityCut);
+            // A threshold the material names is its own cut, and what it
+            // keeps is whole; without one the map is coverage, cut where it
+            // is too faint to be worth a gaussian.
+            const bool threshold = material.opacityThreshold > 0.0F;
+            number("opacityCut", threshold ? static_cast<double>(material.opacityThreshold) : options_->opacityCut);
+            number("opacityBinary", threshold ? 1.0 : 0.0);
         }
         // Six entries a splat: the four a gaussian is, and the two that say
         // what it reflects with.
@@ -958,6 +1005,7 @@ private:
             number("mrUv2", bySecond(material.metallicMap.empty() ? material.roughnessMap : material.metallicMap));
             number("opacityUv2", bySecond(material.opacityMap));
             number("displaceUv2", bySecond(material.displacementMap));
+            number("emissionUv2", bySecond(material.emissionMap));
         }
         number("transmission", static_cast<double>(material.transmission));
         number("metallic", static_cast<double>(material.metallic));
@@ -971,6 +1019,16 @@ private:
         };
         colour("materialColour", material.baseColour);
         colour("transmissionColour", material.transmissionColour);
+        if (emits_) {
+            number("writeEmission", 1.0);
+            colour("emissionColour", material.emission);
+            const char channel = material.emissionMap.channel;
+            number("emissionChannel", channel == 'r'   ? 1.0
+                                      : channel == 'g' ? 2.0
+                                      : channel == 'b' ? 3.0
+                                      : channel == 'a' ? 4.0
+                                                       : 0.0);
+        }
 
         auto rendered = aofx_host::renderEffect(*context_, effect, job);
         if (!rendered) return std::move(rendered).error();
@@ -1025,6 +1083,18 @@ private:
             record[17] = shading[0];
             record[18] = shading[1];
             record[19] = shading[2];
+            // What it gives off: the record's last entry, where the stage
+            // emits; zeros the encoding does not point at otherwise.
+            if (emits_) {
+                const float* emitted = entry(recordEntries - 1);
+                record[20] = emitted[0];
+                record[21] = emitted[1];
+                record[22] = emitted[2];
+            } else {
+                record[20] = 0.0F;
+                record[21] = 0.0F;
+                record[22] = 0.0F;
+            }
             // Where the bake stands and which way it looks, kept beside the
             // record rather than in it: the file has no field for a normal.
             // A displaced gaussian is baked from the flat surface under it --
@@ -1057,6 +1127,9 @@ private:
 
     /// Where every splat's bake starts, in the order the records are in.
     BakeFrom                                 bakeFrom_;
+    /// Whether any material of the stage gives off light: the records then
+    /// carry it (`io::SplatEncoding::emission`).
+    bool                                     emits_ = false;
     /// The Cryptomatte id of the prim each splat came from, in the same order,
     /// and what those ids are called.
     std::vector<uint32_t>                    cryptoIds_;
@@ -1343,15 +1416,18 @@ void addMesh2Splat(CLI::App& app) {
                     "leaves a traced surface 30% transparent");
     cmd->add_option("--flatness", o->flatness,
                     "the third size, as a fraction of the smaller of the other two");
-    cmd->add_option("--opacity", o->opacity, "the opacity every gaussian starts from");
+    cmd->add_option("--opacity", o->opacity,
+                    "how much of what stands behind it the converted surface covers, multiplied into "
+                    "the material's own opacity");
     cmd->add_option("--glass-opacity", o->minOpacity,
-                    "what a fully transmitting material still stops. Low is a window -- you see what "
-                    "stands behind it -- and translucency is not that: the light comes through "
-                    "scattered, so the body stays mostly there");
+                    "how much of what stands behind it a fully transmitting solid still covers. Low is "
+                    "a window -- you see what stands behind it -- and translucency is not that: the "
+                    "light comes through scattered, so the body stays mostly there");
     cmd->add_option("--opacity-cut", o->opacityCut,
-                    "a material whose opacity is a map is a cut-out: below this the surface is "
-                    "not there and no gaussian is written, so the budget goes where the surface "
-                    "is. It is what makes a feather a feather and not the card it is drawn on");
+                    "a material whose opacity is a map with no threshold of its own: below this the "
+                    "surface is not there and no gaussian is written, so the budget goes where the "
+                    "surface is; above it the surface covers what the map reads. It is what makes a "
+                    "feather a feather and not the card it is drawn on");
     cmd->add_option("--max-cells", o->maxCells, "most cells one triangle may walk");
     cmd->add_option("--texture-size", o->textureSize,
                     "read maps no larger than this (0: their own size). A map is a float4 picture "
@@ -1595,6 +1671,8 @@ void addMesh2Splat(CLI::App& app) {
                 // frame lights it whole; a radiance bake keeps the light on the
                 // body and the frame adds only the polish.
                 options.litBody = o->bake && !o->transfer;
+                // Light, all of it: the albedo, the transfer's and the bake's.
+                options.linear = true;
                 // The matte's ancestry, gaussian by gaussian, as the conversion
                 // inherited it from the prims it read.
                 options.cryptoObject = converter.cryptoIds();

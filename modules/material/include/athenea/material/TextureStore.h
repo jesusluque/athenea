@@ -4,8 +4,11 @@
 // the host (decompression, as the rules allow) and its bytes go up whole; a
 // kernel expands its channels and flips it to v-up (texture_decode.slang), and
 // its mip chain is made on the device -- averaged as light for sRGB colour,
-// which is sampled through an sRGB view. UDIM sets resolve to a slot per tile.
-// Materials reach all of it through one table (athenea/material/texture_table).
+// which is sampled through an sRGB view. A file in any other colour space is
+// brought into the working space by the decode kernel itself, a generated
+// one that calls the OpenColorIO function compiled for that space
+// (colour::ColourCompiler). UDIM sets resolve to a slot per tile. Materials
+// reach all of it through one table (athenea/material/texture_table).
 #pragma once
 
 #include <array>
@@ -20,6 +23,7 @@
 #include <slang-rhi.h>
 #include <slang-rhi/shader-cursor.h>
 
+#include "athenea/colour/ColourCompiler.h"
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
@@ -32,25 +36,25 @@ class ShaderLibrary;
 
 namespace athenea::material {
 
-/// How a file's components are to be read: MaterialX's and UsdUVTexture's
-/// `colorSpace`/`sourceColorSpace`.
-enum class ColourSpace : uint8_t {
-    Auto,   ///< the file says: 8-bit images are sRGB unless tagged otherwise, float ones linear
-    Raw,    ///< data (normals, roughness): no decoding
-    Srgb,   ///< sRGB-encoded colour
-};
-
 enum class Wrap : uint8_t { Repeat, Clamp, Mirror, Black };
 enum class Filter : uint8_t { Linear, Nearest };
 
 struct TextureInfo {
     std::string path;
-    ColourSpace space = ColourSpace::Auto;
+    /// The colour space as the material, light or file input named it:
+    /// MaterialX's `colorspace`, UsdUVTexture's `sourceColorSpace`, USD's
+    /// `colorSpace` metadata. Empty or `auto`: the file says (8-bit images
+    /// sRGB unless tagged otherwise, the rest linear). Resolved by
+    /// colour::ColourNames when the file is read.
+    std::string space;
+    /// How it was read: "srgb view", "raw", "working" or the function's
+    /// description; empty before it was.
+    std::string decode;
     bool        loaded = false;
     bool        udim = false;
     uint32_t    width = 0;    ///< the first tile's, for a UDIM set
     uint32_t    height = 0;
-    std::string error;        ///< why it did not load
+    std::string error;        ///< why it did not load, or a colour space nothing knew (read as the file says)
 };
 
 class TextureStore {
@@ -58,10 +62,17 @@ public:
     [[nodiscard]] static Result<std::unique_ptr<TextureStore>> create(gpu::ShaderLibrary& library);
 
     /// The id of `path` -- a file path, one holding "<UDIM>", or a path
-    /// inside a package (`shot.usdz[textures/paint.jpg]`) -- read as `space`.
-    /// Loaded at the next commit; until then, and if it cannot be, samples
-    /// report it missing and materials use their defaults.
-    uint32_t request(const std::string& path, ColourSpace space = ColourSpace::Auto);
+    /// inside a package (`shot.usdz[textures/paint.jpg]`) -- read in the
+    /// colour space `space` names (TextureInfo::space). Loaded at the next
+    /// commit; until then, and if it cannot be, samples report it missing
+    /// and materials use their defaults.
+    uint32_t request(const std::string& path, const std::string& space = {});
+
+    /// Whether 8-bit sRGB files stay 8-bit behind an sRGB view (the default)
+    /// or go through the compiled sRGB function like any other space: the
+    /// second exists to check the first against. For files read after the
+    /// call.
+    void setSrgbFastPath(bool enabled) { srgbFastPath_ = enabled; }
 
     /// WHERE A RELATIVE PATH IS RELATIVE TO.
     ///
@@ -117,14 +128,27 @@ private:
     };
 
     TextureStore() = default;
-    [[nodiscard]] Result<uint32_t> loadFile(const std::string& path, ColourSpace space, TextureInfo& info);
+    [[nodiscard]] Result<uint32_t> loadFile(const std::string& path, const std::string& space, TextureInfo& info);
+    /// The decode kernel that brings `space` (the config's name) into the
+    /// working space: athenea_texdec_<hash>, made once per space.
+    struct Decoder {
+        gpu::ComputeKernel     kernel;
+        colour::ColourFunction function;
+    };
+    [[nodiscard]] Result<const Decoder*> decoderFor(const std::string& space);
     /// A file under the search path whose name matches but for what a
     /// packager changes; empty if there is none.
     [[nodiscard]] std::filesystem::path besideByName(const std::string& name) const;
     [[nodiscard]] Result<void> writeRecords();
 
     gpu::Device*                                          device_ = nullptr;
+    gpu::ShaderLibrary*                                   library_ = nullptr;
     gpu::ComputeKernel                                    decode_;
+    /// Made at the first commit that reads a file: the studio config's names
+    /// and the functions compiled from it.
+    std::unique_ptr<colour::ColourCompiler>               colour_;
+    std::map<std::string, Decoder>                        decoders_;
+    bool                                                  srgbFastPath_ = true;
     std::unique_ptr<gpu::MipGenerator>                    mips_;
     std::filesystem::path                                 search_;
     /// The files under `search_`, by a name with case, spaces, punctuation
@@ -133,7 +157,7 @@ private:
     mutable std::map<std::string, std::filesystem::path>  beside_;
     mutable bool                                          besideBuilt_ = false;
     std::vector<Entry>                                    entries_;
-    std::map<std::pair<std::string, ColourSpace>, uint32_t> ids_;
+    std::map<std::pair<std::string, std::string>, uint32_t> ids_;
     std::vector<Slot>                                     slots_;
     std::vector<gpu::Sampler>                             samplers_;
     std::map<std::tuple<Wrap, Wrap, Filter>, uint32_t>    samplerIds_;

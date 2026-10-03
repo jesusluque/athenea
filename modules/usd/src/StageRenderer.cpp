@@ -1077,8 +1077,11 @@ Result<void> StageRenderer::setDefaultLights(bool on) {
     if (!sun) {
         return Error(ErrorCode::InternalError, "cannot define the default sun in the session layer");
     }
+    // Normalized, so 2.5 is the illuminance it lays rather than the radiance
+    // of its two degree disc (UsdLux's normalize on a DistantLight).
     sun.CreateIntensityAttr(VtValue(2.5F));
     sun.CreateAngleAttr(VtValue(2.0F));
+    sun.CreateNormalizeAttr(VtValue(true));
     // A distant light shines down its own -Z: tilted from overhead toward
     // the viewer's side, about whichever axis is up.
     const bool zUp = UsdGeomGetStageUpAxis(impl.stage) == UsdGeomTokens->z;

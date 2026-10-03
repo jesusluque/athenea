@@ -17,10 +17,24 @@ namespace {
 /// (a hash, so a frame is one image), the path tracer only what is fully
 /// gone, and draws its own lot a sample. Only rows flagged as cutouts pay.
 const char* kCutout = R"(
-float pixelLot(uint2 pixel) {
-    uint state = (pixel.y * 65536u + pixel.x) * 747796405u + 2891336453u;
-    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    word = (word >> 22u) ^ word;
+uint lotHash(uint input) {
+    const uint state = input * 747796405u + 2891336453u;
+    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+/// A pixel's lot for one surface: the pixel, the instance and the triangle
+/// folded through the hash, so a frame is still one image -- and every layer
+/// of a stack draws a lot of its own, as the path tracer's samples do. One
+/// lot a pixel for every layer made the layers' coverage one coverage: two
+/// cards of opacity one half in a row showed what was behind them half the
+/// time instead of a quarter, and a feathered belly dozens of cards deep
+/// showed the background through a card's soft edge wherever the frontmost
+/// card's did.
+float pixelLot(uint2 pixel, uint4 seen) {
+    uint word = lotHash(pixel.y * 65536u + pixel.x);
+    word = lotHash(word + seen.x);
+    word = lotHash(word + seen.y);
     // Never exactly 0: an opacity of 0 always cuts, one of 1 never does.
     return (float(word >> 8) + 0.5) * (1.0 / 16777216.0);
 }
@@ -37,16 +51,19 @@ public bool materialCuts(CameraParams camera, uint2 pixel, uint4 seen) {
     if ((m.flags & kMaterialCutout) == 0) {
         return false;
     }
-    // A UsdPreviewSurface in transparent opacity mode is cut by the raster's
-    // lot (alphaDither) as before, but never by the traced route: the path
-    // tracer keeps that surface, draws its specular whole and lets
-    // (1 - opacity) of the light straight through itself.
-    if (lookup.alphaDither == 0 && (m.flags & kMaterialTransparent) != 0) {
+    // A UsdPreviewSurface in transparent opacity mode is never cut by the
+    // traced route: the path tracer keeps that surface, draws its specular
+    // whole and lets (1 - opacity) of the light straight through itself. The
+    // raster's lot keeps it with the tracer's probability, max(opacity,
+    // 1/20), and its shading weighs the kept sample as the tracer does.
+    const bool transparent = (m.flags & kMaterialTransparent) != 0;
+    if (lookup.alphaDither == 0 && transparent) {
         return false;
     }
     const MaterialInputs inputs = materialInputsAt(camera, toWorld, pixel.x, pixel.y, s, lookup.time);
     evaluateMaterial(m.function, inputs, m.blob);
-    return gAtheneaResult.opacity < (lookup.alphaDither != 0 ? pixelLot(pixel) : 1.0 / 512.0);
+    const float kept = transparent ? max(gAtheneaResult.opacity, kTransparentKeep) : gAtheneaResult.opacity;
+    return kept < (lookup.alphaDither != 0 ? pixelLot(pixel, seen) : 1.0 / 512.0);
 }
 )";
 

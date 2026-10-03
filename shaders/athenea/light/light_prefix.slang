@@ -15,6 +15,13 @@
 // -- unbiased, and dark and blotchy at any count a frame takes. A dome of
 // radiance L lights a scene of radius R with pi L pi R^2, a sun of irradiance
 // E with E pi R^2; over the same pi, L pi R^2 and E R^2.
+//
+// A sun's irradiance is UsdLux's: its radiance times its disc's projected
+// solid angle (`distantSizeFactor`), which `normalize` divides back out, so
+// a normalized sun's irradiance is its intensity. A dome ignores normalize,
+// as the schema says, so its share keeps its pi R^2 either way: before, a
+// dome or a sun authored with normalize lost its R^2 and was chosen as if it
+// were the size of a unit.
 module light_prefix;
 import athenea.light.lights;
 
@@ -26,16 +33,15 @@ static const float3 kPrefixLuminance = float3(0.2126, 0.7152, 0.0722);
 
 float powerOf(LightRecord l) {
     float power = max(dot(l.colour, kPrefixLuminance), 0.0) * exp2(l.exposure);
-    if ((l.flags & kLightNormalize) == 0) {
-        switch (l.kind) {
-        case kLightSphere:   power *= 4.0 * 3.14159265358979 * l.sizeX * l.sizeX; break;
-        case kLightDisk:     power *= 3.14159265358979 * l.sizeX * l.sizeX; break;
-        case kLightRect:     power *= l.sizeX * l.sizeY; break;
-        case kLightCylinder: power *= 2.0 * 3.14159265358979 * l.sizeX * l.sizeY; break;
-        case kLightDome:     power *= 3.14159265358979 * sceneRadius * sceneRadius; break;
-        case kLightDistant:  power *= sceneRadius * sceneRadius; break;
-        default: break;
-        }
+    const bool normalized = (l.flags & kLightNormalize) != 0;
+    switch (l.kind) {
+    case kLightDome:     power *= 3.14159265358979 * sceneRadius * sceneRadius; break;
+    case kLightDistant:  power *= (normalized ? 1.0 : distantSizeFactor(l)) * sceneRadius * sceneRadius; break;
+    case kLightSphere:   power *= normalized ? 1.0 : 4.0 * 3.14159265358979 * l.sizeX * l.sizeX; break;
+    case kLightDisk:     power *= normalized ? 1.0 : 3.14159265358979 * l.sizeX * l.sizeX; break;
+    case kLightRect:     power *= normalized ? 1.0 : l.sizeX * l.sizeY; break;
+    case kLightCylinder: power *= normalized ? 1.0 : 2.0 * 3.14159265358979 * l.sizeX * l.sizeY; break;
+    default: break;
     }
     return max(power, 1.0e-6);
 }

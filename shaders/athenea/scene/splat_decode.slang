@@ -33,6 +33,10 @@ RWStructuredBuffer<uint>     origin;
 // The shading normal, one word a splat (packing's `packNormal`); `params.normal`
 // says whether the file carries one. Always bound.
 RWStructuredBuffer<uint>     normals;
+// The radiance the surface gave off, one word a splat (packing's
+// `packRgb9e5`); `params.emission` says whether the file carries it. Always
+// bound.
+RWStructuredBuffer<uint>     emission;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -94,6 +98,12 @@ void splatDecode(uint3 tid: SV_DispatchThreadID) {
             n = float3(axes[0][shortest], axes[1][shortest], axes[2][shortest]);
         }
         normals[j] = packNormal(normalize(n));
+    }
+    // THE LIGHT IT GIVES OFF, linear and unbounded: encoded here, once, into
+    // the shared-exponent word every renderer reads.
+    if (params.emission != kNoField) {
+        emission[j] = packRgb9e5(float3(fieldOf(raw, i, s, params.emission), fieldOf(raw, i, s, params.emission + 1),
+                                        fieldOf(raw, i, s, params.emission + 2)));
     }
     if (params.shadowBits != kNoField) {
         shadowBits[j * 2] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits));

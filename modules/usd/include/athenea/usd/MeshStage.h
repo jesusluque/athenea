@@ -18,8 +18,8 @@
 // drawn, from the same kernel.
 //
 // What a material says is narrowed here to what a gaussian can carry: a
-// colour, a metallic, a roughness, a normal, a transmission, and the files
-// those come from. A MaterialX graph is not evaluated -- that is
+// colour, a metallic, a roughness, a normal, a transmission, the light it
+// gives off, and the files those come from. A MaterialX graph is not evaluated -- that is
 // `material::MaterialCompiler`'s work and it needs a shading point -- so a
 // value that is computed rather than authored comes back as the texture it
 // is read from, or as the default.
@@ -84,10 +84,25 @@ struct StageMaterial {
     StageTexture           normal;
     StageTexture           metallicMap;
     StageTexture           roughnessMap;
-    /// A cut-out: where this reads below a half the surface is not there at
-    /// all. It is not the same thing as `transmission`, which is a surface
-    /// you see through.
+    /// HOW MUCH OF WHAT STANDS BEHIND THE SURFACE IT COVERS, as a constant:
+    /// MaterialX's `opacity` (OpenPBR `geometry_opacity`, glTF `alpha` in
+    /// BLEND), or UsdPreviewSurface's in `presence` mode. Coverage, not
+    /// transmission: the mesh is drawn there by that lot. One where an input
+    /// is connected to `opacityMap`, which is then the value. (A
+    /// UsdPreviewSurface in its default `transparent` mode carries its
+    /// constant as a thin wall's `transmission` instead.)
+    float                  opacity = 1.0F;
+    /// The opacity read as coverage, a value a point: where it is below the
+    /// conversion's cut the surface is not there at all, and above it the
+    /// surface covers what it reads. It is not the same thing as
+    /// `transmission`, which is a surface you see through.
     StageTexture           opacityMap;
+    /// A CUT-OUT BY THRESHOLD (UsdPreviewSurface's `opacityThreshold`, glTF's
+    /// `alpha_cutoff` in MASK): the opacity is either there, whole, or not,
+    /// by whether it reads at least this. 0: no threshold, the opacity is
+    /// coverage. A constant is resolved here (to an `opacity` of 0 or 1), so
+    /// this is only ever set beside an `opacityMap`.
+    float                  opacityThreshold = 0.0F;
     /// A HEIGHT ALONG THE NORMAL: UsdPreviewSurface's `displacement`, or a
     /// MaterialX `displacement` node's `displacement` times its `scale`. The
     /// surface stands `map * displacementScale + displacementBias` off the
@@ -100,6 +115,21 @@ struct StageMaterial {
     /// not zero.
     [[nodiscard]] bool displaces() const noexcept {
         return !displacementMap.empty() || displacementBias != 0.0F;
+    }
+    /// THE LIGHT IT GIVES OFF BY ITSELF, linear radiance: the colour times
+    /// the weight, in each vocabulary's words -- standard_surface's
+    /// `emission` x `emission_color`, OpenPBR's `emission_luminance` x
+    /// `emission_color` (nits, which the mesh is rendered with as they are),
+    /// glTF's `emissive` x `emissive_strength`, UsdPreviewSurface's
+    /// `emissiveColor`. With `emissionMap` the map is the colour and this is
+    /// what multiplies it (the weight, where the colour is the map; the
+    /// colour, where the weight is), as for every other map here.
+    std::array<float, 3>   emission{0.0F, 0.0F, 0.0F};
+    /// A map on the colour (rgb, `channel` 0) or on the weight (one channel).
+    StageTexture           emissionMap;
+    /// Whether anything is given off at all.
+    [[nodiscard]] bool emits() const noexcept {
+        return emission[0] > 0.0F || emission[1] > 0.0F || emission[2] > 0.0F;
     }
 };
 

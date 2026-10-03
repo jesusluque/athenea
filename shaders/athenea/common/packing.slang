@@ -11,6 +11,8 @@
 //   sh         uint * words   f16 rest coefficients, rgb per basis
 //   normals    uint           optional: the shading normal, octahedral
 //                             2 x 16 bits (`packNormal`), apart from the frame
+//   emission   uint           optional: the radiance the surface gives off by
+//                             itself, linear RGB9E5 (`packRgb9e5`)
 //
 // 32 bytes before harmonics, against openFXplayer's 64 float32. Why each
 // field is what it is:
@@ -127,6 +129,38 @@ public float3 unpackNormal(uint word) {
     n.x += n.x >= 0.0 ? -t : t;
     n.y += n.y >= 0.0 ? -t : t;
     return normalize(n);
+}
+
+/// LIGHT IN ONE WORD (`GpuSplats::emission`): RGB9E5, three 9-bit mantissas
+/// under one 5-bit exponent, as the shared-exponent texture format has it.
+/// Unsigned and HDR -- up to 65408, down to 2^-24 -- with every channel
+/// stepped by 1/512 of the brightest, which is finer than f16 on the channel
+/// that is seen. Negative and not-a-number are nothing; past the top is the
+/// top.
+public uint packRgb9e5(float3 rgb) {
+    const float kTop = 65408.0;   // (511 / 512) * 2^16
+    const float3 c = float3(rgb.x > 0.0 ? min(rgb.x, kTop) : 0.0, rgb.y > 0.0 ? min(rgb.y, kTop) : 0.0,
+                            rgb.z > 0.0 ? min(rgb.z, kTop) : 0.0);
+    const float largest = max(c.x, max(c.y, c.z));
+    if (!(largest >= 5.9604645e-8)) {   // half the smallest step there is
+        return 0u;
+    }
+    // The exponent that puts the largest channel's mantissa below 512, and
+    // one more where rounding takes it to 512.
+    int e = max(-16, int(floor(log2(largest)))) + 16;
+    float step = exp2(float(e - 24));
+    if (uint(floor(largest / step + 0.5)) >= 512u) {
+        e += 1;
+        step *= 2.0;
+    }
+    const uint3 m = min(uint3(floor(c / step + 0.5)), uint3(511u));
+    return m.x | (m.y << 9) | (m.z << 18) | (uint(e) << 27);
+}
+
+/// The other way: linear RGB.
+public float3 unpackRgb9e5(uint word) {
+    const float step = exp2(float(int(word >> 27) - 24));
+    return float3(float(word & 511u), float((word >> 9) & 511u), float((word >> 18) & 511u)) * step;
 }
 
 public uint packHalves(float a, float b) {

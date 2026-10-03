@@ -57,7 +57,9 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
     // HOW EACH ARRAY MERGES, by what it is: a rig's joints with their
     // weights, bits as bits, an int as what may not be merged across (an
     // id, a part, a sheet), and a float as a mean -- metallic, roughness
-    // and transmission compared as a colour is.
+    // and transmission compared as a colour is, and the radiance a gaussian
+    // gives off (`athenea:splat:emission`) merged as one: the mean, weighed
+    // by what each covers, is the light the merged one gives off.
     const auto ends = [](const std::string& name, const char* tail) {
         const std::string t(tail);
         return name.size() >= t.size() && name.compare(name.size() - t.size(), t.size(), t) == 0;

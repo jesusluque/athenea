@@ -19,29 +19,10 @@ athenea_add_module(technique
         athenea::core
         athenea::gpu
         athenea::world
+        athenea::colour
         athenea::material
         athenea::light
         athenea::render)
-
-# OpenColorIO (scripts/build-ocio.sh), as a compiler of shader text and LUTs
-# for the display. Without it ViewTransform::Ocio says so.
-set(ATHENEA_OCIO_ROOT "$ENV{HOME}/tools/ocio-2.5.2" CACHE PATH "OpenColorIO install")
-# A parent that found OpenColorIO already has the imported target: one OCIO in
-# the process, and the parent's.
-if(TARGET OpenColorIO::OpenColorIO)
-    set(_athenea_ocio_from "the parent project's")
-else()
-    find_package(OpenColorIO 2.5 CONFIG QUIET HINTS "${ATHENEA_OCIO_ROOT}" NO_DEFAULT_PATH)
-    set(_athenea_ocio_from "${ATHENEA_OCIO_ROOT}")
-endif()
-if(TARGET OpenColorIO::OpenColorIO)
-    target_link_libraries(athenea_technique PRIVATE OpenColorIO::OpenColorIO)
-    target_compile_definitions(athenea_technique PRIVATE ATHENEA_HAVE_OCIO=1)
-    message(STATUS "technique: OpenColorIO ${OpenColorIO_VERSION} (${_athenea_ocio_from})")
-else()
-    target_compile_definitions(athenea_technique PRIVATE ATHENEA_HAVE_OCIO=0)
-    message(STATUS "technique: no OpenColorIO at ${ATHENEA_OCIO_ROOT}; no OCIO view")
-endif()
 
 # OIDN, GPU devices only (scripts/build-oidn.sh). Without it the engine has no
 # denoiser, and says so.

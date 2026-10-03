@@ -127,10 +127,40 @@ struct Mesh2SplatUniforms {
     /// (2^levels cells a side).
     float    simplify = 0.0F;
     uint32_t simplifyLevels = 3;
-    uint32_t simplifyPad0 = 0;
-    uint32_t simplifyPad1 = 0;
+    /// 1: the cut-out is a threshold (UsdPreviewSurface's `opacityThreshold`,
+    /// glTF's MASK), and what it keeps is whole rather than its value.
+    uint32_t opacityBinary = 0;
+    /// 1: `opacity`, the mask and `glassOpacity` are the surface's coverage,
+    /// and each gaussian takes what one of the stack over a point needs for
+    /// it; 0: each gaussian's own opacity, as before.
+    uint32_t coverage = 1;
+
+    /// What the surface gives off: the Emission clip, where there is one,
+    /// times `emissionColour`, written in a record entry of its own.
+    uint32_t hasEmission = 0;
+    uint32_t emissionWidth = 0;
+    uint32_t emissionHeight = 0;
+    uint32_t emissionStride = 0;
+
+    float    emissionColour[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+
+    /// 0: not written. Otherwise the entry of a record it goes in: the last.
+    uint32_t emissionEntry = 0;
+    /// 0: the clip's rgb; else one channel as grey, 1 r, 2 g, 3 b, 4 a.
+    uint32_t emissionChannel = 0;
+    uint32_t emissionUv2 = 0;
+    uint32_t emissionPad = 0;
+
+    /// 1: the glass is a sheet, and covers what it reflects at `ior` rather
+    /// than `glassOpacity`.
+    uint32_t thinWall = 0;
+    float    ior = 1.5F;
+    /// The material's own coverage (its constant opacity), multiplied into
+    /// `opacity`: the user's and the material's are two numbers.
+    float    materialOpacity = 1.0F;
+    uint32_t coveragePad = 0;
 };
-static_assert(sizeof(Mesh2SplatUniforms) == 304, "must match M2sParams exactly");
+static_assert(sizeof(Mesh2SplatUniforms) == 368, "must match M2sParams exactly");
 
 class Mesh2Splat final : public aofx::Effect {
 public:
@@ -170,6 +200,9 @@ public:
         // A height map: each gaussian stands off the surface by what it reads
         // there, along the normal, and turns with the relief.
         clip("Displacement", "Displacement height", true);
+        // What the surface gives off by itself: multiplied into
+        // `emissionColour`, its rgb or one channel of it (`emissionChannel`).
+        clip("Emission", "Emission", true);
 
         aofx::ParamDesc opacityChannel;
         opacityChannel.name = "opacityChannel";
@@ -194,6 +227,57 @@ public:
         opacityCut.hardMin = {0.0};
         opacityCut.hardMax = {1.0};
         into.params.push_back(opacityCut);
+
+        aofx::ParamDesc opacityBinary;
+        opacityBinary.name = "opacityBinary";
+        opacityBinary.label = "Cut-out is a threshold";
+        opacityBinary.hint =
+            "Where the cut is the material's own threshold (UsdPreviewSurface's opacityThreshold, "
+            "glTF's MASK), what it keeps is the whole surface rather than the value it read.";
+        opacityBinary.type = aofx::ParamType::Boolean;
+        opacityBinary.defaults = {0.0};
+        into.params.push_back(opacityBinary);
+
+        aofx::ParamDesc coverage;
+        coverage.name = "coverage";
+        coverage.label = "Opacity is coverage";
+        coverage.hint =
+            "Opacity, the cut-out's value and the glass opacity say how much of what stands behind "
+            "the surface it covers, and each gaussian takes what one of the several over a point "
+            "needs for that. Off, they are each gaussian's own opacity, and a surface of overlapping "
+            "gaussians covers far more than they say: a mask of 0.5 covered 96%.";
+        coverage.type = aofx::ParamType::Boolean;
+        coverage.defaults = {1.0};
+        into.params.push_back(coverage);
+
+        aofx::ParamDesc thinWall;
+        thinWall.name = "thinWall";
+        thinWall.label = "Thin wall";
+        thinWall.hint =
+            "The glass is a sheet: it sends what it does not reflect straight on, so it covers only what "
+            "it reflects head on at its index, 2R/(1+R), instead of the glass opacity.";
+        thinWall.type = aofx::ParamType::Boolean;
+        thinWall.defaults = {0.0};
+        into.params.push_back(thinWall);
+
+        aofx::ParamDesc ior;
+        ior.name = "ior";
+        ior.label = "Index";
+        ior.hint = "The thin wall's index of refraction.";
+        ior.type = aofx::ParamType::Double;
+        ior.defaults = {1.5};
+        ior.hardMin = {1.0};
+        into.params.push_back(ior);
+
+        aofx::ParamDesc materialOpacity;
+        materialOpacity.name = "materialOpacity";
+        materialOpacity.label = "Material opacity";
+        materialOpacity.hint = "The material's own constant coverage, multiplied into the opacity.";
+        materialOpacity.type = aofx::ParamType::Double;
+        materialOpacity.defaults = {1.0};
+        materialOpacity.hardMin = {0.0};
+        materialOpacity.hardMax = {1.0};
+        into.params.push_back(materialOpacity);
 
         aofx::ParamDesc triangles;
         triangles.name = "triangles";
@@ -286,8 +370,8 @@ public:
         glass.name = "glassOpacity";
         glass.label = "Glass Opacity";
         glass.hint =
-            "What a fully transmitting material still stops, scaled by how much it transmits: 1 "
-            "keeps the opacity whole, which is what a gaussian did before this existed, and low "
+            "What a fully transmitting material still covers, scaled by how much it transmits: 1 "
+            "keeps the surface whole, which is what a gaussian did before this existed, and low "
             "is a window you can see through. A translucent material is not a transparent one, "
             "so the default keeps everything and the caller says otherwise.";
         glass.type = aofx::ParamType::Double;
@@ -359,7 +443,7 @@ public:
 
         // Which maps read by the second set of coordinates (the Texcoord2
         // clip) rather than by the Mesh clip's own.
-        for (const char* name : {"albedoUv2", "normalUv2", "mrUv2", "opacityUv2", "displaceUv2"}) {
+        for (const char* name : {"albedoUv2", "normalUv2", "mrUv2", "opacityUv2", "displaceUv2", "emissionUv2"}) {
             aofx::ParamDesc bySecond;
             bySecond.name = name;
             bySecond.label = std::string(name) + ": read by the second coordinates";
@@ -368,6 +452,41 @@ public:
             bySecond.defaults = {0.0};
             into.params.push_back(bySecond);
         }
+
+        // THE LIGHT IT GIVES OFF. Additive, as the ABI asks: a host that sends
+        // none of these gets records exactly as before.
+        aofx::ParamDesc emission;
+        emission.name = "writeEmission";
+        emission.label = "Write emission";
+        emission.hint =
+            "One entry more a record, the last: the linear radiance the surface gives off there "
+            "(emissionColour, times the Emission clip where there is one).";
+        emission.type = aofx::ParamType::Boolean;
+        emission.defaults = {0.0};
+        into.params.push_back(emission);
+
+        aofx::ParamDesc emissionColour;
+        emissionColour.name = "emissionColour";
+        emissionColour.label = "Emission";
+        emissionColour.hint =
+            "What the material gives off, linear and unbounded: its colour times its weight. "
+            "Multiplied into the Emission clip where there is one.";
+        emissionColour.type = aofx::ParamType::Colour;
+        emissionColour.dimension = 3;
+        emissionColour.defaults = {0.0, 0.0, 0.0};
+        into.params.push_back(emissionColour);
+
+        aofx::ParamDesc emissionChannel;
+        emissionChannel.name = "emissionChannel";
+        emissionChannel.label = "Emission channel";
+        emissionChannel.hint =
+            "0 reads the Emission clip's colour; 1 red, 2 green, 3 blue, 4 alpha read that channel "
+            "as grey -- a map on the emission's weight rather than its colour.";
+        emissionChannel.type = aofx::ParamType::Integer;
+        emissionChannel.defaults = {0.0};
+        emissionChannel.hardMin = {0.0};
+        emissionChannel.hardMax = {4.0};
+        into.params.push_back(emissionChannel);
 
         aofx::ParamDesc displace;
         displace.name = "displace";
@@ -528,6 +647,25 @@ public:
                 uniforms.displaceStride = static_cast<uint32_t>(heights->buffer.stride);
             }
         }
+        // And what the surface gives off, in one entry after all of those.
+        const aofx::InputPlane* emitted = request.input("Emission");
+        const bool withEmissionMap = emitted != nullptr && emitted->buffer.isValid();
+        if (request.number("writeEmission", 0.0) >= 0.5) {
+            uniforms.emissionEntry = uniforms.recordPixels;
+            uniforms.recordPixels += 1U;
+            for (int k = 0; k < 3; ++k) {
+                uniforms.emissionColour[k] = static_cast<float>(
+                    std::max(request.number("emissionColour", 0.0, static_cast<size_t>(k)), 0.0));
+            }
+            if (withEmissionMap) {
+                uniforms.hasEmission = 1U;
+                uniforms.emissionWidth = static_cast<uint32_t>(emitted->buffer.width);
+                uniforms.emissionHeight = static_cast<uint32_t>(emitted->buffer.height);
+                uniforms.emissionStride = static_cast<uint32_t>(emitted->buffer.stride);
+                uniforms.emissionChannel =
+                    static_cast<uint32_t>(std::clamp(request.number("emissionChannel", 0.0), 0.0, 4.0));
+            }
+        }
         uniforms.dstWidth = static_cast<uint32_t>(target->buffer.width);
         uniforms.dstHeight = static_cast<uint32_t>(target->buffer.height);
         uniforms.dstStride = static_cast<uint32_t>(target->buffer.stride);
@@ -616,6 +754,12 @@ public:
         uniforms.opacityChannel =
             hasCut != 0 ? static_cast<uint32_t>(request.number("opacityChannel", 4.0)) : 0U;
         uniforms.opacityCut = static_cast<float>(request.number("opacityCut", 0.5));
+        uniforms.opacityBinary = request.number("opacityBinary", 0.0) >= 0.5 ? 1U : 0U;
+        uniforms.coverage = request.number("coverage", 1.0) >= 0.5 ? 1U : 0U;
+        uniforms.thinWall = request.number("thinWall", 0.0) >= 0.5 ? 1U : 0U;
+        uniforms.ior = static_cast<float>(std::max(request.number("ior", 1.5), 1.0));
+        uniforms.materialOpacity =
+            static_cast<float>(std::clamp(request.number("materialOpacity", 1.0), 0.0, 1.0));
         const aofx::InputPlane* uv2 = request.input("Texcoord2");
         const bool withUv2 = uv2 != nullptr && uv2->buffer.isValid();
         uniforms.hasUv2 = withUv2 ? 1U : 0U;
@@ -627,6 +771,7 @@ public:
         uniforms.mrUv2 = byUv2("mrUv2");
         uniforms.opacityUv2 = byUv2("opacityUv2");
         uniforms.displaceUv2 = byUv2("displaceUv2");
+        uniforms.emissionUv2 = byUv2("emissionUv2");
         uniforms.simplify = static_cast<float>(std::max(request.number("simplify", 0.0), 0.0));
         uniforms.simplifyLevels = static_cast<uint32_t>(std::clamp(request.number("simplifyLevels", 3.0), 1.0, 5.0));
         uniforms.firstTriangle = static_cast<uint32_t>(
@@ -673,7 +818,8 @@ public:
             cellCounts,
             target->buffer,
             withUv2 ? uv2->buffer : meshPlane->buffer,
-            withHeights ? heights->buffer : meshPlane->buffer};
+            withHeights ? heights->buffer : meshPlane->buffer,
+            uniforms.hasEmission != 0 ? emitted->buffer : meshPlane->buffer};
         // Count, then settle where each triangle's gaussians start, then
         // write. The order of the output is the mesh's own, which is what
         // lets a gaussian be followed from one frame to the next.

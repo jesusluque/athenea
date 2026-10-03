@@ -126,7 +126,7 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
     float depthAt = -1.0;
     // What ends the walk from behind: the raster under-layer, or the first
     // opaque disc. Either is a linear colour composited under the splats'
-    // (linearised) contribution -- the same arithmetic whichever route drew
+    // contribution, which is linear too -- the same arithmetic whichever route drew
     // the points, which is what lets the two routes agree.
     bool opaqueHit = false;
     float4 opaqueColour = float4(0.0);
@@ -225,13 +225,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
     }
 
     const float coverage = 1.0 - transmittance;
-    // Blended in the encoded space the cloud was trained in; the finished
-    // splat contribution is made linear. Linearising each splat instead turned
-    // letters red and skies electric in openFXplayer.
-    float3 linearRgb = rgb;
-    if (params.linearise != 0 && coverage > 1e-6) {
-        linearRgb = srgbToLinear(rgb / coverage) * coverage;
-    }
+    // Blended in linear light: every splat's colour was made linear when it
+    // was projected (frame.slang), so nothing is decoded here.
+    const float3 linearRgb = rgb;
     float4 behind = float4(params.bgR, params.bgG, params.bgB, params.bgA);
     if (opaqueHit) {
         behind = opaqueColour;

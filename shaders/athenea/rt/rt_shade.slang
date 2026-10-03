@@ -30,6 +30,9 @@ StructuredBuffer<uint>     sh;
 StructuredBuffer<uint>     pbr;      // metallic and roughness a splat, where the cloud carries them
 // The shading normal a splat, where the cloud carries one (`params.hasNormals`).
 StructuredBuffer<uint>     normals;
+// The radiance a splat gives off, RGB9E5, where the cloud carries it
+// (`params.hasEmission`).
+StructuredBuffer<uint>     emission;
 StructuredBuffer<LightRecord> lights;
 StructuredBuffer<float>    shadowFactors;   // measured before the frame, where a cloud carries a baked visibility
 // The sky prepared for a kernel with no texture table; `params.envLights` of
@@ -79,7 +82,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
     const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
     const float3 eye = float3(params.v03, params.v13, params.v23);
     const float3 dir = normalize(p.xyz - eye);
-    float3 colour = max(base + evaluateRest(sh, i * params.shWords, degree, dir), 0.0);
+    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
     if (params.relight != 0) {
         // In the world, where the lights are: the cloud's own space is where
         // its harmonics were trained, and a light stands somewhere else.
@@ -96,12 +99,11 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         SplatSurface surface;
         surface.position = relightToWorld(w0, w1, w2, p.xyz);
         surface.normal = relightNormalToWorld(w0, w1, w2, cloudNormal);
-        // What the cloud shows in this direction, decoded: the stored colours
-        // are in the space a cloud is blended in and an albedo is light. The
-        // harmonics are part of it -- a baked cloud keeps the body's own
+        // What the cloud shows in this direction, in linear light already.
+        // The harmonics are part of it -- a baked cloud keeps the body's own
         // change with direction in them -- so it is the evaluated colour and
         // not the constant term alone.
-        surface.albedo = params.linearise != 0 ? srgbToLinear(colour) : max(colour, 0.0);
+        surface.albedo = colour;
         surface.metallic = params.hasPbr != 0 ? pbrMetallic(pbr[i]) : 0.0;
         surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[i]) : 1.0;
         surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
@@ -158,8 +160,8 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
                 const float4 seen = colours[params.base + hitParticle];
                 if (seen.w > 0.0) {
                     surface.hasReflection = true;
-                    surface.reflectionColour =
-                        params.linearise != 0 ? srgbToLinear(seen.xyz) : max(seen.xyz, 0.0);
+                    // The first pass's colours are light, as every splat's is.
+                    surface.reflectionColour = max(seen.xyz, 0.0);
                 }
             }
         }
@@ -224,8 +226,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
                             const float4 met = colours[params.base + hitParticle];
                             if (met.w > 0.0) {
                                 surface.hasBehind = true;
-                                surface.behindColour =
-                                    params.linearise != 0 ? srgbToLinear(met.xyz) : max(met.xyz, 0.0);
+                                surface.behindColour = max(met.xyz, 0.0);
                             }
                         }
                     }
@@ -233,6 +234,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
             }
         }
         surface.lit = params.litBody != 0;
+        surface.emission = params.hasEmission != 0 ? unpackRgb9e5(emission[i]) : float3(0.0);
         surface.transferCount = params.transferCount;
         surface.transferBase = i * params.transferWords * 2;
         surface.hasShadowBits = params.shadowBits != 0 && params.transferCount >= 9;
@@ -240,13 +242,12 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         // A traced frame has no shadow pass of its own, but a cloud that
         // carries a baked visibility had its factors measured before the
         // frame, and they are read here exactly as the rasteriser reads its.
-        colour = relitForBlend(relitSplat(surface, normalize(eyeWorld - surface.position), lights,
-                                          params.lightCount, params.categoriesLo, params.categoriesHi,
-                                          shadowFactors, (params.shadowBase + i) * params.shadowLights,
-                                          params.shadowLights, envTexels, envSh, envOfLight,
-                                          params.envLights, params.envBaseSide, envSun, transfer,
-                                          params.transferIndirect != 0),
-                               params.linearise != 0);
+        colour = relitSplat(surface, normalize(eyeWorld - surface.position), lights,
+                            params.lightCount, params.categoriesLo, params.categoriesHi,
+                            shadowFactors, (params.shadowBase + i) * params.shadowLights,
+                            params.shadowLights, envTexels, envSh, envOfLight,
+                            params.envLights, params.envBaseSide, envSun, transfer,
+                            params.transferIndirect != 0);
     }
     if (fate.graded) {
         colour = editGrade(params.edit, colour);

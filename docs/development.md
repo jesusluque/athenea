@@ -41,21 +41,22 @@ document, the header is right.
 | 4 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — one per format, each with its own layout |
 | 5 | gpu | `gpu/Device.h` (backends, the shader directory, the cache), `gpu/ComputeKernel.h` (binding by name) |
 | 6 | gpu_host | `gpu_host/Context.h` — one device, two runtimes on it, one thread that talks to it |
-| 7 | scene | `scene/GpuClouds.h` — the cloud layout every renderer reads |
-| 8 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h` |
-| 9 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
-| 10 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
-| 11 | light | `light/LightTable.h` — a light on the device |
-| 12 | world | `world/GpuScene.h` — the scene as every technique reads it |
-| 13 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 14 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
-| 15 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`) |
-| 16 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
-| 17 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
-| 18 | view | `view/Viewer.h` — the window's options |
+| 7 | colour | `colour/ColourCompiler.h` (OpenColorIO as a compiler of Slang functions and LUTs), `colour/ColourNames.h` (what a colour space's name means) |
+| 8 | scene | `scene/GpuClouds.h` — the cloud layout every renderer reads |
+| 9 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h` |
+| 10 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
+| 11 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
+| 12 | light | `light/LightTable.h` — a light on the device |
+| 13 | world | `world/GpuScene.h` — the scene as every technique reads it |
+| 14 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 15 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
+| 16 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`) |
+| 17 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
+| 18 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
+| 19 | view | `view/Viewer.h` — the window's options |
 
-One thing that looks like a violation and is not: `render` (8) links
-`aofx::aofx` (17). That target is headers only, an `INTERFACE` library, and
+One thing that looks like a violation and is not: `render` (9) links
+`aofx::aofx` (18). That target is headers only, an `INTERFACE` library, and
 what `render` takes from it is `Mat4` and `Vec3`. The ordering rule is about
 compiled libraries.
 
@@ -84,14 +85,20 @@ a pool of its own and wants only the crossing.
    `VisibilityRaster`, `VisibilityTrace`, `VisibilityBvh` — and a test holds
    them to it.
 3. `technique::MaterialShading` (or `HeadlightShading`) rebuilds the surface
-   from that buffer and shades it. `AovShading` rebuilds the same surface for
+   from that buffer and shades it. Where the device traces rays it is three
+   kernels: `drawLobes` evaluates the material and writes its lobe samples'
+   directions, `traceShadows` traces every light and lobe sample's shadow ray
+   into a bit, and `shadeMaterials` lights the pixel by those bits. A kernel
+   that evaluates a material holds no ray query: on Metal the two together
+   wrote rows of garbage. `AovShading` rebuilds the same surface for
    the ids, the normals and the primvars; `CryptoShading` for the matte's id
    plane.
 4. Points, where there are any, are rasterised into a layer of their own and
    composited with the meshes by view z (`layers_nearest.slang`).
 5. That opaque layer is handed to `render::TileRasterizer` as its `under`,
-   and the splats are projected, sorted, tiled and blended over it. The
-   pipeline's stages are named in `shaders/athenea/splat/frame.slang`.
+   and the splats are projected, sorted, tiled and blended over it, in linear
+   light like the layer under them. The pipeline's stages are named in
+   `shaders/athenea/splat/frame.slang`.
 6. Domes are painted behind, exposure is applied, and the frame is done.
    `technique::DisplayTransform` is what turns it into something to look at,
    and only a viewer or a preview calls it.
@@ -113,15 +120,26 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
 `technique`, `volume`, `usd`, `view`, and `test` for the check kernels.
 
 - **The cross-module contract is `common/packing.slang`**: how a splat's
-  opacity, scale, quaternion and DC colour are packed into four words, and the
-  optional shading normal into one (`packNormal`). Anything that writes a
-  cloud and anything that reads one goes through it. An optional buffer of
-  `GpuSplats` (`pbr`, `normals`) is bound whether or not the cloud has it --
+  opacity, scale, quaternion and DC colour are packed into four words, the
+  optional shading normal into one (`packNormal`) and the optional emission
+  into one (`packRgb9e5`). Anything that writes a cloud and anything that
+  reads one goes through it. An optional buffer of `GpuSplats` (`pbr`,
+  `normals`, `emission`) is bound whether or not the cloud has it --
   the shape in its place -- and a flag in the parameters says which.
 - **A splat's index is not its record's.** Validation drops what cannot be
   drawn; `GpuSplats::origin` says which record each kept splat came from.
   Anything else a file keeps a gaussian and a kernel reads by splat goes
   through `CloudLoader::keptOnly`, and back through `toRecords` to be written.
+- **Every splat is blended in linear light**, linear Rec.709, as meshes,
+  points and lights are; sRGB appears only where an image is shown
+  (`DisplayTransform`, OpenColorIO). A cloud says which space its colours are
+  in (`GpuSplats::linear`, `primvars:athenea:splat:linear`): a capture's are
+  the sRGB it was trained in and are made linear a splat at a time, right
+  after the harmonics are evaluated (`common/color.slang`, `cloudLight`), in
+  every projection -- the rasteriser's, the ray tracer's shade, the
+  references'. Nothing after that decodes or encodes a colour: not the
+  blend, not relighting, not a grade, not a bake. Anything that copies a
+  cloud copies the flag.
 - A file declares `module <basename>;` matching its filename. A sibling is
   imported bare (`import frame;`), another area by its dotted path (`import
   athenea.common.packing;`). Anything another module uses is `public`, buffers
@@ -343,7 +361,7 @@ runs in openFXplayer. `athenea mesh2splat` is the largest example in the tree, a
 
 ## 5. The test suite
 
-Eighteen binaries, one per area, all under `tests/`.
+Nineteen binaries, one per area, all under `tests/`.
 
 | Binary | Covers |
 |---|---|
@@ -363,11 +381,15 @@ Eighteen binaries, one per area, all under `tests/`.
 | `athenea_view_tests` | the viewer; label `display` |
 | `athenea_gpu_host_tests` | gpe adopting slang-rhi's device; label `gpe` |
 | `athenea_aofx_tests` | the SDK, the host, and the mesh2splat effect; label `gpe` |
+| `athenea_coverage_tests` | what a converted surface covers against its mesh (`tests/data/coverage`); needs the `mesh2splat_coverage` fixture, which ctest runs first, and skips without it; label `gpe` |
 | `athenea_sched_tests` | the frame clock and PTP |
 
-Plus four tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
-`single_tbb` (one TBB in the process), and the two `mesh2splat_density_*`
-that run the real CLI and assert on the line it prints. And one Catch2 case
+Plus five tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
+`single_tbb` (one TBB in the process), the two `mesh2splat_density_*`
+that run the real CLI and assert on the line it prints, and
+`mesh2splat_coverage`, the real CLI converting the planes
+`athenea_coverage_tests` measures (a fixture: `athenea_test(... FIXTURES
+<name>)` makes every case of a binary require one). And one Catch2 case
 ctest runs on its own, `materialx_root`: `athenea_usd_tests
 "[materialx_root]"` with `ATHENEA_MATERIALX_ROOT` set, since the engine reads
 the variable once a process. The case is hidden (`[.materialx_root]`), so the
@@ -623,6 +645,19 @@ lit with it and keeps the relief, while the disc stays on the face.
 opacity. A translucent material is not a transparent one, and lowering the
 opacity here would say that it was.
 
+**Emission**, where some material of the stage gives off light: the
+material's colour times its weight (`StageMaterial::emission`, read in each
+of the four vocabularies), times its map where there is one -- the effect's
+`Emission` clip, read as rgb or on one channel (`emissionChannel`) --
+written by the effect in a record entry of its own, the last, and by the host
+into `record[20..22]` (`primvars:athenea:splat:emission`; the harmonics start
+at 23). Relit and transferred clouds add it when drawn; the bake meets it at
+its first vertex and keeps it in the colours. Adding a material input a
+gaussian carries means the same five places: `StageMaterial` and `materialOf`,
+a clip or a parameter of the effect, the kernel's `m2sWrite` (and `m2sLookAt`,
+so `--simplify` compares it), the record layout in `convert`/`recordFloats`,
+and the encoding field the export and the decode read.
+
 **Joints and weights**, with `--skinned`: four of each a gaussian, blended
 from the triangle's corners, so the cloud deforms with the skeleton that
 carried the mesh.
@@ -720,15 +755,16 @@ there decodes as black. A cloud out of mesh2splat is nearly all discs, so one
 of those seen edge on at a silhouette is a black splinter — which is what the
 pawn's gold ring had a fringe of, forty-four of them in 729 073.
 
-**The fit is taken in linear light**, and only the fitted result is carried
-into the space a cloud is blended in: the constant term through the sRGB
-curve, the bands that shape it through its slope there. It was done sample by
-sample once, which is a different quantity — the curve is concave, so a mean
-of encoded samples is darker than the encoding of their mean wherever the
-samples differ. Where they agree, which is an open sky, the two are the same,
-and that is why every bake test passed. Where an occluder makes them differ, a
-point beside a wall with half its hemisphere blocked was fitted at 0.2098
-against the 0.309 of light actually on it.
+**The fit is taken in linear light, and stays there**: a cloud is blended in
+linear light, so the bake writes light and the file says so
+(`primvars:athenea:splat:linear`). What `bakeEncode` still does is bound the
+series: read back over the fitted half of the sphere, clamped between nothing
+and the brightest sample the paths returned, mirrored onto the far half and
+projected on the whole sphere. While clouds were blended in sRGB the fit was
+encoded too — sample by sample once, which is a different quantity (the
+curve is concave, so a point beside a wall with half its hemisphere blocked
+was fitted at 0.2098 against the 0.309 of light on it), then to the fit as a
+whole. Neither encoding exists now.
 
 **A bake that measures the sky instead of the light.** `--transfer` runs the
 same rays with a third variant of the kernel, `kTransfer`. The first vertex is
@@ -851,8 +887,9 @@ and its coefficients, the extent — and a camera framing it unless
 `--no-camera`.
 
 Beside them, the primvars that say what this engine needs and the schemas that
-declare them: `AtheneaSplatLightingAPI` (`relight`, `litBody`, and metallic,
-roughness, transmission and the shading normal a gaussian), `AtheneaSplatSkinningAPI` where the cloud
+declare them: `AtheneaSplatLightingAPI` (`relight`, `litBody`, `linear` --
+every conversion's colours are linear light -- and metallic, roughness,
+transmission, the shading normal and the emission a gaussian), `AtheneaSplatSkinningAPI` where the cloud
 is skinned, `AtheneaSplatCryptomatteAPI` with an id a gaussian and the manifest
 that names them, and `AtheneaSplatVisibilityAPI` once `athenea visibility` has run.
 [`operations.md §4.3`](operations.md#43-the-api-schemas) is the attribute
@@ -968,6 +1005,17 @@ subsystem rather than appended as a new one.
 What belongs there and not here: a number, a defeat, a rejected alternative, a
 measurement. What belongs here and not there: how the thing works now, and how
 to change it.
+
+### 8.1 Versions
+
+One version, in the top-level `project(athenea VERSION X.Y.Z)` line; the CLI
+takes it from there (`athenea --version`, `athenea info`). A release is a tag
+`vX.Y.Z` on `main`, made only after the whole `ctest` passes with the GPU
+present -- a test that skips for want of a device is not a pass, so the count
+of skipped tests is read before tagging -- with an entry in `CHANGELOG.md`
+naming what it brings and the commits. A minor version is a set of merged
+work; a patch version fixes what a minor one shipped. The tag and `main` are
+pushed to the private repository together.
 
 ## 9. Known debts
 
