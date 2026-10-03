@@ -103,6 +103,7 @@ void addStage(CLI::App& app) {
         double focal = 35.0, nearZ = 0.0, farZ = 100000.0;
         double fStop = 0.0, focus = 0.0;
         uint32_t frames = 1;
+        bool waits = false;
         uint32_t pathSamples = 1, pathBounces = 1, pathTotal = 1, motionBuckets = 4, refine = 0;
         std::string shutter;
         std::vector<std::string> variants;
@@ -188,6 +189,8 @@ void addStage(CLI::App& app) {
                     "a UsdRenderSettings prim: render its products, each var a layer of its EXR, and stop");
     cmd->add_option("--frames", o->frames,
                     "render this many times and print the time a frame takes (Hydra sync, drawing and the readback)");
+    cmd->add_flag("--waits", o->waits,
+                  "with --frames: where the last frame made the host wait for the GPU, by source line");
     cmd->callback([o] {
         uint32_t width = 0, height = 0;
         if (std::sscanf(o->size.c_str(), "%ux%u", &width, &height) != 2) {
@@ -315,7 +318,16 @@ void addStage(CLI::App& app) {
         }
         Result<usd::StageImage> image = Error(ErrorCode::InvalidArgument, "no image");
         std::vector<double> ms;
+        // HOST WAITS A FRAME: how often the host blocked on the device in it
+        // (gpu::Device::hostWaits), and in the last frame by source line.
+        gpu::Device& device = (*renderer)->device();
+        std::vector<uint64_t> waits;
+        std::vector<gpu::Device::HostWaitSite> sitesBefore;
         for (uint32_t frame = 0; frame < std::max(o->frames, uint32_t{1}); ++frame) {
+            const uint64_t waitsBefore = device.hostWaits();
+            if (frame + 1 == std::max(o->frames, uint32_t{1})) {
+                sitesBefore = device.hostWaitSites();
+            }
             const auto start = std::chrono::steady_clock::now();
             if (own) {
                 image = (*renderer)->render(*own, o->time, width, height, o->technique);
@@ -326,6 +338,7 @@ void addStage(CLI::App& app) {
                 break;
             }
             ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            waits.push_back(device.hostWaits() - waitsBefore);
         }
         if (ms.size() > 1) {
             // The first frame loads the stage onto the device and compiles; the rest are steady.
@@ -333,6 +346,27 @@ void addStage(CLI::App& app) {
             std::sort(steady.begin(), steady.end());
             std::printf("first frame %.1f ms; then median %.2f ms, fastest %.2f ms over %zu frames\n", ms.front(),
                         steady[steady.size() / 2], steady.front(), steady.size());
+            std::vector<uint64_t> steadyWaits(waits.begin() + 1, waits.end());
+            std::sort(steadyWaits.begin(), steadyWaits.end());
+            std::printf("host waits: first frame %llu; then median %llu a frame, at most %llu\n",
+                        static_cast<unsigned long long>(waits.front()),
+                        static_cast<unsigned long long>(steadyWaits[steadyWaits.size() / 2]),
+                        static_cast<unsigned long long>(steadyWaits.back()));
+        }
+        if (o->waits && !ms.empty()) {
+            std::printf("host waits in the last frame, by source line:\n");
+            for (const gpu::Device::HostWaitSite& site : device.hostWaitSites()) {
+                uint64_t before = 0;
+                for (const gpu::Device::HostWaitSite& earlier : sitesBefore) {
+                    if (earlier.where == site.where) {
+                        before = earlier.count;
+                    }
+                }
+                if (site.count > before) {
+                    std::printf("  %4llu  %s\n", static_cast<unsigned long long>(site.count - before),
+                                site.where.c_str());
+                }
+            }
         }
         if (!image) {
             cli::fail(image.error());

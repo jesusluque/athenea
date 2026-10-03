@@ -420,6 +420,53 @@ uint64_t metalAllocatedSize(void* mtlDevice) {
 #endif
 }
 
+void retainMetalObject(void* object) {
+#if defined(__APPLE__)
+    if (object != nullptr) {
+        (void)reinterpret_cast<void* (*)(void*, SEL)>(objc_msgSend)(object, sel_registerName("retain"));
+    }
+#else
+    (void)object;
+#endif
+}
+
+void releaseMetalObject(void* object) {
+#if defined(__APPLE__)
+    if (object != nullptr) {
+        reinterpret_cast<void (*)(void*, SEL)>(objc_msgSend)(object, sel_registerName("release"));
+    }
+#else
+    (void)object;
+#endif
+}
+
+int metalCommandBufferTimes(void* commandBuffer, double& start, double& end) {
+#if defined(__APPLE__)
+    if (commandBuffer == nullptr) {
+        return -1;
+    }
+    // MTLCommandBufferStatus: Completed 4, Error 5.
+    constexpr unsigned long kCompleted = 4;
+    constexpr unsigned long kError = 5;
+    const unsigned long status =
+        reinterpret_cast<unsigned long (*)(void*, SEL)>(objc_msgSend)(commandBuffer, sel_registerName("status"));
+    if (status == kError) {
+        return -1;
+    }
+    if (status != kCompleted) {
+        return 0;
+    }
+    start = reinterpret_cast<double (*)(void*, SEL)>(objc_msgSend)(commandBuffer, sel_registerName("GPUStartTime"));
+    end = reinterpret_cast<double (*)(void*, SEL)>(objc_msgSend)(commandBuffer, sel_registerName("GPUEndTime"));
+    return 1;
+#else
+    (void)commandBuffer;
+    (void)start;
+    (void)end;
+    return -1;
+#endif
+}
+
 uint64_t pageSize() {
     return static_cast<uint64_t>(::sysconf(_SC_PAGESIZE));
 }

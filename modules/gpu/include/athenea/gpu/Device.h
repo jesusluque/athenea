@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <source_location>
 #include <span>
 #include <string>
 #include <string_view>
@@ -90,6 +91,8 @@ struct NativeHandles {
     rhi::NativeHandle queue;     ///< MTLCommandQueue | CUstream | VkQueue
 };
 
+class FrameProfiler;
+
 class Device {
 public:
     [[nodiscard]] static Result<std::shared_ptr<Device>> create(const DeviceDesc& desc = {});
@@ -115,15 +118,34 @@ public:
 
     /// Blocks until everything submitted has run. A command buffer that
     /// failed meanwhile is not lost: the next CommandBatch::submit reports it
-    /// (takeQueueError).
-    void waitIdle();
+    /// (takeQueueError). Counted as a host wait at `where`.
+    void waitIdle(std::source_location where = std::source_location::current());
+
+    /// GPU time by phase and the debug groups (gpu::Phase): one a device.
+    [[nodiscard]] FrameProfiler& profiler() noexcept { return *profiler_; }
+
+    /// HOST WAITS: every time the host blocks until the device has finished
+    /// -- `CommandBatch::submit(true)`, `waitIdle`, a `Buffer::read` or a
+    /// `Texture::read` -- is counted here, with the line that asked. A frame
+    /// that waits between its passes leaves the device idle while the host
+    /// catches up, so the count per frame is a bound a test holds
+    /// (docs/decisions.md, "Host waits").
+    struct HostWaitSite {
+        std::string where;   ///< file:line, the file's name only
+        uint64_t    count = 0;
+    };
+    void noteHostWait(const std::source_location& where);
+    /// How many waits since the device opened.
+    [[nodiscard]] uint64_t hostWaits() const noexcept { return hostWaits_.load(); }
+    /// The same, by the line that asked, most first.
+    [[nodiscard]] std::vector<HostWaitSite> hostWaitSites() const;
 
     /// waitIdle, and what was freed actually given back: on Metal slang-rhi
     /// keeps a freed buffer in the device's residency set -- still resident,
     /// still counted -- until the next submit commits the set, so an empty
     /// one is submitted and waited for. What a caller that has just let go
     /// of memory to make room does before it asks again.
-    void releaseFreed();
+    void releaseFreed(std::source_location where = std::source_location::current());
 
     /// THE DEVICE'S MEMORY BUDGET: how many bytes this process may keep on
     /// the device before it starts to hurt. $ATHENEA_GPU_BUDGET in MiB where
@@ -181,9 +203,15 @@ private:
     rhi::ComPtr<rhi::IDevice>       device_;
     rhi::ComPtr<rhi::ICommandQueue> queue_;
     rhi::ComPtr<slang::ISession>    session_;
+    /// After the queue: destroyed before it, as it holds query pools and
+    /// command buffers of the device's.
+    std::unique_ptr<FrameProfiler>  profiler_;
     std::function<void()>           beforeSubmit_;
     std::atomic<uint64_t>           memoryBudget_{0};
     std::mutex                      queueErrorGuard_;
+    std::atomic<uint64_t>           hostWaits_{0};
+    mutable std::mutex              waitSitesGuard_;
+    std::vector<HostWaitSite>       waitSites_;
     std::optional<Error>            queueError_;
 };
 

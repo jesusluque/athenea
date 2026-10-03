@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <source_location>
 #include <span>
 #include <string>
 #include <vector>
@@ -42,7 +43,8 @@ public:
     /// so the copy counts as finished once everything recorded before it has
     /// run. `wait` is passed on to the submit, for a caller that was going to
     /// wait anyway.
-    [[nodiscard]] Result<void> submit(CommandBatch& batch, const Buffer& source, uint64_t tag, bool wait = false);
+    [[nodiscard]] Result<void> submit(CommandBatch& batch, const Buffer& source, uint64_t tag, bool wait = false,
+                                      std::source_location where = std::source_location::current());
 
     /// The newest slot the device has finished: its bytes into `into` (at most
     /// `bytes()`), and its tag. Empty when no copy has finished yet. Never

@@ -33,7 +33,8 @@ Result<AsyncReadback> AsyncReadback::create(Device& device, uint64_t bytes, uint
     return readback;
 }
 
-Result<void> AsyncReadback::submit(CommandBatch& batch, const Buffer& source, uint64_t tag, bool wait) {
+Result<void> AsyncReadback::submit(CommandBatch& batch, const Buffer& source, uint64_t tag, bool wait,
+                                   std::source_location where) {
     if (device_ == nullptr) {
         return Error(ErrorCode::InvalidArgument, "an asynchronous readback that was never made");
     }
@@ -46,7 +47,7 @@ Result<void> AsyncReadback::submit(CommandBatch& batch, const Buffer& source, ui
     batch.markDirty();
     slot.sequence = ++sequence_;
     slot.tag = tag;
-    return batch.submitSignalling(fence_.get(), slot.sequence, wait);
+    return batch.submitSignalling(fence_.get(), slot.sequence, wait, where);
 }
 
 std::optional<uint64_t> AsyncReadback::latest(std::span<uint8_t> into) {

@@ -121,6 +121,15 @@ void releaseMetalBuffer(void* mtlBuffer);
 /// `currentAllocatedSize`, every buffer, texture and structure counted.
 /// 0 off macOS or for a null device.
 [[nodiscard]] uint64_t metalAllocatedSize(void* mtlDevice);
+/// An MTLCommandBuffer kept alive past slang-rhi's hold on it (retained),
+/// and let go of again: what gpu::FrameProfiler reads a phase's GPU time
+/// from once the buffer has run. No-ops off macOS.
+void retainMetalObject(void* object);
+void releaseMetalObject(void* object);
+/// The GPU's start and end of an MTLCommandBuffer, in seconds on one clock:
+/// 1 once it has completed, 0 while it has not, -1 when it failed (or off
+/// macOS) and will never say.
+[[nodiscard]] int metalCommandBufferTimes(void* commandBuffer, double& start, double& end);
 
 /// Physical memory the system could hand out now without swapping, in
 /// bytes: free, inactive and purgeable pages (Mach's vm statistics) on

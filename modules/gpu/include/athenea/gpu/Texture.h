@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <source_location>
 #include <span>
 #include <string>
 #include <vector>
@@ -68,7 +69,8 @@ public:
 
     /// Reads one subresource back, rows packed. For output and tests' counters,
     /// never a frame path.
-    [[nodiscard]] Result<std::vector<std::byte>> read(Device& device, uint32_t mip, uint32_t layer) const;
+    [[nodiscard]] Result<std::vector<std::byte>> read(Device& device, uint32_t mip, uint32_t layer,
+                                                      std::source_location where = std::source_location::current()) const;
 
 private:
     rhi::ComPtr<rhi::ITexture> texture_;

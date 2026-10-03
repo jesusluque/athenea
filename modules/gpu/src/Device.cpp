@@ -12,6 +12,7 @@
 
 #include "athenea/core/Log.h"
 #include "athenea/core/Platform.h"
+#include "athenea/gpu/FrameProfiler.h"
 #include "ShaderCache.h"
 
 namespace athenea::gpu {
@@ -350,11 +351,14 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
     } else {
         log::info("GPU memory budget: {}{}", budgetFrom, system);
     }
+    device->profiler_ = std::make_unique<FrameProfiler>(*device);
+    // ATHENEA_PROFILE=1: GPU time by phase from the first frame on.
+    device->profiler_->setEnabled(!platform::env("ATHENEA_PROFILE").empty());
     return device;
 }
 
-void Device::releaseFreed() {
-    waitIdle();
+void Device::releaseFreed(std::source_location where) {
+    waitIdle(where);
     if (queue_ != nullptr) {
         beforeSubmit();
         if (auto submitted = queueResult(queue_->submit(rhi::SubmitDesc{}), "the work submitted"); !submitted) {
@@ -364,7 +368,7 @@ void Device::releaseFreed() {
             }
         }
     }
-    waitIdle();
+    waitIdle(where);
 }
 
 uint64_t Device::memoryInUse() const {
@@ -451,6 +455,7 @@ Device::~Device() {
     if (queue_ != nullptr) {
         queue_->waitOnHost();
     }
+    profiler_.reset();
 }
 
 NativeHandles Device::native() const {
@@ -483,7 +488,36 @@ ShaderCacheStats Device::shaderCacheStats() const {
                                    : ShaderCacheStats{};
 }
 
-void Device::waitIdle() {
+void Device::noteHostWait(const std::source_location& where) {
+    hostWaits_.fetch_add(1);
+    std::string_view file = where.file_name();
+    if (const size_t slash = file.find_last_of("/\\"); slash != std::string_view::npos) {
+        file = file.substr(slash + 1);
+    }
+    std::string site = std::string(file) + ":" + std::to_string(where.line());
+    const std::lock_guard<std::mutex> held(waitSitesGuard_);
+    for (HostWaitSite& known : waitSites_) {
+        if (known.where == site) {
+            ++known.count;
+            return;
+        }
+    }
+    waitSites_.push_back({std::move(site), 1});
+}
+
+std::vector<Device::HostWaitSite> Device::hostWaitSites() const {
+    std::vector<HostWaitSite> out;
+    {
+        const std::lock_guard<std::mutex> held(waitSitesGuard_);
+        out = waitSites_;
+    }
+    std::stable_sort(out.begin(), out.end(),
+                     [](const HostWaitSite& a, const HostWaitSite& b) { return a.count > b.count; });
+    return out;
+}
+
+void Device::waitIdle(std::source_location where) {
+    noteHostWait(where);
     if (queue_ != nullptr) {
         if (auto waited = queueResult(queue_->waitOnHost(), "the work submitted"); !waited) {
             const std::lock_guard<std::mutex> held(queueErrorGuard_);

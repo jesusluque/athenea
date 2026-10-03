@@ -108,8 +108,9 @@ Result<void> Texture::upload(Device& device, uint32_t mip, uint32_t layer, std::
     return Device::queueResult(device.queue()->submit(encoder->finish()), "a texture upload");
 }
 
-Result<std::vector<std::byte>> Texture::read(Device& device, uint32_t mip, uint32_t layer) const {
-    device.waitIdle();
+Result<std::vector<std::byte>> Texture::read(Device& device, uint32_t mip, uint32_t layer,
+                                             std::source_location where) const {
+    device.waitIdle(where);
     rhi::ComPtr<ISlangBlob> blob;
     rhi::SubresourceLayout layout;
     if (SLANG_FAILED(device.rhi()->readTexture(texture_.get(), layer, mip, blob.writeRef(), &layout)) ||
