@@ -466,16 +466,21 @@ public float transmittedRoughness(float roughness, float ior) {
 /// where there is no index. The same for a cloud with a transfer and one
 /// without: an index is a property of the material, not of the bake, and a
 /// skinned glass bird carries no transfer.
+///
+/// All of it leaves through the far face, so all of it is weighed by what
+/// that face lets out (`exitThrough`): what a ray met behind the glass as
+/// much as the sky. `behindColour` is the colour the particle it met was
+/// shaded with, which knows nothing of the glass in front of it.
 float3 transmittedBehind(SplatSurface s, float3 wo, uint dome, StructuredBuffer<uint> envTexels,
                          StructuredBuffer<float4> envSh, uint envBaseSide) {
-    return s.hasBehind
-               ? s.behindColour
-               : (s.hasExit ? envRadiance(envTexels, dome, s.exitDirection,
-                                          transmittedRoughness(s.roughness, s.ior), envBaseSide)
-                            : (s.ior > 1.0
-                                   ? envRadiance(envTexels, dome, bentThrough(s, wo), s.roughness, envBaseSide)
-                                   : envIrradiance(envSh, dome, -s.normal) * (1.0 / 3.14159265358979))) *
-           s.exitThrough;
+    const float3 seen =
+        s.hasBehind ? s.behindColour
+                    : (s.hasExit ? envRadiance(envTexels, dome, s.exitDirection,
+                                               transmittedRoughness(s.roughness, s.ior), envBaseSide)
+                                 : (s.ior > 1.0
+                                        ? envRadiance(envTexels, dome, bentThrough(s, wo), s.roughness, envBaseSide)
+                                        : envIrradiance(envSh, dome, -s.normal) * (1.0 / 3.14159265358979)));
+    return seen * s.exitThrough;
 }
 
 /// How much of it passes: what the polish does not reflect, and nothing on

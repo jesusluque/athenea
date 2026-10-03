@@ -9196,6 +9196,30 @@ gaussians at the conversion's glass opacity, tint (1, 1, 0.5), under a sky of
 one colour, against the mesh ball: green and blue through the middle 0.98 and
 0.51 before against the mesh's 0.92 and 0.26, within 3.3 % now.
 
+**What a ray meets behind the glass leaves by the far face too.** The colour
+a ray through the glass meets behind it (`behindColour`, the colour the
+particle it met was shaded with: the collar under the pawn's head) crosses
+the far face as the sky does. `transmittedBehind` was written
+`hasBehind ? behindColour : (...) * exitThrough`, and `?:` binds looser than
+`*`, so the far face's Fresnel and second tint weighed only the sky and what
+stood behind the glass came through tinted once. The whole choice is now
+multiplied. Test: `athenea_usd_tests "what a glass cloud shows behind it*"`
+-- a grey card (0.8) in the same cloud, behind a ball of tint (1, 1, 0.5),
+against the mesh ball and a diffuse card: the cloud's blue over green through
+the middle against the mesh's (the tint squared, whatever either card's
+shading), within 15 %, and green within 15 %. Before, the ratio was about
+the tint once, twice the mesh's.
+
+**Pending: the tint is the whole colour.** The second tint is
+`lerp(1, albedo, T)`, and the albedo is the base colour times the
+transmission colour (mesh2splat.slang), so a glass whose `base_color` is not
+white is tinted by it twice in the cloud where the mesh's dielectric lobe
+tints by `transmission_color` alone and not at all by `base_color`. Fixing it
+needs a per-gaussian transmission colour apart from the colour (a primvar or
+a pbr channel) that the conversion writes and both routes read; until then a
+coloured base under clear transmission is darker and more saturated through
+a cloud than through the mesh.
+
 ### The room through a rough glass is sharper than its reflection
 
 With the weights right the head was still a haze where the mesh shows the

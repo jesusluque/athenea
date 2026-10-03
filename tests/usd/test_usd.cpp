@@ -6564,8 +6564,13 @@ namespace {
 /// transmitting and as rough as the material. Written as the conversion
 /// writes it -- relit, with the index -- and placed with the mesh's camera
 /// and `sky` in a stage of its own. Fibonacci points: evenly spaced, no seam.
+///
+/// With `card`, the cloud also holds an opaque square of that colour behind
+/// the ball -- 6 wide at z = -6, facing the camera -- which is what a ray
+/// through the glass meets instead of the sky.
 fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t count,
-                             const std::array<float, 3>& tint, float roughness, const std::string& sky) {
+                             const std::array<float, 3>& tint, float roughness, const std::string& sky,
+                             const std::array<float, 3>* card = nullptr) {
     io::RawSplats raw;
     raw.source = "glass ball";
     io::SplatEncoding& e = raw.encoding;
@@ -6600,6 +6605,21 @@ fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t c
         raw.records.insert(raw.records.end(), record, record + 17);
         raw.count += 1;
     }
+    if (card != nullptr) {
+        const uint32_t side = 120;
+        const float cell = 6.0F / side;
+        for (uint32_t j = 0; j < side; ++j) {
+            for (uint32_t i = 0; i < side; ++i) {
+                const float record[17] = {-3.0F + cell * (i + 0.5F), -3.0F + cell * (j + 0.5F), -6.0F, 0.99F,
+                                          cell, cell, 0.1F * cell,
+                                          1.0F, 0.0F, 0.0F, 0.0F,
+                                          (*card)[0], (*card)[1], (*card)[2],
+                                          0.0F, 1.0F, 0.0F};
+                raw.records.insert(raw.records.end(), record, record + 17);
+                raw.count += 1;
+            }
+        }
+    }
     const fs::path cloud = scratch(name + "_splats.usda");
     usd::ExportOptions options;
     options.addCamera = false;
@@ -6616,14 +6636,32 @@ fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t c
 
 /// The same ball as a mesh with a `standard_surface` glass of that tint and
 /// roughness, under the same `sky`.
+///
+/// With `card`, the square glassBallCloudStage puts behind the ball, as a
+/// mesh with a diffuse UsdPreviewSurface of that colour.
 fs::path glassBallMeshStage(const std::string& name, const std::string& tint, float roughness,
-                            const std::string& sky) {
+                            const std::string& sky, const std::string& card = "") {
     glassLook(name, roughness, tint);
     const fs::path path = scratch(name + ".usda");
     std::ofstream out(path);
     out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
            "def Scope \"Looks\" (\n    prepend references = @./" << name << ".mtlx@</MaterialX/Materials>\n)\n{\n}\n"
         << ballMesh("Ball", "/Looks/M_Glass", false) << sky << kBallCamera;
+    if (!card.empty()) {
+        out << "def Material \"Card\"\n{\n"
+               "    token outputs:surface.connect = </Card/Surface.outputs:surface>\n"
+               "    def Shader \"Surface\"\n    {\n"
+               "        uniform token info:id = \"UsdPreviewSurface\"\n"
+               "        color3f inputs:diffuseColor = (" << card << ")\n"
+               "        float inputs:roughness = 1\n"
+               "        token outputs:surface\n    }\n}\n"
+               "def Mesh \"Back\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    rel material:binding = </Card>\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-3, -3, -6), (3, -3, -6), (3, 3, -6), (-3, 3, -6)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n}\n";
+    }
     return path;
 }
 
@@ -6701,6 +6739,43 @@ TEST_CASE("a glass cloud lets out at its far face what the mesh's glass does", "
     // 0.98 and 0.51 before, against 0.92 and 0.26; 2.6 % and 3.3 % now.
     CHECK(std::abs(c[1] - m[1]) < 0.045 * m[1]);
     CHECK(std::abs(c[2] - m[2]) < 0.045 * m[2]);
+}
+
+// WHAT A RAY MEETS BEHIND THE GLASS LEAVES THROUGH THE FAR FACE TOO.
+//
+// The colour a ray through a glass cloud meets behind it -- a gold collar
+// under a pawn's glass head -- is the colour that particle was shaded with,
+// and it crosses the far face as the sky does: its Fresnel and a second
+// tint. By the precedence of `?:` the far face weighed only the sky, so a
+// grey card behind a ball of tint (1, 1, 0.5) came through at half its blue
+// where the mesh's glass lets a quarter of it through. The ratio of blue to
+// green is the tint squared whatever the card's own shading, which is what
+// is held to the mesh; green is held too, more loosely, since a relit card
+// and a path-traced one need not agree to the percent.
+TEST_CASE("what a glass cloud shows behind it leaves through the far face as the mesh's does",
+          "[usd][gpu][splat][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const std::string sky = "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    const uint32_t w = 96, h = 96;
+    const std::array<float, 3> grey{0.8F, 0.8F, 0.8F};
+    const gpu::Buffer mesh =
+        renderBall(gpu, glassBallMeshStage("behind_mesh", "1, 1, 0.5", 0.0F, sky, "0.8, 0.8, 0.8"), w, h, 512);
+    const gpu::Buffer cloud = renderBall(
+        gpu, glassBallCloudStage(gpu, "behind_cloud", 60000, {1.0F, 1.0F, 0.5F}, 0.0F, sky, &grey), w, h, 16);
+    const std::array<double, 3> m = middleMean(gpu, mesh, w, h, 16);
+    const std::array<double, 3> c = middleMean(gpu, cloud, w, h, 16);
+    std::printf("  a grey card through a ball of tint (1, 1, 0.5): mesh %.4f %.4f %.4f, cloud %.4f %.4f %.4f\n",
+                m[0], m[1], m[2], c[0], c[1], c[2]);
+    REQUIRE(m[1] > 0.0);
+    REQUIRE(c[1] > 0.0);
+    const double meshRatio = m[2] / m[1];
+    const double cloudRatio = c[2] / c[1];
+    CHECK(std::abs(cloudRatio - meshRatio) < 0.15 * meshRatio);
+    CHECK(std::abs(c[1] - m[1]) < 0.15 * m[1]);
 }
 
 // THE ROOM THROUGH A ROUGH GLASS IS SHARPER THAN ITS REFLECTION.
