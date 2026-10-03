@@ -9364,3 +9364,65 @@ definitions: a material named `material` is not the typedef of that name.
 Not done: a test of the override itself. It is exercised by the Blender
 spike (the default cube's material compiles and shades); a test would need
 a second MaterialX library tree in the build.
+
+## A posed cloud refits its ray tracing structure
+
+A skinned cloud is posed into the same two buffers every frame, and
+`Engine::carryCloud` raises `GpuSplats::revision` so that whatever was built
+over the last pose knows. The ray tracer took the revision as part of the
+cloud's identity, so every pose was a different cloud and a full `rebuild`:
+on the hardware route twenty proxy triangles a gaussian and a BLAS per chunk
+built from nothing, on the compute route a Morton sort, the hierarchy and a
+refit that read a counter back from the host every eight passes. That was
+most of the ~0.9 s a frame of the rigged tube above, and half the sparrow's
+traced frame (athenea-cuda-analysis §3, item 2).
+
+A pose does not change which particles there are or their order, so the
+structure's shape still holds them and only its bounds are stale. The
+revision is now kept beside the cloud (`Cloud::revision`) rather than in its
+key, and `GaussianRayTracer::sync`, shared by `render` and `prepare`, does:
+
+- **the clouds are not those built** (another cloud, a count, a buffer):
+  `rebuild`, as before;
+- **a cloud's revision moved**: a refit of that cloud alone --
+  - *Hardware*: the frames and the proxies again over the new pose, and each
+    chunk's BLAS updated in place (`BuildMode::Update`; built with
+    `AllowUpdate` when the cloud was posed, `updateScratch_` sized from
+    `updateScratchSize`). Metal's `refitAccelerationStructure` underneath.
+  - *ComputeBvh*: the frames again, and the tree refitted **a height at a
+    time, bottom up** (`bvh_refit_level.slang`): one dispatch per height,
+    each over that height's nodes only, a leaf's box made from the posed
+    particle with the build's own `rtParticleBox`. After the last height
+    every box is exact whatever the buffer held, so the number of dispatches
+    is known before the frame and **nothing is read back** -- the build's
+    "until a pass changes nothing" is what needed the counter.
+- **every `refitsPerRebuild` refits** (default 32), or when the cloud cannot
+  take one (built before it was posed, or a tree taller than 127): that cloud
+  rebuilt in place, in the slots it already holds in every combined buffer.
+  A tree shaped for one pose bounds the next ones ever more loosely; the
+  rebuild puts the shape back. `refitsPerRebuild` 0 is the old behaviour.
+
+The heights are worked out at build, only for a posed cloud: `bvhHeights`
+runs beside the build's refit passes and sets the same `changed` flag, so the
+two settle together; `bvhLevelKeys` gives each node its height as a key and
+counts the heights, an 8-bit radix sort orders the nodes into `levelNodes_`
+(a word a node, a cloud's at its `nodeBase`), and the 128 counts are read
+back -- at build, where the build already reads back -- into
+`Cloud::levelStarts`. Memory: four bytes a node for a posed cloud, nothing
+for a still one.
+
+What reads the cloud's own tree reads it refitted: the glass and reflection
+rays of `rt_glass.slang` (`glassExit`, `glassNearest`) walk `bvhBoxes_` and
+`frames_`, both written in place; the packed shadow query
+(technique::SplatShadows) reads the TLAS built every frame over the updated
+BLAS.
+
+Tests (`athenea_render_tests`, "a posed cloud refits its ray tracing
+structure and draws what a rebuilt one draws", both routes): the reflection
+test's gold ball and plate in one cloud, the plate on a still joint and the
+ball turned and slid on another, six poses, three tracers -- refitting,
+rebuilding every pose, and refitting twice between in-place rebuilds. Every
+pose after the first refits and nothing is rebuilt (`RayTracerStats::refitted`,
+`rebuilt`), the periodic one rebuilds at poses 0 and 3, and each image is
+compared to the rebuilt one with `compareImages`.
+

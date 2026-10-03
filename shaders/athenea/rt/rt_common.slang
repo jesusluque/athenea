@@ -125,7 +125,7 @@ public float3x3 rotationOf(float4 q) {
 /// The box around a particle's cut ellipsoid, cloud-local: what the compute
 /// route's BVH holds at a leaf. `q`, `s01` and `s2` are the first three words
 /// of its shape record. One function for the build (bvh_leaves) and the
-/// refit (bvh_levels), so a refitted tree bounds exactly what a built one does.
+/// refit (bvh_refit_level), so a refitted tree bounds exactly what a built one does.
 public void rtParticleBox(float4 p, uint q, uint s01, uint s2, out float3 lo, out float3 hi) {
     const float3 s = exp(float3(lowHalf(s01), highHalf(s01), lowHalf(s2)));
     const float3x3 rs = mul(rotationOf(decodeQuaternion(q)),
