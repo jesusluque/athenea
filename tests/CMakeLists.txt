@@ -1,6 +1,6 @@
 include(Catch)
 
-# athenea_test(<name> SOURCES ... LIBS ... [LABELS ...])
+# athenea_test(<name> SOURCES ... LIBS ... [LABELS ...] [FIXTURES ...])
 #
 # A Catch2 executable, registered with ctest case by case. GPU tests skip when
 # the machine has no device; they never fall back to anything else. Every
@@ -11,7 +11,7 @@ include(Catch)
 # (rasterisation, ray queries) it says in its skip message, which
 # scripts/remote-test.sh tabulates.
 function(athenea_test name)
-    cmake_parse_arguments(ARG "" "" "SOURCES;LIBS;ENVIRONMENT_MODIFICATION;LABELS" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "SOURCES;LIBS;ENVIRONMENT_MODIFICATION;LABELS;FIXTURES" ${ARGN})
     add_executable(${name} ${ARG_SOURCES})
     target_link_libraries(${name} PRIVATE Catch2::Catch2WithMain ${ARG_LIBS})
     athenea_set_target_defaults(${name})
@@ -27,6 +27,12 @@ function(athenea_test name)
     set(properties ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}" LABELS "${label}")
     if(ARG_ENVIRONMENT_MODIFICATION)
         list(APPEND properties ENVIRONMENT_MODIFICATION "${ARG_ENVIRONMENT_MODIFICATION}")
+    endif()
+    # What ctest runs first: a command whose output the cases read (one
+    # fixture a binary, for the same quoting reason as the label).
+    if(ARG_FIXTURES)
+        list(GET ARG_FIXTURES 0 fixture)
+        list(APPEND properties FIXTURES_REQUIRED "${fixture}")
     endif()
     catch_discover_tests(${name}
         PROPERTIES ${properties}
@@ -194,6 +200,30 @@ set_tests_properties(mesh2splat_density_per-model PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [0-9][0-9]? splats of")
 set_tests_properties(mesh2splat_density_per-mesh PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [1-9][0-9][0-9]+ splats of")
+
+# WHAT A CONVERTED SURFACE COVERS: the planes of tests/data/coverage converted
+# once (the fixture), then measured against the meshes they came from.
+add_test(NAME mesh2splat_coverage
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/coverage/planes.usda --prim /Planes
+            --no-bake --no-camera --resolution 512 -o ${CMAKE_CURRENT_BINARY_DIR}/coverage_planes.usdc)
+set_tests_properties(mesh2splat_coverage PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_SETUP coverage_planes
+    LABELS gpe)
+athenea_test(athenea_coverage_tests
+    SOURCES usd/test_coverage.cpp
+    LIBS athenea::usd
+    LABELS gpe
+    FIXTURES coverage_planes)
+add_dependencies(athenea_coverage_tests hdAthenea athenea athenea_aofx_mesh2splat)
+target_compile_definitions(athenea_coverage_tests PRIVATE
+    ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
+    ATHENEA_COVERAGE_STAGE="${CMAKE_CURRENT_SOURCE_DIR}/data/coverage/planes.usda"
+    ATHENEA_COVERAGE_CLOUD="${CMAKE_CURRENT_BINARY_DIR}/coverage_planes.usdc")
+target_compile_options(athenea_coverage_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
+                       -Wno-double-promotion)
+set_target_properties(athenea_coverage_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
+                      BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 # One TBB in the process: OpenUSD's oneTBB, which OIDN (built without its CPU
 # device) and everything else share.

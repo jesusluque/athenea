@@ -15,7 +15,7 @@ cmake --build build/macos-arm64-debug --target athenea_render_tests   # one test
 ```
 
 - **Test binaries** are `athenea_<area>_tests` (core, gpu, scene, render,
-  geom, material, technique, lod, volume, usd, mcp, view, gpu_host, aofx,
+  geom, material, technique, lod, volume, usd, coverage, mcp, view, gpu_host, aofx,
   sched), declared in `tests/CMakeLists.txt` (`athenea_test`), sources in
   `tests/<area>/`. `athenea_host_tests` (tests/usd/test_host.cpp) drives the
   plugin through `UsdImagingGLEngine` and deliberately links no `athenea::usd`,

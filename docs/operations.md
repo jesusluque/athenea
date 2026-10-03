@@ -360,9 +360,9 @@ recipe is §3.1 below.
 | `--max-splats` | integer | `2000000` | the budget, over the whole stage |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
 | `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
-| `--opacity` | number | `1.0` | what every gaussian starts from |
-| `--glass-opacity` | number | `0.6` | what a fully transmitting material still stops |
-| `--opacity-cut` | number | `0.5` | a cut-out map below this reads as no surface: UsdPreviewSurface's `opacity`, standard_surface's `opacity` or OpenPBR's `geometry_opacity` connected to an image |
+| `--opacity` | number, 0 to 1 | `1.0` | coverage: how much of what stands behind it the converted surface covers, multiplied into the material's own opacity. Every opacity is coverage -- this, the material's constant, a map's value, what a glass keeps -- and each gaussian takes what one of the several over a point needs for it, so 0.5 covers half at any size |
+| `--glass-opacity` | number, 0 to 1 | `0.6` | coverage a fully transmitting solid keeps. A thin-walled glass (and a UsdPreviewSurface opacity under one in its default `transparent` mode) covers what the sheet reflects at its index instead |
+| `--opacity-cut` | number, 0 to 1 | `0.5` | where a material's opacity is a map with no threshold of its own (UsdPreviewSurface's `opacity`, standard_surface's `opacity`, OpenPBR's `geometry_opacity`, glTF's `alpha` in BLEND): below this no gaussian is written; above it the surface covers what the map reads. A material's own threshold (`opacityThreshold`, glTF's `alpha_cutoff` in MASK) is used instead, and what it keeps is whole |
 | `--max-cells` | integer | `262144` | most cells one triangle may walk |
 | `--texture-size` | integer | `1024` | a map is read no larger than this; 0 reads it at its own size |
 | `--no-textures` | flag | off | ignore the maps; materials keep their constant values |

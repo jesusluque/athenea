@@ -238,17 +238,13 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         cull(slot);
         return;
     }
-    float alpha = posOpacity.w;
-    if (params.antialias != 0) {
-        // `detBefore` is the still covariance's, so this one square root pays
-        // for both convolutions: the shutter's and the mip filter's.
-        alpha *= sqrt(max(detBefore, 0.0) / det);
-    } else {
-        // Without the filter there is still the shutter and the lens to pay
-        // for; a spread splat that kept its peak would gain energy and the
-        // wings, or the bokeh, would burn.
-        alpha *= spreadPaid;
-    }
+    // `detBefore` is the still covariance's, so this one square root pays
+    // for both convolutions: the shutter's and the mip filter's. Without the
+    // filter there is still the shutter and the lens to pay for; a spread
+    // splat that kept its peak would gain energy and the wings, or the bokeh,
+    // would burn.
+    const float paid = params.antialias != 0 ? sqrt(max(detBefore, 0.0) / det) : spreadPaid;
+    const float alpha = paidOpacity(posOpacity.w, paid);
     if (!(alpha >= 1.0 / 255.0)) {
         cull(slot);
         return;

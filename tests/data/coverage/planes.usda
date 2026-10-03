@@ -1,0 +1,300 @@
+#usda 1.0
+(
+    defaultPrim = "Planes"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# EIGHT UNIT PLANES IN A ROW, 1.5 apart along x, facing +z: what a converted
+# surface covers of what stands behind it, against the mesh with the same
+# material (tests/usd/test_coverage.cpp, after `athenea mesh2splat` has
+# converted /Planes). Every surface is black and reflects nothing, so over a
+# backdrop of 1 the colour is what the plane lets through and the alpha what
+# it covers. standard_surface's `opacity` is coverage, constant or read off a
+# map of one value; the last plane is a UsdPreviewSurface cut-out whose map is
+# 0.25 on its left half and 0.75 on its right, cut at 0.5.
+def Xform "Planes"
+{
+    def Mesh "Const25" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </Planes/Looks/Const25>
+    }
+
+    def Mesh "Const50" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(1.0, -0.5, 0), (2.0, -0.5, 0), (2.0, 0.5, 0), (1.0, 0.5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </Planes/Looks/Const50>
+    }
+
+    def Mesh "Const75" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(2.5, -0.5, 0), (3.5, -0.5, 0), (3.5, 0.5, 0), (2.5, 0.5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </Planes/Looks/Const75>
+    }
+
+    def Mesh "Map25" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(4.0, -0.5, 0), (5.0, -0.5, 0), (5.0, 0.5, 0), (4.0, 0.5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </Planes/Looks/Map25>
+    }
+
+    def Mesh "Map50" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(5.5, -0.5, 0), (6.5, -0.5, 0), (6.5, 0.5, 0), (5.5, 0.5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </Planes/Looks/Map50>
+    }
+
+    def Mesh "Map75" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(7.0, -0.5, 0), (8.0, -0.5, 0), (8.0, 0.5, 0), (7.0, 0.5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </Planes/Looks/Map75>
+    }
+
+    def Mesh "Opaque" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(8.5, -0.5, 0), (9.5, -0.5, 0), (9.5, 0.5, 0), (8.5, 0.5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </Planes/Looks/Opaque>
+    }
+
+    def Mesh "Cutout" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(10.0, -0.5, 0), (11.0, -0.5, 0), (11.0, 0.5, 0), (10.0, 0.5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </Planes/Looks/Cutout>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Const25"
+        {
+            token outputs:mtlx:surface.connect = </Planes/Looks/Const25/Surface.outputs:out>
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                float inputs:base = 0
+                float inputs:specular = 0
+                color3f inputs:opacity = (0.25, 0.25, 0.25)
+                token outputs:out
+            }
+        }
+
+        def Material "Const50"
+        {
+            token outputs:mtlx:surface.connect = </Planes/Looks/Const50/Surface.outputs:out>
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                float inputs:base = 0
+                float inputs:specular = 0
+                color3f inputs:opacity = (0.5, 0.5, 0.5)
+                token outputs:out
+            }
+        }
+
+        def Material "Const75"
+        {
+            token outputs:mtlx:surface.connect = </Planes/Looks/Const75/Surface.outputs:out>
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                float inputs:base = 0
+                float inputs:specular = 0
+                color3f inputs:opacity = (0.75, 0.75, 0.75)
+                token outputs:out
+            }
+        }
+
+        def Material "Map25"
+        {
+            token outputs:mtlx:surface.connect = </Planes/Looks/Map25/Surface.outputs:out>
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                float inputs:base = 0
+                float inputs:specular = 0
+                color3f inputs:opacity.connect = </Planes/Looks/Map25/Map.outputs:out>
+                token outputs:out
+            }
+            def Shader "Map"
+            {
+                uniform token info:id = "ND_image_color3"
+                asset inputs:file = @./grey64.png@ (
+                    colorSpace = "lin_rec709"
+                )
+                color3f outputs:out
+            }
+        }
+
+        def Material "Map50"
+        {
+            token outputs:mtlx:surface.connect = </Planes/Looks/Map50/Surface.outputs:out>
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                float inputs:base = 0
+                float inputs:specular = 0
+                color3f inputs:opacity.connect = </Planes/Looks/Map50/Map.outputs:out>
+                token outputs:out
+            }
+            def Shader "Map"
+            {
+                uniform token info:id = "ND_image_color3"
+                asset inputs:file = @./grey128.png@ (
+                    colorSpace = "lin_rec709"
+                )
+                color3f outputs:out
+            }
+        }
+
+        def Material "Map75"
+        {
+            token outputs:mtlx:surface.connect = </Planes/Looks/Map75/Surface.outputs:out>
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                float inputs:base = 0
+                float inputs:specular = 0
+                color3f inputs:opacity.connect = </Planes/Looks/Map75/Map.outputs:out>
+                token outputs:out
+            }
+            def Shader "Map"
+            {
+                uniform token info:id = "ND_image_color3"
+                asset inputs:file = @./grey191.png@ (
+                    colorSpace = "lin_rec709"
+                )
+                color3f outputs:out
+            }
+        }
+
+        def Material "Opaque"
+        {
+            token outputs:mtlx:surface.connect = </Planes/Looks/Opaque/Surface.outputs:out>
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                float inputs:base = 0
+                float inputs:specular = 0
+                token outputs:out
+            }
+        }
+
+        def Material "Cutout"
+        {
+            token outputs:surface.connect = </Planes/Looks/Cutout/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 0, 0)
+                int inputs:useSpecularWorkflow = 1
+                color3f inputs:specularColor = (0, 0, 0)
+                float inputs:opacity.connect = </Planes/Looks/Cutout/Map.outputs:r>
+                float inputs:opacityThreshold = 0.5
+                token outputs:surface
+            }
+            def Shader "Map"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./halves.png@
+                token inputs:sourceColorSpace = "raw"
+                float2 inputs:st.connect = </Planes/Looks/Cutout/Uv.outputs:result>
+                float outputs:r
+            }
+            def Shader "Uv"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                string inputs:varname = "st"
+                float2 outputs:result
+            }
+        }
+
+    }
+}

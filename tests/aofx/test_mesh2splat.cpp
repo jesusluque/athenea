@@ -790,6 +790,10 @@ TEST_CASE("glass takes its transmission colour, and stops what the caller says",
             // What a renderer makes of that is the renderer's.
             number(job, "transmission", 1.0);
         number(job, "glassOpacity", glass);
+            // Each gaussian's own opacity, as the parameter said before it
+            // was coverage: what a surface of them covers is measured by
+            // athenea_coverage_tests, through the renderer.
+            number(job, "coverage", 0.0);
             job.params.push_back(aofx::ParamValue{"sigma", {kSigma, kSigma}, {}});
             job.params.push_back(aofx::ParamValue{"materialColour", {1.0, 1.0, 1.0}, {}});
             job.params.push_back(aofx::ParamValue{"transmissionColour", {0.2, 0.5, 0.4}, {}});
