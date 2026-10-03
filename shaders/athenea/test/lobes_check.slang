@@ -77,6 +77,7 @@ void lobesPlainCheck(uint3 tid: SV_DispatchThreadID) {
     s.normal = float3(0.0, 0.0, 1.0);
     s.albedo = albedo;
     s.metallic = metallic;
+    s.schlickMetal = false;
     s.roughness = roughness;
     s.lit = false;
     s.lobes = plain;
@@ -165,5 +166,52 @@ void lobesRoundTrip(uint3 tid: SV_DispatchThreadID) {
     if (abs(b.specularIor - l.specularIor) > step || abs(b.coatIor - l.coatIor) > coatStep ||
         b.coatDarkening != (l.coatDarkening >= 0.5 ? 1.0 : 0.0)) {
         InterlockedAdd(counts[2], 1u);
+    }
+}
+
+/// A SCHLICK METAL (task TX: OpenPBR's and glTF's) against the conductor of an
+/// artistic index (standard_surface's), over roughness and N.V, a car paint's
+/// dark base with a white edge: the Schlick never reflects more than the
+/// conductor, which is what read a paint matte and bright; head on and smooth
+/// it is its colour; and a white metal is white either way.
+/// [0] points, [1] a Schlick above the conductor, [2] head on not its colour,
+/// [3] a white metal not white, [4] out of [0, 1]
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void lobesSchlickCheck(uint3 tid: SV_DispatchThreadID) {
+    const uint n = params.steps;
+    if (tid.x >= n * n) {
+        return;
+    }
+    const float roughness = (float(tid.x % n) + 0.5) / float(n);
+    const float nDotV = (float(tid.x / n) + 0.5) / float(n);
+    InterlockedAdd(counts[0], 1u);
+    SplatSurface s;
+    s.normal = float3(0.0, 0.0, 1.0);
+    s.albedo = float3(0.047, 0.06, 0.047);
+    s.metallic = 1.0;
+    s.roughness = roughness;
+    s.lit = false;
+    s.lobes = plainLobes();
+    s.schlickMetal = true;
+    const float3 schlick = environmentBrdfOf(s, nDotV);
+    s.schlickMetal = false;
+    const float3 conductor = environmentBrdfOf(s, nDotV);
+    if (any(schlick > conductor + params.tolerance)) {
+        InterlockedAdd(counts[1], 1u);
+    }
+    if (any(schlick < float3(0.0)) || any(schlick > float3(1.0 + params.tolerance))) {
+        InterlockedAdd(counts[4], 1u);
+    }
+    s.schlickMetal = true;
+    s.roughness = 0.0;
+    const float3 headOn = environmentBrdfOf(s, 1.0);
+    if (tid.x == 0 && any(abs(headOn - s.albedo) > float3(0.01))) {
+        InterlockedAdd(counts[2], 1u);
+    }
+    s.albedo = float3(1.0);
+    s.roughness = roughness;
+    if (any(abs(environmentBrdfOf(s, nDotV) - float3(1.0)) > float3(0.05))) {
+        InterlockedAdd(counts[3], 1u);
     }
 }

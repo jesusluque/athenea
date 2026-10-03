@@ -1178,6 +1178,39 @@ TEST_CASE("a TX transfer's bounced halves go into the filter's picture and back 
     CHECK(diff->maxRelative == 0.0);
 }
 
+// A SCHLICK METAL IS NOT A CONDUCTOR (task TX). OpenPBR's metal and glTF's
+// go from the colour head on to the specular colour at grazing as a Schlick;
+// standard_surface's is a conductor of an artistic index, which for a car
+// paint's 0.05 base reflects twice as much at sixty degrees. A gaussian told
+// which it is (`schlickMetal`) reflects its own.
+TEST_CASE("a Schlick metal reflects a sky as a Schlick, below a conductor of the same colour",
+          "[render][gpu][lobes][schlick]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 8, "schlick.counts");
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobes_check", "lobesSchlickCheck");
+    if (!check) FAIL(check.error().toString());
+    constexpr uint32_t kSteps = 16;
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {kSteps * kSteps, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["steps"].setData(kSteps);
+            cursor["params"]["count"].setData(0u);
+            cursor["params"]["tolerance"].setData(1.0e-4F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> seen{};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(seen), seen.data()));
+    std::printf("  schlick metal: %u points; %u above the conductor, %u not its colour head on, %u white not white, "
+                "%u out of range\n", seen[0], seen[1], seen[2], seen[3], seen[4]);
+    CHECK(seen[0] == kSteps * kSteps);
+    CHECK(seen[1] == 0);
+    CHECK(seen[2] == 0);
+    CHECK(seen[3] == 0);
+    CHECK(seen[4] == 0);
+}
+
 // GLASS SENDS ON WHAT IT DID NOT REFLECT, AND NOT MORE.
 //
 // A transmitting gaussian's body is the light that came through it, and the

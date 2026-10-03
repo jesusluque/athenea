@@ -11979,3 +11979,37 @@ plan, so the flag bits are spoken for:
 
 Until then a cloud with a transfer is written to `.athc` without it, and says
 so; `--transfer` with an `.athc` output stays refused.
+
+### A car's paint is a Schlick metal, not a conductor
+
+The first measurement of step 1 on the Corvette read the paint 40 % bright
+(0.18/0.23/0.21 against the path traced 0.13/0.16/0.15) and matte under its
+coat's sharp reflections -- as the first transfer had, under no coat. The
+paint is OpenPBR at metalness 1 over a base of 0.05, and a gaussian reflected
+every metal as a conductor of the artistic index (`mxArtisticIor` of the
+colour and an edge of the specular colour, white here), which is
+standard_surface's metal. OpenPBR's is MaterialX's `generalized_schlick_bsdf`
+-- the colour head on, the specular colour at 82 degrees -- and for a dark
+metal the two part by twice at an angle:
+
+| angle | conductor (n 0.91, k 0.41) | Schlick from 0.047 |
+|---|---|---|
+| 0 | 0.046 | 0.047 |
+| 45 | 0.077 | 0.049 |
+| 60 | 0.172 | 0.077 |
+| 70 | 0.312 | 0.165 |
+| 80 | 0.560 | 0.414 |
+
+A gaussian now knows which its metal is: `StageMaterial::schlickMetal` for
+OpenPBR and glTF, one int a gaussian in the stage
+(`primvars:athenea:splat:schlickMetal`), a mark of 4 on the transmission the
+streams kernel hands the decode (beside a thin wall's 2), bit 25 of the `pbr`
+word, and `SplatSurface::schlickMetal`; `environmentBrdfOf` then reflects a
+metal with the DFG fit of its own two ends and their compensation
+(`ggxEnvSchlickMetal`). A light's lobe was a Schlick already. A cloud without
+the primvar, and every standard_surface or UsdPreviewSurface metal, is
+reflected as before.
+
+Checked (pending the GPU turn): the Schlick never above the conductor for the
+paint's base, its colour head on, a white metal white ([schlick] in
+athenea_render_tests); the paint ball and the Corvette's paint again.

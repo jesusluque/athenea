@@ -68,6 +68,11 @@ static const uint kTransferReflected = 1u << 27;
 // gaussian's frame and three coefficients (`primvars:athenea:splat:transferZonal`),
 // in place of the harmonics of `transferDirect`.
 static const uint kTransferZonal = 1u << 28;
+// One int a splat, nonzero where its metal is a Schlick (OpenPBR, glTF):
+// carried, as a thin wall is, as a mark on the transmission the decode takes
+// back off (splat_encoding's kSchlickMetalMark).
+static const uint kSchlickMetal = 1u << 29;
+static const float kSchlickMetalMark = 4.0;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -118,6 +123,7 @@ StructuredBuffer<uint>     transferIndirect; // twenty-seven a splat (forty-eigh
 StructuredBuffer<uint>     transferReflected; // forty-eight a splat, a TX transfer's field
 StructuredBuffer<uint>     transferZonal;    // ten a splat: two lobes in the gaussian's frame
 StructuredBuffer<uint>     shadowBits;       // two words a splat, or eight, bits
+StructuredBuffer<uint>     schlickMetal;     // one int a splat, nonzero for a Schlick metal
 StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a thin wall
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
 StructuredBuffer<uint>     emission;         // rgb a splat, the radiance it gives off
@@ -186,7 +192,8 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
         records[r + params.pbrBase] = present(kMetallic) ? streamValue(metallic, isHalf(kMetallic), e) : 0.0;
         records[r + params.pbrBase + 1] = present(kRoughness) ? streamValue(roughness, isHalf(kRoughness), e) : 1.0;
         // A thin wall rides on the transmission, two higher (splat_encoding).
-        const float thin = present(kThinWalled) && thinWalled[e] != 0u ? kThinWalledMark : 0.0;
+        const float thin = (present(kThinWalled) && thinWalled[e] != 0u ? kThinWalledMark : 0.0) +
+                           (present(kSchlickMetal) && schlickMetal[e] != 0u ? kSchlickMetalMark : 0.0);
         records[r + params.pbrBase + 2] =
             (present(kTransmission) ? streamValue(transmission, isHalf(kTransmission), e) : 0.0) + thin;
     }

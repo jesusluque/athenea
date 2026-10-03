@@ -1069,6 +1069,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:transferZonal` | float[] ‹10 a gaussian› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 or 32 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:schlickMetal` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:specularWeight` | float[] ‹1 a gaussian, 0 to 1› | `1` |
@@ -1145,6 +1146,11 @@ cabin -- where they are not, along the way straight through, as a slab sends
 it. Where a cloud carries the layers, a transmitting gaussian bends by its
 own index (`specularIor`) wherever the cloud's `ior` says it bends at all;
 the cloud's single `ior` is whichever glass the conversion met first.
+`schlickMetal` is nonzero where the gaussian's metal is a Schlick -- OpenPBR's
+and glTF's, from its colour head on to its specular colour at grazing --
+rather than the conductor of an artistic index that standard_surface's and
+UsdPreviewSurface's are; `athenea mesh2splat` writes it from the material's
+vocabulary. For a dark metal the two part by twice at sixty degrees.
 `thinWalled` is nonzero where the gaussian came from a thin-walled glass
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame

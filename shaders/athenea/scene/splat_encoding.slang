@@ -152,13 +152,22 @@ public static const uint kNoField = 0xFFFFFFFFu;
 /// its own on the way here.
 public static const float kThinWalledMark = 2.0;
 
+/// What a Schlick metal (OpenPBR's, glTF's) adds to the transmission a record
+/// carries, over a thin wall's mark: bit 25 of the pbr word.
+public static const float kSchlickMetalMark = 4.0;
+
 public uint packPbr(float metallic, float roughness, float transmission) {
-    const bool thin = transmission >= kThinWalledMark - 0.5;
+    const bool schlick = transmission >= kSchlickMetalMark - 0.5;
+    const float rest = schlick ? transmission - kSchlickMetalMark : transmission;
+    const bool thin = rest >= kThinWalledMark - 0.5;
     const uint m = uint(saturate(metallic) * 255.0 + 0.5);
     const uint r = uint(saturate(roughness) * 255.0 + 0.5);
-    const uint t = uint(saturate(thin ? transmission - kThinWalledMark : transmission) * 255.0 + 0.5);
-    return m | (r << 8) | (t << 16) | (thin ? (1u << 24) : 0u);
+    const uint t = uint(saturate(thin ? rest - kThinWalledMark : rest) * 255.0 + 0.5);
+    return m | (r << 8) | (t << 16) | (thin ? (1u << 24) : 0u) | (schlick ? (1u << 25) : 0u);
 }
+
+/// Whether the gaussian's metal is a Schlick rather than a conductor.
+public bool pbrSchlickMetal(uint word) { return ((word >> 25) & 1u) != 0u; }
 
 public float pbrMetallic(uint word) { return float(word & 0xFFu) / 255.0; }
 public float pbrRoughness(uint word) { return float((word >> 8) & 0xFFu) / 255.0; }

@@ -405,6 +405,7 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         takeFloat(read("ior"), out.ior);
     } else {
         takeFloat(read(gltf ? "ior" : openPbr ? "specular_ior" : "specular_IOR"), out.ior);
+        out.schlickMetal = openPbr || gltf;
         if (openPbr) {
             const Resolved thin = read("geometry_thin_walled");
             if (thin.hasValue && thin.value.IsHolding<bool>()) {

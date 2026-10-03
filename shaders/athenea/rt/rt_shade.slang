@@ -111,6 +111,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[i]) : 1.0;
         surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
         surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
+        surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[i]);
         // WHAT A PICK MAY HAVE SAID ABOUT THIS PRIM, over what the file did.
         if (params.overrideCount != 0) {
             const SplatOverride said =

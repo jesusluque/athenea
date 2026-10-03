@@ -1048,6 +1048,10 @@ public:
                 // its gaussians' own transparency (see `glassOpacity`).
                 thinWalled_.insert(thinWalled_.end(), out->written,
                                    thinGlass(material) ? int32_t{1} : int32_t{0});
+                // And whether its metal is a Schlick (OpenPBR, glTF) rather
+                // than a conductor: what a frame reflects a metal with.
+                schlickMetal_.insert(schlickMetal_.end(), out->written,
+                                     material.schlickMetal ? int32_t{1} : int32_t{0});
                 // AND WHAT ITS GLASS BENDS BY. A transmitting gaussian
                 // refracts only with an index (rt_shade: `ior > 1`), and a
                 // cloud keeps one: without it the pawn's glass head was a
@@ -1589,6 +1593,8 @@ private:
     std::vector<uint32_t>                    cryptoIds_;
     /// 1 where the splat came from a thin-walled glass, in the same order.
     std::vector<int32_t>                     thinWalled_;
+    /// One a gaussian, 1 where its metal is a Schlick (StageMaterial::schlickMetal).
+    std::vector<int32_t>                     schlickMetal_;
     /// The index the cloud's transmitting gaussians bend by: the first glass
     /// met's. 0 while there is none.
     float                                    glassIor_ = 0.0F;
@@ -1618,6 +1624,7 @@ public:
     [[nodiscard]] const std::vector<uint32_t>& cryptoIds() const noexcept { return cryptoIds_; }
     [[nodiscard]] double modelCell() const noexcept { return modelCell_; }
     [[nodiscard]] const std::vector<int32_t>& thinWalled() const noexcept { return thinWalled_; }
+    [[nodiscard]] const std::vector<int32_t>& schlickMetal() const noexcept { return schlickMetal_; }
     [[nodiscard]] float glassIor() const noexcept { return glassIor_; }
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
@@ -2691,6 +2698,7 @@ void addMesh2Splat(CLI::App& app) {
                 options.cryptoObject = converter.cryptoIds();
                 options.cryptoManifest = converter.cryptoManifest();
                 options.thinWalled = converter.thinWalled();
+                options.schlickMetal = converter.schlickMetal();
                 options.ior = converter.glassIor();
                 options.transferDirect = transferred.direct;
                 options.transferIndirect = transferred.bounced;

@@ -176,6 +176,7 @@ SplatSurface surfaceOf(uint g, float3x3 frame, float4 row0, float4 row1, float4 
     s.transferCount = kTransferZonalCount;
     s.transferBase = g * 10;
     s.thinWalled = false;
+    s.schlickMetal = false;
     s.hasShadowBits = false;
     splatTransferFrame(s, halves, frame, row0, row1, row2);
     return s;

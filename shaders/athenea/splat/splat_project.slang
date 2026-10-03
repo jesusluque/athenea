@@ -312,6 +312,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[i]) : 1.0;
         surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
         surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
+        surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[i]);
         // WHAT A PICK MAY HAVE SAID ABOUT THIS PRIM. The id a gaussian carries
         // is the one the matte writes, so a table keyed on it is a material
         // override addressed by clicking (athenea/common/splat_override.slang).

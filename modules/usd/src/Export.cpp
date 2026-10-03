@@ -325,6 +325,18 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(thin));
     }
 
+    // WHICH GAUSSIANS' METAL IS A SCHLICK (OpenPBR, glTF) rather than a
+    // conductor of an artistic index. Written only where there is one.
+    if (options.schlickMetal.size() >= count && count > 0 &&
+        std::any_of(options.schlickMetal.begin(), options.schlickMetal.begin() + count,
+                    [](int32_t v) { return v != 0; })) {
+        VtIntArray schlick(options.schlickMetal.begin(), options.schlickMetal.begin() + count);
+        UsdGeomPrimvarsAPI(splats.GetPrim())
+            .CreatePrimvar(TfToken("primvars:athenea:splat:schlickMetal"), SdfValueTypeNames->IntArray,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(schlick));
+    }
+
     // HOW MUCH OF AN ENVIRONMENT REACHES EACH GAUSSIAN. Nine floats a record
     // of the direct half, and twenty-seven more of the indirect one where it
     // was baked, vertex-interpolated like everything else a gaussian carries.
@@ -429,6 +441,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             TfToken("primvars:athenea:splat:roughness"),    TfToken("primvars:athenea:splat:transmission"),
             TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
             TfToken("primvars:athenea:splat:thinWalled"),   TfToken("primvars:athenea:splat:shadowBits"),
+            TfToken("primvars:athenea:splat:schlickMetal"),
             TfToken("primvars:athenea:splat:normal"),       TfToken("primvars:athenea:splat:linear"),
             TfToken("primvars:athenea:splat:emission"),     TfToken("primvars:athenea:splat:coatWeight"),
             TfToken("primvars:athenea:splat:specularWeight"), TfToken("primvars:athenea:splat:sheenColor")};

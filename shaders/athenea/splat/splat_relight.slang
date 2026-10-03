@@ -116,6 +116,12 @@ public struct SplatSurface {
     /// blend is its transmission and what it shades is its reflection alone.
     public bool   thinWalled;
     public float  metallic;    ///< 0 for a capture, which carries no such thing
+    /// ITS METAL IS A SCHLICK -- OpenPBR's `generalized_schlick_bsdf`, glTF's
+    /// -- from its colour head on to the specular colour at grazing, rather
+    /// than a conductor of the artistic index standard_surface's is
+    /// (`ggxEnvConductorEdged`). For a dark metal the two part by twice at
+    /// sixty degrees: a car's paint read matte and bright as a conductor.
+    public bool   schlickMetal;
     public float  roughness;   ///< 1 is the Lambert-only answer this had before
     /// What the material lets through, and the reason a splat can be
     /// translucent at all. A gaussian cannot refract; what it can do is send
@@ -423,8 +429,22 @@ public float3 environmentBrdf(float3 albedo, float metallic, float roughness, fl
 /// specular colour at grazing (standard_surface's `specular_color` on a
 /// metal). The plain lobes make it `environmentBrdf`.
 public float3 environmentBrdfOf(SplatSurface s, float nDotV) {
-    return lerp(ggxEnvDielectricAt(s.roughness, nDotV, s.lobes.specularIor) * specularTint(s),
-                ggxEnvConductorEdged(s.albedo, s.lobes.specularColour, s.roughness, nDotV), saturate(s.metallic));
+    const float3 metal = s.schlickMetal ? ggxEnvSchlickMetal(s.albedo, s.lobes.specularColour, s.roughness, nDotV)
+                                        : ggxEnvConductorEdged(s.albedo, s.lobes.specularColour, s.roughness, nDotV);
+    return lerp(ggxEnvDielectricAt(s.roughness, nDotV, s.lobes.specularIor) * specularTint(s), metal,
+                saturate(s.metallic));
+}
+
+/// A SCHLICK METAL'S SHARE OF AN ENVIRONMENT: the same DFG fit with its own
+/// two ends, the colour head on and the specular colour at grazing (which for
+/// OpenPBR's F82 tint of white is exactly Schlick, and otherwise its nearest),
+/// and the multiple-scattering compensation of that Fresnel.
+float3 ggxEnvSchlickMetal(float3 albedo, float3 edge, float roughness, float nDotV) {
+    const float alpha = max(roughness * roughness, 1.0e-4);
+    const float3 f0 = saturate(albedo);
+    const float3 f90 = saturate(edge);
+    const float3 F = f0 + (f90 - f0) * pow(1.0 - saturate(nDotV), 5.0);
+    return ggxDirectionalAlbedo(nDotV, alpha, f0, f90) * ggxEnergyCompensation(nDotV, alpha, F);
 }
 
 /// WHAT THE LAYERS OVER THE BASE TAKE AND GIVE AT THE EYE.

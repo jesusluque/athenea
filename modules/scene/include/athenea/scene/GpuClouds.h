@@ -231,6 +231,9 @@ struct SplatStreams {
     /// One int32 a splat, nonzero for a thin-walled glass
     /// (`primvars:athenea:splat:thinWalled`); read only beside the PBR arrays.
     FloatStream thinWalled;
+    /// One int a splat, nonzero where its metal is a Schlick rather than a
+    /// conductor (`primvars:athenea:splat:schlickMetal`); beside the PBR arrays.
+    FloatStream schlickMetal;
     /// Three floats a splat, the shading normal (`primvars:athenea:splat:normal`).
     FloatStream normals;
     /// `primvars:athenea:splat:linear`: the colours are linear light

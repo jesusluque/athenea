@@ -131,6 +131,9 @@ struct ExportOptions {
     uint32_t                        shadowWords = 2;
     /// One int a record, 1 where the gaussian came from a thin-walled glass.
     std::span<const int32_t>        thinWalled;
+    /// One int a record, 1 where the gaussian's metal is a Schlick (OpenPBR,
+    /// glTF) rather than a conductor (`primvars:athenea:splat:schlickMetal`).
+    std::span<const int32_t>        schlickMetal;
     /// `primvars:athenea:splat:ior` when above 1: the index the cloud's
     /// transmitting gaussians refract by. Not written at 0.
     float                           ior = 0.0F;

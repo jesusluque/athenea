@@ -202,6 +202,12 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
             s.thinWalled = {std::as_bytes(std::span<const int>(thin.cdata(), thin.size())), false, false};
         }
     }
+    if (a.schlickMetal.IsHolding<pxr::VtIntArray>()) {
+        const pxr::VtIntArray& schlick = a.schlickMetal.UncheckedGet<pxr::VtIntArray>();
+        if (schlick.size() >= s.count && s.count > 0) {
+            s.schlickMetal = {std::as_bytes(std::span<const int>(schlick.cdata(), schlick.size())), false, false};
+        }
+    }
     s.linear = a.linear;
     // The shading normal: three floats a gaussian, or nothing.
     s.normals = streamOf(a.normals);

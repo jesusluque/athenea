@@ -80,6 +80,13 @@ struct StageMaterial {
     /// A sheet, not a solid (OpenPBR's `geometry_thin_walled`): what it
     /// transmits leaves along the direction it came in.
     bool                   thinWalled = false;
+    /// ITS METAL IS A SCHLICK, not a conductor: OpenPBR's (MaterialX's
+    /// `generalized_schlick_bsdf`, the base colour head on and the specular
+    /// colour at 82 degrees) and glTF's. standard_surface's and
+    /// UsdPreviewSurface's metals are conductors of an artistic index. The two
+    /// part most for a dark metal at an angle: a car's paint (base 0.05)
+    /// reflects 0.17 at 60 degrees as a conductor and 0.08 as a Schlick.
+    bool                   schlickMetal = false;
     StageTexture           albedo;
     StageTexture           normal;
     StageTexture           metallicMap;

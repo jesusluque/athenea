@@ -1089,6 +1089,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:transferZonal` | float[] ‹10 por gaussiana› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 o 32 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:schlickMetal` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:specularWeight` | float[] ‹1 por gaussiana, 0 a 1› | `1` |
@@ -1171,6 +1172,12 @@ la dirección que sigue recta, como la envía una lámina. Donde la nube lleva
 las capas, una gaussiana que transmite se dobla con su propio índice
 (`specularIor`) siempre que el `ior` de la nube diga que se dobla; el `ior`
 único de la nube es el del primer vidrio que encontró la conversión.
+`schlickMetal` es distinto de cero donde el metal de la gaussiana es un
+Schlick -- el de OpenPBR y el de glTF, de su color de frente a su color
+especular rasante -- y no el conductor de índice artístico que son el de
+standard_surface y el de UsdPreviewSurface; `athenea mesh2splat` lo escribe
+según el vocabulario del material. Para un metal oscuro los dos se separan al
+doble a sesenta grados.
 `thinWalled` es distinto de cero donde la gaussiana vino de un vidrio de pared
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077

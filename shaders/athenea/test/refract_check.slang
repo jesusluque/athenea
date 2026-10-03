@@ -42,6 +42,7 @@ void refractCheck(uint3 tid: SV_DispatchThreadID) {
     SplatSurface s;
     s.lobes = plainLobes();
     s.thinWalled = false;
+    s.schlickMetal = false;
     s.hasShadowBits = false;
     s.cellWords = 0u;
     s.cellBase = 0u;
