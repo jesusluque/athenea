@@ -318,6 +318,9 @@ TEST_CASE("a decimated stage keeps everything, every array a gaussian long as lo
             .Set(1);
         field.CreateAttribute(TfToken("athenea:test:texture"), SdfValueTypeNames->Asset)
             .Set(SdfAssetPath("./floor_texture.png"));
+        // In centimetres, which the copy must keep: the gaussians' own stage
+        // on the way is written in metres.
+        UsdGeomSetStageMetersPerUnit(stage, 0.01);
         REQUIRE(stage->GetRootLayer()->Save());
     }
     { std::ofstream(folder / "floor_texture.png") << "not an image, only a file that is there"; }
@@ -357,6 +360,7 @@ TEST_CASE("a decimated stage keeps everything, every array a gaussian long as lo
     SdfAssetPath texture;
     REQUIRE(field.GetAttribute(TfToken("athenea:test:texture")).Get(&texture));
     CHECK(!texture.GetResolvedPath().empty());   // found from the other folder
+    CHECK(UsdGeomGetStageMetersPerUnit(stage) == 0.01);
 }
 
 TEST_CASE("splats and points behind a mesh leave it as it is; in front of it they show", "[usd][gpu][mesh][layers]") {

@@ -8915,7 +8915,15 @@ Before, 26, 9 and 21 of 64 points decoded beyond the light, the worst to
 Also found on the pawn: the written ParticleField stage carried no
 `metersPerUnit`, so an application honouring units read a cloud converted in
 metres at a hundredth of its size (USD's fallback is centimetres); it is
-written now, from the source stage. And `athenea` registers its own plugin
+written now, from the source stage. Of the other writers, `athenea
+decimate` of a stage copies the source's root layer, its `metersPerUnit`
+with it (the stage of gaussians it writes on the way is read for its arrays
+alone, so its unit is never seen; a test keeps a centimetre stage in
+centimetres), and `athenea convert` and `decimate` of a splat file read
+`.ply`, `.splat`, `.spz` and `.sog`, none of which says what its unit is: a
+capture is written as metres (`metersPerUnit = 1`), which is what a 3DGS
+trainer's scale is taken to be, and a cloud in another unit wants the stage
+that references it to say so. And `athenea` registers its own plugin
 directory at start-up: without `PXR_PLUGINPATH_NAME` the schema a converted
 cloud applies (`AtheneaSplatCryptomatteAPI`) was an unknown token and was
 dropped from the file.

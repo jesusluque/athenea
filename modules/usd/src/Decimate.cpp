@@ -194,6 +194,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
     if (usd) {
         // The gaussians themselves to a stage of their own, and from it
         // into a copy of the stage they came from, beside everything else.
+        // Only that stage's arrays are read: the copy keeps the source's
+        // metersPerUnit and upAxis, so this one's (metres) are never seen.
         const std::filesystem::path gaussians =
             std::filesystem::temp_directory_path() /
             ("athenea_decimate_" + output.stem().string() + ".usdc");

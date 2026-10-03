@@ -178,6 +178,11 @@ emit, tile sort and blend times separately.
 A `.athc` output refuses a non-zero `--rotate-x`: the container holds the
 cloud as it is, and the turn belongs on the prim that references it.
 
+A stage written here says `metersPerUnit = 1`: none of the input formats
+records a unit, and a capture's scale is taken to be metres. A cloud in
+another unit is scaled where it is referenced, or the stage's
+`metersPerUnit` edited.
+
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
@@ -215,7 +220,8 @@ name ends in `shadowBits` bit by bit; any other int -- an id, a part, a sheet
 as a direction (the weighted mean made a unit vector again); any other float
 -- metallic, roughness, a transfer -- as a mean. Metallic, roughness and transmission are
 also compared as colour is. An array sampled in time is merged a sample at a
-time. A splat file is written as a new stage, as `athenea convert` writes one.
+time. The copy keeps the source's `metersPerUnit` and `upAxis`. A splat
+file is written as a new stage, as `athenea convert` writes one, in metres.
 
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc

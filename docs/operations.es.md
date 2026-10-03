@@ -178,6 +178,11 @@ sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 Un `.athc` de salida rechaza un `--rotate-x` distinto de cero: el contenedor
 guarda la nube como está, y el giro pertenece al prim que lo referencia.
 
+Una escena escrita aquí dice `metersPerUnit = 1`: ninguno de los formatos de
+entrada registra una unidad, y la escala de una captura se toma como metros.
+Una nube en otra unidad se escala donde se referencia, o se edita el
+`metersPerUnit` de la escena.
+
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
@@ -215,9 +220,10 @@ cualquier otro entero -- un id, una parte, una lámina -- como lo que no se
 puede fundir entre sí; `primvars:athenea:splat:normal` como una dirección (la
 media ponderada hecha de nuevo un vector unitario); cualquier otro float --
 metallic, roughness, un transfer -- como una media. Metallic, roughness y transmisión también se comparan
-como el color. Un array muestreado en el tiempo se funde muestra a muestra. Un
-fichero de splats se escribe como una escena nueva, como la escribe
-`athenea convert`.
+como el color. Un array muestreado en el tiempo se funde muestra a muestra. La
+copia conserva el `metersPerUnit` y el `upAxis` de la fuente. Un fichero de
+splats se escribe como una escena nueva, como la escribe `athenea convert`, en
+metros.
 
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
