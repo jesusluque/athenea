@@ -28,6 +28,10 @@ class ShaderLibrary;
 class Device;
 }
 
+namespace athenea::material {
+class TextureStore;
+}
+
 namespace athenea::light {
 
 enum class LightKind : uint32_t {
@@ -158,7 +162,10 @@ struct LightRecord {
     float    shadowDistance = -1.0F;    ///< -1: no limit
     float    shadowFalloff = -1.0F;     ///< -1: no fade
     float    shadowFalloffGamma = 1.0F;
-    uint32_t pad1 = 0;
+    /// A dome with an image: where its distribution (shaders/athenea/light/
+    /// dome_cdf.slang) starts in the values buffer. None: sampled around the
+    /// surface, or no image at all.
+    uint32_t cdf = 0xFFFFFFFFU;
     uint32_t pad2 = 0;
 };
 
@@ -189,6 +196,16 @@ public:
     /// The table needs the library for the kernel that accumulates each
     /// light's share of the frame's power on the device.
     [[nodiscard]] static Result<LightTable> create(gpu::ShaderLibrary& library);
+
+    /// The texture table a dome's image lives in. With one, each dome whose
+    /// image loaded gets the distribution it is importance sampled by (its
+    /// record's `cdf`), built on the device at every `set`; without one, a
+    /// dome is sampled around the surface. Not owned; null to stop.
+    void setTextures(const material::TextureStore* textures) noexcept { textures_ = textures; }
+
+    /// The widest mip level a dome's distribution is built from: a level is
+    /// chosen at most this many texels across (dome_cdf.slang says why).
+    static constexpr uint32_t kDomeCdfWidth = 1024;
 
     /// The frame's lights, uploaded. The buffer is remade when it must grow.
     /// `sceneRadius` is how far the scene reaches, in its own units: a dome
@@ -225,6 +242,9 @@ private:
     std::optional<gpu::ComputeKernel> iesPrepare_;   ///< ies_prepare: each profile's power
     std::optional<gpu::ComputeKernel> instancesMotion_;   ///< light_instances: a moving instanced light's samples
     std::optional<gpu::ComputeKernel> instances_;    ///< light_instances: an instanced light's placements
+    std::optional<gpu::ComputeKernel> cdfRows_;      ///< dome_cdf: each row's conditional
+    std::optional<gpu::ComputeKernel> cdfMarginal_;  ///< dome_cdf: the marginal over the rows
+    const material::TextureStore*     textures_ = nullptr;
     gpu::Buffer  iesRecords_;
     gpu::Buffer  iesValues_;
     /// The light BVH (light_bvh.slang): built after the prefix, from the

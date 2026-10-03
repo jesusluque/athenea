@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "athenea/gpu/Device.h"
+#include "athenea/material/TextureStore.h"
 
 namespace athenea::light {
 
@@ -51,6 +52,8 @@ Result<LightTable> LightTable::create(gpu::ShaderLibrary& library) {
     table.iesPrepare_.emplace(std::move(*iesPrepare));
     table.instances_.emplace(std::move(*instances));
     ATHENEA_TRY(make(table.instancesMotion_, "athenea/light/light_instances", "lightInstancesMotion"));
+    ATHENEA_TRY(make(table.cdfRows_, "athenea/light/dome_cdf", "domeCdfRows"));
+    ATHENEA_TRY(make(table.cdfMarginal_, "athenea/light/dome_cdf", "domeCdfMarginal"));
     table.bvhLeaves_ = std::move(bvhKernels.bvhLeaves_);
     table.bvhPack_ = std::move(bvhKernels.bvhPack_);
     table.bvhParents_ = std::move(bvhKernels.bvhParents_);
@@ -232,6 +235,44 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
             }
         }
     }
+    // A DOME'S IMAGE AS A DISTRIBUTION, after everything else in the values
+    // buffer: room for each image once, whichever domes share it, and the
+    // records told where. How big is bookkeeping -- the image's size, the
+    // level -- and the sums themselves are the device's (dome_cdf.slang).
+    struct CdfBuild {
+        uint32_t texture;
+        uint32_t base;
+        uint32_t level;
+        uint32_t width;
+        uint32_t height;
+    };
+    std::vector<CdfBuild> cdfBuilds;
+    if (textures_ != nullptr) {
+        for (LightRecord& record : records) {
+            if (record.kind != static_cast<uint32_t>(LightKind::Dome) || record.texture >= textures_->count()) {
+                continue;
+            }
+            const material::TextureInfo& info = textures_->info(record.texture);
+            if (!info.loaded || info.udim || info.width == 0 || info.height == 0) {
+                continue;
+            }
+            const auto same = std::find_if(cdfBuilds.begin(), cdfBuilds.end(),
+                                           [&](const CdfBuild& b) { return b.texture == record.texture; });
+            if (same != cdfBuilds.end()) {
+                record.cdf = same->base;
+                continue;
+            }
+            CdfBuild build{record.texture, static_cast<uint32_t>(iesValues.size()), 0, info.width, info.height};
+            while (build.width > kDomeCdfWidth) {
+                ++build.level;
+                build.width = std::max(info.width >> build.level, 1u);
+            }
+            build.height = std::max(info.height >> build.level, 1u);
+            iesValues.resize(iesValues.size() + 5 + build.height + size_t{build.height} * (build.width + 1), 0.0F);
+            record.cdf = build.base;
+            cdfBuilds.push_back(build);
+        }
+    }
     if (iesValues.empty()) {
         iesValues.push_back(0.0F);
     }
@@ -252,6 +293,23 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
             cursor["iesValues"].setBinding(iesValues_.rhi());
             cursor["iesCount"].setData(iesCount_);
         });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    if (!cdfBuilds.empty()) {
+        gpu::CommandBatch batch(*device_);
+        for (const CdfBuild& b : cdfBuilds) {
+            const auto bindCdf = [&](rhi::ShaderCursor cursor) {
+                textures_->bind(cursor["gTextures"]);
+                cursor["cdfValues"].setBinding(iesValues_.rhi());
+                cursor["cdfBase"].setData(b.base);
+                cursor["cdfTexture"].setData(b.texture);
+                cursor["cdfLevel"].setData(b.level);
+                cursor["cdfWidth"].setData(b.width);
+                cursor["cdfHeight"].setData(b.height);
+            };
+            cdfRows_->dispatch(batch, {b.height, 1, 1}, bindCdf);
+            cdfMarginal_->dispatch(batch, {1, 1, 1}, bindCdf);
+        }
         ATHENEA_TRY(batch.submit(true));
     }
     if (!motionExpansions.empty()) {

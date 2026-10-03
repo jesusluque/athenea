@@ -1151,51 +1151,55 @@ sample, mapped around the light's own axes. It is not a layer: it has no
 depth, and giving it one would make the background read as covered, so it is
 painted where the frame drew nothing, opaque, after everything else.
 
-A dome follows its image's own brightness. The warp descends the mip chain
-the texture store already built, choosing among a cell's children by
-luminance, and its density needs no walk at all: a lat-long texel covers
-2 pi^2 sin(theta) du dv, and a texel's share is its luminance over the
-image's total, which the 1x1 level holds as an average -- so
+A dome follows its image's own brightness, by the exact two-level
+distribution Cycles builds for its background (`kernel/light/background.h`,
+Apache-2.0): a marginal over the image's rows and, within each row, a
+conditional over its columns, of luminance times sin(theta) -- a lat-long
+texel covers 2 pi^2 sin(theta) du dv, so a row near a pole is worth less sky.
+A sample searches the marginal for a row and the row's sums for a column
+(binary searches), and spends what is left of each number inside the texel;
+the density is read back from the same sums,
 
-    pdf = luminance / (average * 2 pi^2 * sin(theta))
+    pdf = p(row) p(column | row) width height / (2 pi^2 sin(theta))
 
-Nothing is precomputed, and the choice between warping and sampling around
-the surface is made by how much the image varies: the 1x1 level gives the
-mean and a middle level the spread. A flat sky is better served by the
-cosine, which the numbers below say plainly.
+so what MIS weighs a hit by is what the sample was drawn with.
 
-It took two bugs to get there, and the chi-square binned in the image itself
--- where the warp works, so no grid artefact could be blamed -- found both:
+- **Built on the device** (`light/dome_cdf.slang`), every time the light
+  table is set: one thread a row sums its texels in order, one thread sums
+  the rows. A float row of a thousand terms is exact enough in one pass;
+  `gpu/algo`'s PrefixSum scans uint32 and would have needed the luminance in
+  fixed point. The host only reserves the room (the image's size is
+  bookkeeping) and tells each dome's record where it is (`cdf`).
+- **In the lights' values buffer**, after the IES tables, the light tree and
+  the moving lights' samples: the path tracer binds 31 buffers on Metal and
+  has none to spare. Each image once, whichever domes share it.
+- **From a mip level at most 1024 texels across** (`LightTable::kDomeCdfWidth`),
+  Cycles' default map resolution: a 4K HDRI at full size is 32 MB of sums,
+  and its sun is a few texels of the 1024 level already. The radiance is
+  still read from the full image; only the density is coarser.
+- **Still chosen by variation**: a dome whose image barely varies is sampled
+  around the surface, as before (the 1x1 level against a middle one). A flat
+  sky sends half the image's samples below the horizon; the cosine sends none.
+- **Not done**: the table is rebuilt at every `set`, whether the image
+  changed or not -- a key on the image as `prepareEnvironment` keys the
+  domes' records would skip it; the time is to be measured first.
 
-- **Splitting left from right and then top from bottom off one level** does
-  not give the four children their own probabilities: z 61543 over a million
-  samples. An explicit choice among four weights fixed it.
-- **Splitting an axis that has no resolution left.** With that fixed a square
-  image passed at once (z 0.84) while a 64 x 32 one still read z 1164589: a
-  lat-long chain reaches one row while it still has columns, and from there a
-  cell has two children rather than four, so probability was being handed to
-  texels that are not there. Each level now splits only the axes that still
-  divide.
-
-What was never wrong, measured rather than assumed: the chain telescopes to
-0.7% (a parent against its four children), uv survives a turn through a
-direction exactly (0 of 4032), and every sample agrees with `lightPdf` --
-that last one passed throughout, which is the lesson: a per-sample check
+What it replaced: a descent of the mip chain, choosing among a cell's
+children by luminance, with the density read off the 1x1 level as an
+average. It was parked from the start -- a chi-square binned in the image
+read z 61543 over a million samples -- and for all that time a dome was
+sampled with a cosine around the surface, the worst estimator for an
+interior HDRI with windows and lamps in it (proposal 021). What was learnt
+there stays: the chain did telescope, the uv round trip was exact, and every
+sample agreed with `lightPdf`, which only showed that a per-sample check
 compares a density with itself and cannot see a sampler drawing the wrong
-distribution.
+distribution. Only the chi-square could.
 
-- **Verified**: z 0.84 with a square image and 2.41 with a 2:1 one, a million
-  samples each, against the density integrated over the same bins.
-- **Against the cosine**: on a plane under a flat sky the warp is 20% out
-  where the cosine is 0.08% at the same count, since a uv-uniform sample
-  crowds the poles and drops the cosine. Which is why the rule picks by
-  variation, and why a dome with a sun in it is the warp's case, not this
-  one.
-
-The three instruments that settled this stay: the chi-square bins a dome in
-its image, a cone in its own solid angle and an area light on its own
-surface; a round trip checks the mapping without statistics; and a pyramid
-check measures whether the chain telescopes at all.
+The instruments: the chi-square bins a dome in its image (square and 2:1,
+a million samples each), a cone in its own solid angle and an area light on
+its own surface; a round trip checks the mapping without statistics; and
+`lightCdf` checks the table itself -- every sum non-decreasing from zero,
+each step of the marginal its row's total.
 
 ### The cylinder, added with M6
 

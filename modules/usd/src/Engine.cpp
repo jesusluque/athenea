@@ -1906,6 +1906,9 @@ Result<void> Engine::prepareSplatLights(std::vector<light::Light>& lamps,
         }
         lightSceneRadius_ = std::max(radius, 1.0e-3F);
     }
+    // A dome's image is importance sampled by a distribution built from the
+    // texture table (dome_cdf.slang).
+    lightTable_->setTextures(textures_.get());
     ATHENEA_TRY(lightTable_->set(lamps, lightSceneRadius_));
     return prepareEnvironment(lamps);
 }
@@ -2586,6 +2589,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 lightSceneRadius_ = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 1.0e-3F);
             }
         }
+        // A dome's image is importance sampled by a distribution built from
+        // the texture table (dome_cdf.slang).
+        lightTable_->setTextures(textures_.get());
         ATHENEA_TRY(lightTable_->set(lamps, lightSceneRadius_));
         ATHENEA_TRY(prepareEnvironment(lamps));
         // A path traced surface needs a structure whatever the lights do --

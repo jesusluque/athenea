@@ -44,48 +44,31 @@ float domeLuminance(LightRecord l, float2 uv, float level) {
     return domeTexelOf(l, int2(int(uv.x * float(size.x)), int(uv.y * float(size.y))), mip);
 }
 
-///
-/// A lat-long texel covers 2 pi^2 sin(theta) du dv of solid angle, and the
-/// probability of landing on one is its luminance over the image's total --
-/// which the 1x1 level already holds as an average. So the density needs no
-/// walk at all:
-///
-///     pdf(wi) = luminance(wi) / (average * 2 pi^2 * sin(theta))
-///
-/// and only the sampling descends the mip pyramid, choosing between the four
-/// children of a cell by their luminance. Nothing is precomputed: the chain
-/// the texture store already built is the distribution.
+/// A lat-long texel covers 2 pi^2 sin(theta) du dv of solid angle.
 static const float kTwoPiSquared = 2.0 * 3.14159265358979 * 3.14159265358979;
-
-/// The image's mean luminance, from the top of its chain.
-float domeAverage(LightRecord l) {
-    const TextureRecord record = gTextures.records[l.texture];
-    const float top = log2(max(max(record.width, record.height), 1.0));
-    return domeLuminance(l, float2(0.5, 0.5), ceil(top));
-}
+static const uint  kDomeNoCdf = 0xFFFFFFFF;
 
 /// Whether a dome is worth sampling by its image rather than around the
-/// surface. An image that barely varies is better served by the cosine: the
-/// warp is uniform in uv, which crowds the poles and drops the cosine
-/// altogether, and a plane under a flat dome came out sixteen times noisier
-/// that way. One with a sun in it is the opposite. The 1x1 level gives the
-/// mean and a middle level the spread, so the choice costs two samples.
+/// surface. It must have a distribution (LightTable builds one for every
+/// dome whose image loaded, dome_cdf.slang) with something in it. And it
+/// must vary: an image that barely does is better served by the cosine,
+/// which never draws a direction below the surface, where the image's
+/// distribution sends half its samples for a flat sky. One with a sun in it
+/// is the opposite. The 1x1 level gives the mean and a middle level the
+/// spread, so the choice costs a handful of reads.
+///
+/// The warp this replaced descended the mip chain, splitting each cell
+/// among its children, and was off from the start: a chi-square read z 61543
+/// over a million samples. The distribution is now the exact two-level CDF
+/// Cycles builds (kernel/light/background.h, Apache-2.0).
 public bool domeHasImage(LightRecord l) {
-    // Off until the descent is right. It draws directions its own density
-    // does not describe: a chi-square binned in the image itself -- where the
-    // warp works, so no grid artefact can explain it -- reads z 61543 over a
-    // million samples, and 127965 with a square image, so the asymmetry of a
-    // lat-long is not the cause either. The chain telescopes to 0.7%, the uv
-    // round trip is exact, and every sample agrees with lightPdf, which only
-    // shows that the per-sample test compares the density with itself. What
-    // is left is the split: left/right then top/bottom off one level does not
-    // give the four children their own probabilities. A cosine around the
-    // surface is unbiased meanwhile, and for a flat sky it is the better
-    // estimator anyway (0.08% against 20% at the same count).
-    if (l.texture == 0xFFFFFFFF) {
+    if (l.texture == 0xFFFFFFFF || l.cdf == kDomeNoCdf) {
         return false;
     }
     if ((gTextures.records[l.texture].flags & 1u) == 0) {
+        return false;
+    }
+    if (!(iesValues[l.cdf + 3] > 0.0)) {
         return false;
     }
     const TextureRecord record = gTextures.records[l.texture];
@@ -105,26 +88,61 @@ public bool domeHasImage(LightRecord l) {
     return spread > 0.25 * average;
 }
 
+/// The largest k in [0, count) whose running sum at `at + k` is at most
+/// `target`: the cell a number drawn in proportion lands in. A cell of no
+/// weight shares its start with the next and is passed over.
+uint domeCdfSearch(uint at, uint count, float target) {
+    uint lo = 0;
+    uint hi = count - 1;
+    while (lo < hi) {
+        const uint mid = (lo + hi + 1) >> 1;
+        if (iesValues[at + mid] <= target) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return lo;
+}
+
+/// The density of `wi` in solid angle: the texel's share of the marginal
+/// times its share of its row, spread over the texel's uv, over the solid
+/// angle a unit of uv covers there,
+///
+///     pdf(wi) = p(row) p(column | row) width height / (2 pi^2 sin(theta))
+///
+/// read from the same sums the sample was searched in, so the two agree to
+/// the rounding of a difference.
 public float domeImagePdf(LightRecord l, float3 wi) {
     if (!domeHasImage(l)) {
         return 0.0;
     }
-    const float average = domeAverage(l);
-    if (!(average > 0.0)) {
-        return 0.0;
-    }
+    const uint base = l.cdf;
+    const uint w = uint(iesValues[base]);
+    const uint h = uint(iesValues[base + 1]);
+    const float total = iesValues[base + 3];
     const float2 uv = domeUv(l, wi);
     const float sinTheta = sin(uv.y * 3.14159265358979);
     if (sinTheta <= 1.0e-6) {
         return 0.0;
     }
-    return domeLuminance(l, uv, 0.0) / (average * kTwoPiSquared * sinTheta);
+    const uint i = min(uint(max(uv.x, 0.0) * float(w)), w - 1);
+    const uint j = min(uint(max(uv.y, 0.0) * float(h)), h - 1);
+    const uint marginal = base + 4;
+    const float rowWeight = iesValues[marginal + j + 1] - iesValues[marginal + j];
+    const uint row = base + 5 + h + j * (w + 1);
+    const float rowTotal = iesValues[row + w];
+    if (!(rowWeight > 0.0) || !(rowTotal > 0.0)) {
+        return 0.0;
+    }
+    const float cell = iesValues[row + i + 1] - iesValues[row + i];
+    const float pUv = (rowWeight / total) * (cell / rowTotal) * float(w) * float(h);
+    return pUv / (kTwoPiSquared * sinTheta);
 }
 
-/// Down the pyramid, one level at a time: within the current cell, split left
-/// from right by luminance and take u.x with it, then top from bottom with
-/// u.y. What comes out is a texel drawn in proportion to its luminance, and
-/// the two numbers are spent rather than merely consumed.
+/// A row by the marginal with u.y, a column by that row's conditional with
+/// u.x, and the place inside the texel from what is left of each number --
+/// so both are spent rather than merely consumed.
 public LightSample domeImageSample(LightRecord l, float2 u) {
     LightSample s;
     s.wi = float3(0.0, 0.0, 1.0);
@@ -133,60 +151,33 @@ public LightSample domeImageSample(LightRecord l, float2 u) {
     s.pdf = 0.0;
     s.delta = false;
     s.valid = false;
-    const TextureRecord record = gTextures.records[l.texture];
-    const float levels = ceil(log2(max(max(record.width, record.height), 1.0)));
-    float2 lo = float2(0.0, 0.0);
-    float2 size = float2(1.0, 1.0);
-    // Down the pyramid, one level at a time. A chain over a lat-long is not
-    // square: 64 x 32 reaches one row while it still has columns, and from
-    // there a cell has two children rather than four -- splitting an axis
-    // that has no resolution left hands probability to texels that are not
-    // there. So each level splits only the axes that still divide.
-    const int2 full = int2(max(int(record.width), 1), max(int(record.height), 1));
-    int2 cell = int2(0, 0);
-    for (float level = levels - 1.0; level >= 0.0; level -= 1.0) {
-        const uint mip = uint(level);
-        const int2 size2 = int2(max(full.x >> mip, 1), max(full.y >> mip, 1));
-        const int2 parent = int2(max(full.x >> (mip + 1), 1), max(full.y >> (mip + 1), 1));
-        const bool splitX = size2.x > parent.x;
-        const bool splitY = size2.y > parent.y;
-        cell = int2(splitX ? cell.x * 2 : cell.x, splitY ? cell.y * 2 : cell.y);
-        const uint children = (splitX ? 2u : 1u) * (splitY ? 2u : 1u);
-        float w[4];
-        float total = 0.0;
-        for (uint k = 0; k < children; ++k) {
-            const int2 step = int2(splitX ? int(k & 1u) : 0, splitY ? int(splitX ? (k >> 1) : k) : 0);
-            w[k] = domeTexelOf(l, cell + step, mip);
-            total += w[k];
-        }
-        uint chosen = children - 1;
-        float before = 0.0;
-        if (total > 0.0) {
-            float target = u.x * total;
-            for (uint k = 0; k + 1 < children; ++k) {
-                if (target < w[k]) {
-                    chosen = k;
-                    break;
-                }
-                target -= w[k];
-                before += w[k];
-            }
-            if (chosen == children - 1) {
-                before = total - w[chosen];
-            }
-            // What is left of the number, inside the child it chose.
-            u.x = saturate((u.x * total - before) / max(w[chosen], 1.0e-9));
-        } else {
-            chosen = min(uint(u.x * float(children)), children - 1);
-            u.x = saturate(u.x * float(children) - float(chosen));
-        }
-        const int2 step = int2(splitX ? int(chosen & 1u) : 0, splitY ? int(splitX ? (chosen >> 1) : chosen) : 0);
-        cell += step;
-        size *= float2(splitX ? 0.5 : 1.0, splitY ? 0.5 : 1.0);
-        lo += size * float2(float(step.x), float(step.y));
+    const uint base = l.cdf;
+    const uint w = uint(iesValues[base]);
+    const uint h = uint(iesValues[base + 1]);
+    const float total = iesValues[base + 3];
+    const uint marginal = base + 4;
+    const float ty = u.y * total;
+    const uint j = domeCdfSearch(marginal, h, ty);
+    const float m0 = iesValues[marginal + j];
+    const float m1 = iesValues[marginal + j + 1];
+    if (!(m1 > m0)) {
+        return s;
     }
-    const float2 uv = lo + size * u;
+    const uint row = base + 5 + h + j * (w + 1);
+    const float tx = u.x * iesValues[row + w];
+    const uint i = domeCdfSearch(row, w, tx);
+    const float c0 = iesValues[row + i];
+    const float c1 = iesValues[row + i + 1];
+    if (!(c1 > c0)) {
+        return s;
+    }
+    const float2 inside = float2(saturate((tx - c0) / (c1 - c0)), saturate((ty - m0) / (m1 - m0)));
+    const float2 uv = (float2(float(i), float(j)) + inside) / float2(float(w), float(h));
     s.wi = domeDirection(l, uv);
+    // The density of the direction, as anyone asking about it is told: a
+    // sample on a texel's very edge may come back through domeUv into its
+    // neighbour, and then this, not the texel it was drawn in, is what MIS
+    // and the chi-square must see.
     s.pdf = domeImagePdf(l, s.wi);
     s.radiance = lightEmission(l) * domeImage(l, s.wi);
     s.valid = s.pdf > 0.0 && any(s.radiance > float3(0.0));

@@ -56,7 +56,7 @@ public struct LightRecord {
     public float  shadowDistance;
     public float  shadowFalloff;
     public float  shadowFalloffGamma;
-    public uint   pad1;
+    public uint   cdf;           // a dome's image distribution: where it starts in iesValues (dome_cdf.slang); 0xFFFFFFFF: none
     public uint   pad2;
 };
 

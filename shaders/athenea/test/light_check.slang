@@ -23,7 +23,7 @@ RWStructuredBuffer<float>        expected;   // per bin
 RWStructuredBuffer<float4>       result;
 RWStructuredBuffer<uint>         mismatches;   // [samples whose reported pdf differs from lightPdf, whose direction lightHit does not find as sampled]
 RWStructuredBuffer<uint>         roundTrip;    // [uv that do not survive a turn through a direction]
-RWStructuredBuffer<float>        pyramid;      // [worst relative gap between a parent and its four children]
+RWStructuredBuffer<float>        cdfCheck;     // [worst relative gap of a marginal step against its row, entries that fall]
 StructuredBuffer<float4>         image;        // a rendered frame, for the link counters
 StructuredBuffer<float>          imageDepth;
 RWStructuredBuffer<uint>         halves;       // [drawn left, lit left, drawn right, lit right]
@@ -230,33 +230,39 @@ void lightLinkCounters(uint3 tid: SV_DispatchThreadID) {
     halves[3] = litRight;
 }
 
-/// Does the chain telescope? A descent that splits by luminance is only
-/// unbiased if a parent is the sum of its four children. These mips are
-/// filtered in uv and decoded as sRGB, neither of which preserves a sum, so
-/// this measures the gap rather than assuming it away.
+/// Is the dome's distribution what its sampler assumes? Every table a
+/// running sum from zero, never falling; each step of the marginal its row's
+/// total; the header's total the marginal's last entry. A chi-square would
+/// fold a broken table into its noise; this names it.
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void lightPyramid(uint3 tid: SV_DispatchThreadID) {
+void lightCdf(uint3 tid: SV_DispatchThreadID) {
     const LightRecord l = lights[0];
-    const TextureRecord record = gTextures.records[l.texture];
-    const float levels = ceil(log2(max(max(record.width, record.height), 1.0)));
-    float worstGap = 0.0;
-    for (float level = 1.0; level <= levels; level += 1.0) {
-        const uint mip = uint(level);
-        const int2 size = int2(max(int(record.width) >> mip, 1), max(int(record.height) >> mip, 1));
-        for (int y = 0; y < size.y; ++y) {
-            for (int x = 0; x < size.x; ++x) {
-                const float parent = domeTexelOf(l, int2(x, y), mip) * 4.0;
-                const float children = domeTexelOf(l, int2(x * 2, y * 2), mip - 1) +
-                                       domeTexelOf(l, int2(x * 2 + 1, y * 2), mip - 1) +
-                                       domeTexelOf(l, int2(x * 2, y * 2 + 1), mip - 1) +
-                                       domeTexelOf(l, int2(x * 2 + 1, y * 2 + 1), mip - 1);
-                const float scale = max(max(parent, children), 1.0e-6);
-                worstGap = max(worstGap, abs(parent - children) / scale);
-            }
-        }
+    if (l.cdf == 0xFFFFFFFFu) {
+        cdfCheck[0] = -1.0;   // no distribution at all
+        cdfCheck[1] = -1.0;
+        return;
     }
-    pyramid[0] = worstGap;
+    const uint w = uint(iesValues[l.cdf]);
+    const uint h = uint(iesValues[l.cdf + 1]);
+    const uint marginal = l.cdf + 4;
+    float worstGap = 0.0;
+    float falling = 0.0;
+    falling += iesValues[marginal] != 0.0 ? 1.0 : 0.0;
+    for (uint j = 0; j < h; ++j) {
+        const uint row = l.cdf + 5 + h + j * (w + 1);
+        falling += iesValues[row] != 0.0 ? 1.0 : 0.0;
+        for (uint i = 0; i < w; ++i) {
+            falling += iesValues[row + i + 1] < iesValues[row + i] ? 1.0 : 0.0;
+        }
+        const float step = iesValues[marginal + j + 1] - iesValues[marginal + j];
+        falling += step < 0.0 ? 1.0 : 0.0;
+        const float rowTotal = iesValues[row + w];
+        worstGap = max(worstGap, abs(step - rowTotal) / max(max(step, rowTotal), 1.0e-6));
+    }
+    worstGap = max(worstGap, abs(iesValues[l.cdf + 3] - iesValues[marginal + h]));
+    cdfCheck[0] = worstGap;
+    cdfCheck[1] = falling;
 }
 
 /// A direction is where the image says it is: uv into a direction and back

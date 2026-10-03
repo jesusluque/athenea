@@ -6,6 +6,8 @@
 // with the renderer.
 #include "../gpu/GpuTest.h"
 
+#include <catch2/generators/catch_generators.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -500,11 +502,11 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     // A sky that varies: dark everywhere but one bright patch. A flat image
     // is better served by the cosine and takes that path instead, so only an
     // image like this one exercises the warp at all.
-    const std::filesystem::path png = scratch("dome_sun.png");
-    // Square unless asked otherwise: a lat-long is 2:1, and whether that
-    // asymmetry is what the descent trips on is exactly what this asks.
-    const uint32_t w = std::getenv("ATHENEA_DOME_WIDE") != nullptr ? 64u : 32u;
+    // Square and 2:1, a lat-long's own shape: the descent this replaced
+    // tripped on the asymmetry, and the distribution must not.
+    const uint32_t w = GENERATE(32u, 64u);
     const uint32_t h = 32;
+    const std::filesystem::path png = scratch(w == h ? "dome_sun.png" : "dome_sun_wide.png");
     {
         std::filesystem::remove(png);
         std::vector<uint32_t> texels(size_t{w} * h, 0xFF101010u);   // ABGR, a dim sky
@@ -534,6 +536,7 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     REQUIRE((*textures)->commit());
     auto table = light::LightTable::create(*gpu->library);
     if (!table) FAIL(table.error().toString());
+    table->setTextures(textures->get());
     REQUIRE(table->set(std::span<const light::Light>(&lamp, 1)));
 
     const auto kernel = [&](const char* entry) {
@@ -547,7 +550,7 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     gpu::ComputeKernel statistic = kernel("lightStatistic");
     gpu::ComputeKernel consistent = kernel("lightConsistent");
     gpu::ComputeKernel consistentReduce = kernel("lightConsistentReduce");
-    gpu::ComputeKernel pyramidCheck = kernel("lightPyramid");
+    gpu::ComputeKernel cdfKernel = kernel("lightCdf");
 
     const uint32_t thetaBins = 32;
     const uint32_t phiBins = 64;
@@ -569,13 +572,14 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     gpu::Buffer mismatches = test::uintBuffer(*gpu->device, 2, "dome.mismatches");
     gpu::Buffer worstPdf = test::uintBuffer(*gpu->device, 1, "dome.worstPdf");
     gpu::Buffer mapping = test::uintBuffer(*gpu->device, 1, "dome.mapping");
-    auto pyramid = gpu::Buffer::fromSpan<float>(*gpu->device, std::vector<float>(1, 0.0F), "dome.pyramid");
-    REQUIRE(pyramid);
+    auto cdfCheck = gpu::Buffer::fromSpan<float>(*gpu->device, std::vector<float>(2, 0.0F), "dome.cdfCheck");
+    REQUIRE(cdfCheck);
     REQUIRE(observed);
     REQUIRE(expected);
     REQUIRE(result);
     const auto bind = [&](rhi::ShaderCursor cursor) {
         cursor["lights"].setBinding(table->records().rhi());
+        cursor["iesValues"].setBinding(table->nodeValues().rhi());
         (*textures)->bind(cursor["gTextures"]);
         cursor["bins"].setBinding(binBuffer->rhi());
         cursor["sampleFlags"].setBinding(sampleFlags.rhi());
@@ -586,7 +590,7 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
         cursor["mismatches"].setBinding(mismatches.rhi());
         cursor["worst"].setBinding(worstPdf.rhi());
         cursor["roundTrip"].setBinding(mapping.rhi());
-        cursor["pyramid"].setBinding(pyramid->rhi());
+        cursor["cdfCheck"].setBinding(cdfCheck->rhi());
         rhi::ShaderCursor p = cursor["params"];
         p["thetaBins"].setData(thetaBins);
         p["phiBins"].setData(phiBins);
@@ -600,7 +604,7 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
         gpu::CommandBatch batch(*gpu->device);
         consistent.dispatch(batch, {samples, 1, 1}, bind);
         consistentReduce.dispatch(batch, {1, 1, 1}, bind);
-        pyramidCheck.dispatch(batch, {1, 1, 1}, bind);
+        cdfKernel.dispatch(batch, {1, 1, 1}, bind);
         draw.dispatch(batch, {samples, 1, 1}, bind);
         count.dispatch(batch, {1, 1, 1}, bind);
         expect.dispatch(batch, {1, 1, 1}, bind);
@@ -620,17 +624,24 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     const float chi2 = r[4];
     const float dof = r[5];
     const float drawn = r[6];
-    float gap = 0.0F;
-    REQUIRE(pyramid->read(*gpu->device, 0, sizeof(gap), &gap));
-    std::printf("  the chain telescopes to within %.4f (a parent against its four children)\n", double(gap));
+    float cdf[2] = {};
+    REQUIRE(cdfCheck->read(*gpu->device, 0, sizeof(cdf), cdf));
+    std::printf("  %u x %u: the distribution's marginal steps meet their rows within %.2e, %.0f entries fall\n", w, h,
+                double(cdf[0]), double(cdf[1]));
     const float z = (chi2 - dof) / std::sqrt(2.0F * dof);
-    // While the image warp is parked (lights.slang), this is the cosine path
-    // with an image on it: the statistic still has to hold.
+    // The image's own distribution (dome_cdf.slang), binned in the image:
+    // the descent it replaced read z 61543 here.
     std::printf("  dome with a sun: chi2 %.1f on %.0f dof (z %.2f), pdf integral %.4f against %.4f drawn; %u "
                 "samples disagree (worst %.2e)\n",
                 double(chi2), double(dof), double(z), double(r[0]), double(drawn), differ, double(worstRelative));
+    CHECK(cdf[0] >= 0.0F);   // -1: the dome was given no distribution
+    CHECK(cdf[0] < 1.0e-4F);
+    CHECK(cdf[1] == 0.0F);
     CHECK(differ == 0);
     CHECK(std::abs(z) < 4.0F);
+    // The pdf integrates to what was drawn: one, less the samples that
+    // landed nowhere (none should).
+    CHECK(std::abs(r[0] - drawn) < 0.02F);
 }
 
 TEST_CASE("a light reaches the categories it is linked to, and no others", "[technique][lights][linking]") {
