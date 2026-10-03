@@ -933,6 +933,13 @@ transfer read those nine (`kEnvIrradianceCoefficients`). A transfer of
 sixteen direct coefficients is dotted with all sixteen, as is its indirect
 half of forty-eight.
 
+**Lights that are not the sky.** `relitSplat` gives a light other than a dome,
+on a cloud with the cells, the bits' share over the cone it subtends
+(`splatConeOpen`, `lightHalfAngle`) as its shadow -- the darker of that and a
+measured one -- and adds `splatLightBounce`: the indirect half read along the
+light, on the body and the sheen, and the reflected field scaled to it where
+the base's and the coat's lobes are closed.
+
 **Saying otherwise about a prim.** The Cryptomatte id a gaussian carries is
 also a selection -- everything that came from one prim -- so
 `render::SplatOverride` is a row keyed on it: metallic, roughness,

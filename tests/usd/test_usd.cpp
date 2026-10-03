@@ -12712,7 +12712,10 @@ TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path trace
         spec.data = texels.data();
         REQUIRE(image->Write(spec));
     }
-    const auto composed = [&](const std::string& name, const fs::path& source, const fs::path& cloud, bool windowSky) {
+    // 0: the pale dome and the sun it was converted under; 1: the window, no
+    // sun; 2: no sky at all, a lamp beside the ball (step 4).
+    const auto composed = [&](const std::string& name, const fs::path& source, const fs::path& cloud, int sky) {
+        const bool windowSky = sky == 1;
         const fs::path path = scratch(name);
         std::ofstream out(path);
         out << "#usda 1.0\n(\n    subLayers = [";
@@ -12723,6 +12726,13 @@ TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path trace
         out << "over \"World\"\n{\n";
         if (!cloud.empty()) {
             out << "    over \"Ball\" (\n        active = false\n    )\n    {\n    }\n";
+        }
+        if (sky == 2) {
+            out << "    over \"Sun\" (\n        active = false\n    )\n    {\n    }\n"
+                << "    over \"Sky\" (\n        active = false\n    )\n    {\n    }\n"
+                << "    def SphereLight \"Lamp\"\n    {\n        float inputs:radius = 0.3\n"
+                << "        float inputs:intensity = 40\n        double3 xformOp:translate = (2.2, 2.5, 1.5)\n"
+                << "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n";
         }
         if (windowSky) {
             out << "    over \"Sun\" (\n        active = false\n    )\n    {\n    }\n"
@@ -12770,10 +12780,10 @@ TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path trace
                             {"glass", 0.60, false}};
     for (const Bound& bound : bounds) {
         const fs::path source = data / (std::string(bound.material) + ".usda");
-        for (const bool windowSky : {false, true}) {
-            const std::string sky = windowSky ? "window" : "pale";
+        for (const int skyKind : {0, 1, 2}) {
+            const std::string sky = skyKind == 0 ? "pale" : skyKind == 1 ? "window" : "lamp";
             const std::string meshName = std::string("tx_mesh_") + bound.material + "_" + sky;
-            const gpu::Buffer meshTraced = draw(composed(meshName + ".usda", source, {}, windowSky), "rt", meshName);
+            const gpu::Buffer meshTraced = draw(composed(meshName + ".usda", source, {}, skyKind), "rt", meshName);
             double relMse[2] = {0.0, 0.0};
             const char* modes[2] = {"tx", "first"};
             for (int k = 0; k < 2; ++k) {
@@ -12783,7 +12793,7 @@ TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path trace
                          "(tx_conversions_render_like_the_mesh)");
                 }
                 const std::string name = std::string("tx_cloud_") + bound.material + "_" + modes[k] + "_" + sky;
-                const gpu::Buffer c = draw(composed(name + ".usda", source, cloudFile, windowSky), "raster", name);
+                const gpu::Buffer c = draw(composed(name + ".usda", source, cloudFile, skyKind), "raster", name);
                 auto diff = render::compareHdr(*gpu->library, c, meshTraced, w, h);
                 REQUIRE(diff);
                 relMse[k] = diff->relMse;

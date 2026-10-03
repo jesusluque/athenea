@@ -663,7 +663,12 @@ public float splatCellsOpen(SplatSurface s, StructuredBuffer<uint> cellBits, flo
 public float splatLobeOpen(SplatSurface s, StructuredBuffer<uint> cellBits, float3 m, float roughness,
                            float3 axis) {
     const float alpha = max(roughness * roughness, 1.0e-3);
-    const float spread = min(1.4 * atan(alpha), 1.2);
+    return splatConeOpen(s, cellBits, m, min(1.4 * atan(alpha), 1.2), axis);
+}
+
+/// THE SAME OVER A CONE OF HALF ANGLE `spread`: a reflection's lobe, or the
+/// disc a sphere, a rect or a sun subtends, whose penumbra this is (step 4).
+public float splatConeOpen(SplatSurface s, StructuredBuffer<uint> cellBits, float3 m, float spread, float3 axis) {
     const float centre = splatCellsOpen(s, cellBits, m, axis);
     const float halfCell = 3.14159265358979 / float(splatCellSide(s.cellWords) * 2u);
     if (spread < halfCell) {
@@ -1025,6 +1030,55 @@ public float3 relitByOne(SplatSurface s, float3 wo, LightSample ls, float3 throu
     return through * (diffuse + specular) * ls.radiance / ls.pdf;
 }
 
+/// THE ANGLE A LIGHT SUBTENDS FROM A GAUSSIAN, half of it: a sphere's or a
+/// disk's radius over the distance, half a rect's larger side, half a
+/// distant light's angular diameter. What its shadow is soft over.
+public float lightHalfAngle(LightRecord light, float distance) {
+    if (light.kind == kLightDistant) {
+        return 0.5 * light.sizeX;
+    }
+    const float size = light.kind == kLightRect ? 0.5 * max(light.sizeX, light.sizeY) : light.sizeX;
+    return atan(max(size, 0.0) / max(distance, 1.0e-4));
+}
+
+/// WHAT A LIGHT THAT IS NOT THE SKY PUTS ON A TX GAUSSIAN AFTER A BOUNCE
+/// (task TX, step 4): the indirect half read along the light, which is how
+/// much of it the surroundings send on to the body, and the reflected field
+/// scaled to it, which is what a reflection shows where its lobe is closed --
+/// the floor a lamp lights, seen in the paint. The same terms a dome's sun
+/// gets, from one sample of the light: `radiance / pdf` is what it delivers.
+public float3 splatLightBounce(SplatSurface s, float3 wo, LightSample ls, StructuredBuffer<uint> transfer,
+                               StructuredBuffer<uint> cellBits) {
+    if (ls.pdf <= 0.0 || transferIndirectCount(s.transferCount) == 0u) {
+        return float3(0.0);
+    }
+    const float3 delivered = ls.radiance / ls.pdf;
+    const float3 along = splatIndirectAlong(s, transfer, ls.wi);
+    const float nDotV = max(dot(s.normal, wo), 1.0e-4);
+    const SplatLayers layers = splatLayers(s, nDotV);
+    const float3 bounce = delivered * along;
+    float3 out = s.lit ? float3(0.0)
+                       : layers.under * s.albedo * (1.0 - s.metallic) * (1.0 - transmittedWeight(s)) * bounce +
+                             layers.belowCoat * layers.sheen * bounce;
+    if (transferHasField(s.transferCount) && !s.reflectionTraced) {
+        const uint base = s.transferBase + transferDirectCount(s.transferCount);
+        const float3 white = transferRgbAt(transfer, base) * 3.5449077018110318;
+        const float3 coupling = float3(white.x > 1.0e-4 ? bounce.x / white.x : 0.0,
+                                       white.y > 1.0e-4 ? bounce.y / white.y : 0.0,
+                                       white.z > 1.0e-4 ? bounce.z / white.z : 0.0);
+        const float3 mirror = reflect(-wo, s.normal);
+        const float open = splatLobeOpen(s, cellBits, mirror, s.roughness, s.normal);
+        out += layers.under * thinWallGain(s) * splatPolish(s, nDotV) * (1.0 - open) * coupling *
+               splatFieldAlong(s, transfer, mirror, s.roughness);
+        if (s.lobes.coatWeight > 0.0) {
+            const float coatOpen = splatLobeOpen(s, cellBits, mirror, s.lobes.coatRoughness, s.normal);
+            out += layers.coat * (1.0 - coatOpen) * coupling *
+                   splatFieldAlong(s, transfer, mirror, s.lobes.coatRoughness);
+        }
+    }
+    return max(out, float3(0.0));
+}
+
 /// Every light this splat is linked to, one sample each at its centre.
 ///
 /// `shadowLights` of 0 means nothing measured a shadow, and each light is
@@ -1056,6 +1110,22 @@ public float3 relitSplat(SplatSurface s, float3 wo, StructuredBuffer<LightRecord
         }
         const LightSample ls = sampleLight(light, s.position, s.normal, float2(0.5, 0.5));
         if (!ls.valid) {
+            continue;
+        }
+        // A TX TRANSFER SHADOWS A LIGHT BY ITS OWN BITS (step 4), over the
+        // cone the light subtends, which is its penumbra; where a ray also
+        // measured a shadow the darker of the two stands. The bits say which
+        // ways leave the scene, so an occluder beyond a light inside the
+        // scene shadows it too: right for a sun and a lamp far off, the
+        // approximation for one standing among things.
+        if (s.cellWords >= 8u && (light.flags & kLightShadow) != 0u) {
+            const float open = splatConeOpen(s, cellBits, ls.wi, lightHalfAngle(light, ls.distance), s.normal);
+            const float bits = open >= 0.0 ? open : 1.0;
+            const float shadowed = k < shadowLights ? min(through, bits) : bits;
+            lit += relitByOne(s, wo, ls, shadowTint(light, shadowed, ls.distance));
+            if (withIndirect) {
+                lit += splatLightBounce(s, wo, ls, transfer, cellBits);
+            }
             continue;
         }
         lit += relitByOne(s, wo, ls, shadowTint(light, through, ls.distance));

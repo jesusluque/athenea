@@ -1095,6 +1095,13 @@ where the bits say the sky does not reach: the body in the chrome, the
 ground in the paint. It is written with the cells and the indirect half, and
 read only beside them; `athenea:splatTransferIndirect` turns it off with the
 indirect half.
+A light that is not the sky -- distant, sphere, disk, rect -- lights a cloud
+with the cells through the same lobes, shadowed by the bits over the cone
+the light subtends from each gaussian (its penumbra), and its bounce reaches
+the body and the reflections as the sun's does. Where a frame also measured
+a shadow by ray (`--cloud-shadows`), the darker of the two stands. The bits
+say which ways leave the scene, not which reach a lamp: an object beyond a
+lamp that stands among things still shadows it.
 `thinWalled` is nonzero where the gaussian came from a thin-walled glass
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame

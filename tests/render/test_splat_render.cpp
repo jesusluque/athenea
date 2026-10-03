@@ -1011,6 +1011,28 @@ TEST_CASE("a reflection's lobe sees what a TX transfer's bits leave open", "[ren
         CHECK(counts[2] == 0);
         CHECK(counts[3] == 0);
         CHECK(counts[4] == 0);
+        // A light's shadow out of the same bits, over the cone it subtends
+        // (step 4).
+        auto light = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobe_open_check", "lightOpenCheck");
+        if (!light) FAIL(light.error().toString());
+        gpu::Buffer lightStats = test::uintBuffer(*gpu->device, 8, "lobe.lightStats");
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            light->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                bind(cursor);
+                cursor["stats"].setBinding(lightStats.rhi());
+            });
+            REQUIRE(batch.submit(true));
+        }
+        REQUIRE(lightStats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+        std::printf("  %u x %u cells, a light: %u readings; %u above not open, %u below not closed, %u at the "
+                    "horizon not between, %u angles off\n",
+                    side, side, counts[4], counts[0], counts[1], counts[2], counts[3]);
+        CHECK(counts[4] == kSteps);
+        CHECK(counts[0] == 0);
+        CHECK(counts[1] == 0);
+        CHECK(counts[2] == 0);
+        CHECK(counts[3] == 0);
     }
 }
 

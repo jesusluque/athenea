@@ -11447,3 +11447,29 @@ from.
 coefficients are the clamped cosine's, with nothing in band 3, in the TX
 layout ([degree3] in athenea_usd_tests); the two bases equal to degree 3
 ([field] in athenea_render_tests).
+
+### Step 4: lights that are not the sky
+
+A transfer answered for the environment and nothing else: a lamp beside a
+transferred cloud lit it through the lobes with no shadow but a measured
+one, and bounced nothing. With the cells:
+
+- **The shadow** is the bits read over the cone the light subtends from the
+  gaussian -- a sphere's or disk's radius over its distance, half a rect's
+  larger side, half a sun's diameter (`lightHalfAngle`) -- with the lobe's
+  ring at that angle (`splatConeOpen`, of which a reflection's lobe is now one
+  case). That is the penumbra proposal 028 asks of a mip of the map, read off
+  the map itself. Where a ray measured a shadow too (`--cloud-shadows`), the
+  darker stands. The bits say which ways leave the scene, not which reach the
+  lamp, so an occluder beyond a lamp standing among things shadows it: right
+  for a sun and a lamp far off, the approximation for one inside a car.
+- **The bounce** is the sun's (step 2) for any light: the indirect half read
+  along the light times what one sample of it delivers (`radiance / pdf`),
+  on the body and the sheen; and the reflected field coupled to that bounce
+  where the base's and the coat's lobes are closed (`splatLightBounce`).
+
+**Checked** (pending the GPU turn): over a ground of bits, a light above is
+open at any size, one below closed, one on the horizon part open, and the
+angles a sphere and a sun subtend ([cells] in athenea_render_tests); the
+balls on a ground under a lamp alone, against the mesh path traced
+(`tx_conversions_render_like_the_mesh`, a third light).

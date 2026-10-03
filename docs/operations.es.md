@@ -1117,6 +1117,14 @@ reflejo la muestra donde los bits dicen que el cielo no llega: la carrocería
 en el cromo, el suelo en la pintura. Se escribe con las celdas y la mitad
 indirecta, y sólo se lee junto a ellas; `athenea:splatTransferIndirect` la
 apaga con la mitad indirecta.
+Una luz que no es el cielo -- distante, esfera, disco, rectángulo -- ilumina
+una nube con las celdas por los mismos lóbulos, sombreada por los bits sobre
+el cono que la luz subtiende desde cada gaussiana (su penumbra), y su rebote
+llega al cuerpo y a los reflejos como el del sol. Donde un frame midió
+además una sombra con un rayo (`--cloud-shadows`), se queda la más oscura de
+las dos. Los bits dicen qué direcciones salen de la escena, no cuáles llegan a
+una lámpara: un objeto más allá de una lámpara que está entre cosas también
+la sombrea.
 `thinWalled` es distinto de cero donde la gaussiana vino de un vidrio de pared
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077

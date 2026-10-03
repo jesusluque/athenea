@@ -978,6 +978,13 @@ el primer transfer leen esos nueve (`kEnvIrradianceCoefficients`). Un transfer
 de dieciséis coeficientes directos se multiplica por los dieciséis, igual que
 su mitad indirecta de cuarenta y ocho.
 
+**Luces que no son el cielo.** `relitSplat` da a una luz que no es un domo,
+en una nube con las celdas, la parte de los bits sobre el cono que subtiende
+(`splatConeOpen`, `lightHalfAngle`) como su sombra -- la más oscura de esa y
+de una medida -- y suma `splatLightBounce`: la mitad indirecta leída a lo
+largo de la luz, sobre el cuerpo y el sheen, y el campo reflejado escalado a
+ella donde los lóbulos de la base y del coat están cerrados.
+
 **Decir otra cosa de un prim.** El id de Cryptomatte que lleva una gaussiana
 es también una selección -- todo lo que vino de un mismo prim -- así que
 `render::SplatOverride` es una fila con ese id como clave: metallic,

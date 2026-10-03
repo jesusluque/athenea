@@ -102,3 +102,48 @@ void lobeOpenCheck(uint3 tid: SV_DispatchThreadID) {
     }
     worst[0] = rise;
 }
+
+/// A LIGHT'S SHADOW OUT OF THE SAME BITS (step 4): over the ground sky, a
+/// light 45 degrees up is open whatever its size, one 45 degrees down is
+/// closed, and one on the horizon is part open, the more evenly the wider it
+/// is; a sphere of radius one ten away subtends atan(0.1).
+/// stats[0] up not open, stats[1] down not closed, stats[2] the horizon not
+/// between, stats[3] the angle off, stats[4] readings
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void lightOpenCheck(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    const float3 none = float3(0.0);
+    for (uint i = 0; i < params.steps; ++i) {
+        const float spread = 0.6 * float(i) / float(params.steps);
+        const float3 up = normalize(float3(0.7, 0.7, 0.1));
+        const float3 down = normalize(float3(0.7, -0.7, 0.1));
+        const float3 level = normalize(float3(0.6, 0.0, 0.8));
+        if (splatConeOpen(surfaceOn(2u), bits, up, spread, none) < 1.0 - params.tolerance) {
+            InterlockedAdd(stats[0], 1u);
+        }
+        if (splatConeOpen(surfaceOn(2u), bits, down, spread, none) > params.tolerance) {
+            InterlockedAdd(stats[1], 1u);
+        }
+        const float h = splatConeOpen(surfaceOn(2u), bits, level, spread, none);
+        if (spread > 0.2 && (h < 0.2 || h > 0.8)) {
+            InterlockedAdd(stats[2], 1u);
+        }
+        InterlockedAdd(stats[4], 1u);
+    }
+    LightRecord sphere;
+    sphere.kind = kLightSphere;
+    sphere.sizeX = 1.0;
+    sphere.sizeY = 0.0;
+    if (abs(lightHalfAngle(sphere, 10.0) - atan(0.1)) > 1.0e-5) {
+        InterlockedAdd(stats[3], 1u);
+    }
+    LightRecord sun;
+    sun.kind = kLightDistant;
+    sun.sizeX = 0.0093;
+    if (abs(lightHalfAngle(sun, 1.0e30) - 0.00465) > 1.0e-6) {
+        InterlockedAdd(stats[3], 1u);
+    }
+}
