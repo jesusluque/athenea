@@ -45,6 +45,8 @@ scene::FloatStream streamOf(const pxr::VtValue& value, size_t* elements) {
     if (value.IsHolding<VtQuathArray>()) return bytesOf(value.UncheckedGet<VtQuathArray>(), true, elements);
     if (value.IsHolding<VtFloatArray>()) return bytesOf(value.UncheckedGet<VtFloatArray>(), false, elements);
     if (value.IsHolding<VtHalfArray>()) return bytesOf(value.UncheckedGet<VtHalfArray>(), true, elements);
+    if (value.IsHolding<VtVec4fArray>()) return bytesOf(value.UncheckedGet<VtVec4fArray>(), false, elements);
+    if (value.IsHolding<VtVec4hArray>()) return bytesOf(value.UncheckedGet<VtVec4hArray>(), true, elements);
     const auto doubles = [&](scene::FloatStream stream) {
         stream.half = false;
         stream.isDouble = true;
@@ -125,6 +127,28 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     s.sh = streamOf(a.shCoefficients);
     if (s.sh.values() < uint64_t{s.count} * s.coefficients * 3) {
         s.sh = {};   // fewer coefficients than the degree says: none, as before
+    }
+    // BLENDER'S LAYOUT: DC and opacity in one float4, and a plane a basis
+    // function. As many planes as a whole degree holds (3, 8 or 15), each
+    // the cloud's length; anything else is no harmonics, as above.
+    s.radianceBase = streamOf(a.radianceBase);
+    if (s.radianceBase.values() < uint64_t{s.count} * 4) {
+        s.radianceBase = {};
+    }
+    if (!a.shPlanes.empty()) {
+        std::vector<scene::FloatStream> planes;
+        for (const pxr::VtValue& plane : a.shPlanes) {
+            planes.push_back(streamOf(plane));
+            if (planes.back().values() < uint64_t{s.count} * 3) {
+                planes.pop_back();
+                break;
+            }
+        }
+        const size_t whole = planes.size() >= 15 ? 15 : planes.size() >= 8 ? 8 : planes.size() >= 3 ? 3 : 0;
+        planes.resize(whole);
+        s.sh = {};
+        s.coefficients = static_cast<uint32_t>(whole + 1);
+        s.shPlanes = std::move(planes);
     }
     // One value a particle, or nothing: a shorter array is no array, as the
     // harmonics above are.

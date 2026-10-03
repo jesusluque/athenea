@@ -581,6 +581,19 @@ Result<GpuPoints> CloudLoader::upload(const io::RawPoints& raw, float detail) {
     return points;
 }
 
+Result<gpu::Buffer> CloudLoader::planeBuffer(const std::vector<FloatStream>& planes, uint32_t count,
+                                             const char* label) {
+    // One buffer, each plane's `count` rgb values written where the one
+    // before it ends: the bytes as they are, nothing read on the host.
+    const uint64_t planeBytes = uint64_t{count} * 3 * (planes.front().half ? 2 : 4);
+    auto made = deviceBuffer(*device_, std::max<uint64_t>((planeBytes * planes.size() + 3) / 4, 1), 4, label);
+    if (!made) return std::move(made).error();
+    for (size_t k = 0; k < planes.size(); ++k) {
+        ATHENEA_TRY(made->write(*device_, planeBytes * k, planeBytes, planes[k].bytes.data()));
+    }
+    return made;
+}
+
 Result<gpu::Buffer> CloudLoader::streamBuffer(const FloatStream& stream, const char* label) {
     // Words of four bytes; an odd count of halves leaves the last word short,
     // so the bytes are written into a buffer already the whole word long.
@@ -598,7 +611,7 @@ namespace {
 constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, kSh = 16, kColours = 32,
                    kMetallic = 64, kRoughness = 128, kTransmission = 256, kCrypto = 512,
                    kTransferDirect = 1024, kTransferIndirect = 2048, kShadowBits = 4096,
-                   kThinWalled = 8192, kNormals = 16384;
+                   kThinWalled = 8192, kNormals = 16384, kBase = 32768, kShPlanes = 65536;
 
 }   // namespace
 
@@ -609,11 +622,21 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     };
     const bool shapes = in.coefficients == 0 || in.coefficients == 1 || in.coefficients == 4 ||
                         in.coefficients == 9 || in.coefficients == 16;
+    // Blender's planes: one array a basis function, all of one kind, and as
+    // many as the coefficients say. Halves are laid end to end, so a plane
+    // of an odd number of them would start inside a word.
+    const bool planes = !in.shPlanes.empty();
+    bool planesFit = !planes || (in.coefficients == in.shPlanes.size() + 1 && in.sh.empty());
+    for (const FloatStream& plane : in.shPlanes) {
+        planesFit = planesFit && plane.values() >= uint64_t{n} * 3 && !plane.isDouble &&
+                    plane.half == in.shPlanes.front().half && (!plane.half || (uint64_t{n} * 3) % 2 == 0);
+    }
     if (n == 0 || in.positions.values() < uint64_t{n} * 3 || !holds(in.rotations, 4) || !holds(in.scales, 3) ||
-        !holds(in.opacities, 1) || !shapes || !holds(in.sh, uint64_t{in.coefficients} * 3)) {
+        !holds(in.opacities, 1) || !holds(in.radianceBase, 4) || !shapes || !planesFit ||
+        (!planes && !holds(in.sh, uint64_t{in.coefficients} * 3))) {
         return Error::make(ErrorCode::InvalidArgument, "'{}': splat arrays of the wrong lengths", in.source);
     }
-    const bool haveSh = !in.sh.empty() && in.coefficients > 0;
+    const bool haveSh = (planes || !in.sh.empty()) && in.coefficients > 0;
     static constexpr uint32_t kPerDegree[] = {0, 3, 8, 15};
     const uint32_t keep = haveSh ? std::min(in.coefficients - 1, kPerDegree[std::min(maxDegree, 3u)]) : 0;
 
@@ -684,8 +707,10 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (haveThin) {
         note(in.thinWalled, kThinWalled);
     }
+    note(in.radianceBase, kBase);
     if (haveSh) {
-        note(in.sh, kSh);
+        note(planes ? in.shPlanes.front() : in.sh, kSh);
+        present |= planes ? kShPlanes : 0;
     }
     if (haveNormals) {
         note(in.normals, kNormals);
@@ -698,8 +723,11 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!scales) return std::move(scales).error();
     auto opacities = streamBuffer(in.opacities, "splats.stream.opacities");
     if (!opacities) return std::move(opacities).error();
-    auto sh = streamBuffer(haveSh ? in.sh : FloatStream{}, "splats.stream.sh");
+    auto sh = planes ? planeBuffer(in.shPlanes, n, "splats.stream.shPlanes")
+                     : streamBuffer(haveSh ? in.sh : FloatStream{}, "splats.stream.sh");
     if (!sh) return std::move(sh).error();
+    auto radianceBase = streamBuffer(in.radianceBase, "splats.stream.radianceBase");
+    if (!radianceBase) return std::move(radianceBase).error();
     auto none = streamBuffer({}, "splats.stream.none");
     if (!none) return std::move(none).error();
 
@@ -747,10 +775,12 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 cursor["shadowBits"].setBinding(haveShadowBits ? shadowBits->rhi() : none->rhi());
                 cursor["thinWalled"].setBinding(haveThin ? thinWalled->rhi() : none->rhi());
                 cursor["normals"].setBinding(haveNormals ? normals->rhi() : none->rhi());
+                cursor["radianceBase"].setBinding(radianceBase->rhi());
                 cursor["records"].setBinding(records->rhi());
                 rhi::ShaderCursor p = cursor["params"];
                 p["count"].setData(count);
                 p["first"].setData(first);
+                p["planeLength"].setData(n);
                 p["stride"].setData(e.floatsPerRecord);
                 p["keep"].setData(keep);
                 p["coefficients"].setData(in.coefficients);
