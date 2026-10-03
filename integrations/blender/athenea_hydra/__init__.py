@@ -99,6 +99,60 @@ class AtheneaHydraRenderEngine(bpy.types.HydraRenderEngine):
             self.register_pass(scene, render_layer, 'Depth', 1, 'Z', 'VALUE')
 
 
+class AtheneaSplatExportHook(bpy.types.USDHook):
+    """Writes what Blender's USD export leaves out of a Gaussian-splat cloud.
+
+    A PointCloud of type GAUSSIAN_SPLAT reaches USD -- and through it Hydra,
+    with the USD export method -- as a Points prim carrying its attributes as
+    primvars, all but `radiance:base` (a FLOAT4: the DC coefficient and the
+    opacity), which the writer has no USD type for. This hook adds it, as
+    `primvars:radiance:base` (float4[], vertex), copied from the evaluated
+    attribute as it is: no value is computed here. hdAthenea draws such a
+    Points prim as a splat cloud and lays the attributes out on the GPU.
+
+    It runs inside every USD export (Hydra's own included), and acts only
+    where the scene renders with Athenea.
+    """
+    bl_idname = "athenea_splat_export"
+    bl_label = "Athenea Gaussian splats"
+    bl_description = "Exports a Gaussian-splat point cloud's radiance:base, which Blender's USD writer drops"
+
+    @staticmethod
+    def on_export(export_context):
+        depsgraph = export_context.get_depsgraph()
+        if depsgraph is None or depsgraph.scene.render.engine != AtheneaHydraRenderEngine.bl_idname:
+            return True
+        stage = export_context.get_stage()
+        for path, ids in export_context.get_prim_map().items():
+            for owner in ids:
+                if isinstance(owner, bpy.types.Object) and owner.type == 'POINTCLOUD':
+                    _write_splat_base(stage, stage.GetPrimAtPath(path), owner.evaluated_get(depsgraph))
+        return True
+
+
+def _write_splat_base(stage, xform, evaluated):
+    """`radiance:base` onto the Points prim the writer made under `xform`."""
+    import numpy
+    from pxr import Sdf, UsdGeom, Vt
+    cloud = evaluated.data
+    base = cloud.attributes.get("radiance:base") if cloud is not None else None
+    if not xform or base is None or base.data_type != 'FLOAT4' or base.domain != 'POINT':
+        return
+    for prim in xform.GetChildren():
+        if not prim.IsA(UsdGeom.Points):
+            continue
+        points = UsdGeom.Points(prim).GetPointsAttr().Get()
+        if points is None or len(points) != len(base.data):
+            print(f"athenea_hydra: {prim.GetPath()}: {len(base.data)} radiance:base values for "
+                  f"{0 if points is None else len(points)} points; not written")
+            continue
+        values = numpy.empty((len(base.data), 4), dtype=numpy.float32)
+        base.data.foreach_get("vector", values.ravel())
+        primvar = UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
+            "radiance:base", Sdf.ValueTypeNames.Float4Array, UsdGeom.Tokens.vertex)
+        primvar.Set(Vt.Vec4fArray.FromNumpy(values))
+
+
 def _panels():
     """Blender's panels that say they work with this engine."""
     exclude = {'VIEWLAYER_PT_filter', 'VIEWLAYER_PT_layer_passes'}
@@ -110,7 +164,7 @@ def _panels():
     return panels
 
 
-_classes = (AtheneaPreferences, AtheneaHydraRenderEngine)
+_classes = (AtheneaPreferences, AtheneaHydraRenderEngine, AtheneaSplatExportHook)
 
 
 def register():
