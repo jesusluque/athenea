@@ -2,12 +2,29 @@
 //
 // athenea: the engine from a terminal. Headless but for `athenea view` -- a render node
 // has no window, and nothing else here opens one.
+#include <filesystem>
+#include <system_error>
+
 #include <CLI/CLI.hpp>
 
 #include "Commands.h"
 #include "athenea/core/Log.h"
+#include "athenea/core/Platform.h"
+#include "athenea/usd/StageRenderer.h"
 
 int main(int argc, char** argv) {
+    // THE ENGINE'S OWN USD PLUGINS, before any stage is opened or written:
+    // the codeless schemas a converted cloud applies, and hdAthenea. A stage
+    // written without them names `AtheneaSplatCryptomatteAPI` as an unknown
+    // token and drops the schema -- which is what mesh2splat did unless the
+    // shell had set PXR_PLUGINPATH_NAME. Beside the binary, as the shaders
+    // are, so a build or an install that keeps the layout finds them.
+    const std::filesystem::path plugins = athenea::platform::executableDir() / ".." / "plugin" / "usd";
+    std::error_code missing;
+    if (std::filesystem::exists(plugins / "plugInfo.json", missing)) {
+        athenea::usd::registerPlugins(std::filesystem::weakly_canonical(plugins, missing));
+    }
+
     CLI::App app{"athenea: Gaussian splats and point clouds on the GPU"};
     app.require_subcommand(1);
     bool verbose = false;

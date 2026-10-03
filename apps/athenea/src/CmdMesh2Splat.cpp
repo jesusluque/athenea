@@ -1540,6 +1540,7 @@ void addMesh2Splat(CLI::App& app) {
                 options.maxDegree = o->bake ? std::min(o->bakeDegree, 3u) : 0;
                 options.addCamera = o->addCamera;
                 options.upAxis = (*stage).upAxis();
+                options.metersPerUnit = (*stage).metersPerUnit();
                 // Both baked and not, the cloud is relit -- what differs is what
                 // its colours are. Baked, they are the light on the material's
                 // body and the frame adds the polish; not baked, they are an

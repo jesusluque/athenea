@@ -6482,6 +6482,104 @@ TEST_CASE("a Lambertian surface bakes to the same constant at every degree", "[u
     }
 }
 
+// A BAKE GIVES NO MORE LIGHT THAN ANY PATH SAW, FROM ANY SIDE.
+//
+// The surface that broke it: polished metal under one small, bright light,
+// so its mean is dark and its light swings with the direction. The bands
+// were taken into the cloud's space to first order, scaled by the sRGB
+// curve's slope at the mean -- 12.92 at black -- and the series, fitted on
+// the half of the sphere the surface faces, was read from every side. The
+// pawn's glass head baked at degree 2 decoded to 1094 under a dome of 1, and
+// at degree 3 to infinity. Here the series is evaluated over the whole
+// sphere and may not decode to more than the light sends.
+TEST_CASE("a glossy bake stays within the light the scene sends, from every side", "[usd][gpu][mesh][bake]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("bake_glossy.usda");
+    // The light: a sphere whose radiance is `kRadiance` (UsdLux: intensity is
+    // the light's radiance while `normalize` is off).
+    constexpr float kRadiance = 50.0F;
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Metal>\n}\n"
+               "def Material \"Metal\"\n{\n"
+               "    token outputs:surface.connect = </Metal/Preview.outputs:surface>\n"
+               "    def Shader \"Preview\"\n    {\n"
+               "        uniform token info:id = \"UsdPreviewSurface\"\n"
+               "        color3f inputs:diffuseColor = (0.9, 0.9, 0.9)\n"
+               "        float inputs:metallic = 1\n"
+               "        float inputs:roughness = 0.08\n"
+               "        token outputs:surface\n    }\n}\n"
+               "def SphereLight \"Key\"\n{\n"
+               "    float inputs:intensity = " << kRadiance << "\n"
+               "    float inputs:radius = 0.15\n"
+               "    double3 xformOp:translate = (0.8, 0.5, 0.5)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 1000)\n}\n";
+    }
+    const uint32_t count = 64;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = -1.5F + 3.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(count);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    auto bound = gpu::ComputeKernel::create(*gpu->library, "athenea/test/bake_check", "bakeBound");
+    if (!bound) FAIL(bound.error().toString());
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    for (const uint32_t degree : {1u, 2u, 3u}) {
+        auto baked = (*renderer)->bakePoints(rays, count, 0.0, 256, 1, degree);
+        if (!baked) FAIL(baked.error().toString());
+        const uint32_t planes = (degree + 1) * (degree + 1);
+        REQUIRE(baked->size() == size_t{count} * planes * 4);
+        gpu::BufferDesc desc;
+        desc.bytes = baked->size() * 4;
+        desc.elementBytes = 16;
+        auto fitted = gpu::Buffer::create(*gpu->device, desc, baked->data());
+        REQUIRE(fitted);
+        gpu::Buffer counts = test::uintBuffer(*gpu->device, 3, "counts");
+        gpu::Buffer largest = test::uintBuffer(*gpu->device, 1, "largest");
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            bound->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["coefficients"].setBinding(fitted->rhi());
+                cursor["boundCounts"].setBinding(counts.rhi());
+                cursor["brightest"].setBinding(largest.rhi());
+                rhi::ShaderCursor p = cursor["boundParams"];
+                p["count"].setData(count);
+                p["planes"].setData(planes);
+                // Gibbs: a projection of a bounded function overshoots it by
+                // a fraction, never by multiples.
+                p["bound"].setData(kRadiance * 1.25F);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        uint32_t seen[3] = {0, 0, 0};
+        float    most = 0.0F;
+        REQUIRE(counts.read(*gpu->device, 0, sizeof(seen), seen));
+        REQUIRE(largest.read(*gpu->device, 0, sizeof(most), &most));
+        std::printf("  degree %u: %u points, %u beyond the light, %u not a number, largest %.4g\n", degree, seen[0],
+                    seen[1], seen[2], double(most));
+        CHECK(seen[0] == count);
+        CHECK(seen[1] == 0);
+        CHECK(seen[2] == 0);
+    }
+}
+
 // A SLOT WITH NOTHING IN IT IS STILL A SLOT.
 //
 // The writer used to skip a record that decoded to nothing -- a scale that

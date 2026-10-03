@@ -8845,3 +8845,58 @@ Not fixed: a light bake of the chess set under the default lights leaves 80
 pixels of infinity in a 960x540 frame, on metallic rims and crowns, whose
 coefficients overflow half precision. The rest of the bake is right; a clamp
 on the baked radiance is the likely fix.
+
+## A bake gives no more light than any path saw, from any side
+
+Measured on the chess pawn under a uniform dome of 1, path traced at 256
+samples against the mesh: the cloud baked at degree 0 read a mean of 0.942
+(the mesh 0.948), at degree 1 its glass head peaked at 1.7 -- and at degree 2
+at **1094**, at degree 3 at **infinity**, body included. Two things, each
+enough on its own.
+
+**The bands were taken to the cloud's space to first order.** A cloud keeps
+its harmonics in the sRGB space it is blended in, and the bake fits in linear
+light; the bands were then scaled by the curve's slope at the mean. That slope
+is 12.92 at black, and a surface whose mean is dark and whose light swings
+with the direction -- glass, a dark polished metal -- is exactly where it is
+steep and where the bands are large.
+
+**The fit knows half the sphere and a frame reads all of it.** The fit is over
+the half the surface faces (the projection it replaced put a dark rim on every
+silhouette), but a disc is seen edge on and from behind, and there the series
+is an extrapolation of the least determined combinations of the bands.
+
+The encoding is now a second fit, done in the kernel (`bakeEncode`): the
+linear fit is read back over the same 32 x 16 grid the matrix is integrated
+on, held between nothing and the brightest sample the paths returned, encoded
+direction by direction, and the far half of the sphere is given the near
+half's mirror image across the surface's plane. On the whole sphere the basis
+is orthonormal, so the encoded series is a projection with no matrix. Degree 0
+is unchanged (the encoding of the mean); above it the series is bounded by
+what it fits, up to a projection's overshoot.
+
+| pawn, uniform dome 1, 256 paths | mean | largest | relMSE against the mesh |
+|---|---|---|---|
+| mesh | 0.948 | 2.55 | -- |
+| degree 0 | 0.942 | 1.33 | 0.0135 (as before) |
+| degree 2, before | 3.77 | 1094 | 1058 |
+| degree 2 | 0.946 | 1.67 | 0.0054 |
+| degree 3, before | inf | inf | inf |
+| degree 3 | 0.947 | 1.55 | 0.0054 |
+
+The test is the surface that broke it: polished metal under one small sphere
+light of radiance 50, baked at degrees 1 to 3 and read over the whole sphere.
+Before, 26, 9 and 21 of 64 points decoded beyond the light, the worst to
+177 000; now none.
+
+Also found on the pawn: the written ParticleField stage carried no
+`metersPerUnit`, so an application honouring units read a cloud converted in
+metres at a hundredth of its size (USD's fallback is centimetres); it is
+written now, from the source stage. And `athenea` registers its own plugin
+directory at start-up: without `PXR_PLUGINPATH_NAME` the schema a converted
+cloud applies (`AtheneaSplatCryptomatteAPI`) was an unknown token and was
+dropped from the file.
+
+Not done: the bake still fits in linear light and encodes, because a cloud is
+still blended in sRGB. Blending every cloud in linear light, with sRGB only
+where an image is shown, is the next change, and it removes the encoding.

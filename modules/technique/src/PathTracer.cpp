@@ -825,6 +825,59 @@ void bakeFit(inout float3 c[16], float e[6][10], uint evens[6], uint ne, uint od
         c[odds[j]] = sum / d;
     }
 }
+
+/// THE FIT IS DONE AGAIN WHERE A CLOUD IS BLENDED, bounded by what the paths
+/// saw and defined on the whole sphere.
+///
+/// A cloud keeps its harmonics in the encoded (sRGB) space it is blended in,
+/// and the linear fit above has to be taken there. It was taken to first
+/// order: the bands scaled by the encoding's slope at the mean. That slope
+/// is 12.92 at black, so a surface whose mean is dark and whose light swings
+/// with the direction -- glass, a dark polished metal -- had its bands
+/// multiplied by up to thirteen. Measured on the pawn under a uniform dome of
+/// 1: degree 1 drew its glass head at a largest 1.7, degree 2 at 1094,
+/// degree 3 at infinity, body included.
+///
+/// Two things were wrong and both are settled here. The fitted radiance is
+/// read back over the half of the sphere the fit is good on, held between
+/// nothing and the brightest sample the paths returned -- a fit is not
+/// entitled to light no path saw -- and encoded direction by direction,
+/// instead of to first order. And the fit only ever knew that half, while a
+/// frame reads the series from every side: a disc seen edge on or from
+/// behind read the extrapolation, which at degree 3 is where the infinities
+/// were. So the far half is given the near half's mirror image across the
+/// surface's plane -- continuous at the rim, bounded like the rest -- and on
+/// the whole sphere the basis is orthonormal: the encoded series is a plain
+/// projection, with no matrix to solve. At degree zero it is exactly the
+/// encoding of the mean, as before.
+void bakeEncode(inout float3 c[16], uint count, float3 n, float3 brightest) {
+    float3 b[16];
+    for (uint k = 0; k < 16; ++k) {
+        b[k] = float3(0.0);
+    }
+    const uint kElevations = 32;
+    const uint kAzimuths = 16;
+    for (uint zi = 0; zi < kElevations; ++zi) {
+        for (uint pi = 0; pi < kAzimuths; ++pi) {
+            const float2 u = float2((float(zi) + 0.5) / float(kElevations),
+                                    (float(pi) + 0.5) / float(kAzimuths));
+            const float3 towards = -bakeAim(n, u);
+            const float3 mirrored = towards - 2.0 * dot(towards, n) * n;
+            float3 radiance = float3(0.0);
+            for (uint k = 0; k < count; ++k) {
+                radiance += c[k] * shBasisValue(k, towards);
+            }
+            const float3 encoded = linearToSrgb(clamp(radiance, float3(0.0), brightest));
+            for (uint k = 0; k < count; ++k) {
+                b[k] += encoded * (shBasisValue(k, towards) + shBasisValue(k, mirrored));
+            }
+        }
+    }
+    const float measure = 2.0 * 3.14159265358979 / float(kElevations * kAzimuths);
+    for (uint k = 0; k < 16; ++k) {
+        c[k] = b[k] * measure;
+    }
+}
 )";
 
 const char* kNoBake = R"(
@@ -838,6 +891,7 @@ float3 bakeSurfaceNormal(uint at) { return float3(0.0, 0.0, 1.0); }
 static const float kBakeMeasure = 0.0;
 uint bakeBand(uint k) { return 0; }
 float3 bakeNormalAt(uint at) { return float3(0.0, 0.0, 1.0); }
+void bakeEncode(inout float3 c[16], uint count, float3 n, float3 brightest) {}
 void bakeGram(float3 n, out float e[6][10], uint evens[6], uint ne, uint odds[10], uint no) {
     for (uint i = 0; i < 6; ++i) {
         for (uint j = 0; j < 10; ++j) {
@@ -1647,6 +1701,8 @@ void tracePathsAt(uint2 group, uint index) {
     // weighing them sixteen ways is sixteen times less work than tracing them
     // sixteen times. Measured before this, the pawn took 5m43 at degree 2.
     float3 coefficients[16];
+    // The brightest sample a bake point saw: what its fit may not exceed.
+    float3 brightest = float3(0.0);
     // Which coefficient is on which side of the fit's matrix: bakeGram says
     // why only the block between the two is worked out at all.
     uint   evens[6];
@@ -2113,6 +2169,7 @@ void tracePathsAt(uint2 group, uint index) {
             for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
                 coefficients[c] += sampleColour * opacity * bakeBasisAt(at, sample, c);
             }
+            brightest = max(brightest, sampleColour * opacity);
         }
         total += sampleColour * opacity;
         const float lum = dot(sampleColour * opacity, kPathLuminance);
@@ -2158,20 +2215,9 @@ void tracePathsAt(uint2 group, uint index) {
         float e[6][10];
         bakeGram(bakeNormalAt(at), e, evens, ne, odds, no);
         bakeFit(coefficients, e, evens, ne, odds, no, kBakeMeasure / float(samples));
-        // Into the space a cloud is blended in: the constant term carries the
-        // encoding, and the bands that shape it are scaled by how fast the
-        // encoding moves there -- a first order change of variable, exact at
-        // degree zero and what a band of a small variation about the mean is
-        // worth in the encoded space.
-        const float3 dcLinear = max(coefficients[0] * kShY0, float3(0.0));
-        const float3 dcEncoded = linearToSrgb(dcLinear);
-        coefficients[0] = dcEncoded / kShY0;
-        if (path.bakeCount > 1) {
-            const float3 slope = srgbSlope(dcLinear);
-            for (uint c = 1; c < min(path.bakeCount, 16u); ++c) {
-                coefficients[c] *= slope;
-            }
-        }
+        // Into the space a cloud is blended in: bakeEncode says why this is
+        // a second fit and not a change of variable.
+        bakeEncode(coefficients, min(path.bakeCount, 16u), bakeNormalAt(at), brightest);
         for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
             float3 value = coefficients[c];
             if (c == 0) {

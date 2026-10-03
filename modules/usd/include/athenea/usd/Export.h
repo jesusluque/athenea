@@ -71,6 +71,11 @@ struct ExportOptions {
     /// were laid out Z-up lies on its side -- which is what every asset out
     /// of Blender did.
     char     upAxis = 'y';
+    /// The stage's linear unit, as UsdGeom keeps it. Written always: a stage
+    /// that leaves it out is read as centimetres (USD's fallback is 0.01),
+    /// and a cloud converted from a model in metres came out a hundredth of
+    /// its size in any application that honours the unit.
+    double   metersPerUnit = 1.0;
     /// The rig the cloud is carried by, or nothing. When it is there the
     /// stage takes a time range and the joints' transforms as time samples.
     const SplatSkinning* skinning = nullptr;

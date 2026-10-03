@@ -8,6 +8,7 @@
 module bake_check;
 import athenea.common.sh;
 import athenea.common.packing;
+import athenea.common.color;
 
 struct BakeCheckParams {
     uint   count;        // points
@@ -51,4 +52,63 @@ void bakeCheck(uint3 tid: SV_DispatchThreadID) {
     counts[0] = params.count;
     counts[1] = beyond;
     worst[0] = worstRelative;
+}
+
+// THE SERIES IS BOUNDED FROM EVERY SIDE. A bake is fitted over the half of
+// the sphere the surface faces and read by a frame from any direction: edge
+// on, and from behind for a disc. Per point, the series is evaluated over the
+// whole sphere, decoded the way a cloud decodes it, and the largest light it
+// gives anywhere is kept. A fit that extrapolates past what any path saw --
+// the bands of a dark, glossy surface multiplied by the encoding's slope, or
+// read on the far half it never fitted -- shows up as light no light in the
+// scene sends.
+struct BakeBoundParams {
+    uint  count;    // points
+    uint  planes;   // coefficients each
+    float bound;    // the most light any direction may decode to
+    uint  pad0;
+};
+
+ConstantBuffer<BakeBoundParams> boundParams;
+RWStructuredBuffer<uint>        boundCounts;   // [points, beyond the bound, not a number]
+RWStructuredBuffer<float>       brightest;     // [largest light decoded anywhere]
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void bakeBound(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    uint  beyond = 0;
+    uint  invalid = 0;
+    float largest = 0.0;
+    const uint kElevations = 64;
+    const uint kAzimuths = 32;
+    for (uint p = 0; p < boundParams.count; ++p) {
+        const uint base = p * boundParams.planes;
+        float pointLargest = 0.0;
+        bool  pointInvalid = false;
+        for (uint zi = 0; zi < kElevations; ++zi) {
+            const float z = 1.0 - 2.0 * (float(zi) + 0.5) / float(kElevations);
+            const float r = sqrt(max(1.0 - z * z, 0.0));
+            for (uint ai = 0; ai < kAzimuths; ++ai) {
+                const float phi = 6.28318530718 * (float(ai) + 0.5) / float(kAzimuths);
+                const float3 d = float3(r * cos(phi), r * sin(phi), z);
+                float3 encoded = float3(0.5) + kSH0 * coefficients[base].xyz;
+                for (uint k = 1; k < boundParams.planes; ++k) {
+                    encoded += coefficients[base + k].xyz * shBasisValue(k, d);
+                }
+                const float3 light = srgbToLinear(max(encoded, float3(0.0)));
+                pointInvalid = pointInvalid || any(isnan(light)) || any(isinf(light));
+                pointLargest = max(pointLargest, max(light.r, max(light.g, light.b)));
+            }
+        }
+        invalid += pointInvalid ? 1u : 0u;
+        beyond += pointLargest > boundParams.bound ? 1u : 0u;
+        largest = max(largest, pointLargest);
+    }
+    boundCounts[0] = boundParams.count;
+    boundCounts[1] = beyond;
+    boundCounts[2] = invalid;
+    brightest[0] = largest;
 }

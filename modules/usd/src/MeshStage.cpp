@@ -575,6 +575,13 @@ char MeshStage::upAxis() const {
     return UsdGeomGetStageUpAxis(impl_->stage) == UsdGeomTokens->z ? 'z' : 'y';
 }
 
+double MeshStage::metersPerUnit() const {
+    if (impl_ == nullptr) {
+        return 1.0;
+    }
+    return UsdGeomGetStageMetersPerUnit(impl_->stage);
+}
+
 std::string MeshStage::source() const {
     return impl_ == nullptr ? std::string{} : impl_->source;
 }

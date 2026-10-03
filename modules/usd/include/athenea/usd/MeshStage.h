@@ -213,6 +213,8 @@ public:
     /// Which way it stood: 'y' or 'z'. The gaussians are in that stage's
     /// world space, so the cloud written from them has to say the same.
     [[nodiscard]] char upAxis() const;
+    /// The stage's metersPerUnit, USD's fallback included.
+    [[nodiscard]] double metersPerUnit() const;
 
     /// The layers the stage was opened from, for a message.
     [[nodiscard]] std::string source() const;
