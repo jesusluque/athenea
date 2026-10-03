@@ -146,6 +146,10 @@ struct StageMaterial {
     float                  coatWeight = 0.0F;
     float                  coatRoughness = 0.0F;
     float                  coatIor = 1.5F;
+    /// OpenPBR's `coat_darkening` (1 by default there): the base under the
+    /// coat darkened by what the coat's inside reflects back into it. 0 for
+    /// every other vocabulary, whose coat has none.
+    float                  coatDarkening = 0.0F;
     std::array<float, 3>   sheenColour{0.0F, 0.0F, 0.0F};
     float                  sheenRoughness = 0.3F;
     /// Whether any of it differs from the plain specular every gaussian has

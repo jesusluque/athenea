@@ -59,6 +59,7 @@ static const uint kCoatRoughness = 1u << 22;
 static const uint kCoatIor = 1u << 23;
 static const uint kSheenColour = 1u << 24;
 static const uint kSheenRoughness = 1u << 25;
+static const uint kCoatDarkening = 1u << 26;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -86,7 +87,7 @@ struct StreamParams {
     uint normalBase;
     // Where the three floats of an emitted radiance go, or kNoPbr.
     uint emissionBase;
-    // Where the twelve floats of the layers over the base go, or kNoPbr.
+    // Where the thirteen floats of the layers over the base go, or kNoPbr.
     uint lobesBase;
     // kShPlanes: the splats a plane holds (the whole cloud's, not the slice's).
     uint planeLength;
@@ -119,6 +120,7 @@ StructuredBuffer<uint>     coatRoughness;
 StructuredBuffer<uint>     coatIor;
 StructuredBuffer<uint>     sheenColour;      // rgb a splat
 StructuredBuffer<uint>     sheenRoughness;
+StructuredBuffer<uint>     coatDarkening;
 RWStructuredBuffer<float>  records;
 ConstantBuffer<StreamParams> params;
 
@@ -222,6 +224,7 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
         records[b + 7] = present(kCoatIor) ? streamValue(coatIor, isHalf(kCoatIor), e) : 1.5;
         records[b + 11] =
             present(kSheenRoughness) ? streamValue(sheenRoughness, isHalf(kSheenRoughness), e) : 0.0;
+        records[b + 12] = present(kCoatDarkening) ? streamValue(coatDarkening, isHalf(kCoatDarkening), e) : 0.0;
     }
     // How much of an environment reaches this gaussian: the direct half
     // first, then the indirect one. A cloud that carries neither writes

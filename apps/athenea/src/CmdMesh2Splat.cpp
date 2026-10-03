@@ -793,12 +793,12 @@ public:
                              [](const Piece& piece) { return piece.material->emits(); });
         raw.encoding.emission = emits_ ? 20u : io::SplatEncoding::kNoField;
         // AND WHAT THE MATERIALS LAYER OVER THEIR BASE -- a car's lacquer, a
-        // specular's tint, a sheen -- where any of the stage's does: twelve
+        // specular's tint, a sheen -- where any of the stage's does: thirteen
         // floats more, last, after the harmonics the bake writes.
         layered_ = std::any_of(pieces_.begin(), pieces_.end(),
                                [](const Piece& piece) { return piece.material->layered(); });
         raw.encoding.floatsPerRecord = recordFloats();
-        raw.encoding.lobes = layered_ ? raw.encoding.floatsPerRecord - 12 : io::SplatEncoding::kNoField;
+        raw.encoding.lobes = layered_ ? raw.encoding.floatsPerRecord - 13 : io::SplatEncoding::kNoField;
         raw.encoding.opacity_ = io::SplatEncoding::Opacity::Linear;
         raw.encoding.scale_ = io::SplatEncoding::Scale::Linear;
         // LINEAR LIGHT, BAKED OR NOT. Not baked, the colours are a
@@ -1116,7 +1116,7 @@ private:
     /// where a bake writes them.
     [[nodiscard]] uint32_t recordFloats() const {
         return 23 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3 +
-               (layered_ ? 12u : 0u);
+               (layered_ ? 13u : 0u);
     }
 
     struct OneMesh {
@@ -1209,9 +1209,9 @@ private:
                 : image::ImagePtr{};
         const uint32_t ownEntries = kRecordEntries;
         // AND ONE FOR WHAT IT GIVES OFF, the last, where the stage emits.
-        // AND THREE FOR WHAT THE MATERIAL LAYERS OVER ITS BASE, after it.
+        // AND FOUR FOR WHAT THE MATERIAL LAYERS OVER ITS BASE, after it.
         const uint32_t recordEntries =
-            kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U) + (layered_ ? 3U : 0U);
+            kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U) + (layered_ ? 4U : 0U);
         const image::PixelRect bounds = pictureFor(budget * recordEntries);
 
         // The box the density is measured over: the model's, or this mesh's
@@ -1344,6 +1344,7 @@ private:
             number("coatIor", static_cast<double>(material.coatIor));
             colour("sheenColour", material.sheenColour);
             number("sheenRoughness", static_cast<double>(material.sheenRoughness));
+            number("coatDarkening", static_cast<double>(material.coatDarkening));
         }
 
         auto rendered = aofx_host::renderEffect(*context_, effect, job);
@@ -1528,7 +1529,7 @@ private:
     /// carry it (`io::SplatEncoding::emission`).
     bool                                     emits_ = false;
     /// Whether any material of the stage layers anything over its base
-    /// (`usd::StageMaterial::layered`): the records then carry the twelve
+    /// (`usd::StageMaterial::layered`): the records then carry the thirteen
     /// floats of `io::SplatEncoding::lobes`, last.
     bool                                     layered_ = false;
     /// The Cryptomatte id of the prim each splat came from, in the same order,

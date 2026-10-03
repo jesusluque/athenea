@@ -350,7 +350,9 @@ public float3 environmentBrdfOf(SplatSurface s, float nDotV) {
 /// does the same (material_runtime.slang): so a coat of weight one at 1.5
 /// takes 4% from everything under it head on and most of it at grazing, and
 /// gives it back as its own reflection. The coat is over the sheen and the
-/// sheen over the base, as OpenPBR stacks them. The sheen's weight is its
+/// sheen over the base, as standard_surface stacks them (OpenPBR puts its
+/// fuzz over the coat; with both on one gaussian the order is
+/// standard_surface's). The sheen's weight is its
 /// colour's largest channel -- exact for the white sheen every surface
 /// defaults to -- since a gaussian carries the two multiplied.
 public struct SplatLayers {
@@ -372,6 +374,24 @@ public SplatLayers splatLayers(SplatSurface s, float nDotV) {
     const float sheenWeight = max(max(s.lobes.sheenColour.x, s.lobes.sheenColour.y), s.lobes.sheenColour.z);
     l.belowCoat = saturate(float3(1.0) - l.coat);
     l.under = l.belowCoat * saturate(1.0 - sheenWeight * sheenAlbedo);
+    // OPENPBR'S COAT DARKENING. Light that enters a coat and comes back up
+    // from the base is partly reflected down again at the coat's underside,
+    // and the base absorbs some of it each time: the base comes out darker
+    // than the coat's own throughput says, `(1 - K) / (1 - E K)` with
+    // `K = 1 - (1 - F0) / n^2` the coat's internal reflection and `E` the
+    // base's albedo -- the graph's own estimate (open_pbr_surface.mtlx,
+    // `base_darkening`): the base colour, times the specular weight for a
+    // metal. Under a lacquer at 1.45 a dark metal keeps 0.47 of itself; the
+    // car's paint read 1.5 times the mesh at the centre of its ball without
+    // it. A baked body is darkened already (the bake's stack is the graph),
+    // so only the polish the frame adds is, with its albedo taken as none.
+    if (s.lobes.coatWeight > 0.0 && s.lobes.coatDarkening >= 0.5) {
+        const float n = max(s.lobes.coatIor, 1.0);
+        const float K = 1.0 - (1.0 - dielectricF0(n)) / (n * n);
+        const float3 E = s.lit ? float3(0.0)
+                               : saturate(lerp(s.albedo, s.albedo * s.lobes.specularWeight, saturate(s.metallic)));
+        l.under *= lerp(float3(1.0), (1.0 - K) / max(float3(1.0) - E * K, float3(1.0e-4)), s.lobes.coatWeight);
+    }
     return l;
 }
 

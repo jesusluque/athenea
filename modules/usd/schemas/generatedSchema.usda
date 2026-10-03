@@ -282,11 +282,15 @@ object through the glass wants a ray, which this is not."""
         interpolation = "vertex"
     )
     color3f[] primvars:athenea:splat:sheenColor = [] (
-        doc = """The sheen over each gaussian, its colour times its weight, 0 to 1: OpenPBR's `sheen_weight` times `sheen_color`, standard_surface's `sheen` times `sheen_color`. A retroreflective fuzz over the base that takes what it reflects from it -- velvet, dust, a tyre's bloom. Black where it is not authored."""
+        doc = """The sheen over each gaussian, its colour times its weight, 0 to 1: OpenPBR's `fuzz_weight` times `fuzz_color`, standard_surface's `sheen` times `sheen_color`. A retroreflective fuzz over the base that takes what it reflects from it -- velvet, dust, a tyre's bloom. Black where it is not authored."""
         interpolation = "vertex"
     )
     float[] primvars:athenea:splat:sheenRoughness = [] (
-        doc = """The sheen's roughness, 0 to 1: `sheen_roughness`."""
+        doc = """The sheen's roughness, 0 to 1: `sheen_roughness`, OpenPBR's `fuzz_roughness`."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:coatDarkening = [] (
+        doc = """Whether the coat darkens what lies under it, 0 to 1: OpenPBR's `coat_darkening` (1 by default there), the light the coat's inside reflects back into the base and the base absorbs. On at 0.5 and above. 0 where it is not authored, which is standard_surface's and UsdPreviewSurface's coat."""
         interpolation = "vertex"
     )
 }

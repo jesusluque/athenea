@@ -11106,9 +11106,9 @@ material: car paint, chrome, rubber, plastic, glass.
   specular's weight, colour and index; the coat's weight, roughness and
   index; the sheen's colour times its weight, and its roughness -- OpenPBR's
   units. Three words a splat on the device (`GpuSplats::lobes`, a byte a
-  value, an index as `1 + byte/128`, so 1.5 and 1.25 are exact), twelve floats
-  in a record (`io::SplatEncoding::lobes`), eight primvars in a stage
-  (`primvars:athenea:splat:specularWeight` ... `:sheenRoughness`, declared by
+  value, an index as `1 + byte/128`, so 1.5 and 1.25 are exact), thirteen floats
+  in a record (`io::SplatEncoding::lobes`), nine primvars in a stage
+  (`primvars:athenea:splat:specularWeight` ... `:coatDarkening`, declared by
   `AtheneaSplatLightingAPI`), read back by Hydra (`ParticleFieldArrays` ->
   `SplatStreams` -> the streams kernel, a missing one at its default). The
   coat's normal is the gaussian's shading normal; a coat normal of its own
@@ -11139,15 +11139,15 @@ material: car paint, chrome, rubber, plastic, glass.
   its body by the same throughput.
 - **Read from the materials** (`materialOf`): OpenPBR `specular_weight`,
   `specular_color`, `coat_weight`/`coat_roughness`/`coat_ior` (1.6 by
-  default), `sheen_weight` x `sheen_color`, `sheen_roughness`;
+  default), `fuzz_weight` x `fuzz_color`, `fuzz_roughness` (OpenPBR's sheen), `coat_darkening`;
   standard_surface `specular`, `specular_color`, `coat` (0.1 rough at 1.5 by
   default), `sheen` x `sheen_color`; UsdPreviewSurface `clearcoat`,
   `clearcoatRoughness` at its own `ior`, and in its specular workflow the
   index whose reflectivity is `specularColor`'s brightest channel, tinted by
   the colour over it, with no metal; glTF `clearcoat`, `sheen_color`,
   `specular`. Constants only: a map on any of them is logged and its constant
-  stands. The mesh2splat AOFX effect gains `writeLobes` and eight parameters,
-  additively, written in three record entries after everything else; the host
+  stands. The mesh2splat AOFX effect gains `writeLobes` and nine parameters,
+  additively, written in four record entries after everything else; the host
   writes them only where some material of the stage is not plain
   (`StageMaterial::layered`), and then for every gaussian.
 - **The bake's metal by the material's metalness.** mesh2splat's gather writes
@@ -11161,20 +11161,52 @@ material: car paint, chrome, rubber, plastic, glass.
   dielectric and coat, which stay dropped. The coat is dropped from the bake
   with the rest of the polish and comes back at render time from the lobes.
 
-Measured: **pending the GPU turn** -- the five balls of tests/data/lobes,
-relit and baked, rasterised against the mesh path traced
-(`lobes_conversions_render_like_the_mesh`), the plain-lobes check and the
-round trip (`[lobes]` in athenea_render_tests), the vocabularies and the USD
-round trip (`[lobes]` in athenea_usd_tests), and the Corvette again. The
-bounds written in the test (mean 15 %, p99 0.6; glass 25 %, 0.9) are
-placeholders until then.
+**Measured** (M5 Pro, debug): the plain-lobes check and the pack round trip
+pass (`[lobes]` in athenea_render_tests, 15 of 15 assertions), as do the
+vocabularies and the USD round trip. The five balls of tests/data/lobes,
+rasterised against the mesh path traced (1024 paths, 6 bounces):
+
+| ball | relit p99 / relMSE | baked p99 / relMSE |
+|---|---|---|
+| paint | 0.917 / 0.0319 | 0.459 / 0.0040 |
+| chrome | 0.081 / 0.00095 | 0.115 / 0.00083 |
+| rubber | 1.834 / 0.076 | 1.834 / 0.078 |
+| plastic | 0.648 / 0.0050 | 0.707 / 0.0105 |
+| glass | 0.250 / 0.0119 | 0.545 / 0.016-0.023 |
+
+Two of those rows measured something else, and were fixed after:
+
+- **The rubber's sheen was the cloud's alone.** OpenPBR has no `sheen_*`: it
+  calls the sheen **fuzz** (`fuzz_weight`, `fuzz_color`, `fuzz_roughness`,
+  0.5 by default). The test file authored `sheen_*`, which MaterialX
+  refused ("Input 'sheen_color' doesn't match declaration"), so the mesh
+  had none; the reader read the same names and gave the cloud one. Both now
+  say fuzz, and the reader reads it for OpenPBR.
+- **The paint relit was 1.5 times the mesh at the centre of the ball** (0.082
+  of the sky against 0.055): the coat's 0.034 plus the metal's 0.05 under a
+  throughput of 0.97, where the mesh keeps 0.46 of its metal. That is
+  OpenPBR's coat darkening (`base_darkening = (1 - K) / (1 - E K)`, `K = 1 -
+  (1 - F0) / n^2`: 0.474 at 1.45 over a base of 0.05). It is carried now --
+  `coat_darkening`, 1 by default in OpenPBR and nothing in the other
+  vocabularies, a thirteenth record field (`primvars:athenea:splat:
+  coatDarkening`) and a bit beside the coat's index, which went to seven
+  bits (steps of 1/64; 1.5 and 1.25 still exact) -- and applied to what lies
+  under the coat; a baked body is darkened by its bake already. The baked
+  paint, whose body the bake darkened, was the one that agreed.
+
+The bounds in the test are per material and mode, the measured p99 with
+about a quarter of margin (chrome 0.12 / 0.15, plastic 0.8 / 0.85, glass
+0.32 / 0.65, the baked paint 0.55), and the mean within 5 to 9 % (plastic
+baked was 4.4 % off, glass 7.0 and 4.0 %, the paint 6.4 % before the
+darkening). The relit paint and the rubber keep 0.6 until they are measured
+again with the fixes.
 
 **Not done.** The levels of detail and `.athc` carry no lobes, as they carry
 no metallic and roughness either (a bit 4 for the material -- `pbr` and the
 lobes, four words an element -- is the next step there; bit 3 is P009's).
 Maps on the layers. The deferred layer of proposal 001 does not exist yet:
 the layers are evaluated per gaussian, as the base is, and mixed already
-lit. OpenPBR's coat darkening and coat colour, its Zeltner sheen (the mesh
+lit. OpenPBR's coat colour, its fuzz over the coat (here under it), its Zeltner sheen (the mesh
 uses it, the gaussian Imageworks'), the specular's relative index under a
 coat, and a sheen's weight apart from its colour (its largest channel stands
 for it) are not carried. `readParticleFieldRecords` (the decimation's

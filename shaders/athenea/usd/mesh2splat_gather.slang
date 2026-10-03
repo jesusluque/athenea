@@ -19,7 +19,7 @@
 //               the emission -- zeros where the stage emits nothing; the
 //               harmonics after it are zeros until the bake writes them;
 //               and last, where a material of the stage layers anything
-//               over its base, the twelve floats of its specular, coat and
+//               over its base, the thirteen floats of its specular, coat and
 //               sheen)
 //   rays        three float4 a gaussian, the bake's own layout
 //               (`technique::BakePoints`): the point of the surface under it,
@@ -50,8 +50,8 @@ struct GatherParams {
     uint carried;         ///< and the joints
     uint overArea;        ///< the footprint goes to the bake (a simplified block)
     uint emits;           ///< the picture's last entry a gaussian (before the layers') is the light it gives off
-    /// The picture's last three entries a gaussian are what the material
-    /// layers over its base, and the record's last twelve floats take them.
+    /// The picture's last four entries a gaussian are what the material
+    /// layers over its base, and the record's last thirteen floats take them.
     uint lobes;
 };
 
@@ -104,7 +104,7 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     records[at + 18] = shading.y;
     records[at + 19] = shading.z;
     // What it gives off: the record's last entry, where the stage emits.
-    const uint layerEntries = gather.lobes != 0 ? 3u : 0u;
+    const uint layerEntries = gather.lobes != 0 ? 4u : 0u;
     const float4 emitted =
         gather.emits != 0 ? entryOf(splat, gather.recordEntries - 1 - layerEntries) : float4(0.0);
     records[at + 20] = emitted.x;
@@ -115,13 +115,14 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     for (uint k = 23; k < gather.perRecord; ++k) {
         records[at + k] = 0.0;
     }
-    // WHAT THE MATERIAL LAYERS OVER ITS BASE: the record's last twelve
+    // WHAT THE MATERIAL LAYERS OVER ITS BASE: the record's last thirteen
     // floats, after the harmonics, in packing.slang's record order.
     if (gather.lobes != 0) {
-        const float4 specular = entryOf(splat, gather.recordEntries - 3);   // colour, weight
-        const float4 coat = entryOf(splat, gather.recordEntries - 2);       // weight, roughness, index, specular's index
-        const float4 sheen = entryOf(splat, gather.recordEntries - 1);      // colour, roughness
-        const uint l = at + gather.perRecord - 12;
+        const float4 specular = entryOf(splat, gather.recordEntries - 4);   // colour, weight
+        const float4 coat = entryOf(splat, gather.recordEntries - 3);       // weight, roughness, index, specular's index
+        const float4 sheen = entryOf(splat, gather.recordEntries - 2);      // colour, roughness
+        const float4 darkening = entryOf(splat, gather.recordEntries - 1);  // the coat's darkening
+        const uint l = at + gather.perRecord - 13;
         records[l + 0] = specular.w;
         records[l + 1] = specular.x;
         records[l + 2] = specular.y;
@@ -134,6 +135,7 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
         records[l + 9] = sheen.y;
         records[l + 10] = sheen.z;
         records[l + 11] = sheen.w;
+        records[l + 12] = darkening.x;
     }
 
     // WHERE THE BAKE STANDS AND WHICH WAY IT LOOKS. A displaced gaussian is

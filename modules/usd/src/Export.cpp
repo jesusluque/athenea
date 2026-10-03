@@ -93,7 +93,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     const bool withEmission = e.emission != io::SplatEncoding::kNoField;
     // What the material layered over the base, as the kernel leaves it:
     // each value inside the range the cloud reads it in.
-    VtFloatArray specularWeights, specularIors, coatWeights, coatRoughnesses, coatIors, sheenRoughnesses;
+    VtFloatArray specularWeights, specularIors, coatWeights, coatRoughnesses, coatIors, sheenRoughnesses,
+        coatDarkenings;
     VtVec3fArray specularColours, sheenColours;
     const bool withLobes = e.lobes != io::SplatEncoding::kNoField;
     const bool pbr = e.metallic != io::SplatEncoding::kNoField ||
@@ -118,7 +119,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto normal = buffer(device, withNormals ? n : 1, 16, "export.normal");
         auto material = buffer(device, pbr ? n : 1, 16, "export.pbr");
         auto emitted = buffer(device, withEmission ? n : 1, 16, "export.emission");
-        auto layered = buffer(device, withLobes ? uint64_t{n} * 3 : 1, 16, "export.lobes");
+        auto layered = buffer(device, withLobes ? uint64_t{n} * 4 : 1, 16, "export.lobes");
         if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material || !emitted || !layered) {
             return Error(ErrorCode::OutOfMemory, "cannot allocate export buffers");
         }
@@ -182,7 +183,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
                 emissions.push_back(GfVec3f(ee[0], ee[1], ee[2]));
             }
             if (withLobes) {
-                const float* ll = lo3->data() + size_t{i} * 12;
+                const float* ll = lo3->data() + size_t{i} * 16;
                 specularWeights.push_back(ll[0]);
                 specularColours.push_back(GfVec3f(ll[1], ll[2], ll[3]));
                 specularIors.push_back(ll[4]);
@@ -191,6 +192,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
                 coatIors.push_back(ll[7]);
                 sheenColours.push_back(GfVec3f(ll[8], ll[9], ll[10]));
                 sheenRoughnesses.push_back(ll[11]);
+                coatDarkenings.push_back(ll[12]);
             }
             if (there) {
                 for (int axis = 0; axis < 3; ++axis) {
@@ -290,6 +292,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         floats("primvars:athenea:splat:coatIor", coatIors);
         colours("primvars:athenea:splat:sheenColor", sheenColours);
         floats("primvars:athenea:splat:sheenRoughness", sheenRoughnesses);
+        floats("primvars:athenea:splat:coatDarkening", coatDarkenings);
     }
 
     // WHICH PRIM EACH GAUSSIAN CAME FROM (AtheneaSplatCryptomatteAPI). One id a

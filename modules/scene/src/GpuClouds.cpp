@@ -686,7 +686,7 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kBase = 65536, kShPlanes = 131072, kSpecularWeight = 1u << 18,
                    kSpecularColour = 1u << 19, kSpecularIor = 1u << 20, kCoatWeight = 1u << 21,
                    kCoatRoughness = 1u << 22, kCoatIor = 1u << 23, kSheenColour = 1u << 24,
-                   kSheenRoughness = 1u << 25;
+                   kSheenRoughness = 1u << 25, kCoatDarkening = 1u << 26;
 
 }   // namespace
 
@@ -752,13 +752,14 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
         {&in.coatRoughness, 1, kCoatRoughness, "splats.stream.coatRoughness"},
         {&in.coatIor, 1, kCoatIor, "splats.stream.coatIor"},
         {&in.sheenColour, 3, kSheenColour, "splats.stream.sheenColor"},
-        {&in.sheenRoughness, 1, kSheenRoughness, "splats.stream.sheenRoughness"}};
+        {&in.sheenRoughness, 1, kSheenRoughness, "splats.stream.sheenRoughness"},
+        {&in.coatDarkening, 1, kCoatDarkening, "splats.stream.coatDarkening"}};
     const bool haveLobes = std::any_of(std::begin(lobeArrays), std::end(lobeArrays),
                                        [&](const LobeArray& a) { return whole(*a.stream, a.per); });
     io::SplatEncoding e;
     e.floatsPerRecord = 14 + keep * 3 + (havePbr ? 3 : 0) + (haveCrypto ? 1 : 0) + transferCount +
                         shadowWords + (haveNormals ? 3 : 0) + (haveEmission ? 3 : 0) +
-                        (haveLobes ? 12 : 0);
+                        (haveLobes ? 13 : 0);
     e.x = 0; e.y = 1; e.z = 2; e.opacity = 3;
     e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
     e.rotW = 7; e.rotX = 8; e.rotY = 9; e.rotZ = 10;
@@ -909,7 +910,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 {
                     static constexpr const char* kLobeNames[] = {"specularWeight", "specularColour", "specularIor",
                                                                  "coatWeight",     "coatRoughness",  "coatIor",
-                                                                 "sheenColour",    "sheenRoughness"};
+                                                                 "sheenColour",    "sheenRoughness", "coatDarkening"};
                     for (size_t k = 0; k < lobeBuffers.size(); ++k) {
                         cursor[kLobeNames[k]].setBinding(whole(*lobeArrays[k].stream, lobeArrays[k].per)
                                                              ? lobeBuffers[k].rhi()

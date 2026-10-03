@@ -213,7 +213,7 @@ struct SplatStreams {
     /// The layers over the base, one array each, one value (or three, for a
     /// colour) a splat: `primvars:athenea:splat:specularWeight`,
     /// `:specularColor`, `:specularIor`, `:coatWeight`, `:coatRoughness`,
-    /// `:coatIor`, `:sheenColor`, `:sheenRoughness`. The cloud carries the
+    /// `:coatIor`, `:sheenColor`, `:sheenRoughness`, `:coatDarkening`. The cloud carries the
     /// lobes where any of them is there; one that is missing takes its
     /// default (packing.slang's `plainLobes`).
     FloatStream specularWeight;
@@ -224,6 +224,7 @@ struct SplatStreams {
     FloatStream coatIor;
     FloatStream sheenColour;
     FloatStream sheenRoughness;
+    FloatStream coatDarkening;   ///< `:coatDarkening`, 0 where it is missing
     /// BLENDER'S LAYOUT. Four floats a splat, the DC coefficient's rgb and the
     /// opacity (a Gaussian-splat PointCloud's `radiance:base`); where present
     /// it stands for `opacities` and for the DC of `sh`.

@@ -216,6 +216,7 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     s.coatIor = wholeOr(a.coatIor, 1);
     s.sheenColour = wholeOr(a.sheenColour, 3);
     s.sheenRoughness = wholeOr(a.sheenRoughness, 1);
+    s.coatDarkening = wholeOr(a.coatDarkening, 1);
     // Which ways out are open: bits, like the ids, and only beside a transfer.
     if (!s.transferDirect.empty() && a.shadowBits.IsHolding<pxr::VtIntArray>()) {
         const pxr::VtIntArray& bits = a.shadowBits.UncheckedGet<pxr::VtIntArray>();

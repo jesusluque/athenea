@@ -285,6 +285,8 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.coatIor = held(kCoatIor);
         arrays.sheenColour = held(kSheenColour);
         arrays.sheenRoughness = held(kSheenRoughness);
+        static const TfToken kCoatDarkening("athenea:splat:coatDarkening");
+        arrays.coatDarkening = held(kCoatDarkening);
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();
