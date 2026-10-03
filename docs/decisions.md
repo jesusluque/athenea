@@ -9413,6 +9413,20 @@ definitions: a material named `material` is not the typedef of that name.
 - `athenea_material_tests`: all pass (513 assertions, 9 cases).
 - `athenea_usd_tests "[materials]"`: all pass (281 assertions, 10 cases).
 
-Not done: a test of the override itself. It is exercised by the Blender
-spike (the default cube's material compiles and shades); a test would need
-a second MaterialX library tree in the build.
+Tests, both pending a GPU run:
+
+- `athenea_material_tests "a document's own definitions give way*"`: a
+  standard_surface document that also carries an implementation under the
+  library's own name (`IMPL_standard_surface_surfaceshader_101`) drawing a
+  blue diffuse -- an older host's definition, as the compiler sees it --
+  compiles to the module and source its XML alone compiles to. Before the
+  precedence, the document's implementation stayed and the import skipped
+  the library's.
+- `ctest -R materialx_root` (`athenea_usd_tests "[materialx_root]"`, hidden
+  from discovery, run with the variable set since the engine reads it once
+  a process): the root is a copy of the build's libraries in which
+  UsdPreviewSurface's `diffuseColor` defaults to red, filled by the case
+  itself, and a quad whose UsdPreviewSurface authors no colour must come
+  out red (red over four times green and blue) through Hydra. Grey is what
+  either half missing gives: the variable not read, or the host's node
+  definition kept from hdMtlx's document.

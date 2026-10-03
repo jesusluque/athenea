@@ -16,6 +16,9 @@
 #include "athenea/material/MaterialCompiler.h"
 #include "athenea/material/TextureStore.h"
 
+#include <MaterialXCore/Document.h>
+#include <MaterialXFormat/XmlIo.h>
+
 using namespace athenea;
 
 namespace {
@@ -416,6 +419,54 @@ TEST_CASE("materials that differ in name and values alone share one module", "[m
     std::printf("  'back' is %s, 'uvgrid' is %s\n", back.module.c_str(), uvgrid.module.c_str());
     CHECK(back.module == uvgrid.module);
     CHECK(back.source == uvgrid.source);
+}
+
+// THE COMPILER'S DEFINITIONS WIN OVER A DOCUMENT'S.
+//
+// A document hdMtlx builds carries the libraries of the host's USD, and a
+// host may be older than the compiler's (Blender's 1.39.4). The compiler
+// used to copy the document and import its own libraries after it, and an
+// import skips what is there already: the host's definitions and
+// implementations stayed. Here the document brings an implementation of
+// standard_surface under the library's own name that draws a blue diffuse
+// instead -- what an older host's definition looks like to the compiler --
+// and the material must compile exactly as it does from its XML alone, with
+// the compiler's libraries.
+TEST_CASE("a document's own definitions give way to the compiler's libraries", "[material][materialx][libraries]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto c = compiler(*gpu);
+    const std::string xml =
+        surface("standard_surface", "    <input name=\"base_color\" type=\"color3\" value=\"0.8, 0.5, 0.2\" />\n");
+    auto alone = c->compileXml(xml, "material");
+    if (!alone) FAIL(alone.error().toString());
+
+    namespace mx = MaterialX;
+    mx::DocumentPtr document = mx::createDocument();
+    mx::readFromXmlString(document, xml);
+    mx::DocumentPtr decoy = mx::createDocument();
+    mx::readFromXmlString(decoy,
+                          "<?xml version=\"1.0\"?>\n<materialx version=\"1.39\">\n"
+                          "  <nodegraph name=\"NG_host_standard_surface\">\n"
+                          "    <oren_nayar_diffuse_bsdf name=\"diffuse\" type=\"BSDF\">\n"
+                          "      <input name=\"color\" type=\"color3\" value=\"0, 0, 1\" />\n"
+                          "    </oren_nayar_diffuse_bsdf>\n"
+                          "    <surface name=\"shell\" type=\"surfaceshader\">\n"
+                          "      <input name=\"bsdf\" type=\"BSDF\" nodename=\"diffuse\" />\n"
+                          "    </surface>\n"
+                          "    <output name=\"out\" type=\"surfaceshader\" nodename=\"shell\" />\n"
+                          "  </nodegraph>\n"
+                          "  <implementation name=\"IMPL_standard_surface_surfaceshader_101\"\n"
+                          "                  nodedef=\"ND_standard_surface_surfaceshader\"\n"
+                          "                  nodegraph=\"NG_host_standard_surface\" />\n"
+                          "</materialx>\n");
+    document->importLibrary(decoy);
+    REQUIRE(document->getImplementation("IMPL_standard_surface_surfaceshader_101"));
+    auto given = c->compileDocument(std::shared_ptr<void>(document), "material");
+    if (!given) FAIL(given.error().toString());
+    std::printf("  from its XML %s, from a document with the host's implementation %s\n", alone->module.c_str(),
+                given->module.c_str());
+    CHECK(given->module == alone->module);
+    CHECK(given->source == alone->source);
 }
 
 TEST_CASE("a UsdPreviewSurface's opacity is coverage: no transmission lobe, and the material cuts",

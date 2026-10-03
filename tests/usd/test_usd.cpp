@@ -42,6 +42,7 @@
 
 #include "athenea/technique/Visibility.h"
 #include "athenea/core/Hash.h"
+#include "athenea/core/Platform.h"
 #include "athenea/io/Exr.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/io/Readers.h"
@@ -6780,6 +6781,79 @@ TEST_CASE("what a glass cloud shows behind it leaves through the far face as the
     const double cloudRatio = c[2] / c[1];
     CHECK(std::abs(cloudRatio - meshRatio) < 0.15 * meshRatio);
     CHECK(std::abs(c[1] - m[1]) < 0.15 * m[1]);
+}
+
+// A COMPILER GIVEN MATERIALX LIBRARIES OF ITS OWN READS ITS DEFINITIONS THERE.
+//
+// $ATHENEA_MATERIALX_ROOT names the libraries hdAthenea's material compiler
+// loads in place of the host USD's, and the document hdMtlx builds carries
+// the host's: the compiler's definitions must win over the document's. The
+// root here is a copy of the build's own libraries in which UsdPreviewSurface's
+// diffuseColor defaults to red instead of 0.18 grey, and a quad whose
+// UsdPreviewSurface authors no colour must come out red. Grey is what either
+// half missing gives: the variable not read, or the host's node definition
+// kept from the document. Hidden: ctest runs it as `materialx_root`, with the
+// variable set, since the engine reads it once for the process.
+TEST_CASE("a material compiler given its own MaterialX libraries takes its definitions from them",
+          "[.materialx_root][usd][gpu][materials]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const std::string root = platform::env("ATHENEA_MATERIALX_ROOT");
+    REQUIRE_FALSE(root.empty());
+    const fs::path libraries = fs::path(root) / "libraries";
+    std::error_code ec;
+    fs::remove_all(libraries, ec);
+    fs::create_directories(root);
+    fs::copy(ATHENEA_TEST_MATERIALX_LIBRARIES, libraries, fs::copy_options::recursive);
+    const fs::path preview = libraries / "bxdf" / "usd_preview_surface.mtlx";
+    std::string text;
+    {
+        std::ifstream in(preview);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::string grey = "name=\"diffuseColor\" type=\"color3\" value=\"0.18, 0.18, 0.18\"";
+    const size_t at = text.find(grey);
+    REQUIRE(at != std::string::npos);
+    text.replace(at, grey.size(), "name=\"diffuseColor\" type=\"color3\" value=\"0.8, 0.05, 0.05\"");
+    {
+        std::ofstream out(preview, std::ios::trunc);
+        out << text;
+    }
+    const fs::path path = scratch("materialx_root.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Looks/Paint>\n}\n"
+               "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            float inputs:roughness = 1\n"
+               "            token outputs:surface\n        }\n    }\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    }
+    const uint32_t w = 64, h = 64;
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+    if (!image) FAIL(image.error().toString());
+    gpu::BufferDesc desc;
+    desc.bytes = image->rgba.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto frame = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+    REQUIRE(frame);
+    const std::array<double, 3> m = middleMean(gpu, *frame, w, h, 16);
+    std::printf("  an unauthored diffuseColor under the compiler's own libraries: %.4f %.4f %.4f\n", m[0], m[1], m[2]);
+    CHECK(m[0] > 0.1);
+    CHECK(m[0] > 4.0 * m[1]);
+    CHECK(m[0] > 4.0 * m[2]);
 }
 
 // THE ROOM THROUGH A ROUGH GLASS IS SHARPER THAN ITS REFLECTION.

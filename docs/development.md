@@ -367,7 +367,11 @@ Eighteen binaries, one per area, all under `tests/`.
 
 Plus four tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
 `single_tbb` (one TBB in the process), and the two `mesh2splat_density_*`
-that run the real CLI and assert on the line it prints.
+that run the real CLI and assert on the line it prints. And one Catch2 case
+ctest runs on its own, `materialx_root`: `athenea_usd_tests
+"[materialx_root]"` with `ATHENEA_MATERIALX_ROOT` set, since the engine reads
+the variable once a process. The case is hidden (`[.materialx_root]`), so the
+discovery that registers every other case leaves it out.
 
 **Why `athenea_host_tests` links nothing.** It drives the plugin the way a host
 does, by name. Were it to link `athenea::usd` as well, a template instantiated in

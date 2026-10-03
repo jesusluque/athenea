@@ -68,7 +68,7 @@ athenea_test(athenea_geom_tests
 
 athenea_test(athenea_material_tests
     SOURCES material/test_texture_store.cpp material/test_lobes.cpp material/test_material_compiler.cpp
-    LIBS athenea::material hio)
+    LIBS athenea::material hio MaterialXCore MaterialXFormat)
 target_compile_options(athenea_material_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
                        -Wno-double-promotion -Wno-cast-align)
 target_compile_definitions(athenea_material_tests PRIVATE ATHENEA_MATERIALX_ROOT="${ATHENEA_USD_ROOT}")
@@ -96,7 +96,15 @@ athenea_test(athenea_usd_tests
     SOURCES usd/test_usd.cpp usd/test_migrate.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
-target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}")
+target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
+                           ATHENEA_TEST_MATERIALX_LIBRARIES="${ATHENEA_USD_ROOT}/libraries")
+# $ATHENEA_MATERIALX_ROOT is read once a process, so the case that sets it is
+# hidden from the discovery above and run here alone, with it set to a
+# directory the case fills with an edited copy of the build's libraries.
+add_test(NAME materialx_root COMMAND athenea_usd_tests "[materialx_root]")
+set_tests_properties(materialx_root PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR};ATHENEA_MATERIALX_ROOT=${CMAKE_CURRENT_BINARY_DIR}/materialx_root"
+    LABELS gpu)
 target_compile_options(athenea_usd_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
                        -Wno-double-promotion -Wno-cast-align)
 set_target_properties(athenea_usd_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
