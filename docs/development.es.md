@@ -115,9 +115,10 @@ comprobación.
 
 - **El contrato entre módulos es `common/packing.slang`**: cómo se empaquetan
   en cuatro palabras la opacidad, la escala, el cuaternión y el color DC de un
-  splat, y en una la normal de sombreado opcional (`packNormal`). Todo lo que
-  escribe una nube y todo lo que la lee pasa por ahí. Un buffer opcional de
-  `GpuSplats` (`pbr`, `normals`) se enlaza tenga o no la nube -- la forma en
+  splat, en una la normal de sombreado opcional (`packNormal`) y en una la
+  emisión opcional (`packRgb9e5`). Todo lo que escribe una nube y todo lo que
+  la lee pasa por ahí. Un buffer opcional de `GpuSplats` (`pbr`, `normals`,
+  `emission`) se enlaza tenga o no la nube -- la forma en
   su lugar -- y un flag en los parámetros dice cuál.
 - **El índice de un splat no es el de su registro.** La validación descarta
   lo que no se puede dibujar; `GpuSplats::origin` dice de qué registro vino
@@ -642,6 +643,20 @@ sobre la cara.
 material translúcido no es uno transparente, y bajar aquí la opacidad diría
 que sí lo es.
 
+**La emisión**, donde algún material de la escena emite luz: el color del
+material por su peso (`StageMaterial::emission`, leído en cada uno de los
+cuatro vocabularios), por su mapa donde lo hay -- el clip `Emission` del
+efecto, leído como rgb o en un canal (`emissionChannel`) --, escrita por el
+efecto en una entrada propia del registro, la última, y por el host en
+`record[20..22]` (`primvars:athenea:splat:emission`; los armónicos empiezan en
+23). Las nubes reiluminadas y con transfer la suman al dibujarse; el bake se la
+encuentra en su primer vértice y la guarda en los colores. Añadir una entrada
+de material que lleve una gaussiana son los mismos cinco sitios:
+`StageMaterial` y `materialOf`, un clip o un parámetro del efecto, `m2sWrite`
+del kernel (y `m2sLookAt`, para que `--simplify` la compare), la disposición
+del registro en `convert`/`recordFloats`, y el campo del encoding que leen la
+exportación y la decodificación.
+
 **Joints y pesos**, con `--skinned`: cuatro de cada por gaussiana, mezclados
 desde las esquinas del triángulo, para que la nube se deforme con el esqueleto
 que llevaba la malla.
@@ -883,7 +898,7 @@ armónicos y sus coeficientes, el extent — y una cámara que lo encuadra salvo
 
 Al lado, los primvars que dicen lo que necesita este motor y los schemas que
 los declaran: `AtheneaSplatLightingAPI` (`relight`, `litBody`, y metallic,
-roughness, transmission y la normal de sombreado por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
+roughness, transmission, la normal de sombreado y la emisión por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
 tiene esqueleto, `AtheneaSplatCryptomatteAPI` con un id por gaussiana y el
 manifest que los nombra, y `AtheneaSplatVisibilityAPI` una vez que ha corrido `athenea
 visibility`. La referencia de atributos es

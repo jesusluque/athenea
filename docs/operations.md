@@ -212,7 +212,8 @@ as a rig (each joint's weight summed, the four heaviest kept); an array whose
 name ends in `shadowBits` bit by bit; any other int -- an id, a part, a sheet
 -- as what may not be merged across at all; `primvars:athenea:splat:normal`
 as a direction (the weighted mean made a unit vector again); any other float
--- metallic, roughness, a transfer -- as a mean. Metallic, roughness and transmission are
+-- metallic, roughness, a transfer, `primvars:athenea:splat:emission` -- as a
+mean. Metallic, roughness and transmission are
 also compared as colour is. An array sampled in time is merged a sample at a
 time. A splat file is written as a new stage, as `athenea convert` writes one.
 
@@ -364,7 +365,7 @@ recipe is §3.1 below.
 | `--normal-map-turns` | flag | off | the normal map turns the gaussian, not only its shading. The shading normal is written either way (`primvars:athenea:splat:normal`) |
 | `--no-displacement` | flag | off | ignore the materials' displacement: every gaussian stands on the flat mesh |
 | `--displace-refine` | integer, 1 to 64 | `8` | where the relief stretches a cell, split it into at most this many gaussians along each of its two axes |
-| `--simplify` | number, 0 to 1 | `0` (off) | a block of cells whose colour, metallic, roughness, cut-out and normals move by no more than this -- over the block and a block past each side, all inside one triangle -- becomes one gaussian of its size. Colours and cut-out are 0 to 1; normals are compared as the length of their difference, about the angle in radians |
+| `--simplify` | number, 0 to 1 | `0` (off) | a block of cells whose colour, metallic, roughness, emission, cut-out and normals move by no more than this -- over the block and a block past each side, all inside one triangle -- becomes one gaussian of its size. Colours and cut-out are 0 to 1; emission is compared in its own units, so a bright one merges less; normals are compared as the length of their difference, about the angle in radians |
 | `--simplify-levels` | integer, 1 to 5 | `3` | the largest block `--simplify` may merge is 2^this cells a side |
 | `--no-camera` | flag | camera added | |
 | `--no-bake` | flag | bake on | carry the material to be relit instead of baking the light in |
@@ -539,6 +540,26 @@ shadow on itself: nothing in the tracer stands where the relief does.
 `--no-displacement` converts the flat surface. Hydra's own mesh route ignores
 displacement.
 
+**What it gives off.** A material's emission is carried, a gaussian at a time,
+as the linear radiance its mesh is rendered with: standard_surface's
+`emission` times `emission_color`, OpenPBR's `emission_luminance` times
+`emission_color` (nits, multiplied in as they stand, which is what its graph
+does), glTF's `emissive` times `emissive_strength`, and UsdPreviewSurface's
+`emissiveColor`. A map on the colour is the colour and the weight multiplies
+it; a map on the weight is read on one channel and the colour multiplies it.
+The log line of a mesh that gives off light says so:
+
+```
+mesh2splat: /World/Quad uses /World/Looks/Screen (colour 0.50 0.50 0.50, ..., emission 2.000000 2.000000 2.000000 x '.../emission_gradient.png')
+```
+
+It is written as `primvars:athenea:splat:emission` (§4.3) only where some
+material of the stage emits. Relit (`--no-bake`) and transferred clouds add it
+when they are drawn; a baked one holds it in its colours already. What it
+does not do is light anything: the mesh's emissive triangles are a light for
+the path tracer, the cloud's gaussians are not. An OpenPBR coat over the
+emission, which tints and dims it on the mesh, is not carried.
+
 **Fewer gaussians where the surface is the same.** A gaussian a cell is what
 the surface costs wherever it is, and most of a surface -- a painted panel, a
 wall, a floor -- is the same from one cell to the next. `--simplify` walks each
@@ -705,7 +726,12 @@ finest where none does -- and only that level is posed.
 A cloud that keeps shading normals (a conversion's, `primvars:athenea:splat:normal`)
 keeps them in its `.athc`: four bytes more a gaussian, the merged levels'
 the weighted mean of what they stand for made unit again. That is version 2
-of the format; a version 1 file, which has none, is still read.
+of the format; a version 1 file, which has none, is still read. A cloud that
+gives off light (`primvars:athenea:splat:emission`) keeps that too, four bytes
+more a gaussian (one RGB9E5 word, after the normals where both are there),
+the merged levels' the weighted mean of what they stand for; it is bit 2 of
+the header's `flags` (bit 0 is the normals), so a file without it reads as
+before.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the
@@ -818,6 +844,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:shadowBits` | int[] ‹2 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:emission` | color3f[] ‹1 a gaussian› | — |
 
 `relight` says the colours are an albedo the scene's lights must light.
 `litBody` says they are already the light on the material's body, so what a
@@ -853,6 +880,17 @@ the frame keeps answering everything geometric (the footprint, where a ray
 meets the disc). `athenea mesh2splat` always writes it (twelve bytes a
 gaussian in the file, four on the device); a skeleton that carries the cloud
 turns it as it turns the frame; a capture has none.
+`emission` is the light each gaussian gives off by itself, linear radiance in
+the scene's units, unbounded: what its material's emission was where it stood
+(below). A relit gaussian adds it to what it reflects, transferred or not,
+unshadowed and the same from both sides of its disc; one whose colours are
+`litBody` does not, because the bake that wrote them met the emission and
+holds it already. It lights nothing else -- an emissive gaussian is not a
+light, and a mesh beside it is not lit by it. `athenea mesh2splat` writes it
+only where some material of the stage gives off light (twelve bytes a
+gaussian in the file, four on the device as RGB9E5: three 9-bit mantissas
+under a shared exponent, up to 65408, each channel to 1/512 of the
+brightest); a capture has none.
 
 **`AtheneaSplatSkinningAPI`** — the joints that carry a cloud.
 

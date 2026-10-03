@@ -113,10 +113,11 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
 `technique`, `volume`, `usd`, `view`, and `test` for the check kernels.
 
 - **The cross-module contract is `common/packing.slang`**: how a splat's
-  opacity, scale, quaternion and DC colour are packed into four words, and the
-  optional shading normal into one (`packNormal`). Anything that writes a
-  cloud and anything that reads one goes through it. An optional buffer of
-  `GpuSplats` (`pbr`, `normals`) is bound whether or not the cloud has it --
+  opacity, scale, quaternion and DC colour are packed into four words, the
+  optional shading normal into one (`packNormal`) and the optional emission
+  into one (`packRgb9e5`). Anything that writes a cloud and anything that
+  reads one goes through it. An optional buffer of `GpuSplats` (`pbr`,
+  `normals`, `emission`) is bound whether or not the cloud has it --
   the shape in its place -- and a flag in the parameters says which.
 - **A splat's index is not its record's.** Validation drops what cannot be
   drawn; `GpuSplats::origin` says which record each kept splat came from.
@@ -619,6 +620,19 @@ lit with it and keeps the relief, while the disc stays on the face.
 opacity. A translucent material is not a transparent one, and lowering the
 opacity here would say that it was.
 
+**Emission**, where some material of the stage gives off light: the
+material's colour times its weight (`StageMaterial::emission`, read in each
+of the four vocabularies), times its map where there is one -- the effect's
+`Emission` clip, read as rgb or on one channel (`emissionChannel`) --
+written by the effect in a record entry of its own, the last, and by the host
+into `record[20..22]` (`primvars:athenea:splat:emission`; the harmonics start
+at 23). Relit and transferred clouds add it when drawn; the bake meets it at
+its first vertex and keeps it in the colours. Adding a material input a
+gaussian carries means the same five places: `StageMaterial` and `materialOf`,
+a clip or a parameter of the effect, the kernel's `m2sWrite` (and `m2sLookAt`,
+so `--simplify` compares it), the record layout in `convert`/`recordFloats`,
+and the encoding field the export and the decode read.
+
 **Joints and weights**, with `--skinned`: four of each a gaussian, blended
 from the triangle's corners, so the cloud deforms with the skeleton that
 carried the mesh.
@@ -848,7 +862,7 @@ and its coefficients, the extent — and a camera framing it unless
 
 Beside them, the primvars that say what this engine needs and the schemas that
 declare them: `AtheneaSplatLightingAPI` (`relight`, `litBody`, and metallic,
-roughness, transmission and the shading normal a gaussian), `AtheneaSplatSkinningAPI` where the cloud
+roughness, transmission, the shading normal and the emission a gaussian), `AtheneaSplatSkinningAPI` where the cloud
 is skinned, `AtheneaSplatCryptomatteAPI` with an id a gaussian and the manifest
 that names them, and `AtheneaSplatVisibilityAPI` once `athenea visibility` has run.
 [`operations.md §4.3`](operations.md#43-the-api-schemas) is the attribute

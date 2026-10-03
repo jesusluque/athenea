@@ -261,6 +261,9 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         // The shading normal a conversion keeps apart from the frame.
         static const TfToken kNormal("athenea:splat:normal");
         arrays.normals = held(kNormal);
+        // And the light it gives off by itself, a lamp's shade or a screen.
+        static const TfToken kEmission("athenea:splat:emission");
+        arrays.emission = held(kEmission);
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();

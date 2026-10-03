@@ -588,6 +588,8 @@ Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> inst
             cursor["pbr"].setBinding(shade.cloud->hasPbr() ? shade.cloud->pbr.rhi() : shade.cloud->shape.rhi());
             cursor["normals"].setBinding(shade.cloud->hasNormals() ? shade.cloud->normals.rhi()
                                                                    : shade.cloud->shape.rhi());
+            cursor["emission"].setBinding(shade.cloud->hasEmission() ? shade.cloud->emission.rhi()
+                                                                     : shade.cloud->shape.rhi());
             // Which prim each gaussian came from, and what a pick said that
             // prim is made of. Both bound either way; `overrideCount` of 0
             // says the table is not read.
@@ -629,6 +631,7 @@ Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> inst
             p["categoriesHi"].setData(static_cast<uint32_t>(shade.categories >> 32));
             p["hasPbr"].setData(uint32_t{shade.cloud->hasPbr() ? 1u : 0u});
             p["hasNormals"].setData(uint32_t{shade.cloud->hasNormals() ? 1u : 0u});
+            p["hasEmission"].setData(uint32_t{shade.cloud->hasEmission() ? 1u : 0u});
             p["litBody"].setData(uint32_t{shade.litBody ? 1u : 0u});
             p["envLights"].setData(sky ? lights->envLights : 0u);
             p["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);

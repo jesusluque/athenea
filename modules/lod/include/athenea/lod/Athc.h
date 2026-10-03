@@ -6,12 +6,13 @@
 //   page 0        header
 //   page 1..      level table, chunk table
 //   aligned       the finest level's group starts
-//   aligned       each level: positions, shape, SH, cells (per group)[, normals]
-//   aligned       each chunk: positions, shape, SH, finest group (per splat)[, normals]
+//   aligned       each level: positions, shape, SH, cells (per group)[, normals][, emission]
+//   aligned       each chunk: positions, shape, SH, finest group (per splat)[, normals][, emission]
 //
 // Version 2 adds the header's `flags`; bit 0 says every block ends with the
-// shading normals (one word an element, GpuSplats::normals). Version 1 files,
-// which have none, are still read.
+// shading normals (one word an element, GpuSplats::normals), and bit 2 that
+// the emitted radiance follows them (one RGB9E5 word an element,
+// GpuSplats::emission). Version 1 files, which have neither, are still read.
 //
 // Every block starts on a 4096-byte page, so a chunk maps and faults in alone.
 // Little-endian, the device's own packing (athenea/common/packing.slang).

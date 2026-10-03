@@ -30,6 +30,8 @@ public struct DecodeParams {
     public uint recordBase;
     // Where the three fields of a shading normal start, or kNoField.
     public uint normal;
+    // Where the three fields of an emitted radiance start, or kNoField.
+    public uint emission;
 };
 
 public float fieldOf(StructuredBuffer<float> raw, uint record, uint stride, uint field) {

@@ -37,8 +37,15 @@ public static const uint kLevels = 10;   // 30-bit codes
 /// Moments per group: W, S1 (3), S2 (6: xx xy xz yy yz zz), C base colour
 /// (3), C rest (3 per basis kept, rgb per basis), and where the cloud keeps
 /// shading normals N (3): the sum of w n, weighed as a colour is, whose
-/// direction is the group's normal.
+/// direction is the group's normal; and where it keeps an emission E (3):
+/// the sum of w e, weighed as a colour is, whose mean is the group's.
 public static const uint kMomentsHead = 13;
+
+/// Where a group's emission moments start: after the harmonics', and after
+/// the normals' where those are kept.
+public uint emissionMoments(LodParams p) {
+    return kMomentsHead + p.keep * 3 + (p.normals != 0 ? 3u : 0u);
+}
 
 public struct LodParams {
     public uint  count;        // splats, or groups at this level
@@ -65,7 +72,10 @@ public struct LodParams {
     /// follow the splats into Morton order and the cut, and whose weighted sum
     /// is three moments more after the harmonics', renormalised per group.
     public uint  normals;
-    public uint  pad1;
+    /// 1: the cloud keeps an emitted radiance (`GpuSplats::emission`), which
+    /// follows the splats as the normals do, and whose weighted sum is three
+    /// moments after theirs, divided by the weight per group.
+    public uint  emission;
 };
 
 public uint levelShift(uint level) {

@@ -56,6 +56,12 @@ struct SplatEncoding {
     /// mesh knows it -- the normal map turned it, the disc did not -- and a
     /// capture does not, so `kNoField` is every file a trainer writes.
     uint32_t normal = kNoField;
+    /// THE LIGHT THE SURFACE UNDER IT GAVE OFF BY ITSELF: three consecutive
+    /// fields (r g b) of linear radiance, the material's emission -- a lamp's
+    /// shade, a screen. Added unshadowed to what a relit gaussian reflects; a
+    /// radiance bake already holds it. `kNoField` for a capture, and for a
+    /// conversion of materials that give off nothing.
+    uint32_t emission = kNoField;
     /// First rest coefficient and how many basis functions per colour the file
     /// carries (0, 3, 8 or 15).
     uint32_t restBase = 0;

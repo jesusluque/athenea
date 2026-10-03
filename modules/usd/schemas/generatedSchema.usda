@@ -229,6 +229,10 @@ object through the glass wants a ray, which this is not."""
         doc = """The shading normal of each gaussian, apart from its frame: which way the surface under it faced once its normal map turned it, in the field's own space (the one positions and orientations are in). One a gaussian. A relit gaussian is lit with it, put on the side of the disc the eye is on, while its frame keeps answering everything geometric -- its footprint, where a ray meets it -- so a conversion keeps the relief its mesh's normal map drew without the discs being turned. A skeleton that carries the cloud turns it as it turns the frame. A capture has none, and is relit with its shortest axis."""
         interpolation = "vertex"
     )
+    color3f[] primvars:athenea:splat:emission = [] (
+        doc = """The light each gaussian gives off by itself, linear radiance in the scene's units: what its material's emission was where it stood (standard_surface's `emission` times `emission_color`, OpenPBR's `emission_luminance` times `emission_color`, glTF's `emissive` times `emissive_strength`, UsdPreviewSurface's `emissiveColor`, each with its map). One a gaussian. A relit gaussian -- its colours an albedo, transferred or not -- adds it to what it reflects, unshadowed and the same from every side; one whose body was baked (`litBody`) does not, since the bake already holds it. It lights nothing else: an emissive gaussian is not a light. A capture has none."""
+        interpolation = "vertex"
+    )
 }
 
 class "AtheneaSplatVisibilityAPI" (

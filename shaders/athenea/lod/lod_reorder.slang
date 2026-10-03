@@ -15,6 +15,9 @@ RWStructuredBuffer<uint>   sh;
 // The shading normals, where `params.normals` says the cloud keeps them.
 StructuredBuffer<uint>     srcNormals;
 RWStructuredBuffer<uint>   normals;
+// The radiance given off, where `params.emission` says the cloud keeps it.
+StructuredBuffer<uint>     srcEmission;
+RWStructuredBuffer<uint>   emission;
 ConstantBuffer<LodParams>  params;
 
 [shader("compute")]
@@ -34,5 +37,8 @@ void lodReorder(uint3 tid: SV_DispatchThreadID) {
     }
     if (params.normals != 0) {
         normals[k] = srcNormals[i];
+    }
+    if (params.emission != 0) {
+        emission[k] = srcEmission[i];
     }
 }

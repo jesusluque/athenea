@@ -17,6 +17,9 @@ RWStructuredBuffer<float4>   coefficients; // (1 + keepPerColour) per record: rg
 // The shading normal, unit length and turned as the positions are, where the
 // record carries one (`params.normal`); written only then.
 RWStructuredBuffer<float4>   normalOut;
+// The radiance the record gives off, linear, nothing below zero and nothing
+// that is not a number, where it carries one (`params.emission`).
+RWStructuredBuffer<float4>   emissionOut;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -55,6 +58,11 @@ void splatExport(uint3 tid: SV_DispatchThreadID) {
                           fieldOf(raw, i, s, params.normal + 2));
         n = params.flipYZ != 0 ? float3(n.x, -n.y, -n.z) : n;
         normalOut[i] = float4(dot(n, n) > 1.0e-20 ? normalize(n) : float3(0.0), 0.0);
+    }
+    if (params.emission != kNoField) {
+        const float3 e = float3(fieldOf(raw, i, s, params.emission), fieldOf(raw, i, s, params.emission + 1),
+                                fieldOf(raw, i, s, params.emission + 2));
+        emissionOut[i] = float4(e.x > 0.0 ? e.x : 0.0, e.y > 0.0 ? e.y : 0.0, e.z > 0.0 ? e.z : 0.0, 0.0);
     }
     scaleValid[i] = valid ? float4(exp(ls), 1.0) : float4(0.0, 0.0, 0.0, 0.0);
 

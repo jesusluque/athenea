@@ -81,6 +81,14 @@ struct GpuSplats {
     /// `hasNormals` is how a kernel asks. Whatever turns the frame (the
     /// skinner) turns this with it.
     gpu::Buffer normals;
+    /// THE LIGHT THE SURFACE GAVE OFF BY ITSELF: one uint a splat, linear
+    /// radiance in RGB9E5 (packing.slang's `packRgb9e5`). A relit gaussian
+    /// adds it, unshadowed, to what it reflects -- a converted lamp shade, a
+    /// screen -- and a cloud whose body was baked does not, since the bake
+    /// already holds it. Empty for a capture and for a conversion of
+    /// materials that give off nothing; `hasEmission` is how a kernel asks.
+    /// Nothing turns it: it has no direction.
+    gpu::Buffer emission;
     uint32_t    transferWords = 0;
     uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9 or 36
     /// WHAT THIS CLOUD CASTS ON THE SPACE AROUND IT, baked by part (a part is
@@ -105,6 +113,7 @@ struct GpuSplats {
     [[nodiscard]] bool hasPbr() const noexcept { return pbr.valid(); }
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
     [[nodiscard]] bool hasNormals() const noexcept { return normals.valid(); }
+    [[nodiscard]] bool hasEmission() const noexcept { return emission.valid(); }
     [[nodiscard]] bool hasTransfer() const noexcept { return transfer.valid() && transferCount >= 9; }
     /// Whether it carries which ways out are open (`shadowBits`).
     [[nodiscard]] bool hasShadowBits() const noexcept { return shadowBits.valid(); }
@@ -173,6 +182,9 @@ struct SplatStreams {
     FloatStream thinWalled;
     /// Three floats a splat, the shading normal (`primvars:athenea:splat:normal`).
     FloatStream normals;
+    /// Three floats a splat, the radiance it gives off
+    /// (`primvars:athenea:splat:emission`).
+    FloatStream emission;
 };
 
 /// A point cloud as separate arrays, the way UsdGeomPoints stores one.
@@ -228,7 +240,7 @@ private:
     [[nodiscard]] Result<GpuSplats> startSplats(const std::string& source, uint32_t declared, uint32_t keep,
                                                 bool withPbr = false, bool withCrypto = false,
                                                 uint32_t transferCount = 0, bool withShadowBits = false,
-                                                bool withNormals = false);
+                                                bool withNormals = false, bool withEmission = false);
     /// Validates and decodes `n` records in `raw` into `splats` after `written`;
     /// `recordBase` is the first of them in the whole cloud, for `origin`.
     [[nodiscard]] Result<uint32_t> decodeSlice(const gpu::Buffer& raw, const io::SplatEncoding& e, uint32_t n,

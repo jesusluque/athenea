@@ -213,7 +213,8 @@ más pesadas conservadas); un array cuyo nombre acaba en `shadowBits` bit a bit;
 cualquier otro entero -- un id, una parte, una lámina -- como lo que no se
 puede fundir entre sí; `primvars:athenea:splat:normal` como una dirección (la
 media ponderada hecha de nuevo un vector unitario); cualquier otro float --
-metallic, roughness, un transfer -- como una media. Metallic, roughness y transmisión también se comparan
+metallic, roughness, un transfer, `primvars:athenea:splat:emission` -- como una
+media. Metallic, roughness y transmisión también se comparan
 como el color. Un array muestreado en el tiempo se funde muestra a muestra. Un
 fichero de splats se escribe como una escena nueva, como la escribe
 `athenea convert`.
@@ -368,7 +369,7 @@ receta es §3.1.
 | `--normal-map-turns` | flag | apagado | el mapa de normales gira la gaussiana, no solo su sombreado. La normal de sombreado se escribe en ambos casos (`primvars:athenea:splat:normal`) |
 | `--no-displacement` | flag | apagado | ignorar el displacement de los materiales: toda gaussiana se queda sobre la malla plana |
 | `--displace-refine` | entero, 1 a 64 | `8` | donde el relieve estira una celda, partirla en como mucho este número de gaussianas en cada uno de sus dos ejes |
-| `--simplify` | número, 0 a 1 | `0` (apagado) | un bloque de celdas cuyo color, metallic, roughness, recorte y normales varían no más que esto -- en el bloque y en un bloque más allá de cada lado, todo dentro de un triángulo -- se convierte en una gaussiana de su tamaño. Colores y recorte van de 0 a 1; las normales se comparan por la longitud de su diferencia, más o menos el ángulo en radianes |
+| `--simplify` | número, 0 a 1 | `0` (apagado) | un bloque de celdas cuyo color, metallic, roughness, emisión, recorte y normales varían no más que esto -- en el bloque y en un bloque más allá de cada lado, todo dentro de un triángulo -- se convierte en una gaussiana de su tamaño. Colores y recorte van de 0 a 1; la emisión se compara en sus propias unidades, así que una brillante se funde menos; las normales se comparan por la longitud de su diferencia, más o menos el ángulo en radianes |
 | `--simplify-levels` | entero, 1 a 5 | `3` | el bloque más grande que puede fundir `--simplify` tiene 2^esto celdas de lado |
 | `--no-camera` | flag | cámara añadida | |
 | `--no-bake` | flag | bake encendido | llevar el material para ser relit, en vez de hornear la luz |
@@ -547,6 +548,26 @@ sombra del relieve sobre sí mismo: en el trazador no hay nada donde está el
 relieve. `--no-displacement` convierte la superficie plana. La ruta de mallas
 de Hydra ignora el displacement.
 
+**Lo que emite.** La emisión de un material se lleva, gaussiana a gaussiana,
+como la radiancia lineal con que se renderiza su malla: `emission` por
+`emission_color` de standard_surface, `emission_luminance` por
+`emission_color` de OpenPBR (nits, multiplicados tal cual, que es lo que hace
+su grafo), `emissive` por `emissive_strength` de glTF, y `emissiveColor` de
+UsdPreviewSurface. Un mapa sobre el color es el color y el peso lo multiplica;
+un mapa sobre el peso se lee en un canal y el color lo multiplica. La línea de
+log de una malla que emite luz lo dice:
+
+```
+mesh2splat: /World/Quad uses /World/Looks/Screen (colour 0.50 0.50 0.50, ..., emission 2.000000 2.000000 2.000000 x '.../emission_gradient.png')
+```
+
+Se escribe como `primvars:athenea:splat:emission` (§4.3) sólo donde algún
+material de la escena emite. Las nubes reiluminadas (`--no-bake`) y con
+transfer la suman al dibujarse; una horneada ya la lleva en sus colores. Lo que
+no hace es iluminar nada: los triángulos emisivos de la malla son una luz para
+el path tracer, las gaussianas de la nube no. Una capa de coat de OpenPBR sobre
+la emisión, que en la malla la tiñe y la atenúa, no se lleva.
+
 **Menos gaussianas donde la superficie es igual.** Una gaussiana por celda es lo
 que cuesta la superficie esté donde esté, y casi toda una superficie -- un panel
 pintado, una pared, un suelo -- es igual de una celda a la siguiente.
@@ -716,7 +737,12 @@ Una nube que guarda normales de sombreado (las de una conversión,
 `primvars:athenea:splat:normal`) las guarda en su `.athc`: cuatro bytes más por
 gaussiana, y en los niveles fundidos la media ponderada de lo que representan
 hecha unitaria de nuevo. Es la versión 2 del formato; un fichero de la versión
-1, que no tiene, se sigue leyendo.
+1, que no tiene, se sigue leyendo. Una nube que emite luz
+(`primvars:athenea:splat:emission`) también la guarda, cuatro bytes más por
+gaussiana (una palabra RGB9E5, tras las normales donde están las dos), y en los
+niveles fundidos la media ponderada de lo que representan; es el bit 2 de los
+`flags` de la cabecera (el bit 0 son las normales), así que un fichero sin ella
+se lee como antes.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
 dibujan su gaussiana fundida, así que la nube está pero roma, y se afina según
@@ -830,6 +856,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:shadowBits` | int[] ‹2 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
 
 `relight` dice que los colores son un albedo que las luces de la escena tienen
 que iluminar. `litBody` dice que ya son la luz sobre el cuerpo del material,
@@ -870,6 +897,17 @@ a todo lo geométrico (la huella, dónde corta un rayo al disco). `athenea
 mesh2splat` la escribe siempre (doce bytes por gaussiana en el fichero, cuatro
 en el dispositivo); un esqueleto que lleva la nube la gira igual que gira el
 marco; una captura no tiene.
+`emission` es la luz que cada gaussiana emite por sí misma, radiancia lineal en
+las unidades de la escena, sin tope: lo que era la emisión de su material donde
+estaba (arriba). Una gaussiana reiluminada la suma a lo que refleja, con
+transfer o sin él, sin sombra y igual por las dos caras de su disco; una cuyos
+colores son `litBody` no, porque el bake que los escribió se encontró la
+emisión y ya la lleva. No ilumina nada más -- una gaussiana emisiva no es una
+luz, y una malla a su lado no recibe luz de ella. `athenea mesh2splat` la
+escribe sólo donde algún material de la escena emite luz (doce bytes por
+gaussiana en el fichero, cuatro en el dispositivo como RGB9E5: tres mantisas de
+9 bits bajo un exponente compartido, hasta 65408, cada canal a 1/512 del más
+brillante); una captura no tiene.
 
 **`AtheneaSplatSkinningAPI`** — los joints que llevan una nube.
 

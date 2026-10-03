@@ -96,7 +96,9 @@ athenea_test(athenea_usd_tests
     SOURCES usd/test_usd.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
-target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}")
+target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
+                           ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+                           ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive")
 target_compile_options(athenea_usd_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
                        -Wno-double-promotion -Wno-cast-align)
 set_target_properties(athenea_usd_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
@@ -194,6 +196,42 @@ set_tests_properties(mesh2splat_density_per-model PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [0-9][0-9]? splats of")
 set_tests_properties(mesh2splat_density_per-mesh PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [1-9][0-9][0-9]+ splats of")
+
+# What a converted lamp gives off. Two emissive quads -- a constant OpenPBR
+# luminance, and a glTF emissive map times its strength -- converted relit
+# (--no-bake), transferred (--transfer) and baked; then a hidden case of the
+# USD tests draws each against its mesh, raster and traced, and says whether
+# the cloud gives off what the mesh does (and the baked one not twice).
+set(ATHENEA_EMISSIVE_DIR ${CMAKE_CURRENT_BINARY_DIR}/emissive)
+foreach(variant constant mapped)
+    set(source ${CMAKE_CURRENT_SOURCE_DIR}/data/emissive_quad.usda)
+    if(variant STREQUAL "mapped")
+        set(source ${CMAKE_CURRENT_SOURCE_DIR}/data/emissive_quad_mapped.usda)
+    endif()
+    foreach(mode relit transfer baked)
+        set(flags)
+        if(mode STREQUAL "relit")
+            set(flags --no-bake)
+        elseif(mode STREQUAL "transfer")
+            set(flags --transfer --bake-samples 16)
+        else()
+            set(flags --bake-samples 16 --bake-degree 0)
+        endif()
+        add_test(NAME mesh2splat_emissive_${variant}_${mode}
+            COMMAND athenea mesh2splat ${source} ${flags} --no-camera --resolution 256
+                    -o ${ATHENEA_EMISSIVE_DIR}/${variant}_${mode}.usda)
+        set_tests_properties(mesh2splat_emissive_${variant}_${mode} PROPERTIES
+            ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+            FIXTURES_SETUP emissive_clouds
+            LABELS gpe)
+    endforeach()
+endforeach()
+add_test(NAME emissive_conversions_render_like_the_mesh
+    COMMAND athenea_usd_tests "[emissive_conversion]")
+set_tests_properties(emissive_conversions_render_like_the_mesh PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED emissive_clouds
+    LABELS gpe)
 
 # One TBB in the process: OpenUSD's oneTBB, which OIDN (built without its CPU
 # device) and everything else share.

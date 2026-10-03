@@ -10298,3 +10298,433 @@ TEST_CASE("a relit card with a tilted shading normal renders like the tilted mes
         CHECK(tiltedAgainstFlat.p99Relative > 0.2);
     }
 }
+
+// THE LIGHT A MATERIAL GIVES OFF IS READ IN ITS OWN WORDS.
+//
+// Four vocabularies say it four ways, each with its own defaults:
+// standard_surface's `emission` times `emission_color` (white, weighed by
+// nothing), OpenPBR's `emission_luminance` times `emission_color` (nits,
+// which its graph multiplies in as they stand), glTF's `emissive` times
+// `emissive_strength` (black, weighed by one), and UsdPreviewSurface's
+// `emissiveColor` alone. A map on the colour is the colour and leaves the
+// weight to multiply it; a map on the weight is read on one channel and
+// leaves the colour; a map on something that gives off nothing is nothing.
+TEST_CASE("a material's emission is read in each vocabulary, with its map", "[usd][mesh][materials][emission]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path path = scratch("splat_emission_read.usda");
+    const char* names[] = {"Standard", "Open", "Gltf", "Preview", "Dark", "GltfMapped", "WeightMapped",
+                           "PreviewMapped", "MappedDark"};
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n)\n";
+        for (const char* name : names) {
+            out << "def Mesh \"" << name << "\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                << "    int[] faceVertexCounts = [3]\n    int[] faceVertexIndices = [0, 1, 2]\n"
+                   "    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n"
+                   "    uniform token subdivisionScheme = \"none\"\n"
+                << "    rel material:binding = </Looks/" << name << ">\n}\n";
+        }
+        const auto mx = [&out](const char* name, const char* id, const std::string& inputs) {
+            out << "    def Material \"" << name << "\"\n    {\n"
+                << "        token outputs:mtlx:surface.connect = </Looks/" << name << "/S.outputs:out>\n"
+                << "        def Shader \"S\"\n        {\n"
+                << "            uniform token info:id = \"" << id << "\"\n" << inputs
+                << "            token outputs:out\n        }\n";
+        };
+        const auto image = [&out](const char* material, const char* type) {
+            out << "        def Shader \"Map\"\n        {\n"
+                << "            uniform token info:id = \"ND_image_" << type << "\"\n"
+                << "            asset inputs:file = @./lamp_" << material << ".png@\n"
+                << "            " << (std::string(type) == "float" ? "float" : "color3f") << " outputs:out\n"
+                << "        }\n";
+        };
+        out << "def Scope \"Looks\"\n{\n";
+        mx("Standard", "ND_standard_surface_surfaceshader",
+           "            float inputs:emission = 2\n            color3f inputs:emission_color = (1, 0.5, 0.25)\n");
+        out << "    }\n";
+        mx("Open", "ND_open_pbr_surface_surfaceshader",
+           "            float inputs:emission_luminance = 3\n            color3f inputs:emission_color = (0.5, 1, 0)\n");
+        out << "    }\n";
+        mx("Gltf", "ND_gltf_pbr_surfaceshader",
+           "            color3f inputs:emissive = (0.2, 0.4, 0.8)\n            float inputs:emissive_strength = 5\n");
+        out << "    }\n";
+        // standard_surface with a colour and no weight gives off nothing.
+        mx("Dark", "ND_standard_surface_surfaceshader", "            color3f inputs:emission_color = (1, 1, 1)\n");
+        out << "    }\n";
+        mx("GltfMapped", "ND_gltf_pbr_surfaceshader",
+           "            color3f inputs:emissive.connect = </Looks/GltfMapped/Map.outputs:out>\n"
+           "            float inputs:emissive_strength = 4\n");
+        image("GltfMapped", "color3");
+        out << "    }\n";
+        mx("WeightMapped", "ND_standard_surface_surfaceshader",
+           "            float inputs:emission.connect = </Looks/WeightMapped/Map.outputs:out>\n"
+           "            color3f inputs:emission_color = (0.25, 0.5, 1)\n");
+        image("WeightMapped", "float");
+        out << "    }\n";
+        // A map on a weight of nothing: nothing.
+        mx("MappedDark", "ND_standard_surface_surfaceshader",
+           "            color3f inputs:emission_color.connect = </Looks/MappedDark/Map.outputs:out>\n");
+        image("MappedDark", "color3");
+        out << "    }\n";
+        out << "    def Material \"Preview\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Preview/S.outputs:surface>\n"
+               "        def Shader \"S\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:emissiveColor = (1.5, 0.5, 0)\n"
+               "            token outputs:surface\n        }\n    }\n"
+               "    def Material \"PreviewMapped\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/PreviewMapped/S.outputs:surface>\n"
+               "        def Shader \"S\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:emissiveColor.connect = </Looks/PreviewMapped/T.outputs:rgb>\n"
+               "            token outputs:surface\n        }\n"
+               "        def Shader \"T\"\n        {\n"
+               "            uniform token info:id = \"UsdUVTexture\"\n"
+               "            asset inputs:file = @./lamp_preview.png@\n"
+               "            token inputs:sourceColorSpace = \"sRGB\"\n"
+               "            float3 outputs:rgb\n        }\n    }\n}\n";
+    }
+    auto builder = geom::MeshBuilder::create(*gpu->library);
+    if (!builder) FAIL(builder.error().toString());
+    auto stage = usd::MeshStage::open(path);
+    if (!stage) FAIL(stage.error().toString());
+    auto meshes = stage->read(*builder, usd::MeshStageOptions{});
+    if (!meshes) FAIL(meshes.error().toString());
+    REQUIRE(meshes->size() == std::size(names));
+    const auto is = [](const usd::StageMaterial& m, float r, float g, float b) {
+        CHECK(m.emission[0] == Catch::Approx(r));
+        CHECK(m.emission[1] == Catch::Approx(g));
+        CHECK(m.emission[2] == Catch::Approx(b));
+    };
+    for (const usd::StageMesh& mesh : *meshes) {
+        INFO(mesh.path);
+        const usd::StageMaterial& m = mesh.material;
+        if (mesh.path == "/Standard") {
+            is(m, 2.0F, 1.0F, 0.5F);
+            CHECK(m.emissionMap.empty());
+        } else if (mesh.path == "/Open") {
+            is(m, 1.5F, 3.0F, 0.0F);
+        } else if (mesh.path == "/Gltf") {
+            is(m, 1.0F, 2.0F, 4.0F);
+        } else if (mesh.path == "/Preview") {
+            is(m, 1.5F, 0.5F, 0.0F);
+        } else if (mesh.path == "/Dark" || mesh.path == "/MappedDark") {
+            CHECK_FALSE(m.emits());
+            CHECK(m.emissionMap.empty());
+        } else if (mesh.path == "/GltfMapped") {
+            // The map is the colour; the strength multiplies it.
+            is(m, 4.0F, 4.0F, 4.0F);
+            CHECK(m.emissionMap.file.find("lamp_GltfMapped.png") != std::string::npos);
+            CHECK(m.emissionMap.channel == 0);
+        } else if (mesh.path == "/WeightMapped") {
+            // The map is the weight, one channel of it; the colour multiplies it.
+            is(m, 0.25F, 0.5F, 1.0F);
+            CHECK(m.emissionMap.file.find("lamp_WeightMapped.png") != std::string::npos);
+            CHECK(m.emissionMap.channel == 'r');
+        } else {
+            is(m, 1.0F, 1.0F, 1.0F);
+            CHECK(m.emissionMap.file.find("lamp_preview.png") != std::string::npos);
+            CHECK(m.emissionMap.srgb);
+        }
+    }
+}
+
+namespace {
+
+/// The emission record `i % 5` of the table splat_emission_check.slang keeps
+/// (`tableEmission`): three floats more a record, as `athenea mesh2splat`
+/// writes what a material gives off.
+io::RawSplats withTableEmission(const io::RawSplats& raw) {
+    static const float kTable[5][3] = {
+        {0.0F, 0.0F, 0.0F}, {1.5F, 0.75F, 0.25F}, {0.02F, 0.5F, 4.0F}, {100.0F, 3.0F, 0.0F}, {0.3F, 0.3F, 0.3F}};
+    io::RawSplats out = raw;
+    const uint32_t stride = raw.encoding.floatsPerRecord;
+    out.records.clear();
+    for (uint32_t i = 0; i < raw.count; ++i) {
+        const float* from = raw.records.data() + size_t{i} * stride;
+        out.records.insert(out.records.end(), from, from + stride);
+        out.records.insert(out.records.end(), kTable[i % 5], kTable[i % 5] + 3);
+    }
+    out.encoding.floatsPerRecord = stride + 3;
+    out.encoding.emission = stride;
+    return out;
+}
+
+}   // namespace
+
+// THE LIGHT A GAUSSIAN GIVES OFF GOES OUT AND COMES BACK.
+//
+// A converted gaussian keeps what its material gave off where it stood:
+// `primvars:athenea:splat:emission` (color3f, declared by
+// AtheneaSplatLightingAPI) in a stage, an RGB9E5 word a splat in
+// `GpuSplats::emission`, and a word an element of every block of a `.athc`
+// (flags bit 2). Each way back must give the words that went out: the stage
+// read as records, the stage read as Hydra reads it, and the levels of detail
+// written to a file and read again; and every merged level must give off a
+// mean of what it merged, inside the box the table spans. HDR on the way: a
+// hundred is kept as a hundred. Compared on the device; counters come back.
+TEST_CASE("a cloud's emission survives USD, .athc and the levels of detail", "[usd][gpu][export][lod][emission]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto against = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_emission_check",
+                                              "emissionAgainstTable");
+    auto within = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_emission_check", "emissionWithin");
+    if (!against) FAIL(against.error().toString());
+    if (!within) FAIL(within.error().toString());
+    const io::RawSplats raw = withTableEmission(cloud(3000));
+    auto direct = loader->upload(raw, 0);
+    REQUIRE(direct);
+    REQUIRE(direct->hasEmission());
+    REQUIRE(direct->count == raw.count);
+
+    gpu::BufferDesc countsDesc;
+    countsDesc.bytes = 8 * 4;
+    countsDesc.elementBytes = 4;
+    countsDesc.label = "emission.counts";
+    auto counts = gpu::Buffer::create(*gpu->device, countsDesc);
+    REQUIRE(counts);
+    // RGB9E5 steps by 1/512 of the brightest channel, and rounds to half of
+    // that: twice it is the tolerance.
+    constexpr float kTolerance = 4.0e-3F;
+    const auto check = [&](const gpu::Buffer& a, const gpu::Buffer& b, uint32_t count) {
+        const uint32_t zero[8] = {};
+        REQUIRE(counts->write(*gpu->device, 0, sizeof(zero), zero));
+        gpu::CommandBatch batch(*gpu->device);
+        against->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["emissionA"].setBinding(a.rhi());
+            cursor["emissionB"].setBinding(b.rhi());
+            cursor["counts"].setBinding(counts->rhi());
+            cursor["params"]["count"].setData(count);
+            cursor["params"]["tolerance"].setData(kTolerance);
+        });
+        REQUIRE(batch.submit(true));
+        std::array<uint32_t, 3> seen{};
+        REQUIRE(counts->read(*gpu->device, 0, sizeof(seen), seen.data()));
+        return seen;
+    };
+    const auto self = check(direct->emission, direct->emission, direct->count);
+    std::printf("  on the device: %u compared, %u off the table\n", self[0], self[1]);
+    CHECK(self[0] == raw.count);
+    CHECK(self[1] == 0);
+
+    const fs::path path = scratch("splat_emission.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.relight = true;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, path, options));
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    REQUIRE(stage);
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath("/World/Splats"));
+    REQUIRE(prim);
+    CHECK(prim.HasAPI(TfToken("AtheneaSplatLightingAPI")));
+    const UsdGeomPrimvar written = UsdGeomPrimvarsAPI(prim).GetPrimvar(TfToken("athenea:splat:emission"));
+    REQUIRE(written);
+    CHECK(written.GetTypeName() == SdfValueTypeNames->Color3fArray);
+    CHECK(written.GetInterpolation() == UsdGeomTokens->vertex);
+    // Declared by the schema, so it is not a custom attribute.
+    CHECK_FALSE(written.GetAttr().IsCustom());
+
+    SECTION("read back as records") {
+        auto records = usd::readParticleFieldRecords(path);
+        REQUIRE(records);
+        REQUIRE(records->encoding.emission != io::SplatEncoding::kNoField);
+        auto back = loader->upload(*records, 0);
+        REQUIRE(back);
+        REQUIRE(back->hasEmission());
+        REQUIRE(back->count == direct->count);
+        const auto seen = check(back->emission, direct->emission, back->count);
+        std::printf("  through records: %u compared, %u off the table, %u words apart from the cloud written\n",
+                    seen[0], seen[1], seen[2]);
+        CHECK(seen[1] == 0);
+        CHECK(seen[2] == 0);
+    }
+
+    SECTION("read back as Hydra reads it") {
+        const UsdVolParticleField3DGaussianSplat field(prim);
+        usd::ParticleFieldArrays arrays;
+        field.GetPositionsAttr().Get(&arrays.positions);
+        field.GetOrientationsAttr().Get(&arrays.orientations);
+        field.GetScalesAttr().Get(&arrays.scales);
+        field.GetOpacitiesAttr().Get(&arrays.opacities);
+        int degree = 0;
+        field.GetRadianceSphericalHarmonicsDegreeAttr().Get(&degree);
+        arrays.shDegree = degree;
+        field.GetRadianceSphericalHarmonicsCoefficientsAttr().Get(&arrays.shCoefficients);
+        written.Get(&arrays.emission);
+        const scene::SplatStreams streams = usd::splatStreams(arrays, "emission streams");
+        REQUIRE_FALSE(streams.emission.empty());
+        auto back = loader->upload(streams, 0);
+        REQUIRE(back);
+        REQUIRE(back->hasEmission());
+        REQUIRE(back->count == direct->count);
+        const auto seen = check(back->emission, direct->emission, back->count);
+        std::printf("  through Hydra's arrays: %u compared, %u off the table, %u words apart from the cloud "
+                    "written\n",
+                    seen[0], seen[1], seen[2]);
+        CHECK(seen[1] == 0);
+        CHECK(seen[2] == 0);
+    }
+
+    SECTION("merged by the levels of detail, through a .athc") {
+        auto builder = lod::LodBuilder::create(*gpu->library);
+        REQUIRE(builder);
+        lod::LodBuildSettings chunked;
+        chunked.chunkSplats = 1000;
+        auto built = builder->build(*direct, chunked);
+        if (!built) FAIL(built.error().toString());
+        REQUIRE(built->splats.hasEmission());
+        // Every merge a mean: inside the box of the table's five.
+        uint64_t mergedCompared = 0;
+        uint64_t outside = 0;
+        for (const lod::LodLevel& level : built->levels) {
+            REQUIRE(level.gaussians.hasEmission());
+            const uint32_t zero[8] = {};
+            REQUIRE(counts->write(*gpu->device, 0, sizeof(zero), zero));
+            gpu::CommandBatch batch(*gpu->device);
+            within->dispatch(batch, {level.gaussians.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["emissionA"].setBinding(level.gaussians.emission.rhi());
+                cursor["emissionB"].setBinding(level.gaussians.emission.rhi());
+                cursor["counts"].setBinding(counts->rhi());
+                rhi::ShaderCursor p = cursor["params"];
+                p["count"].setData(level.gaussians.count);
+                p["tolerance"].setData(kTolerance);
+                const std::array<float, 4> low{0.0F, 0.0F, 0.0F, 0.0F};
+                const std::array<float, 4> high{100.0F, 3.0F, 4.0F, 0.0F};
+                p["low"].setData(low.data(), 16);
+                p["high"].setData(high.data(), 16);
+            });
+            REQUIRE(batch.submit(true));
+            uint32_t seen[2] = {0, 0};
+            REQUIRE(counts->read(*gpu->device, 0, sizeof(seen), seen));
+            mergedCompared += seen[0];
+            outside += seen[1];
+        }
+        std::printf("  merged: %llu compared over %zu levels, %llu outside what was merged\n",
+                    static_cast<unsigned long long>(mergedCompared), built->levels.size(),
+                    static_cast<unsigned long long>(outside));
+        CHECK(mergedCompared > 0);
+        CHECK(outside == 0);
+
+        const fs::path file = scratch("splat_emission.athc");
+        REQUIRE(lod::writeAthc(*gpu->device, *built, file));
+        auto read = lod::readAthc(*gpu->device, file);
+        if (!read) FAIL(read.error().toString());
+        REQUIRE(read->splats.hasEmission());
+        // Normals are not in this cloud: bit 2 stands alone, after no bit 0.
+        CHECK_FALSE(read->splats.hasNormals());
+        REQUIRE(read->levels.size() == built->levels.size());
+        auto store = render::countDifferent(*gpu->library, read->splats.emission, built->splats.emission, built->count);
+        REQUIRE(store);
+        uint64_t levelsApart = 0;
+        for (size_t l = 0; l < built->levels.size(); ++l) {
+            REQUIRE(read->levels[l].gaussians.hasEmission());
+            auto apart = render::countDifferent(*gpu->library, read->levels[l].gaussians.emission,
+                                                built->levels[l].gaussians.emission,
+                                                built->levels[l].gaussians.count);
+            REQUIRE(apart);
+            levelsApart += *apart;
+        }
+        std::printf("  through a .athc: %llu of %u splat emissions and %llu merged ones changed\n",
+                    static_cast<unsigned long long>(*store), built->count,
+                    static_cast<unsigned long long>(levelsApart));
+        CHECK(*store == 0);
+        CHECK(levelsApart == 0);
+    }
+}
+
+// AN EMISSIVE QUAD, CONVERTED, GIVES OFF WHAT THE MESH GIVES OFF.
+//
+// `athenea mesh2splat` dropped a material's emission: a converted lamp was as
+// dark as its albedo under the scene's light, relit or transferred. Two quads
+// (tests/data/emissive_quad*.usda) -- OpenPBR's luminance times its colour, and
+// glTF's emissive map times its strength -- under a dome dim enough that what
+// they give off is most of what they show, are converted by ctest beforehand
+// (the mesh2splat_emissive_* tests: --no-bake, --transfer, and the radiance
+// bake) and drawn here, raster and traced, against the mesh. The relit and
+// the transferred clouds add their emission; the baked one holds it in its
+// colours already and must not add it again, which would be it twice.
+//
+// Hidden: it reads what those conversions wrote, so ctest runs it after them
+// (emissive_conversions_render_like_the_mesh).
+TEST_CASE("an emissive quad converted relit, transferred or baked renders as the mesh does",
+          "[.][emissive_conversion][usd][gpu][splat][emission]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path data(ATHENEA_TEST_DATA_DIR);
+    const fs::path converted(ATHENEA_EMISSIVE_DIR);
+    // The mesh, or a converted cloud in its place with the same sky: the
+    // source stage with its quad switched off, and the cloud over it.
+    const auto composed = [&](const std::string& name, const fs::path& source, const fs::path& cloud) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    subLayers = [";
+        if (!cloud.empty()) {
+            out << "@" << cloud.string() << "@, ";
+        }
+        out << "@" << source.string() << "@]\n    upAxis = \"Y\"\n)\n";
+        if (!cloud.empty()) {
+            out << "over \"World\"\n{\n    over \"Quad\" (\n        active = false\n    )\n    {\n    }\n}\n";
+        }
+        out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+        return path;
+    };
+    const uint32_t w = 160, h = 160;
+    const auto draw = [&](const fs::path& path, const char* technique) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    const auto meanRed = [&](const gpu::Buffer& image) {
+        auto stats = render::imageStats(*gpu->library, image, w, h);
+        REQUIRE(stats);
+        return stats->mean[0];
+    };
+    for (const char* variant : {"constant", "mapped"}) {
+        const fs::path source =
+            data / (std::string("emissive_quad") + (std::string(variant) == "mapped" ? "_mapped" : "") + ".usda");
+        const fs::path mesh = composed(std::string("splat_emission_mesh_") + variant + ".usda", source, {});
+        // THE MESH, BOTH WAYS. Its rasterised image is the reference every
+        // cloud is held to pixel by pixel: the traced one samples the map with
+        // a path's own jitter, and on the gradient a percent of its pixels sit
+        // a tenth off the rasterised ones -- the reference's noise, not the
+        // cloud's. The traced mesh is still what the traced cloud's mean is
+        // held to.
+        const gpu::Buffer meshRaster = draw(mesh, "raster");
+        const gpu::Buffer meshTraced = draw(mesh, "rt");
+        for (const char* mode : {"relit", "transfer", "baked"}) {
+            const fs::path cloudFile = converted / (std::string(variant) + "_" + mode + ".usda");
+            if (!fs::exists(cloudFile)) {
+                SKIP("'" << cloudFile.string() << "' is not there: ctest converts it first "
+                     "(emissive_conversions_render_like_the_mesh)");
+            }
+            const fs::path card = composed(std::string("splat_emission_card_") + variant + "_" + mode + ".usda",
+                                           source, cloudFile);
+            for (const char* technique : {"raster", "rt"}) {
+                const bool traced = std::string(technique) == "rt";
+                const gpu::Buffer c = draw(card, technique);
+                auto diff = render::compareHdr(*gpu->library, c, meshRaster, w, h);
+                REQUIRE(diff);
+                const double meshMean = meanRed(traced ? meshTraced : meshRaster);
+                const double cardMean = meanRed(c);
+                std::printf("  %-8s %-8s %-6s: p99 %.3f relMSE %.2e against the rasterised mesh; mean r %.3f "
+                            "against the mesh's %.3f\n",
+                            variant, mode, technique, diff->p99Relative, diff->relMse, cardMean, meshMean);
+                INFO(variant << " " << mode << " " << technique);
+                // What the mesh gives off is what the cloud gives off, to
+                // what a cloud of discs can be; and not twice it, baked.
+                CHECK(diff->p99Relative < 0.08);
+                CHECK(cardMean == Catch::Approx(meshMean).epsilon(0.03));
+            }
+        }
+    }
+}
