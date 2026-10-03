@@ -11127,6 +11127,17 @@ adaptive passes report against the points `extraSamples * count /
 passSamples` allots, which is what the allotment spends at most, and close
 with what they did spend.
 
+**A frame that holds its total is held.** Progress showed what the engine
+did with `--frames 2 --path-total 8 --path-samples 2`: the second frame, the
+same camera at the same time, went on accumulating -- 10 paths a pixel, pass
+5 of 4 -- and was denoised again over the mean. An identical frame added to
+the mean whatever the total, which a viewport left alone wants and an image
+asked for at a total does not. Now a pass whose frame is the same, whose
+total is above one and already gathered, and whose aux and denoise state
+match, traces nothing and runs no denoiser: the layer it gathered (denoised
+or not) is drawn again. A total of one keeps converging as before. The
+second frame of that run reads `render 8/8 ... pass 4/4 ... done`.
+
 **Not done.** The ETA of an adaptive frame is an upper bound: it may stop
 when every pixel's error is under the threshold, which no count predicts.
 The MCP server's tools and `athenea live` do not report; their callers

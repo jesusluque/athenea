@@ -288,7 +288,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--far` | número | `100000` | |
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más `Z` |
 | `--render-settings` | ruta de prim | sin poner | renderiza los productos de ese prim y para |
-| `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido |
+| `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido. Una imagen trazada por caminos (`--path-total` mayor que 1) que ya reunió su total se mantiene en los frames siguientes, sin dibujarse más |
 | `-q`, `--quiet` | flag | progreso encendido | sin líneas de progreso en stderr |
 
 ```sh

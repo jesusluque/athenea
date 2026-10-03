@@ -285,7 +285,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--far` | number | `100000` | |
 | `-o`, `--output` | path | `out.exr` | half RGBA plus `Z` |
 | `--render-settings` | prim path | unset | render that prim's products instead, and stop |
-| `--frames` | integer | `1` | repeat, and report first, median and fastest |
+| `--frames` | integer | `1` | repeat, and report first, median and fastest. A path traced image (`--path-total` above 1) that has gathered its total is held by the frames after it, not drawn further |
 | `-q`, `--quiet` | flag | progress on | no progress lines on stderr |
 
 ```sh

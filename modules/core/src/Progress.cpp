@@ -45,8 +45,9 @@ Timing Tracker::update(const Report& report, Clock::time_point now) {
         reported_ = true;
         first_ = now;
         firstDone_ = report.done;
-        // Begun before this report: what was done since is the only rate known.
-        if (timing.elapsed > 0.0 && report.done > 0) {
+        // Begun before this report: what was done since is the only rate
+        // known -- unless it arrives finished, a frame held rather than drawn.
+        if (!report.finished && timing.elapsed > 0.0 && report.done > 0) {
             timing.rate = static_cast<double>(report.done) / timing.elapsed;
         }
     } else if (now > first_ && report.done > firstDone_) {

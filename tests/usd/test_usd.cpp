@@ -2916,6 +2916,10 @@ TEST_CASE("a path traced frame accumulates over passes and starts again when it 
                 (*renderer)->pathAccumulated());
     CHECK((*renderer)->pathAccumulated() == 32);
     CHECK((*renderer)->pathConverged());
+    // The same image asked for again is held at its total, not drawn past it.
+    auto again = (*renderer)->render("/Camera", 0.0, w, h, "rt");
+    if (!again) FAIL(again.error().toString());
+    CHECK((*renderer)->pathAccumulated() == 32);
 
     // Adaptive: with a total no image would reach, render() ends when every
     // covered pixel's error is below the target -- the other gate.

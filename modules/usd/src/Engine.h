@@ -754,6 +754,10 @@ private:
     std::atomic<double>                       shutterClose_{0.0};
     std::atomic<uint32_t>                     pathTotal_{1};
     mutable std::mutex                        progressGuard_;
+    /// This pass held a frame that had gathered its total (no trace, no
+    /// denoise), and whether the frame held is the denoised one.
+    bool                                      pathHeld_ = false;
+    bool                                      pathHeldDenoised_ = false;
     std::atomic<uint32_t>                     statusAccumulated_{0};
     std::atomic<uint32_t>                     statusPasses_{0};
     std::atomic<bool>                         statusConverged_{true};

@@ -3013,9 +3013,21 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 pathState_ = {};
                 return ok();
             }
-            ATHENEA_TRY(pathTracer_->trace(batch, visibility_, projection, frame, paths, meshLayer_,
-                                       wantAux ? &pathAux_ : nullptr));
-            pathAuxValid_ = wantAux;
+            // A FRAME THAT HOLDS ITS TOTAL IS HELD, not drawn further: the
+            // same frame again (`athenea stage --frames`, a still viewport)
+            // keeps the image it gathered -- and its denoised colour -- rather
+            // than adding passes past the total it was asked for and
+            // denoising the mean again. A total of one is a viewport that
+            // keeps converging while it is left alone, as before.
+            const uint32_t total = pathTotal_.load();
+            pathHeld_ = same && total > 1 && pathTracer_->accumulated() >= total && (!wantAux || pathAuxValid_) &&
+                        pathHeldDenoised_ == (denoise_.load() && !denoiserFailed_);
+            if (!pathHeld_) {
+                ATHENEA_TRY(pathTracer_->trace(batch, visibility_, projection, frame, paths, meshLayer_,
+                                               wantAux ? &pathAux_ : nullptr));
+                pathAuxValid_ = wantAux;
+                pathHeldDenoised_ = false;
+            }
         } else {
             ATHENEA_TRY(materialShading_->shade(batch, visibility_, projection, frame, meshLayer_));
         }
@@ -3077,7 +3089,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // of its own and waits for OIDN. It runs on a path traced frame that
         // has gathered what it was asked for, in place over the mean -- the
         // input is copied to OIDN's staging before OIDN writes anything.
-        if (pathTracing && denoise_.load() && !denoiserFailed_ && pathTracer_->accumulated() >= pathTotal_.load()) {
+        if (pathTracing && !pathHeld_ && denoise_.load() && !denoiserFailed_ &&
+            pathTracer_->accumulated() >= pathTotal_.load()) {
             if (!denoiser_.has_value()) {
                 auto made = technique::Denoiser::create(*library_);
                 if (!made) {
@@ -3099,6 +3112,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                     denoiserFailed_ = true;
                     log::warn("hdAthenea: denoising stopped: {}", ran.error().toString());
                 }
+                pathHeldDenoised_ = !denoiserFailed_;
                 report.done = 1;
                 report.finished = true;
                 reportProgress(report);
