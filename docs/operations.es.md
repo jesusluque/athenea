@@ -738,6 +738,20 @@ compilan el display y el view de ese config dentro del kernel. `--edr` pide
 una superficie float y lleva ACES 2.0 hasta el pico de la pantalla, que en una
 pantalla normal es la misma imagen que sin él.
 
+Una textura se lee en el espacio de color que nombra su material o su luz
+-- el `colorspace` de MaterialX, el `sourceColorSpace` de un UsdUVTexture, el
+`colorSpace` de USD en la entrada de archivo, el `colorSpace` de un domo en
+`inputs:texture:file` -- y se lleva al espacio de trabajo (Rec.709 lineal) en
+el dispositivo. Los nombres son los del studio config de OpenColorIO
+(`srgb_texture`, `lin_rec709`, `acescg`, `g22_rec709`, ...), sus alias y
+roles, los de USD (`lin_ap1_scene`, `srgb_rec709_scene`, ...) y los de
+UsdUVTexture (`sRGB`, `raw`, `auto`). `raw`, `data`, `Non-Color`, `none`,
+`identity` y `Utility - Raw` leen el archivo como datos. Sin nombre, o con
+`auto`: una imagen de 8 bits es sRGB salvo que el archivo diga otra cosa, y
+cualquier otra, lineal. Un nombre que nadie conoce se avisa una vez y el
+archivo se lee como él dice. Sin OpenColorIO en la compilación solo se
+conocen sRGB, Rec.709 lineal y datos.
+
 `athenea view --snapshot` escribe el frame **tal como se ve**, codificado para
 pantalla y con los paneles dentro. Es una captura de pantalla, no una salida
 de render: para eso está `athenea stage`.
@@ -1230,6 +1244,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | Qué se imprime | Qué significa | Qué hacer |
 |---|---|---|
 | `no GPU device` (los tests se saltan) | no se pudo abrir dispositivo | mira `athenea info`; en Linux pon `ATHENEA_BACKEND` |
+| `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |
 | `this build reads no .spz` | faltaba zstd cuando se compiló este binario | recompila con zstd, o convierte la captura en otro sitio |
 | un `.sog` rechazado | faltaba libwebp | instálalo y recompila |

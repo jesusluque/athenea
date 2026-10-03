@@ -9083,3 +9083,117 @@ Not done: a capture has no normal and keeps its axis. `CloudLoader::records`
 (a cloud on the device back into records) does not unpack normals, so a
 splat file decimated without a stage keeps none -- a splat file never has
 them. The merged levels carry the normal but still no PBR channels.
+
+## Colour: OpenColorIO as a compiler, and a texture read in its own colour space
+
+Phases 0 and 1 of the colour plan. The working space is still linear
+Rec.709; what changes is who knows the rest.
+
+### Phase 0: one compiler, below material and technique
+
+- **The module.** `colour` sits between `gpu` and `scene` (material may not
+  link technique, and both need it). It owns the OpenColorIO dependency,
+  PRIVATE and behind `ATHENEA_HAVE_OCIO`, moved from technique.
+- **`ColourCompiler`** (`colour/ColourCompiler.h`). `function(src, dst)`
+  and `displayView(src, display, view, look)` make a processor, extract its
+  HLSL with `setFunctionName("atheneaCs_<hash>")` and
+  `setResourcePrefix("athenea_<hash>_")`, and load it as the Slang module
+  `athenea_cs_<hash>`, the function marked `public` and nothing else. The
+  hash is FNV-1a of the config's cache id and the names, so a pair compiles
+  once per compiler and two functions in one kernel never share a LUT's
+  name. LUTs are filled on the device from OCIO's values
+  (`athenea_colour_fill`); `ColourFunction::bind` binds them and the
+  dynamic properties by name. The host computes the shader text and the LUT
+  values, nothing per pixel.
+- **The display is a client.** `DisplayTransform::setOcio` asks for
+  `displayView` and compiles a second module that imports the function and
+  `athenea.technique.display`. The pixels did not change by a bit: the test
+  builds the old recipe (function text inline in the display module) from
+  the same text and compares both kernels with a tolerance of zero, over
+  sixteen stops, three exposures and three views (ACES 2.0 Rec.709 and P3,
+  un-tone-mapped). The ACES 2.0 agreement test reads what it read before
+  (worst 3.2e-4, 5.5e-4, 2.2e-5).
+- **`ColourNames`** (`colour/ColourNames.h`) is the one resolution of a
+  name. Empty or `auto`: the file decides (8-bit sRGB-tagged, sRGB; the
+  rest, the working space). Data names (`raw`, `Raw`, `data`, `Non-Color`,
+  `none`, `identity`, `Utility - Raw`) and any space the config marks data:
+  Raw. Then a short alias table (UsdUVTexture's `sRGB`, `linear`, the
+  GfColorSpaceNames tokens the studio config does not carry as aliases,
+  such as `g24_rec709_scene`), then the config by name, alias or role, then
+  the built-in studio config -- a function then crosses configs through
+  `GetProcessorFromConfigs`. Nothing knows the name: Unknown, one warning per
+  name, `TextureInfo::error`, and the texture is read as the file says.
+  The studio config already carries MaterialX's (`srgb_texture`,
+  `lin_rec709`, `acescg`, `g22_rec709`) and USD's (`lin_ap1_scene`, ...)
+  names as aliases.
+- **The two ad-hoc tables are gone.** `Material.cpp` hands MaterialX the
+  colour space USD authored, verbatim; `MaterialCompiler` keeps it on the
+  slot as a string. Before, `g22_rec709` was read as sRGB, and `acescg` or
+  any name not in either table was read raw.
+- **Without OpenColorIO** the names resolve by table (sRGB, linear Rec.709,
+  data) and the one function compiled is sRGB to linear, written in the
+  compiler: a 16-bit sRGB file decodes as it did.
+
+### Phase 1: texture input spaces
+
+- **Three routes** in `TextureStore::loadFile`, by what the name resolves
+  to. Raw and the working space: read as they are, as before. 8-bit sRGB:
+  the fast route, unchanged -- RGBA8 behind an `RGBA8UnormSrgb` view, mips
+  averaged as light. Anything else, a 16-bit or float sRGB file included:
+  RGBA16F (RGBA32F for a float32 file), and the decode kernel is
+  `athenea_texdec_<hash>`, generated once per space: texture_decode's
+  `decodeTexel`, the compiled function, `storeTexel`. Alpha is not
+  transformed. The mips are made after, in light, as for any float texture.
+  `texture_decode.slang` lost its `toLinear` parameter.
+- **Keys.** A texture is (path, name as written): `srgb_texture` and `sRGB`
+  of one file are two entries, which costs a second upload and nothing
+  else.
+- **Domes.** A dome's image takes the `colorSpace` authored on
+  `inputs:texture:file`, read from the light's network in the scene index
+  beside the value (`domeColourSpace`, Light.cpp), as a material's file
+  input is. Empty: the file decides, as before. `aofx://` stays raw.
+- **Checked.**
+  - `athenea_colour_tests`: sRGB to linear and back over a 4096-value ramp,
+    worst relative 1.2e-6; linear Rec.709 to ACEScg against aces2.slang's
+    `rgbToRgb(kRec709, kAP1)` over 512 colours, worst relative 9.0e-7;
+    ACEScg reached from a three-space config that lacks it equals the
+    studio config's own function exactly; the names, as bookkeeping.
+    (`compareHdr` bins its maximum at 1.66e-5 and could not certify these;
+    the kernel keeps its own worst as float bits.)
+  - `athenea_material_tests`: one 8-bit sRGB file through the view and
+    through the compiled function, level 0 worst 4.9e-4 in light; the 1x1
+    level 4.9e-3, which is half an 8-bit sRGB code near white where the fast
+    route stores its mips.
+  - `athenea_usd_tests`: a texture authored `acescg` shades as the AP1 to
+    Rec.709 matrix of its colour (0.974 0.578 0.134 for 0.8 0.6 0.2), one
+    authored `Non-Color` as held; a dome authored `raw` shows its code
+    values (0.800 where auto showed 0.604).
+- **Measured** (M5 Pro, debug build, a shared machine; `texture commit time`,
+  hidden `[.timing]` case, eight 2048x2048 files a commit, median of three
+  rounds, per file). Before: 8-bit sRGB 33.0 ms, 8-bit raw 34.0 ms, 16-bit
+  sRGB 49.6 ms. After: 34.5, 34.6 and 49.5 ms; 8-bit sRGB through the
+  compiled function 36.4 ms, 8-bit ACEScg 35.5 ms. The routes cost what
+  they cost before, within this machine's noise. The first commit that
+  needs a new function pays its compile once, about 230 ms for eight files
+  (64 ms a file against 35); each store reads the studio config at its
+  first commit.
+
+### Not done (phases 2 to 5)
+
+- **The working space** is linear Rec.709, fixed (`colour::kWorkingSpace`).
+  Phase 2 makes it a setting; then every function's destination, the
+  display's source, the light and material constants and the MaterialX
+  default space follow it. A MaterialX image node with no colour space is
+  read as `lin_rec709` today, the same as raw; once the working space
+  moves, vector and float image nodes must resolve to Raw.
+- **The config** of textures is the studio config; `--ocio-config` reaches
+  only the display. One config for the stage is phase 2's too.
+- **Colours that are not textures** -- `displayColor`, material constants,
+  light colours, splat SH -- are taken as the working space.
+- **An AOFX colour convert effect** was weighed and not built: an AOFX
+  kernel is a blob compiled when the bundle is built and binds buffers only
+  (aopenfx `KernelDesc`), while a compiled OCIO function is Slang generated
+  at run time that samples textures. It needs an additive ABI extension in
+  aopenfx (a kernel given as source, and texture inputs), or functions
+  generated at build time for a fixed list of spaces, with their LUTs as
+  buffers.

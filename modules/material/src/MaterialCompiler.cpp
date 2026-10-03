@@ -468,9 +468,10 @@ private:
                 MaterialSlot& slot = addSlot(MaterialSlot::Kind::Texture, variable, 2);
                 slot.name = port->getValue() ? port->getValue()->getValueString() : std::string();
                 const mx::ShaderNode* node = port->getNode();
-                // MaterialX reads a file in its colorspace, the document's
-                // (linear) unless it says srgb_texture; UsdUVTexture says
-                // sourceColorSpace instead: auto, raw or sRGB.
+                // The colour space as the document names it, resolved when the
+                // file is read (colour::ColourNames, in TextureStore): MaterialX
+                // reads a file in its colorspace, the document's (linear)
+                // unless it says otherwise; UsdUVTexture says sourceColorSpace instead: auto, raw or sRGB.
                 std::string space = port->getColorSpace();
                 if (space.empty()) {
                     if (const auto found = fileColourSpaces.find(slot.name); found != fileColourSpaces.end()) {
@@ -480,17 +481,15 @@ private:
                 const mx::ShaderInput* source = node != nullptr ? node->getInput("sourceColorSpace") : nullptr;
                 const std::string usd = source != nullptr && source->getValue() ? source->getValue()->getValueString()
                                                                                 : std::string();
-                if (space == "srgb_texture" || space == "g22_rec709" || space == "srgb_rec709" ||
-                    usd == "sRGB") {
-                    slot.space = ColourSpace::Srgb;
-                } else if (space == "auto" || (space.empty() && source != nullptr && (usd.empty() || usd == "auto"))) {
+                if (source != nullptr) {
                     // "auto" is not a MaterialX colour space; the delegate
                     // writes it where USD said the file decides, which is what
                     // `sourceColorSpace = auto` means and what a file with no
-                    // colour space at all gets from the scene index.
-                    slot.space = ColourSpace::Auto;
+                    // colour space at all gets from the scene index. An
+                    // explicit sRGB wins over a document's default.
+                    slot.space = usd == "sRGB" || space.empty() ? (usd.empty() ? std::string("auto") : usd) : space;
                 } else {
-                    slot.space = ColourSpace::Raw;
+                    slot.space = space.empty() ? std::string("lin_rec709") : space;
                 }
                 const auto wrap = [](int mode) {
                     // MaterialX address modes: 0 constant, 1 clamp, 2 periodic, 3 mirror.

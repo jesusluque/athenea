@@ -1284,11 +1284,8 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
             std::string files;
             for (const material::MaterialSlot& slot : entry.compiled->slots) {
                 if (slot.kind == material::MaterialSlot::Kind::Texture && !slot.name.empty()) {
-                    const char* space = slot.space == material::ColourSpace::Srgb   ? " srgb"
-                                        : slot.space == material::ColourSpace::Raw ? " raw"
-                                                                                   : " auto";
                     files += (files.empty() ? "" : ", ") + std::filesystem::path(slot.name).filename().string() +
-                             space;
+                             " " + (slot.space.empty() ? std::string("auto") : slot.space);
                 }
             }
             log::debug("hdAthenea: material {} row {} module {} [{}]", id.GetString(), rows.size(),
@@ -1524,7 +1521,7 @@ Result<void> Engine::prepareLightImages(std::vector<light::Light>& lamps) {
         if (lamp.texture.empty()) {
             continue;
         }
-        lamp.textureId = textures_->request(lamp.texture, material::ColourSpace::Auto);
+        lamp.textureId = textures_->request(lamp.texture, lamp.textureColourSpace);
         // Lat-long: around in u, clamped at the poles.
         lamp.sampler = textures_->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
         domeTextures = true;

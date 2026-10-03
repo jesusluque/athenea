@@ -16,6 +16,7 @@ struct PatternParams {
 
 RWStructuredBuffer<uint>      words;     // pattern: RGBA8 file bytes, top row first
 Texture2D<float4>             level;     // check: a slot's texture, a level of it
+Texture2D<float4>             other;     // agree: the same level read another way
 RWStructuredBuffer<uint>      counts;
 RWStructuredBuffer<float4>    probes;    // table probe: uv (xy), id (z), expected-found (w) in; sample out
 RWStructuredBuffer<float4>    sampled;
@@ -111,4 +112,26 @@ void materialFootprint(uint3 tid: SV_DispatchThreadID) {
         differ += any(abs(graded.rgb - levelled.rgb) > params.tolerance) ? 1u : 0u;
     }
     counts[0] = differ;
+}
+
+/// Two textures of the same file read two ways, level against level: how
+/// many texels were compared (counts[0]) and the largest difference in any
+/// channel, as float bits (counts[1]), and how many texels differ by more
+/// than params.tolerance (counts[2]).
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void materialLevelsAgree(uint3 tid: SV_DispatchThreadID) {
+    float worst = 0.0;
+    uint over = 0;
+    for (uint y = 0; y < params.height; ++y) {
+        for (uint x = 0; x < params.width; ++x) {
+            const float4 d = abs(level.Load(int3(int(x), int(y), 0)) - other.Load(int3(int(x), int(y), 0)));
+            const float most = max(max(d.x, d.y), max(d.z, d.w));
+            worst = max(worst, most);
+            over += most > params.tolerance ? 1u : 0u;
+        }
+    }
+    counts[0] = params.width * params.height;
+    counts[1] = asuint(worst);
+    counts[2] = over;
 }

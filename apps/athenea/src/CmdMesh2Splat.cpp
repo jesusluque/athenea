@@ -439,7 +439,7 @@ public:
         const auto ask = [&](const usd::StageTexture& texture) {
             if (!texture.empty() && !ids_.contains(texture.file)) {
                 ids_[texture.file] = textures_->request(
-                    texture.file, texture.srgb ? material::ColourSpace::Srgb : material::ColourSpace::Raw);
+                    texture.file, texture.srgb ? "srgb_texture" : "raw");
             }
         };
         for (const usd::StageMesh& mesh : meshes) {

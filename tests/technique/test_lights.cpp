@@ -528,7 +528,7 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     light::Light lamp;
     lamp.kind = light::LightKind::Dome;
     lamp.texture = png.string();
-    lamp.textureId = (*textures)->request(png.string(), material::ColourSpace::Auto);
+    lamp.textureId = (*textures)->request(png.string(), "");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
