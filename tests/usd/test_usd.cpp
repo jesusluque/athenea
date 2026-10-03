@@ -8479,6 +8479,175 @@ TEST_CASE("a cloud its file says a skeleton carries moves with it", "[usd][gpu][
     CHECK(later.min[2] == Catch::Approx(first.min[2]).margin(1e-3));
 }
 
+// A SKINNED CLOUD'S TRANSFER TURNS WITH IT (proposal 014 B).
+//
+// A transfer kept as zonal lobes in each gaussian's own frame is turned into
+// the world by whatever frame the gaussian has: the one a skeleton's pose gave
+// it, or the one a prim's transform puts it in. So the same cloud turned by a
+// rigid rotation must shade the same either way -- carried by one joint whose
+// transform at time 1 is the rotation, or still and under an Xform of that
+// rotation -- under a sky whose image is not the same in any two directions.
+// And the same turned cloud without its transfer must shade otherwise: that is
+// what says the transfer is what the comparison compares.
+TEST_CASE("a skinned cloud's zonal transfer turns with it as a turned still cloud's does",
+          "[usd][gpu][skinning][transfer][zonal]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const io::RawSplats raw = cloud(512);
+    // Two lobes a gaussian: an axis in its frame (the octahedral square's u,
+    // v) and three coefficients, values a bake would give (a cosine-like
+    // lobe and a weaker second one).
+    std::vector<float> zonal(size_t{raw.count} * 10, 0.0F);
+    uint64_t state = 7;
+    const auto next = [&] {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<float>((state >> 40) & 0xFFFFFF) / 16777216.0F;
+    };
+    for (uint32_t k = 0; k < raw.count; ++k) {
+        float* one = zonal.data() + size_t{k} * 10;
+        one[0] = next();
+        one[1] = next();
+        one[2] = 0.5F + 0.4F * next();
+        one[3] = 0.3F + 0.4F * next();
+        one[4] = 0.1F * next();
+        one[5] = next();
+        one[6] = next();
+        one[7] = -0.2F * next();
+        one[8] = 0.2F * next() - 0.1F;
+        one[9] = 0.1F * next() - 0.05F;
+    }
+    // The turn: 60 degrees about (1, 2, 0.5).
+    const double angle = 60.0 * 3.14159265358979 / 180.0;
+    const double ax = 1.0 / std::sqrt(5.25), ay = 2.0 / std::sqrt(5.25), az = 0.5 / std::sqrt(5.25);
+    const double c = std::cos(angle), sn = std::sin(angle), t = 1.0 - c;
+    const double r[3][3] = {{t * ax * ax + c, t * ax * ay - sn * az, t * ax * az + sn * ay},
+                            {t * ax * ay + sn * az, t * ay * ay + c, t * ay * az - sn * ax},
+                            {t * ax * az - sn * ay, t * ay * az + sn * ax, t * az * az + c}};
+    // As USD holds a transform, vectors on the left: the transpose, by rows.
+    std::array<float, 16> turned{};
+    std::ostringstream matrix;
+    matrix << "( ";
+    for (int row = 0; row < 4; ++row) {
+        matrix << "(";
+        for (int column = 0; column < 4; ++column) {
+            const double value = row < 3 && column < 3 ? r[column][row] : (row == column ? 1.0 : 0.0);
+            turned[static_cast<size_t>(row * 4 + column)] = static_cast<float>(value);
+            matrix << value << (column < 3 ? ", " : "");
+        }
+        matrix << ")" << (row < 3 ? ", " : " ");
+    }
+    matrix << ")";
+
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.relight = true;
+    options.linear = true;
+    options.transferZonal = zonal;
+    const fs::path still = scratch("zonal-still.usda");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, still, options));
+    usd::SplatSkinning rig;
+    rig.skeleton = "/Root/Skel";
+    rig.joints = 1;
+    rig.influences.resize(size_t{raw.count} * 8, 0.0F);
+    for (uint32_t k = 0; k < raw.count; ++k) {
+        rig.influences[size_t{k} * 8 + 1] = 1.0F;   // joint 0, all of it
+    }
+    rig.times = {0.0, 1.0};
+    rig.xforms.assign(32, 0.0F);
+    rig.xforms[0] = rig.xforms[5] = rig.xforms[10] = rig.xforms[15] = 1.0F;
+    std::copy(turned.begin(), turned.end(), rig.xforms.begin() + 16);
+    REQUIRE(rig.valid());
+    options.skinning = &rig;
+    const fs::path carried = scratch("zonal-carried.usda");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, carried, options));
+
+    // A sky that differs in every direction: red across, green up, blue in a
+    // spot.
+    const fs::path png = scratch("zonal-sky.png");
+    {
+        std::vector<uint32_t> texels(size_t{64} * 32);
+        for (uint32_t y = 0; y < 32; ++y) {
+            for (uint32_t x = 0; x < 64; ++x) {
+                const uint32_t red = 40 + x * 3;
+                const uint32_t green = 30 + y * 6;
+                const uint32_t blue = (x > 40 && x < 50 && y > 8 && y < 16) ? 255 : 20;
+                texels[size_t{y} * 64 + x] = 0xFF000000u | (blue << 16) | (green << 8) | red;
+            }
+        }
+        HioImageSharedPtr image = HioImage::OpenForWriting(png.string());
+        REQUIRE(image);
+        HioImage::StorageSpec spec;
+        spec.width = 64;
+        spec.height = 32;
+        spec.depth = 1;
+        spec.format = HioFormatUNorm8Vec4;
+        spec.data = texels.data();
+        REQUIRE(image->Write(spec));
+    }
+    const auto wrapper = [&](const char* name, const fs::path& layer, const std::string& transform) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n    subLayers = [@" << layer.string() << "@]\n)\n";
+        if (!transform.empty()) {
+            out << "over \"World\"\n{\n    over \"Splats\"\n    {\n"
+                   "        matrix4d xformOp:transform = " << transform << "\n"
+                   "        uniform token[] xformOpOrder = [\"xformOp:transform\"]\n    }\n}\n";
+        }
+        out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 9)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n"
+               "    asset inputs:texture:file = @" << png.string() << "@\n}\n";
+        return path;
+    };
+    const fs::path stillTurned = wrapper("zonal-still-turned.usda", still, matrix.str());
+    usd::ExportOptions bare = options;
+    bare.transferZonal = {};
+    bare.skinning = nullptr;
+    const fs::path plain = scratch("zonal-plain.usda");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, plain, bare));
+    const fs::path plainTurned = wrapper("zonal-plain-turned.usda", plain, matrix.str());
+    const fs::path skinned = wrapper("zonal-carried-turned.usda", carried, "");
+
+    const uint32_t w = 160, h = 120;
+    std::vector<std::string> routes{"raster"};
+    const gpu::Caps& caps = gpu->device->caps();
+    if (caps.accelerationStructure && (caps.rayQuery || caps.rayTracing)) {
+        routes.push_back("rt");
+    }
+    for (const std::string& route : routes) {
+        const auto frame = [&](const fs::path& path) {
+            auto renderer = usd::StageRenderer::open(path);
+            if (!renderer) FAIL(renderer.error().toString());
+            auto image = (*renderer)->render("/Camera", 1.0, w, h, route);
+            if (!image) FAIL(image.error().toString());
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(made);
+            return std::move(*made);
+        };
+        const gpu::Buffer byXform = frame(stillTurned);
+        const gpu::Buffer bySkeleton = frame(skinned);
+        const gpu::Buffer untransferred = frame(plainTurned);
+        auto same = render::compareHdr(*gpu->library, bySkeleton, byXform, w, h);
+        auto moved = render::compareHdr(*gpu->library, untransferred, byXform, w, h);
+        REQUIRE(same);
+        REQUIRE(moved);
+        std::printf("  zonal transfer (%s): carried by the skeleton against the turned prim relMSE %.2e, p99 %.2e, "
+                    "max %.2e; the turned cloud without its transfer relMSE %.2e\n",
+                    route.c_str(), same->relMse, same->p99Relative, same->maxRelative, moved->relMse);
+        // The skinner's frame is re-packed in ten-bit quaternions and its
+        // eigen-decomposition rounds, so not bit for bit: within a hundredth
+        // at the 99th percentile.
+        CHECK(same->relMse < 1.0e-4);
+        CHECK(same->p99Relative < 1.0e-2);
+        CHECK(moved->relMse > 1.0e-3);
+    }
+}
+
 // THE SAME CLOUD, BOUND THE SPECIFICATION'S WAY.
 //
 // SkelBindingAPI on the ParticleField names a Skeleton, the Skeleton's
