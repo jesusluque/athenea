@@ -1,0 +1,31 @@
+#usda 1.0
+# Copyright (c) 2026 jesus luque.
+(
+    defaultPrim = "World"
+    subLayers = [@./sphere.usda@]
+    upAxis = "Y"
+)
+# A car's paint, as the Corvette C7's Car_Paint_Main: a dark green metal under a clear coat. OpenPBR.
+over "World"
+{
+    def Scope "Looks"
+    {
+        def Material "Surface"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Surface/OpenPBR.outputs:out>
+
+            def Shader "OpenPBR"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                color3f inputs:base_color = (0.047, 0.06, 0.047)
+                float inputs:base_metalness = 1
+                float inputs:specular_roughness = 0.3421
+                float inputs:specular_ior = 1.5
+                float inputs:coat_weight = 1
+                float inputs:coat_roughness = 0
+                float inputs:coat_ior = 1.45
+                token outputs:out
+            }
+        }
+    }
+}
