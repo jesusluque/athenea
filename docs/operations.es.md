@@ -398,7 +398,12 @@ receta es §3.1.
 | `--simplify-levels` | entero, 1 a 5 | `3` | el bloque más grande que puede fundir `--simplify` tiene 2^esto celdas de lado |
 | `--no-camera` | flag | cámara añadida | |
 | `--no-bake` | flag | bake encendido | llevar el material para ser relit, en vez de hornear la luz |
-| `--bake-samples` | entero | `64` | caminos por gaussiana |
+| `--bake-samples` | entero | `128` | caminos que toma primero cada gaussiana; una transferencia toma estos más `--bake-extra` |
+| `--bake-extra` | entero | `128` | caminos por gaussiana en promedio añadidos tras la primera pasada, repartidos por sqrt(varianza relativa / coste) de lo que vio la primera; 0 no traza ninguno |
+| `--bake-pass-samples` | entero, 1 a 4096 | `64` | caminos que da cada pasada añadida a las gaussianas para las que es; una gaussiana recibe como mucho 16 de ellas |
+| `--bake-filter` | entero, 0 a 8 | `3` | iteraciones à-trous del filtro de bake de splats (el bundle `SplatBakeFilter`) sobre la luz horneada; 0 no filtra nada. La primera alcanza una celda de 1.5 gaussianas, y cada una la dobla |
+| `--bake-filter-luminance` | número | `4` | el borde del filtro: una vecina cuya luz difiere en este número de desviaciones típicas del ruido de la gaussiana cuenta e^-1 veces. Más alto suaviza más y conserva menos un borde tenue |
+| `--bake-filter-indirect-only` | flag | desactivado | filtra solo la luz indirecta y deja la directa como se trazó |
 | `--bake-bounces` | entero | `3` | tras el primer impacto |
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
@@ -733,6 +738,16 @@ la que se convirtió y no necesita luces para dibujarse. `--bake-samples` y
 el resultado — 0 es un color, 2 es donde un brillo empieza a parecer un
 brillo. `--no-bake` conserva el material, y la nube la ilumina la escena
 donde se ponga.
+
+El bake se toma en dos mitades, la luz directa y la indirecta, como sumas:
+`--bake-samples` caminos en cada gaussiana, después `--bake-extra` más en
+promedio donde la primera pasada fue más ruidosa para lo que costaron sus
+caminos, y después la luz filtrada entre gaussianas vecinas de un mismo prim
+por el bundle `SplatBakeFilter`, que tiene que estar en la ruta de búsqueda
+AOFX mientras `--bake-filter` sea mayor que 0. En el peón bajo un HDRI los
+valores por defecto tardan un 10 % más que 256 caminos por gaussiana y
+llevan la mitad de su error frente a un bake de 4096 caminos
+(docs/decisions.md, "The bake's grain").
 
 **Una nube que lleva el cielo en vez de la luz.** `--transfer` hornea un
 transfer vector: para cada gaussiana, cuánto de un entorno le llega desde cada

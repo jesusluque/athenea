@@ -135,6 +135,47 @@ struct BakedVisibilityArrays {
     uint32_t             partCount = 0;
 };
 
+/// HOW A SPLIT BAKE IS TAKEN (`StageRenderer::bakeSplitOnDevice`).
+struct BakeOptions {
+    uint32_t samples = 256;   ///< paths a gaussian in the first pass
+    uint32_t bounces = 3;     ///< after the first hit
+    uint32_t degree = 0;      ///< harmonics fitted, 0 to 3
+    uint32_t batch = 0;       ///< points a tracer pass at most (0: kBakeBatch)
+    /// ADAPTIVE: paths a gaussian on average to add after the first pass,
+    /// shared out in proportion to sqrt(relative variance / cost) (MARS,
+    /// arXiv 2410.20429) in passes of `passSamples`; 0 adds none.
+    uint32_t extraSamples = 0;
+    uint32_t passSamples = 64;
+    uint32_t maxPasses = 16;   ///< extra passes a gaussian gets at most
+    /// A mean luminance below this is weighed as this: a black gaussian is
+    /// not infinitely noisy in relative terms.
+    float    meanFloor = 0.01F;
+    uint32_t seed = 0;         ///< the first pass's paths; extra passes draw others
+};
+
+/// A BAKE KEPT AS ITS TWO HALVES (`bakeSplitOnDevice`), on the device:
+/// fitted each on its own over every path its gaussian took, so the indirect
+/// half can be filtered between neighbours before `combineBake` adds them.
+struct BakeSplit {
+    gpu::Buffer sums;       ///< `2 * coefficients + 3` float4 a gaussian (athenea/usd/bake_resolve)
+    gpu::Buffer direct;     ///< `coefficients` float4 a gaussian: the direct half, fitted (rgb)
+    gpu::Buffer indirect;   ///< the same of the indirect half: what a filter may change
+    gpu::Buffer guides;     ///< a float4 a gaussian: indirect luminance, its mean's variance, the same of the whole light
+    gpu::Buffer allot;      ///< a uint a gaussian: the extra passes it was given (zeros without)
+    uint32_t    count = 0;
+    uint32_t    coefficients = 1;
+    uint64_t    extraPoints = 0;   ///< gaussians traced again, summed over the extra passes
+    uint32_t    extraPasses = 0;   ///< passes after the first that traced anything
+};
+
+/// THE EXTRA PASSES EACH GAUSSIAN IS WORTH, from the sums of a first pass
+/// (`BakeSplit::sums`): a uint a gaussian into `allot`, its share of
+/// `options.extraSamples * count` paths in passes of `options.passSamples`,
+/// in proportion to sqrt(relative variance / cost) and at most
+/// `options.maxPasses`. Kernels throughout (`athenea/usd/bake_resolve`).
+[[nodiscard]] Result<void> allotBakePasses(gpu::ShaderLibrary& library, const gpu::Buffer& sums, uint32_t count,
+                                           uint32_t coefficients, const BakeOptions& options, gpu::Buffer& allot);
+
 class StageRenderer {
 public:
     /// `device`: a device the host already drives, shared rather than a
@@ -304,6 +345,18 @@ public:
                                                          uint32_t samples = 64, uint32_t bounces = 3,
                                                          uint32_t degree = 0, bool transfer = false,
                                                          uint32_t batch = 0);
+    /// THE SAME BAKE, ITS DIRECT LIGHT KEPT APART FROM ITS INDIRECT, and
+    /// taken adaptively where `options.extraSamples` asks: a first pass of
+    /// `samples` paths at every gaussian, then passes of `passSamples` at the
+    /// gaussians whose relative variance per cost says they are worth them,
+    /// all added as sums and fitted once. Nothing crosses to the processor
+    /// but the count of gaussians each extra pass is for.
+    [[nodiscard]] Result<BakeSplit> bakeSplitOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
+                                                      const BakeOptions& options);
+    /// The two halves added, bounded and made whole as `bakePointsOnDevice`
+    /// does it, in its layout: `coefficients` float4 a gaussian.
+    [[nodiscard]] Result<gpu::Buffer> combineBake(const BakeSplit& split, const gpu::Buffer& rays);
+
     /// Points a bake pass traces at most: 2^19, which at degree 3 is 150 MB
     /// of planes (sixteen float4 a point) where a 10 M-gaussian cloud in one
     /// pass was 2.6 GB.

@@ -1505,6 +1505,284 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
     return std::move(*answer);
 }
 
+Result<void> allotBakePasses(gpu::ShaderLibrary& library, const gpu::Buffer& sums, uint32_t count,
+                             uint32_t coefficients, const BakeOptions& options, gpu::Buffer& allot) {
+    if (count == 0 || !sums.valid() || !allot.valid() || allot.bytes() < uint64_t{count} * 4) {
+        return Error(ErrorCode::InvalidArgument, "bake: no sums to weigh, or no room for the allotment");
+    }
+    if (options.passSamples == 0) {
+        return Error(ErrorCode::InvalidArgument, "bake: an extra pass of no paths");
+    }
+    gpu::Device& device = library.device();
+    const auto kernel = [&](const char* entry) {
+        return gpu::ComputeKernel::create(library, "athenea/usd/bake_resolve", entry);
+    };
+    auto weigh = kernel("bakeWeigh");
+    if (!weigh) return std::move(weigh).error();
+    auto total = kernel("bakeWeighTotal");
+    if (!total) return std::move(total).error();
+    auto share = kernel("bakeAllot");
+    if (!share) return std::move(share).error();
+    const uint32_t groups = (count + 255) / 256;
+    const auto make = [&](uint64_t elements, uint32_t elementBytes, const char* label) -> Result<gpu::Buffer> {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(elements, 4) * elementBytes;
+        desc.elementBytes = elementBytes;
+        desc.label = label;
+        return gpu::Buffer::create(device, desc);
+    };
+    auto weights = make(count, 4, "bake.weights");
+    if (!weights) return std::move(weights).error();
+    auto partials = make(uint64_t{groups} + 1, 4, "bake.partials");
+    if (!partials) return std::move(partials).error();
+    // The budget in whole passes: a count, not a measurement.
+    const float budgetPasses =
+        static_cast<float>(static_cast<double>(options.extraSamples) * count / options.passSamples);
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        for (const char* name : {"planes", "rays", "passRays", "slots", "counter", "direct", "indirect", "guides",
+                                 "answer"}) {
+            cursor[name].setBinding(weights->rhi());
+        }
+        cursor["sums"].setBinding(sums.rhi());
+        cursor["weights"].setBinding(weights->rhi());
+        cursor["partials"].setBinding(partials->rhi());
+        cursor["allot"].setBinding(allot.rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["coefficients"].setData(coefficients);
+        cursor["params"]["maxPasses"].setData(options.maxPasses);
+        cursor["params"]["budgetPasses"].setData(budgetPasses);
+        cursor["params"]["meanFloor"].setData(options.meanFloor);
+    };
+    gpu::CommandBatch batch(device);
+    weigh->dispatch(batch, {groups * 256, 1, 1}, bind);
+    total->dispatch(batch, {256, 1, 1}, bind);
+    share->dispatch(batch, {count, 1, 1}, bind);
+    return batch.submit(true);
+}
+
+Result<BakeSplit> StageRenderer::bakeSplitOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
+                                                   const BakeOptions& options) {
+    Impl& impl = *impl_;
+    if (count == 0 || !rays.valid() || rays.bytes() < uint64_t{count} * 48) {
+        return Error(ErrorCode::InvalidArgument, "bake: three float4 a point, and at least one point");
+    }
+    if (!impl.delegate->HasEngine()) {
+        return Error(ErrorCode::DeviceFailure, "bake: the render delegate has no GPU");
+    }
+    // The stage on the device first, as bakePointsOnDevice puts it there.
+    impl.delegate->SetRenderSetting(TfToken("athenea:settleStreams"), VtValue(true));
+    auto framing = framingCamera(time, 35.0, "rt");
+    if (!framing) return std::move(framing).error();
+    ATHENEA_TRY(aim(*framing, time, 1, 1, "rt"));
+    ATHENEA_TRY(execute(1, 1));
+
+    athenea::usd::Engine& engine = impl.delegate->GetEngine();
+    gpu::Device& device = engine.device();
+    gpu::ShaderLibrary& library = engine.library();
+    const auto kernel = [&](const char* entry) {
+        return gpu::ComputeKernel::create(library, "athenea/usd/bake_resolve", entry);
+    };
+    auto sumsAdd = kernel("bakeSumsAdd");
+    if (!sumsAdd) return std::move(sumsAdd).error();
+    auto select = kernel("bakeSelect");
+    if (!select) return std::move(select).error();
+    auto splitFit = kernel("bakeSplitFit");
+    if (!splitFit) return std::move(splitFit).error();
+
+    const uint32_t degree = std::min(options.degree, 3u);
+    const uint32_t coefficients = (degree + 1) * (degree + 1);
+    const uint32_t entries = 2 * coefficients + 3;
+    const auto make = [&](uint64_t elements, uint32_t elementBytes, const char* label) -> Result<gpu::Buffer> {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(elements, 1) * elementBytes;
+        desc.elementBytes = elementBytes;
+        desc.label = label;
+        return gpu::Buffer::create(device, desc);
+    };
+    BakeSplit split;
+    split.count = count;
+    split.coefficients = coefficients;
+    auto sums = make(uint64_t{count} * entries, 16, "bake.sums");
+    if (!sums) return std::move(sums).error();
+    split.sums = std::move(*sums);
+    auto allot = make(count, 4, "bake.allot");
+    if (!allot) return std::move(allot).error();
+    split.allot = std::move(*allot);
+    {
+        gpu::CommandBatch clear(device);
+        clear.encoder()->clearBuffer(split.allot.rhi(), 0, uint64_t{count} * 4);
+        clear.markDirty();
+        ATHENEA_TRY(clear.submit(true));
+    }
+    // What every kernel here declares is bound whatever it uses: a stand-in
+    // for the buffers a kernel has no use for.
+    auto none = make(4, 16, "bake.none");
+    if (!none) return std::move(none).error();
+    const uint32_t perPass = std::min(options.batch > 0 ? options.batch : kBakeBatch, count);
+    auto passRays = make(uint64_t{perPass} * 3, 16, "bake.passRays");
+    if (!passRays) return std::move(passRays).error();
+
+    render::RenderSettings settings;
+    settings.width = 1;
+    settings.height = 1;
+    const render::Projection projection = render::projectionFor(*framing, 1, 1);
+    render::RenderTargets out;
+    // Every buffer the module declares is bound for every kernel, the ones a
+    // kernel does not touch to a stand-in; the callers bind over them.
+    const auto bindAll = [&](rhi::ShaderCursor cursor, const gpu::Buffer& planes, const gpu::Buffer& slots,
+                             const gpu::Buffer& packed) {
+        cursor["planes"].setBinding(planes.rhi());
+        cursor["sums"].setBinding(split.sums.rhi());
+        cursor["rays"].setBinding(rays.rhi());
+        cursor["passRays"].setBinding(packed.rhi());
+        cursor["slots"].setBinding(slots.rhi());
+        cursor["allot"].setBinding(split.allot.rhi());
+        for (const char* name : {"weights", "partials", "counter", "direct", "indirect", "guides", "answer"}) {
+            cursor[name].setBinding(none->rhi());
+        }
+        cursor["params"]["coefficients"].setData(coefficients);
+    };
+    // ONE PASS of `samples` paths at the points `from` holds (the cloud's own
+    // rays, or a packed selection of them), in batches, its sums written at
+    // their gaussians or added to them.
+    const auto tracePass = [&](const gpu::Buffer& from, uint32_t points, uint32_t samples, uint32_t seed,
+                               bool accumulate, const gpu::Buffer* slots) -> Result<void> {
+        for (uint32_t first = 0; first < points; first += perPass) {
+            const uint32_t n = std::min(perPass, points - first);
+            const gpu::Buffer* batchRays = &from;
+            if (n < points || slots != nullptr) {
+                gpu::CommandBatch copy(device);
+                copy.encoder()->copyBuffer(passRays->rhi(), 0, from.rhi(), uint64_t{first} * 48, uint64_t{n} * 48);
+                copy.markDirty();
+                ATHENEA_TRY(copy.submit(true));
+                batchRays = &*passRays;
+            }
+            athenea::usd::BakeRequest bake;
+            bake.rays = batchRays;
+            bake.count = n;
+            bake.samples = samples;
+            bake.bounces = options.bounces;
+            bake.coefficients = coefficients;
+            bake.split = true;
+            // A batch draws its own paths too: the batch's grid restarts at
+            // zero, and the seed is what keeps it from repeating the first.
+            bake.seed = seed + first * 31u;
+            bake.out = &out;
+            ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
+            if (!out.colour.valid()) {
+                return Error(ErrorCode::InternalError, "bake: the frame wrote nothing");
+            }
+            gpu::CommandBatch add(device);
+            sumsAdd->dispatch(add, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                bindAll(cursor, out.colour, slots != nullptr ? *slots : *none, *none);
+                cursor["params"]["count"].setData(n);
+                cursor["params"]["first"].setData(first);
+                cursor["params"]["plane"].setData(out.width * out.height);
+                cursor["params"]["indexed"].setData(slots != nullptr ? 1u : 0u);
+                cursor["params"]["accumulate"].setData(accumulate ? 1u : 0u);
+            });
+            ATHENEA_TRY(add.submit(true));
+        }
+        return ok();
+    };
+    ATHENEA_TRY(tracePass(rays, count, std::max(options.samples, 1u), options.seed, false, nullptr));
+
+    if (options.extraSamples > 0 && options.passSamples > 0 && options.maxPasses > 0) {
+        // WHERE THE REST OF THE BUDGET GOES. Each gaussian weighed from its
+        // first pass, the weights summed, and its share in whole passes.
+        ATHENEA_TRY(allotBakePasses(library, split.sums, count, coefficients, options, split.allot));
+        auto slots = make(count, 4, "bake.slots");
+        if (!slots) return std::move(slots).error();
+        auto packed = make(uint64_t{count} * 3, 16, "bake.selectedRays");
+        if (!packed) return std::move(packed).error();
+        auto counter = make(4, 4, "bake.selected");
+        if (!counter) return std::move(counter).error();
+        const auto bindSelect = [&](rhi::ShaderCursor cursor) {
+            bindAll(cursor, *none, *slots, *packed);
+            cursor["counter"].setBinding(counter->rhi());
+            cursor["params"]["count"].setData(count);
+        };
+        for (uint32_t pass = 1; pass <= options.maxPasses; ++pass) {
+            const uint32_t zero[4] = {0, 0, 0, 0};
+            ATHENEA_TRY(counter->write(device, 0, sizeof(zero), zero));
+            gpu::CommandBatch batch(device);
+            select->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                bindSelect(cursor);
+                cursor["params"]["pass"].setData(pass);
+            });
+            ATHENEA_TRY(batch.submit(true));
+            uint32_t selected = 0;
+            ATHENEA_TRY(counter->read(device, 0, sizeof(selected), &selected));
+            if (selected == 0) {
+                break;   // allotted no further: every later pass would be empty too
+            }
+            ATHENEA_TRY(tracePass(*packed, selected, options.passSamples, options.seed + pass * 7919u, true,
+                                  &*slots));
+            split.extraPoints += selected;
+            split.extraPasses = pass;
+        }
+    }
+
+    // Each half fitted over every path its gaussian took.
+    auto direct = make(uint64_t{count} * coefficients, 16, "bake.direct");
+    if (!direct) return std::move(direct).error();
+    auto indirect = make(uint64_t{count} * coefficients, 16, "bake.indirect");
+    if (!indirect) return std::move(indirect).error();
+    auto guides = make(count, 16, "bake.guides");
+    if (!guides) return std::move(guides).error();
+    split.direct = std::move(*direct);
+    split.indirect = std::move(*indirect);
+    split.guides = std::move(*guides);
+    gpu::CommandBatch fit(device);
+    splitFit->dispatch(fit, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bindAll(cursor, *none, *none, *none);
+        cursor["direct"].setBinding(split.direct.rhi());
+        cursor["indirect"].setBinding(split.indirect.rhi());
+        cursor["guides"].setBinding(split.guides.rhi());
+        cursor["params"]["count"].setData(count);
+    });
+    ATHENEA_TRY(fit.submit(true));
+    return split;
+}
+
+Result<gpu::Buffer> StageRenderer::combineBake(const BakeSplit& split, const gpu::Buffer& rays) {
+    Impl& impl = *impl_;
+    if (!impl.delegate->HasEngine()) {
+        return Error(ErrorCode::DeviceFailure, "bake: the render delegate has no GPU");
+    }
+    if (split.count == 0 || !split.sums.valid() || !split.direct.valid() || !split.indirect.valid()) {
+        return Error(ErrorCode::InvalidArgument, "bake: no split bake to combine");
+    }
+    athenea::usd::Engine& engine = impl.delegate->GetEngine();
+    gpu::Device& device = engine.device();
+    auto combine = gpu::ComputeKernel::create(engine.library(), "athenea/usd/bake_resolve", "bakeCombine");
+    if (!combine) return std::move(combine).error();
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{split.count} * split.coefficients * 16;
+    desc.elementBytes = 16;
+    desc.label = "bake.answer";
+    auto answer = gpu::Buffer::create(device, desc);
+    if (!answer) return std::move(answer).error();
+    gpu::CommandBatch batch(device);
+    combine->dispatch(batch, {split.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        // Every buffer the module declares, the ones this kernel does not
+        // touch to the allotment, which is there whatever the bake was.
+        for (const char* name : {"planes", "passRays", "slots", "weights", "partials", "counter", "guides"}) {
+            cursor[name].setBinding(split.allot.rhi());
+        }
+        cursor["allot"].setBinding(split.allot.rhi());
+        cursor["sums"].setBinding(split.sums.rhi());
+        cursor["rays"].setBinding(rays.rhi());
+        cursor["direct"].setBinding(split.direct.rhi());
+        cursor["indirect"].setBinding(split.indirect.rhi());
+        cursor["answer"].setBinding(answer->rhi());
+        cursor["params"]["count"].setData(split.count);
+        cursor["params"]["coefficients"].setData(split.coefficients);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return std::move(*answer);
+}
+
 Result<StageImage> StageRenderer::render(const render::Camera& camera, double time, uint32_t width, uint32_t height,
                                          const std::string& technique) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:settleStreams"), VtValue(true));
