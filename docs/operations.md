@@ -965,8 +965,15 @@ the merged levels' the weighted mean of what they stand for; it is bit 2 of
 the header's `flags` (bit 0 is the normals), so a file without it reads as
 before. A cloud without normals, without emission and in sRGB is still written as
 version 1, so a reader of version 1 alone opens it: version 2 is written only
-where the `flags` are not zero. A `flags` bit this build does not know (any
-past bit 2) is refused, file named: a later bit may add a block, and a reader
+where the `flags` are not zero. A cloud with a material (`pbr`, and its
+layers where it has them) keeps it under bit 4, a word an element and three
+more for the layers; one with a transfer keeps it under bit 5, its values as
+f16 pairs and its open directions after them -- the counts in a header of
+thirty-two bytes after the first, and the merged levels' a group's transfer
+averaged by opacity (a zonal one, whose axes do not average, a gaussian's),
+its bits set where half the weight has them, its material a gaussian's. Bit
+3 is kept for proposal 009. A `flags` bit this build does not know (bit 3,
+or past bit 5) is refused, file named: a later bit may add a block, and a reader
 that skipped it would read every block after it from the wrong place.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
@@ -1140,7 +1147,7 @@ gaussian's orientation gives, then its zonal coefficients for bands 0, 1 and 2
 (a one-lobe fit writes the second as zeros). Where both are there it is the one
 read. A reader that does not know it draws the cloud relit with no transfer,
 which is the whole of its versioning: it is a new primvar, not a new meaning of
-an old one, and a `.athc` carries no transfer of either kind.
+an old one; a `.athc` carries either kind under its bit 5.
 `shadowBits` is written beside them: sixty-four bits a gaussian, one a cell of
 an 8 x 8 octahedral grid over the sphere in the cloud's own space -- over the
 gaussian's own frame beside `transferZonal` -- set where the bake's ray in that
@@ -1235,8 +1242,8 @@ their ranges, and on the device they are three words a gaussian, a byte a
 value (an index in steps of 1/128, the coat's in steps of 1/64 beside its
 darkening's bit). `athenea mesh2splat` writes all nine where some material of
 the stage layers anything (52 bytes a gaussian in the file, twelve on the
-device). Neither the levels of detail nor a `.athc` carry
-them yet, as they do not carry metallic and roughness either.
+device). The levels of detail and a `.athc` carry them with the material
+(bit 4), a merged group taking one gaussian's.
  — the joints that carry a cloud.
 
 | Attribute | Type | Note |
@@ -1699,7 +1706,7 @@ A script's own header says what it needs and where it puts things.
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |
 | a cloud's reflections look softer than the mesh's | the conversion's cell is the blur kernel: a cloud reads as the mesh at `r + 9c/R`, where `c` is the cell and `R` the radius of curvature | convert at a finer `--resolution`: a mirror at roughness `r` wants a cell under `r/9` of that radius. It costs the file, not the frame -- fifteen times the gaussians was 36 % more time a frame and sixteen times the disk |
 | a glass ball shows the room but does not bend it | the cloud has no index | `athenea mesh2splat` writes the glass material's IOR; for a cloud from elsewhere author `primvars:athenea:splat:ior` (1.5 is glass). A cloud keeps one index: with two glasses of different IOR the first is kept and the conversion says so |
-| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear) and 2 (emission))` | the `.athc` was written by a newer engine, with something in its blocks this build does not know where to find | read it with that engine, or update this one |
+| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material) and 5 (transfer))` | the `.athc` was written by a newer engine, with something in its blocks this build does not know where to find | read it with that engine, or update this one |
 | a cloud renders blunt and then sharpens | chunks are still arriving | raise `--stream-budget`, or wait; a still settles first |
 | `OutOfMemory: ... does not fit in the GPU's memory budget`, exit code 3 | the frame needed more than the device's budget, even after the engine gave back what it could and stepped down | close what else holds the GPU, render smaller, give a streamed asset a smaller budget; `ATHENEA_GPU_BUDGET` raises or lowers the budget |
 | `OutOfMemory: ... does not fit in the memory the system has free` | on Apple silicon, the machine's free memory less its 1.5 GiB reserve would not hold the allocation: other processes hold the rest | close what else runs, or run smaller; the reserve is not configurable |

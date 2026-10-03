@@ -101,6 +101,8 @@ private:
     gpu::RadixSort     sort_;
     gpu::PrefixSum     prefix_;
     gpu::ComputeKernel morton_, reorder_, boundaries_, groups_, leafMoments_, mergeMoments_, finalize_;
+    /// What a cloud carries beside its gaussians (lod_extras.slang).
+    gpu::ComputeKernel extrasReorder_, extrasMerge_;
 };
 
 struct LodInstance {
@@ -143,7 +145,7 @@ private:
     struct Frame;
     gpu::Device*                        device_ = nullptr;
     gpu::PrefixSum                      prefix_;
-    gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_;
+    gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_, extrasGather_;
     std::vector<std::unique_ptr<Frame>> frames_;
 };
 

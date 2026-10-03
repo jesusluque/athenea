@@ -6,6 +6,7 @@
 #include "../render/SplatFixtures.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -377,6 +378,79 @@ TEST_CASE("a .athc header with a flag bit this reader does not know is refused, 
     CHECK_FALSE(std::filesystem::exists(out));
     CHECK_FALSE(std::filesystem::exists(dir / "copied.athc.partial"));
     std::filesystem::remove_all(dir);
+}
+
+// WHAT A CLOUD CARRIES BESIDE ITS GAUSSIANS GOES THROUGH ITS LEVELS AND ITS
+// FILE (task TX): a material and a transfer with its open directions, the
+// same for every gaussian, so every merged level holds them unchanged -- the
+// mean of a transfer is that transfer, the bits set everywhere stay set --
+// and a .athc written and read back holds them in its store and its levels.
+TEST_CASE("a transfer and a material go through the levels of detail and a .athc", "[lod][gpu][athc][transfer]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder built = randomCloud(20000, 53, 0.003F, 0.05F);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    const uint32_t n = cloud->declared;
+    constexpr uint32_t kTransferCount = 112, kTransferWords = 56, kShadowWords = 8;
+    constexpr uint32_t kOne = 0x3C003C00u;      // two halves of 1.0
+    constexpr uint32_t kOpen = 0xFFFFFFFFu;     // every way out open
+    constexpr uint32_t kMaterial = 0x00FF8040u; // a pbr word
+    const auto filled = [&](uint64_t words, uint32_t value, const char* label) {
+        std::vector<uint32_t> v(words, value);
+        auto made = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, v, label);
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    cloud->transfer = filled(uint64_t{n} * kTransferWords, kOne, "test.transfer");
+    cloud->transferCount = kTransferCount;
+    cloud->transferWords = kTransferWords;
+    cloud->shadowBits = filled(uint64_t{n} * kShadowWords, kOpen, "test.bits");
+    cloud->shadowWords = kShadowWords;
+    cloud->pbr = filled(n, kMaterial, "test.pbr");
+    lod::LodBuildSettings chunked;
+    chunked.chunkSplats = 1000;
+    auto lod = h->builder.build(*cloud, chunked);
+    if (!lod) FAIL(lod.error().toString());
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/words_check");
+    const auto wrongIn = [&](const gpu::Buffer& words, uint64_t count, uint32_t expected) {
+        gpu::Buffer wrong = test::uintBuffer(*gpu->device, 2, "test.wrong");
+        gpu::CommandBatch batch(*gpu->device);
+        check.dispatch(batch, {static_cast<uint32_t>(count), 1, 1}, [&](rhi::ShaderCursor c) {
+            c["words"].setBinding(words.rhi());
+            c["wrong"].setBinding(wrong.rhi());
+            c["params"]["count"].setData(static_cast<uint32_t>(count));
+            c["params"]["expected"].setData(expected);
+        });
+        REQUIRE(batch.submit(true));
+        std::array<uint32_t, 2> counts{};
+        REQUIRE(wrong.read(*gpu->device, 0, sizeof(counts), counts.data()));
+        REQUIRE(counts[1] == count);
+        return counts[0];
+    };
+    const auto allOf = [&](const lod::LodCloud& l, const char* what) {
+        uint32_t off = 0;
+        REQUIRE(l.splats.transferCount == kTransferCount);
+        REQUIRE(l.splats.shadowWords == kShadowWords);
+        off += wrongIn(l.splats.transfer, uint64_t{l.count} * kTransferWords, kOne);
+        off += wrongIn(l.splats.shadowBits, uint64_t{l.count} * kShadowWords, kOpen);
+        off += wrongIn(l.splats.pbr, l.count, kMaterial);
+        for (const lod::LodLevel& level : l.levels) {
+            REQUIRE(level.gaussians.transfer.valid());
+            off += wrongIn(level.gaussians.transfer, uint64_t{level.gaussians.count} * kTransferWords, kOne);
+            off += wrongIn(level.gaussians.shadowBits, uint64_t{level.gaussians.count} * kShadowWords, kOpen);
+            off += wrongIn(level.gaussians.pbr, level.gaussians.count, kMaterial);
+        }
+        std::printf("  %s: %zu levels, %u words off\n", what, l.levels.size(), off);
+        return off;
+    };
+    CHECK(allOf(*lod, "built") == 0);
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "athenea_test_extras.athc";
+    REQUIRE(lod::writeAthc(*gpu->device, *lod, path));
+    auto read = lod::readAthc(*gpu->device, path);
+    if (!read) FAIL(read.error().toString());
+    CHECK(allOf(*read, "read back") == 0);
+    std::filesystem::remove(path);
 }
 
 TEST_CASE("a .athc reads back as it was built, and a stream settles on the same image", "[lod][gpu]") {

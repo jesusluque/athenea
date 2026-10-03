@@ -11953,7 +11953,7 @@ conversion.
   as the frame does; where the mesh has more (27 % of the wing, P014C) the
   posed gaussians stand a little off the surface the bake traces.
 
-### The levels of detail and `.athc` (planned, not built)
+### The levels of detail and `.athc`
 
 A TX transfer, its layers and its material do not travel through a level of
 detail or a `.athc` yet: `packed()` and the cut copy positions, shape and
@@ -11978,8 +11978,22 @@ plan, so the flag bits are spoken for:
 - **The cut** gathers the same words beside positions and shape into the
   per-frame cloud, so `SplatInstance` carries a transfer whatever drew it.
 
-Until then a cloud with a transfer is written to `.athc` without it, and says
-so; `--transfer` with an `.athc` output stays refused.
+Built as planned (`athenea/lod/lod_extras.slang`: a reorder, a merge over a
+group's run and a gather, generic over a buffer of words a gaussian; the
+extra header is `ExtraHeader`, 32 bytes after the first). A zonal transfer's
+axes do not average, so its merged group takes one gaussian's, as the material
+and the matte's ids do. `athenea mesh2splat -o x.athc` still refuses
+`--transfer`: its records carry no transfer, which a conversion writes into
+the stage beside them, and `athenea convert` reads splat files, not stages.
+What carries a transfer through levels of detail today is a frame's own
+(a cloud the delegate cuts by `athenea:lod`), and a `.athc` a caller builds
+from a cloud that has one; a converter from a stage to a `.athc` is not
+written.
+
+Checked (pending the GPU turn): a cloud given a transfer, its bits and a
+material, the same at every gaussian, built into levels and through a
+`.athc`: no word off in the store or any level, built or read back
+(`a transfer and a material go through the levels of detail and a .athc`).
 
 ### A car's paint is a Schlick metal, not a conductor
 

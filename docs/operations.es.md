@@ -983,9 +983,16 @@ niveles fundidos la media ponderada de lo que representan; es el bit 2 de los
 `flags` de la cabecera (el bit 0 son las normales), así que un fichero sin ella
 se lee como antes. Una nube sin normales, sin emisión y en sRGB se sigue escribiendo como versión
 1, de modo que un lector que solo conoce la versión 1 la abre: la versión 2 se
-escribe solo donde los `flags` no son cero. Un bit de los `flags` que esta
-compilación no conoce (cualquiera pasado el bit 2) se rechaza, nombrando el
-fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
+escribe solo donde los `flags` no son cero. Una nube con material (`pbr`, y
+sus capas donde las tiene) lo guarda bajo el bit 4, una palabra por elemento
+y tres más para las capas; una con transfer lo guarda bajo el bit 5, sus
+valores como pares f16 y sus direcciones abiertas detrás -- los números en una
+cabecera de treinta y dos bytes tras la primera, y en los niveles fundidos el
+transfer de un grupo promediado por opacidad (uno zonal, cuyos ejes no se
+promedian, el de una gaussiana), sus bits puestos donde los tiene la mitad del
+peso, su material el de una gaussiana. El bit 3 se guarda para la propuesta
+009. Un bit de los `flags` que esta compilación no conoce (el bit 3, o pasado
+el bit 5) se rechaza, nombrando el fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
 leería cada bloque detrás de él desde el sitio equivocado.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
@@ -1164,8 +1171,7 @@ marco que da la orientación de la gaussiana, y luego sus coeficientes zonales d
 las bandas 0, 1 y 2 (un ajuste de un lóbulo escribe el segundo como ceros).
 Donde están los dos, es el que se lee. Un lector que no lo conoce dibuja la nube
 reiluminada sin transfer, y eso es todo su versionado: es un primvar nuevo, no
-un significado nuevo de uno viejo, y un `.athc` no lleva transfer de ninguna de
-las dos clases.
+un significado nuevo de uno viejo, y un `.athc` lleva cualquiera de las dos bajo su bit 5.
 `shadowBits` se escribe a su lado: sesenta y cuatro bits por gaussiana, uno por
 celda de una rejilla octaédrica de 8 x 8 sobre la esfera en el espacio propio
 de la nube -- sobre el marco propio de la gaussiana junto a `transferZonal` --,
@@ -1265,8 +1271,9 @@ existieran. Se recortan a sus rangos, y en el dispositivo son tres palabras por
 gaussiana, un byte por valor (un índice en pasos de 1/128, el del coat en pasos
 de 1/64 junto al bit de su oscurecimiento). `athenea mesh2splat` escribe los
 nueve donde algún material de la escena pone algo encima (52 bytes por
-gaussiana en el fichero, doce en el dispositivo). Ni los niveles de detalle
-ni un `.athc` los llevan todavía, igual que no llevan metallic ni roughness.
+gaussiana en el fichero, doce en el dispositivo). Los niveles de detalle y
+un `.athc` los llevan con el material (bit 4), tomando un grupo fundido los de
+una gaussiana.
  — los joints que llevan una nube.
 
 | Atributo | Tipo | Nota |
@@ -1737,7 +1744,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | los reflejos de una nube salen más blandos que los de la malla | la celda de la conversión es el kernel de desenfoque: una nube se lee como la malla a `r + 9c/R`, con `c` la celda y `R` el radio de curvatura | convierte con `--resolution` más fina: un espejo de roughness `r` quiere una celda por debajo de `r/9` de ese radio. Lo paga el fichero, no el frame -- quince veces las gaussianas fueron un 36 % más de tiempo por frame y dieciséis veces el disco |
 | una bola de cristal enseña la sala pero no la dobla | la nube no tiene índice | `athenea mesh2splat` escribe el IOR del material de cristal; en una nube de otro origen pon `primvars:athenea:splat:ior` (1.5 es cristal). Una nube guarda un solo índice: con dos cristales de IOR distinto se queda el primero y la conversión lo avisa |
 | una nube convertida sale negra | el bake no encontró luz | dale luces a la escena, o `--default-lights`, o `--no-bake` |
-| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear) and 2 (emission))` | el `.athc` lo escribió un motor más nuevo, con algo en sus bloques que esta compilación no sabe dónde buscar | léelo con ese motor, o actualiza este |
+| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material) and 5 (transfer))` | el `.athc` lo escribió un motor más nuevo, con algo en sus bloques que esta compilación no sabe dónde buscar | léelo con ese motor, o actualiza este |
 | una nube sale roma y luego se afina | todavía están llegando chunks | sube `--stream-budget`, o espera; una imagen fija se asienta antes |
 | `OutOfMemory: ... does not fit in the GPU's memory budget`, código de salida 3 | el frame necesitaba más que el presupuesto del dispositivo, aun después de que el motor devolviera lo que pudo y bajara de nivel | cierra lo que más ocupe la GPU, renderiza más pequeño, da a un asset en streaming un presupuesto menor; `ATHENEA_GPU_BUDGET` sube o baja el presupuesto |
 | `OutOfMemory: ... does not fit in the memory the system has free` | en Apple silicon, la memoria libre de la máquina menos su reserva de 1,5 GiB no cabría la reserva: otros procesos ocupan el resto | cierra lo que más corra, o renderiza más pequeño; la reserva no se configura |
