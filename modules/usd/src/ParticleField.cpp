@@ -225,7 +225,7 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.scales = either(UsdVolTokens->scales, UsdVolTokens->scalesh);
         arrays.opacities = either(UsdVolTokens->opacities, UsdVolTokens->opacitiesh);
         VtValue degree = held(UsdVolTokens->radianceSphericalHarmonicsDegree);
-        arrays.shDegree = degree.IsHolding<int>() ? degree.UncheckedGet<int>() : 0;
+        arrays.shDegree = degree.IsHolding<int>() ? degree.UncheckedGet<int>() : -1;   // unauthored: splatStreams
         arrays.shCoefficients = either(UsdVolTokens->radianceSphericalHarmonicsCoefficients,
                                        UsdVolTokens->radianceSphericalHarmonicsCoefficientsh);
         // AtheneaSplatLightingAPI's other two: what a relit gaussian reflects

@@ -11084,3 +11084,63 @@ the metric's own noise of the mesh's.
 - The grain that is left is the harmonics': sixteen coefficients from 256
   paths. A filter that weighed each band by its own variance, rather than the
   luminance's, is the next thing to try.
+
+## A ParticleField read as OpenUSD writes one
+
+Proposal 017, its USD part (P017U). Checked against OpenUSD 26.08's own source
+(`~/tools/src/OpenUSD-26.08`), not its documentation alone:
+
+- **The DC is the raw coefficient.** `usdVol/schema.usda` says only that a
+  missing array is "a SH coefficient corresponding to a DC signal of (0.5,
+  0.5, 0.5)". The reference code settles it: `py3dgsPlyToUsd.py` copies
+  `f_dc_*` into coefficient 0 unchanged, and makes one from an RGB vertex as
+  `(rgb / 255 - 0.5) / SH_C0`; `hdParticleField`'s `gsRenderer.cpp` evaluates
+  `sum(c_k Y_k) + 0.5`, clamped to [0, 1], and its fallback is the coefficient
+  0. So a ParticleField holds what 3DGS fits, as glTF's
+  `KHR_gaussian_splatting` does (`SH0 * c + 0.5`), and that is what athenea
+  read and wrote (`splat_export.slang` writes `(colour - 0.5) / SH0`,
+  `streams.slang` reads the coefficient, its absence 0). No change.
+- **Opacity and scale are linear** (the schema's words: "not specified in
+  log-format", "not ... a sigmoid"); the converter applies `exp` and the
+  sigmoid on the way in. As athenea had them. Quaternions are real first in
+  USD and `GfQuatf`'s memory is imaginary first, which is what `streams.slang`
+  reads.
+- **The degree falls back to 3.** `uniform int
+  radiance:sphericalHarmonicsDegree = 3`. usdImaging hands a delegate only an
+  authored value (`UsdImagingDataSourceCustomPrimvars` asks
+  `HasAuthoredValue`), and the delegate took an absent degree for 0: a
+  degree-3 array then read a particle's DC from the next particle's
+  harmonics. Fixed: absent is 3, and an array that holds fewer than sixteen a
+  particle is read at the highest whole degree it holds, which is plainly
+  what was written and which the schema would otherwise throw away.
+  `readParticleFieldRecords` already had the fallback (`UsdAttribute::Get`
+  returns it).
+- **A short array is ignored, not the cloud.** Orientations, scales and
+  opacities "too short ... will be ignored"; the loader refused the whole
+  cloud ("splat arrays of the wrong lengths"). `splatStreams` now drops the
+  array, with a warning, and the default stands.
+- **The colour space is UsdColorSpaceAPI's, and the schema says nothing of
+  it.** No ParticleField schema names a space; `UsdColorSpaceAPI` (usd core)
+  is how any prim says one -- `colorSpace:name` inherited down the hierarchy,
+  or `colorSpace` metadata on an attribute -- and with none USD means linear
+  Rec.709. The reference renderer applies no transform at all and clamps to
+  display range, i.e. treats the values as display-referred; Blender 5.3
+  assumes sRGB. athenea keeps its own rule for a field that says nothing --
+  a capture, sRGB -- because that is what every trainer fits and what every
+  other reader assumes, and now reads a declaration where there is one
+  (`fieldColoursLinear`: athenea's primvar first, then the resolved space).
+  The catch is Hydra: `UsdImagingDataSourcePrimvars` resolves a colour space
+  only for a primvar of colour role, and the harmonics are `float3[]`, so the
+  declaration never reaches a delegate. `StageRenderer` reads it off the
+  stage and authors `primvars:athenea:splat:linear` in the session layer,
+  as it already applied `MaterialBindingAPI`; a host that loads the plugin
+  alone sees the primvar only. The writer says both: the primvar where the
+  colours are light, and `colorSpace:name` always (`lin_rec709_scene` or
+  `srgb_rec709_scene`), with `lin_rec709_scene` on `emission`'s attribute so
+  a capture's sRGB does not reach it by inheritance.
+
+Tests (`tests/usd/test_particlefield.cpp`): the names, the resolution order on
+an in-memory stage, the degree and short-array bookkeeping, and on the GPU the
+exported stage's declaration and three frames -- degree unauthored, space
+said only by `UsdColorSpaceAPI`, as written -- that must be the same image
+(max 0), with a control said to be sRGB that must not.

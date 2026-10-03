@@ -1091,6 +1091,39 @@ gaussiana en el fichero, cuatro en el dispositivo como RGB9E5: tres mantisas de
 9 bits bajo un exponente compartido, hasta 65408, cada canal a 1/512 del más
 brillante); una captura no tiene.
 
+**La propia ParticleField** — lo que guarda `UsdVolParticleField3DGaussianSplat`,
+leído como lo define OpenUSD 26.08 (su `schema.usda`, y los conversores de PLY
+y SPZ y el renderer de referencia `hdParticleField` de sus
+`extras/imaging/examples`):
+
+| Qué | Como lo guarda el fichero | Donde no dice nada |
+|---|---|---|
+| `opacities` | lineal, de 0 a 1 (sin sigmoide) | opaca |
+| `scales` | desviaciones típicas lineales (sin `exp`) | unidad |
+| `orientations` | cuaternión, la parte real primero | identidad |
+| `radiance:sphericalHarmonicsCoefficients` | los coeficientes como los ajusta 3DGS, el DC primero, `(degree + 1)^2` por partícula: el color del DC es `0.5 + 0.2820948 * dc` | DC 0, un gris de 0.5 |
+| `radiance:sphericalHarmonicsDegree` | de 0 a 3 | 3, el del esquema; se lee como el mayor grado entero que el array guarda para cada partícula |
+| el espacio de color | `UsdColorSpaceAPI`: `colorSpace:name` en el prim o en un ancestro, o el `colorSpace` de los propios armónicos | el de una captura, sRGB (abajo) |
+
+Un array de orientaciones, escalas u opacidades más corto que las posiciones se
+ignora, con un aviso, y su valor por defecto ocupa su lugar, como dice el
+esquema; un array de armónicos más corto de lo que pide su grado también se
+ignora. Uno más largo se lee hasta las partículas.
+
+El espacio en que están los colores se dice de dos maneras, y la de athenea
+gana donde están las dos: `primvars:athenea:splat:linear`, y después el espacio
+de color que USD resuelve para los armónicos. `lin_rec709_scene` es luz lineal,
+`srgb_rec709_scene` es sRGB; cualquier otro nombre se avisa y los colores se
+toman por sRGB. Un field que no dice ninguno se toma por el sRGB de una
+captura, que es lo que ajusta un entrenador, aunque USD toma un prim que no
+dice nada por Rec.709 lineal. Hydra no lleva espacio de color para los
+armónicos (son `float3[]`, no un color), así que la declaración de USD la leen
+`athenea stage`, `view`, `render` y el servidor MCP, que abren el stage ellos
+mismos; una aplicación que sólo carga el plugin (usdview, Blender) ve sólo
+`primvars:athenea:splat:linear`. Una nube que escribe athenea dice las dos: el
+primvar donde es luz, y `colorSpace:name` siempre, `lin_rec709_scene` o
+`srgb_rec709_scene`; su `emission` dice `lin_rec709_scene` en el atributo.
+
 **`AtheneaSplatSkinningAPI`** — los joints que llevan una nube.
 
 | Atributo | Tipo | Nota |

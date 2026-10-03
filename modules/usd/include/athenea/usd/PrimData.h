@@ -13,6 +13,7 @@
 
 #include <pxr/base/vt/array.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/usd/prim.h>
 
 #include "athenea/render/Camera.h"
 
@@ -27,8 +28,16 @@ struct ParticleFieldArrays {
     pxr::VtValue orientations;     ///< VtQuatfArray or VtQuathArray; empty: identity
     pxr::VtValue scales;           ///< VtVec3fArray or VtVec3hArray; empty: unit
     pxr::VtValue opacities;        ///< VtFloatArray or VtHalfArray; empty: opaque
-    int          shDegree = 0;
-    pxr::VtValue shCoefficients;   ///< VtVec3fArray or VtVec3hArray, (degree+1)^2 per particle, DC first
+    /// `radiance:sphericalHarmonicsDegree` where it is authored; -1 where it
+    /// is not. The schema's fallback is 3, and Hydra hands over only what is
+    /// authored, so `splatStreams` supplies it (and reads a shorter array as
+    /// the highest whole degree it holds).
+    int          shDegree = -1;
+    /// VtVec3fArray or VtVec3hArray, (degree+1)^2 per particle, DC first: the
+    /// coefficients as the 3DGS papers keep them, the colour of the constant
+    /// term being 0.5 + SH0 * dc (OpenUSD's own PLY and SPZ converters, and
+    /// its reference renderer hdParticleField, write and read them so).
+    pxr::VtValue shCoefficients;
     /// What a relit gaussian reflects with, one value each
     /// (`primvars:athenea:splat:metallic` and `:roughness`, AtheneaSplatLightingAPI).
     /// Empty for a capture, which was trained with its light already in it.
@@ -280,6 +289,22 @@ struct MeshLook {
 /// The bytes of a float array a VtValue holds (float or half, any tuple
 /// size), and how many elements it has. Empty for anything else.
 [[nodiscard]] scene::FloatStream streamOf(const pxr::VtValue& value, size_t* elements = nullptr);
+
+/// WHAT A COLOUR SPACE'S NAME SAYS OF A CLOUD'S COLOURS, as USD's
+/// `UsdColorSpaceAPI` resolves one for its harmonics: true for linear Rec.709
+/// light (`lin_rec709_scene`), false for sRGB-encoded Rec.709
+/// (`srgb_rec709_scene`), nothing for a name that says neither -- a space a
+/// cloud is not converted from here, which leaves the cloud as
+/// `primvars:athenea:splat:linear` (or its absence) says.
+[[nodiscard]] std::optional<bool> cloudColoursLinear(const std::string& name);
+
+/// The space a ParticleField's colours are in, as its stage says it:
+/// `primvars:athenea:splat:linear` where that is authored, else the colour
+/// space `UsdColorSpaceAPI` resolves for its harmonics -- authored on the
+/// attribute, or `colorSpace:name` on the prim or an ancestor -- read by
+/// `cloudColoursLinear`. Nothing where neither says, and the cloud is then
+/// taken for a capture, sRGB.
+[[nodiscard]] std::optional<bool> fieldColoursLinear(const pxr::UsdPrim& field);
 
 /// Streams over `arrays`, which must outlive the upload.
 [[nodiscard]] scene::SplatStreams splatStreams(const ParticleFieldArrays& arrays, std::string source);

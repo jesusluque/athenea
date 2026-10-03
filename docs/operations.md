@@ -1067,6 +1067,39 @@ gaussian in the file, four on the device as RGB9E5: three 9-bit mantissas
 under a shared exponent, up to 65408, each channel to 1/512 of the
 brightest); a capture has none.
 
+**The ParticleField itself** — what `UsdVolParticleField3DGaussianSplat`
+holds, read as OpenUSD 26.08 defines it (its `schema.usda`, and the PLY and SPZ
+converters and the reference renderer `hdParticleField` in its
+`extras/imaging/examples`):
+
+| What | As the file holds it | Where it says nothing |
+|---|---|---|
+| `opacities` | linear, 0 to 1 (no sigmoid) | opaque |
+| `scales` | linear standard deviations (no `exp`) | unit |
+| `orientations` | quaternion, real first | identity |
+| `radiance:sphericalHarmonicsCoefficients` | the coefficients as 3DGS fits them, DC first, `(degree + 1)^2` a particle: the colour of the DC is `0.5 + 0.2820948 * dc` | DC 0, a grey of 0.5 |
+| `radiance:sphericalHarmonicsDegree` | 0 to 3 | 3, the schema's; read as the highest whole degree the array holds for every particle |
+| the colour space | `UsdColorSpaceAPI`: `colorSpace:name` on the prim or an ancestor, or the harmonics' own `colorSpace` | a capture's, sRGB (below) |
+
+An orientation, scale or opacity array shorter than the positions is
+ignored, with a warning, and its default stands in, as the schema says; a
+harmonics array shorter than its degree asks is ignored too. A longer one is
+read up to the particles.
+
+The space the colours are in is said two ways, and athenea's wins where both
+are: `primvars:athenea:splat:linear`, then the colour space USD resolves for the
+harmonics. `lin_rec709_scene` is linear light, `srgb_rec709_scene` is sRGB;
+any other name is warned of and the colours are taken for sRGB. A field that
+says neither is taken for a capture's sRGB, which is what a trainer fits,
+although USD takes a prim that says nothing for linear Rec.709. Hydra carries
+no colour space for the harmonics (they are `float3[]`, not a colour), so the
+USD declaration is read by `athenea stage`, `view`, `render` and the MCP
+server, which open the stage themselves; an application that loads only the
+plugin (usdview, Blender) sees `primvars:athenea:splat:linear` alone. A cloud
+athenea writes says both: the primvar where it is light, and `colorSpace:name`
+always, `lin_rec709_scene` or `srgb_rec709_scene`; its `emission` says
+`lin_rec709_scene` on the attribute.
+
 **`AtheneaSplatSkinningAPI`** — the joints that carry a cloud.
 
 | Attribute | Type | Note |

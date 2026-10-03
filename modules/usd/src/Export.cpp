@@ -12,6 +12,8 @@
 
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usd/colorSpaceAPI.h>
+#include <pxr/base/gf/colorSpace.h>
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/metrics.h>
@@ -38,6 +40,7 @@
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
+#include "athenea/usd/PrimData.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -243,10 +246,13 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     // color3f, linear radiance, what the material's emission was where it
     // stood. Written only where the conversion met something that emits.
     if (withEmission) {
-        UsdGeomPrimvarsAPI(splats.GetPrim())
-            .CreatePrimvar(TfToken("primvars:athenea:splat:emission"), SdfValueTypeNames->Color3fArray,
-                           UsdGeomTokens->vertex)
-            .Set(VtValue(emissions));
+        UsdGeomPrimvar emitted = UsdGeomPrimvarsAPI(splats.GetPrim())
+                                     .CreatePrimvar(TfToken("primvars:athenea:splat:emission"),
+                                                    SdfValueTypeNames->Color3fArray, UsdGeomTokens->vertex);
+        emitted.Set(VtValue(emissions));
+        // Light whatever the harmonics are in: said on the attribute, which
+        // stands over the prim's colorSpace:name below.
+        emitted.GetAttr().SetColorSpace(GfColorSpaceNames->LinearRec709);
     }
 
     // WHICH PRIM EACH GAUSSIAN CAME FROM (AtheneaSplatCryptomatteAPI). One id a
@@ -322,13 +328,25 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         static const TfToken kIor("primvars:athenea:splat:ior");
         splats.GetPrim().CreateAttribute(kIor, SdfValueTypeNames->Float, false).Set(options.ior);
     }
-    if (options.linear || linear || e.colour == io::SplatEncoding::Colour::LinearLight) {
+    const bool lightColours = options.linear || linear || e.colour == io::SplatEncoding::Colour::LinearLight;
+    if (lightColours) {
         // Its colours are linear light, which is what every cloud is blended
         // in; without this a reader takes them for a capture's sRGB and
         // decodes them a second time.
         static const TfToken kLinear("primvars:athenea:splat:linear");
         splats.GetPrim().CreateAttribute(kLinear, SdfValueTypeNames->Bool, true).Set(true);
     }
+    // AND SAID IN USD'S OWN WORDS. The ParticleField schema says nothing of
+    // the space its harmonics are in; UsdColorSpaceAPI is how any prim says
+    // it, inherited by every attribute that does not say otherwise, and USD
+    // takes a prim that says nothing for linear Rec.709 -- which a capture,
+    // trained on sRGB photographs, is not. So it is said either way: linear
+    // for light, sRGB for a capture's colours. The primvar above stays, for
+    // Hydra: a colour space reaches a delegate only on a colour primvar, and
+    // the harmonics are float3[].
+    UsdColorSpaceAPI::Apply(splats.GetPrim())
+        .CreateColorSpaceNameAttr(VtValue(lightColours ? GfColorSpaceNames->LinearRec709
+                                                       : GfColorSpaceNames->SRGBRec709));
     if (options.litBody) {
         // Its colours are light, not an albedo: what a frame adds is the
         // reflection, which is the part a single colour cannot hold.
@@ -642,11 +660,9 @@ Result<io::RawSplats> readParticleFieldRecords(const std::filesystem::path& path
     raw.source = path.string();
     // The space its colours are in: light where the stage says so, the sRGB
     // of a capture where it does not.
-    {
-        bool linear = false;
-        const UsdAttribute said = field.GetPrim().GetAttribute(TfToken("primvars:athenea:splat:linear"));
-        raw.linear = said && said.Get(&linear) && linear;
-    }
+    // `primvars:athenea:splat:linear`, or USD's colour space for the
+    // harmonics where that is not authored (fieldColoursLinear).
+    raw.linear = fieldColoursLinear(field.GetPrim()).value_or(false);
     io::SplatEncoding& e = raw.encoding;
     const uint32_t keep = perSplat - 1;
     e.floatsPerRecord = 14 + 3 * keep + (normals.empty() ? 0 : 3) + (emissions.empty() ? 0 : 3);

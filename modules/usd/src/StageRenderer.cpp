@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/usd/StageRenderer.h"
+#include "athenea/usd/PrimData.h"
 
 #include "athenea/core/Log.h"
 
@@ -46,6 +47,7 @@
 #include <pxr/usd/usdLux/lightAPI.h>
 #include <pxr/usd/usdRender/pass.h>
 #include <pxr/usd/usdRender/settings.h>
+#include <pxr/usd/usdVol/particleField.h>
 #include <pxr/usd/usdVol/particleField3DGaussianSplat.h>
 #include <pxr/usdImaging/usdImaging/sceneIndices.h>
 
@@ -205,6 +207,32 @@ Result<std::unique_ptr<StageRenderer>> StageRenderer::open(const std::filesystem
             athenea::log::info("hdAthenea: {} cloud(s) hint sorting by ray hit distance, which is the traced route's order; "
                            "the rasteriser sorts by view depth",
                            byRay);
+        }
+    }
+    // THE SPACE A CLOUD'S COLOURS ARE IN, AS USD SAYS IT. A ParticleField
+    // says it with UsdColorSpaceAPI -- `colorSpace:name` on the prim or an
+    // ancestor, or the harmonics' own `colorSpace` -- and none of that
+    // reaches a Hydra delegate: usdImaging resolves a colour space only for a
+    // primvar of colour role, and the harmonics are float3[]. So it is read
+    // off the stage here and said where the delegate reads it, as
+    // `primvars:athenea:splat:linear` IN THE SESSION LAYER, as the bindings
+    // above are; a field that authors that primvar itself is left as it says
+    // (fieldColoursLinear). An application that loads the plugin alone sees
+    // only the primvar (docs/operations.md, 4.3).
+    {
+        const UsdEditContext session(impl.stage, impl.stage->GetSessionLayer());
+        static const TfToken kLinear("primvars:athenea:splat:linear");
+        for (const UsdPrim& prim : impl.stage->Traverse()) {
+            if (!prim.IsA<UsdVolParticleField>()) {
+                continue;
+            }
+            const UsdAttribute said = prim.GetAttribute(kLinear);
+            if (said && said.HasAuthoredValue()) {
+                continue;
+            }
+            if (const std::optional<bool> linear = athenea::usd::fieldColoursLinear(prim); linear.has_value()) {
+                prim.CreateAttribute(kLinear, SdfValueTypeNames->Bool, true).Set(*linear);
+            }
         }
     }
     UsdImagingCreateSceneIndicesInfo info;
