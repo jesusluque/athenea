@@ -410,6 +410,12 @@ receta es §3.1.
 | `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó; un transfer zonal guarda sólo la mitad directa |
 | `--transfer-degree` | 2 o 3 | 3 | con `--transfer`: el grado de los armónicos, 16 coeficientes directos y 48 indirectos con 3, los 9 y 27 del primer transfer con 2 |
 | `--transfer-cells` | 0, 16 o 32 | 16 | con `--transfer`: celdas por lado de la rejilla de direcciones abiertas sobre la esfera entera (256 o 1024 bits por gaussiana); 0 escribe la de 8 x 8 del primer transfer sobre la mitad a la que mira la gaussiana |
+| `--validate` | directorio | — | medir la conversión material a material frente a la escena trazada, en este directorio (abajo) |
+| `--validate-camera` | ruta de prim | `--cell-from-camera`, si no la primera cámara de la escena | la cámara de los fotogramas |
+| `--validate-size` | W H | `960 540` | los fotogramas, en píxeles |
+| `--validate-paths` | entero | `512` | caminos por píxel que reúne el GT |
+| `--validate-bounces` | entero | `6` | rebotes de los caminos del GT |
+| `--validate-material` | ruta de prim o nombre | todos los materiales | sólo este (repetible) |
 | `--transfer-lobes` | 0 a 2 | `0` | con `--transfer`: guardarlo como este número de lóbulos zonales en el marco propio de cada gaussiana (el bundle `SplatTransferZonal`); 0 es dos lóbulos con `--skinned` y nueve armónicos en el mundo en otro caso |
 | `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
@@ -839,6 +845,28 @@ athenea visibility bird_gs.usdc --skeleton-stage bird.usda --skeleton-prim /Worl
 La última línea es el tercer horneado: lo que la nube proyecta sobre sí misma,
 por partes, para que un ala sombree el cuerpo en cualquier pose sin un rayo.
 Edita el fichero de la nube en el sitio salvo que `-o` nombre otro.
+
+**Una conversión medida por el motor.** `--validate DIR` convierte la escena
+una vez por material, dejando como malla todas las demás, y mide cada una
+frente a la escena trazada, sobre los píxeles de ese material -- la máscara es
+el Cryptomatte del fotograma de mallas, así que una malla de dos materiales
+(GeomSubsets) cuenta en los dos. El GT se traza una vez en `DIR/gt.exr` y la
+siguiente ejecución del mismo tamaño lo vuelve a leer; bórralo para trazarlo de
+nuevo. Todas las demás opciones son las de la conversión, así que lo que se
+mide es `--transfer`, `--no-bake` y el resto. Lo que escribe:
+
+| fichero | qué |
+|---|---|
+| `validate.json` | por material: mallas, gaussianas, la parte del fotograma, relMSE, p99, media y media del GT sobre sus píxeles, y el relMSE y la media de la malla rasterizada |
+| `<material>.png`, `.exr` | el GT, la malla rasterizada y la nube, uno junto a otro, sobre la caja del material |
+| `<material>_gs.exr` | el fotograma entero de la nube |
+| `gt.exr`, `mesh.exr` | la escena trazada, y rasterizada como mallas |
+| `clouds/<material>.usdc`, `.usda` | la nube, y la escena en la que se dibujó |
+
+```sh
+athenea mesh2splat car.usda --transfer --cell-from-camera /World/Camera \
+    --validate car_validate --validate-size 1920 1080 --validate-paths 512
+```
 
 ### 3.2 Renderizar una escena
 

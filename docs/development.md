@@ -432,6 +432,15 @@ says how many pixels were wrong, not merely that something was.
 A timing worth keeping goes in `decisions.md` with the hardware and the
 preset in its caption, not in a comment.
 
+**Validating a conversion** (`athenea mesh2splat --validate`,
+`apps/athenea/src/Mesh2SplatValidate.cpp`). `usd::stageMaterialGroups`
+reads the stage's bindings (meshes and their GeomSubsets) on the processor;
+the conversion runs once a group with every other mesh in `--hide`, through
+the same `runConversion` the command runs once; the frames are
+`StageRenderer`'s; the mask, the masking and the side-by-side pictures are
+`athenea/usd/m2s_validate.slang`; the numbers are the Measure effect's, over
+the mask's box, divided by the mask's sum.
+
 ## 6. Baking a gaussian, in full
 
 Three different things are called baking here, and they happen in this order:

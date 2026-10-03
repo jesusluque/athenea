@@ -445,6 +445,15 @@ lo estaba.
 Un tiempo que valga la pena guardar va a `decisions.md` con el hardware y el
 preset en el pie, no en un comentario.
 
+**Validar una conversión** (`athenea mesh2splat --validate`,
+`apps/athenea/src/Mesh2SplatValidate.cpp`). `usd::stageMaterialGroups` lee
+los enlaces de la escena (mallas y sus GeomSubsets) en el procesador; la
+conversión corre una vez por grupo con todas las demás mallas en `--hide`, por
+el mismo `runConversion` que el comando corre una vez; los fotogramas son de
+`StageRenderer`; la máscara, el enmascarado y las imágenes lado a lado son
+`athenea/usd/m2s_validate.slang`; los números son los del efecto Measure,
+sobre la caja de la máscara, divididos por la suma de la máscara.
+
 ## 6. Hornear una gaussiana, entero
 
 Aquí se llaman horneado tres cosas distintas, y pasan en este orden: la

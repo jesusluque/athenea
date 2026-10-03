@@ -205,6 +205,23 @@ struct StageSubset {
     StageMaterial material;   ///< what it binds (the mesh's, where it binds none)
 };
 
+/// THE MESHES A MATERIAL IS ON, as a stage binds them (`athenea mesh2splat
+/// --validate`): every visible mesh at or under `prim` whose own binding, or
+/// a GeomSubset's of its `materialBind` family, names the material. A mesh of
+/// several materials is in each of their groups. "" names the meshes bound to
+/// nothing. Read on the processor: it is the file's bindings, no geometry.
+struct MaterialGroup {
+    std::string              material;   ///< its prim path, or "" for none
+    std::vector<std::string> meshes;     ///< the meshes, sorted
+};
+[[nodiscard]] Result<std::vector<MaterialGroup>> stageMaterialGroups(const std::filesystem::path& path,
+                                                                     const std::string& prim,
+                                                                     const std::vector<std::string>& hidden,
+                                                                     double time);
+
+/// The first camera of a stage, in traversal order, or "" where it has none.
+[[nodiscard]] Result<std::string> stageFirstCamera(const std::filesystem::path& path);
+
 /// One mesh of the stage, already on the device.
 struct StageMesh {
     std::string           path;

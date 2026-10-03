@@ -44,8 +44,14 @@ def SkelRoot "Root"
         color3f[] primvars:displayColor = [(0.7, 0.7, 0.7)] (interpolation = "constant")
         uniform token subdivisionScheme = "none"
         rel skel:skeleton = </Root/Skel>
-        int[] primvars:skel:jointIndices = [0, 0, 0, 0] (elementSize = 1 interpolation = "vertex")
-        float[] primvars:skel:jointWeights = [1, 1, 1, 1] (elementSize = 1 interpolation = "vertex")
+        int[] primvars:skel:jointIndices = [0, 0, 0, 0] (
+            elementSize = 1
+            interpolation = "vertex"
+        )
+        float[] primvars:skel:jointWeights = [1, 1, 1, 1] (
+            elementSize = 1
+            interpolation = "vertex"
+        )
         matrix4d primvars:skel:geomBindTransform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
     }
     def Mesh "Wall" (
@@ -59,8 +65,14 @@ def SkelRoot "Root"
         color3f[] primvars:displayColor = [(0.7, 0.7, 0.7)] (interpolation = "constant")
         uniform token subdivisionScheme = "none"
         rel skel:skeleton = </Root/Skel>
-        int[] primvars:skel:jointIndices = [0, 0, 0, 0] (elementSize = 1 interpolation = "vertex")
-        float[] primvars:skel:jointWeights = [1, 1, 1, 1] (elementSize = 1 interpolation = "vertex")
+        int[] primvars:skel:jointIndices = [0, 0, 0, 0] (
+            elementSize = 1
+            interpolation = "vertex"
+        )
+        float[] primvars:skel:jointWeights = [1, 1, 1, 1] (
+            elementSize = 1
+            interpolation = "vertex"
+        )
         matrix4d primvars:skel:geomBindTransform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
     }
 }

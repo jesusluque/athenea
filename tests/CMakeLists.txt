@@ -380,6 +380,19 @@ set_tests_properties(tx_conversions_render_like_the_mesh PROPERTIES
     FIXTURES_REQUIRED tx_clouds
     LABELS gpe)
 
+# A CONVERSION MEASURED BY THE ENGINE ITSELF (task TX): two balls of two
+# materials on a ground of a third (tests/data/validate), converted with a
+# transfer one material at a time and each measured against the stage path
+# traced over its own pixels.
+add_test(NAME mesh2splat_validate
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/validate/two_balls.usda --transfer
+            --bake-samples 64 --bake-extra 0 --resolution 96 --no-camera
+            --validate ${CMAKE_CURRENT_BINARY_DIR}/validate --validate-size 192 108 --validate-paths 64)
+set_tests_properties(mesh2splat_validate PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "validate: /World/Looks/Paint +[0-9]+ splats  relMSE.*validate: /World/Looks/Rubber +[0-9]+ splats  relMSE.*validate: wrote"
+    LABELS gpe)
+
 # WHAT A CONVERTED SURFACE COVERS: the planes of tests/data/coverage converted
 # once (the fixture), then measured against the meshes they came from.
 add_test(NAME mesh2splat_coverage

@@ -12013,3 +12013,37 @@ reflected as before.
 Checked (pending the GPU turn): the Schlick never above the conductor for the
 paint's base, its colour head on, a white metal white ([schlick] in
 athenea_render_tests); the paint ball and the Corvette's paint again.
+
+### A conversion measured by the engine itself
+
+The Corvette was measured material by material with three scripts outside
+the tree (a map of materials to meshes parsed out of a conversion's log, a
+mask by the depth difference of two frames, oiiotool's crops and `athenea
+compare` once a material), which only worked for that car and needed someone
+to drive them. `athenea mesh2splat --validate DIR` is the same measurement as
+a feature of the conversion, for any stage:
+
+- **The groups** are the stage's bindings, read on the processor
+  (`usd::stageMaterialGroups`): every visible mesh whose binding, or a
+  GeomSubset's, names a material. A mesh of two materials is in both groups.
+- **The conversion** is the command's own (`runConversion`), run once a
+  group with every mesh outside it hidden, so every option asked of the
+  conversion is what is measured.
+- **The GT** is path traced once and kept (`DIR/gt.exr`); the stage is
+  rasterised once as meshes with its Cryptomatte.
+- **The mask** is the mesh frame's matte: the coverage of every rank whose id
+  hashes one of the group's meshes (`validateMask`), with its sum and box by
+  atomics. It replaces the depth difference, which needed a frame a material
+  and missed what the two frames share.
+- **The numbers** are the Measure effect's over the mask's box, of both frames
+  multiplied by the mask, the error's sum divided by the mask's: relMSE, p99,
+  the means. The mesh rasterised is measured the same way beside it.
+
+What it does not do: a material whose meshes are all inside another's box
+still reads its own pixels only, but a GeomSubset's material is masked with
+its whole mesh. The relit and baked modes are measured the same way, since
+the conversion is whatever was asked.
+
+Checked (pending the GPU turn): two balls and a ground
+(`tests/data/validate`), the three materials measured and the table written
+(`mesh2splat_validate`).

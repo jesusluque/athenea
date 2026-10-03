@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <set>
 #include <optional>
 
 #include <pxr/base/gf/matrix4d.h>
@@ -1230,6 +1231,58 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         return Error::make(ErrorCode::InvalidArgument, "'{}': no meshes to convert", impl_->source);
     }
     return meshes;
+}
+
+
+Result<std::vector<MaterialGroup>> stageMaterialGroups(const std::filesystem::path& path, const std::string& prim,
+                                                       const std::vector<std::string>& hidden, double time) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::NotFound, "'{}': not a stage USD opens", path.string());
+    }
+    const SdfPath under = prim.empty() ? SdfPath::AbsoluteRootPath() : SdfPath(prim);
+    const UsdTimeCode at(time);
+    std::vector<SdfPath> leftOut;
+    for (const std::string& h : hidden) {
+        leftOut.emplace_back(h);
+    }
+    std::map<std::string, std::set<std::string>> groups;
+    for (const UsdPrim& p : stage->Traverse()) {
+        if (!p.IsA<UsdGeomMesh>() || !p.GetPath().HasPrefix(under)) {
+            continue;
+        }
+        if (UsdGeomImageable(p).ComputeVisibility(at) == UsdGeomTokens->invisible ||
+            std::any_of(leftOut.begin(), leftOut.end(), [&](const SdfPath& h) { return p.GetPath().HasPrefix(h); })) {
+            continue;
+        }
+        const std::string mesh = p.GetPath().GetString();
+        const UsdShadeMaterial own = UsdShadeMaterialBindingAPI(p).ComputeBoundMaterial();
+        groups[own ? own.GetPath().GetString() : std::string()].insert(mesh);
+        for (const UsdGeomSubset& subset : UsdShadeMaterialBindingAPI(p).GetMaterialBindSubsets()) {
+            const UsdShadeMaterial bound = UsdShadeMaterialBindingAPI(subset.GetPrim()).ComputeBoundMaterial();
+            if (bound) {
+                groups[bound.GetPath().GetString()].insert(mesh);
+            }
+        }
+    }
+    std::vector<MaterialGroup> out;
+    for (auto& [material, meshes] : groups) {
+        out.push_back({material, std::vector<std::string>(meshes.begin(), meshes.end())});
+    }
+    return out;
+}
+
+Result<std::string> stageFirstCamera(const std::filesystem::path& path) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::NotFound, "'{}': not a stage USD opens", path.string());
+    }
+    for (const UsdPrim& p : stage->Traverse()) {
+        if (p.IsA<UsdGeomCamera>()) {
+            return p.GetPath().GetString();
+        }
+    }
+    return std::string();
 }
 
 }   // namespace athenea::usd

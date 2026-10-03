@@ -405,6 +405,12 @@ recipe is §3.1 below.
 | `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well; a zonal transfer keeps the direct half alone |
 | `--transfer-degree` | 2 or 3 | 3 | with `--transfer`: the harmonics' degree, 16 coefficients direct and 48 indirect at 3, the first transfer's 9 and 27 at 2 |
 | `--transfer-cells` | 0, 16 or 32 | 16 | with `--transfer`: cells a side of the grid of open directions over the whole sphere (256 or 1024 bits a gaussian); 0 writes the first transfer's 8 x 8 over the half a gaussian faces |
+| `--validate` | directory | — | measure the conversion material by material against the stage path traced, into this directory (below) |
+| `--validate-camera` | prim path | `--cell-from-camera`, else the stage's first camera | the frames' camera |
+| `--validate-size` | W H | `960 540` | the frames, in pixels |
+| `--validate-paths` | integer | `512` | paths a pixel the GT holds |
+| `--validate-bounces` | integer | `6` | bounces of the GT's paths |
+| `--validate-material` | prim path or name | every material | only this one (repeatable) |
 | `--transfer-lobes` | 0 to 2 | `0` | with `--transfer`: keep it as this many zonal lobes in each gaussian's own frame (the `SplatTransferZonal` bundle); 0 is two lobes with `--skinned` and nine harmonics in the world otherwise |
 | `--skinned` | flag | off | carry the skeleton; forces `--no-bake`, keeps a `--transfer` as zonal lobes |
 | `--range` | `START:END[:STEP]` | the stage's own range | time codes a skinned cloud keeps |
@@ -824,6 +830,28 @@ athenea visibility bird_gs.usdc --skeleton-stage bird.usda --skeleton-prim /Worl
 The last line is the third bake: what the cloud casts on itself, by part, so a
 wing shadows the body at every pose without a ray. It edits the cloud's file
 in place unless `-o` names another.
+
+**A conversion measured by the engine.** `--validate DIR` converts the stage
+once a material, with every other mesh left a mesh, and measures each against
+the stage path traced, over that material's own pixels -- the mask is the
+mesh frame's Cryptomatte, so a mesh of two materials (GeomSubsets) counts in
+both. The GT is traced once into `DIR/gt.exr` and read back by the next run of
+the same size; delete it to trace it again. Every other option is the
+conversion's, so `--transfer`, `--no-bake` and the rest are what is measured.
+What it writes:
+
+| file | what |
+|---|---|
+| `validate.json` | per material: meshes, gaussians, the share of the frame, relMSE, p99, mean and GT mean over its pixels, and the mesh rasterised's relMSE and mean |
+| `<material>.png`, `.exr` | GT, the mesh rasterised and the cloud, side by side, over the material's box |
+| `<material>_gs.exr` | the cloud's whole frame |
+| `gt.exr`, `mesh.exr` | the stage path traced, and rasterised as meshes |
+| `clouds/<material>.usdc`, `.usda` | the cloud, and the stage it was drawn in |
+
+```sh
+athenea mesh2splat car.usda --transfer --cell-from-camera /World/Camera \
+    --validate car_validate --validate-size 1920 1080 --validate-paths 512
+```
 
 ### 3.2 Rendering a stage
 

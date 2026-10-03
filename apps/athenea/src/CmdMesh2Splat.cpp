@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "Commands.h"
+#include "Mesh2SplatValidate.h"
 #include "aofx/Effect.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
@@ -186,6 +187,13 @@ struct Options {
     /// indirect: task TX, step 3), or 2 (nine and twenty-seven, the first
     /// transfer's).
     uint32_t                 transferDegree = 3;
+    /// --validate DIR (Mesh2SplatValidate.h) and what it is measured with.
+    std::string              validate;
+    std::string              validateCamera;
+    std::vector<uint32_t>    validateSize;
+    uint32_t                 validatePaths = 512;
+    uint32_t                 validateBounces = 6;
+    std::vector<std::string> validateMaterials;
     /// THE TRANSFER AS ZONAL LOBES in each gaussian's own frame (proposal 014
     /// B): 1 or 2 lobes, which turn with the gaussian; 0 is nine harmonics in
     /// the world for a still cloud and two lobes for one a skeleton carries,
@@ -2337,6 +2345,16 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--transfer", o->transfer,
                   "bake how much of an environment reaches each gaussian instead of the light itself, "
                   "so the cloud can be lit by any sky (excludes the radiance bake)");
+    cmd->add_option("--validate", o->validate,
+                    "measure the conversion material by material against the stage path traced, into this "
+                    "directory: a table (validate.json) and GT, mesh and cloud side by side for each");
+    cmd->add_option("--validate-camera", o->validateCamera,
+                    "--validate: the camera (default: --cell-from-camera, else the stage's first)");
+    cmd->add_option("--validate-size", o->validateSize, "--validate: W H of the frames")->expected(2);
+    cmd->add_option("--validate-paths", o->validatePaths, "--validate: paths a pixel the GT holds");
+    cmd->add_option("--validate-bounces", o->validateBounces, "--validate: bounces of the GT's paths");
+    cmd->add_option("--validate-material", o->validateMaterials,
+                    "--validate: only this material, by prim path or name (repeatable)");
     cmd->add_option("--transfer-degree", o->transferDegree,
                     "--transfer: the harmonics' degree, 3 (16 coefficients direct, 48 indirect) or 2 (9 and 27, "
                     "the first transfer's)")
@@ -2475,6 +2493,9 @@ void addMesh2Splat(CLI::App& app) {
         // (usd::writeLodAssembly). A cloud a skeleton carries cannot be
         // merged into coarser cells -- a cell that took wing and body would
         // not know which to move with -- but it can be converted again.
+        // THE CONVERSION, as asked: once, or (--validate) once a material.
+        uint32_t written = 0;
+        const auto runConversion = [&]() {
         const uint32_t lodLevels = std::max(o->lodLevels, 1u);
         const std::string assemblyPath = o->output;
         const uint32_t baseResolution = o->resolution;
@@ -2723,6 +2744,7 @@ void addMesh2Splat(CLI::App& app) {
             }
             std::printf("mesh2splat: wrote %s (%u splats)\n", o->output.c_str(), count);
             levelFiles.push_back({o->output, levelCell});
+            written = count;
         }
         if (lodLevels > 1) {
             o->output = assemblyPath;
@@ -2737,6 +2759,47 @@ void addMesh2Splat(CLI::App& app) {
                 cli::fail(made.error());
             }
             std::printf("mesh2splat: wrote %s, %u levels of detail\n", assemblyPath.c_str(), lodLevels);
+        }
+        };
+        if (o->validate.empty()) {
+            runConversion();
+            return;
+        }
+        // --validate: the same conversion once a material, measured against
+        // the stage path traced (Mesh2SplatValidate.h).
+        aofx::Effect* measure = registry.find("rt.sparrow.aofx.measure");
+        if (measure == nullptr) {
+            std::fprintf(stderr, "no Measure bundle on the AOFX search path (try `athenea aofx list`), and "
+                                 "--validate measures with it\n");
+            throw CLI::RuntimeError(1);
+        }
+        ValidateJob job;
+        job.stage = o->stage;
+        job.directory = o->validate;
+        job.camera = !o->validateCamera.empty() ? o->validateCamera : o->cellFromCamera;
+        if (o->validateSize.size() == 2) {
+            job.width = o->validateSize[0];
+            job.height = o->validateSize[1];
+        }
+        job.gtPaths = o->validatePaths;
+        job.gtBounces = o->validateBounces;
+        job.time = o->time;
+        job.prim = o->prim;
+        job.hidden = o->hidden;
+        job.materials = o->validateMaterials;
+        o->lodLevels = 1;
+        const std::vector<std::string> askedHidden = o->hidden;
+        auto validated = validateConversion(
+            job, *context, library, *measure,
+            [&](const std::vector<std::string>& hidden, const std::string& output) -> Result<uint32_t> {
+                o->hidden = hidden;
+                o->output = output;
+                runConversion();
+                o->hidden = askedHidden;
+                return written;
+            });
+        if (!validated) {
+            cli::fail(validated.error());
         }
     });
 }
