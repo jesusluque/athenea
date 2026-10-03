@@ -14,6 +14,9 @@ add_subdirectory(gpu)
 if(NOT ATHENEA_IOS)
     add_subdirectory(gpu_host)
 endif()
+# OpenColorIO as a compiler of Slang: what material (texture input spaces) and
+# technique (the display) both need, so below both.
+add_subdirectory(colour)
 add_subdirectory(scene)
 add_subdirectory(render)
 add_subdirectory(geom)
