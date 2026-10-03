@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <filesystem>
+#include <format>
 
 #include <MaterialXFormat/File.h>
 #include <pxr/imaging/hdMtlx/hdMtlx.h>
@@ -61,6 +62,148 @@ std::unique_ptr<Engine> Engine::create(std::shared_ptr<gpu::Device> device, std:
         }
     }
     return engine;
+}
+
+namespace {
+
+/// The most a splat of a streamed asset holds on the device: its position and
+/// shape (two float4), degree-3 harmonics in f16 (23 words), a shading normal
+/// and an emission word (lod/Athc.h).
+constexpr uint64_t kStreamBytesPerSplat = 16 + 16 + 92 + 4 + 4;
+
+/// What one gaussian's splat shadows hold on the hardware route: its proxy
+/// (twelve float4 vertices and sixty indices, GaussianRayTracer::buildHardware),
+/// and its twenty triangles' share of the BLAS, taken at 64 bytes a triangle
+/// -- an estimate; the proxies alone are the measured part (~2.5 GB for
+/// 5.9 M gaussians, docs/decisions.md).
+constexpr uint64_t kShadowBytesPerGaussian = 12 * 16 + 60 * 4 + 20 * 64;
+
+constexpr uint64_t kNoBudget = ~uint64_t{0};
+
+uint64_t gaussiansOf(std::span<const render::SplatInstance> splats) {
+    uint64_t total = 0;
+    for (const render::SplatInstance& instance : splats) {
+        total += instance.splats != nullptr ? instance.splats->count : 0;
+    }
+    return total;
+}
+
+/// A size for a message, in MiB, rounded up.
+uint64_t mib(uint64_t bytes) {
+    return (bytes + (uint64_t{1} << 20) - 1) >> 20;
+}
+
+}   // namespace
+
+std::string Engine::relieveMemory() {
+    // The failure being handled is the one already reported: drained, and
+    // whatever else it took with it, so the retry starts clean.
+    device_->releaseFreed();
+    (void)device_->takeQueueError();
+    const uint64_t before = device_->memoryInUse();
+    // What is made again on demand.
+    if (rasterizer_.has_value()) {
+        rasterizer_->releaseScratch();
+    }
+    shadowTracer_.reset();
+    splatShadowScene_.reset();
+    shadowTracerReady_ = false;
+    shadowGaussians_ = 0;
+    rayTracer_.reset();
+    denoiser_.reset();
+    pathAuxValid_ = false;
+    revision_.fetch_add(1);
+    device_->releaseFreed();
+    (void)device_->takeQueueError();
+    std::string did = "the frame's scratch buffers given back";
+    // And one thing more.
+    constexpr uint32_t kMaxLodBias = 4;
+    if (splatShadows_.load() && !memoryNoSplatShadows_.load()) {
+        memoryNoSplatShadows_.store(true);
+        did += "; splat shadows off";
+    } else if (lodBias_ < kMaxLodBias) {
+        ++lodBias_;
+        did += std::format("; levels of detail {} coarser than asked", lodBias_);
+        // Every streamed asset opened again, at the budget this level allows.
+        const std::lock_guard<std::mutex> held(guard_);
+        for (auto& [id, entry] : splats_) {
+            if (!entry.asset.path.empty() && !entry.assetPending.has_value()) {
+                entry.assetPending = entry.asset;
+                entry.asset = StreamedAsset{};
+                entry.lodCloud.reset();
+                entry.pool.reset();
+            }
+        }
+    } else {
+        return {};
+    }
+    const uint64_t after = device_->memoryInUse();
+    if (before != 0 || after != 0) {
+        did += std::format(" ({} -> {} MiB in use)", mib(before), mib(after));
+    }
+    ++reliefs_;
+    lastRelief_ = did;
+    return did;
+}
+
+uint64_t Engine::streamBudget(const pxr::SdfPath& id, const StreamedAsset& asset) const {
+    const uint64_t available = device_->memoryAvailable();
+    uint64_t wanted = asset.budget;
+    if (wanted == 0) {
+        // Read whole, unless the file would take more than half of what the
+        // budget has left: then streamed, which a cut can live within.
+        std::error_code failed;
+        const uint64_t fileBytes = std::filesystem::file_size(asset.path, failed);
+        if (failed || ((available == kNoBudget || fileBytes <= available / 2) && lodBias_ == 0)) {
+            return 0;
+        }
+        wanted = std::max<uint64_t>(fileBytes / kStreamBytesPerSplat, 1);
+    }
+    wanted = std::max<uint64_t>(wanted >> lodBias_, 1);
+    if (available != kNoBudget) {
+        const uint64_t fits = std::max<uint64_t>(available / 2 / kStreamBytesPerSplat, 1);
+        wanted = std::min(wanted, fits);
+    }
+    if (wanted != asset.budget) {
+        log::info("hdAthenea: {}: streaming budget {} splats (~{} MiB; asked {}, {} MiB of the GPU's budget left{})",
+                  id.GetString(), wanted, mib(wanted * kStreamBytesPerSplat),
+                  asset.budget == 0 ? std::string("the whole file") : std::to_string(asset.budget),
+                  available == kNoBudget ? std::string("unknown") : std::to_string(mib(available)),
+                  lodBias_ > 0 ? std::format(", {} levels coarser for memory", lodBias_) : std::string());
+    }
+    return wanted;
+}
+
+bool Engine::splatShadowsFit(uint64_t gaussians) {
+    if (memoryNoSplatShadows_.load()) {
+        return false;
+    }
+    if (gaussians == shadowGaussians_) {
+        return true;   // built already, and counted in what is in use
+    }
+    uint64_t available = device_->memoryAvailable();
+    if (available == kNoBudget) {
+        shadowGaussians_ = gaussians;
+        return true;
+    }
+    // What the tracer holds now goes when it is built again.
+    available += shadowGaussians_ * kShadowBytesPerGaussian;
+    const uint64_t need = gaussians * kShadowBytesPerGaussian;
+    if (need <= available / 2) {
+        shadowGaussians_ = gaussians;
+        return true;
+    }
+    memoryNoSplatShadows_.store(true);
+    shadowTracer_.reset();
+    splatShadowScene_.reset();
+    shadowTracerReady_ = false;
+    shadowGaussians_ = 0;
+    lastRelief_ = std::format("splat shadows skipped: the proxies of {} gaussians need ~{} MiB, more than half of "
+                              "the {} MiB the GPU's {} MiB budget has left",
+                              gaussians, mib(need), mib(available), mib(device_->memoryBudget()));
+    ++reliefs_;
+    log::warn("hdAthenea: {}", lastRelief_);
+    return false;
 }
 
 void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays> raw,
@@ -513,6 +656,8 @@ void Engine::setSplatReflections(bool reflect) {
 void Engine::setSplatShadows(bool shadows) {
     if (splatShadows_.exchange(shadows) != shadows) {
         revision_.fetch_add(1);
+        // Asked for again: tried again, whatever memory said last time.
+        memoryNoSplatShadows_.store(false);
     }
 }
 
@@ -845,8 +990,9 @@ std::set<const SplatEntry*> Engine::lodLevelsFor(const render::Projection& proje
     for (auto& [name, members] : groups) {
         std::sort(members.begin(), members.end(),
                   [](const SplatEntry* a, const SplatEntry* b) { return a->lodCell < b->lodCell; });
-        const SplatEntry* pick = members.front();
-        for (const SplatEntry* level : members) {
+        size_t pickAt = 0;
+        for (size_t at = 0; at < members.size(); ++at) {
+            const SplatEntry* level = members[at];
             const render::Mat4& m = level->objectToWorld;
             // Where it stands this frame: posed where a skeleton carries it.
             const scene::GpuSplats& cloud = level->posed != nullptr ? *level->posed : *level->gpu;
@@ -864,10 +1010,11 @@ std::set<const SplatEntry*> Engine::lodLevelsFor(const render::Projection& proje
             const double distance = std::max(std::sqrt(near2) * scale, projection.nearZ);
             const double pixels = double(level->lodCell) * scale * focal / distance;
             if (pixels <= double(level->lodThreshold)) {
-                pick = level;   // coarser still fits: members go finest to coarsest
+                pickAt = at;   // coarser still fits: members go finest to coarsest
             }
         }
-        chosen.insert(pick);
+        // Short of memory (relieveMemory): as many levels coarser as given up.
+        chosen.insert(members[std::min(pickAt + lodBias_, members.size() - 1)]);
     }
     return chosen;
 }
@@ -1136,6 +1283,9 @@ Result<size_t> Engine::commit() {
                 meshBuilder_.emplace(std::move(*made));
             }
             auto mesh = meshBuilder_->build(built_input);
+            if (!mesh && mesh.error().code() == ErrorCode::OutOfMemory) {
+                return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(), mesh.error().message());   // kept pending, as a cloud is
+            }
             if (mesh) {
                 entry.gpu = std::make_shared<const geom::GpuMesh>(std::move(*mesh));
             } else {
@@ -1173,8 +1323,10 @@ Result<size_t> Engine::commit() {
                 entry.lodCloud.reset();
                 entry.pool.reset();
                 if (!asset.path.empty()) {
-                    if (asset.budget > 0) {
-                        auto pool = lod::StreamingPool::open(*device_, asset.path, {asset.budget, 2});
+                    // Held to the device's budget (streamBudget), which may
+                    // stream a file asked to be read whole.
+                    if (const uint64_t budget = streamBudget(id, asset); budget > 0) {
+                        auto pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
                         if (pool) {
                             entry.pool = std::move(*pool);
                         } else {
@@ -1228,6 +1380,13 @@ Result<size_t> Engine::commit() {
             } else {
                 auto splats = loader_->upload(streams);
                 cloudUploads_.fetch_add(1);
+                if (!splats && splats.error().code() == ErrorCode::OutOfMemory) {
+                    // Kept pending, and the commit stopped here: the render
+                    // pass gives memory back and commits again, and a cloud
+                    // that still does not fit is the frame's error rather
+                    // than a warning over an image without it.
+                    return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(), splats.error().message());
+                }
                 if (!splats) {
                     log::warn("hdAthenea: {}: {}", id.GetString(), splats.error().toString());
                     entry.gpu.reset();
@@ -1313,6 +1472,9 @@ Result<size_t> Engine::commit() {
             entry.gpu.reset();
         } else {
             auto points = loader_->upload(streams);
+            if (!points && points.error().code() == ErrorCode::OutOfMemory) {
+                return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(), points.error().message());   // kept pending, as a cloud is
+            }
             if (!points) {
                 log::warn("hdAthenea: {}: {}", id.GetString(), points.error().toString());
                 entry.gpu.reset();
@@ -2105,7 +2267,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 }
                 continue;
             }
-            cuts.push_back({cloud, entry.objectToWorld, entry.edit, entry.asset.threshold});
+            // Short of memory, each level given up doubles the pixels a merged
+            // cell may span: a coarser cut, fewer splats.
+            cuts.push_back({cloud, entry.objectToWorld, entry.edit,
+                            entry.asset.threshold * static_cast<float>(1u << lodBias_)});
             poolOf.push_back(entry.pool.get());
             cutPrims.push_back(id.GetString());
         }
@@ -2447,7 +2612,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // -- the same setting a cloud's own shadow answers to.
         technique::SplatShadows* meshSplatShadows = nullptr;
         if (pathTracing && !splats.empty() && splatShadows_.load() && device_->caps().rayQuery &&
-            device_->caps().accelerationStructure) {
+            device_->caps().accelerationStructure && splatShadowsFit(gaussiansOf(splats))) {
             if (!shadowTracer_.has_value()) {
                 render::RayTracerSettings rtSettings;
                 rtSettings.route = render::RayTracingRoute::Hardware;
@@ -2972,7 +3137,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     // frame, built by a tracer of their own on the hardware route. Only where
     // a cloud is relit, the device traces inline, and the setting asks.
     const bool shadowedSplats = splatShadows_.load() && splatLights.any() && relitSplats;
-    if (shadowedSplats && device_->caps().rayQuery && device_->caps().accelerationStructure) {
+    if (shadowedSplats && device_->caps().rayQuery && device_->caps().accelerationStructure &&
+        splatShadowsFit(gaussiansOf(splats))) {
         if (!shadowTracer_.has_value()) {
             render::RayTracerSettings rtSettings;
             rtSettings.route = render::RayTracingRoute::Hardware;

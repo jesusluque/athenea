@@ -101,6 +101,14 @@ endif()
 #     Metal (a nil in the device's structure array) and aborted the process;
 #     and an indexed triangle build took max(vertices, indices) / 3 triangles,
 #     reading past its index window.
+#   - slang-rhi-metal-command-buffer-errors.patch: a command buffer that
+#     failed on the device (out of memory, under another job's load) hit an
+#     assertion in its completion handler and aborted the process. The error
+#     is now kept on the queue and returned by the next submit() or
+#     waitOnHost() -- SLANG_E_OUT_OF_MEMORY for MTLCommandBufferErrorOutOfMemory
+#     -- and waitOnHost no longer waits on a tracking event a failed buffer
+#     never signals. A buffer or acceleration structure Metal will not make
+#     is SLANG_E_OUT_OF_MEMORY rather than SLANG_FAIL.
 #   - slang-rhi-ios.patch (iOS only): two things the backend assumes a Mac
 #     for. Slang is linked statically, as everything in an app bundle is, and
 #     the imported target had no iOS branch to say so. And the Metal target
@@ -111,7 +119,8 @@ set(ATHENEA_RHI_PATCHES
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-render-target-array-length.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-acceleration-structures.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-texture-view-format.patch"
-    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-driver-symbols.patch")
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-driver-symbols.patch"
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-command-buffer-errors.patch")
 if(ATHENEA_IOS)
     list(APPEND ATHENEA_RHI_PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-ios.patch")
 endif()

@@ -120,11 +120,25 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     return r;
 }
 
+void TileRasterizer::releaseScratch() {
+    tight_ = true;
+    splatCapacity_ = 0;
+    pairCapacity_ = 0;
+    tileCapacity_ = 0;
+    for (gpu::Buffer* held : {&proj_, &cryptoIds_, &tileRects_, &tilesTouched_, &visible_, &depthKeys_,
+                              &visibleOffsets_, &visibleTotal_, &touchedOffsets_, &touchedTotal_, &sortedCounts_,
+                              &offsets_, &totalPairs_, &ranges_buffer_, &shadowFactors_}) {
+        *held = gpu::Buffer();
+    }
+    depthSort_ = gpu::SortBuffers();
+    tileSort_ = gpu::SortBuffers();
+}
+
 Result<void> TileRasterizer::reserveSplats(uint32_t count) {
     if (count <= splatCapacity_) {
         return ok();
     }
-    const uint32_t n = grow(splatCapacity_, count);
+    const uint32_t n = tight_ ? count : grow(splatCapacity_, count);
     const auto assign = [&](gpu::Buffer& into, uint64_t elements, uint32_t bytes,
                             const char* label) -> Result<void> {
         auto made = buffer(*device_, elements, bytes, label);
@@ -157,7 +171,7 @@ Result<void> TileRasterizer::reservePairs(uint32_t count) {
     if (count <= pairCapacity_) {
         return ok();
     }
-    const uint32_t n = grow(pairCapacity_, count);
+    const uint32_t n = tight_ ? count : grow(pairCapacity_, count);
     auto keys = buffer(*device_, n, 4, "pair.tiles");
     if (!keys) return std::move(keys).error();
     auto values = buffer(*device_, n, 4, "pair.splats");

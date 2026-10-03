@@ -2,6 +2,7 @@
 #include "athenea/gpu/Buffer.h"
 
 #include <cstring>
+#include <format>
 
 #include "athenea/gpu/Device.h"
 
@@ -41,6 +42,7 @@ Result<Buffer> Buffer::create(Device& device, const BufferDesc& desc, const void
     if (desc.bytes == 0) {
         return Error::make(ErrorCode::InvalidArgument, "buffer '{}' of zero bytes", desc.label);
     }
+    ATHENEA_TRY(device.admit(desc.bytes, std::format("buffer '{}'", desc.label)));
     Buffer buffer;
     const rhi::BufferDesc rhiDesc = toRhi(desc);
     if (SLANG_FAILED(device.rhi()->createBuffer(rhiDesc, initial, buffer.buffer_.writeRef()))) {
@@ -79,8 +81,14 @@ Result<void> Buffer::read(Device& device, uint64_t offset, uint64_t bytes, void*
         return Error(ErrorCode::InvalidArgument, "read outside the buffer");
     }
     device.beforeSubmit();
-    if (SLANG_FAILED(device.rhi()->readBuffer(buffer_.get(), offset, bytes, into))) {
-        return Error(ErrorCode::DeviceFailure, "readBuffer failed");
+    // The copy back waits for everything before it anyway (the queue's
+    // fence); waiting here first is how a command buffer that failed on the
+    // way -- the device out of memory -- is reported instead of read.
+    device.waitIdle();
+    ATHENEA_TRY(device.takeQueueError());
+    if (const SlangResult read = device.rhi()->readBuffer(buffer_.get(), offset, bytes, into); SLANG_FAILED(read)) {
+        return read == SLANG_E_OUT_OF_MEMORY ? Error(ErrorCode::OutOfMemory, "the GPU ran out of memory reading a buffer back")
+                                             : Error(ErrorCode::DeviceFailure, "readBuffer failed");
     }
     return ok();
 }
@@ -92,10 +100,7 @@ Result<void> Buffer::write(Device& device, uint64_t offset, uint64_t bytes, cons
     rhi::ComPtr<rhi::ICommandEncoder> encoder = device.queue()->createCommandEncoder();
     encoder->uploadBufferData(buffer_.get(), offset, bytes, const_cast<void*>(from));
     device.beforeSubmit();
-    if (SLANG_FAILED(device.queue()->submit(encoder->finish()))) {
-        return Error(ErrorCode::DeviceFailure, "upload submit failed");
-    }
-    return ok();
+    return Device::queueResult(device.queue()->submit(encoder->finish()), "an upload");
 }
 
 }   // namespace athenea::gpu

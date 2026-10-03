@@ -2066,12 +2066,10 @@ void addMesh2Splat(CLI::App& app) {
             };
             auto ran = context->run([&] { inside = work(); });
             if (!ran) {
-                std::fprintf(stderr, "%s\n", ran.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(ran.error());
             }
             if (!inside) {
-                std::fprintf(stderr, "%s\n", inside.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(inside.error());
             }
             std::printf("mesh2splat: wrote %s (%u splats)\n", o->output.c_str(), count);
             levelFiles.push_back({o->output, levelCell});
@@ -2086,8 +2084,7 @@ void addMesh2Splat(CLI::App& app) {
                                                               std::filesystem::path(assemblyPath).stem().string());
                                                       });
                 !made) {
-                std::fprintf(stderr, "%s\n", made.error().toString().c_str());
-                throw CLI::RuntimeError(1);
+                cli::fail(made.error());
             }
             std::printf("mesh2splat: wrote %s, %u levels of detail\n", assemblyPath.c_str(), lodLevels);
         }

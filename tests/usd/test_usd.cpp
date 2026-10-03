@@ -8378,6 +8378,54 @@ TEST_CASE("a cloud in levels of detail draws the coarsest one whose cell a pixel
     CHECK(farAway == coarse.count);
 }
 
+// OUT OF DEVICE MEMORY, THE ENGINE STEPS DOWN. A frame the device's budget
+// cannot hold fails as a Result -- the render pass gave back what it could,
+// gave up a level of detail and tried once more -- and the frames after it
+// are drawn a level coarser than asked, under the same budget, rather than
+// the process ending (athenea view on a 5.9 M cloud, docs/decisions.md).
+TEST_CASE("a frame past the device's memory budget fails as a Result and the next draws a coarser level",
+          "[usd][gpu][lod][memory]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const io::RawSplats fine = cloud(4096);
+    const io::RawSplats coarse = cloud(256);
+    const fs::path fineFile = scratch("oom-fine.usda");
+    const fs::path coarseFile = scratch("oom-coarse.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, fine, fineFile, options));
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, coarse, coarseFile, options));
+    const fs::path assembly = scratch("oom-assembly.usda");
+    REQUIRE(usd::writeLodAssembly(assembly, {{fineFile, 0.01}, {coarseFile, 0.16}}, "test"));
+    auto renderer = usd::StageRenderer::open(assembly);
+    if (!renderer) FAIL(renderer.error().toString());
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 6.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+    camera.lens.focal = 35.0;
+
+    // Near: the fine level, as asked.
+    REQUIRE((*renderer)->draw(camera, 0.0, 64, 64, "raster"));
+    CHECK((*renderer)->counters().splats == fine.count);
+    CHECK((*renderer)->memoryRelief().times == 0);
+
+    // Eight MiB more than the device holds, and a frame whose colour alone
+    // is sixty-four: refused, given back, tried again, refused, reported.
+    gpu::Device& device = (*renderer)->device();
+    const uint64_t budget = device.memoryBudget();
+    device.setMemoryBudget(device.memoryInUse() + (uint64_t{8} << 20));
+    auto big = (*renderer)->draw(camera, 0.0, 2048, 2048, "raster");
+    REQUIRE_FALSE(big);
+    CHECK(big.error().code() == ErrorCode::OutOfMemory);
+    const usd::StageRenderer::MemoryRelief relief = (*renderer)->memoryRelief();
+    std::printf("  refused: %s\n  relief: %u, '%s', %u levels coarser\n", big.error().toString().c_str(),
+                relief.times, relief.last.c_str(), relief.lodBias);
+    CHECK(relief.times == 1);
+    CHECK(relief.lodBias == 1);
+
+    // The same view under the same budget: drawn, and from the coarser level.
+    REQUIRE((*renderer)->draw(camera, 0.0, 64, 64, "raster"));
+    CHECK((*renderer)->counters().splats == coarse.count);
+    device.setMemoryBudget(budget);
+}
+
 TEST_CASE("the Gaussians panel's numbers say which level a view drew and what the device kept of it",
           "[usd][gpu][lod][counters]") {
     ATHENEA_REQUIRE_GPU(gpu);

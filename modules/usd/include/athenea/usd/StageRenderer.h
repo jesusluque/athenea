@@ -519,6 +519,21 @@ public:
     [[nodiscard]] double timeCodesPerSecond() const;
     [[nodiscard]] double startTimeCode() const;
 
+    /// WHAT RUNNING SHORT OF DEVICE MEMORY HAS COST SO FAR
+    /// (usd::Engine::relieveMemory, and splat shadows skipped for a budget
+    /// they would not fit): how many times, the last, and how many levels of
+    /// detail coarser than asked the engine draws now.
+    struct MemoryRelief {
+        uint32_t    times = 0;
+        std::string last;
+        uint32_t    lodBias = 0;
+    };
+    [[nodiscard]] MemoryRelief memoryRelief() const;
+    /// What a host does when something of its own ran out of device memory
+    /// beside the stage (athenea view's display pass): the engine gives back
+    /// what it can and one thing more. What it did, or empty for nothing left.
+    [[nodiscard]] std::string relieveMemory();
+
 private:
     [[nodiscard]] Result<void> executeUntilGathered(uint32_t width, uint32_t height);
     StageRenderer();

@@ -1059,7 +1059,7 @@ transform), Open Image Denoise (denoising), libwebp (`.sog`), OpenVDB
 are found only in their own prefix, and each prints a status line at configure
 time saying whether it was found. That line is the diagnostic.
 
-**The four slang-rhi patches** are in `cmake/patches/`, applied at fetch time
+**The five slang-rhi patches** are in `cmake/patches/`, applied at fetch time
 by a script that skips any already applied, because FetchContent re-runs the
 command on a tree that may already carry them:
 
@@ -1069,6 +1069,7 @@ command on a tree that may already carry them:
 | Metal texture view format | a view created with the wrong format |
 | CUDA driver symbol shadowing | a driver symbol shadowed by the runtime's |
 | Metal acceleration structures | acceleration structure handling on Metal |
+| Metal command buffer errors | a command buffer that failed on the device (out of memory) asserted and aborted the process; now the next `submit` or `waitOnHost` returns `SLANG_E_OUT_OF_MEMORY`, which `gpu::CommandBatch::submit` turns into `OutOfMemory` |
 
 **Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
 tracks `main`. A change to gpe is committed in the submodule, not here.

@@ -1107,7 +1107,7 @@ Open Image Denoise (el denoising), libwebp (`.sog`), OpenVDB (`.vdb`), zstd
 buscan solo en su propio prefijo, y cada uno imprime una línea de estado al
 configurar diciendo si se encontró. Esa línea es el diagnóstico.
 
-**Los cuatro parches a slang-rhi** están en `cmake/patches/`, aplicados al
+**Los cinco parches a slang-rhi** están en `cmake/patches/`, aplicados al
 traerlo por un script que se salta los ya aplicados, porque FetchContent
 vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 
@@ -1117,6 +1117,7 @@ vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 | formato de vista de textura en Metal | una vista creada con el formato equivocado |
 | símbolos del driver de CUDA | un símbolo del driver tapado por el del runtime |
 | estructuras de aceleración en Metal | su manejo en Metal |
+| errores de command buffer en Metal | un command buffer que fallaba en el dispositivo (sin memoria) disparaba un assert y abortaba el proceso; ahora el siguiente `submit` o `waitOnHost` devuelve `SLANG_E_OUT_OF_MEMORY`, que `gpu::CommandBatch::submit` convierte en `OutOfMemory` |
 
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
 `third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el

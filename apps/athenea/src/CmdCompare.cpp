@@ -95,8 +95,8 @@ void addCompare(CLI::App& app) {
     cmd->add_option("--path", o->paths, "extra bundle directories (after $AOFX_PLUGIN_PATH)");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
-            std::fprintf(stderr, "compare: %s\n", error.toString().c_str());
-            throw CLI::RuntimeError(1);
+            std::fprintf(stderr, "compare: ");
+            cli::fail(error);
         };
         gpu_host::Context* context = gpu_host::installProcessContext();
         if (context == nullptr || context->compute() == nullptr) {

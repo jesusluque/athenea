@@ -113,6 +113,22 @@ bool enableExtendedRange(void* nsWindow);
 [[nodiscard]] void* newTrackedMetalBuffer(void* mtlDevice, uint64_t bytes);
 void releaseMetalBuffer(void* mtlBuffer);
 
+/// How much memory `mtlDevice` (an MTLDevice*) can use before it starts to
+/// hurt: Metal's `recommendedMaxWorkingSetSize`, in bytes. 0 off macOS or
+/// for a null device.
+[[nodiscard]] uint64_t metalRecommendedWorkingSet(void* mtlDevice);
+/// What `mtlDevice` has allocated for this process now, in bytes: Metal's
+/// `currentAllocatedSize`, every buffer, texture and structure counted.
+/// 0 off macOS or for a null device.
+[[nodiscard]] uint64_t metalAllocatedSize(void* mtlDevice);
+
+/// Physical memory the system could hand out now without swapping, in
+/// bytes: free, inactive and purgeable pages (Mach's vm statistics) on
+/// macOS, MemAvailable on Linux. 0 where it cannot be read. On unified
+/// memory this is the device's memory too, and what a budget has to leave
+/// the window server and everything else on the machine.
+[[nodiscard]] uint64_t availablePhysicalMemory();
+
 /// The size of a page of virtual memory.
 [[nodiscard]] uint64_t pageSize();
 

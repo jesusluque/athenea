@@ -531,6 +531,12 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     render::SplatOverride said;
     bool saying = false;
     std::string status;
+    // WHAT RUNNING SHORT OF GPU MEMORY COST, in a panel of its own until it
+    // is closed: the window stays, the frame is drawn at whatever level the
+    // engine fell back to, or skipped and tried again on the next one.
+    std::string memoryNote;
+    bool memoryNoteOpen = false;
+    uint32_t memoryReliefsSeen = 0;
     Orbit orbit;
     bool framed = false;
     const char up = stage.upAxis();
@@ -1224,6 +1230,33 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
         drawMs.push_back(
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawStart).count());
         status = drawn ? std::string() : drawn.error().toString();
+        if (const usd::StageRenderer::MemoryRelief relief = stage.memoryRelief(); relief.times != memoryReliefsSeen) {
+            memoryReliefsSeen = relief.times;
+            memoryNote = "GPU memory ran short: " + relief.last + ".";
+            if (relief.lodBias > 0) {
+                memoryNote += " Drawing " + std::to_string(relief.lodBias) +
+                              (relief.lodBias == 1 ? " level" : " levels") + " of detail coarser than asked.";
+            }
+            memoryNoteOpen = true;
+        }
+        if (!drawn && drawn.error().code() == ErrorCode::OutOfMemory) {
+            memoryNote = "Out of GPU memory, and nothing left to give back: " + drawn.error().message() +
+                         ". The frame is skipped; the next one tries again. Other programs on the GPU, a smaller "
+                         "window or a lower render scale leave it more.";
+            memoryNoteOpen = true;
+        }
+        if (memoryNoteOpen) {
+            const ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(ImVec2(viewport->Size.x * 0.5F, viewport->Size.y - 20.0F), ImGuiCond_Always,
+                                    ImVec2(0.5F, 1.0F));
+            ImGui::SetNextWindowSize(ImVec2(std::min(viewport->Size.x - 40.0F, 640.0F), 0.0F), ImGuiCond_Always);
+            if (ImGui::Begin("GPU memory", &memoryNoteOpen,
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse |
+                                 ImGuiWindowFlags_NoFocusOnAppearing)) {
+                ImGui::TextWrapped("%s", memoryNote.c_str());
+            }
+            ImGui::End();
+        }
         if (drawn && !announce) {
             techniqueDrawn[techniqueAt] = true;
         }
@@ -1257,7 +1290,20 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
             }
         }
         ATHENEA_TRY((*ui)->render(batch, ImGui::GetDrawData(), image->getDefaultView(), surfaceFormat, fbw, fbh));
-        ATHENEA_TRY(batch.submit(false));
+        if (auto shown = batch.submit(false); !shown) {
+            // A frame's own command buffers fail where the device ran out
+            // under them, and this submit is often the first to hear of it:
+            // the window stays, and the engine gives back what it can.
+            if (shown.error().code() != ErrorCode::OutOfMemory) {
+                return std::move(shown).error();
+            }
+            const std::string did = stage.relieveMemory();
+            memoryReliefsSeen = stage.memoryRelief().times;
+            memoryNote = did.empty() ? "Out of GPU memory, and nothing left to give back: " + shown.error().message()
+                                     : "Out of GPU memory: " + shown.error().message() + "; " + did + ".";
+            memoryNoteOpen = true;
+            log::warn("view: {}", memoryNote);
+        }
         // Every frame as it was shown, panels included, where a capture was
         // asked for: the same path `--snapshot` takes, taken each time round.
         if (!options.capture.empty() && drawn) {

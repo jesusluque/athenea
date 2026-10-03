@@ -1563,11 +1563,38 @@ Result<void> StageRenderer::execute(uint32_t width, uint32_t height) {
         GfRect2i(GfVec2i(0), static_cast<int>(width), static_cast<int>(height))));
     HdTaskSharedPtrVector tasks = impl.controller->GetRenderingTasks();
     impl.engine.Execute(impl.index, &tasks);
+    // What the render pass met and Hydra has no way to return: the device out
+    // of memory, after the pass had given back what it could and tried again.
+    if (auto* param = static_cast<HdAtheneaRenderParam*>(impl.delegate->GetRenderParam()); param != nullptr) {
+        if (Engine* engine = param->GetEngine(); engine != nullptr) {
+            if (std::optional<Error> failed = engine->takeFrameError(); failed.has_value()) {
+                return std::move(*failed);
+            }
+        }
+    }
     const render::RenderTargets* targets = lastTargets();
     if (targets == nullptr || targets->width != width || targets->height != height) {
         return Error(ErrorCode::InternalError, "the render pass drew nothing");
     }
     return ok();
+}
+
+StageRenderer::MemoryRelief StageRenderer::memoryRelief() const {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    const Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
+    MemoryRelief relief;
+    if (engine != nullptr) {
+        relief.times = engine->reliefs();
+        relief.last = engine->lastRelief();
+        relief.lodBias = engine->lodBias();
+    }
+    return relief;
+}
+
+std::string StageRenderer::relieveMemory() {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
+    return engine != nullptr ? engine->relieveMemory() : std::string();
 }
 
 const render::RenderTargets* StageRenderer::lastTargets() const {

@@ -39,8 +39,7 @@ void addMigrate(CLI::App& app) {
         options.root = o->root;
         auto report = usd::migrate(o->input, o->output, options);
         if (!report) {
-            std::fprintf(stderr, "%s\n", report.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(report.error());
         }
         using Kind = usd::MigrateChange::Kind;
         for (const usd::MigrateChange& c : report->changes) {

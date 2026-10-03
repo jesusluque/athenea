@@ -38,13 +38,13 @@ int run(const Options& o) {
     // 1. The rig's hierarchy, from the source stage: which joint is under which.
     auto source = usd::MeshStage::open(o.skeletonStage);
     if (!source) {
-        std::fprintf(stderr, "visibility: %s\n", source.error().toString().c_str());
-        return 1;
+        std::fprintf(stderr, "visibility: ");
+        return cli::report(source.error());
     }
     auto joints = source->joints(o.skeletonPrim);
     if (!joints) {
-        std::fprintf(stderr, "visibility: %s\n", joints.error().toString().c_str());
-        return 1;
+        std::fprintf(stderr, "visibility: ");
+        return cli::report(joints.error());
     }
     const technique::VisibilityParts parts = technique::partitionJoints(*joints, o.parts, o.minJoints);
     std::printf("visibility: %zu joints in %zu parts:", joints->size(), parts.partJoint.size());
@@ -58,8 +58,8 @@ int run(const Options& o) {
     // 2. The cloud on the device, and the bake.
     auto renderer = usd::StageRenderer::open(o.stage);
     if (!renderer) {
-        std::fprintf(stderr, "visibility: %s\n", renderer.error().toString().c_str());
-        return 1;
+        std::fprintf(stderr, "visibility: ");
+        return cli::report(renderer.error());
     }
     technique::VisibilityBakeOptions options;
     options.grid = o.grid;
@@ -67,8 +67,8 @@ int run(const Options& o) {
     options.cut = o.cut;
     auto baked = (*renderer)->bakeVisibility(o.prim, parts, options, o.time);
     if (!baked) {
-        std::fprintf(stderr, "visibility: %s\n", baked.error().toString().c_str());
-        return 1;
+        std::fprintf(stderr, "visibility: ");
+        return cli::report(baked.error());
     }
     const double megabytes = static_cast<double>(baked->texels.size()) * 4.0 / (1024.0 * 1024.0);
     std::printf("visibility: %u parts, grid %u, octave %u: %zu words, %.1f MB\n", baked->partCount, o.grid,
@@ -88,8 +88,8 @@ int run(const Options& o) {
     }
     auto written = usd::writeVisibility(target, o.prim, baked->parts, baked->texels, baked->partOf, baked->ambient);
     if (!written) {
-        std::fprintf(stderr, "visibility: %s\n", written.error().toString().c_str());
-        return 1;
+        std::fprintf(stderr, "visibility: ");
+        return cli::report(written.error());
     }
     std::printf("visibility: wrote %s\n", target.string().c_str());
     return 0;
