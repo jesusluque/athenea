@@ -28,6 +28,13 @@ struct TransferFilterIo {
     uint stride;        ///< pixels a row of it, padded
     uint perRecord;     ///< floats a record
     uint size;          ///< the record's first size
+    /// Which half goes through: 0 the indirect half's coefficients, 1 the
+    /// field's sixteen. Apart, since the filter takes at most sixteen
+    /// entries a gaussian.
+    uint part;
+    uint pad0;
+    uint pad1;
+    uint pad2;
 };
 
 StructuredBuffer<float4>       rays;     // 3 a gaussian (bakePointsOnDevice's layout)
@@ -41,14 +48,14 @@ uint at(uint entry) {
     return (entry / io.width) * io.stride + entry % io.width;
 }
 
-/// Values a gaussian handed over: the indirect half's, and the field's.
+/// Values a gaussian handed over: the indirect half's, or the field's.
 uint perGaussian() {
-    return io.coefficients + (io.fieldFirst != 0u ? 16u : 0u);
+    return io.part == 0u ? io.coefficients : 16u;
 }
 
 /// Where value j of gaussian k is in the answer.
 uint answerAt(uint k, uint j) {
-    return k * io.entries + (j < io.coefficients ? j : io.fieldFirst + (j - io.coefficients));
+    return k * io.entries + (io.part == 0u ? j : io.fieldFirst + j);
 }
 
 [shader("compute")]
@@ -66,7 +73,7 @@ void transferFilterPoints(uint3 tid: SV_DispatchThreadID) {
     const float3 facing = own.w > 0.5 ? normalize(own.xyz) : normalize(rays[k * 3 + 1].xyz);
     picture[at(k * 3 + 1)] = float4(facing, asfloat(ids[k]));
     // The luminance of what bounced, and a variance no step in it exceeds.
-    const float3 bounced = answer[k * io.entries].rgb;
+    const float3 bounced = answer[answerAt(k, 0u)].rgb;
     picture[at(k * 3 + 2)] = float4(dot(bounced, float3(0.2126, 0.7152, 0.0722)), 1.0e12, 0.0, 0.0);
 }
 

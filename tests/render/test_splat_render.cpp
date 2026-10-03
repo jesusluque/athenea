@@ -1135,11 +1135,12 @@ TEST_CASE("a TX transfer's bounced halves go into the filter's picture and back 
     auto before = gpu::Buffer::create(*gpu->device, desc, answer.data());
     REQUIRE(before);
     const uint32_t width = 64;
-    const uint32_t pictureEntries = count * (coefficients + 16);
+    const uint32_t pictureEntries = count * 16;
     desc.bytes = uint64_t{pictureEntries + width} * 16;
     auto picture = gpu::Buffer::create(*gpu->device, desc);
     REQUIRE(picture);
     gpu::Buffer words = test::uintBuffer(*gpu->device, count * 12 + 16, "filterio.words");
+    uint32_t part = 0;
     const auto bind = [&](rhi::ShaderCursor cursor) {
         cursor["rays"].setBinding(words.rhi());
         cursor["records"].setBinding(words.rhi());
@@ -1154,20 +1155,25 @@ TEST_CASE("a TX transfer's bounced halves go into the filter's picture and back 
         cursor["io"]["stride"].setData(width);
         cursor["io"]["perRecord"].setData(uint32_t{1});
         cursor["io"]["size"].setData(uint32_t{0});
+        cursor["io"]["part"].setData(part);
     };
     auto in = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/transfer_filter_io", "transferFilterIn");
     if (!in) FAIL(in.error().toString());
     auto out = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/transfer_filter_io", "transferFilterOut");
     if (!out) FAIL(out.error().toString());
-    {
-        gpu::CommandBatch batch(*gpu->device);
-        in->dispatch(batch, {pictureEntries, 1, 1}, bind);
-        REQUIRE(batch.submit(true));
-    }
-    {
-        gpu::CommandBatch batch(*gpu->device);
-        out->dispatch(batch, {pictureEntries, 1, 1}, bind);
-        REQUIRE(batch.submit(true));
+    // The two halves apart, as the conversion hands them (the filter takes
+    // at most sixteen entries a gaussian).
+    for (part = 0; part < 2; ++part) {
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            in->dispatch(batch, {pictureEntries, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            out->dispatch(batch, {pictureEntries, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
     }
     // Compared on the device: an image of `count * entries` texels, the two
     // answers, which must not differ at all.

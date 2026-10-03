@@ -12047,3 +12047,15 @@ the conversion is whatever was asked.
 Checked (pending the GPU turn): two balls and a ground
 (`tests/data/validate`), the three materials measured and the table written
 (`mesh2splat_validate`).
+
+### The filter took sixteen entries, and was handed thirty-two
+
+The balls of the TX test in the tx-next run showed the chrome's lower half
+black, where the ground stands in its mirror: the reflected field read
+nothing. The bounced halves went through `SplatBakeFilter` as one picture of
+the indirect half's sixteen coefficients and the field's sixteen, thirty-two
+entries a gaussian, and the effect's `coefficients` parameter stops at
+sixteen (its hard maximum): it read gaussian k at 16 k, and wrote the
+answer back over the wrong entries. The two halves now go through it apart,
+sixteen entries each (`TransferFilterIo::part`); step 2's measurement, made
+before the filter, had the field whole.
