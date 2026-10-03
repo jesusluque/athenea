@@ -266,6 +266,17 @@ std::string env(const char* name) {
     return value != nullptr ? std::string(value) : std::string();
 }
 
+bool isTerminal(std::FILE* stream) {
+    if (stream == nullptr) {
+        return false;
+    }
+#if defined(_WIN32)
+    return _isatty(_fileno(stream)) != 0;
+#else
+    return isatty(fileno(stream)) != 0;
+#endif
+}
+
 void matchLayerToBacking(void* nsWindow) {
 #if defined(__APPLE__)
     if (nsWindow == nullptr) {

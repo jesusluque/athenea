@@ -40,7 +40,7 @@ function(athenea_test name)
 endfunction()
 
 athenea_test(athenea_core_tests
-    SOURCES core/test_hash.cpp core/test_platform.cpp
+    SOURCES core/test_hash.cpp core/test_platform.cpp core/test_progress.cpp
     LIBS athenea::core)
 
 # The panels' description: bookkeeping, checked on the CPU.

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -89,6 +90,10 @@ void sleepPrecisely(std::chrono::nanoseconds duration);
 
 /// `name` from the environment, or empty.
 [[nodiscard]] std::string env(const char* name);
+
+/// Whether `stream` (stdout or stderr) is a terminal rather than a file or a
+/// pipe: what decides whether progress is redrawn in place or logged.
+[[nodiscard]] bool isTerminal(std::FILE* stream);
 
 /// A window's Metal layer drawn at the window's backing scale (2 on a Retina
 /// display), so a drawable of the framebuffer's pixels maps one to one.
