@@ -79,6 +79,13 @@ void sleepPrecisely(std::chrono::nanoseconds duration);
 /// The directory holding the running executable.
 [[nodiscard]] std::filesystem::path executableDir();
 
+/// The directory holding the image this code was linked into: the
+/// executable for a program, the library for a plugin another program
+/// loads (hdAthenea inside usdview, Houdini or Blender), whose executable
+/// says nothing about where the engine's files are. Empty where the image
+/// cannot be named.
+[[nodiscard]] std::filesystem::path moduleDir();
+
 /// `name` from the environment, or empty.
 [[nodiscard]] std::string env(const char* name);
 

@@ -13,6 +13,7 @@
 #if defined(_WIN32)
 #error "Windows is a later port: implement MappedFile with CreateFileMapping here."
 #else
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -237,6 +238,23 @@ std::filesystem::path executableDir() {
     std::error_code failed;
     auto self = std::filesystem::read_symlink("/proc/self/exe", failed);
     return failed ? std::filesystem::path{} : self.parent_path();
+#endif
+}
+
+std::filesystem::path moduleDir() {
+#if defined(_WIN32)
+    return {};   // GetModuleHandleEx(FROM_ADDRESS) and GetModuleFileName, in the port
+#else
+    // The address of a function in this file names the image it was linked
+    // into: core is a static library, so that is whichever executable or
+    // shared library holds this copy of it.
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void*>(&moduleDir), &info) == 0 || info.dli_fname == nullptr) {
+        return {};
+    }
+    std::error_code failed;
+    auto canonical = std::filesystem::weakly_canonical(info.dli_fname, failed);
+    return failed ? std::filesystem::path{} : canonical.parent_path();
 #endif
 }
 

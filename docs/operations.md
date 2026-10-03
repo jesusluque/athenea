@@ -42,8 +42,9 @@ the binary runs in.
 
 | Variable | What it does |
 |---|---|
-| `ATHENEA_SHADER_DIR` | where the Slang shaders are read from. Without it the binary looks beside itself, in `<exe>/../shaders`, and then at the directory it was built with. `athenea info` prints the one in use. |
+| `ATHENEA_SHADER_DIR` | where the Slang shaders are read from. Without it the engine looks for a `shaders` directory holding `athenea/` beside the image its code was loaded from, or up to three directories above it -- `<exe>/../shaders` for a program, `<build>/shaders` for the Hydra plugin loaded by usdview or Blender -- then beside the executable, then at the directory it was built with. `athenea info` prints the one in use. |
 | `PXR_PLUGINPATH_NAME` | points a USD application at `<build>/plugin/usd`, which holds both the Hydra delegate and the codeless schemas. Needed by any host that is not `athenea` itself. `athenea` registers `<its binary>/../plugin/usd` on its own at start-up, so the schemas a converted cloud applies are written whether this is set or not. |
+| `ATHENEA_MATERIALX_ROOT` | a directory holding MaterialX's `libraries/`, read by hdAthenea's material compiler in place of the libraries the host's USD loaded. Unset by default: the host's are used. For a host whose MaterialX predates the Slang generator (Blender 5.3 ships 1.39.4: no `genslang` implementations, older node definitions), pointed at 1.39.5's. Read once, when the first material compiles; the host's own renderers keep theirs. |
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_SHADER_CACHE` | where compiled shaders are cached between runs. The default is a directory under the platform's cache directory. Deleting it costs one slow first frame. |

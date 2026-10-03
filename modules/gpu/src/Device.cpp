@@ -133,14 +133,34 @@ const char* toString(Backend backend) noexcept {
     return "?";
 }
 
+std::filesystem::path findShaderDirectory(std::span<const std::filesystem::path> starts) {
+    constexpr int kLevelsUp = 3;
+    std::error_code ignored;
+    for (const std::filesystem::path& start : starts) {
+        if (start.empty()) {
+            continue;
+        }
+        std::filesystem::path at = start;
+        for (int level = 0; level <= kLevelsUp; ++level) {
+            if (auto candidate = at / "shaders"; std::filesystem::is_directory(candidate / "athenea", ignored)) {
+                return std::filesystem::weakly_canonical(candidate, ignored);
+            }
+            if (!at.has_parent_path() || at.parent_path() == at) {
+                break;
+            }
+            at = at.parent_path();
+        }
+    }
+    return {};
+}
+
 std::filesystem::path shaderDirectory() {
     if (std::string fromEnv = platform::env("ATHENEA_SHADER_DIR"); !fromEnv.empty()) {
         return fromEnv;
     }
-    std::error_code ignored;
-    if (auto beside = platform::executableDir() / ".." / "shaders";
-        std::filesystem::is_directory(beside, ignored)) {
-        return std::filesystem::weakly_canonical(beside, ignored);
+    const std::filesystem::path starts[] = {platform::moduleDir(), platform::executableDir()};
+    if (auto found = findShaderDirectory(starts); !found.empty()) {
+        return found;
     }
     return ATHENEA_BUILD_SHADER_DIR;
 }

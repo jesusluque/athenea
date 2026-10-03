@@ -728,12 +728,24 @@ Result<size_t> Engine::commit() {
             for (const std::string& path : device_->shaderSearchPaths()) {
                 shaders.emplace_back(path);
             }
-            std::vector<std::filesystem::path> sources;
-            for (const MaterialX::FilePath& path : pxr::HdMtlxSearchPaths()) {
-                sources.emplace_back(path.asString());
-                sources.emplace_back(std::filesystem::path(path.asString()).parent_path());
+            // $ATHENEA_MATERIALX_ROOT: MaterialX's libraries of the
+            // engine's own version, in place of the ones the host's USD
+            // loaded -- a host whose MaterialX is older than the Slang
+            // generator (Blender's 1.39.4) has no genslang implementations
+            // and older node definitions. Read by this compiler alone, so
+            // the host's own renderers keep theirs.
+            const std::string ownRoot = platform::env("ATHENEA_MATERIALX_ROOT");
+            Result<std::unique_ptr<material::MaterialCompiler>> made = Error(ErrorCode::NotFound, "");
+            if (!ownRoot.empty()) {
+                made = material::MaterialCompiler::create(std::vector<std::filesystem::path>{ownRoot}, shaders);
+            } else {
+                std::vector<std::filesystem::path> sources;
+                for (const MaterialX::FilePath& path : pxr::HdMtlxSearchPaths()) {
+                    sources.emplace_back(path.asString());
+                    sources.emplace_back(std::filesystem::path(path.asString()).parent_path());
+                }
+                made = material::MaterialCompiler::create(pxr::HdMtlxStdLibraries(), sources, shaders);
             }
-            auto made = material::MaterialCompiler::create(pxr::HdMtlxStdLibraries(), sources, shaders);
             if (made) {
                 compiler_ = std::move(*made);
             } else {

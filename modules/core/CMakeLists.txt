@@ -5,7 +5,8 @@ athenea_add_module(core
         src/Log.cpp
         src/Platform.cpp)
 find_package(Threads REQUIRED)
-target_link_libraries(athenea_core PUBLIC Threads::Threads)
+# dladdr (platform::moduleDir), in libdl before glibc 2.34.
+target_link_libraries(athenea_core PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 if(UNIX AND NOT APPLE)
     # A headless OpenGL context for libraries that draw with GL (Storm).
     find_library(ATHENEA_EGL_LIB EGL)

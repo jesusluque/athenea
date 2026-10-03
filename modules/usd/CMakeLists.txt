@@ -57,11 +57,20 @@ target_include_directories(hdAthenea PRIVATE include src)
 target_link_libraries(hdAthenea PRIVATE athenea::render athenea::io athenea::scene athenea::lod athenea::geom athenea::world athenea::technique
                       ${ATHENEA_USD_LIBS})
 target_compile_options(hdAthenea PRIVATE -Wno-deprecated-declarations)
+# The plugin's own directory first: a plugin shipped with its libraries
+# beside it (libslang, in a package another program loads) finds them
+# there, wherever the package was unpacked.
+if(APPLE)
+    set(ATHENEA_PLUGIN_ORIGIN "@loader_path")
+else()
+    set(ATHENEA_PLUGIN_ORIGIN "$ORIGIN")
+endif()
 set_target_properties(hdAthenea PROPERTIES
     PREFIX "" OUTPUT_NAME "hdAthenea"
     CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
     LIBRARY_OUTPUT_DIRECTORY "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea"
-    BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
+    BUILD_RPATH "${ATHENEA_PLUGIN_ORIGIN};${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib"
+    INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN}")
 file(MAKE_DIRECTORY "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources")
 configure_file(plugin/plugInfo.json.in "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources/plugInfo.json" @ONLY)
 else()
