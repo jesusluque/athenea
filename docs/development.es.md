@@ -41,21 +41,22 @@ coinciden, la cabecera tiene razón.
 | 4 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout |
 | 5 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre) |
 | 6 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
-| 7 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
-| 8 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
-| 9 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
-| 10 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
-| 11 | light | `light/LightTable.h` — una luz en el dispositivo |
-| 12 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
-| 13 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 14 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 15 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
-| 16 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
-| 17 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
-| 18 | view | `view/Viewer.h` — las opciones de la ventana |
+| 7 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
+| 8 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
+| 9 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
+| 10 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
+| 11 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
+| 12 | light | `light/LightTable.h` — una luz en el dispositivo |
+| 13 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
+| 14 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 15 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
+| 16 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
+| 17 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
+| 18 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
+| 19 | view | `view/Viewer.h` — las opciones de la ventana |
 
-Una cosa que parece una violación y no lo es: `render` (8) enlaza `aofx::aofx`
-(17). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
+Una cosa que parece una violación y no lo es: `render` (9) enlaza `aofx::aofx`
+(18). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
 le toma son `Mat4` y `Vec3`. La regla de orden es sobre librerías compiladas.
 
 ### 1.2 Una GPU, un hilo
@@ -84,7 +85,13 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
    `VisibilityRaster`, `VisibilityTrace`, `VisibilityBvh` — y un test las
    obliga a ello.
 3. `technique::MaterialShading` (o `HeadlightShading`) reconstruye la
-   superficie desde ese buffer y la sombrea. `AovShading` reconstruye la misma
+   superficie desde ese buffer y la sombrea. Donde el dispositivo traza rayos
+   son tres kernels: `drawLobes` evalúa el material y escribe las direcciones
+   de las muestras de sus lóbulos, `traceShadows` traza el rayo de sombra de
+   cada muestra de luz y de lóbulo en un bit, y `shadeMaterials` ilumina el
+   píxel con esos bits. Un kernel que evalúa un material no contiene ninguna
+   ray query: en Metal las dos cosas juntas escribían filas de basura.
+   `AovShading` reconstruye la misma
    superficie para los ids, las normales y los primvars; `CryptoShading` para
    el plano de ids de la matte.
 4. Los puntos, donde los haya, se rasterizan en una capa propia y se componen
@@ -364,7 +371,7 @@ grande del árbol, y el §6 de este documento es lo que hace.
 
 ## 5. El banco de pruebas
 
-Dieciocho binarios, uno por área, todos bajo `tests/`.
+Diecinueve binarios, uno por área, todos bajo `tests/`.
 
 | Binario | Cubre |
 |---|---|
@@ -384,11 +391,15 @@ Dieciocho binarios, uno por área, todos bajo `tests/`.
 | `athenea_view_tests` | el viewer; etiqueta `display` |
 | `athenea_gpu_host_tests` | gpe adoptando el dispositivo de slang-rhi; etiqueta `gpe` |
 | `athenea_aofx_tests` | el SDK, el host y el efecto mesh2splat; etiqueta `gpe` |
+| `athenea_coverage_tests` | lo que cubre una superficie convertida frente a su malla (`tests/data/coverage`); necesita el fixture `mesh2splat_coverage`, que ctest corre antes, y sin él se salta; etiqueta `gpe` |
 | `athenea_sched_tests` | el reloj de frame y PTP |
 
-Y cuatro tests que no son de Catch2: `aofx_sdk_manifest` (los hashes del SDK),
-`single_tbb` (un TBB en el proceso) y los dos `mesh2splat_density_*`, que
-corren el CLI de verdad y afirman sobre la línea que imprime.
+Y cinco tests que no son de Catch2: `aofx_sdk_manifest` (los hashes del SDK),
+`single_tbb` (un TBB en el proceso), los dos `mesh2splat_density_*`, que
+corren el CLI de verdad y afirman sobre la línea que imprime, y
+`mesh2splat_coverage`, el CLI de verdad convirtiendo los planos que mide
+`athenea_coverage_tests` (un fixture: `athenea_test(... FIXTURES <nombre>)`
+hace que todos los casos de un binario lo requieran).
 
 **Por qué `athenea_host_tests` no enlaza nada.** Conduce el plugin como lo hace un
 host, por su nombre. Si además enlazara `athenea::usd`, una plantilla instanciada

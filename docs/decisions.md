@@ -9676,6 +9676,391 @@ is not carried; neither is a map on both the colour and the weight (the
 colour's is read, and the log says so). The transfer's own bake measures no
 emission (`transferMode` gathers nothing), which is right: the frame adds it.
 
+
+## Colour: OpenColorIO as a compiler, and a texture read in its own colour space
+
+Phases 0 and 1 of the colour plan. The working space is still linear
+Rec.709; what changes is who knows the rest.
+
+### Phase 0: one compiler, below material and technique
+
+- **The module.** `colour` sits between `gpu` and `scene` (material may not
+  link technique, and both need it). It owns the OpenColorIO dependency,
+  PRIVATE and behind `ATHENEA_HAVE_OCIO`, moved from technique.
+- **`ColourCompiler`** (`colour/ColourCompiler.h`). `function(src, dst)`
+  and `displayView(src, display, view, look)` make a processor, extract its
+  HLSL with `setFunctionName("atheneaCs_<hash>")` and
+  `setResourcePrefix("athenea_<hash>_")`, and load it as the Slang module
+  `athenea_cs_<hash>`, the function marked `public` and nothing else. The
+  hash is FNV-1a of the config's cache id and the names, so a pair compiles
+  once per compiler and two functions in one kernel never share a LUT's
+  name. LUTs are filled on the device from OCIO's values
+  (`athenea_colour_fill`); `ColourFunction::bind` binds them and the
+  dynamic properties by name. The host computes the shader text and the LUT
+  values, nothing per pixel.
+- **The display is a client.** `DisplayTransform::setOcio` asks for
+  `displayView` and compiles a second module that imports the function and
+  `athenea.technique.display`. The pixels did not change by a bit: the test
+  builds the old recipe (function text inline in the display module) from
+  the same text and compares both kernels with a tolerance of zero, over
+  sixteen stops, three exposures and three views (ACES 2.0 Rec.709 and P3,
+  un-tone-mapped). The ACES 2.0 agreement test reads what it read before
+  (worst 3.2e-4, 5.5e-4, 2.2e-5).
+- **`ColourNames`** (`colour/ColourNames.h`) is the one resolution of a
+  name. Empty or `auto`: the file decides (8-bit sRGB-tagged, sRGB; the
+  rest, the working space). Data names (`raw`, `Raw`, `data`, `Non-Color`,
+  `none`, `identity`, `Utility - Raw`) and any space the config marks data:
+  Raw. Then a short alias table (UsdUVTexture's `sRGB`, `linear`, the
+  GfColorSpaceNames tokens the studio config does not carry as aliases,
+  such as `g24_rec709_scene`), then the config by name, alias or role, then
+  the built-in studio config -- a function then crosses configs through
+  `GetProcessorFromConfigs`. Nothing knows the name: Unknown, one warning per
+  name, `TextureInfo::error`, and the texture is read as the file says.
+  The studio config already carries MaterialX's (`srgb_texture`,
+  `lin_rec709`, `acescg`, `g22_rec709`) and USD's (`lin_ap1_scene`, ...)
+  names as aliases.
+- **The two ad-hoc tables are gone.** `Material.cpp` hands MaterialX the
+  colour space USD authored, verbatim; `MaterialCompiler` keeps it on the
+  slot as a string. Before, `g22_rec709` was read as sRGB, and `acescg` or
+  any name not in either table was read raw.
+- **Without OpenColorIO** the names resolve by table (sRGB, linear Rec.709,
+  data) and the one function compiled is sRGB to linear, written in the
+  compiler: a 16-bit sRGB file decodes as it did.
+
+### Phase 1: texture input spaces
+
+- **Three routes** in `TextureStore::loadFile`, by what the name resolves
+  to. Raw and the working space: read as they are, as before. 8-bit sRGB:
+  the fast route, unchanged -- RGBA8 behind an `RGBA8UnormSrgb` view, mips
+  averaged as light. Anything else, a 16-bit or float sRGB file included:
+  RGBA16F (RGBA32F for a float32 file), and the decode kernel is
+  `athenea_texdec_<hash>`, generated once per space: texture_decode's
+  `decodeTexel`, the compiled function, `storeTexel`. Alpha is not
+  transformed. The mips are made after, in light, as for any float texture.
+  `texture_decode.slang` lost its `toLinear` parameter.
+- **Keys.** A texture is (path, name as written): `srgb_texture` and `sRGB`
+  of one file are two entries, which costs a second upload and nothing
+  else.
+- **Domes.** A dome's image takes the `colorSpace` authored on
+  `inputs:texture:file`, read from the light's network in the scene index
+  beside the value (`domeColourSpace`, Light.cpp), as a material's file
+  input is. Empty: the file decides, as before. `aofx://` stays raw.
+- **Checked.**
+  - `athenea_colour_tests`: sRGB to linear and back over a 4096-value ramp,
+    worst relative 1.2e-6; linear Rec.709 to ACEScg against aces2.slang's
+    `rgbToRgb(kRec709, kAP1)` over 512 colours, worst relative 9.0e-7;
+    ACEScg reached from a three-space config that lacks it equals the
+    studio config's own function exactly; the names, as bookkeeping.
+    (`compareHdr` bins its maximum at 1.66e-5 and could not certify these;
+    the kernel keeps its own worst as float bits.)
+  - `athenea_material_tests`: one 8-bit sRGB file through the view and
+    through the compiled function, level 0 worst 4.9e-4 in light; the 1x1
+    level 4.9e-3, which is half an 8-bit sRGB code near white where the fast
+    route stores its mips.
+  - `athenea_usd_tests`: a texture authored `acescg` shades as the AP1 to
+    Rec.709 matrix of its colour (0.974 0.578 0.134 for 0.8 0.6 0.2), one
+    authored `Non-Color` as held; a dome authored `raw` shows its code
+    values (0.800 where auto showed 0.604).
+- **Measured** (M5 Pro, debug build, a shared machine; `texture commit time`,
+  hidden `[.timing]` case, eight 2048x2048 files a commit, median of three
+  rounds, per file). Before: 8-bit sRGB 33.0 ms, 8-bit raw 34.0 ms, 16-bit
+  sRGB 49.6 ms. After: 34.5, 34.6 and 49.5 ms; 8-bit sRGB through the
+  compiled function 36.4 ms, 8-bit ACEScg 35.5 ms. The routes cost what
+  they cost before, within this machine's noise. The first commit that
+  needs a new function pays its compile once, about 230 ms for eight files
+  (64 ms a file against 35); each store reads the studio config at its
+  first commit.
+
+### Not done (phases 2 to 5)
+
+- **The working space** is linear Rec.709, fixed (`colour::kWorkingSpace`).
+  Phase 2 makes it a setting; then every function's destination, the
+  display's source, the light and material constants and the MaterialX
+  default space follow it. A MaterialX image node with no colour space is
+  read as `lin_rec709` today, the same as raw; once the working space
+  moves, vector and float image nodes must resolve to Raw.
+- **The config** of textures is the studio config; `--ocio-config` reaches
+  only the display. One config for the stage is phase 2's too.
+- **Colours that are not textures** -- `displayColor`, material constants,
+  light colours, splat SH -- are taken as the working space.
+- **An AOFX colour convert effect** was weighed and not built: an AOFX
+  kernel is a blob compiled when the bundle is built and binds buffers only
+  (aopenfx `KernelDesc`), while a compiled OCIO function is Slang generated
+  at run time that samples textures. It needs an additive ABI extension in
+  aopenfx (a kernel given as source, and texture inputs), or functions
+  generated at build time for a fixed list of spaces, with their LUTs as
+  buffers.
+
+## A transparent surface passes what it does not reflect
+
+UsdPreviewSurface's default `opacityMode` keeps the specular whole at any
+opacity, and the path tracer drew what is behind at `(1 - opacity)` as well:
+a surface that reflected and passed everything. One window gains its few per
+cent; a stack gains them once a sheet. Blender writes a feather card's alpha
+that way, and the sparrow's belly is dozens of cards deep: with Blender's
+quarter-metallic feathers it read 5.6 against a shop wall of 0.3, with single
+pixels at 768 (the original engine, d922ad5, read 2.1; the merge only let
+shadow rays through cut-outs, which is right, and more light reached the
+stack). Twenty clear white metal sheets under a dome of radiance one -- a
+white furnace, which returns at most one -- read 218.5.
+
+A clear glass sheet passes `1 - F`. `transparentPasses` (PathTracer.cpp)
+takes the directional albedo of every lobe but the diffuse ones, which the
+opacity already scales, off the throughput of a sample the lot passed. In
+expectation that is `specular + opacity diffuse + (1 - opacity)(1 - rho_s)
+behind`, which at opacity 0 is `rho_s + (1 - rho_s)`. The furnace reads
+1.021; the uncorrected sparrow's belly 0.34 (wall 0.3).
+
+`athenea_usd_tests` "a stack of transparent sheets returns no more light than
+a dome of radiance one gives it": 218.5 before, 1.021 after.
+
+Not done: a shadow ray passes a transparent surface by `(1 - opacity)` alone,
+a lot with no weight; what its specular takes off is not.
+
+## The sparrow's mesh, the same bird on both routes
+
+The mesh render of the tree sparrow was to be the reference for its clouds,
+and the raster drew something else: red and yellow streaks over the body, a
+black hole in the belly, salt and pepper over every feather. The path tracer
+drew a white bird with the belly blown out. Five causes, all the engine's
+(on the corrected stage, `SparrowBird.usda`, and on Blender's uncorrected
+import alike):
+
+**1. A ray query beside the lobe stack miscompiles on Metal.** The streaks
+were the garbage `MaterialShading` had recorded three times: rows in blocks
+of half a threadgroup, from a kernel that evaluates a material and traces a
+shadow ray. Each workaround (no local copy of the stack, the lobe samples
+before the first ray, no cut-out asked in the walk) had kept its own test
+clean; the sparrow broke them all, because a frame that merely holds a
+cut-out material compiles the opacity walk into the kernel. A grey floor
+under a dome and a sun, with one unbound material of opacity one half in the
+stage: 200 718 of 518 400 pixels differed between shadows on and off at
+960 x 540, and 20 000 to 25 000 of 98 304 words at 192 x 128, a different
+count each run. So the raster's shading is three kernels now:
+
+- `drawLobes` evaluates the material and writes its lobe samples' directions
+  (octahedral, 16 bits a coordinate, `min(lightSamples, 32)` a pixel);
+- `traceShadows` rebuilds the surface, draws the same light samples (the same
+  hash, the same order) and traces each one's shadow ray, then each lobe
+  sample's, into one bit each -- it asks a cut-out occluder's opacity, and no
+  material of its own pixel;
+- `shadeMaterials` holds no intersector and reads the bits.
+
+The light-sample bits cost `ceil(bits / 32)` words a pixel (`bits` is the
+samples, or the samples times the lights where every light is lit at every
+pixel); one sample of two lights and one lobe sample is one word.
+
+**2. A cut-out cast its whole card.** With the walk unable to ask a card's
+material, the raster's shadow rays stopped at every feather card, and the
+belly -- dozens of cards under the body -- was in full shadow from the dome
+and the sun: the black hole. `traceShadows` walks on by the occluder's lot,
+as the path tracer does (`lighting.shadowCutouts` is the frame's `cutouts`).
+A floor under a card of opacity one half, presence: 0.000 of the open sun
+before, 0.507 now.
+
+**3. One lot a pixel for every layer.** The raster's visibility cut a sample
+where its opacity was under the pixel's lot -- the same lot for every surface
+at that pixel, so the layers' coverages were one coverage: two cards of one
+half showed what was behind them half the time instead of a quarter. Three
+emissive cards (red and green at one half, blue opaque) read red 0.486, green
+0.000, blue 0.514; the path tracer reads 0.500, 0.251, 0.250. The lot is now
+hashed with the instance and the triangle (`pixelLot(pixel, seen)`): 0.512,
+0.250, 0.237. On a belly of soft cards this is the difference between fluff
+and the background showing through wherever the front card's edge does.
+
+**4. The raster drew transparent opacity as presence.** UsdPreviewSurface's
+default `opacityMode` keeps the specular whole at any opacity; the path
+tracer has drawn it so since step 1 of the opacity work, the raster cut it by
+lot "in either mode". Blender writes the feathers' alpha that way, so the two
+routes drew two birds: brown feathers on the raster, a sheen of every clear
+card's specular on the tracer. The raster now keeps a transparent sample with
+the tracer's probability, `max(opacity, 1/20)` (`kTransparentKeep`), and the
+shading weighs it as the tracer does (`weighTransparent`: specular and
+emission over p, diffuse times opacity over p). At opacity 0 the raster adds
+1.26 of what the tracer adds over the back square: a passed sample shows the
+back whole where the tracer takes off what the sheet reflected (5), and the
+test's sheet is a white specular.
+
+**5. A stack of transparent sheets made light** in the path tracer: the
+section before this one.
+
+And with the rays out of the shading kernel, two things it could not do:
+
+- **A lobe sample is shadowed.** It traced no ray, so a reflection saw the sky
+  through whatever stood in the way: a polished floor under a plate read
+  0.881 where nothing lights it; 0.000 now. On the sparrow the underside of
+  the belly read 0.26 against the tracer's 0.16.
+- **Both strategies are weighed by their true densities.** A Phong proxy
+  stood in for the stack's density, zero for anything broader than a GGX
+  alpha of about 0.35, so a broad lobe's light samples kept the whole weight:
+  a rough metal floor under a uniform sky had a pixel at 20.75; 1.69 now
+  (power heuristic on `stackPdf`, `lobeDensity`).
+
+The MaterialX warnings the bird prints (`Input 'bias' doesn't match
+declaration`, `Input 'normal' doesn't match declaration`) are hdMtlx's own,
+written before `matchDeclaredTypes` retypes the inputs: the dumped documents
+(`ATHENEA_MTLX_DUMP`) carry scale and bias as color4 and the normal
+connected, and the normal-map test with float4 scale and bias already holds.
+
+Measured on `mesh_wing.usda` over `SparrowBird.usda`, time 1, 960 x 540,
+against the path tracer at 256 paths, denoised: one light sample, the raster's frame mean
+0.2219 against 0.2230 (it was 0.2217), relMSE 3.67 (7.28 before), the
+brightest pixel 208 (322). Over 40 x 40 windows on the head, the breast, the
+belly's underside and the wing the raster is within 10 per cent of the
+tracer at sixteen light samples (the underside 0.154 against 0.158; it was
+0.26). Per pixel they still differ by the raster's one sample (below).
+
+`athenea_usd_tests`: "shadow rays change nothing over an unoccluded floor
+when the frame holds a cut-out material", "a half-clear card casts half a
+shadow on the raster route", "the raster's lot is drawn a layer at a time",
+"a stack of transparent sheets returns no more light...", "the raster shadows
+a lobe's own samples...", and the opacityMode test's raster half, which
+asserted the old reading. Each failed before its change.
+
+What it is not:
+
+- One sample a pixel is still one sample: the raster dithers coverage, a
+  transparent card's clear texels are one pixel in twenty at twenty times
+  their specular, and a frame is not accumulated. Per pixel the raster and a
+  converged tracer differ by that noise; their means over a window agree.
+- The raster has no indirect light: it reads somewhat darker than the tracer
+  wherever bounces matter.
+- A sample the raster's lot passed shows what is behind whole; the tracer
+  takes off the transparent surface's reflection.
+- A lobe sample has one bit for every light at infinity, traced against
+  everything: toward a light whose shadow links leave occluders out it is
+  not asked, and sees that light unshadowed as before.
+- Three kernels cost a second evaluation of the material where lobe samples
+  are drawn. Not timed.
+## A converted surface covers what its opacity says
+
+mesh2splat lays a gaussian a cell over a surface, `sigma` cells wide, so a
+point of it is under several at once, and a partial opacity written straight
+into each of them was not the surface's: a mask of 0.5 covered 96% of what
+stood behind it, and `--glass-opacity 0.6` 98%. Every opacity the
+conversion reads is now **coverage** -- `--opacity`, the material's
+constant, a map's value, what a glass keeps -- multiplied as the surface's,
+and only then made into what one gaussian of the stack takes for it.
+
+**The mapping** is the effect's (`m2sCoverageAlpha` in
+plugins/mesh2splat/mesh2splat.slang); nothing is computed on the host. What
+passes the stack is the product of `1 - alpha g`; to second order
+`-ln T = sum alpha g + alpha^2 g^2 / 2`, and on the grid the footprints sum to
+`2 pi sigma^2` and their squares to `pi sigma^2`, so coverage F wants
+`(pi sigma^2 / 2) alpha^2 + 2 pi sigma^2 alpha = -ln(1 - F)`, plus the 1/255
+of its area a faint gaussian is not drawn over (the thin-wall card's
+correction). The first-order term alone (`exp(-alpha 2 pi sigma^2)`) left
+0.25 / 0.5 / 0.75 covering 0.253 / 0.510 / 0.770; the second-order one
+0.251 / 0.501 / 0.752. F of 0.999 and up is 1, so an opaque surface stays
+opaque, and 0 is 0. A thin wall now covers what its sheet reflects,
+`2R/(1+R)` at its index, worked out by the effect (`m2sGlassCovers`); the
+thin-wall card it makes is the one the earlier section measured (0.0778
+against the sheet's 0.0769, both routes).
+
+The effect's new parameters are additive and keep its old behaviour where a
+host does not set them: `coverage` (on by default; off, every opacity is each
+gaussian's own, as before), `opacityBinary`, `thinWall`, `ior` and
+`materialOpacity`.
+
+**What a material says.** `usd::StageMaterial` gains `opacity` (constant
+coverage) and `opacityThreshold`:
+
+- MaterialX `opacity` (color3 on standard_surface, its mean), OpenPBR
+  `geometry_opacity`, and glTF `alpha` in BLEND are coverage, constant or
+  map -- which is what the mesh draws them as, by lot.
+- glTF's `alpha_mode`: OPAQUE (the default) ignores the alpha, MASK cuts at
+  `alpha_cutoff`. Before, any glTF alpha map was a cut-out.
+- UsdPreviewSurface: `opacityThreshold > 0` makes a map a cut-out at the
+  threshold (what it keeps is whole: `opacityBinary`) and decides a
+  constant to 0 or 1; `opacityMode = presence` is coverage; the default
+  `transparent` keeps reading a constant under one as a thin wall's
+  transmission (ebb684a), and a map as coverage.
+- A mesh whose opacity comes out 0 is skipped. A map with no threshold is
+  cut at `--opacity-cut` (no gaussian below it), and above it covers what it
+  reads; a triangle that caught no cell no longer writes a gaussian at its
+  middle where the cut says its middle is not there (an all-cut plane
+  covered 2%).
+
+**MaterialX constant opacity under one** is carried as coverage, not as
+transmission: the mesh renders it as a surface there by lot
+(`MaterialCompiler`'s cut-out flag), and a gaussian that covers F of what is
+behind it is exactly that, on both routes.
+
+**`--opacity-cut` stays 0.5.** The sparrow (wing camera, its alpha without
+the dome): cut at 0.5 / 0.25 / 0.1 wrote 953 242 / 1 003 077 / 1 045 417
+gaussians and covered 0.23669 / 0.23683 / 0.23688 (raster) -- the soft
+fringe under 0.5 is 10% more gaussians for 0.0002 of coverage.
+
+**The rasteriser paid for its filter in energy and not in the cut.**
+Spreading a splat by the antialiasing filter (or the shutter, or the lens)
+lowers its peak to `k alpha` so its energy is kept, but a splat is drawn only
+out to where it falls under 1/255, and what that leaves out is 1/255 of its
+area -- an area the spread made `1/k` times larger. A converted plane of 0.25
+at a twentieth of the screen covered 0.18 under the raster and 0.25 under the
+ray tracer, which draws the sharp splat. `paidOpacity` (splat/frame.slang,
+used by splat_project and the reference's projection alike) draws it at
+`k alpha + (1 - k)/255`, which keeps what the sharp splat keeps, and leaves a
+splat the spread does not touch (`k` 1) as it was -- but only where the spread
+splat was drawn at all (`k alpha >= 1/255`). Paying every splat back drew the
+ones the filter had made too faint for the cut, which is what a distant cloud
+is: the converted pawn at about 80 pixels of a 512 x 512 frame went from 8.7
+to 29.8 ms (debug). As it is, 11.0 ms there and 9.1 against 8.0 ms farther
+out: the drawn splats' footprints grow with their peak.
+
+Measured (`athenea_coverage_tests`, 256 x 256, the planes'
+middle three fifths, alpha with nothing behind and colour over a backdrop of
+1, against the mesh's alpha at full size):
+
+| Plane | Mesh | Raster 1x / 0.25x / 0.05x | Traced alpha 1x / 0.25x / 0.05x |
+|---|---|---|---|
+| constant 0.25 | 0.250 | 0.251 / 0.250 / 0.248 | 0.251 / 0.251 / 0.251 |
+| constant 0.5 | 0.500 | 0.501 / 0.499 / 0.493 | 0.501 / 0.501 / 0.500 |
+| constant 0.75 | 0.750 | 0.752 / 0.749 / 0.736 | 0.752 / 0.752 / 0.752 |
+| map 0.5 | 0.500 | 0.503 / 0.501 / 0.496 | 0.503 / 0.502 / 0.502 |
+| map 0.75 | 0.745 | 0.751 / 0.748 / 0.735 | 0.751 / 0.751 / 0.751 |
+| opaque | 1.000 | 1.000 / 1.000 / 0.999 | 1.000 / 1.000 / 1.000 |
+| cut-out, halves 0.25 / 0.75 at 0.5 | 0 / 1 | 0.000 / 1.000 at every size | the same |
+
+Before, each gaussian took the opacity itself: 0.5 on a stack of
+`2 pi sigma^2 = 6.3` is `1 - exp(-3.1)`, 0.96 (estimated, not rendered).
+Without `paidOpacity` the raster at 0.05x read 0.18 / 0.455 / 0.73 for
+0.25 / 0.5 / 0.75 (with the first-order mapping). The map of 0.25 is under the default cut, so not there.
+
+The pawn and the sparrow (`--no-bake`, against the mesh, both renders by
+this build; alpha without the dome, relMSE with it):
+
+| | Alpha before -> after (mesh) | relMSE before -> after |
+|---|---|---|
+| pawn, raster | 0.0911 -> 0.0881 (0.0879) | 0.0811 -> 0.0723 |
+| pawn, traced | 0.0883 -> 0.0857 (0.0879) | 0.1098 -> 0.0769 |
+| sparrow wing, raster | 0.2395 -> 0.2367 (0.2253) | 0.1742 -> 0.1635 |
+| sparrow wing, traced | 0.2385 -> 0.2358 (0.2462) | 0.1331 -> 0.1247 |
+
+The pawn's glass head now covers its `--glass-opacity` of 0.6 rather than
+98%, and lets the room through as the mesh's refraction does. The wing's
+alpha excess over the mesh's raster is its silhouette, gaussians half a cell
+past every feather's cut, not its coverage. (The mesh's traced alpha counts
+a transparent-mode card whole.)
+
+Not done:
+- A cloud far enough that its gaussians are a few hundredths of a pixel
+  still loses itself in the raster: the pawn at about 80 pixels draws
+  5e-6 of the frame against the mesh's and the tracer's 3e-4. Paying those
+  back is the 3.4x above; levels of detail are the answer.
+- The overlap `2 pi sigma^2` is the grid's. A triangle smaller than a cell
+  writes one gaussian of its own size, and a displaced cell is split, and
+  both overlap otherwise; neither is corrected.
+- The mesh's renderer does not read glTF's `alpha` as a cut-out at all
+  (`cutsOut` looks at `opacity` and `geometry_opacity`), so a glTF MASK
+  converts cut and renders whole.
+- Separating occupancy from optical opacity, so a surface covers without
+  widening sigma (proposal R5, after arXiv 2603.02887, which was not read
+  for this change), was weighed and not done: an occupancy the renderers
+  read beside the opacity is a change to the splat format and to every
+  renderer, for a coverage that is already within 0.015 of the mesh at every
+  size measured here. The second-order transmittance above is this change's
+  own, derived for the conversion's grid.
+
 ## A posed cloud refits its ray tracing structure
 
 A skinned cloud is posed into the same two buffers every frame, and

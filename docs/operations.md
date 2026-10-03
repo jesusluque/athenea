@@ -361,9 +361,9 @@ recipe is §3.1 below.
 | `--max-splats` | integer | `2000000` | the budget, over the whole stage |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
 | `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
-| `--opacity` | number | `1.0` | what every gaussian starts from |
-| `--glass-opacity` | number | `0.6` | what a fully transmitting material still stops |
-| `--opacity-cut` | number | `0.5` | a cut-out map below this reads as no surface: UsdPreviewSurface's `opacity`, standard_surface's `opacity` or OpenPBR's `geometry_opacity` connected to an image |
+| `--opacity` | number, 0 to 1 | `1.0` | coverage: how much of what stands behind it the converted surface covers, multiplied into the material's own opacity. Every opacity is coverage -- this, the material's constant, a map's value, what a glass keeps -- and each gaussian takes what one of the several over a point needs for it, so 0.5 covers half at any size |
+| `--glass-opacity` | number, 0 to 1 | `0.6` | coverage a fully transmitting solid keeps. A thin-walled glass (and a UsdPreviewSurface opacity under one in its default `transparent` mode) covers what the sheet reflects at its index instead |
+| `--opacity-cut` | number, 0 to 1 | `0.5` | where a material's opacity is a map with no threshold of its own (UsdPreviewSurface's `opacity`, standard_surface's `opacity`, OpenPBR's `geometry_opacity`, glTF's `alpha` in BLEND): below this no gaussian is written; above it the surface covers what the map reads. A material's own threshold (`opacityThreshold`, glTF's `alpha_cutoff` in MASK) is used instead, and what it keeps is whole |
 | `--max-cells` | integer | `262144` | most cells one triangle may walk |
 | `--texture-size` | integer | `1024` | a map is read no larger than this; 0 reads it at its own size |
 | `--no-textures` | flag | off | ignore the maps; materials keep their constant values |
@@ -824,6 +824,19 @@ it — `--ocio-config`, `--ocio-display` and `--ocio-view` compile that config's
 display and view into the kernel. `--edr` asks for a float surface and takes
 ACES 2.0 up to the screen's own peak, which on a standard display is the same
 image as without it.
+
+A texture is read in the colour space its material or light names --
+MaterialX's `colorspace`, a UsdUVTexture's `sourceColorSpace`, USD's
+`colorSpace` on the file input, a dome's `colorSpace` on
+`inputs:texture:file` -- and brought into the working space (linear
+Rec.709) on the device. Names are those of OpenColorIO's studio config
+(`srgb_texture`, `lin_rec709`, `acescg`, `g22_rec709`, ...), its aliases and
+roles, USD's (`lin_ap1_scene`, `srgb_rec709_scene`, ...) and UsdUVTexture's
+(`sRGB`, `raw`, `auto`). `raw`, `data`, `Non-Color`, `none`, `identity` and
+`Utility - Raw` read the file as data. No name, or `auto`: an 8-bit image is
+sRGB unless the file says otherwise, anything else linear. A name nothing
+knows is warned of once and the file is read as it says. Without OpenColorIO
+in the build only sRGB, linear Rec.709 and data are known.
 
 `athenea view --snapshot` writes the frame **as shown**, display-encoded and with
 the panels in it. It is a screenshot, not a render output.
@@ -1333,6 +1346,7 @@ A script's own header says what it needs and where it puts things.
 | What is printed | What it means | What to do |
 |---|---|---|
 | `no GPU device` (tests skip) | no device could be opened | check `athenea info`; on Linux set `ATHENEA_BACKEND` |
+| `colour: no colour space '<name>' in <config>; read as the file says` | a texture names a colour space neither the config nor the studio config knows | correct the name (`athenea info` says whether OpenColorIO is built in); the texture is read as if no colour space were given |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |
 | `this build reads no .spz` | zstd was missing when this binary was built | rebuild with zstd, or convert the capture elsewhere |
 | `.sog` refused | libwebp was missing | install it and rebuild |

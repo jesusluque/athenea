@@ -4,9 +4,13 @@
 // kernel: every view transform and display, exposure and a background.
 #include "../gpu/GpuTest.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <tuple>
+#include <utility>
 
+#include "athenea/colour/ColourCompiler.h"
 #include "athenea/gpu/Texture.h"
 #include "athenea/technique/DisplayTransform.h"
 
@@ -325,4 +329,162 @@ TEST_CASE("OpenColorIO's ACES 2.0 view, compiled into a kernel, agrees with aces
     std::printf("  control, the un-tone-mapped view: %u of %u pixels differ by more than 1/255, worst %.2e\n", over,
                 pixels, double(worst));
     CHECK(over > pixels / 4);
+}
+
+// The OCIO view as it was compiled before colour::ColourCompiler existed: the
+// display's pieces, OpenColorIO's function and the entry in one module. Now
+// the function is a module of its own that the display kernel imports; the
+// pixels must not change by a bit. The inline module is built here from the
+// same function text, and both kernels are run over sixteen stops.
+TEST_CASE("the OCIO view through its imported function is bit for bit the view compiled inline",
+          "[technique][display][ocio]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!technique::ocioBuilt()) {
+        SKIP("no OpenColorIO in this build");
+    }
+    const uint32_t w = 257;
+    const uint32_t h = 64;
+    auto generate = gpu::ComputeKernel::create(*gpu->library, "athenea/test/display_check", "displayGenerate");
+    auto agree = gpu::ComputeKernel::create(*gpu->library, "athenea/test/display_check", "displayAgree");
+    auto display = technique::DisplayTransform::create(*gpu->library);
+    if (!generate) FAIL(generate.error().toString());
+    if (!agree) FAIL(agree.error().toString());
+    if (!display) FAIL(display.error().toString());
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{w} * h * 16;
+    desc.elementBytes = 16;
+    desc.label = "display.source";
+    auto source = gpu::Buffer::create(*gpu->device, desc);
+    REQUIRE(source);
+    gpu::Buffer placeholder = test::uintBuffer(*gpu->device, 4, "display.placeholder");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        generate->dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["source"].setBinding(source->rhi());
+            cursor["params"]["width"].setData(w);
+            cursor["params"]["height"].setData(h);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    gpu::TextureDesc target;
+    target.width = w;
+    target.height = h;
+    target.format = rhi::Format::RGBA32Float;
+    target.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+    target.label = "display.imported";
+    auto imported = gpu::Texture::create(*gpu->device, target);
+    target.label = "display.inline";
+    auto inlined = gpu::Texture::create(*gpu->device, target);
+    REQUIRE(imported);
+    REQUIRE(inlined);
+    // Three views: one with a 3D LUT and tables (ACES 2.0), one without
+    // (un-tone-mapped), and a display of another encoding.
+    const std::array<std::pair<const char*, const char*>, 3> views{{
+        {"sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)"},
+        {"sRGB - Display", "Un-tone-mapped"},
+        {"Display P3 - Display", "ACES 2.0 - SDR 100 nits (P3 D65)"},
+    }};
+    for (const auto& [displayName, viewName] : views) {
+        technique::OcioView ocio;
+        ocio.display = displayName;
+        ocio.view = viewName;
+        if (auto set = display->setOcio(ocio); !set) FAIL(set.error().toString());
+        const colour::ColourFunction* function = display->ocioFunction();
+        REQUIRE(function != nullptr);
+        const std::string body =
+            "import athenea.technique.display;\n" + function->body() +
+            "[shader(\"compute\")]\n[numthreads(16, 16, 1)]\n"
+            "void ocioInline(uint3 tid: SV_DispatchThreadID) {\n"
+            "    uint pixel;\n"
+            "    if (!displayPixel(tid, pixel)) {\n"
+            "        return;\n"
+            "    }\n"
+            "    const float3 shown = displayingColour() ? " + function->entry() + "(float4(displayScene(pixel), 1.0)).rgb\n"
+            "                                            : displayOther(pixel, " + function->entry() +
+            "(float4(displayBackground(), 1.0)).rgb);\n"
+            "    displayWrite(tid, shown);\n"
+            "}\n";
+        char name[48];
+        std::snprintf(name, sizeof(name), "athenea_test_ocio_inline_%016llx",
+                      static_cast<unsigned long long>(colour::fnv1a(body)));
+        auto program = gpu->library->loadSource(name, "module " + std::string(name) + ";\n" + body, {"ocioInline"});
+        if (!program) FAIL(program.error().toString());
+        auto inlineKernel = gpu::ComputeKernel::create(*gpu->library, name, "ocioInline");
+        if (!inlineKernel) FAIL(inlineKernel.error().toString());
+        for (const float exposure : {0.0F, 2.5F, -3.0F}) {
+            technique::DisplaySettings settings;
+            settings.view = technique::ViewTransform::Ocio;
+            settings.background = {0.05F, 0.1F, 0.2F};
+            settings.exposure = exposure;
+            technique::DisplaySource from;
+            from.kind = technique::DisplaySource::Kind::Colour;
+            from.buffer = &*source;
+            from.width = w;
+            from.height = h;
+            {
+                gpu::CommandBatch batch(*gpu->device);
+                REQUIRE(display->run(batch, from, settings, imported->rhi()));
+                // The same bindings the display gives its own kernel.
+                inlineKernel->dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+                    function->bind(cursor);
+                    cursor["acesParams"].setBinding(placeholder.rhi());
+                    cursor["acesTables"].setBinding(placeholder.rhi());
+                    cursor["colour"].setBinding(source->rhi());
+                    cursor["depth"].setBinding(placeholder.rhi());
+                    cursor["ids"].setBinding(placeholder.rhi());
+                    cursor["output"].setBinding(inlined->rhi());
+                    rhi::ShaderCursor p = cursor["params"];
+                    p["width"].setData(w);
+                    p["height"].setData(h);
+                    p["mode"].setData(uint32_t{0});
+                    p["stride"].setData(uint32_t{1});
+                    p["offset"].setData(uint32_t{0});
+                    p["view"].setData(static_cast<uint32_t>(settings.view));
+                    p["display"].setData(static_cast<uint32_t>(settings.display));
+                    p["flipRows"].setData(uint32_t{1});
+                    p["exposure"].setData(settings.exposure);
+                    p["nearZ"].setData(settings.nearZ);
+                    p["farZ"].setData(settings.farZ);
+                    p["vectorScale"].setData(settings.vectorScale);
+                    p["vectorBias"].setData(settings.vectorBias);
+                    p["backgroundR"].setData(settings.background[0]);
+                    p["backgroundG"].setData(settings.background[1]);
+                    p["backgroundB"].setData(settings.background[2]);
+                    p["outputWidth"].setData(w);
+                    p["outputHeight"].setData(h);
+                    p["peakScale"].setData(std::max(settings.peakLuminance, 1.0F) / 100.0F);
+                    p["cryptoIsolate"].setData(uint32_t{0});
+                });
+                REQUIRE(batch.submit(true));
+            }
+            gpu::Buffer counts = test::uintBuffer(*gpu->device, 2, "display.counts");
+            gpu::Buffer worst = test::uintBuffer(*gpu->device, 1, "display.worst");
+            auto a = imported->view(0);
+            auto b = inlined->view(0);
+            REQUIRE(a);
+            REQUIRE(b);
+            {
+                gpu::CommandBatch batch(*gpu->device);
+                agree->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["shown"].setBinding((*a).get());
+                    cursor["other"].setBinding((*b).get());
+                    cursor["counts"].setBinding(counts.rhi());
+                    cursor["worst"].setBinding(worst.rhi());
+                    cursor["params"]["width"].setData(w);
+                    cursor["params"]["height"].setData(h);
+                    cursor["params"]["tolerance"].setData(0.0F);
+                });
+                REQUIRE(batch.submit(true));
+            }
+            uint32_t n[2] = {};
+            float error = 0.0F;
+            REQUIRE(counts.read(*gpu->device, 0, sizeof(n), n));
+            REQUIRE(worst.read(*gpu->device, 0, sizeof(error), &error));
+            std::printf("  %s / %s, exposure %+.1f: %u of %u pixels differ, worst %.2e\n", displayName, viewName,
+                        double(exposure), n[0], n[1], double(error));
+            CHECK(n[1] == w * h);
+            CHECK(n[0] == 0);
+            CHECK(error == 0.0F);
+        }
+    }
 }

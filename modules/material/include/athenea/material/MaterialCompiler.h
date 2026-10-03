@@ -36,7 +36,7 @@ struct MaterialSlot {
     uint32_t           words = 0;
     std::vector<float> value;      ///< Value: the document's
     std::string        name;       ///< Texture: the file; Primvar: the primvar
-    ColourSpace        space = ColourSpace::Auto;
+    std::string        space;      ///< Texture: the colour space as named (TextureInfo::space)
     Wrap               wrapS = Wrap::Repeat;
     Wrap               wrapT = Wrap::Repeat;
     Filter             filter = Filter::Linear;

@@ -40,7 +40,6 @@
 #include <vector>
 
 #include "Commands.h"
-#include "athenea/scene/ThinWall.h"
 #include "aofx/Effect.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
@@ -439,7 +438,7 @@ public:
         const auto ask = [&](const usd::StageTexture& texture) {
             if (!texture.empty() && !ids_.contains(texture.file)) {
                 ids_[texture.file] = textures_->request(
-                    texture.file, texture.srgb ? material::ColourSpace::Srgb : material::ColourSpace::Raw);
+                    texture.file, texture.srgb ? "srgb_texture" : "raw");
             }
         };
         for (const usd::StageMesh& mesh : meshes) {
@@ -643,17 +642,28 @@ public:
             cryptoManifest_[meshes[k].path] = meshCrypto;
             const usd::StageMaterial& what = meshes[k].material;
             std::printf("mesh2splat: %s uses %s (colour %.2f %.2f %.2f, albedo '%s', metallic %.2f, "
-                        "roughness %.2f, transmission %.3f%s)\n",
+                        "roughness %.2f, transmission %.3f, opacity %.3f%s%s)\n",
                         meshes[k].path.c_str(), what.path.empty() ? "no material" : what.path.c_str(),
                         static_cast<double>(what.baseColour[0]), static_cast<double>(what.baseColour[1]),
                         static_cast<double>(what.baseColour[2]), what.albedo.file.c_str(),
                         static_cast<double>(what.metallic), static_cast<double>(what.roughness),
-                        static_cast<double>(what.transmission),
+                        static_cast<double>(what.transmission), static_cast<double>(what.opacity),
+                        what.opacityMap.empty() ? ""
+                        : what.opacityThreshold > 0.0F
+                            ? (", cut-out at " + std::to_string(what.opacityThreshold)).c_str()
+                            : ", coverage map",
                         what.emits() ? (", emission " + std::to_string(what.emission[0]) + " " +
                                         std::to_string(what.emission[1]) + " " + std::to_string(what.emission[2]) +
                                         (what.emissionMap.empty() ? "" : " x '" + what.emissionMap.file + "'"))
                                            .c_str()
                                      : "");
+            // A surface whose material says it is not there -- an opacity of
+            // nothing, or a constant under its own threshold -- has no
+            // gaussian worth writing.
+            if (what.opacity <= 0.0F || options_->opacity <= 0.0) {
+                std::printf("mesh2splat: %s covers nothing (opacity 0), skipped\n", meshes[k].path.c_str());
+                continue;
+            }
             // A PICTURE FOR WHAT THIS MESH CAN WANT, NOT FOR THE WHOLE
             // BUDGET.
             //
@@ -935,16 +945,22 @@ private:
         number("maxSplats", static_cast<double>(budget));
         number("firstTriangle", static_cast<double>(firstTriangle));
         number("flatness", options_->flatness);
+        // EVERY OPACITY HERE IS COVERAGE: how much of what stands behind the
+        // surface it covers. The effect multiplies them -- `--opacity`, the
+        // material's constant, the map's value, what a glass keeps -- and
+        // only then gives each gaussian what one of the several over a point
+        // needs for that (`m2sCoverageAlpha`).
+        // Written straight into each gaussian, a mask of 0.5 covered 96% and
+        // a glass kept at 0.6 covered 98%.
+        number("coverage", 1.0);
         number("opacity", options_->opacity);
-        // A THIN WALL IS ITS OWN TRANSPARENCY. A sheet sends what it does not
-        // reflect straight on, which is what blending a gaussian over what
-        // stands behind it already does -- through any number of cards, on
-        // both routes. So a thin-walled glass keeps, of each gaussian, only
-        // what the sheet reflects head on, 2R/(1+R), spread over the
-        // gaussians that overlap at a point (`scene::thinWallOpacity`), and the frame
-        // shades it as that reflection and nothing else. A solid keeps
-        // `--glass-opacity`.
-        number("glassOpacity", thinGlass(material) ? athenea::scene::thinWallOpacity(material.ior, options_->sigma) : options_->minOpacity);
+        number("materialOpacity", static_cast<double>(material.opacity));
+        // A THIN WALL IS ITS OWN TRANSPARENCY: it covers what the sheet
+        // reflects head on at its index, which the effect works out
+        // (`m2sGlassCovers`). A solid covers `--glass-opacity`.
+        number("glassOpacity", options_->minOpacity);
+        number("thinWall", thinGlass(material) ? 1.0 : 0.0);
+        number("ior", static_cast<double>(material.ior));
         number("maxCells", static_cast<double>(options_->maxCells));
         number("cellMin", cellMin_);
         number("cellMax", cellMax_);
@@ -959,7 +975,12 @@ private:
                                  : channel == 'b' ? 3.0
                                                   : 4.0;
             number("opacityChannel", which);
-            number("opacityCut", options_->opacityCut);
+            // A threshold the material names is its own cut, and what it
+            // keeps is whole; without one the map is coverage, cut where it
+            // is too faint to be worth a gaussian.
+            const bool threshold = material.opacityThreshold > 0.0F;
+            number("opacityCut", threshold ? static_cast<double>(material.opacityThreshold) : options_->opacityCut);
+            number("opacityBinary", threshold ? 1.0 : 0.0);
         }
         // Six entries a splat: the four a gaussian is, and the two that say
         // what it reflects with.
@@ -1395,15 +1416,18 @@ void addMesh2Splat(CLI::App& app) {
                     "leaves a traced surface 30% transparent");
     cmd->add_option("--flatness", o->flatness,
                     "the third size, as a fraction of the smaller of the other two");
-    cmd->add_option("--opacity", o->opacity, "the opacity every gaussian starts from");
+    cmd->add_option("--opacity", o->opacity,
+                    "how much of what stands behind it the converted surface covers, multiplied into "
+                    "the material's own opacity");
     cmd->add_option("--glass-opacity", o->minOpacity,
-                    "what a fully transmitting material still stops. Low is a window -- you see what "
-                    "stands behind it -- and translucency is not that: the light comes through "
-                    "scattered, so the body stays mostly there");
+                    "how much of what stands behind it a fully transmitting solid still covers. Low is "
+                    "a window -- you see what stands behind it -- and translucency is not that: the "
+                    "light comes through scattered, so the body stays mostly there");
     cmd->add_option("--opacity-cut", o->opacityCut,
-                    "a material whose opacity is a map is a cut-out: below this the surface is "
-                    "not there and no gaussian is written, so the budget goes where the surface "
-                    "is. It is what makes a feather a feather and not the card it is drawn on");
+                    "a material whose opacity is a map with no threshold of its own: below this the "
+                    "surface is not there and no gaussian is written, so the budget goes where the "
+                    "surface is; above it the surface covers what the map reads. It is what makes a "
+                    "feather a feather and not the card it is drawn on");
     cmd->add_option("--max-cells", o->maxCells, "most cells one triangle may walk");
     cmd->add_option("--texture-size", o->textureSize,
                     "read maps no larger than this (0: their own size). A map is a float4 picture "

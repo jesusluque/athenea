@@ -5,7 +5,13 @@
 
 #include <cmath>
 
+#include <pxr/imaging/hd/materialNetworkSchema.h>
+#include <pxr/imaging/hd/materialNodeParameterSchema.h>
+#include <pxr/imaging/hd/materialNodeSchema.h>
+#include <pxr/imaging/hd/materialSchema.h>
+#include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
+#include <pxr/imaging/hd/sceneIndex.h>
 
 #include "RenderDelegate.h"
 #include "athenea/core/Log.h"
@@ -40,6 +46,40 @@ bool kindOf(const TfToken& type, athenea::light::LightKind& kind) {
     else if (type == HdPrimTypeTokens->cylinderLight) kind = athenea::light::LightKind::Cylinder;
     else return false;
     return true;
+}
+
+/// The colour space a dome's image is authored in: USD's `colorSpace` on
+/// `inputs:texture:file`. GetLightParamValue hands over the value alone; the
+/// scene index carries the colour space beside it, in the light's network
+/// (as it does for a material's file inputs, Material.cpp). Empty: none said,
+/// and the file decides.
+std::string domeColourSpace(HdSceneDelegate* sceneDelegate, const SdfPath& id) {
+    const HdSceneIndexBaseRefPtr index = sceneDelegate->GetRenderIndex().GetTerminalSceneIndex();
+    if (!index) {
+        return {};
+    }
+    const HdSceneIndexPrim prim = index->GetPrim(id);
+    const HdMaterialSchema material = HdMaterialSchema::GetFromParent(prim.dataSource);
+    if (!prim.dataSource || !material.IsDefined()) {
+        return {};
+    }
+    for (const TfToken& context : material.GetRenderContexts()) {
+        const HdMaterialNodeContainerSchema nodes = material.GetMaterialNetwork(context).GetNodes();
+        for (const TfToken& nodeName : nodes.GetNames()) {
+            const HdMaterialNodeParameterContainerSchema parameters = nodes.Get(nodeName).GetParameters();
+            for (const TfToken& name : parameters.GetNames()) {
+                const std::string& text = name.GetString();
+                if (text != "texture:file" && text != "inputs:texture:file") {
+                    continue;
+                }
+                const HdMaterialNodeParameterSchema parameter = parameters.Get(name);
+                if (const HdTokenDataSourceHandle space = parameter.GetColorSpace()) {
+                    return space->GetTypedValue(0.0F).GetString();
+                }
+            }
+        }
+    }
+    return {};
 }
 
 }   // namespace
@@ -173,6 +213,7 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
         if (file.IsHolding<SdfAssetPath>()) {
             const SdfAssetPath& asset = file.UncheckedGet<SdfAssetPath>();
             lamp.texture = !asset.GetResolvedPath().empty() ? asset.GetResolvedPath() : asset.GetAssetPath();
+            lamp.textureColourSpace = domeColourSpace(sceneDelegate, id);
         }
     }
     engine->setLight(id, lamp, std::move(instancing));
