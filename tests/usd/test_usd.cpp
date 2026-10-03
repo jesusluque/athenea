@@ -6387,6 +6387,351 @@ TEST_CASE("the raster sees a dome through glass as the path tracer does", "[usd]
     }
 }
 
+namespace {
+
+/// A lat-long sky of `columns` x `rows` cells in four colours (ABGR), so what
+/// a glass shows through it is a picture and where it bends to can be seen.
+/// Four and not two: a ball lens turns what is behind it over, and a
+/// two-colour checker turned over about a corner is the same checker.
+fs::path checkerSky(const std::string& name, uint32_t columns, uint32_t rows) {
+    const fs::path png = scratch(name);
+    fs::remove(png);
+    const uint32_t palette[4] = {0xFF2050E0u, 0xFFE0D0A0u, 0xFF30B040u, 0xFF101010u};
+    const uint32_t w = 128, h = 64;
+    std::vector<uint32_t> texels(size_t{w} * h);
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            texels[size_t{y} * w + x] = palette[((x * columns / w) + 2 * (y * rows / h)) % 4];
+        }
+    }
+    HioImageSharedPtr image = HioImage::OpenForWriting(png.string());
+    REQUIRE(image);
+    HioImage::StorageSpec spec;
+    spec.width = static_cast<int>(w);
+    spec.height = static_cast<int>(h);
+    spec.depth = 1;
+    spec.format = HioFormatUNorm8Vec4;
+    spec.data = texels.data();
+    REQUIRE(image->Write(spec));
+    return png;
+}
+
+/// A standard_surface glass as a MaterialX file, `M_Glass` under /MaterialX.
+fs::path glassLook(const std::string& name, float roughness, const std::string& tint) {
+    const fs::path material = scratch(name + ".mtlx");
+    std::ofstream out(material);
+    out << "<?xml version=\"1.0\"?>\n<materialx version=\"1.39\">\n"
+           "  <standard_surface name=\"Glass\" type=\"surfaceshader\">\n"
+           "    <input name=\"base_color\" type=\"color3\" value=\"1, 1, 1\" />\n"
+           "    <input name=\"specular_roughness\" type=\"float\" value=\""
+        << roughness
+        << "\" />\n"
+           "    <input name=\"specular_IOR\" type=\"float\" value=\"1.5\" />\n"
+           "    <input name=\"transmission\" type=\"float\" value=\"1\" />\n"
+           "    <input name=\"transmission_color\" type=\"color3\" value=\""
+        << tint
+        << "\" />\n"
+           "  </standard_surface>\n"
+           "  <surfacematerial name=\"M_Glass\" type=\"material\">\n"
+           "    <input name=\"surfaceshader\" type=\"surfaceshader\" nodename=\"Glass\" />\n"
+           "  </surfacematerial>\n</materialx>\n";
+    return material;
+}
+
+/// A ball of radius one at the origin, `slices` around and `stacks` from pole
+/// to pole, as a Mesh prim `name` bound to `material`. Hydra's own sphere is
+/// ten facets around, which is a lens of facets.
+std::string ballMesh(const std::string& name, const std::string& material, bool doubleSided,
+                     uint32_t slices = 96, uint32_t stacks = 48) {
+    std::ostringstream out;
+    out << "def Mesh \"" << name << "\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+        << "    uniform bool doubleSided = " << (doubleSided ? "1" : "0") << "\n"
+        << "    uniform token subdivisionScheme = \"none\"\n    rel material:binding = <" << material << ">\n";
+    const auto vertices = [&](const char* attribute) {
+        out << "    " << attribute << " = [";
+        for (uint32_t j = 0; j <= stacks; ++j) {
+            const double theta = 3.14159265358979 * j / stacks;
+            for (uint32_t i = 0; i < slices; ++i) {
+                const double phi = 2.0 * 3.14159265358979 * i / slices;
+                out << (j + i ? ", " : "") << "(" << std::sin(theta) * std::cos(phi) << ", " << std::cos(theta)
+                    << ", " << -std::sin(theta) * std::sin(phi) << ")";
+            }
+        }
+        out << "]";
+    };
+    vertices("point3f[] points");
+    out << "\n";
+    vertices("normal3f[] normals");
+    out << " (interpolation = \"vertex\")\n    int[] faceVertexCounts = [";
+    for (uint32_t k = 0; k < slices * stacks; ++k) {
+        out << (k ? ", " : "") << 4;
+    }
+    // Counter-clockwise seen from outside, which is USD's right-handed front.
+    out << "]\n    int[] faceVertexIndices = [";
+    for (uint32_t j = 0; j < stacks; ++j) {
+        for (uint32_t i = 0; i < slices; ++i) {
+            const uint32_t a = j * slices + i;
+            const uint32_t b = j * slices + (i + 1) % slices;
+            const uint32_t c = (j + 1) * slices + (i + 1) % slices;
+            const uint32_t d = (j + 1) * slices + i;
+            out << (j + i ? ", " : "") << a << ", " << d << ", " << c << ", " << b;
+        }
+    }
+    out << "]\n}\n";
+    return out.str();
+}
+
+/// The camera every glass ball below is seen from: the ball of radius one
+/// at the origin nearly fills it.
+const char* const kBallCamera =
+    "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+    "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+    "    float2 clippingRange = (0.1, 1000)\n"
+    "    double3 xformOp:translate = (0, 0, 3.5)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+
+}   // namespace
+
+// A RAY THAT WENT INTO A GLASS MEETS ITS FAR FACE.
+//
+// Back faces were culled for every ray the path tracer traced after the
+// first hit, which is what a single-sided mesh asks of a ray that bounced off
+// it -- and wrong for one that went through: inside a solid glass ball the
+// far face is a back face, so the ray left without bending again and the
+// ball showed the room bent once, a thick lens drawn as one interface. The
+// chess pawn's glass head was the reference a converted cloud was measured
+// against, and the cloud, which bends twice, came out 0.05 relMSE from it for
+// being right. A double-sided ball was not culled and drew black instead: at
+// the default of one bounce the ray met the far face with nothing left to
+// leave by. Now a crossing sees back faces and costs no bounce, so the two
+// balls are one picture, and one bounce draws what four do.
+TEST_CASE("a glass ball bends at its far face whether or not it is double-sided, at one bounce",
+          "[usd][gpu][mesh][path][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path sky = checkerSky("ball_sky.png", 8, 4);
+    glassLook("ball_glass", 0.0F, "1, 1, 1");
+    const auto stage = [&](const std::string& name, bool doubleSided) {
+        const fs::path path = scratch(name + ".usda");
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Scope \"Looks\" (\n    prepend references = @./ball_glass.mtlx@</MaterialX/Materials>\n)\n{\n}\n"
+            << ballMesh("Ball", "/Looks/M_Glass", doubleSided)
+            << "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n"
+               "    asset inputs:texture:file = @"
+            << sky.string() << "@\n}\n"
+            << kBallCamera;
+        return path;
+    };
+    const uint32_t w = 64, h = 64;
+    const auto render = [&](const fs::path& path, uint32_t bounces) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setPathBounces(bounces);
+        (*renderer)->setPathTotal(256);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        if (!made) FAIL(made.error().toString());
+        return std::move(*made);
+    };
+    const gpu::Buffer single = render(stage("ball_single", false), 1);
+    const gpu::Buffer twice = render(stage("ball_double", true), 1);
+    const gpu::Buffer deep = render(stage("ball_double_deep", true), 4);
+    auto sided = render::compareHdr(*gpu->library, single, twice, w, h);
+    auto bounces = render::compareHdr(*gpu->library, twice, deep, w, h);
+    REQUIRE(sided);
+    REQUIRE(bounces);
+    std::printf("  single- against double-sided: relMse %.2e, p99 %.3g; one bounce against four: relMse %.2e, p99 %.3g\n",
+                sided->relMse, sided->p99Relative, bounces->relMse, bounces->p99Relative);
+    CHECK(sided->pixels == uint64_t{w} * h);
+    CHECK(sided->relMse < 0.01);
+    CHECK(sided->p99Relative < 0.3);
+    CHECK(bounces->relMse < 0.01);
+    CHECK(bounces->p99Relative < 0.3);
+}
+
+namespace {
+
+/// A GLASS BALL AS mesh2splat MAKES ONE: a shell of flat gaussians on the
+/// sphere of radius one, each facing out, a cell wide, at the conversion's
+/// glass opacity (0.6), its colour the transmission tint (base colour one),
+/// transmitting and as rough as the material. Written as the conversion
+/// writes it -- relit, with the index -- and placed with the mesh's camera
+/// and `sky` in a stage of its own. Fibonacci points: evenly spaced, no seam.
+fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t count,
+                             const std::array<float, 3>& tint, float roughness, const std::string& sky) {
+    io::RawSplats raw;
+    raw.source = "glass ball";
+    io::SplatEncoding& e = raw.encoding;
+    e.x = 0; e.y = 1; e.z = 2; e.opacity = 3; e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
+    e.rotW = 7; e.rotX = 8; e.rotY = 9; e.rotZ = 10; e.dc0 = 11; e.dc1 = 12; e.dc2 = 13;
+    e.metallic = 14; e.roughness = 15; e.transmission = 16;
+    e.restBase = 17; e.restPerColour = 0; e.restColourOuter = 0;
+    e.floatsPerRecord = 17;
+    e.opacity_ = io::SplatEncoding::Opacity::Linear;
+    e.scale_ = io::SplatEncoding::Scale::Linear;
+    e.colour = io::SplatEncoding::Colour::LinearLight;
+    e.rest = io::SplatEncoding::Rest::Float;
+    e.rotation = io::SplatEncoding::Rotation::Float;
+    const double cell = std::sqrt(4.0 * 3.14159265358979 / count);
+    const double golden = 3.14159265358979 * (3.0 - std::sqrt(5.0));
+    for (uint32_t i = 0; i < count; ++i) {
+        const double y = 1.0 - 2.0 * (i + 0.5) / count;
+        const double ring = std::sqrt(std::max(0.0, 1.0 - y * y));
+        const double x = ring * std::cos(golden * i);
+        const double z = ring * std::sin(golden * i);
+        // The rotation taking the third axis, the short one, to the normal.
+        double qw = 1.0 + z, qx = -y, qy = x;
+        if (qw < 1e-6) {
+            qw = 0.0; qx = 1.0; qy = 0.0;
+        }
+        const double qn = std::sqrt(qw * qw + qx * qx + qy * qy);
+        const float record[17] = {float(x), float(y), float(z), 0.6F,
+                                  float(cell), float(cell), float(0.1 * cell),
+                                  float(qw / qn), float(qx / qn), float(qy / qn), 0.0F,
+                                  tint[0], tint[1], tint[2],
+                                  0.0F, roughness, 1.0F};
+        raw.records.insert(raw.records.end(), record, record + 17);
+        raw.count += 1;
+    }
+    const fs::path cloud = scratch(name + "_splats.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.relight = true;
+    options.ior = 1.5F;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, cloud, options));
+    const fs::path path = scratch(name + ".usda");
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+           "def Xform \"Ball\" (\n    prepend references = @./" << cloud.filename().string() << "@</World>\n)\n{\n}\n"
+        << sky << kBallCamera;
+    return path;
+}
+
+/// The same ball as a mesh with a `standard_surface` glass of that tint and
+/// roughness, under the same `sky`.
+fs::path glassBallMeshStage(const std::string& name, const std::string& tint, float roughness,
+                            const std::string& sky) {
+    glassLook(name, roughness, tint);
+    const fs::path path = scratch(name + ".usda");
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+           "def Scope \"Looks\" (\n    prepend references = @./" << name << ".mtlx@</MaterialX/Materials>\n)\n{\n}\n"
+        << ballMesh("Ball", "/Looks/M_Glass", false) << sky << kBallCamera;
+    return path;
+}
+
+/// A frame, rt, `paths` a pixel, on the device.
+gpu::Buffer renderBall(test::Gpu* gpu, const fs::path& path, uint32_t w, uint32_t h, uint32_t paths) {
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    (*renderer)->setPathTotal(paths);
+    auto image = (*renderer)->render("/Camera", 0.0, w, h, "rt");
+    if (!image) FAIL(image.error().toString());
+    gpu::BufferDesc desc;
+    desc.bytes = image->rgba.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+    if (!made) FAIL(made.error().toString());
+    return std::move(*made);
+}
+
+/// The mean colour of the `side` x `side` pixels at the middle of a frame.
+std::array<double, 3> middleMean(test::Gpu* gpu, const gpu::Buffer& frame, uint32_t w, uint32_t h,
+                                 uint32_t side) {
+    auto kernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/patch_mean", "patchMean");
+    if (!kernel) FAIL(kernel.error().toString());
+    const std::array<uint32_t, 4> zero{};
+    auto sums = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, std::span<const uint32_t>(zero), "ball.sums");
+    REQUIRE(sums);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kernel->dispatch(batch, {(side + 7) / 8, (side + 7) / 8, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["frame"].setBinding(frame.rhi());
+            cursor["sums"].setBinding(sums->rhi());
+            cursor["params"]["width"].setData(w);
+            cursor["params"]["x0"].setData(w / 2 - side / 2);
+            cursor["params"]["y0"].setData(h / 2 - side / 2);
+            cursor["params"]["w"].setData(side);
+            cursor["params"]["h"].setData(side);
+            cursor["params"]["scale"].setData(65536.0F);
+            cursor["params"]["withAlpha"].setData(0u);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 4> read{};
+    REQUIRE(sums->read(*gpu->device, 0, sizeof(read), read.data()));
+    const double n = std::max<double>(read[3], 1.0) * 65536.0;
+    return {read[0] / n, read[1] / n, read[2] / n};
+}
+
+}   // namespace
+
+// WHAT A GLASS CLOUD'S FAR FACE LETS OUT.
+//
+// A ray through a solid crosses two interfaces. The cloud bent at both
+// (rt_glass finds the far face) and weighed only the first: what the near
+// face did not reflect, tinted once by the colour mesh2splat folds the
+// transmission colour into. The mesh's dielectric lobe reflects its Fresnel
+// share at the far face too and tints again, so through the middle of a ball
+// of tint (1, 1, 0.5) the cloud read blue at half the light where the mesh
+// reads a quarter. A sky of one colour, so what is measured is the weight and
+// nothing of where the ray went.
+TEST_CASE("a glass cloud lets out at its far face what the mesh's glass does", "[usd][gpu][splat][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const std::string sky = "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    const uint32_t w = 96, h = 96;
+    const gpu::Buffer mesh = renderBall(gpu, glassBallMeshStage("exit_mesh", "1, 1, 0.5", 0.0F, sky), w, h, 512);
+    const gpu::Buffer cloud =
+        renderBall(gpu, glassBallCloudStage(gpu, "exit_cloud", 60000, {1.0F, 1.0F, 0.5F}, 0.0F, sky), w, h, 16);
+    const std::array<double, 3> m = middleMean(gpu, mesh, w, h, 16);
+    const std::array<double, 3> c = middleMean(gpu, cloud, w, h, 16);
+    std::printf("  through the middle of a ball of tint (1, 1, 0.5): mesh %.4f %.4f %.4f, cloud %.4f %.4f %.4f\n",
+                m[0], m[1], m[2], c[0], c[1], c[2]);
+    // 0.98 and 0.51 before, against 0.92 and 0.26; 2.6 % and 3.3 % now.
+    CHECK(std::abs(c[1] - m[1]) < 0.045 * m[1]);
+    CHECK(std::abs(c[2] - m[2]) < 0.045 * m[2]);
+}
+
+// THE ROOM THROUGH A ROUGH GLASS IS SHARPER THAN ITS REFLECTION.
+//
+// The prepared sky's levels are reflection lobes, and the transmitted half
+// read them at the material's own roughness: a microfacet tilted by theta
+// turns a reflection by 2 theta and a ray through two faces of index 1.5 by
+// about 0.7 theta, so a rough ball showed the room through a reflection's
+// blur. A ball of roughness 0.3 under a checker sky, cloud against mesh.
+TEST_CASE("a rough glass cloud blurs the room behind it as the mesh's glass does", "[usd][gpu][splat][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path png = checkerSky("rough_sky.png", 16, 8);
+    const std::string sky = "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n"
+                            "    asset inputs:texture:file = @" + png.string() + "@\n}\n";
+    const uint32_t w = 96, h = 96;
+    const gpu::Buffer mesh = renderBall(gpu, glassBallMeshStage("rough_mesh", "1, 1, 1", 0.3F, sky), w, h, 1024);
+    const gpu::Buffer cloud =
+        renderBall(gpu, glassBallCloudStage(gpu, "rough_cloud", 60000, {1.0F, 1.0F, 1.0F}, 0.3F, sky), w, h, 16);
+    auto difference = render::compareHdr(*gpu->library, cloud, mesh, w, h);
+    REQUIRE(difference);
+    std::printf("  a ball of roughness 0.3, cloud against mesh: relMse %.4f, p99 %.3f\n", difference->relMse,
+                difference->p99Relative);
+    CHECK(difference->pixels == uint64_t{w} * h);
+    // 0.119 read at the reflection's roughness, 0.045 now.
+    CHECK(difference->relMse < 0.07);
+}
+
 // THE BAKE'S ANSWER CANNOT DEPEND ON HOW MANY HARMONICS IT IS ASKED FOR.
 //
 // A Lambertian surface sends the same radiance in every direction of the half

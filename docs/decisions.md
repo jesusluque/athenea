@@ -9106,3 +9106,143 @@ Not done: a capture has no normal and keeps its axis. `CloudLoader::records`
 (a cloud on the device back into records) does not unpack normals, so a
 splat file decimated without a stage keeps none -- a splat file never has
 them. The merged levels carry the normal but still no PBR channels.
+## A ray that went into a glass meets its far face
+
+The converted pawn's glass head was measured against the mesh path traced
+beside it, and came out 0.050 relMSE from it -- worse than with no index at
+all. The cloud was not what was wrong. The path tracer culled back faces for
+every ray after the first hit (`traceNearestFrom`, both routes), which is what
+a single-sided mesh asks of a ray that bounced off it and wrong for one that
+went through: inside a solid glass ball the far face is a back face, so the
+ray left without bending again, and the ball showed the room bent once -- a
+thick lens drawn as one interface. The cloud, which bends at its far face
+(`rt_glass`), was being held to a picture no glass makes.
+
+Two measurements said so before anything was changed. The cloud's own single
+bend (no far face asked) against the old mesh: relMSE **0.0059**, head 0.050.
+And the mesh with its index raised to 2.0 looked as the cloud did at 1.5.
+
+**A crossing sees back faces.** A bounce ray is traced without culling when
+it goes through a glass (`throughGlass`): the vertex's material has a
+dielectric lobe, and the direction went through the surface it left
+(`dot(n, wi) < 0`, with `n` facing the side the path came from) or the
+dielectric was met from inside (`kFlagInside`), where a reflection stays in
+the glass. A ray that bounced off anything else still culls, as before -- a
+back face of a room seen from inside its walls included. The first version
+of this asked only whether the surface was met from inside, and the closed
+furnace (`athenea_technique_tests "a closed emissive shell*"`), a Lambert
+shell seen from inside, counted every bounce free and read its series 33 %
+high at one bounce.
+
+**A crossing is not a bounce.** With the far face found, a double-sided ball
+-- which was never culled -- showed what the default of one bounce does to a
+solid: the ray met the far face with nothing left to leave by, and the ball
+drew black. Crossings are free now, up to `kFreeCrossings` (8) a path, as a
+renderer keeps its transmission depth apart from its diffuse one. Next event
+estimation weighs a light against the material only where the path would go
+on in that direction (`pathGoesOn`): out of bounces, that is through a glass
+alone. A diffuse transmission (a translucent leaf) is a bounce as it was.
+
+| pawn, autoshop_01, the transferred cloud, 512 paths | whole relMSE | p99 | head relMSE (x 300-470, y 470-590) |
+|---|---|---|---|
+| against the mesh bent once (before) | 0.0498 | 0.771 | 1.32 |
+| against the mesh bent twice (now) | 0.0087 | 0.648 | 0.134 |
+
+The mesh's own frame changes only in the head (relMSE 0.031 between the two,
+p99 0.39) and takes 18.4 s where it took 15.2 (debug build, 768 x 768, 512
+paths): the paths through the ball are longer. The table "What the glass is
+worth" above was measured against the mesh bent once, and its halfway-out and
+rim rows say as much about that mesh as about the cloud.
+
+Test: `athenea_usd_tests "a glass ball bends at its far face*"` -- a smooth
+glass ball under a four-colour checker sky, single-sided against
+double-sided and one bounce against four, all one picture. Before: relMSE 3.6
+and 0.18.
+
+### What a glass cloud's far face lets out
+
+Held to the mesh bent twice, the cloud's head was the right picture a fifth
+too bright in blue and a few per cent in red and green (head means 0.322
+0.348 0.299 against 0.301 0.326 0.258). It bent at both faces and weighed
+only the first: what the near face does not reflect, tinted once by the
+colour mesh2splat folds the transmission colour into. The mesh's dielectric
+lobe reflects its Fresnel share at the far face too, and tints what crosses
+it again -- a ball's yellow is the tint squared.
+
+`SplatSurface::exitThrough` carries both now, from `rt_shade` where the far
+face is found: `1 - F` at the exit (glass to air, at the angle the ray meets
+it) times the colour once more, as much as the gaussian transmits. Past the
+critical angle nothing leaves, the turned ray is all the cloud has, and it
+keeps its whole weight. Where no far face is found -- the rasteriser, the
+hardware route -- it is one.
+
+| pawn head, against the mesh bent twice | relMSE | p99 | means |
+|---|---|---|---|
+| one face weighed (before) | 0.134 | 2.59 | 0.322 0.348 0.299 |
+| and the far face's Fresnel | 0.100 | 2.38 | 0.307 0.332 0.286 |
+| and the tint again | 0.081 | 2.00 | 0.307 0.332 0.261 |
+| the mesh | | | 0.301 0.326 0.258 |
+
+The whole frame: relMSE 0.0087 to 0.0069, p99 0.648 to 0.595.
+
+The tint taken again is the colour, which is the base colour times the
+transmission colour: exact for the pawn (base colour one), and a base colour
+too many for a glass whose base colour is not white. A `standard_surface`'s
+base colour does not tint its transmission at all; a cloud keeps one colour a
+gaussian and cannot say which part of it is which.
+
+Test: `athenea_usd_tests "a glass cloud lets out*"` -- a ball of 60 000
+gaussians at the conversion's glass opacity, tint (1, 1, 0.5), under a sky of
+one colour, against the mesh ball: green and blue through the middle 0.98 and
+0.51 before against the mesh's 0.92 and 0.26, within 3.3 % now.
+
+### The room through a rough glass is sharper than its reflection
+
+With the weights right the head was still a haze where the mesh shows the
+workshop. The transmitted half read the prepared sky at the material's own
+roughness (0.23 on the pawn, from its map), and the sky's levels are
+reflection lobes: a microfacet tilted by `theta` turns a reflected ray by
+`2 theta`, and a ray through an interface by `(1 - 1/ior) theta` going in and
+`(ior - 1) theta` coming out -- the first opened by `ior` again where the ray
+leaves. Through both faces that is `sqrt(2) (ior - 1) theta`, a third of the
+reflection's spread at 1.5. `transmittedRoughness` reads the level that wide:
+a level's width goes as the roughness squared, so the roughness is scaled by
+the root of that ratio, 0.59 at 1.5.
+
+| pawn head, against the mesh bent twice | relMSE | p99 |
+|---|---|---|
+| the reflection's roughness (before) | 0.081 | 2.00 |
+| the factor at 0.8 | 0.061 | 1.83 |
+| at 0.7 | 0.054 | 1.68 |
+| **at sqrt(0.707 (ior - 1)) = 0.59** | **0.048** | **1.54** |
+| at 0.5 | 0.046 | 1.54 |
+
+The test ball (roughness 0.3) is best at 0.59 (0.045 against 0.048 at both 0.5
+and 0.7); the pawn would take a little less. The closed form stays.
+
+Only where both faces were found. The single bend of a route with no tree --
+the rasteriser, the hardware route -- is not the image a lens forms, and
+sharpening it made the rasterised head worse against the mesh (0.138 to
+0.211): there the blur is what hides that it is the wrong picture.
+
+**Where the pawn ends up.** Against the mesh bent twice, the transferred cloud
+under autoshop_01 at 768 x 768 and 512 paths:
+
+| | whole relMSE | p99 | largest | head relMSE | head p99 |
+|---|---|---|---|---|---|
+| before these changes (the mesh bent once) | 0.0498 | 0.771 | 83 | 1.32 | 5.66 |
+| before, against the mesh bent twice | 0.0087 | 0.648 | 76 | 0.134 | 2.59 |
+| now | 0.0057 | 0.545 | 76 | 0.048 | 1.54 |
+
+The body (x 234-534, y 188-448) is 0.0174 throughout: none of this touches
+it. The largest relative value is in the opaque parts, not the glass.
+
+Test: `athenea_usd_tests "a rough glass cloud*"` -- a ball of roughness 0.3
+under a 16 x 8 checker sky, cloud against mesh: relMSE 0.119 before, 0.045
+now.
+
+**Not done.** The rasteriser's glass bends once and shows the sky alone; a
+thick lens there needs the far face without a tree. The mesh has a normal map
+on the glass (scratches) that the cloud does not carry. The glass's own
+opacity was tried: front faces opaque and far faces gone took the head from
+0.047 to 0.055, so the conversion's 0.6 stays.
