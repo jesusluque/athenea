@@ -96,6 +96,15 @@ struct BakePoints {
     /// and the direct half in their alpha, and one plane more carries the
     /// coverage that a bake puts in every plane's alpha.
     bool               transfer = false;
+    /// KEEP THE SUMS, THE DIRECT LIGHT APART FROM THE INDIRECT: no fit.
+    /// `2 * coefficients + 3` planes come back -- the direct half's sum
+    /// against each harmonic, the indirect half's, then (brightest rgb, the
+    /// opacity summed), (sum and sum of squares of the direct luminance, the
+    /// same of the indirect), (sum of their product, the steps the paths
+    /// took, the paths) -- for a caller that adds passes together, filters
+    /// the indirect half and fits once (`athenea/usd/bake_resolve`). Not
+    /// with `transfer`.
+    bool               split = false;
 };
 
 class PathTracer {

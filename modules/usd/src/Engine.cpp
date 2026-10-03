@@ -2971,6 +2971,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 points.height = (bake->count + points.width - 1) / points.width;
                 points.coefficients = bake->coefficients;
                 points.transfer = bake->transfer;
+                points.split = bake->split;
+                paths.seed = bake->seed;
                 paths.accumulate = false;
                 paths.adaptive = false;
                 // A bake has no camera, so it cannot have a headlight: what

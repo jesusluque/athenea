@@ -757,6 +757,25 @@ buffer the size of the cloud; each pass draws its own paths, so a batch
 changes an answer's noise, not its mean. It is the same integrator a frame uses,
 compiled with its bake constant true: not a second implementation.
 
+**The bake in two halves.** What the conversion calls is
+`StageRenderer::bakeSplitOnDevice`: the same tracer with `BakePoints::split`,
+which fits nothing and writes sums -- each harmonic against the direct light
+(emission at the first vertex, next event estimation from it, and what its
+own sample met of a light, MIS on both sides) and against the indirect, then
+the brightest sample, the luminance's moments and the steps the paths took
+(`athenea/usd/bake_resolve` has the layout). Sums add, so a second pass at the
+gaussians that need it is added on (`allotBakePasses`: sqrt(relative
+variance / cost) per gaussian, MARS with the gaussian as the cell), and the
+fit (`common/bake_fit.slang`, the tracer's own, moved out of it) is made once
+over every path a gaussian took, each half on its own. Between the fit and
+`combineBake`, which adds the halves and bounds them as the tracer's bake
+does, the conversion may hand the halves to the splat bake filter
+(`plugins/splatbakefilter`, an AOFX effect: a-trous over a hash grid of the
+gaussians, weighed by tangent-plane distance, normal, Cryptomatte id and each
+one's noise), packed into pictures and back by `athenea/usd/bake_filter_io`.
+`bakePointsOnDevice` stays what it was, the fit in the tracer, for a transfer
+and for the tests that ask for it.
+
 **A raised gaussian** is baked from the flat point under it, down the flat
 normal — a ray from where it stands would start under the surface wherever the
 relief sank it — with a third entry, its facing, laid out beside the two.
@@ -987,6 +1006,9 @@ transfer -- the last two are refused, the rest said.
 | the cell from a camera | the same | the card three units from the lens holds over three times the one seven away |
 | `.athc` output | the same | the same cards as a `.athc` and as a stage draw alike (p99 at most 1) |
 | the bake's rays on the device | `athenea_usd_tests "[mesh2splat]"` | every ray starts `1e-4` of the box's diagonal off; the device bake answers what the host's does; passes answer as one |
+| the bake in two halves | `athenea_usd_tests "[split]"` | direct and indirect fitted apart and combined answer what the whole bake does, to 1e-4, and every point beside a lit wall has indirect light |
+| the adaptive passes | `athenea_usd_tests "[adaptive]"` | on sums whose variance differs a hundredfold, the noisy half gets 8 to 12 times the quiet half's passes, and the two the budget within 5 % |
+| the bake filter | `athenea_aofx_tests "[bakefilter]"` | a noisy step of light on a plane comes back with under a quarter of its error, each side of the step within 0.05 of its own light |
 | whole or not at all | `athenea_core_tests "[platform]"` | a failing writer leaves no file and no partial one |
 | the cut-out map | `athenea_aofx_tests` | an alpha of 0.3 becomes an opacity of 0.3, not a gaussian or nothing |
 | the light bake | `athenea_usd_tests` bake cases | a Lambertian plane comes back at the radiance arithmetic says, and a metal is not black |

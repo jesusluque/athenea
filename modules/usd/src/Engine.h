@@ -257,6 +257,11 @@ struct BakeRequest {
     /// reaches each point from an environment, with its own albedo taken as
     /// one, so the answer does not depend on the light it was baked under.
     bool               transfer = false;
+    /// KEEP THE SUMS, DIRECT APART FROM INDIRECT (technique::BakePoints::split).
+    bool               split = false;
+    /// Which paths these are: a pass that adds to an earlier one draws
+    /// others. The same seed draws the same paths.
+    uint32_t           seed = 0;
     /// Where the answer lands: one `float4` a point, the radiance in rgb.
     render::RenderTargets* out = nullptr;
 };
