@@ -475,7 +475,7 @@ keeps its own opinions, variants included):
 | `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
 | `customData` and `customLayerData` keys with an `lrt` component | the same with `athenea` |
 | an asset path ending `.lrtc` | `.athc` |
-| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 2, no normals); the payload is copied as it is |
+| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 1, no normals); the payload is copied as it is |
 
 Asset paths. A relative path to a file that is not copied (a texture, a layer
 without `--recursive`, one outside `--root`) is made absolute when the output
@@ -756,7 +756,10 @@ finest where none does -- and only that level is posed.
 A cloud that keeps shading normals (a conversion's, `primvars:athenea:splat:normal`)
 keeps them in its `.athc`: four bytes more a gaussian, the merged levels'
 the weighted mean of what they stand for made unit again. That is version 2
-of the format; a version 1 file, which has none, is still read.
+of the format; a version 1 file, which has none, is still read. A cloud
+without normals is still written as version 1, so a reader of version 1
+alone opens it: version 2 is written only where a block carries something
+besides its four arrays.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the

@@ -9062,6 +9062,13 @@ clear), so the surface does not open where the relief is steep, which is what
   disagreed (all 256 kept gaussians of the test floor). `.athc` is version 2:
   the header's former padding is `flags`, bit 0 says every block ends with the
   normals, and a version 1 file -- whose padding was zero -- is read as before.
+  A file is written as version 2 if and only if `flags` is not zero: a cloud
+  without normals is binary for binary a version 1 file and is written as
+  one, so a reader that knows version 1 alone -- an embedded engine older than
+  this -- still opens it; the migration of a `.lrtc` writes version 1 too.
+  Every flag bit that follows (emission, a linear colour) keeps the rule.
+  Test: the header of `normals.athc` reads 2 and 1, that of a cloud without
+  normals 1 and 0, and that one reads back.
 
 What it costs: four bytes a gaussian on the device and twelve in the file
 (the pawn's relit conversion, 730 559 gaussians, 40.9 -> 49.7 MB), one word
@@ -9297,7 +9304,7 @@ and `lrt:*` settings, and streamed `.lrtc` files. `athenea migrate`
 - **.lrtc.** Its `Lrtc.cpp` (lucabRTrender e51ca4a, never changed after)
   differs from `Athc.cpp` at e8ef1eb in the magic alone, and the last header
   word was padding written as zero -- version 2's `flags`, no normals. The
-  header is rewritten (`ATHC`, version 2), the payload copied in slices
+  header is rewritten (`ATHC`, version 1: no flags), the payload copied in slices
   without decoding, and the result parsed before it takes its name.
 - **.usdz.** Extracted beside the output, each member layer migrated as itself
   (no anchoring: a package names everything relatively), a `.lrtc` member

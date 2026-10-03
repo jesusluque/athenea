@@ -23,6 +23,9 @@ constexpr uint64_t kPage = 4096;
 /// 2: `flags` says what a block carries besides its four arrays (the shading
 /// normals, `kHasNormals`). A version 1 file has nothing besides, and its
 /// `flags` is the zero its padding always was, so it reads unchanged.
+/// A file is written as version 2 if and only if its `flags` is not zero:
+/// one that carries nothing besides is a version 1 file, and says so, so a
+/// reader that knows only version 1 opens it.
 constexpr uint32_t kVersion = 2;
 constexpr uint32_t kOldestVersion = 1;
 constexpr uint32_t kHasNormals = 1;
@@ -307,6 +310,8 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     h.extent = cloud.extent;
     std::copy(cloud.splats.bounds.min.begin(), cloud.splats.bounds.min.end(), h.boundsMin);
     std::copy(cloud.splats.bounds.max.begin(), cloud.splats.bounds.max.end(), h.boundsMax);
+    // Version 2 if and only if a block carries something besides.
+    h.version = h.flags != 0 ? kVersion : kOldestVersion;
     h.levelTable = kPage;
     h.chunkTable = h.levelTable + uint64_t{h.levels} * sizeof(LevelEntry);
     h.starts = aligned(h.chunkTable + uint64_t{h.chunks} * sizeof(ChunkEntry));
@@ -419,8 +424,8 @@ Result<bool> migrateLrtc(const std::filesystem::path& in, const std::filesystem:
             return bad(in, ".lrtc version " + std::to_string(h.version) + "; lucabRTrender wrote version 1 only");
         }
         std::memcpy(h.magic, kMagic, 4);
-        h.version = kVersion;
         h.flags = 0;
+        h.version = kOldestVersion;   // nothing besides, so version 1
         converted = true;
     } else if (std::memcmp(h.magic, kMagic, 4) != 0) {
         return bad(in, "neither LRTC nor ATHC magic");

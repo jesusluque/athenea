@@ -481,7 +481,7 @@ propias opiniones, variantes incluidas):
 | `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
 | claves de `customData` y `customLayerData` con un componente `lrt` | lo mismo con `athenea` |
 | una ruta de asset que acaba en `.lrtc` | `.athc` |
-| un `.lrtc` (`LRTC`, versión 1) | un `.athc` (`ATHC`, versión 2, sin normales); el contenido se copia tal cual |
+| un `.lrtc` (`LRTC`, versión 1) | un `.athc` (`ATHC`, versión 1, sin normales); el contenido se copia tal cual |
 
 Rutas de asset. Una ruta relativa a un fichero que no se copia (una textura,
 una capa sin `--recursive`, una fuera de `--root`) se hace absoluta cuando la
@@ -768,7 +768,10 @@ Una nube que guarda normales de sombreado (las de una conversión,
 `primvars:athenea:splat:normal`) las guarda en su `.athc`: cuatro bytes más por
 gaussiana, y en los niveles fundidos la media ponderada de lo que representan
 hecha unitaria de nuevo. Es la versión 2 del formato; un fichero de la versión
-1, que no tiene, se sigue leyendo.
+1, que no tiene, se sigue leyendo. Una nube sin normales se sigue escribiendo
+como versión 1, de modo que un lector que solo conoce la versión 1 la abre: la
+versión 2 se escribe solo donde un bloque lleva algo además de sus cuatro
+arrays.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
 dibujan su gaussiana fundida, así que la nube está pero roma, y se afina según

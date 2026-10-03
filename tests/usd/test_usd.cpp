@@ -10203,6 +10203,18 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         REQUIRE(built->splats.hasNormals());
         const fs::path file = scratch("normals.athc");
         REQUIRE(lod::writeAthc(*gpu->device, *built, file));
+        // The header's version and flags words: version 2 where a block
+        // carries anything besides its four arrays, and only there.
+        const auto header = [](const fs::path& path) {
+            std::ifstream in(path, std::ios::binary);
+            std::array<char, 80> bytes{};
+            in.read(bytes.data(), bytes.size());
+            uint32_t version = 0, flags = 0;
+            std::memcpy(&version, bytes.data() + 4, 4);
+            std::memcpy(&flags, bytes.data() + 76, 4);
+            return std::pair{version, flags};
+        };
+        CHECK(header(file) == std::pair{2u, 1u});
         auto read = lod::readAthc(*gpu->device, file);
         if (!read) FAIL(read.error().toString());
         REQUIRE(read->splats.hasNormals());
@@ -10225,8 +10237,8 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         CHECK(*store == 0);
         CHECK(levelsApart == 0);
 
-        // A cloud with none writes a file the version before would have, but
-        // for its version number; put that back and it must still read.
+        // A cloud with none writes the file the version before wrote, version
+        // number included, so a reader of version 1 alone still opens it.
         auto plain = loader->upload(cloud(3000), 0);
         REQUIRE(plain);
         REQUIRE_FALSE(plain->hasNormals());
@@ -10234,13 +10246,7 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         if (!plainLod) FAIL(plainLod.error().toString());
         const fs::path old = scratch("normals_v1.athc");
         REQUIRE(lod::writeAthc(*gpu->device, *plainLod, old));
-        {
-            std::fstream bytes(old, std::ios::in | std::ios::out | std::ios::binary);
-            REQUIRE(bytes);
-            const uint32_t one = 1;
-            bytes.seekp(4);
-            bytes.write(reinterpret_cast<const char*>(&one), 4);
-        }
+        CHECK(header(old) == std::pair{1u, 0u});
         auto oldRead = lod::readAthc(*gpu->device, old);
         if (!oldRead) FAIL(oldRead.error().toString());
         CHECK_FALSE(oldRead->splats.hasNormals());
