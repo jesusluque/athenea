@@ -563,16 +563,27 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
                 constant(openPbr ? "coat_weight" : "coat", out.coatWeight);
                 constant("coat_roughness", out.coatRoughness);
                 constant(openPbr ? "coat_ior" : "coat_IOR", out.coatIor);
+                if (openPbr) {
+                    out.coatDarkening = 1.0F;
+                    constant("coat_darkening", out.coatDarkening);
+                }
             }
             // The sheen: a colour and a weight (glTF's has the colour alone).
+            // OpenPBR calls it FUZZ (`fuzz_weight`, `fuzz_color`,
+            // `fuzz_roughness`, 0.5 by default); read as `sheen_*` its inputs
+            // were not there, and a test ball whose authored sheen the mesh
+            // never had was given one.
             float sheenWeight = gltf ? 1.0F : 0.0F;
             std::array<float, 3> sheenColour = gltf ? std::array<float, 3>{0.0F, 0.0F, 0.0F}
                                                     : std::array<float, 3>{1.0F, 1.0F, 1.0F};
-            if (!gltf) {
-                constant(openPbr ? "sheen_weight" : "sheen", sheenWeight);
+            if (openPbr) {
+                out.sheenRoughness = 0.5F;
             }
-            colourOf("sheen_color", sheenColour);
-            constant("sheen_roughness", out.sheenRoughness);
+            if (!gltf) {
+                constant(openPbr ? "fuzz_weight" : "sheen", sheenWeight);
+            }
+            colourOf(openPbr ? "fuzz_color" : "sheen_color", sheenColour);
+            constant(openPbr ? "fuzz_roughness" : "sheen_roughness", out.sheenRoughness);
             out.sheenColour = {sheenColour[0] * sheenWeight, sheenColour[1] * sheenWeight,
                                sheenColour[2] * sheenWeight};
         }
@@ -587,7 +598,8 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
             out.specularColour[k] = unit(out.specularColour[k]);
             out.sheenColour[k] = unit(out.sheenColour[k]);
         }
-        out.coatIor = std::clamp(out.coatIor, 1.0F, 2.99F);
+        out.coatIor = std::clamp(out.coatIor, 1.0F, 2.98F);
+        out.coatDarkening = unit(out.coatDarkening);
     }
 
     // DISPLACEMENT: a height along the normal, which a gaussian can carry for

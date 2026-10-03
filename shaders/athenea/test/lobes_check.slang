@@ -105,6 +105,7 @@ void lobesPlainCheck(uint3 tid: SV_DispatchThreadID) {
     const SplatLobes p = plainLobes();
     if (plain.specularWeight != p.specularWeight || any(plain.specularColour != p.specularColour) ||
         plain.specularIor != p.specularIor || plain.coatWeight != p.coatWeight || plain.coatIor != p.coatIor ||
+        plain.coatDarkening != p.coatDarkening ||
         any(plain.sheenColour != p.sheenColour)) {
         InterlockedAdd(counts[4], 1u);
     }
@@ -132,7 +133,8 @@ float hashed(uint i, uint k) {
 }
 
 /// [0] compared, [1] a weight, colour or roughness more than half a byte
-/// off, [2] an index more than half its step off.
+/// off, [2] an index more than half its step off, or a darkening not on
+/// where it was asked for at half or more.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void lobesRoundTrip(uint3 tid: SV_DispatchThreadID) {
@@ -146,19 +148,22 @@ void lobesRoundTrip(uint3 tid: SV_DispatchThreadID) {
     l.specularIor = 1.0 + 1.99 * hashed(i, 4);
     l.coatWeight = hashed(i, 5);
     l.coatRoughness = hashed(i, 6);
-    l.coatIor = 1.0 + 1.99 * hashed(i, 7);
+    l.coatIor = 1.0 + 1.98 * hashed(i, 7);
+    l.coatDarkening = hashed(i, 12);
     l.sheenColour = float3(hashed(i, 8), hashed(i, 9), hashed(i, 10));
     l.sheenRoughness = hashed(i, 11);
     const SplatLobes b = unpackLobes(packLobes(l));
     InterlockedAdd(counts[0], 1u);
     const float byte = 0.5 / 255.0 + 1.0e-6;
     const float step = 0.5 / 128.0 + 1.0e-6;
+    const float coatStep = 0.5 / 64.0 + 1.0e-6;   // seven bits: the eighth is the darkening
     if (abs(b.specularWeight - l.specularWeight) > byte || any(abs(b.specularColour - l.specularColour) > byte) ||
         abs(b.coatWeight - l.coatWeight) > byte || abs(b.coatRoughness - l.coatRoughness) > byte ||
         any(abs(b.sheenColour - l.sheenColour) > byte) || abs(b.sheenRoughness - l.sheenRoughness) > byte) {
         InterlockedAdd(counts[1], 1u);
     }
-    if (abs(b.specularIor - l.specularIor) > step || abs(b.coatIor - l.coatIor) > step) {
+    if (abs(b.specularIor - l.specularIor) > step || abs(b.coatIor - l.coatIor) > coatStep ||
+        b.coatDarkening != (l.coatDarkening >= 0.5 ? 1.0 : 0.0)) {
         InterlockedAdd(counts[2], 1u);
     }
 }

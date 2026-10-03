@@ -679,9 +679,11 @@ dielectric reflection's weight and tint (OpenPBR `specular_weight` and
 `specular` and `specular_color`; the tint is also a metal's edge colour) at
 the specular's index (`specular_ior`, `specular_IOR`, `ior`); a clear coat
 (`coat_weight`, `coat`, UsdPreviewSurface `clearcoat`, glTF `clearcoat`, with
-its roughness and index; UsdPreviewSurface's coat is at its own `ior`); and a
-sheen, its colour times its weight (`sheen_weight` x `sheen_color`, `sheen` x
-`sheen_color`, glTF `sheen_color`) with its roughness. A UsdPreviewSurface in
+its roughness and index; UsdPreviewSurface's coat is at its own `ior`), with
+OpenPBR's `coat_darkening` (1 by default there, none in the other
+vocabularies); and a sheen, its colour times its weight (OpenPBR's fuzz,
+`fuzz_weight` x `fuzz_color`; standard_surface `sheen` x `sheen_color`; glTF
+`sheen_color`) with its roughness. A UsdPreviewSurface in
 its specular workflow (`useSpecularWorkflow` 1) is carried as the index whose
 reflectivity head on is its `specularColor`'s brightest channel, tinted by the
 colour over it, and no metal. A map on any of these is not read: the input's
@@ -694,7 +696,7 @@ says what:
 mesh2splat: /World/Ball layers specular 1.00 x (1.00 1.00 1.00) at 1.500, coat 1.00 rough 0.00 at 1.450, sheen (0.00 0.00 0.00) rough 0.30
 ```
 
-They are written (the eight primvars of §4.3 from `specularWeight` on) only
+They are written (the nine primvars of §4.3 from `specularWeight` on) only
 where some material of the stage differs from the plain specular -- weight
 one, white, an index of 1.5, no coat, no sheen -- and then for every
 gaussian. Relit, transferred and baked clouds alike reflect with them when
@@ -1045,9 +1047,10 @@ showing the radiance it carries.
 | `primvars:athenea:splat:specularIor` | float[] ‹1 a gaussian, 1 to 2.99› | `1.5` |
 | `primvars:athenea:splat:coatWeight` | float[] ‹1 a gaussian, 0 to 1› | `0` |
 | `primvars:athenea:splat:coatRoughness` | float[] ‹1 a gaussian, 0 to 1› | `0` |
-| `primvars:athenea:splat:coatIor` | float[] ‹1 a gaussian, 1 to 2.99› | `1.5` |
+| `primvars:athenea:splat:coatIor` | float[] ‹1 a gaussian, 1 to 2.98› | `1.5` |
 | `primvars:athenea:splat:sheenColor` | color3f[] ‹1 a gaussian, 0 to 1› | `(0, 0, 0)` |
 | `primvars:athenea:splat:sheenRoughness` | float[] ‹1 a gaussian, 0 to 1› | `0` |
+| `primvars:athenea:splat:coatDarkening` | float[] ‹1 a gaussian, 0 to 1, on at 0.5› | `0` |
 
 `relight` says the colours are an albedo the scene's lights must light.
 `litBody` says they are already the light on the material's body, so what a
@@ -1106,20 +1109,23 @@ gaussian in the file, four on the device as RGB9E5: three 9-bit mantissas
 under a shared exponent, up to 65408, each channel to 1/512 of the
 brightest); a capture has none.
 
-The eight from `specularWeight` to `sheenRoughness` are what the material
+The nine from `specularWeight` to `coatDarkening` are what the material
 layered over its base, in OpenPBR's units: the dielectric reflection's weight,
 tint and index (the tint is also a metal's edge colour), a clear coat over
 everything -- a GGX dielectric of its own roughness and index -- and a sheen
 (its colour times its weight, Imageworks' lobe). Each layer takes from what
 lies under it the share it reflects at the eye, as MaterialX's `layer` does, so
 a coat makes the body under it darker at grazing and gives that light back as
-its own reflection. A cloud carries them where any is authored and reads a
+its own reflection; with `coatDarkening` the base under the coat is darker
+still, by what the coat's inside reflects back into it (OpenPBR's
+`(1 - K) / (1 - E K)`). A cloud carries them where any is authored and reads a
 missing one at the default in the table; one with none of them reflects with
 the plain specular, exactly as before they existed. They are clamped into
 their ranges, and on the device they are three words a gaussian, a byte a
-value (an index in steps of 1/128). `athenea mesh2splat` writes all eight
-where some material of the stage layers anything (48 bytes a gaussian in the
-file, twelve on the device). Neither the levels of detail nor a `.athc` carry
+value (an index in steps of 1/128, the coat's in steps of 1/64 beside its
+darkening's bit). `athenea mesh2splat` writes all nine where some material of
+the stage layers anything (52 bytes a gaussian in the file, twelve on the
+device). Neither the levels of detail nor a `.athc` carry
 them yet, as they do not carry metallic and roughness either.
  — the joints that carry a cloud.
 

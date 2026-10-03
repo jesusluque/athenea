@@ -167,9 +167,10 @@ struct Mesh2SplatUniforms {
     float    specular[4] = {1.0F, 1.0F, 1.0F, 1.0F};
     float    coat[4] = {0.0F, 0.0F, 1.5F, 1.5F};
     float    sheen[4] = {0.0F, 0.0F, 0.0F, 0.3F};
-    /// 0: not written. Otherwise the first of the three entries.
+    /// 0: not written. Otherwise the first of the four entries.
     uint32_t lobesEntry = 0;
-    uint32_t lobesPad0 = 0;
+    /// The coat's darkening (OpenPBR `coat_darkening`), in the fourth entry.
+    float    coatDarkening = 0.0F;
     uint32_t lobesPad1 = 0;
     uint32_t lobesPad2 = 0;
 };
@@ -537,8 +538,9 @@ public:
             into.params.push_back(d);
         };
         boolean("writeLobes", "Write specular, coat and sheen",
-                "Three entries more a record, after everything else: (specularColour, specularWeight), "
-                "(coatWeight, coatRoughness, coatIor, specularIor), (sheenColour, sheenRoughness).");
+                "Four entries more a record, after everything else: (specularColour, specularWeight), "
+                "(coatWeight, coatRoughness, coatIor, specularIor), (sheenColour, sheenRoughness), "
+                "(coatDarkening, 0, 0, 0).");
         scalar("specularWeight", "Specular weight", "How much of the dielectric reflection is kept.", 1.0, 0.0, 1.0);
         rgb("specularColour", "Specular colour", "The dielectric reflection's tint, and a metal's edge colour.", 1.0);
         scalar("specularIor", "Specular index", "The dielectric reflection's index of refraction.", 1.5, 1.0, 3.0);
@@ -547,6 +549,8 @@ public:
         scalar("coatIor", "Coat index", "The coat's index of refraction.", 1.5, 1.0, 3.0);
         rgb("sheenColour", "Sheen", "The sheen's colour times its weight.", 0.0);
         scalar("sheenRoughness", "Sheen roughness", "The sheen's roughness.", 0.3, 0.0, 1.0);
+        scalar("coatDarkening", "Coat darkening",
+               "How much the coat darkens what is under it (OpenPBR's coat_darkening).", 0.0, 0.0, 1.0);
 
         aofx::ParamDesc displace;
         displace.name = "displace";
@@ -727,11 +731,11 @@ public:
                     static_cast<uint32_t>(std::clamp(request.number("emissionChannel", 0.0), 0.0, 4.0));
             }
         }
-        // And what the material layers over its base, in three entries after
+        // And what the material layers over its base, in four entries after
         // all of those.
         if (request.number("writeLobes", 0.0) >= 0.5) {
             uniforms.lobesEntry = uniforms.recordPixels;
-            uniforms.recordPixels += 3U;
+            uniforms.recordPixels += 4U;
             const auto unit = [](double v) { return static_cast<float>(std::clamp(v, 0.0, 1.0)); };
             const auto index = [](double v) { return static_cast<float>(std::clamp(v, 1.0, 3.0)); };
             for (size_t k = 0; k < 3; ++k) {
@@ -744,6 +748,7 @@ public:
             uniforms.coat[2] = index(request.number("coatIor", 1.5));
             uniforms.coat[3] = index(request.number("specularIor", 1.5));
             uniforms.sheen[3] = unit(request.number("sheenRoughness", 0.3));
+            uniforms.coatDarkening = unit(request.number("coatDarkening", 0.0));
         }
         uniforms.dstWidth = static_cast<uint32_t>(target->buffer.width);
         uniforms.dstHeight = static_cast<uint32_t>(target->buffer.height);

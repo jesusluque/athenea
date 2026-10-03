@@ -74,6 +74,7 @@ struct ParticleFieldArrays {
     pxr::VtValue coatIor;
     pxr::VtValue sheenColour;      ///< VtVec3fArray or VtVec3hArray
     pxr::VtValue sheenRoughness;
+    pxr::VtValue coatDarkening;    ///< `:coatDarkening`, VtFloatArray or VtHalfArray
     std::string  cryptoManifest;   ///< {"<path>":"<hex8>"} as the primvar holds it
     /// A LEVEL OF DETAIL OF A CLOUD THAT MOVES: the same cloud converted at
     /// several cells, each its own prim with its own rig, named alike by

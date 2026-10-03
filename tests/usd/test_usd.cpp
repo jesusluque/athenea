@@ -12059,8 +12059,8 @@ TEST_CASE("an emissive quad converted relit, transferred or baked renders as the
 //
 // Proposal 026: a gaussian carries its specular's weight, colour and index,
 // a clear coat and a sheen, read from the material as constants. OpenPBR
-// says `specular_weight`, `coat_weight`, `sheen_weight` times `sheen_color`
-// (its coat at 1.6 by default); standard_surface `specular`, `coat` (0.1
+// says `specular_weight`, `coat_weight` with its `coat_darkening`, and
+// `fuzz_weight` times `fuzz_color` for its sheen (its coat at 1.6 by default); standard_surface `specular`, `coat` (0.1
 // rough at 1.5), `sheen`; UsdPreviewSurface `clearcoat` and
 // `clearcoatRoughness` at its own `ior`, and in its specular workflow a
 // `specularColor` that is the reflectivity head on; glTF `clearcoat` and a
@@ -12101,8 +12101,9 @@ TEST_CASE("a material's specular, coat and sheen are read in each vocabulary", "
            "            float inputs:specular_ior = 1.45\n"
            "            float inputs:coat_weight = 1\n            float inputs:coat_roughness = 0.2\n"
            "            float inputs:coat_ior = 1.45\n"
-           "            float inputs:sheen_weight = 0.5\n            color3f inputs:sheen_color = (1, 1, 0)\n"
-           "            float inputs:sheen_roughness = 0.4\n");
+           "            float inputs:coat_darkening = 0.25\n"
+           "            float inputs:fuzz_weight = 0.5\n            color3f inputs:fuzz_color = (1, 1, 0)\n"
+           "            float inputs:fuzz_roughness = 0.4\n");
         mx("OpenPlain", "ND_open_pbr_surface_surfaceshader", "            float inputs:base_metalness = 1\n");
         mx("Standard", "ND_standard_surface_surfaceshader",
            "            float inputs:specular = 0.8\n            float inputs:coat = 0.7\n"
@@ -12140,6 +12141,7 @@ TEST_CASE("a material's specular, coat and sheen are read in each vocabulary", "
             CHECK(m.coatWeight == Catch::Approx(1.0F));
             CHECK(m.coatRoughness == Catch::Approx(0.2F));
             CHECK(m.coatIor == Catch::Approx(1.45F));
+            CHECK(m.coatDarkening == Catch::Approx(0.25F));
             colour(m.sheenColour, 0.5F, 0.5F, 0.0F);
             CHECK(m.sheenRoughness == Catch::Approx(0.4F));
         } else if (mesh.path == "/OpenPlain") {
@@ -12147,12 +12149,15 @@ TEST_CASE("a material's specular, coat and sheen are read in each vocabulary", "
             // carries any.
             CHECK_FALSE(m.layered());
             CHECK(m.coatIor == Catch::Approx(1.6F));
+            CHECK(m.coatDarkening == Catch::Approx(1.0F));   // OpenPBR's default
+            CHECK(m.sheenRoughness == Catch::Approx(0.5F));  // fuzz_roughness's
         } else if (mesh.path == "/Standard") {
             CHECK(m.layered());
             CHECK(m.specularWeight == Catch::Approx(0.8F));
             CHECK(m.coatWeight == Catch::Approx(0.7F));
             CHECK(m.coatRoughness == Catch::Approx(0.1F));
             CHECK(m.coatIor == Catch::Approx(1.5F));
+            CHECK(m.coatDarkening == 0.0F);   // standard_surface's coat has none
             colour(m.sheenColour, 0.2F, 0.4F, 0.6F);
         } else if (mesh.path == "/Preview") {
             CHECK(m.coatWeight == Catch::Approx(1.0F));
@@ -12178,23 +12183,23 @@ namespace {
 
 /// The layers record `i % 5` of a table: plain, a car's lacquer, a tinted
 /// half specular with a coat and a sheen, the ends of every range, a dim
-/// sheen. Twelve floats more a record, as `athenea mesh2splat` writes them.
+/// sheen. Thirteen floats more a record, as `athenea mesh2splat` writes them.
 io::RawSplats withTableLobes(const io::RawSplats& raw) {
-    static const float kTable[5][12] = {
-        {1.0F, 1.0F, 1.0F, 1.0F, 1.5F, 0.0F, 0.0F, 1.5F, 0.0F, 0.0F, 0.0F, 0.3F},
-        {1.0F, 1.0F, 1.0F, 1.0F, 1.5F, 1.0F, 0.0F, 1.45F, 0.0F, 0.0F, 0.0F, 0.3F},
-        {0.5F, 1.0F, 0.5F, 0.25F, 1.45F, 0.25F, 0.4F, 1.6F, 0.2F, 0.4F, 0.6F, 0.5F},
-        {0.0F, 0.0F, 0.0F, 0.0F, 2.0F, 0.75F, 1.0F, 2.5F, 1.0F, 1.0F, 1.0F, 1.0F},
-        {0.8F, 0.9F, 0.9F, 0.9F, 1.33F, 0.0F, 0.0F, 1.5F, 0.05F, 0.05F, 0.05F, 0.1F}};
+    static const float kTable[5][13] = {
+        {1.0F, 1.0F, 1.0F, 1.0F, 1.5F, 0.0F, 0.0F, 1.5F, 0.0F, 0.0F, 0.0F, 0.3F, 0.0F},
+        {1.0F, 1.0F, 1.0F, 1.0F, 1.5F, 1.0F, 0.0F, 1.45F, 0.0F, 0.0F, 0.0F, 0.3F, 1.0F},
+        {0.5F, 1.0F, 0.5F, 0.25F, 1.45F, 0.25F, 0.4F, 1.6F, 0.2F, 0.4F, 0.6F, 0.5F, 0.0F},
+        {0.0F, 0.0F, 0.0F, 0.0F, 2.0F, 0.75F, 1.0F, 2.5F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F},
+        {0.8F, 0.9F, 0.9F, 0.9F, 1.33F, 0.0F, 0.0F, 1.5F, 0.05F, 0.05F, 0.05F, 0.1F, 0.0F}};
     io::RawSplats out = raw;
     const uint32_t stride = raw.encoding.floatsPerRecord;
     out.records.clear();
     for (uint32_t i = 0; i < raw.count; ++i) {
         const float* from = raw.records.data() + size_t{i} * stride;
         out.records.insert(out.records.end(), from, from + stride);
-        out.records.insert(out.records.end(), kTable[i % 5], kTable[i % 5] + 12);
+        out.records.insert(out.records.end(), kTable[i % 5], kTable[i % 5] + 13);
     }
-    out.encoding.floatsPerRecord = stride + 12;
+    out.encoding.floatsPerRecord = stride + 13;
     out.encoding.lobes = stride;
     return out;
 }
@@ -12203,9 +12208,9 @@ io::RawSplats withTableLobes(const io::RawSplats& raw) {
 
 // WHAT A MATERIAL LAYERS OVER ITS BASE GOES OUT AND COMES BACK.
 //
-// Eight primvars of AtheneaSplatLightingAPI in a stage (`specularWeight`,
+// Nine primvars of AtheneaSplatLightingAPI in a stage (`specularWeight`,
 // `specularColor`, `specularIor`, `coatWeight`, `coatRoughness`, `coatIor`,
-// `sheenColor`, `sheenRoughness`), three words a splat on the device. The
+// `sheenColor`, `sheenRoughness`, `coatDarkening`), three words a splat on the device. The
 // stage read as Hydra reads it must give back the words that went out, and a
 // cloud written without them must come back without them.
 TEST_CASE("a cloud's specular, coat and sheen survive USD", "[usd][gpu][export][lobes]") {
@@ -12255,6 +12260,7 @@ TEST_CASE("a cloud's specular, coat and sheen survive USD", "[usd][gpu][export][
     primvar("athenea:splat:coatIor", arrays.coatIor, SdfValueTypeNames->FloatArray);
     primvar("athenea:splat:sheenColor", arrays.sheenColour, SdfValueTypeNames->Color3fArray);
     primvar("athenea:splat:sheenRoughness", arrays.sheenRoughness, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:coatDarkening", arrays.coatDarkening, SdfValueTypeNames->FloatArray);
     const scene::SplatStreams streams = usd::splatStreams(arrays, "lobes streams");
     auto back = loader->upload(streams, 0);
     REQUIRE(back);
@@ -12344,15 +12350,25 @@ TEST_CASE("a ball of each material converted relit or baked rasterises as the me
         REQUIRE(stats);
         return (stats->mean[0] + stats->mean[1] + stats->mean[2]) / 3.0;
     };
-    // THE BOUNDS, A MATERIAL: the mean of the cloud against the mesh's, and
-    // the 99th percentile of the relative error over the frame.
+    // THE BOUNDS, A MATERIAL AND A MODE: the mean of the cloud against the
+    // mesh's (relative), and the 99th percentile of the relative error over
+    // the frame. Set from the first measurement (decisions.md, proposal 026)
+    // with about a quarter of margin: chrome 0.081 relit and 0.115 baked,
+    // plastic 0.648 and 0.707 (mean 4.4 % off baked), glass 0.250 and 0.545
+    // (means 7.0 % and 4.0 % off), the paint baked 0.459. The paint relit
+    // (0.917, before the coat darkened the metal under it) and the rubber
+    // (1.834 both ways, before its fuzz was read as OpenPBR names it) were
+    // measured on what this no longer is; theirs are the paint baked's until
+    // they are measured again.
     struct Bound {
         const char* material;
         double      mean;
-        double      p99;
+        double      p99Relit;
+        double      p99Baked;
     };
-    const Bound bounds[] = {{"paint", 0.15, 0.6}, {"chrome", 0.15, 0.6}, {"rubber", 0.15, 0.6},
-                            {"plastic", 0.15, 0.6}, {"glass", 0.25, 0.9}};
+    const Bound bounds[] = {{"paint", 0.07, 0.6, 0.55},   {"chrome", 0.05, 0.12, 0.15},
+                            {"rubber", 0.08, 0.6, 0.6},   {"plastic", 0.06, 0.8, 0.85},
+                            {"glass", 0.09, 0.32, 0.65}};
     for (const Bound& bound : bounds) {
         const fs::path source = data / (std::string(bound.material) + ".usda");
         const fs::path mesh = composed(std::string("lobes_mesh_") + bound.material + ".usda", source, {});
@@ -12374,7 +12390,7 @@ TEST_CASE("a ball of each material converted relit or baked rasterises as the me
                         "the mesh's %.4f\n",
                         bound.material, mode, diff->p99Relative, diff->relMse, cloudMean, meshMean);
             INFO(bound.material << " " << mode);
-            CHECK(diff->p99Relative < bound.p99);
+            CHECK(diff->p99Relative < (std::string(mode) == "relit" ? bound.p99Relit : bound.p99Baked));
             CHECK(cloudMean == Catch::Approx(meshMean).epsilon(bound.mean));
         }
     }

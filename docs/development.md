@@ -710,9 +710,10 @@ and the encoding field the export and the decode read.
 **What the material layers over its base**, where some material of the stage
 layers anything (`StageMaterial::layered`): the specular's weight, colour and
 index, the coat's weight, roughness and index, the sheen's colour and
-roughness, constants of the material, sent to the effect as `writeLobes` and
-eight parameters and written in three entries of their own after everything
-else; the gather puts them in the record's last twelve floats, after the
+roughness, the coat's darkening, constants of the material, sent to the
+effect as `writeLobes` and nine parameters and written in four entries of
+their own after everything else; the gather puts them in the record's last
+thirteen floats, after the
 harmonics (`io::SplatEncoding::lobes`, packing.slang's `SplatLobes` order).
 On the device they are `GpuSplats::lobes`, three words a splat
 (`packLobes`), and `splat_relight` reads them for both routes

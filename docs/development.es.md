@@ -739,9 +739,10 @@ exportación y la decodificación.
 **Lo que el material pone sobre su base**, donde algún material de la escena
 pone algo (`StageMaterial::layered`): el peso, el color y el índice del
 specular, el peso, la roughness y el índice del coat, el color y la roughness
-del sheen, constantes del material, enviadas al efecto como `writeLobes` y
-ocho parámetros y escritas en tres entradas propias después de todo lo demás;
-el gather las pone en los doce últimos floats del registro, tras los armónicos
+del sheen, el oscurecimiento del coat, constantes del material, enviadas al
+efecto como `writeLobes` y nueve parámetros y escritas en cuatro entradas
+propias después de todo lo demás; el gather las pone en los trece últimos
+floats del registro, tras los armónicos
 (`io::SplatEncoding::lobes`, en el orden de `SplatLobes` de packing.slang). En
 el dispositivo son `GpuSplats::lobes`, tres palabras por splat (`packLobes`),
 y `splat_relight` las lee para las dos rutas (`splatLobesOf`): el coat y el
