@@ -9338,6 +9338,12 @@ clear), so the surface does not open where the relief is steep, which is what
   one, so a reader that knows version 1 alone -- an embedded engine older than
   this -- still opens it; the migration of a `.lrtc` writes version 1 too.
   Every flag bit that follows (emission, a linear colour) keeps the rule.
+  A bit the reader does not know is refused (`parse`, so `readAthc`,
+  `StreamingPool::open` and `migrateLrtc` alike), the error naming the file
+  and the bits: a later bit may add a block, and one skipped would have every
+  block after it read shifted, silently. Test (no device):
+  `athenea_lod_tests "a .athc header with a flag bit this reader*"`, a
+  version 2 header with bits 0 and 3 through `migrateLrtc`.
   Test: the header of `normals.athc` reads 2 and 1, that of a cloud without
   normals 1 and 0, and that one reads back.
 

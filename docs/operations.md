@@ -840,7 +840,9 @@ the merged levels' the weighted mean of what they stand for; it is bit 2 of
 the header's `flags` (bit 0 is the normals), so a file without it reads as
 before. A cloud without normals, without emission and in sRGB is still written as
 version 1, so a reader of version 1 alone opens it: version 2 is written only
-where the `flags` are not zero.
+where the `flags` are not zero. A `flags` bit this build does not know (any
+past bit 2) is refused, file named: a later bit may add a block, and a reader
+that skipped it would read every block after it from the wrong place.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the
@@ -1451,6 +1453,7 @@ A script's own header says what it needs and where it puts things.
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |
 | a cloud's reflections look softer than the mesh's | the conversion's cell is the blur kernel: a cloud reads as the mesh at `r + 9c/R`, where `c` is the cell and `R` the radius of curvature | convert at a finer `--resolution`: a mirror at roughness `r` wants a cell under `r/9` of that radius. It costs the file, not the frame -- fifteen times the gaussians was 36 % more time a frame and sixteen times the disk |
 | a glass ball shows the room but does not bend it | the cloud has no index | `athenea mesh2splat` writes the glass material's IOR; for a cloud from elsewhere author `primvars:athenea:splat:ior` (1.5 is glass). A cloud keeps one index: with two glasses of different IOR the first is kept and the conversion says so |
+| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear) and 2 (emission))` | the `.athc` was written by a newer engine, with something in its blocks this build does not know where to find | read it with that engine, or update this one |
 | a cloud renders blunt and then sharpens | chunks are still arriving | raise `--stream-budget`, or wait; a still settles first |
 | the Storm oracle tests fail | `HDX_MSAA_SAMPLE_COUNT` is not 1 | ctest sets it; set it by hand if running the binary directly |
 

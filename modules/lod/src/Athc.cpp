@@ -36,6 +36,10 @@ constexpr uint32_t kLinear = 2;
 /// Bit 2: every block ends with the emitted radiance, one RGB9E5 word an
 /// element, after the normals where those are there too. (Bit 1 is taken.)
 constexpr uint32_t kHasEmission = 4;
+/// Every bit this reader knows. A bit outside it is refused, not ignored: a
+/// later bit may add a block, and a reader that skipped it would take every
+/// block after it from the wrong place.
+constexpr uint32_t kKnownFlags = kHasNormals | kLinear | kHasEmission;
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'C'};
 /// Uploads staged before a submit: the staging heap holds them until then.
 constexpr uint64_t kStageBytes = uint64_t{256} << 20;
@@ -122,6 +126,15 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
     }
     if (h.version < 2) {
         h.flags = 0;
+    }
+    if ((h.flags & ~kKnownFlags) != 0) {
+        std::string bits;
+        for (uint32_t b = 0; b < 32; ++b) {
+            if ((h.flags & ~kKnownFlags & (1u << b)) != 0) {
+                bits += (bits.empty() ? "" : ", ") + std::to_string(b);
+            }
+        }
+        return bad(path, "unknown flag bits " + bits + "; this reads bits 0 (normals), 1 (linear) and 2 (emission)");
     }
     const auto within = [&](uint64_t offset, uint64_t size) {
         return offset <= bytes.size() && size <= bytes.size() - offset;
