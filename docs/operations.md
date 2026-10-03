@@ -402,8 +402,9 @@ recipe is §3.1 below.
 | `--bake-bounces` | integer | `3` | after the first hit |
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |
-| `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well |
-| `--skinned` | flag | off | carry the skeleton; forces `--no-bake` |
+| `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well; a zonal transfer keeps the direct half alone |
+| `--transfer-lobes` | 0 to 2 | `0` | with `--transfer`: keep it as this many zonal lobes in each gaussian's own frame (the `SplatTransferZonal` bundle); 0 is two lobes with `--skinned` and nine harmonics in the world otherwise |
+| `--skinned` | flag | off | carry the skeleton; forces `--no-bake`, keeps a `--transfer` as zonal lobes |
 | `--range` | `START:END[:STEP]` | the stage's own range | time codes a skinned cloud keeps |
 | `--default-lights` | flag | off | a dome and a sun for the bake, on a stage with none |
 | `--time` | number | `0` | the instant the stage is posed and the bake traces at |
@@ -411,6 +412,8 @@ recipe is §3.1 below.
 
 `--skinned` and a bake are refused together: a cloud that moves cannot carry
 light baked in one pose, so the conversion says so and keeps the material.
+`--skinned` and `--transfer` go together: the transfer is kept as zonal lobes
+in each gaussian's frame, which turn with the gaussian (below).
 
 A mesh whose GeomSubsets (`materialBind` family) bind materials of their own
 is converted a subset at a time, each with its material, and the faces no
@@ -748,6 +751,25 @@ leaves out. The rays are the same rays, so the second half is free to bake and
 A transfer and a light bake are exclusive: one is what the light did, the
 other is what any light would do.
 
+**A transfer that turns with the gaussian.** Nine harmonics are in the world
+and stay there when a skeleton turns the gaussian. `--transfer-lobes 1` or `2`
+-- and `--skinned`, where two is the default -- keeps the direct half instead
+as one or two zonal lobes a gaussian, each an axis written in the gaussian's
+own frame and three coefficients: ten floats a gaussian against nine, with no
+indirect half, and the shadow bits laid out over the gaussian's frame. Every
+frame turns the axes with whatever frame the gaussian has, so the transfer
+follows the wing. A skinned cloud is posed at `--time` before the bake traces
+it, since the stage it traces is posed there; what the lobes hold is what that
+pose let through around each gaussian, so occlusion by another limb in another
+pose is not in them. The fit is the `SplatTransferZonal` bundle, which must be
+on the AOFX search path, and the log says its relative error against the nine
+harmonics it replaces, `|f - g| / |f|` over the sphere, as a median, a 90th and
+a 99th percentile (each the upper edge of a quarter octave):
+
+```
+mesh2splat: transfer kept as 2 zonal lobes in each gaussian's frame for <n> gaussians in <t> ms; relative error against the nine harmonics: median <a>, p90 <b>, p99 <c>
+```
+
 **A cloud that moves.** `--skinned` builds the gaussians in the bind pose and
 gives each one the joints that carry it, so the cloud is deformed at render
 time by the Skeleton it is bound to. A bake is refused with it, because light
@@ -1005,6 +1027,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:ior` | float | `0` |
 | `primvars:athenea:splat:transferDirect` | float[] ‹9 a gaussian› | — |
 | `primvars:athenea:splat:transferIndirect` | float[] ‹27 a gaussian› | — |
+| `primvars:athenea:splat:transferZonal` | float[] ‹10 a gaussian› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
@@ -1026,11 +1049,20 @@ The two transfer arrays are what `--transfer` writes instead: how much of any
 sky reaches the gaussian, direct and after a bounce, which the frame combines
 with the sky that is there. A cloud that has them needs no `litBody`, and
 there is no attribute saying so — carrying them is what says it.
+`transferZonal` is the direct half as two zonal lobes in each gaussian's own
+frame, written in place of `transferDirect` (`--transfer-lobes`, `--skinned`):
+for each lobe the octahedral square's (u, v) of its axis in the frame the
+gaussian's orientation gives, then its zonal coefficients for bands 0, 1 and 2
+(a one-lobe fit writes the second as zeros). Where both are there it is the one
+read. A reader that does not know it draws the cloud relit with no transfer,
+which is the whole of its versioning: it is a new primvar, not a new meaning of
+an old one, and a `.athc` carries no transfer of either kind.
 `shadowBits` is written beside them: sixty-four bits a gaussian, one a cell of
-an 8 x 8 octahedral grid over the sphere in the cloud's own space, set where
-the bake's ray in that direction left the scene. It is what shadows the sun a
-frame takes out of the sky; it is read only on a cloud that also carries
-`transferDirect`, and without it the sun is shadowed softly by the transfer.
+an 8 x 8 octahedral grid over the sphere in the cloud's own space -- over the
+gaussian's own frame beside `transferZonal` -- set where the bake's ray in that
+direction left the scene. It is what shadows the sun a frame takes out of the
+sky; it is read only on a cloud that also carries `transferDirect` or
+`transferZonal`, and without it the sun is shadowed softly by the transfer.
 `thinWalled` is nonzero where the gaussian came from a thin-walled glass
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame

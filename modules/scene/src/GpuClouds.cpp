@@ -666,7 +666,7 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kMetallic = 64, kRoughness = 128, kTransmission = 256, kCrypto = 512,
                    kTransferDirect = 1024, kTransferIndirect = 2048, kShadowBits = 4096,
                    kThinWalled = 8192, kNormals = 16384, kEmission = 32768,
-                   kBase = 65536, kShPlanes = 131072;
+                   kBase = 65536, kShPlanes = 131072, kTransferZonal = 262144;
 
 }   // namespace
 
@@ -702,7 +702,12 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     const bool haveDirect = !in.transferDirect.empty() && in.transferDirect.values() >= uint64_t{n} * 9;
     const bool haveIndirect = haveDirect && !in.transferIndirect.empty() &&
                               in.transferIndirect.values() >= uint64_t{n} * 27;
-    const uint32_t transferCount = haveDirect ? (haveIndirect ? 36u : 9u) : 0u;
+    // A ZONAL TRANSFER, ten values a gaussian, wins where both are there: it
+    // turns with the gaussian, which nine harmonics in the world do not.
+    const bool haveZonal = !in.transferZonal.empty() &&
+                           in.transferZonal.values() >= uint64_t{n} * GpuSplats::kTransferZonalCount;
+    const uint32_t transferCount =
+        haveZonal ? GpuSplats::kTransferZonalCount : (haveDirect ? (haveIndirect ? 36u : 9u) : 0u);
     // Two words a gaussian of which ways out are open, only beside a transfer.
     const bool haveShadowBits = transferCount > 0 && !in.shadowBits.empty() &&
                                 in.shadowBits.values() >= uint64_t{n} * 2;
@@ -759,8 +764,12 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     note(in.roughness, kRoughness);
     note(in.transmission, kTransmission);
     note(in.cryptoObject, kCrypto);
-    note(in.transferDirect, kTransferDirect);
-    note(in.transferIndirect, kTransferIndirect);
+    if (haveZonal) {
+        note(in.transferZonal, kTransferZonal);
+    } else {
+        note(in.transferDirect, kTransferDirect);
+        note(in.transferIndirect, kTransferIndirect);
+    }
     if (haveShadowBits) {
         note(in.shadowBits, kShadowBits);
     }
@@ -807,6 +816,8 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!transferDirect) return std::move(transferDirect).error();
     auto transferIndirect = streamBuffer(in.transferIndirect, "splats.stream.transferIndirect");
     if (!transferIndirect) return std::move(transferIndirect).error();
+    auto transferZonal = streamBuffer(haveZonal ? in.transferZonal : FloatStream{}, "splats.stream.transferZonal");
+    if (!transferZonal) return std::move(transferZonal).error();
     auto thinWalled = streamBuffer(haveThin ? in.thinWalled : FloatStream{}, "splats.stream.thinWalled");
     if (!thinWalled) return std::move(thinWalled).error();
     auto shadowBits = streamBuffer(haveShadowBits ? in.shadowBits : FloatStream{}, "splats.stream.shadowBits");
@@ -840,6 +851,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 cursor["cryptoObject"].setBinding(haveCrypto ? cryptoObject->rhi() : none->rhi());
                 cursor["transferDirect"].setBinding(haveDirect ? transferDirect->rhi() : none->rhi());
                 cursor["transferIndirect"].setBinding(haveIndirect ? transferIndirect->rhi() : none->rhi());
+                cursor["transferZonal"].setBinding(haveZonal ? transferZonal->rhi() : none->rhi());
                 cursor["shadowBits"].setBinding(haveShadowBits ? shadowBits->rhi() : none->rhi());
                 cursor["thinWalled"].setBinding(haveThin ? thinWalled->rhi() : none->rhi());
                 cursor["normals"].setBinding(haveNormals ? normals->rhi() : none->rhi());

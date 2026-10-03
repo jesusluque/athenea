@@ -60,13 +60,17 @@ struct GpuSplats {
     /// HOW MUCH OF AN ENVIRONMENT REACHES EACH GAUSSIAN: `transferWords` uint
     /// a gaussian, f16 pairs, the nine scalars of the direct half first and
     /// then, where the cloud carries it, nine rgb triples of the indirect
-    /// one. Empty for a cloud baked the old way, whose colours are the light
-    /// of the dome it was baked under.
+    /// one. Or ten values, a ZONAL transfer (`isZonal`): two lobes, each an
+    /// axis in the gaussian's own frame (the octahedral square's u, v) and
+    /// three zonal coefficients, which turn with the gaussian -- what a cloud
+    /// a skeleton carries keeps. Empty for a cloud baked the old way, whose
+    /// colours are the light of the dome it was baked under.
     gpu::Buffer transfer;
     /// WHICH WAYS OUT ARE OPEN, two words a gaussian: sixty-four bits of an
     /// 8 x 8 octahedral grid over the sphere, set where a ray traced at the
     /// bake found nothing. What lets a sun cast a hard shadow. Empty for a
-    /// cloud that was not baked with a transfer.
+    /// cloud that was not baked with a transfer. Beside a zonal transfer the
+    /// grid is over the gaussian's own frame rather than the world.
     gpu::Buffer shadowBits;
     /// WHICH RECORD EACH SPLAT CAME FROM, one uint a splat: validation drops
     /// what cannot be drawn, so anything else the file keeps a gaussian --
@@ -91,7 +95,7 @@ struct GpuSplats {
     /// Nothing turns it: it has no direction.
     gpu::Buffer emission;
     uint32_t    transferWords = 0;
-    uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9 or 36
+    uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9, 10 (zonal) or 36
     /// THE SPACE ITS COLOURS ARE IN (`io::RawSplats::linear`): false for a
     /// capture, whose harmonics are sRGB and are decoded a splat at a time
     /// when they are evaluated; true for a cloud that holds light already.
@@ -127,6 +131,11 @@ struct GpuSplats {
     [[nodiscard]] bool hasShadowBits() const noexcept { return shadowBits.valid(); }
     /// Whether the indirect half is there as well as the direct one.
     [[nodiscard]] bool hasIndirect() const noexcept { return transferCount >= 36; }
+    /// Whether the transfer is two zonal lobes in each gaussian's frame.
+    [[nodiscard]] bool isZonal() const noexcept { return transferCount == kTransferZonalCount; }
+    /// Values a gaussian of a zonal transfer (splat_relight.slang's
+    /// `kTransferZonalCount`).
+    static constexpr uint32_t kTransferZonalCount = 10;
     [[nodiscard]] bool hasVisibility() const noexcept {
         return visibilityPartCount > 0 && visibilityParts.valid() && visibilityTexels.valid() &&
                visibilityPartOf.valid();
@@ -183,6 +192,11 @@ struct SplatStreams {
     /// `:transferIndirect`).
     FloatStream transferDirect;
     FloatStream transferIndirect;
+    /// Ten floats a splat, a zonal transfer (`primvars:athenea:splat:transferZonal`):
+    /// two lobes, each an axis in the gaussian's frame and three coefficients.
+    /// Where it is there it is what the cloud carries, in place of the nine
+    /// harmonics.
+    FloatStream transferZonal;
     /// Two int32 a splat (`primvars:athenea:splat:shadowBits`), read as bits.
     FloatStream shadowBits;
     /// One int32 a splat, nonzero for a thin-walled glass

@@ -944,6 +944,39 @@ is the inverse transpose up to scale), so a limb's relief bends with it.
 A bake is refused with `--skinned`, because light baked in one pose is wrong in
 every other.
 
+**A transfer that turns with the gaussian** (proposal 014 B). A transfer is
+not refused: with `--skinned` (or `--transfer-lobes`) it is kept as zonal
+lobes in each gaussian's own frame, which a pose turns. The steps, in
+`Converter::transfer`:
+
+1. `framesForBake` decodes the records as a frame decodes them
+   (`CloudLoader`), so the frame the lobes are written against is the packed
+   quaternion a renderer reads. For a skinned cloud it then poses the cloud at
+   `--time` with `SplatSkinner` -- the joints' transforms at that instant,
+   `MeshStage::skeletonTransforms` -- and moves each bake ray with its
+   gaussian (`athenea/usd/transfer_zonal_io`, `zonalPoseRays`: the posed point,
+   and the turn from the rest frame to the posed one), because the stage the
+   bake traces is posed at `--time` and the cloud was built in the bind pose.
+2. `kTransfer` bakes the nine harmonics as for any transfer, the direct half
+   alone.
+3. `fitZonal` packs them, the bits and each gaussian's frame into a picture
+   (`zonalPack`) for the `SplatTransferZonal` bundle
+   (`plugins/splattransferzonal`, an AOFX effect), which fits one or two lobes
+   by searching the axis that keeps most of the harmonics' energy and
+   projecting onto it, refits the two against each other, writes the axes in
+   the gaussian's frame, lays the sixty-four bits out over that frame, and
+   attaches a histogram of its relative error; `zonalUnpack` writes the answer
+   as `transferZonal` (ten floats a gaussian) and the bits.
+
+The frame reads them through `splatTransferFrame` (`splat_relight.slang`),
+which both shading kernels call with the gaussian's current rotation and the
+instance's rows: each axis goes to the world by the frame and the rows, the
+lobes become nine harmonics (`z_l sqrt(4 pi / (2l + 1)) Y_lm(a)`, closed), and
+everything after it -- the body's dot with the sky, the sun's share, the
+openness -- reads those as it read the stored ones. `splatSunOpen` looks the
+sun up in the frame where the bits are the frame's. `transferCount` 10 is what
+says a cloud's transfer is zonal (`GpuSplats::isZonal`).
+
 ### 6.8 The visibility bake
 
 A skinned cloud cannot carry one baked visibility, because the wing moves and

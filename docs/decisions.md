@@ -7626,7 +7626,9 @@ is none. Frame time 29.5 ms either way. The bake of the pawn at `--resolution
 - **Space.** The bits are baked in the cloud's own space and looked up with the
   world's sun direction, as the transfer already is: right for a cloud whose
   transform is a translation or a scale, turned for one that is rotated.
-- **Not through `.athc`, not on a skinned cloud**, as the transfer itself.
+- **Not through `.athc`**, as the transfer itself. On a skinned cloud the
+  bits now ride with a zonal transfer, laid out over the gaussian's frame
+  ("A skinned cloud keeps its transfer", below).
 
 ### A glass sparrow, and what it found
 
@@ -8211,9 +8213,10 @@ sky -- a quantity averaged in the wrong space.
 - **The `.athc` and the LOD lose it**, as they already lose `pbr` and the
   Cryptomatte ids: `packed()` copies positions, shape and sh. A streamed cut
   falls back to the body it has.
-- **A skinned cloud is not baked** and so is not transferred either; the
-  analytic route (a zonal cosine rotated to the normal, cut by the per-part
-  visibility field) is named in the plan and not written.
+- ~~**A skinned cloud is not baked** and so is not transferred either.~~ It
+  is transferred now, as zonal lobes in each gaussian's frame: "A skinned
+  cloud keeps its transfer" below. The per-part visibility field is not yet
+  multiplied in.
 - **`athenea transfer` for a cloud already converted** needs a normal a gaussian,
   which a file does not keep. It would have to come from the short axis or be
   written at conversion.
@@ -11084,3 +11087,123 @@ the metric's own noise of the mesh's.
 - The grain that is left is the harmonics': sixteen coefficients from 256
   paths. A filter that weighed each band by its own variance, rather than the
   luminance's, is the next thing to try.
+
+## A skinned cloud keeps its transfer: zonal lobes in each gaussian's frame
+
+Proposal 014, part B (P014B). `--transfer` was dropped with `--skinned`: nine
+harmonics are baked in the world, and a skeleton turns the gaussian under
+them, so a wing in flight kept the sky of the pose it was converted in.
+Rotating nine harmonics a gaussian is a 9 x 9 (proposal 008 rotates them a part
+at a time, and a gaussian on a border then belongs to two parts). A zonal lobe
+-- a function symmetric about an axis -- rotates by rotating its axis, one
+3 x 3, so the transfer is kept as one or two of them a gaussian with the axes
+written in the gaussian's own frame (Relightable Full-Body Gaussian Codec
+Avatars, 2501.14726, does the same and drops SH for the cost of rotating it).
+Whatever frame the gaussian has at a frame -- the one `splat_skin` makes of the
+blend's whole Jacobian, or a prim's transform -- takes the lobes with it, and
+no gaussian has to be assigned to a part.
+
+**What is stored.** Ten floats a gaussian, `primvars:athenea:splat:transferZonal`
+(elementSize 10): per lobe the octahedral square's (u, v) of its axis in the
+frame and its zonal coefficients for bands 0 to 2. On the device it is the
+`transfer` buffer as before, f16 pairs, `transferCount` 10 -- which is what
+tells it from nine harmonics (9) or both halves (36); no flag, no new buffer.
+The indirect half is not kept: it is in the world as the direct one was, and
+three channels of lobes are a later step. The shadow bits stay two words, laid
+out over the gaussian's frame instead of the world's sphere (`rebin`: each
+cell of the frame's grid takes the world's cell its centre falls in), and the
+sun is looked up in the frame.
+
+**Versioning.** A new primvar, not a new meaning of an old one: a reader that
+does not know `transferZonal` draws the cloud relit with no transfer, and one
+that does prefers it to `transferDirect` where both are there. `shadowBits`
+keeps its name and changes its frame beside `transferZonal`; an older reader
+does not read bits without a transfer it knows. The `.athc` carries no
+transfer and no rig (`mesh2splat` refuses both for it), so it gains nothing and
+its header is unchanged: bit 4 of `flags`, which the task reserved for this, is
+not taken, and readers keep refusing it as any unknown bit.
+
+**The fit.** An AOFX effect, `plugins/splattransferzonal`
+(`rt.sparrow.aofx.splattransferzonal`), for the reason the bake filter is one:
+it makes new data out of a cloud's records and nothing else. A lobe about `a`
+with coefficients `z` is, as harmonics, `g_lm = z_l k_l Y_lm(a)` with `k_l =
+sqrt(4 pi / (2l + 1))`. For a given axis the best `z` is the projection, `z_l =
+k_l sum_m f_lm Y_lm(a)`, and by the addition theorem the error it leaves is
+`|f|^2 - sum_l z_l^2` -- so the axis is the one whose projection keeps the most.
+It is searched for, per gaussian on the device: the band-1 direction, the
+gaussian's normal, 64 Fibonacci directions over a hemisphere (the energy is
+even in the axis), then a walk halving its step. With two lobes the second is
+fitted to what the first leaves and the two are refitted against each other
+twice (Sloan's ZH fit, "Stupid Spherical Harmonics Tricks", 2008). The effect
+attaches a histogram of `|f - g| / |f|` by quarter octave, which the
+conversion prints as a median, a p90 and a p99: the error against the nine
+harmonics on the pose that was baked, stated on every conversion.
+
+**The pose the bake traces.** A skinned cloud is built in the bind pose; the
+stage the bake traces is posed at `--time` (Hydra skins the mesh). So the
+conversion poses its own cloud there first, with the engine's `SplatSkinner`
+and the joints' transforms at `--time`, carries each ray with its gaussian
+(the posed point, and the turn from the rest frame to the posed one,
+`zonalPoseRays`), and fits the lobes against the posed frames. The records are
+decoded by `CloudLoader` for this, so the frame the fit writes against is the
+packed ten-bit quaternion a renderer reads, not the conversion's floats. What
+the lobes hold is what that one pose let through around each gaussian: the
+inside of a feather, the body under a wing at that instant. Occlusion that
+another limb casts in another pose is not in them; that is the per-part
+visibility fields' (008, and P005's proxy) and is not multiplied in yet.
+
+**Where it is read.** `splatTransferFrame` (`splat_relight.slang`), called by
+the rasteriser's `splatProject` and the tracer's `rtShade` with the gaussian's
+current rotation and the instance's rows, turns each axis into the world
+(`relightDirectionToWorld` of the frame's column) and rebuilds the nine
+harmonics there; `transferredBody`, `splatSunShare` and `splatOpenness` read
+them through `transferValue` exactly as they read stored ones.
+
+### How it is checked
+
+- `athenea_aofx_tests "[zonal]"` (`tests/aofx/test_transfer_zonal.cpp`, kernels
+  in `shaders/athenea/test/transfer_zonal_check.slang`), 4096 gaussians in
+  random frames: a transfer that is two lobes comes back within 0.5 % through
+  the fit and the f16 storage; one shaped as a bake's (the clamped cosine with
+  a cap of 20 to 50 degrees taken away 30 to 70 degrees off the normal) is
+  stated, mean relative error required under 15 %; turning the gaussian's frame
+  by a rotation M and reading along `M w` gives what the unturned one gives
+  along `w`, and so does turning the instance's rows; the sun's share through
+  the re-laid bits is the same under the turn; a frame equal to the world's
+  keeps its bits exactly. Run with one lobe and with two.
+- `athenea_usd_tests "[zonal]"`: 512 gaussians with a zonal transfer, carried
+  by one joint whose transform at time 1 is a rotation of 60 degrees about (1,
+  2, 0.5), against the same cloud still under an Xform of that rotation, under a
+  sky whose image differs in every direction, rasterised and traced:
+  relMSE under 1e-4 and p99 under 1 %; and the turned cloud without its
+  transfer differs.
+- The fixtures `mesh2splat_output_skinned_transfer` and
+  `mesh2splat_output_still_transfer_zonal` convert `tests/data/skinned_corner.usda`
+  (a floor and a wall a joint turns a quarter turn) with `--skinned --transfer
+  --time 1` and still with `--transfer-lobes 2`: the first must say it posed
+  the cloud and kept two lobes -- where `--skinned` used to drop the transfer --
+  and the second states the fit's error. `athenea_mesh2splat_tests
+  "[transfer]"` draws the skinned one at times 0, 1 and 2 and finds one skinned
+  cloud with a zonal transfer.
+
+### Measured
+
+Pending the GPU turn: the fit's error on the corner and on the sparrow
+(SparrowBird.usda), and the time `framesForBake` and the fit add to a
+conversion.
+
+### Not done
+
+- **The indirect half** is not kept zonal (three channels of lobes, or one
+  lobe a channel); a zonal transfer is the direct half only.
+- **Occlusion between parts in another pose** (proposal 008's coarse level, the
+  per-part visibility field, or P005's proxy) is not multiplied in: the lobes
+  know the pose `--time` holds.
+- **A frame that spins in its plane.** The skinner takes the posed in-plane
+  axes as the covariance's eigenvectors; a nearly round gaussian under shear
+  can swap them a quarter turn, which turns a tilted lobe about the normal. A
+  lobe on the normal does not notice. Not measured.
+- **The `.athc`**, as for any transfer.
+- **Four influences.** The posing at the bake uses the cloud's four joints,
+  as the frame does; where the mesh has more (27 % of the wing, P014C) the
+  posed gaussians stand a little off the surface the bake traces.

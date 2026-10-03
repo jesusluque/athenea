@@ -45,6 +45,9 @@ struct ParticleFieldArrays {
     /// indirect half was baked too.
     pxr::VtValue transferDirect;   ///< VtFloatArray
     pxr::VtValue transferIndirect; ///< VtFloatArray
+    /// The same direct half as two zonal lobes in each gaussian's own frame,
+    /// ten floats a gaussian, which turn with it (a cloud a skeleton carries).
+    pxr::VtValue transferZonal;    ///< VtFloatArray
     /// Which ways out of each gaussian are open: two int32 a gaussian, the
     /// bits of an 8 x 8 octahedral grid, baked beside the transfer.
     pxr::VtValue shadowBits;       ///< VtIntArray

@@ -106,9 +106,16 @@ struct ExportOptions {
     /// under, so the colours it carries are an albedo and nothing else.
     std::span<const float>          transferDirect;
     std::span<const float>          transferIndirect;
+    /// THE SAME, AS ZONAL LOBES IN EACH GAUSSIAN'S FRAME: ten floats a record,
+    /// two lobes of an axis (the octahedral square's u, v) and three zonal
+    /// coefficients. Written in place of `transferDirect` -- what a cloud a
+    /// skeleton carries keeps, since the lobes turn with the gaussian.
+    std::span<const float>          transferZonal;
     /// WHICH WAYS OUT ARE OPEN: two ints a record, sixty-four bits of an
     /// 8 x 8 octahedral grid over the sphere, set where a traced ray found
-    /// nothing. What lets a sun cast a hard shadow on a relit cloud.
+    /// nothing. What lets a sun cast a hard shadow on a relit cloud. Over the
+    /// world's sphere beside `transferDirect`, over the gaussian's own frame
+    /// beside `transferZonal`.
     std::span<const int32_t>        shadowBits;
     /// One int a record, 1 where the gaussian came from a thin-walled glass.
     std::span<const int32_t>        thinWalled;

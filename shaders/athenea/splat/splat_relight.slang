@@ -48,19 +48,48 @@ public float transferAt(StructuredBuffer<uint> transfer, uint base, uint k) {
     return f16tof32((at & 1u) != 0u ? (word >> 16) : (word & 0xFFFFu));
 }
 
+/// THE VALUES A ZONAL TRANSFER IS: two lobes of five, each the octahedral
+/// square's two coordinates of its axis in the gaussian's frame
+/// (common/octahedral.slang) and its three zonal coefficients, bands 0 to 2.
+public static const uint kTransferZonalCount = 10;
+public static const uint kZonalLobeValues = 5;
+
+/// `sqrt(4 pi / (2 l + 1))` for the band harmonic `k` is in: a zonal lobe of
+/// coefficients `z_l` about the axis `a` is, as harmonics, `z_l` times this
+/// times `Y_k(a)` (Sloan, "Stupid Spherical Harmonics Tricks", 2008).
+public float zonalBandScale(uint k) {
+    return k == 0 ? 3.5449077018110318 : (k < 4 ? 2.0466534158929770 : 1.5853309190424043);
+}
+
+public uint zonalBandOf(uint k) {
+    return k == 0 ? 0u : (k < 4 ? 1u : 2u);
+}
+
 public struct SplatSurface {
     public float3 position;
     public float3 normal;      ///< already turned towards the eye
     public float3 albedo;
     /// HOW MUCH OF AN ENVIRONMENT REACHES THIS GAUSSIAN, where its cloud
     /// carries it: `transferBase` is where its values start in the buffer,
-    /// counted in halves, and `transferCount` is 0, 9 (the direct half) or 36
-    /// (both). With it a cloud is lit by a sky it was never baked under.
+    /// counted in halves, and `transferCount` is 0, 9 (the direct half), 10
+    /// (the direct half as zonal lobes, below) or 36 (both halves). With it a
+    /// cloud is lit by a sky it was never baked under.
     public uint   transferBase;
     public uint   transferCount;
+    /// A ZONAL TRANSFER (`transferCount` 10, `kTransferZonalCount`): two
+    /// lobes, each an axis in the gaussian's own frame and three zonal
+    /// coefficients, rather than nine harmonics in the world. The axes turn
+    /// with the gaussian, so a cloud a skeleton carries keeps its transfer
+    /// through every pose (proposal 014 B). `splatTransferFrame` fills both
+    /// fields below: the gaussian's three axes in the world, and the lobes put
+    /// back as the nine harmonics everything after it reads.
+    public float3x3 transferFrame;
+    public float    transferSh[9];
     /// WHICH WAYS OUT ARE OPEN, where the cloud carries them: sixty-four bits
     /// of an 8 x 8 octahedral grid, set where the bake's ray left the scene.
-    /// What the sun is shadowed by when they are there (`splatSunOpen`).
+    /// What the sun is shadowed by when they are there (`splatSunOpen`). In
+    /// the world beside nine harmonics, in the gaussian's own frame beside a
+    /// zonal transfer.
     public bool   hasShadowBits;
     public uint2  shadowBits;
     /// A THIN WALL: a glass sheet the conversion made as transparent as the
@@ -150,6 +179,60 @@ public struct SplatSurface {
     /// holds it already, and adding it again would be it twice.
     public float3 emission;
 };
+
+/// Whether the gaussian's transfer is zonal lobes in its own frame.
+public bool splatTransferZonal(SplatSurface s) {
+    return s.transferCount == kTransferZonalCount;
+}
+
+/// Harmonic `k` of a gaussian's transfer, in the world: read as it was
+/// stored, or out of the lobes `splatTransferFrame` turned into the world.
+public float transferValue(SplatSurface s, StructuredBuffer<uint> transfer, uint k) {
+    return splatTransferZonal(s) ? s.transferSh[k] : transferAt(transfer, s.transferBase, k);
+}
+
+/// THE GAUSSIAN'S FRAME, AND ITS ZONAL TRANSFER TURNED BY IT.
+///
+/// `rotation` is the frame the gaussian has now -- the one its `shape` holds,
+/// which for a cloud a skeleton carries is what `splat_skin` made of the
+/// blend's Jacobian this frame -- and the rows take the cloud into the world.
+/// Each lobe's axis is a direction of that frame, so it is taken to the world
+/// by the frame and then by the rows: one 3 x 3 a lobe. A lobe about an axis
+/// `a` with zonal coefficients `z` is, as harmonics, `z_l sqrt(4 pi / (2l +
+/// 1)) Y_k(a)`, closed, so what the frame reads afterwards -- the body's dot
+/// with the sky, the sun's share, the openness -- is the same nine numbers it
+/// always read, only rebuilt here rather than read.
+///
+/// A cloud whose transfer is nine harmonics gets its frame and nothing else.
+public void splatTransferFrame(inout SplatSurface s, StructuredBuffer<uint> transfer, float3x3 rotation,
+                               float4 row0, float4 row1, float4 row2) {
+    const float3 u = relightDirectionToWorld(row0, row1, row2, float3(rotation[0][0], rotation[1][0], rotation[2][0]));
+    const float3 v = relightDirectionToWorld(row0, row1, row2, float3(rotation[0][1], rotation[1][1], rotation[2][1]));
+    const float3 n = relightDirectionToWorld(row0, row1, row2, float3(rotation[0][2], rotation[1][2], rotation[2][2]));
+    s.transferFrame = float3x3(u.x, v.x, n.x, u.y, v.y, n.y, u.z, v.z, n.z);
+    [unroll] for (uint k = 0; k < 9; ++k) {
+        s.transferSh[k] = 0.0;
+    }
+    if (!splatTransferZonal(s)) {
+        return;
+    }
+    [unroll] for (uint lobe = 0; lobe < 2; ++lobe) {
+        const uint base = s.transferBase + lobe * kZonalLobeValues;
+        const float2 square = float2(transferAt(transfer, base, 0), transferAt(transfer, base, 1));
+        const float3 axis = normalize(mul(s.transferFrame, octDecode(square)));
+        const float3 z = float3(transferAt(transfer, base, 2), transferAt(transfer, base, 3),
+                                transferAt(transfer, base, 4));
+        [unroll] for (uint k = 0; k < 9; ++k) {
+            s.transferSh[k] += z[zonalBandOf(k)] * zonalBandScale(k) * envBasisValue(k, axis);
+        }
+    }
+}
+
+/// A direction of the world in the gaussian's own frame, where its transfer
+/// keeps one (a zonal transfer's shadow bits); the world's itself otherwise.
+float3 transferLocal(SplatSurface s, float3 d) {
+    return splatTransferZonal(s) ? normalize(mul(d, s.transferFrame)) : d;
+}
 
 /// GGX, as the surface lobes write it: D, Smith's height-correlated V, and
 /// Schlick's F folded into one weight for a light in direction `wi`.
@@ -272,7 +355,7 @@ float3 transferredBody(SplatSurface s, StructuredBuffer<uint> transfer, Structur
     const uint base = dome * kEnvCoefficients;
     float3 sum = float3(0.0);
     [unroll] for (uint k = 0; k < kEnvCoefficients; ++k) {
-        sum += envSh[base + k].rgb * transferAt(transfer, s.transferBase, k);
+        sum += envSh[base + k].rgb * transferValue(s, transfer, k);
     }
     if (withIndirect && s.transferCount >= 36) {
         [unroll] for (uint k = 0; k < kEnvCoefficients; ++k) {
@@ -324,7 +407,7 @@ public float splatSunShare(SplatSurface s, StructuredBuffer<uint> transfer, floa
     [unroll] for (uint k = 0; k < kEnvCoefficients; ++k) {
         const float basis = envBasisValue(k, sunDirection);
         const float band = k == 0 ? 1.0 : (k < 4 ? (2.0 / 3.0) : 0.25);
-        lit += transferAt(transfer, s.transferBase, k) * basis;
+        lit += transferValue(s, transfer, k) * basis;
         open += band * envBasisValue(k, n) * basis;
     }
     return open > 0.04 ? saturate(lit / open) : 1.0;
@@ -345,7 +428,11 @@ public float splatSunOpen(SplatSurface s, StructuredBuffer<uint> transfer, float
     if (!s.hasShadowBits) {
         return splatSunShare(s, transfer, sunDirection);
     }
-    const float2 at = octEncode(sunDirection) * 8.0 - 0.5;
+    // Beside a zonal transfer the bits were laid out in the gaussian's own
+    // frame, so the sun and the horizon are looked up there.
+    const float3 sun = transferLocal(s, sunDirection);
+    const float3 normal = transferLocal(s, s.normal);
+    const float2 at = octEncode(sun) * 8.0 - 0.5;
     const float2 lo = floor(at);
     const float2 f = at - lo;
     float open = 0.0;
@@ -354,7 +441,7 @@ public float splatSunOpen(SplatSurface s, StructuredBuffer<uint> transfer, float
         const int2 cell = clamp(int2(lo) + int2(k & 1, k >> 1), int2(0), int2(7));
         const float w = ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
         const float3 towards = octDecode((float2(cell) + 0.5) / 8.0);
-        if (dot(towards, s.normal) <= 0.0 || w <= 0.0) {
+        if (dot(towards, normal) <= 0.0 || w <= 0.0) {
             continue;
         }
         const uint index = uint(cell.y) * 8u + uint(cell.x);
@@ -388,7 +475,7 @@ public float splatOpenness(SplatSurface s, StructuredBuffer<uint> transfer) {
     if (s.transferCount < 9) {
         return 1.0;
     }
-    return saturate(transferAt(transfer, s.transferBase, 0) / 0.28209479177387814);
+    return saturate(transferValue(s, transfer, 0) / 0.28209479177387814);
 }
 
 /// AND HOW MUCH OF IT THE REFLECTION CAN SEE.
@@ -458,8 +545,7 @@ public float transmittedRoughness(float roughness, float ior) {
 /// sky along the direction the glass sends it where the route traced one or
 /// an index bends it, and the sky's irradiance from behind -- translucency --
 /// where there is no index. The same for a cloud with a transfer and one
-/// without: an index is a property of the material, not of the bake, and a
-/// skinned glass bird carries no transfer.
+/// without: an index is a property of the material, not of the bake.
 ///
 /// All of it leaves through the far face, so all of it is weighed by what
 /// that face lets out (`exitThrough`): what a ray met behind the glass as

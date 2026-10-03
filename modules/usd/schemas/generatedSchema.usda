@@ -240,12 +240,17 @@ object through the glass wants a ray, which this is not."""
         elementSize = 27
         interpolation = "vertex"
     )
+    float[] primvars:athenea:splat:transferZonal = [] (
+        doc = """The direct half of the transfer as two zonal lobes in the gaussian's own frame, in place of `transferDirect`: ten floats a gaussian (elementSize 10), each lobe the octahedral square's (u, v) of its axis in the frame the gaussian's orientation gives and its three zonal coefficients, bands 0 to 2. The frame turns the axes into the world every frame, so a cloud a skeleton carries keeps its transfer through every pose. Where both are there this one is read. A reader that does not know it draws the cloud relit with no transfer."""
+        elementSize = 10
+        interpolation = "vertex"
+    )
     int[] primvars:athenea:splat:thinWalled = [] (
         doc = """Nonzero where the gaussian came from a thin-walled glass (OpenPBR's geometry_thin_walled): a sheet that sends what it does not reflect straight on. Its gaussians are as transparent as the sheet is -- their opacity is what it reflects head on -- so the blend is its transmission and the frame shades its reflection alone. One int a gaussian."""
         interpolation = "vertex"
     )
     int[] primvars:athenea:splat:shadowBits = [] (
-        doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer."""
+        doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer. Beside `transferZonal` the grid is over the gaussian's own frame rather than the field's space."""
         elementSize = 2
         interpolation = "vertex"
     )

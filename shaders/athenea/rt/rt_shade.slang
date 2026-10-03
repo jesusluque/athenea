@@ -237,6 +237,9 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         surface.emission = params.hasEmission != 0 ? unpackRgb9e5(emission[i]) : float3(0.0);
         surface.transferCount = params.transferCount;
         surface.transferBase = i * params.transferWords * 2;
+        // The frame the gaussian has now -- posed, for a cloud a skeleton
+        // carries -- which is what a zonal transfer's lobes turn with.
+        splatTransferFrame(surface, transfer, rotation, w0, w1, w2);
         surface.hasShadowBits = params.shadowBits != 0 && params.transferCount >= 9;
         surface.shadowBits = surface.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
         // A traced frame has no shadow pass of its own, but a cloud that
