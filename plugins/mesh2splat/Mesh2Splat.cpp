@@ -173,8 +173,25 @@ struct Mesh2SplatUniforms {
     float    coatDarkening = 0.0F;
     uint32_t lobesPad1 = 0;
     uint32_t lobesPad2 = 0;
+
+    /// MAPS ON THE LAYERS (task TX): up to three clips, Layer0..2, each read
+    /// for one input in place of its constant -- `layerTarget` 1 specular
+    /// weight, 2 specular colour, 3 coat weight, 4 coat roughness, 5 sheen
+    /// colour, 6 sheen weight, 7 sheen roughness, 0 none -- on `layerChannel`
+    /// (0 rgb, 1..4 one channel), by the second coordinates where
+    /// `layerUv2`. The fourth of each is unused.
+    uint32_t layerTarget[4] = {0, 0, 0, 0};
+    uint32_t layerChannel[4] = {0, 0, 0, 0};
+    uint32_t layerUv2[4] = {0, 0, 0, 0};
+    uint32_t layerWidth[4] = {0, 0, 0, 0};
+    uint32_t layerHeight[4] = {0, 0, 0, 0};
+    uint32_t layerStride[4] = {0, 0, 0, 0};
+    /// The sheen's weight alone, for a map on its colour or on its weight;
+    /// then its colour alone.
+    float    sheenWeight = 0.0F;
+    float    sheenColourAlone[3] = {0.0F, 0.0F, 0.0F};
 };
-static_assert(sizeof(Mesh2SplatUniforms) == 432, "must match M2sParams exactly");
+static_assert(sizeof(Mesh2SplatUniforms) == 544, "must match M2sParams exactly");
 
 class Mesh2Splat final : public aofx::Effect {
 public:
@@ -217,6 +234,11 @@ public:
         // What the surface gives off by itself: multiplied into
         // `emissionColour`, its rgb or one channel of it (`emissionChannel`).
         clip("Emission", "Emission", true);
+        // Maps on the layers over the base (task TX): what each stands for is
+        // the `layer<k>Target` parameter.
+        clip("Layer0", "Layer map 0", true);
+        clip("Layer1", "Layer map 1", true);
+        clip("Layer2", "Layer map 2", true);
 
         aofx::ParamDesc opacityChannel;
         opacityChannel.name = "opacityChannel";
@@ -551,6 +573,22 @@ public:
         scalar("sheenRoughness", "Sheen roughness", "The sheen's roughness.", 0.3, 0.0, 1.0);
         scalar("coatDarkening", "Coat darkening",
                "How much the coat darkens what is under it (OpenPBR's coat_darkening).", 0.0, 0.0, 1.0);
+        scalar("sheenWeight", "Sheen weight", "The sheen's weight alone, for a map on its colour.", 0.0, 0.0, 1.0);
+        rgb("sheenColourAlone", "Sheen colour alone", "The sheen's colour alone, for a map on its weight.", 0.0);
+        for (const char* k : {"0", "1", "2"}) {
+            const std::string n(k);
+            const std::string target = "layer" + n + "Target", targetLabel = "Layer map " + n + " input";
+            const std::string channel = "layer" + n + "Channel", channelLabel = "Layer map " + n + " channel";
+            const std::string uv2 = "layer" + n + "Uv2", uv2Label = "Layer map " + n + " by the second set";
+            scalar(target.c_str(), targetLabel.c_str(),
+                   "What the clip stands for, in place of its constant: 0 nothing, 1 specular weight, 2 specular "
+                   "colour, 3 coat weight, 4 coat roughness, 5 sheen colour, 6 sheen weight, 7 sheen roughness.",
+                   0.0, 0.0, 7.0);
+            scalar(channel.c_str(), channelLabel.c_str(),
+                   "0 the clip's rgb; else one channel, 1 red, 2 green, 3 blue, 4 alpha.", 0.0, 0.0, 4.0);
+            scalar(uv2.c_str(), uv2Label.c_str(),
+                   "1: sampled by the Texcoord2 clip's coordinates.", 0.0, 0.0, 1.0);
+        }
 
         aofx::ParamDesc displace;
         displace.name = "displace";
@@ -749,6 +787,25 @@ public:
             uniforms.coat[3] = index(request.number("specularIor", 1.5));
             uniforms.sheen[3] = unit(request.number("sheenRoughness", 0.3));
             uniforms.coatDarkening = unit(request.number("coatDarkening", 0.0));
+            uniforms.sheenWeight = unit(request.number("sheenWeight", 0.0));
+            for (size_t k = 0; k < 3; ++k) {
+                uniforms.sheenColourAlone[k] = unit(request.number("sheenColourAlone", 0.0, k));
+            }
+            for (uint32_t k = 0; k < 3; ++k) {
+                const std::string n = std::to_string(k);
+                const aofx::InputPlane* plane = request.input(("Layer" + n).c_str());
+                if (plane == nullptr || !plane->buffer.isValid()) {
+                    continue;
+                }
+                uniforms.layerTarget[k] =
+                    static_cast<uint32_t>(std::clamp(request.number(("layer" + n + "Target").c_str(), 0.0), 0.0, 7.0));
+                uniforms.layerChannel[k] = static_cast<uint32_t>(
+                    std::clamp(request.number(("layer" + n + "Channel").c_str(), 0.0), 0.0, 4.0));
+                uniforms.layerUv2[k] = request.number(("layer" + n + "Uv2").c_str(), 0.0) >= 0.5 ? 1U : 0U;
+                uniforms.layerWidth[k] = static_cast<uint32_t>(plane->buffer.width);
+                uniforms.layerHeight[k] = static_cast<uint32_t>(plane->buffer.height);
+                uniforms.layerStride[k] = static_cast<uint32_t>(plane->buffer.stride);
+            }
         }
         uniforms.dstWidth = static_cast<uint32_t>(target->buffer.width);
         uniforms.dstHeight = static_cast<uint32_t>(target->buffer.height);
@@ -891,6 +948,12 @@ public:
             scan == aofx::kInvalidKernel || emit == aofx::kInvalidKernel) {
             return false;
         }
+        // A layer map's clip where its target is set, the mesh where not.
+        const auto layerBuffer = [&](uint32_t k) {
+            const aofx::InputPlane* plane = request.input(("Layer" + std::to_string(k)).c_str());
+            return uniforms.layerTarget[k] != 0 && plane != nullptr && plane->buffer.isValid() ? plane->buffer
+                                                                                               : meshPlane->buffer;
+        };
         const std::vector<aofx::Buffer> buffers{
             meshPlane->buffer,
             albedo != nullptr && albedo->buffer.isValid() ? albedo->buffer : meshPlane->buffer,
@@ -903,7 +966,8 @@ public:
             target->buffer,
             withUv2 ? uv2->buffer : meshPlane->buffer,
             withHeights ? heights->buffer : meshPlane->buffer,
-            uniforms.hasEmission != 0 ? emitted->buffer : meshPlane->buffer};
+            uniforms.hasEmission != 0 ? emitted->buffer : meshPlane->buffer,
+            layerBuffer(0), layerBuffer(1), layerBuffer(2)};
         // Count, then settle where each triangle's gaussians start, then
         // write. The order of the output is the mesh's own, which is what
         // lets a gaussian be followed from one frame to the next.

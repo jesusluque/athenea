@@ -697,8 +697,11 @@ vocabularies); and a sheen, its colour times its weight (OpenPBR's fuzz,
 `sheen_color`) with its roughness. A UsdPreviewSurface in
 its specular workflow (`useSpecularWorkflow` 1) is carried as the index whose
 reflectivity head on is its `specularColor`'s brightest channel, tinted by the
-colour over it, and no metal. A map on any of these is not read: the input's
-constant stands, and the log says so. Each surface's own defaults are what is
+colour over it, and no metal. A map on the specular's weight or colour, the
+coat's weight or roughness, or the sheen's colour, weight or roughness is
+sampled at every gaussian, as the base's maps are, in place of the input's
+constant -- the first three maps a material has; past those, and on an index
+or `coat_darkening`, the constant stands and the log says so. Each surface's own defaults are what is
 assumed where nothing is authored (an OpenPBR coat at 1.6, a standard_surface
 one 0.1 rough at 1.5). The log line of a mesh whose material layers anything
 says what:

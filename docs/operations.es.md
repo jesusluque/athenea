@@ -706,8 +706,12 @@ por su peso (el fuzz de OpenPBR, `fuzz_weight` x `fuzz_color`; `sheen` x
 `sheen_color` de standard_surface; `sheen_color` de glTF) con su roughness. Un UsdPreviewSurface en su flujo specular
 (`useSpecularWorkflow` 1) se lleva como el índice cuya reflectividad de frente
 es el canal más brillante de su `specularColor`, teñido por el color dividido
-por él, y sin metal. Un mapa sobre cualquiera de ellos no se lee: queda la
-constante de la entrada, y el log lo dice. Donde no hay nada escrito se toman
+por él, y sin metal. Un mapa sobre el peso o el color del specular, el peso o
+la roughness del coat, o el color, el peso o la roughness del sheen se
+muestrea en cada gaussiana, como los mapas de la base, en lugar de la
+constante de la entrada -- los tres primeros mapas que tenga un material; más
+allá de ellos, y sobre un índice o `coat_darkening`, queda la constante y el
+log lo dice. Donde no hay nada escrito se toman
 los valores por defecto de cada superficie (un coat de OpenPBR a 1.6, uno de
 standard_surface de roughness 0.1 a 1.5). La línea de log de una malla cuyo
 material pone algo encima dice qué:

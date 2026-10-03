@@ -720,7 +720,9 @@ and the encoding field the export and the decode read.
 layers anything (`StageMaterial::layered`): the specular's weight, colour and
 index, the coat's weight, roughness and index, the sheen's colour and
 roughness, the coat's darkening, constants of the material, sent to the
-effect as `writeLobes` and nine parameters and written in four entries of
+effect as `writeLobes` and nine parameters -- and the maps on them as clips
+`Layer0`..`Layer2`, each with the input it stands for (`layer<k>Target`),
+sampled per gaussian by `m2sLayersAt` -- and written in four entries of
 their own after everything else; the gather puts them in the record's last
 thirteen floats, after the
 harmonics (`io::SplatEncoding::lobes`, packing.slang's `SplatLobes` order).

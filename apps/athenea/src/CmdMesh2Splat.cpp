@@ -693,6 +693,11 @@ public:
             // What it gives off, where that is a map. sRGB where the file
             // says so: a map of light is a colour like any other.
             ask(material.emissionMap);
+            // The maps on the layers, sRGB where the file says so: a
+            // specular or sheen colour is a colour.
+            for (const usd::StageMaterial::LayerMap& map : material.layerMaps) {
+                ask(map.texture);
+            }
             if (!options_->noDisplacement) {
                 ask(material.displacementMap);
             }
@@ -1277,6 +1282,16 @@ private:
         if (uv2s_[at]) job.inputs.push_back({"Texcoord2", uv2s_[at]});
         if (heightMap) job.inputs.push_back({"Displacement", heightMap});
         if (emissionMap) job.inputs.push_back({"Emission", emissionMap});
+        // The maps on the layers, Layer0..2, each for the input it stands for.
+        std::array<image::ImagePtr, 3> layerPictures{};
+        if (layered_ && !options_->noTextures) {
+            for (size_t k = 0; k < material.layerMaps.size() && k < 3; ++k) {
+                layerPictures[k] = mapOrNone(material.layerMaps[k].texture.file, {}, false);
+                if (layerPictures[k]) {
+                    job.inputs.push_back({"Layer" + std::to_string(k), layerPictures[k]});
+                }
+            }
+        }
 
         const auto number = [&job](const char* name, double value) {
             job.params.push_back(aofx::ParamValue{name, {value}, {}});
@@ -1386,6 +1401,29 @@ private:
             colour("sheenColour", material.sheenColour);
             number("sheenRoughness", static_cast<double>(material.sheenRoughness));
             number("coatDarkening", static_cast<double>(material.coatDarkening));
+            number("sheenWeight", static_cast<double>(material.sheenWeight));
+            const float weight = material.sheenWeight;
+            colour("sheenColourAlone",
+                   weight > 0.0F ? std::array<float, 3>{material.sheenColour[0] / weight,
+                                                        material.sheenColour[1] / weight,
+                                                        material.sheenColour[2] / weight}
+                                 : std::array<float, 3>{1.0F, 1.0F, 1.0F});
+            for (size_t k = 0; k < material.layerMaps.size() && k < 3; ++k) {
+                if (!layerPictures[k]) {
+                    continue;
+                }
+                const usd::StageMaterial::LayerMap& map = material.layerMaps[k];
+                const std::string n = std::to_string(k);
+                const char channel = map.texture.channel;
+                number(("layer" + n + "Target").c_str(), static_cast<double>(static_cast<uint32_t>(map.target)));
+                number(("layer" + n + "Channel").c_str(), channel == 'r'   ? 1.0
+                                                          : channel == 'g' ? 2.0
+                                                          : channel == 'b' ? 3.0
+                                                          : channel == 'a' ? 4.0
+                                                                           : 0.0);
+                number(("layer" + n + "Uv2").c_str(),
+                       uv2s_[at] && !map.texture.empty() && map.texture.uvSet == mesh.uv2 ? 1.0 : 0.0);
+            }
         }
 
         auto rendered = aofx_host::renderEffect(*context_, effect, job);

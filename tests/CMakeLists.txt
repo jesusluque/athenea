@@ -345,6 +345,21 @@ foreach(material paint chrome rubber plastic glass)
             LABELS gpe)
     endforeach()
 endforeach()
+# A MAP ON A LAYER (task TX): a card whose coat weight is half nothing and
+# half whole, its gaussians' coat weights read back by a hidden case.
+add_test(NAME mesh2splat_lobes_coat_map
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/coat_map.usda --no-bake --no-camera
+            --resolution 64 -o ${ATHENEA_LOBES_DIR}/coat_map.usda)
+set_tests_properties(mesh2splat_lobes_coat_map PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_SETUP coat_map_cloud
+    LABELS gpe)
+add_test(NAME a_map_on_a_layer_is_sampled_per_gaussian
+    COMMAND athenea_usd_tests "[layer_maps]")
+set_tests_properties(a_map_on_a_layer_is_sampled_per_gaussian PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED coat_map_cloud
+    LABELS gpe)
 add_test(NAME lobes_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[lobes_conversion]")
 set_tests_properties(lobes_conversions_render_like_the_mesh PROPERTIES

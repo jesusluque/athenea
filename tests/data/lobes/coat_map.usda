@@ -1,0 +1,58 @@
+#usda 1.0
+# Copyright (c) 2026 jesus luque.
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# A card whose coat weight is a map, half nothing and half whole
+# (half_white.png), for the maps on the layers (task TX): converted by ctest
+# (mesh2splat_lobes_coat_map) and its gaussians' coat weights read back
+# (tests/usd/test_usd.cpp, "[layer_maps]").
+def Xform "World"
+{
+    def Mesh "Card" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Coated>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Coated"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Coated/OpenPBR.outputs:out>
+
+            def Shader "OpenPBR"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                color3f inputs:base_color = (0.2, 0.2, 0.2)
+                float inputs:coat_weight.connect = </World/Looks/Coated/CoatMap.outputs:out>
+                token outputs:out
+            }
+
+            def Shader "CoatMap"
+            {
+                uniform token info:id = "ND_image_float"
+                asset inputs:file = @./half_white.png@
+                float outputs:out
+            }
+        }
+    }
+
+    def DomeLight "Sky"
+    {
+        float inputs:intensity = 1
+    }
+}

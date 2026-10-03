@@ -159,6 +159,21 @@ struct StageMaterial {
     float                  coatDarkening = 0.0F;
     std::array<float, 3>   sheenColour{0.0F, 0.0F, 0.0F};
     float                  sheenRoughness = 0.3F;
+    /// The sheen's weight alone (`sheenColour` is it times the colour), for
+    /// a map on the colour or on the weight.
+    float                  sheenWeight = 0.0F;
+    /// MAPS ON THE LAYERS (task TX): which input a map stands for, and the
+    /// map. Sampled per gaussian by the conversion, as the base's are, in
+    /// place of the input's constant; the first three a material has.
+    enum class LayerTarget : uint32_t {
+        SpecularWeight = 1, SpecularColour = 2, CoatWeight = 3, CoatRoughness = 4,
+        SheenColour = 5, SheenWeight = 6, SheenRoughness = 7
+    };
+    struct LayerMap {
+        LayerTarget  target = LayerTarget::SpecularWeight;
+        StageTexture texture;
+    };
+    std::vector<LayerMap>  layerMaps;
     /// Whether any of it differs from the plain specular every gaussian has
     /// without them (weight one, white, an index of 1.5, no coat, no sheen):
     /// the conversion then writes them (`io::SplatEncoding::lobes`).
@@ -166,7 +181,7 @@ struct StageMaterial {
         const auto white = [](const std::array<float, 3>& c) {
             return c[0] == 1.0F && c[1] == 1.0F && c[2] == 1.0F;
         };
-        return specularWeight != 1.0F || !white(specularColour) || ior != 1.5F || coatWeight > 0.0F ||
+        return !layerMaps.empty() || specularWeight != 1.0F || !white(specularColour) || ior != 1.5F || coatWeight > 0.0F ||
                sheenColour[0] > 0.0F || sheenColour[1] > 0.0F || sheenColour[2] > 0.0F;
     }
 };

@@ -506,30 +506,46 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     }
 
     // WHAT IT LAYERS OVER ITS BASE: the dielectric reflection's weight and
-    // tint, a clear coat, a sheen (proposal 026). Constants only: a map on
-    // one of them is a value a gaussian could carry and does not yet, so the
-    // input's own default stands and the log says which.
+    // tint, a clear coat, a sheen (proposal 026). A map on one of them is
+    // kept beside the constant (`layerMaps`, task TX) and sampled per
+    // gaussian by the conversion; past three a material has, the constant
+    // stands and the log says which.
     {
+        using Target = StageMaterial::LayerTarget;
+        const auto mapped = [&](const Resolved& in, Target target, const char* name, bool grey) {
+            if (in.texture.empty() || target == Target{0}) {
+                return;
+            }
+            if (out.layerMaps.size() >= 3) {
+                athenea::log::info("mesh2splat: '{}' maps '{}' past the three layer maps a conversion samples; a "
+                                   "gaussian carries its constant", out.path, name);
+                return;
+            }
+            StageMaterial::LayerMap map{target, in.texture};
+            if (grey && map.texture.channel == 0) {
+                map.texture.channel = 'r';   // a grey map read on its first channel
+            }
+            out.layerMaps.push_back(map);
+        };
+        Target scalarTarget = Target::SpecularWeight;
+        Target colourTarget = Target::SpecularColour;
         const auto constant = [&](const char* name, float& into) {
             const Resolved in = read(name);
             takeFloat(in, into);
-            if (!in.texture.empty()) {
-                athenea::log::info("mesh2splat: '{}' maps '{}'; a gaussian carries its constant ({})", out.path,
-                                   name, into);
-            }
+            mapped(in, scalarTarget, name, true);
         };
         const auto colourOf = [&](const char* name, std::array<float, 3>& into) {
             const Resolved in = read(name);
             takeColour(in, into);
-            if (!in.texture.empty()) {
-                athenea::log::info("mesh2splat: '{}' maps '{}'; a gaussian carries its constant", out.path, name);
-            }
+            mapped(in, colourTarget, name, false);
         };
         if (preview) {
             // UsdPreviewSurface's coat is a Schlick of the surface's own
             // index (`coat_F0` is `R_sq`), and its default roughness 0.01.
             out.coatRoughness = 0.01F;
+            scalarTarget = Target::CoatWeight;
             constant("clearcoat", out.coatWeight);
+            scalarTarget = Target::CoatRoughness;
             constant("clearcoatRoughness", out.coatRoughness);
             out.coatIor = out.ior;
             // THE SPECULAR WORKFLOW: `specularColor` is the reflectivity head
@@ -538,6 +554,7 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
             // colour over it -- the head-on reflection exactly, a white edge.
             if (takeInt(read("useSpecularWorkflow"), 0) == 1) {
                 std::array<float, 3> f0{0.0F, 0.0F, 0.0F};
+                colourTarget = Target{0};   // an index, not a tint: its map is not sampled
                 colourOf("specularColor", f0);
                 const float top = std::max({f0[0], f0[1], f0[2]});
                 out.metallic = 0.0F;
@@ -551,19 +568,26 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
                 }
             }
         } else {
+            scalarTarget = Target::SpecularWeight;
             constant(openPbr ? "specular_weight" : gltf ? "specular" : "specular", out.specularWeight);
+            colourTarget = Target::SpecularColour;
             colourOf("specular_color", out.specularColour);
             if (gltf) {
+                scalarTarget = Target::CoatWeight;
                 constant("clearcoat", out.coatWeight);
                 out.coatRoughness = 0.0F;
+                scalarTarget = Target::CoatRoughness;
                 constant("clearcoat_roughness", out.coatRoughness);
             } else {
                 // OpenPBR's coat sits at 1.6 and standard_surface's at 1.5,
                 // the roughness of either at 0 and 0.1.
                 out.coatIor = openPbr ? 1.6F : 1.5F;
                 out.coatRoughness = openPbr ? 0.0F : 0.1F;
+                scalarTarget = Target::CoatWeight;
                 constant(openPbr ? "coat_weight" : "coat", out.coatWeight);
+                scalarTarget = Target::CoatRoughness;
                 constant("coat_roughness", out.coatRoughness);
+                scalarTarget = Target{0};   // an index and a switch: their maps are not sampled
                 constant(openPbr ? "coat_ior" : "coat_IOR", out.coatIor);
                 if (openPbr) {
                     out.coatDarkening = 1.0F;
@@ -582,10 +606,14 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
                 out.sheenRoughness = 0.5F;
             }
             if (!gltf) {
+                scalarTarget = Target::SheenWeight;
                 constant(openPbr ? "fuzz_weight" : "sheen", sheenWeight);
             }
+            colourTarget = Target::SheenColour;
             colourOf(openPbr ? "fuzz_color" : "sheen_color", sheenColour);
+            scalarTarget = Target::SheenRoughness;
             constant(openPbr ? "fuzz_roughness" : "sheen_roughness", out.sheenRoughness);
+            out.sheenWeight = std::clamp(sheenWeight, 0.0F, 1.0F);
             out.sheenColour = {sheenColour[0] * sheenWeight, sheenColour[1] * sheenWeight,
                                sheenColour[2] * sheenWeight};
         }

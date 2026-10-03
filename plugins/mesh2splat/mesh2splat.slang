@@ -165,6 +165,19 @@ struct M2sParams {
     float coatDarkening;     // the fourth: (coat darkening, 0, 0, 0)
     uint  lobesPad1;
     uint  lobesPad2;
+
+    // MAPS ON THE LAYERS (task TX, m2sLayersAt): up to three, each read for
+    // one input in place of its constant. Target 1 specular weight, 2
+    // specular colour, 3 coat weight, 4 coat roughness, 5 sheen colour, 6
+    // sheen weight, 7 sheen roughness, 0 none.
+    uint4 layerTarget;
+    uint4 layerChannel;
+    uint4 layerUv2;
+    uint4 layerWidth;
+    uint4 layerHeight;
+    uint4 layerStride;
+    float sheenWeight;       // the sheen's weight alone
+    float3 sheenColourAlone; // and its colour alone
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -179,6 +192,9 @@ RWStructuredBuffer<float4> records;     // the output plane
 StructuredBuffer<float4>   texcoord2;   // the mesh picture's shape: (u2, v2) a corner, where there is a second set
 StructuredBuffer<float4>   heightMap;   // the displacement, read on one channel
 StructuredBuffer<float4>   emissionMap; // what the surface gives off, rgb or one channel
+StructuredBuffer<float4>   layerMap0;   // the maps on the layers, where there are any (m2sLayersAt)
+StructuredBuffer<float4>   layerMap1;
+StructuredBuffer<float4>   layerMap2;
 ConstantBuffer<M2sParams>  params;
 
 /// The counters start a render, and a buffer the host handed over holds
@@ -671,6 +687,49 @@ float3 m2sMapTangent(const M2sTriangle t, float3 normal) {
 }
 
 /// What the cut-out map reads here: one where there is no map.
+/// ONE MAP ON THE LAYERS at `bary`: its rgb, or one channel as grey.
+float3 m2sLayerTexel(uint k, const M2sTriangle t, float3 bary) {
+    const float2 uv = params.layerUv2[k] != 0 ? m2sUv2At(t, bary) : m2sUvAt(t, bary);
+    float4 texel;
+    if (k == 0) {
+        texel = sampleWrapped(layerMap0, params.layerWidth[0], params.layerHeight[0], params.layerStride[0], uv);
+    } else if (k == 1) {
+        texel = sampleWrapped(layerMap1, params.layerWidth[1], params.layerHeight[1], params.layerStride[1], uv);
+    } else {
+        texel = sampleWrapped(layerMap2, params.layerWidth[2], params.layerHeight[2], params.layerStride[2], uv);
+    }
+    const uint c = params.layerChannel[k];
+    return c == 0 ? texel.xyz : c == 1 ? texel.xxx : c == 2 ? texel.yyy : c == 3 ? texel.zzz : texel.www;
+}
+
+/// WHAT THE MAPS ON THE LAYERS SAY at `bary` (task TX): each in place of the
+/// constant of the input it stands for. The sheen is its colour times its
+/// weight, so a map on one is multiplied by the other's constant.
+void m2sLayersAt(const M2sTriangle t, float3 bary, inout float4 specular, inout float4 coat, inout float4 sheen) {
+    [unroll] for (uint k = 0; k < 3; ++k) {
+        const uint target = params.layerTarget[k];
+        if (target == 0) {
+            continue;
+        }
+        const float3 v = saturate(m2sLayerTexel(k, t, bary));
+        if (target == 1) {
+            specular.w = v.x;
+        } else if (target == 2) {
+            specular.xyz = v;
+        } else if (target == 3) {
+            coat.x = v.x;
+        } else if (target == 4) {
+            coat.y = v.x;
+        } else if (target == 5) {
+            sheen.xyz = v * params.sheenWeight;
+        } else if (target == 6) {
+            sheen.xyz = params.sheenColourAlone * v.x;
+        } else if (target == 7) {
+            sheen.w = v.x;
+        }
+    }
+}
+
 /// WHAT THE SURFACE GIVES OFF at `bary`: the material's emission, times its
 /// map where it has one -- the map's colour, or one of its channels as grey.
 /// Linear: a map of colour was decoded out of sRGB on its way here.
@@ -1103,9 +1162,13 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         records[recordAt(slot, params.emissionEntry)] = float4(m2sEmissionAt(t, bary), 0.0);
     }
     if (params.lobesEntry != 0) {
-        records[recordAt(slot, params.lobesEntry)] = params.specular;
-        records[recordAt(slot, params.lobesEntry + 1)] = params.coat;
-        records[recordAt(slot, params.lobesEntry + 2)] = params.sheen;
+        float4 specular = params.specular;
+        float4 coat = params.coat;
+        float4 sheen = params.sheen;
+        m2sLayersAt(t, bary, specular, coat, sheen);
+        records[recordAt(slot, params.lobesEntry)] = specular;
+        records[recordAt(slot, params.lobesEntry + 1)] = coat;
+        records[recordAt(slot, params.lobesEntry + 2)] = sheen;
         records[recordAt(slot, params.lobesEntry + 3)] = float4(params.coatDarkening, 0.0, 0.0, 0.0);
     }
     return true;

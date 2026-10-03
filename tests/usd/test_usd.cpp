@@ -13184,3 +13184,31 @@ TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path trace
         }
     }
 }
+
+// A MAP ON A LAYER IS SAMPLED PER GAUSSIAN (task TX). A card whose coat
+// weight is a map, half nothing and half whole (tests/data/lobes/coat_map.usda),
+// converted by ctest beforehand: its gaussians carry both, about half each,
+// where a constant would have given every one the same.
+//
+// Hidden: it reads what that conversion wrote (a_map_on_a_layer_is_sampled_per_gaussian).
+TEST_CASE("a map on a layer is sampled per gaussian", "[.][layer_maps][usd][lobes]") {
+    const fs::path cloud = fs::path(ATHENEA_LOBES_DIR) / "coat_map.usda";
+    if (!fs::exists(cloud)) {
+        SKIP("'" << cloud.string() << "' is not there: ctest converts it first");
+    }
+    UsdStageRefPtr stage = UsdStage::Open(cloud.string());
+    REQUIRE(stage);
+    const UsdPrim splats = stage->GetPrimAtPath(SdfPath("/World/Splats"));
+    REQUIRE(splats);
+    VtFloatArray weights;
+    REQUIRE(UsdGeomPrimvarsAPI(splats).GetPrimvar(TfToken("primvars:athenea:splat:coatWeight")).Get(&weights));
+    size_t none = 0, whole = 0;
+    for (const float w : weights) {
+        none += w < 0.1F ? 1 : 0;
+        whole += w > 0.9F ? 1 : 0;
+    }
+    std::printf("  coat map: %zu gaussians, %zu with no coat, %zu with a whole one\n", weights.size(), none, whole);
+    REQUIRE(!weights.empty());
+    CHECK(none > weights.size() / 3);
+    CHECK(whole > weights.size() / 3);
+}

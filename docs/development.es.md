@@ -749,8 +749,10 @@ exportación y la decodificación.
 pone algo (`StageMaterial::layered`): el peso, el color y el índice del
 specular, el peso, la roughness y el índice del coat, el color y la roughness
 del sheen, el oscurecimiento del coat, constantes del material, enviadas al
-efecto como `writeLobes` y nueve parámetros y escritas en cuatro entradas
-propias después de todo lo demás; el gather las pone en los trece últimos
+efecto como `writeLobes` y nueve parámetros -- y los mapas sobre ellas como
+clips `Layer0`..`Layer2`, cada uno con la entrada que representa
+(`layer<k>Target`), muestreados por gaussiana en `m2sLayersAt` -- y escritas
+en cuatro entradas propias después de todo lo demás; el gather las pone en los trece últimos
 floats del registro, tras los armónicos
 (`io::SplatEncoding::lobes`, en el orden de `SplatLobes` de packing.slang). En
 el dispositivo son `GpuSplats::lobes`, tres palabras por splat (`packLobes`),

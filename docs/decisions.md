@@ -11148,7 +11148,8 @@ material: car paint, chrome, rubber, plastic, glass.
   `clearcoatRoughness` at its own `ior`, and in its specular workflow the
   index whose reflectivity is `specularColor`'s brightest channel, tinted by
   the colour over it, with no metal; glTF `clearcoat`, `sheen_color`,
-  `specular`. Constants only: a map on any of them is logged and its constant
+  `specular`. (Maps on them are sampled since task TX, below: "Maps on the
+  layers".) Constants only: a map on any of them is logged and its constant
   stands. The mesh2splat AOFX effect gains `writeLobes` and nine parameters,
   additively, written in four record entries after everything else; the host
   writes them only where some material of the stage is not plain
@@ -12059,3 +12060,24 @@ sixteen (its hard maximum): it read gaussian k at 16 k, and wrote the
 answer back over the wrong entries. The two halves now go through it apart,
 sixteen entries each (`TransferFilterIo::part`); step 2's measurement, made
 before the filter, had the field whole.
+
+### Maps on the layers
+
+A gaussian carried its specular, coat and sheen as constants of the material;
+a map on any of them was logged and its constant stood, so a coat painted on
+in places, or a fuzz with a pattern, converted flat. The maps are now sampled
+as the base's are: `StageMaterial::layerMaps` keeps, for the first three a
+material has, which input a map stands for (specular weight or colour, coat
+weight or roughness, sheen colour, weight or roughness) and the map; the
+conversion hands them to the Mesh2Splat effect as clips `Layer0`..`Layer2`
+with `layer<k>Target`, `Channel` and `Uv2`, additively; and `m2sLayersAt`
+reads each at the gaussian's coordinates in place of the constant -- the
+sheen, carried as its colour times its weight, multiplying a map on one by
+the other's constant (`sheenWeight`, `sheenColourAlone`). An index and the
+coat's darkening stay constants: the first is a byte a gaussian of 1 to 3,
+the second a switch. The effect's uniform block grows by 112 bytes at its
+end (544), which a bundle that does not set them reads as no maps.
+
+Checked (pending the GPU turn): a card whose coat weight is half nothing and
+half whole converts to gaussians a third or more of each
+(`a_map_on_a_layer_is_sampled_per_gaussian`).
