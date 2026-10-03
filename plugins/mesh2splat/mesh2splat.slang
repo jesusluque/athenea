@@ -116,7 +116,7 @@ struct M2sParams {
     float cellMin;
     float cellMax;
     uint  cellByLongest;
-    float glassOpacity;   // what a fully transmitting material still stops
+    float glassOpacity;   // what a fully transmitting solid still covers
 
     // A HEIGHT ALONG THE NORMAL (m2sRelief says what it does).
     uint  displaceChannel;   // 0: no map, the bias alone; else 1 r, 2 g, 3 b, 4 a
@@ -132,8 +132,29 @@ struct M2sParams {
     // FEWER GAUSSIANS WHERE THE SURFACE IS THE SAME (m2sWalkBlocks).
     float simplify;          // 0: every cell; else how far a block's cells may differ and still be one
     uint  simplifyLevels;    // the largest block is 2^this cells a side
-    uint  simplifyPad0;
-    uint  simplifyPad1;
+    // WHAT AN OPACITY SAYS (m2sCoverageAlpha says why).
+    uint  opacityBinary;     // 1: the cut-out is a threshold, and above it the surface is whole
+    uint  coverage;          // 1: opacities are the surface's coverage; 0: each gaussian's own
+
+    // THE LIGHT THE SURFACE GIVES OFF (m2sEmissionAt): the colour, times the
+    // Emission picture where there is one, written in an entry of its own.
+    uint  hasEmission;       // the Emission picture is there
+    uint  emissionWidth;
+    uint  emissionHeight;
+    uint  emissionStride;
+
+    float4 emissionColour;   // linear radiance, unbounded; multiplied into the map
+
+    uint  emissionEntry;     // 0: not written; else the entry of a record it goes in
+    uint  emissionChannel;   // 0: the map's rgb; else one channel, 1 r, 2 g, 3 b, 4 a, as grey
+    uint  emissionUv2;
+    uint  emissionPad;
+
+    // THE GLASS AND THE MATERIAL'S OWN COVERAGE (m2sGlassCovers, m2sCoverageAlpha).
+    uint  thinWall;          // 1: a glass that is a sheet, which covers what it reflects (m2sGlassCovers)
+    float ior;               // the sheet's index
+    float materialOpacity;   // the material's own coverage, multiplied into `opacity`
+    uint  coveragePad;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -147,6 +168,7 @@ RWStructuredBuffer<uint>   cellCounts;  // a triangle's covered cells, then wher
 RWStructuredBuffer<float4> records;     // the output plane
 StructuredBuffer<float4>   texcoord2;   // the mesh picture's shape: (u2, v2) a corner, where there is a second set
 StructuredBuffer<float4>   heightMap;   // the displacement, read on one channel
+StructuredBuffer<float4>   emissionMap; // what the surface gives off, rgb or one channel
 ConstantBuffer<M2sParams>  params;
 
 /// The counters start a render, and a buffer the host handed over holds
@@ -570,6 +592,24 @@ float3 m2sMapTangent(const M2sTriangle t, float3 normal) {
 }
 
 /// What the cut-out map reads here: one where there is no map.
+/// WHAT THE SURFACE GIVES OFF at `bary`: the material's emission, times its
+/// map where it has one -- the map's colour, or one of its channels as grey.
+/// Linear: a map of colour was decoded out of sRGB on its way here.
+float3 m2sEmissionAt(const M2sTriangle t, float3 bary) {
+    float3 e = params.emissionColour.xyz;
+    if (params.hasEmission != 0) {
+        const float2 uv = params.emissionUv2 != 0 ? m2sUv2At(t, bary) : m2sUvAt(t, bary);
+        const float4 texel = sampleWrapped(emissionMap, params.emissionWidth, params.emissionHeight,
+                                           params.emissionStride, uv);
+        e *= params.emissionChannel == 0 ? texel.xyz
+           : params.emissionChannel == 1 ? texel.xxx
+           : params.emissionChannel == 2 ? texel.yyy
+           : params.emissionChannel == 3 ? texel.zzz
+                                         : texel.www;
+    }
+    return max(e, float3(0.0));
+}
+
 float m2sMaskAt(const M2sTriangle t, float3 bary) {
     if (params.opacityChannel == 0) {
         return 1.0;
@@ -581,6 +621,61 @@ float m2sMaskAt(const M2sTriangle t, float3 bary) {
          : params.opacityChannel == 2 ? texel.y
          : params.opacityChannel == 3 ? texel.z
                                       : texel.w;
+}
+
+/// THE OPACITY A GAUSSIAN TAKES FOR A SURFACE OF COVERAGE `wanted`.
+///
+/// A point of a converted surface is under several gaussians at once, each
+/// `sigma` cells wide on a grid of cells, and what passes them is the product
+/// of `1 - alpha g` over the stack. An opacity written straight into each
+/// gaussian is therefore not the surface's: a mask of 0.5 covered 96% of what
+/// stood behind it, and a glass kept at 0.6 covered 98%. Taken as
+/// `-ln T = sum alpha g + alpha^2 g^2 / 2`, the footprints sum to
+/// `2 pi sigma^2` and their squares to `pi sigma^2`, so a surface of
+/// coverage F wants `(pi sigma^2 / 2) alpha^2 + 2 pi sigma^2 alpha = -ln(1-F)`
+/// -- the first term alone (faint gaussians, `exp(-alpha 2 pi sigma^2)`) left
+/// 0.75 covering 0.77. A gaussian is also drawn only out to where it falls
+/// under 1/255, which leaves out 1/255 of its area: hence `+ 1/255`.
+/// A whole surface
+/// stays whole (1 is 1, and so is anything the formula takes past it), and
+/// nothing stays nothing.
+float m2sCoverageAlpha(float wanted) {
+    if (params.coverage == 0) {
+        return wanted;
+    }
+    if (!(wanted > 0.0)) {
+        return 0.0;
+    }
+    if (wanted >= 0.999) {
+        return 1.0;
+    }
+    const float spread = max(3.14159265 * params.sigmaX * params.sigmaY, 1.0e-3);   // pi sigma^2
+    const float stopped = -log(1.0 - wanted);
+    const float alpha = (sqrt(4.0 * spread * spread + 2.0 * spread * stopped) - 2.0 * spread) / spread;
+    return min(1.0, alpha + 1.0 / 255.0);
+}
+
+/// WHAT A FULLY TRANSMITTING SURFACE STILL COVERS. A thin wall sends what it
+/// does not reflect straight on, which is what blending a gaussian over what
+/// stands behind it already does -- through any number of cards, on both
+/// routes -- so it covers what the sheet reflects head on: both faces'
+/// Fresnel with the light between them summed, `2R / (1 + R)`, and the frame
+/// shades it as that reflection and nothing else. A solid covers what the
+/// caller said (`glassOpacity`).
+float m2sGlassCovers() {
+    if (params.thinWall == 0) {
+        return params.glassOpacity;
+    }
+    const float r = (params.ior - 1.0) / (params.ior + 1.0);
+    const float reflected = r * r;
+    return min(2.0 * reflected / (1.0 + reflected), 0.998);
+}
+
+/// What the mask says the surface covers at a cell it did not cut away: its
+/// value, or the whole of it where the cut is a threshold (UsdPreviewSurface's
+/// `opacityThreshold`, glTF's MASK), which is either there or not.
+float m2sMaskCoverage(float mask) {
+    return params.opacityBinary != 0 && params.opacityChannel != 0 ? 1.0 : mask;
 }
 
 bool m2sCovered(const M2sTriangle t, float3 bary) {
@@ -755,9 +850,12 @@ void m2sCount(uint3 tid: SV_DispatchThreadID) {
     // centimetre, and a mesh of 80137 of them came out as 34011 gaussians
     // with the detail gone. So one that caught nothing gets a single gaussian
     // at its middle. It is the least a triangle can be worth and it is not
-    // nothing.
+    // nothing -- unless the cut-out says its middle is not there either: a
+    // card's triangle whose every cell the mask cut away wrote one whole
+    // gaussian at its middle, and a plane whose map was all under the cut
+    // still covered 2% of what stood behind it.
     if (inside == 0) {
-        inside = 1;
+        inside = m2sCovered(t, float3(1.0 / 3.0)) ? 1u : 0u;
     }
     cellCounts[countAt(triangle)] = inside;
 }
@@ -869,8 +967,14 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     // other, which is what this did before the parameter existed, and
     // low is a ball you can see the room through. The material's colour
     // still goes towards the transmission colour either way.
+    // ALL OF IT IS COVERAGE: the material's opacity, the mask, and what a
+    // glass keeps -- multiplied as the surface's, and only then made into
+    // what one gaussian of the stack over a point takes (m2sCoverageAlpha).
+    // A mask of zero is a gaussian with nothing to draw (the filler a count
+    // left unfilled), whatever the cut says.
+    const float covered = mask > 0.0 ? m2sMaskCoverage(mask) : 0.0;
     const float keptOpacity =
-        params.opacity * mask * lerp(1.0, params.glassOpacity, params.transmission);
+        m2sCoverageAlpha(params.opacity * params.materialOpacity * covered * lerp(1.0, m2sGlassCovers(), params.transmission));
     colour = lerp(colour, colour * params.transmissionColour.xyz, params.transmission);
 
     const float3 shortAxis = params.useNormalMap != 0 ? shading : normal;
@@ -885,8 +989,9 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     records[recordAt(slot, 1)] = float4(scale, 0.0);
     records[recordAt(slot, 2)] = rotation;
     records[recordAt(slot, 3)] = float4(colour, 0.0);
-    // The entries before the relief's three: 4, 6 or 8.
-    const uint own = params.displaceRefine != 0 ? params.recordPixels - 3 : params.recordPixels;
+    // The entries before the relief's three and the emission's one: 4, 6 or 8.
+    const uint own = params.recordPixels - (params.displaceRefine != 0 ? 3u : 0u) -
+                     (params.emissionEntry != 0 ? 1u : 0u);
     if (own >= 6) {
         records[recordAt(slot, 4)] = float4(shading, metallic);
         records[recordAt(slot, 5)] = float4(roughness, params.transmission, uv.x, uv.y);
@@ -903,6 +1008,9 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         records[recordAt(slot, extra)] = float4(flat, height);
         records[recordAt(slot, extra + 1)] = float4(flatNormal, 0.0);
         records[recordAt(slot, extra + 2)] = float4(normal, 0.0);
+    }
+    if (params.emissionEntry != 0) {
+        records[recordAt(slot, params.emissionEntry)] = float4(m2sEmissionAt(t, bary), 0.0);
     }
     return true;
 }
@@ -982,7 +1090,7 @@ bool m2sCellEmit(uint triangle, const M2sTriangle t, float2 centre, float3 bary,
 /// to one -- and a block becomes one gaussian of its own size when it lies
 /// wholly inside the triangle and, over every cell centre in it, what the
 /// maps say moves by no more than `simplify`: the colour, metallic and
-/// roughness, the cut-out (which must also stand above the cut everywhere),
+/// roughness, what it gives off, the cut-out (which must also stand above the cut everywhere),
 /// the shading normal with its normal map, and the relief's normal (with no
 /// cell of it stretched enough to split). Otherwise it goes down to its four
 /// children, and a single cell is what it always was.
@@ -1012,6 +1120,7 @@ struct M2sLook {
     float3 normal;   // the shading normal: interpolated, then the normal map's
     float3 relief;   // the relief's normal, the flat one without a relief
     float  stretch;  // the relief's larger stretch at one cell
+    float3 emission; // what it gives off
 };
 
 M2sLook m2sLookAt(const M2sTriangle t, float2 at) {
@@ -1041,6 +1150,7 @@ M2sLook m2sLookAt(const M2sTriangle t, float2 at) {
         const float3 bitangent = cross(flat, straight);
         l.normal = normalize(straight * fromMap.x + bitangent * fromMap.y + flat * fromMap.z);
     }
+    l.emission = m2sEmissionAt(t, bary);
     l.relief = flat;
     l.stretch = 1.0;
     if (params.displaceRefine != 0) {
@@ -1082,6 +1192,8 @@ bool m2sBlockIsOne(const M2sTriangle t, int2 origin, uint size) {
     float2 mrHigh = float2(-3.4e38);
     float maskLow = 3.4e38;
     float maskHigh = -3.4e38;
+    float3 emissionLow = float3(3.4e38);
+    float3 emissionHigh = float3(-3.4e38);
     float3 normalFirst = float3(0.0);
     float3 reliefFirst = float3(0.0);
     // OVER WHAT THE GAUSSIAN REACHES, NOT ONLY OVER THE BLOCK. A block's
@@ -1121,8 +1233,10 @@ bool m2sBlockIsOne(const M2sTriangle t, int2 origin, uint size) {
             mrHigh = max(mrHigh, l.mr);
             maskLow = min(maskLow, l.mask);
             maskHigh = max(maskHigh, l.mask);
+            emissionLow = min(emissionLow, l.emission);
+            emissionHigh = max(emissionHigh, l.emission);
             if (any(colourHigh - colourLow > tolerance) || any(mrHigh - mrLow > tolerance) ||
-                maskHigh - maskLow > tolerance) {
+                maskHigh - maskLow > tolerance || any(emissionHigh - emissionLow > tolerance)) {
                 return false;
             }
         }
@@ -1296,12 +1410,14 @@ void m2sEmit(uint3 tid: SV_DispatchThreadID) {
         if (caught && !m2sCellInside(t, k, bary)) {
             continue;   // the cell's centre is outside this triangle
         }
-        // THE CUT-OUT'S VALUE IS THE GAUSSIAN'S OPACITY, not a yes or a no.
-        // A feather's barb is a texel of alpha 0.3, and a gaussian of
-        // opacity 0.3 is what blends the way the card did; cut at a half,
-        // every barb was either a whole gaussian or nothing.
-        const float mask = caught ? m2sMaskAt(t, bary) : 1.0;
-        if (caught && !(mask >= params.opacityCut)) {
+        // THE CUT-OUT'S VALUE IS THE SURFACE'S COVERAGE, not a yes or a no.
+        // A feather's barb is a texel of alpha 0.3, and a surface covering
+        // 0.3 is what blends the way the card did; cut at a half, every barb
+        // was either a whole gaussian or nothing. What one gaussian of the
+        // stack takes for it is m2sCoverageAlpha's -- unless the cut is a
+        // threshold, where what is kept is whole.
+        const float mask = params.opacityChannel != 0 ? m2sMaskAt(t, bary) : 1.0;
+        if (params.opacityChannel != 0 && !(mask >= params.opacityCut)) {
             continue;   // the cut-out says there is no surface here
         }
         const float2 centre = caught ? m2sCellCentre(t, k) : t.oa + t.edge1 * bary.y + t.edge2 * bary.z;

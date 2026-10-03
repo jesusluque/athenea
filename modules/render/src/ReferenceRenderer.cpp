@@ -114,6 +114,7 @@ Result<uint32_t> ReferenceRenderer::render(const Camera& camera,
             cursor["params"]["restPerColour"].setData(cloud->restPerColour);
             cursor["params"]["shWords"].setData(cloud->shWords);
             setEdit(cursor["params"]["edit"], instance.edit);
+            setCloudSpace(cursor, *cloud);
         });
         base += cloud->count;
     }
@@ -220,6 +221,7 @@ Result<uint32_t> ReferenceRenderer::renderPeaks(const Camera& camera,
             cursor["params"]["restPerColour"].setData(cloud->restPerColour);
             cursor["params"]["shWords"].setData(cloud->shWords);
             setEdit(cursor["params"]["edit"], instance.edit);
+            setCloudSpace(cursor, *cloud);
         });
         base += cloud->count;
     }

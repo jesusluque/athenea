@@ -4,6 +4,11 @@
 // channels of 8-bit, 16-bit or float components), into the first level of an
 // RGBA texture with row 0 at the bottom -- where texture coordinate v = 0 is,
 // as MaterialX and USD have it.
+//
+// A texture in a colour space other than the working one or raw is decoded
+// by a generated module (TextureStore, `athenea_texdec_<hash>`) whose entry
+// is this one's with the compiled colour function (colour::ColourCompiler)
+// between `decodeTexel` and `storeTexel`; alpha is never transformed.
 module texture_decode;
 import athenea.common.packing;
 
@@ -12,7 +17,6 @@ struct DecodeParams {
     uint height;
     uint channels;     // 1 grey, 2 grey and alpha, 3 rgb, 4 rgba
     uint component;    // 0 unorm8, 1 unorm16, 2 float16, 3 float32
-    uint toLinear;     // 1: the components are sRGB-encoded and the texture holds light
     uint packedKind;   // 0: written to the texture; else atheneaPackTexel's kind
     uint rowPixels;    // pixels a source row; 0: the width
     uint bottomFirst;  // 1: the source's rows are bottom first already (a host's plane)
@@ -42,20 +46,15 @@ float componentAt(uint index) {
     return asfloat(bits);
 }
 
-float decodeSrgb(float x) {
-    return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
-}
-
-[shader("compute")]
-[numthreads(16, 16, 1)]
-void textureDecode(uint3 tid: SV_DispatchThreadID) {
+/// The texel this thread decodes, as the file holds it; false outside the image.
+public bool decodeTexel(uint3 tid, out float4 texel) {
+    texel = float4(0.0, 0.0, 0.0, 1.0);
     if (tid.x >= params.width || tid.y >= params.height) {
-        return;
+        return false;
     }
     const uint fileRow = params.bottomFirst != 0 ? tid.y : params.height - 1 - tid.y;
     const uint rowPixels = params.rowPixels != 0 ? params.rowPixels : params.width;
     const uint first = (fileRow * rowPixels + tid.x) * params.channels;
-    float4 texel = float4(0.0, 0.0, 0.0, 1.0);
     if (params.channels <= 2) {
         texel.rgb = float3(componentAt(first));
         if (params.channels == 2) {
@@ -69,12 +68,24 @@ void textureDecode(uint3 tid: SV_DispatchThreadID) {
             texel.a = componentAt(first + 3);
         }
     }
-    if (params.toLinear != 0) {
-        texel.rgb = float3(decodeSrgb(texel.r), decodeSrgb(texel.g), decodeSrgb(texel.b));
-    }
+    return true;
+}
+
+/// Into level 0, or packed where the store does not convert.
+public void storeTexel(uint3 tid, float4 texel) {
     if (params.packedKind != 0) {
         atheneaPackTexel(packed, params.packedKind, tid.y * params.width + tid.x, texel);
     } else {
         level[tid.xy] = texel;
     }
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void textureDecode(uint3 tid: SV_DispatchThreadID) {
+    float4 texel;
+    if (!decodeTexel(tid, texel)) {
+        return;
+    }
+    storeTexel(tid, texel);
 }

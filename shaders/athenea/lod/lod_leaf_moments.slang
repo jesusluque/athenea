@@ -10,6 +10,7 @@ StructuredBuffer<uint>     shape;
 StructuredBuffer<uint>     sh;
 StructuredBuffer<uint>     starts;
 StructuredBuffer<uint>     normals;     // Morton order, where `params.normals` says
+StructuredBuffer<uint>     emission;    // Morton order, where `params.emission` says
 RWStructuredBuffer<float>  moments;
 ConstantBuffer<LodParams>  params;       // count: splats; groups
 
@@ -56,6 +57,9 @@ void lodLeafMoments(uint3 tid: SV_DispatchThreadID) {
         moments[at + 7] += weight * (cov[1][1] + p.y * p.y);
         moments[at + 8] += weight * (cov[1][2] + p.y * p.z);
         moments[at + 9] += weight * (cov[2][2] + p.z * p.z);
+        // The colour is averaged in the space the cloud keeps it in -- a
+        // capture's sRGB, a conversion's linear light (GpuSplats::linear) --
+        // and the merged Gaussian is in that space too.
         moments[at + 10] += weight * highHalf(shape[row + 2]);
         moments[at + 11] += weight * lowHalf(shape[row + 3]);
         moments[at + 12] += weight * highHalf(shape[row + 3]);
@@ -70,6 +74,15 @@ void lodLeafMoments(uint3 tid: SV_DispatchThreadID) {
             moments[nb] += weight * n.x;
             moments[nb + 1] += weight * n.y;
             moments[nb + 2] += weight * n.z;
+        }
+        if (params.emission != 0) {
+            // Weighed as the colour is: what a group gives off is what its
+            // gaussians give off, by what they cover.
+            const float3 e = unpackRgb9e5(emission[i]);
+            const uint eb = at + emissionMoments(params);
+            moments[eb] += weight * e.x;
+            moments[eb + 1] += weight * e.y;
+            moments[eb + 2] += weight * e.z;
         }
     }
 }

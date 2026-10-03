@@ -6,7 +6,9 @@
 
 #include <catch2/catch_approx.hpp>
 
+#include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 
 #include <pxr/imaging/hio/image.h>
@@ -85,10 +87,10 @@ TEST_CASE("a PNG comes back texel for texel, its sRGB decoded by its view and av
     writePattern(*gpu, png, w, h);
     auto store = material::TextureStore::create(*gpu->library);
     if (!store) FAIL(store.error().toString());
-    const uint32_t raw = (*store)->request(png.string(), material::ColourSpace::Raw);
-    const uint32_t srgb = (*store)->request(png.string(), material::ColourSpace::Srgb);
+    const uint32_t raw = (*store)->request(png.string(), "raw");
+    const uint32_t srgb = (*store)->request(png.string(), "srgb_texture");
     const uint32_t missing = (*store)->request(scratch("absent.png").string());
-    CHECK((*store)->request(png.string(), material::ColourSpace::Raw) == raw);
+    CHECK((*store)->request(png.string(), "raw") == raw);
     auto loaded = (*store)->commit();
     REQUIRE(loaded);
     CHECK(*loaded == 2);
@@ -194,7 +196,7 @@ TEST_CASE("a footprint filtered by its gradients and by the level they pick agre
     writePattern(*gpu, png, w, h);
     auto store = material::TextureStore::create(*gpu->library);
     if (!store) FAIL(store.error().toString());
-    const uint32_t slot = (*store)->request(png.string(), material::ColourSpace::Raw);
+    const uint32_t slot = (*store)->request(png.string(), "raw");
     auto loaded = (*store)->commit();
     REQUIRE(loaded);
     auto footprint = gpu::ComputeKernel::create(*gpu->library, "athenea/test/material_textures", "materialFootprint");
@@ -240,7 +242,7 @@ TEST_CASE("a UDIM set samples the tile its uv falls in, and nothing where it has
     writePattern(*gpu, scratch("tiles.1012.png"), 16, 16, blue);
     auto store = material::TextureStore::create(*gpu->library);
     if (!store) FAIL(store.error().toString());
-    const uint32_t id = (*store)->request(scratch("tiles.<UDIM>.png").string(), material::ColourSpace::Raw);
+    const uint32_t id = (*store)->request(scratch("tiles.<UDIM>.png").string(), "raw");
     auto loaded = (*store)->commit();
     REQUIRE(loaded);
     CHECK(*loaded == 2);
@@ -272,4 +274,127 @@ TEST_CASE("a UDIM set samples the tile its uv falls in, and nothing where it has
     CHECK(s[7] == 1.0F);
     CHECK(s[6] == Catch::Approx(std::round(blue[2] * 255.0F) / 255.0F).margin(1e-5F));
     CHECK(s[11] == 0.0F);
+}
+
+// 8-bit sRGB has two routes into light: the fast one, where the texture stays
+// 8-bit behind an sRGB view and the sampler decodes, and the one every other
+// colour space takes, where the decode kernel calls the function OpenColorIO
+// compiled for it and the texture holds half floats. Same file, both routes,
+// level 0 and the last level compared on the device.
+TEST_CASE("an 8-bit sRGB texture reads the same through its sRGB view and through the compiled sRGB function",
+          "[material][texture][colour]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const uint32_t w = 37;
+    const uint32_t h = 23;
+    const fs::path png = scratch("pattern_routes.png");
+    writePattern(*gpu, png, w, h);
+    auto fast = material::TextureStore::create(*gpu->library);
+    auto compiled = material::TextureStore::create(*gpu->library);
+    if (!fast) FAIL(fast.error().toString());
+    if (!compiled) FAIL(compiled.error().toString());
+    (*compiled)->setSrgbFastPath(false);
+    const uint32_t a = (*fast)->request(png.string(), "srgb_texture");
+    const uint32_t b = (*compiled)->request(png.string(), "srgb_texture");
+    REQUIRE((*fast)->commit());
+    REQUIRE((*compiled)->commit());
+    REQUIRE((*fast)->info(a).loaded);
+    REQUIRE((*compiled)->info(b).loaded);
+    std::printf("  fast: %s; compiled: %s\n", (*fast)->info(a).decode.c_str(), (*compiled)->info(b).decode.c_str());
+    CHECK((*fast)->info(a).decode == "srgb view");
+    CHECK((*compiled)->info(b).decode != "srgb view");
+    const gpu::Texture& eight = (*fast)->slotTexture(0);
+    const gpu::Texture& half = (*compiled)->slotTexture(0);
+    CHECK(eight.desc().format == rhi::Format::RGBA8Unorm);
+    CHECK(half.desc().format == rhi::Format::RGBA16Float);
+    REQUIRE(eight.mipCount() == half.mipCount());
+    auto agree = gpu::ComputeKernel::create(*gpu->library, "athenea/test/material_textures", "materialLevelsAgree");
+    REQUIRE(agree);
+    for (const uint32_t mip : {0u, eight.mipCount() - 1}) {
+        // Level 0 is the file through two decodes: within 1/255 in light
+        // (measured 4.9e-4). A mip is light averaged and then stored again,
+        // in 8-bit sRGB on the fast route: half a code there is up to
+        // 0.5/255 * 2.4 in light near white (measured 4.9e-3 at 1x1).
+        const float tolerance = mip == 0 ? 1.0F / 255.0F : 2.0F / 255.0F;
+        // The 8-bit texture as materials see it: through an sRGB view.
+        rhi::TextureViewDesc srgbDesc;
+        srgbDesc.format = rhi::Format::RGBA8UnormSrgb;
+        srgbDesc.subresourceRange.layer = 0;
+        srgbDesc.subresourceRange.layerCount = 1;
+        srgbDesc.subresourceRange.mip = mip;
+        srgbDesc.subresourceRange.mipCount = 1;
+        rhi::ComPtr<rhi::ITextureView> decoded;
+        REQUIRE(SLANG_SUCCEEDED(gpu->device->rhi()->createTextureView(eight.rhi(), srgbDesc, decoded.writeRef())));
+        auto light = half.view(mip);
+        REQUIRE(light);
+        gpu::Buffer counts = test::uintBuffer(*gpu->device, 3, "counts");
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            agree->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["level"].setBinding(decoded.get());
+                cursor["other"].setBinding((*light).get());
+                cursor["counts"].setBinding(counts.rhi());
+                cursor["params"]["width"].setData(eight.width(mip));
+                cursor["params"]["height"].setData(eight.height(mip));
+                cursor["params"]["tolerance"].setData(tolerance);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        uint32_t c[3] = {};
+        REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+        float worst = 0.0F;
+        std::memcpy(&worst, &c[1], sizeof(worst));
+        std::printf("  level %u: %u texels, worst %.2e in light, %u beyond %.0f/255\n", mip, c[0], double(worst), c[2],
+                    double(tolerance * 255.0F));
+        CHECK(c[0] == eight.width(mip) * eight.height(mip));
+        CHECK(c[2] == 0);
+        CHECK(worst < tolerance);
+    }
+}
+
+// Not a check: how long a commit takes, by route. 2048 x 2048 files, eight at
+// a time; the first of each route pays for the config and the compile.
+TEST_CASE("texture commit time", "[.timing]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const uint32_t w = 2048, h = 2048, n = 8;
+    std::vector<fs::path> eight, sixteen;
+    for (uint32_t k = 0; k < n; ++k) {
+        eight.push_back(scratch("timing8_" + std::to_string(k) + ".png"));
+        writePattern(*gpu, eight.back(), w, h);
+        // The same bytes, as half floats in an EXR: a file of another depth
+        // for the timing, not a picture.
+        sixteen.push_back(scratch("timing16_" + std::to_string(k) + ".exr"));
+        HioImageSharedPtr in = HioImage::OpenForReading(eight.back().string());
+        REQUIRE(in);
+        std::vector<uint8_t> bytes(size_t{w} * h * 4);
+        HioImage::StorageSpec spec;
+        spec.width = int(w);
+        spec.height = int(h);
+        spec.depth = 1;
+        spec.format = in->GetFormat();
+        spec.flipped = false;
+        spec.data = bytes.data();
+        REQUIRE(in->Read(spec));
+        HioImageSharedPtr out = HioImage::OpenForWriting(sixteen.back().string());
+        spec.width = int(w / 2);
+        spec.format = HioFormatFloat16Vec4;
+        REQUIRE(out->Write(spec));
+    }
+    const auto time = [&](const char* label, const std::vector<fs::path>& files, const char* space, bool fastPath) {
+        auto store = material::TextureStore::create(*gpu->library);
+        REQUIRE(store);
+        (*store)->setSrgbFastPath(fastPath);
+        for (const fs::path& f : files) (void)(*store)->request(f.string(), space);
+        const auto t0 = std::chrono::steady_clock::now();
+        auto loaded = (*store)->commit();
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        REQUIRE(loaded);
+        std::printf("  %s: %zu files in %.1f ms (%.1f ms each)\n", label, *loaded, ms, ms / double(*loaded));
+    };
+    for (int round = 0; round < 3; ++round) {
+        time("8-bit srgb (fast path)", eight, "srgb_texture", true);
+        time("8-bit raw", eight, "raw", true);
+        time("16-bit srgb", sixteen, "srgb_texture", true);
+        time("8-bit srgb (compiled function)", eight, "srgb_texture", false);
+        time("8-bit acescg", eight, "acescg", true);
+    }
 }

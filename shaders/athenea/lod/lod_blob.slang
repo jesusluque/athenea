@@ -21,8 +21,11 @@ public Blob blobOf(float4 p, uint row0, uint row1, uint row2, uint row3) {
     b.opacity = p.w;
     b.scale = exp(float3(lowHalf(row1), highHalf(row1), lowHalf(row2)));
     b.axes = transpose(axesOfQuaternion(decodeQuaternion(row0)));   // its columns are the axes
-    // The shape keeps the base colour itself, 0.5 + SH0 * dc (splat_decode).
-    b.colour = saturate(float3(highHalf(row2), lowHalf(row3), highHalf(row3)));
+    // The shape keeps the base colour itself, 0.5 + SH0 * dc (splat_decode),
+    // in the cloud's own space: a capture's sRGB, or the linear light of a
+    // conversion (GpuSplats::linear), which is not bounded by one -- a lit
+    // bake's highlight is 3 -- and is compared as it is, not clipped.
+    b.colour = max(float3(highHalf(row2), lowHalf(row3), highHalf(row3)), float3(0.0));
     return b;
 }
 

@@ -189,7 +189,6 @@ struct RenderSettings {
     enum class Depth { Mean, Threshold };
     Depth    depth = Depth::Mean;
     float    depthThreshold = 0.5F;
-    bool     linearise = true;
     /// CRYPTOMATTE. Keep, beside the colour, which prims covered each pixel
     /// and by how much: `RenderTargets::crypto`, the `CryptoObject` layers of
     /// the Cryptomatte specification. Only the clouds that carry per-gaussian

@@ -14,8 +14,9 @@
 //
 //   records     `perRecord` floats a gaussian, `io::RawSplats`' layout as
 //               `athenea mesh2splat` declares it (the canonical fourteen, then
-//               metallic, roughness, transmission and the shading normal;
-//               the harmonics after it are zeros until the bake writes them)
+//               metallic, roughness, transmission, the shading normal and
+//               the emission -- zeros where the stage emits nothing; the
+//               harmonics after it are zeros until the bake writes them)
 //   rays        three float4 a gaussian, the bake's own layout
 //               (`technique::BakePoints`): the point of the surface under it,
 //               w left for the ray's offset (mesh2splat_span), that
@@ -39,7 +40,7 @@ struct GatherParams {
     uint displaced;       ///< the picture carries the flat surface and the relief
     uint carried;         ///< and the joints
     uint overArea;        ///< the footprint goes to the bake (a simplified block)
-    uint pad0;
+    uint emits;           ///< the picture's last entry a gaussian is the light it gives off
     uint pad1;
 };
 
@@ -90,9 +91,14 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     records[at + 17] = shading.x;   // the shading normal
     records[at + 18] = shading.y;
     records[at + 19] = shading.z;
+    // What it gives off: the record's last entry, where the stage emits.
+    const float4 emitted = gather.emits != 0 ? entryOf(splat, gather.recordEntries - 1) : float4(0.0);
+    records[at + 20] = emitted.x;
+    records[at + 21] = emitted.y;
+    records[at + 22] = emitted.z;
     // The harmonics' room, zero until a bake writes it: a cloud that is not
     // baked declares none, and one whose bake found nothing keeps these.
-    for (uint k = 20; k < gather.perRecord; ++k) {
+    for (uint k = 23; k < gather.perRecord; ++k) {
         records[at + k] = 0.0;
     }
 

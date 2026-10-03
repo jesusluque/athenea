@@ -167,10 +167,16 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
             s.thinWalled = {std::as_bytes(std::span<const int>(thin.cdata(), thin.size())), false, false};
         }
     }
+    s.linear = a.linear;
     // The shading normal: three floats a gaussian, or nothing.
     s.normals = streamOf(a.normals);
     if (s.normals.values() < uint64_t{s.count} * 3) {
         s.normals = {};
+    }
+    // The radiance it gives off: three floats a gaussian, or nothing.
+    s.emission = streamOf(a.emission);
+    if (s.emission.values() < uint64_t{s.count} * 3) {
+        s.emission = {};
     }
     // Which ways out are open: bits, like the ids, and only beside a transfer.
     if (!s.transferDirect.empty() && a.shadowBits.IsHolding<pxr::VtIntArray>()) {

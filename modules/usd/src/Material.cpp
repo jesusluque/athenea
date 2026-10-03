@@ -188,22 +188,6 @@ void matchDeclaredTypes(const MaterialX::DocumentPtr& document) {
     }
 }
 
-/// What MaterialX calls the colour space USD named, or empty for one this
-/// does not know.
-std::string mtlxColourSpace(const TfToken& usd) {
-    const std::string& name = usd.GetString();
-    if (name == "sRGB" || name == "srgb_texture" || name == "srgb_rec709" || name == "sRGB - Texture") {
-        return "srgb_texture";
-    }
-    if (name == "raw" || name == "Raw" || name == "lin_rec709" || name == "linear") {
-        return "lin_rec709";
-    }
-    if (name == "auto") {
-        return "auto";   // not MaterialX's: read by MaterialCompiler, and by nothing else
-    }
-    return {};
-}
-
 /// The node named `name`, wherever it sits in the document.
 MaterialX::NodePtr nodeNamed(const MaterialX::DocumentPtr& doc, const std::string& name) {
     if (const MaterialX::NodePtr direct = doc->getNode(name)) {
@@ -235,7 +219,7 @@ MaterialX::NodePtr nodeNamed(const MaterialX::DocumentPtr& doc, const std::strin
 /// before, and the scene index for this one thing, which is then written onto
 /// the MaterialX input the document ended up with. Nothing is transformed
 /// here: `material::MaterialCompiler` reads the attribute and `TextureStore`
-/// does the decode on the device.
+/// resolves the name and does the decode on the device.
 void applyColourSpaces(HdSceneDelegate* sceneDelegate, const SdfPath& id,
                        const MaterialX::DocumentPtr& doc) {
     const HdSceneIndexBaseRefPtr index = sceneDelegate->GetRenderIndex().GetTerminalSceneIndex();
@@ -274,7 +258,11 @@ void applyColourSpaces(HdSceneDelegate* sceneDelegate, const SdfPath& id,
                 if (!space) {
                     continue;
                 }
-                const std::string mtlx = mtlxColourSpace(space->GetTypedValue(0.0F));
+                // As USD names it: MaterialX's names, USD's GfColorSpaceNames,
+                // a config's own, or "auto" (read by MaterialCompiler, and by
+                // nothing else). What it means is resolved where the file is
+                // read (colour::ColourNames, in TextureStore), by one table.
+                const std::string mtlx = space->GetTypedValue(0.0F).GetString();
                 MaterialX::InputPtr input = mtlx.empty() ? nullptr : mxNode->getInput(parameterName.GetString());
                 if (input) {
                     input->setColorSpace(mtlx);

@@ -61,7 +61,7 @@ namespace {
 /// buffer holding records `first` to `first + n`, from wherever they are.
 using RecordSlice = std::function<Result<gpu::Buffer>(uint32_t first, uint32_t n)>;
 
-Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e, uint32_t count,
+Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e, uint32_t count, bool linear,
                         const RecordSlice& slice, const std::filesystem::path& path,
                         const ExportOptions& options) {
     if (count == 0) {
@@ -87,6 +87,10 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     // as the positions are where the file is right-up-back.
     VtVec3fArray normals;
     const bool withNormals = e.normal != io::SplatEncoding::kNoField;
+    // The radiance each gives off, as the kernel leaves it: linear, nothing
+    // below zero.
+    VtVec3fArray emissions;
+    const bool withEmission = e.emission != io::SplatEncoding::kNoField;
     const bool pbr = e.metallic != io::SplatEncoding::kNoField ||
                      e.roughness != io::SplatEncoding::kNoField ||
                      e.transmission != io::SplatEncoding::kNoField;
@@ -108,7 +112,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto coeff = buffer(device, uint64_t{n} * perRecord, 16, "export.coefficients");
         auto normal = buffer(device, withNormals ? n : 1, 16, "export.normal");
         auto material = buffer(device, pbr ? n : 1, 16, "export.pbr");
-        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material) {
+        auto emitted = buffer(device, withEmission ? n : 1, 16, "export.emission");
+        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material || !emitted) {
             return Error(ErrorCode::OutOfMemory, "cannot allocate export buffers");
         }
         gpu::CommandBatch batch(device);
@@ -120,6 +125,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             cursor["coefficients"].setBinding(coeff->rhi());
             cursor["normalOut"].setBinding(normal->rhi());
             cursor["pbrOut"].setBinding(material->rhi());
+            cursor["emissionOut"].setBinding(emitted->rhi());
             scene::setDecodeParams(cursor, e, n, 0, keep, 1);
         });
         ATHENEA_TRY(batch.submit(true));
@@ -129,7 +135,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto co = coeff->readAll<float>(device);
         auto no = normal->readAll<float>(device);
         auto pb = material->readAll<float>(device);
-        if (!po || !ro || !sv || !co || !no || !pb) {
+        auto eo = emitted->readAll<float>(device);
+        if (!po || !ro || !sv || !co || !no || !pb || !eo) {
             return Error(ErrorCode::DeviceFailure, "cannot read export values back");
         }
         for (uint32_t i = 0; i < n; ++i) {
@@ -161,6 +168,10 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             if (withNormals) {
                 const float* nn = no->data() + size_t{i} * 4;
                 normals.push_back(GfVec3f(nn[0], nn[1], nn[2]));
+            }
+            if (withEmission) {
+                const float* ee = eo->data() + size_t{i} * 4;
+                emissions.push_back(GfVec3f(ee[0], ee[1], ee[2]));
             }
             if (there) {
                 for (int axis = 0; axis < 3; ++axis) {
@@ -226,6 +237,16 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .CreatePrimvar(TfToken("primvars:athenea:splat:normal"), SdfValueTypeNames->Normal3fArray,
                            UsdGeomTokens->vertex)
             .Set(VtValue(normals));
+    }
+
+    // THE LIGHT EACH GAUSSIAN GIVES OFF BY ITSELF (AtheneaSplatLightingAPI):
+    // color3f, linear radiance, what the material's emission was where it
+    // stood. Written only where the conversion met something that emits.
+    if (withEmission) {
+        UsdGeomPrimvarsAPI(splats.GetPrim())
+            .CreatePrimvar(TfToken("primvars:athenea:splat:emission"), SdfValueTypeNames->Color3fArray,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(emissions));
     }
 
     // WHICH PRIM EACH GAUSSIAN CAME FROM (AtheneaSplatCryptomatteAPI). One id a
@@ -301,6 +322,13 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         static const TfToken kIor("primvars:athenea:splat:ior");
         splats.GetPrim().CreateAttribute(kIor, SdfValueTypeNames->Float, false).Set(options.ior);
     }
+    if (options.linear || linear || e.colour == io::SplatEncoding::Colour::LinearLight) {
+        // Its colours are linear light, which is what every cloud is blended
+        // in; without this a reader takes them for a capture's sRGB and
+        // decodes them a second time.
+        static const TfToken kLinear("primvars:athenea:splat:linear");
+        splats.GetPrim().CreateAttribute(kLinear, SdfValueTypeNames->Bool, true).Set(true);
+    }
     if (options.litBody) {
         // Its colours are light, not an albedo: what a frame adds is the
         // reflection, which is the part a single colour cannot hold.
@@ -319,7 +347,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             TfToken("primvars:athenea:splat:roughness"),    TfToken("primvars:athenea:splat:transmission"),
             TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
             TfToken("primvars:athenea:splat:thinWalled"),   TfToken("primvars:athenea:splat:shadowBits"),
-            TfToken("primvars:athenea:splat:normal")};
+            TfToken("primvars:athenea:splat:normal"),       TfToken("primvars:athenea:splat:linear"),
+            TfToken("primvars:athenea:splat:emission")};
         const UsdPrim prim = splats.GetPrim();
         if (std::any_of(std::begin(kLighting), std::end(kLighting),
                         [&](const TfToken& name) { return prim.GetAttribute(name).HasAuthoredValue(); })) {
@@ -445,7 +474,7 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
     }
     gpu::Device& device = library.device();
     return writeStage(
-        library, e, raw.count,
+        library, e, raw.count, raw.linear,
         [&](uint32_t first, uint32_t n) {
             return buffer(device, uint64_t{n} * e.floatsPerRecord, 4, "export.raw",
                           raw.records.data() + size_t{first} * e.floatsPerRecord);
@@ -462,7 +491,7 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const DeviceSp
     }
     gpu::Device& device = library.device();
     return writeStage(
-        library, e, records.count,
+        library, e, records.count, records.linear,
         [&](uint32_t first, uint32_t n) -> Result<gpu::Buffer> {
             // The whole cloud in one slice is the buffer itself; a slice of
             // a larger one is copied out of it on the device.
@@ -566,32 +595,47 @@ Result<io::RawSplats> readParticleFieldRecords(const std::filesystem::path& path
         return Error::make(ErrorCode::InvalidArgument, "'{}': {} harmonic coefficients for {} gaussians at degree {}",
                            field.GetPath().GetString(), coefficients.size(), n, degree);
     }
-    // The shading normal, where the field keeps one: three floats more a
-    // record, after the harmonics.
-    VtVec3fArray normals;
-    {
-        const UsdGeomPrimvar primvar = UsdGeomPrimvarsAPI(field.GetPrim()).GetPrimvar(TfToken("athenea:splat:normal"));
+    // Three floats a gaussian of a primvar, where the field keeps one: a
+    // shorter array is no array.
+    const auto threes = [&](const char* name) {
+        VtVec3fArray out;
+        const UsdGeomPrimvar primvar = UsdGeomPrimvarsAPI(field.GetPrim()).GetPrimvar(TfToken(name));
         VtValue value;
         if (primvar && primvar.Get(&value, at)) {
             if (value.IsHolding<VtVec3fArray>()) {
-                normals = value.UncheckedGet<VtVec3fArray>();
+                out = value.UncheckedGet<VtVec3fArray>();
             } else if (value.IsHolding<VtVec3hArray>()) {
                 for (const GfVec3h& h : value.UncheckedGet<VtVec3hArray>()) {
-                    normals.push_back(GfVec3f(h));
+                    out.push_back(GfVec3f(h));
                 }
             }
         }
-        if (normals.size() != n) {
-            normals.clear();   // a shorter array is no array
+        if (out.size() != n) {
+            out.clear();
         }
-    }
+        return out;
+    };
+    // The shading normal and the radiance given off, where the field keeps
+    // them: three floats more a record each, after the harmonics.
+    const VtVec3fArray normals = threes("athenea:splat:normal");
+    const VtVec3fArray emissions = threes("athenea:splat:emission");
     io::RawSplats raw;
     raw.source = path.string();
+    // The space its colours are in: light where the stage says so, the sRGB
+    // of a capture where it does not.
+    {
+        bool linear = false;
+        const UsdAttribute said = field.GetPrim().GetAttribute(TfToken("primvars:athenea:splat:linear"));
+        raw.linear = said && said.Get(&linear) && linear;
+    }
     io::SplatEncoding& e = raw.encoding;
     const uint32_t keep = perSplat - 1;
-    e.floatsPerRecord = 14 + 3 * keep + (normals.empty() ? 0 : 3);
+    e.floatsPerRecord = 14 + 3 * keep + (normals.empty() ? 0 : 3) + (emissions.empty() ? 0 : 3);
     if (!normals.empty()) {
         e.normal = 14 + 3 * keep;
+    }
+    if (!emissions.empty()) {
+        e.emission = 14 + 3 * keep + (normals.empty() ? 0 : 3);
     }
     e.x = 0; e.y = 1; e.z = 2; e.opacity = 3;
     e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
@@ -627,6 +671,11 @@ Result<io::RawSplats> readParticleFieldRecords(const std::filesystem::path& path
             r[e.normal] = normals[i][0];
             r[e.normal + 1] = normals[i][1];
             r[e.normal + 2] = normals[i][2];
+        }
+        if (!emissions.empty()) {
+            r[e.emission] = emissions[i][0];
+            r[e.emission + 1] = emissions[i][1];
+            r[e.emission + 2] = emissions[i][2];
         }
     }
     if (where != nullptr) {

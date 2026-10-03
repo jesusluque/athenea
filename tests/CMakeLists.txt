@@ -1,6 +1,6 @@
 include(Catch)
 
-# athenea_test(<name> SOURCES ... LIBS ... [LABELS ...])
+# athenea_test(<name> SOURCES ... LIBS ... [LABELS ...] [FIXTURES ...])
 #
 # A Catch2 executable, registered with ctest case by case. GPU tests skip when
 # the machine has no device; they never fall back to anything else. Every
@@ -11,7 +11,7 @@ include(Catch)
 # (rasterisation, ray queries) it says in its skip message, which
 # scripts/remote-test.sh tabulates.
 function(athenea_test name)
-    cmake_parse_arguments(ARG "" "" "SOURCES;LIBS;ENVIRONMENT_MODIFICATION;LABELS;FIXTURES_REQUIRED" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "SOURCES;LIBS;ENVIRONMENT_MODIFICATION;LABELS;FIXTURES" ${ARGN})
     add_executable(${name} ${ARG_SOURCES})
     target_link_libraries(${name} PRIVATE Catch2::Catch2WithMain ${ARG_LIBS})
     athenea_set_target_defaults(${name})
@@ -28,9 +28,11 @@ function(athenea_test name)
     if(ARG_ENVIRONMENT_MODIFICATION)
         list(APPEND properties ENVIRONMENT_MODIFICATION "${ARG_ENVIRONMENT_MODIFICATION}")
     endif()
-    # What a binary reads that another test writes first (a command's output).
-    if(ARG_FIXTURES_REQUIRED)
-        list(APPEND properties FIXTURES_REQUIRED "${ARG_FIXTURES_REQUIRED}")
+    # What ctest runs first: a command whose output the cases read (one
+    # fixture a binary, for the same quoting reason as the label).
+    if(ARG_FIXTURES)
+        list(GET ARG_FIXTURES 0 fixture)
+        list(APPEND properties FIXTURES_REQUIRED "${fixture}")
     endif()
     catch_discover_tests(${name}
         PROPERTIES ${properties}
@@ -44,6 +46,10 @@ athenea_test(athenea_core_tests
 athenea_test(athenea_gpu_tests
     SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp
     LIBS athenea::gpu athenea::render)
+
+athenea_test(athenea_colour_tests
+    SOURCES colour/test_colour.cpp
+    LIBS athenea::colour)
 
 athenea_test(athenea_scene_tests
     SOURCES scene/test_loading.cpp
@@ -100,7 +106,9 @@ athenea_test(athenea_usd_tests
     SOURCES usd/test_usd.cpp usd/test_migrate.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
-target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}")
+target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
+                           ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+                           ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive")
 target_compile_options(athenea_usd_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
                        -Wno-double-promotion -Wno-cast-align)
 set_target_properties(athenea_usd_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
@@ -229,9 +237,69 @@ athenea_test(athenea_mesh2splat_tests
     SOURCES mesh2splat/test_outputs.cpp
     LIBS athenea::usd athenea::lod athenea::render athenea::scene
     LABELS gpe
-    FIXTURES_REQUIRED mesh2splat_outputs)
+    FIXTURES mesh2splat_outputs)
+add_dependencies(athenea_mesh2splat_tests athenea athenea_aofx_mesh2splat)
 target_compile_definitions(athenea_mesh2splat_tests PRIVATE ATHENEA_M2S_OUTPUTS="${ATHENEA_M2S_OUTPUTS}")
 set_target_properties(athenea_mesh2splat_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
+# What a converted lamp gives off. Two emissive quads -- a constant OpenPBR
+# luminance, and a glTF emissive map times its strength -- converted relit
+# (--no-bake), transferred (--transfer) and baked; then a hidden case of the
+# USD tests draws each against its mesh, raster and traced, and says whether
+# the cloud gives off what the mesh does (and the baked one not twice).
+set(ATHENEA_EMISSIVE_DIR ${CMAKE_CURRENT_BINARY_DIR}/emissive)
+foreach(variant constant mapped)
+    set(source ${CMAKE_CURRENT_SOURCE_DIR}/data/emissive_quad.usda)
+    if(variant STREQUAL "mapped")
+        set(source ${CMAKE_CURRENT_SOURCE_DIR}/data/emissive_quad_mapped.usda)
+    endif()
+    foreach(mode relit transfer baked)
+        set(flags)
+        if(mode STREQUAL "relit")
+            set(flags --no-bake)
+        elseif(mode STREQUAL "transfer")
+            set(flags --transfer --bake-samples 16)
+        else()
+            set(flags --bake-samples 16 --bake-degree 0)
+        endif()
+        add_test(NAME mesh2splat_emissive_${variant}_${mode}
+            COMMAND athenea mesh2splat ${source} ${flags} --no-camera --resolution 256
+                    -o ${ATHENEA_EMISSIVE_DIR}/${variant}_${mode}.usda)
+        set_tests_properties(mesh2splat_emissive_${variant}_${mode} PROPERTIES
+            ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+            FIXTURES_SETUP emissive_clouds
+            LABELS gpe)
+    endforeach()
+endforeach()
+add_test(NAME emissive_conversions_render_like_the_mesh
+    COMMAND athenea_usd_tests "[emissive_conversion]")
+set_tests_properties(emissive_conversions_render_like_the_mesh PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED emissive_clouds
+    LABELS gpe)
+
+# WHAT A CONVERTED SURFACE COVERS: the planes of tests/data/coverage converted
+# once (the fixture), then measured against the meshes they came from.
+add_test(NAME mesh2splat_coverage
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/coverage/planes.usda --prim /Planes
+            --no-bake --no-camera --resolution 512 -o ${CMAKE_CURRENT_BINARY_DIR}/coverage_planes.usdc)
+set_tests_properties(mesh2splat_coverage PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_SETUP coverage_planes
+    LABELS gpe)
+athenea_test(athenea_coverage_tests
+    SOURCES usd/test_coverage.cpp
+    LIBS athenea::usd
+    LABELS gpe
+    FIXTURES coverage_planes)
+add_dependencies(athenea_coverage_tests hdAthenea athenea athenea_aofx_mesh2splat)
+target_compile_definitions(athenea_coverage_tests PRIVATE
+    ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
+    ATHENEA_COVERAGE_STAGE="${CMAKE_CURRENT_SOURCE_DIR}/data/coverage/planes.usda"
+    ATHENEA_COVERAGE_CLOUD="${CMAKE_CURRENT_BINARY_DIR}/coverage_planes.usdc")
+target_compile_options(athenea_coverage_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
+                       -Wno-double-promotion)
+set_target_properties(athenea_coverage_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
+                      BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 # One TBB in the process: OpenUSD's oneTBB, which OIDN (built without its CPU
 # device) and everything else share.

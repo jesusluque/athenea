@@ -16,7 +16,7 @@ struct BakeCheckParams {
     uint   pad0;
     uint   pad1;
     float4 direction;    // xyz: from the eye to the point; w: the relative tolerance
-    float4 expected;     // xyz: the light it sends, in the space a cloud is blended in
+    float4 expected;     // xyz: the light it sends, linear, as a cloud is blended
 };
 
 StructuredBuffer<float4>        coefficients;
@@ -57,11 +57,10 @@ void bakeCheck(uint3 tid: SV_DispatchThreadID) {
 // THE SERIES IS BOUNDED FROM EVERY SIDE. A bake is fitted over the half of
 // the sphere the surface faces and read by a frame from any direction: edge
 // on, and from behind for a disc. Per point, the series is evaluated over the
-// whole sphere, decoded the way a cloud decodes it, and the largest light it
+// whole sphere, read the way a cloud reads it, and the largest light it
 // gives anywhere is kept. A fit that extrapolates past what any path saw --
-// the bands of a dark, glossy surface multiplied by the encoding's slope, or
-// read on the far half it never fitted -- shows up as light no light in the
-// scene sends.
+// read on the far half it never fitted, or swung past the brightest sample --
+// shows up as light no light in the scene sends.
 struct BakeBoundParams {
     uint  count;    // points
     uint  planes;   // coefficients each
@@ -94,11 +93,12 @@ void bakeBound(uint3 tid: SV_DispatchThreadID) {
             for (uint ai = 0; ai < kAzimuths; ++ai) {
                 const float phi = 6.28318530718 * (float(ai) + 0.5) / float(kAzimuths);
                 const float3 d = float3(r * cos(phi), r * sin(phi), z);
-                float3 encoded = float3(0.5) + kSH0 * coefficients[base].xyz;
+                float3 series = float3(0.5) + kSH0 * coefficients[base].xyz;
                 for (uint k = 1; k < boundParams.planes; ++k) {
-                    encoded += coefficients[base + k].xyz * shBasisValue(k, d);
+                    series += coefficients[base + k].xyz * shBasisValue(k, d);
                 }
-                const float3 light = srgbToLinear(max(encoded, float3(0.0)));
+                // Light already: a bake is linear, as every cloud is blended.
+                const float3 light = max(series, float3(0.0));
                 pointInvalid = pointInvalid || any(isnan(light)) || any(isinf(light));
                 pointLargest = max(pointLargest, max(light.r, max(light.g, light.b)));
             }

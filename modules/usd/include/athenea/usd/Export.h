@@ -67,6 +67,12 @@ struct ExportOptions {
     /// the material's body, not an albedo, so a frame that relights this
     /// cloud adds the polish and nothing else. What `athenea mesh2splat` bakes.
     bool     litBody = false;
+    /// Writes `primvars:athenea:splat:linear = 1`: the colours are linear
+    /// light, not the sRGB a capture was trained in, and are drawn as they
+    /// are. Also written whenever the records say so (`io::RawSplats::linear`,
+    /// or colours encoded as `LinearLight`), so a cloud read back and written
+    /// again keeps its space.
+    bool     linear = false;
     /// Which way the stage the gaussians came from stood: 'y' or 'z'. They
     /// are in that stage's world space, so a cloud written as Y-up when they
     /// were laid out Z-up lies on its side -- which is what every asset out
@@ -122,6 +128,7 @@ struct DeviceSplatRecords {
     uint32_t          count = 0;
     io::SplatEncoding encoding;
     gpu::Buffer       records;   ///< count * encoding.floatsPerRecord floats
+    bool              linear = false;   ///< as io::RawSplats::linear
 };
 
 /// The same stage from records on the device.

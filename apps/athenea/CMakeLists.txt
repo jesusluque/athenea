@@ -24,6 +24,9 @@ if(TARGET MaterialXCore)
 endif()
 # Bundles built in this tree are found without a --path.
 target_compile_definitions(athenea PRIVATE ATHENEA_AOFX_BUNDLE_DIR="${AOFX_BUNDLE_DIR}")
+# The one version, the project's (the top-level project() line): what
+# `athenea --version` and `athenea info` print and what a release is tagged.
+target_compile_definitions(athenea PRIVATE ATHENEA_VERSION="${athenea_VERSION}")
 if(TARGET athenea_aofx_invert)
     add_dependencies(athenea athenea_aofx_invert athenea_aofx_mesh2splat)
 endif()
