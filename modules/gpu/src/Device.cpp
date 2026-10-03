@@ -4,6 +4,8 @@
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
+#include <algorithm>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -316,7 +318,133 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
     caps.convertingStores = device->backend_ != Backend::CUDA;       // and this
 
     log::info("GPU: {} on {}", caps.apiName, caps.adapterName);
+
+    // The memory budget: what Metal recommends, unless the environment says
+    // otherwise -- which is how a run is held below what other jobs on the
+    // same GPU leave it, and how a test runs out on purpose.
+    uint64_t budget = 0;
+    std::string budgetFrom = "none: the backend does not say";
+    if (device->backend_ == Backend::Metal) {
+        budget = platform::metalRecommendedWorkingSet(device->native().device.value != 0
+                                                          ? reinterpret_cast<void*>(device->native().device.value)
+                                                          : nullptr);
+        budgetFrom = "Metal's recommended working set";
+    }
+    if (const std::string fromEnv = platform::env("ATHENEA_GPU_BUDGET"); !fromEnv.empty()) {
+        char* end = nullptr;
+        const unsigned long long mib = std::strtoull(fromEnv.c_str(), &end, 10);
+        if (end != nullptr && *end == '\0' && mib > 0) {
+            budget = uint64_t{mib} << 20;
+            budgetFrom = "ATHENEA_GPU_BUDGET";
+        } else {
+            log::warn("ATHENEA_GPU_BUDGET: '{}' is not a size in MiB", fromEnv);
+        }
+    }
+    device->memoryBudget_.store(budget);
+    const uint64_t headroom = device->systemHeadroom();
+    const std::string system = headroom == ~uint64_t{0}
+                                   ? std::string()
+                                   : std::format("; the system has {} MiB free past its reserve", headroom >> 20);
+    if (budget != 0) {
+        log::info("GPU memory budget: {} MiB ({}){}", budget >> 20, budgetFrom, system);
+    } else {
+        log::info("GPU memory budget: {}{}", budgetFrom, system);
+    }
     return device;
+}
+
+void Device::releaseFreed() {
+    waitIdle();
+    if (queue_ != nullptr) {
+        beforeSubmit();
+        if (auto submitted = queueResult(queue_->submit(rhi::SubmitDesc{}), "the work submitted"); !submitted) {
+            const std::lock_guard<std::mutex> held(queueErrorGuard_);
+            if (!queueError_.has_value()) {
+                queueError_ = std::move(submitted).error();
+            }
+        }
+    }
+    waitIdle();
+}
+
+uint64_t Device::memoryInUse() const {
+    if (backend_ != Backend::Metal) {
+        return 0;
+    }
+    const NativeHandles handles = native();
+    return handles.device.value != 0 ? platform::metalAllocatedSize(reinterpret_cast<void*>(handles.device.value)) : 0;
+}
+
+namespace {
+
+/// What a unified-memory device leaves the rest of the machine: the window
+/// server, the other processes. A machine that swapped its GPU's working set
+/// stopped drawing its windows, and the watchdog restarted it.
+constexpr uint64_t kSystemReserve = uint64_t{1536} << 20;
+
+}   // namespace
+
+uint64_t Device::systemHeadroom() const {
+    if (!caps_.unifiedMemory) {
+        return ~uint64_t{0};
+    }
+    const uint64_t physical = platform::availablePhysicalMemory();
+    if (physical == 0) {
+        return ~uint64_t{0};
+    }
+    return physical > kSystemReserve ? physical - kSystemReserve : 0;
+}
+
+uint64_t Device::memoryAvailable() const {
+    const uint64_t budget = memoryBudget();
+    uint64_t available = ~uint64_t{0};
+    if (budget != 0) {
+        const uint64_t used = memoryInUse();
+        available = used < budget ? budget - used : 0;
+    }
+    return std::min(available, systemHeadroom());
+}
+
+Result<void> Device::admit(uint64_t bytes, std::string_view what) const {
+    const uint64_t budget = memoryBudget();
+    if (budget != 0) {
+        const uint64_t used = memoryInUse();
+        if (bytes > budget || used > budget - bytes) {
+            return Error::make(ErrorCode::OutOfMemory,
+                               "{} ({} MiB) does not fit in the GPU's memory budget: {} of {} MiB in use",
+                               what, (bytes + (1u << 20) - 1) >> 20, used >> 20, budget >> 20);
+        }
+    }
+    // Unified memory is the machine's: past what it has free the system
+    // swaps, and a machine swapping the GPU's memory stops drawing windows.
+    if (const uint64_t headroom = systemHeadroom(); bytes > headroom) {
+        return Error::make(ErrorCode::OutOfMemory,
+                           "{} ({} MiB) does not fit in the memory the system has free: {} MiB, less {} MiB kept "
+                           "for the rest of the machine",
+                           what, (bytes + (1u << 20) - 1) >> 20, (headroom + kSystemReserve) >> 20,
+                           kSystemReserve >> 20);
+    }
+    return ok();
+}
+
+Result<void> Device::queueResult(SlangResult result, std::string_view what) {
+    if (SLANG_SUCCEEDED(result)) {
+        return ok();
+    }
+    if (result == SLANG_E_OUT_OF_MEMORY) {
+        return Error::make(ErrorCode::OutOfMemory, "the GPU ran out of memory running {}", what);
+    }
+    return Error::make(ErrorCode::DeviceFailure, "the GPU failed running {}", what);
+}
+
+Result<void> Device::takeQueueError() {
+    const std::lock_guard<std::mutex> held(queueErrorGuard_);
+    if (!queueError_.has_value()) {
+        return ok();
+    }
+    Error error = std::move(*queueError_);
+    queueError_.reset();
+    return error;
 }
 
 Device::~Device() {
@@ -357,7 +485,12 @@ ShaderCacheStats Device::shaderCacheStats() const {
 
 void Device::waitIdle() {
     if (queue_ != nullptr) {
-        queue_->waitOnHost();
+        if (auto waited = queueResult(queue_->waitOnHost(), "the work submitted"); !waited) {
+            const std::lock_guard<std::mutex> held(queueErrorGuard_);
+            if (!queueError_.has_value()) {
+                queueError_ = std::move(waited).error();
+            }
+        }
     }
 }
 

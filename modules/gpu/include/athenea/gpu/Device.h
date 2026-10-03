@@ -15,12 +15,16 @@
 // so the two share memory and nothing crosses between them.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <slang-rhi.h>
@@ -109,8 +113,50 @@ public:
         return searchPaths_;
     }
 
-    /// Blocks until everything submitted has run.
+    /// Blocks until everything submitted has run. A command buffer that
+    /// failed meanwhile is not lost: the next CommandBatch::submit reports it
+    /// (takeQueueError).
     void waitIdle();
+
+    /// waitIdle, and what was freed actually given back: on Metal slang-rhi
+    /// keeps a freed buffer in the device's residency set -- still resident,
+    /// still counted -- until the next submit commits the set, so an empty
+    /// one is submitted and waited for. What a caller that has just let go
+    /// of memory to make room does before it asks again.
+    void releaseFreed();
+
+    /// THE DEVICE'S MEMORY BUDGET: how many bytes this process may keep on
+    /// the device before it starts to hurt. $ATHENEA_GPU_BUDGET in MiB where
+    /// it is set, else Metal's recommended working set
+    /// (`recommendedMaxWorkingSetSize`); `setMemoryBudget` replaces either.
+    /// 0 where nothing says (CUDA and Vulkan without the variable), and then
+    /// nothing is held to one.
+    [[nodiscard]] uint64_t memoryBudget() const noexcept { return memoryBudget_.load(); }
+    /// What the device holds for this process now (Metal's
+    /// `currentAllocatedSize`); 0 where the backend does not say.
+    [[nodiscard]] uint64_t memoryInUse() const;
+    /// The budget less what is in use, and on unified memory no more than
+    /// systemHeadroom; UINT64_MAX where neither says.
+    [[nodiscard]] uint64_t memoryAvailable() const;
+    /// On unified memory (Apple silicon), the physical memory the system has
+    /// free now less 1.5 GiB kept for the rest of the machine: the budget
+    /// above is the device's, this is the machine's, and an allocation must
+    /// fit both. UINT64_MAX on a discrete device or where it cannot be read.
+    [[nodiscard]] uint64_t systemHeadroom() const;
+    /// A budget of the caller's: a host that shares the device, or a test
+    /// that wants to run out. 0 lifts it.
+    void setMemoryBudget(uint64_t bytes) noexcept { memoryBudget_.store(bytes); }
+    /// OutOfMemory when `bytes` more would take the device past its budget:
+    /// asked before an allocation, so a request that cannot fit fails as a
+    /// Result rather than as a command buffer the device refuses later.
+    [[nodiscard]] Result<void> admit(uint64_t bytes, std::string_view what) const;
+
+    /// A slang-rhi result from the queue as a Result: SLANG_E_OUT_OF_MEMORY
+    /// (a command buffer the device ran out of memory on, with the patch in
+    /// cmake/patches) is OutOfMemory, any other failure DeviceFailure.
+    [[nodiscard]] static Result<void> queueResult(SlangResult result, std::string_view what);
+    /// A failure waitIdle met and could not return, once.
+    [[nodiscard]] Result<void> takeQueueError();
 
     /// Called before this device submits anything to its queue.
     ///
@@ -136,6 +182,9 @@ private:
     rhi::ComPtr<rhi::ICommandQueue> queue_;
     rhi::ComPtr<slang::ISession>    session_;
     std::function<void()>           beforeSubmit_;
+    std::atomic<uint64_t>           memoryBudget_{0};
+    std::mutex                      queueErrorGuard_;
+    std::optional<Error>            queueError_;
 };
 
 /// Where the engine's own .slang files are: $ATHENEA_SHADER_DIR, then a

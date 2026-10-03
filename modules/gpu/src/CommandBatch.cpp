@@ -15,17 +15,23 @@ CommandBatch::~CommandBatch() {
 }
 
 Result<void> CommandBatch::submit(bool wait) {
+    // A command buffer that failed before this one -- the device out of
+    // memory -- is reported by the first submit or wait after it, whichever
+    // batch makes it: the work it fed is garbage, and the caller is told so
+    // rather than shown it.
+    Result<void> earlier = device_.takeQueueError();
     if (dirty_) {
         device_.beforeSubmit();
-        if (SLANG_FAILED(device_.queue()->submit(encoder_->finish()))) {
-            return Error(ErrorCode::DeviceFailure, "command submit failed");
-        }
+        const SlangResult submitted = device_.queue()->submit(encoder_->finish());
         encoder_ = device_.queue()->createCommandEncoder();
         dirty_ = false;
+        ATHENEA_TRY(earlier);
+        ATHENEA_TRY(Device::queueResult(submitted, "a command batch"));
     }
+    ATHENEA_TRY(earlier);
     if (wait) {
         device_.beforeSubmit();
-        device_.queue()->waitOnHost();
+        ATHENEA_TRY(Device::queueResult(device_.queue()->waitOnHost(), "a command batch"));
     }
     return ok();
 }
@@ -44,13 +50,14 @@ Result<void> CommandBatch::submitSignalling(rhi::IFence* fence, uint64_t value, 
     desc.signalFences = fences;
     desc.signalFenceValues = values;
     desc.signalFenceCount = 1;
-    if (SLANG_FAILED(device_.queue()->submit(desc))) {
-        return Error(ErrorCode::DeviceFailure, "command submit failed");
-    }
+    Result<void> earlier = device_.takeQueueError();
+    const SlangResult submitted = device_.queue()->submit(desc);
     encoder_ = device_.queue()->createCommandEncoder();
     dirty_ = false;
+    ATHENEA_TRY(earlier);
+    ATHENEA_TRY(Device::queueResult(submitted, "a command batch"));
     if (wait) {
-        device_.queue()->waitOnHost();
+        ATHENEA_TRY(Device::queueResult(device_.queue()->waitOnHost(), "a command batch"));
     }
     return ok();
 }

@@ -49,7 +49,7 @@ athenea_test(athenea_ui_tests
     LIBS athenea::ui)
 
 athenea_test(athenea_gpu_tests
-    SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp
+    SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp gpu/test_memory.cpp
     LIBS athenea::gpu athenea::render)
 
 athenea_test(athenea_colour_tests
