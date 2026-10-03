@@ -29,8 +29,7 @@ void addInfo(CLI::App& app) {
 
         auto device = gpu::Device::create(desc);
         if (!device) {
-            std::fprintf(stderr, "%s\n", device.error().toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(device.error());
         }
         const gpu::Caps& caps = (*device)->caps();
         const auto yes = [](bool b) { return b ? "yes" : "no"; };

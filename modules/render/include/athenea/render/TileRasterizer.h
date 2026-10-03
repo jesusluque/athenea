@@ -6,9 +6,12 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <vector>
 
 #include "athenea/core/Result.h"
+#include "athenea/gpu/AsyncReadback.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/algo/PrefixSum.h"
@@ -18,6 +21,7 @@
 #include "athenea/scene/GpuClouds.h"
 
 namespace athenea::gpu {
+class CommandBatch;
 class ShaderLibrary;
 }
 
@@ -198,6 +202,43 @@ struct RenderSettings {
     bool     cryptomatte = false;
     /// Wait after every stage so `FrameStats` times each one. Slower; for bench.
     bool     timeStages = false;
+    /// COUNT WHAT THE FRAME DID on the device -- why each culled splat was
+    /// culled, the most tiles one touched, what each cloud kept -- and copy
+    /// it out without waiting: `TileRasterizer::latestCounters` hands back
+    /// the newest frame the device has finished, tagged `countersTag`. Four
+    /// small dispatches and a copy; off, nothing is counted.
+    bool     countSplats = false;
+    uint64_t countersTag = 0;
+};
+
+/// WHAT A FRAME OF SPLATS DID, as the device counted it
+/// (splat_frame_counters.slang): read a frame or two after it was drawn.
+struct SplatCounters {
+    /// Clouds counted one by one; the rest are only in the totals.
+    static constexpr uint32_t kMaxClouds = 64;
+    static constexpr uint32_t kWords = 16 + 2 * kMaxClouds;
+    /// Why a splat was culled, in frame.slang's numbering.
+    enum Cull : uint32_t {
+        Unprojected = 0,   ///< a slot no splat projection wrote
+        Edit,              ///< removed by its prim's SplatEdit
+        Depth,             ///< nearer than the near plane or past the far one
+        Degenerate,        ///< a footprint of no area
+        Faint,             ///< under 1/255 of opacity once spread
+        Offscreen,         ///< its footprint lies outside the frame
+        NoTile,            ///< in the frame, but no tile meets its ellipse
+        Reasons,
+    };
+    uint64_t tag = 0;        ///< the counted frame's `RenderSettings::countersTag`
+    uint32_t slots = 0;      ///< splats counted
+    uint32_t visible = 0;    ///< kept: what the depth sort sorts
+    uint32_t pairs = 0;      ///< (tile, splat) pairs: what the tile sort sorts
+    uint32_t maxTiles = 0;   ///< the most tiles one splat touched
+    std::array<uint32_t, Reasons> culled{};
+    struct Cloud {
+        uint32_t visible = 0;
+        uint32_t pairs = 0;
+    };
+    std::vector<Cloud> clouds;   ///< by instance, in the order the frame was given them
 };
 
 struct FrameStats {
@@ -248,13 +289,26 @@ public:
                                             const RenderTargets* under = nullptr,
                                             const SplatLights* lights = nullptr);
 
+    /// The newest frame drawn with `RenderSettings::countSplats` that the
+    /// device has finished, or nothing yet. Never waits.
+    [[nodiscard]] std::optional<SplatCounters> latestCounters();
+
+    /// Gives back the buffers a frame grew into (projections, sort keys,
+    /// tile pairs), which the next frame makes again; from then on they
+    /// grow to what a frame needs and no further, rather than half as much
+    /// again. What a device that ran out of memory is asked to do first.
+    void releaseScratch();
+
 private:
+    [[nodiscard]] Result<void> countFrame(gpu::CommandBatch& batch, std::span<const SplatInstance> instances,
+                                          uint32_t splatSlots, uint32_t all);
     [[nodiscard]] Result<void> reserveSplats(uint32_t count);
     [[nodiscard]] Result<void> reservePairs(uint32_t count);
     [[nodiscard]] Result<void> reserveTargets(RenderTargets& targets, uint32_t width,
                                               uint32_t height, uint32_t tiles, bool crypto);
 
     gpu::Device*       device_ = nullptr;
+    gpu::ShaderLibrary* library_ = nullptr;
     gpu::PrefixSum     prefix_;
     gpu::RadixSort     sort_;
     gpu::ComputeKernel project_;
@@ -269,6 +323,7 @@ private:
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
 
+    bool     tight_ = false;   ///< grow to the need exactly (after releaseScratch)
     uint32_t splatCapacity_ = 0;
     uint32_t pairCapacity_ = 0;
     uint32_t tileCapacity_ = 0;
@@ -294,6 +349,11 @@ private:
     gpu::Buffer shadowFactors_;    ///< one float a (splat, light), where a relit cloud shadows
     gpu::ComputeKernel splatShadow_;
     bool        shadowsSupported_ = false;
+    /// The panel's counters (`countSplats`), made the first time they are asked for.
+    bool               countersMade_ = false;
+    gpu::ComputeKernel countersClear_, counters_, countersCloud_;
+    gpu::Buffer        counterWords_;
+    gpu::AsyncReadback counterReadback_;
 };
 
 }   // namespace athenea::render

@@ -31,6 +31,13 @@ struct SplatSkinInput {
     /// `(joint, weight)` float2s, `perSplat` of them a gaussian.
     const gpu::Buffer* influences = nullptr;
     uint32_t           perSplat = 4;
+    /// The weights' gradients across each gaussian, which is what makes its
+    /// frame follow the whole Jacobian of the blend and not only the blend of
+    /// the joints' linear parts: `perSplat - 1` words a gaussian, each two
+    /// halves (d w_k / d u, d w_k / d v) along its rest axes; the last
+    /// joint's is minus the sum. Null: a cloud converted without them, carried
+    /// by the blend's own part as before.
+    const gpu::Buffer* weightGradients = nullptr;
     /// Sixteen floats a joint, row major as `GfMatrix4f` holds them; they go
     /// over transposed, exactly as `geom::Skinner` sends a mesh's.
     const gpu::Buffer* skinningXforms = nullptr;

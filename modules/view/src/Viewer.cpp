@@ -29,6 +29,7 @@
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/technique/DisplayTransform.h"
+#include "athenea/ui/GaussianPanel.h"
 #include "athenea/usd/StageRenderer.h"
 #include "athenea/view/ImGuiRenderer.h"
 #include "athenea/view/Window.h"
@@ -277,6 +278,83 @@ bool combo(const char* label, int& index, std::span<const Choice> choices) {
     return changed;
 }
 
+/// A PANEL OF THE SHARED DESCRIPTION (athenea::ui), drawn with Dear ImGui: a
+/// collapsing header a section, a reading its label and its text, a note as
+/// the row's tooltip. What the iOS app draws with UIKit from the same table.
+void drawPanel(const ui::Panel& panel) {
+    for (const ui::Section& section : panel.sections) {
+        if (!section.isShown()) {
+            continue;
+        }
+        ImGui::PushID(section.id.c_str());
+        if (ImGui::CollapsingHeader(section.title.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+            for (const ui::Control& control : section.controls) {
+                if (!control.isShown()) {
+                    continue;
+                }
+                ImGui::PushID(control.id.c_str());
+                ImGui::BeginDisabled(!control.isEnabled());
+                switch (control.kind) {
+                case ui::Control::Kind::Reading: {
+                    const std::string text = control.reading ? control.reading() : std::string();
+                    if (control.label.empty()) {
+                        ImGui::Separator();
+                        ImGui::TextWrapped("%s", text.c_str());
+                    } else {
+                        ImGui::TextDisabled("%s", control.label.c_str());
+                        ImGui::SameLine(150.0F);
+                        ImGui::TextWrapped("%s", text.c_str());
+                    }
+                    break;
+                }
+                case ui::Control::Kind::Toggle: {
+                    bool on = control.flag && control.flag();
+                    if (ImGui::Checkbox(control.label.c_str(), &on) && control.setFlag) {
+                        control.setFlag(on);
+                    }
+                    break;
+                }
+                case ui::Control::Kind::Action:
+                    if (ImGui::Button(control.label.c_str()) && control.act) {
+                        control.act();
+                    }
+                    break;
+                case ui::Control::Kind::Slider:
+                case ui::Control::Kind::Stepper: {
+                    const auto [lo, hi] = control.bounds();
+                    float value = control.number ? float(control.number()) : 0.0F;
+                    const std::string format = "%." + std::to_string(control.decimals) + "f " + control.unit;
+                    if (ImGui::SliderFloat(control.label.c_str(), &value, float(lo), float(hi), format.c_str(),
+                                           control.logarithmic ? ImGuiSliderFlags_Logarithmic : 0) &&
+                        control.setNumber) {
+                        control.setNumber(double(value));
+                    }
+                    break;
+                }
+                case ui::Control::Kind::Choice: {
+                    const std::string now = control.chosen ? control.chosen() : std::string();
+                    if (ImGui::BeginCombo(control.label.c_str(), ui::labelOf(control.choices, now).c_str())) {
+                        for (const ui::Choice& entry : control.choices) {
+                            if (ImGui::Selectable(entry.label.c_str(), entry.value == now) && control.choose) {
+                                control.choose(entry.value);
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    break;
+                }
+                }
+                ImGui::EndDisabled();
+                if (!control.note.empty() && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", control.note.c_str());
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::PopID();
+    }
+}
+
 int indexOf(std::span<const Choice> choices, const std::string& value) {
     for (size_t k = 0; k < choices.size(); ++k) {
         if (value == choices[k].value) {
@@ -453,6 +531,12 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     render::SplatOverride said;
     bool saying = false;
     std::string status;
+    // WHAT RUNNING SHORT OF GPU MEMORY COST, in a panel of its own until it
+    // is closed: the window stays, the frame is drawn at whatever level the
+    // engine fell back to, or skipped and tried again on the next one.
+    std::string memoryNote;
+    bool memoryNoteOpen = false;
+    uint32_t memoryReliefsSeen = 0;
     Orbit orbit;
     bool framed = false;
     const char up = stage.upAxis();
@@ -535,6 +619,16 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
         settings.farZ = static_cast<float>(orbit.distance + orbit.radius);
         return settings;
     };
+    // THE GAUSSIANS PANEL, described in athenea::ui and drawn by drawPanel. Its
+    // numbers are the report of the frame just drawn, taken once a frame; the
+    // engine gathers them only while the panel is open, and the device's
+    // counts in it are read without waiting, so they can be a frame behind.
+    usd::GaussianStats gaussianReport;
+    bool timeSplatStages = false;
+    bool gaussiansOpen = true;
+    const ui::Panel gaussians =
+        ui::gaussianPanel([&gaussianReport]() -> const ui::GaussianReport& { return gaussianReport; },
+                          timeSplatStages);
     uint64_t snapshotLit = 0;
     std::vector<double> drawMs;
     std::vector<double> frameMs;
@@ -1094,6 +1188,11 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
             shutterSet = shutter;
         }
 
+        // What the Gaussians panel asks of the frame: counted while it is
+        // open, its stages timed while its switch is on.
+        stage.setGaussianStats(gaussiansOpen);
+        stage.setTimeSplatStages(gaussiansOpen && timeSplatStages);
+
         // The frame.
         const auto drawStart = std::chrono::steady_clock::now();
         const std::string techniqueName = kTechniques[static_cast<size_t>(technique)].value;
@@ -1131,6 +1230,33 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
         drawMs.push_back(
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawStart).count());
         status = drawn ? std::string() : drawn.error().toString();
+        if (const usd::StageRenderer::MemoryRelief relief = stage.memoryRelief(); relief.times != memoryReliefsSeen) {
+            memoryReliefsSeen = relief.times;
+            memoryNote = "GPU memory ran short: " + relief.last + ".";
+            if (relief.lodBias > 0) {
+                memoryNote += " Drawing " + std::to_string(relief.lodBias) +
+                              (relief.lodBias == 1 ? " level" : " levels") + " of detail coarser than asked.";
+            }
+            memoryNoteOpen = true;
+        }
+        if (!drawn && drawn.error().code() == ErrorCode::OutOfMemory) {
+            memoryNote = "Out of GPU memory, and nothing left to give back: " + drawn.error().message() +
+                         ". The frame is skipped; the next one tries again. Other programs on the GPU, a smaller "
+                         "window or a lower render scale leave it more.";
+            memoryNoteOpen = true;
+        }
+        if (memoryNoteOpen) {
+            const ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(ImVec2(viewport->Size.x * 0.5F, viewport->Size.y - 20.0F), ImGuiCond_Always,
+                                    ImVec2(0.5F, 1.0F));
+            ImGui::SetNextWindowSize(ImVec2(std::min(viewport->Size.x - 40.0F, 640.0F), 0.0F), ImGuiCond_Always);
+            if (ImGui::Begin("GPU memory", &memoryNoteOpen,
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse |
+                                 ImGuiWindowFlags_NoFocusOnAppearing)) {
+                ImGui::TextWrapped("%s", memoryNote.c_str());
+            }
+            ImGui::End();
+        }
         if (drawn && !announce) {
             techniqueDrawn[techniqueAt] = true;
         }
@@ -1140,6 +1266,16 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
             }
             drawnTime = time;
         }
+
+        // Drawn after the frame, so its numbers are this frame's.
+        gaussianReport = stage.gaussianStats();
+        ImGui::SetNextWindowPos(ImVec2(730, 10), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(400, 620), ImGuiCond_FirstUseEver);
+        gaussiansOpen = ImGui::Begin("Gaussians");
+        if (gaussiansOpen) {
+            drawPanel(gaussians);
+        }
+        ImGui::End();
 
         rhi::ComPtr<rhi::ITexture> image = surface->acquireNextImage();
         ImGui::Render();
@@ -1154,7 +1290,20 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
             }
         }
         ATHENEA_TRY((*ui)->render(batch, ImGui::GetDrawData(), image->getDefaultView(), surfaceFormat, fbw, fbh));
-        ATHENEA_TRY(batch.submit(false));
+        if (auto shown = batch.submit(false); !shown) {
+            // A frame's own command buffers fail where the device ran out
+            // under them, and this submit is often the first to hear of it:
+            // the window stays, and the engine gives back what it can.
+            if (shown.error().code() != ErrorCode::OutOfMemory) {
+                return std::move(shown).error();
+            }
+            const std::string did = stage.relieveMemory();
+            memoryReliefsSeen = stage.memoryRelief().times;
+            memoryNote = did.empty() ? "Out of GPU memory, and nothing left to give back: " + shown.error().message()
+                                     : "Out of GPU memory: " + shown.error().message() + "; " + did + ".";
+            memoryNoteOpen = true;
+            log::warn("view: {}", memoryNote);
+        }
         // Every frame as it was shown, panels included, where a capture was
         // asked for: the same path `--snapshot` takes, taken each time round.
         if (!options.capture.empty() && drawn) {

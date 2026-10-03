@@ -337,7 +337,12 @@ std::vector<Panel> viewerPanels(ViewerSettings& settings, ViewerFacts facts, Vie
     }
     view.sections.push_back(std::move(frame));
 
-    return {std::move(view)};
+    std::vector<Panel> panels;
+    panels.push_back(std::move(view));
+    if (facts.gaussians) {
+        panels.push_back(gaussianPanel(facts.gaussians, s->timeSplatStages));
+    }
+    return panels;
 }
 
 }   // namespace athenea::ui

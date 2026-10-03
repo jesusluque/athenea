@@ -105,10 +105,7 @@ Result<void> Texture::upload(Device& device, uint32_t mip, uint32_t layer, std::
         return Error::make(ErrorCode::DeviceFailure, "cannot upload to texture '{}'", desc_.label);
     }
     device.beforeSubmit();
-    if (SLANG_FAILED(device.queue()->submit(encoder->finish()))) {
-        return Error(ErrorCode::DeviceFailure, "texture upload submit failed");
-    }
-    return ok();
+    return Device::queueResult(device.queue()->submit(encoder->finish()), "a texture upload");
 }
 
 Result<std::vector<std::byte>> Texture::read(Device& device, uint32_t mip, uint32_t layer) const {

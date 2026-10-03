@@ -17,11 +17,13 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
+#include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usd/usdShade/connectableAPI.h>
@@ -215,6 +217,40 @@ void takeFloat(const Resolved& resolved, float& into) {
     }
 }
 
+/// A coverage: a float, or a colour (standard_surface's `opacity` is
+/// color3), whose mean is what it covers of a grey.
+void takeCoverage(const Resolved& resolved, float& into) {
+    if (!resolved.hasValue) {
+        return;
+    }
+    if (resolved.value.IsHolding<GfVec3f>()) {
+        const GfVec3f& v = resolved.value.UncheckedGet<GfVec3f>();
+        into = (v[0] + v[1] + v[2]) / 3.0F;
+    } else if (resolved.value.IsHolding<GfVec3d>()) {
+        const GfVec3d& v = resolved.value.UncheckedGet<GfVec3d>();
+        into = static_cast<float>((v[0] + v[1] + v[2]) / 3.0);
+    } else {
+        takeFloat(resolved, into);
+    }
+    into = std::clamp(into, 0.0F, 1.0F);
+}
+
+/// An integer input (glTF's `alpha_mode`, UsdPreviewSurface's `opacityMode`
+/// as MaterialX carries it), or a token that names one.
+[[nodiscard]] int takeInt(const Resolved& resolved, int fallback) {
+    if (!resolved.hasValue) {
+        return fallback;
+    }
+    if (resolved.value.IsHolding<int>()) {
+        return resolved.value.UncheckedGet<int>();
+    }
+    if (resolved.value.IsHolding<TfToken>()) {
+        const TfToken& token = resolved.value.UncheckedGet<TfToken>();
+        return token == TfToken("presence") ? 1 : token == TfToken("transparent") ? 0 : fallback;
+    }
+    return fallback;
+}
+
 void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     if (!resolved.hasValue) {
         return;
@@ -326,25 +362,46 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     out.normal = read(openPbr ? "geometry_normal" : "normal").texture;
 
     if (preview) {
-        // UsdPreviewSurface has no transmission. What it has is an opacity,
-        // and a surface you can see through is one whose opacity is less than
-        // one -- so that is read as transmission, which is the only place a
-        // gaussian can put it.
         const Resolved resolved = read("opacity");
         float opacity = 1.0F;
-        takeFloat(resolved, opacity);
-        out.transmission = std::clamp(1.0F - opacity, 0.0F, 1.0F);
-        // And it is a COVERAGE, which bends nothing: the mesh blends the
-        // surface over what stands behind it. A thin wall is that --
-        // `(1 - T) surface + T behind`, untinted -- where a solid glass would
-        // refract it, which a converted cloud does now that it carries an
-        // index.
-        out.thinWalled = out.transmission > 0.0F;
-        // A MAP ON THE OPACITY IS A CUT-OUT, NOT A TRANSMISSION. Where it
-        // reads low the surface is not there; where it reads high it is
-        // opaque. Carrying it as transmission would make a feather a pane of
-        // glass shaped like a rectangle, which is what the wings were.
-        out.opacityMap = resolved.texture;
+        takeCoverage(resolved, opacity);
+        float threshold = 0.0F;
+        takeFloat(read("opacityThreshold"), threshold);
+        // A THRESHOLD MAKES IT A CUT-OUT, in either mode: where the opacity
+        // reads at least the threshold the surface is whole, and below it is
+        // not there. A map keeps the threshold for the conversion to cut by;
+        // a constant is decided here.
+        if (threshold > 0.0F) {
+            out.opacityMap = resolved.texture;
+            if (!out.opacityMap.empty()) {
+                out.opacityThreshold = threshold;
+            } else {
+                out.opacity = opacity >= threshold ? 1.0F : 0.0F;
+            }
+        } else if (takeInt(read("opacityMode"), 0) == 1) {
+            // `presence`: the older reading, where the whole response scales
+            // and the surface is there by lot -- coverage, as MaterialX's.
+            out.opacity = opacity;
+            out.opacityMap = resolved.texture;
+        } else {
+            // `transparent`, the default. UsdPreviewSurface has no
+            // transmission. What it has is an opacity, and a surface you can
+            // see through is one whose opacity is less than one -- so that is
+            // read as transmission, which is the only place a gaussian can
+            // put it.
+            out.transmission = std::clamp(1.0F - opacity, 0.0F, 1.0F);
+            // And it is a COVERAGE, which bends nothing: the mesh blends the
+            // surface over what stands behind it. A thin wall is that --
+            // `(1 - T) surface + T behind`, untinted -- where a solid glass
+            // would refract it, which a converted cloud does now that it
+            // carries an index.
+            out.thinWalled = out.transmission > 0.0F;
+            // A MAP ON THE OPACITY IS COVERAGE, NOT A TRANSMISSION. Where it
+            // reads low the surface is not there. Carrying it as transmission
+            // would make a feather a pane of glass shaped like a rectangle,
+            // which is what the wings were.
+            out.opacityMap = resolved.texture;
+        }
         takeFloat(read("ior"), out.ior);
     } else {
         takeFloat(read(gltf ? "ior" : openPbr ? "specular_ior" : "specular_IOR"), out.ior);
@@ -362,17 +419,40 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
             // no input of its own for it.
             takeColour(read("transmission_color"), out.transmissionColour);
         }
-        // THE SAME CUT-OUT, IN MATERIALX. `opacity` (`geometry_opacity` in
-        // OpenPBR) is coverage there too -- where it reads low the surface is
-        // not there -- and it is not transmission, which has an input of its
-        // own. So a glass feather keeps its shape: the transmission makes it
-        // glass and the map still cuts the card. An image node gives its
-        // first channel, not an alpha, so that is the channel read.
-        StageTexture cut = read(gltf ? "alpha" : openPbr ? "geometry_opacity" : "opacity").texture;
+        // THE SAME COVERAGE, IN MATERIALX. `opacity` (`geometry_opacity` in
+        // OpenPBR, `alpha` in glTF) is coverage there too -- where it reads
+        // low the surface is not there -- and it is not transmission, which
+        // has an input of its own. So a glass feather keeps its shape: the
+        // transmission makes it glass and the map still cuts the card. A
+        // constant under one is the surface drawn by that lot, which is what
+        // the mesh does with it (`MaterialCompiler`'s cut-out), so it is
+        // carried as the coverage it is. An image node gives its first
+        // channel, not an alpha, so that is the channel read.
+        const Resolved coverage = read(gltf ? "alpha" : openPbr ? "geometry_opacity" : "opacity");
+        float opacity = 1.0F;
+        takeCoverage(coverage, opacity);
+        StageTexture cut = coverage.texture;
         if (!cut.empty() && cut.channel == 0) {
             cut.channel = 'r';
         }
-        out.opacityMap = cut;
+        // glTF says what its alpha is: OPAQUE (0, the default) ignores it,
+        // MASK (1) cuts at `alpha_cutoff`, BLEND (2) is coverage.
+        const int alphaMode = gltf ? takeInt(read("alpha_mode"), 0) : 2;
+        if (alphaMode == 0) {
+            // Opaque: neither the constant nor the map is the surface's.
+        } else if (alphaMode == 1) {
+            float cutoff = 0.5F;
+            takeFloat(read("alpha_cutoff"), cutoff);
+            if (!cut.empty()) {
+                out.opacityMap = cut;
+                out.opacityThreshold = std::max(cutoff, 1e-6F);
+            } else {
+                out.opacity = opacity >= cutoff ? 1.0F : 0.0F;
+            }
+        } else {
+            out.opacity = opacity;
+            out.opacityMap = cut;
+        }
     }
 
     // THE LIGHT IT GIVES OFF. A colour and a weight, which the four
@@ -669,6 +749,30 @@ double MeshStage::metersPerUnit() const {
     return UsdGeomGetStageMetersPerUnit(impl_->stage);
 }
 
+Result<StageCamera> MeshStage::camera(const std::string& path, double time) const {
+    if (impl_ == nullptr) {
+        return Error(ErrorCode::InvalidArgument, "no stage");
+    }
+    const SdfPath at(path);
+    if (!at.IsAbsolutePath()) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': not an absolute prim path", path);
+    }
+    const UsdGeomCamera camera(impl_->stage->GetPrimAtPath(at));
+    if (!camera) {
+        return Error::make(ErrorCode::NotFound, "'{}': no camera there", path);
+    }
+    const UsdTimeCode when(time);
+    StageCamera out;
+    camera.GetFocalLengthAttr().Get(&out.focalLength, when);
+    camera.GetHorizontalApertureAttr().Get(&out.horizontalAperture, when);
+    GfVec2f clipping(1.0F, 1000000.0F);
+    camera.GetClippingRangeAttr().Get(&clipping, when);
+    out.nearClip = clipping[0];
+    UsdGeomXformCache transforms(when);
+    out.toWorld = rowsOf(transforms.GetLocalToWorldTransform(camera.GetPrim()));
+    return out;
+}
+
 std::string MeshStage::source() const {
     return impl_ == nullptr ? std::string{} : impl_->source;
 }
@@ -883,14 +987,39 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         // not the first: carried as `st2`, and the conversion samples that map
         // by it. One second set; a third map's would have to be a third.
         StageMaterial material = materialOf(prim);
-        std::string second;
-        for (const StageTexture* texture : {&material.albedo, &material.normal, &material.metallicMap,
-                                            &material.roughnessMap, &material.opacityMap,
-                                            &material.displacementMap}) {
-            if (!texture->empty() && !texture->uvSet.empty() && texture->uvSet != primary) {
-                second = texture->uvSet;
-                break;
+        // A MESH OF SEVERAL MATERIALS: the GeomSubsets of its `materialBind`
+        // family, each binding its own. Read as Hydra reads them -- face
+        // indices, handed to the builder, which says on the device which
+        // subset each triangle is in -- so the conversion can run each with
+        // its own material instead of the whole mesh with the mesh's.
+        std::vector<StageSubset> subsets;
+        std::vector<VtIntArray>  subsetFaces;
+        for (const UsdGeomSubset& subset : UsdShadeMaterialBindingAPI(prim).GetMaterialBindSubsets()) {
+            TfToken element;
+            subset.GetElementTypeAttr().Get(&element);
+            if (!element.IsEmpty() && element != UsdGeomTokens->face) {
+                continue;
             }
+            VtIntArray faces;
+            if (!subset.GetIndicesAttr().Get(&faces, at) || faces.empty()) {
+                continue;
+            }
+            subsets.push_back({subset.GetPath().GetString(), materialOf(subset.GetPrim())});
+            subsetFaces.push_back(std::move(faces));
+        }
+        std::string second;
+        const auto secondOf = [&primary](const StageMaterial& one) {
+            for (const StageTexture* texture : {&one.albedo, &one.normal, &one.metallicMap, &one.roughnessMap,
+                                                &one.opacityMap, &one.displacementMap}) {
+                if (!texture->empty() && !texture->uvSet.empty() && texture->uvSet != primary) {
+                    return texture->uvSet;
+                }
+            }
+            return std::string();
+        };
+        second = secondOf(material);
+        for (size_t k = 0; k < subsets.size() && second.empty(); ++k) {
+            second = secondOf(subsets[k].material);
         }
         VtVec2fArray uvs2;
         VtIntArray   uv2Indices;
@@ -957,6 +1086,9 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         input.smoothNormals =
             !hasNormals && scheme != UsdGeomTokens->none && scheme != UsdGeomTokens->bilinear;
         input.primvars = inputs;
+        for (const VtIntArray& faces : subsetFaces) {
+            input.subsets.emplace_back(faces.cdata(), faces.size());
+        }
 
         auto built = builder.build(input);
         if (!built) {
@@ -971,6 +1103,7 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         out.displacementUnit = static_cast<float>(std::cbrt(std::abs(toWorld.GetDeterminant3())));
         out.material = std::move(material);
         out.uv2 = hasUvs2 ? second : std::string();
+        out.subsets = std::move(subsets);
         if (instances.instanced) {
             // One entry an instance, sharing the mesh on the device: its
             // buffers are counted references, so a copy costs no memory.

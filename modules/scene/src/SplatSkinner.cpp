@@ -53,6 +53,8 @@ Result<void> SplatSkinner::skin(gpu::CommandBatch& batch, const SplatSkinInput& 
     }
     const bool moves = motion != nullptr && input.skinningXformsEnd != nullptr;
     const bool turnsNormals = normals != nullptr && input.rest->hasNormals();
+    const bool gradients = input.weightGradients != nullptr && input.weightGradients->valid() &&
+                           input.perSplat > 1;
     kernel_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["restPositions"].setBinding(input.rest->positions.rhi());
         cursor["restShape"].setBinding(input.rest->shape.rhi());
@@ -68,11 +70,14 @@ Result<void> SplatSkinner::skin(gpu::CommandBatch& batch, const SplatSkinInput& 
         cursor["shape"].setBinding(shape.rhi());
         cursor["restNormals"].setBinding(turnsNormals ? input.rest->normals.rhi() : input.rest->shape.rhi());
         cursor["normals"].setBinding(turnsNormals ? normals->rhi() : shape.rhi());
+        cursor["weightGradients"].setBinding(gradients ? input.weightGradients->rhi()
+                                                       : input.rest->shape.rhi());
         rhi::ShaderCursor p = cursor["params"];
         p["count"].setData(count);
         p["perSplat"].setData(std::max(input.perSplat, 1U));
         p["motionOut"].setData(uint32_t{moves ? 1u : 0u});
         p["normalsOut"].setData(uint32_t{turnsNormals ? 1u : 0u});
+        p["gradientsIn"].setData(uint32_t{gradients ? 1u : 0u});
         setRows(p, "geomBind", input.geomBindTransform);
         setRows(p, "skelToWorld", input.skelLocalToWorld);
         setRows(p, "worldToPrim", input.primWorldToLocal);

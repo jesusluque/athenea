@@ -36,27 +36,28 @@ coinciden, la cabecera tiene razón.
 | # | Módulo | Léete esto primero |
 |---|---|---|
 | 1 | core | `core/Result.h` (la convención de errores), `core/Platform.h` (toda la superficie del sistema operativo), `core/Hash.h` |
-| 2 | sched | `sched/FrameClock.h` — genlock, PTP y alineamiento ST 2059-1 |
-| 3 | image | `image/Image.h` — la imagen de host que el host AOFX pasa de un lado a otro |
-| 4 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout |
-| 5 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre) |
-| 6 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
-| 7 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
-| 8 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
-| 9 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
-| 10 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
-| 11 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
-| 12 | light | `light/LightTable.h` — una luz en el dispositivo |
-| 13 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
-| 14 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 15 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 16 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
-| 17 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
-| 18 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
-| 19 | view | `view/Viewer.h` — las opciones de la ventana |
+| 2 | ui | `ui/Controls.h` (qué es un panel), `ui/ViewerPanels.h` (los paneles del visor), `ui/GaussianPanel.h` y `ui/GaussianReport.h` (el panel Gaussians, y el registro que el motor rellena para él) — descritos una vez, dibujados por `athenea view` y la app de iOS |
+| 3 | sched | `sched/FrameClock.h` — genlock, PTP y alineamiento ST 2059-1 |
+| 4 | image | `image/Image.h` — la imagen de host que el host AOFX pasa de un lado a otro |
+| 5 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout |
+| 6 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre), `gpu/AsyncReadback.h` (números de un frame sin esperarlo) |
+| 7 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
+| 8 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
+| 9 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
+| 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
+| 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
+| 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
+| 13 | light | `light/LightTable.h` — una luz en el dispositivo |
+| 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
+| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
+| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
+| 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
+| 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
+| 20 | view | `view/Viewer.h` — las opciones de la ventana |
 
-Una cosa que parece una violación y no lo es: `render` (9) enlaza `aofx::aofx`
-(18). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
+Una cosa que parece una violación y no lo es: `render` (10) enlaza `aofx::aofx`
+(19). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
 le toma son `Mat4` y `Vec3`. La regla de orden es sobre librerías compiladas.
 
 ### 1.2 Una GPU, un hilo
@@ -100,6 +101,13 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
    los splats se proyectan, ordenan, reparten por tiles y mezclan encima, en
    luz lineal como la capa que tienen debajo. Las etapas del pipeline están
    nombradas en `shaders/athenea/splat/frame.slang`.
+   Mientras un panel lo pide (`RenderSettings::countSplats`), cuatro kernels
+   pequeños cuentan lo que hizo la proyección -- por qué se descartó cada
+   splat descartado, que la proyección deja en la clave de profundidad del
+   hueco descartado, y la parte de cada nube -- y `gpu::AsyncReadback` copia
+   las cuentas fuera con el propio submit del frame y un fence. Se leen
+   después, nunca se esperan: un número que muestra un panel no debe ser una
+   espera que el panel haya causado.
 6. Los domes se pintan detrás, se aplica la exposición y el frame está. Lo que
    lo convierte en algo que mirar es `technique::DisplayTransform`, y solo lo
    llaman un viewer o una vista previa.
@@ -180,7 +188,10 @@ captura en el borde de ese módulo y se convierte en un `Error`.
 
 **El sistema operativo vive en `core/Platform`.** Cada llamada al sistema que
 hace el motor fuera de sus dependencias está detrás de una cabecera, así que
-el port a Windows tiene un fichero por el que empezar y no una búsqueda.
+el port a Windows tiene un fichero por el que empezar y no una búsqueda. Un
+fichero que un comando escribe para que otro paso lo lea se escribe con
+`platform::writeAtomically`: con un nombre parcial a su lado, renombrado al
+completarse, así que un fallo no deja medio fichero con el nombre pedido.
 
 **aofx solo cambia de manera aditiva.** Los bundles de openFXplayer tienen que
 seguir cargando, así que las cabeceras del SDK se copian literales de su
@@ -367,11 +378,20 @@ Un bundle bajo `plugins/<nombre>`, compilado con el helper de CMake del SDK.
 El efecto declara sus entradas y sus parámetros y recibe imágenes y números —
 no ve USD, ni una escena, ni una API de dispositivo, que es justo por lo que
 el mismo binario corre en openFXplayer. `athenea mesh2splat` es el ejemplo más
-grande del árbol, y el §6 de este documento es lo que hace.
+grande del árbol, y el §6 de este documento es lo que hace. `plugins/measure`
+es el más pequeño que sustituye código del motor: `athenea compare` lo corre
+por el host (`aofx_host::renderEffect`) en vez de llamar a
+`render::imageStats`, `compareHdr` y `compareImages`, así que el comando y un
+nodo de QC del compositor son una sola implementación. Sus kernels son los de
+esas tres, reescritos para el binding por orden -- las mismas sumas en el
+mismo orden, así que los dígitos impresos son los mismos -- y
+`athenea_aofx_tests "[measure]"` sujeta cada número que adjunta a los suyos.
+Un port de kernels del motor a un bundle se sujeta así a los originales: los
+originales se quedan, como referencia de los tests.
 
 ## 5. El banco de pruebas
 
-Dieciocho binarios, uno por área, todos bajo `tests/`.
+Diecinueve binarios, uno por área, todos bajo `tests/`.
 
 | Binario | Cubre |
 |---|---|
@@ -390,12 +410,23 @@ Dieciocho binarios, uno por área, todos bajo `tests/`.
 | `athenea_host_tests` | el plugin por `UsdImagingGLEngine`; **no enlaza `athenea::usd` a propósito** |
 | `athenea_view_tests` | el viewer; etiqueta `display` |
 | `athenea_gpu_host_tests` | gpe adoptando el dispositivo de slang-rhi; etiqueta `gpe` |
-| `athenea_aofx_tests` | el SDK, el host y el efecto mesh2splat; etiqueta `gpe` |
+| `athenea_aofx_tests` | el SDK, el host, el efecto mesh2splat, y el efecto Measure frente a la comparación de render; etiqueta `gpe` |
+| `athenea_coverage_tests` | lo que cubre una superficie convertida frente a su malla (`tests/data/coverage`); necesita el fixture `mesh2splat_coverage`, que ctest corre antes, y sin él se salta; etiqueta `gpe` |
 | `athenea_sched_tests` | el reloj de frame y PTP |
 
-Y cuatro tests que no son de Catch2: `aofx_sdk_manifest` (los hashes del SDK),
-`single_tbb` (un TBB en el proceso) y los dos `mesh2splat_density_*`, que
-corren el CLI de verdad y afirman sobre la línea que imprime.
+Y nueve tests que no son de Catch2: `aofx_sdk_manifest` (los hashes del SDK),
+`single_tbb` (un TBB en el proceso), los dos `mesh2splat_density_*`, que
+corren el CLI de verdad y afirman sobre la línea que imprime, los cuatro
+`compare_cli_*`, que corren `athenea compare` sobre dos renders de fixture
+(`tests/data/compare`) y sujetan lo que imprime al texto que imprimía antes de
+correr el efecto Measure (`tests/aofx/CheckCompare.cmake`), y
+`mesh2splat_coverage`, el CLI de verdad convirtiendo los planos que mide
+`athenea_coverage_tests` (un fixture: `athenea_test(... FIXTURES <nombre>)`
+hace que todos los casos de un binario lo requieran). Y un caso de
+Catch2 que ctest corre aparte, `materialx_root`: `athenea_usd_tests
+"[materialx_root]"` con `ATHENEA_MATERIALX_ROOT` definida, porque el motor lee
+la variable una vez por proceso. El caso está oculto (`[.materialx_root]`), así
+que el descubrimiento que registra todos los demás casos lo deja fuera.
 
 **Por qué `athenea_host_tests` no enlaza nada.** Conduce el plugin como lo hace un
 host, por su nombre. Si además enlazara `athenea::usd`, una plantilla instanciada
@@ -438,10 +469,16 @@ vuelve como un `UsdVolParticleField3DGaussianSplat`.
 
 Las imágenes viven en el almacenamiento de imágenes del propio host AOFX, que
 en un dispositivo de memoria unificada es la memoria que lee un kernel. Los
-triángulos se escriben donde los va a leer el efecto y no se copia nada. Lo
-que cruza de vuelta al procesador son los registros, una vez, porque el
-escritor de USD los toma como un `io::RawSplats` — y los valores de un fichero
-USD son asunto del procesador por definición.
+triángulos se escriben donde los va a leer el efecto y no se copia nada. Los
+registros se quedan en el dispositivo desde ahí hasta el fichero: la imagen de
+cada pasada se coloca en los buffers de la propia nube con
+`athenea/usd/mesh2splat_gather` (registros, los rayos del bake, las
+articulaciones), el desplazamiento de los rayos sale de la caja de la nube con
+`mesh2splat_span`, el bake responde en un buffer del dispositivo que
+`mesh2splat_bake` escribe en los registros, y la exportación los decodifica
+donde están (`usd::DeviceSplatRecords`). Lo que cruza al procesador son
+cuentas y, al final, los valores que guarda un array de USD — que son asunto
+del procesador por definición.
 
 ### 6.2 La vida de una gaussiana, en quince líneas
 
@@ -484,6 +521,17 @@ nada compuesto para un frame.
 así que las caras de una nube convertida se corresponden con lo que habría
 dibujado Hydra.
 
+**Una malla de varios materiales.** Los GeomSubsets de la familia
+`materialBind` de una malla se leen con el material que enlaza cada uno
+(`StageMesh::subsets`) y se le pasan al builder, que dice en el dispositivo en
+qué subset está cada triángulo (`GpuMesh::triangleSubsets`). La conversión
+corre entonces una *pieza* cada vez: los triángulos de cada subset, listados
+en el orden de la malla por `athenea/usd/mesh2splat_subset` (una marca, una
+suma de prefijos, un scatter) y empaquetados como una malla propia (el
+`listed` de `mesh_pack`), con el material de ese subset; y los triángulos que
+no reclama ningún subset, con el de la malla. Las gaussianas de una pieza
+conservan el id Cryptomatte de la malla: el matte nombra prims como Hydra.
+
 La imagen de triángulos (`shaders/athenea/usd/mesh_pack.slang`) son seis `float4`
 por entrada: por cada una de las tres esquinas, la posición con la primera
 coordenada de textura en `w`, y luego la normal con la segunda en `w`. Un
@@ -505,6 +553,18 @@ MaterialX al que apunte el terminal de displacement del material, por su
 `displacementScale` y `displacementBias`; `StageMesh::displacementUnit` es la
 raíz cúbica del volumen de la transformación, porque una altura se escribe en
 las unidades de la propia malla.
+
+**Las celdas y el presupuesto, antes de convertir nada.** Lo que recorrerá
+cada pieza se calcula en el dispositivo sobre las cajas que plegó el
+empaquetado (`athenea/usd/mesh2splat_cells`): la celda del modelo, las cotas
+derivadas por malla, la celda que recorre cada pieza -- desde la cámara de
+`--cell-from-camera` si se da una -- y lo que se le pasa al efecto para ella.
+Después se cuenta cada pieza (una pasada con sitio para una gaussiana: el
+efecto cuenta todo lo que escribiría una pasada), y si el total pasa de
+`--max-splats` el presupuesto se reparte en proporción a lo que quiere cada
+una y las celdas se calculan otra vez con cada pieza engrosada por
+`sqrt(quiere / parte)`. El host hace la aritmética entera de las partes
+-- cuentas y huecos -- y le pasa al efecto los números del kernel.
 
 ### 6.4 Un solo kernel: contar, escanear, emitir
 
@@ -677,7 +737,8 @@ exportación y la decodificación.
 
 **Joints y pesos**, con `--skinned`: cuatro de cada por gaussiana, mezclados
 desde las esquinas del triángulo, para que la nube se deforme con el esqueleto
-que llevaba la malla.
+que llevaba la malla; y cómo cambian esos pesos a lo largo de la gaussiana,
+para que se estire a través de un pliegue como su triángulo (§6.7).
 
 **El id Cryptomatte** es el hash de la ruta del prim origen, heredado por cada
 gaussiana que la conversión hace de los triángulos de ese prim. Es lo que
@@ -718,7 +779,15 @@ del bloque.
 
 **Quién los traza.** `StageRenderer::bakePoints` toma dos `float4` por punto —
 el punto con su desplazamiento, y luego su normal — y despacha el path tracer
-sobre ellos como si fueran píxeles. Es el mismo integrador que usa un frame,
+sobre ellos como si fueran píxeles. `bakePointsOnDevice` es lo mismo con los
+rayos ya en el dispositivo en la disposición de tres `float4` del kernel y la
+respuesta dejada allí, las entradas de un punto juntas
+(`athenea/usd/bake_gather`); la conversión abre el renderer en su propio
+dispositivo y usa esa. Traza en pasadas de como mucho
+`StageRenderer::kBakeBatch` puntos (2^19), así que los planos y las sumas del
+tracer tienen el tamaño de la pasada y la respuesta es el único buffer del
+tamaño de la nube; cada pasada saca sus propios caminos, así que el lote
+cambia el ruido de una respuesta, no su media. Es el mismo integrador que usa un frame,
 compilado con su constante de bake en cierto: no una segunda implementación.
 
 **Una gaussiana elevada** se hornea desde el punto plano que tiene debajo,
@@ -881,8 +950,19 @@ demás es estático. En un pájaro de 4 269 858 gaussianas solo ese array tiene
 muestras de tiempo, y son 609 matrices — que es lo que hace que una nube
 animada cueste kilobytes por frame en vez de decenas de megabytes.
 
-El skinner gira la normal de sombreado con el marco, con la misma mezcla y
-como una normal (`(M a) x (M b)` para dos direcciones `a`, `b` de su superficie,
+Cada gaussiana guarda además los gradientes de sus pesos: la regla del
+cociente sobre los cuatro pesos retenidos, a partir de los gradientes
+baricéntricos del triángulo, a lo largo de los dos ejes de reposo de la
+gaussiana, para los tres primeros joints (el del cuarto es menos su suma) —
+una novena entrada del registro, y `jointWeightGradients` en el fichero. El
+skinner lleva el marco con el Jacobiano entero de la mezcla con ellos, las
+partes lineales de los joints y `sum (X_k q) grad w_k`, y toma los
+autovectores exactos de la covarianza posada en el plano para los dos ejes en
+lugar de reortogonalizarlos, que tiraría la cizalla. Una nube sin ellos se
+lleva solo con las partes lineales de los joints.
+
+El skinner gira la normal de sombreado con el marco, con el mismo Jacobiano y
+como una normal (`(J a) x (J b)` para dos direcciones `a`, `b` de su superficie,
 que es la inversa traspuesta salvo escala), así que el relieve de un miembro
 se dobla con él.
 
@@ -931,6 +1011,15 @@ slots es lo que mantiene los arrays por gaussiana índice a índice, que es lo
 que permite leer las influencias del esqueleto, los ids y los armónicos con el
 mismo índice.
 
+**O un `.athc`.** Con `-o x.athc` los registros van del dispositivo a una nube
+en el dispositivo (`CloudLoader::upload` de un buffer del dispositivo), a
+niveles de detalle allí (`lod::LodBuilder`), y fuera como los bytes del
+fichero (`lod::writeAthc`). Un `.athc` guarda posiciones, forma, armónicos y
+las normales de sombreado; no tiene sitio para el material con que refleja
+una nube reiluminada, los ids Cryptomatte, el índice de un vidrio, el eje
+vertical y la unidad, un esqueleto o un transfer -- los dos últimos se
+rechazan, el resto se dice.
+
 ### 6.10 Cómo se comprueba cada fase, y qué midió
 
 | Fase | Lo comprueba | Qué afirma |
@@ -938,6 +1027,12 @@ mismo índice.
 | la proyección y la celda | `athenea_aofx_tests "[mesh2splat]"` | un cuadrado unidad a una resolución conocida da una cuenta conocida, y cada gaussiana tiene un ancho conocido |
 | la celda acotada | los mismos, casos `[cell]` | un límite que muerde cambia la cuenta, y uno que no la deja bit a bit |
 | densidad por malla | `ctest -R mesh2splat_density` | el plano pequeño de una escena de dos mallas saca decenas de gaussianas por modelo y centenares por malla |
+| GeomSubsets | `athenea_mesh2splat_tests` (tras el fixture `mesh2splat_outputs`) | dos caras enlazadas en rojo y azul sobre una malla verde salen rojas y azules, tantas de cada, nada verde |
+| el presupuesto | los mismos | dos mallas iguales con un presupuesto de la mitad de lo que quieren conservan más o menos la mitad cada una |
+| la celda desde una cámara | los mismos | la tarjeta a tres unidades de la lente tiene más del triple que la que está a siete |
+| salida `.athc` | los mismos | las mismas tarjetas como `.athc` y como escena se dibujan igual (p99 como mucho 1) |
+| los rayos del bake en el dispositivo | `athenea_usd_tests "[mesh2splat]"` | cada rayo empieza a `1e-4` de la diagonal de la caja; el bake del dispositivo responde lo que el del host; las pasadas responden como una |
+| entero o nada | `athenea_core_tests "[platform]"` | un escritor que falla no deja fichero ni parcial |
 | el mapa de recorte | `athenea_aofx_tests` | un alfa de 0.3 se vuelve una opacidad de 0.3, no una gaussiana o nada |
 | el bake de luz | casos de bake de `athenea_usd_tests` | un plano lambertiano vuelve con la radiancia que dice la aritmética, y un metal no sale negro |
 | el ajuste de armónicos | los mismos | el ajuste reproduce una función direccional conocida dentro de tolerancia |
@@ -1012,7 +1107,7 @@ Open Image Denoise (el denoising), libwebp (`.sog`), OpenVDB (`.vdb`), zstd
 buscan solo en su propio prefijo, y cada uno imprime una línea de estado al
 configurar diciendo si se encontró. Esa línea es el diagnóstico.
 
-**Los cuatro parches a slang-rhi** están en `cmake/patches/`, aplicados al
+**Los cinco parches a slang-rhi** están en `cmake/patches/`, aplicados al
 traerlo por un script que se salta los ya aplicados, porque FetchContent
 vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 
@@ -1022,6 +1117,7 @@ vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 | formato de vista de textura en Metal | una vista creada con el formato equivocado |
 | símbolos del driver de CUDA | un símbolo del driver tapado por el del runtime |
 | estructuras de aceleración en Metal | su manejo en Metal |
+| errores de command buffer en Metal | un command buffer que fallaba en el dispositivo (sin memoria) disparaba un assert y abortaba el proceso; ahora el siguiente `submit` o `waitOnHost` devuelve `SLANG_E_OUT_OF_MEMORY`, que `gpu::CommandBatch::submit` convierte en `OutOfMemory` |
 
 **hdAthenea para Blender** (rama `blender`). Blender carga su propio
 OpenUSD, oneTBB, MaterialX, OpenColorIO y OIDN, así que el plugin se compila

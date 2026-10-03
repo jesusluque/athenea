@@ -117,13 +117,16 @@ The binding itself is UsdSkel's: `SkelBindingAPI` on the ParticleField, with
 the bound Skeleton's animation at each instant, which is what makes
 retargeting and clip blending work on a cloud as on a mesh.
 
-`skinningXforms` is the one attribute this API adds: the joints' transforms
-written down at the instants a conversion read them (`athenea mesh2splat
---skinned`). A stage that composes the cloud without its Skeleton still
-moves by it, and one with the Skeleton skips the resolving; where both are
-present the cache wins, being the same numbers. The other three attributes
-are what a cloud written before the binding was UsdSkel's carries the same
-influences under, and are still read from such a file."""
+`skinningXforms` is the first of the two attributes this API adds: the
+joints' transforms written down at the instants a conversion read them
+(`athenea mesh2splat --skinned`). A stage that composes the cloud without its
+Skeleton still moves by it, and one with the Skeleton skips the resolving;
+where both are present the cache wins, being the same numbers.
+`jointWeightGradients` is the second: how each gaussian's four weights change
+across it, which is what lets its frame follow the whole Jacobian of the
+linear blend rather than the blend of the joints' linear parts. The other
+three attributes are what a cloud written before the binding was UsdSkel's
+carries the same influences under, and are still read from such a file."""
 )
 {
     int[] primvars:athenea:splat:jointIndices = [] (
@@ -146,6 +149,19 @@ point from bind space to the skeleton's space. Time sampled: this is the only
 thing about an animated cloud that changes from frame to frame, and for sixty
 joints it is four kilobytes."""
         interpolation = "constant"
+    )
+    half[] primvars:athenea:splat:jointWeightGradients = [] (
+        doc = """How each gaussian's weights change across it, in the order of
+the four joints that carry it: the gradient of the first three joints' weights
+along the gaussian's own first and second rest axes, (dw0/du, dw0/dv, dw1/du,
+dw1/dv, dw2/du, dw2/dv), per unit of the cloud's own space. The fourth joint's
+is minus their sum, since the weights sum to one. Only these two components
+act: a gaussian is a disc and its third axis does not see the third. Exact at
+the gaussian's centre for the four weights as kept (truncated and
+renormalised). Empty, or absent: the frame is carried by the blend of the
+joints' linear parts alone. `elementSize` is 6."""
+        elementSize = 6
+        interpolation = "vertex"
     )
     string primvars:athenea:splat:skeleton = "" (
         doc = "The Skeleton prim the cloud was converted against, for provenance."

@@ -267,6 +267,21 @@ void m2sCheckInfluences(uint3 tid: SV_DispatchThreadID) {
     if (abs(sum - 1.0) > params.tolerance) {
         InterlockedAdd(counts[2], 1u);
     }
+    // One joint everywhere is a weight that does not change: the ninth
+    // entry's three gradients (two halves a word, the bits in the floats)
+    // are nothing but the barycentric gradients' rounding, which cancel.
+    const float4 slopes = records[recordAt(splat, 8)];
+    float steepest = 0.0;
+    for (uint k = 0; k < 3; ++k) {
+        const uint word = asuint(slopes[k]);
+        const float along = abs(f16tof32(word & 0xffffu));
+        const float across = abs(f16tof32(word >> 16));
+        steepest = along > steepest ? along : steepest;
+        steepest = across > steepest ? across : steepest;
+    }
+    if (!(steepest < 1.0e-3)) {
+        InterlockedAdd(counts[3], 1u);
+    }
 }
 
 /// A TENT OF HEIGHT in the albedo picture's red: 0 at u = 0 and u = 1, 1 at

@@ -6,6 +6,42 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
+## 0.2.0 — 2026-10-03
+
+The day's tasks merged. 354 tests, all passing on Metal (Apple M5 Pro); the
+same two skip on purpose as in 0.1.0.
+
+- **UsdLux units** (`6686626`): a `DistantLight` is radiance, and `normalize`
+  divides by π·sin²θ.
+- **Every gaussian blends in linear light** (`1155dc6`); a cloud says whether
+  it was captured in sRGB, and sRGB is applied only at the display.
+- **Emission per gaussian** (`48cc5e3`), stored as RGB9E5 in `.athc` v2.
+- **OpenColorIO on the GPU** (`2fadf32`): the `colour` module compiles colour
+  spaces into Slang kernels; textures decode their input space on the device.
+- **The sparrow as a mesh** (`e947962`): raster shading, shadows and material
+  passes that match the path tracer; feathers cut by stochastic coverage.
+- **Partial opacity is the real coverage** (`125043e`).
+- **mesh2splat on the GPU**: materials per `GeomSubset`, the budget shared
+  between meshes, bake bounds and rays on the device, `.athc` written
+  directly, atomic writes.
+- **A skinned cloud refits its ray structure** instead of rebuilding it each
+  frame.
+- **Review fixes**: `exitThrough` precedence, cofactor normals,
+  `metersPerUnit` in convert and decimate, `.athc` v1 without blocks.
+- **Gaussian stats in `athenea view`**: what is drawn this frame, in a panel.
+- **Blender**: the generic plugin path, and Blender's native splats arrive as
+  splats.
+- **The exact skinning Jacobian** (`eb3822b`): a skinned gaussian deforms by
+  the whole derivative of its blend, with weight gradients from mesh2splat.
+- **The Measure effect** (`83b7ff0`): an AOFX bundle that measures and compares
+  images on the GPU; `athenea compare` runs on it with identical output.
+- **Out of GPU memory is an error, not an abort** (`0397b8c`): a slang-rhi
+  patch reports failed command buffers; allocations are admitted against a
+  budget (`ATHENEA_GPU_BUDGET`, else Metal's working set, and never past the
+  machine's free memory minus 1.5 GiB); the engine drops splat shadows and
+  LOD levels and retries; the viewer stays open; the CLI exits with code 3.
+- **`.athc` readers refuse flag bits they do not know** (`2b17427`).
+
 ## 0.1.0 — 2026-10-03
 
 The engine that was lucabRTrender, under its own name, with the day's first

@@ -5,6 +5,7 @@ athenea_add_module(gpu
         src/ShaderLibrary.cpp
         src/ComputeKernel.cpp
         src/CommandBatch.cpp
+        src/AsyncReadback.cpp
         src/ShaderCache.cpp
         src/Texture.cpp
         src/RasterKernel.cpp

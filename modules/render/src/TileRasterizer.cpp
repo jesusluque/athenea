@@ -59,6 +59,7 @@ private:
 Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     TileRasterizer r;
     r.device_ = &library.device();
+    r.library_ = &library;
     auto prefix = gpu::PrefixSum::create(library);
     if (!prefix) return std::move(prefix).error();
     r.prefix_ = std::move(*prefix);
@@ -119,11 +120,25 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     return r;
 }
 
+void TileRasterizer::releaseScratch() {
+    tight_ = true;
+    splatCapacity_ = 0;
+    pairCapacity_ = 0;
+    tileCapacity_ = 0;
+    for (gpu::Buffer* held : {&proj_, &cryptoIds_, &tileRects_, &tilesTouched_, &visible_, &depthKeys_,
+                              &visibleOffsets_, &visibleTotal_, &touchedOffsets_, &touchedTotal_, &sortedCounts_,
+                              &offsets_, &totalPairs_, &ranges_buffer_, &shadowFactors_}) {
+        *held = gpu::Buffer();
+    }
+    depthSort_ = gpu::SortBuffers();
+    tileSort_ = gpu::SortBuffers();
+}
+
 Result<void> TileRasterizer::reserveSplats(uint32_t count) {
     if (count <= splatCapacity_) {
         return ok();
     }
-    const uint32_t n = grow(splatCapacity_, count);
+    const uint32_t n = tight_ ? count : grow(splatCapacity_, count);
     const auto assign = [&](gpu::Buffer& into, uint64_t elements, uint32_t bytes,
                             const char* label) -> Result<void> {
         auto made = buffer(*device_, elements, bytes, label);
@@ -156,7 +171,7 @@ Result<void> TileRasterizer::reservePairs(uint32_t count) {
     if (count <= pairCapacity_) {
         return ok();
     }
-    const uint32_t n = grow(pairCapacity_, count);
+    const uint32_t n = tight_ ? count : grow(pairCapacity_, count);
     auto keys = buffer(*device_, n, 4, "pair.tiles");
     if (!keys) return std::move(keys).error();
     auto values = buffer(*device_, n, 4, "pair.splats");
@@ -562,7 +577,18 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["params"]["hasUnder"].setData(uint32_t{under != nullptr ? 1u : 0u});
         cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
     });
-    ATHENEA_TRY(batch.submit(true));
+    if (settings.countSplats) {
+        // What the panel shows, counted from what the frame already wrote
+        // and copied out with the submit the frame makes anyway.
+        uint32_t splatSlots = 0;
+        for (const SplatInstance& instance : instances) {
+            splatSlots += instance.splats != nullptr ? instance.splats->count : 0u;
+        }
+        ATHENEA_TRY(countFrame(batch, instances, splatSlots, all));
+        ATHENEA_TRY(counterReadback_.submit(batch, counterWords_, settings.countersTag, true));
+    } else {
+        ATHENEA_TRY(batch.submit(true));
+    }
     ms = watch.lap();
     if (!ms) return std::move(ms).error();
     stats.blendMs = *ms;
@@ -570,6 +596,92 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                                                               frameStart)
                         .count();
     return stats;
+}
+
+Result<void> TileRasterizer::countFrame(gpu::CommandBatch& batch, std::span<const SplatInstance> instances,
+                                        uint32_t splatSlots, uint32_t all) {
+    if (!countersMade_) {
+        auto clear = gpu::ComputeKernel::create(*library_, "athenea/splat/splat_frame_counters", "splatCountersClear");
+        if (!clear) return std::move(clear).error();
+        auto count = gpu::ComputeKernel::create(*library_, "athenea/splat/splat_frame_counters", "splatCounters");
+        if (!count) return std::move(count).error();
+        auto cloud = gpu::ComputeKernel::create(*library_, "athenea/splat/splat_frame_counters", "splatCountersCloud");
+        if (!cloud) return std::move(cloud).error();
+        auto words = buffer(*device_, SplatCounters::kWords, 4, "splat.counters");
+        if (!words) return std::move(words).error();
+        auto readback = gpu::AsyncReadback::create(*device_, SplatCounters::kWords * 4, 3, "splat.counters.readback");
+        if (!readback) return std::move(readback).error();
+        countersClear_ = std::move(*clear);
+        counters_ = std::move(*count);
+        countersCloud_ = std::move(*cloud);
+        counterWords_ = *words;
+        counterReadback_ = std::move(*readback);
+        countersMade_ = true;
+    }
+    const uint32_t rows = std::min<uint32_t>(static_cast<uint32_t>(instances.size()), SplatCounters::kMaxClouds);
+    const auto bindAll = [&](rhi::ShaderCursor cursor) {
+        cursor["visible"].setBinding(visible_.rhi());
+        cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
+        cursor["depthKeys"].setBinding(depthKeys_.rhi());
+        cursor["visibleOffsets"].setBinding(visibleOffsets_.rhi());
+        cursor["visibleTotal"].setBinding(visibleTotal_.rhi());
+        cursor["touchedOffsets"].setBinding(touchedOffsets_.rhi());
+        cursor["touchedTotal"].setBinding(touchedTotal_.rhi());
+        cursor["counters"].setBinding(counterWords_.rhi());
+    };
+    countersClear_.dispatch(batch, {SplatCounters::kWords, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bindAll(cursor);
+        cursor["params"]["words"].setData(SplatCounters::kWords);
+        cursor["params"]["cloudCount"].setData(rows);
+    });
+    if (splatSlots > 0) {
+        counters_.dispatch(batch, {splatSlots, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bindAll(cursor);
+            cursor["params"]["count"].setData(splatSlots);
+        });
+    }
+    uint32_t base = 0;
+    for (uint32_t k = 0; k < static_cast<uint32_t>(instances.size()); ++k) {
+        const uint32_t count = instances[k].splats != nullptr ? instances[k].splats->count : 0u;
+        if (k < rows && count > 0) {
+            countersCloud_.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                bindAll(cursor);
+                cursor["params"]["base"].setData(base);
+                cursor["params"]["cloudCount"].setData(count);
+                cursor["params"]["all"].setData(all);
+                cursor["params"]["index"].setData(k);
+            });
+        }
+        base += count;
+    }
+    return ok();
+}
+
+std::optional<SplatCounters> TileRasterizer::latestCounters() {
+    if (!countersMade_) {
+        return std::nullopt;
+    }
+    std::array<uint32_t, SplatCounters::kWords> words{};
+    const auto tag = counterReadback_.latest(
+        std::span<uint8_t>(reinterpret_cast<uint8_t*>(words.data()), words.size() * sizeof(uint32_t)));
+    if (!tag) {
+        return std::nullopt;
+    }
+    SplatCounters out;
+    out.tag = *tag;
+    out.slots = words[0];
+    out.visible = words[1];
+    out.pairs = words[2];
+    out.maxTiles = words[3];
+    for (uint32_t k = 0; k < SplatCounters::Reasons; ++k) {
+        out.culled[k] = words[4 + k];
+    }
+    const uint32_t rows = std::min(words[12], SplatCounters::kMaxClouds);
+    out.clouds.resize(rows);
+    for (uint32_t k = 0; k < rows; ++k) {
+        out.clouds[k] = {words[16 + 2 * k], words[17 + 2 * k]};
+    }
+    return out;
 }
 
 }   // namespace athenea::render

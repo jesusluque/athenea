@@ -45,7 +45,7 @@ struct PackParams {
     uint  uv2Mode;        ///< a second set of texture coordinates, or kNoPrimvar
 
     uint  uv2Count;
-    uint  pad0;
+    uint  listed;         ///< 1: thread t packs triangle `triangleList[t]`, the pieces of a mesh one subset holds
     uint  pad1;
     uint  pad2;
 };
@@ -61,6 +61,11 @@ StructuredBuffer<float4>   positions;         // float4 a point
 StructuredBuffer<uint>     indices;           // 3 a triangle: points
 StructuredBuffer<uint>     triangleCorners;   // 3 a triangle: face-vertex corners
 StructuredBuffer<uint>     triangleFaces;     // 1 a triangle: the authored face
+// WHICH TRIANGLES, where the stream is one GeomSubset's: the mesh's triangle
+// each entry of the stream is, in the mesh's order (mesh2splat_subset). The
+// stream is then that subset's alone, packed as if it were a mesh of its own,
+// and the effect converts it with that subset's material.
+StructuredBuffer<uint>     triangleList;
 StructuredBuffer<float4>   normals;           // a primvar, float4 an element
 StructuredBuffer<float4>   uvs;
 StructuredBuffer<float4>   uvs2;              // the second set, where a material reads its maps by one
@@ -109,10 +114,11 @@ float3 normalToWorld(float3 n) {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void meshPack(uint3 tid: SV_DispatchThreadID) {
-    const uint triangle = tid.x;
-    if (triangle >= pack.triangles) {
+    const uint slot = tid.x;   // where in the stream
+    if (slot >= pack.triangles) {
         return;
     }
+    const uint triangle = pack.listed != 0 ? triangleList[slot] : slot;   // which of the mesh's
     const uint3 points = uint3(indices[triangle * 3], indices[triangle * 3 + 1], indices[triangle * 3 + 2]);
     float3 corner[3];
     for (uint k = 0; k < 3; ++k) {
@@ -157,20 +163,20 @@ void meshPack(uint3 tid: SV_DispatchThreadID) {
                 // Insertion into the four heaviest, which keeps the order
                 // settled and so keeps the conversion repeatable.
                 float2 carry = one;
-                for (uint slot = 0; slot < 4; ++slot) {
-                    if (carry.y > weight[slot]) {
-                        const float2 out = float2(joint[slot], weight[slot]);
-                        joint[slot] = carry.x;
-                        weight[slot] = carry.y;
+                for (uint heavy = 0; heavy < 4; ++heavy) {
+                    if (carry.y > weight[heavy]) {
+                        const float2 out = float2(joint[heavy], weight[heavy]);
+                        joint[heavy] = carry.x;
+                        weight[heavy] = carry.y;
                         carry = out;
                     }
                 }
             }
-            const uint skin = pack.destFirst + triangle * 6 + k * 2;
+            const uint skin = pack.destFirst + slot * 6 + k * 2;
             skinStream[streamAt(skin)] = float4(joint.x, weight.x, joint.y, weight.y);
             skinStream[streamAt(skin + 1)] = float4(joint.z, weight.z, joint.w, weight.w);
         }
-        const uint entry = pack.destFirst + triangle * 6 + k * 2;
+        const uint entry = pack.destFirst + slot * 6 + k * 2;
         stream[streamAt(entry)] = float4(corner[k], uv.x);
         stream[streamAt(entry + 1)] = float4(normal, uv.y);
         // THE SECOND SET, where the mesh has one: the sparrow's feather cards

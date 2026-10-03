@@ -46,6 +46,7 @@ el que corre el binario.
 | `ATHENEA_MATERIALX_ROOT` | un directorio que contiene los `libraries/` de MaterialX, que el compilador de materiales de hdAthenea lee en lugar de las bibliotecas que cargó el USD del host. Sin definir por defecto: se usan las del host. Para un host cuyo MaterialX es anterior al generador de Slang (Blender 5.3 trae 1.39.4: sin implementaciones `genslang` y con definiciones de nodo anteriores), se apunta a las de 1.39.5. Se lee una vez, cuando compila el primer material; los renderers propios del host conservan las suyas. |
 | `AOFX_PLUGIN_PATH` | directorios extra de bundles AOFX, buscados antes que la ruta del sistema y antes que `--path`. |
 | `ATHENEA_BACKEND` | qué dispositivo abrir, como un orden separado por comas: `metal,cuda,vulkan,d3d12`. Las palabras desconocidas avisan y se saltan. |
+| `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina, diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
 | `ATHENEA_SHADER_CACHE` | dónde se cachean los shaders compilados entre ejecuciones. Por defecto, un directorio bajo el de caché de la plataforma. Borrarla cuesta un primer frame lento. |
 
 Un binario compilado sin `ATHENEA_BUILD_VIEW` no tiene el subcomando `athenea view`:
@@ -84,10 +85,21 @@ Lo que cambia entre ellos, en la práctica:
 
 ### 1.5 Códigos de salida, y dónde se imprime un error
 
-Cada subcomando imprime sus errores en la salida de error y termina con `1`.
-Una ejecución correcta termina con `0`. No hay más códigos: un pipeline debe
-mirar el estado de salida y leer stderr, no analizar stdout, que lleva el
-informe — tiempos, cuentas, la ruta escrita.
+Cada subcomando imprime sus errores en la salida de error y termina con `1`,
+salvo cuando la GPU se quedó sin memoria, que termina con `3` y dice de qué
+pedir menos: el único fallo con el que un script puede hacer algo, volviendo a
+intentarlo más tarde o más pequeño. Una ejecución correcta termina con `0`. No
+hay más códigos: un pipeline debe mirar el estado de salida y leer stderr, no
+analizar stdout, que lleva el informe — tiempos, cuentas, la ruta escrita.
+
+La falta de memoria se atiende antes de informarse. Un frame que falla por
+ella devuelve lo que el motor vuelve a hacer cuando se le pide (los buffers
+crecidos del rasterizador, las estructuras de los trazadores, el denoiser),
+renuncia a una cosa más, y se intenta otra vez, una: primero las sombras de
+splats, después un nivel de detalle cada vez (el siguiente nivel más grueso de
+un grupo LOD, el corte de un asset en streaming al doble de píxeles y con la
+mitad de su presupuesto), hasta cuatro. Cada paso es un aviso que nombra a qué
+renunció. Solo un frame que sigue fallando es el error del comando.
 
 `-v` (o `--verbose`) antes del subcomando enciende el log de depuración, que
 también va a stderr.
@@ -182,6 +194,11 @@ sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 Un `.athc` de salida rechaza un `--rotate-x` distinto de cero: el contenedor
 guarda la nube como está, y el giro pertenece al prim que lo referencia.
 
+Una escena escrita aquí dice `metersPerUnit = 1`: ninguno de los formatos de
+entrada registra una unidad, y la escala de una captura se toma como metros.
+Una nube en otra unidad se escala donde se referencia, o se edita el
+`metersPerUnit` de la escena.
+
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
@@ -220,9 +237,10 @@ puede fundir entre sí; `primvars:athenea:splat:normal` como una dirección (la
 media ponderada hecha de nuevo un vector unitario); cualquier otro float --
 metallic, roughness, un transfer, `primvars:athenea:splat:emission` -- como una
 media. Metallic, roughness y transmisión también se comparan
-como el color. Un array muestreado en el tiempo se funde muestra a muestra. Un
-fichero de splats se escribe como una escena nueva, como la escribe
-`athenea convert`.
+como el color. Un array muestreado en el tiempo se funde muestra a muestra. La
+copia conserva el `metersPerUnit` y el `upAxis` de la fuente. Un fichero de
+splats se escribe como una escena nueva, como la escribe `athenea convert`, en
+metros.
 
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
@@ -354,7 +372,7 @@ receta es §3.1.
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `stage` | ruta, obligatoria | — | una escena con mallas |
-| `-o`, `--output` | ruta | `splats.usda` | `.usda`, `.usdc`, `.usd` |
+| `-o`, `--output` | ruta | `splats.usda` | `.usda`, `.usdc`, `.usd`, o `.athc` con niveles de detalle: solo las gaussianas y sus normales de sombreado (sin metallic/roughness/transmission, ids Cryptomatte, índice del vidrio, eje vertical ni unidad); con él se rechazan `--skinned`, `--transfer` y `--lod-levels` |
 | `--prim` | ruta de prim | todas las mallas | solo las que cuelgan de esa ruta |
 | `--hide` | ruta de prim, repetible | ninguna | se deja fuera con todo lo que cuelga de ella, como invisible (opinión de sesión; el fichero no cambia) |
 | `--resolution` | entero | `512` | celdas a lo largo del lado largo de la caja sobre la que se mide la densidad |
@@ -362,12 +380,14 @@ receta es §3.1.
 | `--density` | `per-model` \| `per-mesh` | `per-model` | qué caja es esa |
 | `--cell-min` | número | `0`, derivado | unidades de mundo; por malla, lo más fina que puede ser una celda |
 | `--cell-max` | número | `0`, derivado | unidades de mundo; lo más gruesa |
-| `--max-splats` | entero | `2000000` | el presupuesto, de toda la escena |
+| `--max-splats` | entero | `2000000` | el presupuesto, de toda la escena, repartido entre las mallas en proporción a lo que quiere cada una |
+| `--cell-from-camera` | ruta de un prim cámara | ninguna | la celda de cada malla es lo que cubre un píxel de esa cámara donde la caja de la malla le queda más cerca (como poco el plano cercano), en `--time`; sustituye a `--density`. `--cell-min`/`--cell-max` la acotan, si se dan; no se deriva nada |
+| `--camera-pixels` | entero, de 1 a 65536 | `1920` | con `--cell-from-camera`: píxeles a lo ancho de la apertura horizontal de la cámara |
 | `--sigma` | número | `1.0` | anchura de la gaussiana en celdas; la de mesh2splat es 0.65 |
 | `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos |
-| `--opacity` | número | `1.0` | de donde arranca cada gaussiana |
-| `--glass-opacity` | número | `0.6` | lo que sigue parando un material que transmite del todo |
-| `--opacity-cut` | número | `0.5` | por debajo de esto, un mapa de recorte dice que no hay superficie: el `opacity` de UsdPreviewSurface, el `opacity` de standard_surface o el `geometry_opacity` de OpenPBR conectado a una imagen |
+| `--opacity` | número, de 0 a 1 | `1.0` | cobertura: cuánto de lo que hay detrás cubre la superficie convertida, multiplicado por la opacidad propia del material. Toda opacidad es cobertura -- esta, la constante del material, el valor de un mapa, lo que conserva un vidrio -- y cada gaussiana toma lo que necesita una de las varias que hay sobre un punto, así que 0.5 cubre la mitad a cualquier tamaño |
+| `--glass-opacity` | número, de 0 a 1 | `0.6` | cobertura que conserva un sólido que transmite del todo. Un vidrio de pared fina (y una opacidad de UsdPreviewSurface menor que uno en su modo `transparent` por defecto) cubre en cambio lo que la lámina refleja con su índice |
+| `--opacity-cut` | número, de 0 a 1 | `0.5` | donde la opacidad de un material es un mapa sin umbral propio (el `opacity` de UsdPreviewSurface, el `opacity` de standard_surface, el `geometry_opacity` de OpenPBR, el `alpha` de glTF en BLEND): por debajo de esto no se escribe ninguna gaussiana; por encima, la superficie cubre lo que lee el mapa. El umbral propio del material (`opacityThreshold`, el `alpha_cutoff` de glTF en MASK) se usa en su lugar, y lo que conserva queda entero |
 | `--max-cells` | entero | `262144` | celdas como mucho que recorre un triángulo |
 | `--texture-size` | entero | `1024` | un mapa se lee no mayor que esto; 0 lo lee a su tamaño |
 | `--no-textures` | flag | apagado | ignorar los mapas; los materiales se quedan con sus valores constantes |
@@ -392,6 +412,17 @@ receta es §3.1.
 `--skinned` y un bake se rechazan juntos: una nube que se mueve no puede
 llevar luz horneada en una pose, así que la conversión lo dice y conserva el
 material.
+
+Una malla cuyos GeomSubsets (familia `materialBind`) enlazan materiales
+propios se convierte un subset cada vez, cada uno con su material, y las caras
+que no reclama ningún subset con el de la malla; el log nombra el prim de cada
+subset. Sus gaussianas conservan el id Cryptomatte de la malla.
+
+La salida se escribe entera o no se escribe: como `.<nombre>.partial-<pid>.<ext>`
+en el mismo directorio, y renombrada a `-o` cuando está completa. Una
+conversión que falla no deja nada en `-o` -- o deja el fichero que ya había,
+tal como estaba -- y borra su fichero parcial. Con `--lod-levels`, cada nivel
+y la escena que los dibuja se escriben así.
 
 ### 2.9 `athenea visibility` — lo que proyecta una nube con esqueleto, por partes
 
@@ -443,13 +474,19 @@ mismo para ambas y después cuánto se aleja la primera de la segunda, que se
 toma como referencia: el error HDR relativo (`relMSE`, p99 y mayor diferencia
 relativa) y la distribución en valores de código sRGB de 8 bits (p99, máximo,
 píxeles por encima de 2). La CPU solo lee los ficheros; cada número es de un
-kernel.
+kernel. Los kernels son los del efecto Measure (§7.1), corridos por el host
+AOFX como los corre un compositor, así que el bundle tiene que estar en la
+ruta de búsqueda: uno compilado en este árbol siempre lo está.
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `image` | ruta, obligatoria | — | un EXR |
 | `reference` | ruta | ninguna | un EXR del mismo tamaño |
-| `--window` | `X0 Y0 X1 Y1` | la imagen entera | píxeles en [X0, X1) × [Y0, Y1), filas contadas desde abajo; solo las medias, las diferencias son de toda la imagen |
+| `--window` | `X0 Y0 X1 Y1` | la imagen entera | píxeles en [X0, X1) × [Y0, Y1), filas contadas desde abajo; solo las medias, las diferencias son de toda la imagen. Un X1 o Y1 de 0, o más allá del borde, es el borde |
+| `--heatmap` | ruta | ninguna | escribe además la imagen del efecto, un EXR del tamaño de `image` |
+| `--show` | `source`, `difference`, `relative`, `codes` | `codes` | lo que dibuja `--heatmap`: el `mode` del efecto Measure (§7.1) |
+| `--gain` | número ≥ 0 | `1` | por cuánto se multiplica `--heatmap`; los números no dependen de él |
+| `--path` | directorio ‹repetible› | ninguno | directorios de bundles buscados después de `$AOFX_PLUGIN_PATH` |
 
 Una media conserva el signo, y una diferencia no: un horno blanco que no debe
 devolver más de 1, o un plano convertido que debe cubrir todos sus píxeles, es
@@ -458,6 +495,7 @@ una media.
 ```sh
 athenea compare cloud.exr mesh.exr
 athenea compare furnace.exr --window 192 192 320 320
+athenea compare render.exr golden.exr --heatmap where.exr --show relative --gain 4
 ```
 
 ### 2.12 `athenea migrate` — los ficheros de lucabRTrender con los nombres de athenea
@@ -486,7 +524,7 @@ propias opiniones, variantes incluidas):
 | `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
 | claves de `customData` y `customLayerData` con un componente `lrt` | lo mismo con `athenea` |
 | una ruta de asset que acaba en `.lrtc` | `.athc` |
-| un `.lrtc` (`LRTC`, versión 1) | un `.athc` (`ATHC`, versión 2, sin normales); el contenido se copia tal cual |
+| un `.lrtc` (`LRTC`, versión 1) | un `.athc` (`ATHC`, versión 1, sin normales); el contenido se copia tal cual |
 
 Rutas de asset. Una ruta relativa a un fichero que no se copia (una textura,
 una capa sin `--recursive`, una fuera de `--root`) se hace absoluta cuando la
@@ -559,11 +597,26 @@ unidades dentro:
 El suelo está en su presupuesto en los dos casos: son dos triángulos, y lo
 decide el techo de celdas, no la densidad.
 
-**El presupuesto.** `--max-splats` es un techo de toda la escena, tomado en
-orden de malla, así que un presupuesto corto conserva enteras las primeras
-mallas y tira las últimas del todo. El log dice cuántas querían más de lo que
-recibieron. Sube el presupuesto, o con `--density per-mesh` sube `--cell-min`
-para que cada malla cueste menos.
+**El presupuesto.** `--max-splats` es un techo de toda la escena. Primero se
+cuenta cada malla (cada GeomSubset de una) -- una pasada del efecto con sitio
+para una gaussiana, que lo cuenta todo y no escribe nada -- y cuando quieren
+más que el presupuesto se reparte en proporción: cada una recibe
+`presupuesto × quiere / total` (y una como poco), y recorre una celda
+`sqrt(quiere / parte)` veces más gruesa para querer más o menos eso. Es un
+solo suelo de densidad para toda la escena: todas las mallas pierden densidad
+por igual y no se tira ninguna. El aviso dice cuántas se querían, y la línea
+de log de cada malla cuánto más gruesa recorrió. Una malla que aún quiere un
+poco más que su parte tras engrosarla conserva las gaussianas de sus primeros
+triángulos, en el orden de la malla. Contar cuesta una pasada corta por malla.
+
+**Desde una cámara.** `--cell-from-camera` da a cada malla la celda de la
+cámara que la va a mirar (la regla de Mesh2GS): `z × (apertura / píxeles) /
+focal`, con `z` la distancia de la cámara al punto más cercano de la caja de
+la malla (como poco su plano cercano, y cero dentro de la caja), así que una
+celda cubre más o menos un píxel donde la malla está más cerca. Cada
+triángulo de la malla recorre exactamente esa celda. Una cámara libre que no
+está en la escena no la conoce la conversión, así que es una opción y no lo
+de por defecto.
 
 **Texturas.** Cada mapa viaja al dispositivo como float4, dieciséis bytes por
 texel, así que un mapa de 4k son 268 MB y un coche con quince no cabe. La
@@ -696,7 +749,12 @@ hizo la luz, el otro lo que haría cualquiera.
 **Una nube que se mueve.** `--skinned` construye las gaussianas en la pose de
 bind y le da a cada una los joints que la llevan, así que la nube se deforma
 al renderizar con el Skeleton al que está atada. Un bake se rechaza con él,
-porque la luz horneada en una pose está mal en todas las demás.
+porque la luz horneada en una pose está mal en todas las demás. Cada gaussiana
+guarda además cómo cambian sus pesos a lo largo de ella
+(`jointWeightGradients`, doce bytes por gaussiana), que es lo que la estira a
+través de un pliegue como se estira su triángulo; una nube convertida antes de
+que se escribieran sigue moviéndose, solo con la mezcla de sus joints, y los
+gana al convertirla de nuevo.
 
 ```sh
 athenea mesh2splat car.usda --density per-mesh --resolution 512 \
@@ -808,18 +866,27 @@ hecha unitaria de nuevo. Es la versión 2 del formato; un fichero de la versión
 1, que no tiene, se sigue leyendo. La misma versión guarda si los colores son
 luz lineal (`primvars:athenea:splat:linear`) en los flags de su cabecera (bit
 1, junto al bit 0 de las normales); un fichero escrito antes lo tiene a cero y
-se lee como una captura, sRGB.
-
-1, que no tiene, se sigue leyendo. Una nube que emite luz
+se lee como una captura, sRGB. Una nube que emite luz
 (`primvars:athenea:splat:emission`) también la guarda, cuatro bytes más por
 gaussiana (una palabra RGB9E5, tras las normales donde están las dos), y en los
 niveles fundidos la media ponderada de lo que representan; es el bit 2 de los
 `flags` de la cabecera (el bit 0 son las normales), así que un fichero sin ella
-se lee como antes.
+se lee como antes. Una nube sin normales, sin emisión y en sRGB se sigue escribiendo como versión
+1, de modo que un lector que solo conoce la versión 1 la abre: la versión 2 se
+escribe solo donde los `flags` no son cero. Un bit de los `flags` que esta
+compilación no conoce (cualquiera pasado el bit 2) se rechaza, nombrando el
+fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
+leería cada bloque detrás de él desde el sitio equivocado.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
 dibujan su gaussiana fundida, así que la nube está pero roma, y se afina según
-aterrizan. `athenea stage` espera a que los streams se asienten antes de una
+aterrizan.
+
+El presupuesto se ciñe al del dispositivo (`ATHENEA_GPU_BUDGET`, §1.2): un
+stream se abre con como mucho la mitad de lo que le queda al presupuesto del
+dispositivo, a 132 bytes por splat, y un asset al que se pidió leer entero
+cuyo fichero ocuparía más que esa mitad se lee en streaming. Ambas cosas se
+imprimen cuando pasan (`streaming budget N splats (~M MiB; asked ...)`). `athenea stage` espera a que los streams se asienten antes de una
 imagen fija, así que un frame renderizado nunca está a medio llegar.
 
 ### 3.4 Color
@@ -1051,6 +1118,7 @@ brillante); una captura no tiene.
 | `primvars:athenea:splat:jointWeights` | float[] | cuatro por gaussiana |
 | `primvars:athenea:splat:geomBindTransform` | matrix4d | |
 | `primvars:athenea:splat:skinningXforms` | matrix4d[] | una por joint, lo único que cambia con el tiempo |
+| `primvars:athenea:splat:jointWeightGradients` | half[] | seis por gaussiana: los gradientes de peso de los tres primeros joints a lo largo de sus dos ejes de reposo, por unidad del espacio de la nube; el del cuarto es menos su suma. Opcional |
 | `primvars:athenea:splat:skeleton` | string | de dónde vino |
 
 **`AtheneaSplatVisibilityAPI`** — lo que proyecta una nube con esqueleto, horneado
@@ -1175,7 +1243,7 @@ ImGui dibuja encima. No vuelve nada salvo el píxel picado y un snapshot.
 
 ### 5.2 Los paneles
 
-Dos paneles, contados por su papel y no widget a widget, porque se mueven
+Los paneles, contados por su papel y no widget a widget, porque se mueven
 según crece el motor.
 
 **View** lleva el frame: qué cámara (la libre, o cualquiera de la escena) y su
@@ -1243,6 +1311,48 @@ cuesta la reconstrucción que cuesta un cielo nuevo.
 **Picked** es en qué resultó ser un píxel, y se abre con la ventana en vez de
 esperar a que lo encuentres: el prim y la instancia que nombra Hydra, la matte
 que nombra una nube, y de qué están hechas las gaussianas de ese prim.
+
+**Gaussians** es qué son los splats en pantalla y qué hizo el frame con ellos,
+plegable sección a sección, con los números separados por miles. Sobre una
+escena sin nubes dice *no gaussians in this stage* y nada más. Se describe una
+vez en `modules/ui` (`ui::gaussianPanel`) y se dibuja después del frame, así que
+su primera fila es el frame en pantalla.
+
+Lleva dos clases de número, y el panel dice a qué frame pertenece cada una. Lo
+que recibió el frame -- las nubes de la escena, lo que conservó el nivel de
+detalle, lo que lleva y ocupa cada una -- es exacto para el frame en pantalla.
+Lo que contó el dispositivo se lee sin esperar, así que pertenece al frame que
+nombra la fila **Counted**, que puede ir uno o dos frames por detrás (bajo la
+ruta raster hoy es el mismo frame, porque el rasterizador ya se espera a sí
+mismo al final).
+
+| Fila | Qué es | Unidad, y cuándo se muestra |
+|---|---|---|
+| Frame | la cuenta de frames dibujados del motor, y la ruta: *rasterised*, *splats traced* o *meshes traced, splats rasterised* | siempre, en una escena con nubes |
+| Counted | el frame al que pertenecen las cuentas del dispositivo de abajo, y cuánto va por detrás | rutas raster |
+| In the stage | las gaussianas de todas las nubes, dibujadas o no | gaussianas |
+| Submitted | entregadas al renderer: tras el nivel de detalle, los prims ocultos y los niveles de variante no elegidos; la parte de *In the stage* | gaussianas |
+| Visible | conservadas por la proyección, el tamaño del orden por profundidad; la parte de lo entregado en el frame contado | gaussianas, rutas raster |
+| Culled, y una fila por razón | *Removed by an edit*, *Outside near/far*, *No area*, *Too faint* (bajo 1/255 una vez repartida por su huella: en lo que se convierte una gaussiana demasiado pequeña), *Off screen* (fuera de los lados del frustum), *Touch no tile*; una razón es fila solo donde descartó algo | gaussianas, rutas raster |
+| Tile pairs | pares (tile, gaussiana), el tamaño del orden por tile, y la media por gaussiana visible | pares |
+| Most tiles | el mayor número de tiles que tocó una gaussiana | tiles |
+| Sort sizes | las claves del orden por profundidad y del orden por tile | claves |
+| Traced | lo que dibujó el trazador de rayos: no descarta nada que contar | gaussianas, `rt` solo |
+| Time each stage | un interruptor: cada etapa del rasterizador espera entonces al dispositivo, y el frame va más lento por esas esperas | apagado por defecto |
+| Project ... Total | las etapas del rasterizador | ms, mientras *Time each stage* está encendido |
+| Structures, Build, Trace, Total | el trazador de rayos: si sus estructuras se reconstruyeron o se conservaron, su ruta, y sus tiempos | ms, `rt` solo |
+| Clouds (memoria) | los arrays de todas las nubes en el dispositivo, incluidas una copia posada y su esqueleto | bytes |
+| Levels of detail | los assets de los que se toman los cortes, y los almacenes de streaming | bytes, donde los hay |
+| una fila por nube | el prim; sus gaussianas, cuántas se entregaron, y las visibles y los pares que contó el dispositivo para ella; su nivel (*level 1 of 3 in 'bird'*, o *cut* con sus gaussianas propias y fusionadas); para un `.athc` en streaming, los chunks en el dispositivo, pedidos, ausentes y cargando; lo que lleva (grado SH, lineal o sRGB de captura, reiluminada, lit body, transfer, con esqueleto, normales, emisión, PBR, ids, visibilidad horneada, ior); lo que ocupa | hasta 24 nubes; el resto entra en los totales |
+
+Las cuentas cuestan cuatro dispatches pequeños y una copia por frame, y solo se
+toman mientras el panel está abierto: plegar su ventana las detiene.
+
+**GPU memory** aparece abajo en la ventana cuando al dispositivo le faltó
+memoria: a qué renunció el motor (las sombras de splats, un nivel de detalle) y
+cuántos niveles más grueso de lo pedido dibuja ahora, o, donde no quedaba nada
+que dar, que el frame se saltó y el siguiente lo vuelve a intentar. La ventana
+sigue; cerrar el panel quita el mensaje hasta la siguiente vez.
 
 ### 5.2.1 Cambiar de qué está hecho el prim picado
 
@@ -1355,6 +1465,35 @@ dos veces se carga una:
 declara cada bundle. `athenea aofx run` corre un efecto sobre ficheros EXR, con
 `--param nombre=valor` para lo que declare.
 
+### 7.1 Measure — `rt.sparrow.aofx.measure`
+
+Un nodo de QC: `Source` frente a `Reference` (opcional), medidas en el
+dispositivo donde ya están, con los números colgados de la salida. Es la
+implementación de `athenea compare`, y el mismo bundle carga en openFXplayer.
+
+| Parámetro | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `mode` | choice: `source`, `difference`, `relative`, `codes` | `codes` | la imagen de salida. `source` deja pasar Source; `difference` es \|S − R\| × gain, alfa 1; `relative` es una rampa (negro, azul, cian, verde, amarillo, rojo) de \|S − R\| / max(\|R\|, 0.001) del canal mayor, rojo en 1 / gain; `codes` colorea los píxeles cuya diferencia de 8 bits pasa de `threshold`, rojo en 32 / gain, y deja el resto en negro. Sin Reference la imagen es Source |
+| `gain` | número ≥ 0 | `1` | solo el mapa de calor |
+| `threshold` | entero 0–255 | `2` | valores de código de 8 bits que un píxel puede diferir sin contar como por encima |
+| `window` | cuatro números, píxeles | `0 0 0 0` | X0 Y0 X1 Y1 en píxeles de Source, filas desde abajo; un X1 o Y1 de 0 es el borde. Solo las medias y los máximos |
+
+Lo que adjunta, todo floats. Una cuenta son dos floats, `alto × 2^24 + bajo`,
+cada uno exacto (alto es 0 por debajo de 16 777 216):
+
+| Id | Valores |
+|---|---|
+| `source` | media R G B A, máximo R G B A, suma R G B A, los píxeles de la ventana (alto, bajo) |
+| `reference` | lo mismo de Reference; solo si está conectada |
+| `hdr` | relMSE, diferencia relativa p99, mayor diferencia relativa, la suma del error cuadrático relativo, píxeles (alto, bajo) |
+| `codes` | p99 de 8 bits, máximo de 8 bits, píxeles por encima de `threshold` (alto, bajo), `threshold`, píxeles (alto, bajo) |
+
+La diferencia relativa va en bins de un octavo de octava desde 2^-16, así que
+su p99 y su máximo son la cota superior de un bin (en torno al 9 %). Las sumas
+están para un host que divide en double, como hace `athenea compare`. Dos
+imágenes de tamaños distintos se rechazan (`measure compares pictures of one
+size`), y también una ventana sin nada dentro (`measure: an empty window`).
+
 ## 8. Referencia
 
 ### 8.1 Variables de entorno
@@ -1424,6 +1563,8 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 |---|---|---|
 | `no GPU device` (los tests se saltan) | no se pudo abrir dispositivo | mira `athenea info`; en Linux pon `ATHENEA_BACKEND` |
 | `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
+| `no Measure bundle on the AOFX search path` | `athenea compare` no encontró `rt.sparrow.aofx.measure` | compila el target `athenea_aofx_measure`, o da su directorio con `--path` |
+| `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |
 | `this build reads no .spz` | faltaba zstd cuando se compiló este binario | recompila con zstd, o convierte la captura en otro sitio |
 | un `.sog` rechazado | faltaba libwebp | instálalo y recompila |
@@ -1431,13 +1572,21 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | `mesh visibility by rays: the device has no ray tracing` | `--visibility rays` en un dispositivo sin ello | usa `automatic`, que elige lo que el dispositivo tiene |
 | un host no ofrece el renderer | no encontró el plugin | pon `PXR_PLUGINPATH_NAME` a `<build>/plugin/usd` |
 | `render product '<ruta>' has no resolution` / `no vars` | el prim de settings está incompleto | dale al producto resolución y vars ordenadas |
-| a una nube convertida le faltan las últimas mallas | el presupuesto se acabó en orden de malla | sube `--max-splats`, o con `--density per-mesh` sube `--cell-min` |
+| una nube convertida sale más gruesa de lo pedido, y `warning: the meshes want N splats` | `--max-splats` estaba por debajo de lo que querían las mallas, y todas se engrosaron por igual para repartirlo | sube `--max-splats`, o baja `--resolution` para elegir tú lo grueso |
+| `warning: the budget is exhausted` o `the budget ran out before N mesh(es)` | `--max-splats` era menor que lo que querían las mallas | sube `--max-splats`, baja `--resolution`, o con `--density per-mesh` sube `--cell-min` |
+| `warning: N cells lay past --max-cells` | un triángulo quería más celdas de las que puede recorrer uno; el resto queda desnudo | sube `--max-cells`, o baja `--resolution` |
 | los reflejos de una nube salen más planos que los de la malla | no lleva normal de sombreado (`primvars:athenea:splat:normal`): se convirtió antes de que las conversiones la escribieran | conviértela de nuevo; `--normal-map-turns` además gira los propios discos |
 | `cells of relief wanted more than N gaussians`, y el relieve muestra huecos en sus pendientes más fuertes | el relieve estiró esas celdas más de lo que permite la partición | sube `--displace-refine`; un polo de las coordenadas de textura estira sin límite y deja unas pocas sea cual sea el valor |
 | los reflejos de una nube salen más blandos que los de la malla | la celda de la conversión es el kernel de desenfoque: una nube se lee como la malla a `r + 9c/R`, con `c` la celda y `R` el radio de curvatura | convierte con `--resolution` más fina: un espejo de roughness `r` quiere una celda por debajo de `r/9` de ese radio. Lo paga el fichero, no el frame -- quince veces las gaussianas fueron un 36 % más de tiempo por frame y dieciséis veces el disco |
 | una bola de cristal enseña la sala pero no la dobla | la nube no tiene índice | `athenea mesh2splat` escribe el IOR del material de cristal; en una nube de otro origen pon `primvars:athenea:splat:ior` (1.5 es cristal). Una nube guarda un solo índice: con dos cristales de IOR distinto se queda el primero y la conversión lo avisa |
 | una nube convertida sale negra | el bake no encontró luz | dale luces a la escena, o `--default-lights`, o `--no-bake` |
+| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear) and 2 (emission))` | el `.athc` lo escribió un motor más nuevo, con algo en sus bloques que esta compilación no sabe dónde buscar | léelo con ese motor, o actualiza este |
 | una nube sale roma y luego se afina | todavía están llegando chunks | sube `--stream-budget`, o espera; una imagen fija se asienta antes |
+| `OutOfMemory: ... does not fit in the GPU's memory budget`, código de salida 3 | el frame necesitaba más que el presupuesto del dispositivo, aun después de que el motor devolviera lo que pudo y bajara de nivel | cierra lo que más ocupe la GPU, renderiza más pequeño, da a un asset en streaming un presupuesto menor; `ATHENEA_GPU_BUDGET` sube o baja el presupuesto |
+| `OutOfMemory: ... does not fit in the memory the system has free` | en Apple silicon, la memoria libre de la máquina menos su reserva de 1,5 GiB no cabría la reserva: otros procesos ocupan el resto | cierra lo que más corra, o renderiza más pequeño; la reserva no se configura |
+| `the GPU ran out of memory running ...` | un command buffer falló en el propio dispositivo (`Insufficient Memory` de Metal), sin llegar aún al presupuesto -- otros trabajos ocupan el resto | lo mismo; bajar `ATHENEA_GPU_BUDGET` mantiene esta ejecución por debajo de lo que dejan |
+| `trying again with ...; levels of detail N coarser than asked` | al dispositivo le faltó memoria y el motor bajó de nivel; los frames siguen | nada, o lo mismo que arriba para recuperar el detalle (una ejecución nueva empieza como se pidió) |
+| `splat shadows skipped: the proxies of N gaussians need ~M MiB` | se pidieron sombras de splats para una nube cuyos proxies ocuparían más de la mitad de lo que le queda al presupuesto (unos 1,7 KB por gaussiana) | una nube más pequeña o sus niveles de detalle; volver a pedirlas (apagar y encender `athenea:splatShadows`) lo vuelve a intentar |
 | fallan los tests del oráculo de Storm | `HDX_MSAA_SAMPLE_COUNT` no es 1 | ctest lo pone; ponlo a mano si corres el binario directamente |
 
 ## 10. Glosario

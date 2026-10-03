@@ -47,6 +47,7 @@ the binary runs in.
 | `ATHENEA_MATERIALX_ROOT` | a directory holding MaterialX's `libraries/`, read by hdAthenea's material compiler in place of the libraries the host's USD loaded. Unset by default: the host's are used. For a host whose MaterialX predates the Slang generator (Blender 5.3 ships 1.39.4: no `genslang` implementations, older node definitions), pointed at 1.39.5's. Read once, when the first material compiles; the host's own renderers keep theirs. |
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
+| `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine, whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
 | `ATHENEA_SHADER_CACHE` | where compiled shaders are cached between runs. The default is a directory under the platform's cache directory. Deleting it costs one slow first frame. |
 
 A binary built without `ATHENEA_BUILD_VIEW` has no `athenea view` subcommand; that is
@@ -84,10 +85,20 @@ What differs between them, in practice:
 
 ### 1.5 Exit codes, and where an error is printed
 
-Every subcommand prints its errors to standard error and exits with `1`. A
-successful run exits with `0`. There are no other codes: a pipeline should
-test the exit status and read stderr, not parse stdout, which carries the
-report — timings, counts, the path written.
+Every subcommand prints its errors to standard error and exits with `1`,
+except when the GPU ran out of memory, which exits with `3` and says what to
+ask for less of: the one failure a script can do something about by trying
+again later or smaller. A successful run exits with `0`. There are no other
+codes: a pipeline should test the exit status and read stderr, not parse
+stdout, which carries the report — timings, counts, the path written.
+
+Out of memory is handled before it is reported. A frame that fails with it
+gives back what the engine makes again on demand (the rasteriser's grown
+buffers, the ray tracers' structures, the denoiser), gives up one thing more,
+and is tried again once: splat shadows first, then a level of detail at a time
+(a LOD group's next coarser level, a streamed asset's cut at twice the pixels
+and half its streaming budget), up to four. Each step is a warning naming
+what it gave up. Only a frame that still fails is the command's error.
 
 `-v` (or `--verbose`) before the subcommand turns on debug logging, which goes
 to stderr as well.
@@ -182,6 +193,11 @@ emit, tile sort and blend times separately.
 A `.athc` output refuses a non-zero `--rotate-x`: the container holds the
 cloud as it is, and the turn belongs on the prim that references it.
 
+A stage written here says `metersPerUnit = 1`: none of the input formats
+records a unit, and a capture's scale is taken to be metres. A cloud in
+another unit is scaled where it is referenced, or the stage's
+`metersPerUnit` edited.
+
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
@@ -220,7 +236,8 @@ as a direction (the weighted mean made a unit vector again); any other float
 -- metallic, roughness, a transfer, `primvars:athenea:splat:emission` -- as a
 mean. Metallic, roughness and transmission are
 also compared as colour is. An array sampled in time is merged a sample at a
-time. A splat file is written as a new stage, as `athenea convert` writes one.
+time. The copy keeps the source's `metersPerUnit` and `upAxis`. A splat
+file is written as a new stage, as `athenea convert` writes one, in metres.
 
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
@@ -350,7 +367,7 @@ recipe is §3.1 below.
 | Option | Value | Default | Notes |
 |---|---|---|---|
 | `stage` | path, required | — | a stage holding meshes |
-| `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd` |
+| `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd`, or `.athc` with levels of detail: the gaussians and their shading normals only (no metallic/roughness/transmission, Cryptomatte ids, glass index, up axis or unit); `--skinned`, `--transfer` and `--lod-levels` are refused with it |
 | `--prim` | prim path | every mesh | only meshes at or under this path |
 | `--hide` | prim path, repeatable | none | left out with all beneath it, as if invisible (a session opinion; the file is untouched) |
 | `--resolution` | integer | `512` | cells across the longest side of the box the density is measured over |
@@ -358,12 +375,14 @@ recipe is §3.1 below.
 | `--density` | `per-model` \| `per-mesh` | `per-model` | which box that is |
 | `--cell-min` | number | `0`, derived | world units; per-mesh, the finest a cell may be |
 | `--cell-max` | number | `0`, derived | world units; per-mesh, the coarsest |
-| `--max-splats` | integer | `2000000` | the budget, over the whole stage |
+| `--max-splats` | integer | `2000000` | the budget, over the whole stage, shared between the meshes in proportion to what each wants |
+| `--cell-from-camera` | camera prim path | none | each mesh's cell is what one pixel of that camera covers where the mesh's box is nearest to it (held to the near plane), at `--time`; replaces `--density`. `--cell-min`/`--cell-max` bound it, given; nothing is derived |
+| `--camera-pixels` | integer, 1 to 65536 | `1920` | with `--cell-from-camera`: pixels across the camera's horizontal aperture |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
 | `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
-| `--opacity` | number | `1.0` | what every gaussian starts from |
-| `--glass-opacity` | number | `0.6` | what a fully transmitting material still stops |
-| `--opacity-cut` | number | `0.5` | a cut-out map below this reads as no surface: UsdPreviewSurface's `opacity`, standard_surface's `opacity` or OpenPBR's `geometry_opacity` connected to an image |
+| `--opacity` | number, 0 to 1 | `1.0` | coverage: how much of what stands behind it the converted surface covers, multiplied into the material's own opacity. Every opacity is coverage -- this, the material's constant, a map's value, what a glass keeps -- and each gaussian takes what one of the several over a point needs for it, so 0.5 covers half at any size |
+| `--glass-opacity` | number, 0 to 1 | `0.6` | coverage a fully transmitting solid keeps. A thin-walled glass (and a UsdPreviewSurface opacity under one in its default `transparent` mode) covers what the sheet reflects at its index instead |
+| `--opacity-cut` | number, 0 to 1 | `0.5` | where a material's opacity is a map with no threshold of its own (UsdPreviewSurface's `opacity`, standard_surface's `opacity`, OpenPBR's `geometry_opacity`, glTF's `alpha` in BLEND): below this no gaussian is written; above it the surface covers what the map reads. A material's own threshold (`opacityThreshold`, glTF's `alpha_cutoff` in MASK) is used instead, and what it keeps is whole |
 | `--max-cells` | integer | `262144` | most cells one triangle may walk |
 | `--texture-size` | integer | `1024` | a map is read no larger than this; 0 reads it at its own size |
 | `--no-textures` | flag | off | ignore the maps; materials keep their constant values |
@@ -387,6 +406,17 @@ recipe is §3.1 below.
 
 `--skinned` and a bake are refused together: a cloud that moves cannot carry
 light baked in one pose, so the conversion says so and keeps the material.
+
+A mesh whose GeomSubsets (`materialBind` family) bind materials of their own
+is converted a subset at a time, each with its material, and the faces no
+subset claims with the mesh's; the log names each subset's prim. Their
+gaussians keep the mesh's Cryptomatte id.
+
+The output is written whole or not at all: under `.<name>.partial-<pid>.<ext>`
+in the same directory, and renamed to `-o` once it is complete. A conversion
+that fails leaves nothing under `-o` -- or the file that was there before, as
+it was -- and removes its partial file. With `--lod-levels`, each level and
+the stage that draws them are written so.
 
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part
 
@@ -437,13 +467,20 @@ One image prints the mean and the largest value of each channel. Two print that
 for both, then how far the first is from the second, the second taken as the
 reference: the relative HDR error (`relMSE`, p99 and largest relative
 difference) and the 8-bit sRGB code-value distribution (p99, largest, pixels
-over 2). The CPU only reads the files; every number is a kernel's.
+over 2). The CPU only reads the files; every number is a kernel's. The kernels
+are the Measure effect's (§7.1), run through the AOFX host as a compositor runs
+them, so the bundle must be on the search path: one built in this tree always
+is.
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
 | `image` | path, required | — | an EXR |
 | `reference` | path | none | an EXR of the same size |
-| `--window` | `X0 Y0 X1 Y1` | the whole image | pixels in [X0, X1) × [Y0, Y1), rows counted from the bottom; the means only, the differences are over the whole image |
+| `--window` | `X0 Y0 X1 Y1` | the whole image | pixels in [X0, X1) × [Y0, Y1), rows counted from the bottom; the means only, the differences are over the whole image. An X1 or Y1 of 0, or past the edge, is the edge |
+| `--heatmap` | path | none | also writes the effect's picture, an EXR the size of `image` |
+| `--show` | `source`, `difference`, `relative`, `codes` | `codes` | what `--heatmap` draws: the Measure effect's `mode` (§7.1) |
+| `--gain` | number ≥ 0 | `1` | what `--heatmap` is multiplied by; the numbers do not depend on it |
+| `--path` | directory ‹repeatable› | none | bundle directories searched after `$AOFX_PLUGIN_PATH` |
 
 A mean keeps its sign, which a difference does not: a white furnace that must
 return at most 1, or a converted plane that must cover all of its pixels, is a
@@ -452,6 +489,7 @@ mean.
 ```sh
 athenea compare cloud.exr mesh.exr
 athenea compare furnace.exr --window 192 192 320 320
+athenea compare render.exr golden.exr --heatmap where.exr --show relative --gain 4
 ```
 
 ### 2.12 `athenea migrate` — lucabRTrender's files under athenea's names
@@ -480,7 +518,7 @@ keeps its own opinions, variants included):
 | `hydra:rendererName` `lrt`, `HdLrtRendererPlugin` | `athenea`, `HdAtheneaRendererPlugin` |
 | `customData` and `customLayerData` keys with an `lrt` component | the same with `athenea` |
 | an asset path ending `.lrtc` | `.athc` |
-| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 2, no normals); the payload is copied as it is |
+| a `.lrtc` (`LRTC`, version 1) | a `.athc` (`ATHC`, version 1, no normals); the payload is copied as it is |
 
 Asset paths. A relative path to a file that is not copied (a texture, a layer
 without `--recursive`, one outside `--root`) is made absolute when the output
@@ -550,11 +588,25 @@ in it:
 The ground is at its budget in both: it is two triangles and the cell ceiling
 decides it, not the density.
 
-**The budget.** `--max-splats` is a ceiling over the whole stage, taken in
-mesh order, so a budget too small keeps the first meshes whole and drops the
-last ones entirely. The log says how many wanted more than they were given.
-Raise the budget, or with `--density per-mesh` raise `--cell-min` so every
-mesh costs less.
+**The budget.** `--max-splats` is a ceiling over the whole stage. Every mesh
+(every GeomSubset of one) is counted first -- a run of the effect with room
+for one gaussian, which counts everything and writes nothing -- and when they
+want more than the budget it is shared in proportion: each gets
+`budget × wanted / total` (and one at least), and walks a cell
+`sqrt(wanted / share)` times coarser so that it wants about that. That is one
+density floor for the whole stage: every mesh loses density alike and none is
+dropped. The warning says how many were wanted, and each mesh's log line how
+much coarser it walked. A mesh that still wants a little more than its share
+after the coarsening keeps its first triangles' gaussians, in the mesh's
+order. The count costs one short run a mesh.
+
+**From a camera.** `--cell-from-camera` sizes each mesh's cell by the camera
+that will look at it (Mesh2GS's rule): `z × (aperture / pixels) / focal`,
+`z` the distance from the camera to the nearest point of the mesh's box (its
+near clip at least, and zero inside the box), so one cell covers about one
+pixel where the mesh is nearest. Every triangle of the mesh walks exactly
+that cell. A free camera that is not in the stage is not known to the
+conversion, so this is an option and not the default.
 
 **Textures.** Each map travels to the device as float4, sixteen bytes a texel,
 so a 4k map is 268 MB and a car with fifteen of them does not fit. The
@@ -685,7 +737,11 @@ other is what any light would do.
 **A cloud that moves.** `--skinned` builds the gaussians in the bind pose and
 gives each one the joints that carry it, so the cloud is deformed at render
 time by the Skeleton it is bound to. A bake is refused with it, because light
-baked in one pose is wrong in every other.
+baked in one pose is wrong in every other. Each gaussian also keeps how its
+weights change across it (`jointWeightGradients`, twelve bytes a gaussian),
+which is what makes it stretch across a bend as its triangle does; a cloud
+converted before those were written still moves, by the blend of its joints
+alone, and gains them by being converted again.
 
 ```sh
 athenea mesh2splat car.usda --density per-mesh --resolution 512 \
@@ -796,18 +852,26 @@ the weighted mean of what they stand for made unit again. That is version 2
 of the format; a version 1 file, which has none, is still read. The same
 version keeps whether the colours are linear light (`primvars:athenea:splat:linear`)
 in its header's flags (bit 1, beside bit 0 for the normals); a file written
-before has it clear and is read as a capture, sRGB.
-
-of the format; a version 1 file, which has none, is still read. A cloud that
+before has it clear and is read as a capture, sRGB. A cloud that
 gives off light (`primvars:athenea:splat:emission`) keeps that too, four bytes
 more a gaussian (one RGB9E5 word, after the normals where both are there),
 the merged levels' the weighted mean of what they stand for; it is bit 2 of
 the header's `flags` (bit 0 is the normals), so a file without it reads as
-before.
+before. A cloud without normals, without emission and in sRGB is still written as
+version 1, so a reader of version 1 alone opens it: version 2 is written only
+where the `flags` are not zero. A `flags` bit this build does not know (any
+past bit 2) is refused, file named: a later bit may add a block, and a reader
+that skipped it would read every block after it from the wrong place.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the
-chunks land. `athenea stage` waits for the streams to settle before a still, so a
+chunks land.
+
+The budget is held to the device's (`ATHENEA_GPU_BUDGET`, §1.2): a stream is
+opened with at most half of what the device's budget has left, at 132 bytes
+a splat, and an asset asked to be read whole whose file would take more than
+that half is streamed instead. Either is printed when it happens
+(`streaming budget N splats (~M MiB; asked ...)`). `athenea stage` waits for the streams to settle before a still, so a
 rendered frame is never half-arrived.
 
 ### 3.4 Colour
@@ -1029,6 +1093,7 @@ brightest); a capture has none.
 | `primvars:athenea:splat:jointWeights` | float[] | four a gaussian |
 | `primvars:athenea:splat:geomBindTransform` | matrix4d | |
 | `primvars:athenea:splat:skinningXforms` | matrix4d[] | one a joint, the only thing that changes over time |
+| `primvars:athenea:splat:jointWeightGradients` | half[] | six a gaussian: the first three joints' weight gradients along its two rest axes, per unit of the cloud's space; the fourth's is minus their sum. Optional |
 | `primvars:athenea:splat:skeleton` | string | where it came from |
 
 **`AtheneaSplatVisibilityAPI`** — what a skinned cloud casts, baked by part.
@@ -1151,7 +1216,7 @@ Nothing but a picked pixel and a snapshot comes back.
 
 ### 5.2 The panels
 
-Two panels, by role rather than by widget, since they move as the engine
+The panels, by role rather than by widget, since they move as the engine
 grows.
 
 **View** holds the frame: which camera (the free one, or any on the stage) and
@@ -1219,6 +1284,48 @@ on; switching a dome back costs the rebuild a new sky costs.
 **Picked** is what a pixel turned out to be, and it opens with the window
 rather than waiting to be found: the prim and instance Hydra names, the matte
 that names a cloud, and what that prim's gaussians are made of.
+
+**Gaussians** is what the splats on screen are and what the frame did with
+them, collapsible section by section, numbers with thousands separators. Over
+a stage with no clouds it says *no gaussians in this stage* and nothing else.
+It is described once in `modules/ui` (`ui::gaussianPanel`) and drawn after the
+frame, so its first row is the frame on screen.
+
+Two kinds of number sit in it, and the panel says which frame each belongs
+to. What the frame was handed -- the stage's clouds, what the level of detail
+kept, what each carries and holds -- is exact for the frame on screen. What
+the device counted is read back without waiting, so it belongs to the frame
+named on the **Counted** row, which may be a frame or two behind (under the
+raster route today it is the same frame, because the rasteriser already
+waits for itself at the end).
+
+| Row | What it is | Unit, and when it is shown |
+|---|---|---|
+| Frame | the engine's count of frames drawn, and the route: *rasterised*, *splats traced*, or *meshes traced, splats rasterised* | always, over a stage with clouds |
+| Counted | the frame the device's counts below belong to, and how far behind it is | raster routes |
+| In the stage | every cloud's gaussians, drawn or not | gaussians |
+| Submitted | handed to the renderer: after the level of detail, the hidden prims and the variant levels not chosen; the share of *In the stage* | gaussians |
+| Visible | kept by the projection, the depth sort's size; the share of the counted frame's submitted | gaussians, raster routes |
+| Culled, and a row a reason | *Removed by an edit*, *Outside near/far*, *No area*, *Too faint* (under 1/255 once spread over its footprint: what a too-small gaussian becomes), *Off screen* (outside the frustum's sides), *Touch no tile*; a reason is a row only where it culled something | gaussians, raster routes |
+| Tile pairs | (tile, gaussian) pairs, the tile sort's size, and the mean a visible gaussian | pairs |
+| Most tiles | the most tiles one gaussian touched | tiles |
+| Sort sizes | the depth sort's and the tile sort's keys | keys |
+| Traced | what the ray tracer drew: it culls nothing to count | gaussians, `rt` alone |
+| Time each stage | a switch: each rasteriser stage then waits for the device, and the frame is slower by those waits | off by default |
+| Project ... Total | the rasteriser's stages | ms, while *Time each stage* is on |
+| Structures, Build, Trace, Total | the ray tracer: whether its structures were rebuilt or kept, its route, and its times | ms, `rt` alone |
+| Clouds (memory) | every cloud's arrays on the device, a posed copy and its skeleton included | bytes |
+| Levels of detail | the assets cuts are taken from, and the streaming stores | bytes, where there are any |
+| one row a cloud | the prim; its gaussians, how many were submitted, and the device's visible and pairs for it; its level (*level 1 of 3 in 'bird'*, or *cut* with its own and merged gaussians); for a streamed `.athc`, chunks on the device, wanted, missing and loading; what it carries (SH degree, linear or capture sRGB, relit, lit body, transfer, skinned, normals, emission, PBR, ids, baked visibility, ior); what it holds | up to 24 clouds; the rest are in the totals |
+
+The counts cost four small dispatches and a copy a frame, and are taken only
+while the panel is open: collapsing its window stops them.
+
+**GPU memory** appears at the bottom of the window when the device ran short:
+what the engine gave up (splat shadows, a level of detail) and how many levels
+coarser than asked it now draws, or, where nothing was left to give, that the
+frame was skipped and the next one tries again. The window stays; closing the
+panel dismisses the message until the next time.
 
 ### 5.2.1 Changing what a picked prim is made of
 
@@ -1327,6 +1434,35 @@ twice is loaded once:
 bundle declares. `athenea aofx run` runs one effect over EXR files, with
 `--param name=value` for anything it declares.
 
+### 7.1 Measure — `rt.sparrow.aofx.measure`
+
+A QC node: `Source` against `Reference` (optional), measured on the device
+they are on, the numbers attached to the output. It is `athenea compare`'s
+implementation, and the same bundle loads in openFXplayer.
+
+| Parameter | Value | Default | Notes |
+|---|---|---|---|
+| `mode` | choice: `source`, `difference`, `relative`, `codes` | `codes` | the picture out. `source` passes Source through; `difference` is \|S − R\| × gain, alpha 1; `relative` is a ramp (black, blue, cyan, green, yellow, red) of the largest channel's \|S − R\| / max(\|R\|, 0.001), red at 1 / gain; `codes` colours the pixels whose 8-bit difference is over `threshold`, red at 32 / gain, and leaves the rest black. Without a Reference the picture is Source |
+| `gain` | number ≥ 0 | `1` | the heatmap only |
+| `threshold` | integer 0–255 | `2` | 8-bit code values a pixel may differ by and not be counted as over |
+| `window` | four numbers, pixels | `0 0 0 0` | X0 Y0 X1 Y1 in Source's pixels, rows from the bottom; an X1 or Y1 of 0 is the edge. The means and the largest values only |
+
+What it attaches, floats all. A count is two floats, `high × 2^24 + low`, each
+exact (high is 0 below 16 777 216):
+
+| Id | Values |
+|---|---|
+| `source` | mean R G B A, largest R G B A, sum R G B A, the window's pixels (high, low) |
+| `reference` | the same for Reference; only when it is wired |
+| `hdr` | relMSE, p99 relative difference, largest relative difference, the relative squared error's sum, pixels (high, low) |
+| `codes` | 8-bit p99, 8-bit largest, pixels over `threshold` (high, low), `threshold`, pixels (high, low) |
+
+The relative difference is binned in eighths of an octave from 2^-16, so its
+p99 and largest are a bin's upper bound (about 9 %). The sums are there for a
+host that divides in double, as `athenea compare` does. Two pictures of
+different sizes are refused (`measure compares pictures of one size`), and so
+is a window with nothing in it (`measure: an empty window`).
+
 ## 8. Reference
 
 ### 8.1 Environment variables
@@ -1394,6 +1530,8 @@ A script's own header says what it needs and where it puts things.
 |---|---|---|
 | `no GPU device` (tests skip) | no device could be opened | check `athenea info`; on Linux set `ATHENEA_BACKEND` |
 | `colour: no colour space '<name>' in <config>; read as the file says` | a texture names a colour space neither the config nor the studio config knows | correct the name (`athenea info` says whether OpenColorIO is built in); the texture is read as if no colour space were given |
+| `no Measure bundle on the AOFX search path` | `athenea compare` found no `rt.sparrow.aofx.measure` | build the `athenea_aofx_measure` target, or give its directory with `--path` |
+| `measure: an empty window` | `athenea compare --window` (or the effect's `window`) holds no pixel | give X0 < X1 and Y0 < Y1 inside the image |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |
 | `this build reads no .spz` | zstd was missing when this binary was built | rebuild with zstd, or convert the capture elsewhere |
 | `.sog` refused | libwebp was missing | install it and rebuild |
@@ -1401,13 +1539,21 @@ A script's own header says what it needs and where it puts things.
 | `mesh visibility by rays: the device has no ray tracing` | `--visibility rays` on a device without it | use `automatic`, which picks what the device has |
 | a host does not offer the renderer | the plugin was not found | set `PXR_PLUGINPATH_NAME` to `<build>/plugin/usd` |
 | `render product '<path>' has no resolution` / `no vars` | the settings prim is incomplete | give the product a resolution and ordered vars |
-| a converted cloud is missing its last meshes | the budget ran out in mesh order | raise `--max-splats`, or with `--density per-mesh` raise `--cell-min` |
+| a converted cloud is coarser than asked, and `warning: the meshes want N splats` | `--max-splats` was below what the meshes wanted, and every mesh was coarsened alike to share it | raise `--max-splats`, or lower `--resolution` to choose the coarseness yourself |
+| `warning: the budget is exhausted` or `the budget ran out before N mesh(es)` | `--max-splats` was smaller than what the meshes wanted | raise `--max-splats`, lower `--resolution`, or with `--density per-mesh` raise `--cell-min` |
+| `warning: N cells lay past --max-cells` | a triangle wanted more cells than one triangle may walk; the rest of it is bare | raise `--max-cells`, or lower `--resolution` |
 | a converted cloud is black | the bake found no light | give the stage lights, or `--default-lights`, or `--no-bake` |
 | a cloud's reflections look flatter than the mesh's | it carries no shading normal (`primvars:athenea:splat:normal`): converted before conversions wrote one | convert it again; `--normal-map-turns` also turns the discs themselves |
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |
 | a cloud's reflections look softer than the mesh's | the conversion's cell is the blur kernel: a cloud reads as the mesh at `r + 9c/R`, where `c` is the cell and `R` the radius of curvature | convert at a finer `--resolution`: a mirror at roughness `r` wants a cell under `r/9` of that radius. It costs the file, not the frame -- fifteen times the gaussians was 36 % more time a frame and sixteen times the disk |
 | a glass ball shows the room but does not bend it | the cloud has no index | `athenea mesh2splat` writes the glass material's IOR; for a cloud from elsewhere author `primvars:athenea:splat:ior` (1.5 is glass). A cloud keeps one index: with two glasses of different IOR the first is kept and the conversion says so |
+| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear) and 2 (emission))` | the `.athc` was written by a newer engine, with something in its blocks this build does not know where to find | read it with that engine, or update this one |
 | a cloud renders blunt and then sharpens | chunks are still arriving | raise `--stream-budget`, or wait; a still settles first |
+| `OutOfMemory: ... does not fit in the GPU's memory budget`, exit code 3 | the frame needed more than the device's budget, even after the engine gave back what it could and stepped down | close what else holds the GPU, render smaller, give a streamed asset a smaller budget; `ATHENEA_GPU_BUDGET` raises or lowers the budget |
+| `OutOfMemory: ... does not fit in the memory the system has free` | on Apple silicon, the machine's free memory less its 1.5 GiB reserve would not hold the allocation: other processes hold the rest | close what else runs, or run smaller; the reserve is not configurable |
+| `the GPU ran out of memory running ...` | a command buffer failed on the device itself (Metal's `Insufficient Memory`), with the budget not yet reached -- other jobs hold the rest | the same; lowering `ATHENEA_GPU_BUDGET` keeps this run below what they leave |
+| `trying again with ...; levels of detail N coarser than asked` | the device ran short and the engine stepped down; the frames go on | nothing, or the same as above to get the detail back (a new run starts as asked) |
+| `splat shadows skipped: the proxies of N gaussians need ~M MiB` | splat shadows were asked for a cloud whose proxies would take more than half of what the budget has left (about 1.7 KB a gaussian) | a smaller cloud or its levels of detail; asking again (switching `athenea:splatShadows` off and on) tries again |
 | the Storm oracle tests fail | `HDX_MSAA_SAMPLE_COUNT` is not 1 | ctest sets it; set it by hand if running the binary directly |
 
 ## 10. Glossary

@@ -1,6 +1,6 @@
 include(Catch)
 
-# athenea_test(<name> SOURCES ... LIBS ... [LABELS ...])
+# athenea_test(<name> SOURCES ... LIBS ... [LABELS ...] [FIXTURES ...])
 #
 # A Catch2 executable, registered with ctest case by case. GPU tests skip when
 # the machine has no device; they never fall back to anything else. Every
@@ -11,7 +11,7 @@ include(Catch)
 # (rasterisation, ray queries) it says in its skip message, which
 # scripts/remote-test.sh tabulates.
 function(athenea_test name)
-    cmake_parse_arguments(ARG "" "" "SOURCES;LIBS;ENVIRONMENT_MODIFICATION;LABELS" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "SOURCES;LIBS;ENVIRONMENT_MODIFICATION;LABELS;FIXTURES" ${ARGN})
     add_executable(${name} ${ARG_SOURCES})
     target_link_libraries(${name} PRIVATE Catch2::Catch2WithMain ${ARG_LIBS})
     athenea_set_target_defaults(${name})
@@ -28,6 +28,12 @@ function(athenea_test name)
     if(ARG_ENVIRONMENT_MODIFICATION)
         list(APPEND properties ENVIRONMENT_MODIFICATION "${ARG_ENVIRONMENT_MODIFICATION}")
     endif()
+    # What ctest runs first: a command whose output the cases read (one
+    # fixture a binary, for the same quoting reason as the label).
+    if(ARG_FIXTURES)
+        list(GET ARG_FIXTURES 0 fixture)
+        list(APPEND properties FIXTURES_REQUIRED "${fixture}")
+    endif()
     catch_discover_tests(${name}
         PROPERTIES ${properties}
         DISCOVERY_MODE PRE_TEST)
@@ -37,8 +43,13 @@ athenea_test(athenea_core_tests
     SOURCES core/test_hash.cpp core/test_platform.cpp
     LIBS athenea::core)
 
+# The panels' description: bookkeeping, checked on the CPU.
+athenea_test(athenea_ui_tests
+    SOURCES ui/test_panels.cpp
+    LIBS athenea::ui)
+
 athenea_test(athenea_gpu_tests
-    SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp
+    SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp gpu/test_memory.cpp
     LIBS athenea::gpu athenea::render)
 
 athenea_test(athenea_colour_tests
@@ -72,7 +83,7 @@ athenea_test(athenea_geom_tests
 
 athenea_test(athenea_material_tests
     SOURCES material/test_texture_store.cpp material/test_lobes.cpp material/test_material_compiler.cpp
-    LIBS athenea::material hio)
+    LIBS athenea::material hio MaterialXCore MaterialXFormat)
 target_compile_options(athenea_material_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
                        -Wno-double-promotion -Wno-cast-align)
 target_compile_definitions(athenea_material_tests PRIVATE ATHENEA_MATERIALX_ROOT="${ATHENEA_USD_ROOT}")
@@ -102,7 +113,15 @@ athenea_test(athenea_usd_tests
 add_dependencies(athenea_usd_tests hdAthenea)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
                            ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-                           ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive")
+                           ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive"
+                           ATHENEA_TEST_MATERIALX_LIBRARIES="${ATHENEA_USD_ROOT}/libraries")
+# $ATHENEA_MATERIALX_ROOT is read once a process, so the case that sets it is
+# hidden from the discovery above and run here alone, with it set to a
+# directory the case fills with an edited copy of the build's libraries.
+add_test(NAME materialx_root COMMAND athenea_usd_tests "[materialx_root]")
+set_tests_properties(materialx_root PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR};ATHENEA_MATERIALX_ROOT=${CMAKE_CURRENT_BINARY_DIR}/materialx_root"
+    LABELS gpu)
 target_compile_options(athenea_usd_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
                        -Wno-double-promotion -Wno-cast-align)
 set_target_properties(athenea_usd_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
@@ -165,15 +184,30 @@ athenea_test(athenea_gpu_host_tests
 
 add_subdirectory(aofx/bundles)
 athenea_test(athenea_aofx_tests
-    SOURCES aofx/test_aofx.cpp aofx/test_mesh2splat.cpp
-    LIBS athenea::aofx_host athenea::gpu
+    SOURCES aofx/test_aofx.cpp aofx/test_mesh2splat.cpp aofx/test_measure.cpp
+    LIBS athenea::aofx_host athenea::render athenea::gpu
     LABELS gpe)
 # The conversion's own bundle, checked through the host like any other.
-add_dependencies(athenea_aofx_tests aofx_test_bundles athenea_aofx_mesh2splat)
+add_dependencies(athenea_aofx_tests aofx_test_bundles athenea_aofx_mesh2splat athenea_aofx_measure)
 target_compile_definitions(athenea_aofx_tests PRIVATE
     ATHENEA_AOFX_TEST_BUNDLES="${ATHENEA_AOFX_TEST_BUNDLES}"
     ATHENEA_AOFX_TEST_RUN_BUNDLES="${ATHENEA_AOFX_TEST_RUN_BUNDLES}"
     ATHENEA_AOFX_BUNDLES="${AOFX_BUNDLE_DIR}")
+# `athenea compare` runs the Measure effect now, and prints what it printed
+# when it called render's comparison itself: two fixture renders (sh3.ply,
+# 96x64, degree 3 against degree 0 without the 2D filter), both ways round,
+# with a window, and one image alone.
+foreach(case "pair;a.exr;b.exr" "swapped;b.exr;a.exr" "window;a.exr;b.exr;--window;10;5;70;50" "single;b.exr")
+    list(GET case 0 expected)
+    list(REMOVE_AT case 0)
+    string(REPLACE ";" "\\;" arguments "${case}")
+    add_test(NAME compare_cli_${expected}
+        COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea> -DDATA=${CMAKE_CURRENT_SOURCE_DIR}/data/compare
+                -DEXPECTED=${expected} -DARGS=${arguments} -P ${CMAKE_CURRENT_SOURCE_DIR}/aofx/CheckCompare.cmake)
+    set_tests_properties(compare_cli_${expected} PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        LABELS gpe)
+endforeach()
 # The SDK headers against their recorded hashes: aofx compatibility is mandatory.
 add_test(NAME aofx_sdk_manifest
     COMMAND ${CMAKE_COMMAND} -DSDK_DIR=${ATHENEA_AOFX_DIR}/sdk/include/aofx
@@ -201,6 +235,40 @@ set_tests_properties(mesh2splat_density_per-model PROPERTIES
 set_tests_properties(mesh2splat_density_per-mesh PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [1-9][0-9][0-9]+ splats of")
 
+# WHAT `athenea mesh2splat` WRITES, checked on the device. The conversions run
+# first (the `mesh2splat_outputs` fixture) into one directory, and
+# athenea_mesh2splat_tests reads them back and counts with kernels.
+set(ATHENEA_M2S_OUTPUTS ${CMAKE_CURRENT_BINARY_DIR}/mesh2splat)
+file(MAKE_DIRECTORY ${ATHENEA_M2S_OUTPUTS})
+function(athenea_m2s_output name)
+    add_test(NAME mesh2splat_output_${name}
+        COMMAND athenea mesh2splat ${ARGN})
+    set_tests_properties(mesh2splat_output_${name} PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        FIXTURES_SETUP mesh2splat_outputs
+        LABELS gpe)
+endfunction()
+athenea_m2s_output(two_subsets ${CMAKE_CURRENT_SOURCE_DIR}/data/two_subsets.usda --no-bake --no-camera
+    --resolution 32 -o ${ATHENEA_M2S_OUTPUTS}/two_subsets.usda)
+# A budget below what the two cards want: shared, not spent on the first.
+athenea_m2s_output(two_cards_budget ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --resolution 64 --max-splats 800 -o ${ATHENEA_M2S_OUTPUTS}/two_cards_budget.usda)
+# The cell from the stage's camera, 64 pixels across.
+athenea_m2s_output(two_cards_camera ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --cell-from-camera /World/Camera --camera-pixels 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards_camera.usda)
+# The same cards as a .athc and as a stage, to be drawn side by side.
+athenea_m2s_output(two_cards_athc ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.athc)
+athenea_m2s_output(two_cards_usd ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
+    --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.usda)
+athenea_test(athenea_mesh2splat_tests
+    SOURCES mesh2splat/test_outputs.cpp
+    LIBS athenea::usd athenea::lod athenea::render athenea::scene
+    LABELS gpe
+    FIXTURES mesh2splat_outputs)
+add_dependencies(athenea_mesh2splat_tests athenea athenea_aofx_mesh2splat)
+target_compile_definitions(athenea_mesh2splat_tests PRIVATE ATHENEA_M2S_OUTPUTS="${ATHENEA_M2S_OUTPUTS}")
+set_target_properties(athenea_mesh2splat_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 # What a converted lamp gives off. Two emissive quads -- a constant OpenPBR
 # luminance, and a glTF emissive map times its strength -- converted relit
 # (--no-bake), transferred (--transfer) and baked; then a hidden case of the
@@ -236,6 +304,30 @@ set_tests_properties(emissive_conversions_render_like_the_mesh PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED emissive_clouds
     LABELS gpe)
+
+# WHAT A CONVERTED SURFACE COVERS: the planes of tests/data/coverage converted
+# once (the fixture), then measured against the meshes they came from.
+add_test(NAME mesh2splat_coverage
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/coverage/planes.usda --prim /Planes
+            --no-bake --no-camera --resolution 512 -o ${CMAKE_CURRENT_BINARY_DIR}/coverage_planes.usdc)
+set_tests_properties(mesh2splat_coverage PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_SETUP coverage_planes
+    LABELS gpe)
+athenea_test(athenea_coverage_tests
+    SOURCES usd/test_coverage.cpp
+    LIBS athenea::usd
+    LABELS gpe
+    FIXTURES coverage_planes)
+add_dependencies(athenea_coverage_tests hdAthenea athenea athenea_aofx_mesh2splat)
+target_compile_definitions(athenea_coverage_tests PRIVATE
+    ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
+    ATHENEA_COVERAGE_STAGE="${CMAKE_CURRENT_SOURCE_DIR}/data/coverage/planes.usda"
+    ATHENEA_COVERAGE_CLOUD="${CMAKE_CURRENT_BINARY_DIR}/coverage_planes.usdc")
+target_compile_options(athenea_coverage_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
+                       -Wno-double-promotion)
+set_target_properties(athenea_coverage_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
+                      BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 # One TBB in the process: OpenUSD's oneTBB, which OIDN (built without its CPU
 # device) and everything else share.

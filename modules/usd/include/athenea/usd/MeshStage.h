@@ -84,10 +84,25 @@ struct StageMaterial {
     StageTexture           normal;
     StageTexture           metallicMap;
     StageTexture           roughnessMap;
-    /// A cut-out: where this reads below a half the surface is not there at
-    /// all. It is not the same thing as `transmission`, which is a surface
-    /// you see through.
+    /// HOW MUCH OF WHAT STANDS BEHIND THE SURFACE IT COVERS, as a constant:
+    /// MaterialX's `opacity` (OpenPBR `geometry_opacity`, glTF `alpha` in
+    /// BLEND), or UsdPreviewSurface's in `presence` mode. Coverage, not
+    /// transmission: the mesh is drawn there by that lot. One where an input
+    /// is connected to `opacityMap`, which is then the value. (A
+    /// UsdPreviewSurface in its default `transparent` mode carries its
+    /// constant as a thin wall's `transmission` instead.)
+    float                  opacity = 1.0F;
+    /// The opacity read as coverage, a value a point: where it is below the
+    /// conversion's cut the surface is not there at all, and above it the
+    /// surface covers what it reads. It is not the same thing as
+    /// `transmission`, which is a surface you see through.
     StageTexture           opacityMap;
+    /// A CUT-OUT BY THRESHOLD (UsdPreviewSurface's `opacityThreshold`, glTF's
+    /// `alpha_cutoff` in MASK): the opacity is either there, whole, or not,
+    /// by whether it reads at least this. 0: no threshold, the opacity is
+    /// coverage. A constant is resolved here (to an `opacity` of 0 or 1), so
+    /// this is only ever set beside an `opacityMap`.
+    float                  opacityThreshold = 0.0F;
     /// A HEIGHT ALONG THE NORMAL: UsdPreviewSurface's `displacement`, or a
     /// MaterialX `displacement` node's `displacement` times its `scale`. The
     /// surface stands `map * displacementScale + displacementBias` off the
@@ -143,6 +158,15 @@ struct StageSkinning {
     bool                  dualQuaternion = false;
 };
 
+/// A GEOMSUBSET THAT BINDS A MATERIAL OF ITS OWN: one of the mesh's
+/// `materialBind` family. Its faces are the mesh's triangles whose
+/// `GpuMesh::triangleSubsets` is its index plus one; the faces no subset
+/// claims keep the mesh's own material.
+struct StageSubset {
+    std::string   path;       ///< the GeomSubset prim, for messages
+    StageMaterial material;   ///< what it binds (the mesh's, where it binds none)
+};
+
 /// One mesh of the stage, already on the device.
 struct StageMesh {
     std::string           path;
@@ -165,6 +189,20 @@ struct StageMesh {
     /// (`st2`), where a map of its material reads by one that is not the
     /// first; empty otherwise.
     std::string           uv2;
+    /// Its GeomSubsets of the `materialBind` family, in the order the mesh
+    /// was built with them (`mesh.subsets` of them). Empty: one material.
+    std::vector<StageSubset> subsets;
+};
+
+/// A camera of the stage, as a conversion that sizes its cells by what that
+/// camera sees reads it: where it stands and the lens it looks through.
+struct StageCamera {
+    /// Camera to world, row major: three rows of four, the position in the
+    /// fourth column (as `StageMesh::toWorld`).
+    std::array<float, 12> toWorld{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+    float                 focalLength = 50.0F;          ///< in the aperture's units (tenths of a scene unit)
+    float                 horizontalAperture = 20.955F;
+    float                 nearClip = 1.0F;              ///< the clipping range's near end, scene units
 };
 
 struct MeshStageOptions {
@@ -230,6 +268,10 @@ public:
     [[nodiscard]] char upAxis() const;
     /// The stage's metersPerUnit, USD's fallback included.
     [[nodiscard]] double metersPerUnit() const;
+
+    /// The `UsdGeomCamera` at `path`, at `time`: its world transform, focal
+    /// length, horizontal aperture and near clip, as authored.
+    [[nodiscard]] Result<StageCamera> camera(const std::string& path, double time) const;
 
     /// The layers the stage was opened from, for a message.
     [[nodiscard]] std::string source() const;

@@ -2,43 +2,78 @@
 //
 // `athenea compare`: what one or two EXR images hold, measured on the GPU.
 // The CPU reads the files; the means, the largest values and the differences
-// are kernels (render::imageStats, compareHdr, compareImages), the same ones
-// the tests use. One image: its statistics. Two: each one's, and how far the
-// first is from the second, the second taken as the reference.
-#include <array>
+// are the Measure effect's kernels (plugins/measure), run through the AOFX
+// host as a compositor runs them, so this command and a QC node in
+// openFXplayer are one implementation. One image: its statistics. Two: each
+// one's, and how far the first is from the second, the second taken as the
+// reference.
+#include <algorithm>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "Commands.h"
-#include "athenea/gpu/Buffer.h"
-#include "athenea/gpu/Device.h"
-#include "athenea/gpu/ShaderLibrary.h"
+#include "aofx/Effect.h"
+#include "athenea/aofx/EffectRegistry.h"
+#include "athenea/aofx/EffectRender.h"
+#include "athenea/gpu_host/Context.h"
+#include "athenea/image/Image.h"
 #include "athenea/io/Exr.h"
-#include "athenea/render/ReferenceRenderer.h"
 
 namespace athenea::cli {
 namespace {
 
 struct Options {
-    std::string           image;
-    std::string           reference;
-    std::vector<uint32_t> window;   // x0 y0 x1 y1, bottom row first
+    std::string              image;
+    std::string              reference;
+    std::vector<uint32_t>    window;   // x0 y0 x1 y1, bottom row first
+    std::string              heatmap;
+    std::string              show = "codes";
+    double                   gain = 1.0;
+    std::vector<std::string> paths;
 };
 
-Result<gpu::Buffer> upload(gpu::Device& device, const io::ExrPixels& pixels, const char* label) {
-    gpu::BufferDesc desc;
-    desc.bytes = pixels.rgba.size() * sizeof(float);
-    desc.elementBytes = 16;
-    desc.label = label;
-    return gpu::Buffer::create(device, desc, pixels.rgba.data());
+/// The file's pixels in an image on the device, rows as the file has them
+/// (bottom first).
+Result<image::ImagePtr> load(const io::ExrPixels& pixels) {
+    auto image = image::Image::create({0, 0, static_cast<int32_t>(pixels.width), static_cast<int32_t>(pixels.height)});
+    if (!image) return std::move(image).error();
+    auto floats = (*image)->floats();
+    const auto stride = static_cast<size_t>((*image)->stride());
+    for (uint32_t y = 0; y < pixels.height; ++y) {
+        const size_t row = size_t{y} * pixels.width * 4;
+        std::copy_n(pixels.rgba.begin() + static_cast<std::ptrdiff_t>(row), size_t{pixels.width} * 4,
+                    floats.begin() + static_cast<std::ptrdiff_t>(size_t{y} * stride * 4));
+    }
+    return *image;
 }
 
-void printStats(const char* name, const render::ImageStats& stats) {
-    std::printf("%-9s mean %.6g %.6g %.6g %.6g   max %.6g %.6g %.6g %.6g   (%llu pixels)\n", name,
-                stats.mean[0], stats.mean[1], stats.mean[2], stats.mean[3], stats.max[0], stats.max[1],
-                stats.max[2], stats.max[3], static_cast<unsigned long long>(stats.pixels));
+/// A count the effect attached as two exact floats, high and low 24 bits.
+unsigned long long countAt(const std::vector<float>& values, size_t at) {
+    return (static_cast<unsigned long long>(values[at]) << 24U) + static_cast<unsigned long long>(values[at + 1]);
+}
+
+/// "source" / "reference": mean, max and sum of each channel, then the
+/// window's pixels. The mean printed is the sum over the pixels in double,
+/// as it always was.
+void printStats(const char* name, const std::vector<float>& values) {
+    const unsigned long long pixels = countAt(values, 12);
+    double mean[4];
+    for (size_t c = 0; c < 4; ++c) {
+        mean[c] = static_cast<double>(values[8 + c]) / static_cast<double>(pixels);
+    }
+    std::printf("%-9s mean %.6g %.6g %.6g %.6g   max %.6g %.6g %.6g %.6g   (%llu pixels)\n", name, mean[0],
+                mean[1], mean[2], mean[3], static_cast<double>(values[4]), static_cast<double>(values[5]),
+                static_cast<double>(values[6]), static_cast<double>(values[7]), pixels);
+}
+
+int showIndex(const std::string& show) {
+    if (show == "source") return 0;
+    if (show == "difference") return 1;
+    if (show == "relative") return 2;
+    return 3;
 }
 
 }   // namespace
@@ -53,54 +88,108 @@ void addCompare(CLI::App& app) {
                     "X0 Y0 X1 Y1: only the pixels in [X0, X1) x [Y0, Y1), rows counted from the bottom "
                     "(default: the whole image)")
         ->expected(4);
+    cmd->add_option("--heatmap", o->heatmap, "also write where the two differ, as an EXR");
+    cmd->add_option("--show", o->show, "what --heatmap draws")
+        ->check(CLI::IsMember({"source", "difference", "relative", "codes"}));
+    cmd->add_option("--gain", o->gain, "what --heatmap is multiplied by");
+    cmd->add_option("--path", o->paths, "extra bundle directories (after $AOFX_PLUGIN_PATH)");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
-            std::fprintf(stderr, "compare: %s\n", error.toString().c_str());
-            throw CLI::RuntimeError(1);
+            std::fprintf(stderr, "compare: ");
+            cli::fail(error);
         };
-        auto device = gpu::Device::create();
-        if (!device) fail(device.error());
-        gpu::ShaderLibrary library(*device);
+        gpu_host::Context* context = gpu_host::installProcessContext();
+        if (context == nullptr || context->compute() == nullptr) {
+            fail(Error(ErrorCode::Unsupported, "no GPU compute device for AOFX kernels (gpe has no backend here)"));
+        }
+        aofx_host::EffectRegistry registry;
+        for (const std::string& path : o->paths) {
+            registry.addSearchPath(path);
+        }
+#ifdef ATHENEA_AOFX_BUNDLE_DIR
+        registry.addSearchPath(ATHENEA_AOFX_BUNDLE_DIR);
+#endif
+        registry.scan(context);
+        aofx::Effect* effect = registry.find("rt.sparrow.aofx.measure");
+        if (effect == nullptr) {
+            fail(Error(ErrorCode::NotFound, "no Measure bundle on the AOFX search path (try `athenea aofx list`)"));
+        }
 
         auto image = io::readExr(o->image);
         if (!image) fail(image.error());
-        auto imageBuffer = upload(**device, *image, "compare.image");
-        if (!imageBuffer) fail(imageBuffer.error());
+        std::optional<io::ExrPixels> reference;
+        if (!o->reference.empty()) {
+            auto read = io::readExr(o->reference);
+            if (!read) fail(read.error());
+            if (read->width != image->width || read->height != image->height) {
+                fail(Error::make(ErrorCode::InvalidArgument, "{}x{} against {}x{}", image->width, image->height,
+                                 read->width, read->height));
+            }
+            reference = std::move(*read);
+        }
 
-        std::array<uint32_t, 4> w{0, 0, 0, 0};
+        aofx_host::EffectJob job;
+        auto source = load(*image);
+        if (!source) fail(source.error());
+        job.inputs.push_back({"Source", *source});
+        if (reference) {
+            auto loaded = load(*reference);
+            if (!loaded) fail(loaded.error());
+            job.inputs.push_back({"Reference", *loaded});
+        }
         if (o->window.size() == 4) {
-            w = {o->window[0], o->window[1], o->window[2], o->window[3]};
+            job.params.push_back(aofx::ParamValue{
+                "window",
+                {static_cast<double>(o->window[0]), static_cast<double>(o->window[1]),
+                 static_cast<double>(o->window[2]), static_cast<double>(o->window[3])},
+                {}});
         }
-        auto stats = render::imageStats(library, *imageBuffer, image->width, image->height, w[0], w[1], w[2], w[3]);
-        if (!stats) fail(stats.error());
+        job.params.push_back(aofx::ParamValue{"mode", {static_cast<double>(showIndex(o->show))}, {}});
+        job.params.push_back(aofx::ParamValue{"gain", {o->gain}, {}});
+        auto rendered = aofx_host::renderEffect(*context, *effect, job);
+        if (!rendered) fail(rendered.error());
+        const image::Image& out = **rendered;
+
+        const std::vector<float>* stats = out.attached("source");
+        if (stats == nullptr || stats->size() < 14) {
+            fail(Error(ErrorCode::DeviceFailure, "the Measure effect attached no statistics"));
+        }
         printStats("image", *stats);
-        if (o->reference.empty()) {
-            return;
+        if (reference) {
+            const std::vector<float>* referenceStats = out.attached("reference");
+            const std::vector<float>* hdr = out.attached("hdr");
+            const std::vector<float>* codes = out.attached("codes");
+            if (referenceStats == nullptr || referenceStats->size() < 14 || hdr == nullptr || hdr->size() < 6 ||
+                codes == nullptr || codes->size() < 7) {
+                fail(Error(ErrorCode::DeviceFailure, "the Measure effect attached no differences"));
+            }
+            printStats("reference", *referenceStats);
+            // The differences are over the whole image: they are
+            // distributions, and a window is for the means above.
+            const unsigned long long pixels = countAt(*hdr, 4);
+            const double relMse =
+                pixels > 0 ? static_cast<double>((*hdr)[3]) / static_cast<double>(pixels) : 0.0;
+            std::printf("hdr       relMSE %.6g   p99 relative %.4g   max relative %.4g\n", relMse,
+                        static_cast<double>((*hdr)[1]), static_cast<double>((*hdr)[2]));
+            std::printf("8-bit     p99 %u   max %u   over 2: %llu of %llu pixels\n",
+                        static_cast<unsigned>((*codes)[0]), static_cast<unsigned>((*codes)[1]), countAt(*codes, 2),
+                        countAt(*codes, 5));
         }
 
-        auto reference = io::readExr(o->reference);
-        if (!reference) fail(reference.error());
-        if (reference->width != image->width || reference->height != image->height) {
-            fail(Error::make(ErrorCode::InvalidArgument, "{}x{} against {}x{}", image->width, image->height,
-                             reference->width, reference->height));
+        if (!o->heatmap.empty()) {
+            const auto width = static_cast<uint32_t>(out.bounds().width());
+            const auto height = static_cast<uint32_t>(out.bounds().height());
+            std::vector<float> rgba(size_t{width} * height * 4);
+            const auto floats = out.floats();
+            const auto stride = static_cast<size_t>(out.stride());
+            for (uint32_t y = 0; y < height; ++y) {
+                std::copy_n(floats.begin() + static_cast<std::ptrdiff_t>(size_t{y} * stride * 4), size_t{width} * 4,
+                            rgba.begin() + static_cast<std::ptrdiff_t>(size_t{y} * width * 4));
+            }
+            if (auto written = io::writeExr(o->heatmap, width, height, rgba, {}, false); !written) {
+                fail(written.error());
+            }
         }
-        auto referenceBuffer = upload(**device, *reference, "compare.reference");
-        if (!referenceBuffer) fail(referenceBuffer.error());
-        auto referenceStats =
-            render::imageStats(library, *referenceBuffer, image->width, image->height, w[0], w[1], w[2], w[3]);
-        if (!referenceStats) fail(referenceStats.error());
-        printStats("reference", *referenceStats);
-
-        // The differences are over the whole image: they are distributions,
-        // and a window is for the means above.
-        auto hdr = render::compareHdr(library, *imageBuffer, *referenceBuffer, image->width, image->height);
-        if (!hdr) fail(hdr.error());
-        std::printf("hdr       relMSE %.6g   p99 relative %.4g   max relative %.4g\n", hdr->relMse, hdr->p99Relative,
-                    hdr->maxRelative);
-        auto ldr = render::compareImages(library, *imageBuffer, *referenceBuffer, image->width, image->height);
-        if (!ldr) fail(ldr.error());
-        std::printf("8-bit     p99 %u   max %u   over 2: %llu of %llu pixels\n", ldr->p99, ldr->max,
-                    static_cast<unsigned long long>(ldr->over2), static_cast<unsigned long long>(ldr->pixels));
     });
 }
 

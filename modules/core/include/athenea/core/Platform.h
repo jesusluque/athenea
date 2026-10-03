@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -112,6 +113,22 @@ bool enableExtendedRange(void* nsWindow);
 [[nodiscard]] void* newTrackedMetalBuffer(void* mtlDevice, uint64_t bytes);
 void releaseMetalBuffer(void* mtlBuffer);
 
+/// How much memory `mtlDevice` (an MTLDevice*) can use before it starts to
+/// hurt: Metal's `recommendedMaxWorkingSetSize`, in bytes. 0 off macOS or
+/// for a null device.
+[[nodiscard]] uint64_t metalRecommendedWorkingSet(void* mtlDevice);
+/// What `mtlDevice` has allocated for this process now, in bytes: Metal's
+/// `currentAllocatedSize`, every buffer, texture and structure counted.
+/// 0 off macOS or for a null device.
+[[nodiscard]] uint64_t metalAllocatedSize(void* mtlDevice);
+
+/// Physical memory the system could hand out now without swapping, in
+/// bytes: free, inactive and purgeable pages (Mach's vm statistics) on
+/// macOS, MemAvailable on Linux. 0 where it cannot be read. On unified
+/// memory this is the device's memory too, and what a budget has to leave
+/// the window server and everything else on the machine.
+[[nodiscard]] uint64_t availablePhysicalMemory();
+
 /// The size of a page of virtual memory.
 [[nodiscard]] uint64_t pageSize();
 
@@ -128,5 +145,36 @@ void unmapPages(void* pages, uint64_t bytes);
 /// on failure; released with releaseMetalBuffer. What AOFX's `Gpu::borrow`
 /// binds.
 [[nodiscard]] void* newMetalBufferOverPages(void* mtlDevice, const void* pages, uint64_t bytes);
+
+/// WRITING A FILE WHOLE OR NOT AT ALL.
+///
+/// A conversion that fails half way -- the device runs out, the disk fills,
+/// the process is killed -- must not leave a file under the name it was
+/// asked for: the next step reads that name and takes a stage of half a
+/// cloud for a cloud. So a file is written under another name beside it and
+/// takes its own name only once it is complete.
+///
+/// `partialPathFor` is that other name: the same directory, so the rename
+/// does not cross a filesystem and is one step; the same extension, so a
+/// writer that chooses its format by the extension (USD's `.usda`/`.usdc`)
+/// writes the same format; and this process's id in it, so two conversions
+/// writing the same output do not share a partial file.
+[[nodiscard]] std::filesystem::path partialPathFor(const std::filesystem::path& path);
+
+/// `from` renamed to `to`, replacing a file already there in one step (POSIX
+/// `rename`; `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` in the Windows
+/// port).
+[[nodiscard]] Result<void> replaceFile(const std::filesystem::path& from, const std::filesystem::path& to);
+
+/// Removes `path` if it is there. Whether it was is nobody's business: what
+/// calls this is cleaning up after a failure it is already reporting.
+void removeFile(const std::filesystem::path& path) noexcept;
+
+/// `write` given `partialPathFor(path)`, and that file renamed to `path` when
+/// it succeeds. When it fails the partial file is removed and `path` is left
+/// as it was -- absent, or the previous complete file.
+[[nodiscard]] Result<void> writeAtomically(
+    const std::filesystem::path& path,
+    const std::function<Result<void>(const std::filesystem::path& partial)>& write);
 
 }   // namespace athenea::platform

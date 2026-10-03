@@ -17,6 +17,12 @@ RWStructuredBuffer<float4>   coefficients; // (1 + keepPerColour) per record: rg
 // The shading normal, unit length and turned as the positions are, where the
 // record carries one (`params.normal`); written only then.
 RWStructuredBuffer<float4>   normalOut;
+// What the gaussian reflects with -- (metallic, roughness, transmission, 0),
+// straight out of the record, every value already 0 to 1 -- where the record
+// carries any of them; written only then. Out of the kernel rather than out
+// of host records, so a cloud whose records never left the device exports
+// the same.
+RWStructuredBuffer<float4>   pbrOut;
 // The radiance the record gives off, linear, nothing below zero and nothing
 // that is not a number, where it carries one (`params.emission`).
 RWStructuredBuffer<float4>   emissionOut;
@@ -65,6 +71,12 @@ void splatExport(uint3 tid: SV_DispatchThreadID) {
         emissionOut[i] = float4(e.x > 0.0 ? e.x : 0.0, e.y > 0.0 ? e.y : 0.0, e.z > 0.0 ? e.z : 0.0, 0.0);
     }
     scaleValid[i] = valid ? float4(exp(ls), 1.0) : float4(0.0, 0.0, 0.0, 0.0);
+    if (params.metallic != kNoField || params.roughness != kNoField || params.transmission != kNoField) {
+        pbrOut[i] = float4(params.metallic != kNoField ? fieldOf(raw, i, s, params.metallic) : 0.0,
+                           params.roughness != kNoField ? fieldOf(raw, i, s, params.roughness) : 1.0,
+                           params.transmission != kNoField ? fieldOf(raw, i, s, params.transmission) : 0.0,
+                           0.0);
+    }
 
     const uint row = i * (1 + params.keepPerColour);
     float3 dc = float3(fieldOf(raw, i, s, params.dc0), fieldOf(raw, i, s, params.dc1),

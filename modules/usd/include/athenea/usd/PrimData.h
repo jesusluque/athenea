@@ -76,6 +76,10 @@ struct ParticleFieldArrays {
     /// does. Empty for a cloud nothing moves.
     pxr::VtValue jointIndices;     ///< VtIntArray, 4 a gaussian
     pxr::VtValue jointWeights;     ///< VtFloatArray, 4 a gaussian
+    /// How those weights change across each gaussian: VtHalfArray, two
+    /// halves for each joint but the last (`athenea:splat:jointWeightGradients`).
+    /// Empty for a cloud converted without them.
+    pxr::VtValue jointWeightGradients;
     pxr::VtValue skinningXforms;   ///< VtMatrix4dArray or VtMatrix4fArray, one a joint
     /// The same joints at the other end of the shutter. Hydra hands back the
     /// authored samples that *bracket* the shutter, at their own instants,

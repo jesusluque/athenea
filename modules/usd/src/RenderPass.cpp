@@ -34,9 +34,39 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
     const unsigned width = static_cast<unsigned>(std::max(window.GetWidth(), 1));
     const unsigned height = static_cast<unsigned>(std::max(window.GetHeight(), 1));
 
+    // OUT OF MEMORY is handled here, for every host at once (athenea view,
+    // the CLI, usdview, Blender): what the engine can give back it gives
+    // back, one thing more is given up (Engine::relieveMemory), and the step
+    // is tried again, once. A frame that still fails is reported -- logged,
+    // and kept for StageRenderer -- and the next frame tries again from the
+    // lower level.
+    const auto relieved = [this](const athenea::Error& error) {
+        if (error.code() != athenea::ErrorCode::OutOfMemory) {
+            return false;
+        }
+        const std::string did = _engine->relieveMemory();
+        if (did.empty()) {
+            athenea::log::error("hdAthenea: {}; nothing is left to give back", error.toString());
+            return false;
+        }
+        athenea::log::warn("hdAthenea: {}; trying again with {}", error.toString(), did);
+        return true;
+    };
     if (auto uploaded = _engine->commit(); !uploaded) {
-        athenea::log::error("hdAthenea: {}", uploaded.error().toString());
-        return;
+        athenea::Error error = std::move(uploaded).error();
+        bool recovered = false;
+        if (relieved(error)) {
+            auto again = _engine->commit();
+            recovered = again.hasValue();
+            if (!recovered) {
+                error = std::move(again).error();
+            }
+        }
+        if (!recovered) {
+            athenea::log::error("hdAthenea: {}", error.toString());
+            _engine->noteFrameError(std::move(error));
+            return;
+        }
     }
     const GfMatrix4d proj = state->GetProjectionMatrix();
     athenea::render::Projection projection =
@@ -201,8 +231,28 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
     if (auto drawn =
             _engine->render(projection, settings, *_targets, technique, settle, &renderTags, request, visibility);
         !drawn) {
-        athenea::log::error("hdAthenea: {}", drawn.error().toString());
-        return;
+        athenea::Error error = std::move(drawn).error();
+        bool recovered = false;
+        if (relieved(error)) {
+            // Committed again first: a stream given up is opened again there,
+            // at the budget the step down allows.
+            athenea::Result<void> again = athenea::ok();
+            if (auto recommitted = _engine->commit(); !recommitted) {
+                again = std::move(recommitted).error();
+            } else {
+                again = _engine->render(projection, settings, *_targets, technique, settle, &renderTags, request,
+                                        visibility);
+            }
+            recovered = again.hasValue();
+            if (!recovered) {
+                error = std::move(again).error();
+            }
+        }
+        if (!recovered) {
+            athenea::log::error("hdAthenea: {}", error.toString());
+            _engine->noteFrameError(std::move(error));
+            return;
+        }
     }
     for (const Output& output : outputs) {
         HdAtheneaRenderBuffer* buffer = output.buffer;

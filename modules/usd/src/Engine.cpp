@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <filesystem>
+#include <format>
 
 #include <MaterialXFormat/File.h>
 #include <pxr/imaging/hdMtlx/hdMtlx.h>
@@ -61,6 +62,148 @@ std::unique_ptr<Engine> Engine::create(std::shared_ptr<gpu::Device> device, std:
         }
     }
     return engine;
+}
+
+namespace {
+
+/// The most a splat of a streamed asset holds on the device: its position and
+/// shape (two float4), degree-3 harmonics in f16 (23 words), a shading normal
+/// and an emission word (lod/Athc.h).
+constexpr uint64_t kStreamBytesPerSplat = 16 + 16 + 92 + 4 + 4;
+
+/// What one gaussian's splat shadows hold on the hardware route: its proxy
+/// (twelve float4 vertices and sixty indices, GaussianRayTracer::buildHardware),
+/// and its twenty triangles' share of the BLAS, taken at 64 bytes a triangle
+/// -- an estimate; the proxies alone are the measured part (~2.5 GB for
+/// 5.9 M gaussians, docs/decisions.md).
+constexpr uint64_t kShadowBytesPerGaussian = 12 * 16 + 60 * 4 + 20 * 64;
+
+constexpr uint64_t kNoBudget = ~uint64_t{0};
+
+uint64_t gaussiansOf(std::span<const render::SplatInstance> splats) {
+    uint64_t total = 0;
+    for (const render::SplatInstance& instance : splats) {
+        total += instance.splats != nullptr ? instance.splats->count : 0;
+    }
+    return total;
+}
+
+/// A size for a message, in MiB, rounded up.
+uint64_t mib(uint64_t bytes) {
+    return (bytes + (uint64_t{1} << 20) - 1) >> 20;
+}
+
+}   // namespace
+
+std::string Engine::relieveMemory() {
+    // The failure being handled is the one already reported: drained, and
+    // whatever else it took with it, so the retry starts clean.
+    device_->releaseFreed();
+    (void)device_->takeQueueError();
+    const uint64_t before = device_->memoryInUse();
+    // What is made again on demand.
+    if (rasterizer_.has_value()) {
+        rasterizer_->releaseScratch();
+    }
+    shadowTracer_.reset();
+    splatShadowScene_.reset();
+    shadowTracerReady_ = false;
+    shadowGaussians_ = 0;
+    rayTracer_.reset();
+    denoiser_.reset();
+    pathAuxValid_ = false;
+    revision_.fetch_add(1);
+    device_->releaseFreed();
+    (void)device_->takeQueueError();
+    std::string did = "the frame's scratch buffers given back";
+    // And one thing more.
+    constexpr uint32_t kMaxLodBias = 4;
+    if (splatShadows_.load() && !memoryNoSplatShadows_.load()) {
+        memoryNoSplatShadows_.store(true);
+        did += "; splat shadows off";
+    } else if (lodBias_ < kMaxLodBias) {
+        ++lodBias_;
+        did += std::format("; levels of detail {} coarser than asked", lodBias_);
+        // Every streamed asset opened again, at the budget this level allows.
+        const std::lock_guard<std::mutex> held(guard_);
+        for (auto& [id, entry] : splats_) {
+            if (!entry.asset.path.empty() && !entry.assetPending.has_value()) {
+                entry.assetPending = entry.asset;
+                entry.asset = StreamedAsset{};
+                entry.lodCloud.reset();
+                entry.pool.reset();
+            }
+        }
+    } else {
+        return {};
+    }
+    const uint64_t after = device_->memoryInUse();
+    if (before != 0 || after != 0) {
+        did += std::format(" ({} -> {} MiB in use)", mib(before), mib(after));
+    }
+    ++reliefs_;
+    lastRelief_ = did;
+    return did;
+}
+
+uint64_t Engine::streamBudget(const pxr::SdfPath& id, const StreamedAsset& asset) const {
+    const uint64_t available = device_->memoryAvailable();
+    uint64_t wanted = asset.budget;
+    if (wanted == 0) {
+        // Read whole, unless the file would take more than half of what the
+        // budget has left: then streamed, which a cut can live within.
+        std::error_code failed;
+        const uint64_t fileBytes = std::filesystem::file_size(asset.path, failed);
+        if (failed || ((available == kNoBudget || fileBytes <= available / 2) && lodBias_ == 0)) {
+            return 0;
+        }
+        wanted = std::max<uint64_t>(fileBytes / kStreamBytesPerSplat, 1);
+    }
+    wanted = std::max<uint64_t>(wanted >> lodBias_, 1);
+    if (available != kNoBudget) {
+        const uint64_t fits = std::max<uint64_t>(available / 2 / kStreamBytesPerSplat, 1);
+        wanted = std::min(wanted, fits);
+    }
+    if (wanted != asset.budget) {
+        log::info("hdAthenea: {}: streaming budget {} splats (~{} MiB; asked {}, {} MiB of the GPU's budget left{})",
+                  id.GetString(), wanted, mib(wanted * kStreamBytesPerSplat),
+                  asset.budget == 0 ? std::string("the whole file") : std::to_string(asset.budget),
+                  available == kNoBudget ? std::string("unknown") : std::to_string(mib(available)),
+                  lodBias_ > 0 ? std::format(", {} levels coarser for memory", lodBias_) : std::string());
+    }
+    return wanted;
+}
+
+bool Engine::splatShadowsFit(uint64_t gaussians) {
+    if (memoryNoSplatShadows_.load()) {
+        return false;
+    }
+    if (gaussians == shadowGaussians_) {
+        return true;   // built already, and counted in what is in use
+    }
+    uint64_t available = device_->memoryAvailable();
+    if (available == kNoBudget) {
+        shadowGaussians_ = gaussians;
+        return true;
+    }
+    // What the tracer holds now goes when it is built again.
+    available += shadowGaussians_ * kShadowBytesPerGaussian;
+    const uint64_t need = gaussians * kShadowBytesPerGaussian;
+    if (need <= available / 2) {
+        shadowGaussians_ = gaussians;
+        return true;
+    }
+    memoryNoSplatShadows_.store(true);
+    shadowTracer_.reset();
+    splatShadowScene_.reset();
+    shadowTracerReady_ = false;
+    shadowGaussians_ = 0;
+    lastRelief_ = std::format("splat shadows skipped: the proxies of {} gaussians need ~{} MiB, more than half of "
+                              "the {} MiB the GPU's {} MiB budget has left",
+                              gaussians, mib(need), mib(available), mib(device_->memoryBudget()));
+    ++reliefs_;
+    log::warn("hdAthenea: {}", lastRelief_);
+    return false;
 }
 
 void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays> raw,
@@ -513,6 +656,8 @@ void Engine::setSplatReflections(bool reflect) {
 void Engine::setSplatShadows(bool shadows) {
     if (splatShadows_.exchange(shadows) != shadows) {
         revision_.fetch_add(1);
+        // Asked for again: tried again, whatever memory said last time.
+        memoryNoSplatShadows_.store(false);
     }
 }
 
@@ -662,6 +807,177 @@ void Engine::remove(const pxr::SdfPath& id) {
 /// coarsest whose cell, at the nearest point of its bounds, spans no more than
 /// its threshold in pixels -- the finest where none is that fine. The others
 /// are not drawn, and cost the frame nothing but their memory.
+namespace {
+
+/// Device memory a cloud's arrays hold: every buffer it carries.
+uint64_t bytesOf(const scene::GpuSplats& cloud) {
+    uint64_t n = 0;
+    for (const gpu::Buffer* b : {&cloud.positions, &cloud.shape, &cloud.sh, &cloud.pbr, &cloud.crypto, &cloud.transfer,
+                                 &cloud.shadowBits, &cloud.origin, &cloud.normals, &cloud.emission,
+                                 &cloud.visibilityParts, &cloud.visibilityTexels, &cloud.visibilityPartOf,
+                                 &cloud.visibilityAmbient}) {
+        n += b->valid() ? b->bytes() : 0;
+    }
+    return n;
+}
+
+/// And a level of detail's: the store, its merged levels and its tables.
+uint64_t bytesOf(const lod::LodCloud& cloud) {
+    uint64_t n = bytesOf(cloud.splats);
+    for (const gpu::Buffer* b : {&cloud.groups, &cloud.resident, &cloud.starts, &cloud.order}) {
+        n += b->valid() ? b->bytes() : 0;
+    }
+    for (const lod::LodLevel& level : cloud.levels) {
+        n += bytesOf(level.gaussians) + (level.cells.valid() ? level.cells.bytes() : 0);
+    }
+    return n;
+}
+
+}   // namespace
+
+void Engine::noteGaussians(const std::string& route, std::span<const render::SplatInstance> splats,
+                           std::span<const std::string> prims, std::span<const lod::CutStats> cutStats,
+                           std::span<const std::string> cutPrims, const std::set<const SplatEntry*>& levels) {
+    GaussianStats g;
+    g.frame = frameSerial_;
+    g.route = route;
+    for (const render::SplatInstance& instance : splats) {
+        g.submitted += instance.splats != nullptr ? instance.splats->count : 0u;
+    }
+    // A variant level's place among its group's, finest first, for the words.
+    std::map<std::string, std::vector<std::pair<float, const SplatEntry*>>> groups;
+    const std::lock_guard<std::mutex> held(guard_);
+    for (const auto& [id, entry] : splats_) {
+        if (!entry.lodGroup.empty() && entry.gpu != nullptr) {
+            groups[entry.lodGroup].push_back({entry.lodCell, &entry});
+        }
+    }
+    for (auto& [name, members] : groups) {
+        std::sort(members.begin(), members.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+    }
+    for (const auto& [id, entry] : splats_) {
+        GaussianCloudStats c;
+        c.prim = id.GetString();
+        const lod::LodCloud* lodCloud = entry.pool != nullptr ? &entry.pool->cloud() : entry.lodCloud.get();
+        const scene::GpuSplats* data = entry.gpu != nullptr ? entry.gpu.get()
+                                       : lodCloud != nullptr ? &lodCloud->splats
+                                                             : nullptr;
+        if (data == nullptr) {
+            continue;   // synced, not yet uploaded
+        }
+        c.gaussians = entry.gpu != nullptr ? entry.gpu->count : lodCloud->count;
+        c.shDegree = data->degree();
+        c.linear = data->linear;
+        c.relit = entry.relight;
+        c.litBody = entry.litBody;
+        c.transfer = data->hasTransfer() ? data->transferCount : 0u;
+        c.skinned = entry.posed != nullptr;
+        c.normals = data->hasNormals();
+        c.emission = data->hasEmission();
+        c.pbr = data->hasPbr();
+        c.crypto = data->hasCrypto();
+        c.visibility = data->hasVisibility();
+        c.ior = entry.ior;
+        if (entry.gpu != nullptr) {
+            c.bytes += bytesOf(*entry.gpu);
+        }
+        if (entry.posed != nullptr) {
+            c.bytes += bytesOf(*entry.posed);
+        }
+        for (const gpu::Buffer* b : {&entry.influences, &entry.xforms, &entry.xformsEnd, &entry.motion}) {
+            c.bytes += b->valid() ? b->bytes() : 0;
+        }
+        g.cloudBytes += c.bytes;
+        if (lodCloud != nullptr) {
+            g.poolBytes += bytesOf(*lodCloud);
+        }
+        if (!entry.lodGroup.empty()) {
+            const auto& members = groups[entry.lodGroup];
+            size_t at = 0;
+            for (size_t k = 0; k < members.size(); ++k) {
+                if (members[k].second == &entry) {
+                    at = k;
+                }
+            }
+            c.lod = "level " + std::to_string(at) + " of " + std::to_string(members.size()) + " in '" +
+                    entry.lodGroup + "'";
+        }
+        c.drawn = entry.visible && (entry.lodGroup.empty() || levels.count(&entry) != 0);
+        if (entry.pool != nullptr) {
+            const lod::StreamingPool::Status status = entry.pool->status();
+            c.streamed = true;
+            c.chunks = lodCloud->chunks();
+            c.chunksResident = status.resident;
+            c.chunksMissing = status.missing;
+            c.chunksInFlight = status.inFlight;
+        }
+        if (lodCloud != nullptr && entry.gpu == nullptr) {
+            c.lod = "cut";
+            for (size_t k = 0; k < cutPrims.size() && k < cutStats.size(); ++k) {
+                if (cutPrims[k] == c.prim) {
+                    c.lodOwn = cutStats[k].splats;
+                    c.lodMerged = cutStats[k].merged;
+                    c.chunksWanted = static_cast<uint32_t>(
+                        std::count_if(cutStats[k].needs.begin(), cutStats[k].needs.end(),
+                                      [](uint32_t need) { return need != 0; }));
+                }
+            }
+        }
+        for (size_t k = 0; k < prims.size() && k < splats.size(); ++k) {
+            if (prims[k] == c.prim && splats[k].splats != nullptr) {
+                c.submitted += splats[k].splats->count;
+            }
+        }
+        g.inStage += c.gaussians;
+        g.clouds.push_back(std::move(c));
+    }
+    gaussianStats_ = std::move(g);
+    // The last counts the device finished, until newer ones arrive: they are
+    // labelled with the frame they belong to.
+    takeSplatCounters();
+}
+
+void Engine::takeSplatCounters() {
+    if (rasterizer_.has_value()) {
+        if (std::optional<render::SplatCounters> latest = rasterizer_->latestCounters();
+            latest && (!lastCounted_ || latest->tag != lastCounted_->tag)) {
+            const auto frame = std::find_if(countedFrames_.begin(), countedFrames_.end(),
+                                            [&](const CountedFrame& f) { return f.tag == latest->tag; });
+            lastCountedPrims_ = frame != countedFrames_.end() ? frame->prims : std::vector<std::string>();
+            lastCounted_ = std::move(latest);
+            // Frames older than the one counted will not be asked for again.
+            countedFrames_.erase(countedFrames_.begin(), frame != countedFrames_.end() ? frame : countedFrames_.begin());
+        }
+    }
+    if (!lastCounted_) {
+        return;
+    }
+    GaussianStats& g = gaussianStats_;
+    const render::SplatCounters& c = *lastCounted_;
+    g.counted = true;
+    g.countedFrame = c.tag;
+    g.countedSlots = c.slots;
+    g.visible = c.visible;
+    g.pairs = c.pairs;
+    g.maxTiles = c.maxTiles;
+    for (size_t k = 0; k < g.culled.size() && k < c.culled.size(); ++k) {
+        g.culled[k] = c.culled[k];
+    }
+    for (GaussianCloudStats& cloud : g.clouds) {
+        cloud.counted = false;
+        cloud.visible = 0;
+        cloud.pairs = 0;
+        for (size_t k = 0; k < c.clouds.size() && k < lastCountedPrims_.size(); ++k) {
+            if (lastCountedPrims_[k] == cloud.prim) {
+                cloud.counted = true;
+                cloud.visible += c.clouds[k].visible;
+                cloud.pairs += c.clouds[k].pairs;
+            }
+        }
+    }
+}
+
 std::set<const SplatEntry*> Engine::lodLevelsFor(const render::Projection& projection) const {
     std::map<std::string, std::vector<const SplatEntry*>> groups;
     for (const auto& [id, entry] : splats_) {
@@ -674,8 +990,9 @@ std::set<const SplatEntry*> Engine::lodLevelsFor(const render::Projection& proje
     for (auto& [name, members] : groups) {
         std::sort(members.begin(), members.end(),
                   [](const SplatEntry* a, const SplatEntry* b) { return a->lodCell < b->lodCell; });
-        const SplatEntry* pick = members.front();
-        for (const SplatEntry* level : members) {
+        size_t pickAt = 0;
+        for (size_t at = 0; at < members.size(); ++at) {
+            const SplatEntry* level = members[at];
             const render::Mat4& m = level->objectToWorld;
             // Where it stands this frame: posed where a skeleton carries it.
             const scene::GpuSplats& cloud = level->posed != nullptr ? *level->posed : *level->gpu;
@@ -693,10 +1010,11 @@ std::set<const SplatEntry*> Engine::lodLevelsFor(const render::Projection& proje
             const double distance = std::max(std::sqrt(near2) * scale, projection.nearZ);
             const double pixels = double(level->lodCell) * scale * focal / distance;
             if (pixels <= double(level->lodThreshold)) {
-                pick = level;   // coarser still fits: members go finest to coarsest
+                pickAt = at;   // coarser still fits: members go finest to coarsest
             }
         }
-        chosen.insert(pick);
+        // Short of memory (relieveMemory): as many levels coarser as given up.
+        chosen.insert(members[std::min(pickAt + lodBias_, members.size() - 1)]);
     }
     return chosen;
 }
@@ -965,6 +1283,9 @@ Result<size_t> Engine::commit() {
                 meshBuilder_.emplace(std::move(*made));
             }
             auto mesh = meshBuilder_->build(built_input);
+            if (!mesh && mesh.error().code() == ErrorCode::OutOfMemory) {
+                return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(), mesh.error().message());   // kept pending, as a cloud is
+            }
             if (mesh) {
                 entry.gpu = std::make_shared<const geom::GpuMesh>(std::move(*mesh));
             } else {
@@ -1002,8 +1323,10 @@ Result<size_t> Engine::commit() {
                 entry.lodCloud.reset();
                 entry.pool.reset();
                 if (!asset.path.empty()) {
-                    if (asset.budget > 0) {
-                        auto pool = lod::StreamingPool::open(*device_, asset.path, {asset.budget, 2});
+                    // Held to the device's budget (streamBudget), which may
+                    // stream a file asked to be read whole.
+                    if (const uint64_t budget = streamBudget(id, asset); budget > 0) {
+                        auto pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
                         if (pool) {
                             entry.pool = std::move(*pool);
                         } else {
@@ -1057,6 +1380,13 @@ Result<size_t> Engine::commit() {
             } else {
                 auto splats = loader_->upload(streams);
                 cloudUploads_.fetch_add(1);
+                if (!splats && splats.error().code() == ErrorCode::OutOfMemory) {
+                    // Kept pending, and the commit stopped here: the render
+                    // pass gives memory back and commits again, and a cloud
+                    // that still does not fit is the frame's error rather
+                    // than a warning over an image without it.
+                    return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(), splats.error().message());
+                }
                 if (!splats) {
                     log::warn("hdAthenea: {}: {}", id.GetString(), splats.error().toString());
                     entry.gpu.reset();
@@ -1142,6 +1472,9 @@ Result<size_t> Engine::commit() {
             entry.gpu.reset();
         } else {
             auto points = loader_->upload(streams);
+            if (!points && points.error().code() == ErrorCode::OutOfMemory) {
+                return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(), points.error().message());   // kept pending, as a cloud is
+            }
             if (!points) {
                 log::warn("hdAthenea: {}: {}", id.GetString(), points.error().toString());
                 entry.gpu.reset();
@@ -1748,6 +2081,13 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     std::vector<render::PointInstance> points;
     std::vector<lod::LodInstance> cuts;
     std::vector<lod::StreamingPool*> poolOf;   // per cut: its pool, if streamed
+    // Which prim each instance and each cut came from, for the Gaussians
+    // panel: the device counts by instance, and only this says whose it was.
+    ++frameSerial_;
+    std::vector<std::string> instancePrims;
+    std::vector<std::string> cutPrims;
+    std::vector<lod::CutStats> cutStats;
+    std::set<const SplatEntry*> drawnLevels;
     const uint32_t motionBuckets = technique == Technique::RayTraced ? motionBuckets_.load() : 1u;
     // OBJECT TO VIEW, AND WHAT THE SHUTTER CHANGES OF IT: the camera's motion
     // and the prim's in one 3x4, which is what the rasteriser smears a
@@ -1846,6 +2186,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frameClouds_.clear();
         frameSlots_ = 0;
         const std::set<const SplatEntry*> levels = lodLevelsFor(projection);
+        drawnLevels = levels;
         // The levels this view draws are posed now, with the latest joints
         // their prims were given; the others keep theirs for when they are.
         for (auto& [id, entry] : splats_) {
@@ -1873,6 +2214,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 const scene::GpuSplats* drawn = entry.posed != nullptr ? entry.posed.get() : entry.gpu.get();
                 splats.push_back({drawn, entry.objectToWorld, entry.edit, entry.relight,
                                   entry.litBody, categoryMask(entry.categories)});
+                instancePrims.push_back(id.GetString());
                 splats.back().transferIndirect = transferIndirect_.load();
                 splats.back().reflectCloud = splatReflections_.load();
                 splats.back().ior = entry.ior;
@@ -1915,6 +2257,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 if (entry.lodCloud != nullptr) {
                     splats.push_back({&entry.lodCloud->splats, entry.objectToWorld, entry.edit, entry.relight,
                                       entry.litBody, categoryMask(entry.categories)});
+                    instancePrims.push_back(id.GetString());
                     splats.back().transferIndirect = transferIndirect_.load();
                     splats.back().reflectCloud = splatReflections_.load();
                     splats.back().ior = entry.ior;
@@ -1924,8 +2267,12 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 }
                 continue;
             }
-            cuts.push_back({cloud, entry.objectToWorld, entry.edit, entry.asset.threshold});
+            // Short of memory, each level given up doubles the pixels a merged
+            // cell may span: a coarser cut, fewer splats.
+            cuts.push_back({cloud, entry.objectToWorld, entry.edit,
+                            entry.asset.threshold * static_cast<float>(1u << lodBias_)});
             poolOf.push_back(entry.pool.get());
+            cutPrims.push_back(id.GetString());
         }
         for (const auto& [id, entry] : meshes_) {
             if (!entry.visible || entry.gpu == nullptr) {
@@ -2038,12 +2385,18 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             cutter_.emplace(std::move(*made));
         }
         const bool streamed = std::any_of(poolOf.begin(), poolOf.end(), [](auto* p) { return p != nullptr; });
-        std::vector<lod::CutStats> stats;
+        std::vector<lod::CutStats>& stats = cutStats;
+        const auto placeCuts = [&](const std::vector<render::SplatInstance>& selected) {
+            splats.insert(splats.end(), selected.begin(), selected.end());
+            for (size_t k = 0; k < selected.size(); ++k) {
+                instancePrims.push_back(k < cutPrims.size() ? cutPrims[k] : std::string());
+            }
+        };
         for (int round = 0;; ++round) {
             auto selected = cutter_->select(projection, cuts, 0.0F, streamed ? &stats : nullptr);
             if (!selected) return std::move(selected).error();
             if (!streamed) {
-                splats.insert(splats.end(), selected->begin(), selected->end());
+                placeCuts(*selected);
                 break;
             }
             for (size_t k = 0; k < poolOf.size(); ++k) {
@@ -2062,7 +2415,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 }
             }
             if (!settleStreams || placed == 0 || round >= 64) {
-                splats.insert(splats.end(), selected->begin(), selected->end());
+                placeCuts(*selected);
                 break;
             }
         }
@@ -2090,6 +2443,11 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         }
     }
     const gpu::Caps& caps = device_->caps();
+    if (countSplats_.load()) {
+        const bool tracedAlone = technique == Technique::RayTraced && !drawMeshes && !volumesInFrame;
+        noteGaussians(tracedAlone ? "rt" : technique == Technique::RayTraced ? "rt+raster" : "raster", splats,
+                      instancePrims, cutStats, cutPrims, drawnLevels);
+    }
     // A frame of nothing but splats is GaussianRayTracer's, and it writes the
     // whole image: there is no layer to compose under it, so it returns here.
     // With meshes in the frame the traced technique means something else --
@@ -2124,7 +2482,26 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
         }
         ATHENEA_TRY(measureVisibility(tracedLights));
-        ATHENEA_TRY(rayTracer_->render(projection, splats, settings, targets, &tracedLights));
+        auto tracedStats = rayTracer_->render(projection, splats, settings, targets, &tracedLights);
+        if (!tracedStats) return std::move(tracedStats).error();
+        counters_ = {tracedStats->splats, 0u, 0u, 0u,
+                     lightTable_.has_value() ? lightTable_->count() : 0u, false};
+        if (countSplats_.load()) {
+            GaussianStats& g = gaussianStats_;
+            g.traced = true;
+            g.rebuilt = tracedStats->rebuilt;
+            g.buildMs = tracedStats->buildMs;
+            g.traceMs = tracedStats->renderMs;
+            g.tracedMs = tracedStats->totalMs;
+            g.tracedSplats = tracedStats->splats;
+            g.tracedChunks = tracedStats->chunks;
+            g.traceRoute = tracedStats->route == render::RayTracingRoute::Hardware ? "hardware" : "compute BVH";
+            // The counts a raster frame left are not this frame's.
+            g.counted = false;
+            for (GaussianCloudStats& cloud : g.clouds) {
+                cloud.counted = false;
+            }
+        }
         // What every other route does when it has finished drawing, and what
         // this one used to return without: the sky behind the frame, and the
         // camera's exposure. A stage of nothing but splats came back over
@@ -2235,7 +2612,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // -- the same setting a cloud's own shadow answers to.
         technique::SplatShadows* meshSplatShadows = nullptr;
         if (pathTracing && !splats.empty() && splatShadows_.load() && device_->caps().rayQuery &&
-            device_->caps().accelerationStructure) {
+            device_->caps().accelerationStructure && splatShadowsFit(gaussiansOf(splats))) {
             if (!shadowTracer_.has_value()) {
                 render::RayTracerSettings rtSettings;
                 rtSettings.route = render::RayTracingRoute::Hardware;
@@ -2760,7 +3137,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     // frame, built by a tracer of their own on the hardware route. Only where
     // a cloud is relit, the device traces inline, and the setting asks.
     const bool shadowedSplats = splatShadows_.load() && splatLights.any() && relitSplats;
-    if (shadowedSplats && device_->caps().rayQuery && device_->caps().accelerationStructure) {
+    if (shadowedSplats && device_->caps().rayQuery && device_->caps().accelerationStructure &&
+        splatShadowsFit(gaussiansOf(splats))) {
         if (!shadowTracer_.has_value()) {
             render::RayTracerSettings rtSettings;
             rtSettings.route = render::RayTracingRoute::Hardware;
@@ -2783,7 +3161,16 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     // copy, since the frame's settings are the caller's.
     render::RenderSettings splatSettings = settings;
     splatSettings.cryptomatte = aovRequest.cryptomatte;
-    splatSettings.timeStages = splatSettings.timeStages || stages;
+    splatSettings.timeStages = splatSettings.timeStages || stages || timeSplatStages_.load();
+    splatSettings.countSplats = countSplats_.load();
+    splatSettings.countersTag = frameSerial_;
+    if (splatSettings.countSplats) {
+        // The prims of this frame's instances, kept until its counts arrive.
+        countedFrames_.push_back({frameSerial_, instancePrims});
+        if (countedFrames_.size() > 8) {
+            countedFrames_.erase(countedFrames_.begin());
+        }
+    }
     // The counts the frame already had, kept for whoever draws a panel: the
     // rasteriser hands them back and nothing here measures anything for it.
     const auto drawn = under != nullptr
@@ -2796,6 +3183,18 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                   "emit {:.1f}, tile sort {:.1f}, blend {:.1f}; {} splats, {} visible, {} pairs",
                   lastCommitMs_, visibilityMs, drawn->projectMs, drawn->countsMs, drawn->depthSortMs,
                   drawn->emitMs, drawn->tileSortMs, drawn->blendMs, drawn->splats, drawn->visible, drawn->pairs);
+    }
+    if (splatSettings.countSplats) {
+        GaussianStats& g = gaussianStats_;
+        g.stagesTimed = splatSettings.timeStages;
+        g.projectMs = drawn->projectMs;
+        g.countsMs = drawn->countsMs;
+        g.depthSortMs = drawn->depthSortMs;
+        g.emitMs = drawn->emitMs;
+        g.tileSortMs = drawn->tileSortMs;
+        g.blendMs = drawn->blendMs;
+        g.totalMs = drawn->totalMs;
+        takeSplatCounters();
     }
     counters_ = {drawn->splats,
                  drawn->visible,
@@ -2882,14 +3281,14 @@ namespace {
 CloudIdentity Engine::identityOf(const ParticleFieldArrays& arrays) {
     // Blender's planes come and go together: the first stands for them all.
     static const pxr::VtValue kNone;
-    const pxr::VtValue* const held[16] = {
+    const pxr::VtValue* const held[17] = {
         &arrays.positions,   &arrays.orientations, &arrays.scales,       &arrays.opacities,
         &arrays.shCoefficients, &arrays.metallic,  &arrays.roughness,    &arrays.transmission,
         &arrays.jointIndices,   &arrays.jointWeights, &arrays.visibilityParts, &arrays.visibilityTexels,
         &arrays.visibilityPartOf, &arrays.visibilityAmbient, &arrays.radianceBase,
-        arrays.shPlanes.empty() ? &kNone : &arrays.shPlanes.front()};
+        arrays.shPlanes.empty() ? &kNone : &arrays.shPlanes.front(), &arrays.jointWeightGradients};
     CloudIdentity identity;
-    for (size_t k = 0; k < 16; ++k) {
+    for (size_t k = 0; k < 17; ++k) {
         const auto [data, bytes] = arrayIdentity(*held[k]);
         identity.data[k] = data;
         identity.bytes[k] = bytes;
@@ -3069,6 +3468,7 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
         (!constantInfluences && indices->size() != size_t{count} * perSplat)) {
         entry.posed.reset();
         entry.influences = gpu::Buffer{};
+        entry.weightGradients = gpu::Buffer{};
         entry.xforms = gpu::Buffer{};
         entry.joints = 0;
         return ok();
@@ -3101,6 +3501,28 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
         if (!kept) return std::move(kept).error();
         entry.influences = std::move(*kept);
         entry.perSplat = static_cast<uint32_t>(perSplat);
+
+        // AND HOW THE WEIGHTS CHANGE ACROSS EACH GAUSSIAN, where the
+        // conversion kept it: two halves for every joint but the last, which
+        // is a word each -- uploaded as the file holds them and packed to the
+        // kept splats as the influences are. A file without them, or with a
+        // count that does not match, is carried as before.
+        entry.weightGradients = gpu::Buffer{};
+        const scene::FloatStream slopes = streamOf(arrays.jointWeightGradients);
+        const size_t words = perSplat > 1 ? perSplat - 1 : 0;
+        if (words > 0 && !constantInfluences && slopes.half &&
+            slopes.bytes.size() == size_t{count} * words * 4) {
+            gpu::BufferDesc desc;
+            desc.bytes = slopes.bytes.size();
+            desc.elementBytes = 4;
+            desc.label = "splat.weightGradients";
+            auto raw = gpu::Buffer::create(*device_, desc, slopes.bytes.data());
+            if (!raw) return std::move(raw).error();
+            auto keptSlopes = loader_->keptOnly(*entry.gpu, *raw, static_cast<uint32_t>(words),
+                                                "splat.weightGradients.kept");
+            if (!keptSlopes) return std::move(keptSlopes).error();
+            entry.weightGradients = std::move(*keptSlopes);
+        }
     }
     auto xforms = gpu::Buffer::fromSpan<float>(*device_, joints, "splat.skinningXforms");
     if (!xforms) return std::move(xforms).error();
@@ -3181,6 +3603,7 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     input.rest = entry.gpu.get();
     input.influences = &entry.influences;
     input.perSplat = entry.perSplat;
+    input.weightGradients = entry.weightGradients.valid() ? &entry.weightGradients : nullptr;
     input.skinningXforms = &entry.xforms;
     input.skinningXformsEnd = moves ? &entry.xformsEnd : nullptr;
     input.geomBindTransform = entry.geomBind;

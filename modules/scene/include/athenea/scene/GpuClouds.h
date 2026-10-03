@@ -222,6 +222,12 @@ public:
 
     /// `maxDegree` caps the harmonics kept (0..3).
     [[nodiscard]] Result<GpuSplats> upload(const io::RawSplats& raw, uint32_t maxDegree = 3);
+    /// The same decode of records that are already on the device: `count`
+    /// of them in `records`, laid out as `encoding` says. Nothing crosses to
+    /// the processor (`athenea mesh2splat -o x.athc`).
+    [[nodiscard]] Result<GpuSplats> upload(const gpu::Buffer& records, uint32_t count,
+                                           const io::SplatEncoding& encoding, const std::string& source,
+                                           uint32_t maxDegree = 3);
     /// A SOG's images, decoded on the device into records that then take the
     /// same validate and decode as any other format -- nothing crosses back.
     [[nodiscard]] Result<GpuSplats> upload(const io::RawSog& sog, uint32_t maxDegree = 3);

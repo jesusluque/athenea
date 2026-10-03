@@ -33,6 +33,19 @@ import athenea.common.edit;
 
 public static const uint kTile = 16;
 
+// WHY A SPLAT WAS CULLED, kept where a culled slot's depth key would be: the
+// compaction reads a key only where `visible` is 1, so the word is free, and
+// a panel's counters (splat_frame_counters.slang) read the reason from it
+// rather than the projection paying a counter of its own.
+public static const uint kCulledKey     = 0xFF000000u;   // | the reason
+public static const uint kCullEdit      = 1;   // removed by the prim's SplatEdit
+public static const uint kCullDepth     = 2;   // nearer than the near plane or past the far one
+public static const uint kCullDegenerate = 3;  // a footprint of no area
+public static const uint kCullFaint     = 4;   // under 1/255 of opacity, once paid for its spread
+public static const uint kCullOffscreen = 5;   // its footprint's tiles lie outside the frame
+public static const uint kCullNoTile    = 6;   // in the frame, but no tile meets its ellipse
+public static const uint kCullReasons   = 7;   // 0 is a slot no splat projection wrote (points)
+
 public struct FrameParams {
     public uint  width;
     public uint  height;
@@ -159,6 +172,34 @@ public float3 toView(FrameParams f, float3 p) {
 
 public float3x3 viewLinear(FrameParams f) {
     return float3x3(f.m00, f.m01, f.m02, f.m10, f.m11, f.m12, f.m20, f.m21, f.m22);
+}
+
+/// THE PEAK A SPREAD SPLAT IS DRAWN WITH, so that what it draws is what the
+/// still, sharp one draws. Spreading a gaussian (the antialiasing filter, the
+/// shutter, the lens) by a determinant ratio `paid^2` keeps its energy when
+/// its peak goes to `paid * alpha`. But a splat is drawn only out to where it
+/// falls under 1/255 (`cutoffPower`), and what that leaves out is 1/255 of
+/// peak times its area -- an area the spread made `1/paid` times larger. So a
+/// splat a fraction of a pixel wide lost most of itself: a converted surface
+/// meant to cover 0.25 covered 0.18 at a twentieth of the screen, where the
+/// ray tracer, which draws the sharp splat, kept 0.25 at every size. Drawn at
+/// `paid * alpha + (1 - paid) / 255` the spread splat keeps `alpha - 1/255`
+/// of the sharp one's area, exactly what the sharp one keeps, and a splat the
+/// spread does not touch (`paid` 1) is unchanged. Under the three-sigma cap a
+/// splat keeps 98.9% of itself whatever its peak, and the term is under a
+/// 255th either way.
+///
+/// ONLY WHERE THE SPREAD SPLAT IS DRAWN AT ALL (`paid * alpha >= 1/255`), as
+/// before. Paying every splat back would draw the ones the spread had made
+/// too faint to be drawn, and those are what a distant cloud is made of: the
+/// converted chess pawn at 80 pixels of a 512 x 512 frame went from 8.7 to
+/// 29.8 ms (debug build) for 730 thousand gaussians a few hundredths of a
+/// pixel wide. Paid back only where drawn it costs 11.0 ms, and that pawn
+/// still all but vanishes from the raster (the ray tracer keeps it): such a
+/// cloud wants its levels of detail.
+public float paidOpacity(float alpha, float paid) {
+    const float spread = paid * alpha;
+    return spread >= 1.0 / 255.0 ? spread + (1.0 - paid) * (1.0 / 255.0) : spread;
 }
 
 /// The squared Mahalanobis radius a splat is cut at: where its own

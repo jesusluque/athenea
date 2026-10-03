@@ -51,10 +51,13 @@ Result<gpu::Buffer> upload(gpu::Device& device, std::vector<T>& values, uint32_t
 
 Result<rhi::ComPtr<rhi::IAccelerationStructure>> buildStructure(
     gpu::Device& device, const rhi::AccelerationStructureBuildDesc& build,
-    rhi::AccelerationStructureKind kind, const char* label) {
+    rhi::AccelerationStructureKind kind, const char* label, uint64_t* updateScratch = nullptr) {
     rhi::AccelerationStructureSizes sizes;
     if (SLANG_FAILED(device.rhi()->getAccelerationStructureSizes(build, &sizes))) {
         return Error::make(ErrorCode::DeviceFailure, "no sizes for acceleration structure '{}'", label);
+    }
+    if (updateScratch != nullptr) {
+        *updateScratch = std::max(*updateScratch, sizes.updateScratchSize);
     }
     auto scratch = buffer(device, sizes.scratchSize, 1, "rt.scratch");
     if (!scratch) return std::move(scratch).error();
@@ -188,12 +191,15 @@ Result<GaussianRayTracer> GaussianRayTracer::create(gpu::ShaderLibrary& library,
         ATHENEA_TRY(make(r.bvhRefit_, "athenea/rt/bvh_refit", "bvhRefit"));
         ATHENEA_TRY(make(r.count_, "athenea/reference/count_nonzero", "countNonzero"));
         ATHENEA_TRY(make(r.bvhRender_, "athenea/rt/rt_bvh_render", "rtBvhRender"));
+        ATHENEA_TRY(make(r.bvhHeights_, "athenea/rt/bvh_heights", "bvhHeights"));
+        ATHENEA_TRY(make(r.bvhLevelKeys_, "athenea/rt/bvh_level_keys", "bvhLevelKeys"));
+        ATHENEA_TRY(make(r.bvhRefitLevel_, "athenea/rt/bvh_refit_level", "bvhRefitLevel"));
     }
     return r;
 }
 
 const GaussianRayTracer::Cloud* GaussianRayTracer::find(const scene::GpuSplats& splats) const {
-    const CloudKey key{&splats, splats.positions.rhi(), splats.count, splats.restPerColour, splats.revision};
+    const CloudKey key{&splats, splats.positions.rhi(), splats.count, splats.restPerColour};
     const auto found = std::find_if(clouds_.begin(), clouds_.end(),
                                     [&](const Cloud& c) { return c.key == key; });
     return found == clouds_.end() ? nullptr : &*found;
@@ -211,12 +217,13 @@ Result<void> GaussianRayTracer::rebuild(std::span<const SplatInstance> instances
         if (cloud == nullptr || cloud->count == 0) {
             continue;
         }
-        const CloudKey key{cloud, cloud->positions.rhi(), cloud->count, cloud->restPerColour, cloud->revision};
+        const CloudKey key{cloud, cloud->positions.rhi(), cloud->count, cloud->restPerColour};
         if (std::any_of(clouds.begin(), clouds.end(), [&](const Cloud& c) { return c.key == key; })) {
             continue;
         }
         Cloud entry;
         entry.key = key;
+        entry.revision = cloud->revision;
         entry.base = static_cast<uint32_t>(splats);
         entry.firstChunk = chunks;
         entry.chunks = hardware ? (cloud->count + settings_.chunkSplats - 1) / settings_.chunkSplats : 0;
@@ -232,33 +239,37 @@ Result<void> GaussianRayTracer::rebuild(std::span<const SplatInstance> instances
     }
     auto frames = buffer(device, splats * 4, 16, "rt.frames");
     if (!frames) return std::move(frames).error();
+    frames_ = std::move(*frames);
+    // Until every structure stands, nothing here is a cloud built: a build
+    // that fails leaves the next frame to build again.
+    clouds_.clear();
     {
         gpu::CommandBatch batch(device);
         for (const Cloud& cloud : clouds) {
-            const scene::GpuSplats& source = *cloud.key.cloud;
-            frames_kernel_.dispatch(batch, {source.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
-                cursor["positions"].setBinding(source.positions.rhi());
-                cursor["shape"].setBinding(source.shape.rhi());
-                cursor["frames"].setBinding(frames->rhi());
-                // What each particle transmits travels in the frame's spare
-                // lane, so a query that walks the frames knows glass from
-                // wall with no table of its own.
-                cursor["pbr"].setBinding(source.hasPbr() ? source.pbr.rhi() : source.shape.rhi());
-                cursor["params"]["hasPbr"].setData(uint32_t{source.hasPbr() ? 1u : 0u});
-                cursor["params"]["count"].setData(source.count);
-                cursor["params"]["base"].setData(cloud.base);
-            });
+            ATHENEA_TRY(writeFrames(batch, cloud));
         }
         ATHENEA_TRY(batch.submit(true));
     }
 
     std::vector<rhi::ComPtr<rhi::IAccelerationStructure>> blas;
     gpu::Buffer boxes, children, leaves;
+    // The refit's order, a word a node, only where a cloud is posed.
+    const bool posed = std::any_of(clouds.begin(), clouds.end(), [](const Cloud& c) { return c.revision != 0; });
+    levelNodes_ = gpu::Buffer{};
+    if (!hardware && posed && settings_.refitsPerRebuild > 0) {
+        auto made = buffer(device, std::max<uint64_t>(nodes, 1), 4, "bvh.levelNodes");
+        if (!made) return std::move(made).error();
+        levelNodes_ = std::move(*made);
+    }
     if (hardware) {
         blas.reserve(chunks);
-        for (const Cloud& cloud : clouds) {
+        updateScratchBytes_ = 0;
+        for (Cloud& cloud : clouds) {
             ATHENEA_TRY(buildHardware(cloud, blas));
         }
+        updateScratch_ = gpu::Buffer{};
+        updateScratchCapacity_ = 0;
+        ATHENEA_TRY(reserveUpdateScratch());
     } else {
         auto madeBoxes = buffer(device, std::max<uint64_t>(nodes, 1) * 2, 16, "bvh.boxes");
         if (!madeBoxes) return std::move(madeBoxes).error();
@@ -269,7 +280,7 @@ Result<void> GaussianRayTracer::rebuild(std::span<const SplatInstance> instances
         boxes = std::move(*madeBoxes);
         children = std::move(*madeChildren);
         leaves = std::move(*madeLeaves);
-        for (const Cloud& cloud : clouds) {
+        for (Cloud& cloud : clouds) {
             ATHENEA_TRY(buildBvh(cloud, boxes, children, leaves));
         }
     }
@@ -280,15 +291,197 @@ Result<void> GaussianRayTracer::rebuild(std::span<const SplatInstance> instances
     bvhChildren_ = std::move(children);
     bvhLeaves_buffer_ = std::move(leaves);
     splats_ = static_cast<uint32_t>(splats);
-    frames_ = std::move(*frames);
     tlas_ = nullptr;
     return ok();
 }
 
-Result<void> GaussianRayTracer::buildHardware(const Cloud& cloud,
+Result<void> GaussianRayTracer::reserveUpdateScratch() {
+    // Always a buffer, even of nothing: an update is handed one whatever
+    // size the backend asked for (Metal dereferences it).
+    if (updateScratch_.valid() && updateScratchBytes_ <= updateScratchCapacity_) {
+        return ok();
+    }
+    auto scratch = buffer(*device_, updateScratchBytes_, 1, "rt.updateScratch");
+    if (!scratch) return std::move(scratch).error();
+    updateScratch_ = std::move(*scratch);
+    updateScratchCapacity_ = updateScratchBytes_;
+    return ok();
+}
+
+Result<void> GaussianRayTracer::writeFrames(gpu::CommandBatch& batch, const Cloud& cloud) {
+    const scene::GpuSplats& source = *cloud.key.cloud;
+    frames_kernel_.dispatch(batch, {source.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(source.positions.rhi());
+        cursor["shape"].setBinding(source.shape.rhi());
+        cursor["frames"].setBinding(frames_.rhi());
+        // What each particle transmits travels in the frame's spare
+        // lane, so a query that walks the frames knows glass from
+        // wall with no table of its own.
+        cursor["pbr"].setBinding(source.hasPbr() ? source.pbr.rhi() : source.shape.rhi());
+        cursor["params"]["hasPbr"].setData(uint32_t{source.hasPbr() ? 1u : 0u});
+        cursor["params"]["count"].setData(source.count);
+        cursor["params"]["base"].setData(cloud.base);
+    });
+    return ok();
+}
+
+Result<void> GaussianRayTracer::sync(std::span<const SplatInstance> instances, RayTracerStats& stats) {
+    std::vector<const scene::GpuSplats*> wanted;
+    for (const SplatInstance& instance : instances) {
+        const scene::GpuSplats* cloud = instance.splats;
+        if (cloud == nullptr || cloud->count == 0) {
+            continue;
+        }
+        if (std::find(wanted.begin(), wanted.end(), cloud) == wanted.end()) {
+            wanted.push_back(cloud);
+        }
+        stats.instances += 1;
+    }
+    bool same = wanted.size() == clouds_.size() && frames_.valid();
+    for (size_t k = 0; same && k < wanted.size(); ++k) {
+        const scene::GpuSplats& cloud = *wanted[k];
+        same = clouds_[k].key == CloudKey{&cloud, cloud.positions.rhi(), cloud.count, cloud.restPerColour};
+    }
+    if (!same) {
+        ATHENEA_TRY(rebuild(instances));
+        stats.rebuilt = true;
+        return ok();
+    }
+    // The same clouds: what moved is a pose. Its particles are the same ones
+    // in the same order, so the structure's shape still holds them and only
+    // its bounds are stale -- a refit, unless the cloud cannot take one or
+    // has taken enough that the tree it was shaped as is due again.
+    const bool hardware = settings_.route == RayTracingRoute::Hardware;
+    for (Cloud& cloud : clouds_) {
+        const uint32_t revision = cloud.key.cloud->revision;
+        if (revision == cloud.revision) {
+            continue;
+        }
+        const bool refit = cloud.refittable && settings_.refitsPerRebuild > 0 &&
+                           cloud.refits < settings_.refitsPerRebuild;
+        if (refit) {
+            ATHENEA_TRY(hardware ? refitHardware(cloud) : refitBvh(cloud));
+            cloud.refits += 1;
+            stats.refitted += 1;
+        } else if (!cloud.refittable && settings_.refitsPerRebuild > 0) {
+            // Built before it was posed -- a BLAS that cannot be updated, no
+            // room for a refit's order -- or with a tree too tall to refit
+            // by heights: everything again, as before refits.
+            ATHENEA_TRY(rebuild(instances));
+            stats.rebuilt = true;
+            return ok();
+        } else {
+            // In place: the cloud keeps its slots in every combined buffer.
+            cloud.revision = revision;
+            {
+                gpu::CommandBatch batch(*device_);
+                ATHENEA_TRY(writeFrames(batch, cloud));
+                ATHENEA_TRY(batch.submit(true));
+            }
+            if (hardware) {
+                std::vector<rhi::ComPtr<rhi::IAccelerationStructure>> blas;
+                ATHENEA_TRY(buildHardware(cloud, blas));
+                for (uint32_t c = 0; c < cloud.chunks; ++c) {
+                    blas_[cloud.firstChunk + c] = std::move(blas[c]);
+                }
+                ATHENEA_TRY(reserveUpdateScratch());
+            } else {
+                ATHENEA_TRY(buildBvh(cloud, bvhBoxes_, bvhChildren_, bvhLeaves_buffer_));
+            }
+            cloud.refits = 0;
+            stats.rebuilt = true;
+        }
+        cloud.revision = revision;
+    }
+    return ok();
+}
+
+Result<void> GaussianRayTracer::refitBvh(const Cloud& cloud) {
+    const scene::GpuSplats& source = *cloud.key.cloud;
+    gpu::CommandBatch batch(*device_);
+    ATHENEA_TRY(writeFrames(batch, cloud));
+    // Bottom up, a height at a time: each pass reads only boxes the passes
+    // before it wrote. A fixed number of dispatches, nothing read back.
+    for (size_t h = 1; h + 1 < cloud.levelStarts.size(); ++h) {
+        const uint32_t start = cloud.levelStarts[h];
+        const uint32_t count = cloud.levelStarts[h + 1] - start;
+        if (count == 0) {
+            continue;
+        }
+        bvhRefitLevel_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["positions"].setBinding(source.positions.rhi());
+            cursor["shape"].setBinding(source.shape.rhi());
+            cursor["children"].setBinding(bvhChildren_.rhi());
+            cursor["leaves"].setBinding(bvhLeaves_buffer_.rhi());
+            cursor["levelNodes"].setBinding(levelNodes_.rhi());
+            cursor["boxes"].setBinding(bvhBoxes_.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(source.count);
+            p["nodeBase"].setData(cloud.nodeBase);
+            p["leafBase"].setData(cloud.base);
+            p["levelStart"].setData(start);
+            p["levelCount"].setData(count);
+        });
+    }
+    // Not waited for: the frame's own passes queue behind it.
+    return batch.submit(false);
+}
+
+Result<void> GaussianRayTracer::refitHardware(const Cloud& cloud) {
+    gpu::Device& device = *device_;
+    const scene::GpuSplats& source = *cloud.key.cloud;
+    const rhi::BufferUsage asInput = rhi::BufferUsage::AccelerationStructureBuildInput;
+    // The proxies again, over the new pose: the same vertices and triangles
+    // in the same places, which is what an update asks of its input.
+    auto vertices = buffer(device, uint64_t{source.count} * 12, 16, "rt.proxyVertices", asInput);
+    if (!vertices) return std::move(vertices).error();
+    auto indices = buffer(device, uint64_t{source.count} * 60, 4, "rt.proxyIndices", asInput);
+    if (!indices) return std::move(indices).error();
+    gpu::CommandBatch batch(device);
+    ATHENEA_TRY(writeFrames(batch, cloud));
+    proxy_.dispatch(batch, {source.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(source.positions.rhi());
+        cursor["shape"].setBinding(source.shape.rhi());
+        cursor["vertices"].setBinding(vertices->rhi());
+        cursor["indices"].setBinding(indices->rhi());
+        cursor["params"]["count"].setData(source.count);
+        cursor["params"]["base"].setData(settings_.chunkSplats);
+    });
+    // One scratch for every chunk: each update waits for the one before.
+    for (uint32_t c = 0; c < cloud.chunks; ++c) {
+        const uint32_t first = c * settings_.chunkSplats;
+        const uint32_t count = std::min(settings_.chunkSplats, source.count - first);
+        rhi::AccelerationStructureBuildInput input = {};
+        input.type = rhi::AccelerationStructureBuildInputType::Triangles;
+        input.triangles.vertexBuffers[0] = rhi::BufferOffsetPair(vertices->rhi(), uint64_t{first} * 12 * 16);
+        input.triangles.vertexBufferCount = 1;
+        input.triangles.vertexFormat = rhi::Format::RGB32Float;
+        input.triangles.vertexCount = count * 12;
+        input.triangles.vertexStride = 16;
+        input.triangles.indexBuffer = rhi::BufferOffsetPair(indices->rhi(), uint64_t{first} * 60 * 4);
+        input.triangles.indexFormat = rhi::IndexFormat::Uint32;
+        input.triangles.indexCount = count * 60;
+        input.triangles.flags = rhi::AccelerationStructureGeometryFlags::NoDuplicateAnyHitInvocation;
+        rhi::AccelerationStructureBuildDesc build;
+        build.inputs = &input;
+        build.inputCount = 1;
+        build.mode = rhi::AccelerationStructureBuildMode::Update;
+        build.flags = rhi::AccelerationStructureBuildFlags::PreferFastTrace |
+                      rhi::AccelerationStructureBuildFlags::AllowUpdate;
+        rhi::IAccelerationStructure* structure = blas_[cloud.firstChunk + c].get();
+        batch.encoder()->buildAccelerationStructure(build, structure, structure,
+                                                    rhi::BufferOffsetPair(updateScratch_.rhi(), 0), 0, nullptr);
+        batch.markDirty();
+    }
+    // Waited for: the proxies go when this returns.
+    return batch.submit(true);
+}
+
+Result<void> GaussianRayTracer::buildHardware(Cloud& cloud,
                                               std::vector<rhi::ComPtr<rhi::IAccelerationStructure>>& blas) {
     gpu::Device& device = *device_;
     const scene::GpuSplats& source = *cloud.key.cloud;
+    cloud.refittable = cloud.revision != 0 && settings_.refitsPerRebuild > 0;
     const rhi::BufferUsage asInput = rhi::BufferUsage::AccelerationStructureBuildInput;
     // The proxies only live until their structures are built.
     auto vertices = buffer(device, uint64_t{source.count} * 12, 16, "rt.proxyVertices", asInput);
@@ -331,14 +524,20 @@ Result<void> GaussianRayTracer::buildHardware(const Cloud& cloud,
         build.inputs = &input;
         build.inputCount = 1;
         build.flags = rhi::AccelerationStructureBuildFlags::PreferFastTrace;
-        auto structure = buildStructure(device, build, rhi::AccelerationStructureKind::BottomLevel, "rt.blas");
+        // A posed cloud's chunks are updated in place by the next pose
+        // (refitHardware) rather than built again.
+        if (cloud.refittable) {
+            build.flags = build.flags | rhi::AccelerationStructureBuildFlags::AllowUpdate;
+        }
+        auto structure = buildStructure(device, build, rhi::AccelerationStructureKind::BottomLevel, "rt.blas",
+                                        cloud.refittable ? &updateScratchBytes_ : nullptr);
         if (!structure) return std::move(structure).error();
         blas.push_back(std::move(*structure));
     }
     return ok();
 }
 
-Result<void> GaussianRayTracer::buildBvh(const Cloud& cloud, gpu::Buffer& boxes, gpu::Buffer& children,
+Result<void> GaussianRayTracer::buildBvh(Cloud& cloud, gpu::Buffer& boxes, gpu::Buffer& children,
                                          gpu::Buffer& leaves) {
     gpu::Device& device = *device_;
     const scene::GpuSplats& source = *cloud.key.cloud;
@@ -360,6 +559,23 @@ Result<void> GaussianRayTracer::buildBvh(const Cloud& cloud, gpu::Buffer& boxes,
     if (!changed) return std::move(changed).error();
     auto changedCount = buffer(device, 1, 4, "bvh.changedCount");
     if (!changedCount) return std::move(changedCount).error();
+    // A posed cloud's tree is refitted, not rebuilt, by the poses that
+    // follow (refitBvh), a height at a time; the heights settle with the
+    // boxes, in the same passes.
+    cloud.refittable = false;
+    cloud.levelStarts.clear();
+    const bool levels = cloud.revision != 0 && levelNodes_.valid() && n >= 2;
+    gpu::Buffer heights;
+    if (levels) {
+        auto made = buffer(device, n - 1, 4, "bvh.heights");
+        if (!made) return std::move(made).error();
+        heights = std::move(*made);
+    }
+    const auto setLevels = [&](rhi::ShaderCursor p) {
+        p["count"].setData(n);
+        p["nodeBase"].setData(cloud.nodeBase);
+        p["leafBase"].setData(cloud.base);
+    };
 
     const auto setBvh = [&](rhi::ShaderCursor p) {
         p["count"].setData(n);
@@ -390,6 +606,10 @@ Result<void> GaussianRayTracer::buildBvh(const Cloud& cloud, gpu::Buffer& boxes,
             cursor["leaves"].setBinding(leaves.rhi());
             setBvh(cursor["params"]);
         });
+        if (levels) {
+            batch.encoder()->clearBuffer(heights.rhi(), 0, uint64_t{n - 1} * 4);
+            batch.markDirty();
+        }
         ATHENEA_TRY(batch.submit(true));
     }
     if (n < 2) {
@@ -410,6 +630,16 @@ Result<void> GaussianRayTracer::buildBvh(const Cloud& cloud, gpu::Buffer& boxes,
                 cursor["changed"].setBinding(changed->rhi());
                 setBvh(cursor["params"]);
             });
+            if (levels) {
+                // After the boxes' pass, so a height that moved keeps the
+                // flag set that the boxes' pass wrote.
+                bvhHeights_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["children"].setBinding(children.rhi());
+                    cursor["heights"].setBinding(heights.rhi());
+                    cursor["changed"].setBinding(changed->rhi());
+                    setLevels(cursor["params"]);
+                });
+            }
         }
         count_.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["values"].setBinding(changed->rhi());
@@ -420,11 +650,66 @@ Result<void> GaussianRayTracer::buildBvh(const Cloud& cloud, gpu::Buffer& boxes,
         uint32_t still = 0;
         ATHENEA_TRY(changedCount->read(device, 0, sizeof(still), &still));
         if (still == 0) {
-            return ok();
+            return levels ? buildLevels(cloud, heights) : ok();
         }
     }
     return Error::make(ErrorCode::InternalError, "BVH refit of {} particles did not settle in {} passes", n,
                        kMaxPasses);
+}
+
+Result<void> GaussianRayTracer::buildLevels(Cloud& cloud, const gpu::Buffer& heights) {
+    // The internal nodes ordered by height -- a radix sort on an 8-bit key
+    // -- and how many there are of each, which is the one thing the host
+    // keeps: where each refit pass starts and how many threads it takes.
+    gpu::Device& device = *device_;
+    const uint32_t nodes = cloud.key.count - 1;
+    static constexpr uint32_t kMaxLevels = 128;   // bvh_levels.slang
+    gpu::SortBuffers sorting;
+    for (auto [into, label] : {std::pair{&sorting.keysLo, "bvh.levelKeys"}, std::pair{&sorting.values, "bvh.levelOrder"},
+                               std::pair{&sorting.scratchKeysLo, "bvh.levelKeys2"},
+                               std::pair{&sorting.scratchValues, "bvh.levelOrder2"}}) {
+        auto made = buffer(device, nodes, 4, label);
+        if (!made) return std::move(made).error();
+        *into = std::move(*made);
+    }
+    auto counts = buffer(device, kMaxLevels, 4, "bvh.levelCounts");
+    if (!counts) return std::move(counts).error();
+    {
+        gpu::CommandBatch batch(device);
+        batch.encoder()->clearBuffer(counts->rhi(), 0, uint64_t{kMaxLevels} * 4);
+        batch.markDirty();
+        bvhLevelKeys_.dispatch(batch, {nodes, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["heights"].setBinding(heights.rhi());
+            cursor["levelKeys"].setBinding(sorting.keysLo.rhi());
+            cursor["levelValues"].setBinding(sorting.values.rhi());
+            cursor["levelCounts"].setBinding(counts->rhi());
+            cursor["params"]["count"].setData(cloud.key.count);
+            cursor["params"]["nodeBase"].setData(cloud.nodeBase);
+            cursor["params"]["leafBase"].setData(cloud.base);
+        });
+        ATHENEA_TRY(sort_.sort(batch, sorting, nodes, 8));
+        batch.encoder()->copyBuffer(levelNodes_.rhi(), uint64_t{cloud.nodeBase} * 4, sorting.values.rhi(), 0,
+                                    uint64_t{nodes} * 4);
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit(true));
+    }
+    std::array<uint32_t, kMaxLevels> perHeight{};
+    ATHENEA_TRY(counts->read(device, 0, sizeof(perHeight), perHeight.data()));
+    if (perHeight[kMaxLevels - 1] != 0) {
+        // Taller than the key holds: heights from here on share a key and
+        // their order within it is not bottom up. Such a cloud rebuilds.
+        return ok();
+    }
+    size_t top = kMaxLevels - 1;
+    while (top > 0 && perHeight[top] == 0) {
+        --top;
+    }
+    cloud.levelStarts.assign(top + 2, 0);
+    for (size_t h = 1; h <= top; ++h) {
+        cloud.levelStarts[h + 1] = cloud.levelStarts[h] + perHeight[h];
+    }
+    cloud.refittable = true;
+    return ok();
 }
 
 Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> instances,
@@ -690,26 +975,7 @@ Result<RayTracerStats> GaussianRayTracer::prepare(const Projection& projection,
     const auto start = Clock::now();
     RayTracerStats stats;
     stats.route = settings_.route;
-    std::vector<CloudKey> wanted;
-    for (const SplatInstance& instance : instances) {
-        const scene::GpuSplats* cloud = instance.splats;
-        if (cloud == nullptr || cloud->count == 0) {
-            continue;
-        }
-        const CloudKey key{cloud, cloud->positions.rhi(), cloud->count, cloud->restPerColour, cloud->revision};
-        if (std::find(wanted.begin(), wanted.end(), key) == wanted.end()) {
-            wanted.push_back(key);
-        }
-        stats.instances += 1;
-    }
-    bool same = wanted.size() == clouds_.size() && frames_.valid();
-    for (size_t k = 0; same && k < wanted.size(); ++k) {
-        same = wanted[k] == clouds_[k].key;
-    }
-    if (!same) {
-        ATHENEA_TRY(rebuild(instances));
-        stats.rebuilt = true;
-    }
+    ATHENEA_TRY(sync(instances, stats));
     stats.splats = splats_;
     for (const Cloud& cloud : clouds_) {
         stats.chunks += cloud.chunks;
@@ -739,26 +1005,7 @@ Result<RayTracerStats> GaussianRayTracer::render(const Projection& projection,
     RayTracerStats stats;
     stats.route = settings_.route;
 
-    std::vector<CloudKey> wanted;
-    for (const SplatInstance& instance : instances) {
-        const scene::GpuSplats* cloud = instance.splats;
-        if (cloud == nullptr || cloud->count == 0) {
-            continue;
-        }
-        const CloudKey key{cloud, cloud->positions.rhi(), cloud->count, cloud->restPerColour, cloud->revision};
-        if (std::find(wanted.begin(), wanted.end(), key) == wanted.end()) {
-            wanted.push_back(key);
-        }
-        stats.instances += 1;
-    }
-    bool same = wanted.size() == clouds_.size() && frames_.valid();
-    for (size_t k = 0; same && k < wanted.size(); ++k) {
-        same = wanted[k] == clouds_[k].key;
-    }
-    if (!same) {
-        ATHENEA_TRY(rebuild(instances));
-        stats.rebuilt = true;
-    }
+    ATHENEA_TRY(sync(instances, stats));
     stats.splats = splats_;
     for (const Cloud& cloud : clouds_) {
         stats.chunks += cloud.chunks;

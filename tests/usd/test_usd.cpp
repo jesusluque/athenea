@@ -43,6 +43,7 @@
 
 #include "athenea/technique/Visibility.h"
 #include "athenea/core/Hash.h"
+#include "athenea/core/Platform.h"
 #include "athenea/io/Exr.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/io/Readers.h"
@@ -320,6 +321,9 @@ TEST_CASE("a decimated stage keeps everything, every array a gaussian long as lo
             .Set(1);
         field.CreateAttribute(TfToken("athenea:test:texture"), SdfValueTypeNames->Asset)
             .Set(SdfAssetPath("./floor_texture.png"));
+        // In centimetres, which the copy must keep: the gaussians' own stage
+        // on the way is written in metres.
+        UsdGeomSetStageMetersPerUnit(stage, 0.01);
         REQUIRE(stage->GetRootLayer()->Save());
     }
     { std::ofstream(folder / "floor_texture.png") << "not an image, only a file that is there"; }
@@ -359,6 +363,7 @@ TEST_CASE("a decimated stage keeps everything, every array a gaussian long as lo
     SdfAssetPath texture;
     REQUIRE(field.GetAttribute(TfToken("athenea:test:texture")).Get(&texture));
     CHECK(!texture.GetResolvedPath().empty());   // found from the other folder
+    CHECK(UsdGeomGetStageMetersPerUnit(stage) == 0.01);
 }
 
 TEST_CASE("splats and points behind a mesh leave it as it is; in front of it they show", "[usd][gpu][mesh][layers]") {
@@ -2078,6 +2083,12 @@ TEST_CASE("the codeless athenea schemas register, with their defaults", "[usd][s
                                         &elementSize));
     CHECK(elementSize.IsHolding<int>());
     CHECK(elementSize.UncheckedGet<int>() == 4);
+    // The weights' gradients: two components for each of three joints.
+    VtValue gradientSize;
+    CHECK(skinning->GetPropertyMetadata(TfToken("primvars:athenea:splat:jointWeightGradients"),
+                                        TfToken("elementSize"), &gradientSize));
+    CHECK(gradientSize.IsHolding<int>());
+    CHECK(gradientSize.UncheckedGet<int>() == 6);
     VtValue litBody;
     CHECK(lighting->GetAttributeFallbackValue(TfToken("primvars:athenea:splat:litBody"), &litBody));
     CHECK(litBody.IsHolding<bool>());
@@ -6783,8 +6794,13 @@ namespace {
 /// transmitting and as rough as the material. Written as the conversion
 /// writes it -- relit, with the index -- and placed with the mesh's camera
 /// and `sky` in a stage of its own. Fibonacci points: evenly spaced, no seam.
+///
+/// With `card`, the cloud also holds an opaque square of that colour behind
+/// the ball -- 6 wide at z = -6, facing the camera -- which is what a ray
+/// through the glass meets instead of the sky.
 fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t count,
-                             const std::array<float, 3>& tint, float roughness, const std::string& sky) {
+                             const std::array<float, 3>& tint, float roughness, const std::string& sky,
+                             const std::array<float, 3>* card = nullptr) {
     io::RawSplats raw;
     raw.source = "glass ball";
     io::SplatEncoding& e = raw.encoding;
@@ -6819,6 +6835,21 @@ fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t c
         raw.records.insert(raw.records.end(), record, record + 17);
         raw.count += 1;
     }
+    if (card != nullptr) {
+        const uint32_t side = 120;
+        const float cell = 6.0F / side;
+        for (uint32_t j = 0; j < side; ++j) {
+            for (uint32_t i = 0; i < side; ++i) {
+                const float record[17] = {-3.0F + cell * (i + 0.5F), -3.0F + cell * (j + 0.5F), -6.0F, 0.99F,
+                                          cell, cell, 0.1F * cell,
+                                          1.0F, 0.0F, 0.0F, 0.0F,
+                                          (*card)[0], (*card)[1], (*card)[2],
+                                          0.0F, 1.0F, 0.0F};
+                raw.records.insert(raw.records.end(), record, record + 17);
+                raw.count += 1;
+            }
+        }
+    }
     const fs::path cloud = scratch(name + "_splats.usda");
     usd::ExportOptions options;
     options.addCamera = false;
@@ -6835,14 +6866,32 @@ fs::path glassBallCloudStage(test::Gpu* gpu, const std::string& name, uint32_t c
 
 /// The same ball as a mesh with a `standard_surface` glass of that tint and
 /// roughness, under the same `sky`.
+///
+/// With `card`, the square glassBallCloudStage puts behind the ball, as a
+/// mesh with a diffuse UsdPreviewSurface of that colour.
 fs::path glassBallMeshStage(const std::string& name, const std::string& tint, float roughness,
-                            const std::string& sky) {
+                            const std::string& sky, const std::string& card = "") {
     glassLook(name, roughness, tint);
     const fs::path path = scratch(name + ".usda");
     std::ofstream out(path);
     out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
            "def Scope \"Looks\" (\n    prepend references = @./" << name << ".mtlx@</MaterialX/Materials>\n)\n{\n}\n"
         << ballMesh("Ball", "/Looks/M_Glass", false) << sky << kBallCamera;
+    if (!card.empty()) {
+        out << "def Material \"Card\"\n{\n"
+               "    token outputs:surface.connect = </Card/Surface.outputs:surface>\n"
+               "    def Shader \"Surface\"\n    {\n"
+               "        uniform token info:id = \"UsdPreviewSurface\"\n"
+               "        color3f inputs:diffuseColor = (" << card << ")\n"
+               "        float inputs:roughness = 1\n"
+               "        token outputs:surface\n    }\n}\n"
+               "def Mesh \"Back\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    rel material:binding = </Card>\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-3, -3, -6), (3, -3, -6), (3, 3, -6), (-3, 3, -6)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n}\n";
+    }
     return path;
 }
 
@@ -6920,6 +6969,119 @@ TEST_CASE("a glass cloud lets out at its far face what the mesh's glass does", "
     // 0.98 and 0.51 before, against 0.92 and 0.26; 2.6 % and 3.3 % now.
     CHECK(std::abs(c[1] - m[1]) < 0.045 * m[1]);
     CHECK(std::abs(c[2] - m[2]) < 0.045 * m[2]);
+}
+
+// WHAT A RAY MEETS BEHIND THE GLASS LEAVES THROUGH THE FAR FACE TOO.
+//
+// The colour a ray through a glass cloud meets behind it -- a gold collar
+// under a pawn's glass head -- is the colour that particle was shaded with,
+// and it crosses the far face as the sky does: its Fresnel and a second
+// tint. By the precedence of `?:` the far face weighed only the sky, so a
+// grey card behind a ball of tint (1, 1, 0.5) came through at half its blue
+// where the mesh's glass lets a quarter of it through. The ratio of blue to
+// green is the tint squared whatever the card's own shading, which is what
+// is held to the mesh; green is held too, more loosely, since a relit card
+// and a path-traced one need not agree to the percent.
+TEST_CASE("what a glass cloud shows behind it leaves through the far face as the mesh's does",
+          "[usd][gpu][splat][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const std::string sky = "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    const uint32_t w = 96, h = 96;
+    const std::array<float, 3> grey{0.8F, 0.8F, 0.8F};
+    const gpu::Buffer mesh =
+        renderBall(gpu, glassBallMeshStage("behind_mesh", "1, 1, 0.5", 0.0F, sky, "0.8, 0.8, 0.8"), w, h, 512);
+    const gpu::Buffer cloud = renderBall(
+        gpu, glassBallCloudStage(gpu, "behind_cloud", 60000, {1.0F, 1.0F, 0.5F}, 0.0F, sky, &grey), w, h, 16);
+    const std::array<double, 3> m = middleMean(gpu, mesh, w, h, 16);
+    const std::array<double, 3> c = middleMean(gpu, cloud, w, h, 16);
+    std::printf("  a grey card through a ball of tint (1, 1, 0.5): mesh %.4f %.4f %.4f, cloud %.4f %.4f %.4f\n",
+                m[0], m[1], m[2], c[0], c[1], c[2]);
+    REQUIRE(m[1] > 0.0);
+    REQUIRE(c[1] > 0.0);
+    const double meshRatio = m[2] / m[1];
+    const double cloudRatio = c[2] / c[1];
+    // 1.6 % and 4.5 % measured; 84 % and 8.6 % before.
+    CHECK(std::abs(cloudRatio - meshRatio) < 0.06 * meshRatio);
+    CHECK(std::abs(c[1] - m[1]) < 0.08 * m[1]);
+}
+
+// A COMPILER GIVEN MATERIALX LIBRARIES OF ITS OWN READS ITS DEFINITIONS THERE.
+//
+// $ATHENEA_MATERIALX_ROOT names the libraries hdAthenea's material compiler
+// loads in place of the host USD's, and the document hdMtlx builds carries
+// the host's: the compiler's definitions must win over the document's. The
+// root here is a copy of the build's own libraries in which UsdPreviewSurface's
+// diffuseColor defaults to red instead of 0.18 grey, and a quad whose
+// UsdPreviewSurface authors no colour must come out red. Grey is what either
+// half missing gives: the variable not read, or the host's node definition
+// kept from the document. Hidden: ctest runs it as `materialx_root`, with the
+// variable set, since the engine reads it once for the process; its one tag
+// keeps a run by any other tag ([usd], [materials]) from selecting it.
+TEST_CASE("a material compiler given its own MaterialX libraries takes its definitions from them",
+          "[.materialx_root]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const std::string root = platform::env("ATHENEA_MATERIALX_ROOT");
+    REQUIRE_FALSE(root.empty());
+    const fs::path libraries = fs::path(root) / "libraries";
+    std::error_code ec;
+    fs::remove_all(libraries, ec);
+    fs::create_directories(root);
+    fs::copy(ATHENEA_TEST_MATERIALX_LIBRARIES, libraries, fs::copy_options::recursive);
+    const fs::path preview = libraries / "bxdf" / "usd_preview_surface.mtlx";
+    std::string text;
+    {
+        std::ifstream in(preview);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::string grey = "name=\"diffuseColor\" type=\"color3\" value=\"0.18, 0.18, 0.18\"";
+    const size_t at = text.find(grey);
+    REQUIRE(at != std::string::npos);
+    text.replace(at, grey.size(), "name=\"diffuseColor\" type=\"color3\" value=\"0.8, 0.05, 0.05\"");
+    {
+        std::ofstream out(preview, std::ios::trunc);
+        out << text;
+    }
+    const fs::path path = scratch("materialx_root.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Looks/Paint>\n}\n"
+               "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            float inputs:roughness = 1\n"
+               "            token outputs:surface\n        }\n    }\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    }
+    const uint32_t w = 64, h = 64;
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+    if (!image) FAIL(image.error().toString());
+    gpu::BufferDesc desc;
+    desc.bytes = image->rgba.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto frame = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+    REQUIRE(frame);
+    const std::array<double, 3> m = middleMean(gpu, *frame, w, h, 16);
+    std::printf("  an unauthored diffuseColor under the compiler's own libraries: %.4f %.4f %.4f\n", m[0], m[1], m[2]);
+    // 0.810 0.063 0.063 measured: the red default, lit by a dome of one.
+    CHECK(m[0] > 0.7);
+    CHECK(m[0] > 8.0 * m[1]);
+    CHECK(m[0] > 8.0 * m[2]);
 }
 
 // THE ROOM THROUGH A ROUGH GLASS IS SHARPER THAN ITS REFLECTION.
@@ -7047,6 +7209,259 @@ TEST_CASE("a Lambertian surface bakes to the same constant at every degree", "[u
         CHECK(seen[0] == count);
         CHECK(seen[1] == 0);
     }
+}
+
+// THE BAKE'S BOX AND RAYS, ON THE DEVICE, ANSWER AS THEY DID ON THE HOST.
+//
+// `athenea mesh2splat` folded the cloud's box over its records on the processor,
+// wrote a ray a gaussian there -- `1e-4` of the box's diagonal off the
+// surface -- and uploaded them to `bakePoints`. Now `mesh2splat_span` folds
+// the box and writes the offset on the device, and `bakePointsOnDevice`
+// traces the rays where they are. On a known plane: every ray's offset is
+// that fraction of the box the records were built in, and the device bake
+// answers what the host bake answers for the same rays, entry for entry.
+TEST_CASE("a bake from rays set up on the device answers as the host's did", "[usd][gpu][mesh][bake][mesh2splat]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("bake_device_plane.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n"
+               "def SphereLight \"Lamp\"\n{\n    float inputs:intensity = 30\n    float inputs:radius = 0.3\n"
+               "    double3 xformOp:translate = (1, 0.5, 1)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    }
+    // Records as the conversion lays them out, twenty floats a gaussian, on
+    // an 8 x 8 grid over a box the test knows: x in [-1.5, 1.5], y in
+    // [-0.5, 0.5], on the plane. And the rays the gather would have written
+    // for them: the point, the plane's normal, no facing, no offset yet.
+    constexpr uint32_t kSide = 8;
+    constexpr uint32_t kCount = kSide * kSide;
+    constexpr uint32_t kPerRecord = 20;
+    std::vector<float> records(size_t{kCount} * kPerRecord, 0.0F);
+    std::vector<float> rays(size_t{kCount} * 12, 0.0F);
+    for (uint32_t j = 0; j < kSide; ++j) {
+        for (uint32_t i = 0; i < kSide; ++i) {
+            const uint32_t k = j * kSide + i;
+            const float x = -1.5F + 3.0F * static_cast<float>(i) / static_cast<float>(kSide - 1);
+            const float y = -0.5F + 1.0F * static_cast<float>(j) / static_cast<float>(kSide - 1);
+            float* record = records.data() + size_t{k} * kPerRecord;
+            record[0] = x;
+            record[1] = y;
+            record[2] = -1.5F;
+            record[3] = 1.0F;
+            record[19] = 1.0F;
+            float* ray = rays.data() + size_t{k} * 12;
+            ray[0] = x;
+            ray[1] = y;
+            ray[2] = -1.5F;
+            ray[6] = 1.0F;
+        }
+    }
+    gpu::Device& device = *gpu->device;
+    auto recordBuffer = gpu::Buffer::fromSpan<float>(device, records, "test.records");
+    REQUIRE(recordBuffer);
+    gpu::BufferDesc desc;
+    desc.bytes = rays.size() * sizeof(float);
+    desc.elementBytes = 16;
+    desc.label = "test.rays";
+    auto rayBuffer = gpu::Buffer::create(device, desc, rays.data());
+    REQUIRE(rayBuffer);
+
+    // The conversion's own kernels, as `Converter::spanRays` runs them.
+    auto chunks = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/mesh2splat_span", "m2sRecordChunks");
+    auto reduce = gpu::ComputeKernel::create(*gpu->library, "athenea/scene/bounds_reduce", "boundsReduce");
+    auto span = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/mesh2splat_span", "m2sRaySpan");
+    auto spanCheck = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_host_check", "m2sSpanCheck");
+    auto compare = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_host_check", "m2sAnswerCompare");
+    REQUIRE(chunks);
+    REQUIRE(reduce);
+    REQUIRE(span);
+    REQUIRE(spanCheck);
+    REQUIRE(compare);
+    constexpr uint32_t kChunk = 16;
+    constexpr uint32_t kChunks = kCount / kChunk;
+    desc.bytes = uint64_t{kChunks} * 2 * 16;
+    desc.label = "test.extents";
+    auto extents = gpu::Buffer::create(device, desc);
+    desc.bytes = 2 * 16;
+    desc.label = "test.box";
+    auto box = gpu::Buffer::create(device, desc);
+    REQUIRE(extents);
+    REQUIRE(box);
+    {
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["records"].setBinding(recordBuffer->rhi());
+            cursor["extents"].setBinding(extents->rhi());
+            cursor["box"].setBinding(box->rhi());
+            cursor["rays"].setBinding(rayBuffer->rhi());
+            cursor["span"]["count"].setData(kCount);
+            cursor["span"]["perRecord"].setData(kPerRecord);
+            cursor["span"]["chunkSize"].setData(kChunk);
+            cursor["span"]["chunkCount"].setData(kChunks);
+        };
+        gpu::CommandBatch batch(device);
+        chunks->dispatch(batch, {kChunks, 1, 1}, bind);
+        reduce->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["extents"].setBinding(extents->rhi());
+            cursor["result"].setBinding(box->rhi());
+            cursor["params"]["count"].setData(kCount);
+            cursor["params"]["chunkSize"].setData(kChunk);
+            cursor["params"]["chunkCount"].setData(kChunks);
+        });
+        span->dispatch(batch, {kCount, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    {
+        gpu::Buffer counts = test::uintBuffer(device, 4, "counts");
+        gpu::CommandBatch batch(device);
+        spanCheck->dispatch(batch, {kCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["a"].setBinding(rayBuffer->rhi());
+            cursor["b"].setBinding(rayBuffer->rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            const float low[4] = {-1.5F, -0.5F, -1.5F, 0.0F};
+            const float high[4] = {1.5F, 0.5F, -1.5F, 0.0F};
+            cursor["params"]["low"].setData(low, sizeof(low));
+            cursor["params"]["high"].setData(high, sizeof(high));
+            cursor["params"]["count"].setData(kCount);
+            cursor["params"]["tolerance"].setData(1.0e-5F);
+        });
+        REQUIRE(batch.submit(true));
+        uint32_t seen[2] = {0, 0};
+        REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+        CHECK(seen[0] == kCount);
+        CHECK(seen[1] == 0);   // every ray a ten-thousandth of the diagonal off
+    }
+
+    // The same rays, traced from the host and from the device.
+    auto renderer = usd::StageRenderer::open(path, gpu->device);
+    if (!renderer) FAIL(renderer.error().toString());
+    std::vector<float> laid(size_t{kCount} * 12);
+    REQUIRE(rayBuffer->read(device, 0, laid.size() * sizeof(float), laid.data()));
+    std::vector<float> hostRays(size_t{kCount} * 8);
+    for (uint32_t k = 0; k < kCount; ++k) {   // the host form is the first two float4, copied
+        std::copy_n(laid.data() + size_t{k} * 12, 8, hostRays.data() + size_t{k} * 8);
+    }
+    constexpr uint32_t kDegree = 2;
+    constexpr uint32_t kEntries = (kDegree + 1) * (kDegree + 1);
+    auto fromHost = (*renderer)->bakePoints(hostRays, kCount, 0.0, 64, 1, kDegree);
+    if (!fromHost) FAIL(fromHost.error().toString());
+    auto fromDevice = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 64, 1, kDegree);
+    if (!fromDevice) FAIL(fromDevice.error().toString());
+    REQUIRE(fromHost->size() == size_t{kCount} * kEntries * 4);
+    REQUIRE(fromDevice->bytes() >= uint64_t{kCount} * kEntries * 16);
+    auto hostAnswer = gpu::Buffer::create(device, [&] {
+        gpu::BufferDesc d;
+        d.bytes = fromHost->size() * sizeof(float);
+        d.elementBytes = 16;
+        d.label = "test.hostAnswer";
+        return d;
+    }(), fromHost->data());
+    REQUIRE(hostAnswer);
+    gpu::Buffer counts = test::uintBuffer(device, 4, "counts");
+    {
+        gpu::CommandBatch batch(device);
+        compare->dispatch(batch, {kCount * kEntries, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["a"].setBinding(hostAnswer->rhi());
+            cursor["b"].setBinding(fromDevice->rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["count"].setData(kCount * kEntries);
+            cursor["params"]["tolerance"].setData(1.0e-5F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t seen[3] = {0, 0, 0};
+    REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+    float worst = 0.0F;
+    std::memcpy(&worst, &seen[2], sizeof(worst));
+    std::printf("  device bake against host bake: %u entries, %u apart, worst %.3g\n", seen[0], seen[1],
+                static_cast<double>(worst));
+    CHECK(seen[0] == kCount * kEntries);
+    CHECK(seen[1] == 0);
+}
+
+// A BAKE IN PASSES ANSWERS AS A BAKE IN ONE.
+//
+// A cloud of ten million gaussians in one pass had the tracer hold a plane an
+// entry for every one of them at once -- 2.6 GB at degree 3 -- besides its
+// own sums. `bakePointsOnDevice` takes it in passes of at most `batch`
+// points, each laid into the answer at its place. On a Lambertian plane under
+// a dome, where every point's answer is the same: a bake in passes of 7
+// points (so the last is short) against one pass, entry for entry, within
+// what the paths' noise moves an answer by.
+TEST_CASE("a bake taken in passes answers as one taken whole", "[usd][gpu][mesh][bake][mesh2splat]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("bake_batches.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    constexpr uint32_t kCount = 40;
+    std::vector<float> rays(size_t{kCount} * 12, 0.0F);
+    for (uint32_t k = 0; k < kCount; ++k) {
+        float* ray = rays.data() + size_t{k} * 12;
+        ray[0] = -1.5F + 3.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(kCount);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    gpu::Device& device = *gpu->device;
+    gpu::BufferDesc desc;
+    desc.bytes = rays.size() * sizeof(float);
+    desc.elementBytes = 16;
+    desc.label = "test.rays";
+    auto rayBuffer = gpu::Buffer::create(device, desc, rays.data());
+    REQUIRE(rayBuffer);
+    auto compare = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_host_check", "m2sAnswerCompare");
+    REQUIRE(compare);
+    auto renderer = usd::StageRenderer::open(path, gpu->device);
+    if (!renderer) FAIL(renderer.error().toString());
+    constexpr uint32_t kDegree = 2;
+    constexpr uint32_t kEntries = (kDegree + 1) * (kDegree + 1);
+    auto whole = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 1024, 1, kDegree, false, 0);
+    if (!whole) FAIL(whole.error().toString());
+    auto passes = (*renderer)->bakePointsOnDevice(*rayBuffer, kCount, 0.0, 1024, 1, kDegree, false, 7);
+    if (!passes) FAIL(passes.error().toString());
+    gpu::Buffer counts = test::uintBuffer(device, 4, "counts");
+    {
+        gpu::CommandBatch batch(device);
+        compare->dispatch(batch, {kCount * kEntries, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["a"].setBinding(whole->rhi());
+            cursor["b"].setBinding(passes->rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["count"].setData(kCount * kEntries);
+            // The constant term is about 0.46 here and the harmonics about
+            // zero; 1024 stratified paths hold both within 0.0053 (M5 Pro).
+            cursor["params"]["tolerance"].setData(0.01F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t seen[3] = {0, 0, 0};
+    REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+    float worst = 0.0F;
+    std::memcpy(&worst, &seen[2], sizeof(worst));
+    std::printf("  six passes of 7 and one of 40: %u entries, %u apart, worst %.3g\n", seen[0], seen[1],
+                static_cast<double>(worst));
+    CHECK(seen[0] == kCount * kEntries);
+    CHECK(seen[1] == 0);
 }
 
 // A BAKE GIVES NO MORE LIGHT THAN ANY PATH SAW, FROM ANY SIDE.
@@ -7961,6 +8376,129 @@ TEST_CASE("a cloud in levels of detail draws the coarsest one whose cell a pixel
     std::printf("  near: %u splats drawn; far: %u\n", nearBy, farAway);
     CHECK(nearBy == fine.count);
     CHECK(farAway == coarse.count);
+}
+
+// OUT OF DEVICE MEMORY, THE ENGINE STEPS DOWN. A frame the device's budget
+// cannot hold fails as a Result -- the render pass gave back what it could,
+// gave up a level of detail and tried once more -- and the frames after it
+// are drawn a level coarser than asked, under the same budget, rather than
+// the process ending (athenea view on a 5.9 M cloud, docs/decisions.md).
+TEST_CASE("a frame past the device's memory budget fails as a Result and the next draws a coarser level",
+          "[usd][gpu][lod][memory]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const io::RawSplats fine = cloud(4096);
+    const io::RawSplats coarse = cloud(256);
+    const fs::path fineFile = scratch("oom-fine.usda");
+    const fs::path coarseFile = scratch("oom-coarse.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, fine, fineFile, options));
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, coarse, coarseFile, options));
+    const fs::path assembly = scratch("oom-assembly.usda");
+    REQUIRE(usd::writeLodAssembly(assembly, {{fineFile, 0.01}, {coarseFile, 0.16}}, "test"));
+    auto renderer = usd::StageRenderer::open(assembly);
+    if (!renderer) FAIL(renderer.error().toString());
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 6.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+    camera.lens.focal = 35.0;
+
+    // Near: the fine level, as asked.
+    REQUIRE((*renderer)->draw(camera, 0.0, 64, 64, "raster"));
+    CHECK((*renderer)->counters().splats == fine.count);
+    CHECK((*renderer)->memoryRelief().times == 0);
+
+    // Eight MiB more than the device holds, and a frame whose colour alone
+    // is sixty-four: refused, given back, tried again, refused, reported.
+    gpu::Device& device = (*renderer)->device();
+    const uint64_t budget = device.memoryBudget();
+    device.setMemoryBudget(device.memoryInUse() + (uint64_t{8} << 20));
+    auto big = (*renderer)->draw(camera, 0.0, 2048, 2048, "raster");
+    REQUIRE_FALSE(big);
+    CHECK(big.error().code() == ErrorCode::OutOfMemory);
+    const usd::StageRenderer::MemoryRelief relief = (*renderer)->memoryRelief();
+    std::printf("  refused: %s\n  relief: %u, '%s', %u levels coarser\n", big.error().toString().c_str(),
+                relief.times, relief.last.c_str(), relief.lodBias);
+    CHECK(relief.times == 1);
+    CHECK(relief.lodBias == 1);
+
+    // The same view under the same budget: drawn, and from the coarser level.
+    REQUIRE((*renderer)->draw(camera, 0.0, 64, 64, "raster"));
+    CHECK((*renderer)->counters().splats == coarse.count);
+    device.setMemoryBudget(budget);
+}
+
+TEST_CASE("the Gaussians panel's numbers say which level a view drew and what the device kept of it",
+          "[usd][gpu][lod][counters]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const io::RawSplats fine = cloud(4096);
+    const io::RawSplats coarse = cloud(256);
+    const fs::path fineFile = scratch("stats-fine.usda");
+    const fs::path coarseFile = scratch("stats-coarse.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, fine, fineFile, options));
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, coarse, coarseFile, options));
+    const fs::path assembly = scratch("stats-assembly.usda");
+    REQUIRE(usd::writeLodAssembly(assembly, {{fineFile, 0.01}, {coarseFile, 0.16}}, "test"));
+    auto renderer = usd::StageRenderer::open(assembly);
+    if (!renderer) FAIL(renderer.error().toString());
+    // Not asked for, not gathered.
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 4000.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+    camera.lens.focal = 35.0;
+    REQUIRE((*renderer)->draw(camera, 0.0, 400, 300, "raster"));
+    CHECK((*renderer)->gaussianStats().clouds.empty());
+
+    (*renderer)->setGaussianStats(true);
+    REQUIRE((*renderer)->draw(camera, 0.0, 400, 300, "raster"));
+    const usd::GaussianStats far = (*renderer)->gaussianStats();
+    CHECK(far.route == "raster");
+    CHECK(far.inStage == fine.count + coarse.count);
+    CHECK(far.submitted == coarse.count);
+    REQUIRE(far.clouds.size() == 2);
+    uint32_t drawnClouds = 0;
+    for (const usd::GaussianCloudStats& c : far.clouds) {
+        CHECK(c.lod.find("in 'test'") != std::string::npos);
+        CHECK(c.bytes > 0);
+        if (c.drawn) {
+            ++drawnClouds;
+            CHECK(c.gaussians == coarse.count);
+            CHECK(c.submitted == coarse.count);
+            CHECK(c.lod.rfind("level 1 of 2", 0) == 0);
+            CHECK(c.counted);
+            CHECK(c.visible == far.visible);
+        }
+    }
+    CHECK(drawnClouds == 1);
+    // The device's counts: of the frame just drawn here, since the
+    // rasteriser waits for itself; and they add up.
+    REQUIRE(far.counted);
+    CHECK(far.countedFrame == far.frame);
+    CHECK(far.countedSlots == coarse.count);
+    uint32_t culled = 0;
+    for (uint32_t n : far.culled) {
+        culled += n;
+    }
+    CHECK(far.visible + culled == far.countedSlots);
+    CHECK(far.cloudBytes > 0);
+    std::printf("  far: %u visible of %u, %u pairs\n", far.visible, far.countedSlots, far.pairs);
+
+    // Near: the fine level, and most of it kept.
+    camera = render::Camera::lookingAt({0.0, 0.0, 6.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+    camera.lens.focal = 35.0;
+    REQUIRE((*renderer)->draw(camera, 0.0, 400, 300, "raster"));
+    const usd::GaussianStats near = (*renderer)->gaussianStats();
+    CHECK(near.frame > far.frame);
+    CHECK(near.submitted == fine.count);
+    CHECK(near.countedSlots == fine.count);
+    CHECK(near.visible > 0);
+    CHECK(near.pairs >= near.visible);
+    for (const usd::GaussianCloudStats& c : near.clouds) {
+        if (c.drawn) {
+            CHECK(c.lod.rfind("level 0 of 2", 0) == 0);
+            CHECK(c.visible == near.visible);
+            CHECK(c.pairs == near.pairs);
+        }
+    }
+    std::printf("  near: %u visible of %u, %u pairs\n", near.visible, near.countedSlots, near.pairs);
 }
 
 TEST_CASE("a skinned cloud stepping through time is uploaded once", "[usd][gpu][skinning]") {
@@ -10691,6 +11229,18 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         REQUIRE(built->splats.hasNormals());
         const fs::path file = scratch("normals.athc");
         REQUIRE(lod::writeAthc(*gpu->device, *built, file));
+        // The header's version and flags words: version 2 where a block
+        // carries anything besides its four arrays, and only there.
+        const auto header = [](const fs::path& path) {
+            std::ifstream in(path, std::ios::binary);
+            std::array<char, 80> bytes{};
+            in.read(bytes.data(), bytes.size());
+            uint32_t version = 0, flags = 0;
+            std::memcpy(&version, bytes.data() + 4, 4);
+            std::memcpy(&flags, bytes.data() + 76, 4);
+            return std::pair{version, flags};
+        };
+        CHECK(header(file) == std::pair{2u, 1u});
         auto read = lod::readAthc(*gpu->device, file);
         if (!read) FAIL(read.error().toString());
         REQUIRE(read->splats.hasNormals());
@@ -10713,8 +11263,8 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         CHECK(*store == 0);
         CHECK(levelsApart == 0);
 
-        // A cloud with none writes a file the version before would have, but
-        // for its version number; put that back and it must still read.
+        // A cloud with none writes the file the version before wrote, version
+        // number included, so a reader of version 1 alone still opens it.
         auto plain = loader->upload(cloud(3000), 0);
         REQUIRE(plain);
         REQUIRE_FALSE(plain->hasNormals());
@@ -10722,13 +11272,7 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         if (!plainLod) FAIL(plainLod.error().toString());
         const fs::path old = scratch("normals_v1.athc");
         REQUIRE(lod::writeAthc(*gpu->device, *plainLod, old));
-        {
-            std::fstream bytes(old, std::ios::in | std::ios::out | std::ios::binary);
-            REQUIRE(bytes);
-            const uint32_t one = 1;
-            bytes.seekp(4);
-            bytes.write(reinterpret_cast<const char*>(&one), 4);
-        }
+        CHECK(header(old) == std::pair{1u, 0u});
         auto oldRead = lod::readAthc(*gpu->device, old);
         if (!oldRead) FAIL(oldRead.error().toString());
         CHECK_FALSE(oldRead->splats.hasNormals());
@@ -10739,6 +11283,90 @@ TEST_CASE("a cloud's shading normals survive USD and .athc, and an old .athc sti
         CHECK(*oldStore == 0);
     }
 }
+
+namespace {
+
+/// THE CARD AND THE QUAD the shading normal tests draw: a 4 x 4 square at
+/// z = 0, as a relit cloud (`card`) of gaussians a cell wide and flat or as a
+/// mesh of a grey diffuse paint, carrying the normal `kTiltedNormal` where
+/// `tilted`, under a prim scaled `scaleX` in x where that is not one, lit by
+/// a distant light turned `lightDegrees` about y, seen from z = 3.
+const char* const kTiltedNormal = "(0.573576, 0, 0.819152)";   // 35 degrees towards +x
+
+fs::path tiltedCardStage(const char* name, bool card, bool tilted, float scaleX = 1.0F,
+                         float lightDegrees = 40.0F) {
+    const char* kTilted = kTiltedNormal;
+    const fs::path path = scratch(name);
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
+    // Under a prim of that scale, where it is not one.
+    const bool scaled = scaleX != 1.0F;
+    if (scaled) {
+        out << "def Xform \"Scaled\"\n{\n    float3 xformOp:scale = (" << scaleX << ", 1, 1)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:scale\"]\n";
+    }
+    if (card) {
+        // A gaussian a cell, sigma a cell wide and flat, its albedo the
+        // mesh's 0.5 kept as a cloud keeps a colour (encoded, so
+        // 0.5 + SH0 * dc = 0.735357), relit.
+        const int side = 160;
+        const double cell = 4.0 / side;
+        out << "def ParticleField3DGaussianSplat \"Card\"\n{\n    point3f[] positions = [";
+        for (int k = 0; k < side * side; ++k) {
+            out << (k ? ", " : "") << "(" << (-2.0 + ((k % side) + 0.5) * cell) << ", "
+                << (-2.0 + ((k / side) + 0.5) * cell) << ", 0)";
+        }
+        out << "]\n    quatf[] orientations = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
+        out << "]\n    float3[] scales = [";
+        for (int k = 0; k < side * side; ++k) {
+            out << (k ? ", " : "") << "(" << cell << ", " << cell << ", " << 1.0e-4 * cell << ")";
+        }
+        out << "]\n    float[] opacities = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "0.99";
+        out << "]\n    uniform int radiance:sphericalHarmonicsDegree = 0\n"
+               "    float3[] radiance:sphericalHarmonicsCoefficients = [";
+        for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(0.834321, 0.834321, 0.834321)";
+        out << "]\n    bool primvars:athenea:splat:relight = 1\n";
+        if (tilted) {
+            out << "    normal3f[] primvars:athenea:splat:normal = [";
+            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << kTilted;
+            out << "] (\n        interpolation = \"vertex\"\n    )\n";
+        }
+        out << "}\n";
+        if (scaled) out << "}\n";
+    } else {
+        out << "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n";
+        if (tilted) {
+            out << "    normal3f[] normals = [" << kTilted << ", " << kTilted << ", " << kTilted << ", "
+                << kTilted << "] (\n        interpolation = \"vertex\"\n    )\n";
+        }
+        out << "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Looks/Paint>\n}\n";
+        if (scaled) out << "}\n";
+        out << "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
+               "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
+               "            float inputs:roughness = 1\n"
+               "            float inputs:metallic = 0\n"
+               "            token outputs:surface\n        }\n    }\n}\n";
+    }
+    out << "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 2\n"
+           "    bool inputs:shadow:enable = 0\n"
+           "    float3 xformOp:rotateXYZ = (0, " << lightDegrees << ", 0)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
+           "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+           "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+           "    float2 clippingRange = (0.1, 1000)\n"
+           "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+    return path;
+}
+
+}   // namespace
 
 // A RELIT CONVERSION KEEPS THE RELIEF ITS NORMAL MAP DREW.
 //
@@ -10756,69 +11384,7 @@ TEST_CASE("a relit card with a tilted shading normal renders like the tilted mes
     ATHENEA_REQUIRE_GPU(gpu);
     // A tilt of 35 degrees towards +x, and a light from 40 degrees that way:
     // the cosine is 0.996 with the tilt and 0.766 without.
-    const char* kTilted = "(0.573576, 0, 0.819152)";
-    const auto stage = [&](const char* name, bool card, bool tilted) {
-        const fs::path path = scratch(name);
-        std::ofstream out(path);
-        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
-        if (card) {
-            // A gaussian a cell, sigma a cell wide and flat, its albedo the
-            // mesh's 0.5 kept as a cloud keeps a colour (encoded, so
-            // 0.5 + SH0 * dc = 0.735357), relit.
-            const int side = 160;
-            const double cell = 4.0 / side;
-            out << "def ParticleField3DGaussianSplat \"Card\"\n{\n    point3f[] positions = [";
-            for (int k = 0; k < side * side; ++k) {
-                out << (k ? ", " : "") << "(" << (-2.0 + ((k % side) + 0.5) * cell) << ", "
-                    << (-2.0 + ((k / side) + 0.5) * cell) << ", 0)";
-            }
-            out << "]\n    quatf[] orientations = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
-            out << "]\n    float3[] scales = [";
-            for (int k = 0; k < side * side; ++k) {
-                out << (k ? ", " : "") << "(" << cell << ", " << cell << ", " << 1.0e-4 * cell << ")";
-            }
-            out << "]\n    float[] opacities = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "0.99";
-            out << "]\n    uniform int radiance:sphericalHarmonicsDegree = 0\n"
-                   "    float3[] radiance:sphericalHarmonicsCoefficients = [";
-            for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << "(0.834321, 0.834321, 0.834321)";
-            out << "]\n    bool primvars:athenea:splat:relight = 1\n";
-            if (tilted) {
-                out << "    normal3f[] primvars:athenea:splat:normal = [";
-                for (int k = 0; k < side * side; ++k) out << (k ? ", " : "") << kTilted;
-                out << "] (\n        interpolation = \"vertex\"\n    )\n";
-            }
-            out << "}\n";
-        } else {
-            out << "def Mesh \"Quad\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
-                   "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
-                   "    point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]\n";
-            if (tilted) {
-                out << "    normal3f[] normals = [" << kTilted << ", " << kTilted << ", " << kTilted << ", "
-                    << kTilted << "] (\n        interpolation = \"vertex\"\n    )\n";
-            }
-            out << "    uniform token subdivisionScheme = \"none\"\n"
-                   "    rel material:binding = </Looks/Paint>\n}\n"
-                   "def Scope \"Looks\"\n{\n    def Material \"Paint\"\n    {\n"
-                   "        token outputs:surface.connect = </Looks/Paint/Surface.outputs:surface>\n"
-                   "        def Shader \"Surface\"\n        {\n"
-                   "            uniform token info:id = \"UsdPreviewSurface\"\n"
-                   "            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)\n"
-                   "            float inputs:roughness = 1\n"
-                   "            float inputs:metallic = 0\n"
-                   "            token outputs:surface\n        }\n    }\n}\n";
-        }
-        out << "def DistantLight \"Sun\"\n{\n    bool inputs:normalize = 1\n    float inputs:intensity = 2\n"
-               "    bool inputs:shadow:enable = 0\n"
-               "    float3 xformOp:rotateXYZ = (0, 40, 0)\n"
-               "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n"
-               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
-               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
-               "    float2 clippingRange = (0.1, 1000)\n"
-               "    double3 xformOp:translate = (0, 0, 3)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
-        return path;
-    };
+    const auto stage = [&](const char* name, bool card, bool tilted) { return tiltedCardStage(name, card, tilted); };
     const fs::path meshTilted = stage("normals_mesh_tilted.usda", false, true);
     const fs::path meshFlat = stage("normals_mesh_flat.usda", false, false);
     const fs::path cardTilted = stage("normals_card_tilted.usda", true, true);
@@ -10859,6 +11425,46 @@ TEST_CASE("a relit card with a tilted shading normal renders like the tilted mes
         CHECK(flatPair.p99Relative < 0.08);
         // ... and the tilt is what tells the two meshes apart.
         CHECK(tiltedAgainstFlat.p99Relative > 0.2);
+    }
+}
+
+// A STORED NORMAL GOES TO THE WORLD AS A NORMAL.
+//
+// A prim scaled (2, 1, 1) stretches its card in x, and a normal tilted 35
+// degrees towards +x on it leans 19 degrees in the world -- the inverse
+// transpose, which is what the mesh's normals take -- where turned by the
+// rows as a direction it leant 54. Lit from straight above, that is a cosine
+// of 0.94 against 0.58: the stretched card must render like the stretched
+// mesh on both routes.
+TEST_CASE("a relit card's stored normal under a scale that is not uniform leans as the scaled mesh's",
+          "[usd][gpu][splat][relight][normals]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path mesh = tiltedCardStage("normals_mesh_stretched.usda", false, true, 2.0F, 0.0F);
+    const fs::path card = tiltedCardStage("normals_card_stretched.usda", true, true, 2.0F, 0.0F);
+    const uint32_t w = 160, h = 160;
+    for (const char* technique : {"raster", "rt"}) {
+        const auto draw = [&](const fs::path& path) {
+            auto renderer = usd::StageRenderer::open(path);
+            if (!renderer) FAIL(renderer.error().toString());
+            auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+            if (!image) FAIL(image.error().toString());
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(made);
+            return std::move(*made);
+        };
+        const gpu::Buffer m = draw(mesh);
+        const gpu::Buffer c = draw(card);
+        auto diff = render::compareHdr(*gpu->library, c, m, w, h);
+        REQUIRE(diff);
+        std::printf("  %s: the stretched card against the stretched mesh p99 %.3f relMSE %.2e\n", technique,
+                    diff->p99Relative, diff->relMse);
+        CHECK(diff->pixels == uint64_t{w} * h);
+        // 0.014 on both routes; 0.386 turned as a direction (a cosine of 0.58
+        // where the mesh is 0.94).
+        CHECK(diff->p99Relative < 0.04);
     }
 }
 

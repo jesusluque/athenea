@@ -33,6 +33,7 @@
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/technique/Environment.h"
+#include "athenea/usd/GaussianStats.h"
 #include "athenea/usd/PrimData.h"
 #include "athenea/geom/Curves.h"
 #include "athenea/geom/Mesh.h"
@@ -83,8 +84,8 @@ struct StreamedAsset {
 /// actually changed. `skinningXforms` is deliberately not among them -- it is
 /// the one array that does change every frame, and no decode depends on it.
 struct CloudIdentity {
-    std::array<const void*, 16> data{};
-    std::array<size_t, 16>      bytes{};
+    std::array<const void*, 17> data{};
+    std::array<size_t, 17>      bytes{};
     int                         shDegree = -1;
 
     [[nodiscard]] bool operator==(const CloudIdentity& other) const noexcept {
@@ -137,6 +138,9 @@ struct SplatEntry {
     std::unique_ptr<scene::GpuSplats>   posed;
     gpu::Buffer                         influences;   ///< float2 (joint, weight), `perSplat` a gaussian
     uint32_t                            perSplat = 4; ///< influences a gaussian (SkelBindingAPI's elementSize)
+    /// The weights' gradients across each gaussian, `perSplat - 1` words of
+    /// two halves a kept gaussian; empty for a cloud converted without them.
+    gpu::Buffer                         weightGradients;
     gpu::Buffer                         xforms;       ///< four float4 a joint, this frame's
     /// Under a shutter: the same joints at its other end, and what the
     /// skinner made of the two -- a displacement a gaussian, in the cloud's
@@ -500,6 +504,36 @@ public:
     [[nodiscard]] gpu::Device& device() noexcept { return *device_; }
     [[nodiscard]] gpu::ShaderLibrary& library() noexcept { return *library_; }
 
+    /// WHEN THE DEVICE RUNS OUT OF MEMORY.
+    ///
+    /// What a frame that failed with OutOfMemory asks before it is tried
+    /// again (the render pass does, once). Every call gives back what is
+    /// made again on demand -- the rasteriser's grown buffers, the ray
+    /// tracers' structures and proxies, the denoiser -- and gives up one
+    /// thing more, in this order: splat shadows (`athenea:splatShadows`), then
+    /// a level of detail at a time, each one level coarser for a LOD group
+    /// (athenea:lod:group), a cut of twice the pixels for a streamed asset,
+    /// and its streaming budget halved. Returns what it did, for the
+    /// warning and the viewer's panel; empty when nothing is left to give.
+    [[nodiscard]] std::string relieveMemory();
+    /// How many levels coarser than asked the engine draws now (0: as asked).
+    [[nodiscard]] uint32_t lodBias() const noexcept { return lodBias_; }
+    /// How many times memory was given up -- relieveMemory, or splat shadows
+    /// skipped for a budget they would not fit -- and what the last one did.
+    [[nodiscard]] uint32_t reliefs() const noexcept { return reliefs_; }
+    [[nodiscard]] const std::string& lastRelief() const noexcept { return lastRelief_; }
+    /// Whether splat shadows were given up for memory, by relieveMemory or
+    /// because the proxies would not fit the device's budget.
+    [[nodiscard]] bool splatShadowsGivenUp() const noexcept { return memoryNoSplatShadows_.load(); }
+    /// The last frame's failure, kept by the render pass, which Hydra gives
+    /// no way to return (StageRenderer::execute does), once.
+    void noteFrameError(Error error) { frameError_ = std::move(error); }
+    [[nodiscard]] std::optional<Error> takeFrameError() {
+        std::optional<Error> out = std::move(frameError_);
+        frameError_.reset();
+        return out;
+    }
+
     /// The targets the last render drew into (owned by the render pass).
     [[nodiscard]] const render::RenderTargets* lastTargets() const noexcept { return lastTargets_; }
 
@@ -514,6 +548,15 @@ public:
 
     /// What the last frame held (`FrameCounters`).
     [[nodiscard]] const FrameCounters& frameCounters() const noexcept { return counters_; }
+
+    /// THE GAUSSIANS ON SCREEN, for a panel (GaussianStats): gathered only
+    /// while a panel asks for them, since the device counts a few things more
+    /// for it -- four small dispatches and a copy that nothing waits for.
+    void setCountSplats(bool on) { countSplats_.store(on); }
+    /// Time each stage of the rasteriser: every stage then waits for the
+    /// device, so the frame is slower by what the waits cost.
+    void setTimeSplatStages(bool on) { timeSplatStages_.store(on); }
+    [[nodiscard]] const GaussianStats& gaussianStats() const noexcept { return gaussianStats_; }
 
     /// What the last frame's Cryptomatte ids are called: path -> id, for the
     /// manifest an EXR carries and for anything that has to name an id.
@@ -534,6 +577,23 @@ public:
 
 private:
     Engine() = default;
+
+    /// relieveMemory's state: how many levels coarser, and whether the
+    /// splat shadows are given up.
+    uint32_t                                  lodBias_ = 0;
+    std::atomic<bool>                         memoryNoSplatShadows_{false};
+    std::optional<Error>                      frameError_;
+    uint32_t                                  reliefs_ = 0;
+    std::string                               lastRelief_;
+    /// The streaming budget, in splats, a streamed asset is opened with: what
+    /// it asks for (or the whole file where it asks for none), held to half
+    /// of what the device's budget has left, and halved once for every
+    /// level relieveMemory has given up. 0: read the file whole.
+    [[nodiscard]] uint64_t streamBudget(const pxr::SdfPath& id, const StreamedAsset& asset) const;
+    /// Whether the splat shadow proxies of `gaussians` fit what the device's
+    /// budget has left; says once why not.
+    [[nodiscard]] bool splatShadowsFit(uint64_t gaussians);
+    uint64_t                                  shadowGaussians_ = 0;   ///< what the shadow tracer was last prepared for
 
     std::shared_ptr<gpu::Device>              device_;
     std::unique_ptr<gpu::ShaderLibrary>       library_;
@@ -823,6 +883,27 @@ private:
                                           render::RenderTargets& targets);
     technique::VisibilityTargets              visibility_;
     FrameCounters                             counters_;
+    /// The Gaussians panel's numbers (`gaussianStats`), and what gathers them.
+    std::atomic<bool>                         countSplats_{false};
+    std::atomic<bool>                         timeSplatStages_{false};
+    uint64_t                                  frameSerial_ = 0;
+    GaussianStats                             gaussianStats_;
+    /// The prims of the frames whose counts are still on their way, by tag:
+    /// a count arrives by instance, and only the frame it was drawn in says
+    /// which prim each instance was.
+    struct CountedFrame {
+        uint64_t                 tag = 0;
+        std::vector<std::string> prims;
+    };
+    std::vector<CountedFrame>                 countedFrames_;
+    std::optional<render::SplatCounters>      lastCounted_;
+    std::vector<std::string>                  lastCountedPrims_;
+    /// This frame's clouds, levels and submissions into `gaussianStats_`.
+    void noteGaussians(const std::string& route, std::span<const render::SplatInstance> splats,
+                       std::span<const std::string> prims, std::span<const lod::CutStats> cutStats,
+                       std::span<const std::string> cutPrims, const std::set<const SplatEntry*>& levels);
+    /// Whatever counts the device has finished since, into `gaussianStats_`.
+    void takeSplatCounters();
     std::optional<technique::Environment>     environment_;
     /// The dome records the environment was prepared from: a frame whose
     /// domes read the same builds nothing.

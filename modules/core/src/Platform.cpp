@@ -7,7 +7,10 @@
 #include <EGL/eglext.h>
 #endif
 
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 
 #if defined(_WIN32)
@@ -357,6 +360,66 @@ void* newTrackedMetalBuffer(void* mtlDevice, uint64_t bytes) {
 #endif
 }
 
+uint64_t availablePhysicalMemory() {
+#if defined(__APPLE__)
+    vm_statistics64_data_t stats{};
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    const mach_port_t host = mach_host_self();
+    const kern_return_t got =
+        host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&stats), &count);
+    mach_port_deallocate(mach_task_self(), host);
+    if (got != KERN_SUCCESS) {
+        return 0;
+    }
+    const uint64_t page = static_cast<uint64_t>(::sysconf(_SC_PAGESIZE));
+    return (uint64_t{stats.free_count} + stats.inactive_count + stats.purgeable_count) * page;
+#elif defined(__linux__)
+    FILE* file = std::fopen("/proc/meminfo", "r");
+    if (file == nullptr) {
+        return 0;
+    }
+    char line[256];
+    uint64_t kib = 0;
+    while (std::fgets(line, sizeof(line), file) != nullptr) {
+        unsigned long long value = 0;
+        if (std::sscanf(line, "MemAvailable: %llu kB", &value) == 1) {
+            kib = value;
+            break;
+        }
+    }
+    std::fclose(file);
+    return kib * 1024;
+#else
+    return 0;
+#endif
+}
+
+uint64_t metalRecommendedWorkingSet(void* mtlDevice) {
+#if defined(__APPLE__)
+    if (mtlDevice == nullptr) {
+        return 0;
+    }
+    return reinterpret_cast<uint64_t (*)(void*, SEL)>(objc_msgSend)(mtlDevice,
+                                                                    sel_registerName("recommendedMaxWorkingSetSize"));
+#else
+    (void)mtlDevice;
+    return 0;
+#endif
+}
+
+uint64_t metalAllocatedSize(void* mtlDevice) {
+#if defined(__APPLE__)
+    if (mtlDevice == nullptr) {
+        return 0;
+    }
+    return static_cast<uint64_t>(reinterpret_cast<unsigned long (*)(void*, SEL)>(objc_msgSend)(
+        mtlDevice, sel_registerName("currentAllocatedSize")));
+#else
+    (void)mtlDevice;
+    return 0;
+#endif
+}
+
 uint64_t pageSize() {
     return static_cast<uint64_t>(::sysconf(_SC_PAGESIZE));
 }
@@ -416,6 +479,40 @@ void releaseMetalBuffer(void* mtlBuffer) {
 #else
     (void)mtlBuffer;
 #endif
+}
+
+std::filesystem::path partialPathFor(const std::filesystem::path& path) {
+    // `.name.partial-<pid>.ext`: hidden where a listing hides dot files, and
+    // still ending in what the writer chooses its format by.
+    const std::string name = "." + path.stem().string() + ".partial-" + std::to_string(::getpid()) +
+                             path.extension().string();
+    return path.parent_path() / name;
+}
+
+Result<void> replaceFile(const std::filesystem::path& from, const std::filesystem::path& to) {
+    if (::rename(from.c_str(), to.c_str()) != 0) {
+        return Error::make(ErrorCode::IoFailure, "cannot move '{}' to '{}': {}", from.string(), to.string(),
+                           std::strerror(errno));
+    }
+    return ok();
+}
+
+void removeFile(const std::filesystem::path& path) noexcept { ::unlink(path.c_str()); }
+
+Result<void> writeAtomically(const std::filesystem::path& path,
+                             const std::function<Result<void>(const std::filesystem::path& partial)>& write) {
+    const std::filesystem::path partial = partialPathFor(path);
+    removeFile(partial);   // a partial file a killed run of this same pid left
+    Result<void> wrote = write(partial);
+    if (!wrote) {
+        removeFile(partial);
+        return wrote;
+    }
+    if (Result<void> moved = replaceFile(partial, path); !moved) {
+        removeFile(partial);
+        return moved;
+    }
+    return ok();
 }
 
 }   // namespace athenea::platform

@@ -57,8 +57,7 @@ void addDecimate(CLI::App& app) {
     cmd->add_flag("--no-camera", o->noCamera, "do not add /World/Camera");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
-            std::fprintf(stderr, "%s\n", error.toString().c_str());
-            throw CLI::RuntimeError(1);
+            cli::fail(error);
         };
         auto device = gpu::Device::create();
         if (!device) fail(device.error());
