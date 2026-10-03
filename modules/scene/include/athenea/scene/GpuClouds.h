@@ -13,6 +13,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <cstddef>
 #include <span>
 #include <filesystem>
@@ -111,6 +112,11 @@ struct GpuSplats {
     gpu::Buffer visibilityAmbient;   ///< a probe's mean over its directions, for domes
     uint32_t    visibilityPartCount = 0;
     Bounds      bounds;
+    /// THE BOX IT WAS BOUND IN, where `positions` are a pose of another
+    /// cloud's (a skinned cloud's posed copy): what does not breathe with
+    /// the wings, which is what a shadow map is sized from. Empty for a cloud
+    /// that is its own rest pose.
+    std::optional<Bounds> restBounds;
     /// Counted up by whatever rewrites `positions` or `shape` in place -- the
     /// skinner, a frame -- so a structure built over them (the ray tracer's
     /// proxies) can tell a cloud posed anew from the one it built for. The

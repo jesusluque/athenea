@@ -11084,3 +11084,67 @@ the metric's own noise of the mesh's.
 - The grain that is left is the harmonics': sixteen coefficients from 256
   paths. A filter that weighed each band by its own variance, rather than the
   luminance's, is the next thing to try.
+
+
+## A cloud's shadow that does not breathe with the wings
+
+The analysis of a flying sparrow's shadows (P005) found the combination
+already right -- the per-part fields shadow the bird, the map from the light
+shadows the floor -- and the map unstable: four causes of flicker, all in
+`splat_shadow_map.slang` and `splat_shadow_read.slang`. What does not flicker
+was kept: the accumulation is in integers (fixed point, atomic adds and
+minima), so the same pose gives the same map bit for bit; the posed shape
+carries the whole Jacobian; and a cloud that only translates moves its
+shadow unchanged. The steps below remove one cause each.
+
+### Step 1: the frame is sized from the rest pose and snapped to the world
+
+**The cause.** `shadowMapFrame` framed the map on the casters' box, and a
+skinned cloud's box is the *posed* one, recomputed every pose by
+`Engine::carryCloud`. `texels = resolution / (2 widest)`, so every flap
+changed the size of a texel and its phase under a body that had not moved,
+and the edge of the body's shadow shimmered. The slab was `2 extentZ` of the
+same box, and the lit side's bias, two per cent of it, changed its length in
+the world with the wings -- and the Fourier frequencies with it.
+
+**The frame now.**
+
+- **Extent**: the casters' rest sphere -- half the diagonal of the box the
+  cloud was bound in (`GpuSplats::restBounds`, which the posed copy keeps from
+  the bind pose; `ShadowMapCaster::restBounds` overrides it), in the world,
+  reduced on the device with the posed box -- or the posed box's support where
+  that reaches further, times `1 + margin`, **rounded up to a quarter
+  octave** (`2^(ceil(4 log2 r) / 4)`). A pose inside the sphere never changes
+  it; one past it changes it only when it crosses a step.
+- **Centre**: the posed box's, so the map follows a bird that flies, but
+  **on the world's texel grid**: `rowU.w = resolution / 2 - round(centreU
+  texels)`, an integer, so a point that does not move keeps its place in its
+  texel whatever the centre does. In depth the quantum is a quarter of the
+  slab: a shift of the depth origin turns every Fourier term's phase, so it
+  is coarse on purpose, and a quarter still keeps every caster inside.
+- **Slab**: `2 widest`, so it changes only when the extent does.
+- **Bias in the world**: `ShadowMapJob::selfBias`, in world units, a word of
+  the frame of its own (`kShadowFrameWords` is 21); 0, the default, is two
+  per cent of that slab -- the same fraction as before, of a slab that no
+  longer breathes. The analysis proposed a multiple of the cloud's mean
+  sigma instead; no header holds one, and measuring it is a pass over every
+  gaussian a frame, so the slab it is.
+- **The header is read in one place.** `splat_shadow_read.slang` reads a
+  frame and a texel through `IShadowMapSource`, which the pass's buffer
+  (gaussian receivers, the probe) and the shading kernel's texture
+  (`CloudShadowTexture`, in `MaterialShading`) both implement -- so the probe
+  answers what a floor reads. The texture's header is sixteen words a row in
+  layer zero: one row of 160 words was cut by any map narrower than that
+  (`athenea:cloudShadowResolution` goes down to 64).
+
+**Not done**: a light that stands somewhere (a sphere, a spot) turns the
+map's axis towards the box's centre every frame, and snapping does not undo a
+rotation. The sparrow's flight has a sun and a dome; a local light would want
+its axis quantised, or a perspective map fixed to the light.
+
+`athenea_technique_tests "[shadowmap][stable]"`: a body that stays put and a
+wing in three poses that make the posed box larger and smaller; sixteen probes
+across the edge of the body's shadow, with one term (behind the cloud) and
+with five (inside the slab). Expected: the same answers in every pose, to one
+unit of fixed point (5e-4). Before the step the texel changed with the wing.
+*To be run in the GPU turn.*

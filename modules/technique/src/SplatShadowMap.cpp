@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 #include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
@@ -11,11 +12,12 @@
 namespace athenea::technique {
 namespace {
 
-/// The shader's, and they must agree: twenty words a light slot, then the six
-/// the casters' box is reduced into.
-constexpr uint32_t kFrameWords = 20;
+/// The shader's, and they must agree: twenty-one words a light slot, then the
+/// six the casters' posed box is reduced into and the one their rest radius
+/// is.
+constexpr uint32_t kFrameWords = 21;
 constexpr uint32_t kSlots = 8;
-constexpr uint32_t kHeaderWords = kFrameWords * kSlots + 6;
+constexpr uint32_t kHeaderWords = kFrameWords * kSlots + 7;
 
 /// The rows of `objectToWorld`, by the names the parameter block gives them.
 constexpr const char* kRow[12] = {"w00", "w01", "w02", "w03", "w10", "w11",
@@ -102,6 +104,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         p["coefficients"].setData(coefficients);
         p["margin"].setData(job.margin);
         p["density"].setData(job.density);
+        p["selfBias"].setData(job.selfBias);
         p["lightCount"].setData(lights);
         cursor["shadowMap"].setBinding(map_.rhi());
         cursor["shadowLights"].setBinding(job.lights->rhi());
@@ -111,6 +114,10 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         p["count"].setData(caster.cloud->count);
         p["boxMin"].setData(caster.cloud->bounds.min);
         p["boxMax"].setData(caster.cloud->bounds.max);
+        const scene::Bounds rest =
+            caster.restBounds.has_value() ? *caster.restBounds : caster.cloud->restBounds.value_or(caster.cloud->bounds);
+        p["restMin"].setData(rest.min);
+        p["restMax"].setData(rest.max);
         for (int k = 0; k < 12; ++k) {
             p[kRow[k]].setData(caster.objectToWorld[static_cast<size_t>(k)]);
         }
@@ -123,7 +130,8 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         setCommon(cursor, 0);
         setCaster(cursor, job.casters.front());
     });
-    // Where the casters stand, reduced on the device: eight corners a cloud.
+    // Where the casters stand and how far they reach at rest, reduced on the
+    // device: eight corners a cloud.
     for (const ShadowMapCaster& caster : job.casters) {
         if (caster.cloud == nullptr || caster.cloud->count == 0) {
             continue;
@@ -224,6 +232,29 @@ Result<double> SplatShadowMap::meanTransmittance(uint32_t light) {
     uint32_t summed = 0;
     ATHENEA_TRY(total->read(*device_, 0, sizeof(summed), &summed));
     return double(summed) / 65536.0 / (double(resolution_) * double(resolution_));
+}
+
+Result<SplatShadowMap::FrameInfo> SplatShadowMap::frameInfo(uint32_t light) {
+    FrameInfo info;
+    if (!valid_ || light >= lights_) {
+        return info;
+    }
+    std::array<uint32_t, kFrameWords> words{};
+    ATHENEA_TRY(map_.read(*device_, uint64_t{light} * kFrameWords * 4, sizeof(words), words.data()));
+    const auto real = [&](size_t at) {
+        float f = 0.0F;
+        std::memcpy(&f, &words[at], sizeof(f));
+        return f;
+    };
+    info.valid = words[19] != 0;
+    for (size_t k = 0; k < 4; ++k) {
+        info.rowU[k] = real(k);
+        info.rowV[k] = real(4 + k);
+        info.rowZ[k] = real(8 + k);
+    }
+    info.texelsPerUnit = real(15);
+    info.bias = real(20);
+    return info;
 }
 
 Result<std::vector<float>> SplatShadowMap::probe(uint32_t light, std::span<const std::array<float, 4>> points) {

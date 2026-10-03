@@ -250,8 +250,21 @@ static const bool kCloudShadows = true;
 // buffers, and a texture slot it still has.
 Texture2DArray<float> cloudShadow;
 
+// The texture as a source splat_shadow_read understands: the same read the
+// pass's probe and the gaussian receivers do through its buffer.
+struct CloudShadowTexture : IShadowMapSource {
+    static float headerReal(uint word) { return cloudShadow.Load(shadowHeaderTexel(word)); }
+    static uint headerCount(uint word) { return uint(cloudShadow.Load(shadowHeaderTexel(word))); }
+    static float texel(ShadowMapFrame f, uint light, int x, int y, uint which) {
+        return cloudShadow.Load(int4(x, y, int(shadowLayerOf(light, f.coefficients, which)), 0));
+    }
+};
+
 float cloudTransmittance(float3 p, uint light, bool casts) {
-    return casts ? shadowMapTransmittanceTex(cloudShadow, light, p) : 1.0;
+    if (!casts || light >= kShadowSlots) {
+        return 1.0;
+    }
+    return shadowMapRead<CloudShadowTexture>(shadowFrameOf<CloudShadowTexture>(light), light, p);
 }
 )";
 

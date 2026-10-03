@@ -28,22 +28,6 @@ import athenea.light.lights;
 import athenea.splat.frame;   // cutoffPower and footprintExtent: one footprint, one meaning
 import athenea.technique.splat_shadow_read;
 
-/// The frame as the pass itself reads it, through its writable binding.
-ShadowMapFrame shadowFrameOfRW(RWStructuredBuffer<uint> map, uint light) {
-    const uint at = light * kShadowFrameWords;
-    ShadowMapFrame f;
-    f.rowU = float4(asfloat(map[at + 0]), asfloat(map[at + 1]), asfloat(map[at + 2]), asfloat(map[at + 3]));
-    f.rowV = float4(asfloat(map[at + 4]), asfloat(map[at + 5]), asfloat(map[at + 6]), asfloat(map[at + 7]));
-    f.rowZ = float4(asfloat(map[at + 8]), asfloat(map[at + 9]), asfloat(map[at + 10]), asfloat(map[at + 11]));
-    f.axisZ = float3(asfloat(map[at + 12]), asfloat(map[at + 13]), asfloat(map[at + 14]));
-    f.texelsPerUnit = asfloat(map[at + 15]);
-    f.resolution = map[at + 16];
-    f.coefficients = map[at + 17];
-    f.offset = map[at + 18];
-    f.valid = map[at + 19];
-    return f;
-}
-
 // --- the pass ------------------------------------------------------------
 
 public struct ShadowMapParams {
@@ -60,7 +44,7 @@ public struct ShadowMapParams {
     /// opacity says and is the only physical value; less lets light through a
     /// solid thing, more darkens a thin one.
     public float density;
-    public float pad3;
+    public uint  level;        ///< the transmittance chain: which level a dispatch writes
     /// The caster's box in its own space, and its object-to-world rows: the
     /// box is a bound the host holds from the upload; where it lands is the
     /// device's business (`shadowMapBox`).
@@ -71,6 +55,16 @@ public struct ShadowMapParams {
     public float  w00, w01, w02, w03;
     public float  w10, w11, w12, w13;
     public float  w20, w21, w22, w23;
+    /// The caster's box as it was bound, in its own space: what a skinned
+    /// cloud's map is sized from, since the posed box breathes with the
+    /// wings and a map sized from it changed its texels every frame.
+    public float3 restMin;
+    /// How far behind the nearest caster a receiver still counts as on it,
+    /// in world units; 0 is two per cent of the slab, a slab that does not
+    /// change with the pose.
+    public float  selfBias;
+    public float3 restMax;
+    public float  pad4;
 };
 
 public ConstantBuffer<ShadowMapParams> shadowParams;
@@ -78,6 +72,23 @@ public RWStructuredBuffer<uint>        shadowMap;
 public StructuredBuffer<LightRecord>   shadowLights;
 public StructuredBuffer<float4>        shadowPositions;   ///< posed, the cloud's own space
 public StructuredBuffer<uint>          shadowShape;       ///< 4 words a gaussian, as GpuSplats packs them
+
+/// The pass's own buffer as a source the read understands: the gaussian
+/// receivers and the probe read it through this, a floor through the
+/// texture, and the two through the same `shadowMapRead`.
+struct ShadowBufferSource : IShadowMapSource {
+    static float headerReal(uint word) { return asfloat(shadowMap[word]); }
+    static uint headerCount(uint word) { return shadowMap[word]; }
+    static float texel(ShadowMapFrame f, uint light, int x, int y, uint which) {
+        const uint word = f.offset + (uint(y) * f.resolution + uint(x)) * shadowStrideOf(f.coefficients) + which;
+        const uint raw = shadowMap[word];
+        // The total is unsigned, every Fourier term is signed, and the last
+        // word of a texel is a depth stored as an ordered key.
+        return which == f.coefficients ? shadowOrderedFloat(raw)
+               : which == 0            ? float(raw) / kShadowFixedScale
+                                       : float(int(raw)) / kShadowFixedScale;
+    }
+};
 
 float3 toWorld(float3 p) {
     const ShadowMapParams s = shadowParams;
@@ -95,11 +106,12 @@ void shadowMapClear(uint3 tid: SV_DispatchThreadID) {
     // Two kinds of word start at the largest key there is, because both are
     // reduced with a minimum: the three the casters' box is gathered into,
     // and the last word of every texel, which holds the depth of the nearest
-    // thing that cast into it. Everything else starts at nothing, which is
-    // what a sum wants.
+    // thing that cast into it. The box's maxima and the rest radius start at
+    // the smallest, and everything else at nothing, which is what a sum
+    // wants.
     const uint header = shadowHeaderWords();
     bool smallest = tid.x >= kShadowBoxAt && tid.x < kShadowBoxAt + 3;
-    const bool largest = tid.x >= kShadowBoxAt + 3 && tid.x < kShadowBoxAt + 6;
+    const bool largest = tid.x >= kShadowBoxAt + 3 && tid.x < kShadowBoxAt + kShadowBoxWords;
     if (tid.x >= header) {
         const uint stride = shadowStrideOf(shadowParams.coefficients);
         smallest = (tid.x - header) % stride == shadowParams.coefficients;
@@ -114,9 +126,10 @@ void shadowMapClear(uint3 tid: SV_DispatchThreadID) {
 }
 
 /// Eight threads a caster: the corners of its box in world space, reduced
-/// into the six words every frame is then built from. The box is a bound the
-/// host already holds; where its corners land is not something the host works
-/// out.
+/// into the six words every frame is then centred from, and the corners of
+/// its rest box, whose farthest from the rest box's centre is the radius the
+/// frame is sized from. The boxes are bounds the host already holds; where
+/// their corners land is not something the host works out.
 [shader("compute")]
 [numthreads(8, 1, 1)]
 void shadowMapBox(uint3 tid: SV_DispatchThreadID) {
@@ -133,6 +146,13 @@ void shadowMapBox(uint3 tid: SV_DispatchThreadID) {
         InterlockedMin(shadowMap[kShadowBoxAt + k], shadowOrderedKey(world[k]));
         InterlockedMax(shadowMap[kShadowBoxAt + 3 + k], shadowOrderedKey(world[k]));
     }
+    // The rest sphere: the half diagonal of the bind pose's box as the object
+    // transform carries it, which no pose changes.
+    const float3 rest = float3((corner & 1u) != 0u ? s.restMax.x : s.restMin.x,
+                               (corner & 2u) != 0u ? s.restMax.y : s.restMin.y,
+                               (corner & 4u) != 0u ? s.restMax.z : s.restMin.z);
+    const float radius = length(toWorld(rest) - toWorld(0.5 * (s.restMin + s.restMax)));
+    InterlockedMax(shadowMap[kShadowBoxAt + 6], shadowOrderedKey(radius));
 }
 
 /// One thread a light: the map's frame, from the light's own axes and the box
@@ -140,6 +160,22 @@ void shadowMapBox(uint3 tid: SV_DispatchThreadID) {
 /// the only kind whose rays are parallel -- and a light that stands somewhere
 /// gets one about the direction from it to the box, which is exact for a
 /// light far enough away and is what a spot is.
+///
+/// A FRAME THAT DOES NOT BREATHE WITH THE WINGS. The map used to be framed on
+/// the posed box: every flap changed its widest extent, so the texel's size
+/// and phase changed under a body that had not moved, and the edge of its
+/// shadow shimmered; the slab changed with it, and the bias and the Fourier
+/// frequencies with the slab. Now
+///
+/// - the extent is the casters' REST sphere (or the posed box where that is
+///   wider), times the margin, rounded UP to a quarter octave -- so it
+///   changes only when the casters' reach crosses a step, never with a pose
+///   inside it;
+/// - the centre is the posed box's, so the map follows a bird that flies,
+///   but SNAPPED to the texel grid in u and v and to a quarter of the slab in
+///   depth: a point that does not move lands at the same place in its texel,
+///   and at the same depth, whatever else does;
+/// - the slab is the extent's, and the bias is a length in the world.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
@@ -158,15 +194,13 @@ void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
                                  shadowOrderedFloat(shadowMap[kShadowBoxAt + 2]));
     const float3 boxMax = float3(shadowOrderedFloat(shadowMap[kShadowBoxAt + 3]), shadowOrderedFloat(shadowMap[kShadowBoxAt + 4]),
                                  shadowOrderedFloat(shadowMap[kShadowBoxAt + 5]));
+    const float restRadius = shadowOrderedFloat(shadowMap[kShadowBoxAt + 6]);
     if (!all(boxMax >= boxMin)) {
         shadowMap[at + 19] = 0;   // nothing cast anything
         return;
     }
     const float3 centre = 0.5 * (boxMin + boxMax);
-    // A skinned cloud is posed away from the box it was bound in, so the map
-    // covers more than the bind pose: a wing that leaves the map stops
-    // casting, and that is the one artefact worth paying a margin to avoid.
-    const float3 half3 = max(0.5 * (boxMax - boxMin) * (1.0 + s.margin), float3(1.0e-6));
+    const float3 half3 = max(0.5 * (boxMax - boxMin), float3(1.0e-6));
     // Which way the light travels. UsdLux shines down its own -Z.
     float3 axisZ = -lightAxisZ(light);
     if (light.kind != kLightDistant) {
@@ -189,20 +223,34 @@ void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
     const float3 up = abs(axisZ.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
     const float3 axisX = normalize(cross(up, axisZ));
     const float3 axisY = cross(axisZ, axisX);
-    // The box's extent along each axis: its half diagonal projected, which is
-    // the support function of a box and so exact for any rotation.
+    // The posed box's extent along each axis: its half diagonal projected,
+    // which is the support function of a box and so exact for any rotation.
+    // It is never more than the posed box's half diagonal, so a pose that
+    // stays inside the rest sphere never reaches past it.
     const float extentX = abs(half3.x * axisX.x) + abs(half3.y * axisX.y) + abs(half3.z * axisX.z);
     const float extentY = abs(half3.x * axisY.x) + abs(half3.y * axisY.y) + abs(half3.z * axisY.z);
     const float extentZ = abs(half3.x * axisZ.x) + abs(half3.y * axisZ.y) + abs(half3.z * axisZ.z);
-    const float widest = max(max(extentX, extentY), 1.0e-6);
+    // A skinned cloud is posed away from the box it was bound in, so the map
+    // covers more than the bind pose: a wing that leaves the map stops
+    // casting, and that is the one artefact worth paying a margin to avoid.
+    const float reach = max(max(max(extentX, extentY), extentZ), max(restRadius, 1.0e-6)) * (1.0 + s.margin);
+    const float widest = exp2(ceil(4.0 * log2(reach)) * 0.25);
     const float texels = float(s.resolution) / (2.0 * widest);
-    const float centreU = dot(axisX, centre);
-    const float centreV = dot(axisY, centre);
-    const float centreZ = dot(axisZ, centre);
-    const float slab = max(2.0 * extentZ, 1.0e-6);
-    const float4 rowU = float4(axisX * texels, 0.5 * float(s.resolution) - centreU * texels);
-    const float4 rowV = float4(axisY * texels, 0.5 * float(s.resolution) - centreV * texels);
-    const float4 rowZ = float4(axisZ / slab, 0.5 - centreZ / slab);
+    const float slab = 2.0 * widest;
+    // The centre on the world's texel grid: a whole number of texels, so a
+    // point keeps its place in its texel when the centre moves.
+    const float gridU = round(dot(axisX, centre) * texels);
+    const float gridV = round(dot(axisY, centre) * texels);
+    // In depth the quantum is a quarter of the slab: coarse, because a shift
+    // of the depth origin moves every Fourier term's phase and the
+    // reconstruction with it, and a quarter still keeps every caster inside
+    // (its reach is at most 1 / (1 + margin) of the half slab, and the snap
+    // moves the centre by an eighth of the slab at most).
+    const float steps = round(dot(axisZ, centre) / slab * 4.0);
+    const float4 rowU = float4(axisX * texels, 0.5 * float(s.resolution) - gridU);
+    const float4 rowV = float4(axisY * texels, 0.5 * float(s.resolution) - gridV);
+    const float4 rowZ = float4(axisZ / slab, 0.5 - steps / 4.0);
+    const float bias = (s.selfBias > 0.0 ? s.selfBias : 0.02 * slab) / slab;
     shadowMap[at + 0] = asuint(rowU.x); shadowMap[at + 1] = asuint(rowU.y);
     shadowMap[at + 2] = asuint(rowU.z); shadowMap[at + 3] = asuint(rowU.w);
     shadowMap[at + 4] = asuint(rowV.x); shadowMap[at + 5] = asuint(rowV.y);
@@ -216,6 +264,7 @@ void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
     shadowMap[at + 17] = s.coefficients;
     shadowMap[at + 18] = shadowHeaderWords() + k * s.resolution * s.resolution * shadowStrideOf(s.coefficients);
     shadowMap[at + 19] = 1;
+    shadowMap[at + 20] = asuint(bias);
 }
 
 /// One thread a gaussian: its optical depth into every texel its footprint
@@ -227,7 +276,7 @@ void shadowMapSplat(uint3 tid: SV_DispatchThreadID) {
     if (i >= shadowParams.count) {
         return;
     }
-    const ShadowMapFrame f = shadowFrameOfRW(shadowMap, shadowParams.light);
+    const ShadowMapFrame f = shadowFrameOf<ShadowBufferSource>(shadowParams.light);
     if (f.valid == 0) {
         return;
     }
@@ -325,7 +374,7 @@ public RWStructuredBuffer<uint> shadowTotal;
 [numthreads(256, 1, 1)]
 void shadowMapMean(uint3 tid: SV_DispatchThreadID) {
     const uint texel = tid.x;
-    const ShadowMapFrame f = shadowFrameOfRW(shadowMap, shadowParams.light);
+    const ShadowMapFrame f = shadowFrameOf<ShadowBufferSource>(shadowParams.light);
     if (f.valid == 0 || texel >= f.resolution * f.resolution) {
         return;
     }
@@ -345,51 +394,24 @@ void shadowMapProbe(uint3 tid: SV_DispatchThreadID) {
     if (at >= shadowParams.count) {
         return;
     }
-    const float3 p = shadowProbePoints[at].xyz;
-    // Through the writable binding, since this runs in the same pass.
-    float answer = 1.0;
-    const ShadowMapFrame f = shadowFrameOfRW(shadowMap, shadowParams.light);
-    if (f.valid != 0) {
-        const float u = dot(f.rowU.xyz, p) + f.rowU.w;
-        const float v = dot(f.rowV.xyz, p) + f.rowV.w;
-        const float z = dot(f.rowZ.xyz, p) + f.rowZ.w;
-        if (u >= 0.0 && v >= 0.0 && u < float(f.resolution) && v < float(f.resolution) && z > 0.0) {
-            const uint texel = uint(v) * f.resolution + uint(u);
-            const uint word = f.offset + texel * shadowStrideOf(f.coefficients);
-            if (z <= shadowOrderedFloat(shadowMap[word + f.coefficients]) + kShadowSelfBias) {
-                shadowProbeOut[at] = 1.0;
-                return;
-            }
-            const float total = float(shadowMap[word]) / kShadowFixedScale;
-            float optical = total;
-            if (f.coefficients > 1 && z < 1.0) {
-                float sum = total * z;
-                const uint pairs = (f.coefficients - 1) / 2;
-                for (uint k = 1; k <= pairs; ++k) {
-                    const float a = float(int(shadowMap[word + k * 2 - 1])) / kShadowFixedScale;
-                    const float b = float(int(shadowMap[word + k * 2])) / kShadowFixedScale;
-                    const float angle = 2.0 * kShadowPi * float(k) * z;
-                    sum += (a * sin(angle) + b * (1.0 - cos(angle))) / (kShadowPi * float(k));
-                }
-                optical = clamp(sum, 0.0, max(total, 0.0));
-            }
-            answer = exp(-max(optical, 0.0));
-        }
-    }
-    shadowProbeOut[at] = answer;
+    // Through the writable binding, since this runs in the same pass, and
+    // through the same read a floor and a gaussian do.
+    const uint light = shadowParams.light;
+    shadowProbeOut[at] = shadowMapRead<ShadowBufferSource>(shadowFrameOf<ShadowBufferSource>(light), light,
+                                                           shadowProbePoints[at].xyz);
 }
 
 // --- the map as a texture, for the kernels with no binding slot left ------
 //
 // A shading kernel is at Metal's limit of thirty-one buffers before this
 // arrives, so the map reaches it as a texture instead: one array layer a
-// coefficient a light, and the frames in layer zero's first row. Nothing is
+// coefficient a light, and the frames in layer zero's first rows. Nothing is
 // sampled -- the reads are integer loads -- but a texture costs a texture
 // slot, and of those there are plenty.
 
 public RWTexture2DArray<float> shadowOut;
 
-/// Layer zero, first row: light k's frame, word by word, as floats.
+/// Layer zero, sixteen words a row: light k's frame, word by word, as floats.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void shadowMapHeader(uint3 tid: SV_DispatchThreadID) {
@@ -397,13 +419,11 @@ void shadowMapHeader(uint3 tid: SV_DispatchThreadID) {
     if (word >= kShadowFrameWords * kShadowSlots) {
         return;
     }
-    const uint light = word / kShadowFrameWords;
-    const uint at = word % kShadowFrameWords;
     // The numeric fields keep their value; the four counts are small enough
     // that a float holds them exactly.
     const uint raw = shadowMap[word];
-    const float value = at < 16 ? asfloat(raw) : float(raw);
-    shadowOut[uint3(word, 0, 0)] = value;
+    const float value = shadowHeaderIsReal(word) ? asfloat(raw) : float(raw);
+    shadowOut[uint3(shadowHeaderTexel(word).xyz)] = value;
 }
 
 /// Every texel of every coefficient: fixed point out, float in.
@@ -429,7 +449,7 @@ void shadowMapResolve(uint3 tid: SV_DispatchThreadID) {
     const float value = which == coefficients ? shadowOrderedFloat(shadowMap[word])
                         : which == 0          ? float(shadowMap[word]) / kShadowFixedScale
                                               : float(int(shadowMap[word])) / kShadowFixedScale;
-    shadowOut[uint3(tid.x, tid.y, slice + 1)] = value;
+    shadowOut[uint3(tid.x, tid.y, shadowLayerOf(light, coefficients, which))] = value;
 }
 
 // --- the other receiver: the gaussians themselves ------------------------
@@ -456,35 +476,11 @@ void shadowMapFactors(uint3 tid: SV_DispatchThreadID) {
     const uint slot = (shadowParams.base + i) * shadowParams.lightCount;
     const float3 world = toWorld(shadowPositions[i].xyz);
     for (uint k = 0; k < shadowParams.lightCount && k < kShadowSlots; ++k) {
-        const ShadowMapFrame f = shadowFrameOfRW(shadowMap, k);
-        float answer = 1.0;
-        if (f.valid != 0) {
-            const float u = dot(f.rowU.xyz, world) + f.rowU.w;
-            const float v = dot(f.rowV.xyz, world) + f.rowV.w;
-            const float z = clamp(dot(f.rowZ.xyz, world) + f.rowZ.w, 0.0, 1.0);
-            if (u >= 0.0 && v >= 0.0 && u < float(f.resolution) && v < float(f.resolution)) {
-                const uint word = f.offset + (uint(v) * f.resolution + uint(u)) * shadowStrideOf(f.coefficients);
-                const float nearest = shadowOrderedFloat(shadowMap[word + f.coefficients]);
-                const float total = float(shadowMap[word]) / kShadowFixedScale;
-                float optical = total;
-                if (f.coefficients > 1) {
-                    float sum = total * z;
-                    const uint pairs = (f.coefficients - 1) / 2;
-                    for (uint c = 1; c <= pairs; ++c) {
-                        const float a = float(int(shadowMap[word + c * 2 - 1])) / kShadowFixedScale;
-                        const float b = float(int(shadowMap[word + c * 2])) / kShadowFixedScale;
-                        sum += shadowOpticalOf(total, a, b, c, z);
-                    }
-                    optical = clamp(sum, 0.0, max(total, 0.0));
-                }
-                // On the lit side of the first surface -- which is where most
-                // of a surface-like cloud's gaussians are -- nothing is in
-                // the way, and the reconstruction is not asked a question it
-                // cannot answer.
-                answer = z <= nearest + kShadowSelfBias ? 1.0 : exp(-max(optical, 0.0));
-            }
-        }
-        shadowFactors[slot + k] = answer;
+        // On the lit side of the first surface -- which is where most of a
+        // surface-like cloud's gaussians are -- nothing is in the way, and
+        // the reconstruction is not asked a question it cannot answer: the
+        // read's own test, the same a floor's is.
+        shadowFactors[slot + k] = shadowMapRead<ShadowBufferSource>(shadowFrameOf<ShadowBufferSource>(k), k, world);
     }
 }
 

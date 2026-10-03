@@ -5,16 +5,28 @@
 // A shading kernel is at Metal's limit of thirty-one buffers before it hears
 // about clouds at all, and importing a module brings that module's global
 // parameters with it -- so everything the pass declares lives next door in
-// splat_shadow_map.slang, and what a receiver needs is here: functions that
-// take the map they are to read as an argument, and the layout both agree on.
+// splat_shadow_map.slang, and what a receiver needs is here: the layout both
+// agree on, and the read itself, written once over whatever holds the map
+// (`IShadowMapSource`). The pass's own buffer is one source (the gaussian
+// receivers, the probe), the shading kernel's texture is the other; both read
+// the header and the texels through the same function, so a probe answers
+// what a floor reads.
 module splat_shadow_read;
 
 public static const float kShadowFixedScale = 4096.0;
-public static const uint kShadowFrameWords = 20;
+/// Words a light slot's frame takes in the header (`ShadowMapFrame`).
+public static const uint kShadowFrameWords = 21;
 public static const uint kShadowSlots = 8;
 public static const uint kShadowBoxAt = kShadowFrameWords * kShadowSlots;
+/// After the frames: the casters' posed box (three minima, three maxima) and
+/// the widest of their rest spheres, each reduced with an atomic.
+public static const uint kShadowBoxWords = 7;
+/// How many header words a row of the texture's layer zero holds: sixteen,
+/// which the smallest map there is (16 texels a side) has room for. The
+/// header used to be one row, which a map narrower than its 160 words cut.
+public static const uint kShadowHeaderRow = 16;
 
-public uint shadowHeaderWords() { return kShadowBoxAt + 6; }
+public uint shadowHeaderWords() { return kShadowBoxAt + kShadowBoxWords; }
 
 /// A texel keeps its coefficients and then one word more: the depth of the
 /// nearest thing that cast into it, as an ordered key.
@@ -28,9 +40,12 @@ public uint shadowHeaderWords() { return kShadowBoxAt + 6; }
 /// what it is good at, which is everything behind that.
 public uint shadowStrideOf(uint coefficients) { return coefficients + 1; }
 
-/// How much of the slab a receiver may be inside the first surface and still
-/// count as standing on it.
-public static const float kShadowSelfBias = 0.02;
+/// The texture layer of light `light`'s value `which` (0 the total, 1.. the
+/// Fourier terms, `coefficients` the nearest depth). Layer zero is the
+/// header's.
+public uint shadowLayerOf(uint light, uint coefficients, uint which) {
+    return 1 + light * shadowStrideOf(coefficients) + which;
+}
 
 public static const float kShadowPi = 3.14159265358979;
 
@@ -44,8 +59,14 @@ public struct ShadowMapFrame {
     public float  texelsPerUnit;   ///< how many texels a world unit is
     public uint   resolution;
     public uint   coefficients;
-    public uint   offset;      ///< first word of this light's texels
+    public uint   offset;      ///< first word of this light's texels, in the buffer
     public uint   valid;       ///< 0: this light has no map, and nothing shadows
+    /// How far behind the nearest caster a receiver still stands on it, in
+    /// the slab's units: a length in the world (`ShadowMapJob::selfBias`)
+    /// over a slab that does not change with the pose, so the same length
+    /// every frame. It was two per cent of a slab that breathed with the
+    /// wings.
+    public float  bias;
 };
 
 /// A float as a uint that sorts the way the float does: the sign bit flipped
@@ -80,51 +101,87 @@ public float shadowOpticalOf(float total, float a, float b, uint k, float z) {
     return (a * sin(angle) + b * (1.0 - cos(angle))) / (kShadowPi * float(k));
 }
 
-/// THE READ a shading kernel does, from the texture the pass resolved into:
-/// one array layer a coefficient a light, the frames in layer zero's first
-/// row. Nothing is sampled -- these are integer loads.
-public float shadowMapTransmittanceTex(Texture2DArray<float> tex, uint light, float3 p) {
-    if (light >= kShadowSlots) {
-        return 1.0;
-    }
+/// Which header words are numbers rather than counts: what the texture's
+/// header rows store as the float itself rather than as a count converted.
+public bool shadowHeaderIsReal(uint word) {
+    const uint at = word % kShadowFrameWords;
+    return at < 16 || at == 20;
+}
+
+/// Header word `word`'s place in the texture: layer zero, sixteen a row.
+public int4 shadowHeaderTexel(uint word) {
+    return int4(int(word % kShadowHeaderRow), int(word / kShadowHeaderRow), 0, 0);
+}
+
+/// What holds a map: the pass's buffer, or the texture a shading kernel
+/// reads. Static, since a source is a global of the kernel that imports this
+/// module and not something a struct carries.
+public interface IShadowMapSource {
+    /// Header word `word`, as a number (the rows, the axis, the scale, the
+    /// bias) and as a count (the resolution, the terms, the offset, valid).
+    static float headerReal(uint word);
+    static uint headerCount(uint word);
+    /// Level zero of light `light`'s texel (x, y), decoded: `which` 0 is the
+    /// total optical depth, 1.. the Fourier terms, `f.coefficients` the depth
+    /// of the nearest caster. In range: the caller has checked.
+    static float texel(ShadowMapFrame f, uint light, int x, int y, uint which);
+};
+
+/// The header, read in one place for every source.
+public ShadowMapFrame shadowFrameOf<S : IShadowMapSource>(uint light) {
     const uint at = light * kShadowFrameWords;
-    const float4 rowU = float4(tex[uint3(at + 0, 0, 0)], tex[uint3(at + 1, 0, 0)],
-                               tex[uint3(at + 2, 0, 0)], tex[uint3(at + 3, 0, 0)]);
-    const float4 rowV = float4(tex[uint3(at + 4, 0, 0)], tex[uint3(at + 5, 0, 0)],
-                               tex[uint3(at + 6, 0, 0)], tex[uint3(at + 7, 0, 0)]);
-    const float4 rowZ = float4(tex[uint3(at + 8, 0, 0)], tex[uint3(at + 9, 0, 0)],
-                               tex[uint3(at + 10, 0, 0)], tex[uint3(at + 11, 0, 0)]);
-    const uint resolution = uint(tex[uint3(at + 16, 0, 0)]);
-    const uint coefficients = uint(tex[uint3(at + 17, 0, 0)]);
-    const uint valid = uint(tex[uint3(at + 19, 0, 0)]);
-    if (valid == 0 || resolution == 0) {
+    ShadowMapFrame f;
+    f.rowU = float4(S.headerReal(at + 0), S.headerReal(at + 1), S.headerReal(at + 2), S.headerReal(at + 3));
+    f.rowV = float4(S.headerReal(at + 4), S.headerReal(at + 5), S.headerReal(at + 6), S.headerReal(at + 7));
+    f.rowZ = float4(S.headerReal(at + 8), S.headerReal(at + 9), S.headerReal(at + 10), S.headerReal(at + 11));
+    f.axisZ = float3(S.headerReal(at + 12), S.headerReal(at + 13), S.headerReal(at + 14));
+    f.texelsPerUnit = S.headerReal(at + 15);
+    f.resolution = S.headerCount(at + 16);
+    f.coefficients = S.headerCount(at + 17);
+    f.offset = S.headerCount(at + 18);
+    f.valid = S.headerCount(at + 19);
+    f.bias = S.headerReal(at + 20);
+    return f;
+}
+
+/// One tap: the transmittance a receiver at depth `z` reads through texel
+/// (x, y). Outside the map nothing of the cloud is in the way.
+public float shadowTap<S : IShadowMapSource>(ShadowMapFrame f, uint light, int x, int y, float z) {
+    if (x < 0 || y < 0 || x >= int(f.resolution) || y >= int(f.resolution)) {
         return 1.0;
     }
-    const float u = dot(rowU.xyz, p) + rowU.w;
-    const float v = dot(rowV.xyz, p) + rowV.w;
-    if (u < 0.0 || v < 0.0 || u >= float(resolution) || v >= float(resolution)) {
-        return 1.0;   // beside the cloud: nothing of it is in the way
-    }
-    const float z = dot(rowZ.xyz, p) + rowZ.w;
-    if (z <= 0.0) {
-        return 1.0;   // nearer the light than anything that casts
-    }
-    const uint stride = shadowStrideOf(coefficients);
-    const uint3 texel = uint3(uint(u), uint(v), light * stride + 1);
-    // Nearer than the first thing that cast into this texel: lit.
-    if (z <= tex[uint3(texel.xy, light * stride + coefficients + 1)] + kShadowSelfBias) {
+    // Nearer than the first thing that cast into this texel: lit. An
+    // untouched texel's nearest is 1e30, so it is lit too.
+    if (z <= S.texel(f, light, x, y, f.coefficients) + f.bias) {
         return 1.0;
     }
-    const float total = tex[texel];
+    const float total = S.texel(f, light, x, y, 0);
     float optical = total;
-    if (coefficients > 1 && z < 1.0) {
-        float sum = total * z;
-        const uint pairs = (coefficients - 1) / 2;
+    if (f.coefficients > 1 && z < 1.0) {
+        float sum = total * max(z, 0.0);
+        const uint pairs = (f.coefficients - 1) / 2;
         for (uint k = 1; k <= pairs; ++k) {
-            sum += shadowOpticalOf(total, tex[uint3(texel.xy, texel.z + k * 2 - 1)],
-                                   tex[uint3(texel.xy, texel.z + k * 2)], k, z);
+            sum += shadowOpticalOf(total, S.texel(f, light, x, y, k * 2 - 1), S.texel(f, light, x, y, k * 2), k,
+                                   max(z, 0.0));
         }
         optical = clamp(sum, 0.0, max(total, 0.0));
     }
     return exp(-max(optical, 0.0));
+}
+
+/// THE READ, for every receiver: a floor's, a gaussian's, a probe's.
+public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p) {
+    if (f.valid == 0 || f.resolution == 0) {
+        return 1.0;
+    }
+    const float u = dot(f.rowU.xyz, p) + f.rowU.w;
+    const float v = dot(f.rowV.xyz, p) + f.rowV.w;
+    if (!(u >= 0.0 && v >= 0.0 && u < float(f.resolution) && v < float(f.resolution))) {
+        return 1.0;   // beside the cloud: nothing of it is in the way
+    }
+    const float z = dot(f.rowZ.xyz, p) + f.rowZ.w;
+    if (z <= 0.0) {
+        return 1.0;   // nearer the light than anything that casts
+    }
+    return shadowTap<S>(f, light, int(u), int(v), z);
 }

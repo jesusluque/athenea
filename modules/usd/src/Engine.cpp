@@ -2672,6 +2672,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 caster.positions = &instance.splats->positions;
                 caster.objectToWorld = instance.objectToWorld.rows3x4();
                 caster.categories = instance.categories;
+                caster.restBounds = instance.splats->restBounds.value_or(instance.splats->bounds);
                 job.casters.push_back(caster);
             }
             if (!job.casters.empty()) {
@@ -3619,6 +3620,9 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     auto box = loader_->boundsOf(entry.posed->positions, kept);
     if (!box) return std::move(box).error();
     entry.posed->bounds = *box;
+    // And the box it was bound in, which no pose changes: what the cloud's
+    // shadow map is sized from, so the map does not breathe with the wings.
+    entry.posed->restBounds = entry.gpu->bounds;
     // A new pose in the same buffers: whatever built proxies over the last
     // one -- the ray tracer's, for a traced frame or a mesh's shadow rays --
     // finds out here rather than tracing the bind pose for the rest of the
