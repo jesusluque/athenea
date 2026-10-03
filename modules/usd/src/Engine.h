@@ -83,8 +83,8 @@ struct StreamedAsset {
 /// actually changed. `skinningXforms` is deliberately not among them -- it is
 /// the one array that does change every frame, and no decode depends on it.
 struct CloudIdentity {
-    std::array<const void*, 14> data{};
-    std::array<size_t, 14>      bytes{};
+    std::array<const void*, 15> data{};
+    std::array<size_t, 15>      bytes{};
     int                         shDegree = -1;
 
     [[nodiscard]] bool operator==(const CloudIdentity& other) const noexcept {
@@ -137,6 +137,9 @@ struct SplatEntry {
     std::unique_ptr<scene::GpuSplats>   posed;
     gpu::Buffer                         influences;   ///< float2 (joint, weight), `perSplat` a gaussian
     uint32_t                            perSplat = 4; ///< influences a gaussian (SkelBindingAPI's elementSize)
+    /// The weights' gradients across each gaussian, `perSplat - 1` words of
+    /// two halves a kept gaussian; empty for a cloud converted without them.
+    gpu::Buffer                         weightGradients;
     gpu::Buffer                         xforms;       ///< four float4 a joint, this frame's
     /// Under a shutter: the same joints at its other end, and what the
     /// skinner made of the two -- a displacement a gaussian, in the cloud's

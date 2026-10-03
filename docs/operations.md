@@ -685,7 +685,11 @@ other is what any light would do.
 **A cloud that moves.** `--skinned` builds the gaussians in the bind pose and
 gives each one the joints that carry it, so the cloud is deformed at render
 time by the Skeleton it is bound to. A bake is refused with it, because light
-baked in one pose is wrong in every other.
+baked in one pose is wrong in every other. Each gaussian also keeps how its
+weights change across it (`jointWeightGradients`, twelve bytes a gaussian),
+which is what makes it stretch across a bend as its triangle does; a cloud
+converted before those were written still moves, by the blend of its joints
+alone, and gains them by being converted again.
 
 ```sh
 athenea mesh2splat car.usda --density per-mesh --resolution 512 \
@@ -997,6 +1001,7 @@ brightest); a capture has none.
 | `primvars:athenea:splat:jointWeights` | float[] | four a gaussian |
 | `primvars:athenea:splat:geomBindTransform` | matrix4d | |
 | `primvars:athenea:splat:skinningXforms` | matrix4d[] | one a joint, the only thing that changes over time |
+| `primvars:athenea:splat:jointWeightGradients` | half[] | six a gaussian: the first three joints' weight gradients along its two rest axes, per unit of the cloud's space; the fourth's is minus their sum. Optional |
 | `primvars:athenea:splat:skeleton` | string | where it came from |
 
 **`AtheneaSplatVisibilityAPI`** — what a skinned cloud casts, baked by part.

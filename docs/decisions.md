@@ -4998,7 +4998,8 @@ carried entirely however its triangle was authored. It is the effect's because
 it is the effect that knows where inside the triangle the gaussian stands.
 
 The record grows to **eight entries**: four, six with the PBR channels, eight
-with the joints, and nothing in between. `writeInfluences` and the
+with the joints, and nothing in between (nine since the weights' gradients
+joined them: "The whole Jacobian of a skinned gaussian"). `writeInfluences` and the
 `Influences` clip are additive, so the bundle's ABI is untouched and
 `aofx_sdk_manifest` never moves.
 
@@ -5033,12 +5034,19 @@ the left and the kernel multiplies rows by a column, so the matrix goes over
 turned, as a mesh's does.
 
 **The frame is the same chain's linear part.** The two axes a gaussian spreads
-along are carried by `worldToPrim . skelToWorld . (sum of w_j X_j) . geomBind`
--- which is the Jacobian of the position map, so a gaussian stretches with its
-triangle instead of sliding along beside it. They are squared up again
-afterwards, because a joint may shear where a rotation would not, and the
-third axis is a disc's and is left alone. The two sizes in the plane come out
-as the lengths of the carried axes.
+along are carried by `worldToPrim . skelToWorld . (sum of w_j X_j) . geomBind`,
+so a gaussian stretches with its triangle instead of sliding along beside it.
+They are squared up again afterwards, because a joint may shear where a
+rotation would not, and the third axis is a disc's and is left alone. The two
+sizes in the plane come out as the lengths of the carried axes.
+
+*Corrected later* (see "The whole Jacobian of a skinned gaussian" below): that
+chain is **not** the Jacobian of the position map. It leaves out
+`sum_j (X_j q) grad w_j^T`, the weights changing across the gaussian, and is
+exact only where the weights do not change or every joint that changes them
+moves the point alike -- at rest and under a rigid motion of the whole group,
+which is exactly what the test below measured. And squaring up threw away the
+shear it claimed to allow for.
 
 **What is not touched** is everything else a gaussian carries: its opacity,
 its colour, its harmonics, its PBR channels, and the word that holds its third
@@ -5063,6 +5071,129 @@ smallest-three quaternion at ten bits a component, so an axis cannot be pinned
 closer than about `sqrt(2)/1023`. At rest the frame written is the frame read,
 and re-encoding a value that was already a word's decode lands on that word --
 except at the boundary of the rounding, where two gaussians of 4096 did.
+
+## The whole Jacobian of a skinned gaussian
+
+The skinner's position map is `p' = M sum_j w_j(p) X_j(G p)`, with `G` the
+bind transform, `X_j q = A_j q + t_j` a joint's and `M = worldToPrim .
+skelToWorld`. Its derivative is
+
+    J = L(M) [ sum_j w_j A_j L(G)  +  sum_j (X_j q) grad_p w_j^T ].
+
+The kernel carried the frame by the first term alone. The second -- the
+weights changing across a gaussian while the joints disagree about where its
+point goes -- is what stretches a gaussian across a bend: with two joints a
+relative turn `theta` apart and a weight transition of length `L`, its size
+against the first is about `2 tan(theta/2) d / L`, of the order of the whole at
+a right angle. On the sparrow's `Flight` (the analysis in
+`~/luc/athenea-skinning-analysis.md`: 61 frames, 1500 wing triangles, the
+posed mesh as reference) the blend alone was off the mesh's own map by a
+median of 4-6 %, a 90th percentile of 14-19 % and a 99th of 37-50 %, on the
+wing hand and the feather fans; with the second term the 90th and 99th fall to
+5-6.5 % and 11-13 %, the rest being the blend's curvature inside a triangle.
+
+**What a gaussian keeps.** `grad w` in the cloud's own space, tangential --
+only the components along the gaussian's two rest axes act on a disc -- and
+for all joints but the last, since the weights sum to one and so the
+gradients sum to zero: three words of two halves, **twelve bytes a
+gaussian**, `primvars:athenea:splat:jointWeightGradients` (half[],
+`elementSize` 6) under `AtheneaSplatSkinningAPI`. Not in `GpuSplats` and not
+in `io::SplatEncoding`: it travels as the influences do, beside the cloud
+(`SplatEntry::weightGradients`, packed to the kept gaussians by `keptOnly`, and
+`SplatSkinInput::weightGradients` into the kernel). A file without it is
+carried by the first term alone.
+
+**Where it comes from.** mesh2splat's `blendInfluences`. A joint's raw weight
+`sum_c w_cj lambda_c` is linear on the triangle, with gradient
+`sum_c w_cj grad lambda_c` (`grad lambda_b = (e2 x n)/|n|^2`, `grad lambda_c =
+(n x e1)/|n|^2`, the first corner's minus both); the weight kept is that over
+the four kept joints' sum, so its gradient is the quotient rule's, `(grad w~_k
+- w_k sum_i grad w~_i) / W` -- exact at the gaussian's centre, and not constant
+across the triangle. Projected on the record's own two axes (the frame the
+skinner decodes), packed as halves (held inside half's range) into a ninth
+record entry: a carried record is **nine entries** now, not eight. Once the
+four joints are chosen, each one's weight is the whole of its blend, where
+before a joint displaced and taken back kept only what it gained after --
+so weight and gradient are of one function. A gaussian off its triangle (a
+relief's sub-cell) reads the weights at the clamped point and the triangle's
+gradient, its linear extension. The aofx SDK is untouched: this is the
+plugin's record and the host reads its length from the effect's own count.
+
+**The kernel.** In the loop that already forms `X_k q`, it accumulates
+`sum_k (X_k q) g_k` on each rest axis, relative to the blended point (the same
+sum, since the gradients sum to zero, and a difference of nearby points rather
+than of two large ones in float). A joint of no weight with a gradient -- a
+point where its corner's share runs out -- pulls too. The carried axes are `J`
+on the two rest axes times the sizes.
+
+**The frame, exact.** Squaring the carried axes up (Gram-Schmidt) kept the
+first axis's direction and threw away the shear, and the elastic term is
+mostly shear. Instead the posed covariance `J E S^2 E^T J^T` is taken in the
+plane the two carried axes span -- an orthonormal basis of it, the two axes as
+an upper triangular `K` in it, `C = K K^T` -- and its eigenvectors and the
+square roots of its eigenvalues are the gaussian's two axes and sizes, the
+smaller eigenvalue from the determinant rather than as a difference that a
+thin gaussian would cancel to nothing. The first axis is the eigenvector
+nearer the first carried one, so a gaussian whose second size is its larger
+keeps it second, and where the off-diagonal term is float's rounding and
+nothing more the axes are the basis's exactly (a round gaussian is not spun).
+The third axis is the plane's normal and the third size is left as the
+conversion's, a disc's thickness. The shading normal turns by the cofactor of
+the whole `J` -- the cross product of `J` on two directions in its plane.
+
+**Measured** (`tests/scene/test_loading.cpp`, "a skinned gaussian follows the
+whole Jacobian of its blend"): a strip of 4096 gaussians across a linear ramp
+of weights, bent a quarter turn, each gaussian's decoded posed covariance
+against `J E S^2 E^T J^T` with `J = (1 - w) I + w R + (R p - p) grad w^T`,
+counting relative Frobenius errors over 3 % (above the ten-bit quaternion and
+the halves):
+
+| case | before (blend alone, squared up) | after |
+|---|---|---|
+| bent, axes 0.1 rad from the ramp | 2048 of 4096 | 0 |
+| bent, axes turned 30 degrees | 2048 | 0 |
+| rigid turn and slide (control) | 0 | 0 |
+| a joint that shears, weights constant | 4096 | 0 |
+| bent, no gradients kept (a cloud converted before) | 2048 | 1984 |
+
+"Before" is the kernel as it was, run on the same inputs (its file swapped
+into the build's shader copy). The last row is the new kernel without the
+primvar: the blend alone, now with the exact eigenframe, which is right where
+the ramp is flat or nearly so. mesh2splat's joints test also reads the ninth
+entry: one joint everywhere is a gradient of nothing (under 1e-3).
+
+**On the sparrow** (`SparrowBird.usda`, `Flight`, converted `--skinned
+--resolution 500`: 1 125 022 gaussians, 12 bytes each more; the gradients
+read in the file are tens per metre), frames 5, 31 and 36 path traced
+(`--technique rt`, 32 paths, 1024x768, looking down on the spread wings),
+against the mesh traced the same way. The old kernel and the new one on the
+same file:
+
+| frame | whole image, relMSE before / after | changed pixels after vs before (8-bit over 2) | p99 of that change | wing-hand coverage (alpha) left, right: before / after / mesh |
+|---|---|---|---|---|
+| 5 | 0.1273 / 0.1307 | 79 174 of 786 432 | 16 | 0.515 / 0.514 / 0.549; 0.520 / 0.519 / 0.558 |
+| 31 | 0.1274 / 0.1313 | 72 189 | 15 | 0.496 / 0.495 / 0.520; 0.511 / 0.511 / 0.547 |
+| 36 | 0.1230 / 0.1256 | 66 789 | 14 | 0.509 / 0.509 / 0.529; 0.413 / 0.413 / 0.439 |
+
+The frames differ by a few levels in a tenth of the pixels, along the
+feathers of the hand, and seen side by side the two are the same wing. The
+error against the mesh is not this: the cloud is a few percent short of the
+mesh's coverage at the hand with either kernel, and its colour error is the
+conversion's (blurred feather cards, no relief) rather than the frame's. As
+the analysis expected, gaussians that overlap their neighbours hide a frame
+fifteen percent short. The whole-image relMSE against the mesh is slightly
+worse after (by 2-3 %), which is shading over a few changed pixels rather
+than geometry: the coverage does not move. So the change is right in the
+arithmetic, pinned by the strip, and not visible at this distance on this
+bird; what it buys shows where gaussians are larger than their neighbours'
+spacing -- coarse LOD levels, close-ups of a bend.
+
+**Not done here.** The sparrow's clips (`Sparrow_gs.usdc`, `gs60`, the LOD
+levels) were converted before the gradients and are carried as before until
+they are converted again. The truncation to four joints (27 % of the wing's
+vertices have more) is a separate error, of position and not of frame, and is
+not measured here. A coarse LOD level's larger gaussians linearise more of the
+blend's curvature; GradRig's resampling criterion would act there.
 
 ## The file carries the rig, not the frames
 

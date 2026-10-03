@@ -50,7 +50,7 @@ struct M2sParams {
     uint  triangles;
     uint  meshWidth;      // the mesh image: 6 float4 an entry, row major
     uint  meshStride;
-    uint  recordPixels;   // float4 a splat: 4, or 6 with the PBR channels
+    uint  recordPixels;   // float4 a splat: 4, 6 with the PBR channels, 9 with the joints (and 3 more displaced)
 
     uint  dstWidth;       // where the records go
     uint  dstHeight;
@@ -235,24 +235,43 @@ float2 texcoord2Entry(uint index) {
 /// carries: a joint already there gains the weight, an empty slot takes it,
 /// and otherwise it displaces the lightest. The four are renormalised, so a
 /// gaussian is carried entirely however its triangle was authored.
-void blendInfluences(uint triangle, float3 bary, out float4 joints, out float4 weights) {
+///
+/// AND HOW THOSE WEIGHTS CHANGE ACROSS IT, which a skinner needs for the
+/// frame: the posed map is `sum_k w_k(p) X_k p`, and its Jacobian has a term
+/// `sum_k (X_k p) grad w_k^T` that the blend of the joints' linear parts
+/// leaves out. A joint's raw weight `sum_c w_ck lambda_c` is linear on the
+/// triangle, with the gradient `sum_c w_ck grad lambda_c`; the weight the
+/// cloud keeps is that over the four kept ones' sum, so its gradient is the
+/// quotient rule's, `(grad w~_k - w_k sum_i grad w~_i) / W` -- exact at the
+/// point, not constant across the triangle. Once the four are chosen, each
+/// one's weight is the whole of its blend (a joint displaced and taken back
+/// would otherwise keep only what it gained after), so weight and gradient
+/// are of one function. The gradients are in the mesh's space, tangent to
+/// the triangle; they sum to zero.
+void blendInfluences(const M2sTriangle t, uint triangle, float3 bary, out float4 joints, out float4 weights,
+                     out float3 gradients[4]) {
     joints = float4(0.0);
     weights = float4(0.0);
+    for (uint k = 0; k < 4; ++k) {
+        gradients[k] = float3(0.0);
+    }
+    float2 pairs[3][4];
     for (uint corner = 0; corner < 3; ++corner) {
         const uint at = triangle * 6 + corner * 2;
         const float4 low = influenceEntry(at);
         const float4 high = influenceEntry(at + 1);
-        float2 pairs[4];
-        pairs[0] = low.xy;
-        pairs[1] = low.zw;
-        pairs[2] = high.xy;
-        pairs[3] = high.zw;
+        pairs[corner][0] = low.xy;
+        pairs[corner][1] = low.zw;
+        pairs[corner][2] = high.xy;
+        pairs[corner][3] = high.zw;
+    }
+    for (uint corner = 0; corner < 3; ++corner) {
         for (uint i = 0; i < 4; ++i) {
-            const float weight = pairs[i].y * bary[corner];
+            const float weight = pairs[corner][i].y * bary[corner];
             if (!(weight > 0.0)) {
                 continue;
             }
-            const float joint = pairs[i].x;
+            const float joint = pairs[corner][i].x;
             bool placed = false;
             for (uint slot = 0; slot < 4; ++slot) {
                 if (weights[slot] > 0.0 && joints[slot] == joint) {
@@ -276,8 +295,58 @@ void blendInfluences(uint triangle, float3 bary, out float4 joints, out float4 w
             }
         }
     }
+
+    // The barycentric coordinates' gradients in the triangle's plane:
+    // `grad lambda_b = (e2 x n) / |n|^2`, `grad lambda_c = (n x e1) / |n|^2`,
+    // and lambda_a's minus both.
+    const float3 e1 = t.b - t.a;
+    const float3 e2 = t.c - t.a;
+    const float3 n = cross(e1, e2);
+    const float area = dot(n, n);
+    float3 gradLambda[3];
+    gradLambda[1] = area > 1.0e-30 ? cross(e2, n) / area : float3(0.0);
+    gradLambda[2] = area > 1.0e-30 ? cross(n, e1) / area : float3(0.0);
+    gradLambda[0] = -(gradLambda[1] + gradLambda[2]);
+
+    float3 raw[4];
+    float3 rawSum = float3(0.0);
+    for (uint slot = 0; slot < 4; ++slot) {
+        raw[slot] = float3(0.0);
+        if (!(weights[slot] > 0.0)) {
+            continue;
+        }
+        float whole = 0.0;
+        for (uint corner = 0; corner < 3; ++corner) {
+            for (uint i = 0; i < 4; ++i) {
+                if (pairs[corner][i].x == joints[slot] && pairs[corner][i].y > 0.0) {
+                    whole += pairs[corner][i].y * bary[corner];
+                    raw[slot] += gradLambda[corner] * pairs[corner][i].y;
+                }
+            }
+        }
+        weights[slot] = whole;
+        rawSum += raw[slot];
+    }
     const float sum = weights.x + weights.y + weights.z + weights.w;
-    weights = sum > 0.0 ? weights / sum : float4(1.0, 0.0, 0.0, 0.0);
+    if (!(sum > 0.0)) {
+        weights = float4(1.0, 0.0, 0.0, 0.0);
+        return;
+    }
+    weights = weights / sum;
+    for (uint slot = 0; slot < 4; ++slot) {
+        if (weights[slot] > 0.0) {
+            gradients[slot] = (raw[slot] - rawSum * weights[slot]) / sum;
+        }
+    }
+}
+
+/// Two numbers as halves in one word, the lower first: packing.slang's
+/// `packHalves`, written out here since the plugin imports nothing of the
+/// engine's. Held inside half's range, so a weight that turns over within
+/// a few millionths of a unit stays a steep gradient and not an infinity.
+uint m2sPackHalves(float2 v) {
+    const float2 held = clamp(v, float2(-65504.0), float2(65504.0));
+    return f32tof16(held.x) | (f32tof16(held.y) << 16);
 }
 
 /// A texture, wrapped, sampled as the four texels around the point. Row 0 is
@@ -989,19 +1058,30 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     records[recordAt(slot, 1)] = float4(scale, 0.0);
     records[recordAt(slot, 2)] = rotation;
     records[recordAt(slot, 3)] = float4(colour, 0.0);
-    // The entries before the relief's three and the emission's one: 4, 6 or 8.
+    // The entries before the relief's three and the emission's one: 4, 6 or 9.
     const uint own = params.recordPixels - (params.displaceRefine != 0 ? 3u : 0u) -
                      (params.emissionEntry != 0 ? 1u : 0u);
     if (own >= 6) {
         records[recordAt(slot, 4)] = float4(shading, metallic);
         records[recordAt(slot, 5)] = float4(roughness, params.transmission, uv.x, uv.y);
     }
-    if (own >= 8 && params.hasInfluences != 0) {
+    if (own >= 9 && params.hasInfluences != 0) {
         float4 joints;
         float4 weights;
-        blendInfluences(triangle, m2sOnTriangle(bary), joints, weights);
+        float3 gradients[4];
+        blendInfluences(t, triangle, m2sOnTriangle(bary), joints, weights, gradients);
         records[recordAt(slot, 6)] = float4(joints.x, weights.x, joints.y, weights.y);
         records[recordAt(slot, 7)] = float4(joints.z, weights.z, joints.w, weights.w);
+        // The ninth: the first three joints' gradients along the gaussian's
+        // own two axes, two halves a word, the words' bits in the floats
+        // (the fourth is minus their sum). Only the two in its plane act on
+        // a disc, and the frame they are measured in is the one this record
+        // carries, so a skinner reads them against the axes it decodes.
+        records[recordAt(slot, 8)] =
+            float4(asfloat(m2sPackHalves(float2(dot(gradients[0], alongU), dot(gradients[0], alongV)))),
+                   asfloat(m2sPackHalves(float2(dot(gradients[1], alongU), dot(gradients[1], alongV)))),
+                   asfloat(m2sPackHalves(float2(dot(gradients[2], alongU), dot(gradients[2], alongV)))),
+                   0.0);
     }
     if (params.displaceRefine != 0) {
         const uint extra = own;

@@ -696,7 +696,12 @@ hizo la luz, el otro lo que haría cualquiera.
 **Una nube que se mueve.** `--skinned` construye las gaussianas en la pose de
 bind y le da a cada una los joints que la llevan, así que la nube se deforma
 al renderizar con el Skeleton al que está atada. Un bake se rechaza con él,
-porque la luz horneada en una pose está mal en todas las demás.
+porque la luz horneada en una pose está mal en todas las demás. Cada gaussiana
+guarda además cómo cambian sus pesos a lo largo de ella
+(`jointWeightGradients`, doce bytes por gaussiana), que es lo que la estira a
+través de un pliegue como se estira su triángulo; una nube convertida antes de
+que se escribieran sigue moviéndose, solo con la mezcla de sus joints, y los
+gana al convertirla de nuevo.
 
 ```sh
 athenea mesh2splat car.usda --density per-mesh --resolution 512 \
@@ -1017,6 +1022,7 @@ brillante); una captura no tiene.
 | `primvars:athenea:splat:jointWeights` | float[] | cuatro por gaussiana |
 | `primvars:athenea:splat:geomBindTransform` | matrix4d | |
 | `primvars:athenea:splat:skinningXforms` | matrix4d[] | una por joint, lo único que cambia con el tiempo |
+| `primvars:athenea:splat:jointWeightGradients` | half[] | seis por gaussiana: los gradientes de peso de los tres primeros joints a lo largo de sus dos ejes de reposo, por unidad del espacio de la nube; el del cuarto es menos su suma. Opcional |
 | `primvars:athenea:splat:skeleton` | string | de dónde vino |
 
 **`AtheneaSplatVisibilityAPI`** — lo que proyecta una nube con esqueleto, horneado

@@ -760,10 +760,13 @@ public:
                 // who. Those gaussians get four joints of no weight, which
                 // is what the skinner reads as "leave this one where the
                 // bind pose put it".
+                // Nor do their weights change across them: no gradient.
                 if (options_->skinned && out->influences.empty()) {
                     influences_.insert(influences_.end(), out->written * 8, 0.0F);
+                    gradients_.insert(gradients_.end(), out->written * 3, 0U);
                 } else {
                     influences_.insert(influences_.end(), out->influences.begin(), out->influences.end());
+                    gradients_.insert(gradients_.end(), out->gradients.begin(), out->gradients.end());
                     carried = carried || !out->influences.empty();
                 }
                 if (out->wanted <= out->written || out->done <= first || out->done >= triangles_[k]) {
@@ -845,6 +848,11 @@ private:
         /// splat. Beside the record rather than in it, as the normals are --
         /// `io::SplatEncoding` has no field for a skeleton.
         std::vector<float> influences;
+        /// How those weights change across it: three words a splat, each two
+        /// halves (d w_k / d u, d w_k / d v) along its own axes for the first
+        /// three joints; the fourth's is minus their sum. The words' bits,
+        /// as the device wrote them into the record's floats.
+        std::vector<uint32_t> gradients;
     };
 
     [[nodiscard]] Result<OneMesh> runOne(aofx::Effect& effect, const usd::StageMesh& mesh, size_t at,
@@ -897,10 +905,11 @@ private:
         // The records the effect writes go into a picture of their own, four
         // entries a splat: position and opacity, the three sizes, the rotation,
         // the colour.
-        // Four entries a record, six with the PBR channels, eight when the
-        // gaussian carries the joints that move it.
+        // Four entries a record, six with the PBR channels, nine when the
+        // gaussian carries the joints that move it and how their weights
+        // change across it.
         const bool carried = mesh.skinning.bound && skins_[at];
-        const uint32_t kRecordEntries = carried ? 8U : 6U;
+        const uint32_t kRecordEntries = carried ? 9U : 6U;
         const uint64_t budget = std::min<uint64_t>(room, 1ull << 23);
         // DISPLACED: three entries more a record -- the point of the flat
         // surface and its height, that surface's normal, the relief's.
@@ -1120,6 +1129,11 @@ private:
                 for (uint32_t k = 0; k < 4; ++k) {
                     answer.influences.push_back(high[k]);
                 }
+                // Bits, not numbers: three words of halves the kernel packed.
+                const float* slopes = entry(8);
+                for (uint32_t k = 0; k < 3; ++k) {
+                    answer.gradients.push_back(std::bit_cast<uint32_t>(slopes[k]));
+                }
             }
         }
         return answer;
@@ -1140,6 +1154,7 @@ private:
     float                                    glassIor_ = 0.0F;
     std::map<std::string, uint32_t>          cryptoManifest_;
     std::vector<float>                       influences_;
+    std::vector<uint32_t>                    gradients_;
     std::set<std::string>                    refused_;   ///< maps the device would not hold
 
 public:
@@ -1156,6 +1171,7 @@ public:
     }
     /// (joint, weight) four times a gaussian, empty when nothing carries it.
     [[nodiscard]] const std::vector<float>& influences() const noexcept { return influences_; }
+    [[nodiscard]] const std::vector<uint32_t>& weightGradients() const noexcept { return gradients_; }
 
 private:
     gpu_host::Context*                       context_ = nullptr;
@@ -1620,6 +1636,7 @@ void addMesh2Splat(CLI::App& app) {
                         }
                     }
                     rig.influences = converter.influences();
+                    rig.weightGradients = converter.weightGradients();
                     const auto [begin, end] = (*stage).timeRange();
                     double from = begin;
                     double to = end;

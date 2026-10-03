@@ -656,7 +656,8 @@ and the encoding field the export and the decode read.
 
 **Joints and weights**, with `--skinned`: four of each a gaussian, blended
 from the triangle's corners, so the cloud deforms with the skeleton that
-carried the mesh.
+carried the mesh; and how those weights change across the gaussian, so it
+stretches across a bend as its triangle does (§6.7).
 
 **The Cryptomatte id** is the hash of the source prim's path, inherited by
 every gaussian the conversion makes from that prim's triangles. It is what
@@ -848,8 +849,18 @@ is static. On a bird of 4 269 858 gaussians only that array has time samples,
 and it is 609 matrices — which is what makes an animated cloud cost kilobytes
 a frame instead of tens of megabytes.
 
-The skinner turns the shading normal with the frame, by the same blend and
-as a normal (`(M a) x (M b)` for two directions `a`, `b` in its surface, which
+Each gaussian also keeps its weights' gradients: the quotient rule over the
+four kept weights, from the triangle's barycentric gradients, along the
+gaussian's two rest axes, for the first three joints (the fourth's is minus
+their sum) — a ninth record entry, and `jointWeightGradients` in the file.
+The skinner carries the frame by the whole Jacobian of the blend with them,
+the joints' linear parts and `sum (X_k q) grad w_k`, and takes the posed
+in-plane covariance's exact eigenvectors for the two axes rather than
+squaring them up, which would drop the shear. A cloud without them is carried
+by the joints' linear parts alone.
+
+The skinner turns the shading normal with the frame, by the same Jacobian and
+as a normal (`(J a) x (J b)` for two directions `a`, `b` in its surface, which
 is the inverse transpose up to scale), so a limb's relief bends with it.
 
 A bake is refused with `--skinned`, because light baked in one pose is wrong in

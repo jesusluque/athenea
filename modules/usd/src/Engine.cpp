@@ -2880,13 +2880,13 @@ namespace {
 }   // namespace
 
 CloudIdentity Engine::identityOf(const ParticleFieldArrays& arrays) {
-    const pxr::VtValue* const held[14] = {
+    const pxr::VtValue* const held[15] = {
         &arrays.positions,   &arrays.orientations, &arrays.scales,       &arrays.opacities,
         &arrays.shCoefficients, &arrays.metallic,  &arrays.roughness,    &arrays.transmission,
         &arrays.jointIndices,   &arrays.jointWeights, &arrays.visibilityParts, &arrays.visibilityTexels,
-        &arrays.visibilityPartOf, &arrays.visibilityAmbient};
+        &arrays.visibilityPartOf, &arrays.visibilityAmbient, &arrays.jointWeightGradients};
     CloudIdentity identity;
-    for (size_t k = 0; k < 14; ++k) {
+    for (size_t k = 0; k < 15; ++k) {
         const auto [data, bytes] = arrayIdentity(*held[k]);
         identity.data[k] = data;
         identity.bytes[k] = bytes;
@@ -3066,6 +3066,7 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
         (!constantInfluences && indices->size() != size_t{count} * perSplat)) {
         entry.posed.reset();
         entry.influences = gpu::Buffer{};
+        entry.weightGradients = gpu::Buffer{};
         entry.xforms = gpu::Buffer{};
         entry.joints = 0;
         return ok();
@@ -3098,6 +3099,28 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
         if (!kept) return std::move(kept).error();
         entry.influences = std::move(*kept);
         entry.perSplat = static_cast<uint32_t>(perSplat);
+
+        // AND HOW THE WEIGHTS CHANGE ACROSS EACH GAUSSIAN, where the
+        // conversion kept it: two halves for every joint but the last, which
+        // is a word each -- uploaded as the file holds them and packed to the
+        // kept splats as the influences are. A file without them, or with a
+        // count that does not match, is carried as before.
+        entry.weightGradients = gpu::Buffer{};
+        const scene::FloatStream slopes = streamOf(arrays.jointWeightGradients);
+        const size_t words = perSplat > 1 ? perSplat - 1 : 0;
+        if (words > 0 && !constantInfluences && slopes.half &&
+            slopes.bytes.size() == size_t{count} * words * 4) {
+            gpu::BufferDesc desc;
+            desc.bytes = slopes.bytes.size();
+            desc.elementBytes = 4;
+            desc.label = "splat.weightGradients";
+            auto raw = gpu::Buffer::create(*device_, desc, slopes.bytes.data());
+            if (!raw) return std::move(raw).error();
+            auto keptSlopes = loader_->keptOnly(*entry.gpu, *raw, static_cast<uint32_t>(words),
+                                                "splat.weightGradients.kept");
+            if (!keptSlopes) return std::move(keptSlopes).error();
+            entry.weightGradients = std::move(*keptSlopes);
+        }
     }
     auto xforms = gpu::Buffer::fromSpan<float>(*device_, joints, "splat.skinningXforms");
     if (!xforms) return std::move(xforms).error();
@@ -3178,6 +3201,7 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     input.rest = entry.gpu.get();
     input.influences = &entry.influences;
     input.perSplat = entry.perSplat;
+    input.weightGradients = entry.weightGradients.valid() ? &entry.weightGradients : nullptr;
     input.skinningXforms = &entry.xforms;
     input.skinningXformsEnd = moves ? &entry.xformsEnd : nullptr;
     input.geomBindTransform = entry.geomBind;

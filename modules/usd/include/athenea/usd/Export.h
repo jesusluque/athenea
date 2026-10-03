@@ -34,6 +34,12 @@ struct SplatSkinning {
     std::vector<std::string> jointNames;
     /// `(joint, weight)` four times a gaussian, in the order the records are.
     std::vector<float>    influences;
+    /// How those weights change across each gaussian: three words a gaussian
+    /// in the same order, each two halves (d w_k / d u, d w_k / d v) along its
+    /// rest axes for the first three joints, the fourth's minus their sum.
+    /// Written as `primvars:athenea:splat:jointWeightGradients`; empty writes
+    /// nothing, and the cloud is carried by the blend of its joints alone.
+    std::vector<uint32_t> weightGradients;
     std::array<float, 16> geomBindTransform{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
                                             0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
     uint32_t              joints = 0;

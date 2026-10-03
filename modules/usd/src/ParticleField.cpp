@@ -284,6 +284,8 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         static const TfToken kXforms("athenea:splat:skinningXforms");
         arrays.jointIndices = held(kJointIndices);
         arrays.jointWeights = held(kJointWeights);
+        static const TfToken kJointWeightGradients("athenea:splat:jointWeightGradients");
+        arrays.jointWeightGradients = held(kJointWeightGradients);
         arrays.geomBindTransform = held(kGeomBind);
         arrays.skinningXforms = held(kXforms);
         // SkelBindingAPI, the specification's own binding, where the cloud

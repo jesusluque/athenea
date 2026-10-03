@@ -701,6 +701,130 @@ TEST_CASE("a skinned cloud's shading normals turn with its joints", "[scene][gpu
     }
 }
 
+// A GAUSSIAN ACROSS A RAMP OF WEIGHTS IS STRETCHED BY THE WHOLE JACOBIAN.
+//
+// The posed map of linear blend skinning is `p' = sum_j w_j(p) X_j p`, and a
+// gaussian's frame has to follow its derivative -- the blend of the joints'
+// linear parts *and* `sum_j (X_j p) grad w_j^T`, what the weights changing
+// across the gaussian do. Taking only the first leaves a bent limb's
+// gaussians a third too short at the middle of the bend, and squaring their
+// axes up afterwards leaves a sheared joint's unsheared. A strip bent a
+// quarter turn across a ramp of weights, a rigid control and a joint that
+// shears, each compared on the device with `J E S^2 E^T J^T`; one counter
+// comes back. And the same bend with no gradients is the blend alone, as a
+// cloud converted before them is drawn.
+TEST_CASE("a skinned gaussian follows the whole Jacobian of its blend", "[scene][gpu][skinning][jacobian]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = gpu->library->device();
+    auto make = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_skin_check", "splatStripMake");
+    auto joints = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_skin_check", "splatStripJoints");
+    auto compare = gpu::ComputeKernel::create(*gpu->library, "athenea/test/splat_skin_check", "splatStripCompare");
+    auto skinner = scene::SplatSkinner::create(*gpu->library);
+    if (!make) FAIL(make.error().toString());
+    if (!joints) FAIL(joints.error().toString());
+    if (!compare) FAIL(compare.error().toString());
+    if (!skinner) FAIL(skinner.error().toString());
+
+    constexpr uint32_t kCount = 4096;
+    constexpr uint32_t kPerSplat = 4;
+    constexpr uint32_t kJoints = 2;
+    const auto buffer = [&](uint64_t bytes, uint32_t element, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = bytes;
+        desc.elementBytes = element;
+        desc.label = label;
+        auto made = gpu::Buffer::create(device, desc);
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    scene::GpuSplats rest;
+    rest.count = kCount;
+    rest.positions = buffer(uint64_t{kCount} * 16, 16, "strip.restPositions");
+    rest.shape = buffer(uint64_t{kCount} * 16, 4, "strip.restShape");
+    gpu::Buffer influences = buffer(uint64_t{kCount} * kPerSplat * 8, 8, "strip.influences");
+    gpu::Buffer gradients = buffer(uint64_t{kCount} * (kPerSplat - 1) * 4, 4, "strip.gradients");
+    gpu::Buffer xforms = buffer(uint64_t{kJoints} * 4 * 16, 16, "strip.xforms");
+    gpu::Buffer positions = buffer(uint64_t{kCount} * 16, 16, "strip.positions");
+    gpu::Buffer shape = buffer(uint64_t{kCount} * 16, 4, "strip.shape");
+    gpu::Buffer counts = buffer(8 * 4, 4, "strip.counts");
+
+    struct Case {
+        const char* name;
+        uint32_t    mode;           // 0 bent, 1 rigid, 2 sheared joint
+        float       frameAngle;     // the gaussians' first axis from x, radians
+        bool        withGradients;
+    };
+    // Six degrees past a multiple of a right angle, so no frame is squared up
+    // by luck, and thirty, where a bend shears the gaussians as well.
+    const std::array<Case, 5> cases{Case{"bent, axes along it", 0, 0.1F, true},
+                                    Case{"bent, axes turned", 0, 0.5236F, true},
+                                    Case{"rigid", 1, 0.5236F, true},
+                                    Case{"a sheared joint", 2, 0.5236F, true},
+                                    Case{"bent, no gradients kept", 0, 0.5236F, false}};
+    const float halfTurn = 0.6F;
+    const float s = std::sin(halfTurn);
+    for (const Case& one : cases) {
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["restPositions"].setBinding(rest.positions.rhi());
+            cursor["restShape"].setBinding(rest.shape.rhi());
+            cursor["influences"].setBinding(influences.rhi());
+            cursor["gradients"].setBinding(gradients.rhi());
+            cursor["xforms"].setBinding(xforms.rhi());
+            cursor["shape"].setBinding(shape.rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(kCount);
+            p["perSplat"].setData(kPerSplat);
+            p["joints"].setData(kJoints);
+            const std::array<float, 4> turn{0.4082483F * s, 0.8164966F * s, 0.4082483F * s, std::cos(halfTurn)};
+            p["rotation"].setData(turn.data(), 16);
+            const std::array<float, 4> slide{1.5F, -0.75F, 0.25F, 0.0F};
+            p["translation"].setData(slide.data(), 16);
+            // Above what the format holds -- ten bits a quaternion component,
+            // halves for the log sizes and the gradients -- and far below the
+            // tenth to a third the blend alone is off by across the ramp.
+            p["tolerance"].setData(0.03F);
+            p["mode"].setData(one.mode);
+            p["frameAngle"].setData(one.frameAngle);
+        };
+        {
+            gpu::CommandBatch batch(device);
+            make->dispatch(batch, {kCount, 1, 1}, bind);
+            joints->dispatch(batch, {kJoints, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(device);
+            scene::SplatSkinInput input;
+            input.rest = &rest;
+            input.influences = &influences;
+            input.perSplat = kPerSplat;
+            input.weightGradients = one.withGradients ? &gradients : nullptr;
+            input.skinningXforms = &xforms;
+            REQUIRE(skinner->skin(batch, input, positions, shape));
+            REQUIRE(batch.submit(true));
+        }
+        {
+            const uint32_t zero[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            REQUIRE(counts.write(device, 0, sizeof(zero), zero));
+            gpu::CommandBatch batch(device);
+            compare->dispatch(batch, {kCount, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        uint32_t seen[2] = {0, 0};
+        REQUIRE(counts.read(device, 0, sizeof(seen), seen));
+        std::printf("  %-24s %u compared, %u off the posed covariance by more than 3%%\n", one.name, seen[0],
+                    seen[1]);
+        CHECK(seen[0] == kCount);
+        if (one.withGradients) {
+            CHECK(seen[1] == 0);
+        } else {
+            // The ramp is a half of the strip and nearly all of it is off.
+            CHECK(seen[1] > kCount / 4);
+        }
+    }
+}
+
 // THE BASIS, AGAINST ITSELF.
 //
 // `sh.slang` writes the harmonics twice -- `evaluateRest` for a renderer

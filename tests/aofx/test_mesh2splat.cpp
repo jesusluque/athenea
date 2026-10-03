@@ -991,7 +991,7 @@ TEST_CASE("a gaussian keeps the joints of the triangle it stands on", "[aofx][me
         carried->deviceWrote();
         mesh->attach("bounds", {0.0F, 0.0F, 0.0F, 1.0F, 1.0F, 0.0F});
 
-        const image::ImagePtr records = pictureOf(static_cast<int32_t>(budget * 8), 1);
+        const image::ImagePtr records = pictureOf(static_cast<int32_t>(budget * 9), 1);
         aofx_host::EffectJob job;
         job.bounds = records->bounds();
         job.inputs.push_back({"Mesh", mesh});
@@ -1010,8 +1010,9 @@ TEST_CASE("a gaussian keeps the joints of the triangle it stands on", "[aofx][me
         REQUIRE(counted != nullptr);
         const auto written = static_cast<uint32_t>((*counted)[0]);
         REQUIRE(written >= kResolution * kResolution);
-        // Eight entries a record, which is what the joints asked for.
-        REQUIRE((*counted)[4] == 8.0F);
+        // Nine entries a record, which is what the joints asked for: two of
+        // them and one of their weights' gradients.
+        REQUIRE((*counted)[4] == 9.0F);
 
         const gpu::Buffer recordView = viewOf(*gpu, *rendered);
         gpu::BufferDesc desc;
@@ -1027,7 +1028,7 @@ TEST_CASE("a gaussian keeps the joints of the triangle it stands on", "[aofx][me
             cursor["records"].setBinding(recordView.rhi());
             cursor["counts"].setBinding(counts->rhi());
             cursor["params"]["splats"].setData(written);
-            cursor["params"]["recordPixels"].setData(uint32_t{8});
+            cursor["params"]["recordPixels"].setData(uint32_t{9});
             cursor["params"]["dstWidth"].setData(static_cast<uint32_t>((*rendered)->bounds().width()));
             cursor["params"]["dstStride"].setData(static_cast<uint32_t>((*rendered)->stride()));
             cursor["params"]["tolerance"].setData(1.0e-5F);
@@ -1036,11 +1037,12 @@ TEST_CASE("a gaussian keeps the joints of the triangle it stands on", "[aofx][me
         REQUIRE(second.submit(true));
         uint32_t violations[4] = {0, 0, 0, 0};
         REQUIRE(counts->read(library.device(), 0, sizeof(violations), violations));
-        std::printf("  %u gaussians carried; %u wrong joint, %u spilled, %u unnormalised\n", written,
-                    violations[0], violations[1], violations[2]);
+        std::printf("  %u gaussians carried; %u wrong joint, %u spilled, %u unnormalised, %u sloped\n",
+                    written, violations[0], violations[1], violations[2], violations[3]);
         CHECK(violations[0] == 0);   // every one on the joint its corners named
         CHECK(violations[1] == 0);   // and nothing in the other three slots
         CHECK(violations[2] == 0);   // and the weights a whole
+        CHECK(violations[3] == 0);   // that do not change across it
     }));
 }
 

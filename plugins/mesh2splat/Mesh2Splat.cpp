@@ -434,9 +434,11 @@ public:
         joints.name = "writeInfluences";
         joints.label = "Write joint influences";
         joints.hint =
-            "Two entries more a record: the four joints the gaussian is carried by and how much, "
-            "blended from the corners of its triangle. What a cloud a skeleton deforms needs, and "
-            "it wants the Influences clip and the PBR entries with it.";
+            "Three entries more a record: the four joints the gaussian is carried by and how much, "
+            "blended from the corners of its triangle, and how those weights change across it "
+            "(three joints' gradients along its two axes, as halves; the fourth's is minus their "
+            "sum). What a cloud a skeleton deforms needs, and it wants the Influences clip and the "
+            "PBR entries with it.";
         joints.type = aofx::ParamType::Boolean;
         joints.defaults = {0.0};
         into.params.push_back(joints);
@@ -617,13 +619,14 @@ public:
         uniforms.meshWidth = static_cast<uint32_t>(meshPlane->buffer.width);
         uniforms.meshStride = static_cast<uint32_t>(meshPlane->buffer.stride);
         uniforms.recordPixels = request.number("writePbr", 1.0) >= 0.5 ? 6U : 4U;
-        // The joints a gaussian is carried by ride in two more entries, and
-        // they need the PBR ones ahead of them: 4, 6, 8 and nothing between.
+        // The joints a gaussian is carried by ride in three more entries --
+        // two of (joint, weight) and one of the weights' gradients -- and
+        // they need the PBR ones ahead of them: 4, 6, 9 and nothing between.
         const aofx::InputPlane* carried = request.input("Influences");
         const bool withJoints = request.number("writeInfluences", 0.0) >= 0.5 && carried != nullptr &&
                                 carried->buffer.isValid();
         if (withJoints) {
-            uniforms.recordPixels = 8U;
+            uniforms.recordPixels = 9U;
             uniforms.hasInfluences = 1U;
         }
         // A displaced gaussian carries three entries more: where the surface

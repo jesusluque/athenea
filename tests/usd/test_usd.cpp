@@ -1998,6 +1998,12 @@ TEST_CASE("the codeless athenea schemas register, with their defaults", "[usd][s
                                         &elementSize));
     CHECK(elementSize.IsHolding<int>());
     CHECK(elementSize.UncheckedGet<int>() == 4);
+    // The weights' gradients: two components for each of three joints.
+    VtValue gradientSize;
+    CHECK(skinning->GetPropertyMetadata(TfToken("primvars:athenea:splat:jointWeightGradients"),
+                                        TfToken("elementSize"), &gradientSize));
+    CHECK(gradientSize.IsHolding<int>());
+    CHECK(gradientSize.UncheckedGet<int>() == 6);
     VtValue litBody;
     CHECK(lighting->GetAttributeFallbackValue(TfToken("primvars:athenea:splat:litBody"), &litBody));
     CHECK(litBody.IsHolding<bool>());

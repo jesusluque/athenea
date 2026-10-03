@@ -681,7 +681,8 @@ exportación y la decodificación.
 
 **Joints y pesos**, con `--skinned`: cuatro de cada por gaussiana, mezclados
 desde las esquinas del triángulo, para que la nube se deforme con el esqueleto
-que llevaba la malla.
+que llevaba la malla; y cómo cambian esos pesos a lo largo de la gaussiana,
+para que se estire a través de un pliegue como su triángulo (§6.7).
 
 **El id Cryptomatte** es el hash de la ruta del prim origen, heredado por cada
 gaussiana que la conversión hace de los triángulos de ese prim. Es lo que
@@ -885,8 +886,19 @@ demás es estático. En un pájaro de 4 269 858 gaussianas solo ese array tiene
 muestras de tiempo, y son 609 matrices — que es lo que hace que una nube
 animada cueste kilobytes por frame en vez de decenas de megabytes.
 
-El skinner gira la normal de sombreado con el marco, con la misma mezcla y
-como una normal (`(M a) x (M b)` para dos direcciones `a`, `b` de su superficie,
+Cada gaussiana guarda además los gradientes de sus pesos: la regla del
+cociente sobre los cuatro pesos retenidos, a partir de los gradientes
+baricéntricos del triángulo, a lo largo de los dos ejes de reposo de la
+gaussiana, para los tres primeros joints (el del cuarto es menos su suma) —
+una novena entrada del registro, y `jointWeightGradients` en el fichero. El
+skinner lleva el marco con el Jacobiano entero de la mezcla con ellos, las
+partes lineales de los joints y `sum (X_k q) grad w_k`, y toma los
+autovectores exactos de la covarianza posada en el plano para los dos ejes en
+lugar de reortogonalizarlos, que tiraría la cizalla. Una nube sin ellos se
+lleva solo con las partes lineales de los joints.
+
+El skinner gira la normal de sombreado con el marco, con el mismo Jacobiano y
+como una normal (`(J a) x (J b)` para dos direcciones `a`, `b` de su superficie,
 que es la inversa traspuesta salvo escala), así que el relieve de un miembro
 se dobla con él.
 

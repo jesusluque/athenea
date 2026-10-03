@@ -16,8 +16,8 @@ struct SkinCheckParams {
     float4 rotation;      ///< the rigid turn, as (x, y, z, w)
     float4 translation;   ///< and the slide, in xyz
     float  tolerance;
-    uint   pad1;
-    uint   pad2;
+    uint   mode;          ///< the strip's: 0 bent across a ramp, 1 rigid, 2 a sheared joint
+    float  frameAngle;    ///< the strip's: its gaussians' first axis, from x about z
     uint   pad3;
 };
 
@@ -142,6 +142,154 @@ void splatSkinMotion(uint3 tid: SV_DispatchThreadID) {
                                lowHalf(motion[at * 2 + 1]));
     InterlockedAdd(counts[0], 1u);
     if (any(abs(step - params.translation.xyz) > params.tolerance)) {
+        InterlockedAdd(counts[1], 1u);
+    }
+}
+
+// THE WHOLE JACOBIAN, ON A STRIP.
+//
+// A strip of gaussians `x in [-1, 1]`, `y in [-0.2, 0.2]` in z = 0, carried by
+// two joints whose weights ramp linearly across `x in [-0.5, 0.5]`
+// (`w1 = x + 0.5`, so `grad w1 = (1, 0, 0)` there and zero outside). Joint 0
+// stays; joint 1 turns a quarter about y through the origin. The posed map is
+// `p' = (1 - w) p + w R p`, whose Jacobian is
+//
+//     J = (1 - w) I + w R + (R p - p) grad w^T,
+//
+// and a gaussian whose axes `E` and sizes `S` were its rest covariance must be
+// posed as `J E S^2 E^T J^T`. The blend of the joints' linear parts alone --
+// the first two terms -- is a third short of it at the middle of the ramp.
+// Made, posed and compared on the device; one counter comes back.
+//
+// Modes: 0 that bend; 1 a control, both joints the same rigid turn and slide
+// (the gradient term cancels, before as after); 2 a joint that shears, the
+// weights a constant half each, where squaring the axes up threw the shear
+// away. The gaussians' first axis is turned `frameAngle` from x in the plane,
+// so a bend shears them as well.
+RWStructuredBuffer<uint> gradients;   ///< three words of two halves a gaussian
+
+static const uint kStripAcross = 256;
+
+float stripWeight(float x) {
+    return params.mode == 2 ? 0.5 : clamp(x + 0.5, 0.0, 1.0);
+}
+
+float3 stripGradient(float x) {
+    return params.mode != 2 && abs(x) < 0.5 ? float3(1.0, 0.0, 0.0) : float3(0.0, 0.0, 0.0);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void splatStripMake(uint3 tid: SV_DispatchThreadID) {
+    const uint at = tid.x;
+    if (at >= params.count) {
+        return;
+    }
+    const uint rows = max(params.count / kStripAcross, 1u);
+    const float x = -1.0 + 2.0 * (float(at % kStripAcross) + 0.5) / float(kStripAcross);
+    const float y = -0.2 + 0.4 * (float(at / kStripAcross) + 0.5) / float(rows);
+    restPositions[at] = float4(x, y, 0.0, 1.0);
+    const float halfAngle = params.frameAngle * 0.5;
+    const float4 q = float4(0.0, 0.0, sin(halfAngle), cos(halfAngle));
+    const uint row = at * 4;
+    restShape[row] = encodeQuaternion(q);
+    restShape[row + 1] = packHalves(log(0.02), log(0.01));
+    restShape[row + 2] = packHalves(log(1.0e-3), 0.5);
+    restShape[row + 3] = packHalves(0.5, 0.5);
+
+    const float w = stripWeight(x);
+    influences[at * params.perSplat + 0] = float2(0.0, 1.0 - w);
+    influences[at * params.perSplat + 1] = float2(1.0, w);
+    for (uint k = 2; k < params.perSplat; ++k) {
+        influences[at * params.perSplat + k] = float2(0.0, 0.0);
+    }
+    // The gradients in the gaussian's own rest axes, as a conversion keeps
+    // them: joint 1's, joint 0's minus it, nothing for the empty third.
+    const float3x3 axes = axesOfQuaternion(decodeQuaternion(restShape[row]));
+    const float3 restU = float3(axes[0][0], axes[1][0], axes[2][0]);
+    const float3 restV = float3(axes[0][1], axes[1][1], axes[2][1]);
+    const float3 grad = stripGradient(x);
+    const float2 g1 = float2(dot(grad, restU), dot(grad, restV));
+    gradients[at * 3 + 0] = packHalves(-g1.x, -g1.y);
+    gradients[at * 3 + 1] = packHalves(g1.x, g1.y);
+    gradients[at * 3 + 2] = packHalves(0.0, 0.0);
+}
+
+/// Joint `j`'s transform in the strip's mode, rows of a 4x4 as the kernel
+/// multiplies them.
+float3x4 stripJoint(uint joint) {
+    if (params.mode == 1) {
+        const float3x3 turn = turnOf(params.rotation);
+        return float3x4(float4(turn[0], params.translation.x), float4(turn[1], params.translation.y),
+                        float4(turn[2], params.translation.z));
+    }
+    if (joint == 0) {
+        return float3x4(float4(1.0, 0.0, 0.0, 0.0), float4(0.0, 1.0, 0.0, 0.0), float4(0.0, 0.0, 1.0, 0.0));
+    }
+    if (params.mode == 2) {
+        return float3x4(float4(1.0, 0.8, 0.0, 0.1), float4(0.0, 1.2, 0.0, 0.0), float4(0.0, 0.3, 1.0, 0.0));
+    }
+    // A quarter turn about y: x goes to -z, z to x.
+    return float3x4(float4(0.0, 0.0, 1.0, 0.0), float4(0.0, 1.0, 0.0, 0.0), float4(-1.0, 0.0, 0.0, 0.0));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void splatStripJoints(uint3 tid: SV_DispatchThreadID) {
+    const uint joint = tid.x;
+    if (joint >= params.joints) {
+        return;
+    }
+    const float3x4 m = stripJoint(min(joint, 1u));
+    xforms[joint * 4 + 0] = m[0];
+    xforms[joint * 4 + 1] = m[1];
+    xforms[joint * 4 + 2] = m[2];
+    xforms[joint * 4 + 3] = float4(0.0, 0.0, 0.0, 1.0);
+}
+
+/// The posed covariance the skinner wrote, against `J E S^2 E^T J^T`.
+/// counts: [compared, off by more than `tolerance` in relative Frobenius].
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void splatStripCompare(uint3 tid: SV_DispatchThreadID) {
+    const uint at = tid.x;
+    if (at >= params.count) {
+        return;
+    }
+    InterlockedAdd(counts[0], 1u);
+    const float3 p = restPositions[at].xyz;
+    const float w = stripWeight(p.x);
+    const float3x4 x0 = stripJoint(0);
+    const float3x4 x1 = stripJoint(1);
+    const float3x3 a0 = float3x3(x0[0].xyz, x0[1].xyz, x0[2].xyz);
+    const float3x3 a1 = float3x3(x1[0].xyz, x1[1].xyz, x1[2].xyz);
+    const float3 apart = mul(x1, float4(p, 1.0)) - mul(x0, float4(p, 1.0));
+    const float3 grad = stripGradient(p.x);
+    // `apart grad^T`: built by rows as `grad_i * apart`, which is its
+    // transpose, and turned back.
+    const float3x3 elastic = float3x3(apart * grad.x, apart * grad.y, apart * grad.z);
+    const float3x3 jacobian = a0 * (1.0 - w) + a1 * w + transpose(elastic);
+
+    const uint row = at * 4;
+    const float3x3 was = axesOfQuaternion(decodeQuaternion(restShape[row]));
+    const float2 restSize = exp(float2(lowHalf(restShape[row + 1]), highHalf(restShape[row + 1])));
+    const float3 wantU = mul(jacobian, float3(was[0][0], was[1][0], was[2][0])) * restSize.x;
+    const float3 wantV = mul(jacobian, float3(was[0][1], was[1][1], was[2][1])) * restSize.y;
+    const float3x3 is = axesOfQuaternion(decodeQuaternion(shape[row]));
+    const float2 size = exp(float2(lowHalf(shape[row + 1]), highHalf(shape[row + 1])));
+    const float3 gotU = float3(is[0][0], is[1][0], is[2][0]) * size.x;
+    const float3 gotV = float3(is[0][1], is[1][1], is[2][1]) * size.y;
+    float difference = 0.0;
+    float norm = 0.0;
+    for (uint r = 0; r < 3; ++r) {
+        for (uint c = 0; c < 3; ++c) {
+            const float want = wantU[r] * wantU[c] + wantV[r] * wantV[c];
+            const float got = gotU[r] * gotU[c] + gotV[r] * gotV[c];
+            difference += (got - want) * (got - want);
+            norm += want * want;
+        }
+    }
+    if (!(sqrt(difference) <= params.tolerance * sqrt(norm))) {
         InterlockedAdd(counts[1], 1u);
     }
 }

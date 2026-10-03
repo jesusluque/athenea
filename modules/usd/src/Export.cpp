@@ -406,6 +406,25 @@ Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawS
         // and one with it skips the resolving. AtheneaSplatSkinningAPI's one
         // remaining attribute.
         UsdGeomPrimvarsAPI rigged(splats.GetPrim());
+
+        // HOW THE WEIGHTS CHANGE ACROSS EACH GAUSSIAN: six halves a gaussian,
+        // what makes the skinner's frame the whole Jacobian of the blend
+        // (splat_skin.slang). The conversion packed them as words of two
+        // halves, low first, which is a VtHalfArray's own layout on a
+        // little-endian machine -- copied, not converted.
+        if (rig.weightGradients.size() == carried * 3) {
+            VtHalfArray slopes(carried * 6);
+            static_assert(sizeof(GfHalf) == 2);
+            std::memcpy(slopes.data(), rig.weightGradients.data(), carried * 3 * sizeof(uint32_t));
+            UsdGeomPrimvar gradients = rigged.CreatePrimvar(
+                TfToken("primvars:athenea:splat:jointWeightGradients"), SdfValueTypeNames->HalfArray,
+                UsdGeomTokens->vertex, 6);
+            gradients.Set(slopes);
+        } else if (!rig.weightGradients.empty()) {
+            return Error::make(ErrorCode::InvalidArgument,
+                               "the rig's weight gradients cover {} gaussians and the cloud has {}",
+                               rig.weightGradients.size() / 3, positions.size());
+        }
         UsdGeomPrimvar moved = rigged.CreatePrimvar(TfToken("primvars:athenea:splat:skinningXforms"),
                                                     SdfValueTypeNames->Matrix4dArray,
                                                     UsdGeomTokens->constant);
