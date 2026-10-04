@@ -91,9 +91,12 @@ export async function createRenderer({ canvas, scene: meta = {}, file = {}, url,
     setRoi() {},
     setLightState: (s) => host.setLightState(s),
     setFeatures: (f) => host.setFeatures(f),
+    // `extra` is a line the page prints as it is; `debug` the same as numbers.
     stats: () => ({
       total: last.total, rendered: last.visible, fps,
-      extra: { pairs: last.pairs, pairsDropped: last.pairsDropped ?? 0, ms: last.ms ?? 0, error: error?.message },
+      extra: error ? `error: ${error.message}`
+        : `${(last.pairs ?? 0).toLocaleString("en")} pairs${last.pairsDropped ? ` (${last.pairsDropped.toLocaleString("en")} dropped)` : ""} · ${(last.ms ?? 0).toFixed(1)} ms`,
+      debug: { pairs: last.pairs, pairsDropped: last.pairsDropped ?? 0, ms: last.ms ?? 0, error: error?.message },
     }),
     snapshot: () => new Promise((resolve) => snapshots.push(resolve)),
     dispose() {

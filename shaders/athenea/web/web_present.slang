@@ -1,7 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 //
-// THE PICTURE ON THE PAGE: the blend's linear, bottom-row-first colour,
-// exposed and encoded as sRGB into the canvas's own texture (rgba8unorm,
+// THE PICTURE ON THE PAGE: the blend's bottom-row-first colour, exposed and,
+// where it was blended in linear light, encoded as sRGB into the canvas's own texture (rgba8unorm,
 // configured with STORAGE_BINDING), top row first as a page shows it. One
 // storage buffer, one storage texture.
 module web_present;
@@ -11,7 +11,10 @@ public struct PresentParams {
     public uint  width;
     public uint  height;
     public float exposure;   // a multiplier, 1 = as blended
-    public uint  pad;
+    /// 1: the blend was in linear light and is encoded to sRGB here. 0: it was
+    /// in display sRGB already -- standard 3DGS, which blends a capture's
+    /// colours as they were trained -- and is written as it is.
+    public uint  encode;
 };
 
 StructuredBuffer<float4>          colour;
@@ -26,6 +29,7 @@ void webPresent(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float4 c = colour[(present.height - 1 - tid.y) * present.width + tid.x];
-    const float3 shown = linearToSrgb(saturate(c.rgb * present.exposure));
+    const float3 exposed = saturate(c.rgb * present.exposure);
+    const float3 shown = present.encode != 0 ? linearToSrgb(exposed) : exposed;
     target.Store(tid.xy, float4(shown, saturate(c.a)));
 }

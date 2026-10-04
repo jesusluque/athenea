@@ -1111,12 +1111,12 @@ por etapa, 16384 bytes de memoria de workgroup.
 | `setDetail(scale)` | 1 es el valor por defecto. Sin niveles de detalle en T1: por debajo de 1 baja los armónicos (≥ 0,5: grado 1; por debajo: 0) | `host.setFeatures({shDegree})` |
 | `hasLod`, `hasRoi`, `roi`, `setRoi()` | `false`; `setRoi` no hace nada | |
 | `setLightState(states)`, `setFeatures(features)` | como los del anfitrión, abajo | |
-| `stats()` | `{total, rendered, fps, extra: {pairs, pairsDropped, ms, error}}`: `rendered` son los splats que el último cuadro encontró visibles | el último `host.frame()` |
+| `stats()` | `{total, rendered, fps, extra, debug}`: `rendered` son los splats que el último cuadro encontró visibles; `extra` una línea que la página imprime tal cual (`<pares> pairs · <ms> ms`, o `error: <mensaje>`); `debug` lo mismo como `{pairs, pairsDropped, ms, error}` | el último `host.frame()` |
 | `snapshot()` | `Promise<Blob>`, webp, tras el siguiente cuadro | |
 | `dispose()` | para el bucle, libera todos los buffers y el dispositivo | `host.dispose` |
 
 `RENDERER_INFO` es `{label: "athenea · WebGPU", formats: ["ply"], needsWebGPU: true}`.
-El tamaño CSS del canvas es cosa de la página; el módulo fija su tamaño en
+El directorio es autocontenido: resuelve sus ficheros desde `import.meta.url` y no importa nada por un nombre suelto, así que se sirve tal cual y se carga con `import(url)`. El tamaño CSS del canvas es cosa de la página; el módulo fija su tamaño en
 píxeles a partir de él por `devicePixelRatio` (como mucho 2). Sin hilos, así
 que sin cabeceras COOP/COEP.
 
@@ -1129,9 +1129,16 @@ que sin cabeceras COOP/COEP.
 | `setCamera({position, target, up, fov})`, `getCamera()` | `up` por defecto `[0, 1, 0]` |
 | `setSky({color, hdriUrl, exposure})` | devuelve `{hdri: false}` en T1 |
 | `setLightState({[grupo]: {on, intensity}})` | se guarda para la E8 de la 072; devuelve `{applied: false}` en T1 |
-| `setFeatures({shDegree, antialias})` | `shDegree` 0-3 (3 por defecto), un override de WGSL: un pipeline por valor, creado una vez; `antialias` true por defecto. Devuelve, por nombre, si este preset lo tiene |
+| `setFeatures({shDegree, antialias, linear})` | `shDegree` 0-3 (3 por defecto), un override de WGSL: un pipeline por valor, creado una vez; `antialias` true por defecto; `linear` false por defecto (abajo). Devuelve, por nombre, si este preset lo tiene |
 | `frame()` | dibuja en el canvas a su tamaño en píxeles; se resuelve en `{total, visible, pairs, pairsDropped, ms}` |
 | `bounds()`, `dispose()` | |
+
+**Color.** T1 mezcla como el 3DGS estándar -- los entrenadores, Spark,
+three.js -- en el sRGB de pantalla en que se entrenaron los colores de una
+captura, y escribe el resultado tal cual, para que la imagen se compare con la
+de esos visores. `setFeatures({linear: true})` mezcla en luz lineal y codifica a
+la salida, como el raster nativo de athenea (`frame.slang`): el modo que se
+compara con `athenea render`. El `color` de fondo es sRGB en ambos casos.
 
 **A qué apunta `url`.** Un PLY de 3DGS: `binary_little_endian`, un elemento
 `vertex` sin nada antes, todas las propiedades `float`, con `x y z opacity

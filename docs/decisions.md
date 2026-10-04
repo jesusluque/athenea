@@ -12826,6 +12826,14 @@ limits; the four new ones also compile for Metal.
 - **The blend fits 16 KiB** by holding no slope (12 bytes of 16 a record in
   WGSL), no id, no under layer, no depth: 256 records of 48 bytes and two
   words.
+- **Colour, as standard 3DGS by default.** The site compares T1 with Spark
+  and three.js, which blend a capture's SH colours as display sRGB; blending
+  in linear light (athenea's way) and encoding afterwards gives different
+  edges and mixes. So T1 projects with `linearCloud` 1 (the colour as it is),
+  blends in that space and `webPresent` writes it without an encode;
+  `setFeatures({linear: true})` is athenea's linear blend, the mode compared
+  against `athenea render`. A pipeline value, not a kernel: one uniform word in
+  the projection and one in the present.
 - **The picture.** `webPresent` writes the canvas's texture as a write-only
   `rgba8unorm` storage texture: exposure, sRGB, the bottom row first turned
   top first. One more pass than writing it from the blend, and the blend's
@@ -12840,7 +12848,9 @@ limits; the four new ones also compile for Metal.
   changing. `check.mjs` runs it in node over a WebGPU stand-in that validates
   bind groups, ranges, alignments, read/write conflicts and group counts, and
   computes nothing: it found the totals bound at 16-byte offsets, which a
-  browser would refuse.
+  browser would refuse. It loads and draws clouds of the site's test sizes
+  (200 k with SH3, 730 k and 1.88 M with SH0), and `ply.js` reads the three
+  test files' headers (fetched by range) to their exact byte sizes.
 - **Sizes.** The largest stream a splat has is its record (48 bytes), so a
   default 128 MiB binding holds 2.8 M splats; degree-3 harmonics (92 bytes)
   hold 1.46 M, and the host drops a degree at a time to fit. Pairs are capped

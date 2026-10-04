@@ -158,10 +158,10 @@ function makeDevice() {
 const device = makeDevice();
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: { gpu: { requestAdapter: async () => ({ limits, requestDevice: async () => device }) } } });
 
-// A cloud of `count` splats with degree-3 harmonics, as a file's bytes.
-function plyBytes(count) {
+// A cloud of `count` splats with `rest` harmonic coefficients, as a file's bytes.
+function plyBytes(count, rest) {
   const names = ["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"];
-  for (let i = 0; i < 45; ++i) names.push(`f_rest_${i}`);
+  for (let i = 0; i < rest; ++i) names.push(`f_rest_${i}`);
   names.push("opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3");
   const header = `ply\nformat binary_little_endian 1.0\nelement vertex ${count}\n` +
     names.map((n) => `property float ${n}`).join("\n") + "\nend_header\n";
@@ -174,7 +174,8 @@ function plyBytes(count) {
 globalThis.fetch = async (url) => {
   const u = String(url);
   if (u.startsWith("mem:")) {
-    const bytes = plyBytes(Number(u.slice(4)));
+    const [count, rest] = u.slice(4).split(":").map(Number);
+    const bytes = plyBytes(count, rest);
     let sent = false;
     return {
       ok: true, status: 200, headers: { get: () => String(bytes.length) },
@@ -203,13 +204,15 @@ const canvas = {
   getContext: () => ({ configure() {}, unconfigure() {}, getCurrentTexture: () => ({ createView: () => ({ view: true }) }) }),
 };
 const host = await AtheneaHost.create({ canvas, base: pathToFileURL(dir + "/") });
-for (const count of [1000, 300000]) {
-  const loaded = await host.load({ url: `mem:${count}`, format: "ply", transform: { rotation: [180, 0, 0] } });
-  if (loaded.count !== count || loaded.restPerColour !== 15) fail(`load ${count}: ${JSON.stringify(loaded)}`);
+// The sizes of the site's test clouds: soar (200 k, SH3), pawn-r10 (730 k,
+// SH0), pawn-hq (1.88 M, SH0), and a small one.
+for (const [count, rest] of [[1000, 45], [200258, 45], [730559, 0], [1875795, 0]]) {
+  const loaded = await host.load({ url: `mem:${count}:${rest}`, format: "ply", transform: { rotation: [180, 0, 0], scale: 0.01 } });
+  if (loaded.count !== count || loaded.restPerColour !== rest / 3) fail(`load ${count}: ${JSON.stringify(loaded)}`);
   for (const [visible, pairs] of [[0, 0], [count >> 1, count * 3], [count, 20000000]]) {
     pretend = { visible, pairs };
     host.setCamera({ position: [0, 0.5, 3], target: [0, 0, 0], fov: 50 });
-    host.setFeatures({ shDegree: 1, antialias: true });
+    host.setFeatures({ shDegree: 1, antialias: true, linear: pairs > count });
     const stats = await host.frame();
     if (stats.visible !== visible) fail(`frame: visible ${stats.visible}`);
     if (stats.pairs + stats.pairsDropped !== pairs) fail(`frame: pairs ${stats.pairs} + ${stats.pairsDropped}`);

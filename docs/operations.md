@@ -1089,12 +1089,12 @@ stage, 16384 bytes of workgroup memory.
 | `setDetail(scale)` | 1 is the default. No levels of detail in T1: under 1 lowers the harmonics (≥ 0.5: degree 1; below: 0) | `host.setFeatures({shDegree})` |
 | `hasLod`, `hasRoi`, `roi`, `setRoi()` | `false`; `setRoi` does nothing | |
 | `setLightState(states)`, `setFeatures(features)` | as the host's, below | |
-| `stats()` | `{total, rendered, fps, extra: {pairs, pairsDropped, ms, error}}`: `rendered` is the splats the last frame found visible | the last `host.frame()` |
+| `stats()` | `{total, rendered, fps, extra, debug}`: `rendered` is the splats the last frame found visible; `extra` one line for the page to print as it is (`<pairs> pairs · <ms> ms`, or `error: <message>`); `debug` the same as `{pairs, pairsDropped, ms, error}` | the last `host.frame()` |
 | `snapshot()` | `Promise<Blob>`, webp, after the next frame | |
 | `dispose()` | stops the loop, frees every buffer and the device | `host.dispose` |
 
 `RENDERER_INFO` is `{label: "athenea · WebGPU", formats: ["ply"], needsWebGPU: true}`.
-The canvas's CSS size is the page's; the module sets its pixel size from it
+The directory is self-contained: it resolves its files from `import.meta.url` and imports nothing by a bare name, so it is served as it is and loaded with `import(url)`. The canvas's CSS size is the page's; the module sets its pixel size from it
 times `devicePixelRatio` (at most 2). No threads, so no COOP/COEP headers.
 
 **W-host** (`host.js`), what a page drives directly:
@@ -1106,9 +1106,16 @@ times `devicePixelRatio` (at most 2). No threads, so no COOP/COEP headers.
 | `setCamera({position, target, up, fov})`, `getCamera()` | `up` default `[0, 1, 0]` |
 | `setSky({color, hdriUrl, exposure})` | returns `{hdri: false}` in T1 |
 | `setLightState({[group]: {on, intensity}})` | kept for 072's E8; returns `{applied: false}` in T1 |
-| `setFeatures({shDegree, antialias})` | `shDegree` 0-3 (default 3), a WGSL override: a pipeline a value, made once; `antialias` default true. Returns, per name, whether this preset has it |
+| `setFeatures({shDegree, antialias, linear})` | `shDegree` 0-3 (default 3), a WGSL override: a pipeline a value, made once; `antialias` default true; `linear` default false (below). Returns, per name, whether this preset has it |
 | `frame()` | draws into the canvas at its pixel size; resolves to `{total, visible, pairs, pairsDropped, ms}` |
 | `bounds()`, `dispose()` | |
+
+**Colour.** T1 blends as standard 3DGS does -- the trainers, Spark, three.js
+-- in the display sRGB a capture's colours were trained in, and writes the
+result as it is, so a picture compares with those viewers'. `setFeatures({linear:
+true})` blends in linear light and encodes on the way out, as athenea's native
+raster does (`frame.slang`): the one to compare with `athenea render`. The
+background `color` is sRGB either way.
 
 **What `url` points to.** A 3DGS PLY: `binary_little_endian`, one `vertex`
 element and nothing before it, every property `float`, with `x y z opacity

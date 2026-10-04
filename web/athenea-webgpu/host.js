@@ -147,8 +147,12 @@ export class AtheneaHost {
       device, format: "rgba8unorm", alphaMode: "opaque",
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    host.features = { shDegree: 3, antialias: true };
-    host.sky = { color: [0.043, 0.043, 0.059, 1], hdriUrl: null, exposure: 1 };
+    // `linear`: blend in linear light, athenea's own way (frame.slang), and
+    // encode on the way out. Off by default in T1: standard 3DGS -- the
+    // trainers, Spark, three.js -- blends a capture's colours in the display
+    // sRGB they were trained in, and T1 is compared against those viewers.
+    host.features = { shDegree: 3, antialias: true, linear: false };
+    host.sky = { color: parseColour("#0b0b0f"), hdriUrl: null, exposure: 1 };
     host.lightStates = {};
     host.camera = { position: [0, 0, 3], target: [0, 0, 0], up: [0, 1, 0], fov: 50 };
     host.cloud = null;
@@ -486,12 +490,13 @@ export class AtheneaHost {
     return { applied: false };
   }
 
-  /** { shDegree: 0..3, antialias: bool }. What a feature this preset lacks is answered with false. */
+  /** { shDegree: 0..3, antialias: bool, linear: bool }. What a feature this preset lacks is answered with false. */
   setFeatures(features = {}) {
     const known = {};
     for (const [k, v] of Object.entries(features)) {
       if (k === "shDegree") { this.features.shDegree = Math.max(0, Math.min(3, v | 0)); known[k] = true; }
       else if (k === "antialias") { this.features.antialias = !!v; known[k] = true; }
+      else if (k === "linear") { this.features.linear = !!v; known[k] = true; }
       else known[k] = false;
     }
     return known;
@@ -528,7 +533,8 @@ export class AtheneaHost {
     const distance = Math.hypot(...sub(c.target, c.position)) || 1;
     const focal = (height * 0.5) / Math.tan((c.fov * Math.PI) / 360);
     const tilesX = Math.ceil(width / TILE), tilesY = Math.ceil(height / TILE);
-    const [bgR, bgG, bgB, bgA] = this.sky.color;
+    // The background in the space the splats are blended in.
+    const [bgR, bgG, bgB, bgA] = this.features.linear ? this.sky.color.map((v, i) => (i < 3 ? srgbToLinear(v) : v)) : this.sky.color;
     const p = {
       width, height, tilesX, tilesY, focalX: focal, focalY: focal, centreX: width * 0.5, centreY: height * 0.5,
       nearZ: Math.max(distance * 1e-3, 1e-5), farZ: distance * 1e4, orthographic: 0,
@@ -536,7 +542,10 @@ export class AtheneaHost {
       eyeX: eyeObject[0], eyeY: eyeObject[1], eyeZ: eyeObject[2],
       restPerColour: this.cloud.keep, shWords: this.cloud.shWords, shLimit: 3,
       tileBits: bitsFor(tilesX * tilesY), depthMode: 0, depthThreshold: 0.5,
-      bgR, bgG, bgB, bgA, linearCloud: this.cloud.linear ? 1 : 0, envBaseSide: 1,
+      bgR, bgG, bgB, bgA,
+      // linearCloud 1 takes the colours as they are (common/color.slang's
+      // cloudLight): in display mode that is what keeps a capture in sRGB.
+      linearCloud: this.cloud.linear || !this.features.linear ? 1 : 0, envBaseSide: 1,
     };
     ["m00", "m01", "m02", "m03", "m10", "m11", "m12", "m13", "m20", "m21", "m22", "m23"].forEach((k, i) => { p[k] = m[i]; });
     return p;
@@ -668,7 +677,7 @@ export class AtheneaHost {
     this.dispatch(pass, "webBlend", [width, height], { ranges: B.ranges, pairSplats: B.pairSplats, proj: B.proj, colour: B.colour, params: common });
     const target = this.context.getCurrentTexture();
     this.dispatch(pass, "webPresent", [width, height], {
-      colour: B.colour, target: target.createView(), present: { width, height, exposure: this.sky.exposure },
+      colour: B.colour, target: target.createView(), present: { width, height, exposure: this.sky.exposure, encode: this.features.linear ? 1 : 0 },
     });
     pass.end();
     this.endUniforms();
@@ -692,12 +701,16 @@ export class AtheneaHost {
   }
 }
 
+/** A page's colour, "#rrggbb" or [r, g, b(, a)] in sRGB 0-1, kept as sRGB. */
 function parseColour(c) {
-  // sRGB in, linear out: the blend is in linear light.
-  const lin = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
-  if (Array.isArray(c)) return [lin(c[0]), lin(c[1]), lin(c[2]), c[3] ?? 1];
+  if (Array.isArray(c)) return [c[0], c[1], c[2], c[3] ?? 1];
   const m = /^#?([0-9a-f]{6})$/i.exec(String(c));
   if (!m) return [0, 0, 0, 1];
   const v = parseInt(m[1], 16);
-  return [lin(((v >> 16) & 255) / 255), lin(((v >> 8) & 255) / 255), lin((v & 255) / 255), 1];
+  return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1];
+}
+
+/** The sRGB transfer, inverted: a uniform's background, bookkeeping for one colour. */
+function srgbToLinear(v) {
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
 }

@@ -4,7 +4,9 @@
      module, and prints its stats. Served by any static server from the
      directory scripts/web-kernels.py writes. Optional: &eye=x,y,z&target=x,y,z
      &fov=degrees (vertical) for a camera to compare against `athenea render`,
-     and &shot=name to download a webp of the frame once it has drawn. -->
+     &shot=name to download a webp of the frame once it has drawn,
+     &transform={"scale":0.01} (JSON, as a scene.json gives it), &linear=1 to
+     blend in linear light rather than display sRGB. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -30,10 +32,11 @@
   } else {
     try {
       const r = await createRenderer({
-        canvas: document.getElementById("view"), scene: {}, file: { format: "ply" }, url: new URL(url, location.href).href,
+        canvas: document.getElementById("view"), scene: {}, file: { format: "ply", transform: params.get("transform") ? JSON.parse(params.get("transform")) : undefined }, url: new URL(url, location.href).href,
         onProgress: (f, bytes) => { out.textContent = `loading ${f == null ? "" : Math.round(f * 100) + "% "}${(bytes / 1e6).toFixed(1)} MB`; },
       });
       window.renderer = r;
+      if (params.get("linear")) r.setFeatures({ linear: params.get("linear") === "1" });
       const vec = (k) => params.get(k)?.split(",").map(Number);
       if (params.get("eye")) r.setCamera({ position: vec("eye"), target: vec("target") ?? [0, 0, 0], fov: Number(params.get("fov") ?? 50) });
       if (params.get("shot")) {
@@ -45,9 +48,7 @@
       }
       setInterval(() => {
         const s = r.stats();
-        out.textContent = `${r.name} · ${r.backend}\n${s.rendered} / ${s.total} splats · ${s.extra.pairs} pairs` +
-          `${s.extra.pairsDropped ? ` (${s.extra.pairsDropped} dropped)` : ""}\n${s.fps.toFixed(1)} fps · ${s.extra.ms.toFixed(1)} ms` +
-          (s.extra.error ? `\n${s.extra.error}` : "");
+        out.textContent = `${r.name} · ${r.backend}\n${s.rendered} / ${s.total} splats · ${s.fps.toFixed(1)} fps\n${s.extra}`;
       }, 500);
     } catch (e) {
       out.textContent = String(e && e.message || e);
