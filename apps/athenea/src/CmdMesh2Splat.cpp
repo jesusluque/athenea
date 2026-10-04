@@ -187,6 +187,10 @@ struct Options {
     /// indirect: task TX, step 3), or 2 (nine and twenty-seven, the first
     /// transfer's).
     uint32_t                 transferDegree = 3;
+    /// HOW MUCH THE SURFACE'S TURN UNDER A GAUSSIAN ROUGHENS IT (Toksvig,
+    /// the effect's `normalSpread`): negative is 1 for --transfer and 0
+    /// otherwise, so a relit or baked conversion is what it was.
+    double                   specularFilter = -1.0;
     /// --validate DIR (Mesh2SplatValidate.h) and what it is measured with.
     std::string              validate;
     std::string              validateCamera;
@@ -1325,6 +1329,8 @@ private:
         number("cellMax", static_cast<double>(cellValues_[3 + 4 * pieces_.size() + at]));
         number("cellByLongest", perMesh_ || camera_ ? 1.0 : 0.0);
         number("useNormalMap", options_->normalMapTurns ? 1.0 : 0.0);
+        number("normalSpread", options_->specularFilter >= 0.0 ? options_->specularFilter
+                                                               : (options_->transfer ? 1.0 : 0.0));
         number("simplify", options_->simplify);
         number("simplifyLevels", static_cast<double>(options_->simplifyLevels));
         if (cutMap) {
@@ -2429,6 +2435,11 @@ void addMesh2Splat(CLI::App& app) {
                     "--transfer: cells a side of the grid of open directions over the whole sphere, 16 or 32; "
                     "0 keeps the first transfer's 8 x 8 over the half a gaussian faces")
         ->check(CLI::IsMember({0u, 16u, 32u}));
+    cmd->add_option("--specular-filter", o->specularFilter,
+                    "how much the turn of the surface under a gaussian widens its roughness and its coat's, "
+                    "so a reflection off a curved strip is the mean over the gaussian rather than a bead as "
+                    "wide as it (0 off; default 1 with --transfer, 0 otherwise)")
+        ->check(CLI::Range(-1.0, 4.0));
     cmd->add_option("--transfer-lobes", o->transferLobes,
                     "--transfer: keep it as this many zonal lobes in each gaussian's own frame, which turn "
                     "with the gaussian, rather than nine harmonics in the world (0: two for --skinned, "

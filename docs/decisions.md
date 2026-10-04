@@ -11529,6 +11529,30 @@ floor's closed form in its field straight down and next to nothing straight
 up ([glass] in athenea_usd_tests); the glass ball on a ground in
 `tx_conversions_render_like_the_mesh`.
 
+### A reflection off a curved strip is the mean over the gaussian (Toksvig)
+
+The Corvette's chrome read 1.6 times the path traced one (relMSE 15.5) while
+the chrome ball validated within 1% of its mean (0.0157 against the mesh
+raster's 0.209). The difference is the shape: the chrome on the car is thin
+curved strips -- the grille's trim is four pixels high -- and a gaussian has
+one normal. Where the strip's curvature turns the reflection across a
+gaussian, the path traced pixel averages a highlight that moves and shows a
+thin line; the gaussian shows the light its one normal meets at full
+brightness over its whole footprint, and the trim came back as a row of
+white beads.
+
+The conversion now widens a gaussian's roughness, and its coat's, by the
+spread of the surface's normals under it: the corners' normals apart over
+the corners apart, along the edge where they turn fastest, times the
+gaussian's wider size, added to the GGX slopes' variance
+(`alpha' = sqrt(alpha^2 + 2 sigma^2)`, `m2sSpread` / `m2sWidened` in the
+Mesh2Splat effect, parameter `normalSpread`). A flat triangle, or one whose
+corners share a normal, is unchanged. `--specular-filter` sets it: 1 with
+`--transfer`, 0 otherwise, so relit and baked conversions are what they were.
+
+**Checked** (pending the GPU turn): the Corvette's Chrome and Car_Paint_Main
+with `drive_tx.py` against the GT.
+
 ### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
 
 A car converted to gaussians cast nothing on the ground under a sky: the

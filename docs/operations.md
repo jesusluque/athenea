@@ -405,6 +405,7 @@ recipe is §3.1 below.
 | `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well; a zonal transfer keeps the direct half alone |
 | `--transfer-degree` | 2 or 3 | 3 | with `--transfer`: the harmonics' degree, 16 coefficients direct and 48 indirect at 3, the first transfer's 9 and 27 at 2 |
 | `--transfer-cells` | 0, 16 or 32 | 16 | with `--transfer`: cells a side of the grid of open directions over the whole sphere (256 or 1024 bits a gaussian); 0 writes the first transfer's 8 x 8 over the half a gaussian faces |
+| `--specular-filter` | 0 to 4 | 1 with `--transfer`, else 0 | how much the turn of the surface under a gaussian widens its roughness and its coat's: the corners' normals apart, over the gaussian's width, added to the slopes' variance (Toksvig). 0 keeps the material's roughness; relit and baked conversions keep 0 unless asked |
 | `--validate` | directory | — | measure the conversion material by material against the stage path traced, into this directory (below) |
 | `--validate-camera` | prim path | `--cell-from-camera`, else the stage's first camera | the frames' camera |
 | `--validate-size` | W H | `960 540` | the frames, in pixels |

@@ -171,7 +171,9 @@ struct Mesh2SplatUniforms {
     uint32_t lobesEntry = 0;
     /// The coat's darkening (OpenPBR `coat_darkening`), in the fourth entry.
     float    coatDarkening = 0.0F;
-    uint32_t lobesPad1 = 0;
+    /// How much the surface's turn across a gaussian widens its roughness
+    /// (m2sSpread); 0 leaves the material's.
+    float    normalSpread = 0.0F;
     uint32_t lobesPad2 = 0;
 
     /// MAPS ON THE LAYERS (task TX): up to three clips, Layer0..2, each read
@@ -415,6 +417,20 @@ public:
         glass.hardMin = {0.0};
         glass.hardMax = {1.0};
         into.params.push_back(glass);
+
+        aofx::ParamDesc spread;
+        spread.name = "normalSpread";
+        spread.label = "Normal Spread";
+        spread.hint =
+            "How much the turn of the surface under a gaussian widens its roughness and its coat's: "
+            "a gaussian has one normal, and a reflection off a strip of chrome it spans turns with "
+            "the surface. 0 keeps the material's roughness; 1 adds the normals' spread across the "
+            "gaussian's width as slope variance (Toksvig).";
+        spread.type = aofx::ParamType::Double;
+        spread.defaults = {0.0};
+        spread.hardMin = {0.0};
+        spread.hardMax = {4.0};
+        into.params.push_back(spread);
 
         aofx::ParamDesc metallic;
         metallic.name = "metallic";
@@ -858,6 +874,7 @@ public:
         uniforms.glassOpacity =
             static_cast<float>(std::clamp(request.number("glassOpacity", 1.0), 0.0, 1.0));
         uniforms.useNormalMap = request.number("useNormalMap", 0.0) >= 0.5 ? 1U : 0U;
+        uniforms.normalSpread = static_cast<float>(std::clamp(request.number("normalSpread", 0.0), 0.0, 4.0));
         uniforms.metallic = static_cast<float>(std::clamp(request.number("metallic", 0.0), 0.0, 1.0));
         uniforms.roughness = static_cast<float>(std::clamp(request.number("roughness", 0.5), 0.0, 1.0));
         for (int k = 0; k < 3; ++k) {

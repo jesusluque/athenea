@@ -163,7 +163,7 @@ struct M2sParams {
     float4 sheen;            // colour (times its weight), roughness
     uint  lobesEntry;        // 0: not written; else the first of the four
     float coatDarkening;     // the fourth: (coat darkening, 0, 0, 0)
-    uint  lobesPad1;
+    float normalSpread;      // m2sSpread: 0 the material's roughness as it is
     uint  lobesPad2;
 
     // MAPS ON THE LAYERS (task TX, m2sLayersAt): up to three, each read for
@@ -1055,6 +1055,37 @@ void m2sScan(uint3 gid: SV_GroupThreadID) {
     }
 }
 
+/// HOW FAR THE SURFACE TURNS UNDER A GAUSSIAN, as the spread of its normals
+/// (radians, one standard deviation) across the gaussian's width: the
+/// corners' normals apart over the corners apart, along the edge where they
+/// turn fastest, times the gaussian's wider size. A gaussian has one normal,
+/// so a reflection that turns with a strip of chrome across it came back
+/// as a bead as wide as the gaussian, at the full brightness of the light it
+/// met; the path traced strip shows a thin line, the mean over the gaussian's
+/// footprint of a highlight that moves. That mean is what a rougher lobe
+/// gives (Toksvig): the spread added to the slopes' variance.
+float m2sSpread(const M2sTriangle t, float3 scale) {
+    const float3 corners[3] = { t.p0.xyz, t.p1.xyz, t.p2.xyz };
+    const float3 normals[3] = { t.n0.xyz, t.n1.xyz, t.n2.xyz };
+    float turn = 0.0;
+    for (uint k = 0; k < 3; ++k) {
+        const uint j = (k + 1) % 3;
+        const float apart = length(corners[j] - corners[k]);
+        const float3 a = normalize(normals[k]);
+        const float3 b = normalize(normals[j]);
+        if (apart > 1.0e-12 && all(isfinite(a)) && all(isfinite(b))) {
+            turn = max(turn, acos(clamp(dot(a, b), -1.0, 1.0)) / apart);
+        }
+    }
+    return params.normalSpread * turn * max(scale.x, scale.y);
+}
+
+/// A roughness (perceptual, alpha its square) widened by a spread of normals.
+float m2sWidened(float roughness, float spread) {
+    const float alpha = roughness * roughness;
+    return saturate(sqrt(sqrt(alpha * alpha + 2.0 * spread * spread)));
+}
+
 /// ONE GAUSSIAN, WRITTEN: what the maps say at `bary`, turned to `normal`
 /// with its first axis along `tangent`, `scale` wide. `false` where the frame
 /// collapsed and nothing was written. A displaced one carries three entries
@@ -1083,6 +1114,10 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
                                            params.mrStride, params.mrUv2 != 0 ? uv2 : uv);
         metallic *= texel.z;
         roughness *= texel.y;
+    }
+    const float spread = params.normalSpread > 0.0 ? m2sSpread(t, scale) : 0.0;
+    if (spread > 0.0) {
+        roughness = m2sWidened(roughness, spread);
     }
     float3 shading = normal;
     if (params.hasNormal != 0) {
@@ -1167,6 +1202,9 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         float4 coat = params.coat;
         float4 sheen = params.sheen;
         m2sLayersAt(t, bary, specular, coat, sheen);
+        if (spread > 0.0) {
+            coat.y = m2sWidened(coat.y, spread);
+        }
         records[recordAt(slot, params.lobesEntry)] = specular;
         records[recordAt(slot, params.lobesEntry + 1)] = coat;
         records[recordAt(slot, params.lobesEntry + 2)] = sheen;
