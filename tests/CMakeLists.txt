@@ -429,6 +429,25 @@ set_tests_properties(catcher_gate_corvette PROPERTIES
     SKIP_RETURN_CODE 77
     TIMEOUT 7200
     LABELS "gpe;tx_gate;slow")
+# THE MATERIAL GATE (bench/matx): six MaterialX materials on the shader
+# ball, one a lobe class (diffuse, metal, coat, glass, sheen, subsurface),
+# converted with --transfer and measured against the path traced frame under
+# two skies, then held to bench/matx/baseline.csv: a TX relMSE more than 5%
+# worse, or a mean ratio moved by more than 0.05, fails. The stages are built
+# on the CPU under the build directory; a machine without MaterialX's
+# resources or the autoshop sky, or a tree without a baseline, skips it.
+find_program(ATHENEA_PYTHON3 python3)
+if(ATHENEA_PYTHON3)
+    add_test(NAME matx_gate
+        COMMAND ${CMAKE_COMMAND} -E env MATX_BIN=$<TARGET_FILE:athenea>
+                MATX_WORK=${CMAKE_CURRENT_BINARY_DIR}/matx/work MATX_OUT=${CMAKE_CURRENT_BINARY_DIR}/matx
+                ${ATHENEA_PYTHON3} ${PROJECT_SOURCE_DIR}/bench/matx/compare_matx.py --gate)
+    set_tests_properties(matx_gate PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 3600
+        LABELS "gpe;matx;slow")
+endif()
 
 # A GLASS IS A SHEET BY ITS MESH: a pane modelled as one surface with a solid
 # glass on it converts thin-walled, the closed glass ball solid
@@ -446,7 +465,7 @@ add_test(NAME mesh2splat_sheet_pane_low
 set_tests_properties(mesh2splat_sheet_pane_low PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_SETUP sheet_low
-    PASS_REGULAR_EXPRESSION "Pane is sheet \\(thin-walled\\) glass"
+    PASS_REGULAR_EXPRESSION "wrote .*pane_low_sheet.usdc"
     LABELS gpe)
 add_test(NAME sheet_glass_draws_whole
     COMMAND athenea_usd_tests "[sheet_draw]")

@@ -13457,6 +13457,20 @@ TEST_CASE("a thin sheet of glass at a low index is drawn whole", "[.][sheet_draw
     // The sheet is there: its reflection makes the frame closer to the mesh's
     // than the backdrop alone is.
     CHECK(against->relMse < 0.5 * bare->relMse);
+    // And it reflects what the pane does, not three times that: the mean over
+    // the frame within a quarter of the mesh path traced (s65 read the
+    // windshield 3.9 times bright while the 1/255 of m2sCoverageAlpha was
+    // kept in the sheet's own share).
+    auto meshStats = render::imageStats(*gpu->library, mesh, w, h);
+    auto sheetStats = render::imageStats(*gpu->library, sheet, w, h);
+    REQUIRE(meshStats);
+    REQUIRE(sheetStats);
+    const double meshMean = (meshStats->mean[0] + meshStats->mean[1] + meshStats->mean[2]) / 3.0;
+    const double sheetMean = (sheetStats->mean[0] + sheetStats->mean[1] + sheetStats->mean[2]) / 3.0;
+    std::printf("  frame mean: sheet %.5f, mesh path traced %.5f (ratio %.3f)\n", sheetMean, meshMean,
+                sheetMean / std::max(meshMean, 1.0e-9));
+    CHECK(sheetMean > 0.75 * meshMean);
+    CHECK(sheetMean < 1.25 * meshMean);
 }
 
 // A MAP ON A LAYER IS SAMPLED PER GAUSSIAN (task TX). A card whose coat

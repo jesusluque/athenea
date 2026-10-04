@@ -11878,6 +11878,23 @@ streak). A transmittance the blend carries itself (proposal 075) is what
 would let the interior through as it is. Tested by a pane at 1.16 over a
 black backdrop, drawn against the mesh path traced (`[sheet_draw]`).
 
+Then too bright (s65, the current car on the mesh ground): the windshield
+read 3.9 times the path traced one under the shop's lamps. The conversion
+writes a sheet's coverage as `m2sCoverageAlpha` solves it plus 1/255, for
+the radius at which a gaussian is cut -- and for a sheet whose solved share
+is 0.0018 that 1/255 is twice as much again, which the floor's
+alpha x colour then kept. A sheet's own share is now its stored opacity
+less that 1/255 (nothing of it is cut at the floor), and the test holds the
+pane's frame mean within a quarter of the mesh path traced.
+
+And the ramp: on the car the windshield stayed 3.8 times bright with the
+1/255 out (s69), as a sharp mirror of the shop's lamp tubes. A sheet's slope
+across its footprint was packed from its colour before the floor's scaling,
+at the 1/F0 gain -- fifty times the colour it rode on, and past what a half
+holds where a lamp is a hundred times the sky. The slope is now scaled with
+the colour. The flat pane has no slope, which is why the test did not see
+it.
+
 ### Known: a transparent mesh glass dithers on the raster route
 
 In the per-material frames (one material a cloud, the rest meshes) the
@@ -11892,6 +11909,51 @@ metrics are taken over the converted material's own mask, against the mesh
 path traced -- so it is left as it is for now. What would take it out: a lot
 that changes with the frame, accumulated, or a transparent opacity blended
 rather than cut.
+
+### A dome's mips keep its solid-angle mean (research 087, step 1)
+
+The paint's base read 0.77 of the path traced frame under the shop and 0.95
+under a white dome (s57, s64): what is lost is in the shop's small, very
+bright lamps, which the prefiltered dome does not keep. The first and
+cheapest of the steps research 087 lists: the source chain the prefilter
+reads its samples from is a lat-long, and its mips were plain area means --
+a row by a pole, a sliver of the sphere, counted as much as a row at the
+equator, so the coarse levels a rough lobe reads over-weighed the poles,
+where a ceiling's lamps hang. A dome's texture is now requested as a
+lat-long (TextureStore::request, `latLong`) and its levels weigh each source
+row by the band of the sphere it stands for, cos(theta0) - cos(theta1), so
+every level keeps the sky's solid-angle mean (exact where a level halves,
+to half a percent on an odd edge's three taps; `[mips]`). The lamps
+themselves, taken out as lights of their own, are the next step.
+
+### A sharp coat is read per pixel
+
+The user's fender under san_giuseppe: gaussian-sized bright patches below
+the headlight, where the path traced panel is smooth with one sharp point of
+the sun (s63, s65). A coat at roughness 0.04 mirrors a facade, or a 1.5
+degree sun, that changes far faster across a curved panel than a gaussian
+is wide, and the coat was read once, at the centre's mirror, and spread over
+the footprint: a gaussian whose mirror found the sun drew it as a blob of
+its own size, its neighbour nothing. The slope (a linear ramp) softens a
+facade and cannot draw a point.
+
+So a coat smoother than `kSharpRoughness` (0.2) is handed to the blend: the
+projection takes the centre's reading of it out of the colour and writes the
+mirror at the centre and its turn a pixel right and a pixel down, in
+octahedral coordinates, with the coat's weight (albedo times openness) and
+roughness -- four words in the slot the slope used (`kSharpMark`). The blend
+reads the first dome's prefiltered sky along the mirror each pixel turns to.
+The sky's own sun is in that map, so the sun comes back as a point where
+the panel's normal mirrors it, and a facade as an image rather than patches.
+What it costs: one sky read per pixel per sharp record, and the slope's
+group memory widened from three words a record to four (17412 of WebGPU's
+17416 bytes). What it does not do: the base's polish under the coat keeps
+its centre's value (no ramp), and only the first dome is read per pixel. The
+centre's reading is taken out of the colour unclamped, so where the coat's
+share of a shadowed sun was taken back out the record keeps that negative,
+and the blend clamps after adding its per-pixel sky: clamped in the
+projection, a gaussian whose centre mirrored a shadowed sun lost its body
+and drew the sun back whole.
 
 ### A TX frame computes what the eye changes (playback)
 
@@ -12872,3 +12934,84 @@ gaussian) it reads 0.021, the workshop sky unchanged (0.038 against 0.043),
 so `--shadow-catcher` takes 32 unless told. Weighing the four cells nearer
 than bilinearly (a smoothstep on the fractions) was tried and left out: rows
 430 and 440 came closer, the contact window went the other way (0.023).
+
+## Materials measured one by one on the shader ball (bench/matx)
+
+The TX gate measures two assets, and the materials they happen to hold.
+`bench/matx` measures materials as such: each on the same object, under the
+same two skies, against the path tracer, so a change that helps the paint
+and hurts the velvet says so by name.
+
+**The object** is MaterialX's shader ball (`resources/Geometry/shaderball.glb`,
+Apache-2.0): a sphere with a cut-out on a base with a flat ledge, the
+look-dev object every MaterialX renderer is shown with. `build_ball.py`
+reads the glb with the standard library and writes it through usdcat as it
+is: metres, +Y up, two meshes (the shell and the core), UVs as
+`primvars:st` with v turned. It carries one material and no subsets; the
+study binds one material to both meshes. `scene/base.usda.in` puts it on a
+100 m grey ground (OpenPBR, 0.18, rough), under the autoshop dome the
+Corvette uses, seen from a 50 mm camera three-quarters from the side its
+cut-out faces. goegap, with its sun in the texels, is the second sky,
+swapped in by `--validate-sky`.
+
+**The materials.** Phase 1 is every MaterialX example of the OpenPbr,
+StandardSurface and DisneyPrincipled families; the chess set (15 materials
+for an asset) and the two looks (pairs of examples already in the list) are
+left out. Phase 2 is the part of proposal 086's 52 that sits on the shader
+ball: 35 OpenPBR examples, fetched from the OpenPBR repository at a pinned
+commit and checked against `openpbr.sha256`. Khronos' test models (their
+own meshes and glTF extensions), AMD's (licence unread) and Poly Haven's
+(not chosen) are listed in `manifest.json` as deferred. usdMtlx (usdcat)
+turns each `.mtlx` into USD, which is how athenea reads MaterialX from a
+stage: `outputs:mtlx:surface` on a Shader of `ND_<node>_surfaceshader`.
+The OpenPBR examples declare `colorspace="acescg"`, which athenea reads for
+textures and not for constants, so their colours are converted to linear
+Rec.709 when the stage is written (clamped to [0, 1]; gold's red was 1.06).
+
+**The classes** are read off each document: a lobe counts where the surface
+shader's input that switches it is non-zero or connected (`base_metalness`,
+`coat_weight`, `transmission_weight`, `subsurface_weight`, `fuzz_weight`,
+`thin_film_weight`, `emission_luminance`, and their standard_surface and
+Disney names). No material is classified by hand.
+
+**What is measured** is `mesh2splat --transfer --validate` at 512 x 512:
+the ball converted (`--cell-from-camera`, 512 camera pixels, 64 bake paths)
+and rasterised with the ground left a mesh, against the path tracer's 256
+paths a pixel; relMSE, p99 and the mean of each channel over the ball's
+pixels. The mesh raster is a reference column, not the target.
+`report_matx.py` writes the table, the breakdown by lobe class with the
+worst offenders, and a GT | GS contact sheet a sky.
+
+**The regression check.** `baseline.csv` holds, a material and a sky, TX's
+relMSE, the mean ratio of each channel (TX over GT) and p99, written from a
+whole sweep. `compare_matx.py` fails a run whose relMSE is more than 5%
+worse or whose mean ratio moved by more than 0.05; `ctest -L matx` does it
+for six materials, one a class (OpenPBR default, standard_surface chrome,
+OpenPBR carpaint, glass, velvet and ketchup), under both skies.
+
+**The GT is kept.** At 256 paths a pixel the path tracer's own noise moves
+a glass's relMSE by about the 5% the check allows, so two runs of an
+unchanged cloud against two fresh GTs could disagree by a regression. Each
+GT is cached (`gt_cache/<key>.exr`, beside the renders; `MATX_GT_CACHE`)
+and handed back to `--validate`, which reads a GT of the frame's size
+instead of tracing one. The key is a hash of everything the GT depends on:
+the stage and each file it composes (the base scene, the ball, the
+material and its textures, the autoshop sky, the sky swapped in), the
+size, the paths, the bounces, and the path tracer. The path tracer is the
+build's copy of the shader directories it imports from (algo, common, geom,
+light, material, rt, scene, volume, world, and technique but for its
+`splat_*` kernels), so a change to the conversion (usd/, splat/, lod/)
+keeps every GT and a change to a lobe traces them again; what C++ decides
+about the kernel (PathTracer.cpp, StageRenderer.cpp) no shader shows, and
+`GT_EPOCH` in `matx_common.py` is bumped by hand in the commit that changes
+it. The measure then moves only when the cloud does. A sweep run before
+the cache hands its GTs over with `run_matx.py --adopt-gt`;
+`--fresh-gt` traces a selection again.
+
+### Not done
+
+- The baseline: written from the first whole sweep, in the commit after it.
+- Thin film is accepted by the lobes and not drawn; both sides of the
+  measure leave it out, so it compares equal and says nothing about it.
+- The deferred part of the 52 (Khronos, AMD, Poly Haven), and the path
+  tracer against Cycles or the Render Fidelity goldens.

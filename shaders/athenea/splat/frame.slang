@@ -174,6 +174,9 @@ public static const float kSlopeMark = 0.25;
 /// splatProjectCatcher): black, and drawn over an opaque layer under it
 /// even where its centre's depth reads behind that layer -- it lies on it.
 public static const float kCatcherMark = 0.125;
+/// A record whose sharp lobe the blend draws per pixel (splat_project's
+/// SplatSlope sharp lobe): `slopes` holds its mirror and the mirror's turn.
+public static const float kSharpMark = 0.375;
 
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power

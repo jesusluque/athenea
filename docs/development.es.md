@@ -236,6 +236,35 @@ de un 5% peor en TX (`tests/regress/tx_against_first.cmake`); sus imágenes
 GT|malla|nube quedan en `build/<preset>/tests/tx_gate`. Una máquina sin esos
 recursos se lo salta.
 
+**La puerta de materiales.** `bench/matx` mide TX material a material sobre
+el shader ball de MaterialX: todos los ejemplos de MaterialX de las familias
+OpenPbr, StandardSurface y DisneyPrincipled (fase 1) y los ejemplos de
+OpenPBR de la propuesta 086 (fase 2, descargados de un commit fijo), cada uno
+ligado a toda la bola sobre un suelo gris, convertidos con `--transfer` y
+medidos con `--validate` bajo el cielo autoshop y goegap. Las escenas
+generadas, la bola convertida y las descargas no están en git; los scripts
+las rehacen en la CPU:
+
+```sh
+cd bench/matx
+python3 build_ball.py && bash fetch_phase2.sh && python3 build_stages.py   # CPU
+MATX_BIN=../../build/<preset>/bin/athenea python3 run_matx.py --phase 1     # GPU, reanudable
+python3 report_matx.py                                                      # tablas, hojas de contactos
+python3 compare_matx.py                                                     # frente a baseline.csv
+```
+
+`ctest -L matx` ejecuta seis, uno por clase de lóbulo, bajo los dos cielos
+(unos diez minutos) y falla donde el relMSE de TX es más de un 5% peor que
+en `baseline.csv` o la razón de medias de un canal se ha movido más de 0,05.
+`compare_matx.py --write-baseline` reescribe la referencia a partir de un
+barrido; cambia en el commit cuyo efecto registra. `MATX_MX_RESOURCES`,
+`MATX_AUTOSHOP`, `MATX_WORK` y `MATX_OUT` dicen dónde están las entradas y
+adónde van las salidas (`matx_common.py`). El GT trazado se guarda por
+material y cielo, con una clave de la escena, el cuadro, los caminos y los
+shaders del path tracer, así que cada ejecución se mide frente al mismo GT;
+`GT_EPOCH` en `matx_common.py` lo sube el commit que cambia el C++ del path
+tracer.
+
 ### 3.2 Un cambio de solo shader
 
 Los shaders se compilan en ejecución, no van dentro del binario, así que un

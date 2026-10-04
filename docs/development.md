@@ -231,6 +231,34 @@ out more than 5% worse in TX (`tests/regress/tx_against_first.cmake`); its
 GT|mesh|cloud pictures stay under `build/<preset>/tests/tx_gate`. A machine
 without those assets skips it.
 
+**The material gate.** `bench/matx` measures TX material by material on
+MaterialX's shader ball: every MaterialX example of the OpenPbr,
+StandardSurface and DisneyPrincipled families (phase 1) and the OpenPBR
+examples of proposal 086 (phase 2, fetched at a pinned commit), each bound
+to the whole ball on a grey ground, converted with `--transfer` and
+measured through `--validate` under the autoshop sky and goegap. The
+generated stages, the converted ball and the downloads are not in git;
+the scripts rebuild them on the CPU:
+
+```sh
+cd bench/matx
+python3 build_ball.py && bash fetch_phase2.sh && python3 build_stages.py   # CPU
+MATX_BIN=../../build/<preset>/bin/athenea python3 run_matx.py --phase 1     # GPU, resumable
+python3 report_matx.py                                                      # tables, contact sheets
+python3 compare_matx.py                                                     # against baseline.csv
+```
+
+`ctest -L matx` runs six of them, one a lobe class, under both skies
+(about ten minutes) and fails where TX's relMSE is more than 5% worse than
+`baseline.csv` or a channel's mean ratio moved by more than 0.05.
+`compare_matx.py --write-baseline` rewrites the baseline from a sweep; it
+changes in the commit whose effect it records. `MATX_MX_RESOURCES`,
+`MATX_AUTOSHOP`, `MATX_WORK` and `MATX_OUT` say where the inputs are and
+where the outputs go (`matx_common.py`). The path traced GT is cached a
+material and a sky, keyed by the stage, the frame, the paths and the path
+tracer's shaders, so every run measures against the same GT; `GT_EPOCH` in
+`matx_common.py` is bumped by the commit that changes the path tracer's C++.
+
 ### 3.2 A shader-only change
 
 Shaders are compiled at run time, not embedded, so a change to an existing
