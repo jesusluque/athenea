@@ -13380,6 +13380,85 @@ TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path trace
     }
 }
 
+// A THIN SHEET OF GLASS IS DRAWN WHOLE (task TX, s62b). A pane at the
+// Corvette windshield's index, 1.16, converts to gaussians covering 0.0055 of
+// what is behind them; the faint cull dropped them before they were shaded,
+// and the windshield came out as the interior seen through, salted with the
+// few that survived. Drawn at splat_project's floor (kSheetAlpha) with alpha x
+// colour kept, the sheet's reflection of a white dome over a black backdrop
+// must show, close to the mesh path traced, where without the floor the
+// frame was the backdrop alone. Converted by ctest first
+// (mesh2splat_sheet_pane_low).
+TEST_CASE("a thin sheet of glass at a low index is drawn whole", "[.][sheet_draw][usd][gpu][splat][transfer]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path cloud = fs::path(ATHENEA_TX_DIR) / "pane_low_sheet.usdc";
+    if (!fs::exists(cloud)) {
+        SKIP("'" << cloud.string() << "' is not there: ctest converts it first (mesh2splat_sheet_pane_low)");
+    }
+    const fs::path source = fs::path(ATHENEA_TEST_DATA_DIR) / "tx" / "pane_low.usda";
+    const auto composed = [&](const std::string& name, bool withCloud, bool withPane) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    subLayers = [";
+        if (withCloud) {
+            out << "@" << cloud.string() << "@, ";
+        }
+        out << "@" << source.string() << "@]\n    upAxis = \"Y\"\n)\n";
+        out << "over \"World\"\n{\n";
+        if (!withPane) {
+            out << "    over \"Pane\" (\n        active = false\n    )\n    {\n    }\n";
+        }
+        out << "    def Mesh \"Backdrop\" (\n        prepend apiSchemas = [\"MaterialBindingAPI\"]\n    )\n    {\n"
+               "        int[] faceVertexCounts = [4]\n        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "        point3f[] points = [(-3, -3, -1), (3, -3, -1), (3, 3, -1), (-3, 3, -1)]\n"
+               "        uniform token subdivisionScheme = \"none\"\n"
+               "        rel material:binding = </World/Looks/Black>\n    }\n"
+               "    over \"Looks\"\n    {\n        def Material \"Black\"\n        {\n"
+               "            token outputs:surface.connect = </World/Looks/Black/Preview.outputs:surface>\n"
+               "            def Shader \"Preview\"\n            {\n"
+               "                uniform token info:id = \"UsdPreviewSurface\"\n"
+               "                color3f inputs:diffuseColor = (0, 0, 0)\n"
+               "                float inputs:roughness = 1\n                token outputs:surface\n            }\n"
+               "        }\n    }\n"
+               "    def DomeLight \"Sky\"\n    {\n        float inputs:intensity = 1\n    }\n}\n";
+        out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 1.6, 2.6)\n    float3 xformOp:rotateXYZ = (-30, 0, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n";
+        return path;
+    };
+    const uint32_t w = 128, h = 128;
+    const auto draw = [&](const fs::path& path, const char* technique) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        if (std::string(technique) == "rt") {
+            (*renderer)->setPathSamples(64);
+            (*renderer)->setPathTotal(512);
+        }
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    const gpu::Buffer mesh = draw(composed("sheet_low_mesh.usda", false, true), "rt");
+    const gpu::Buffer sheet = draw(composed("sheet_low_cloud.usda", true, false), "raster");
+    const gpu::Buffer none = draw(composed("sheet_low_none.usda", false, false), "raster");
+    auto against = render::compareHdr(*gpu->library, sheet, mesh, w, h);
+    auto bare = render::compareHdr(*gpu->library, none, mesh, w, h);
+    REQUIRE(against);
+    REQUIRE(bare);
+    std::printf("  sheet at 1.16 against the mesh path traced: relMSE %.4f; the backdrop alone %.4f\n",
+                against->relMse, bare->relMse);
+    // The sheet is there: its reflection makes the frame closer to the mesh's
+    // than the backdrop alone is.
+    CHECK(against->relMse < 0.5 * bare->relMse);
+}
+
 // A MAP ON A LAYER IS SAMPLED PER GAUSSIAN (task TX). A card whose coat
 // weight is a map, half nothing and half whole (tests/data/lobes/coat_map.usda),
 // converted by ctest beforehand: its gaussians carry both, about half each,

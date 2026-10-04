@@ -15,6 +15,10 @@ import splat_relight;
 import athenea.common.color;
 import athenea.scene.splat_encoding;
 import athenea.common.splat_override;
+
+/// The opacity a gaussian of a thin sheet of glass is drawn at, its colour
+/// scaled to keep alpha x colour (the faint cull, task TX, s62b).
+static const float kSheetAlpha = 0.1;
 // A shadow ray against the cloud's own proxies, where the caller built them.
 
 StructuredBuffer<float4>    positions;
@@ -385,7 +389,24 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     if (kTransfer == kProjectCatcher) {
         posOpacity.w = catcherOpacity(i, r, scale, posOpacity.w);
     }
-    const float alpha = paidOpacity(posOpacity.w, paid);
+    // A THIN SHEET OF GLASS IS DRAWN AS A LAYER. Its gaussians cover what the
+    // sheet reflects head on -- 0.0055 for a windshield at 1.16 -- and carry
+    // that reflection scaled up by 1/F0 (splat_relight's thinWallGain). At
+    // that opacity the faint cull, the cut radius and the blend's 1/255 per
+    // pixel dropped most of them before anything was shaded: a windshield
+    // came out the interior seen through, salted with the few that survived
+    // at a hundred and eighty times their colour. So a sheet's opacity is
+    // held to `kSheetAlpha` and its colour scaled down by as much, which
+    // keeps alpha x colour -- the reflection -- and draws it whole. The
+    // price is a sheet that covers a tenth of what is behind it per gaussian,
+    // where it should let all of it through (until the blend carries a
+    // transmittance of its own); measured on the Corvette's windshield it is
+    // the smaller error by far (s62b: relMSE 2.26 to 0.89 under the shop,
+    // 0.31 to 0.067 under goegap).
+    const bool sheet = kTransfer != kProjectCatcher && params.hasPbr != 0 && pbrThinWalled(pbr[i]) &&
+                       pbrTransmission(pbr[i]) > 0.5;
+    const float alphaOwn = paidOpacity(posOpacity.w, paid);
+    const float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
     if (!(alpha >= 1.0 / 255.0)) {
         cull(slot, kCullFaint);
         return;
@@ -598,6 +619,9 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
 
     ProjRecord record;
     record.screen = float4(centre, t.z, cutoff);
+    if (sheet) {
+        colour *= alphaOwn / alpha;   // the sheet's alpha x colour, as its own opacity had it
+    }
     record.conic = float4(conic, alpha);
     record.colour = float4(colour, sloped ? kSlopeMark : kTransfer == kProjectCatcher ? kCatcherMark : 0.0);
     proj[slot] = record;

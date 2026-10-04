@@ -11854,6 +11854,30 @@ behind. So 0.6 is the default in every mode again; the pawn's head, whose
 dark cast first asked for 1, now has its far face's Fresnel and tint
 (`lensExitThrough`) and is measured by the gate at 0.6.
 
+### A thin sheet of glass is drawn as a layer
+
+The user's worst artefact was the speckle on the Corvette's windshield. The
+windshield is a thin-walled slab (classifySheets) at an index of 1.16, so
+its gaussians cover what it reflects head on, 0.0055, and carry that
+reflection scaled up by 1/F0 (thinWallGain, 181 here). At that opacity the
+projection's faint cull at 1/255 (after the antialias's payment), the cut
+radius and the blend's per-pixel 1/255 dropped most of them before they
+were shaded: the gate's frames drew the interior seen through and nothing
+of the glass (TX and first bit-identical at 6.20, then 2.62), and what
+survived was a scatter of dots at 181 times their colour. Shader variants
+on the same cloud (s62b) found it: a variant that drew the sheet red only
+reached it once the sheet was told apart before the cull. A sheet's
+gaussians are now drawn at an opacity of at least `kSheetAlpha` (0.1) with
+their colour scaled down by as much, which keeps alpha x colour -- the
+reflection -- and draws every one. Windshield relMSE 2.26 to 0.89 under
+the shop, 0.31 to 0.067 under goegap; 0.25 measured 1.25 and 0.081. The
+cost: each gaussian covers a tenth of what is behind it where the glass
+lets it all through, which darkens the interior seen through a sheet
+(close to what the path traced windshield shows, dark with the sky's
+streak). A transmittance the blend carries itself (proposal 075) is what
+would let the interior through as it is. Tested by a pane at 1.16 over a
+black backdrop, drawn against the mesh path traced (`[sheet_draw]`).
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

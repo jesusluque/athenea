@@ -440,6 +440,20 @@ set_tests_properties(mesh2splat_sheet_pane PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     PASS_REGULAR_EXPRESSION "Pane is sheet \\(thin-walled\\) glass"
     LABELS gpe)
+add_test(NAME mesh2splat_sheet_pane_low
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/pane_low.usda --no-camera --resolution 64
+            -o ${ATHENEA_TX_DIR}/pane_low_sheet.usdc)
+set_tests_properties(mesh2splat_sheet_pane_low PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_SETUP sheet_low
+    PASS_REGULAR_EXPRESSION "Pane is sheet \\(thin-walled\\) glass"
+    LABELS gpe)
+add_test(NAME sheet_glass_draws_whole
+    COMMAND athenea_usd_tests "[sheet_draw]")
+set_tests_properties(sheet_glass_draws_whole PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED sheet_low
+    LABELS gpe)
 add_test(NAME mesh2splat_sheet_ball
     COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/glass.usda --no-camera --resolution 64
             -o ${ATHENEA_TX_DIR}/ball_sheet.usdc)
