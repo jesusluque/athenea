@@ -11759,10 +11759,18 @@ Glass_Tinted bound as solid glass (transmission one, no
 `geometry_thin_walled`) on single surfaces: converted solid, their gaussians
 covered `--glass-opacity` (0.6) of the cabin and let 40% of it through,
 which is the blurred patch in the windscreen and the cabin read 2.5 times
-bright behind it. `--thin-glass NAME` reads a material as thin-walled
-(`MeshStageOptions::thinGlass`), by its prim path or its name. Not guessed
-from the mesh: whether a surface is a sheet is the mesh's topology, and
-nothing here measures it yet.
+bright behind it. The conversion now reads it from the mesh, with nothing said per asset
+(`Converter::classifySheets`): for every transmitting piece whose material
+does not already say it is thin, its triangles' edges, keyed by where the
+two points stand (so a sphere whose seam repeats its points is closed),
+are sorted and their runs counted on the device; an edge one triangle uses
+is open, one more than two use is no solid's. Over a two-hundredth of the
+edges open, or any shared by more than two, is a sheet, read thin-walled;
+a closed glass with a stray hole stays solid. Each decision is printed per
+mesh. `--thin-glass NAME` (`MeshStageOptions::thinGlass`) is the override,
+for a sheet the mesh does not show -- a thin slab modelled closed, which the
+edges call solid. Measuring thickness by rays, which would catch that too,
+is not done.
 
 ### A transfer goes up a slice at a time
 

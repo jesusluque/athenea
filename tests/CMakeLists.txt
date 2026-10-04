@@ -388,6 +388,24 @@ foreach(material paint chrome rubber glass)
             LABELS gpe)
     endforeach()
 endforeach()
+# A GLASS IS A SHEET BY ITS MESH: a pane modelled as one surface with a solid
+# glass on it converts thin-walled, the closed glass ball solid
+# (Converter::classifySheets), with nothing said per asset.
+add_test(NAME mesh2splat_sheet_pane
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/pane.usda --no-camera --resolution 64
+            -o ${ATHENEA_TX_DIR}/pane_sheet.usdc)
+set_tests_properties(mesh2splat_sheet_pane PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "Pane is sheet \\(thin-walled\\) glass"
+    LABELS gpe)
+add_test(NAME mesh2splat_sheet_ball
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/glass.usda --no-camera --resolution 64
+            -o ${ATHENEA_TX_DIR}/ball_sheet.usdc)
+set_tests_properties(mesh2splat_sheet_ball PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "Ball is solid glass"
+    LABELS gpe)
+
 # A transfer baked in slices (--transfer-slice) finds the surface under every
 # gaussian as one slice does: four slices of the paint ball, filtered.
 add_test(NAME mesh2splat_tx_sliced
