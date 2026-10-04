@@ -10,6 +10,7 @@
 #include "athenea/gpu/ShaderLibrary.h"
 
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 #include "athenea/gpu/Device.h"
@@ -271,6 +272,21 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
         records.emplace_back();   // a buffer to bind, which nothing reads
     }
     count_ = static_cast<uint32_t>(records.size()) - (lights.empty() ? 1u : 0u);
+    // WHETHER ANYTHING CHANGED, for what a frame keeps between frames
+    // (`revision`): the records as authored, the values beside them and the
+    // reach the shares are measured against, compared as bytes. Lights the
+    // device places or moves are new every frame.
+    const bool placed = !expansions.empty() || !motionExpansions.empty() || anyMoves_;
+    const bool same = !placed && records.size() == lastRecords_.size() && iesValues.size() == lastValues_.size() &&
+                      sceneRadius == lastRadius_ &&
+                      std::memcmp(records.data(), lastRecords_.data(), records.size() * sizeof(LightRecord)) == 0 &&
+                      std::memcmp(iesValues.data(), lastValues_.data(), iesValues.size() * sizeof(float)) == 0;
+    if (!same) {
+        ++revision_;
+        lastRecords_ = records;
+        lastValues_ = iesValues;
+        lastRadius_ = sceneRadius;
+    }
     if (records.size() > capacity_ || !records_.valid()) {
         auto made = gpu::Buffer::fromSpan<LightRecord>(*device_, records, "lights.records");
         if (!made) return std::move(made).error();

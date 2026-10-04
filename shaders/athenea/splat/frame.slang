@@ -158,6 +158,9 @@ public struct FrameParams {
     /// 1: `curvature` holds this cloud's shape operators, and a TX transfer's
     /// reflection gets its slope across the footprint (splat_project).
     public uint  hasCurvature;
+    /// 1: `txCache` holds this cloud's view-independent transfer terms
+    /// (splatTransferViewless), each with the dome slice it is for.
+    public uint  txCache;
     public EditParams edit;      // this cloud instance's SplatEdit (common/edit.slang)
 };
 

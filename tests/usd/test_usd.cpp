@@ -13276,6 +13276,11 @@ TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path trace
             CHECK(relMse[0] < bound.relMse);
             if (bound.beatsFirst) {
                 CHECK(relMse[0] < relMse[1]);
+            } else {
+                // Glass: no worse than the first transfer, which drew a
+                // clear ball sharp against the sky it bends (the pawn's head
+                // came back milky when the field filled the whole lens).
+                CHECK(relMse[0] <= 1.05 * relMse[1]);
             }
         }
     }

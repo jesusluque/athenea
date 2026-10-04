@@ -58,6 +58,7 @@
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/algo/PrefixSum.h"
+#include "athenea/gpu/algo/RadixSort.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/gpu_host/Context.h"
 #include "athenea/gpu_host/ImageStorage.h"
@@ -118,6 +119,10 @@ constexpr uint32_t kRowEntries = 4096;
 
 struct Options {
     std::vector<std::string> hidden;
+    /// Materials whose glass is a sheet though they do not say so, and
+    /// materials whose glass is solid whatever their mesh looks like.
+    std::vector<std::string> thinGlass;
+    std::vector<std::string> solidGlass;
     std::string              stage;
     std::string              output = "splats.usda";
     std::string              prim;
@@ -308,6 +313,12 @@ public:
         ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetFlags", subsetFlags_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetScatter", subsetScatter_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_cells", "m2sCells", cells_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetEdges", sheetEdges_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetRuns", sheetRuns_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetSum", sheetSum_));
+        auto sort = gpu::RadixSort::create(*library_);
+        if (!sort) return std::move(sort).error();
+        sort_ = std::move(*sort);
         auto prefix = gpu::PrefixSum::create(*library_);
         if (!prefix) return std::move(prefix).error();
         prefix_ = std::move(*prefix);
@@ -391,6 +402,132 @@ public:
             }
         }
         return ok();
+    }
+
+    /// WHICH GLASS IS A SHEET, from the mesh and nothing else. A transmitting
+    /// piece whose material does not already say it is thin is read
+    /// thin-walled where it is a sheet or a slab:
+    ///
+    /// - open: its triangles leave edges with one triangle on them, or share
+    ///   one among more than two -- a windscreen modelled as one surface;
+    /// - thin: twice its volume over its area (2V/A, research 055) under four
+    ///   of the model's cells or a fiftieth of its own size (the root of its
+    ///   area) -- the Corvette's glass is closed slabs 3 to 4 mm thick, two
+    ///   parallel faces that bend nothing, where a ball reads two thirds of
+    ///   its radius and stays solid.
+    ///
+    /// Both measured on the device from the triangles the piece was packed
+    /// into (`mesh2splat_sheet`): the edges keyed by where their points
+    /// stand, sorted and their runs counted; the volume and the area summed.
+    /// Three counts and two sums come back. Over a two-hundredth of the edges
+    /// open is open, so a closed glass with a stray hole is not. Each decision
+    /// is printed. `--thin-glass` names one neither measure shows.
+    [[nodiscard]] Result<void> classifySheets() {
+        gpu::Device& device = library_->device();
+        sheet_.assign(pieces_.size(), false);
+        for (size_t p = 0; p < pieces_.size(); ++p) {
+            const Piece& piece = pieces_[p];
+            const usd::StageMaterial& material = *piece.material;
+            if (material.transmission <= 0.0F || material.thinWalled || piece.triangles == 0 ||
+                p >= streams_.size() || !streams_[p]) {
+                continue;
+            }
+            // `--solid-glass`: the caller's word over the mesh's.
+            const std::string name = material.path.substr(material.path.find_last_of('/') + 1);
+            if (std::any_of(options_->solidGlass.begin(), options_->solidGlass.end(),
+                            [&](const std::string& want) { return want == material.path || want == name; })) {
+                std::printf("mesh2splat: %s is solid glass (--solid-glass)\n", piece.path.c_str());
+                continue;
+            }
+            const uint32_t edges = piece.triangles * 3;
+            const auto words = [&](uint64_t n, uint32_t element, const char* label) {
+                gpu::BufferDesc desc;
+                desc.bytes = std::max<uint64_t>(n, 1) * element;
+                desc.elementBytes = element;
+                desc.label = label;
+                return gpu::Buffer::create(device, desc);
+            };
+            auto view = viewOf(*context_, streams_[p], "mesh2splat.sheetPicture");
+            if (!view) return std::move(view).error();
+            gpu::SortBuffers buffers;
+            auto lo = words(edges, 4, "mesh2splat.sheetKeysLo");
+            auto hi = words(edges, 4, "mesh2splat.sheetKeysHi");
+            auto values = words(edges, 4, "mesh2splat.sheetValues");
+            auto scratchLo = words(edges, 4, "mesh2splat.sheetScratchLo");
+            auto scratchHi = words(edges, 4, "mesh2splat.sheetScratchHi");
+            auto scratchValues = words(edges, 4, "mesh2splat.sheetScratchValues");
+            auto counts = words(3, 4, "mesh2splat.sheetCounts");
+            auto measures = words(piece.triangles, 8, "mesh2splat.sheetMeasures");
+            auto sums = words(2, 4, "mesh2splat.sheetSums");
+            if (!lo || !hi || !values || !scratchLo || !scratchHi || !scratchValues || !counts || !measures ||
+                !sums) {
+                return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot measure a glass");
+            }
+            buffers.keysLo = *lo;
+            buffers.keysHi = *hi;
+            buffers.values = *values;
+            buffers.scratchKeysLo = *scratchLo;
+            buffers.scratchKeysHi = *scratchHi;
+            buffers.scratchValues = *scratchValues;
+            const uint32_t zero[3] = {0, 0, 0};
+            ATHENEA_TRY(counts->write(device, 0, sizeof(zero), zero));
+            const auto bind = [&](rhi::ShaderCursor cursor) {
+                cursor["picture"].setBinding(view->rhi());
+                cursor["keysLo"].setBinding(buffers.keysLo.rhi());
+                cursor["keysHi"].setBinding(buffers.keysHi.rhi());
+                cursor["values"].setBinding(buffers.values.rhi());
+                cursor["counts"].setBinding(counts->rhi());
+                cursor["measures"].setBinding(measures->rhi());
+                cursor["sums"].setBinding(sums->rhi());
+                cursor["sheet"]["triangles"].setData(piece.triangles);
+                cursor["sheet"]["count"].setData(edges);
+                cursor["sheet"]["width"].setData(static_cast<uint32_t>(streams_[p]->bounds().width()));
+                cursor["sheet"]["stride"].setData(static_cast<uint32_t>(streams_[p]->stride()));
+            };
+            {
+                gpu::CommandBatch batch(device);
+                sheetEdges_.dispatch(batch, {piece.triangles, 1, 1}, bind);
+                ATHENEA_TRY(sort_.sort(batch, buffers, edges, 64));
+                sheetRuns_.dispatch(batch, {edges, 1, 1}, bind);
+                sheetSum_.dispatch(batch, {256, 1, 1}, bind);
+                ATHENEA_TRY(batch.submit(true));
+            }
+            uint32_t said[3] = {0, 0, 0};
+            float measured[2] = {0.0F, 0.0F};
+            ATHENEA_TRY(counts->read(device, 0, sizeof(said), said));
+            ATHENEA_TRY(sums->read(device, 0, sizeof(measured), measured));
+            const bool open = said[1] * 200u > said[0] || said[2] > 0;
+            const double area = std::max(static_cast<double>(measured[1]), 1.0e-30);
+            const double thickness = 2.0 * std::abs(static_cast<double>(measured[0])) / area;
+            const double size = std::sqrt(area);
+            const bool slab = !open && (thickness < 4.0 * modelCell_ || thickness < 0.02 * size);
+            // A TINTED SHEET STAYS SOLID, for now: a thin wall lets what
+            // stands behind it through by its coverage, which is grey -- the
+            // Corvette's tinted panes (transmission colour 0.52) let the cabin
+            // through untinted at twice the path traced brightness. A solid
+            // glass carries its tint in the field.
+            const auto& tint = material.transmissionColour;
+            const float through = 0.2126F * tint[0] + 0.7152F * tint[1] + 0.0722F * tint[2];
+            const bool tinted = through < 0.9F;
+            sheet_[p] = (open || slab) && !tinted;
+            std::printf("mesh2splat: %s is %s glass: %u of its %u edges open, %u shared by more than two; "
+                        "%.4g thick (2V/A) against a cell of %.4g and a size of %.4g\n",
+                        piece.path.c_str(),
+                        (open || slab) && tinted ? "tinted, kept solid"
+                        : open                   ? "sheet (thin-walled)"
+                        : slab                   ? "slab (thin-walled)"
+                                                 : "solid",
+                        said[1], said[0], said[2], thickness, modelCell_, size);
+        }
+        return ok();
+    }
+
+    /// Whether piece `p`'s glass is a sheet: its material says so, the
+    /// caller does (`--thin-glass`, read into the material), or its mesh
+    /// does (`classifySheets`).
+    [[nodiscard]] bool thinGlassOf(size_t p) const {
+        return thinGlass(*pieces_[p].material) ||
+               (p < sheet_.size() && sheet_[p] && pieces_[p].material->transmission > 0.0F);
     }
 
     /// Every piece's triangles into a picture of its own, and the model's box
@@ -890,6 +1027,8 @@ public:
         wantedBy_.assign(pieces, 0);
         shareOf_.assign(pieces, 0);
         ATHENEA_TRY(deriveCells());
+        // Which glass is a sheet or a slab, now that the cell is known.
+        ATHENEA_TRY(classifySheets());
         if (perMesh_ && !camera_) {
             std::printf("mesh2splat: density per mesh: %u cells across each mesh's longest side, the cell "
                         "held between %.4g and %.4g (the model's is %.4g)\n",
@@ -1074,7 +1213,7 @@ public:
                 // And whether it is a sheet: a thin wall's transmission is
                 // its gaussians' own transparency (see `glassOpacity`).
                 thinWalled_.insert(thinWalled_.end(), out->written,
-                                   thinGlass(material) ? int32_t{1} : int32_t{0});
+                                   thinGlassOf(k) ? int32_t{1} : int32_t{0});
                 // And whether its metal is a Schlick (OpenPBR, glTF) rather
                 // than a conductor: what a frame reflects a metal with.
                 schlickMetal_.insert(schlickMetal_.end(), out->written,
@@ -1083,7 +1222,7 @@ public:
                 // refracts only with an index (rt_shade: `ior > 1`), and a
                 // cloud keeps one: without it the pawn's glass head was a
                 // milky ball in every mode, relit, transferred or baked.
-                if (out->written > 0 && material.transmission > 0.0F && !material.thinWalled) {
+                if (out->written > 0 && material.transmission > 0.0F && !thinGlassOf(k)) {
                     const float ior = material.ior;
                     if (glassIor_ > 0.0F && glassIor_ != ior) {
                         std::fprintf(stderr,
@@ -1332,7 +1471,7 @@ private:
         // reflects head on at its index, which the effect works out
         // (`m2sGlassCovers`). A solid covers `--glass-opacity`.
         number("glassOpacity", options_->minOpacity);
-        number("thinWall", thinGlass(material) ? 1.0 : 0.0);
+        number("thinWall", thinGlassOf(at) ? 1.0 : 0.0);
         number("ior", static_cast<double>(material.ior));
         number("maxCells", static_cast<double>(options_->maxCells));
         number("cellMin", static_cast<double>(cellValues_[3 + 3 * pieces_.size() + at]));
@@ -1749,6 +1888,10 @@ private:
                                              transferInto_, subsetFlags_, subsetScatter_;
     gpu::ComputeKernel                       zonalPoseRays_, zonalPack_, zonalUnpack_;
     gpu::PrefixSum                           prefix_;
+    gpu::RadixSort                           sort_;
+    gpu::ComputeKernel                       sheetEdges_, sheetRuns_, sheetSum_;
+    /// A piece each: its glass is a sheet by its mesh (`classifySheets`).
+    std::vector<bool>                        sheet_;
     std::vector<Piece>                       pieces_;
     gpu::ComputeKernel                       cells_;
     gpu::Buffer                              boxes_;        ///< the model's box, then each mesh's
@@ -2430,6 +2573,14 @@ void addMesh2Splat(CLI::App& app) {
                     "the ParticleField stage to write (.usda, .usdc, .usd), or a .athc with levels of detail");
     cmd->add_option("--prim", o->prim, "only meshes at or under this prim path");
     cmd->add_option("--hide", o->hidden, "a prim to leave out with all beneath it, as if invisible (repeatable)");
+    cmd->add_option("--thin-glass", o->thinGlass,
+                    "a material (prim path or name) whose glass is one sheet though it does not say so -- a "
+                    "windscreen modelled as a single surface with a solid glass on it: converted thin-walled, "
+                    "so what stands behind it shows through (repeatable; the conversion already reads a sheet "
+                    "or a slab from the mesh, so this overrides)");
+    cmd->add_option("--solid-glass", o->solidGlass,
+                    "a material (prim path or name) whose glass is solid whatever its mesh looks like: the "
+                    "override the other way (repeatable)");
     cmd->add_option("--lod-levels", o->lodLevels,
                     "levels of detail: the conversion again at half the resolution each time, each level a "
                     "stage beside the output and the output one that draws them as one cloud (1: none)");
@@ -2690,6 +2841,7 @@ void addMesh2Splat(CLI::App& app) {
             read.time = o->time;
             read.skinned = o->skinned;
             read.hidden = o->hidden;
+            read.thinGlass = o->thinGlass;
             if (o->transfer) {
                 // The two are different answers to the same question and the file
                 // has room for one: a transfer keeps the geometry, a radiance

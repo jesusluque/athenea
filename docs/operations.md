@@ -371,6 +371,8 @@ recipe is §3.1 below.
 | `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd`, or `.athc` with levels of detail: the gaussians and their shading normals only (no metallic/roughness/transmission, Cryptomatte ids, glass index, up axis or unit); `--skinned`, `--transfer` and `--lod-levels` are refused with it |
 | `--prim` | prim path | every mesh | only meshes at or under this path |
 | `--hide` | prim path, repeatable | none | left out with all beneath it, as if invisible (a session opinion; the file is untouched) |
+| `--thin-glass` | material path or name, repeatable | none | an override: a transmitting material read as thin-walled though neither it nor its mesh says so. A glass is already read thin-walled where its material says so or where its mesh is a sheet or a slab -- over a two-hundredth of its edges open, or any shared by more than two, or twice its volume over its area under four cells or a fiftieth of its size, which the conversion measures on the device and prints per mesh; this names one the mesh does not show. A solid glass covers `--glass-opacity` of what stands behind it; a thin wall covers what it reflects head on (under a tenth), so the cabin shows through |
+| `--solid-glass` | material path or name, repeatable | none | the override the other way: a transmitting material kept solid whatever its mesh measures |
 | `--resolution` | integer | `512` | cells across the longest side of the box the density is measured over |
 | `--lod-levels` | integer | `1` | levels of detail: the conversion again at half the resolution each time; `-o` becomes the stage that draws them as one cloud, each level a `<name>_lod<n>.usdc` beside it |
 | `--density` | `per-model` \| `per-mesh` | `per-model` | which box that is |

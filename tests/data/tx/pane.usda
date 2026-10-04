@@ -1,0 +1,45 @@
+#usda 1.0
+# Copyright (c) 2026 jesus luque.
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# A pane of glass modelled as one surface, bound to a solid glass that does
+# not say it is thin: what mesh2splat must read as a sheet by its open edges
+# (tests/CMakeLists.txt, mesh2splat_sheet_*).
+def Xform "World"
+{
+    def Mesh "Pane" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4]
+        int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]
+        point3f[] points = [(-1, -1, 0), (0, -1, 0), (1, -1, 0), (-1, 1, 0), (0, 1, 0), (1, 1, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (0.5, 0), (1, 0), (0, 1), (0.5, 1), (1, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Glass>
+    }
+    def Scope "Looks"
+    {
+        def Material "Glass"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Glass/OpenPBR.outputs:out>
+
+            def Shader "OpenPBR"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                float inputs:specular_roughness = 0
+                float inputs:specular_ior = 1.5
+                float inputs:transmission_weight = 1
+                token outputs:out
+            }
+        }
+    }
+}

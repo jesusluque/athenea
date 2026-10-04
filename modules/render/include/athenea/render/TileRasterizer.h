@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include "athenea/core/Result.h"
@@ -170,6 +171,10 @@ struct SplatLights {
     /// solid angle then irradiance. Null, or a solid angle of 0, and the
     /// harmonics hold the whole sky as they did before.
     const gpu::Buffer*           envSun = nullptr;
+    /// WHAT THESE LIGHTS AND THIS SKY ARE, as a number that changes whenever
+    /// they do (light::LightTable::revision). 0 says nothing is known, and no
+    /// cloud keeps what depends on them from one frame to the next.
+    uint64_t                     revision = 0;
 
     [[nodiscard]] bool environment() const noexcept {
         return envLights > 0 && envBaseSide > 0 && envTexels != nullptr && envSh != nullptr &&
@@ -315,6 +320,19 @@ private:
     /// The same with the transfer's shading compiled out, for a cloud that
     /// carries none (splat_project.slang's projectSplat says why).
     gpu::ComputeKernel projectPlain_;
+    /// And for a cloud with the first transfer (no cells): the TX transfer's
+    /// shading compiled out of it too.
+    gpu::ComputeKernel projectFirst_;
+    /// A transfer cloud's view-independent terms, a splat each, kept while
+    /// the lights, the sky, the cloud and its place stand (`txCaches_`).
+    gpu::ComputeKernel viewless_;
+    struct TxCache {
+        gpu::Buffer buffer;
+        uint64_t    key = 0;
+        uint64_t    seen = 0;   ///< the last frame that drew the cloud
+    };
+    uint64_t                                             frameOfCaches_ = 0;
+    std::unordered_map<const scene::GpuSplats*, TxCache> txCaches_;
     gpu::ComputeKernel compact_;
     gpu::ComputeKernel pointsProject_;
     gpu::ComputeKernel gather_;

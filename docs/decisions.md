@@ -11512,6 +11512,16 @@ that route was missing in the rasteriser, **what stands behind**:
   slab sends it; the single bend at one face is not what a sheet of glass
   does -- the sky where the bits behind are open and the field coupled to the
   sky where they are not.
+  **A solid glass is a lens** (the pawn's clear head drew milky and flat,
+  with a horizon across it, 0.58 against the mesh path traced where the first
+  transfer drew it sharp): its own far face closes every cell behind it, so
+  the field filled the whole lens at degree 3. For a gaussian with an index
+  the frame now reads the sky along the ray the glass bends, sharp, as the
+  first transfer did, where the field says the way through is open -- its
+  white-sky value along `-wo`, a glass's own throughput when open, smoothly
+  from 0.5 to 0.85 in luminance -- and the field coupled to the sky where it
+  says closed. `tx_conversions` holds the glass ball under every sky to no
+  worse than the first transfer (5%).
 - **Its own index.** Where the cloud carries the layers, a transmitting
   gaussian bends by its specular index whenever the cloud's `ior` says it
   bends at all. That reaches relit clouds with layers too, which proposal 026
@@ -11636,6 +11646,11 @@ kernel's state in thread memory, and a kernel that holds too much draws some
 of its threads wrong rather than failing (the iPad refused one outright;
 de0413c, 254a609).
 
+(Later three: the first transfer's clouds -- no cells -- drew blotched in
+the TX transfer's kernel once the slope and the kept terms grew it, the
+glass ball under the lamp among them, so `splatProjectFirst` is
+`projectSplat<1>`, with the cells, the field and the slope compiled out;
+`splatProject` is level 2, a TX transfer's.)
 `splatProject` is now `projectSplat<kTransfer>`, two entry points: the one a
 cloud with a transfer takes, and `splatProjectPlain` with the transfer's
 shading compiled out (`relitSplat<0>`, `relitByDome<0>`), which every other
@@ -11700,15 +11715,17 @@ read at the centre's angle (044's bands, 1.00 / 0.95 / 0.90 / 0.81).
   open reflection's colour changes over each step, weighed as the
   reflection is. Two values of three a slot go to `slopes`, as halves, and
   the record's colour.w says so (`kSlopeMark`, 0.25).
-- **Limited, as a scheme for a conservation law is (051).** The sky is read
-  a pixel each way along both axes, and the slope per channel is the smaller
-  of the step forward and the step back where they agree in sign, nothing
-  where they do not (minmod): the ramp never leaves the range of the three
-  readings, so a window narrower than the gaussian in the chrome is not
-  carried across the footprint as a halo. Measured before the limiter: the
-  Corvette's Car_Paint_Main 0.629 to 0.393 and Car_Paint_Black 1.20 (whole
-  car) to 0.255, the chrome 1.35 to 1.64; the balls, whose skies hold no
-  feature a gaussian wide, did not move.
+- **A pixel ahead, by measure.** The slope is the change a pixel right and a
+  pixel down, one-sided. Against the path traced frame, the Corvette's
+  Car_Paint_Main went from 0.629 to 0.393 and Car_Paint_Black from 1.20
+  (whole car) to 0.255 with it, the chrome from 1.35 to 1.64. The central
+  difference (a pixel each way, half the difference) read 0.584 and 0.894,
+  chrome 1.75; minmod (research proposal 051) 0.564 and 0.938, chrome 1.57.
+  Why the one-sided slope does better than the derivative is not
+  understood -- a step scale or a sign the central one gets wrong is the
+  first suspect -- and it is also the cheaper: two sky readings a lobe,
+  not four. The balls, whose skies hold no feature a gaussian wide, did not
+  move with any of the three.
 - **The blend adds the slope.** `splat_blend` takes the slope with the
   record into group memory and draws `max(colour + slope . d, 0)` at the
   pixel `d` from the centre. A record without the mark is drawn as it was.
@@ -11722,6 +11739,66 @@ seen edge on does not swing its reflection across the sky.
 **Checked** (pending the GPU turn): the TX balls and the Corvette's paint and
 chrome against the path traced frame; the frozen card for the projection
 kernel's size.
+
+### A TX frame computes what the eye changes (playback)
+
+The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew
+in 158 ms, a relit cloud of its size in about 83: projection 84.5 ms, the
+two sorts 30, the blend 25. Shader variants priced the projection's parts:
+the field and its coupling 24 ms, the cells read by the lobes 16.5, the sun's
+share and bounce 12, the body's transfer 7.5.
+
+- **The field is read once for both lobes** (`splatFieldAlongPair`): the
+  polish's roughness and the coat's take their two band weightings of one
+  reading of its forty-eight values.
+- **What the eye does not change is kept** (`transferViewless`): the body's
+  light under the sky (the transfer dotted with it, the sun's cosine at the
+  share the cells let through, its bounce), that share, and the field's
+  coupling to the sky. `splatTransferViewless` writes them a splat each, as
+  halves with the dome slice they are for; `splatProject` reads them back
+  where the eye sees the face they were kept for. The rasteriser keeps them a
+  cloud each and works them out again only when their key changes: the
+  lights' revision (`LightTable::revision`, bumped when the records, their
+  values or the scene's reach differ as bytes, and on every frame where the
+  device places or moves a light -- the sky is prepared from the same
+  records), the cloud's revision and buffers, its transform and the
+  indirect toggle. A cloud no frame draws gives its terms back.
+
+**Checked** (pending the GPU turn): the profile again; the balls and the
+Corvette's paint, which must read what they did.
+
+### A windscreen modelled as one surface is a sheet (`--thin-glass`)
+
+Research (proposal 054) found the Corvette's Glass_Windshield and
+Glass_Tinted bound as solid glass (transmission one, no
+`geometry_thin_walled`) on single surfaces: converted solid, their gaussians
+covered `--glass-opacity` (0.6) of the cabin and let 40% of it through,
+which is the blurred patch in the windscreen and the cabin read 2.5 times
+bright behind it. The conversion now reads it from the mesh, with nothing said per asset
+(`Converter::classifySheets`): for every transmitting piece whose material
+does not already say it is thin, its triangles' edges, keyed by where the
+two points stand (so a sphere whose seam repeats its points is closed),
+are sorted and their runs counted on the device; an edge one triangle uses
+is open, one more than two use is no solid's. Over a two-hundredth of the
+edges open, or any shared by more than two, is a sheet, read thin-walled;
+a closed glass with a stray hole stays solid. Each decision is printed per
+mesh. But research measured the Corvette's glass in Blender (proposal 055):
+closed slabs, two parallel faces 3 to 4 mm apart, only one of them open --
+so the edges alone call nearly all of it solid. The thickness reads them:
+twice the volume over the area (2V/A, the signed tetrahedra to the origin
+and the triangles' areas summed by one group on the device) is a slab's gap
+and two thirds of a ball's radius. Under four of the model's cells or a
+fiftieth of the glass's own size (the root of its area) it is a slab, read
+thin-walled: two parallel faces bend nothing, so thin is right optically
+too. Both measures come from the triangles the piece was packed into, in
+the world. `--thin-glass` and `--solid-glass` are the overrides. A tinted
+sheet or slab (transmission colour under 0.9 in luminance) stays solid for
+now: a thin wall lets what stands behind it through by its coverage, which
+is grey, and the Corvette's tinted panes let the cabin through untinted --
+225 against the path traced frame where solid read 1.85. Classified, the
+windscreen read 6.2 against 0.26 per material: the cabin behind it, left a
+mesh in that measure, is the mesh raster's own noise (research 048's
+addendum); the whole car converted is what measures it.
 
 ### A transfer goes up a slice at a time
 

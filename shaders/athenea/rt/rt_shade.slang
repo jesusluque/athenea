@@ -264,7 +264,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         // frame, and they are read here exactly as the rasteriser reads its.
         // A ray meets a point, not a footprint: no slope.
         SplatSlope flat = noSlope();
-        colour = relitSplat<1>(surface, normalize(eyeWorld - surface.position), lights,
+        colour = relitSplat<2>(surface, normalize(eyeWorld - surface.position), lights,
                             params.lightCount, params.categoriesLo, params.categoriesHi,
                             shadowFactors, (params.shadowBase + i) * params.shadowLights,
                             params.shadowLights, envTexels, envSh, envOfLight,

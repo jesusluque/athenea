@@ -117,7 +117,7 @@ void splatDecode(uint3 tid: SV_DispatchThreadID) {
         lobes[j * 3 + 2] = words.z;
     }
     if (params.shadowBits != kNoField) {
-        const uint words = params.shadowWords == 8u ? 8u : 2u;
+        const uint words = params.shadowWords >= 8u ? params.shadowWords : 2u;   // 2, 8 or 32
         for (uint w = 0; w < words; ++w) {
             shadowBits[j * words + w] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits + w));
         }

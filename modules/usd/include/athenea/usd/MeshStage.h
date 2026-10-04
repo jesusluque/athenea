@@ -299,6 +299,10 @@ struct MeshStageOptions {
     /// hidden prims, so a conversion holds what that host draws. Nothing on
     /// disk changes.
     std::vector<std::string> hidden;
+    /// Materials (prim paths, or their names) whose glass is a sheet, though
+    /// the material does not say so: a windscreen modelled as one surface
+    /// with a solid glass bound to it. Read as thin-walled.
+    std::vector<std::string> thinGlass;
 };
 
 /// Opens `path` and reads its meshes. The stage stays open for as long as this

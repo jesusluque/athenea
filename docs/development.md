@@ -221,6 +221,16 @@ the README's *Building*. Tests run one at a time because they share one GPU:
 every test preset sets `jobs: 1`, and running two suites at once is how a
 timing becomes meaningless.
 
+**The TX gate.** A change to shading or to the conversion runs the gate
+before anything else: `ctest -L tx_gate` (and `tx_conversions_render_like_the_mesh`,
+whose glass ball is held to the first transfer too). It converts the pawn of
+the OpenChessSet under its workshop sky (`ATHENEA_BENCH_DIR`) and the
+Corvette (`ATHENEA_ASSETS_DIR`, labelled `slow`) with `--transfer` and with
+the first transfer, through `--validate`, and fails where a material comes
+out more than 5% worse in TX (`tests/regress/tx_against_first.cmake`); its
+GT|mesh|cloud pictures stay under `build/<preset>/tests/tx_gate`. A machine
+without those assets skips it.
+
 ### 3.2 A shader-only change
 
 Shaders are compiled at run time, not embedded, so a change to an existing

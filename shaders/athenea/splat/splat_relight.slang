@@ -653,6 +653,27 @@ public float3 splatFieldCoupling(SplatSurface s, StructuredBuffer<uint> transfer
 /// this roughness -- a GGX lobe reflected is about a von Mises-Fisher of
 /// concentration `1 / (2 alpha^2)`, whose band l is `exp(-l (l + 1) alpha^2)`.
 /// Times `splatFieldCoupling` it is radiance.
+/// The field along one direction at two roughnesses -- the polish's and the
+/// coat's -- out of one reading of its forty-eight values: the frame's most
+/// costly reads (24 of the TX car's 85 ms of projection were the field's).
+public void splatFieldAlongPair(SplatSurface s, StructuredBuffer<uint> transfer, float3 d, float roughness,
+                                float coatRoughness, out float3 polish, out float3 coat) {
+    const uint base = s.transferBase + transferFieldOffset(s.transferCount);
+    const float a = roughness * roughness;
+    const float b = coatRoughness * coatRoughness;
+    const float a2 = a * a, b2 = b * b;
+    polish = float3(0.0);
+    coat = float3(0.0);
+    [unroll] for (uint j = 0; j < 16u; ++j) {
+        const float band = j < 1u ? 0.0 : (j < 4u ? 2.0 : (j < 9u ? 6.0 : 12.0));   // l (l + 1)
+        const float3 value = transferRgbAt(transfer, base + j * 3u) * envBasisValue(j, d);
+        polish += value * exp(-band * a2);
+        coat += value * exp(-band * b2);
+    }
+    polish = max(polish, float3(0.0));
+    coat = max(coat, float3(0.0));
+}
+
 public float3 splatFieldAlong(SplatSurface s, StructuredBuffer<uint> transfer, float3 d, float roughness) {
     const uint base = s.transferBase + transferFieldOffset(s.transferCount);
     const float alpha = roughness * roughness;
@@ -976,6 +997,44 @@ float3 transmittedShare(SplatSurface s, float nDotV) {
                                             s.lobes.specularWeight);
 }
 
+/// WHAT A TX TRANSFER GIVES A GAUSSIAN WHATEVER THE EYE: the body's light
+/// under this sky (the transfer dotted with it, the sun's exact cosine at
+/// the share the cells let through, the sun's bounce), that share, and the
+/// field's coupling to the sky. The frame keeps these a gaussian while the
+/// sky and the lights stand (splat_project's splatTransferViewless) and
+/// reads them back; what a frame computes is then what the eye changes.
+public void transferViewless<let kCells : int>(SplatSurface s, StructuredBuffer<uint> transfer, StructuredBuffer<uint> cellBits,
+                             StructuredBuffer<float4> envSh, StructuredBuffer<float4> envSun, uint dome,
+                             bool withIndirect, out float3 front, out float3 coupling, out float sunShare) {
+    front = transferredBody(s, transfer, envSh, dome, withIndirect);
+    // THE DISC THE HARMONICS NO LONGER HOLD. `env_sun` took it out of
+    // them and handed over its direction and the irradiance it delivers,
+    // so it is added back here as the light it is: an exact cosine, and a
+    // share of it that the transfer itself estimates along that
+    // direction. A solid angle of zero says this dome had no sun and
+    // nothing was taken, and then there is nothing to add.
+    //
+    // Added to the body only. The prefiltered map kept its own sun, so the
+    // polish already has it, and what the polish owes is the shadowed
+    // share of it taken back out (relitByDome).
+    const float4 disc = envSun[dome * 2];
+    const float3 irradiance = disc.w > 0.0 ? envSun[dome * 2 + 1].rgb : float3(0.0);
+    const float cosine = max(dot(s.normal, disc.xyz), 0.0);
+    sunShare = disc.w > 0.0 ? splatOpenToward(s, transfer, cellBits, disc.xyz) : 1.0;
+    front += irradiance * (cosine * sunShare * kOverPiSun);
+    // WHAT A TX TRANSFER ADDS (docs/decisions.md, task TX): the open
+    // directions by the lobe (step 1), and what the closed ones show
+    // (step 2) -- the reflected field, scaled to this sky -- and the sun's
+    // bounce, which the first transfer lost with the sun it took out of
+    // the harmonics.
+    const bool cells = kCells >= 2 && s.cellWords >= 8u;
+    const bool field = cells && withIndirect && transferHasField(s.transferCount);
+    if (cells && withIndirect && disc.w > 0.0) {
+        front += irradiance * splatIndirectAlong(s, transfer, disc.xyz);
+    }
+    coupling = field ? splatFieldCoupling(s, transfer, envSh, dome, disc, irradiance) : float3(0.0);
+}
+
 /// HOW THE REFLECTION TURNS ACROSS A GAUSSIAN'S FOOTPRINT (task TX). The
 /// caller says which way the surface faces a pixel to the right of the
 /// gaussian's centre and a pixel below it (`normalX`, `normalY`, in the
@@ -989,10 +1048,15 @@ public struct SplatSlope {
     public bool   on;
     public float3 normalX;
     public float3 normalY;
-    public float3 normalXBack;   ///< a pixel to the left
-    public float3 normalYBack;   ///< and a pixel up
     public float3 slopeX;   ///< the colour's change a pixel to the right
     public float3 slopeY;   ///< and a pixel down
+    /// What the frame kept of `transferViewless` for this gaussian under
+    /// dome `cachedDome`, where `cached`.
+    public bool   cached;
+    public uint   cachedDome;
+    public float3 cachedFront;
+    public float3 cachedCoupling;
+    public float  cachedSunShare;
 };
 
 public SplatSlope noSlope() {
@@ -1000,23 +1064,14 @@ public SplatSlope noSlope() {
     g.on = false;
     g.normalX = float3(0.0, 0.0, 1.0);
     g.normalY = float3(0.0, 0.0, 1.0);
-    g.normalXBack = float3(0.0, 0.0, 1.0);
-    g.normalYBack = float3(0.0, 0.0, 1.0);
     g.slopeX = float3(0.0);
     g.slopeY = float3(0.0);
+    g.cached = false;
+    g.cachedDome = 0xFFFFFFFFu;
+    g.cachedFront = float3(0.0);
+    g.cachedCoupling = float3(0.0);
+    g.cachedSunShare = 1.0;
     return g;
-}
-
-/// THE SLOPE THAT STAYS BETWEEN ITS NEIGHBOURS (research proposal 051): of
-/// the change a step forward and the change a step back, per channel, the
-/// smaller where the two agree in sign and nothing where they do not
-/// (minmod). A ramp built on it never leaves the range of the three readings,
-/// so a highlight narrower than the footprint -- a window in the chrome --
-/// is not extrapolated into a halo across the gaussian.
-float3 slopeBetween(float3 back, float3 centre, float3 forward) {
-    const float3 ahead = forward - centre;
-    const float3 behind = centre - back;
-    return select(ahead * behind > float3(0.0), sign(ahead) * min(abs(ahead), abs(behind)), float3(0.0));
 }
 
 float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord light, uint dome,
@@ -1038,33 +1093,37 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
     // A cloud that carries a transfer answers the body from it, and answers
     // it for any sky: what it keeps is the geometry, not the light.
     if (kTransfer != 0 && dome != kEnvNone && s.transferCount >= 9 && !s.lit) {
-        float3 front = transferredBody(s, transfer, envSh, dome, withIndirect);
-        // THE DISC THE HARMONICS NO LONGER HOLD. `env_sun` took it out of
-        // them and handed over its direction and the irradiance it delivers,
-        // so it is added back here as the light it is: an exact cosine, and a
-        // share of it that the transfer itself estimates along that
-        // direction. A solid angle of zero says this dome had no sun and
-        // nothing was taken, and then there is nothing to add.
-        //
-        // Added to the body only. The prefiltered map kept its own sun, so the
-        // polish already has it, and what the polish owes is the shadowed
-        // share of it taken back out (below).
+        // What does not depend on the eye: the body's light, the sun's share,
+        // the field's coupling to this sky -- kept from an earlier frame where
+        // the sky and the lights have not changed (splatTransferViewless).
         const float4 disc = envSun[dome * 2];
         const float3 irradiance = disc.w > 0.0 ? envSun[dome * 2 + 1].rgb : float3(0.0);
         const float cosine = max(dot(s.normal, disc.xyz), 0.0);
-        const float sunShare = disc.w > 0.0 ? splatOpenToward(s, transfer, cellBits, disc.xyz) : 1.0;
-        front += irradiance * (cosine * sunShare * kOverPiSun);
-        // WHAT A TX TRANSFER ADDS (docs/decisions.md, task TX): the open
-        // directions by the lobe (step 1), and what the closed ones show
-        // (step 2) -- the reflected field, scaled to this sky -- and the sun's
-        // bounce, which the first transfer lost with the sun it took out of
-        // the harmonics.
-        const bool cells = s.cellWords >= 8u;
+        // Level 2 is a TX transfer's kernel, level 1 the first transfer's:
+        // the cells, the field and the slope compiled out of the second, so
+        // its kernel is the size it was (a kernel past a size draws threads
+        // wrong on Metal: the first transfer's ball came back blotched).
+        const bool cells = kTransfer >= 2 && s.cellWords >= 8u;
         const bool field = cells && withIndirect && transferHasField(s.transferCount);
-        if (cells && withIndirect && disc.w > 0.0) {
-            front += irradiance * splatIndirectAlong(s, transfer, disc.xyz);
+        float3 front;
+        float3 coupling;
+        float  sunShare;
+        if (slope.cached && slope.cachedDome == dome) {
+            front = slope.cachedFront;
+            coupling = slope.cachedCoupling;
+            sunShare = slope.cachedSunShare;
+        } else {
+            transferViewless<kTransfer>(s, transfer, cellBits, envSh, envSun, dome, withIndirect, front, coupling,
+                                        sunShare);
         }
-        const float3 coupling = field ? splatFieldCoupling(s, transfer, envSh, dome, disc, irradiance) : float3(0.0);
+        // The field along the mirror, at the polish's roughness and the
+        // coat's, read once.
+        float3 fieldPolish = float3(0.0);
+        float3 fieldCoat = float3(0.0);
+        if (field) {
+            splatFieldAlongPair(s, transfer, reflect(-wo, s.normal), s.roughness,
+                                coated ? s.lobes.coatRoughness : s.roughness, fieldPolish, fieldCoat);
+        }
         // The translucent half faces the other way, and a transfer was
         // measured over the hemisphere the normal faces alone: what arrives
         // behind is answered by the sky's harmonics with no occlusion, which
@@ -1081,7 +1140,24 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // stands where the bits are open and what the field holds where they
         // are not. A solid's own far face closes its bits, so through a slab
         // it is the field that answers, and it saw through that face.
-        if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0) {
+        if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0 && s.ior > 1.0) {
+            // A SOLID GLASS IS A LENS: the sky along the ray it bends, sharp,
+            // as before the field existed -- a clear ball refracts the room.
+            // Its own far face closes every cell behind it, so the cells say
+            // nothing; the field does: it holds what the eye's ray finds
+            // through both faces under a white sky (the bake bent it in), a
+            // glass's own throughput where the way out is open, less where
+            // the scene stands in it. So the sharp sky stands where the field
+            // reads open and the field coupled to the sky where it reads
+            // closed. Filling the whole lens with the field (degree 3) drew
+            // the pawn's clear head milky and flat with a horizon across it:
+            // 0.58 against the mesh path traced, where the first transfer
+            // drew it sharp.
+            const float3 white = splatFieldAlong(s, transfer, -wo, s.roughness);
+            const float open = smoothstep(0.5, 0.85, dot(white, float3(0.2126, 0.7152, 0.0722)));
+            behind = open * transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide) +
+                     (1.0 - open) * coupling * white * s.exitThrough;
+        } else if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0) {
             const float3 through = -wo;
             const float alpha = max(s.roughness * s.roughness, 1.0e-3);
             const float openBehind = splatConeOpen(s, cellBits, through, min(1.4 * atan(alpha), 1.2), -s.normal);
@@ -1143,7 +1219,7 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
                                        : coatLobe(s, wo, disc.xyz) * irradiance * (cosine * (1.0 - sunShare));
             coat = field ? max(layers.coat * (coatNarrowed * coatSeen +
                                               (1.0 - coatNarrowed) * coupling *
-                                                  splatFieldAlong(s, transfer, mirror, s.lobes.coatRoughness)) -
+                                                  fieldCoat) -
                                    coatNarrowed * coatSun,
                                float3(0.0))
                          : max(layers.coat * coatNarrowed * coatSeen - coatNarrowed * coatSun, float3(0.0));
@@ -1154,31 +1230,23 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         const float3 sheen = layers.belowCoat * layers.sheen * front;
         // THE SLOPE: the open part of the reflection, read again along the
         // mirrors a pixel away (SplatSlope).
-        if (kTransfer != 0 && slope.on && !s.hasReflection) {
+        if (kTransfer >= 2 && slope.on && !s.hasReflection) {
             const float3 mirrorX = reflect(-wo, slope.normalX);
             const float3 mirrorY = reflect(-wo, slope.normalY);
-            const float3 mirrorXBack = reflect(-wo, slope.normalXBack);
-            const float3 mirrorYBack = reflect(-wo, slope.normalYBack);
             const float3 polishWeight = layers.under * thinWallGain(s) * splatPolish(s, nDotV) * narrowed;
-            slope.slopeX = polishWeight * slopeBetween(envRadiance(envTexels, dome, mirrorXBack, s.roughness, envBaseSide),
-                                                       seen,
-                                                       envRadiance(envTexels, dome, mirrorX, s.roughness, envBaseSide));
-            slope.slopeY = polishWeight * slopeBetween(envRadiance(envTexels, dome, mirrorYBack, s.roughness, envBaseSide),
-                                                       seen,
-                                                       envRadiance(envTexels, dome, mirrorY, s.roughness, envBaseSide));
+            slope.slopeX = polishWeight * (envRadiance(envTexels, dome, mirrorX, s.roughness, envBaseSide) - seen);
+            slope.slopeY = polishWeight * (envRadiance(envTexels, dome, mirrorY, s.roughness, envBaseSide) - seen);
             if (coated) {
                 const float r = s.lobes.coatRoughness;
                 const float3 coatSeen = envRadiance(envTexels, dome, mirror, r, envBaseSide);
                 const float coatOpen = splatLobeOpen(s, cellBits, mirror, r, s.normal);
                 const float3 coatWeight = layers.coat * (cells ? coatOpen : 1.0);
-                slope.slopeX += coatWeight * slopeBetween(envRadiance(envTexels, dome, mirrorXBack, r, envBaseSide), coatSeen,
-                                                          envRadiance(envTexels, dome, mirrorX, r, envBaseSide));
-                slope.slopeY += coatWeight * slopeBetween(envRadiance(envTexels, dome, mirrorYBack, r, envBaseSide), coatSeen,
-                                                          envRadiance(envTexels, dome, mirrorY, r, envBaseSide));
+                slope.slopeX += coatWeight * (envRadiance(envTexels, dome, mirrorX, r, envBaseSide) - coatSeen);
+                slope.slopeY += coatWeight * (envRadiance(envTexels, dome, mirrorY, r, envBaseSide) - coatSeen);
             }
         }
         if (field) {
-            const float3 closed = coupling * splatFieldAlong(s, transfer, mirror, s.roughness);
+            const float3 closed = coupling * fieldPolish;
             return body2 +
                    layers.under * thinWallGain(s) *
                        max(splatPolish(s, nDotV) * (narrowed * seen + (1.0 - narrowed) * closed) -
@@ -1358,7 +1426,7 @@ public float3 relitSplat<let kTransfer : int>(SplatSurface s, float3 wo, Structu
         // ways leave the scene, so an occluder beyond a light inside the
         // scene shadows it too: right for a sun and a lamp far off, the
         // approximation for one standing among things.
-        if (kTransfer != 0 && s.cellWords >= 8u && (light.flags & kLightShadow) != 0u) {
+        if (kTransfer >= 2 && s.cellWords >= 8u && (light.flags & kLightShadow) != 0u) {
             const float open = splatConeOpen(s, cellBits, ls.wi, lightHalfAngle(light, ls.distance), s.normal);
             const float bits = open >= 0.0 ? open : 1.0;
             const float shadowed = k < shadowLights ? min(through, bits) : bits;

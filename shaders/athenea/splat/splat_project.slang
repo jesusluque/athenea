@@ -28,6 +28,11 @@ StructuredBuffer<uint>      normals;
 // came to, a slot each, where the record's colour.w says so (kSlopeMark).
 StructuredBuffer<float>     curvature;
 RWStructuredBuffer<uint4>   slopes;
+// A splat each: a TX transfer's view-independent terms -- the body's light
+// (rgb), the field's coupling to the sky (rgb), the sun's share, and 1 where
+// written -- as halves (splatTransferViewless writes them, splatProject
+// reads them where `params.txCache`).
+RWStructuredBuffer<uint4>   txCache;
 // The radiance a splat gives off, RGB9E5, where the cloud carries it
 // (`params.hasEmission`).
 StructuredBuffer<uint>      emission;
@@ -87,6 +92,16 @@ void cull(uint slot, uint reason) {
     tileRects[slot * 4 + 1] = 1;
     tileRects[slot * 4 + 2] = 0;
     tileRects[slot * 4 + 3] = 0;
+}
+
+/// The face a splat's transfer was measured for: its stored shading normal,
+/// or its short axis as the frame turns it, in the cloud's space.
+float3 storedFacing(float3x3 r, float3 scale, uint i) {
+    if (params.hasNormals != 0) {
+        return unpackNormal(normals[i]);
+    }
+    const uint shortest = scale.x <= scale.y ? (scale.x <= scale.z ? 0u : 2u) : (scale.y <= scale.z ? 1u : 2u);
+    return normalize(float3(r[0][shortest], r[1][shortest], r[2][shortest]));
 }
 
 /// ONE SPLAT PROJECTED, and shaded where its cloud is relit. `kTransfer` 0
@@ -380,7 +395,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         // projection's own linearisation (`tx3`, `ty3`), inverted on the
         // splat's plane -- and turned with the normal the eye sees.
         SplatSlope slope = noSlope();
-        if (kTransfer != 0 && params.hasCurvature != 0 && surface.cellWords >= 8u) {
+        if (kTransfer >= 2 && params.hasCurvature != 0 && surface.cellWords >= 8u) {
             const float3 u = float3(r[0][0], r[1][0], r[2][0]);
             const float3 v = float3(r[0][1], r[1][1], r[2][1]);
             const float2x2 toPixels = float2x2(dot(tx3, u), dot(tx3, v), dot(ty3, u), dot(ty3, v));
@@ -407,8 +422,20 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 slope.on = true;
                 slope.normalX = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hx));
                 slope.normalY = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hy));
-                slope.normalXBack = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal - hx));
-                slope.normalYBack = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal - hy));
+            }
+        }
+        // WHAT THE EYE DOES NOT CHANGE, kept from when the sky and the lights
+        // last changed (splatTransferViewless), where the eye sees the face
+        // the terms were kept for.
+        if (kTransfer >= 2 && params.txCache != 0 && surface.transferCount != kTransferZonalCount &&
+            dot(cloudNormal, storedFacing(r, scale, i)) > 0.0) {
+            const uint4 kept = txCache[i];
+            if (kept.w != 0u) {
+                slope.cached = true;
+                slope.cachedDome = uint(highHalf(kept.w) + 0.5) - 1u;
+                slope.cachedFront = float3(lowHalf(kept.x), highHalf(kept.x), lowHalf(kept.y));
+                slope.cachedCoupling = float3(highHalf(kept.y), lowHalf(kept.z), highHalf(kept.z));
+                slope.cachedSunShare = lowHalf(kept.w);
             }
         }
         colour = relitSplat<kTransfer>(surface, normalize(eye - surface.position), lights,
@@ -417,7 +444,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                             envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
                             envSun, transfer, shadowBits,
                             params.transferIndirect != 0, slope);
-        if (kTransfer != 0 && slope.on) {
+        if (kTransfer >= 2 && slope.on) {
             sloped = true;
             slopes[slot] = uint4(packHalves(slope.slopeX.x, slope.slopeX.y),
                                  packHalves(slope.slopeX.z, slope.slopeY.x),
@@ -449,10 +476,18 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     depthKeys[slot] = bit_cast<uint>(t.z) >> 7;
 }
 
-/// A cloud that carries a transfer: everything.
+/// A cloud that carries a TX transfer (the cells): everything.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void splatProject(uint3 tid: SV_DispatchThreadID) {
+    projectSplat<2>(tid);
+}
+
+/// A cloud that carries the first transfer (no cells): its shading, without
+/// the TX transfer's (projectSplat says why kernels are split by size).
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void splatProjectFirst(uint3 tid: SV_DispatchThreadID) {
     projectSplat<1>(tid);
 }
 
@@ -462,4 +497,60 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
 [numthreads(256, 1, 1)]
 void splatProjectPlain(uint3 tid: SV_DispatchThreadID) {
     projectSplat<0>(tid);
+}
+
+/// A TX TRANSFER'S VIEW-INDEPENDENT TERMS, A SPLAT EACH (transferViewless):
+/// the body's light under the frame's first prepared dome, the sun's share
+/// and the field's coupling to the sky, for the face the transfer was
+/// measured for. Run when the sky, the lights, the cloud or its place
+/// change; every frame in between reads them back (splatProject), and what
+/// it computes is what the eye changes -- 37 of the TX car's 85 ms of
+/// projection were these.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    txCache[i] = uint4(0u);
+    // The frame's first dome with a prepared sky: what relitSplat answers a
+    // dome with, and the only one kept.
+    uint dome = kEnvNone;
+    for (uint k = 0; k < params.lightCount && k < params.envLights; ++k) {
+        if (lights[k].kind == kLightDome && envOfLight[k] != kEnvNone) {
+            dome = envOfLight[k];
+            break;
+        }
+    }
+    if (params.transferCount < 9u || params.transferCount == kTransferZonalCount || dome == kEnvNone) {
+        return;
+    }
+    const uint row = i * 4;
+    const float3 scale = exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2])));
+    const float4 q = decodeQuaternion(shape[row]);
+    const float3x3 r = splatRotation(q);
+    const float4 w0 = float4(params.w00, params.w01, params.w02, params.w03);
+    const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
+    const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
+    SplatSurface s = {};
+    s.normal = relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i));
+    s.transferCount = params.transferCount;
+    s.transferBase = i * params.transferWords * 2;
+    s.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u;
+    s.shadowBits = s.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
+    s.cellWords = params.shadowBits >= 8u ? params.shadowBits : 0u;
+    s.cellBase = i * s.cellWords;
+    s.lit = params.litBody != 0;
+    if (s.lit) {
+        return;
+    }
+    float3 front;
+    float3 coupling;
+    float  sunShare;
+    transferViewless<2>(s, transfer, shadowBits, envSh, envSun, dome, params.transferIndirect != 0, front, coupling,
+                        sunShare);
+    // The slice, one up, in the last half: zero is "not kept".
+    txCache[i] = uint4(packHalves(front.x, front.y), packHalves(front.z, coupling.x),
+                       packHalves(coupling.y, coupling.z), packHalves(sunShare, float(dome + 1u)));
 }

@@ -388,6 +388,52 @@ foreach(material paint chrome rubber glass)
             LABELS gpe)
     endforeach()
 endforeach()
+# THE TX GATE: a TX transfer no worse than the first, material by material,
+# on stages that are assets rather than tests (the pawn of the OpenChessSet
+# under its workshop sky, the Corvette's measured materials), wherever this
+# machine has them (ATHENEA_BENCH_DIR, ATHENEA_ASSETS_DIR); skipped where it
+# does not. Each run leaves its GT|mesh|cloud pictures under tests/tx_gate.
+set(ATHENEA_BENCH_DIR "$ENV{HOME}/luc/athenea-bench" CACHE PATH "scenes the TX gate measures (scenes/pawn_mesh.usda)")
+set(ATHENEA_ASSETS_DIR "$ENV{HOME}/tools/assets" CACHE PATH "assets the TX gate measures (CorvetteC7)")
+add_test(NAME tx_gate_pawn
+    COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
+            -DSTAGE=${ATHENEA_BENCH_DIR}/scenes/pawn_mesh.usda -DPRIM=/World/Subject -DCAMERA=/World/Cam
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/tx_gate/pawn -DSIZE=512 -DPATHS=512
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/regress/tx_against_first.cmake)
+set_tests_properties(tx_gate_pawn PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    SKIP_RETURN_CODE 77
+    LABELS "gpe;tx_gate")
+add_test(NAME tx_gate_corvette
+    COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
+            -DSTAGE=${ATHENEA_ASSETS_DIR}/CorvetteC7/usd/corvette_scene.usda -DPRIM=/World/Corvette
+            -DCAMERA=/World/Camera -DOUT=${CMAKE_CURRENT_BINARY_DIR}/tx_gate/corvette -DWIDTH=960 -DHEIGHT=540
+            -DPATHS=256
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/regress/tx_against_first.cmake)
+set_tests_properties(tx_gate_corvette PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 36000
+    LABELS "gpe;tx_gate;slow")
+
+# A GLASS IS A SHEET BY ITS MESH: a pane modelled as one surface with a solid
+# glass on it converts thin-walled, the closed glass ball solid
+# (Converter::classifySheets), with nothing said per asset.
+add_test(NAME mesh2splat_sheet_pane
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/pane.usda --no-camera --resolution 64
+            -o ${ATHENEA_TX_DIR}/pane_sheet.usdc)
+set_tests_properties(mesh2splat_sheet_pane PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "Pane is sheet \\(thin-walled\\) glass"
+    LABELS gpe)
+add_test(NAME mesh2splat_sheet_ball
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/glass.usda --no-camera --resolution 64
+            -o ${ATHENEA_TX_DIR}/ball_sheet.usdc)
+set_tests_properties(mesh2splat_sheet_ball PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "Ball is solid glass"
+    LABELS gpe)
+
 # A transfer baked in slices (--transfer-slice) finds the surface under every
 # gaussian as one slice does: four slices of the paint ball, filtered.
 add_test(NAME mesh2splat_tx_sliced
