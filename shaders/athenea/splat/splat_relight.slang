@@ -1135,7 +1135,24 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // stands where the bits are open and what the field holds where they
         // are not. A solid's own far face closes its bits, so through a slab
         // it is the field that answers, and it saw through that face.
-        if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0) {
+        if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0 && s.ior > 1.0) {
+            // A SOLID GLASS IS A LENS: the sky along the ray it bends, sharp,
+            // as before the field existed -- a clear ball refracts the room.
+            // Its own far face closes every cell behind it, so the cells say
+            // nothing; the field does: it holds what the eye's ray finds
+            // through both faces under a white sky (the bake bent it in), a
+            // glass's own throughput where the way out is open, less where
+            // the scene stands in it. So the sharp sky stands where the field
+            // reads open and the field coupled to the sky where it reads
+            // closed. Filling the whole lens with the field (degree 3) drew
+            // the pawn's clear head milky and flat with a horizon across it:
+            // 0.58 against the mesh path traced, where the first transfer
+            // drew it sharp.
+            const float3 white = splatFieldAlong(s, transfer, -wo, s.roughness);
+            const float open = smoothstep(0.5, 0.85, dot(white, float3(0.2126, 0.7152, 0.0722)));
+            behind = open * transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide) +
+                     (1.0 - open) * coupling * white * s.exitThrough;
+        } else if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0) {
             const float3 through = -wo;
             const float alpha = max(s.roughness * s.roughness, 1.0e-3);
             const float openBehind = splatConeOpen(s, cellBits, through, min(1.4 * atan(alpha), 1.2), -s.normal);

@@ -11512,6 +11512,16 @@ that route was missing in the rasteriser, **what stands behind**:
   slab sends it; the single bend at one face is not what a sheet of glass
   does -- the sky where the bits behind are open and the field coupled to the
   sky where they are not.
+  **A solid glass is a lens** (the pawn's clear head drew milky and flat,
+  with a horizon across it, 0.58 against the mesh path traced where the first
+  transfer drew it sharp): its own far face closes every cell behind it, so
+  the field filled the whole lens at degree 3. For a gaussian with an index
+  the frame now reads the sky along the ray the glass bends, sharp, as the
+  first transfer did, where the field says the way through is open -- its
+  white-sky value along `-wo`, a glass's own throughput when open, smoothly
+  from 0.5 to 0.85 in luminance -- and the field coupled to the sky where it
+  says closed. `tx_conversions` holds the glass ball under every sky to no
+  worse than the first transfer (5%).
 - **Its own index.** Where the cloud carries the layers, a transmitting
   gaussian bends by its specular index whenever the cloud's `ior` says it
   bends at all. That reaches relit clouds with layers too, which proposal 026
