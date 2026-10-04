@@ -1104,6 +1104,10 @@ public void transferViewless<let kCells : int>(SplatSurface s, StructuredBuffer<
 /// The roughest coat drawn per pixel (SplatSlope's sharp lobe): past it the
 /// prefiltered sky is smooth enough over a footprint for the slope to hold.
 public static const float kSharpRoughness = 0.2;
+/// The roughest base polish drawn per pixel: the paint's metal flake (0.34)
+/// and every polish smoother, whose sky -- and its sun -- changes across a
+/// curved panel faster than a gaussian is wide.
+public static const float kSharpPolishRoughness = 0.5;
 
 public struct SplatSlope {
     public bool   on;
@@ -1136,6 +1140,16 @@ public struct SplatSlope {
     public float3 sharpMirror;
     public float3 sharpMirrorX;
     public float3 sharpMirrorY;
+    /// THE BASE'S POLISH, PER PIXEL TOO: a metal flake's lobe at the paint's
+    /// 0.34 reads the sun in the prefiltered sky as a bright spot, and read
+    /// once per gaussian it drew the fender's blotches (s74: the polish off
+    /// took two thirds of them away; the coat, the sun's share and its bounce
+    /// none). Its weight (rgb), roughness and the centre's reading.
+    public float3 sharpPolish;
+    public float  sharpPolishRoughness;
+    public float3 sharpPolishSeen;
+    /// Either lobe handed back: the mirror and its turn are written.
+    public bool   sharpOn;
 };
 
 public SplatSlope noSlope() {
@@ -1157,6 +1171,10 @@ public SplatSlope noSlope() {
     g.sharpMirror = float3(0.0, 0.0, 1.0);
     g.sharpMirrorX = float3(0.0, 0.0, 1.0);
     g.sharpMirrorY = float3(0.0, 0.0, 1.0);
+    g.sharpPolish = float3(0.0);
+    g.sharpPolishRoughness = 1.0;
+    g.sharpPolishSeen = float3(0.0);
+    g.sharpOn = false;
     return g;
 }
 
@@ -1325,6 +1343,7 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
                 slope.sharpMirror = mirror;
                 slope.sharpMirrorX = reflect(-wo, slope.normalX);
                 slope.sharpMirrorY = reflect(-wo, slope.normalY);
+                slope.sharpOn = true;
             }
             coat = field ? max(layers.coat * (coatNarrowed * coatSeen +
                                               (1.0 - coatNarrowed) * coupling *
@@ -1343,8 +1362,22 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             const float3 mirrorX = reflect(-wo, slope.normalX);
             const float3 mirrorY = reflect(-wo, slope.normalY);
             const float3 polishWeight = layers.under * thinWallGain(s) * splatPolish(s, nDotV) * narrowed;
-            slope.slopeX = polishWeight * (envRadiance(envTexels, dome, mirrorX, s.roughness, envBaseSide) - seen);
-            slope.slopeY = polishWeight * (envRadiance(envTexels, dome, mirrorY, s.roughness, envBaseSide) - seen);
+            if (dome == 0u && s.roughness < kSharpPolishRoughness && any(polishWeight > float3(0.0))) {
+                // The polish goes to the blend per pixel (SplatSlope's sharp
+                // polish), along the same mirror and turn as the coat's.
+                slope.sharpPolish = polishWeight;
+                slope.sharpPolishRoughness = s.roughness;
+                slope.sharpPolishSeen = seen;
+                slope.sharpMirror = mirror;
+                slope.sharpMirrorX = mirrorX;
+                slope.sharpMirrorY = mirrorY;
+                slope.sharpOn = true;
+                slope.slopeX = float3(0.0);
+                slope.slopeY = float3(0.0);
+            } else {
+                slope.slopeX = polishWeight * (envRadiance(envTexels, dome, mirrorX, s.roughness, envBaseSide) - seen);
+                slope.slopeY = polishWeight * (envRadiance(envTexels, dome, mirrorY, s.roughness, envBaseSide) - seen);
+            }
             if (coated && !(slope.sharpWeight > 0.0)) {
                 const float r = s.lobes.coatRoughness;
                 const float3 coatSeen = envRadiance(envTexels, dome, mirror, r, envBaseSide);

@@ -11955,6 +11955,18 @@ and the blend clamps after adding its per-pixel sky: clamped in the
 projection, a gaussian whose centre mirrored a shadowed sun lost its body
 and drew the sun back whole.
 
+The fender's blotches outlived it (s72), and switching one sun-dependent
+term off at a time named them (s74): the coat, the sun's share, its bounce
+and the sun taken back out changed the 4-16 px band by under 3%, the base's
+polish off took a third of it away and most of the blotches. The paint's
+metal flake at 0.34 reads the sun in the prefiltered sky as a bright spot,
+and once per gaussian. So the base's polish smoother than
+`kSharpPolishRoughness` (0.5) goes to the blend too, along the same mirror
+and turn: its weight (rgb, a metal's colour) and roughness in a buffer of
+two words a slot (`sharpPolish`), read from memory beside the group's
+records -- the group memory is full. A sharp record no longer carries the
+polish's ramp.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

@@ -22,6 +22,9 @@ import athenea.common.splat_override;
 static const float kSheetAlpha = 0.1;
 // A shadow ray against the cloud's own proxies, where the caller built them.
 
+/// A sharp record's base polish (kSharpMark): its weight, rgb, and roughness,
+/// as halves -- what the blend reads beside `slopes` from memory.
+RWStructuredBuffer<uint2>   sharpPolish;
 StructuredBuffer<float4>    positions;
 StructuredBuffer<uint>      shape;
 StructuredBuffer<uint>      sh;
@@ -592,7 +595,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                             envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
                             envSun, transfer, shadowBits,
                             params.transferIndirect != 0, slope);
-        if (kTransfer >= 2 && slope.sharpWeight > 0.0) {
+        if (kTransfer >= 2 && slope.sharpOn) {
             // THE SHARP LOBE GOES TO THE BLEND (SplatSlope): the centre's
             // reading of it out of the colour, and the mirror's turn across
             // the footprint in octahedral coordinates, a pixel right and a
@@ -602,7 +605,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             // Not clamped: where the coat's share of a shadowed sun was taken
             // back out, the colour keeps that as a negative the blend's
             // per-pixel sky is added to, and clamps after.
-            colour = colour - slope.sharpWeight * slope.sharpSeen;
+            colour = colour - slope.sharpWeight * slope.sharpSeen - slope.sharpPolish * slope.sharpPolishSeen;
             const float2 at = octEncode(slope.sharpMirror);
             float2 stepX = octEncode(slope.sharpMirrorX) - at;
             float2 stepY = octEncode(slope.sharpMirrorY) - at;
@@ -611,6 +614,8 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             sharp = true;
             slopes[slot] = uint4(packHalves(at.x, at.y), packHalves(stepX.x, stepX.y), packHalves(stepY.x, stepY.y),
                                  packHalves(slope.sharpWeight * scale, slope.sharpRoughness));
+            const float3 polish = slope.sharpPolish * scale;
+            sharpPolish[slot] = uint2(packHalves(polish.x, polish.y), packHalves(polish.z, slope.sharpPolishRoughness));
         } else if (kTransfer >= 2 && slope.on) {
             // THE RAMP NEVER GOES BELOW BLACK INSIDE THE FOOTPRINT. A
             // chrome strip turns its normal so fast that a pixel's slope,

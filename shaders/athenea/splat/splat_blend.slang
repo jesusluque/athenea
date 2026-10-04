@@ -15,6 +15,7 @@ StructuredBuffer<uint4>     slopes;   // a slot each, read where the record is m
 // The first dome's prefiltered sky, which a sharp lobe reads per pixel
 // (kSharpMark; athenea/light/environment.slang). Bound whether or not one is.
 StructuredBuffer<uint>      envTexels;
+StructuredBuffer<uint2>     sharpPolish;   // a sharp record's base polish (kSharpMark)
 // What is under the splats: a rasterised point layer (or nothing: bound to a
 // placeholder with params.hasUnder == 0). Linear, premultiplied, bottom row first.
 StructuredBuffer<float4>    underColour;
@@ -231,8 +232,19 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 const float2 at = float2(lowHalf(w.x), highHalf(w.x)) + float2(lowHalf(w.y), highHalf(w.y)) * d.x +
                                   float2(lowHalf(w.z), highHalf(w.z)) * d.y;
                 const float3 mirror = octDecode(saturate(at));
-                shade = max(shade + lowHalf(w.w) * envRadiance(envTexels, 0u, mirror, highHalf(w.w), params.envBaseSide),
-                            float3(0.0));
+                float3 sky = float3(0.0);
+                if (lowHalf(w.w) > 0.0) {
+                    sky += lowHalf(w.w) * envRadiance(envTexels, 0u, mirror, highHalf(w.w), params.envBaseSide);
+                }
+                // The base's polish along the same mirror, its weight and
+                // roughness read from memory: one record's for every pixel
+                // of the tile, so it stays in cache.
+                const uint2 p = sharpPolish[sSplats[j]];
+                const float3 polish = float3(lowHalf(p.x), highHalf(p.x), lowHalf(p.y));
+                if (any(polish > float3(0.0))) {
+                    sky += polish * envRadiance(envTexels, 0u, mirror, highHalf(p.y), params.envBaseSide);
+                }
+                shade = max(shade + sky, float3(0.0));
             }
             rgb += weight * shade;
             depthSum += weight * screen.z;
