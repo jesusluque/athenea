@@ -251,6 +251,15 @@ Para comprobar que un shader compila sin compilar nada más:
     -target metal -entry <entry> -stage compute -o /dev/null
 ```
 
+Para WGSL, lo que compila un navegador, `-target wgsl` hace lo mismo con un
+kernel, y `scripts/wgsl-report.py --markdown` con todos los kernels del raster
+de splats y del efecto Measure a la vez: si compila cada uno, sus storage
+buffers y sus bytes de workgroup frente a los límites de la web, y los
+veredictos de Naga y de Tint (Tint por el backend nulo de Dawn,
+`scripts/wgsl-tint.cpp`). Todo en la CPU. Naga solo no basta como
+comprobación: aceptó una barrera bajo una rama sobre memoria de grupo que Tint
+rechaza.
+
 Los shaders generados — los materiales, los kernels de sombreado y de path
 tracing — los escribe `ATHENEA_SHADER_DUMP=<dir>`, y compilan con `slangc -I
 shaders -I <dir>`, que es como se mide el tiempo de compilación de un kernel

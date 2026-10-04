@@ -245,6 +245,14 @@ To check that a shader compiles without building anything:
     -target metal -entry <entry> -stage compute -o /dev/null
 ```
 
+For WGSL, what a browser compiles, `-target wgsl` does the same for one
+kernel, and `scripts/wgsl-report.py --markdown` for every kernel of the splat
+raster and the Measure effect at once: whether each compiles, its storage
+buffers and workgroup bytes against the web's limits, and Naga's and Tint's
+verdicts (Tint through Dawn's null backend, `scripts/wgsl-tint.cpp`). All on
+the CPU. Naga alone is not a check: it took a barrier under a branch on group
+memory that Tint refuses.
+
 Generated shaders — the materials, the shading and path-tracing kernels — are
 written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders -I
 <dir>`, which is how a kernel's compile time is measured outside the process.

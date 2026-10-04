@@ -1747,6 +1747,8 @@ assets que enseña el README.
 | `build-oidn.sh [versión]` | compila Open Image Denoise, solo dispositivos GPU |
 | `build-ocio.sh [versión]` | compila OpenColorIO con sus dependencias enlazadas estáticamente |
 | `build-dawn.sh` | deja Dawn 138.0.7204.168, precompilado, en `~/tools/dawn-<versión>` (`ATHENEA_DAWN_ROOT` lo cambia), comprobado contra su SHA-256 |
+| `wgsl-report.py [--markdown] [--only E,...] [--out DIR]` | compila a WGSL con `slangc` los kernels del raster de splats y el efecto Measure, e imprime por kernel sus storage buffers, sus bytes de workgroup y lo que falla; con Naga (`cargo install naga-cli`) y Dawn presentes, también sus veredictos. Solo CPU. El WGSL va a `--out` (por defecto `$TMPDIR/wgsl`) |
+| `wgsl-tint.cpp` | Tint, por el backend nulo de Dawn, sobre un fichero WGSL: el módulo, y después su pipeline con los límites por defecto de la web. Lo compila `wgsl-report.py` |
 | `fetch-fox.sh [dir]` | el zorro de Khronos, por Blender, para una conversión con esqueleto |
 | `sketchfab-to-usd.sh <zip> [nombre]` | un archivo de Sketchfab a un asset USD |
 | `readme-images.sh [salida]` | las imágenes del README, desde el asset del gorrión |

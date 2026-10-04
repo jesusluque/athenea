@@ -1706,6 +1706,8 @@ the README shows.
 | `build-oidn.sh [version]` | builds Open Image Denoise, GPU devices only |
 | `build-ocio.sh [version]` | builds OpenColorIO with its dependencies linked statically |
 | `build-dawn.sh` | puts Dawn 138.0.7204.168, prebuilt, in `~/tools/dawn-<version>` (`ATHENEA_DAWN_ROOT` overrides), checked against its SHA-256 |
+| `wgsl-report.py [--markdown] [--only E,...] [--out DIR]` | compiles the splat raster's kernels and the Measure effect to WGSL with `slangc`, and prints per kernel its storage buffers, workgroup bytes and what fails; with Naga (`cargo install naga-cli`) and Dawn present, their verdicts too. CPU only. The WGSL goes to `--out` (default `$TMPDIR/wgsl`) |
+| `wgsl-tint.cpp` | Tint, through Dawn's null backend, on a WGSL file: the module, then its pipeline under the web's default limits. Built by `wgsl-report.py` |
 | `fetch-fox.sh [dir]` | the Khronos Fox, through Blender, for a skinned conversion |
 | `sketchfab-to-usd.sh <zip> [name]` | a Sketchfab archive into a USD asset |
 | `readme-images.sh [outdir]` | the images in the README, from the sparrow asset |
