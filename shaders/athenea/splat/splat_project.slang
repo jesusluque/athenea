@@ -612,6 +612,15 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 slope.slopeX *= keep;
                 slope.slopeY *= keep;
             }
+            // A sheet's ramp goes with its colour: both are scaled down to
+            // the floor's alpha below, and a ramp left at the 1/F0 gain was
+            // fifty times its colour -- the windshield's lamp tubes drawn as
+            // a bright mirror, whatever its own share (s69), and past what a
+            // half holds where a lamp is a hundred times the sky.
+            if (sheet) {
+                slope.slopeX *= alphaOwn / alpha;
+                slope.slopeY *= alphaOwn / alpha;
+            }
             sloped = true;
             slopes[slot] = uint4(packHalves(slope.slopeX.x, slope.slopeX.y),
                                  packHalves(slope.slopeX.z, slope.slopeY.x),

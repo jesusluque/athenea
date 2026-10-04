@@ -11887,6 +11887,14 @@ alpha x colour then kept. A sheet's own share is now its stored opacity
 less that 1/255 (nothing of it is cut at the floor), and the test holds the
 pane's frame mean within a quarter of the mesh path traced.
 
+And the ramp: on the car the windshield stayed 3.8 times bright with the
+1/255 out (s69), as a sharp mirror of the shop's lamp tubes. A sheet's slope
+across its footprint was packed from its colour before the floor's scaling,
+at the 1/F0 gain -- fifty times the colour it rode on, and past what a half
+holds where a lamp is a hundred times the sky. The slope is now scaled with
+the colour. The flat pane has no slope, which is why the test did not see
+it.
+
 ### Known: a transparent mesh glass dithers on the raster route
 
 In the per-material frames (one material a cloud, the rest meshes) the
