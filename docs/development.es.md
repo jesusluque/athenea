@@ -226,6 +226,16 @@ Los requisitos, sus versiones y prefijos, y los cuatro presets están en el
 cada preset de test pone `jobs: 1`, y correr dos suites a la vez es como un
 tiempo deja de significar nada.
 
+**La puerta TX.** Un cambio en el sombreado o en la conversión pasa la puerta
+antes que nada: `ctest -L tx_gate` (y `tx_conversions_render_like_the_mesh`,
+cuya bola de vidrio también se compara con el primer transfer). Convierte el
+peón del OpenChessSet bajo su cielo de taller (`ATHENEA_BENCH_DIR`) y el
+Corvette (`ATHENEA_ASSETS_DIR`, con la etiqueta `slow`) con `--transfer` y con
+el primer transfer, mediante `--validate`, y falla donde un material sale más
+de un 5% peor en TX (`tests/regress/tx_against_first.cmake`); sus imágenes
+GT|malla|nube quedan en `build/<preset>/tests/tx_gate`. Una máquina sin esos
+recursos se lo salta.
+
 ### 3.2 Un cambio de solo shader
 
 Los shaders se compilan en ejecución, no van dentro del binario, así que un
