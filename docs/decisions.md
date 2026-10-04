@@ -11839,6 +11839,21 @@ cells read, so the paths -- and every colour that is not a transfer's --
 stay as they were. Four origins cost four rays a point beside a thousand
 cells.
 
+### A solid glass covers 0.6 again
+
+The gate's glass ball under the lamp read 0.217 against the first
+transfer's 0.092, and under the window 0.170 against 0.137. Bisected (s55):
+the coverage is the whole of it. The same cloud converted at
+`--glass-opacity 0.6` measures exactly what s46 did (lamp 0.0965, window
+0.1318, pale 0.0565), and the raster's lens variants change nothing under
+the lamp. A TX lens answers what stands behind it from the domes alone --
+the sky through both faces, the field coupled to the sky -- so a glass that
+covers whole hides every other light the scene sends through it: the ground
+the lamp lights. At 0.6 the rest comes through straight from the frame
+behind. So 0.6 is the default in every mode again; the pawn's head, whose
+dark cast first asked for 1, now has its far face's Fresnel and tint
+(`lensExitThrough`) and is measured by the gate at 0.6.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

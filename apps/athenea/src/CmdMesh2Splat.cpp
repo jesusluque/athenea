@@ -1482,10 +1482,11 @@ private:
         number("materialOpacity", static_cast<double>(material.opacity));
         // A THIN WALL IS ITS OWN TRANSPARENCY: it covers what the sheet
         // reflects head on at its index, which the effect works out
-        // (`m2sGlassCovers`). A solid covers `--glass-opacity`.
-        number("glassOpacity", options_->minOpacity >= 0.0
-                                   ? options_->minOpacity
-                                   : (options_->transfer && options_->transferCells > 0 ? 1.0 : 0.6));
+        // (`m2sGlassCovers`). A solid covers `--glass-opacity`, 0.6 in every
+        // mode: a TX transfer's lens answers what is behind it from the
+        // domes alone, so at 1 a glass ball under a lamp lost the lit ground
+        // it shows (0.217 against the first transfer's 0.092; 0.0965 at 0.6).
+        number("glassOpacity", options_->minOpacity >= 0.0 ? options_->minOpacity : 0.6);
         number("thinWall", thinGlassOf(at) ? 1.0 : 0.0);
         number("ior", static_cast<double>(material.ior));
         number("maxCells", static_cast<double>(options_->maxCells));
