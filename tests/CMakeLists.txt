@@ -388,6 +388,16 @@ foreach(material paint chrome rubber glass)
             LABELS gpe)
     endforeach()
 endforeach()
+# A transfer baked in slices (--transfer-slice) finds the surface under every
+# gaussian as one slice does: four slices of the paint ball, filtered.
+add_test(NAME mesh2splat_tx_sliced
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/paint.usda --prim /World/Ball --transfer
+            --bake-samples 16 --bake-extra 0 --transfer-slice 25000 --no-camera --resolution 192
+            -o ${ATHENEA_TX_DIR}/paint_sliced.usdc)
+set_tests_properties(mesh2splat_tx_sliced PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "transfer baked for 9[0-9][0-9][0-9][0-9] of 96130"
+    LABELS gpe)
 add_test(NAME tx_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[tx_conversion]")
 set_tests_properties(tx_conversions_render_like_the_mesh PROPERTIES
