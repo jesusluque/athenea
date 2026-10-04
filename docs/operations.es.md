@@ -273,6 +273,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--splat-shadows` | flag | apagado | rt: una nube relit se sombrea a sí misma, un rayo por splat |
 | `--no-antialias` | flag | antialias encendido | |
 | `--no-cloud-shadows` | flag | sombras de nube encendidas | |
+| `--no-dome-prefilter` | flag | prefiltrado | raster: un domo ilumina una malla con una muestra por píxel y un rayo de sombra |
 | `--cloud-shadow-texels` | entero | `1024` | por lado, por luz |
 | `--cloud-shadow-density` | número | `1.0` | multiplicador de la profundidad óptica de la nube |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 es solo el total, el resto añaden pares de Fourier; 0 deja decidir a quien recibe |
@@ -923,7 +924,15 @@ proyecta a través de un mapa de transmitancia en cada luz, sin rayo ninguno:
 gobiernan, y `--no-cloud-shadows` lo apaga. Una `DomeLight` también
 proyecta: en los huecos del mapa que dejan las luces (ocho en total), seis
 mapas a lo largo de su cenit y de un anillo a cuarenta grados de altura, y una
-muestra del domo en una malla lee el más cercano a su dirección.
+muestra del domo en una malla lee el más cercano a su dirección. En la ruta
+raster un domo ilumina una malla **prefiltrado** por defecto: sin muestra y
+sin rayo, así que sin grano -- los lóbulos difusos toman la irradiancia de
+los armónicos del cielo más el sol sacado de ellos, los brillantes la imagen
+del domo desenfocada a su rugosidad, y la sombra de la nube son esos seis
+mapas suavizados por el ancho de cielo que representa cada uno. Lo que no ve
+es una malla sombreando a otra desde el domo, y una superficie que transmite
+(vidrio) sigue muestreando el domo. `--no-dome-prefilter` lo muestrea en
+todas partes, como antes.
 `--splat-shadows` es la otra
 dirección en la ruta trazada: una nube relit sombreándose a sí misma, un rayo
 por splat.
@@ -1097,6 +1106,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:splatReflections` | bool | `false` | rt: una gaussiana refleja la nube a la que pertenece, un rayo cada una |
 | `athenea:splatShadows` | bool | `false` | rt: una nube relit se sombrea a sí misma |
 | `athenea:cloudShadows` | bool | `true` | el mapa de transmitancia de una nube en cada luz |
+| `athenea:domePrefiltered` | bool | `true` | raster: un domo ilumina una malla prefiltrado, sin muestra ni rayo |
 | `athenea:cloudShadowResolution` | int | `1024` | texels por lado, por luz |
 | `athenea:cloudShadowTerms` | int | `0` | 1 es solo el total; 3, 5, 7 añaden pares de Fourier; 0 deja decidir a quien recibe |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplicador de la profundidad óptica de la nube |

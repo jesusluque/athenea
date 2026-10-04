@@ -61,9 +61,9 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     const uint32_t resolution = std::max(job.resolution, 16u);
     // One, three, five or seven: a total, and Fourier pairs after it.
     const uint32_t coefficients = std::max(job.coefficients | 1u, 1u);
-    // A texel keeps its coefficients and one word more, for the depth of the
-    // nearest caster in it.
-    const uint32_t stride = coefficients + 1;
+    // A texel keeps its coefficients and two words more, for the depths of
+    // the nearest caster in it and of the farthest.
+    const uint32_t stride = coefficients + 2;
     const uint64_t plane = uint64_t{resolution} * resolution * stride;
     const uint64_t words = kHeaderWords + plane * slots;
     if (!map_.valid() || map_.count() < words || resolution_ != resolution || coefficients_ != coefficients) {

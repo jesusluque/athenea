@@ -92,7 +92,7 @@ struct ShadowBufferSource : IShadowMapSource {
         const uint raw = shadowMap[word];
         // The total is unsigned, every Fourier term is signed, and the last
         // word of a texel is a depth stored as an ordered key.
-        return which == f.coefficients ? shadowOrderedFloat(raw)
+        return which >= f.coefficients ? shadowOrderedFloat(raw)
                : which == 0            ? float(raw) / kShadowFixedScale
                                        : float(int(raw)) / kShadowFixedScale;
     }
@@ -124,10 +124,12 @@ void shadowMapClear(uint3 tid: SV_DispatchThreadID) {
     // wants.
     const uint header = shadowHeaderWords();
     bool smallest = tid.x >= kShadowBoxAt && tid.x < kShadowBoxAt + 3;
-    const bool largest = tid.x >= kShadowBoxAt + 3 && tid.x < kShadowBoxAt + kShadowBoxWords;
+    bool largest = tid.x >= kShadowBoxAt + 3 && tid.x < kShadowBoxAt + kShadowBoxWords;
     if (tid.x >= header) {
+        // A texel's nearest caster is a minimum and its farthest a maximum.
         const uint stride = shadowStrideOf(shadowParams.coefficients);
         smallest = (tid.x - header) % stride == shadowParams.coefficients;
+        largest = (tid.x - header) % stride == shadowParams.coefficients + 1;
     }
     // Finite sentinels, not the extreme keys: those decode to a NaN, and a
     // comparison against a NaN is not something a device compiling with fast
@@ -396,6 +398,9 @@ void shadowMapSplat(uint3 tid: SV_DispatchThreadID) {
             // And how near the light the nearest caster in this texel is: what
             // says where the lit side of a surface-like cloud is.
             InterlockedMin(shadowMap[at + f.coefficients], shadowOrderedKey(z));
+            // And the farthest: what a receiver behind the cloud meets last,
+            // the distance a soft shadow's penumbra is measured from.
+            InterlockedMax(shadowMap[at + f.coefficients + 1], shadowOrderedKey(z));
             for (uint k = 1; k <= pairs; ++k) {
                 const float angle = 2.0 * kShadowPi * float(k) * z;
                 // Signed, added as two's complement: an unsigned add wraps
@@ -494,9 +499,9 @@ void shadowMapResolve(uint3 tid: SV_DispatchThreadID) {
     const uint which = slice % stride;
     const uint offset = shadowHeaderWords() + light * resolution * resolution * stride;
     const uint word = offset + (tid.y * resolution + tid.x) * stride + which;
-    // The total is unsigned, every Fourier term is signed, and the last word
-    // of a texel is a depth stored as an ordered key.
-    const float value = which == coefficients ? shadowOrderedFloat(shadowMap[word])
+    // The total is unsigned, every Fourier term is signed, and the last two
+    // words of a texel are depths stored as ordered keys.
+    const float value = which >= coefficients ? shadowOrderedFloat(shadowMap[word])
                         : which == 0          ? float(shadowMap[word]) / kShadowFixedScale
                                               : float(int(shadowMap[word])) / kShadowFixedScale;
     shadowOut[uint3(tid.x, tid.y, shadowLayerOf(light, coefficients, which))] = value;

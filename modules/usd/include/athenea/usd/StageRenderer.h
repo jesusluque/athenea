@@ -386,6 +386,9 @@ public:
     /// `athenea:cloudShadows`: the frame's clouds shadow its meshes, measured
     /// from each light into a map and read with no ray. On by default.
     void setCloudShadows(bool shadows);
+    /// `athenea:domePrefiltered`: the raster route lights a mesh by a dome
+    /// prefiltered, with no sample and no ray. On by default.
+    void setDomePrefiltered(bool prefiltered);
     /// `athenea:cloudShadowResolution`: texels a side of that map, per light.
     void setCloudShadowResolution(uint32_t texels);
     /// `athenea:cloudShadowTerms`: 1 is the total optical depth (exact for a

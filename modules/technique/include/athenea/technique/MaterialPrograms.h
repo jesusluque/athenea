@@ -124,6 +124,13 @@ struct MaterialFrame {
     /// far from the map reads at the level of its pixel's footprint. Bound
     /// with `cloudShadow`, which says whether either is.
     rhi::ITextureView*            cloudShadowChain = nullptr;
+    /// THE DOMES, PREFILTERED (Environment::meshView): where it is bound the
+    /// raster route lights a surface whose lobes all reflect by the domes in
+    /// closed form -- the harmonics' irradiance, the sun taken out of them
+    /// and the sky's mip chain along the mirror, shadowed by the cloud map's
+    /// dome directions -- instead of sampling them. Null: sampled, rays and
+    /// all, as every frame was before (`athenea:domePrefiltered`).
+    rhi::ITextureView*            domeLighting = nullptr;
     /// Samples per light. One is the interactive choice; a test that wants
     /// an area light's irradiance without noise asks for more.
     uint32_t                      samples = 1;

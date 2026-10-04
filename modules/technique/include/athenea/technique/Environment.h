@@ -30,6 +30,7 @@
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/Texture.h"
 
 namespace athenea::light {
 class LightTable;
@@ -55,6 +56,8 @@ inline constexpr uint32_t kEnvironmentFloorSide = 16;
 /// slice to 45 MB.
 inline constexpr uint32_t kEnvironmentWidestSide = 2048;
 inline constexpr uint32_t kEnvironmentCoefficients = 16;   // degree 3 (environment.slang)
+/// Texels a row of `Environment::meshView` (env_mesh.slang's kEnvMeshTexels).
+inline constexpr uint32_t kEnvironmentMeshTexels = 12;
 /// The light a slice was prepared for, when it was not prepared at all.
 inline constexpr uint32_t kEnvironmentNone = 0xFFFFFFFFU;
 
@@ -95,6 +98,12 @@ public:
     /// Lights `domeOfLight` describes, which is the frame's whole light list.
     [[nodiscard]] uint32_t lightCount() const noexcept { return lights_; }
     [[nodiscard]] bool ready() const noexcept { return domes_ > 0 && texels_.valid() && sh_.valid(); }
+    /// THE SAME SKY FOR A MESH'S SHADING KERNEL, which has no buffer slot
+    /// left: a texture of `kEnvironmentMeshTexels` a row and a row a slice
+    /// (env_mesh.slang has the layout): the harmonics, the sun, and the light
+    /// the row is for. What the raster route lights a mesh with when it reads
+    /// a dome prefiltered rather than sampling it. Null before a build.
+    [[nodiscard]] rhi::ITextureView* meshView() const noexcept { return meshView_.get(); }
     /// The octahedral side of level 0 these slices were written at, which the
     /// frame must hand to whoever reads them.
     [[nodiscard]] uint32_t baseSide() const noexcept { return baseSide_; }
@@ -118,6 +127,9 @@ private:
     gpu::ComputeKernel project_;
     gpu::ComputeKernel prefilter_;
     gpu::ComputeKernel sunKernel_;
+    gpu::ComputeKernel meshPack_;
+    gpu::Texture       mesh_;
+    rhi::ComPtr<rhi::ITextureView> meshView_;
     gpu::Buffer        texels_;
     gpu::Buffer        sh_;
     gpu::Buffer        sun_;

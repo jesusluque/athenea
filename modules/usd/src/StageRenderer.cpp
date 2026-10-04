@@ -1121,6 +1121,10 @@ void StageRenderer::setCloudShadows(bool shadows) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:cloudShadows"), VtValue(shadows));
 }
 
+void StageRenderer::setDomePrefiltered(bool prefiltered) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:domePrefiltered"), VtValue(prefiltered));
+}
+
 void StageRenderer::setCloudShadowResolution(uint32_t texels) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:cloudShadowResolution"), VtValue(int(texels)));
 }

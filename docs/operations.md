@@ -270,6 +270,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--splat-shadows` | flag | off | rt: a relit cloud shadows itself, one ray a splat |
 | `--no-antialias` | flag | antialias on | |
 | `--no-cloud-shadows` | flag | cloud shadows on | |
+| `--no-dome-prefilter` | flag | prefiltered | raster: a dome lights a mesh by one sample a pixel and a shadow ray |
 | `--cloud-shadow-texels` | integer | `1024` | a side, per light |
 | `--cloud-shadow-density` | number | `1.0` | multiplier on the cloud's optical depth |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 is the total alone, the rest add Fourier pairs; 0 lets what receives decide |
@@ -907,7 +908,14 @@ transmittance map at each light, with no ray at all:
 control it, and `--no-cloud-shadows` turns it off. A `DomeLight` casts too:
 in the map's slots the lights leave (eight in all), six maps along its zenith
 and a ring forty degrees up, and a mesh's sample of the dome reads the one
-nearest its direction. `--splat-shadows` is the
+nearest its direction. On the raster route a dome lights a mesh
+**prefiltered** by default: no sample and no ray, so no grain -- the
+diffuse lobes take the irradiance of the sky's harmonics plus the sun taken
+out of them, the glossy ones the dome's image blurred to their roughness,
+and the cloud's shadow is those six maps softened by the width of sky each
+stands for. What it cannot see is a mesh shadowing a mesh from the dome, and
+a surface that transmits (glass) keeps the dome sampled.
+`--no-dome-prefilter` samples it everywhere, as it used to. `--splat-shadows` is the
 other direction on the traced route: a relit cloud shadowing itself, one ray a
 splat.
 
@@ -1075,6 +1083,7 @@ found and does not.
 | `athenea:splatReflections` | bool | `false` | rt: a gaussian reflects the cloud it belongs to, one ray each |
 | `athenea:splatShadows` | bool | `false` | rt: a relit cloud shadows itself |
 | `athenea:cloudShadows` | bool | `true` | a cloud's transmittance map at each light |
+| `athenea:domePrefiltered` | bool | `true` | raster: a dome lights a mesh prefiltered, no sample and no ray |
 | `athenea:cloudShadowResolution` | int | `1024` | texels a side, per light |
 | `athenea:cloudShadowTerms` | int | `0` | 1 is the total; 3, 5, 7 add Fourier pairs; 0 lets what receives decide |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplier on the cloud's optical depth |

@@ -252,7 +252,7 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 | `ATHENEA_TEST_DUMP` | a directory for the images tests dump; without it they dump nothing |
 | `ATHENEA_VIEW_SWITCH_AT` | `=N`: the viewer flips its technique at frame N, as a click would, for reproducible `--frames` runs |
 | `ATHENEA_VIEW_ORBIT` | `=R`: the viewer's free camera turns R radians about its target every frame, as a drag would, to time a moving camera with `--frames` |
-| `ATHENEA_STAGES` | `=1`: a line a rasterised frame of splats saying where it went -- commit, per-part visibility, project, counts, depth sort, emit, tile sort, blend -- each stage waited for, so the frame is slower for it |
+| `ATHENEA_STAGES` | `=1`: a line a rasterised frame of splats saying where it went -- commit, per-part visibility, project, counts, depth sort, emit, tile sort, blend -- and, with meshes, a line for the mesh layer -- its preparation and the cloud shadow map in it, visibility, lobe directions, shadow rays, shading, the domes read prefiltered --; each stage waited for, so the frame is slower for it |
 | `ATHENEA_PORTABLE_SORT` | `=1`: every radix sort takes the chunked passes, as before the tiled route existed; to set a backend's tiled route aside |
 | `ATHENEA_ORACLE_*` | the Storm side-by-side oracle's inputs; seven of them, documented where the test reads them |
 | `HDX_MSAA_SAMPLE_COUNT` | must be `1` for the Storm oracle; ctest sets it, and the test fails with an explanation if it is not |

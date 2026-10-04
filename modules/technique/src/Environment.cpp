@@ -78,6 +78,9 @@ Result<Environment> Environment::create(gpu::ShaderLibrary& library) {
     env.project_ = std::move(*project);
     env.prefilter_ = std::move(*prefilter);
     env.sunKernel_ = std::move(*sun);
+    auto meshPack = gpu::ComputeKernel::create(library, "athenea/technique/env_mesh", "envMeshPack");
+    if (!meshPack) return std::move(meshPack).error();
+    env.meshPack_ = std::move(*meshPack);
     return env;
 }
 
@@ -198,6 +201,31 @@ Result<void> Environment::build(const light::LightTable& table, const material::
             cursor["params"]["roughness"].setData(roughness);
         });
     }
+    // And the harmonics and the sun copied into the texture a mesh's shading
+    // kernel reads, a row a slice (env_mesh.slang).
+    if (!mesh_.valid()) {
+        gpu::TextureDesc desc;
+        desc.type = rhi::TextureType::Texture2D;
+        desc.width = kEnvironmentMeshTexels;
+        desc.height = kEnvironmentDomes;
+        desc.format = rhi::Format::RGBA32Float;
+        desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+        desc.label = "environment.mesh";
+        auto made = gpu::Texture::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        mesh_ = std::move(*made);
+        auto view = mesh_.view(0);
+        if (!view) return std::move(view).error();
+        meshView_ = std::move(*view);
+    }
+    meshPack_.dispatch(batch, {kEnvironmentMeshTexels * kEnvironmentDomes, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["sh"].setBinding(sh_.rhi());
+        cursor["sun"].setBinding(sun_.rhi());
+        cursor["domeLights"].setBinding(sliceBuffer->rhi());
+        cursor["meshOut"].setBinding(meshView_.get());
+        cursor["params"]["domes"].setData(domes);
+        cursor["params"]["rows"].setData(kEnvironmentDomes);
+    });
     // Waits for the device: this is not a frame, and the frame that follows
     // reads what it wrote.
     ATHENEA_TRY(batch.submit(true));

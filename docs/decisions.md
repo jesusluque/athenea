@@ -12340,3 +12340,48 @@ carried -- the shadows' -- is gone, at 256 directions a gaussian (1024 at
 are still the paths'. Checked (pending the GPU turn): the unoccluded
 point's sixteen coefficients against the clamped cosine's, at 16 cells
 (`[degree3]`).
+
+## The ground under a dome, without grain and without its 480 ms (task PLAY-G)
+
+The whole TX Corvette played back in raster at 1920 x 1080 in 158 ms a frame
+alone and 637 ms on its mesh ground (`/World/Ground` of `corvette_scene.usda`,
+a 60 m plane of OpenPBR grey), and the ground was grain: one dome sample a
+pixel with its shadow ray, std/mean 2.7 over a patch of it against the path
+traced frame's 0.12. `ATHENEA_STAGES=1` now says where a mesh layer's time
+goes, a line a frame -- its preparation and the cloud map in it, visibility,
+lobe directions, shadow rays, shading, the domes -- and it said: the map 77
+ms, the lobe directions 109 (a second evaluation of the material, for the
+lobe samples' shadow rays), the shading 150 to 220, the splat blend 30 more
+than without a ground. Four changes, each where the time was.
+
+### The dome, read prefiltered (`athenea:domePrefiltered`, on)
+
+A surface whose lobes all reflect, under a dome the frame prepared
+(`Environment`, up to four), takes the dome in closed form instead of by a
+sample: its diffuse lobes the irradiance of the sky's nine harmonics at the
+normal plus the sun `env_sun` took out of them, its glossy lobes the dome's
+own image along the mirror direction at the mip whose texels are as wide as
+the lobe (4 pi alpha^2 against 4 pi / (w h)), each weighed by its directional
+albedo -- the split sum. The cloud's shadow is the map's six dome directions,
+each read by `shadowMapReadSoft`: a blocker search over nine texels of the
+nearest-caster depth and the transmittance chain read at the penumbra that
+distance gives under a source as wide as the region of sky the direction
+stands for (tan 30 degrees), weighed by the direction's cosine and the sky's
+brightness there. No sample and no ray.
+
+It is two kernels. The shading kernel leaves what the lobe stack says of a
+pixel (the two albedos, the glossy alpha, where it stands and its normal) in
+three textures, and `dome_shade.slang`, which holds no lobe stack, adds the
+domes. Written into the shading kernel the read overflowed what Metal keeps
+of a thread: rows of garbage across the ground, and a pipeline that would
+not compile without the cloud map. A device that still refuses the kernel
+with the G-buffer samples its domes, said once.
+
+What it does not do: a mesh shadowing another mesh from a dome (there is no
+ray); a stack with a lobe that transmits (glass, a thin wall) or a fibre
+keeps the dome sampled; a fifth dome is its image's mean. The six
+directions are a coarse sky: a low horizon is shadowed by the ring forty
+degrees up.
+
+`--no-dome-prefilter` samples the dome as before. The path tracer, and so
+the ground truth, is untouched.
