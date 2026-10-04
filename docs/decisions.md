@@ -12843,3 +12843,68 @@ goegap: a sun of 1.86 degrees and 5.8 of irradiance. autoshop: a lamp of
 `[environment][sun]` tests hold: a disc of nine texels taken whole (0.1084
 against its closed form 0.1084), the residual sky within 2.1%, an even sky
 left alone.
+
+## Materials measured one by one on the shader ball (bench/matx)
+
+The TX gate measures two assets, and the materials they happen to hold.
+`bench/matx` measures materials as such: each on the same object, under the
+same two skies, against the path tracer, so a change that helps the paint
+and hurts the velvet says so by name.
+
+**The object** is MaterialX's shader ball (`resources/Geometry/shaderball.glb`,
+Apache-2.0): a sphere with a cut-out on a base with a flat ledge, the
+look-dev object every MaterialX renderer is shown with. `build_ball.py`
+reads the glb with the standard library and writes it through usdcat as it
+is: metres, +Y up, two meshes (the shell and the core), UVs as
+`primvars:st` with v turned. It carries one material and no subsets; the
+study binds one material to both meshes. `scene/base.usda.in` puts it on a
+100 m grey ground (OpenPBR, 0.18, rough), under the autoshop dome the
+Corvette uses, seen from a 50 mm camera three-quarters from the side its
+cut-out faces. goegap, with its sun in the texels, is the second sky,
+swapped in by `--validate-sky`.
+
+**The materials.** Phase 1 is every MaterialX example of the OpenPbr,
+StandardSurface and DisneyPrincipled families; the chess set (15 materials
+for an asset) and the two looks (pairs of examples already in the list) are
+left out. Phase 2 is the part of proposal 086's 52 that sits on the shader
+ball: 35 OpenPBR examples, fetched from the OpenPBR repository at a pinned
+commit and checked against `openpbr.sha256`. Khronos' test models (their
+own meshes and glTF extensions), AMD's (licence unread) and Poly Haven's
+(not chosen) are listed in `manifest.json` as deferred. usdMtlx (usdcat)
+turns each `.mtlx` into USD, which is how athenea reads MaterialX from a
+stage: `outputs:mtlx:surface` on a Shader of `ND_<node>_surfaceshader`.
+The OpenPBR examples declare `colorspace="acescg"`, which athenea reads for
+textures and not for constants, so their colours are converted to linear
+Rec.709 when the stage is written (clamped to [0, 1]; gold's red was 1.06).
+
+**The classes** are read off each document: a lobe counts where the surface
+shader's input that switches it is non-zero or connected (`base_metalness`,
+`coat_weight`, `transmission_weight`, `subsurface_weight`, `fuzz_weight`,
+`thin_film_weight`, `emission_luminance`, and their standard_surface and
+Disney names). No material is classified by hand.
+
+**What is measured** is `mesh2splat --transfer --validate` at 512 x 512:
+the ball converted (`--cell-from-camera`, 512 camera pixels, 64 bake paths)
+and rasterised with the ground left a mesh, against the path tracer's 256
+paths a pixel; relMSE, p99 and the mean of each channel over the ball's
+pixels. The mesh raster is a reference column, not the target.
+`report_matx.py` writes the table, the breakdown by lobe class with the
+worst offenders, and a GT | GS contact sheet a sky.
+
+**The regression check.** `baseline.csv` holds, a material and a sky, TX's
+relMSE, the mean ratio of each channel (TX over GT) and p99, written from a
+whole sweep. `compare_matx.py` fails a run whose relMSE is more than 5%
+worse or whose mean ratio moved by more than 0.05; `ctest -L matx` does it
+for six materials, one a class (OpenPBR default, standard_surface chrome,
+OpenPBR carpaint, glass, velvet and ketchup), under both skies.
+
+### Not done
+
+- The baseline: written from the first whole sweep, in the commit after it.
+- 5% is about the GT's own noise at 256 paths on a glass; a material whose
+  relMSE wanders by that much from run to run will need a wider slack or a
+  GT kept between runs.
+- Thin film is accepted by the lobes and not drawn; both sides of the
+  measure leave it out, so it compares equal and says nothing about it.
+- The deferred part of the 52 (Khronos, AMD, Poly Haven), and the path
+  tracer against Cycles or the Render Fidelity goldens.
