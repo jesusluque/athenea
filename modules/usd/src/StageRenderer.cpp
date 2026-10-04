@@ -1417,9 +1417,10 @@ Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& r
 
 Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                       uint32_t samples, uint32_t bounces, uint32_t degree,
-                                                      bool transfer, uint32_t batch, uint32_t cellSide) {
+                                                      bool transfer, uint32_t batch, uint32_t cellSide,
+                                                      uint32_t firstPoint) {
     Impl& impl = *impl_;
-    if (count == 0 || !rays.valid() || rays.bytes() < uint64_t{count} * 48) {
+    if (count == 0 || !rays.valid() || rays.bytes() < (uint64_t{firstPoint} + count) * 48) {
         return Error(ErrorCode::InvalidArgument, "bake: three float4 a point, and at least one point");
     }
     if (!impl.delegate->HasEngine()) {
@@ -1463,7 +1464,7 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
     // place. What the tracer allocates is sized by the pass.
     const uint32_t perPass = std::min(batch > 0 ? batch : kBakeBatch, count);
     gpu::Buffer passRays;
-    if (perPass < count) {
+    if (perPass < count || firstPoint > 0) {
         desc.bytes = uint64_t{perPass} * 48;
         desc.elementBytes = 16;
         desc.label = "bake.passRays";
@@ -1475,7 +1476,8 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
         const uint32_t n = std::min(perPass, count - first);
         if (passRays.valid()) {
             gpu::CommandBatch copy(device);
-            copy.encoder()->copyBuffer(passRays.rhi(), 0, rays.rhi(), uint64_t{first} * 48, uint64_t{n} * 48);
+            copy.encoder()->copyBuffer(passRays.rhi(), 0, rays.rhi(), (uint64_t{firstPoint} + first) * 48,
+                                       uint64_t{n} * 48);
             copy.markDirty();
             ATHENEA_TRY(copy.submit(true));
         }

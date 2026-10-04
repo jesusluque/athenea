@@ -2124,26 +2124,11 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     std::optional<gpu::Buffer> bits;
     for (uint32_t base = 0; base < count_; base += slice) {
         const uint32_t n = std::min(slice, count_ - base);
-        gpu::Buffer rays = rays_;
-        if (n < count_) {
-            // Three float4 a gaussian, bound as float4: a buffer of floats
-            // read as one of float4 gave every slice rays of nothing.
-            gpu::BufferDesc desc;
-            desc.bytes = uint64_t{n} * 48;
-            desc.elementBytes = 16;
-            desc.label = "mesh2splat.transferRaysSlice";
-            auto part = gpu::Buffer::create(device, desc);
-            if (!part) return std::move(part).error();
-            gpu::CommandBatch copy(device);
-            copy.encoder()->copyBuffer(part->rhi(), 0, rays_.rhi(), uint64_t{base} * 48, uint64_t{n} * 48);
-            // A batch with no dispatch submits nothing unless told it has work.
-            copy.markDirty();
-            ATHENEA_TRY(copy.submit(true));
-            rays = std::move(*part);
-        }
         const auto started = std::chrono::steady_clock::now();
-        auto baked = (*renderer)->bakePointsOnDevice(rays, n, time, samples, bounces, bakeDegree,
-                                                     /*transfer=*/true, /*batch=*/0, side);
+        // The slice's rays are copied out by the bake itself, a pass at a
+        // time, as it copies a large cloud's passes.
+        auto baked = (*renderer)->bakePointsOnDevice(rays_, n, time, samples, bounces, bakeDegree,
+                                                     /*transfer=*/true, /*batch=*/0, side, base);
         if (!baked) return std::move(baked).error();
         // The rays are the same rays whether the indirect half is kept or
         // not, so this number is what says the second half costs no bake:
