@@ -1115,7 +1115,17 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         // A SECOND SET, where a map of the material reads by a primvar that is
         // not the first: carried as `st2`, and the conversion samples that map
         // by it. One second set; a third map's would have to be a third.
-        StageMaterial material = materialOf(prim);
+        // A GLASS THE CALLER SAYS IS A SHEET (MeshStageOptions::thinGlass).
+        const auto sheet = [&options](StageMaterial m) {
+            const std::string name = m.path.substr(m.path.find_last_of('/') + 1);
+            if (m.transmission > 0.0F &&
+                std::any_of(options.thinGlass.begin(), options.thinGlass.end(),
+                            [&](const std::string& want) { return want == m.path || want == name; })) {
+                m.thinWalled = true;
+            }
+            return m;
+        };
+        StageMaterial material = sheet(materialOf(prim));
         // A MESH OF SEVERAL MATERIALS: the GeomSubsets of its `materialBind`
         // family, each binding its own. Read as Hydra reads them -- face
         // indices, handed to the builder, which says on the device which
@@ -1133,7 +1143,7 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
             if (!subset.GetIndicesAttr().Get(&faces, at) || faces.empty()) {
                 continue;
             }
-            subsets.push_back({subset.GetPath().GetString(), materialOf(subset.GetPrim())});
+            subsets.push_back({subset.GetPath().GetString(), sheet(materialOf(subset.GetPrim()))});
             subsetFaces.push_back(std::move(faces));
         }
         std::string second;

@@ -375,6 +375,7 @@ receta es §3.1.
 | `-o`, `--output` | ruta | `splats.usda` | `.usda`, `.usdc`, `.usd`, o `.athc` con niveles de detalle: solo las gaussianas y sus normales de sombreado (sin metallic/roughness/transmission, ids Cryptomatte, índice del vidrio, eje vertical ni unidad); con él se rechazan `--skinned`, `--transfer` y `--lod-levels` |
 | `--prim` | ruta de prim | todas las mallas | solo las que cuelgan de esa ruta |
 | `--hide` | ruta de prim, repetible | ninguna | se deja fuera con todo lo que cuelga de ella, como invisible (opinión de sesión; el fichero no cambia) |
+| `--thin-glass` | ruta o nombre de material, repetible | ninguno | un material que transmite leído como de pared delgada aunque no lo diga: un parabrisas modelado como una sola superficie con un vidrio sólido. Un vidrio sólido cubre `--glass-opacity` de lo que hay detrás; una pared delgada cubre lo que refleja de frente (menos de una décima), así que el habitáculo se ve |
 | `--resolution` | entero | `512` | celdas a lo largo del lado largo de la caja sobre la que se mide la densidad |
 | `--lod-levels` | entero | `1` | niveles de detalle: la conversión otra vez a la mitad de resolución cada vez; `-o` pasa a ser la escena que los dibuja como una nube, cada nivel un `<nombre>_lod<n>.usdc` a su lado |
 | `--density` | `per-model` \| `per-mesh` | `per-model` | qué caja es esa |

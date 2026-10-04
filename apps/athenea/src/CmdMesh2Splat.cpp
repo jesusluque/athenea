@@ -118,6 +118,8 @@ constexpr uint32_t kRowEntries = 4096;
 
 struct Options {
     std::vector<std::string> hidden;
+    /// Materials whose glass is a sheet though they do not say so.
+    std::vector<std::string> thinGlass;
     std::string              stage;
     std::string              output = "splats.usda";
     std::string              prim;
@@ -2430,6 +2432,10 @@ void addMesh2Splat(CLI::App& app) {
                     "the ParticleField stage to write (.usda, .usdc, .usd), or a .athc with levels of detail");
     cmd->add_option("--prim", o->prim, "only meshes at or under this prim path");
     cmd->add_option("--hide", o->hidden, "a prim to leave out with all beneath it, as if invisible (repeatable)");
+    cmd->add_option("--thin-glass", o->thinGlass,
+                    "a material (prim path or name) whose glass is one sheet though it does not say so -- a "
+                    "windscreen modelled as a single surface with a solid glass on it: converted thin-walled, "
+                    "so what stands behind it shows through (repeatable)");
     cmd->add_option("--lod-levels", o->lodLevels,
                     "levels of detail: the conversion again at half the resolution each time, each level a "
                     "stage beside the output and the output one that draws them as one cloud (1: none)");
@@ -2690,6 +2696,7 @@ void addMesh2Splat(CLI::App& app) {
             read.time = o->time;
             read.skinned = o->skinned;
             read.hidden = o->hidden;
+            read.thinGlass = o->thinGlass;
             if (o->transfer) {
                 // The two are different answers to the same question and the file
                 // has room for one: a transfer keeps the geometry, a radiance

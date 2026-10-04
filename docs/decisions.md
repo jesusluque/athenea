@@ -11752,6 +11752,18 @@ share and bounce 12, the body's transfer 7.5.
 **Checked** (pending the GPU turn): the profile again; the balls and the
 Corvette's paint, which must read what they did.
 
+### A windscreen modelled as one surface is a sheet (`--thin-glass`)
+
+Research (proposal 054) found the Corvette's Glass_Windshield and
+Glass_Tinted bound as solid glass (transmission one, no
+`geometry_thin_walled`) on single surfaces: converted solid, their gaussians
+covered `--glass-opacity` (0.6) of the cabin and let 40% of it through,
+which is the blurred patch in the windscreen and the cabin read 2.5 times
+bright behind it. `--thin-glass NAME` reads a material as thin-walled
+(`MeshStageOptions::thinGlass`), by its prim path or its name. Not guessed
+from the mesh: whether a surface is a sheet is the mesh's topology, and
+nothing here measures it yet.
+
 ### Free memory counts what the system gives back
 
 On Apple silicon an allocation must fit the memory the system has free less

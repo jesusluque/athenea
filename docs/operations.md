@@ -370,6 +370,7 @@ recipe is §3.1 below.
 | `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd`, or `.athc` with levels of detail: the gaussians and their shading normals only (no metallic/roughness/transmission, Cryptomatte ids, glass index, up axis or unit); `--skinned`, `--transfer` and `--lod-levels` are refused with it |
 | `--prim` | prim path | every mesh | only meshes at or under this path |
 | `--hide` | prim path, repeatable | none | left out with all beneath it, as if invisible (a session opinion; the file is untouched) |
+| `--thin-glass` | material path or name, repeatable | none | a transmitting material read as thin-walled though it does not say so: a windscreen modelled as one surface with a solid glass on it. A solid glass covers `--glass-opacity` of what stands behind it; a thin wall covers what it reflects head on (under a tenth), so the cabin shows through |
 | `--resolution` | integer | `512` | cells across the longest side of the box the density is measured over |
 | `--lod-levels` | integer | `1` | levels of detail: the conversion again at half the resolution each time; `-o` becomes the stage that draws them as one cloud, each level a `<name>_lod<n>.usdc` beside it |
 | `--density` | `per-model` \| `per-mesh` | `per-model` | which box that is |
