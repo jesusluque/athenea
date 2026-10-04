@@ -11793,6 +11793,18 @@ arrives, and the lens's image is the frame's (`lensExit`). Up to eight
 surfaces are passed; the ninth closes the way. Tested by a glass roof over a
 plate, whose cells all read open (`[cells][glass]`).
 
+### The lens's far face, in the rasteriser
+
+The solid glass's sharp sky (`lensExit`) took its far face's throughput from
+`exitThrough`, which only a route that traces the glass fills; the
+rasteriser leaves it one. So the pawn's head crossed one interface's worth:
+tinted once and with nothing reflected back at the far side -- a tenth bright
+and grey where the path traced head is warm green (s49: TX 0.192 against the
+first's 0.123, mean 0.407/0.443 against 0.365/0.397). `lensExitThrough`
+gives the guessed sphere's far face what rt_shade gives a traced one: the
+Fresnel the second interface reflects at the angle the ray meets it, and the
+transmission colour a second time.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

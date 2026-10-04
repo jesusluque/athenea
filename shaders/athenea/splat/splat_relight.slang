@@ -906,6 +906,36 @@ public float3 lensExit(SplatSurface s, float3 wo, float curvature) {
     return dot(out, out) > 1.0e-8 ? normalize(out) : reflect(t1, -farNormal);
 }
 
+/// WHAT THE FAR FACE OF `lensExit`'S SPHERE LETS OUT, for a route that found
+/// no far face (`exitThrough` is one there): the Fresnel share the second
+/// interface reflects back into the glass, and the tint a second time -- the
+/// mesh's dielectric lobe tints at every crossing and the colour carries it
+/// once (mesh2splat folds the transmission colour into it), as rt_shade's
+/// traced exit does. The pawn's head read a tenth bright and grey where the
+/// path traced one is warm green. A ray the far face holds keeps what it had.
+public float3 lensExitThrough(SplatSurface s, float3 wo, float curvature) {
+    const float3 tint = lerp(float3(1.0), saturate(s.albedo), s.transmission);
+    const float index = max(s.ior, 1.0);
+    const float3 n = s.normal;
+    const float3 inside = refract(-wo, n, 1.0 / index);
+    if (!(dot(inside, inside) > 1.0e-8)) {
+        return tint;
+    }
+    const float3 t1 = normalize(inside);
+    float3 farNormal = -n;
+    if (curvature > 1.0e-6) {
+        const float radius = 1.0 / curvature;
+        const float chord = 2.0 * radius * max(dot(t1, -n), 0.0);
+        farNormal = normalize(t1 * (chord / radius) + n);
+    }
+    const float3 out = refract(t1, -farNormal, index);
+    if (!(dot(out, out) > 1.0e-8)) {
+        return tint;
+    }
+    const float reflectedBack = fresnelDielectric(saturate(dot(t1, farNormal)), 1.0 / index);
+    return (1.0 - reflectedBack) * tint;
+}
+
 public float3 bentThrough(SplatSurface s, float3 wo) {
     const float3 bent = refract(-wo, s.normal, 1.0 / max(s.ior, 1.0));
     return dot(bent, bent) > 1.0e-8 ? normalize(bent) : -wo;
@@ -1193,7 +1223,8 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             const float3 sharp =
                 slope.curvature > 0.0
                     ? envRadiance(envTexels, dome, lensExit(s, wo, slope.curvature),
-                                  transmittedRoughness(s.roughness, s.ior), envBaseSide) * s.exitThrough
+                                  transmittedRoughness(s.roughness, s.ior), envBaseSide) *
+                          lensExitThrough(s, wo, slope.curvature)
                     : transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide);
             behind = open * sharp + (1.0 - open) * coupling * white * s.exitThrough;
         } else if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0) {
