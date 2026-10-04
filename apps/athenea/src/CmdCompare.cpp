@@ -64,7 +64,7 @@ void printStats(const char* name, const std::vector<float>& values) {
     for (size_t c = 0; c < 4; ++c) {
         mean[c] = static_cast<double>(values[8 + c]) / static_cast<double>(pixels);
     }
-    std::printf("%-9s mean %.6g %.6g %.6g %.6g   max %.6g %.6g %.6g %.6g   (%llu pixels)\n", name, mean[0],
+    cli::out("%-9s mean %.6g %.6g %.6g %.6g   max %.6g %.6g %.6g %.6g   (%llu pixels)\n", name, mean[0],
                 mean[1], mean[2], mean[3], static_cast<double>(values[4]), static_cast<double>(values[5]),
                 static_cast<double>(values[6]), static_cast<double>(values[7]), pixels);
 }
@@ -95,7 +95,7 @@ void addCompare(CLI::App& app) {
     cmd->add_option("--path", o->paths, "extra bundle directories (after $AOFX_PLUGIN_PATH)");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
-            std::fprintf(stderr, "compare: ");
+            cli::err("compare: ");
             cli::fail(error);
         };
         gpu_host::Context* context = gpu_host::installProcessContext();
@@ -169,9 +169,9 @@ void addCompare(CLI::App& app) {
             const unsigned long long pixels = countAt(*hdr, 4);
             const double relMse =
                 pixels > 0 ? static_cast<double>((*hdr)[3]) / static_cast<double>(pixels) : 0.0;
-            std::printf("hdr       relMSE %.6g   p99 relative %.4g   max relative %.4g\n", relMse,
+            cli::out("hdr       relMSE %.6g   p99 relative %.4g   max relative %.4g\n", relMse,
                         static_cast<double>((*hdr)[1]), static_cast<double>((*hdr)[2]));
-            std::printf("8-bit     p99 %u   max %u   over 2: %llu of %llu pixels\n",
+            cli::out("8-bit     p99 %u   max %u   over 2: %llu of %llu pixels\n",
                         static_cast<unsigned>((*codes)[0]), static_cast<unsigned>((*codes)[1]), countAt(*codes, 2),
                         countAt(*codes, 5));
         }

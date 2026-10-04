@@ -1,6 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 #include "Output.h"
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -8,6 +9,7 @@
 namespace athenea::cli {
 namespace {
 
+std::atomic<bool> gCancel{false};
 LineSink gSink = nullptr;
 void*    gUser = nullptr;
 
@@ -34,6 +36,10 @@ void setLineSink(LineSink sink, void* user) {
     gSink = sink;
     gUser = user;
 }
+
+void requestCancel(bool on) { gCancel.store(on, std::memory_order_relaxed); }
+
+bool cancelRequested() { return gCancel.load(std::memory_order_relaxed); }
 
 void out(const char* format, ...) {
     va_list args;

@@ -17,6 +17,12 @@ using LineSink = void (*)(int error, const char* text, void* user);
 /// Not thread-safe: set around one command, which the entry point serialises.
 void setLineSink(LineSink sink, void* user);
 
+/// A host's request that the running command stop: set from any thread
+/// (athenea_request_cancel), read by the command between its batches, and
+/// cleared when the next command begins.
+void requestCancel(bool on);
+[[nodiscard]] bool cancelRequested();
+
 /// printf to stdout, or to the sink.
 void out(const char* format, ...) __attribute__((format(printf, 1, 2)));
 /// printf to stderr, or to the sink.

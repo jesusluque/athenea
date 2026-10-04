@@ -119,7 +119,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
-        "ATHENEA_USD_ROOT": "$env{HOME}/tools/usd-26.03-blender",
+        "ATHENEA_USD_ROOT": "$env{HOME}/tools/usd-26.08-blender",
         "ATHENEA_BLENDER_LIB": "/Applications/Blender.app/Contents/Resources/lib",
         "BUILD_TESTING": "OFF"
       }
@@ -157,7 +157,9 @@
         "hdAthenea",
         "athenea_shaders_copy",
         "athenea_aofx_mesh2splat",
-        "athenea_aofx_splatbakefilter"
+        "athenea_aofx_splatbakefilter",
+        "athenea_aofx_measure",
+        "athenea_aofx_splattransferzonal"
       ]
     }
   ],

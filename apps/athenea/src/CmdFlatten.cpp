@@ -171,19 +171,19 @@ void addFlatten(CLI::App& app) {
         }
         for (const std::string& f : formats) {
             if (known.count(f) == 0) {
-                std::fprintf(stderr, "flatten: '%s' is not a format (ply, spz, glb, usdc, usda)\n", f.c_str());
+                cli::err("flatten: '%s' is not a format (ply, spz, glb, usdc, usda)\n", f.c_str());
                 throw CLI::RuntimeError(1);
             }
         }
         const bool display = o->referred == "display";
         if (!display && (std::count(formats.begin(), formats.end(), "spz") != 0 ||
                          std::count(formats.begin(), formats.end(), "glb") != 0)) {
-            std::fprintf(stderr, "flatten: SPZ and glTF hold colours a display shows; --referred scene writes "
+            cli::err("flatten: SPZ and glTF hold colours a display shows; --referred scene writes "
                                  "ply or usd\n");
             throw CLI::RuntimeError(1);
         }
         if (o->spzVersion == 4 && !io::writesSpzVersion4()) {
-            std::fprintf(stderr, "flatten: this build has no ZSTD, so SPZ version 4 cannot be written\n");
+            cli::err("flatten: this build has no ZSTD, so SPZ version 4 cannot be written\n");
             throw CLI::RuntimeError(1);
         }
         const fs::path source = fs::absolute(o->stage);
@@ -245,7 +245,7 @@ void addFlatten(CLI::App& app) {
             std::ofstream layer(composed);
             layer << overLayer(source.string(), off, bodies, upAxis, metersPerUnit, tail);
             if (!layer) {
-                std::fprintf(stderr, "flatten: cannot write %s\n", composed.string().c_str());
+                cli::err("flatten: cannot write %s\n", composed.string().c_str());
                 throw CLI::RuntimeError(1);
             }
         }
@@ -267,7 +267,7 @@ void addFlatten(CLI::App& app) {
 
         gpu_host::Context* context = gpu_host::installProcessContext();
         if (context == nullptr || context->compute() == nullptr) {
-            std::fprintf(stderr, "no GPU compute device (gpe has no backend here)\n");
+            cli::err("no GPU compute device (gpe has no backend here)\n");
             throw CLI::RuntimeError(1);
         }
         gpu::ShaderLibrary library(context->deviceShared());
@@ -403,29 +403,29 @@ void addFlatten(CLI::App& app) {
         }
 
         for (const auto& c : clouds) {
-            std::printf("flatten: %-56s %9u gaussians%s\n", c.prim.c_str(), c.cloud.count,
+            cli::out("flatten: %-56s %9u gaussians%s\n", c.prim.c_str(), c.cloud.count,
                         c.cloud.catcher ? " (shadow catcher)" : "");
         }
-        std::printf("flatten: %llu gaussians, %u directions each, %s, roughness floor %s\n",
+        cli::out("flatten: %llu gaussians, %u directions each, %s, roughness floor %s\n",
                     static_cast<unsigned long long>(total), settings.directions,
                     display ? "fitted to the sRGB a viewer shows" : "fitted in linear light",
                     settings.roughnessFloor ? std::to_string(floor).c_str() : "off");
-        std::printf("flatten: frame y up, metres (stage %c up, %g m a unit); box (%.4g %.4g %.4g) to (%.4g %.4g %.4g)\n",
+        cli::out("flatten: frame y up, metres (stage %c up, %g m a unit); box (%.4g %.4g %.4g) to (%.4g %.4g %.4g)\n",
                     upAxis, metersPerUnit, static_cast<double>(stats.min[0]), static_cast<double>(stats.min[1]),
                     static_cast<double>(stats.min[2]), static_cast<double>(stats.max[0]),
                     static_cast<double>(stats.max[1]), static_cast<double>(stats.max[2]));
         const double perGaussian = total > 0 ? 1.0 / static_cast<double>(total) : 0.0;
-        std::printf("flatten: %.2f%% of gaussians had their higher bands shrunk to stay positive; %.2f%% of axes "
+        cli::out("flatten: %.2f%% of gaussians had their higher bands shrunk to stay positive; %.2f%% of axes "
                     "under e^%g (PLY, glTF floor), %.2f%% under e^-10 (SPZ); %.2f%% of gaussians scaled into SPZ's "
                     "[-1, 1]; SPZ fixed point %u bits\n",
                     100.0 * stats.shrunk * perGaussian, 100.0 * stats.sizesFloored * perGaussian / 3.0,
                     static_cast<double>(kLogScaleFloor), 100.0 * stats.spzSizesFloored * perGaussian / 3.0,
                     100.0 * stats.spzSaturated * perGaussian, stats.fractionalBits);
         for (const auto& [path, bytes] : written) {
-            std::printf("flatten: wrote %s, %.1f MB (%.1f bytes a gaussian)\n", path.c_str(),
+            cli::out("flatten: wrote %s, %.1f MB (%.1f bytes a gaussian)\n", path.c_str(),
                         static_cast<double>(bytes) / 1.0e6, static_cast<double>(bytes) * perGaussian);
         }
-        std::printf("flatten: shading and fit %.0f ms, packing and writing %.0f ms, %.0f ms in all\n", flattenMs,
+        cli::out("flatten: shading and fit %.0f ms, packing and writing %.0f ms, %.0f ms in all\n", flattenMs,
                     packMs, msSince(began));
 
         if (o->validate.empty()) {
@@ -438,12 +438,12 @@ void addFlatten(CLI::App& app) {
         const fs::path measured = out.string() + "." + o->validateFormat;
         if (std::none_of(written.begin(), written.end(),
                          [&](const auto& w) { return w.first == measured.string(); })) {
-            std::fprintf(stderr, "flatten: --validate measures %s, which --format did not write\n",
+            cli::err("flatten: --validate measures %s, which --format did not write\n",
                          measured.string().c_str());
             throw CLI::RuntimeError(1);
         }
         if (metersPerUnit != 1.0) {
-            std::fprintf(stderr, "flatten: --validate places the file in a stage of metres only (this one is "
+            cli::err("flatten: --validate places the file in a stage of metres only (this one is "
                                  "%g m a unit)\n",
                          metersPerUnit);
             throw CLI::RuntimeError(1);
@@ -458,7 +458,7 @@ void addFlatten(CLI::App& app) {
         registry.scan(context);
         aofx::Effect* measure = registry.find("rt.sparrow.aofx.measure");
         if (measure == nullptr) {
-            std::fprintf(stderr, "no Measure bundle on the AOFX search path (try `athenea aofx list`), and "
+            cli::err("no Measure bundle on the AOFX search path (try `athenea aofx list`), and "
                                  "--validate measures with it\n");
             throw CLI::RuntimeError(1);
         }

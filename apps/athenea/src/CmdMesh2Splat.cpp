@@ -2311,6 +2311,10 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     std::optional<gpu::Buffer> directs;
     std::optional<gpu::Buffer> bits;
     for (uint32_t base = 0; base < count_; base += slice) {
+        // A host's stop (Blender's Esc), between slices: one slice late at most.
+        if (cli::cancelRequested()) {
+            return Error(ErrorCode::Cancelled, "mesh2splat: cancelled");
+        }
         const uint32_t n = std::min(slice, count_ - base);
         const auto started = std::chrono::steady_clock::now();
         // The slice's rays are copied out by the bake itself, a pass at a
@@ -2376,6 +2380,12 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         }
         directs = std::move(*sliceDirects);
         bits = std::move(*sliceBits);
+        // How far the transfer is, for a host's progress bar (the add-on
+        // reads the share in brackets).
+        if (count_ > slice) {
+            cli::out("mesh2splat: transfer %u of %u gaussians (%.1f%%)\n", base + n, count_,
+                100.0 * static_cast<double>(base + n) / static_cast<double>(count_));
+        }
     }
     cli::out("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
                 reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
@@ -2783,7 +2793,7 @@ void addMesh2Splat(CLI::App& app) {
         // own -- the object staying in the stage as what the rays meet.
         if (o->shadowCatcher) {
             if (o->prim.empty()) {
-                cli::err( "--shadow-catcher needs --prim: the object whose shadow is caught\n");
+                cli::err("--shadow-catcher needs --prim: the object whose shadow is caught\n");
                 throw CLI::RuntimeError(1);
             }
             usd::ShadowCatcherOptions catcher;
@@ -2850,7 +2860,7 @@ void addMesh2Splat(CLI::App& app) {
         if (lobes > 0) {
             zonalFit = registry.find("rt.sparrow.aofx.splattransferzonal");
             if (zonalFit == nullptr) {
-                cli::err( "no SplatTransferZonal bundle on the AOFX search path (try `athenea aofx "
+                cli::err("no SplatTransferZonal bundle on the AOFX search path (try `athenea aofx "
                                      "list`), and a transfer kept as zonal lobes needs it\n");
                 throw CLI::RuntimeError(1);
             }
@@ -2879,6 +2889,9 @@ void addMesh2Splat(CLI::App& app) {
         const uint32_t baseResolution = o->resolution;
         std::vector<usd::LodLevelFile> levelFiles;
         for (uint32_t level = 0; level < lodLevels; ++level) {
+            if (cli::cancelRequested()) {
+                cli::fail(Error(ErrorCode::Cancelled, "mesh2splat: cancelled"));
+            }
             if (lodLevels > 1) {
                 const std::filesystem::path out(assemblyPath);
                 o->output = (out.parent_path() / (out.stem().string() + "_lod" + std::to_string(level) + ".usdc"))
@@ -3152,7 +3165,7 @@ void addMesh2Splat(CLI::App& app) {
         // the stage path traced (Mesh2SplatValidate.h).
         aofx::Effect* measure = registry.find("rt.sparrow.aofx.measure");
         if (measure == nullptr) {
-            cli::err( "no Measure bundle on the AOFX search path (try `athenea aofx list`), and "
+            cli::err("no Measure bundle on the AOFX search path (try `athenea aofx list`), and "
                                  "--validate measures with it\n");
             throw CLI::RuntimeError(1);
         }

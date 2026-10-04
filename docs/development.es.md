@@ -386,15 +386,22 @@ motor.
 Un comando imprime con `cli::out` y `cli::err` (`Output.h`), con el formato
 de printf, no con `std::printf`: en el binario son stdout y stderr, y
 ejecutado dentro de otro proceso van al sumidero de ese host. `athenea
-mesh2splat` también se compila dentro de hdAthenea cuando
-`ATHENEA_HYDRA_COMMANDS` está activo (lo está por defecto en la compilación
-para Blender): `Embedded.cpp` exporta `athenea_embedded_abi()` (1) y
-`athenea_mesh2splat(argc, argv, sink, user)`, los argumentos del comando sin
-`athenea mesh2splat`, que devuelve su código de salida (2 si ya hay una
-conversión en curso) y manda sus líneas a `sink(error, text, user)`. Así es
-como un host con un USD propio (Blender) convierte sin cargar un segundo: el
-stage que lee y escribe es el USD del plugin, que es el del host. hdAthenea
-compila entonces `StageRenderer`, `Export`, `MeshStage` y `BindingPurposes`
+mesh2splat`, `athenea flatten` y `athenea compare` también se compilan dentro
+de hdAthenea cuando `ATHENEA_HYDRA_COMMANDS` está activo (lo está por
+defecto en la compilación para Blender): `Embedded.cpp` exporta
+`athenea_embedded_abi()` (2), y `athenea_mesh2splat`, `athenea_flatten` y
+`athenea_compare`, cada uno `(argc, argv, sink, user)`: los argumentos del
+comando sin `athenea <comando>`, que devuelve su código de salida (2 si ya
+hay otro comando en curso, 4 si se le paró) y manda sus líneas a
+`sink(error, text, user)`. `athenea_request_cancel()` pide desde cualquier
+hilo que el comando en curso pare: un comando mira con
+`cli::cancelRequested()` entre sus lotes (mesh2splat entre los trozos del
+transfer y entre niveles de detalle) y falla con `ErrorCode::Cancelled`; la
+marca se borra cuando empieza el siguiente comando. Un bucle largo de un
+comando que ejecuta un host mira también. Así es como un host con un USD
+propio (Blender) convierte sin cargar un segundo: el stage que lee y escribe
+es el USD del plugin, que es el del host. hdAthenea compila entonces
+`StageRenderer`, `Export`, `MeshStage`, `ShadowCatcher` y `BindingPurposes`
 junto a las fuentes del delegate, y enlaza `aofx_host` y CLI11.
 
 ### 4.7 Un plugin aofx
@@ -1332,42 +1339,58 @@ vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 | estructuras de aceleración en Metal | su manejo en Metal |
 | errores de command buffer en Metal | un command buffer que fallaba en el dispositivo (sin memoria) disparaba un assert y abortaba el proceso; ahora el siguiente `submit` o `waitOnHost` devuelve `SLANG_E_OUT_OF_MEMORY`, que `gpu::CommandBatch::submit` convierte en `OutOfMemory` |
 
-**hdAthenea para Blender** (rama `blender`). Blender carga su propio
-OpenUSD, oneTBB, MaterialX, OpenColorIO y OIDN, así que el plugin se compila
-contra cabeceras que coinciden con ellos y se enlaza con las bibliotecas de
-Blender:
+**hdAthenea para Blender** (rama `blender`). El objetivo es la compilación
+de desarrollo de Blender (la diaria de la 5.3 alfa), cuyas bibliotecas se
+mueven. Blender carga su propio OpenUSD, oneTBB, MaterialX, OpenColorIO y
+OIDN, así que el plugin se compila contra cabeceras que coinciden con ellos y
+se enlaza con las bibliotecas de Blender:
 
-1. `scripts/build-usd-blender.sh` (una vez): OpenUSD 26.03 configurado como
-   lo compila Blender -- monolítico, namespace `pxrBlender_v26_03`, Python
+1. `scripts/build-usd-blender.sh [tag]` (una vez por cada USD al que se mueva
+   Blender; v26.08 por defecto, el que lleva la diaria del 4 de octubre de
+   2026 -- `nm libusd_ms.dylib` lo nombra): OpenUSD configurado como lo
+   compila Blender -- monolítico, namespace `pxrBlender_v<versión>`, Python
    activado (las cabeceras de 3.13, de `uv python install 3.13`), el
-   `usd_ctor.diff` de Blender como el renombre `pxrctor` -> `pxbctor` -- con
-   oneTBB 2022.3, MaterialX 1.39.4 y OpenSubdiv 3.7.0, en
-   `~/tools/usd-26.03-blender`. Solo se compilan los targets de cabeceras de
-   USD.
+   `usd_ctor.diff` de Blender como el renombre `pxrctor` -> `pxbctor`,
+   aplicado a una copia de las fuentes para que un árbol compartido quede
+   como está -- con oneTBB 2022.3, MaterialX 1.39.4 y OpenSubdiv 3.7.0, en
+   `~/tools/usd-<versión>-blender`. Solo se compilan los targets de cabeceras
+   de USD. El preset y `USD_VERSION` en el `__init__.py` del add-on nombran
+   la versión; `register()` rechaza otra.
 2. `cmake --preset macos-arm64-blender && cmake --build --preset
    macos-arm64-blender`: `cmake/BlenderUsd.cmake` sustituye a
    `find_package(pxr)`, cada target de USD un nombre para la `libusd_ms` de
    Blender, y compila `MaterialXGenSlang` desde las fuentes de 1.39.5 en el
    namespace de 1.39.4 sobre los shims de `integrations/blender/materialx`.
-   Solo se compilan `hdAthenea` (con mesh2splat dentro,
-   `ATHENEA_HYDRA_COMMANDS`), los shaders y los bundles Mesh2Splat y
-   SplatBakeFilter; sin ctest.
-3. El add-on es `integrations/blender/athenea_hydra` (manual de operaciones,
-   4.1.1): `__init__.py` el motor de render y el hook de exportación USD,
-   `convert.py` el operador de mesh2splat y su panel.
-4. Sus tests son scripts de Blender sin ventana, `tests/blender/run.sh [out]`:
-   `convert_and_render.py` convierte el cubo por defecto de tres maneras con
-   el operador y compara cada render con el de la malla (`athenea compare`,
-   así que hace falta el `athenea` de una compilación de escritorio:
-   `ATHENEA_CLI`); `viewport_readback.py` mide el mapeo del color en float
-   frente a media. Los dos usan la GPU.
+   Solo se compilan `hdAthenea` (con mesh2splat, flatten y compare dentro,
+   `ATHENEA_HYDRA_COMMANDS`), los shaders y los bundles Mesh2Splat,
+   SplatBakeFilter, SplatTransferZonal y Measure; sin ctest.
+3. El add-on es `integrations/blender/athenea_hydra`, una extensión de
+   Blender (manual de operaciones, 4.1.1): `__init__.py` el motor de render,
+   sus ajustes y su panel y el hook de exportación USD; `commands.py` los
+   puntos de entrada por ctypes y el trabajo que los ejecuta en un hilo (sus
+   líneas, su progreso, su cancelación); `convert.py` la conversión y su
+   panel; `export.py` la exportación con flatten; `look.py` la comparación
+   con Cycles. Es contabilidad: exporta, compone stages, entrega argumentos
+   y lee las líneas y los números de compare. Una elección por asset es del
+   motor, nunca una opción nueva del panel; una opción es un override en
+   *Overrides*.
+4. Sus tests son scripts de Blender sin ventana, `tests/blender/run.sh
+   [cpu|gpu|all] [salida]`: `test_module.py` (cpu: el registro, los ajustes de
+   render, los stages y argumentos de una conversión y de una exportación; no
+   abre ningún dispositivo); `tx_module.py` (gpu: el cubo sobre un suelo bajo
+   forest.exr convertido con su catcher, renderizado frente al GT trazado,
+   comparado con Cycles, exportado, traído como Blender splats, parado) y
+   `viewport_readback.py` (gpu: el mapeo del color en float frente a media).
+   Los de gpu usan el `athenea compare` de una compilación de escritorio
+   (`ATHENEA_CLI`).
 5. El paquete es `scripts/package-blender-addon.sh` (manual de operaciones,
    4.1.1). `integrations/blender/THIRD_PARTY_LICENSES.md` es su lista de
-   terceros: lo que lleva el paquete, lo que deja a Blender, lo que carga del
-   sistema. Una biblioteca añadida al paquete, o una dependencia de cabeceras
-   nueva, añade su fila ahí y su línea `licence <componente> <ficheros>` al
-   script en el mismo commit; el script se para ante un fichero de licencia
-   que no encuentra, nunca sale sin él.
+   terceros: lo que lleva el paquete y lo que deja a Blender. Una biblioteca
+   añadida al paquete, o una dependencia de cabeceras nueva, añade su fila
+   ahí y su línea `licence <componente> <ficheros>` al script en el mismo
+   commit; el script se para ante un fichero de licencia que no encuentra,
+   nunca sale sin él. Una biblioteca que se lleva se renombra `@loader_path`
+   y se firma ad hoc ahí.
 
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
 `third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el
