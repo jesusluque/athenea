@@ -1,20 +1,25 @@
 // Copyright (c) 2026 jesus luque.
 //
-// THE HOST AGAINST ITS KERNELS, ON THE CPU: host.js run in node over a
-// WebGPU stand-in that does no arithmetic and draws nothing, but holds every
-// call to what a browser's validation would: each bind group names every
-// binding the kernel's WGSL declares and nothing else, with the resource kind
-// its declaration says (uniform, read-only or writable storage, a storage
-// texture); storage offsets on 256 bytes, ranges inside their buffers and
-// under the binding size; no buffer both read-only and writable in one
-// dispatch; at most 8 storage buffers a dispatch; groups under 65535 a
-// dimension. A cloud is made up here as a PLY in memory -- the bytes of a
-// file, not data anything computes from -- and loaded and drawn a frame.
+// THE ENGINE AGAINST ITS KERNELS, ON THE CPU: lib/engine.js, every module and
+// both loaders, run in node over a WebGPU stand-in that does no arithmetic
+// and draws nothing, but holds every call to what a browser's validation
+// would: each bind group names every binding the kernel's WGSL declares and
+// nothing else, with the resource kind its declaration says (uniform,
+// read-only or writable storage, a storage texture); storage offsets on 256
+// bytes, ranges inside their buffers and under the binding size; no buffer
+// both read-only and writable in one dispatch; at most 8 storage buffers a
+// dispatch; groups under 65535 a dimension; copies inside their buffers and
+// with their usages. Clouds are made up here as PLYs in memory -- the bytes of
+// a file, not data anything computes from -- and an SPZ is read from disk
+// when one is given; each is loaded, its levels of detail built, and drawn
+// with every module's switches turned, at each tier. The counts a readback
+// would return are made up too (a level's groups, the visible splats, the
+// pairs, the drawn).
 //
 // What it cannot say: whether a picture is right. That is a GPU's run
 // (docs/decisions.md, "WebGPU").
 //
-// Usage: node check.mjs [directory built by scripts/web-kernels.py]
+// Usage: node check.mjs [directory built by scripts/web-kernels.py] [an .spz]
 
 import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -49,7 +54,7 @@ function declared(wgsl) {
 }
 
 const counters = { dispatches: 0, bindGroups: 0, byKernel: {} };
-let pretend = { visible: 0, pairs: 0 };
+let pretend = { visible: 0, pairs: 0, drawn: 0, level: 0, splats: 0 };
 
 class Buffer {
   constructor({ size, usage, label }) {
@@ -61,8 +66,9 @@ class Buffer {
   getMappedRange(offset = 0, size = this.size - offset) {
     // What a readback would hold: the counts a frame asks for, made up.
     const a = new Uint32Array(size / 4);
-    if (this.label === "totals.readback") { a[0] = pretend.visible; a[1] = pretend.pairs; }
-    if (this.label === "bounds.read") new Float32Array(a.buffer).set([-1, -1, -1, 0, 1, 1, 1, 0]);
+    if (this.label === "frame.readback") { a[0] = pretend.visible; a[1] = pretend.pairs; if (a.length > 2) a[2] = pretend.drawn; }
+    if (this.from === "bounds.result") new Float32Array(a.buffer).set([-1, -1, -1, 0, 1, 1, 1, 0]);
+    if (this.from === "lod.total") a[0] = Math.min(8 ** ++pretend.level, pretend.splats);   // a level's groups
     return a.buffer;
   }
   unmap() {}
@@ -138,6 +144,9 @@ function makeDevice() {
       copyBufferToBuffer(src, so, dst, d0, size) {
         if (so % 4 || d0 % 4 || size % 4) fail(`copy ${src.label}: offsets not on 4`);
         if (so + size > src.size || d0 + size > dst.size) fail(`copy ${src.label} -> ${dst.label}: out of range`);
+        if (!(src.usage & U.COPY_SRC)) fail(`copy from ${src.label}: no COPY_SRC`);
+        if (!(dst.usage & U.COPY_DST)) fail(`copy into ${dst.label}: no COPY_DST`);
+        dst.from = src.label;
       },
       finish: () => ({}),
     }),
@@ -156,7 +165,7 @@ function makeDevice() {
 }
 
 const device = makeDevice();
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: { gpu: { requestAdapter: async () => ({ limits, requestDevice: async () => device }) } } });
+Object.defineProperty(globalThis, "navigator", { configurable: true, value: { gpu: { requestAdapter: async () => ({ limits, features: new Set(), requestDevice: async () => device }) } } });
 
 // A cloud of `count` splats with `rest` harmonic coefficients, as a file's bytes.
 function plyBytes(count, rest) {
@@ -174,7 +183,7 @@ function plyBytes(count, rest) {
 globalThis.fetch = async (url) => {
   const u = String(url);
   if (u.startsWith("mem:")) {
-    const [count, rest] = u.slice(4).split(":").map(Number);
+    const [count, rest] = u.slice(4).replace(/\.ply$/, "").split(":").map(Number);
     const bytes = plyBytes(count, rest);
     let sent = false;
     return {
@@ -198,27 +207,45 @@ globalThis.fetch = async (url) => {
 
 // --- the run -----------------------------------------------------------------
 
-const { AtheneaHost } = await import(pathToFileURL(path.join(dir, "host.js")));
+const { Engine } = await import(pathToFileURL(path.join(dir, "lib/engine.js")));
 const canvas = {
   width: 1280, height: 720,
   getContext: () => ({ configure() {}, unconfigure() {}, getCurrentTexture: () => ({ createView: () => ({ view: true }) }) }),
 };
-const host = await AtheneaHost.create({ canvas, base: pathToFileURL(dir + "/") });
-// The sizes of the site's test clouds: soar (200 k, SH3), pawn-r10 (730 k,
-// SH0), pawn-hq (1.88 M, SH0), and a small one.
-for (const [count, rest] of [[1000, 45], [200258, 45], [730559, 0], [1875795, 0]]) {
-  const loaded = await host.load({ url: `mem:${count}:${rest}`, format: "ply", transform: { rotation: [180, 0, 0], scale: 0.01 } });
-  if (loaded.count !== count || loaded.restPerColour !== rest / 3) fail(`load ${count}: ${JSON.stringify(loaded)}`);
-  for (const [visible, pairs] of [[0, 0], [count >> 1, count * 3], [count, 20000000]]) {
-    pretend = { visible, pairs };
-    host.setCamera({ position: [0, 0.5, 3], target: [0, 0, 0], fov: 50 });
-    host.setFeatures({ shDegree: 1, antialias: true, linear: pairs > count });
-    const stats = await host.frame();
-    if (stats.visible !== visible) fail(`frame: visible ${stats.visible}`);
+const draw = async (engine, count) => {
+  for (const [visible, pairs, drawn] of [[0, 0, 0], [count >> 1, count * 3, count >> 1], [count, 20000000, 2 * count]]) {
+    pretend.visible = visible; pretend.pairs = pairs; pretend.drawn = drawn;
+    engine.setCamera({ position: [0, 0.5, 3], target: [0, 0, 0], fov: 50 });
+    const said = engine.setFeatures({ shDegree: visible & 3, antialias: true, linear: pairs > count, lod: drawn !== count, lodThreshold: 1.5, exposure: 1.2, nothing: 1 });
+    if (said.nothing !== false || said.shDegree !== true || said.lod !== true) fail(`setFeatures: ${JSON.stringify(said)}`);
+    const stats = await engine.frame();
+    if (stats.visible > visible) fail(`frame: visible ${stats.visible}`);
     if (stats.pairs + stats.pairsDropped !== pairs) fail(`frame: pairs ${stats.pairs} + ${stats.pairsDropped}`);
   }
+};
+for (const tier of ["T1", "T2", "T3"]) {
+  const engine = await Engine.create({ canvas, base: pathToFileURL(dir + "/"), tier });
+  if (engine.tier !== tier) fail(`tier ${engine.tier}, asked ${tier}`);
+  if (engine.options().length < 7) fail(`options: ${engine.options().length}`);
+  // The sizes of the site's test clouds: soar (200 k, SH3), pawn-r10 (730 k,
+  // SH0), pawn-hq (1.88 M, SH0), and a small one.
+  for (const [count, rest] of [[1000, 45], [200258, 45], [730559, 0], [1875795, 0]]) {
+    pretend.level = 0; pretend.splats = count;
+    const loaded = await engine.load({ url: `mem:${count}:${rest}.ply`, transform: { rotation: [180, 0, 0], scale: 0.01 } });
+    if (loaded.count !== count) fail(`load ${count}: ${JSON.stringify(loaded)}`);
+    await draw(engine, count);
+  }
+  const spz = process.argv[3];
+  if (spz) {
+    const blob = new Blob([await readFile(spz)]);
+    const head = new Uint8Array(await new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()).subarray(0, 16);
+    pretend.level = 0; pretend.splats = new DataView(head.buffer, head.byteOffset).getUint32(8, true);
+    const loaded = await engine.load({ blob, format: "spz" });
+    if (loaded.count !== pretend.splats) fail(`spz: ${loaded.count} of ${pretend.splats}`);
+    await draw(engine, loaded.count);
+  }
+  engine.dispose();
 }
-host.dispose();
 console.log(`${counters.dispatches} dispatches, ${counters.bindGroups} bind groups:`,
   Object.entries(counters.byKernel).map(([k, n]) => `${k} ${n}`).join(", "));
 if (failures) {

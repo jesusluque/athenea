@@ -1051,95 +1051,152 @@ Each EXR carries its timecode, its rate as a rational, the TAI instant, the
 frame index, the USD time and how late the wake was, so a frame can be placed
 on a timeline by what is inside it.
 
-### 3.6 The web module
+### 3.6 The web viewer
 
-athenea's splat raster on a web page's WebGPU, as a directory a site serves
-(proposal 072, stage E1, preset T1: a captured cloud with its harmonics,
-nothing relit). Built on the CPU, no GPU involved:
+athenea's own viewer on a web page's WebGPU, by modules (docs/decisions.md,
+"The web viewer"): its splat raster, its levels of detail, the harmonics, and
+next the relit features, as one directory a site serves as it is. Built on
+the CPU, no GPU involved:
 
 ```sh
-scripts/web-kernels.py --out build/web/athenea-webgpu     # needs slangc; Naga and Dawn for their checks
-node build/web/athenea-webgpu/check.mjs                    # the host against its kernels, on the CPU
+scripts/web-kernels.py --out build/web/athenea          # needs slangc; Naga and Dawn for their checks
+node build/web/athenea/check.mjs build/web/athenea [x.spz]   # the engine against its kernels, on the CPU
 ```
 
 The build fails if a kernel does not compile, if Naga or Tint refuses it, or if
 it asks for more than the specification's defaults: 8 storage buffers a
 stage, 16384 bytes of workgroup memory.
 
-| File | What it is |
+| Path | What it is |
 |---|---|
+| `viewer/index.html` | the viewer page |
+| `athenea-webgpu.js` | the same engine as a renderer of the athenea-web site: `createRenderer`, `RENDERER_INFO` |
+| `lib/engine.js` | W-host: `Engine`, the page's API below |
+| `lib/gpu.js`, `lib/probe.js`, `lib/orbit.js`, `lib/math.js` | the kernel runner, the tier probe, the orbit, the camera's matrices |
+| `lib/loaders/` | `ply.js`, `spz.js`, and `cloud.js` which they share |
+| `lib/modules/` | `core-raster.js`, `sh.js`, `lod.js`: a manifest and the hooks each |
 | `manifest.json` | per kernel: its WGSL file, workgroup size, every parameter by name with its `@binding` and kind, a uniform's field offsets, its override constants by `@id`, and what it uses of the limits. `format` `athenea-webgpu-kernels`, `version` 1 |
 | `kernels/<entry>.wgsl` | one WGSL module a kernel, compiled from `shaders/`; never edited |
-| `host.js` | W-host: `AtheneaHost` |
-| `athenea-webgpu.js` | the renderer slot of the athenea-web viewer: `createRenderer`, `RENDERER_INFO` |
-| `ply.js` | the PLY header, read on the CPU |
-| `test.html` | the module alone: `test.html?url=<a .ply>` |
 | `check.mjs` | the CPU check above |
 
-**The renderer slot** (`athenea-webgpu.js`), the interface of athenea-web's
-`renderers/index.js`:
+Every path is relative and every import resolved from `import.meta.url`, with
+no bare import: the directory is served as it is, anywhere, and loaded with
+`import(url)`. No threads, so no COOP/COEP headers.
 
-| Call | Takes, returns | Maps to |
+**The viewer** (`viewer/index.html`). A file is dropped on the page, opened
+with the button, or given in the address:
+
+| Parameter | Takes | Default |
 |---|---|---|
-| `createRenderer({canvas, scene, file, url, onProgress})` | resolves when every record is on the device. `file.format` `ply` (default); `file.transform` or `scene.transform`: `{position, rotation, scale}`, rotation in degrees, three.js's XYZ order. `onProgress(fraction or null, bytes)` | `AtheneaHost.create`, `host.load` |
-| `name`, `backend` | `"athenea"`, `"WebGPU"` | |
-| `bounds()` | `{min, max}` in the world: `scene.bounds` if given, otherwise the cloud's box reduced on the GPU, through its transform | `host.bounds` |
-| `setCamera({position, target, fov})`, `getCamera()` | world space, Y up; `fov` vertical, degrees, default 50. The module owns its orbit (left drag turns, right drag or shift pans, wheel dollies) | `host.setCamera` |
-| `setBackground({color, hdriUrl, showHdri, exposure, blur})` | `color` sRGB `#rrggbb` (default `#0b0b0f`); `exposure` a multiplier, default 1. T1 shows no sky: `hdriUrl` is kept, `blur` ignored | `host.setSky` |
-| `setDetail(scale)` | 1 is the default. No levels of detail in T1: under 1 lowers the harmonics (≥ 0.5: degree 1; below: 0) | `host.setFeatures({shDegree})` |
-| `hasLod`, `hasRoi`, `roi`, `setRoi()` | `false`; `setRoi` does nothing | |
-| `setLightState(states)`, `setFeatures(features)` | as the host's, below | |
-| `stats()` | `{total, rendered, fps, extra, debug}`: `rendered` is the splats the last frame found visible; `extra` one line for the page to print as it is (`<pairs> pairs · <ms> ms`, or `error: <message>`); `debug` the same as `{pairs, pairsDropped, ms, error}` | the last `host.frame()` |
-| `snapshot()` | `Promise<Blob>`, webp, after the next frame | |
-| `dispose()` | stops the loop, frees every buffer and the device | `host.dispose` |
+| `url` | a `.ply` or `.spz`, relative to the page or absolute (with CORS) | none: the page waits for a file |
+| `tier` | `T1`, `T2`, `T3` | probed (below) |
+| `transform` | JSON, as a scene.json gives it: `{"position": [x,y,z], "rotation": [x,y,z] (degrees, XYZ), "scale": s}` | none |
+| `eye`, `target`, `fov` | `x,y,z`, `x,y,z`, vertical degrees | the cloud framed, 50 |
+| `modules` | ids, comma-separated | `core-raster,sh,lod` |
+| `features` | JSON, the options below: `{"linear": true, "lodThreshold": 2}` | each option's default |
+| `shot` | a name: `<name>.webp` is downloaded 4 s after the cloud is drawn, and the stats are logged to the console | none |
 
-`RENDERER_INFO` is `{label: "athenea · WebGPU", formats: ["ply"], needsWebGPU: true}`.
-The directory is self-contained: it resolves its files from `import.meta.url` and imports nothing by a bare name, so it is served as it is and loaded with `import(url)`. The canvas's CSS size is the page's; the module sets its pixel size from it
-times `devicePixelRatio` (at most 2). No threads, so no COOP/COEP headers.
+The orbit: left drag turns about the target, right drag or shift-drag pans,
+the wheel dollies. The panel lists every module's options; one the tier
+cannot have is greyed with why. The stats line: tier, pixels, fps, ms a
+frame; splats, drawn, visible, pairs; the LOD's threshold, levels and slots.
 
-**W-host** (`host.js`), what a page drives directly:
+**Tiers**, probed from the adapter, or `tier=`:
+
+| Tier | When | Drawn at most | Cell floor | Resolution | Frame target |
+|---|---|---|---|---|---|
+| T1 | WebGPU at the default limits, or any phone, tablet or headset | 1.25 M | 1.5 px | 1.5 x CSS | 33.3 ms |
+| T2 | 32 KiB of workgroup memory and 644 MB a binding | 2.5 M | 1 px | 2 x | 16.7 ms |
+| T3 | T2 and 1.25 GB a binding and BC textures | 4.5 M | 1 px | the display's | 16.7 ms |
+
+Without WebGPU (T0) the page says so.
+
+**The modules and their options** (`engine.setFeatures({id: value})`):
+
+| Module | Option `id` | Takes | Default |
+|---|---|---|---|
+| core-raster | `antialias` | the Mip-Splatting filter's energy compensation | true |
+| | `linear` | blend in linear light and encode at the end, as `athenea render`; false blends in display sRGB, as standard 3DGS viewers do | false |
+| | `exposure` | a multiplier, 0.25-4 | 1 |
+| sh | `shDegree` | 0-3; a pipeline a degree, no data moved | 3 |
+| lod | `lod` | levels of detail on or off | true |
+| | `lodAuto` | the controller holds the frame time and the tier's drawn budget | true |
+| | `lodThreshold` | pixels a merged cell may span, 0.5-8; setting it turns `lodAuto` off | the tier's start (2 px T1, 1 px T2-T3) |
+
+**Levels of detail.** Built on the GPU once a cloud has loaded (4096 splats or
+more): the native `LodBuilder`'s method -- Morton order, octree levels, a
+merged Gaussian a cell, down to cells of two splats. Each frame the cut draws
+a cell merged when it spans at most the threshold, into a list the projection
+walks over a fixed number of slots -- the tier's drawn budget -- so what the
+cut leaves out costs nothing after the cut. The controller raises the
+threshold by 1.25 when the cut wants more than the slots, or when a tenth of
+the last half second's frames took over 1.5 x the target; it lowers it after
+three seconds under 0.7 x, not within ten seconds of raising it; from the
+tier's floor to 8 px. A pool of the splats and every level takes about 1.6 x
+the cloud's memory.
+
+**The engine** (`lib/engine.js`), what a page drives directly:
 
 | Call | Takes, returns |
 |---|---|
-| `AtheneaHost.create({canvas, base, device})` | `base`: the directory of `manifest.json` (default: the module's own). `device`: one the page has, or one is requested with the adapter's `maxStorageBufferBindingSize` and `maxBufferSize` and every other limit at its default. Configures the canvas `rgba8unorm` with `STORAGE_BINDING` |
-| `load({url, format, onProgress, transform})` | streams the file by `fetch` and decodes it on the GPU a slice of at most 64 MiB at a time as it arrives; resolves to `{count, restPerColour, bounds}` |
-| `setCamera({position, target, up, fov})`, `getCamera()` | `up` default `[0, 1, 0]` |
-| `setSky({color, hdriUrl, exposure})` | returns `{hdri: false}` in T1 |
-| `setLightState({[group]: {on, intensity}})` | kept for 072's E8; returns `{applied: false}` in T1 |
-| `setFeatures({shDegree, antialias, linear})` | `shDegree` 0-3 (default 3), a WGSL override: a pipeline a value, made once; `antialias` default true; `linear` default false (below). Returns, per name, whether this preset has it |
-| `frame()` | draws into the canvas at its pixel size; resolves to `{total, visible, pairs, pairsDropped, ms}` |
-| `bounds()`, `dispose()` | |
+| `Engine.create({canvas, base, tier, modules, device})` | `base`: the directory of `manifest.json` (default: the one above `lib/`). `device`: one the page has, or one is requested with the adapter's `maxStorageBufferBindingSize` and `maxBufferSize` and every other limit at its default. Configures the canvas `rgba8unorm` with `STORAGE_BINDING` |
+| `load({url or blob, format, onProgress, transform})` | `format` `ply` or `spz`, by the name when left out. Resolves to `{count, restPerColour, bounds}` once the cloud is on the device and the modules have built what they keep |
+| `setCamera({position, target, up, fov})`, `getCamera()` | world space, Y up; `fov` vertical, degrees; `up` default `[0, 1, 0]` |
+| `setSky({color, hdriUrl, exposure})` | `color` sRGB `#rrggbb` or `[r, g, b]`, default `#0b0b0f`; no sky shown yet: returns `{hdri: false}` |
+| `setLightState({[group]: {on, intensity}})` | kept for the light groups' module; returns `{applied: false}` |
+| `setFeatures({id: value})` | the options above; returns, per id, whether a module took it |
+| `options()` | every module's options: `{id, label, kind, range, step, effect, default, module, value, available, why}` |
+| `frame()` | draws into the canvas at its pixel size; resolves to `{total, drawn, visible, pairs, pairsDropped, ms, counters, modules}` |
+| `bounds()`, `dispose()` | the box in the world; frees every buffer, and the device if it made it |
 
-**Colour.** T1 blends as standard 3DGS does -- the trainers, Spark, three.js
--- in the display sRGB a capture's colours were trained in, and writes the
-result as it is, so a picture compares with those viewers'. `setFeatures({linear:
-true})` blends in linear light and encodes on the way out, as athenea's native
-raster does (`frame.slang`): the one to compare with `athenea render`. The
-background `color` is sRGB either way.
+**The site's renderer** (`athenea-webgpu.js`) follows athenea-web's
+`renderers/index.js`: `createRenderer({canvas, scene, file, url,
+onProgress})` (`file.format`; `file.transform` or `scene.transform`; the tier
+probed); `bounds()`; `setCamera`/`getCamera`; `setBackground({color, hdriUrl,
+showHdri, exposure, blur})` to `setSky` (`blur` ignored); `setDetail(scale)`:
+the LOD threshold is the tier's start over `scale`, and `scale` 1 gives the
+controller back; `hasLod` true; `hasRoi`, `roi` false; `setLightState`,
+`setFeatures`; `stats()` `{total, rendered (drawn), fps, extra, debug}` where
+`extra` is one line (`<tier> · <visible> visible · <pairs> pairs · <ms> ms`,
+or `error: <message>`) and `debug` the frame's numbers; `snapshot()` a webp
+after the next frame; `dispose()`. `RENDERER_INFO` is `{label: "athenea ·
+WebGPU", formats: ["ply", "spz"], needsWebGPU: true}`.
 
-**What `url` points to.** A 3DGS PLY: `binary_little_endian`, one `vertex`
-element and nothing before it, every property `float`, with `x y z opacity
-scale_0-2 rot_0-3 f_dc_0-2` and `f_rest_*` for 0, 9, 24 or 45 harmonics
-(any order, extra properties ignored). The server must give `content-length`
-for the progress to be a fraction, and CORS. SPZ, SOG, `.rad` and the
-sectioned `.athc` (072's S0-S7) are later stages.
+**What `url` points to.**
+- A 3DGS PLY: `binary_little_endian`, one `vertex` element and nothing before
+  it, every property `float`, with `x y z opacity scale_0-2 rot_0-3 f_dc_0-2`
+  and `f_rest_*` for 0, 9, 24 or 45 harmonics. Streamed and decoded a slice
+  of at most 64 MiB at a time as it arrives; `content-length` makes the
+  progress a fraction.
+- An SPZ, v2 or v3 (gzip): read whole, decompressed by the browser, its
+  streams decoded on the GPU. v1 (float16 positions) and v4 (zstd) are
+  refused. Its coordinates are right-up-back and turned as the native reader
+  turns them.
 
-**Limits.** A splat takes 16 bytes of positions, 16 of shape, 2 to 92 of
-harmonics, 48 of record and 28 of the frame's words; each stream is one
-binding, so the cloud is at most `maxStorageBufferBindingSize / 48` splats
-(2.8 M at the default 128 MiB, the record being the largest) and the harmonics are dropped a degree at a time
-until they fit (degree 3 holds 1.46 M at 128 MiB). Pairs (a splat's tiles) are
-at most `min(binding / 4, 65535 × 256)`; past that the frame drops the rest and
-says how many in `pairsDropped`.
+**Limits.** Every stream is one binding. The largest a splat has is its
+projected record, 48 bytes, so a cloud is at most `maxStorageBufferBindingSize
+/ 48` splats (2.8 M at the default 128 MiB); harmonics are dropped a degree at
+a time until 1.6 x the cloud fits a binding. Pairs are at most
+`min(binding / 4, 65535 × 256)`; past that a frame drops the rest and says how
+many in `pairsDropped`.
 
-**Errors**, thrown by `createRenderer` and `load`: `this browser has no
-WebGPU`; `WebGPU: no adapter`; `<url>: HTTP <status>`; `not a PLY file`;
-`PLY format '<f>'; splat clouds are binary_little_endian`; `PLY: a property
-that is not float32 (this module reads float32 records only)`; `PLY: no '<name>'
--- this does not look like a trained splat cloud`; `PLY: <n> harmonic
-coefficients is not a whole degree`; `<n> splats: past this device's <b> bytes
-a binding`; `<url>: <k> of <n> records arrived`. A frame that fails stops the
-loop and leaves its message in `stats().extra.error`.
+**Colour.** By default the blend is in display sRGB, as standard 3DGS viewers
+(Spark, three.js) blend, and the result is written as it is; `linear` blends in
+linear light and encodes at the end, as the native raster does. The background
+colour is sRGB either way.
+
+**Errors**, thrown by `Engine.create`, `load` and `createRenderer`: `this
+browser has no WebGPU`; `WebGPU: no adapter`; `<url>: HTTP <status>`; `format
+'<f>': this page reads ply, spz`; `not a PLY file`; `PLY format '<f>'; splat
+clouds are binary_little_endian`; `PLY: a property that is not float32 (this
+module reads float32 records only)`; `PLY: no '<name>' -- this does not look
+like a trained splat cloud`; `PLY: <n> harmonic coefficients is not a whole
+degree`; `not an SPZ file (no NGSP header)`; `SPZ v1: float16 positions (a
+format never released)`; `SPZ v<n>: this page reads v2 and v3`; `<name>: not a
+gzipped SPZ (v4's zstd is not read here)`; `<n> splats: past this device's <b>
+bytes a binding`; `<label>: <n> bytes is past the device's binding size <b>`;
+`<name>: <k> of <n> records arrived`. A frame that fails stops the viewer's
+loop and shows its message.
 
 ## 4. Authoring for this engine in USD
 
@@ -1798,7 +1855,7 @@ the README shows.
 | `build-dawn.sh` | puts Dawn 138.0.7204.168, prebuilt, in `~/tools/dawn-<version>` (`ATHENEA_DAWN_ROOT` overrides), checked against its SHA-256 |
 | `wgsl-report.py [--markdown] [--only E,...] [--out DIR]` | compiles the splat raster's kernels and the Measure effect to WGSL with `slangc`, and prints per kernel its storage buffers, workgroup bytes and what fails; with Naga (`cargo install naga-cli`) and Dawn present, their verdicts too. CPU only. The WGSL goes to `--out` (default `$TMPDIR/wgsl`) |
 | `wgsl-tint.cpp` | Tint, through Dawn's null backend, on a WGSL file: the module, then its pipeline under the web's default limits. Built by `wgsl-report.py` |
-| `web-kernels.py --out DIR [--no-tint]` | the web module (3.6): the web route's kernels as WGSL, `manifest.json`, and `web/athenea-webgpu` beside them; fails on a kernel that does not compile, that Naga or Tint refuses, or that is over 8 storage buffers or 16384 workgroup bytes. CPU only |
+| `web-kernels.py --out DIR [--no-tint]` | the web viewer (3.6): its modules' kernels as WGSL, `manifest.json`, and `web/` beside them; fails on a kernel that does not compile, that Naga or Tint refuses, or that is over 8 storage buffers or 16384 workgroup bytes. CPU only |
 | `fetch-fox.sh [dir]` | the Khronos Fox, through Blender, for a skinned conversion |
 | `sketchfab-to-usd.sh <zip> [name]` | a Sketchfab archive into a USD asset |
 | `readme-images.sh [outdir]` | the images in the README, from the sparrow asset |

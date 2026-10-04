@@ -1073,96 +1073,155 @@ Cada EXR lleva su timecode, su cadencia como racional, el instante TAI, el
 índice de frame, el tiempo USD y cuánto se retrasó el despertar, así que un
 frame se coloca en una línea de tiempo por lo que lleva dentro.
 
-### 3.6 El módulo web
+### 3.6 El visor web
 
-El raster de splats de athenea sobre el WebGPU de una página web, como un
-directorio que un sitio sirve (propuesta 072, etapa E1, preset T1: una nube
-capturada con sus armónicos, sin reiluminar). Se construye en la CPU, sin GPU:
+El visor propio de athenea sobre el WebGPU de una página web, por módulos
+(docs/decisions.md, "The web viewer"): su raster de splats, sus niveles de
+detalle, los armónicos y, después, las features reiluminadas, como un
+directorio que un sitio sirve tal cual. Se construye en la CPU, sin GPU:
 
 ```sh
-scripts/web-kernels.py --out build/web/athenea-webgpu     # necesita slangc; Naga y Dawn para sus comprobaciones
-node build/web/athenea-webgpu/check.mjs                    # el anfitrión contra sus kernels, en la CPU
+scripts/web-kernels.py --out build/web/athenea          # necesita slangc; Naga y Dawn para sus comprobaciones
+node build/web/athenea/check.mjs build/web/athenea [x.spz]   # el motor contra sus kernels, en la CPU
 ```
 
 La construcción falla si un kernel no compila, si Naga o Tint lo rechazan, o si
 pide más que los valores por defecto de la especificación: 8 storage buffers
 por etapa, 16384 bytes de memoria de workgroup.
 
-| Fichero | Qué es |
+| Ruta | Qué es |
 |---|---|
+| `viewer/index.html` | la página del visor |
+| `athenea-webgpu.js` | el mismo motor como renderer del sitio athenea-web: `createRenderer`, `RENDERER_INFO` |
+| `lib/engine.js` | W-host: `Engine`, la API de la página de abajo |
+| `lib/gpu.js`, `lib/probe.js`, `lib/orbit.js`, `lib/math.js` | el ejecutor de kernels, la sonda de tier, la órbita, las matrices de la cámara |
+| `lib/loaders/` | `ply.js`, `spz.js`, y `cloud.js`, que comparten |
+| `lib/modules/` | `core-raster.js`, `sh.js`, `lod.js`: un manifiesto y los ganchos de cada uno |
 | `manifest.json` | por kernel: su fichero WGSL, el tamaño de workgroup, cada parámetro por nombre con su `@binding` y su tipo, los desplazamientos de los campos de un uniform, sus constantes override por `@id`, y lo que usa de los límites. `format` `athenea-webgpu-kernels`, `version` 1 |
 | `kernels/<entry>.wgsl` | un módulo WGSL por kernel, compilado desde `shaders/`; nunca se edita |
-| `host.js` | W-host: `AtheneaHost` |
-| `athenea-webgpu.js` | el hueco de renderer del visor athenea-web: `createRenderer`, `RENDERER_INFO` |
-| `ply.js` | la cabecera PLY, leída en la CPU |
-| `test.html` | el módulo solo: `test.html?url=<un .ply>` |
 | `check.mjs` | la comprobación en CPU de arriba |
 
-**El hueco de renderer** (`athenea-webgpu.js`), la interfaz de
-`renderers/index.js` de athenea-web:
+Todas las rutas son relativas y todos los imports se resuelven desde
+`import.meta.url`, sin ningún import por nombre suelto: el directorio se sirve
+tal cual, en cualquier sitio, y se carga con `import(url)`. Sin hilos, así que
+sin cabeceras COOP/COEP.
 
-| Llamada | Recibe, devuelve | Corresponde a |
+**El visor** (`viewer/index.html`). Un fichero se suelta en la página, se abre
+con el botón, o se da en la dirección:
+
+| Parámetro | Recibe | Por defecto |
 |---|---|---|
-| `createRenderer({canvas, scene, file, url, onProgress})` | se resuelve cuando todos los registros están en el dispositivo. `file.format` `ply` (por defecto); `file.transform` o `scene.transform`: `{position, rotation, scale}`, la rotación en grados, en el orden XYZ de three.js. `onProgress(fracción o null, bytes)` | `AtheneaHost.create`, `host.load` |
-| `name`, `backend` | `"athenea"`, `"WebGPU"` | |
-| `bounds()` | `{min, max}` en el mundo: `scene.bounds` si viene, si no la caja de la nube reducida en la GPU, por su transformación | `host.bounds` |
-| `setCamera({position, target, fov})`, `getCamera()` | espacio del mundo, Y arriba; `fov` vertical, en grados, 50 por defecto. El módulo lleva su propia órbita (arrastre izquierdo gira, arrastre derecho o mayúsculas desplaza, la rueda acerca) | `host.setCamera` |
-| `setBackground({color, hdriUrl, showHdri, exposure, blur})` | `color` sRGB `#rrggbb` (por defecto `#0b0b0f`); `exposure` un multiplicador, 1 por defecto. T1 no muestra cielo: `hdriUrl` se guarda, `blur` se ignora | `host.setSky` |
-| `setDetail(scale)` | 1 es el valor por defecto. Sin niveles de detalle en T1: por debajo de 1 baja los armónicos (≥ 0,5: grado 1; por debajo: 0) | `host.setFeatures({shDegree})` |
-| `hasLod`, `hasRoi`, `roi`, `setRoi()` | `false`; `setRoi` no hace nada | |
-| `setLightState(states)`, `setFeatures(features)` | como los del anfitrión, abajo | |
-| `stats()` | `{total, rendered, fps, extra, debug}`: `rendered` son los splats que el último cuadro encontró visibles; `extra` una línea que la página imprime tal cual (`<pares> pairs · <ms> ms`, o `error: <mensaje>`); `debug` lo mismo como `{pairs, pairsDropped, ms, error}` | el último `host.frame()` |
-| `snapshot()` | `Promise<Blob>`, webp, tras el siguiente cuadro | |
-| `dispose()` | para el bucle, libera todos los buffers y el dispositivo | `host.dispose` |
+| `url` | un `.ply` o `.spz`, relativo a la página o absoluto (con CORS) | ninguno: la página espera un fichero |
+| `tier` | `T1`, `T2`, `T3` | el de la sonda (abajo) |
+| `transform` | JSON, como lo da un scene.json: `{"position": [x,y,z], "rotation": [x,y,z] (grados, XYZ), "scale": s}` | ninguno |
+| `eye`, `target`, `fov` | `x,y,z`, `x,y,z`, grados verticales | la nube encuadrada, 50 |
+| `modules` | ids, separados por comas | `core-raster,sh,lod` |
+| `features` | JSON, las opciones de abajo: `{"linear": true, "lodThreshold": 2}` | el valor por defecto de cada opción |
+| `shot` | un nombre: se descarga `<nombre>.webp` 4 s después de dibujarse la nube, y las estadísticas se escriben en la consola | ninguno |
 
-`RENDERER_INFO` es `{label: "athenea · WebGPU", formats: ["ply"], needsWebGPU: true}`.
-El directorio es autocontenido: resuelve sus ficheros desde `import.meta.url` y no importa nada por un nombre suelto, así que se sirve tal cual y se carga con `import(url)`. El tamaño CSS del canvas es cosa de la página; el módulo fija su tamaño en
-píxeles a partir de él por `devicePixelRatio` (como mucho 2). Sin hilos, así
-que sin cabeceras COOP/COEP.
+La órbita: arrastre izquierdo gira alrededor del objetivo, arrastre derecho o
+con mayúsculas desplaza, la rueda acerca. El panel lista las opciones de cada
+módulo; la que el tier no puede tener sale en gris con el porqué. La línea de
+estadísticas: tier, píxeles, fps, ms por cuadro; splats, dibujados, visibles,
+pares; el umbral del LOD, los niveles y los slots.
 
-**W-host** (`host.js`), lo que una página maneja directamente:
+**Tiers**, de la sonda del adaptador, o `tier=`:
+
+| Tier | Cuándo | Dibujados como mucho | Suelo de celda | Resolución | Objetivo de cuadro |
+|---|---|---|---|---|---|
+| T1 | WebGPU con los límites por defecto, o cualquier móvil, tableta o visor | 1,25 M | 1,5 px | 1,5 × CSS | 33,3 ms |
+| T2 | 32 KiB de memoria de workgroup y 644 MB por vinculación | 2,5 M | 1 px | 2 × | 16,7 ms |
+| T3 | T2, 1,25 GB por vinculación y texturas BC | 4,5 M | 1 px | la de la pantalla | 16,7 ms |
+
+Sin WebGPU (T0), la página lo dice.
+
+**Los módulos y sus opciones** (`engine.setFeatures({id: valor})`):
+
+| Módulo | `id` de la opción | Recibe | Por defecto |
+|---|---|---|---|
+| core-raster | `antialias` | la compensación de energía del filtro de Mip-Splatting | true |
+| | `linear` | mezclar en luz lineal y codificar al final, como `athenea render`; false mezcla en el sRGB de pantalla, como los visores 3DGS estándar | false |
+| | `exposure` | un multiplicador, 0,25-4 | 1 |
+| sh | `shDegree` | 0-3; un pipeline por grado, sin mover datos | 3 |
+| lod | `lod` | niveles de detalle sí o no | true |
+| | `lodAuto` | el controlador sostiene el tiempo de cuadro y el presupuesto de dibujados del tier | true |
+| | `lodThreshold` | píxeles que puede abarcar una celda fusionada, 0,5-8; fijarlo apaga `lodAuto` | el inicial del tier (2 px en T1, 1 px en T2-T3) |
+
+**Niveles de detalle.** Se construyen en la GPU cuando la nube ha cargado (con
+4096 splats o más): el método del `LodBuilder` nativo -- orden Morton, niveles
+de un octree, una gaussiana fusionada por celda, hasta celdas de dos splats.
+En cada cuadro el corte dibuja fusionada una celda que abarca como mucho el
+umbral, en una lista que la proyección recorre sobre un número fijo de slots
+-- el presupuesto de dibujados del tier --, así que lo que el corte deja fuera
+no cuesta nada después del corte. El controlador sube el umbral ×1,25 cuando
+el corte quiere más que los slots, o cuando la décima parte de los cuadros del
+último medio segundo pasa de 1,5 × el objetivo; lo baja tras tres segundos por
+debajo de 0,7 ×, y no en los diez segundos siguientes a subirlo; del suelo del
+tier a 8 px. Un pool con los splats y todos los niveles ocupa unas 1,6 veces la
+memoria de la nube.
+
+**El motor** (`lib/engine.js`), lo que una página maneja directamente:
 
 | Llamada | Recibe, devuelve |
 |---|---|
-| `AtheneaHost.create({canvas, base, device})` | `base`: el directorio de `manifest.json` (por defecto, el del propio módulo). `device`: uno que ya tenga la página, o se pide uno con `maxStorageBufferBindingSize` y `maxBufferSize` del adaptador y el resto de límites por defecto. Configura el canvas `rgba8unorm` con `STORAGE_BINDING` |
-| `load({url, format, onProgress, transform})` | recibe el fichero por `fetch` y lo decodifica en la GPU por trozos de como mucho 64 MiB según llega; se resuelve en `{count, restPerColour, bounds}` |
-| `setCamera({position, target, up, fov})`, `getCamera()` | `up` por defecto `[0, 1, 0]` |
-| `setSky({color, hdriUrl, exposure})` | devuelve `{hdri: false}` en T1 |
-| `setLightState({[grupo]: {on, intensity}})` | se guarda para la E8 de la 072; devuelve `{applied: false}` en T1 |
-| `setFeatures({shDegree, antialias, linear})` | `shDegree` 0-3 (3 por defecto), un override de WGSL: un pipeline por valor, creado una vez; `antialias` true por defecto; `linear` false por defecto (abajo). Devuelve, por nombre, si este preset lo tiene |
-| `frame()` | dibuja en el canvas a su tamaño en píxeles; se resuelve en `{total, visible, pairs, pairsDropped, ms}` |
-| `bounds()`, `dispose()` | |
+| `Engine.create({canvas, base, tier, modules, device})` | `base`: el directorio de `manifest.json` (por defecto, el que está encima de `lib/`). `device`: uno que ya tenga la página, o se pide uno con `maxStorageBufferBindingSize` y `maxBufferSize` del adaptador y el resto de límites por defecto. Configura el canvas `rgba8unorm` con `STORAGE_BINDING` |
+| `load({url o blob, format, onProgress, transform})` | `format` `ply` o `spz`, por el nombre si no se da. Se resuelve en `{count, restPerColour, bounds}` cuando la nube está en el dispositivo y los módulos han construido lo que guardan |
+| `setCamera({position, target, up, fov})`, `getCamera()` | espacio del mundo, Y arriba; `fov` vertical, en grados; `up` por defecto `[0, 1, 0]` |
+| `setSky({color, hdriUrl, exposure})` | `color` sRGB `#rrggbb` o `[r, g, b]`, por defecto `#0b0b0f`; aún no se muestra cielo: devuelve `{hdri: false}` |
+| `setLightState({[grupo]: {on, intensity}})` | se guarda para el módulo de grupos de luces; devuelve `{applied: false}` |
+| `setFeatures({id: valor})` | las opciones de arriba; devuelve, por id, si un módulo la aceptó |
+| `options()` | las opciones de todos los módulos: `{id, label, kind, range, step, effect, default, module, value, available, why}` |
+| `frame()` | dibuja en el canvas a su tamaño en píxeles; se resuelve en `{total, drawn, visible, pairs, pairsDropped, ms, counters, modules}` |
+| `bounds()`, `dispose()` | la caja en el mundo; libera todos los buffers, y el dispositivo si lo creó |
 
-**Color.** T1 mezcla como el 3DGS estándar -- los entrenadores, Spark,
-three.js -- en el sRGB de pantalla en que se entrenaron los colores de una
-captura, y escribe el resultado tal cual, para que la imagen se compare con la
-de esos visores. `setFeatures({linear: true})` mezcla en luz lineal y codifica a
-la salida, como el raster nativo de athenea (`frame.slang`): el modo que se
-compara con `athenea render`. El `color` de fondo es sRGB en ambos casos.
+**El renderer del sitio** (`athenea-webgpu.js`) sigue `renderers/index.js` de
+athenea-web: `createRenderer({canvas, scene, file, url, onProgress})`
+(`file.format`; `file.transform` o `scene.transform`; el tier de la sonda);
+`bounds()`; `setCamera`/`getCamera`; `setBackground({color, hdriUrl, showHdri,
+exposure, blur})` a `setSky` (`blur` se ignora); `setDetail(scale)`: el umbral
+del LOD es el inicial del tier entre `scale`, y `scale` 1 devuelve el mando al
+controlador; `hasLod` true; `hasRoi`, `roi` false; `setLightState`,
+`setFeatures`; `stats()` `{total, rendered (dibujados), fps, extra, debug}`,
+donde `extra` es una línea (`<tier> · <visibles> visible · <pares> pairs · <ms>
+ms`, o `error: <mensaje>`) y `debug` los números del cuadro; `snapshot()` un
+webp tras el siguiente cuadro; `dispose()`. `RENDERER_INFO` es `{label:
+"athenea · WebGPU", formats: ["ply", "spz"], needsWebGPU: true}`.
 
-**A qué apunta `url`.** Un PLY de 3DGS: `binary_little_endian`, un elemento
-`vertex` sin nada antes, todas las propiedades `float`, con `x y z opacity
-scale_0-2 rot_0-3 f_dc_0-2` y `f_rest_*` para 0, 9, 24 o 45 armónicos (en
-cualquier orden; las propiedades de más se ignoran). El servidor debe dar
-`content-length` para que el progreso sea una fracción, y CORS. SPZ, SOG,
-`.rad` y el `.athc` por secciones (S0-S7 de la 072) son etapas posteriores.
+**A qué apunta `url`.**
+- Un PLY de 3DGS: `binary_little_endian`, un elemento `vertex` sin nada antes,
+  todas las propiedades `float`, con `x y z opacity scale_0-2 rot_0-3
+  f_dc_0-2` y `f_rest_*` para 0, 9, 24 o 45 armónicos. Se recibe en streaming y
+  se decodifica por trozos de como mucho 64 MiB según llega; `content-length`
+  hace del progreso una fracción.
+- Un SPZ, v2 o v3 (gzip): se lee entero, lo descomprime el navegador y sus
+  streams se decodifican en la GPU. v1 (posiciones float16) y v4 (zstd) se
+  rechazan. Sus coordenadas son right-up-back y se giran como las gira el
+  lector nativo.
 
-**Límites.** Un splat ocupa 16 bytes de posiciones, 16 de forma, de 2 a 92 de
-armónicos, 48 de registro y 28 de las palabras del cuadro; cada stream es una
-vinculación, así que la nube tiene como mucho `maxStorageBufferBindingSize / 48`
-splats (2,8 M con los 128 MiB por defecto, por ser el registro el mayor) y los armónicos se quitan de grado
-en grado hasta que caben (el grado 3 admite 1,46 M con 128 MiB). Los pares (las
-teselas de un splat) son como mucho `min(vinculación / 4, 65535 × 256)`; a
-partir de ahí el cuadro descarta el resto y dice cuántos en `pairsDropped`.
+**Límites.** Cada stream es una vinculación. El mayor de un splat es su
+registro proyectado, 48 bytes, así que una nube tiene como mucho
+`maxStorageBufferBindingSize / 48` splats (2,8 M con los 128 MiB por defecto);
+los armónicos se quitan de grado en grado hasta que 1,6 veces la nube cabe en
+una vinculación. Los pares son como mucho `min(vinculación / 4, 65535 × 256)`;
+a partir de ahí el cuadro descarta el resto y dice cuántos en `pairsDropped`.
 
-**Errores**, que lanzan `createRenderer` y `load`: `this browser has no
-WebGPU`; `WebGPU: no adapter`; `<url>: HTTP <status>`; `not a PLY file`;
-`PLY format '<f>'; splat clouds are binary_little_endian`; `PLY: a property
-that is not float32 (this module reads float32 records only)`; `PLY: no '<name>'
--- this does not look like a trained splat cloud`; `PLY: <n> harmonic
-coefficients is not a whole degree`; `<n> splats: past this device's <b> bytes
-a binding`; `<url>: <k> of <n> records arrived`. Un cuadro que falla para el
-bucle y deja su mensaje en `stats().extra.error`.
+**Color.** Por defecto la mezcla es en el sRGB de pantalla, como mezclan los
+visores 3DGS estándar (Spark, three.js), y el resultado se escribe tal cual;
+`linear` mezcla en luz lineal y codifica al final, como el raster nativo. El
+color de fondo es sRGB en ambos casos.
+
+**Errores**, que lanzan `Engine.create`, `load` y `createRenderer`: `this
+browser has no WebGPU`; `WebGPU: no adapter`; `<url>: HTTP <status>`; `format
+'<f>': this page reads ply, spz`; `not a PLY file`; `PLY format '<f>'; splat
+clouds are binary_little_endian`; `PLY: a property that is not float32 (this
+module reads float32 records only)`; `PLY: no '<name>' -- this does not look
+like a trained splat cloud`; `PLY: <n> harmonic coefficients is not a whole
+degree`; `not an SPZ file (no NGSP header)`; `SPZ v1: float16 positions (a
+format never released)`; `SPZ v<n>: this page reads v2 and v3`; `<name>: not a
+gzipped SPZ (v4's zstd is not read here)`; `<n> splats: past this device's <b>
+bytes a binding`; `<label>: <n> bytes is past the device's binding size <b>`;
+`<name>: <k> of <n> records arrived`. Un cuadro que falla para el bucle del
+visor y muestra su mensaje.
 
 ## 4. Autorizar para este motor en USD
 
@@ -1840,7 +1899,7 @@ assets que enseña el README.
 | `build-dawn.sh` | deja Dawn 138.0.7204.168, precompilado, en `~/tools/dawn-<versión>` (`ATHENEA_DAWN_ROOT` lo cambia), comprobado contra su SHA-256 |
 | `wgsl-report.py [--markdown] [--only E,...] [--out DIR]` | compila a WGSL con `slangc` los kernels del raster de splats y el efecto Measure, e imprime por kernel sus storage buffers, sus bytes de workgroup y lo que falla; con Naga (`cargo install naga-cli`) y Dawn presentes, también sus veredictos. Solo CPU. El WGSL va a `--out` (por defecto `$TMPDIR/wgsl`) |
 | `wgsl-tint.cpp` | Tint, por el backend nulo de Dawn, sobre un fichero WGSL: el módulo, y después su pipeline con los límites por defecto de la web. Lo compila `wgsl-report.py` |
-| `web-kernels.py --out DIR [--no-tint]` | el módulo web (3.6): los kernels de la ruta web como WGSL, `manifest.json`, y `web/athenea-webgpu` al lado; falla con un kernel que no compila, que Naga o Tint rechazan, o que pasa de 8 storage buffers o de 16384 bytes de workgroup. Solo CPU |
+| `web-kernels.py --out DIR [--no-tint]` | el visor web (3.6): los kernels de sus módulos como WGSL, `manifest.json`, y `web/` al lado; falla con un kernel que no compila, que Naga o Tint rechazan, o que pasa de 8 storage buffers o de 16384 bytes de workgroup. Solo CPU |
 | `fetch-fox.sh [dir]` | el zorro de Khronos, por Blender, para una conversión con esqueleto |
 | `sketchfab-to-usd.sh <zip> [nombre]` | un archivo de Sketchfab a un asset USD |
 | `readme-images.sh [salida]` | las imágenes del README, desde el asset del gorrión |

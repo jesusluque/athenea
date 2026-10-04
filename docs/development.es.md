@@ -268,18 +268,24 @@ veredictos de Naga y de Tint (Tint por el backend nulo de Dawn,
 comprobación: aceptó una barrera bajo una rama sobre memoria de grupo que Tint
 rechaza.
 
-**El módulo web** (`docs/operations.es.md` 3.6) es `shaders/athenea/web/` --
-los kernels cuyos equivalentes nativos pasan de los límites de la web
-(decodificación, proyección, blend) como el preset T1 -- con el sort, el
-prefijo, la compactación, la emisión y los rangos del propio raster, compilados
-por `scripts/web-kernels.py`, y `web/athenea-webgpu/`, el JavaScript de la
-página. `host.js` repite el orden de `TileRasterizer::render`,
-`RadixSort::sort` (la ruta por trozos) y `PrefixSum::apply` hasta que W-host
-sea el C++ del motor en wasm: un cambio en un dispatch de allí, o en un kernel
-que usa la ruta web (los nombres de sus vinculaciones, su uniform), es también
-un cambio en `host.js`, y `node check.mjs` sobre un módulo reconstruido dice si
-siguen de acuerdo. Corre en la CPU sobre un sustituto de WebGPU que valida lo
-que valida un navegador y no calcula nada.
+**El visor web** (`docs/operations.es.md` 3.6) es `web/` -- la página, el
+motor y sus módulos en JavaScript -- y los kernels que despacha:
+`shaders/athenea/web/` para los que en nativo pasan de los límites de la web
+(decodificación, los registros SPZ, proyección, blend, presentación, el
+reordenado y la lista del LOD), y los del propio motor para el resto (prefijo,
+compactación, el radix por trozos, gather, emisión, rangos, caja, la
+construcción y el corte del LOD), compilados por `scripts/web-kernels.py`. Un
+módulo es `web/lib/modules/<id>.js`: su manifiesto (los campos de la 081:
+tier, requires, arenas, ganchos, flags, ui) y sus ganchos (`load`, `prepare`,
+`set`, `after`, `stats`, `dispose`); uno nuevo se añade a `MODULES` en
+`lib/engine.js` y sus kernels a la lista del script. `lib/engine.js` repite el
+orden de `TileRasterizer::render`, `RadixSort::sort` (la ruta por trozos),
+`PrefixSum::apply` y `LodBuilder::build` hasta que W-host sea el C++ del motor
+en wasm: un cambio en un dispatch de allí, o en un kernel que usa la web (los
+nombres de sus vinculaciones, su uniform), es también un cambio aquí, y `node
+check.mjs` sobre un directorio reconstruido dice si siguen de acuerdo. Corre en
+la CPU sobre un sustituto de WebGPU que valida lo que valida un navegador y no
+calcula nada.
 
 Los shaders generados — los materiales, los kernels de sombreado y de path
 tracing — los escribe `ATHENEA_SHADER_DUMP=<dir>`, y compilan con `slangc -I

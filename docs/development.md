@@ -261,17 +261,23 @@ verdicts (Tint through Dawn's null backend, `scripts/wgsl-tint.cpp`). All on
 the CPU. Naga alone is not a check: it took a barrier under a branch on group
 memory that Tint refuses.
 
-**The web module** (`docs/operations.md` 3.6) is `shaders/athenea/web/` -- the
-kernels whose native counterparts are over the web's limits (decode, project,
-blend) as the T1 preset -- with the raster's own sort, prefix, compact, emit
-and ranges, compiled by `scripts/web-kernels.py`, and `web/athenea-webgpu/`,
-the page's JavaScript. `host.js` repeats the order of `TileRasterizer::render`,
-`RadixSort::sort` (the chunked route) and `PrefixSum::apply` until W-host is
-the engine's C++ in wasm: a change to a dispatch there, or to a kernel the web
-route uses (its bindings' names, its uniform), is a change to `host.js` too,
-and `node check.mjs` on a rebuilt module says whether they still agree. It runs
-on the CPU over a WebGPU stand-in that validates what a browser validates and
-computes nothing.
+**The web viewer** (`docs/operations.md` 3.6) is `web/` -- the page, the
+engine and its modules in JavaScript -- and the kernels it dispatches:
+`shaders/athenea/web/` for those whose native counterparts are over the web's
+limits (decode, the SPZ records, project, blend, present, the LOD's reorder
+and list), and the engine's own for the rest (prefix, compact, the chunked
+radix sort, gather, emit, ranges, bounds, the LOD's build and cut), compiled
+by `scripts/web-kernels.py`. A module is `web/lib/modules/<id>.js`: its
+manifest (081's fields: tier, requires, arenas, hooks, flags, ui) and its
+hooks (`load`, `prepare`, `set`, `after`, `stats`, `dispose`); a new one is
+added to `MODULES` in `lib/engine.js` and its kernels to the script's list.
+`lib/engine.js` repeats the order of `TileRasterizer::render`,
+`RadixSort::sort` (the chunked route), `PrefixSum::apply` and `LodBuilder::build`
+until W-host is the engine's C++ in wasm: a change to a dispatch there, or to
+a kernel the web uses (its bindings' names, its uniform), is a change there
+too, and `node check.mjs` on a rebuilt directory says whether they still
+agree. It runs on the CPU over a WebGPU stand-in that validates what a
+browser validates and computes nothing.
 
 Generated shaders — the materials, the shading and path-tracing kernels — are
 written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders -I

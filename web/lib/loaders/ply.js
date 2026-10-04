@@ -9,7 +9,7 @@
 const REQUIRED = ["x", "y", "z", "opacity", "scale_0", "scale_1", "scale_2",
   "rot_0", "rot_1", "rot_2", "rot_3", "f_dc_0", "f_dc_1", "f_dc_2"];
 
-const NO_FIELD = 0xffffffff;
+import { NO_FIELD, byteStream, makeCloud, decodeSlices } from "./cloud.js";
 
 /** Where "end_header\n" ends in `bytes`, or -1 if it has not arrived yet. */
 export function headerEnd(bytes) {
@@ -94,4 +94,38 @@ export function parsePlyHeader(bytes) {
       transferBase: NO_FIELD, shadowBits: NO_FIELD, normal: NO_FIELD, emission: NO_FIELD, lobes: NO_FIELD,
     },
   };
+}
+
+/**
+ * A PLY into a cloud on the device: the header read here, the records
+ * streamed up a slice at a time as they arrive and decoded by webDecode.
+ * `source`: { url } or { blob }.
+ */
+export async function loadPly(gpu, source, { onProgress, slotsPerSplat = 1 } = {}) {
+  const stream = await byteStream(source);
+  let pending = new Uint8Array(0);
+  let header = null;
+  while (!header) {
+    const { done, value } = await stream.read();
+    if (done) throw new Error(`${stream.name}: ended inside its header`);
+    const joined = new Uint8Array(pending.length + value.length);
+    joined.set(pending);
+    joined.set(value, pending.length);
+    pending = joined;
+    if (headerEnd(pending) >= 0) header = parsePlyHeader(pending);
+  }
+  const cloud = makeCloud(gpu, { count: header.count, restPerColour: header.restPerColour, slotsPerSplat });
+  const decode = { ...header.decode, keepPerColour: cloud.keep, shWords: cloud.shWords };
+  await decodeSlices(gpu, cloud, header.stride, decode, async function* () {
+    yield pending.subarray(header.dataStart);
+    onProgress?.(stream.fraction(), stream.loaded);
+    for (;;) {
+      const { done, value } = await stream.read();
+      if (done) return;
+      yield value;
+      onProgress?.(stream.fraction(), stream.loaded);
+    }
+  }, stream.name);
+  stream.cancel();
+  return cloud;
 }

@@ -1,0 +1,23 @@
+/* Copyright (c) 2026 jesus luque. */
+:root {
+  --bg: #0b0b0f; --fg: #dcdce4; --muted: #8a8a99; --panel: rgba(20, 20, 28, 0.86); --line: #2c2c3a; --accent: #7aa2ff;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { --panel: rgba(250, 250, 252, 0.9); --fg: #1d1d26; --muted: #5d5d6e; --line: #d6d6e0; --accent: #2f5fd0; color-scheme: light; }
+}
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+canvas { display: block; position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+header { position: fixed; left: 0; right: 0; top: 0; display: flex; gap: 12px; align-items: center; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+#status { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.button { border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.button:hover { border-color: var(--accent); }
+aside { position: fixed; right: 16px; top: 52px; width: min(280px, calc(100vw - 32px)); max-height: calc(100vh - 140px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+aside h3 { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+aside label { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; margin: 6px 0; }
+aside label input[type="range"] { grid-column: 1 / -1; width: 100%; }
+aside label.off { opacity: 0.45; }
+#tier { color: var(--muted); }
+#stats { position: fixed; left: 16px; bottom: 12px; margin: 0; padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font: 12px/1.45 ui-monospace, monospace; pointer-events: none; }
+#stats:empty { display: none; }
+body.drag::after { content: "drop to open"; position: fixed; inset: 0; display: grid; place-items: center; font-size: 20px; background: rgba(0, 0, 0, 0.5); color: #fff; }

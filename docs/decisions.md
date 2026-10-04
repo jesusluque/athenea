@@ -12937,6 +12937,29 @@ tablet: 1.25 M drawn, a 1.5 px floor, at most 1.5 x resolution; T2 32 KiB of
 workgroup memory and 644 MB a binding: 2.5 M, 1 px, 2 x; T3 1.25 GB a binding
 and BC textures: 4.5 M, 1 px, the display's own.
 
+**Built (the shell and the first modules).** `web/viewer/` (the page, the
+panel from the modules' ui, the stats, drop or `?url=`), `web/lib/` (engine,
+kernel runner, probe, orbit, PLY and SPZ loaders, core-raster, sh, lod) and
+the site's slot over the same engine. 30 kernels, every one under the default
+limits with Naga and Tint agreeing; the web-only ones:
+
+| Kernel | Storage | Uniform | What |
+|---|---|---|---|
+| `webSpzRecords` | 2 | 1 | an SPZ's byte streams into float records, as io::readSpz writes them |
+| `webDecode` | 4 | 1 | records into B0 |
+| `webProject` | 6 | 2 | E4; `kListed` (walk the LOD's list) and `kShDegree` overrides |
+| `webLodReorder` | 7 | 1 | lodReorder without normals and emission (11 there) |
+| `webLodList` | 3 | 1 | the cut, placed by its prefix sum, as the draw list |
+| `webBlend`, `webPresent` | 4, 1 + a storage texture | 1 | E7, E8 |
+
+The LOD's own kernels pass as they are (lodMorton 3, lodBoundaries 2,
+lodGroups 6, lodLeafMoments 7, lodMergeMoments 4, lodFinalize 6, lodCutGroups
+2, lodCutFinest 5, lodCutSplats 3); lodGather (12) is not needed, since the
+list replaces the copy. `check.mjs` loads clouds of the site's test sizes at
+each tier, and soar.spz (200 k, SH3, v3) read from disk, builds their levels
+and draws them with every option turned: 2415 dispatches, every bind group as
+a browser would accept it. Not run on a GPU.
+
 **Where this first set stops short of 081** (in order, the next steps): the
 frame still reads two counts back between E4 and E5 (the visible splats and
 the tile pairs), as `TileRasterizer` does natively, because the sort and the
