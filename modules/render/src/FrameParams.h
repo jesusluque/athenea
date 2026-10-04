@@ -49,6 +49,7 @@ inline void setFrame(rhi::ShaderCursor cursor, const FrameCommon& f) {
     p["lensRadius"].setData(static_cast<float>(f.projection->orthographic ? 0.0 : f.projection->lensRadius));
     p["focusDistance"].setData(static_cast<float>(f.projection->focusDistance));
     p["shLimit"].setData(f.settings->maxShDegree);
+    p["displayBlend"].setData(uint32_t{f.settings->displayBlend ? 1u : 0u});
     p["depthMode"].setData(uint32_t{f.settings->depth == RenderSettings::Depth::Mean ? 0u : 1u});
     p["depthThreshold"].setData(f.settings->depthThreshold);
     p["bgR"].setData(f.settings->background[0]);

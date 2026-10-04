@@ -381,6 +381,20 @@ public:
     void setSplatShadows(bool shadows);
     /// Whether a transferred cloud adds the indirect half it carries.
     void setSplatTransferIndirect(bool indirect);
+    /// Splats blended as a standard viewer blends them, their sRGB values
+    /// summed and the pixel decoded after (`athenea:splatDisplayBlend`).
+    void setSplatDisplayBlend(bool display);
+    /// EVERY RELIT TX CLOUD OF THE STAGE, AND EVERY SHADOW CATCHER, FLATTENED
+    /// (`athenea flatten`, render/Flatten.h): one rasterised frame under the
+    /// stage's lights at `time` that shades each gaussian from
+    /// `request.settings.directions` directions and fits degree 3 harmonics,
+    /// rather than drawing. The request's fit (FlattenFit) must be prepared on
+    /// this renderer's device. Each cloud comes back with its prim.
+    struct FlattenedCloud {
+        std::string       prim;
+        render::FlatCloud cloud;
+    };
+    [[nodiscard]] Result<std::vector<FlattenedCloud>> flatten(render::SplatFlatten& request, double time);
     /// Whether a gaussian reflects the cloud it belongs to.
     void setSplatReflections(bool reflect);
     /// `athenea:cloudShadows`: the frame's clouds shadow its meshes, measured

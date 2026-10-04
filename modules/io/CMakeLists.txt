@@ -13,6 +13,7 @@ athenea_add_module(io
         src/Png.cpp
         src/Sog.cpp
         src/Ies.cpp
+        src/SplatWriters.cpp
     PUBLIC_LIBS
         athenea::core
     PRIVATE_LIBS
@@ -22,6 +23,14 @@ athenea_add_module(io
 if(ATHENEA_HAVE_SPZ)
     target_link_libraries(athenea_io PRIVATE athenea_spz)
     target_compile_definitions(athenea_io PRIVATE ATHENEA_HAVE_SPZ=1)
+endif()
+
+# SPZ version 4 is written with ZSTD where third_party/spz found it (a
+# parent that brings its own spz may not say where: then version 3 alone).
+if(ATHENEA_ZSTD_INCLUDE AND ATHENEA_ZSTD_LIB)
+    target_include_directories(athenea_io SYSTEM PRIVATE ${ATHENEA_ZSTD_INCLUDE})
+    target_link_libraries(athenea_io PRIVATE ${ATHENEA_ZSTD_LIB})
+    target_compile_definitions(athenea_io PRIVATE ATHENEA_HAVE_ZSTD=1)
 endif()
 
 # .vdb: OpenVDB reads it and NanoVDB lays it out (cmake/Usd.cmake finds both).

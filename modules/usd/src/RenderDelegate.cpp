@@ -351,6 +351,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     transferIndirect.name = "A cloud's transfer adds its indirect half (the light it bounced)";
     transferIndirect.key = TfToken("athenea:splatTransferIndirect");
     transferIndirect.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor displayBlend;
+    displayBlend.name = "Splats blended as a standard viewer blends them (sRGB values summed)";
+    displayBlend.key = TfToken("athenea:splatDisplayBlend");
+    displayBlend.defaultValue = VtValue(false);
     HdRenderSettingDescriptor splatShadows;
     splatShadows.name = "A relit cloud shadows itself, one ray a splat (rt)";
     splatShadows.key = TfToken("athenea:splatShadows");
@@ -380,7 +384,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudDensity.key = TfToken("athenea:cloudShadowDensity");
     cloudDensity.defaultValue = VtValue(1.0f);
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
-            total,     denoise,     adaptive,    error,       mis,        motion,      transferIndirect, reflectCloud, splatShadows,
+            total,     denoise,     adaptive,    error,       mis,        motion,      transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered};
 }
 
@@ -495,6 +499,11 @@ bool HdAtheneaRenderDelegate::GetSplatReflections() const {
 bool HdAtheneaRenderDelegate::GetSplatTransferIndirect() const {
     const VtValue value = GetRenderSetting(TfToken("athenea:splatTransferIndirect"));
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+bool HdAtheneaRenderDelegate::GetSplatDisplayBlend() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:splatDisplayBlend"));
+    return value.IsHolding<bool>() && value.UncheckedGet<bool>();
 }
 
 bool HdAtheneaRenderDelegate::GetPathMis() const {

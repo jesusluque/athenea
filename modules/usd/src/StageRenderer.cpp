@@ -1145,6 +1145,10 @@ void StageRenderer::setSplatTransferIndirect(bool indirect) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:splatTransferIndirect"), VtValue(indirect));
 }
 
+void StageRenderer::setSplatDisplayBlend(bool display) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:splatDisplayBlend"), VtValue(display));
+}
+
 void StageRenderer::setSplatReflections(bool reflect) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:splatReflections"), VtValue(reflect));
 }
@@ -1354,6 +1358,38 @@ Result<StageImage> StageRenderer::render(const std::string& camera, double time,
     ATHENEA_TRY(aim(camera, time, technique));
     ATHENEA_TRY(executeUntilGathered(width, height));
     return readImage(width, height);
+}
+
+Result<std::vector<StageRenderer::FlattenedCloud>> StageRenderer::flatten(render::SplatFlatten& request,
+                                                                          double time) {
+    Impl& impl = *impl_;
+    if (!impl.delegate->HasEngine()) {
+        return Error(ErrorCode::DeviceFailure, "flatten: the render delegate has no GPU");
+    }
+    // Everything loaded, then one small rasterised frame that flattens and
+    // draws nothing: what it is aimed at does not matter, since every
+    // gaussian is looked at from every direction anyway.
+    impl.delegate->SetRenderSetting(TfToken("athenea:settleStreams"), VtValue(true));
+    auto framing = framingCamera(time, 35.0, "raster");
+    if (!framing) return std::move(framing).error();
+    ATHENEA_TRY(aim(*framing, time, 64, 64, "raster"));
+    ATHENEA_TRY(execute(64, 64));
+    athenea::usd::Engine& engine = impl.delegate->GetEngine();
+    request.clouds.clear();
+    engine.setFlatten(&request);
+    const Result<void> ran = execute(64, 64);
+    engine.setFlatten(nullptr);
+    ATHENEA_TRY(ran);
+    const std::vector<std::string> prims = engine.flattenedPrims();
+    std::vector<FlattenedCloud> out;
+    for (render::FlatCloud& cloud : request.clouds) {
+        FlattenedCloud flat;
+        flat.prim = cloud.instance < prims.size() ? prims[cloud.instance] : std::string();
+        flat.cloud = std::move(cloud);
+        out.push_back(std::move(flat));
+    }
+    request.clouds.clear();
+    return out;
 }
 
 Result<BakedVisibilityArrays> StageRenderer::bakeVisibility(const std::string& prim,
