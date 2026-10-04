@@ -12839,3 +12839,27 @@ where it was 15%; under the workshop sky the contact crop 0.034 against
 What is left is the sky's: the workshop's light is a ceiling of lamps, and
 the catcher weighs its open cells by a degree-3 sky that cannot place them.
 The gate's contact tolerance is 25% now (40%).
+
+### The sky a catcher weighs its cells by, and its faint gaussians
+
+**The sky per cell from the prefiltered map.** The workshop's light is a
+ceiling of lamps that a degree-3 sky cannot place, and under the bumper,
+where only the horizon is open, the catcher drew its contact 24% dark of the
+path traced frame at the first rows. Each open cell is now weighed by the
+prepared octahedral map read at a roughness the size of a cell (about 13
+degrees) -- which holds the lamps where they are, with no extractor -- and a
+cell within the extracted sun's cone takes the harmonics' residual sky, since
+the sun is added apart. At 960 x 540 under the workshop sky, rows 410 / 420 /
+430 below the bumper read 0.0348 / 0.0417 / 0.0596 against the path traced
+0.0399 / 0.0453 / 0.0601 (0.0304 / 0.0376 / 0.0553 with the harmonics), the
+contact window 0.038 against 0.043. Under goegap the sun's contact is still
+too bright (0.029 against 0.016): its shadow's edge right under the bumper is
+read through 16 x 16 cells.
+
+**A faint catcher is thinned, not culled.** Far from the car the shadow is a
+few per cent, and at a grazing view the antialias's payment took those
+gaussians under the 1/255 the cull and the blend drop: the open ground under
+a white dome read 5% bright (0.249 against 0.236). A catcher gaussian under
+kCatcherFloor (0.03) is drawn at it by a lot -- a hash of its index -- with
+probability its opacity over that, the same coverage in the mean: 0.2386
+against 0.2361.

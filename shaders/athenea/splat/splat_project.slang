@@ -112,6 +112,9 @@ float3 storedFacing(float3x3 r, float3 scale, uint i) {
 /// --shadow-catcher): projected as any splat, drawn black, its opacity what
 /// the object took of the light reaching it (catcherOpacity).
 static const int kProjectCatcher = 3;
+/// The least opacity a catcher's gaussian is drawn at: fainter ones are
+/// thinned to it (projectSplat).
+static const float kCatcherFloor = 0.03;
 
 
 /// THE OPACITY THAT LEAVES `ratio` OF WHAT IS BEHIND THE LAYER, measured
@@ -185,6 +188,16 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     }
     float with = 0.0;
     float without = 0.0;
+    // THE SKY ALONG A CELL, from the prefiltered map at a roughness whose lobe
+    // is about the cell's width -- not the harmonics, which hold a horizon
+    // badly: under the Corvette's bumper, where only the horizon is open, the
+    // degree-3 sky drew the contact 12% darker than the path tracer did. The
+    // map keeps its sun, which is added apart below, so a cell within the
+    // sun's cone takes the harmonics' residual sky instead.
+    const float4 disc = envSun[dome * 2];
+    const float cellAngle = 3.5449077 / float(side);   // sqrt(4 pi) / side
+    const float sunReach = disc.w > 0.0 ? cos(disc.w + cellAngle) : 2.0;
+    const float cellRoughness = sqrt(saturate(0.5 * cellAngle));
     for (uint cell = 0; cell < side * side; ++cell) {
         const float2 uv = (float2(float(cell % side), float(cell / side)) + 0.5) / float(side);
         const float3 d = octDecode(uv);
@@ -193,8 +206,12 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
             continue;
         }
         float radiance = 0.0;
-        [unroll] for (uint k = 0; k < coefficients; ++k) {
-            radiance += sky[k] * envBasisValue(k, d);
+        if (dot(d, disc.xyz) >= sunReach) {
+            [unroll] for (uint k = 0; k < coefficients; ++k) {
+                radiance += sky[k] * envBasisValue(k, d);
+            }
+        } else {
+            radiance = dot(envRadiance(envTexels, dome, d, cellRoughness, params.envBaseSide), luma);
         }
         const float l1 = abs(d.x) + abs(d.y) + abs(d.z);
         const float worth = max(radiance, 0.0) * cosine * (4.0 / float(side * side)) * l1 * l1 * l1;
@@ -203,7 +220,6 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
             with += worth;
         }
     }
-    const float4 disc = envSun[dome * 2];
     if (disc.w > 0.0) {
         const float facing = max(dot(n, disc.xyz), 0.0);
         const float sun = dot(envSun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
@@ -422,7 +438,21 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     const bool sheet = kTransfer != kProjectCatcher && params.hasPbr != 0 && pbrThinWalled(pbr[i]) &&
                        pbrTransmission(pbr[i]) > 0.5;
     const float alphaOwn = paidOpacity(posOpacity.w, paid);
-    const float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
+    float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
+    // A FAINT CATCHER IS THINNED, NOT CULLED. Far from the object the
+    // shadow is a few per cent -- the Corvette's open ground loses 5% of its
+    // sky to the car's flank -- and at a grazing view the antialias's payment
+    // takes such a gaussian under the 1/255 the cull and the blend drop: the
+    // whole faint shadow went. Black has no colour to scale up, as a sheet's
+    // has, so a faint catcher gaussian is drawn at kCatcherFloor by a lot (a
+    // hash of its index) with probability its own opacity over that: the
+    // same coverage in the mean, where a faint layer's coverages add.
+    if (kTransfer == kProjectCatcher && alpha > 0.0 && alpha < kCatcherFloor) {
+        uint h = i * 747796405u + 2891336453u;
+        h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+        h = (h >> 22u) ^ h;
+        alpha = float(h >> 8) * (1.0 / 16777216.0) < alpha / kCatcherFloor ? kCatcherFloor : 0.0;
+    }
     if (!(alpha >= 1.0 / 255.0)) {
         cull(slot, kCullFaint);
         return;
