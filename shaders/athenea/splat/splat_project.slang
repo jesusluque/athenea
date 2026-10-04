@@ -453,16 +453,27 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                             envSun, transfer, shadowBits,
                             params.transferIndirect != 0, slope);
         if (kTransfer >= 2 && slope.on) {
-            // THE RAMP IS NEVER MORE THAN TWICE THE COLOUR across the
-            // footprint (three sigma of the projected covariance): a chrome
-            // strip turns its normal so fast that a pixel's slope, carried
-            // across the gaussian, went far past the highlight -- the strips
-            // 0.77 against the path traced frame, 0.59 held to once the
-            // colour; the paint 0.30 and 0.34, so twice.
-            const float reach = 3.0 * sqrt(max(max(a, c), 1.0e-6));
-            const float3 most = 2.0 * max(colour, float3(1.0e-4)) / max(reach, 1.0);
-            slope.slopeX = clamp(slope.slopeX, -most, most);
-            slope.slopeY = clamp(slope.slopeY, -most, most);
+            // THE RAMP NEVER GOES BELOW BLACK INSIDE THE FOOTPRINT. A
+            // chrome strip turns its normal so fast that a pixel's slope,
+            // carried across the gaussian, went far past the highlight (the
+            // strips 0.77 against the path traced frame, 0.59 held to the
+            // colour). Held per axis to twice the colour it still went down to
+            // minus the colour at the footprint's edge, and the blend's
+            // clamp at zero drew that as black: a dashed dark line along a
+            // crease, a pawn's gold ring under its glass head. So per
+            // channel the ramp's largest fall over the ellipse of three
+            // sigma -- 3 sqrt(g^T Sigma g) for the slope g and the projected
+            // covariance -- is at most the colour, and the shade stays at or
+            // above zero wherever the gaussian draws.
+            {
+                const float3 fall = 3.0 * sqrt(max(a * slope.slopeX * slope.slopeX +
+                                                       2.0 * b * slope.slopeX * slope.slopeY +
+                                                       c * slope.slopeY * slope.slopeY,
+                                                   float3(0.0)));
+                const float3 keep = min(float3(1.0), max(colour, float3(0.0)) / max(fall, float3(1.0e-9)));
+                slope.slopeX *= keep;
+                slope.slopeY *= keep;
+            }
             sloped = true;
             slopes[slot] = uint4(packHalves(slope.slopeX.x, slope.slopeX.y),
                                  packHalves(slope.slopeX.z, slope.slopeY.x),

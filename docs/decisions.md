@@ -11771,6 +11771,11 @@ is now the default, all of it generic:
 - no cone is narrower than a cell (`splatConeOpen`), for every user of it;
 - the closed field is the coat's alone;
 - the slope's ramp across the footprint is at most twice the colour.
+  (Later replaced: held per axis, it still reached minus the colour at the
+  footprint's edge, which the blend drew black -- dashes along a pawn's gold
+  ring. Now the ramp's fall over the three-sigma ellipse, `3 sqrt(g^T Sigma
+  g)` per channel, is at most the colour, so the shade never goes below zero
+  where the gaussian draws.)
 
 Measured as variants (once the colour): chrome 0.591, rough metal 0.0835,
 paint 0.341, against the first's 0.536, 0.0896 and 0.705. The chrome stays a
