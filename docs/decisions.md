@@ -12470,3 +12470,273 @@ carried -- the shadows' -- is gone, at 256 directions a gaussian (1024 at
 are still the paths'. Checked (pending the GPU turn): the unoccluded
 point's sixteen coefficients against the clamped cosine's, at 16 cells
 (`[degree3]`).
+
+## WebGPU: the raster in a browser's backend (proposal 071, M1 prepared)
+
+The web viewer the user asked for (proposal 071, option (b)) is this engine's
+own splat raster -- TX relighting, lobes, the reflected field, the slope, the
+catcher -- run by WebGPU in a browser, from the same Slang. M1 is that backend
+natively, where the engine's tools can find what WebGPU refuses before a
+browser is in the loop. This section is what was prepared on the CPU, what it
+found, and the plan for what is left; nothing in it has run on a GPU yet.
+
+### The backend
+
+- **slang-rhi already has one** (`src/wgpu/` at the pinned e17f6d7): device,
+  buffers, textures, compute and render pipelines, shader objects, indirect
+  dispatch, buffer clears and copies, a surface. It loads Dawn by name from
+  the directory of the binary that links it (`libdawn.dylib`, `libdawn.so`,
+  `dawn.dll`) and calls the `webgpu.h` of the prebuilt Dawn 138.0.7204.168
+  its CMake downloads. Its `Emscripten` branch builds the WGPU backend alone
+  against Emscripten's `emdawnwebgpu` port: the same code in a browser. What it
+  does not have: timestamp results (`QueryPoolImpl::getResult` is not
+  implemented), native handles (so gpe cannot adopt the device: no AOFX
+  effect and no OIDN on a WebGPU device), shader tables.
+- **`ATHENEA_WEBGPU=ON`** (presets `macos-arm64-webgpu`, `linux-x86_64-webgpu`:
+  release, the platform's backend beside it, so one build renders both sides
+  of a comparison) turns the backend on over Dawn from `scripts/build-dawn.sh`,
+  which puts slang-rhi's own prebuilt binaries, hash-checked, in
+  `~/tools/dawn-138.0.7204.168`. Building Dawn from source was not worth an
+  hour of the machine: slang-rhi is written against exactly this release.
+  slang-rhi's `FetchPackage(dawn)` is pointed there and `libdawn` is copied into
+  `bin/`.
+- **`gpu::Backend::WebGPU`**, opened only when named (`ATHENEA_BACKEND=webgpu`,
+  `athenea info --backend webgpu`), never a platform's preference.
+- **Web limits.** slang-rhi asked Dawn for every limit the adapter has, and a
+  desktop adapter's are far above a browser's. A patch
+  (`slang-rhi-wgpu-limits.patch`) adds `WGPUDeviceExtendedDesc` to the
+  device's chain, which lowers four limits; `ATHENEA_WEBGPU_WEB_LIMITS` fills
+  it: `1` the specification's defaults (8 storage buffers a stage, 16 KiB of
+  workgroup memory, 128 MiB a binding, 256 MiB a buffer), `10` what 98-99% of
+  adapters give (10, 32 KiB, 256 MiB, 256 MiB; the buffer size was not
+  surveyed and stays at the default), or `S,W,B,F`. Dawn enforces a device's
+  limits, not its adapter's, when a pipeline layout is made, so a kernel over
+  a limit fails there by name. That is the native stand-in for Chrome; Safari
+  (WebKit's own compiler, 98% of reports at 44 buffers or more) and Firefox
+  (Naga) are not covered by it.
+
+Built (M5 Pro, `macos-arm64-webgpu`, `-j 2`): the whole tree -- engine, apps,
+plugins, every test binary -- with the WGPU backend compiled in and no new
+warning.
+
+### The kernels as WGSL
+
+`scripts/wgsl-report.py` compiles every entry point the raster route
+dispatches, and the Measure effect, with `slangc -target wgsl`, and counts
+what each asks of the device from the WGSL itself: storage buffers, uniforms,
+workgroup memory by WGSL's layout rules. Then it asks two of the three
+browsers' compilers:
+
+- **Naga** (Firefox; `cargo install naga-cli`, 30.0.1);
+- **Tint** (Chrome), through Dawn's null backend (`scripts/wgsl-tint.cpp`): an
+  adapter with no GPU behind it that still runs Tint and still checks a
+  pipeline's layout against the device's limits, at the web's defaults.
+
+Nothing touches a GPU.
+
+After this branch's fixes (below):
+
+| Kernel | Group | Storage buffers (ro+rw) | Workgroup B | Fails / over the default limits | Naga | Tint (WGSL · 8/16K) |
+|---|---|---|---|---|---|---|
+| `splatValidate` | decode | 2 (1+1) | 0 | | ok | ok · ok |
+| `splatStreams` | decode | **29** (28+1) | 0 | storage | ok | ok · storage 29 |
+| `splatDecode` | decode | **14** (3+11) | 0 | storage | ok | ok · storage 14 |
+| `sogDecode` | decode | **9** (8+1) | 0 | storage | ok | ok · storage 9 |
+| `splatUnpack` | decode | 4 (3+1) | 0 | | ok | ok · ok |
+| `splatKept`, `splatKeptScatter` | decode | 3 (2+1) | 0 | | ok | ok · ok |
+| `boundsChunks`, `boundsReduce` | decode | 2 (1+1) | 0 | | ok | ok · ok |
+| `splatProject` | project | **29** (20+9) | 0 | storage | ok | ok · storage 29 |
+| `splatProjectFirst` | project | **26** (19+7) | 0 | storage | ok | ok · storage 26 |
+| `splatProjectPlain` | project | **26** (19+7) | 0 | storage | ok | ok · storage 26 |
+| `splatTransferViewless` | project | **9** (8+1) | 0 | storage | ok | ok · storage 9 |
+| `splatProjectCatcher` (play-ground 91a34d5) | project | **17** (11+6) | 0 | storage | ok | ok · storage 17 |
+| `splatCompact` | counts | 5 (3+2) | 0 | | ok | ok · ok |
+| `splatGatherCounts` | counts | 3 (2+1) | 0 | | ok | ok · ok |
+| `splatCountersClear` | counts | 1 (0+1) | 0 | | ok | ok · ok |
+| `splatCounters` | counts | 4 (3+1) | 44 | was `InterlockedAdd`/`Max` | ok | ok · ok |
+| `splatCountersCloud` | counts | 5 (4+1) | 0 | | ok | ok · ok |
+| `prefixChunkTotals`, `prefixChunkStarts`, `prefixLocal` | sort | 2-3 | 0 | | ok | ok · ok |
+| `radixHistogram`, `radixTotals`, `radixStarts` | sort | 2-3 | 0 | | ok | ok · ok |
+| `radixScatter` | sort | 7 (3+4) | 0 | | ok | ok · ok |
+| `radixBlockHistogram` | sort | 3 (2+1) | 1024 | was `InterlockedAdd` | ok | ok · ok |
+| `radixBlockScatter` | sort | 7 (4+3) | **27648** | workgroup; was `InterlockedAdd` | ok | ok · workgroup 27648 |
+| `splatTilesClear`, `splatRanges` | emit | 1-2 | 0 | | ok | ok · ok |
+| `splatEmit` | emit | 7 (5+2) | 0 | | ok | ok · ok |
+| `splatBlend` (and `Composite`, `Crypto`, `CompositeCrypto`) | blend | **11** (8+3) | **17416** | storage, workgroup; was `InterlockedAdd` and a non-uniform barrier | ok | ok · storage 11 |
+| `measureRows` | measure | 4 (2+2) | 0 | | ok | ok · ok |
+| `measureReduce` | measure | 3 (0+3) | 0 | | ok | ok · ok |
+| `measureFinish` | measure | 2 (0+2) | 0 | | ok | ok · ok |
+| `measureHeatmap` | measure | 3 (2+1) | 0 | | ok | ok · ok |
+
+Every kernel compiles, and Tint and Naga take every one as WGSL. What is left
+is limits: eight kernels over 8 storage buffers, two over 16 KiB of workgroup
+memory. Every one takes one uniform block (a `ConstantBuffer`), no storage
+texture, no sampler.
+
+What was found on the way:
+
+- **WGSL has atomics only as a type.** Slang refuses `InterlockedAdd` and
+  `InterlockedMax` for WGSL (E36107); `Atomic<T>` with `.add`, `.max`,
+  `.load`, `.store` is the portable form. It translates in group memory too
+  (`var<workgroup> x : array<atomic<u32>, 256>`), and the same source gives
+  Metal's `atomic_fetch_add_explicit` on `threadgroup atomic<uint>` and CUDA's
+  `atomicAdd`. Proposal 071 had that as unverified; it is not a risk.
+- **Naga is not enough.** The blend branched on group memory (`if (sDone ==
+  kBatch) break;`) inside a loop that holds barriers, and the walk's bounds came
+  from the pixel's id. Naga validated it; Tint refuses it ("workgroupBarrier
+  must only be called from uniform control flow"). Hence Tint in the report.
+- **f16 packing translates** to `unpack2x16float` with no `shader-f16`
+  feature.
+- `ProjRecord` blocks of 48 bytes and `uint3` in group memory have WGSL's
+  layout (a `vec3<u32>` takes 16 bytes in an array): the blend's group memory
+  is 17416 bytes in WGSL, not 16388 as counted in Slang's terms.
+- `iesRecords` is declared writable though nothing writes it
+  (`light/lights.slang`), so it is a read-write binding where a read-only one
+  would do; it counts the same against the limit.
+
+### The fixes made here (Interlocked → Atomic<T>)
+
+In files neither TX nor PLAY-G is editing in their own trees:
+
+- `algo/radix_block.slang`: the digit counts are `groupshared Atomic<uint>`.
+- `splat/splat_frame_counters.slang`: the group's tally and the counters
+  buffer are atomics (`RWStructuredBuffer<Atomic<uint>>`: the same 4 bytes a
+  word that `SplatCounters` reads).
+- `splat/splat_blend.slang` (PLAY-G has an uncommitted change there at the
+  catcher's lines, which these hunks do not touch): `sDone` is an atomic; the
+  group's decision to stop is read through `sDoneAll` with
+  `workgroupUniformLoad` (WGSL's uniform read; on other targets a plain load,
+  so a barrier is written before it); and the tile is the group's id, not the
+  pixel's divided by 16 -- the same number, since the blend is dispatched a
+  16 × 16 group a tile, but one Tint can see is uniform. It costs one barrier
+  a batch of 256 records.
+
+Checked: each compiles for WGSL, Metal and CUDA. **Not yet run on a GPU**: the
+first GPU job runs the gpu and render suites on Metal to hold these three to
+what they did.
+
+### What `splat_project.slang` must change (not done: TX is editing it)
+
+It compiles to WGSL as it is -- no `Interlocked`, no wave operation, no inline
+ray (on purpose, as its comment says), and Tint takes it. The one thing is its
+29 storage bindings (26 for `First` and `Plain`, 9 for `TransferViewless`, 17
+for the catcher), which group as:
+
+| Group | Buffers | Access |
+|---|---|---|
+| the cloud | `positions`, `shape`, `sh`, `normals`, `pbr`, `emission`, `lobes`, `curvature`, `motion`, `shadowBits`, `cloudCrypto`, `splatOverrides`, `transfer` | read, a splat's slot |
+| the lighting | `lights`, `iesRecords`, `iesValues`, `shadowFactors`, `envTexels`, `envSh`, `envOfLight`, `envSun` | read, shared by every splat |
+| the frame's results | `proj`, `visible`, `tilesTouched`, `depthKeys`, `tileRects`, `slopes`, `cryptoIds`, `txCache` | written, a splat's slot |
+
+### The M1 plan
+
+**1. The arena: 29 storage bindings into at most 8, bound by name.** Three
+byte-address buffers, one per group above, and the offsets in the frame's
+uniform block:
+
+- `ByteAddressBuffer cloudArena`, `ByteAddressBuffer lightArena`,
+  `RWByteAddressBuffer frameArena`; each stream an offset (in words, `uint`) in
+  `FrameParams` (`positionsAt`, `shapeAt`, ... `txCacheAt`), read by a typed
+  accessor in one Slang module (`common/arena.slang`: `float4
+  cloudPosition(uint i)`, `ProjRecord` stored and loaded as a struct through
+  `Load<T>`/`Store<T>`), so the kernels read as they do now and only the
+  accessors know the layout. Binding stays by name: `cursor["cloudArena"]`,
+  `cursor["params"]["shAt"]`.
+- **The cloud's arena is the cloud's own allocation.** `GpuSplats` keeps its
+  streams as ranges of one buffer instead of one buffer each: the loader's
+  decode writes into ranges (`splatStreams` and `splatDecode`, 29 and 14
+  bindings today, take the same arena and so fit too), and every other user of
+  a stream -- the ray tracer, the LOD, the bake -- binds the same buffer with a
+  range (slang-rhi's `Binding(buffer, BufferRange)`; offsets aligned to
+  `minStorageBufferOffsetAlignment`, 256 bytes), so nothing else changes.
+- **The frame's results** are sub-allocations of one buffer, sized by the
+  scratch logic that sizes them now; emit, sort and blend keep their own names
+  and bind ranges of it (they are at 7 or under already).
+- **The lighting** is built once per light revision by GPU copies
+  (`copyBuffer`) into its arena -- bookkeeping, no arithmetic on the CPU.
+- **Size.** A binding is 128 MiB by default and 256 MiB on 98% of adapters; a
+  buffer 256 MiB by default. A TX cloud is 256 B a gaussian on the device, so
+  1 M gaussians do not fit one binding. The cloud's arena is therefore laid
+  out by slices of splats -- every stream of slice 0, then of slice 1 -- each
+  slice its own buffer of at most the binding limit, and `splatProject` is
+  dispatched a slice at a time with that slice bound. The frame arena is
+  sliced the same way where it must be (`proj` is 48 B a splat).
+- **Budget:** `splatProject` 3 storage + 1 uniform; the decode 2-3; the blend
+  (11 today: `ranges`, `pairSplats`, `proj`, `slopes`, `underColour`,
+  `underDepth`, `colour`, `depth`, the crypto pair) 2 by putting the
+  read-only ones in the frame arena; all at or under 8, which is the
+  specification's default and so every browser's.
+- Done after TX settles, in one change across `frame.slang`,
+  `splat_project.slang`, `GpuSplats`/`CloudLoader` and `TileRasterizer`, and
+  measured on Metal against the build before it (`athenea compare`, and ms a
+  frame) before it is measured on WebGPU.
+
+**2. Workgroup memory.** Request the adapter's `maxComputeWorkgroupStorageSize`
+(the patch's default already asks for the adapter's maximum), and keep a
+variant under 16 KiB for the 1% that give no more:
+
+| Kernel | Bytes (WGSL) | Fits 16 KiB? | Under 16 KiB |
+|---|---|---|---|
+| `radixBlockScatter` | 27648 (3 × 256 + 6 × 1024 words) | no | a tile of 512 keys (`kPerThread` 2): 15360 B, twice the blocks |
+| `radixBlockHistogram` | 1024 | yes | |
+| `splatBlend` (all four) | 17416 (256 × 48 B records, 256 ids, 256 slopes at 16 B, 2 words) | no | the slopes as three `uint` arrays (12 B, not 16): 16392, still over by 8; or a batch of 128 records: 8712 B, twice the loads |
+| `splatCounters` | 44 | yes | |
+| everything else | 0 | yes | |
+
+The variant is a compile-time constant chosen by the device's limit, so the
+desktop keeps the faster form.
+
+**3. Dispatch size.** `ComputeKernel::dispatch` takes threads and divides by
+the group size in one dimension; WebGPU allows 65535 groups a dimension, so a
+256-thread kernel stops at 16.7 M threads and a 64-thread one at 4.2 M. The
+pairs (emit, ranges) pass 16.7 M in a large frame. The fix is a 2D fold in
+`dispatch` (`x ≤ 65535`, `y` the rest) and the linear index rebuilt from the
+group id in the kernels that can go past it; to do in M1, measured with a
+frame of more than 16.7 M pairs.
+
+**4. The first GPU run** (one job, queued as `webgpu_1`): `athenea info` on
+both backends; the gpu and render suites on Metal, which hold the three
+migrated kernels to what they did; `sh3.ply` and the pawn's TX stage on Dawn
+on Metal against Metal on the same build, with `athenea compare` on the pictures (relMSE at floating-point
+noise is the bar 071 proposes, and ms a frame at most 1.5 × Metal's). Until
+the arena exists it runs without `ATHENEA_WEBGPU_WEB_LIMITS` -- what Dawn's
+Metal adapter gives a stage is not known here (Metal itself has 31 buffer
+slots, and Dawn takes some for itself), so whether `splatProject`'s 29 and a
+uniform fit is what the run says -- and once with it, to see each over-limit
+kernel refused by name.
+
+**5. The wasm host (M2).** The C++ core compiled to wasm with Emscripten and
+slang-rhi's WGPU backend on `emdawnwebgpu`, not a TypeScript orchestration: one
+`RadixSort.cpp`, one `FrameParams`, one dispatch order.
+
+- Modules: `core` (no Platform calls a browser lacks: its Emscripten branch
+  is the Windows port's kind of work), `io` without USD, TBB and OpenVDB
+  (`.athc`, SPZ through zlib and zstd), `gpu` without `RayTracingKernel`,
+  `scene`, `render`'s raster (`TileRasterizer` and what it uses), `lod`'s
+  `CutSelector` and `StreamingPool`, `colour` for the display transform. Not
+  `usd`, `mcp`, `ui`, `aofx`, `technique`'s path tracer, `view`.
+- **Shaders.** slang-rhi builds its shader-object layouts from Slang's
+  reflection at run time, so WGSL compiled at build time is not enough by
+  itself: either Slang goes to wasm (slang-wasm exists for Slang's
+  playground; its size is not measured), with the modules shipped
+  precompiled (`.slang-module`) so a page parses nothing, or the reflection is
+  serialised at build time and slang-rhi taught to take it. The first keeps
+  slang-rhi as it is and is tried first; its size decides.
+- **Waits.** `mapAsync` and `wgpuInstanceWaitAny` are asynchronous in a
+  browser; the engine's waits (`CommandBatch::submit(true)`,
+  `AsyncReadback`'s reads) need JSPI (or ASYNCIFY) -- or the frame loop
+  restructured so it never waits, which `AsyncReadback` already is.
+- **Threads** in wasm need cross-origin isolation (COOP/COEP headers, which
+  Cloudflare can set); the raster needs none of its own.
+
+Not done:
+- no GPU has run any of this: not the backend, not the three migrated kernels
+  on Metal;
+- the arena, the workgroup variants and the 2D fold (above);
+- WebKit's WGSL compiler is not checked; neither is Naga's uniformity
+  analysis, which is weaker than Tint's;
+- `ATHENEA_WEBGPU_WEB_LIMITS=10` uses 256 MiB for `maxBufferSize`, which no
+  survey here measured;
+- the Measure effect's kernels compile to WGSL, but an AOFX effect runs on gpe,
+  and gpe cannot adopt a WebGPU device: `athenea compare` runs on the
+  platform's own backend, which is all M1 needs.
