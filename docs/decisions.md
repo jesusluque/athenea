@@ -11723,6 +11723,15 @@ seen edge on does not swing its reflection across the sky.
 chrome against the path traced frame; the frozen card for the projection
 kernel's size.
 
+### Free memory counts what the system gives back
+
+On Apple silicon an allocation must fit the memory the system has free less
+1.5 GiB. Free was free, inactive and purgeable pages: after a large process
+had left its files in the cache it read 1.7 GB on a machine memory_pressure
+called 79% free, and the whole TX car's playback was refused its rotations.
+`availablePhysicalMemory` now counts the speculative read-ahead and the file
+cache too, as memory_pressure does, the larger of the two overlapping sums.
+
 ### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
 
 A car converted to gaussians cast nothing on the ground under a sky: the
