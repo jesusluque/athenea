@@ -11878,6 +11878,21 @@ streak). A transmittance the blend carries itself (proposal 075) is what
 would let the interior through as it is. Tested by a pane at 1.16 over a
 black backdrop, drawn against the mesh path traced (`[sheet_draw]`).
 
+### Known: a transparent mesh glass dithers on the raster route
+
+In the per-material frames (one material a cloud, the rest meshes) the
+Corvette's side windows (Glass_Tinted: a UsdPreviewSurface at opacity 0.1)
+and headlight cover come out as a field of dots. The raster route cuts a
+fractional opacity by a pixel's lot (MaterialPrograms' `pixelLot`), kept at
+max(opacity, 1/20): at 0.1 a tenth of the pixels keep the glass. The lot is a
+hash of the pixel and the surface alone, so `--frames` draws the same dots
+again and averaging frames does not take them out. It is the mesh frame's,
+not the product's -- a converted car draws gaussians only, and the gate's
+metrics are taken over the converted material's own mask, against the mesh
+path traced -- so it is left as it is for now. What would take it out: a lot
+that changes with the frame, accumulated, or a transparent opacity blended
+rather than cut.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew
