@@ -1101,6 +1101,10 @@ public void transferViewless<let kCells : int>(SplatSurface s, StructuredBuffer<
 /// it reads along the centre's, times what the reflection is weighed by.
 /// A rasteriser adds that slope over the footprint, so a gaussian draws the
 /// highlight moving across it rather than its centre's flat over all of it.
+/// The roughest coat drawn per pixel (SplatSlope's sharp lobe): past it the
+/// prefiltered sky is smooth enough over a footprint for the slope to hold.
+public static const float kSharpRoughness = 0.2;
+
 public struct SplatSlope {
     public bool   on;
     public float3 normalX;
@@ -1118,6 +1122,20 @@ public struct SplatSlope {
     public float3 cachedFront;
     public float3 cachedCoupling;
     public float  cachedSunShare;
+    /// THE SHARP LOBE, DRAWN PER PIXEL (splat_blend, kSharpMark). A coat
+    /// smooth enough that what it mirrors changes faster than a gaussian is
+    /// wide is not answered at the centre and spread over the footprint: its
+    /// weight (`sharpWeight`, the coat's albedo times its openness), its
+    /// roughness, and the mirror at the centre and a pixel right and down
+    /// are handed back, the centre's reading of the sky (`sharpSeen`) is
+    /// taken out of the colour, and the blend reads the sky again along the
+    /// mirror each pixel turns to. 0 in `sharpWeight`: nothing handed back.
+    public float  sharpWeight;
+    public float  sharpRoughness;
+    public float3 sharpSeen;
+    public float3 sharpMirror;
+    public float3 sharpMirrorX;
+    public float3 sharpMirrorY;
 };
 
 public SplatSlope noSlope() {
@@ -1133,6 +1151,12 @@ public SplatSlope noSlope() {
     g.cachedFront = float3(0.0);
     g.cachedCoupling = float3(0.0);
     g.cachedSunShare = 1.0;
+    g.sharpWeight = 0.0;
+    g.sharpRoughness = 1.0;
+    g.sharpSeen = float3(0.0);
+    g.sharpMirror = float3(0.0, 0.0, 1.0);
+    g.sharpMirrorX = float3(0.0, 0.0, 1.0);
+    g.sharpMirrorY = float3(0.0, 0.0, 1.0);
     return g;
 }
 
@@ -1290,6 +1314,18 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             const float3 coatSun = s.hasReflection
                                        ? float3(0.0)
                                        : coatLobe(s, wo, disc.xyz) * irradiance * (cosine * (1.0 - sunShare));
+            // A coat smooth enough is drawn per pixel (SplatSlope's sharp
+            // lobe): the first dome's, where the cloud keeps the curvature
+            // the mirror turns by.
+            if (kTransfer >= 2 && slope.on && !s.hasReflection && dome == 0u &&
+                s.lobes.coatRoughness < kSharpRoughness) {
+                slope.sharpWeight = dot(layers.coat, float3(0.2126, 0.7152, 0.0722)) * coatNarrowed;
+                slope.sharpRoughness = s.lobes.coatRoughness;
+                slope.sharpSeen = coatSeen;
+                slope.sharpMirror = mirror;
+                slope.sharpMirrorX = reflect(-wo, slope.normalX);
+                slope.sharpMirrorY = reflect(-wo, slope.normalY);
+            }
             coat = field ? max(layers.coat * (coatNarrowed * coatSeen +
                                               (1.0 - coatNarrowed) * coupling *
                                                   fieldCoat) -
@@ -1309,7 +1345,7 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             const float3 polishWeight = layers.under * thinWallGain(s) * splatPolish(s, nDotV) * narrowed;
             slope.slopeX = polishWeight * (envRadiance(envTexels, dome, mirrorX, s.roughness, envBaseSide) - seen);
             slope.slopeY = polishWeight * (envRadiance(envTexels, dome, mirrorY, s.roughness, envBaseSide) - seen);
-            if (coated) {
+            if (coated && !(slope.sharpWeight > 0.0)) {
                 const float r = s.lobes.coatRoughness;
                 const float3 coatSeen = envRadiance(envTexels, dome, mirror, r, envBaseSide);
                 const float coatOpen = splatLobeOpen(s, cellBits, mirror, r, s.normal);

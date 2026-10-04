@@ -11926,6 +11926,30 @@ every level keeps the sky's solid-angle mean (exact where a level halves,
 to half a percent on an odd edge's three taps; `[mips]`). The lamps
 themselves, taken out as lights of their own, are the next step.
 
+### A sharp coat is read per pixel
+
+The user's fender under san_giuseppe: gaussian-sized bright patches below
+the headlight, where the path traced panel is smooth with one sharp point of
+the sun (s63, s65). A coat at roughness 0.04 mirrors a facade, or a 1.5
+degree sun, that changes far faster across a curved panel than a gaussian
+is wide, and the coat was read once, at the centre's mirror, and spread over
+the footprint: a gaussian whose mirror found the sun drew it as a blob of
+its own size, its neighbour nothing. The slope (a linear ramp) softens a
+facade and cannot draw a point.
+
+So a coat smoother than `kSharpRoughness` (0.2) is handed to the blend: the
+projection takes the centre's reading of it out of the colour and writes the
+mirror at the centre and its turn a pixel right and a pixel down, in
+octahedral coordinates, with the coat's weight (albedo times openness) and
+roughness -- four words in the slot the slope used (`kSharpMark`). The blend
+reads the first dome's prefiltered sky along the mirror each pixel turns to.
+The sky's own sun is in that map, so the sun comes back as a point where
+the panel's normal mirrors it, and a facade as an image rather than patches.
+What it costs: one sky read per pixel per sharp record, and the slope's
+group memory widened from three words a record to four (17412 of WebGPU's
+17416 bytes). What it does not do: the base's polish under the coat keeps
+its centre's value (no ramp), and only the first dome is read per pixel.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

@@ -638,6 +638,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["pairSplats"].setBinding(tileSort_.values.rhi());
         cursor["proj"].setBinding(proj_.rhi());
         cursor["slopes"].setBinding(slopes_.rhi());
+        // The first dome's sky, which a sharp lobe reads per pixel (kSharpMark).
+        const bool sky = lights != nullptr && lights->environment();
+        cursor["envTexels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());
         cursor["underColour"].setBinding(under != nullptr ? under->colour.rhi() : placeholderColour_.rhi());
         cursor["underDepth"].setBinding(under != nullptr ? under->depth.rhi() : placeholderDepth_.rhi());
         cursor["colour"].setBinding(targets.colour.rhi());
@@ -649,6 +652,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         setFrame(cursor, common);
         cursor["params"]["hasUnder"].setData(uint32_t{under != nullptr ? 1u : 0u});
         cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
+        cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
     });
     if (settings.countSplats) {
         // What the panel shows, counted from what the frame already wrote

@@ -4,6 +4,7 @@
 // key, and exactly how many tiles its footprint touches. See frame.slang.
 module splat_project;
 import athenea.common.packing;
+import athenea.common.octahedral;
 import athenea.common.sh;
 import frame;
 import athenea.common.edit;
@@ -450,6 +451,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
     // Whether `slopes[slot]` holds the reflection's slope (kSlopeMark).
     bool sloped = false;
+    bool sharp = false;
     if (kTransfer == kProjectCatcher) {
         colour = float3(0.0);   // black: it only takes
     } else if (params.relight != 0) {
@@ -590,7 +592,23 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                             envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
                             envSun, transfer, shadowBits,
                             params.transferIndirect != 0, slope);
-        if (kTransfer >= 2 && slope.on) {
+        if (kTransfer >= 2 && slope.sharpWeight > 0.0) {
+            // THE SHARP LOBE GOES TO THE BLEND (SplatSlope): the centre's
+            // reading of it out of the colour, and the mirror's turn across
+            // the footprint in octahedral coordinates, a pixel right and a
+            // pixel down. A turn across the octahedron's fold is not a step
+            // and is left flat.
+            const float scale = sheet ? alphaOwn / alpha : 1.0;
+            colour = max(colour - slope.sharpWeight * slope.sharpSeen, float3(0.0));
+            const float2 at = octEncode(slope.sharpMirror);
+            float2 stepX = octEncode(slope.sharpMirrorX) - at;
+            float2 stepY = octEncode(slope.sharpMirrorY) - at;
+            stepX = all(abs(stepX) < 0.25) ? stepX : float2(0.0);
+            stepY = all(abs(stepY) < 0.25) ? stepY : float2(0.0);
+            sharp = true;
+            slopes[slot] = uint4(packHalves(at.x, at.y), packHalves(stepX.x, stepX.y), packHalves(stepY.x, stepY.y),
+                                 packHalves(slope.sharpWeight * scale, slope.sharpRoughness));
+        } else if (kTransfer >= 2 && slope.on) {
             // THE RAMP NEVER GOES BELOW BLACK INSIDE THE FOOTPRINT. A
             // chrome strip turns its normal so fast that a pixel's slope,
             // carried across the gaussian, went far past the highlight (the
@@ -637,7 +655,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         colour *= alphaOwn / alpha;   // the sheet's alpha x colour, as its own opacity had it
     }
     record.conic = float4(conic, alpha);
-    record.colour = float4(colour, sloped ? kSlopeMark : kTransfer == kProjectCatcher ? kCatcherMark : 0.0);
+    record.colour = float4(colour, sharp ? kSharpMark : sloped ? kSlopeMark : kTransfer == kProjectCatcher ? kCatcherMark : 0.0);
     proj[slot] = record;
     if (params.cryptoMode != 0) {
         cryptoIds[slot] = params.cryptoMode == 1 ? cloudCrypto[i] : 0u;

@@ -5,11 +5,16 @@ module splat_blend;
 import athenea.common.color;
 import athenea.common.packing;
 import frame;
+import athenea.common.octahedral;
+import athenea.light.environment;
 
 StructuredBuffer<uint>      ranges;
 StructuredBuffer<uint>      pairSplats;
 StructuredBuffer<ProjRecord> proj;
-StructuredBuffer<uint4>     slopes;   // a slot each, read where the record is marked (kSlopeMark)
+StructuredBuffer<uint4>     slopes;   // a slot each, read where the record is marked (kSlopeMark, kSharpMark)
+// The first dome's prefiltered sky, which a sharp lobe reads per pixel
+// (kSharpMark; athenea/light/environment.slang). Bound whether or not one is.
+StructuredBuffer<uint>      envTexels;
 // What is under the splats: a rasterised point layer (or nothing: bound to a
 // placeholder with params.hasUnder == 0). Linear, premultiplied, bottom row first.
 StructuredBuffer<float4>    underColour;
@@ -106,7 +111,7 @@ groupshared ProjRecord sRecords[kBatch];
 groupshared uint       sSplats[kBatch];
 // The colour's slope across the footprint, where the record is marked so
 // (frame.slang's kSlopeMark): x then y, rgb each, as halves.
-groupshared uint3      sSlopes[kBatch];
+groupshared uint4      sSlopes[kBatch];
 groupshared uint       sDone;
 
 void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
@@ -163,7 +168,8 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             const uint splat = pairSplats[mine];
             sSplats[lane] = splat;
             sRecords[lane] = proj[splat];
-            sSlopes[lane] = abs(sRecords[lane].colour.w - kSlopeMark) < 0.01 ? slopes[splat].xyz : uint3(0u);
+            const float mark = sRecords[lane].colour.w;
+            sSlopes[lane] = abs(mark - kSlopeMark) < 0.01 || abs(mark - kSharpMark) < 0.01 ? slopes[splat] : uint4(0u);
         }
         GroupMemoryBarrierWithGroupSync();
         const uint count = min(kBatch, end - first);
@@ -210,10 +216,22 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             // step from the centre (splat_project's SplatSlope).
             float3 shade = record.colour.xyz;
             if (abs(record.colour.w - kSlopeMark) < 0.01) {
-                const uint3 w = sSlopes[j];
+                const uint3 w = sSlopes[j].xyz;
                 const float3 slopeX = float3(lowHalf(w.x), highHalf(w.x), lowHalf(w.y));
                 const float3 slopeY = float3(highHalf(w.y), lowHalf(w.z), highHalf(w.z));
                 shade = max(shade + slopeX * d.x + slopeY * d.y, float3(0.0));
+            } else if (abs(record.colour.w - kSharpMark) < 0.01) {
+                // A SHARP LOBE, READ AT THIS PIXEL: the sky along the mirror
+                // this pixel turns to, a step from the centre's, at the
+                // lobe's own roughness (splat_project's sharp lobe). A
+                // facade or the sun mirrored in a curved coat is drawn where
+                // it falls inside the gaussian, not as the centre's reading
+                // spread over all of it.
+                const uint4 w = sSlopes[j];
+                const float2 at = float2(lowHalf(w.x), highHalf(w.x)) + float2(lowHalf(w.y), highHalf(w.y)) * d.x +
+                                  float2(lowHalf(w.z), highHalf(w.z)) * d.y;
+                const float3 mirror = octDecode(saturate(at));
+                shade += lowHalf(w.w) * envRadiance(envTexels, 0u, mirror, highHalf(w.w), params.envBaseSide);
             }
             rgb += weight * shade;
             depthSum += weight * screen.z;
