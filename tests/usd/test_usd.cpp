@@ -13010,10 +13010,12 @@ TEST_CASE("a ball of each material converted relit or baked rasterises as the me
     // with about a quarter of margin: chrome 0.081 relit and 0.115 baked,
     // plastic 0.648 and 0.707 (mean 4.4 % off baked), glass 0.250 and 0.545
     // (means 7.0 % and 4.0 % off), the paint baked 0.459. The paint relit
-    // (0.917, before the coat darkened the metal under it) and the rubber
-    // (1.834 both ways, before its fuzz was read as OpenPBR names it) were
-    // measured on what this no longer is; theirs are the paint baked's until
-    // they are measured again.
+    // (0.917, before the coat darkened the metal under it) was measured on
+    // what this no longer is; its bound is the paint baked's. The rubber was
+    // measured again, four runs alike: 0.841 both ways (relMSE 8.4e-3 and
+    // 8.6e-3, mean 3.3 % under), and holds to that with the same margin. Its
+    // data names the fuzz `sheen_*`, which OpenPBR does not declare, so
+    // neither the mesh nor the cloud carries one.
     struct Bound {
         const char* material;
         double      mean;
@@ -13021,7 +13023,7 @@ TEST_CASE("a ball of each material converted relit or baked rasterises as the me
         double      p99Baked;
     };
     const Bound bounds[] = {{"paint", 0.07, 0.6, 0.55},   {"chrome", 0.05, 0.12, 0.15},
-                            {"rubber", 0.08, 0.6, 0.6},   {"plastic", 0.06, 0.8, 0.85},
+                            {"rubber", 0.08, 1.05, 1.05},   {"plastic", 0.06, 0.8, 0.85},
                             {"glass", 0.09, 0.32, 0.65}};
     for (const Bound& bound : bounds) {
         const fs::path source = data / (std::string(bound.material) + ".usda");
