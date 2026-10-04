@@ -75,6 +75,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     };
     ATHENEA_TRY(make(r.project_, "athenea/splat/splat_project", "splatProject"));
     ATHENEA_TRY(make(r.projectPlain_, "athenea/splat/splat_project", "splatProjectPlain"));
+    ATHENEA_TRY(make(r.projectFirst_, "athenea/splat/splat_project", "splatProjectFirst"));
     ATHENEA_TRY(make(r.viewless_, "athenea/splat/splat_project", "splatTransferViewless"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
     ATHENEA_TRY(make(r.pointsProject_, "athenea/splat/points_project", "pointsProject"));
@@ -343,7 +344,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
         const Vec3 eyeObject =
             aofx::xform::inverseAffine(instance.objectToWorld).point(projection.eyeWorld);
-        gpu::ComputeKernel& project = cloud->hasTransfer() ? project_ : projectPlain_;
+        // Three kernels by what the cloud carries, each with what the others
+        // need compiled out (splat_project.slang's projectSplat): a TX
+        // transfer (the cells), the first transfer, none.
+        const bool txCells = cloud->hasTransfer() && cloud->shadowWords >= 8;
+        gpu::ComputeKernel& project = txCells ? project_ : cloud->hasTransfer() ? projectFirst_ : projectPlain_;
         // WHAT THE EYE DOES NOT CHANGE, KEPT (splat_project's
         // splatTransferViewless): a cloud with a transfer, under lights and a
         // sky that say when they changed, keeps its view-independent terms a
@@ -351,7 +356,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         // they depend on moved -- the lights, the sky, the cloud, its place.
         TxCache* kept = nullptr;
         bool keep = false;
-        if (cloud->hasTransfer() && instance.relight && lights != nullptr && lights->revision != 0 &&
+        if (txCells && instance.relight && lights != nullptr && lights->revision != 0 &&
             lights->environment()) {
             uint64_t key = lights->revision * 0x9E3779B97F4A7C15ULL;
             const auto mix = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ULL; };
@@ -383,7 +388,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["params"]["txCache"].setData(uint32_t{kept != nullptr && !viewless ? 1u : 0u});
             // How the surface turns under each splat, where the cloud keeps
             // it: a TX transfer's reflection then gets its slope (`slopes`).
-            const bool curved = cloud->hasCurvature() && cloud->hasTransfer();
+            const bool curved = cloud->hasCurvature() && txCells;
             cursor["curvature"].setBinding(curved ? cloud->curvature.rhi() : cloud->shape.rhi());
             cursor["slopes"].setBinding(slopes_.rhi());
             cursor["positions"].setBinding(cloud->positions.rhi());
@@ -471,7 +476,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // sheen, where the conversion met any.
             cursor["params"]["hasLobes"].setData(uint32_t{cloud->hasLobes() ? 1u : 0u});
             cursor["params"]["hasCurvature"].setData(
-                uint32_t{cloud->hasCurvature() && cloud->hasTransfer() ? 1u : 0u});
+                uint32_t{cloud->hasCurvature() && txCells ? 1u : 0u});
             cursor["lobes"].setBinding(cloud->hasLobes() ? cloud->lobes.rhi() : cloud->shape.rhi());
             // What a pick said this prim is made of. Bound either way, as
             // every name a shader declares; `overrideCount` of 0 is what says

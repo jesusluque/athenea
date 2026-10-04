@@ -320,6 +320,9 @@ private:
     /// The same with the transfer's shading compiled out, for a cloud that
     /// carries none (splat_project.slang's projectSplat says why).
     gpu::ComputeKernel projectPlain_;
+    /// And for a cloud with the first transfer (no cells): the TX transfer's
+    /// shading compiled out of it too.
+    gpu::ComputeKernel projectFirst_;
     /// A transfer cloud's view-independent terms, a splat each, kept while
     /// the lights, the sky, the cloud and its place stand (`txCaches_`).
     gpu::ComputeKernel viewless_;

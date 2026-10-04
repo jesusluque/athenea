@@ -11646,6 +11646,11 @@ kernel's state in thread memory, and a kernel that holds too much draws some
 of its threads wrong rather than failing (the iPad refused one outright;
 de0413c, 254a609).
 
+(Later three: the first transfer's clouds -- no cells -- drew blotched in
+the TX transfer's kernel once the slope and the kept terms grew it, the
+glass ball under the lamp among them, so `splatProjectFirst` is
+`projectSplat<1>`, with the cells, the field and the slope compiled out;
+`splatProject` is level 2, a TX transfer's.)
 `splatProject` is now `projectSplat<kTransfer>`, two entry points: the one a
 cloud with a transfer takes, and `splatProjectPlain` with the transfer's
 shading compiled out (`relitSplat<0>`, `relitByDome<0>`), which every other

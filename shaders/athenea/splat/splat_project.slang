@@ -395,7 +395,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         // projection's own linearisation (`tx3`, `ty3`), inverted on the
         // splat's plane -- and turned with the normal the eye sees.
         SplatSlope slope = noSlope();
-        if (kTransfer != 0 && params.hasCurvature != 0 && surface.cellWords >= 8u) {
+        if (kTransfer >= 2 && params.hasCurvature != 0 && surface.cellWords >= 8u) {
             const float3 u = float3(r[0][0], r[1][0], r[2][0]);
             const float3 v = float3(r[0][1], r[1][1], r[2][1]);
             const float2x2 toPixels = float2x2(dot(tx3, u), dot(tx3, v), dot(ty3, u), dot(ty3, v));
@@ -427,7 +427,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         // WHAT THE EYE DOES NOT CHANGE, kept from when the sky and the lights
         // last changed (splatTransferViewless), where the eye sees the face
         // the terms were kept for.
-        if (kTransfer != 0 && params.txCache != 0 && surface.transferCount != kTransferZonalCount &&
+        if (kTransfer >= 2 && params.txCache != 0 && surface.transferCount != kTransferZonalCount &&
             dot(cloudNormal, storedFacing(r, scale, i)) > 0.0) {
             const uint4 kept = txCache[i];
             if (kept.w != 0u) {
@@ -444,7 +444,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                             envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
                             envSun, transfer, shadowBits,
                             params.transferIndirect != 0, slope);
-        if (kTransfer != 0 && slope.on) {
+        if (kTransfer >= 2 && slope.on) {
             sloped = true;
             slopes[slot] = uint4(packHalves(slope.slopeX.x, slope.slopeX.y),
                                  packHalves(slope.slopeX.z, slope.slopeY.x),
@@ -476,10 +476,18 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     depthKeys[slot] = bit_cast<uint>(t.z) >> 7;
 }
 
-/// A cloud that carries a transfer: everything.
+/// A cloud that carries a TX transfer (the cells): everything.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void splatProject(uint3 tid: SV_DispatchThreadID) {
+    projectSplat<2>(tid);
+}
+
+/// A cloud that carries the first transfer (no cells): its shading, without
+/// the TX transfer's (projectSplat says why kernels are split by size).
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void splatProjectFirst(uint3 tid: SV_DispatchThreadID) {
     projectSplat<1>(tid);
 }
 
@@ -540,8 +548,8 @@ void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
     float3 front;
     float3 coupling;
     float  sunShare;
-    transferViewless(s, transfer, shadowBits, envSh, envSun, dome, params.transferIndirect != 0, front, coupling,
-                     sunShare);
+    transferViewless<2>(s, transfer, shadowBits, envSh, envSun, dome, params.transferIndirect != 0, front, coupling,
+                        sunShare);
     // The slice, one up, in the last half: zero is "not kept".
     txCache[i] = uint4(packHalves(front.x, front.y), packHalves(front.z, coupling.x),
                        packHalves(coupling.y, coupling.z), packHalves(sunShare, float(dome + 1u)));

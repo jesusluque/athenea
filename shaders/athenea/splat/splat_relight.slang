@@ -1003,7 +1003,7 @@ float3 transmittedShare(SplatSurface s, float nDotV) {
 /// field's coupling to the sky. The frame keeps these a gaussian while the
 /// sky and the lights stand (splat_project's splatTransferViewless) and
 /// reads them back; what a frame computes is then what the eye changes.
-public void transferViewless(SplatSurface s, StructuredBuffer<uint> transfer, StructuredBuffer<uint> cellBits,
+public void transferViewless<let kCells : int>(SplatSurface s, StructuredBuffer<uint> transfer, StructuredBuffer<uint> cellBits,
                              StructuredBuffer<float4> envSh, StructuredBuffer<float4> envSun, uint dome,
                              bool withIndirect, out float3 front, out float3 coupling, out float sunShare) {
     front = transferredBody(s, transfer, envSh, dome, withIndirect);
@@ -1027,7 +1027,7 @@ public void transferViewless(SplatSurface s, StructuredBuffer<uint> transfer, St
     // (step 2) -- the reflected field, scaled to this sky -- and the sun's
     // bounce, which the first transfer lost with the sun it took out of
     // the harmonics.
-    const bool cells = s.cellWords >= 8u;
+    const bool cells = kCells >= 2 && s.cellWords >= 8u;
     const bool field = cells && withIndirect && transferHasField(s.transferCount);
     if (cells && withIndirect && disc.w > 0.0) {
         front += irradiance * splatIndirectAlong(s, transfer, disc.xyz);
@@ -1099,7 +1099,11 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         const float4 disc = envSun[dome * 2];
         const float3 irradiance = disc.w > 0.0 ? envSun[dome * 2 + 1].rgb : float3(0.0);
         const float cosine = max(dot(s.normal, disc.xyz), 0.0);
-        const bool cells = s.cellWords >= 8u;
+        // Level 2 is a TX transfer's kernel, level 1 the first transfer's:
+        // the cells, the field and the slope compiled out of the second, so
+        // its kernel is the size it was (a kernel past a size draws threads
+        // wrong on Metal: the first transfer's ball came back blotched).
+        const bool cells = kTransfer >= 2 && s.cellWords >= 8u;
         const bool field = cells && withIndirect && transferHasField(s.transferCount);
         float3 front;
         float3 coupling;
@@ -1109,7 +1113,8 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             coupling = slope.cachedCoupling;
             sunShare = slope.cachedSunShare;
         } else {
-            transferViewless(s, transfer, cellBits, envSh, envSun, dome, withIndirect, front, coupling, sunShare);
+            transferViewless<kTransfer>(s, transfer, cellBits, envSh, envSun, dome, withIndirect, front, coupling,
+                                        sunShare);
         }
         // The field along the mirror, at the polish's roughness and the
         // coat's, read once.
@@ -1225,7 +1230,7 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         const float3 sheen = layers.belowCoat * layers.sheen * front;
         // THE SLOPE: the open part of the reflection, read again along the
         // mirrors a pixel away (SplatSlope).
-        if (kTransfer != 0 && slope.on && !s.hasReflection) {
+        if (kTransfer >= 2 && slope.on && !s.hasReflection) {
             const float3 mirrorX = reflect(-wo, slope.normalX);
             const float3 mirrorY = reflect(-wo, slope.normalY);
             const float3 polishWeight = layers.under * thinWallGain(s) * splatPolish(s, nDotV) * narrowed;
@@ -1421,7 +1426,7 @@ public float3 relitSplat<let kTransfer : int>(SplatSurface s, float3 wo, Structu
         // ways leave the scene, so an occluder beyond a light inside the
         // scene shadows it too: right for a sun and a lamp far off, the
         // approximation for one standing among things.
-        if (kTransfer != 0 && s.cellWords >= 8u && (light.flags & kLightShadow) != 0u) {
+        if (kTransfer >= 2 && s.cellWords >= 8u && (light.flags & kLightShadow) != 0u) {
             const float open = splatConeOpen(s, cellBits, ls.wi, lightHalfAngle(light, ls.distance), s.normal);
             const float bits = open >= 0.0 ? open : 1.0;
             const float shadowed = k < shadowLights ? min(through, bits) : bits;
