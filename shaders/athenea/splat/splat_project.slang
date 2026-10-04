@@ -395,6 +395,14 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         // projection's own linearisation (`tx3`, `ty3`), inverted on the
         // splat's plane -- and turned with the normal the eye sees.
         SplatSlope slope = noSlope();
+        if (kTransfer >= 2 && params.hasCurvature != 0) {
+            // The mean curvature, on the face the eye sees (a lens's far face
+            // is guessed from it): the shape operator was measured on the
+            // mesh's normal.
+            const float3 axisN = float3(r[0][2], r[1][2], r[2][2]);
+            const float faces = dot(cloudNormal, axisN) >= 0.0 ? 1.0 : -1.0;
+            slope.curvature = faces * 0.5 * (curvature[i * 3] + curvature[i * 3 + 2]);
+        }
         if (kTransfer >= 2 && params.hasCurvature != 0 && surface.cellWords >= 8u) {
             const float3 u = float3(r[0][0], r[1][0], r[2][0]);
             const float3 v = float3(r[0][1], r[1][1], r[2][1]);

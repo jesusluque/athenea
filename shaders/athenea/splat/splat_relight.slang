@@ -881,6 +881,31 @@ public float splatOpenToward(SplatSurface s, StructuredBuffer<uint> transfer, St
 /// towards the eye, so the ratio is `1 / ior`. Past the critical angle there
 /// is no direction to look along and the straight one is what is left, which
 /// is what this did before an index existed.
+/// WHERE A RAY LEAVES A SOLID GLASS, the far face guessed from the near one's
+/// curvature `curvature` (1/radius): a ray bent in by the index, across the
+/// chord of a sphere of that radius, and bent out again at the far side --
+/// which turns the room upside down through a ball, as a lens does, and
+/// leaves it straight through a slab (curvature 0: the exit parallel to the
+/// way in). A ray the far face holds by total reflection leaves reflected.
+public float3 lensExit(SplatSurface s, float3 wo, float curvature) {
+    const float index = max(s.ior, 1.0);
+    const float3 n = s.normal;
+    const float3 inside = refract(-wo, n, 1.0 / index);
+    if (!(dot(inside, inside) > 1.0e-8)) {
+        return -wo;
+    }
+    const float3 t1 = normalize(inside);
+    if (!(curvature > 1.0e-6)) {
+        return -wo;
+    }
+    const float radius = 1.0 / curvature;
+    const float chord = 2.0 * radius * max(dot(t1, -n), 0.0);
+    // The far point, from the near one, and the outward normal there.
+    const float3 farNormal = normalize(t1 * (chord / radius) + n);
+    const float3 out = refract(t1, -farNormal, index);
+    return dot(out, out) > 1.0e-8 ? normalize(out) : reflect(t1, -farNormal);
+}
+
 public float3 bentThrough(SplatSurface s, float3 wo) {
     const float3 bent = refract(-wo, s.normal, 1.0 / max(s.ior, 1.0));
     return dot(bent, bent) > 1.0e-8 ? normalize(bent) : -wo;
@@ -1054,6 +1079,10 @@ public struct SplatSlope {
     public float3 slopeY;   ///< and a pixel down
     /// What the frame kept of `transferViewless` for this gaussian under
     /// dome `cachedDome`, where `cached`.
+    /// The surface's mean curvature under the gaussian (the shape operator's
+    /// half trace, on the face the eye sees), where the cloud keeps it: what
+    /// a solid glass's far face is guessed from (`lensExit`). 0: unknown.
+    public float  curvature;
     public bool   cached;
     public uint   cachedDome;
     public float3 cachedFront;
@@ -1068,6 +1097,7 @@ public SplatSlope noSlope() {
     g.normalY = float3(0.0, 0.0, 1.0);
     g.slopeX = float3(0.0);
     g.slopeY = float3(0.0);
+    g.curvature = 0.0;
     g.cached = false;
     g.cachedDome = 0xFFFFFFFFu;
     g.cachedFront = float3(0.0);
@@ -1157,8 +1187,15 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             // drew it sharp.
             const float3 white = splatFieldAlong(s, transfer, -wo, s.roughness);
             const float open = smoothstep(0.5, 0.85, dot(white, float3(0.2126, 0.7152, 0.0722)));
-            behind = open * transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide) +
-                     (1.0 - open) * coupling * white * s.exitThrough;
+            // Through both faces where the cloud keeps its curvature (a ball
+            // shows the room inverted, a pawn's head did not), one bend
+            // otherwise.
+            const float3 sharp =
+                slope.curvature > 0.0
+                    ? envRadiance(envTexels, dome, lensExit(s, wo, slope.curvature),
+                                  transmittedRoughness(s.roughness, s.ior), envBaseSide) * s.exitThrough
+                    : transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide);
+            behind = open * sharp + (1.0 - open) * coupling * white * s.exitThrough;
         } else if (field && !s.hasBehind && !s.hasExit && transmittedWeight(s) > 0.0) {
             const float3 through = -wo;
             const float alpha = max(s.roughness * s.roughness, 1.0e-3);

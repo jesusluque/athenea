@@ -11522,6 +11522,17 @@ that route was missing in the rasteriser, **what stands behind**:
   from 0.5 to 0.85 in luminance -- and the field coupled to the sky where it
   says closed. `tx_conversions` holds the glass ball under every sky to no
   worse than the first transfer (5%).
+  **Through both faces, and whole.** The pawn converted at quality (2048
+  pixels, 32 x 32 cells) still drew the head 35% dark, cool and upright where
+  the path traced one is golden and inverted: a solid glass covered 0.6
+  (`--glass-opacity`), so 40% of the room came through straight and
+  untinted, and the sky was read along one bend. With a TX transfer a solid
+  glass now covers whole by default, and the sky is read where the ray leaves
+  the far face (`lensExit`): bent in, across the chord of a sphere, bent out
+  -- the far face guessed from the curvature the gaussian keeps, a direction
+  that does not depend on the radius (a ball inverts the room whatever its
+  size), and straight through where the surface is flat. A slab is read
+  thin-walled anyway (classifySheets), so what takes this road is a body.
 - **Its own index.** Where the cloud carries the layers, a transmitting
   gaussian bends by its specular index whenever the cloud's `ior` says it
   bends at all. That reaches relit clouds with layers too, which proposal 026

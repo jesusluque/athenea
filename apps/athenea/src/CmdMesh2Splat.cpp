@@ -149,7 +149,10 @@ struct Options {
     double                   sigma = 1.0;
     double                   flatness = 0.1;
     double                   opacity = 1.0;
-    double                   minOpacity = 0.6;
+    /// What a fully transmitting solid covers; negative chooses: 1 with a
+    /// TX transfer, whose frame draws the lens's own image (its sky bent
+    /// through both faces, the field where the way is closed), 0.6 otherwise.
+    double                   minOpacity = -1.0;
     /// A cut-out map reads below this where there is no surface.
     double                   opacityCut = 0.5;
     uint32_t                 maxCells = 1u << 18;
@@ -1470,7 +1473,9 @@ private:
         // A THIN WALL IS ITS OWN TRANSPARENCY: it covers what the sheet
         // reflects head on at its index, which the effect works out
         // (`m2sGlassCovers`). A solid covers `--glass-opacity`.
-        number("glassOpacity", options_->minOpacity);
+        number("glassOpacity", options_->minOpacity >= 0.0
+                                   ? options_->minOpacity
+                                   : (options_->transfer && options_->transferCells > 0 ? 1.0 : 0.6));
         number("thinWall", thinGlassOf(at) ? 1.0 : 0.0);
         number("ior", static_cast<double>(material.ior));
         number("maxCells", static_cast<double>(options_->maxCells));
