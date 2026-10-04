@@ -12516,3 +12516,251 @@ carried -- the shadows' -- is gone, at 256 directions a gaussian (1024 at
 are still the paths'. Checked (pending the GPU turn): the unoccluded
 point's sixteen coefficients against the clamped cosine's, at 16 cells
 (`[degree3]`).
+
+## The ground under a dome, without grain and without its 480 ms (task PLAY-G)
+
+The whole TX Corvette played back in raster at 1920 x 1080 in 158 ms a frame
+alone and 637 ms on its mesh ground (`/World/Ground` of `corvette_scene.usda`,
+a 60 m plane of OpenPBR grey), and the ground was grain: one dome sample a
+pixel with its shadow ray, std/mean 2.7 over a patch of it against the path
+traced frame's 0.12. `ATHENEA_STAGES=1` now says where a mesh layer's time
+goes, a line a frame -- its preparation and the cloud map in it, visibility,
+lobe directions, shadow rays, shading, the domes -- and it said: the map 77
+ms, the lobe directions 109 (a second evaluation of the material, for the
+lobe samples' shadow rays), the shading 150 to 220, the splat blend 30 more
+than without a ground. Four changes, each where the time was.
+
+### The dome, read prefiltered (`athenea:domePrefiltered`, on)
+
+A surface whose lobes all reflect, under a dome the frame prepared
+(`Environment`, up to four), takes the dome in closed form instead of by a
+sample: its diffuse lobes the irradiance of the sky's nine harmonics at the
+normal plus the sun `env_sun` took out of them, its glossy lobes the dome's
+own image along the mirror direction at the mip whose texels are as wide as
+the lobe (4 pi alpha^2 against 4 pi / (w h)), each weighed by its directional
+albedo -- the split sum. The cloud's shadow is the map's six dome directions,
+each read by `shadowMapReadSoft`: a blocker search over nine texels of the
+nearest-caster depth and the transmittance chain read at the penumbra that
+distance gives under a source as wide as the region of sky the direction
+stands for (tan 30 degrees), weighed by the direction's cosine and the sky's
+brightness there. No sample and no ray.
+
+It is two kernels. The shading kernel leaves what the lobe stack says of a
+pixel (the two albedos, the glossy alpha, where it stands and its normal) in
+three textures, and `dome_shade.slang`, which holds no lobe stack, adds the
+domes. Written into the shading kernel the read overflowed what Metal keeps
+of a thread: rows of garbage across the ground, and a pipeline that would
+not compile without the cloud map. A device that still refuses the kernel
+with the G-buffer samples its domes, said once.
+
+What it does not do: a mesh shadowing another mesh from a dome (there is no
+ray); a stack with a lobe that transmits (glass, a thin wall) or a fibre
+keeps the dome sampled; a fifth dome is its image's mean. The six
+directions are a coarse sky: a low horizon is shadowed by the ring forty
+degrees up.
+
+`--no-dome-prefilter` samples the dome as before. The path tracer, and so
+the ground truth, is untouched.
+
+### The cloud map is built when what it shows changes
+
+It is the casters' and the lights', not the camera's: seven passes over 14.7
+million gaussians re-measured a car that did not move. A frame whose clouds
+(their buffers and `revision`, which a pose counts up), transforms, lights
+and map settings are the last map's reads that map again. A frame with levels
+of detail always builds: its cut's clouds are the camera's.
+
+### Under domes alone, no ray and no second evaluation
+
+Where every light of the frame is a prefiltered dome, the lobe directions and
+the shadow rays are not drawn at all; a surface the prefiltered read cannot
+answer (glass) samples its domes shadowed by the clouds' map alone.
+
+### A material the same everywhere is shaded from a table
+
+Most of what was left was the OpenPBR graph itself, evaluated at every
+pixel of the ground: layers and mixes of sixteen-lobe BSDFs in thread
+memory, 150 ms. A material whose inputs are all values and whose graph reads
+no texture coordinate, position, primvar or noise (`kMaterialUniform`, found
+in the generated source) returns, on a flat patch, what depends on the angle
+to the eye alone. Under prefiltered domes alone such a material is
+tabulated once a frame (`tabulateMaterials`, 32 angles: the two albedos, the
+alpha, the opacity, the emission) and its pixels are shaded from the table by
+a kernel of their own (`shadeTabled`); the shading kernel steps aside for
+them.
+
+### Measured (M5 Pro, release, 1920 x 1080, `athenea stage --frames 20`)
+
+The whole TX Corvette on its mesh ground, the camera of the stage, against
+the path traced frame (`athenea_rt512.exr`, 512 paths). The ground's error
+is over a mask of where the ground changes the frame (52% of it), the mean
+absolute difference over the GT's mean, at full size and boxed down by four
+(which takes most of the GT's own grain out):
+
+| | median a frame | mesh layer | under the car (GT 0.182) | the bumper's contact (GT 0.043) | open ground (GT 0.217) | ground error, full / quarter |
+|---|---|---|---|---|---|---|
+| before (sampled, a map a frame) | 637 ms | ~480 | 0.160, std 0.50 | 0.027 | 0.220, std 0.60 | 106% / 50% |
+| prefiltered, in the shading kernel | 535 ms | 345 | rows of garbage | | | |
+| its own kernel | 537 ms | 348 | 0.170 | 0.023 | 0.223, std 0.0001 | |
+| the map cached, no rays | 352 ms | 163 | 0.170 | 0.023 | 0.223 | |
+| the material from a table | 200 ms | 11 | 0.188 | 0.075 | 0.213 | 12% / 5.5% |
+| the penumbra from the farthest caster | **201 ms** | **11.2** | **0.182** | **0.041** | **0.215** | |
+| the car alone, no ground | 156 ms | | | | | |
+
+The mesh layer's 11 ms: visibility 1.7, the shading kernel and the table
+1.6, the domes 5.0 -- the six soft reads -- and its preparation 1.8. The
+splat blend still costs 30 ms more over the ground than without it (55
+against 25): the composite variant of the blend, not looked into.
+
+Under the bumper the contact shadow went from 0.075 to 0.041: measured from
+the nearest caster -- seen from the sky, the roof -- every point under the
+car was a metre from its blocker and the shadow went as soft as the rest.
+The map keeps the farthest caster's depth too now (one word more a texel, an
+atomic maximum), and the penumbra is measured from it.
+
+**Checked**: a grey floor under a plain dome reads 0.5000 prefiltered and
+0.4998 sampled at 64 a pixel; a slab of gaussians over a floor under a dome
+darkens it to 0.132 from 0.800 (the test's patch was reading the horizon
+past the slab, and was aimed under it); `[shadowmap]` with the farthest
+depth. The two tests about the raster's dome samples (their convergence
+through glass, a lobe's shadow under a plate) sample the dome, which they
+measure.
+
+## The ground's shadow as gaussians: a shadow catcher (task PLAY-G)
+
+The direction for the ground: its shadows become gaussians, drawn in the same
+raster as the car, and the geometric plane stays only as something to
+compare against. A catcher is a layer of gaussians lying on the ground under
+and around the object, drawn black, each covering what the object takes of
+the light reaching it -- so it darkens whatever is behind it: the sky's own
+floor, a backplate, a mesh.
+
+### Where it stands, and what it knows
+
+`athenea mesh2splat STAGE --prim OBJECT --shadow-catcher` finds the ground
+(`usd/ShadowCatcher.h`: the largest mesh outside the object, flat along the
+up axis, whose top is at the object's bottom and which reaches under it;
+`--catcher-ground` names one), writes a stage that is the source with a
+patch on the ground's plane -- the object's footprint widened by
+`--catcher-margin` heights (1.5), a grid of quads about 64 cells a side each,
+since a conversion walks at most `--max-cells` cells a triangle and two
+triangles left a third of the Corvette's patch unsampled -- and converts the
+patch alone, at one cell (`--catcher-cell`, a hundredth of the object's
+height), as a TX transfer. The object and the ground stay in that stage as
+what the bake's rays meet, so each catcher gaussian keeps, independent of
+the sky, how much of every direction is open (the cells), the transfer's
+direct and bounced halves, and the sun's share by the same bits. The boxes
+are the meshes' authored extents (`UsdGeomBBoxCache` with the hint):
+metadata, read.
+
+The Corvette's: /World/Ground/Plane found, a 5.9 x 8.3 m patch, 11 x 11
+quads, 309 k gaussians at a 1.26 cm cell, baked in 79 s (64 paths, 3
+bounces).
+
+### How it is drawn
+
+`primvars:athenea:splat:catcher` reaches `SplatInstance::catcher`, and the
+rasteriser projects such a cloud with a kernel of its own,
+`splatProjectCatcher` (`projectSplat<kProjectCatcher>`: no relighting, 68
+KB of Metal against the TX kernel's 179), beside TX's choice:
+
+- the light that reaches the gaussian with the object there is its transfer
+  dotted with the frame's sky plus the sun at its open share and bounce
+  (`transferViewless`'s front); with nothing there it would be the sky's
+  irradiance at its normal plus the sun's cosine, over pi as the transfer is;
+- their ratio is what is left; the gaussian's opacity is -ln(ratio) / 2 pi,
+  since a lattice of gaussians sigma = 1 cell wide sums to 2 pi everywhere
+  and a layer of opacity a leaves exp(-2 pi a) of what is behind it. (2.4,
+  the coverage a converted surface reaches, was the first guess: the
+  shadow came out 2.2 to 3 times as deep as the path traced frame's.)
+- black, and marked (`kCatcherMark`), so the blend draws it over an opaque
+  layer under it even where its centre's depth reads behind that layer: it
+  lies on it.
+
+Light the object bounces onto the ground beyond what it takes is not
+drawn: a black layer can only take.
+
+### Measured (M5 Pro, 1920 x 1080, the TX car and its catcher)
+
+On the mesh ground with the cloud map's shadow off (the catcher is the
+shadow), against the path traced frame:
+
+| | under the car (GT 0.182) | the bumper's contact (GT 0.043) | under the body (0.020) | open ground (0.217) | ground error, full / quarter | median a frame |
+|---|---|---|---|---|---|---|
+| the mesh ground's own map | 0.182 | 0.041 | 0.020 | 0.215 | 12% / 5.5% | 201 ms |
+| catcher, depth 2.4, two triangles | 0.144 | 0.002 | 0.020 | 0.206 | 16.5% / 12.2% | 187 ms |
+| catcher, depth 2 pi, a grid | **0.192** | **0.030** | 0.020 | **0.220** | **11.3% / 4.8%** | 186 ms |
+
+And with no mesh at all -- the car and its catcher over the sky's floor --
+**147 ms** a frame (the car alone read 156 before the latest TX merge,
+whose playback work is in this build too: not a like-for-like pair).
+
+### Under another sky: what was wrong, and the gate
+
+The catcher was baked once, under the stage's own sky, and drawn under
+goegap (a desert with a sun of 1.2e5) against the path traced mesh car under
+goegap. Three things were wrong, none of them the transfer:
+
+- **It cast into the cloud shadow map.** A catcher is a cloud, so it was one
+  of the map's casters, and the ground under it received its patch's outline
+  along each of the dome's six directions: straight-edged blocks across the
+  ground under a sunny sky, a third of the light gone under a soft one (the
+  frames with a mesh car read 0.119 under the car for GT's 0.182). A
+  catcher casts nothing now.
+- **Its ratio was two projections.** The transfer dotted with the sky's
+  harmonics, against the harmonics' own irradiance at the normal: two band
+  limits that do not cancel, so a ground nothing stood over did not read
+  one. Both sides are one quadrature now -- over the cells of the bake's
+  open directions, the sky's radiance times the cosine and the cell's solid
+  angle, the open cells for one side and every cell above the surface for
+  the other, and the extracted sun on both, read through the same bits on
+  the first.
+- **Drawn over the layer under it everywhere.** A catcher gaussian is drawn
+  past the opaque layer's depth only within a percent and a half of it --
+  the ground it lies on -- so a mesh car's body is not painted with its own
+  shadow.
+
+And the sun: env_sun had taken goegap's as 0.07 of irradiance where it
+delivers 5.8 (next section), so its shadow was the harmonics' smear.
+
+| goegap, 960 x 540 | under the car | the sun's contact | open ground |
+|---|---|---|---|
+| path traced mesh | 0.354 | 0.016 | 0.352 / 0.348 |
+| catcher, first draw | 0.320 | 0.032 | 0.328 / 0.342 |
+| catcher, all of the above | **0.357** | **0.024** | **0.356 / 0.360** |
+
+**The gate** (`ctest -R catcher_gate`, `tests/regress/catcher_against_gt.cmake`):
+the Corvette's catcher baked, the stage's meshes drawn on the raster route
+with it (a prefiltered dome traces no ray, so the catcher is the ground's
+whole shadow), against a path traced frame of 256 paths at 960 x 540, in
+four windows of the ground measured by `athenea compare --window`: under
+the car 0.188 against 0.181, the contact 0.030 against 0.042, the open
+ground 0.218 against 0.217 and 0.227 against 0.220. Within 10% of the GT
+under the car and on the open ground, and 40% at the contact, where the
+catcher is still dark: a gap of a few centimetres under the bumper against
+a 1.26 cm cell, with the light coming through a wedge at the horizon.
+
+## The sun is the texels that are it
+
+env_sun found a dome's sun on a grid of 1.8 degree cells, measured its
+profile in two degree rings and then summed it on the projection's texels
+within the ring it ended at: on goegap the sun is sharper than the rings,
+and its irradiance came out 0.07 (1%) of the 5.8 it delivers, the rest left
+in nine harmonics that cannot hold a disc. Now the sun is the texels that
+are it, on the level the harmonics are projected from (`sunRegionOf`): a
+sky has one where its brightest texel is over 32 times its median (a
+histogram of log luminance over the projection's own measure, which the sun
+cannot drag as it drags a mean), and its texels are those over 16 times the
+median and 2% of the peak, within ten degrees of the peak. The irradiance
+is their radiance times their solid angle in the projection's quadrature,
+the direction their luminance's centroid, and `env_project` skips the same
+texels by the same test (`sunHolds`): what leaves the harmonics is what
+arrives as the light. The buffer keeps its stride: (direction, the half
+angle of the cone its texels fill) and (irradiance, the luminance they were
+cut at); every reader asked only whether the first w was positive.
+
+goegap: a sun of 1.86 degrees and 5.8 of irradiance. autoshop: a lamp of
+6.35 degrees and 0.28, where the rings had found another at 0.11. The two
+`[environment][sun]` tests hold: a disc of nine texels taken whole (0.1084
+against its closed form 0.1084), the residual sky within 2.1%, an even sky
+left alone.

@@ -64,16 +64,14 @@ void envProject(uint3 tid: SV_DispatchThreadID) {
         // sky each, would count as much as the horizon.
         const float area = kTwoPiSquared / float(w * h);
         // WHAT THE SUN TOOK WITH IT. The disc is lit as a light now, so the
-        // harmonics must not hold it too: the texels inside the cone are
-        // skipped and what is left is a residual sky, which is the smooth
-        // thing nine numbers were always able to hold. Skipped rather than
-        // subtracted, because a texel of a sun is a thousand times its
+        // harmonics must not hold it too: the texels `env_sun` took for it are
+        // skipped -- the same texels, decided by the same `sunRegionOf` at the
+        // same level -- and what is left is a residual sky, which is the
+        // smooth thing nine numbers were always able to hold. Skipped rather
+        // than subtracted, because a texel of a sun is a thousand times its
         // neighbour and the difference of two such numbers is noise.
-        const float4 disc = sun[dome * 2];
-        const bool cutSun = disc.w > 0.0;
-        // The cone `env_sun` measured, in radians: the two read it from the
-        // same place, so they can never disagree about where the sun ends.
-        const float cosCone = cos(sun[dome * 2 + 1].w);
+        const bool cutSun = sun[dome * 2].w > 0.0;
+        const SunRegion region = sunRegionOf(light, level);
         for (uint y = 0; y < h; ++y) {
             const float v = (float(y) + 0.5) / float(h);
             const float sinTheta = sin((1.0 - v) * 3.14159265358979);
@@ -83,10 +81,10 @@ void envProject(uint3 tid: SV_DispatchThreadID) {
             for (uint x = 0; x < w; ++x) {
                 const float u = (float(x) + 0.5) / float(w);
                 const float3 dir = domeDirection(light, float2(u, v));
-                if (cutSun && dot(dir, disc.xyz) >= cosCone) {
+                const float3 rgb = gTextures.textures[record.slot].Load(int3(int(x), int(y), int(level))).rgb;
+                if (cutSun && sunHolds(region, dir, rgb)) {
                     continue;
                 }
-                const float3 rgb = gTextures.textures[record.slot].Load(int3(int(x), int(y), int(level))).rgb;
                 sum += rgb * (envBasisValue(k, dir) * sinTheta * area);
             }
         }

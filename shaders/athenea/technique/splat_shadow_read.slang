@@ -47,7 +47,14 @@ public uint shadowHeaderWords() { return kShadowBoxAt + kShadowBoxWords; }
 /// depth of the first caster is what says "this is the lit side": nearer than
 /// it, by a bias, nothing is in the way, and the reconstruction is left to do
 /// what it is good at, which is everything behind that.
-public uint shadowStrideOf(uint coefficients) { return coefficients + 1; }
+///
+/// AND THE DEPTH OF THE FARTHEST, one word after it, reduced with an atomic
+/// maximum: what a receiver behind the cloud is shadowed by last -- a car's
+/// underside rather than its roof, for the floor under it -- and so what a
+/// soft shadow's penumbra is measured from (shadowMapReadSoft). Measured from
+/// the nearest, every point under the Corvette was a metre from its blocker
+/// and the contact shadow went as soft as the rest.
+public uint shadowStrideOf(uint coefficients) { return coefficients + 2; }
 
 /// The texture layer of light `light`'s value `which` (0 the total, 1.. the
 /// Fourier terms, `coefficients` the nearest depth). Layer zero is the
@@ -151,7 +158,8 @@ public interface IShadowMapSource {
     static uint headerCount(uint word);
     /// Level zero of light `light`'s texel (x, y), decoded: `which` 0 is the
     /// total optical depth, 1.. the Fourier terms, `f.coefficients` the depth
-    /// of the nearest caster. In range: the caller has checked.
+    /// of the nearest caster and `f.coefficients + 1` of the farthest. In
+    /// range: the caller has checked.
     static float texel(ShadowMapFrame f, uint light, int x, int y, uint which);
     /// How many levels the transmittance chain has: 1 where there is none.
     static uint levels(ShadowMapFrame f);
@@ -290,6 +298,83 @@ public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, f
     const uint lo = uint(floor(level));
     const float t = level - float(lo);
     const float below = lo == 0 ? pcf : shadowChainAt<S>(f, light, lo, u, v);
+    if (lo + 1 >= levels) {
+        return below;
+    }
+    return lerp(below, shadowChainAt<S>(f, light, lo + 1, u, v), t);
+}
+
+/// A SHADOW CAST BY A WIDE SOURCE: the read above, with its footprint widened
+/// to the penumbra a source `spread` wide (the tangent of its half angle)
+/// throws at this receiver -- percentage-closer soft shadows, with the
+/// transmittance chain as the filter, so the cost is a blocker search and
+/// two bilinear reads whatever the width.
+///
+/// The blocker search reads the nearest-caster depth of nine texels on a
+/// square as wide as the widest penumbra could be (the receiver's distance
+/// to the slab's light side, times the spread), and the penumbra is the
+/// mean distance to the last caster in front of the receiver (the farthest
+/// depth of the texel, held below the receiver's own) times the spread. A
+/// dome's direction stands for a whole region of its sky (task PLAY-G: the
+/// car's shadow on the ground under a dome, read with no ray and no noise),
+/// and this is how that region's width reaches the shadow.
+///
+/// The chain is read whatever terms the map keeps: a receiver softened this
+/// way is one behind the casters it found (a floor under a car), and what
+/// reaches it is the total's exp(-total), which is what the chain averages.
+/// With the Fourier terms' own condition (behind the whole slab) a floor
+/// standing inside the slab of a relit car read level zero, and the six dome
+/// directions showed as six hard outlines on the Corvette's ground.
+public float shadowMapReadSoft<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p, float3 dpdx,
+                                                     float3 dpdy, float spread) {
+    if (f.valid == 0 || f.resolution == 0) {
+        return 1.0;
+    }
+    const float u = dot(f.rowU.xyz, p) + f.rowU.w;
+    const float v = dot(f.rowV.xyz, p) + f.rowV.w;
+    const float r = float(f.resolution);
+    const float z = dot(f.rowZ.xyz, p) + f.rowZ.w;
+    if (z <= 0.0) {
+        return 1.0;
+    }
+    // Texels a unit of the slab's depth spans across, at this spread.
+    const float slabWorld = 1.0 / max(length(f.rowZ.xyz), 1.0e-12);
+    const float perDepth = spread * slabWorld * f.texelsPerUnit;
+    const float widest = z * perDepth;
+    if (!(u > -1.0 - widest && v > -1.0 - widest && u < r + 1.0 + widest && v < r + 1.0 + widest)) {
+        return 1.0;
+    }
+    float blockers = 0.0;
+    float found = 0.0;
+    [unroll] for (int j = -1; j <= 1; ++j) {
+        [unroll] for (int i = -1; i <= 1; ++i) {
+            const int x = int(floor(u + float(i) * 0.5 * widest));
+            const int y = int(floor(v + float(j) * 0.5 * widest));
+            if (x < 0 || y < 0 || x >= int(f.resolution) || y >= int(f.resolution)) {
+                continue;
+            }
+            const float nearest = S.texel(f, light, x, y, f.coefficients);
+            if (nearest + f.bias < z) {
+                blockers += min(S.texel(f, light, x, y, f.coefficients + 1), z);
+                found += 1.0;
+            }
+        }
+    }
+    if (!(found > 0.0)) {
+        return shadowMapRead<S>(f, light, p, dpdx, dpdy);
+    }
+    const float penumbra = (z - blockers / found) * perDepth;
+    const float2 ax = float2(dot(f.rowU.xyz, dpdx), dot(f.rowV.xyz, dpdx));
+    const float2 ay = float2(dot(f.rowU.xyz, dpdy), dot(f.rowV.xyz, dpdy));
+    const float footprint = max(max(length(ax), length(ay)), penumbra);
+    const uint levels = S.levels(f);
+    if (!(footprint > 1.0) || levels <= 1) {
+        return shadowPcf<S>(f, light, u, v, z);
+    }
+    const float level = min(log2(footprint), float(levels - 1));
+    const uint lo = uint(floor(level));
+    const float t = level - float(lo);
+    const float below = lo == 0 ? shadowPcf<S>(f, light, u, v, z) : shadowChainAt<S>(f, light, lo, u, v);
     if (lo + 1 >= levels) {
         return below;
     }

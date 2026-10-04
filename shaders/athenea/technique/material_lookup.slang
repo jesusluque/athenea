@@ -25,11 +25,14 @@ public static const uint kMaterialTransparent = 2u;
 /// It lets light through (a transmission, or a transparent opacity): a ray
 /// that asks only whether the way is open looks at it rather than stopping
 /// (the bake's cells, the path tracer's `pathThrough`).
-public static const uint kMaterialTransmits = 4u;
+public static const uint kMaterialTransmits = 8u;
 /// The least probability a transparent surface is kept with, by a raster
 /// pixel's lot or a path's: held off zero so a window at opacity 0 still
 /// reflects, one sample in twenty at twenty times the weight.
 public static const float kTransparentKeep = 0.05;
+/// The same everywhere on a surface: no texture, no primvar, no pattern of
+/// position (technique::kMaterialUniform).
+public static const uint kMaterialUniform = 4u;
 
 public struct MaterialLookupParams {
     public float time;

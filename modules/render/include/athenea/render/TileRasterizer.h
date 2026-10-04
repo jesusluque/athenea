@@ -126,6 +126,10 @@ struct SplatInstance {
     /// Object to view, the difference over the shutter: the camera's motion
     /// and this prim's, together. Zero: neither moves.
     std::array<float, 12>   viewStep{};
+    /// `primvars:athenea:splat:catcher`: a shadow catcher (athenea mesh2splat
+    /// --shadow-catcher), projected by a kernel of its own: black, as opaque
+    /// as what its object took of the light reaching it.
+    bool                    catcher = false;
 };
 
 /// The frame's lights, as a renderer that must not depend on the light module
@@ -323,6 +327,9 @@ private:
     /// And for a cloud with the first transfer (no cells): the TX transfer's
     /// shading compiled out of it too.
     gpu::ComputeKernel projectFirst_;
+    /// A shadow catcher's (splatProjectCatcher): black, as opaque as what
+    /// its object took, no relighting.
+    gpu::ComputeKernel projectCatcher_;
     /// A transfer cloud's view-independent terms, a splat each, kept while
     /// the lights, the sky, the cloud and its place stand (`txCaches_`).
     gpu::ComputeKernel viewless_;

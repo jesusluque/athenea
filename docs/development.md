@@ -51,7 +51,7 @@ document, the header is right.
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
-| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`) |
+| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
 | 20 | view | `view/Viewer.h` — the window's options |
@@ -262,7 +262,7 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 | `ATHENEA_TEST_DUMP` | a directory for the images tests dump; without it they dump nothing |
 | `ATHENEA_VIEW_SWITCH_AT` | `=N`: the viewer flips its technique at frame N, as a click would, for reproducible `--frames` runs |
 | `ATHENEA_VIEW_ORBIT` | `=R`: the viewer's free camera turns R radians about its target every frame, as a drag would, to time a moving camera with `--frames` |
-| `ATHENEA_STAGES` | `=1`: a line a rasterised frame of splats saying where it went -- commit, per-part visibility, project, counts, depth sort, emit, tile sort, blend -- each stage waited for, so the frame is slower for it |
+| `ATHENEA_STAGES` | `=1`: a line a rasterised frame of splats saying where it went -- commit, per-part visibility, project, counts, depth sort, emit, tile sort, blend -- and, with meshes, a line for the mesh layer -- its preparation and the cloud shadow map in it, visibility, lobe directions, shadow rays, shading, the domes read prefiltered --; each stage waited for, so the frame is slower for it |
 | `ATHENEA_PORTABLE_SORT` | `=1`: every radix sort takes the chunked passes, as before the tiled route existed; to set a backend's tiled route aside |
 | `ATHENEA_ORACLE_*` | the Storm side-by-side oracle's inputs; seven of them, documented where the test reads them |
 | `HDX_MSAA_SAMPLE_COUNT` | must be `1` for the Storm oracle; ctest sets it, and the test fails with an explanation if it is not |

@@ -15,12 +15,12 @@
 // as what it always was: a directional light, with a cosine that is exact and
 // a lobe that knows where the eye is.
 //
-// ONE THREAD A DOME, walking an octahedral grid of `kSunCells` a side twice.
-// Four thousand samples a pass and at most four domes, run once when the sky
-// changes: a reduction would need three dispatches and a barrier between each,
-// and there is nothing here worth that. The grid rather than the image is what
-// keeps the cost off the sky's resolution -- a 4k dome and an 8k one search
-// the same 4096 directions.
+// ONE THREAD A DOME, walking the texels the harmonics are projected from
+// (`projectLevel`, at most 256 wide) twice: once for the sky's median and its
+// brightest texel, once to sum the texels that are the sun. Run once when the
+// sky changes. The sun is those texels -- brighter than kSunOverMedian times
+// the median and kSunOfPeak of the peak, within kSunWidest of the peak --
+// which `env_project` skips by the same test, so the two cannot disagree.
 module env_sun;
 import athenea.light.lights_image;
 import athenea.light.environment;
@@ -76,9 +76,10 @@ StructuredBuffer<LightRecord> lights;
 // exist here even where the count is not what this kernel walks.
 uniform uint                  lightCount;
 StructuredBuffer<uint>        domeLights;
-/// Two float4 a dome: (direction.xyz, the disc's solid angle) and
-/// (irradiance.rgb, the sky's mean luminance). A solid angle of 0 says this
-/// dome has no sun, and then nothing is taken out of its harmonics.
+/// Two float4 a dome: (direction.xyz, the half angle of the cone its texels
+/// fill) and (irradiance.rgb, the luminance its texels were cut at). A half
+/// angle of 0 says this dome has no sun, and then nothing is taken out of its
+/// harmonics.
 RWStructuredBuffer<float4>    sunOut;
 ConstantBuffer<EnvSunParams>  params;
 
@@ -107,6 +108,82 @@ float3 skyAlong(LightRecord light, float3 dir, uint level) {
         .rgb;
 }
 
+
+public static const float3 kSunGrey = float3(0.2126, 0.7152, 0.0722);
+/// A texel is the sun where it is this many times the sky's median...
+public static const float kSunOverMedian = 16.0;
+/// ...and at least this share of the peak, so the aureole stays in the sky.
+public static const float kSunOfPeak = 0.02;
+/// And a sky whose peak is not this many times its median has no sun.
+public static const float kSunPeakOverMedian = 32.0;
+
+/// WHERE A DOME'S SUN IS, as `env_sun` and `env_project` both decide it: the
+/// texels of `level` brighter than a threshold set by the sky's median (a
+/// histogram of log luminance over the projection's measure, robust to the
+/// sun itself, which the mean is not), within kSunWidest of the brightest.
+public struct SunRegion {
+    public bool   found;
+    public float3 axis;        ///< the brightest texel's direction
+    public float  threshold;   ///< luminance at and above which a texel is the sun
+};
+
+public SunRegion sunRegionOf(LightRecord light, uint level) {
+    SunRegion region;
+    region.found = false;
+    region.axis = float3(0.0, 1.0, 0.0);
+    region.threshold = 0.0;
+    if (light.texture == 0xFFFFFFFFu) {
+        return region;
+    }
+    const TextureRecord record = gTextures.records[light.texture];
+    const uint w = max(uint(record.width) >> level, 1u);
+    const uint h = max(uint(record.height) >> level, 1u);
+    // log2 luminance from 2^-20 to 2^20 in half stops.
+    float histogram[80];
+    for (uint b = 0; b < 80; ++b) {
+        histogram[b] = 0.0;
+    }
+    float total = 0.0;
+    float peak = -1.0;
+    uint2 peakAt = uint2(0);
+    for (uint y = 0; y < h; ++y) {
+        const float v = (float(y) + 0.5) / float(h);
+        const float weight = sin((1.0 - v) * kSunPi);
+        if (weight <= 0.0) {
+            continue;
+        }
+        for (uint x = 0; x < w; ++x) {
+            const float lum =
+                dot(gTextures.textures[record.slot].Load(int3(int(x), int(y), int(level))).rgb, kSunGrey);
+            const uint bin = uint(clamp((log2(max(lum, 1.0e-9)) + 20.0) * 2.0, 0.0, 79.0));
+            histogram[bin] += weight;
+            total += weight;
+            if (lum > peak) {
+                peak = lum;
+                peakAt = uint2(x, y);
+            }
+        }
+    }
+    float below = 0.0;
+    float median = 0.0;
+    for (uint b = 0; b < 80; ++b) {
+        below += histogram[b];
+        if (below >= 0.5 * total) {
+            median = exp2(float(b) * 0.5 - 20.0 + 0.25);
+            break;
+        }
+    }
+    region.axis = domeDirection(light, (float2(peakAt) + 0.5) / float2(float(w), float(h)));
+    region.threshold = max(kSunOverMedian * median, kSunOfPeak * peak);
+    region.found = peak > kSunPeakOverMedian * max(median, 1.0e-9);
+    return region;
+}
+
+/// Whether a texel along `dir` of luminance `rgb` is the sun of `region`.
+public bool sunHolds(SunRegion region, float3 dir, float3 rgb) {
+    return region.found && dot(rgb, kSunGrey) >= region.threshold && dot(dir, region.axis) >= cos(kSunWidest);
+}
+
 [shader("compute")]
 [numthreads(4, 1, 1)]
 void envSun(uint3 tid: SV_DispatchThreadID) {
@@ -121,110 +198,25 @@ void envSun(uint3 tid: SV_DispatchThreadID) {
         sunOut[dome * 2 + 1] = float4(0.0);
         return;
     }
-    const uint cells = kSunCells * kSunCells;
-    const float3 grey = float3(0.2126, 0.7152, 0.0722);
+    // THE SUN AS THE TEXELS THAT ARE IT (task PLAY-G): found, summed and
+    // taken out in one quadrature, the projection's own -- the texels of
+    // `projectLevel` with `2 pi^2 sin(theta) du dv` each -- so that what
+    // leaves the harmonics is exactly what arrives as the light, whatever the
+    // sun's size. The rings this replaced measured the disc on one grid and
+    // summed it on another, and a sun sharper than their 2 degree step (goegap,
+    // peaking at 1.2e5) came out at 1% of its energy: 0.07 of irradiance
+    // taken out where the sun delivers about six, and the rest smeared through
+    // nine coefficients -- no shadow edge for a cloud or a catcher to cast.
     const float3 emission = lightEmission(light);
-
-    // The brightest cell, and the sky's mean luminance beside it -- the mean
-    // over the sphere, so each cell counts for the solid angle it covers.
-    float best = -1.0;
-    uint bestCell = 0;
-    float skySum = 0.0;
-    float sphere = 0.0;
-    for (uint c = 0; c < cells; ++c) {
-        const float2 uv = (float2(float(c % kSunCells), float(c / kSunCells)) + 0.5) / float(kSunCells);
-        const float area = cellSolidAngle(uv);
-        const float luminance = dot(skyAlong(light, octDecode(uv), params.level) * emission, grey);
-        skySum += luminance * area;
-        sphere += area;
-        if (luminance > best) {
-            best = luminance;
-            bestCell = c;
-        }
-    }
-    const float skyMean = skySum / max(sphere, 1.0e-9);
-    const float2 bestUv = (float2(float(bestCell % kSunCells), float(bestCell / kSunCells)) + 0.5) /
-                          float(kSunCells);
-    const float3 axis = octDecode(bestUv);
-
-    // The source's profile: one ring of two degrees at a time about the
-    // brightest cell, each ring's mean radiance and what it carries.
-    float ringLum[kSunRings];
-    float3 ringRgb[kSunRings];
-    float ringArea[kSunRings];
-    float3 ringDir[kSunRings];
-    [unroll] for (uint r = 0; r < kSunRings; ++r) {
-        ringLum[r] = 0.0;
-        ringRgb[r] = float3(0.0);
-        ringArea[r] = 0.0;
-        ringDir[r] = float3(0.0);
-    }
-    const float reach = cos(kSunRing * float(kSunRings));
-    for (uint c = 0; c < cells; ++c) {
-        const float2 uv = (float2(float(c % kSunCells), float(c / kSunCells)) + 0.5) / float(kSunCells);
-        const float3 dir = octDecode(uv);
-        const float along = dot(dir, axis);
-        if (along < reach) {
-            continue;
-        }
-        const uint ring = min(uint(acos(clamp(along, -1.0, 1.0)) / kSunRing), kSunRings - 1);
-        const float area = cellSolidAngle(uv);
-        const float3 rgb = skyAlong(light, dir, params.level) * emission;
-        const float lum = dot(rgb, grey);
-        ringLum[ring] += lum * area;
-        ringRgb[ring] += rgb * area;
-        ringArea[ring] += area;
-        ringDir[ring] += dir * lum;
-    }
-    // Where it ends. The outermost ring is the background the source sits in,
-    // taken off every ring before the profile is read; the middle ring is the
-    // source at its brightest above that background, and the cone ends at the
-    // first ring that has fallen to a tenth of it.
-    const float background = ringLum[kSunRings - 1] / max(ringArea[kSunRings - 1], 1.0e-9);
-    const float middle = ringLum[0] / max(ringArea[0], 1.0e-9) - background;
-    uint edge = kSunRings;
-    for (uint r = 1; r < kSunRings; ++r) {
-        const float mean = ringLum[r] / max(ringArea[r], 1.0e-9) - background;
-        if (!(middle > 0.0) || mean < kSunEdge * middle) {
-            edge = r;
-            break;
-        }
-    }
-    float3 irradiance = float3(0.0);
-    float3 centre = float3(0.0);
-    float cone = 0.0;
-    for (uint r = 0; r < min(edge, kSunRings); ++r) {
-        irradiance += ringRgb[r];
-        centre += ringDir[r];
-        cone += ringArea[r];
-    }
-    const float floor = max(skyMean, 1.0e-9);
-    // A source still going at ten degrees is a sky, not a sun.
-    const bool ends = float(edge) * kSunRing <= kSunWidest;
-    const bool isSun = ends && best > kSunPeakRatio * floor && dot(centre, centre) > 0.0;
-    const float3 direction = isSun ? normalize(centre) : axis;
-
-    // WHAT THE DISC IS WORTH, IN THE PROJECTION'S OWN QUADRATURE.
-    //
-    // The rings above find the disc and how wide it is, and that is all they
-    // are good for: a grid of 1.8 degree cells sampling a 1024 wide sky reads
-    // a half degree sun at its peak and multiplies it by the whole cell,
-    // which is eight times the energy that sun carries. The harmonics, mean-
-    // while, lose exactly the lat-long texels `env_project` skips. Add back
-    // one and remove the other and a grey ball under a chapel went from four
-    // per cent bright to fourteen.
-    //
-    // So the irradiance is summed here the way the projection sums, over the
-    // same texels of the same level with the same measure -- `2 pi^2 sin(theta)
-    // du dv` -- so that what leaves the coefficients is what arrives as a
-    // light, to the last texel.
+    const SunRegion region = sunRegionOf(light, params.projectLevel);
     float3 delivered = float3(0.0);
-    if (isSun) {
+    float3 centre = float3(0.0);
+    float solid = 0.0;
+    if (region.found) {
         const TextureRecord record = gTextures.records[light.texture];
         const uint w = max(uint(record.width) >> params.projectLevel, 1u);
         const uint h = max(uint(record.height) >> params.projectLevel, 1u);
         const float area = 2.0 * kSunPi * kSunPi / float(w * h);
-        const float cosCone = cos(float(edge) * kSunRing);
         for (uint y = 0; y < h; ++y) {
             const float v = (float(y) + 0.5) / float(h);
             const float sinTheta = sin((1.0 - v) * kSunPi);
@@ -234,21 +226,24 @@ void envSun(uint3 tid: SV_DispatchThreadID) {
             for (uint x = 0; x < w; ++x) {
                 const float u = (float(x) + 0.5) / float(w);
                 const float3 dir = domeDirection(light, float2(u, v));
-                if (dot(dir, direction) < cosCone) {
+                const float3 rgb =
+                    gTextures.textures[record.slot].Load(int3(int(x), int(y), int(params.projectLevel))).rgb;
+                if (!sunHolds(region, dir, rgb)) {
                     continue;
                 }
-                const float3 rgb =
-                    gTextures.textures[record.slot]
-                        .Load(int3(int(x), int(y), int(params.projectLevel)))
-                        .rgb;
-                delivered += rgb * (sinTheta * area);
+                const float omega = sinTheta * area;
+                delivered += rgb * omega;
+                centre += dir * (dot(rgb, kSunGrey) * omega);
+                solid += omega;
             }
         }
-        delivered *= emission;
     }
-    sunOut[dome * 2] = float4(direction, isSun ? cone : 0.0);
-    // How wide the source turned out to be, in degrees, rides back in the
-    // second row's w: it is how the log says what was found, or why a sky was
-    // left alone.
-    sunOut[dome * 2 + 1] = float4(delivered, float(edge) * kSunRing);
+    const bool isSun = region.found && solid > 0.0 && dot(centre, centre) > 0.0;
+    const float3 direction = isSun ? normalize(centre) : region.axis;
+    // The cone it stands in: the solid angle's own, as a disc would.
+    const float cone = isSun ? acos(saturate(1.0 - solid / (2.0 * kSunPi))) : 0.0;
+    sunOut[dome * 2] = float4(direction, isSun ? max(cone, 1.0e-4) : 0.0);
+    // The irradiance, and the threshold the region was cut at -- which is
+    // what `env_project` cuts the same texels out of the harmonics with.
+    sunOut[dome * 2 + 1] = float4(delivered * emission, region.threshold);
 }

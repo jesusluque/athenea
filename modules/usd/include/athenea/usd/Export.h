@@ -73,6 +73,11 @@ struct ExportOptions {
     /// the material's body, not an albedo, so a frame that relights this
     /// cloud adds the polish and nothing else. What `athenea mesh2splat` bakes.
     bool     litBody = false;
+    /// Writes `primvars:athenea:splat:catcher = 1`: the gaussians are a
+    /// shadow catcher lying on a ground (`athenea mesh2splat --shadow-catcher`).
+    /// A frame draws them black, each covering what the object took of the
+    /// light reaching it, so they darken whatever is drawn behind them.
+    bool     catcher = false;
     /// Writes `primvars:athenea:splat:linear = 1`: the colours are linear
     /// light, not the sRGB a capture was trained in, and are drawn as they
     /// are. Also written whenever the records say so (`io::RawSplats::linear`,

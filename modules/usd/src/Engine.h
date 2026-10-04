@@ -110,6 +110,9 @@ struct SplatEntry {
     /// `primvars:athenea:splat:litBody`: its colours are light already, so what
     /// relighting adds is the polish alone (`athenea mesh2splat --bake`).
     bool                                litBody = false;
+    /// `primvars:athenea:splat:catcher`: a shadow catcher, drawn black as
+    /// opaque as what its object took (`athenea mesh2splat --shadow-catcher`).
+    bool                                catcher = false;
     /// `primvars:athenea:splat:ior`: the index its transmitting gaussians bend
     /// the sky by. 0 bends nothing, which is every cloud that does not say.
     float                               ior = 0.0F;
@@ -338,7 +341,8 @@ public:
                    std::optional<std::vector<pxr::TfToken>> categories = std::nullopt,
                    std::optional<bool> litBody = std::nullopt,
                    std::optional<float> ior = std::nullopt,
-                   std::optional<render::Mat4> transformStep = std::nullopt);
+                   std::optional<render::Mat4> transformStep = std::nullopt,
+                   std::optional<bool> catcher = std::nullopt);
     void setPoints(const pxr::SdfPath& id, std::optional<PointsArrays> raw,
                    const render::Mat4* transform, std::optional<bool> visible,
                    std::optional<render::PointStyle> style);
@@ -400,6 +404,12 @@ public:
     /// cloud is lit as if the cloud were not there, which is what every
     /// raster frame did before.
     void setCloudShadows(bool shadows);
+    /// Whether the raster route reads a dome prefiltered on a mesh
+    /// (`athenea:domePrefiltered`): the harmonics' irradiance and the sky's
+    /// mip chain, shadowed by the cloud map's dome directions, with no sample
+    /// and no ray. On by default; off, a dome is sampled and traced as it
+    /// was, one sample a pixel and its grain.
+    void setDomePrefiltered(bool prefiltered);
     /// Texels a side of that map, per light (`athenea:cloudShadowResolution`).
     void setCloudShadowResolution(uint32_t texels);
     /// How many terms of the map each texel keeps (`athenea:cloudShadowTerms`):
@@ -720,6 +730,7 @@ private:
     std::atomic<bool>                         chooseLights_{false};
     std::atomic<bool>                         splatShadows_{false};
     std::atomic<bool>                         cloudShadows_{true};
+    std::atomic<bool>                         domePrefiltered_{true};
     std::atomic<uint32_t>                     cloudShadowTexels_{1024};
     std::atomic<uint32_t>                     cloudShadowTerms_{0};
     std::atomic<float>                        cloudShadowDensity_{1.0F};
@@ -745,6 +756,10 @@ private:
     /// How many times a cloud's arrays were uploaded: once a cloud, unless
     /// what it holds changed (tests hold a time step to it).
     double                                    lastCommitMs_ = 0.0;   ///< ATHENEA_STAGES: the last commit's time
+    double                                    meshShadowMapMs_ = 0.0;   ///< ATHENEA_STAGES: the cloud map's build
+    /// What the cloud shadow map was last built from (Engine::render): a
+    /// frame with the same key reads it again.
+    std::vector<uint64_t>                     cloudShadowKey_;
     std::atomic<uint64_t>                     cloudUploads_{0};
     std::atomic<bool>                         splatReflections_{false};
     /// The per-prim material table and the buffer it is uploaded into. The

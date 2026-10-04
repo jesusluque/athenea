@@ -51,7 +51,7 @@ coinciden, la cabecera tiene razón.
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
+| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él) |
 | 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
 | 20 | view | `view/Viewer.h` — las opciones de la ventana |
@@ -269,7 +269,7 @@ fuera del proceso.
 | `ATHENEA_TEST_DUMP` | un directorio para las imágenes que vuelcan los tests; sin él no vuelcan nada |
 | `ATHENEA_VIEW_SWITCH_AT` | `=N`: el viewer cambia de técnica en el frame N, como haría un clic, para ejecuciones `--frames` reproducibles |
 | `ATHENEA_VIEW_ORBIT` | `=R`: la cámara libre del viewer gira R radianes alrededor de su objetivo en cada frame, como haría un arrastre, para medir una cámara en movimiento con `--frames` |
-| `ATHENEA_STAGES` | `=1`: una línea por frame rasterizado de splats diciendo adónde fue -- commit, visibilidad por partes, proyección, recuentos, orden por profundidad, emisión, orden por tile, blend --, esperando cada etapa, así que el frame es más lento |
+| `ATHENEA_STAGES` | `=1`: una línea por frame rasterizado de splats diciendo adónde fue -- commit, visibilidad por partes, proyección, recuentos, orden por profundidad, emisión, orden por tile, blend -- y, con mallas, una línea para la capa de mallas -- su preparación y dentro de ella el mapa de sombra de las nubes, visibilidad, direcciones de lóbulo, rayos de sombra, sombreado, los domos leídos prefiltrados --; esperando cada etapa, así que el frame es más lento |
 | `ATHENEA_PORTABLE_SORT` | `=1`: todo radix sort toma las pasadas por trozos, como antes de la ruta por tiles; para apartar la ruta por tiles de un backend |
 | `ATHENEA_ORACLE_*` | las entradas del oráculo de Storm en paralelo; son siete, documentadas donde el test las lee |
 | `HDX_MSAA_SAMPLE_COUNT` | tiene que ser `1` para el oráculo de Storm; ctest lo pone, y el test falla explicándolo si no |

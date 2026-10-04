@@ -22,6 +22,7 @@
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/Texture.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/technique/MaterialPrograms.h"
@@ -46,10 +47,24 @@ public:
     /// And with the cloud shadow map, which a frame has only where a cloud
     /// casts one: a frame without compiles the kernel it always did.
     [[nodiscard]] Result<void> setPrograms(const MaterialPrograms& programs, bool groups, bool clouds);
+    /// And with the domes read prefiltered (`MaterialFrame::domeLighting`):
+    /// a frame that samples them compiles the kernel it always did.
+    [[nodiscard]] Result<void> setPrograms(const MaterialPrograms& programs, bool groups, bool clouds, bool domes);
 
     [[nodiscard]] Result<void> shade(gpu::CommandBatch& batch, const VisibilityTargets& targets,
                                      const render::Projection& projection, const MaterialFrame& frame,
                                      render::RenderTargets& out);
+
+    /// ATHENEA_STAGES: submit and wait after each kernel, and keep how long
+    /// each took (milliseconds), so a frame can say where its meshes went.
+    struct StageTimes {
+        double lobes = 0.0;    ///< drawLobes
+        double shadows = 0.0;  ///< traceShadows
+        double shade = 0.0;    ///< shadeMaterials
+        double domes = 0.0;    ///< domeShade, the domes read prefiltered
+    };
+    void timeStages(bool on) noexcept { timeStages_ = on; }
+    [[nodiscard]] const StageTimes& stageTimes() const noexcept { return times_; }
 
 private:
     gpu::ShaderLibrary*              library_ = nullptr;
@@ -66,6 +81,32 @@ private:
     std::string                      module_;
     bool                             groups_ = false;
     bool                             clouds_ = false;
+    bool                             domes_ = false;
+    /// The device would not make the kernel with the domes read prefiltered:
+    /// every kernel after is made with them sampled.
+    bool                             domesRefused_ = false;
+    /// The domes read prefiltered (dome_shade.slang), and what the shading
+    /// kernel leaves it a pixel: (diffuse albedo, coverage), (glossy albedo,
+    /// alpha), (position, normal).
+    std::optional<gpu::ComputeKernel> domeKernel_;
+    gpu::Texture                     domeDiffuse_;
+    gpu::Texture                     domeGlossy_;
+    gpu::Texture                     domePoint_;
+    rhi::ComPtr<rhi::ITextureView>   domeDiffuseView_;
+    rhi::ComPtr<rhi::ITextureView>   domeGlossyView_;
+    rhi::ComPtr<rhi::ITextureView>   domePointView_;
+    /// What stands for the cloud map where a frame has none.
+    gpu::Texture                     domeNoMap_;
+    rhi::ComPtr<rhi::ITextureView>   domeNoMapView_;
+    /// The table of materials the same everywhere (tabulateMaterials), made
+    /// for the materials it was compiled with, and the texture it fills.
+    std::optional<gpu::ComputeKernel> table_;
+    std::optional<gpu::ComputeKernel> tabled_;   ///< shadeTabled: the pixels the table shades
+    std::string                      tableModule_;
+    gpu::Texture                     tableTexture_;
+    rhi::ComPtr<rhi::ITextureView>   tableView_;
+    bool                             timeStages_ = false;
+    StageTimes                       times_;
     /// Whether the kernel in use reads the shadow rays' answers (traceShadows').
     bool                             shadowed_ = false;
     /// The device would not make the shadowed kernel: every kernel after is

@@ -273,6 +273,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--splat-shadows` | flag | apagado | rt: una nube relit se sombrea a sí misma, un rayo por splat |
 | `--no-antialias` | flag | antialias encendido | |
 | `--no-cloud-shadows` | flag | sombras de nube encendidas | |
+| `--no-dome-prefilter` | flag | prefiltrado | raster: un domo ilumina una malla con una muestra por píxel y un rayo de sombra |
 | `--cloud-shadow-texels` | entero | `1024` | por lado, por luz |
 | `--cloud-shadow-density` | número | `1.0` | multiplicador de la profundidad óptica de la nube |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 es solo el total, el resto añaden pares de Fourier; 0 deja decidir a quien recibe |
@@ -421,6 +422,10 @@ receta es §3.1.
 | `--validate-bounces` | entero | `6` | rebotes de los caminos del GT |
 | `--validate-material` | ruta de prim o nombre | todos los materiales | sólo este (repetible) |
 | `--validate-sky` | `white` o un fichero de imagen | las luces de la escena | cada fotograma bajo otro cielo -- una constante de radiancia uno, o esa imagen en los domos de la escena -- con sus demás luces apagadas; el GT se guarda como `gt_<cielo>.exr` |
+| `--shadow-catcher` | flag | apagado | convertir la sombra que `--prim` arroja sobre su suelo en vez de `--prim`: un parche de gaussianas sobre el suelo bajo él y alrededor, horneado como transfer TX (el objeto y el suelo son lo que encuentran sus rayos), escrito con `primvars:athenea:splat:catcher` y dibujado negro, cubriendo lo que el objeto quita de la luz. Implica `--transfer` y una sola celda en todas partes |
+| `--catcher-ground` | ruta de prim | encontrado | con `--shadow-catcher`: el suelo; se encuentra como la malla plana más grande fuera de `--prim` cuya cara superior está en su base y que llega por debajo de él |
+| `--catcher-margin` | número | `1.5` | con `--shadow-catcher`: hasta dónde pasa el parche de la huella del objeto, en alturas del objeto |
+| `--catcher-cell` | unidades del mundo | `0` | con `--shadow-catcher`: la celda del parche; 0 es una centésima de la altura del objeto |
 | `--transfer-lobes` | 0 a 2 | `0` | con `--transfer`: guardarlo como este número de lóbulos zonales en el marco propio de cada gaussiana (el bundle `SplatTransferZonal`); 0 es dos lóbulos con `--skinned` y nueve armónicos en el mundo en otro caso |
 | `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
@@ -925,7 +930,17 @@ proyecta a través de un mapa de transmitancia en cada luz, sin rayo ninguno:
 gobiernan, y `--no-cloud-shadows` lo apaga. Una `DomeLight` también
 proyecta: en los huecos del mapa que dejan las luces (ocho en total), seis
 mapas a lo largo de su cenit y de un anillo a cuarenta grados de altura, y una
-muestra del domo en una malla lee el más cercano a su dirección.
+muestra del domo en una malla lee el más cercano a su dirección. En la ruta
+raster un domo ilumina una malla **prefiltrado** por defecto: sin muestra y
+sin rayo, así que sin grano -- los lóbulos difusos toman la irradiancia de
+los armónicos del cielo más el sol sacado de ellos, los brillantes la imagen
+del domo desenfocada a su rugosidad, y la sombra de la nube son esos seis
+mapas suavizados por el ancho de cielo que representa cada uno. Lo que no ve
+es una malla sombreando a otra desde el domo, y una superficie que transmite
+(vidrio) sigue muestreando el domo. Donde todas las luces del frame son
+domos así, no se traza ningún rayo de sombra: el vidrio muestrea sus domos
+sombreados solo por las nubes. `--no-dome-prefilter` muestrea los domos en
+todas partes, como antes.
 `--splat-shadows` es la otra
 dirección en la ruta trazada: una nube relit sombreándose a sí misma, un rayo
 por splat.
@@ -1099,6 +1114,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:splatReflections` | bool | `false` | rt: una gaussiana refleja la nube a la que pertenece, un rayo cada una |
 | `athenea:splatShadows` | bool | `false` | rt: una nube relit se sombrea a sí misma |
 | `athenea:cloudShadows` | bool | `true` | el mapa de transmitancia de una nube en cada luz |
+| `athenea:domePrefiltered` | bool | `true` | raster: un domo ilumina una malla prefiltrado, sin muestra ni rayo |
 | `athenea:cloudShadowResolution` | int | `1024` | texels por lado, por luz |
 | `athenea:cloudShadowTerms` | int | `0` | 1 es solo el total; 3, 5, 7 añaden pares de Fourier; 0 deja decidir a quien recibe |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplicador de la profundidad óptica de la nube |
@@ -1126,6 +1142,7 @@ la radiancia que lleva.
 |---|---|---|
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
+| `primvars:athenea:splat:catcher` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |

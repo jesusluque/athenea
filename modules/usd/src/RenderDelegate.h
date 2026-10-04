@@ -83,6 +83,7 @@ public:
     /// cloud's own proxies.
     [[nodiscard]] bool GetSplatShadows() const;
     [[nodiscard]] bool GetCloudShadows() const;
+    [[nodiscard]] bool GetDomePrefiltered() const;
     [[nodiscard]] uint32_t GetCloudShadowResolution() const;
     [[nodiscard]] uint32_t GetCloudShadowTerms() const;
     [[nodiscard]] float GetCloudShadowDensity() const;

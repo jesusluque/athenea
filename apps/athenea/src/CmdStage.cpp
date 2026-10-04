@@ -112,6 +112,7 @@ void addStage(CLI::App& app) {
         bool transferIndirect = true;
         bool splatReflections = false;
         bool cloudShadows = true;
+        bool domePrefiltered = true;
         bool antialias = true;
         uint32_t cloudShadowTexels = 1024;
         uint32_t cloudShadowTerms = 0;
@@ -162,6 +163,9 @@ void addStage(CLI::App& app) {
     cmd->add_flag("!--no-cloud-shadows", o->cloudShadows,
                   "the frame's clouds do not shadow its meshes (they do by default: a map from each "
                   "light, no ray, so it works where nothing can be traced)");
+    cmd->add_flag("!--no-dome-prefilter", o->domePrefiltered,
+                  "raster: a dome lights a mesh by one sample a pixel and a shadow ray, as it used to (by "
+                  "default it is read prefiltered: no sample, no ray, no grain)");
     cmd->add_option("--cloud-shadow-texels", o->cloudShadowTexels,
                     "texels a side of that map, per light (1024)");
     cmd->add_option("--cloud-shadow-density", o->cloudShadowDensity,
@@ -226,6 +230,7 @@ void addStage(CLI::App& app) {
         (*renderer)->setSplatTransferIndirect(o->transferIndirect);
         (*renderer)->setSplatReflections(o->splatReflections);
         (*renderer)->setCloudShadows(o->cloudShadows);
+        (*renderer)->setDomePrefiltered(o->domePrefiltered);
         (*renderer)->setCloudShadowResolution(o->cloudShadowTexels);
         (*renderer)->setCloudShadowTerms(o->cloudShadowTerms);
         (*renderer)->setCloudShadowDensity(static_cast<float>(o->cloudShadowDensity));

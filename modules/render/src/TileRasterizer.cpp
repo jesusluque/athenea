@@ -76,6 +76,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.project_, "athenea/splat/splat_project", "splatProject"));
     ATHENEA_TRY(make(r.projectPlain_, "athenea/splat/splat_project", "splatProjectPlain"));
     ATHENEA_TRY(make(r.projectFirst_, "athenea/splat/splat_project", "splatProjectFirst"));
+    ATHENEA_TRY(make(r.projectCatcher_, "athenea/splat/splat_project", "splatProjectCatcher"));
     ATHENEA_TRY(make(r.viewless_, "athenea/splat/splat_project", "splatTransferViewless"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
     ATHENEA_TRY(make(r.pointsProject_, "athenea/splat/points_project", "pointsProject"));
@@ -348,7 +349,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         // need compiled out (splat_project.slang's projectSplat): a TX
         // transfer (the cells), the first transfer, none.
         const bool txCells = cloud->hasTransfer() && cloud->shadowWords >= 8;
-        gpu::ComputeKernel& project = txCells ? project_ : cloud->hasTransfer() ? projectFirst_ : projectPlain_;
+        gpu::ComputeKernel& chosen = txCells ? project_ : cloud->hasTransfer() ? projectFirst_ : projectPlain_;
+        // And a shadow catcher's, beside them: black, as opaque as what its
+        // object took (splatProjectCatcher).
+        gpu::ComputeKernel& project = instance.catcher ? projectCatcher_ : chosen;
         // WHAT THE EYE DOES NOT CHANGE, KEPT (splat_project's
         // splatTransferViewless): a cloud with a transfer, under lights and a
         // sky that say when they changed, keeps its view-independent terms a
@@ -356,7 +360,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         // they depend on moved -- the lights, the sky, the cloud, its place.
         TxCache* kept = nullptr;
         bool keep = false;
-        if (txCells && instance.relight && lights != nullptr && lights->revision != 0 &&
+        if (txCells && !instance.catcher && instance.relight && lights != nullptr && lights->revision != 0 &&
             lights->environment()) {
             uint64_t key = lights->revision * 0x9E3779B97F4A7C15ULL;
             const auto mix = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ULL; };

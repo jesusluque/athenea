@@ -211,7 +211,8 @@ void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays
                        std::optional<render::SplatEdit> edit, std::optional<StreamedAsset> asset,
                        std::optional<bool> relight,
                        std::optional<std::vector<pxr::TfToken>> categories, std::optional<bool> litBody,
-                       std::optional<float> ior, std::optional<render::Mat4> transformStep) {
+                       std::optional<float> ior, std::optional<render::Mat4> transformStep,
+                       std::optional<bool> catcher) {
     const std::lock_guard<std::mutex> held(guard_);
     SplatEntry& entry = splats_[id];
     if (transformStep) {
@@ -228,6 +229,9 @@ void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays
     }
     if (litBody) {
         entry.litBody = *litBody;
+    }
+    if (catcher) {
+        entry.catcher = *catcher;
     }
     if (ior) {
         entry.ior = *ior;
@@ -664,6 +668,10 @@ void Engine::setSplatShadows(bool shadows) {
 
 void Engine::setCloudShadows(bool shadows) {
     cloudShadows_.store(shadows);
+}
+
+void Engine::setDomePrefiltered(bool prefiltered) {
+    domePrefiltered_.store(prefiltered);
 }
 
 void Engine::setCloudShadowResolution(uint32_t texels) {
@@ -1554,6 +1562,15 @@ Result<std::optional<scene::Bounds>> Engine::bounds() {
     return all;
 }
 
+namespace {
+/// What in a generated material's source says it varies over the surface
+/// with no slot to show for it: MaterialX's position and texture coordinate
+/// nodes, and the noises and patterns made of them.
+constexpr const char* kPlaceDependent[] = {"gAtheneaInputs.", "atheneaPrimvar", "_Pworld", "_Pobject", "_Pmodel",
+                                           "texcoord", "geomprop_UV", "noise", "worley", "fractal", "u_time",
+                                           "u_frame", "geomcolor", "geompropvalue"};
+}   // namespace
+
 Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvars) {
     if (!scene_.has_value()) {
         auto scene = world::GpuScene::create(*library_);
@@ -1637,8 +1654,21 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
             log::debug("hdAthenea: material {} row {} module {} [{}]", id.GetString(), rows.size(),
                        entry.compiled->module, files);
         }
+        // THE SAME EVERYWHERE: every input a value, and nothing in the graph
+        // that reads where on the surface it is (a texture coordinate, a
+        // position, a noise of either). What lets a frame lit by
+        // prefiltered domes alone shade it from a table (kMaterialUniform).
+        const bool uniform =
+            std::all_of(entry.compiled->slots.begin(), entry.compiled->slots.end(),
+                        [](const material::MaterialSlot& slot) {
+                            return slot.kind == material::MaterialSlot::Kind::Value;
+                        }) &&
+            std::none_of(std::begin(kPlaceDependent), std::end(kPlaceDependent), [&](const char* token) {
+                return entry.compiled->source.find(token) != std::string::npos;
+            });
         const uint32_t flags = (entry.cutout ? technique::kMaterialCutout : 0u) |
                                (entry.transparent ? technique::kMaterialTransparent : 0u) |
+                               (uniform && !entry.cutout && !entry.transparent ? technique::kMaterialUniform : 0u) |
                                (entry.transmission ? technique::kMaterialTransmits : 0u);
         materialCutouts_ = materialCutouts_ || entry.cutout;
         // What a transmitting row lets through, for a ray that does not
@@ -2233,6 +2263,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 splats.back().transferIndirect = transferIndirect_.load();
                 splats.back().reflectCloud = splatReflections_.load();
                 splats.back().ior = entry.ior;
+                splats.back().catcher = entry.catcher;
                 // What the shutter moved each gaussian, where a skeleton
                 // carries the cloud and the camera's is open. The rasteriser
                 // smears the splat along it; the tracer ignores it, since its
@@ -2276,6 +2307,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                     splats.back().transferIndirect = transferIndirect_.load();
                     splats.back().reflectCloud = splatReflections_.load();
                     splats.back().ior = entry.ior;
+                    splats.back().catcher = entry.catcher;
+                splats.back().catcher = entry.catcher;
                     frameSlots_ += entry.lodCloud->splats.count;
                 } else {
                     log::warn("hdAthenea: {}: a streamed asset is drawn by the rasteriser only", id.GetString());
@@ -2563,6 +2596,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         pathState_.traced = false;
         pathAuxValid_ = false;
     }
+    const auto meshLayerStart = std::chrono::steady_clock::now();
     if (meshLayer) {
         // A light that moves cuts the frame into shutter slices as geometry
         // that moves does. The mesh scene is the mesh layer's; a frame of
@@ -2658,6 +2692,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // a mesh's shading reads. It is what shadows a floor under a bird in
         // the raster route -- which had no cloud shadow of any kind -- and it
         // is the only kind a device without ray tracing can have.
+        meshShadowMapMs_ = 0.0;
         if (cloudShadows_.load() && !splats.empty() && lightTable_.has_value() && lightTable_->count() > 0) {
             if (!cloudShadowMap_.has_value()) {
                 auto made = technique::SplatShadowMap::create(*library_);
@@ -2683,7 +2718,12 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             // lights leave: the car on the ground under a sky (task TX).
             job.domeSlots = 6;
             for (const render::SplatInstance& instance : splats) {
-                if (instance.splats == nullptr || instance.splats->count == 0) {
+                // A shadow catcher is a shadow already: cast into the map, it
+                // laid its own patch's outline on the ground beneath it once
+                // more along each of the dome's directions -- the straight-
+                // edged blocks under goegap's sun, and the mesh car's frame a
+                // third dark.
+                if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher) {
                     continue;
                 }
                 technique::ShadowMapCaster caster;
@@ -2694,10 +2734,46 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 caster.restBounds = instance.splats->restBounds.value_or(instance.splats->bounds);
                 job.casters.push_back(caster);
             }
-            if (!job.casters.empty()) {
+            // A MAP IS THE CASTERS' AND THE LIGHTS', NOT THE CAMERA'S: a frame
+            // whose clouds, poses, transforms, lights and settings are what the
+            // last map was built from reads that map again (task PLAY-G: seven
+            // passes over the Corvette's 14.7 M gaussians were 77 ms a frame of
+            // a car that does not move). The key is bookkeeping the host holds:
+            // which clouds, their revision (a pose counts it up), where they
+            // stand, the lights' records and the job. A frame with levels of
+            // detail always builds -- its cut's clouds are the camera's.
+            std::vector<uint64_t> key;
+            const auto keyBytes = [&key](const void* data, size_t bytes) {
+                const size_t at = key.size();
+                key.resize(at + (bytes + 7) / 8, 0);
+                std::memcpy(key.data() + at, data, bytes);
+            };
+            for (const technique::ShadowMapCaster& caster : job.casters) {
+                const uint64_t ids[4] = {reinterpret_cast<uintptr_t>(caster.cloud),
+                                         reinterpret_cast<uintptr_t>(caster.cloud->positions.rhi()),
+                                         caster.cloud->count, caster.cloud->revision};
+                keyBytes(ids, sizeof(ids));
+                keyBytes(caster.objectToWorld.data(), sizeof(float) * 12);
+                keyBytes(&caster.categories, sizeof(caster.categories));
+                keyBytes(&caster.cloud->bounds, sizeof(caster.cloud->bounds));
+                keyBytes(&*caster.restBounds, sizeof(scene::Bounds));
+            }
+            for (const light::Light& lamp : lamps) {
+                const light::LightRecord record = light::LightTable::recordOf(lamp);
+                keyBytes(&record, sizeof(record));
+            }
+            const uint32_t settingsKey[4] = {job.resolution, job.coefficients, job.domeSlots, job.lightCount};
+            keyBytes(settingsKey, sizeof(settingsKey));
+            keyBytes(&job.density, sizeof(job.density));
+            const bool sameMap = cuts.empty() && cloudShadowMap_->valid() && key == cloudShadowKey_;
+            if (!job.casters.empty() && !sameMap) {
+                const auto castStart = std::chrono::steady_clock::now();
                 gpu::CommandBatch casting(*device_);
                 ATHENEA_TRY(cloudShadowMap_->build(casting, job));
                 ATHENEA_TRY(casting.submit(true));
+                meshShadowMapMs_ =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - castStart).count();
+                cloudShadowKey_ = std::move(key);
             }
             if (cloudShadowMap_->valid()) {
                 if (std::getenv("ATHENEA_SHADOW_DEBUG") != nullptr) {
@@ -2710,6 +2786,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
         } else if (cloudShadowMap_.has_value()) {
             cloudShadowMap_.reset();   // nothing casts: the kernel goes back to the one without a map
+            cloudShadowKey_.clear();
         }
         technique::MaterialFrame frame;
         frame.programs = &*materialPrograms_;
@@ -2857,6 +2934,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
         }
         const technique::MaterialFrame* cutouts = (materialCutouts_ || scene_->anyHidden()) ? &frame : nullptr;
+            const auto meshStart = std::chrono::steady_clock::now();
             gpu::CommandBatch batch(*device_);
         switch (visibility) {
         case MeshVisibility::Automatic:
@@ -2896,6 +2974,14 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                            settings.height, visibility_, cutouts));
             break;
         }
+        // ATHENEA_STAGES: the visibility pass on its own, waited for.
+        const bool meshStages = !platform::env("ATHENEA_STAGES").empty();
+        double meshVisibilityMs = 0.0;
+        if (meshStages) {
+            ATHENEA_TRY(batch.submit(true));
+            meshVisibilityMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - meshStart).count();
+        }
         // Read after the visibility pass, never before it: the rays route
         // rebuilds this structure there, and the one it replaces is released
         // with it -- taking the pointer earlier left shading tracing against
@@ -2906,6 +2992,17 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             cloudShadowMap_.has_value() && cloudShadowMap_->valid() ? cloudShadowMap_->textureView() : nullptr;
         frame.cloudShadowChain =
             cloudShadowMap_.has_value() && cloudShadowMap_->valid() ? cloudShadowMap_->chainView() : nullptr;
+        // The domes read prefiltered on the raster route (task PLAY-G): the
+        // sky prepared once (prepareEnvironment), no sample and no ray. The
+        // path tracer samples them, as the ground truth must.
+        frame.domeLighting = domePrefiltered_.load() && !pathTracing && environment_.has_value() &&
+                                     environment_->ready()
+                                 ? environment_->meshView()
+                                 : nullptr;
+        frame.domesOnly = frame.domeLighting != nullptr && !lamps.empty() &&
+                          lamps.size() <= technique::kEnvironmentDomes &&
+                          std::all_of(lamps.begin(), lamps.end(),
+                                      [](const light::Light& l) { return l.kind == light::LightKind::Dome; });
         if (pathTracing) {
             if (!pathTracer_.has_value()) {
                 auto made = technique::PathTracer::create(*library_);
@@ -3015,6 +3112,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                        wantAux ? &pathAux_ : nullptr));
             pathAuxValid_ = wantAux;
         } else {
+            materialShading_->timeStages(meshStages);
             ATHENEA_TRY(materialShading_->shade(batch, visibility_, projection, frame, meshLayer_));
         }
         // WHICH PRIM EACH PIXEL'S SURFACE IS, for the matte the splat blend
@@ -3043,6 +3141,17 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             aovsValid_ = true;
         }
         ATHENEA_TRY(batch.submit(true));
+        // ATHENEA_STAGES=1: what the mesh layer took, a line a frame -- the
+        // cloud map from the lights, and the visibility and shading passes.
+        if (meshStages) {
+            const technique::MaterialShading::StageTimes& t = materialShading_->stageTimes();
+            log::info("stages: mesh prepare {:.1f} ms (cloud shadow map {:.1f} of it), visibility {:.1f}, lobes {:.1f}, "
+                      "shadow rays {:.1f}, shading {:.1f}, domes {:.1f}; mesh layer {:.1f} in all",
+                      std::chrono::duration<double, std::milli>(meshStart - meshLayerStart).count(),
+                      meshShadowMapMs_, meshVisibilityMs, t.lobes, t.shadows, t.shade, t.domes,
+                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - meshLayerStart)
+                          .count());
+        }
         // The adaptive gate's counters, after the pass: which covered pixels
         // have stopped. Its own dispatch and readback, so after the batch.
         if (pathTracing && pathState_.adaptive) {

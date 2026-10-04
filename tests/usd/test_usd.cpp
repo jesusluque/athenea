@@ -6528,6 +6528,9 @@ TEST_CASE("the raster sees a dome through glass as the path tracer does", "[usd]
         const gpu::Buffer ones = upload(std::vector<float>(size_t{w} * h * 4, 1.0F));
         auto renderer = usd::StageRenderer::open(path);
         if (!renderer) FAIL(renderer.error().toString());
+        // Sampled, as the raster's convergence is what this measures: read
+        // prefiltered (the default) a polished metal has no samples to count.
+        (*renderer)->setDomePrefiltered(false);
         for (const uint32_t lightSamples : {1u, 4u}) {
             (*renderer)->setLightSamples(lightSamples);
             auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
@@ -6551,6 +6554,9 @@ TEST_CASE("the raster sees a dome through glass as the path tracer does", "[usd]
             "  </standard_surface>\n");
         auto renderer = usd::StageRenderer::open(path);
         if (!renderer) FAIL(renderer.error().toString());
+        // Sampled, as the raster's convergence is what this measures: read
+        // prefiltered (the default) a polished metal has no samples to count.
+        (*renderer)->setDomePrefiltered(false);
         // The path tracer first, deep, as the answer; then the raster at two
         // sample counts. Its lobe choice between reflection and a tinted
         // transmission is noise, so agreement is stated as the error falling
@@ -6596,6 +6602,9 @@ TEST_CASE("the raster sees a dome through glass as the path tracer does", "[usd]
             "    <input name=\"bsdf\" type=\"BSDF\" nodename=\"b\" />\n  </surface>\n");
         auto renderer = usd::StageRenderer::open(path);
         if (!renderer) FAIL(renderer.error().toString());
+        // Sampled, as the raster's convergence is what this measures: read
+        // prefiltered (the default) a polished metal has no samples to count.
+        (*renderer)->setDomePrefiltered(false);
         (*renderer)->setPathBounces(1);
         (*renderer)->setPathTotal(4096);
         auto traced = (*renderer)->render("/Camera", 0.0, w, h, "rt");
@@ -10062,13 +10071,17 @@ TEST_CASE("the raster shadows a lobe's own samples, and weighs them against the 
         return out.str();
     };
     const uint32_t w = 128, h = 96;
-    const gpu::Buffer covered = renderStageText("lobe_shadow_plate.usda", stage(true, "0.1"), "raster", w, h);
+    // The dome sampled, as this test is about its samples: read prefiltered
+    // (the default) no mesh shadows another from a dome at all.
+    const auto sampled = [](usd::StageRenderer& r) { r.setDomePrefiltered(false); };
+    const gpu::Buffer covered =
+        renderStageText("lobe_shadow_plate.usda", stage(true, "0.1"), "raster", w, h, sampled);
     auto under = render::imageStats(*gpu->library, covered, w, h, 0, 0, w, h / 2);
     REQUIRE(under);
     std::printf("  a polished floor under a plate, raster: mean %.4f (black wanted)\n", under->mean[0]);
     CHECK(under->mean[0] < 0.02);
 
-    const gpu::Buffer open = renderStageText("lobe_mis_open.usda", stage(false, "0.5"), "raster", w, h);
+    const gpu::Buffer open = renderStageText("lobe_mis_open.usda", stage(false, "0.5"), "raster", w, h, sampled);
     auto sky = render::imageStats(*gpu->library, open, w, h, 0, 0, w, h / 2);
     REQUIRE(sky);
     std::printf("  a rough metal floor under the open sky, raster: mean %.3f, brightest pixel %.2f\n",
@@ -10155,8 +10168,11 @@ TEST_CASE("a cloud shadows a mesh under a dome on the raster route", "[usd][gpu]
                 cursor["frame"].setBinding(frame->rhi());
                 cursor["sums"].setBinding(sums->rhi());
                 cursor["params"]["width"].setData(w);
+                // Below the middle, as the image is stored bottom row first:
+                // the floor under the slab. Above it the patch reached past
+                // the slab towards the horizon, and read the sky into it.
                 cursor["params"]["x0"].setData(w / 2 - 6);
-                cursor["params"]["y0"].setData(h / 2 + 4);
+                cursor["params"]["y0"].setData(h / 2 - 10);
                 cursor["params"]["w"].setData(12u);
                 cursor["params"]["h"].setData(12u);
                 cursor["params"]["scale"].setData(4096.0F);
@@ -10174,6 +10190,77 @@ TEST_CASE("a cloud shadows a mesh under a dome on the raster route", "[usd][gpu]
                 without);
     CHECK(without > 0.1);
     CHECK(with < 0.6 * without);
+}
+
+TEST_CASE("a dome read prefiltered lights a floor as its samples do, without them", "[usd][gpu][mesh][lights][dome]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    // A grey floor under a plain dome, seen from above at a slant: a Lambert
+    // surface under a constant sky L returns albedo * L whatever its normal,
+    // which the prefiltered read gives in closed form (the harmonics' first
+    // band) and the sampled one by its samples' mean.
+    const fs::path path = scratch("dome_prefiltered_floor.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n    metersPerUnit = 1\n)\n"
+               "def Mesh \"Ground\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-6, -6, 0), (6, -6, 0), (6, 6, 0), (-6, 6, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] ( interpolation = \"constant\" )\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 30\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 100)\n"
+               "    double3 xformOp:translate = (0, -2.5, 1.5)\n    float3 xformOp:rotateXYZ = (60, 0, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t w = 160, h = 120;
+    auto meanKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/patch_mean", "patchMean");
+    if (!meanKernel) FAIL(meanKernel.error().toString());
+    const auto floorMean = [&](bool prefiltered, uint32_t samples) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setLightSamples(samples);
+        (*renderer)->setDomePrefiltered(prefiltered);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto frame = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(frame);
+        const std::array<uint32_t, 4> zero{0, 0, 0, 0};
+        auto sums = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, std::span<const uint32_t>(zero), "dome.sums");
+        REQUIRE(sums);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            meanKernel->dispatch(batch, {40, 40, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["frame"].setBinding(frame->rhi());
+                cursor["sums"].setBinding(sums->rhi());
+                cursor["params"]["width"].setData(w);
+                cursor["params"]["x0"].setData(w / 2 - 20);
+                cursor["params"]["y0"].setData(h / 2 - 20);
+                cursor["params"]["w"].setData(40u);
+                cursor["params"]["h"].setData(40u);
+                cursor["params"]["scale"].setData(4096.0F);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 4> read{};
+        REQUIRE(sums->read(*gpu->device, 0, sizeof(read), read.data()));
+        const double count = std::max<double>(read[3], 1.0) * 4096.0;
+        return (read[0] + read[1] + read[2]) / (3.0 * count);
+    };
+    const double prefiltered = floorMean(true, 1);
+    const double sampled = floorMean(false, 64);
+    std::printf("  a grey floor under a plain dome: %.4f prefiltered, %.4f sampled (64 a pixel)\n", prefiltered,
+                sampled);
+    CHECK(sampled > 0.1);
+    CHECK(std::abs(prefiltered - sampled) < 0.03 * sampled);
 }
 
 TEST_CASE("a cloud's shadow on a plane is tinted, switched off and cut short as the light's ShadowAPI says",

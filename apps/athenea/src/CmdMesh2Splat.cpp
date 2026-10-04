@@ -71,6 +71,7 @@
 #include "athenea/scene/SplatSkinner.h"
 #include "athenea/usd/Export.h"
 #include "athenea/usd/MeshStage.h"
+#include "athenea/usd/ShadowCatcher.h"
 #include "athenea/usd/StageRenderer.h"
 
 namespace athenea::cli {
@@ -244,6 +245,15 @@ struct Options {
     std::string              range;
     double                   time = 0.0;
     std::vector<std::string> paths;
+    /// THE GROUND'S SHADOW AS GAUSSIANS (usd/ShadowCatcher.h): convert, of the
+    /// stage, a patch on the ground under --prim and around it, baked as a
+    /// transfer with the object and the ground as what its rays meet, and
+    /// written as a catcher -- black, covering what the object takes.
+    bool                     shadowCatcher = false;
+    std::string              catcherGround;
+    double                   catcherMargin = 1.5;
+    /// The catcher's cell, world units; 0 is a hundredth of the object's height.
+    double                   catcherCell = 0.0;
 };
 
 /// One map the conversion reads, as a picture. Several materials name the same
@@ -2655,6 +2665,17 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--transfer", o->transfer,
                   "bake how much of an environment reaches each gaussian instead of the light itself, "
                   "so the cloud can be lit by any sky (excludes the radiance bake)");
+    cmd->add_flag("--shadow-catcher", o->shadowCatcher,
+                  "convert the shadow --prim casts on its ground instead of --prim itself: a layer of gaussians "
+                  "on the ground under and around it, baked as a transfer (the object and the ground are what "
+                  "its rays meet) and drawn black, covering what the object takes of the light");
+    cmd->add_option("--catcher-ground", o->catcherGround,
+                    "--shadow-catcher: the ground prim (found by itself: the largest flat mesh outside --prim "
+                    "whose top is at its bottom)");
+    cmd->add_option("--catcher-margin", o->catcherMargin,
+                    "--shadow-catcher: how far past the object's footprint the catcher reaches, in its heights");
+    cmd->add_option("--catcher-cell", o->catcherCell,
+                    "--shadow-catcher: the catcher's cell, world units (0: a hundredth of the object's height)");
     cmd->add_option("--validate", o->validate,
                     "measure the conversion material by material against the stage path traced, into this "
                     "directory: a table (validate.json) and GT, mesh and cloud side by side for each");
@@ -2751,6 +2772,37 @@ void addMesh2Splat(CLI::App& app) {
             std::printf("mesh2splat: a .athc keeps the gaussians and their shading normals; the metallic, "
                         "roughness and transmission a relit cloud reflects with, the Cryptomatte ids, the glass "
                         "index and the stage's up axis and unit stay out\n");
+        }
+        // THE SHADOW CATCHER: the stage again with a patch on the ground, and
+        // that patch is what is converted -- as a transfer, at a cell of its
+        // own -- the object staying in the stage as what the rays meet.
+        if (o->shadowCatcher) {
+            if (o->prim.empty()) {
+                std::fprintf(stderr, "--shadow-catcher needs --prim: the object whose shadow is caught\n");
+                throw CLI::RuntimeError(1);
+            }
+            usd::ShadowCatcherOptions catcher;
+            catcher.object = o->prim;
+            catcher.ground = o->catcherGround;
+            catcher.margin = o->catcherMargin;
+            catcher.cell = o->catcherCell;
+            const std::filesystem::path out(o->output);
+            const std::filesystem::path catcherStage =
+                out.parent_path() / (out.stem().string() + "_catcher_stage.usda");
+            auto made = usd::writeShadowCatcherStage(o->stage, catcher, catcherStage);
+            if (!made) {
+                cli::fail(made.error());
+            }
+            o->stage = made->stage.string();
+            o->prim = made->prim;
+            o->transfer = true;
+            o->density = "per-mesh";
+            o->cellFromCamera.clear();
+            const double cell = made->cell;
+            o->cellMin = cell;
+            o->cellMax = cell;
+            std::printf("mesh2splat: the shadow catcher of %s on %s, a cell of %.4g\n", catcher.object.c_str(),
+                        made->ground.c_str(), cell);
         }
         gpu_host::Context* context = gpu_host::installProcessContext();
         if (context == nullptr || context->compute() == nullptr) {
@@ -3034,6 +3086,7 @@ void addMesh2Splat(CLI::App& app) {
                 // frame lights it whole; a radiance bake keeps the light on the
                 // body and the frame adds only the polish.
                 options.litBody = o->bake && !o->transfer;
+                options.catcher = o->shadowCatcher;
                 // Light, all of it: the albedo, the transfer's and the bake's.
                 options.linear = true;
                 // The matte's ancestry, gaussian by gaussian, as the conversion

@@ -28,7 +28,7 @@ endif()
 
 # The engine side of Hydra, linked into the CLI and tests.
 athenea_add_module(usd
-    SOURCES ${ATHENEA_USD_SOURCES} src/StageRenderer.cpp src/BindingPurposes.cpp src/Export.cpp src/Decimate.cpp src/MeshStage.cpp src/Migrate.cpp
+    SOURCES ${ATHENEA_USD_SOURCES} src/StageRenderer.cpp src/BindingPurposes.cpp src/Export.cpp src/ShadowCatcher.cpp src/Decimate.cpp src/MeshStage.cpp src/Migrate.cpp
     PUBLIC_LIBS athenea::ui athenea::render athenea::io athenea::scene athenea::lod athenea::geom athenea::world athenea::technique ${ATHENEA_USD_LIBS})
 # USD's headers predate the warnings this engine asks for.
 target_compile_options(athenea_usd PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-cast-align

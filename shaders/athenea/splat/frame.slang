@@ -170,6 +170,10 @@ public struct FrameParams {
 /// its footprint in `slopes` (splat_project, splat_blend): neither 0, a plain
 /// splat, nor above a half, an opaque point of the layer under the splats.
 public static const float kSlopeMark = 0.25;
+/// A ProjRecord's colour.w for a shadow catcher's gaussian (splat_project's
+/// splatProjectCatcher): black, and drawn over an opaque layer under it
+/// even where its centre's depth reads behind that layer -- it lies on it.
+public static const float kCatcherMark = 0.125;
 
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power
