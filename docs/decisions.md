@@ -12861,68 +12861,91 @@ limits; the four new ones also compile for Metal.
 The user's direction (2026-10-04): athenea's own WebGPU renderer and its own
 modular viewer, not only a slot in the site's Spark/three.js page; those stay
 as the standard-compatibility check of what `athenea flatten` writes. 072's
-stages, tiers and arenas, and 074's per-device LOD, are the plan; this is the
-shape of the code.
+stages and arenas, 074's per-device LOD, and the research's 081 (the module
+contract) and 082 (sort and raster) are the plan; this is the shape of the
+code.
 
 **Layout** (source under `web/`, built by `scripts/web-kernels.py` into one
-directory that is served as it is: every path relative, every import by
+directory served as it is: every path relative, every import by
 `import.meta.url`, no bare import):
 
 | Path | What |
 |---|---|
 | `manifest.json`, `kernels/*.wgsl` | the kernels every module uses, compiled from `shaders/` |
-| `lib/gpu.js` | the kernel runner: pipelines by name and override, bind groups by the manifest's names, the uniform ring, buffers held to the device's limits |
-| `lib/probe.js` | W-probe: adapter limits, features and platform into a tier, T0-T3, and the tier's policy (074 section 2.2) |
+| `lib/gpu.js` | the kernel runner: pipelines by name and override, bind groups by the manifest's names, the uniform ring, buffers held to the device's limits, the prefix sum and the sort |
+| `lib/probe.js` | W-probe: adapter limits, features and platform into a tier, T0-T3, and its policy (074 section 2.2) |
 | `lib/engine.js` | W-host: the cloud, the camera, the modules, the frame; the page's API (`load`, `setCamera`, `setSky`, `setLightState`, `setFeatures`, `frame`) |
-| `lib/loaders/*.js` | file headers into records the GPU decodes: PLY, SPZ (v1-v3, gzip by the browser's `DecompressionStream`); SOG and the sectioned `.athc` later |
-| `lib/modules/*.js` | the features |
+| `lib/loaders/*.js` | file headers into records the GPU decodes: PLY, SPZ v2-v3 (gzip, by the browser's `DecompressionStream`); SOG and the sectioned `.athc` later |
+| `lib/modules/*.js` | the modules |
 | `viewer/` | the page: canvas, orbit, a panel made from the modules' options, stats, the tier |
 | `athenea-webgpu.js` | the same engine as a renderer of the site's viewer |
 
-**A module's contract** -- what `lib/modules/<name>.js` exports:
+**The frame's stages are fixed** (081 section 2); a module hooks into them and
+adds none: E0 streaming, E1 decode, E2 the LOD cut, E3 per-splat modifiers
+(edit, skin, transform), E4 project, cull, compact and keys, E5 sort, E6
+tile emit and ranges, E7 blend, E8 output, E9 stats. 081's rule is that no
+count crosses to the CPU from E2 to E8 -- every stage sizes the next by an
+indirect dispatch -- and E9 reads a frame late.
 
-| Field | Says |
-|---|---|
-| `name`, `requires` | its name and the modules it builds on |
-| `tier` | the lowest tier it runs on; below it, the engine leaves it out |
-| `kernels` | the manifest entries it dispatches (checked present when it is attached) |
-| `arenas` | the buffers it owns, by 072's arena names (B0-B4 read, W0-W2 written), and their bytes a splat |
-| `overrides` | the WGSL overrides it sets, by kernel |
-| `options` | what the panel shows: key, label, kind (`range`, `toggle`, `select`), bounds, default |
-| hooks | `attach(engine)`, `load(cloud)` (build what it keeps), `prepare(frame)` (work before the projection: the cut), `set(key, value)`, `stats()`, `dispose()` |
+**A module** (081 section 3) is a manifest and its Slang kernels. The manifest,
+as `lib/modules/<id>.js` exports it: `id`, `version`, `minTier`, `requires`,
+`conflicts`, `sections` (the `.athc` sections it needs), `arenas` (`B0`-`B4`
+read, `W0`-`W2` written, with bytes a splat or a slot), `hooks` (the stage,
+and the Slang interface it implements there: `ISplatColour` at E4,
+`IBlendTerm` at E7), `flags` (`FrameParams` switches), `ui` (id, label, kind
+-- toggle, slider, select, file -- range or options, and `effect`: `flag`, on
+the fly, or `preset`, a pipeline rebuilt and no data), `workgroupBytes`. The
+JavaScript beside it is bookkeeping: `load` (what it builds once), `prepare`
+(its dispatches before E4), `set`, `stats`, `dispose`.
 
-The frame is still core-raster's order, and the modules change what it
-projects (lod: a list of what to draw), how (sh: the degree), and with what
-(TX later: arenas B1-B4 and the relit projection). A module the tier or the
-asset cannot have answers `false` from `setFeatures`, and the page greys it.
+**Presets by tier** (081 section 4): a preset is a set of modules resolved at
+build time -- dependencies ordered, conflicts refused, arenas against 8
+storage buffers, workgroup bytes against the tier -- into one WGSL a kernel.
+Inside a preset a feature is a uniform flag. 081 asks for no `override`
+because slang-rhi cannot set one; the page makes its own pipelines through
+WebGPU, which can, so the web uses an override where a constant is a
+preset's (the harmonic degree, whether the projection walks a list): a
+pipeline rebuilt, no data.
 
-**First modules:**
-- **core-raster**: E1's route (decode, project, counts, sorts, emit, ranges,
-  blend, present); options: antialias, the blend's space, exposure.
-- **sh**: the harmonic degree, 0-3, a WGSL override: one pipeline a degree.
-- **lod**: the native `LodBuilder` and `CutSelector` kernels on the page's
-  device -- Morton order, groups by a boundary pass and a prefix sum,
+**Sort and raster** (082): the chunked 8-bit radix of the native sort (no
+look-back, no subgroups: Safari and Firefox have none, Apple guarantees no
+forward progress) everywhere first, a 4-bit variant for T1 and 16-bit keys
+quantised by camera-relative intervals next; tile raster in compute, since
+the blend's terms (RGB transmittance, the catcher, AOVs, depth) are not the
+hardware's; compaction before anything is drawn; dispatches past 65535 groups
+folded into 2D.
+
+**The first modules** (081's T1 preset):
+- **core-raster** (E1, E4-E8): E1's route -- decode, project, counts, sorts,
+  emit, ranges, blend, present; ui: antialias, the blend's space, exposure.
+- **sh** (E4, `ISplatColour`): the harmonic degree, 0-3, a preset constant.
+- **lod** (E2): the native `LodBuilder` and `CutSelector` kernels on the
+  page's device -- Morton order, groups by a boundary pass and a prefix sum,
   moments from the finest level up, a Gaussian a group -- built once after a
-  load, and the cut every frame. The cloud's splats and every merged level go
-  into one pool; the cut marks what to draw, a prefix sum places it, and a
-  list of pool indices is what the projection walks: **compaction before the
-  draw**, so a splat the cut leaves out costs one word of the cut and nothing
-  after it, and no count crosses to the CPU to make the list. The projection
-  is dispatched over a fixed number of slots, the tier's budget; the drawn
-  count rides back with the frame's one readback, and 074's controller moves
-  the cut's threshold on it and on the frame time: up by 1.25 when a tenth of
-  the last half second's frames took over 1.5 x the target or the budget is
-  passed, down after three quiet seconds under 0.7 x, a second's pause after
-  each change, between the tier's floor and 8 pixels.
-- **then TX**: the transfer, the relit lobes, the catcher, from `.athc`
-  sections S1-S5, so that the page shows what the native raster shows.
+  load, and the cut every frame. The cloud's splats and every merged level
+  are one pool; the cut marks what to draw, a prefix sum places it and a
+  list of pool indices is what E4 walks: **compaction before the draw**, with
+  no count read to make it. E4 is dispatched over a fixed number of slots,
+  the tier's budget; the drawn count comes back with the frame's stats, and
+  074's controller moves the cut's threshold on it and on the frame time.
+- **then TX** (081's T2 preset): `relight.dome`, `catcher`, `sun.bits`, from
+  `.athc` sections S1-S5.
 
-**Tiers** (074 section 2.2, probed from the adapter, overridable by `?tier=`):
-T0 no WebGPU (the page says so and offers the standard viewer); T1 WebGPU
-at the default limits or a phone or tablet: 1.25 M drawn, 1.5 px floor,
-resolution at most 1.5 x; T2 32 KiB of workgroup memory and 644 MB a binding:
-2.5 M, 1 px, 2 x; T3 1.25 GB a binding and BC textures: 4.5 M, 1 px, the
-display's own.
+**Tiers** (074 section 2.2, probed from the adapter, `?tier=` to force): T0
+no WebGPU (the page says so); T1 WebGPU at the default limits, or any phone or
+tablet: 1.25 M drawn, a 1.5 px floor, at most 1.5 x resolution; T2 32 KiB of
+workgroup memory and 644 MB a binding: 2.5 M, 1 px, 2 x; T3 1.25 GB a binding
+and BC textures: 4.5 M, 1 px, the display's own.
+
+**Where this first set stops short of 081** (in order, the next steps): the
+frame still reads two counts back between E4 and E5 (the visible splats and
+the tile pairs), as `TileRasterizer` does natively, because the sort and the
+emit take their counts from a uniform; making them indirect -- the counts in a
+buffer, the dispatch arguments written by a kernel -- is the sort facade of
+082 and the next change. No timestamps per stage yet (`timestamp-query`); no
+Slang interfaces yet (sh is an override of the projection, not an
+`ISplatColour`); presets are not yet resolved by the build from the
+manifests.
 
 Not done:
 - no GPU has run any of this: not the backend, not the three migrated kernels
