@@ -411,7 +411,13 @@ public float3 ggxEnvDielectricExactAt(float roughness, float nDotV, float ior) {
     const float index = max(ior, 1.0);
     const float f0 = dielectricF0(index);
     const float schlick = f0 + (1.0 - f0) * pow(1.0 - saturate(nDotV), 5.0);
-    const float ratio = fresnelDielectric(nDotV, index) / max(schlick, 1.0e-6);
+    const float exact = fresnelDielectric(saturate(nDotV), index);
+    // A mirror reflects its Fresnel, which the fit is not at the ends (7%
+    // over it head on at 1.45).
+    if (alpha < 1.0e-3) {
+        return float3(exact);
+    }
+    const float ratio = exact / max(schlick, 1.0e-6);
     return ggxEnvDielectricAt(roughness, nDotV, ior) * lerp(ratio, 1.0, saturate(alpha));
 }
 
