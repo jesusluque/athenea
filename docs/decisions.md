@@ -11793,6 +11793,12 @@ arrives, and the lens's image is the frame's (`lensExit`). Up to eight
 surfaces are passed; the ninth closes the way. Tested by a glass roof over a
 plate, whose cells all read open (`[cells][glass]`).
 
+Only for what stands under the glass: a glass's own points keep their cells
+closed by anything, its own far face included, since the frame answers a
+solid glass's behind by the lens and the field and reads those cells as
+closed. Passing its own body opened them all, and the gate's glass ball under
+the lamp went from 0.097 to 0.217.
+
 ### The lens's far face, in the rasteriser
 
 The solid glass's sharp sky (`lensExit`) took its far face's throughput from

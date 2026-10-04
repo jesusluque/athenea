@@ -1054,6 +1054,30 @@ float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
     return through;
 }
 
+/// Whether a point's own surface lets light through: a transmitting lobe
+/// with any weight.
+bool stackTransmits(LobeStack stack) {
+    for (uint k = 0; k < stack.count; ++k) {
+        if (stack.lobes[k].scatter != kScatterReflect && any(stack.lobes[k].weight > float3(0.0))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// What a transfer's cell ray gets through from a point: past glass for what
+/// stands under it (`pathThrough`), and stopped by anything for the glass's
+/// own points. A glass's frame reads its cells as closed by its own far face
+/// -- the lens and the field answer there (splat_relight) -- and passing its
+/// own body opened them all: the gate's glass ball under the lamp went from
+/// 0.097 to 0.217.
+float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmits) {
+    if (selfTransmits) {
+        return pathOccluded(p, n, wi, 3.0e38, kLightUnlinked, mask) ? 0.0 : 1.0;
+    }
+    return pathThrough(p, n, wi, mask);
+}
+
 /// What was found, its material evaluated: the kernel's one call of it.
 Shaded shadeFound(uint2 pixel, Found f) {
     Shaded out;
@@ -2073,6 +2097,7 @@ void tracePathsAt(uint2 group, uint index) {
                 // ray, since the body facing away from it receives nothing.
                 const float3 np = cur.inputs.normalWorld;
                 const float3 pp = cur.inputs.positionWorld;
+                const bool selfTransmits = stackTransmits(cur.stack);
                 // 256 cells over the whole sphere: `pathOccluded` starts a ray
                 // below the surface from its far side, so a direction behind
                 // a solid meets the solid and one behind a sheet leaves.
@@ -2089,7 +2114,7 @@ void tracePathsAt(uint2 group, uint index) {
                             const float3 wd = octDecode(uv);
                             // Past what lets light through (pathThrough): the
                             // cell is open where at least half gets through.
-                            const float through = pathThrough(pp, np, wd, mask);
+                            const float through = cellThrough(pp, np, wd, mask, selfTransmits);
                             if (through > 0.0) {
                                 if (through >= 0.5) {
                                     word |= 1u << b;
@@ -2124,7 +2149,7 @@ void tracePathsAt(uint2 group, uint index) {
                     if (dot(np, wd) <= 0.0) {
                         continue;
                     }
-                    if (pathThrough(pp, np, wd, mask) >= 0.5) {
+                    if (cellThrough(pp, np, wd, mask, selfTransmits) >= 0.5) {
                         if (cell < 32u) {
                             shadowBits0 |= 1u << cell;
                         } else {
