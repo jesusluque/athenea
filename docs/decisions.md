@@ -12774,10 +12774,85 @@ slang-rhi's WGPU backend on `emdawnwebgpu`, not a TypeScript orchestration: one
   it; `setBackground`'s `hdriUrl` is `setSky`. That module comes after E1, and
   is written with the session that owns the site.
 
+### E1, the first module a page can load: preset T1
+
+What the site's `athenea-webgpu` slot can load now (`docs/operations.md`
+3.6): the web route's kernels as WGSL, a manifest that names every binding,
+and a page module -- for a captured cloud with its harmonics, nothing relit,
+under the specification's **default** limits, so on every WebGPU device. Built
+by `scripts/web-kernels.py`, which fails the build on a kernel over 8 storage
+buffers or 16384 bytes of workgroup memory, or one Naga or Tint refuses.
+
+| Kernel | Storage (ro+rw) | Uniform | Workgroup B | Where from |
+|---|---|---|---|---|
+| `webDecode` | 4 (1+3) | 1 | 0 | new, `web/web_decode.slang` (`splatDecode`: 14) |
+| `boundsChunks`, `boundsReduce` | 2 | 1 | 0 | the engine's |
+| `webProject` | 5 (3+2) | 2 | 0 | new, `web/web_project.slang` (`splatProjectPlain`: 26) |
+| `prefixChunkTotals`, `prefixChunkStarts`, `prefixLocal` | 2-3 | 1 | 0 | the engine's |
+| `splatCompact` | 5 (3+2) | 1 | 0 | the engine's |
+| `radixHistogram`, `radixTotals`, `radixStarts`, `radixScatter` | 2-7 | 1 | 0 | the engine's (the chunked route) |
+| `splatGatherCounts`, `splatEmit` | 3, 7 | 1 | 0 | the engine's |
+| `splatTilesClear`, `splatRanges` | 1, 2 | 1 | 0 | the engine's |
+| `webBlend` | 4 (3+1) | 1 | 12296 | new, `web/web_blend.slang` (`splatBlend`: 11, 17416 B) |
+| `webPresent` | 1, a storage texture | 1 | 0 | new, `web/web_present.slang` |
+
+Every one: Naga ok, Tint ok on the WGSL and on the pipeline at the default
+limits; the four new ones also compile for Metal.
+
+- **Arenas, for this preset.** 072's B0 (`positions`, `shape`, `sh`) stays
+  three bindings: they are read by name by kernels this change does not
+  touch, and three fit. W0 is `proj`. W1 is one buffer, `frameWords`, with
+  `visible`, `tilesTouched`, `depthKeys` and `tileRects` at word offsets in a
+  second uniform (`WebArena`), each on 256 bytes; the kernels after the
+  projection read those streams under their own names, bound as ranges of
+  W1. That takes `webProject` from 8 (the plain kernel's own count, once the
+  off features are not declared) to 5. The full feature arenas (B1-B4, W2)
+  are for the kernel that relights.
+- **A feature as an override.** `kShDegree` is a `[SpecializationConstant]`:
+  `@id(0) override` in the WGSL, a function constant on Metal; the page sets it
+  as `constants: {"0": n}` when it makes the pipeline, one pipeline a value. The
+  page cannot do that through slang-rhi (no constants at the pin), which is
+  why the page makes its pipelines itself.
+- **Why new kernels, not `splat_project.slang`'s.** A binding a kernel names
+  counts whether a flag reads it or not, and the plain kernel's runtime
+  branches name 26. Compiling them out is a change to `splat_project.slang`
+  and `splat_blend.slang`, both in flux on other branches (TX's, PLAY-G's).
+  The web kernels repeat the plain geometry and the walk, said so in their
+  headers; when the arena change reaches the native kernels, the two become
+  one kernel with the features as specialisation constants.
+- **The sort is the chunked one.** The tiled route's `radixBlockScatter` wants
+  27648 bytes of group memory; the chunked passes want none and are what the
+  native sort uses under 65536 keys or with `ATHENEA_PORTABLE_SORT`.
+- **The blend fits 16 KiB** by holding no slope (12 bytes of 16 a record in
+  WGSL), no id, no under layer, no depth: 256 records of 48 bytes and two
+  words.
+- **The picture.** `webPresent` writes the canvas's texture as a write-only
+  `rgba8unorm` storage texture: exposure, sRGB, the bottom row first turned
+  top first. One more pass than writing it from the blend, and the blend's
+  linear buffer is kept for a snapshot or a comparison.
+- **The host is JavaScript for now.** No Emscripten here, and Slang's
+  reflection would have to go to wasm with it (above). `host.js` does what
+  the C++ does -- buffer sizes, uniforms by the manifest's offsets, dispatch
+  order -- and no arithmetic on data: decode, bounds, sort, everything is a
+  kernel; the CPU reads the PLY header and two totals a frame (the visible
+  splats and the pairs, one `mapAsync`, as `TileRasterizer` reads them). The
+  page's API is W-host's, so a wasm host replaces this file without the page
+  changing. `check.mjs` runs it in node over a WebGPU stand-in that validates
+  bind groups, ranges, alignments, read/write conflicts and group counts, and
+  computes nothing: it found the totals bound at 16-byte offsets, which a
+  browser would refuse.
+- **Sizes.** The largest stream a splat has is its record (48 bytes), so a
+  default 128 MiB binding holds 2.8 M splats; degree-3 harmonics (92 bytes)
+  hold 1.46 M, and the host drops a degree at a time to fit. Pairs are capped
+  at 65535 x 256 (no 2D fold yet) and counted when dropped.
+
 Not done:
 - no GPU has run any of this: not the backend, not the three migrated kernels
-  on Metal;
-- the arena, the workgroup variants and the 2D fold (above);
+  on Metal, not the web module in a browser (the first run: `test.html` with
+  a PLY in Chrome and Safari, against `athenea render` of the same file);
+- the arena in the native kernels, the workgroup variants and the 2D fold
+  (above); the web module's levels of detail, sky, SPZ/SOG and `.athc`
+  readers (072's E2-E4);
 - WebKit's WGSL compiler is not checked; neither is Naga's uniformity
   analysis, which is weaker than Tint's;
 - `ATHENEA_WEBGPU_WEB_LIMITS=10` uses 256 MiB for `maxBufferSize`, which no

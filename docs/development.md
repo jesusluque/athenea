@@ -261,6 +261,18 @@ verdicts (Tint through Dawn's null backend, `scripts/wgsl-tint.cpp`). All on
 the CPU. Naga alone is not a check: it took a barrier under a branch on group
 memory that Tint refuses.
 
+**The web module** (`docs/operations.md` 3.6) is `shaders/athenea/web/` -- the
+kernels whose native counterparts are over the web's limits (decode, project,
+blend) as the T1 preset -- with the raster's own sort, prefix, compact, emit
+and ranges, compiled by `scripts/web-kernels.py`, and `web/athenea-webgpu/`,
+the page's JavaScript. `host.js` repeats the order of `TileRasterizer::render`,
+`RadixSort::sort` (the chunked route) and `PrefixSum::apply` until W-host is
+the engine's C++ in wasm: a change to a dispatch there, or to a kernel the web
+route uses (its bindings' names, its uniform), is a change to `host.js` too,
+and `node check.mjs` on a rebuilt module says whether they still agree. It runs
+on the CPU over a WebGPU stand-in that validates what a browser validates and
+computes nothing.
+
 Generated shaders — the materials, the shading and path-tracing kernels — are
 written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders -I
 <dir>`, which is how a kernel's compile time is measured outside the process.

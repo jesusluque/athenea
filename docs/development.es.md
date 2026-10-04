@@ -268,6 +268,19 @@ veredictos de Naga y de Tint (Tint por el backend nulo de Dawn,
 comprobación: aceptó una barrera bajo una rama sobre memoria de grupo que Tint
 rechaza.
 
+**El módulo web** (`docs/operations.es.md` 3.6) es `shaders/athenea/web/` --
+los kernels cuyos equivalentes nativos pasan de los límites de la web
+(decodificación, proyección, blend) como el preset T1 -- con el sort, el
+prefijo, la compactación, la emisión y los rangos del propio raster, compilados
+por `scripts/web-kernels.py`, y `web/athenea-webgpu/`, el JavaScript de la
+página. `host.js` repite el orden de `TileRasterizer::render`,
+`RadixSort::sort` (la ruta por trozos) y `PrefixSum::apply` hasta que W-host
+sea el C++ del motor en wasm: un cambio en un dispatch de allí, o en un kernel
+que usa la ruta web (los nombres de sus vinculaciones, su uniform), es también
+un cambio en `host.js`, y `node check.mjs` sobre un módulo reconstruido dice si
+siguen de acuerdo. Corre en la CPU sobre un sustituto de WebGPU que valida lo
+que valida un navegador y no calcula nada.
+
 Los shaders generados — los materiales, los kernels de sombreado y de path
 tracing — los escribe `ATHENEA_SHADER_DUMP=<dir>`, y compilan con `slangc -I
 shaders -I <dir>`, que es como se mide el tiempo de compilación de un kernel
