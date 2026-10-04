@@ -914,8 +914,10 @@ diffuse lobes take the irradiance of the sky's harmonics plus the sun taken
 out of them, the glossy ones the dome's image blurred to their roughness,
 and the cloud's shadow is those six maps softened by the width of sky each
 stands for. What it cannot see is a mesh shadowing a mesh from the dome, and
-a surface that transmits (glass) keeps the dome sampled.
-`--no-dome-prefilter` samples it everywhere, as it used to. `--splat-shadows` is the
+a surface that transmits (glass) keeps the dome sampled. Where the frame's
+lights are all such domes, no shadow ray is traced at all: glass samples its
+domes shadowed by the clouds alone. `--no-dome-prefilter` samples the domes
+everywhere, as it used to. `--splat-shadows` is the
 other direction on the traced route: a relit cloud shadowing itself, one ray a
 splat.
 

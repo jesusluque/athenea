@@ -1557,6 +1557,15 @@ Result<std::optional<scene::Bounds>> Engine::bounds() {
     return all;
 }
 
+namespace {
+/// What in a generated material's source says it varies over the surface
+/// with no slot to show for it: MaterialX's position and texture coordinate
+/// nodes, and the noises and patterns made of them.
+constexpr const char* kPlaceDependent[] = {"gAtheneaInputs.", "atheneaPrimvar", "_Pworld", "_Pobject", "_Pmodel",
+                                           "texcoord", "geomprop_UV", "noise", "worley", "fractal", "u_time",
+                                           "u_frame", "geomcolor", "geompropvalue"};
+}   // namespace
+
 Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvars) {
     if (!scene_.has_value()) {
         auto scene = world::GpuScene::create(*library_);
@@ -1640,8 +1649,21 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
             log::debug("hdAthenea: material {} row {} module {} [{}]", id.GetString(), rows.size(),
                        entry.compiled->module, files);
         }
+        // THE SAME EVERYWHERE: every input a value, and nothing in the graph
+        // that reads where on the surface it is (a texture coordinate, a
+        // position, a noise of either). What lets a frame lit by
+        // prefiltered domes alone shade it from a table (kMaterialUniform).
+        const bool uniform =
+            std::all_of(entry.compiled->slots.begin(), entry.compiled->slots.end(),
+                        [](const material::MaterialSlot& slot) {
+                            return slot.kind == material::MaterialSlot::Kind::Value;
+                        }) &&
+            std::none_of(std::begin(kPlaceDependent), std::end(kPlaceDependent), [&](const char* token) {
+                return entry.compiled->source.find(token) != std::string::npos;
+            });
         const uint32_t flags = (entry.cutout ? technique::kMaterialCutout : 0u) |
-                               (entry.transparent ? technique::kMaterialTransparent : 0u);
+                               (entry.transparent ? technique::kMaterialTransparent : 0u) |
+                               (uniform && !entry.cutout && !entry.transparent ? technique::kMaterialUniform : 0u);
         materialCutouts_ = materialCutouts_ || entry.cutout;
         rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, 0});
         blob.insert(blob.end(), words.begin(), words.end());
@@ -2950,6 +2972,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                      environment_->ready()
                                  ? environment_->meshView()
                                  : nullptr;
+        frame.domesOnly = frame.domeLighting != nullptr && !lamps.empty() &&
+                          lamps.size() <= technique::kEnvironmentDomes &&
+                          std::all_of(lamps.begin(), lamps.end(),
+                                      [](const light::Light& l) { return l.kind == light::LightKind::Dome; });
         if (pathTracing) {
             if (!pathTracer_.has_value()) {
                 auto made = technique::PathTracer::create(*library_);

@@ -48,6 +48,12 @@ inline constexpr uint32_t kMaterialCutout = 1u;
 /// The path tracer keeps its specular and emission at full weight and lets
 /// (1 - opacity) of the light straight through; the raster still cuts by lot.
 inline constexpr uint32_t kMaterialTransparent = 2u;
+/// MaterialRecord::flags: the material is the same everywhere on a surface --
+/// no texture, no primvar, no pattern of position -- so what its lobes
+/// return depends on the angle to the eye alone. Under prefiltered domes and
+/// nothing else, such a material is shaded from a table made once a frame
+/// rather than evaluated at every pixel (MaterialShading, task PLAY-G).
+inline constexpr uint32_t kMaterialUniform = 4u;
 
 class MaterialPrograms {
 public:
@@ -131,6 +137,12 @@ struct MaterialFrame {
     /// dome directions -- instead of sampling them. Null: sampled, rays and
     /// all, as every frame was before (`athenea:domePrefiltered`).
     rhi::ITextureView*            domeLighting = nullptr;
+    /// With `domeLighting`: every light of the frame is one of those domes.
+    /// Then no shadow ray is traced and no lobe direction drawn at all -- two
+    /// passes that evaluate every pixel's material again -- and a surface the
+    /// prefiltered read cannot answer (glass) samples its domes shadowed by
+    /// the clouds' map alone, not by other meshes.
+    bool                          domesOnly = false;
     /// Samples per light. One is the interactive choice; a test that wants
     /// an area light's irradiance without noise asks for more.
     uint32_t                      samples = 1;

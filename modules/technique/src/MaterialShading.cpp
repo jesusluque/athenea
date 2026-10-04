@@ -392,11 +392,168 @@ void writeDomeSurface(uint2 tid, bool closed, float3 wo, float3 p, float coverag
     domeGlossyOut[tid] = float4(glossy, glossySum > 0.0 ? alphaSum / glossySum : 0.0);
     domePointOut[tid] = float4(p, asfloat(packed));
 }
+
+/// A MATERIAL THE SAME EVERYWHERE, UNDER THE DOMES ALONE, is shaded by a
+/// kernel of its own from the table tabulateMaterials made (kTabledBody):
+/// this kernel only steps aside for its pixels. One test, no evaluation --
+/// written here, the table's read pushed this kernel past what Metal would
+/// compile (an internal compiler error under a UsdPreviewSurface ground).
+Texture2D<float4> materialTable;
+uniform uint      materialTableRows;
+bool tabled(Surface s) {
+    if (materialTableRows == 0) {
+        return false;
+    }
+    const uint row = materialRowOf(s);
+    return row < materialTableRows && (materials[row].flags & kMaterialUniform) != 0 &&
+           materialTable.Load(int3(2, int(row), 0)).w > 0.5 &&
+           domesReach(s.instance.categoriesLo, s.instance.categoriesHi);
+}
 )";
 
 const char* kNoDomePrefilter = R"(
 static const bool kDomePrefiltered = false;
 void writeDomeSurface(uint2 tid, bool closed, float3 wo, float3 p, float coverage) {}
+bool tabled(Surface s) { return false; }
+)";
+
+/// A MATERIAL THE SAME EVERYWHERE, UNDER THE DOMES ALONE: what its lobes
+/// return depends on the angle to the eye and nothing else, so it was
+/// tabulated once this frame (tabulateMaterials, kTableBins angles) and a
+/// pixel reads the table instead of evaluating the graph -- which for the
+/// Corvette's OpenPBR ground was 150 ms at 1080p. It writes what the shading
+/// kernel would have (the emission, the coverage, no light group's share)
+/// and what dome_shade.slang adds the domes from. The frame's other lights,
+/// were there any, would need the lobe stack itself: `materialTableRows` is
+/// 0 unless the domes are all there is.
+const char* kTabledBody = R"(
+Texture2D<float4>          materialTable;
+uniform uint               materialTableRows;
+RWTexture2D<float4>        domeDiffuseOut;
+RWTexture2D<float4>        domeGlossyOut;
+RWTexture2D<float4>        domePointOut;
+RWStructuredBuffer<float4> groupColour;   // groupCount planes, a pixel each
+uniform uint               groupCount;
+static const uint          kTableBins = 32;
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void shadeTabled(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= camera.width || tid.y >= camera.height || materialTableRows == 0) {
+        return;
+    }
+    const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
+    if (seen.x == 0) {
+        return;
+    }
+    const Surface s = surfaceAt(camera, tid.x, tid.y, seen);
+    const uint row = materialRowOf(s);
+    if (row >= materialTableRows || (materials[row].flags & kMaterialUniform) == 0 ||
+        materialTable.Load(int3(2, int(row), 0)).w < 0.5 ||
+        !domesReach(s.instance.categoriesLo, s.instance.categoriesHi)) {
+        return;   // the shading kernel's
+    }
+    const uint at = tid.y * camera.width + tid.x;
+    const uint pixels = camera.width * camera.height;
+    const MaterialInputs inputs = materialInputsAt(camera, toWorld, tid.x, tid.y, s, lookup.time, false);
+    const float3 toEye = normalize(inputs.viewPosition - inputs.positionWorld);
+    const float bin = clamp(dot(inputs.normalWorld, toEye) * float(kTableBins) - 0.5, 0.0, float(kTableBins - 1));
+    const uint lo = uint(bin);
+    const uint hi = min(lo + 1u, kTableBins - 1u);
+    const float f = bin - float(lo);
+    const float4 d = lerp(materialTable.Load(int3(int(lo * 3), int(row), 0)),
+                          materialTable.Load(int3(int(hi * 3), int(row), 0)), f);
+    const float4 g = lerp(materialTable.Load(int3(int(lo * 3 + 1), int(row), 0)),
+                          materialTable.Load(int3(int(hi * 3 + 1), int(row), 0)), f);
+    const float3 emission = lerp(materialTable.Load(int3(int(lo * 3 + 2), int(row), 0)).rgb,
+                                 materialTable.Load(int3(int(hi * 3 + 2), int(row), 0)).rgb, f);
+    const float coverage = d.w;
+    colour[at] = float4(emission * coverage, coverage);
+    depth[at] = s.depth;
+    for (uint k = 0; k < groupCount && k < 8; ++k) {
+        groupColour[k * pixels + at] = float4(0.0, 0.0, 0.0, coverage);
+    }
+    if (!(coverage > 0.0)) {
+        domeDiffuseOut[tid.xy] = float4(0.0);
+        return;
+    }
+    const float2 e = saturate(octEncode(inputs.normalWorld));
+    const uint packed = uint(e.x * 65534.0 + 0.5) | (uint(e.y * 65534.0 + 0.5) << 16u);
+    domeDiffuseOut[tid.xy] = float4(d.rgb, coverage);
+    domeGlossyOut[tid.xy] = g;
+    domePointOut[tid.xy] = float4(inputs.positionWorld, asfloat(packed));
+}
+)";
+
+/// The table shadeTabled reads: a row a material, kTableBins angles to
+/// the eye, three texels each -- (diffuse albedo, opacity), (glossy albedo,
+/// alpha), (emission, whether the domes answer it) -- for every material
+/// flagged kMaterialUniform, evaluated on a flat patch facing up with the eye
+/// at that angle.
+const char* kTableBody = R"(
+RWTexture2D<float4> materialTableOut;
+uniform uint        materialTableRows;
+static const uint   kTableBins = 32;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void tabulateMaterials(uint3 tid: SV_DispatchThreadID) {
+    const uint row = tid.x / kTableBins;
+    const uint bin = tid.x % kTableBins;
+    if (row >= materialTableRows) {
+        return;
+    }
+    const MaterialRecord m = materials[row];
+    if ((m.flags & kMaterialUniform) == 0) {
+        materialTableOut[uint2(bin * 3 + 2, row)] = float4(0.0);
+        return;
+    }
+    const float c = (float(bin) + 0.5) / float(kTableBins);
+    const float3 wo = float3(sqrt(max(1.0 - c * c, 0.0)), 0.0, c);
+    MaterialInputs inputs;
+    inputs.positionWorld = float3(0.0);
+    inputs.normalWorld = float3(0.0, 0.0, 1.0);
+    inputs.tangentWorld = float3(1.0, 0.0, 0.0);
+    inputs.bitangentWorld = float3(0.0, 1.0, 0.0);
+    inputs.positionObject = float3(0.0);
+    inputs.normalObject = float3(0.0, 0.0, 1.0);
+    inputs.tangentObject = float3(1.0, 0.0, 0.0);
+    inputs.bitangentObject = float3(0.0, 1.0, 0.0);
+    inputs.viewPosition = wo;
+    inputs.uvDx = float2(0.0);
+    inputs.uvDy = float2(0.0);
+    inputs.frame = 0.0;
+    inputs.time = lookup.time;
+    inputs.inside = false;
+    inputs.triangle = 0;
+    inputs.points = uint3(0);
+    inputs.weights = float3(1.0, 0.0, 0.0);
+    inputs.displayColor = float4(0.18, 0.18, 0.18, 1.0);
+    inputs.worldFromObject0 = float4(1.0, 0.0, 0.0, 0.0);
+    inputs.worldFromObject1 = float4(0.0, 1.0, 0.0, 0.0);
+    inputs.worldFromObject2 = float4(0.0, 0.0, 1.0, 0.0);
+    evaluateMaterial(m.function, inputs, m.blob);
+    float3 diffuse = float3(0.0);
+    float3 glossy = float3(0.0);
+    float alphaSum = 0.0;
+    float glossySum = 0.0;
+    for (uint k = 0; k < gAtheneaResult.count; ++k) {
+        const uint kind = gAtheneaResult.lobes[k].kind;
+        const float3 albedo = gAtheneaResult.lobes[k].weight * lobeAlbedo(gAtheneaResult.lobes[k], wo);
+        if (kind == kLobeOrenNayar || kind == kLobeBurley || kind == kLobeSheen) {
+            diffuse += albedo;
+        } else {
+            const float2 a = gAtheneaResult.lobes[k].alpha;
+            const float share = max(dot(albedo, float3(0.2126, 0.7152, 0.0722)), 0.0);
+            glossy += albedo;
+            alphaSum += share * sqrt(max(a.x * a.y, 0.0));
+            glossySum += share;
+        }
+    }
+    materialTableOut[uint2(bin * 3, row)] = float4(diffuse, gAtheneaResult.opacity);
+    materialTableOut[uint2(bin * 3 + 1, row)] = float4(glossy, glossySum > 0.0 ? alphaSum / glossySum : 0.0);
+    materialTableOut[uint2(bin * 3 + 2, row)] = float4(gAtheneaResult.emission, stackReflectsOnly() ? 1.0 : 0.0);
+}
 )";
 
 const char* kNoShadowMap = R"(
@@ -651,6 +808,9 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
         return;
     }
     const Surface s = surfaceAt(camera, tid.x, tid.y, seen);
+    if (tabled(s)) {
+        return;   // shadeTabled's
+    }
     const MaterialInputs inputs = materialInputsAt(camera, toWorld, tid.x, tid.y, s, lookup.time);
     const MaterialRecord m = materials[materialRowOf(s)];
     evaluateMaterial(m.function, inputs, m.blob);
@@ -948,6 +1108,25 @@ Result<void> MaterialShading::setPrograms(const MaterialPrograms& programs, bool
         if (!drawn) return std::move(drawn).error();
         lobes_.emplace(std::move(*drawn));
     }
+    // The table a material the same everywhere is shaded from under the
+    // domes alone (kTableBody): the materials, no light, no ray.
+    if (domes && (!table_.has_value() || tableModule_ != programs.module())) {
+        const std::string tableName = programs.module() + "_dome_table";
+        const std::string tableSource = "import " + programs.module() + ";\n" + kKernelPrelude + kTableBody;
+        auto program = library_->loadSource(tableName, tableSource, {"tabulateMaterials"});
+        if (!program) return std::move(program).error();
+        auto made = gpu::ComputeKernel::create(*library_, tableName, "tabulateMaterials");
+        if (!made) return std::move(made).error();
+        table_.emplace(std::move(*made));
+        const std::string tabledName = programs.module() + "_dome_tabled";
+        const std::string tabledSource = "import " + programs.module() + ";\n" + kKernelPrelude + kTabledBody;
+        auto tabledProgram = library_->loadSource(tabledName, tabledSource, {"shadeTabled"});
+        if (!tabledProgram) return std::move(tabledProgram).error();
+        auto tabled = gpu::ComputeKernel::create(*library_, tabledName, "shadeTabled");
+        if (!tabled) return std::move(tabled).error();
+        tabled_.emplace(std::move(*tabled));
+        tableModule_ = programs.module();
+    }
     const bool shadows = canTrace && !shadowsRefused_;
     auto kernel = make(shadows);
     if (!kernel && domes) {
@@ -1088,7 +1267,9 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
     uint32_t shadowWords = 0;
     uint32_t lobes = 0;
     const uint32_t lightCount = frame.lights != nullptr ? frame.lights->count() : 0u;
-    if (shadowed_ && trace_.has_value() && lobes_.has_value() && frame.shadows != nullptr && lightCount > 0) {
+    const bool tracing = !(domes && frame.domesOnly);
+    if (tracing && shadowed_ && trace_.has_value() && lobes_.has_value() && frame.shadows != nullptr &&
+        lightCount > 0) {
         const uint64_t samples = std::max(frame.samples, 1u);
         lobes = static_cast<uint32_t>(std::min<uint64_t>(samples, kLobeLookups));
         const uint64_t bits = (frame.chooseLights ? samples : samples * lightCount) + lobes;
@@ -1142,6 +1323,33 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
         });
         ATHENEA_TRY(stage(times_.shadows));
     }
+    // A material the same everywhere, under the domes alone, is tabulated
+    // here, a row a material, and its pixels shaded from it (shadeTabled).
+    const uint32_t tableRows = domes && frame.domesOnly && table_.has_value() && tabled_.has_value()
+                                   ? static_cast<uint32_t>(frame.records->count())
+                                   : 0u;
+    if (domes && (!tableTexture_.valid() || tableTexture_.height() < std::max(tableRows, 1u))) {
+        gpu::TextureDesc desc;
+        desc.type = rhi::TextureType::Texture2D;
+        desc.width = 32 * 3;   // kTableBins angles, three texels each
+        desc.height = std::max(tableRows, 1u);
+        desc.format = rhi::Format::RGBA32Float;
+        desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+        desc.label = "materials.domeTable";
+        auto made = gpu::Texture::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        tableTexture_ = std::move(*made);
+        auto view = tableTexture_.view(0);
+        if (!view) return std::move(view).error();
+        tableView_ = std::move(*view);
+    }
+    if (tableRows != 0) {
+        table_->dispatch(batch, {tableRows * 32, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bindMaterialFrame(cursor, frame, projection);
+            cursor["materialTableOut"].setBinding(tableView_.get());
+            cursor["materialTableRows"].setData(tableRows);
+        });
+    }
     kernel_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
         bindMaterialFrame(cursor, frame, projection);
         // The lights are these two kernels' alone.
@@ -1158,6 +1366,8 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             cursor["domeDiffuseOut"].setBinding(domeDiffuseView_.get());
             cursor["domeGlossyOut"].setBinding(domeGlossyView_.get());
             cursor["domePointOut"].setBinding(domePointView_.get());
+            cursor["materialTable"].setBinding(tableView_.get());
+            cursor["materialTableRows"].setData(tableRows);
         }
         cursor["visibility"].setBinding((*ids).get());
         cursor["colour"].setBinding(out.colour.rhi());
@@ -1168,7 +1378,25 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
         }
         setCamera(cursor["camera"], projection, targets.width, targets.height);
     });
-
+    // The pixels the shading kernel stepped aside for: a material the same
+    // everywhere, shaded from the table (kTabledBody).
+    if (tableRows != 0) {
+        tabled_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
+            bindMaterialFrame(cursor, frame, projection);
+            bindLights(cursor);
+            cursor["visibility"].setBinding((*ids).get());
+            cursor["colour"].setBinding(out.colour.rhi());
+            cursor["depth"].setBinding(out.depth.rhi());
+            cursor["materialTable"].setBinding(tableView_.get());
+            cursor["materialTableRows"].setData(tableRows);
+            cursor["domeDiffuseOut"].setBinding(domeDiffuseView_.get());
+            cursor["domeGlossyOut"].setBinding(domeGlossyView_.get());
+            cursor["domePointOut"].setBinding(domePointView_.get());
+            cursor["groupColour"].setBinding(groups ? frame.groups.colour->rhi() : out.colour.rhi());
+            cursor["groupCount"].setData(groups ? std::min(frame.groups.count, kMaxLightGroups) : 0u);
+            setCamera(cursor["camera"], projection, targets.width, targets.height);
+        });
+    }
     ATHENEA_TRY(stage(times_.shade));
     // THE DOMES, PREFILTERED: added over what the shading kernel wrote, at
     // the pixels it left them to (dome_shade.slang).

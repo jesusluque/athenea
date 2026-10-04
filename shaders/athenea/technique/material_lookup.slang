@@ -23,6 +23,9 @@ public static const uint kMaterialTransparent = 2u;
 /// pixel's lot or a path's: held off zero so a window at opacity 0 still
 /// reflects, one sample in twenty at twenty times the weight.
 public static const float kTransparentKeep = 0.05;
+/// The same everywhere on a surface: no texture, no primvar, no pattern of
+/// position (technique::kMaterialUniform).
+public static const uint kMaterialUniform = 4u;
 
 public struct MaterialLookupParams {
     public float time;

@@ -98,6 +98,13 @@ private:
     /// What stands for the cloud map where a frame has none.
     gpu::Texture                     domeNoMap_;
     rhi::ComPtr<rhi::ITextureView>   domeNoMapView_;
+    /// The table of materials the same everywhere (tabulateMaterials), made
+    /// for the materials it was compiled with, and the texture it fills.
+    std::optional<gpu::ComputeKernel> table_;
+    std::optional<gpu::ComputeKernel> tabled_;   ///< shadeTabled: the pixels the table shades
+    std::string                      tableModule_;
+    gpu::Texture                     tableTexture_;
+    rhi::ComPtr<rhi::ITextureView>   tableView_;
     bool                             timeStages_ = false;
     StageTimes                       times_;
     /// Whether the kernel in use reads the shadow rays' answers (traceShadows').

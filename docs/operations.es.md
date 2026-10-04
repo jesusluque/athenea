@@ -931,7 +931,9 @@ los armónicos del cielo más el sol sacado de ellos, los brillantes la imagen
 del domo desenfocada a su rugosidad, y la sombra de la nube son esos seis
 mapas suavizados por el ancho de cielo que representa cada uno. Lo que no ve
 es una malla sombreando a otra desde el domo, y una superficie que transmite
-(vidrio) sigue muestreando el domo. `--no-dome-prefilter` lo muestrea en
+(vidrio) sigue muestreando el domo. Donde todas las luces del frame son
+domos así, no se traza ningún rayo de sombra: el vidrio muestrea sus domos
+sombreados solo por las nubes. `--no-dome-prefilter` muestrea los domos en
 todas partes, como antes.
 `--splat-shadows` es la otra
 dirección en la ruta trazada: una nube relit sombreándose a sí misma, un rayo

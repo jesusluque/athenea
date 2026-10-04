@@ -12393,3 +12393,59 @@ million gaussians re-measured a car that did not move. A frame whose clouds
 (their buffers and `revision`, which a pose counts up), transforms, lights
 and map settings are the last map's reads that map again. A frame with levels
 of detail always builds: its cut's clouds are the camera's.
+
+### Under domes alone, no ray and no second evaluation
+
+Where every light of the frame is a prefiltered dome, the lobe directions and
+the shadow rays are not drawn at all; a surface the prefiltered read cannot
+answer (glass) samples its domes shadowed by the clouds' map alone.
+
+### A material the same everywhere is shaded from a table
+
+Most of what was left was the OpenPBR graph itself, evaluated at every
+pixel of the ground: layers and mixes of sixteen-lobe BSDFs in thread
+memory, 150 ms. A material whose inputs are all values and whose graph reads
+no texture coordinate, position, primvar or noise (`kMaterialUniform`, found
+in the generated source) returns, on a flat patch, what depends on the angle
+to the eye alone. Under prefiltered domes alone such a material is
+tabulated once a frame (`tabulateMaterials`, 32 angles: the two albedos, the
+alpha, the opacity, the emission) and its pixels are shaded from the table by
+a kernel of their own (`shadeTabled`); the shading kernel steps aside for
+them.
+
+### Measured (M5 Pro, release, 1920 x 1080, `athenea stage --frames 20`)
+
+The whole TX Corvette on its mesh ground, the camera of the stage, against
+the path traced frame (`athenea_rt512.exr`, 512 paths). The ground's error
+is over a mask of where the ground changes the frame (52% of it), the mean
+absolute difference over the GT's mean, at full size and boxed down by four
+(which takes most of the GT's own grain out):
+
+| | median a frame | mesh layer | under the car (GT 0.182) | the bumper's contact (GT 0.043) | open ground (GT 0.217) | ground error, full / quarter |
+|---|---|---|---|---|---|---|
+| before (sampled, a map a frame) | 637 ms | ~480 | 0.160, std 0.50 | 0.027 | 0.220, std 0.60 | 106% / 50% |
+| prefiltered, in the shading kernel | 535 ms | 345 | rows of garbage | | | |
+| its own kernel | 537 ms | 348 | 0.170 | 0.023 | 0.223, std 0.0001 | |
+| the map cached, no rays | 352 ms | 163 | 0.170 | 0.023 | 0.223 | |
+| the material from a table | 200 ms | 11 | 0.188 | 0.075 | 0.213 | 12% / 5.5% |
+| the penumbra from the farthest caster | **201 ms** | **11.2** | **0.182** | **0.041** | **0.215** | |
+| the car alone, no ground | 156 ms | | | | | |
+
+The mesh layer's 11 ms: visibility 1.7, the shading kernel and the table
+1.6, the domes 5.0 -- the six soft reads -- and its preparation 1.8. The
+splat blend still costs 30 ms more over the ground than without it (55
+against 25): the composite variant of the blend, not looked into.
+
+Under the bumper the contact shadow went from 0.075 to 0.041: measured from
+the nearest caster -- seen from the sky, the roof -- every point under the
+car was a metre from its blocker and the shadow went as soft as the rest.
+The map keeps the farthest caster's depth too now (one word more a texel, an
+atomic maximum), and the penumbra is measured from it.
+
+**Checked**: a grey floor under a plain dome reads 0.5000 prefiltered and
+0.4998 sampled at 64 a pixel; a slab of gaussians over a floor under a dome
+darkens it to 0.132 from 0.800 (the test's patch was reading the horizon
+past the slab, and was aimed under it); `[shadowmap]` with the farthest
+depth. The two tests about the raster's dome samples (their convergence
+through glass, a lobe's shadow under a plate) sample the dome, which they
+measure.
