@@ -456,6 +456,8 @@ void writeAuxAt(uint at, uint pixels, float4 albedo, float4 normal) {
 const char* kBake = R"(
 import athenea.common.bake_fit;
 static const bool kBake = true;
+/// Points a transfer's cells are traced from over the footprint (bakeCellOrigin).
+static const uint kCellOrigins = 4u;
 // Three entries a point: where it is and how far off to start; the normal of
 // the surface under it, which the ray is sent down to find that surface; and
 // the way the gaussian itself faces, w 1 where it is not the surface's -- a
@@ -680,11 +682,53 @@ float3 bakeNormalAt(uint at) {
     return bakeFacing(at);
 }
 
+/// WHERE A TRANSFER'S CELLS ARE TRACED FROM, over the gaussian's footprint:
+/// origin `k` of `kCellOrigins` comes down onto a point of a disc as wide as
+/// the gaussian (the w of the normal, negative where only the cells take it:
+/// the paths stay at the centre), and 0 is the centre the paths found. A
+/// cell traced from one point is a sample of one point: a gaussian over a
+/// groove narrower than itself read the groove's shadow whole, its neighbour
+/// none of it, and a lip of a pawn's gold ring drew a dashed dark line where
+/// the path traced frame has a faint, even one. An origin whose ray finds no
+/// surface, or one farther than the footprint, stands at the centre.
+bool bakeCellOrigin(uint at, uint k, uint mask, float3 centre, out float3 p, out float3 n) {
+    p = centre;
+    n = float3(0.0, 0.0, 1.0);
+    const float4 o = bakeRays[at * 3];
+    const float4 surface = bakeRays[at * 3 + 1];
+    const float wide = abs(surface.w);
+    if (k == 0u || !(wide > 0.0)) {
+        return false;
+    }
+    const float3 axis = normalize(surface.xyz);
+    // Stratified over the disc: the k-th of the ring's angles, a radius by
+    // the point's own hash so neighbours do not line up.
+    const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
+    const float2 u = random2(pixel, k, 0u, 47u);
+    const float radius = wide * sqrt((float(k) - 0.5 + 0.5 * u.x) / float(kCellOrigins - 1u));
+    const float phi = 2.0 * 3.14159265358979 * (float(k) + u.y) / float(kCellOrigins - 1u);
+    const float3 tangent = abs(axis.z) < 0.999 ? normalize(cross(float3(0.0, 0.0, 1.0), axis)) : float3(1.0, 0.0, 0.0);
+    const float3 bitangent = cross(axis, tangent);
+    const float3 from = o.xyz + axis * o.w + (tangent * cos(phi) + bitangent * sin(phi)) * radius;
+    const PathHit hit = traceNearestFrom(from, -axis, o.w * 0.01, mask, true);
+    const Found f = foundHit(hit, from, -axis);
+    if (!f.valid || length(f.positionWorld - centre) > 2.0 * wide) {
+        return false;
+    }
+    p = f.positionWorld;
+    n = normalize(applyRows(toWorld, f.s.normal, 0.0));
+    if (dot(n, axis) < 0.0) {
+        n = -n;
+    }
+    return true;
+}
+
 
 )";
 
 const char* kNoBake = R"(
 static const bool kBake = false;
+static const uint kCellOrigins = 4u;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
 LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
@@ -695,6 +739,11 @@ float3 bakeSurfaceNormal(uint at) { return float3(0.0, 0.0, 1.0); }
 static const float kBakeMeasure = 0.0;
 uint bakeBand(uint k) { return 0; }
 float3 bakeNormalAt(uint at) { return float3(0.0, 0.0, 1.0); }
+bool bakeCellOrigin(uint at, uint k, uint mask, float3 centre, out float3 p, out float3 n) {
+    p = centre;
+    n = float3(0.0, 0.0, 1.0);
+    return false;
+}
 void bakeEncode(inout float3 c[16], uint count, float3 n, float3 brightest) {}
 void bakeGram(float3 n, out float e[6][10], uint evens[6], uint ne, uint odds[10], uint no) {
     for (uint i = 0; i < 6; ++i) {
@@ -2087,6 +2136,18 @@ void tracePathsAt(uint2 group, uint index) {
                 const float3 np = cur.inputs.normalWorld;
                 const float3 pp = cur.inputs.positionWorld;
                 const bool selfTransmits = stackTransmits(cur.stack);
+                // The cells over the footprint: cell c from origin c % 4
+                // (bakeCellOrigin), the centre's normal where an origin
+                // stands at the centre.
+                float3 cellFrom[kCellOrigins];
+                float3 cellNormal[kCellOrigins];
+                for (uint k = 0; k < kCellOrigins; ++k) {
+                    float3 p;
+                    float3 n;
+                    const bool moved = bakeCellOrigin(at, k, mask, pp, p, n);
+                    cellFrom[k] = moved ? p : pp;
+                    cellNormal[k] = moved ? n : np;
+                }
                 // 256 cells over the whole sphere: `pathOccluded` starts a ray
                 // below the surface from its far side, so a direction behind
                 // a solid meets the solid and one behind a sheet leaves.
@@ -2103,7 +2164,9 @@ void tracePathsAt(uint2 group, uint index) {
                             const float3 wd = octDecode(uv);
                             // Past what lets light through (pathThrough): the
                             // cell is open where at least half gets through.
-                            const float through = cellThrough(pp, np, wd, mask, selfTransmits);
+                            const uint origin = (cell + cell / cellSide) % kCellOrigins;
+                            const float through =
+                                cellThrough(cellFrom[origin], cellNormal[origin], wd, mask, selfTransmits);
                             if (through > 0.0) {
                                 if (through >= 0.5) {
                                     word |= 1u << b;
@@ -2138,7 +2201,8 @@ void tracePathsAt(uint2 group, uint index) {
                     if (dot(np, wd) <= 0.0) {
                         continue;
                     }
-                    if (cellThrough(pp, np, wd, mask, selfTransmits) >= 0.5) {
+                    const uint origin = (cell + cell / 8u) % kCellOrigins;
+                    if (cellThrough(cellFrom[origin], cellNormal[origin], wd, mask, selfTransmits) >= 0.5) {
                         if (cell < 32u) {
                             shadowBits0 |= 1u << cell;
                         } else {

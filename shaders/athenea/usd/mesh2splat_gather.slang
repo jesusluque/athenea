@@ -24,8 +24,8 @@
 //   rays        three float4 a gaussian, the bake's own layout
 //               (`technique::BakePoints`): the point of the surface under it,
 //               w left for the ray's offset (mesh2splat_span), that
-//               surface's normal with the gaussian's footprint in w where
-//               `overArea`, and the way the relief turned it (w 1) or zeros;
+//               surface's normal with the gaussian's footprint in w
+//               (negative unless `overArea`: the cells alone take it), and the way the relief turned it (w 1) or zeros;
 //               that w plus a quarter of the material's metalness, which the
 //               bake reads to tell a dark metal from a polish (`bakeBody`)
 //   influences  two float4 a gaussian, (joint, weight) four times, where a
@@ -153,7 +153,10 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     // WHERE THE BAKE STANDS AND WHICH WAY IT LOOKS. A displaced gaussian is
     // baked from the flat surface under it -- the only one the tracer holds
     // -- and faces as the relief does.
-    const float footprint = gather.overArea != 0 ? sizes.x : 0.0;
+    // Positive: the paths spread over it too (a simplified block). Negative:
+    // only a transfer's cells are traced over it (PathTracer's
+    // bakeCellOrigin), the paths stay at the centre.
+    const float footprint = gather.overArea != 0 ? sizes.x : -sizes.x;
     if (gather.displaced != 0) {
         const float4 flat = entryOf(splat, gather.ownEntries);
         const float4 flatNormal = entryOf(splat, gather.ownEntries + 1);

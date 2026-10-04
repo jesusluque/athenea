@@ -11820,6 +11820,25 @@ gives the guessed sphere's far face what rt_shade gives a traced one: the
 Fresnel the second interface reflects at the angle the ray meets it, and the
 transmission colour a second time.
 
+### The cells over the footprint
+
+The pawn's gold ring kept a dashed dark line along its lip after the glass
+let its cells open, and the slope was not it (s50: the same with the slope
+off). The lip has a groove narrower than a gaussian, and every cell was
+traced from the one point at the gaussian's centre: a gaussian whose centre
+fell in the groove read its shadow whole, its neighbour none, and the
+groove came out dashed and dark where the path traced frame has a faint,
+even line (the mesh rasterised at one sample shows the same dashes). The
+cells are now traced from four points over the footprint, cell c from
+origin c mod 4 (shifted by row so neighbouring directions differ): the
+centre, and three come down onto a disc as wide as the gaussian, each by a
+ray down the normal as the paths' own points are. An origin that finds no
+surface, or one more than the footprint away, stands at the centre. The
+gaussian's size goes to the bake as a negative footprint, which only the
+cells read, so the paths -- and every colour that is not a transfer's --
+stay as they were. Four origins cost four rays a point beside a thousand
+cells.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew
