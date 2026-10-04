@@ -752,6 +752,9 @@ private:
     /// what it holds changed (tests hold a time step to it).
     double                                    lastCommitMs_ = 0.0;   ///< ATHENEA_STAGES: the last commit's time
     double                                    meshShadowMapMs_ = 0.0;   ///< ATHENEA_STAGES: the cloud map's build
+    /// What the cloud shadow map was last built from (Engine::render): a
+    /// frame with the same key reads it again.
+    std::vector<uint64_t>                     cloudShadowKey_;
     std::atomic<uint64_t>                     cloudUploads_{0};
     std::atomic<bool>                         splatReflections_{false};
     /// The per-prim material table and the buffer it is uploaded into. The

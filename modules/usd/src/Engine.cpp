@@ -2685,13 +2685,46 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 caster.restBounds = instance.splats->restBounds.value_or(instance.splats->bounds);
                 job.casters.push_back(caster);
             }
-            if (!job.casters.empty()) {
+            // A MAP IS THE CASTERS' AND THE LIGHTS', NOT THE CAMERA'S: a frame
+            // whose clouds, poses, transforms, lights and settings are what the
+            // last map was built from reads that map again (task PLAY-G: seven
+            // passes over the Corvette's 14.7 M gaussians were 77 ms a frame of
+            // a car that does not move). The key is bookkeeping the host holds:
+            // which clouds, their revision (a pose counts it up), where they
+            // stand, the lights' records and the job. A frame with levels of
+            // detail always builds -- its cut's clouds are the camera's.
+            std::vector<uint64_t> key;
+            const auto keyBytes = [&key](const void* data, size_t bytes) {
+                const size_t at = key.size();
+                key.resize(at + (bytes + 7) / 8, 0);
+                std::memcpy(key.data() + at, data, bytes);
+            };
+            for (const technique::ShadowMapCaster& caster : job.casters) {
+                const uint64_t ids[4] = {reinterpret_cast<uintptr_t>(caster.cloud),
+                                         reinterpret_cast<uintptr_t>(caster.cloud->positions.rhi()),
+                                         caster.cloud->count, caster.cloud->revision};
+                keyBytes(ids, sizeof(ids));
+                keyBytes(caster.objectToWorld.data(), sizeof(float) * 12);
+                keyBytes(&caster.categories, sizeof(caster.categories));
+                keyBytes(&caster.cloud->bounds, sizeof(caster.cloud->bounds));
+                keyBytes(&*caster.restBounds, sizeof(scene::Bounds));
+            }
+            for (const light::Light& lamp : lamps) {
+                const light::LightRecord record = light::LightTable::recordOf(lamp);
+                keyBytes(&record, sizeof(record));
+            }
+            const uint32_t settingsKey[4] = {job.resolution, job.coefficients, job.domeSlots, job.lightCount};
+            keyBytes(settingsKey, sizeof(settingsKey));
+            keyBytes(&job.density, sizeof(job.density));
+            const bool sameMap = cuts.empty() && cloudShadowMap_->valid() && key == cloudShadowKey_;
+            if (!job.casters.empty() && !sameMap) {
                 const auto castStart = std::chrono::steady_clock::now();
                 gpu::CommandBatch casting(*device_);
                 ATHENEA_TRY(cloudShadowMap_->build(casting, job));
                 ATHENEA_TRY(casting.submit(true));
                 meshShadowMapMs_ =
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - castStart).count();
+                cloudShadowKey_ = std::move(key);
             }
             if (cloudShadowMap_->valid()) {
                 if (std::getenv("ATHENEA_SHADOW_DEBUG") != nullptr) {
@@ -2704,6 +2737,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
         } else if (cloudShadowMap_.has_value()) {
             cloudShadowMap_.reset();   // nothing casts: the kernel goes back to the one without a map
+            cloudShadowKey_.clear();
         }
         technique::MaterialFrame frame;
         frame.programs = &*materialPrograms_;

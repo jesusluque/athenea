@@ -12385,3 +12385,11 @@ degrees up.
 
 `--no-dome-prefilter` samples the dome as before. The path tracer, and so
 the ground truth, is untouched.
+
+### The cloud map is built when what it shows changes
+
+It is the casters' and the lights', not the camera's: seven passes over 14.7
+million gaussians re-measured a car that did not move. A frame whose clouds
+(their buffers and `revision`, which a pose counts up), transforms, lights
+and map settings are the last map's reads that map again. A frame with levels
+of detail always builds: its cut's clouds are the camera's.
