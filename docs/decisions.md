@@ -11878,6 +11878,15 @@ streak). A transmittance the blend carries itself (proposal 075) is what
 would let the interior through as it is. Tested by a pane at 1.16 over a
 black backdrop, drawn against the mesh path traced (`[sheet_draw]`).
 
+Then too bright (s65, the current car on the mesh ground): the windshield
+read 3.9 times the path traced one under the shop's lamps. The conversion
+writes a sheet's coverage as `m2sCoverageAlpha` solves it plus 1/255, for
+the radius at which a gaussian is cut -- and for a sheet whose solved share
+is 0.0018 that 1/255 is twice as much again, which the floor's
+alpha x colour then kept. A sheet's own share is now its stored opacity
+less that 1/255 (nothing of it is cut at the floor), and the test holds the
+pane's frame mean within a quarter of the mesh path traced.
+
 ### Known: a transparent mesh glass dithers on the raster route
 
 In the per-material frames (one material a cloud, the rest meshes) the
@@ -11892,6 +11901,22 @@ metrics are taken over the converted material's own mask, against the mesh
 path traced -- so it is left as it is for now. What would take it out: a lot
 that changes with the frame, accumulated, or a transparent opacity blended
 rather than cut.
+
+### A dome's mips keep its solid-angle mean (research 087, step 1)
+
+The paint's base read 0.77 of the path traced frame under the shop and 0.95
+under a white dome (s57, s64): what is lost is in the shop's small, very
+bright lamps, which the prefiltered dome does not keep. The first and
+cheapest of the steps research 087 lists: the source chain the prefilter
+reads its samples from is a lat-long, and its mips were plain area means --
+a row by a pole, a sliver of the sphere, counted as much as a row at the
+equator, so the coarse levels a rough lobe reads over-weighed the poles,
+where a ceiling's lamps hang. A dome's texture is now requested as a
+lat-long (TextureStore::request, `latLong`) and its levels weigh each source
+row by the band of the sphere it stands for, cos(theta0) - cos(theta1), so
+every level keeps the sky's solid-angle mean (exact where a level halves,
+to half a percent on an odd edge's three taps; `[mips]`). The lamps
+themselves, taken out as lights of their own, are the next step.
 
 ### A TX frame computes what the eye changes (playback)
 

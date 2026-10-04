@@ -405,7 +405,12 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // 0.31 to 0.067 under goegap).
     const bool sheet = kTransfer != kProjectCatcher && params.hasPbr != 0 && pbrThinWalled(pbr[i]) &&
                        pbrTransmission(pbr[i]) > 0.5;
-    const float alphaOwn = paidOpacity(posOpacity.w, paid);
+    // A sheet's own share is its coverage as the conversion solved it, without
+    // the 1/255 m2sCoverageAlpha adds for the radius it would be cut at: drawn
+    // at the floor, nothing of it is cut, and at 0.0018 of coverage that
+    // 1/255 had tripled it -- the windshield read 3.9 times the path traced
+    // one under the shop's lamps (s65).
+    const float alphaOwn = sheet ? paid * max(posOpacity.w - 1.0 / 255.0, 0.0) : paidOpacity(posOpacity.w, paid);
     const float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
     if (!(alpha >= 1.0 / 255.0)) {
         cull(slot, kCullFaint);

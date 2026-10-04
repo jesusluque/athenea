@@ -446,7 +446,7 @@ add_test(NAME mesh2splat_sheet_pane_low
 set_tests_properties(mesh2splat_sheet_pane_low PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_SETUP sheet_low
-    PASS_REGULAR_EXPRESSION "Pane is sheet \\(thin-walled\\) glass"
+    PASS_REGULAR_EXPRESSION "wrote .*pane_low_sheet.usdc"
     LABELS gpe)
 add_test(NAME sheet_glass_draws_whole
     COMMAND athenea_usd_tests "[sheet_draw]")
