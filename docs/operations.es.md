@@ -1195,7 +1195,12 @@ indirecta bajo ese cielo que bajo el blanco, contado el rebote del sol -- y un
 reflejo la muestra donde los bits dicen que el cielo no llega: la carrocería
 en el cromo, el suelo en la pintura. Se escribe con las celdas y la mitad
 indirecta, y sólo se lee junto a ellas; `athenea:splatTransferIndirect` la
-apaga con la mitad indirecta.
+apaga con la mitad indirecta. Una conversión la rellena sobre las direcciones
+cerradas: a lo largo de cada una guarda la media de lo que muestran las
+direcciones cerradas en torno a ella, y a lo largo de una abierta la media de
+las cerradas, de modo que una dirección cerrada junto a una abierta no se lee
+diluida. Una nube convertida antes guarda la proyección tal como la hizo el
+horneado, y se lee igual.
 Una luz que no es el cielo -- distante, esfera, disco, rectángulo -- ilumina
 una nube con las celdas por los mismos lóbulos, sombreada por los bits sobre
 el cono que la luz subtiende desde cada gaussiana (su penumbra), y su rebote

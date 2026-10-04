@@ -241,7 +241,7 @@ object through the glass wants a ray, which this is not."""
         interpolation = "vertex"
     )
     float[] primvars:athenea:splat:transferReflected = [] (
-        doc = """What a TX transfer's gaussian sees in the directions the scene closes, by direction: the radiance arriving along each after it met the scene, under a white sky of radiance one, projected onto sixteen harmonics (degree 3), rgb a coefficient -- forty-eight floats a gaussian (elementSize 48). Under a real sky it is scaled by how much more the indirect half gathers under that sky than under the white one, and it is what a reflection shows where the open directions (shadowBits) say the sky does not reach. Only read beside transferIndirect."""
+        doc = """What a TX transfer's gaussian sees in the directions the scene closes, by direction: the radiance arriving along each after it met the scene, under a white sky of radiance one, projected onto sixteen harmonics (degree 3), rgb a coefficient -- forty-eight floats a gaussian (elementSize 48). A conversion fills it over the closed directions: along each, the mean of what the closed directions about it show; along an open one, the closed directions' mean. Under a real sky it is scaled by how much more the indirect half gathers under that sky than under the white one, and it is what a reflection shows where the open directions (shadowBits) say the sky does not reach. Only read beside transferIndirect."""
         elementSize = 48
         interpolation = "vertex"
     )

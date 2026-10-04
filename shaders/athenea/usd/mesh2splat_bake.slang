@@ -30,6 +30,8 @@
 // number that crosses back, for the log.
 module mesh2splat_bake;
 
+import athenea.usd.transfer_field_fill;
+
 struct BakeParams {
     uint count;          ///< gaussians
     uint coefficients;   ///< float4 a gaussian the radiance bake answered
@@ -112,11 +114,20 @@ void m2sTransferInto(uint3 tid: SV_DispatchThreadID) {
     // only beside the indirect half, which is what couples it to a sky.
     if (bake.cells != 0 && bake.indirect != 0) {
         const uint field = first + coefficients + 1u + bake.cells / 4u;
+        float3 radiance[16];
+        float  closed[16];
         for (uint c = 0; c < 16u; ++c) {
             const float4 value = baked[field + c];
-            reflected[k * 48 + c * 3] = found ? value.x : 0.0;
-            reflected[k * 48 + c * 3 + 1] = found ? value.y : 0.0;
-            reflected[k * 48 + c * 3 + 2] = found ? value.z : 0.0;
+            radiance[c] = value.xyz;
+            closed[c] = value.w;
+        }
+        if (found) {
+            m2sFieldOverClosed(radiance, closed);
+        }
+        for (uint c = 0; c < 16u; ++c) {
+            reflected[k * 48 + c * 3] = found ? radiance[c].x : 0.0;
+            reflected[k * 48 + c * 3 + 1] = found ? radiance[c].y : 0.0;
+            reflected[k * 48 + c * 3 + 2] = found ? radiance[c].z : 0.0;
         }
     }
     for (uint c = 0; c < coefficients; ++c) {

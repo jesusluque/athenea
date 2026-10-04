@@ -1170,7 +1170,11 @@ under the white one, the sun's bounce included -- and a reflection shows it
 where the bits say the sky does not reach: the body in the chrome, the
 ground in the paint. It is written with the cells and the indirect half, and
 read only beside them; `athenea:splatTransferIndirect` turns it off with the
-indirect half.
+indirect half. A conversion fills it over the closed directions: along each
+it holds the mean of what the closed directions about it show, and along an
+open one the closed directions' mean, so a closed direction beside an open
+one is not read diluted. A cloud converted before that holds the projection
+as the bake made it, and is read the same way.
 A light that is not the sky -- distant, sphere, disk, rect -- lights a cloud
 with the cells through the same lobes, shadowed by the bits over the cone
 the light subtends from each gaussian (its penumbra), and its bounce reaches

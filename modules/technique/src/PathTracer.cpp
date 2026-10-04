@@ -1571,6 +1571,12 @@ void tracePathsAt(uint2 group, uint index) {
     // With the bake split: the indirect half of the same sums, the direct
     // half being the whole less it.
     float3 indirectCoefficients[16];
+    // A TX transfer's closed directions, projected as the field is (task TX):
+    // one where the first ray met something, over the same samples and by
+    // the same measure, so the field over it is the radiance the closed
+    // directions show, not that radiance diluted by the open ones and by the
+    // half that was never drawn (m2sTransferInto).
+    float  closedCoefficients[16];
     // And what says how noisy each half is, and how much a path cost:
     // sums of each half's luminance and of its square, of their product,
     // and of the steps the paths took.
@@ -1621,6 +1627,7 @@ void tracePathsAt(uint2 group, uint index) {
             coefficients[c] = float3(0.0);
             transferDirect[c] = 0.0;
             indirectCoefficients[c] = float3(0.0);
+            closedCoefficients[c] = 0.0;
         }
         for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
             if ((bakeBand(c) & 1u) == 0u) {
@@ -1787,6 +1794,12 @@ void tracePathsAt(uint2 group, uint index) {
                         }
                     }
                     break;   // the ray escaped
+                }
+                // The first ray met something: a closed direction.
+                if (kBake && transferMode && cellsMode && bounce == 1) {
+                    for (uint c = 0; c < 16u; ++c) {
+                        closedCoefficients[c] += firstMeasure * shBasisValue(c, firstDirection);
+                    }
                 }
             }
             // The one place materials are evaluated; the camera's hit once a pixel.
@@ -2259,7 +2272,8 @@ void tracePathsAt(uint2 group, uint index) {
             colour[(count + 1) * pixels + at] = float4(asfloat(shadowBits0), asfloat(shadowBits1), 0.0, 0.0);
         } else {
             for (uint c = 0; c < 16u; ++c) {
-                colour[(count + 1 + cellPlanes + c) * pixels + at] = float4(indirectCoefficients[c] * over, 0.0);
+                colour[(count + 1 + cellPlanes + c) * pixels + at] = float4(indirectCoefficients[c] * over,
+                                                                             closedCoefficients[c] * over);
             }
         }
         return;

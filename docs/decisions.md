@@ -11553,6 +11553,33 @@ corners share a normal, is unchanged. `--specular-filter` sets it: 1 with
 **Checked** (pending the GPU turn): the Corvette's Chrome and Car_Paint_Main
 with `drive_tx.py` against the GT.
 
+### The field says what the closed directions show, undiluted
+
+The Corvette's paint read 10% dark against the path traced one, and the ball
+of paint under a white dome 13% (`--validate`: 0.072 against 0.083). By term
+the coat carries 80% of the paint and the closed directions almost nothing:
+0.0014 of 0.115, where a third of the coat's lobe is closed and what closes
+it is the ground. The field is the projection of the radiance arriving along
+closed directions, zero along the open ones and along the half a gaussian
+never draws; sixteen harmonics of that read a closed direction beside an
+open one -- the ground at a door's horizon, the unsampled half under it --
+at a fraction of what stands there.
+
+The bake now projects the closed directions themselves as well, one where
+the first ray met something, over the same samples and by the same measure,
+in the alpha of the field's planes that was free. The conversion divides the
+two where they are read (a normalised convolution: the mean radiance of the
+closed directions about a direction), takes the closed directions' mean
+where they are too few to say (a share under 0.1, blended up to 0.4), and
+projects that again over a 16 x 16 octahedral grid by its cells' solid
+angles (`m2sFieldOverClosed`, `transfer_field_fill.slang`). The file keeps
+the same forty-eight floats and the frame reads them the same way; a cloud
+converted before keeps its projection.
+
+**Checked** (pending the GPU turn): beside the wall the filled field reads
+the wall toward it within the tolerance the bake's own does ([field] in
+athenea_usd_tests); the paint and its terms on the Corvette.
+
 ### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
 
 A car converted to gaussians cast nothing on the ground under a sky: the

@@ -11589,15 +11589,20 @@ TEST_CASE("a TX transfer's reflected field reads the wall that stands beside it"
     }
     std::array<uint32_t, 8> counts{};
     REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
-    float worstWall = 0.0F, mostUp = 0.0F;
+    float worstWall = 0.0F, mostUp = 0.0F, worstFilled = 0.0F;
     std::memcpy(&worstWall, &counts[4], 4);
     std::memcpy(&mostUp, &counts[5], 4);
+    std::memcpy(&worstFilled, &counts[6], 4);
     std::printf("  the field beside a wall: %u points, %u off the wall's %.3f (worst %.3f relative), %u reading "
-                "the open side (most %.4f)\n",
-                counts[2], counts[0], double(wallRadiance), double(worstWall), counts[1], double(mostUp));
+                "the open side (most %.4f); filled over the closed directions, %u off (worst %.3f)\n",
+                counts[2], counts[0], double(wallRadiance), double(worstWall), counts[1], double(mostUp), counts[3],
+                double(worstFilled));
     CHECK(counts[2] == count);
     CHECK(counts[0] == 0);
     CHECK(counts[1] == 0);
+    // What the file keeps: the field filled over the closed directions
+    // reads the wall as well.
+    CHECK(counts[3] == 0);
 }
 
 // WHAT A TX TRANSFER'S GLASS SEES THROUGH ITSELF (step 5).

@@ -17,6 +17,7 @@
 module field_check;
 import athenea.splat.splat_relight;
 import athenea.common.sh;
+import athenea.usd.transfer_field_fill;
 
 struct FieldParams {
     uint  count;        ///< points (fieldBakeCheck)
@@ -126,6 +127,9 @@ void fieldCouplingCheck(uint3 tid: SV_DispatchThreadID) {
 /// stats[2] points judged
 /// stats[4] the worst relative error toward the wall, stats[5] the most read
 /// up, both as the bits of a float (positive, so they order as uints)
+/// stats[3] points whose field made to say what the closed directions show
+/// (m2sFieldOverClosed, what the file keeps) is off the wall toward it by
+/// more than the tolerance, stats[6] its worst relative error, as bits
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void fieldBakeCheck(uint3 tid: SV_DispatchThreadID) {
@@ -158,6 +162,25 @@ void fieldBakeCheck(uint3 tid: SV_DispatchThreadID) {
     uint dummy;
     InterlockedMax(stats[4], asuint(error), dummy);
     InterlockedMax(stats[5], asuint(max(upRead, 0.0)), dummy);
+    // The same field, filled as the conversion fills it.
+    float3 field[16];
+    float  closed[16];
+    for (uint j = 0; j < 16u; ++j) {
+        const float4 c = baked[k * params.entries + params.firstField + j];
+        field[j] = c.rgb;
+        closed[j] = c.w;
+    }
+    m2sFieldOverClosed(field, closed);
+    float3 filled = float3(0.0);
+    for (uint j = 0; j < 16u; ++j) {
+        const float band = j < 1u ? 0.0 : (j < 4u ? 2.0 : (j < 9u ? 6.0 : 12.0));
+        filled += field[j] * (exp(-band * alpha * alpha) * envBasisValue(j, normalize(params.towardsWall)));
+    }
+    const float filledError = abs(dot(filled, float3(1.0 / 3.0)) - params.wallRadiance) / params.wallRadiance;
+    if (filledError > params.tolerance) {
+        InterlockedAdd(stats[3], 1u);
+    }
+    InterlockedMax(stats[6], asuint(filledError), dummy);
 }
 
 /// THE SKY'S BASIS IS THE BAKE'S, to degree 3: `envBasisValue`, which the sky
