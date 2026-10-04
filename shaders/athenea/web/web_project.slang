@@ -15,7 +15,7 @@
 //   W1 frame      visible | tilesTouched | depthKeys | tileRects
 //                 one buffer, each stream at its word offset in `arena`
 //
-// Five storage bindings and two uniforms. W1 is one allocation so the kernels
+// Six storage bindings (with the draw list) and two uniforms. W1 is one allocation so the kernels
 // after this one (compact, gather, emit), which read its streams under their
 // own names, bind ranges of it: offsets are multiples of 64 words, the web's
 // 256-byte storage offset alignment.
@@ -29,6 +29,7 @@ import athenea.common.packing;
 import athenea.common.sh;
 import athenea.common.color;
 import athenea.splat.frame;
+import web_list;
 
 /// The highest degree of harmonics this pipeline evaluates: a WGSL `override`
 /// (a Metal function constant), set when the pipeline is made, so a device
@@ -36,6 +37,12 @@ import athenea.splat.frame;
 /// module. Lowered further per frame by `params.shLimit`.
 [SpecializationConstant]
 const uint kShDegree = 3;
+
+/// Whether the projection walks a draw list (web_list.slang: the level of
+/// detail's cut, compacted) or the cloud's own splats one a slot. Listed, a
+/// slot past the list's count is cleared and left: it costs two words.
+[SpecializationConstant]
+const bool kListed = false;
 
 /// Where each stream of W1 starts, in words.
 public struct WebArena {
@@ -48,6 +55,7 @@ public struct WebArena {
 StructuredBuffer<float4>       positions;
 StructuredBuffer<uint>         shape;
 StructuredBuffer<uint>         sh;
+StructuredBuffer<uint>         listWords;   // read where kListed; a placeholder otherwise
 RWStructuredBuffer<ProjRecord> proj;
 RWStructuredBuffer<uint>       frameWords;
 ConstantBuffer<FrameParams>    params;
@@ -72,8 +80,17 @@ void webProject(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint slot = params.base + i;
-    const float4 posOpacity = positions[i];
-    const uint row = i * 4;
+    uint s = i;   // the splat this slot draws
+    if (kListed) {
+        if (i >= listWords[0]) {
+            frameWords[arena.touchedAt + slot] = 0;
+            frameWords[arena.visibleAt + slot] = 0;
+            return;
+        }
+        s = listWords[kListHead + i];
+    }
+    const float4 posOpacity = positions[s];
+    const uint row = s * 4;
     const float3 scale = exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2])));
 
     const float3 t = toView(params, posOpacity.xyz);
@@ -160,7 +177,7 @@ void webProject(uint3 tid: SV_DispatchThreadID) {
     const float3 base = float3(highHalf(shape[row + 2]), lowHalf(shape[row + 3]), highHalf(shape[row + 3]));
     const uint degree = min(min(degreeOf(params.restPerColour), params.shLimit), kShDegree);
     const float3 dir = normalize(posOpacity.xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
-    const float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
+    const float3 colour = cloudLight(base + evaluateRest(sh, s * params.shWords, degree, dir), params.linearCloud != 0);
 
     ProjRecord record;
     record.screen = float4(centre, t.z, cutoff);

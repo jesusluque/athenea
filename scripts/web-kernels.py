@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 jesus luque.
 #
-# THE WEB MODULE, BUILT: the kernels of the web's raster route (proposal 072,
-# preset T1) compiled from the one Slang source to WGSL, a manifest of what
-# each binds and by what name, and the page's module beside them -- the
-# directory a site serves as its `athenea-webgpu` renderer.
+# THE WEB VIEWER, BUILT: the kernels its modules dispatch (proposal 072,
+# docs/decisions.md "The web viewer") compiled from the one Slang source to
+# WGSL, a manifest of what each binds and by what name, and web/ beside them
+# -- the directory a site serves as it is: the viewer (viewer/index.html) and
+# the site's `athenea-webgpu` renderer (athenea-webgpu.js).
 #
 #   <out>/manifest.json        what the host reads: per kernel its file, its
 #                              workgroup size, every parameter by name (its
@@ -12,7 +13,8 @@
 #                              of every field), its override constants, and
 #                              what it asks of the device
 #   <out>/kernels/<entry>.wgsl one module a kernel
-#   <out>/*.js, test.html      web/athenea-webgpu, copied
+#   <out>/...                  web/, copied: lib/, viewer/, athenea-webgpu.js,
+#                              check.mjs
 #
 # Every kernel must compile, pass Naga (Firefox) and Tint (Chrome, through
 # Dawn's null backend: scripts/wgsl-tint.cpp, with the pipeline checked against
@@ -39,8 +41,9 @@ _spec = importlib.util.spec_from_file_location("wgsl_report", HERE / "scripts/wg
 report = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(report)
 
-# The web route, in the order a frame dispatches it (web/athenea-webgpu/host.js).
+# The web route, in the order a frame dispatches it (web/lib/modules/core-raster.js).
 KERNELS = [
+    ("athenea/web/web_spz", "webSpzRecords"),
     ("athenea/web/web_decode", "webDecode"),
     ("athenea/scene/bounds_chunks", "boundsChunks"),
     ("athenea/scene/bounds_reduce", "boundsReduce"),
@@ -58,6 +61,19 @@ KERNELS = [
     ("athenea/splat/splat_tiles_clear", "splatTilesClear"),
     ("athenea/splat/splat_ranges", "splatRanges"),
     ("athenea/web/web_blend", "webBlend"),
+    # The level of detail (lib/modules/lod.js): the native build and cut, and
+    # the web's reorder and list.
+    ("athenea/lod/lod_morton", "lodMorton"),
+    ("athenea/lod/lod_boundaries", "lodBoundaries"),
+    ("athenea/lod/lod_groups", "lodGroups"),
+    ("athenea/web/web_lod", "webLodReorder"),
+    ("athenea/lod/lod_leaf_moments", "lodLeafMoments"),
+    ("athenea/lod/lod_merge_moments", "lodMergeMoments"),
+    ("athenea/lod/lod_finalize", "lodFinalize"),
+    ("athenea/lod/lod_cut", "lodCutGroups"),
+    ("athenea/lod/lod_cut", "lodCutFinest"),
+    ("athenea/lod/lod_cut", "lodCutSplats"),
+    ("athenea/web/web_lod", "webLodList"),
     ("athenea/web/web_present", "webPresent"),
 ]
 
@@ -213,10 +229,12 @@ def main():
         print("\n".join(failed), file=sys.stderr)
         raise SystemExit(1)
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
-    page = HERE / "web/athenea-webgpu"
-    for f in sorted(page.iterdir()):
-        if f.is_file():
-            shutil.copy2(f, out / f.name)
+    page = HERE / "web"
+    for f in sorted(page.rglob("*")):
+        if f.is_file() and f.name != ".DS_Store":
+            target = out / f.relative_to(page)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, target)
     print(f"\nthe web module in {out}", file=sys.stderr)
 
 
