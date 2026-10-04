@@ -11725,6 +11725,33 @@ seen edge on does not swing its reflection across the sky.
 chrome against the path traced frame; the frozen card for the projection
 kernel's size.
 
+### A TX frame computes what the eye changes (playback)
+
+The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew
+in 158 ms, a relit cloud of its size in about 83: projection 84.5 ms, the
+two sorts 30, the blend 25. Shader variants priced the projection's parts:
+the field and its coupling 24 ms, the cells read by the lobes 16.5, the sun's
+share and bounce 12, the body's transfer 7.5.
+
+- **The field is read once for both lobes** (`splatFieldAlongPair`): the
+  polish's roughness and the coat's take their two band weightings of one
+  reading of its forty-eight values.
+- **What the eye does not change is kept** (`transferViewless`): the body's
+  light under the sky (the transfer dotted with it, the sun's cosine at the
+  share the cells let through, its bounce), that share, and the field's
+  coupling to the sky. `splatTransferViewless` writes them a splat each, as
+  halves with the dome slice they are for; `splatProject` reads them back
+  where the eye sees the face they were kept for. The rasteriser keeps them a
+  cloud each and works them out again only when their key changes: the
+  lights' revision (`LightTable::revision`, bumped when the records, their
+  values or the scene's reach differ as bytes, and on every frame where the
+  device places or moves a light -- the sky is prepared from the same
+  records), the cloud's revision and buffers, its transform and the
+  indirect toggle. A cloud no frame draws gives its terms back.
+
+**Checked** (pending the GPU turn): the profile again; the balls and the
+Corvette's paint, which must read what they did.
+
 ### Free memory counts what the system gives back
 
 On Apple silicon an allocation must fit the memory the system has free less

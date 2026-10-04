@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 #include <slang-rhi.h>
 #include <slang-rhi/shader-cursor.h>
@@ -197,6 +198,10 @@ public:
     [[nodiscard]] Result<void> set(std::span<const Light> lights, float sceneRadius = 1.0F);
 
     [[nodiscard]] uint32_t count() const noexcept { return count_; }
+    /// A number that changes whenever `set` was handed lights that differ
+    /// from the last ones (as bytes), and on every frame where lights are
+    /// placed or moved on the device. Never 0.
+    [[nodiscard]] uint64_t revision() const noexcept { return revision_; }
     [[nodiscard]] bool     anyShadow() const noexcept { return shadows_; }
     /// Whether any of them is a dome, which a frame paints where it drew nothing.
     [[nodiscard]] bool     anyDome() const noexcept { return domes_; }
@@ -219,6 +224,10 @@ public:
     [[nodiscard]] static LightRecord recordOf(const Light& light);
 
 private:
+    uint64_t                 revision_ = 1;
+    std::vector<LightRecord> lastRecords_;
+    std::vector<float>       lastValues_;
+    float                    lastRadius_ = -1.0F;
     gpu::Device* device_ = nullptr;
     gpu::Buffer  records_;
     std::optional<gpu::ComputeKernel> prefix_;   ///< light_prefix: each light's cumulative share, on the device

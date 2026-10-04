@@ -1989,6 +1989,9 @@ void Engine::bindEnvironment(render::SplatLights& lights) const {
     lights.envLights = environment_->lightCount();
     lights.envBaseSide = environment_->baseSide();
     lights.envSun = &environment_->sun();
+    // What a cloud may keep between frames is good while these stand: the
+    // lights as the table last changed them (the sky is prepared from them).
+    lights.revision = lightTable_.has_value() ? lightTable_->revision() : 0;
 }
 
 /// A bake is a frame whose camera is a list of rays. Everything the frame
