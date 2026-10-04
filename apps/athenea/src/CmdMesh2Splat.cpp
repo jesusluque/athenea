@@ -2136,6 +2136,8 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
             if (!part) return std::move(part).error();
             gpu::CommandBatch copy(device);
             copy.encoder()->copyBuffer(part->rhi(), 0, rays_.rhi(), uint64_t{base} * 48, uint64_t{n} * 48);
+            // A batch with no dispatch submits nothing unless told it has work.
+            copy.markDirty();
             ATHENEA_TRY(copy.submit(true));
             rays = std::move(*part);
         }
