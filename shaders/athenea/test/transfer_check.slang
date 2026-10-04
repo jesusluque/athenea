@@ -38,8 +38,9 @@ RWStructuredBuffer<float>    worst;   ///< 8 wide
 ConstantBuffer<TransferCheckParams> params;
 
 /// The bands of the clamped cosine lobe (Ramamoorthi and Hanrahan).
+// The clamped cosine's band 3 is zero, as every odd band past the first is.
 float bandWeight(uint k) {
-    return k == 0 ? 3.14159265358979 : (k < 4 ? 2.0943951023932 : 0.78539816339745);
+    return k == 0 ? 3.14159265358979 : (k < 4 ? 2.0943951023932 : (k < 9 ? 0.78539816339745 : 0.0));
 }
 
 /// stats[0] points whose direct transfer is beyond the tolerance
@@ -60,7 +61,8 @@ void transferCheck(uint3 tid: SV_DispatchThreadID) {
     const uint base = k * params.entries;
     // A point the bake found no surface under is not a point with no
     // transfer: it is counted apart.
-    if (!(baked[base + params.entries - 2].w > 0.0)) {
+    // The coverage follows the coefficients, whatever follows it.
+    if (!(baked[base + params.coefficients].w > 0.0)) {
         InterlockedAdd(stats[3], 1u);
         return;
     }

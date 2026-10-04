@@ -8,6 +8,7 @@ add_executable(athenea
     src/CmdMigrate.cpp
     src/CmdAofx.cpp
     src/CmdMesh2Splat.cpp
+    src/Mesh2SplatValidate.cpp
     src/CmdVisibility.cpp
     src/CmdLive.cpp
     src/Output.cpp)
@@ -58,13 +59,13 @@ if(ATHENEA_HYDRA_COMMANDS AND TARGET hdAthenea)
     # beside the delegate's sources and hdAthenea compiles itself.
     set(_usd_src "${ATHENEA_ROOT}/modules/usd/src")
     target_sources(hdAthenea PRIVATE
-        src/Embedded.cpp src/Output.cpp src/CmdMesh2Splat.cpp
+        src/Embedded.cpp src/Output.cpp src/CmdMesh2Splat.cpp src/Mesh2SplatValidate.cpp
         ${_usd_src}/StageRenderer.cpp ${_usd_src}/BindingPurposes.cpp ${_usd_src}/Export.cpp
-        ${_usd_src}/MeshStage.cpp)
+        ${_usd_src}/MeshStage.cpp ${_usd_src}/ShadowCatcher.cpp)
     target_include_directories(hdAthenea PRIVATE src)
     target_link_libraries(hdAthenea PRIVATE athenea::aofx_host CLI11::CLI11)
     target_compile_definitions(hdAthenea PRIVATE ATHENEA_AOFX_BUNDLE_DIR="${AOFX_BUNDLE_DIR}")
     if(TARGET athenea_aofx_mesh2splat)
-        add_dependencies(hdAthenea athenea_aofx_mesh2splat athenea_aofx_splatbakefilter)
+        add_dependencies(hdAthenea athenea_aofx_mesh2splat athenea_aofx_splatbakefilter athenea_aofx_measure)
     endif()
 endif()

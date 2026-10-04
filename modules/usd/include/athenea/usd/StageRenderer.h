@@ -316,6 +316,9 @@ public:
     /// rather than the light leaving it. What comes back is then one entry a
     /// coefficient whose rgb is the indirect half and whose alpha is the
     /// direct one, and one entry more carrying the coverage.
+    /// `cellSide`, with `transfer`, keeps which ways out are open on a 16 x 16
+    /// or 32 x 32 grid over the whole sphere (technique::BakePoints::cellSide),
+    /// which changes what follows the coverage (technique::transferPlanes).
     /// `facing`, four floats a point where given, is the way a point faces
     /// when that is not the surface's, w 1 where it says so and 0 where the
     /// surface's stands: a displaced gaussian stands off the flat mesh and is
@@ -324,7 +327,8 @@ public:
                                                         double time, uint32_t samples = 64,
                                                         uint32_t bounces = 3, uint32_t degree = 0,
                                                         bool transfer = false,
-                                                        const std::vector<float>* facing = nullptr);
+                                                        const std::vector<float>* facing = nullptr,
+                                                        uint32_t cellSide = 0);
 
     /// THE SAME BAKE, WITH NOTHING CROSSING TO THE PROCESSOR. `rays` is on
     /// this renderer's device (open it with the device the caller's buffers
@@ -334,17 +338,21 @@ public:
     /// way the point faces where that is not the surface's (w 1) or zeros.
     /// What comes back is on the device too: `count * entries` `float4`, a
     /// point's entries together in the order `bakePoints` returns them --
-    /// `(degree + 1)^2` coefficients, and two more for a transfer.
+    /// `(degree + 1)^2` coefficients, and `technique::transferPlanes` more
+    /// for a transfer.
     ///
     /// IN PASSES OF AT MOST `batch` POINTS (0: `kBakeBatch`), so what the
     /// tracer holds at once -- a plane an entry over its grid, and its sums
     /// -- is bounded whatever the cloud: the answer is the only buffer the
     /// size of the cloud. Each pass draws its own paths, so a point's answer
     /// is the same in distribution, not in bits, whatever the batch.
+    /// `firstPoint`: the points are `count` of `rays` from that one on (a
+    /// caller baking a large cloud in slices); the answer is theirs alone.
     [[nodiscard]] Result<gpu::Buffer> bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                          uint32_t samples = 64, uint32_t bounces = 3,
                                                          uint32_t degree = 0, bool transfer = false,
-                                                         uint32_t batch = 0);
+                                                         uint32_t batch = 0, uint32_t cellSide = 0,
+                                                         uint32_t firstPoint = 0);
     /// THE SAME BAKE, ITS DIRECT LIGHT KEPT APART FROM ITS INDIRECT, and
     /// taken adaptively where `options.extraSamples` asks: a first pass of
     /// `samples` paths at every gaussian, then passes of `passSamples` at the
@@ -378,6 +386,9 @@ public:
     /// `athenea:cloudShadows`: the frame's clouds shadow its meshes, measured
     /// from each light into a map and read with no ray. On by default.
     void setCloudShadows(bool shadows);
+    /// `athenea:domePrefiltered`: the raster route lights a mesh by a dome
+    /// prefiltered, with no sample and no ray. On by default.
+    void setDomePrefiltered(bool prefiltered);
     /// `athenea:cloudShadowResolution`: texels a side of that map, per light.
     void setCloudShadowResolution(uint32_t texels);
     /// `athenea:cloudShadowTerms`: 1 is the total optical depth (exact for a

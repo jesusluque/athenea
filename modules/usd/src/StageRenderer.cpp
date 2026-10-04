@@ -66,6 +66,7 @@
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/io/Exr.h"
+#include "athenea/technique/PathTracer.h"
 #include <pxr/usdImaging/usdImaging/stageSceneIndex.h>
 
 #include "BindingPurposes.h"
@@ -1139,6 +1140,10 @@ void StageRenderer::setCloudShadows(bool shadows) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:cloudShadows"), VtValue(shadows));
 }
 
+void StageRenderer::setDomePrefiltered(bool prefiltered) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:domePrefiltered"), VtValue(prefiltered));
+}
+
 void StageRenderer::setCloudShadowResolution(uint32_t texels) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:cloudShadowResolution"), VtValue(int(texels)));
 }
@@ -1406,7 +1411,7 @@ Result<BakedVisibilityArrays> StageRenderer::bakeVisibility(const std::string& p
 Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& rays, uint32_t count,
                                                      double time, uint32_t samples, uint32_t bounces,
                                                      uint32_t degree, bool transfer,
-                                                     const std::vector<float>* facing) {
+                                                     const std::vector<float>* facing, uint32_t cellSide) {
     Impl& impl = *impl_;
     if (count == 0 || rays.size() < size_t{count} * 8) {
         return Error(ErrorCode::InvalidArgument, "bake: two float4 a point, and at least one point");
@@ -1434,7 +1439,7 @@ Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& r
     desc.label = "bake.rays";
     auto buffer = gpu::Buffer::create(device, desc, laid.data());
     if (!buffer) return std::move(buffer).error();
-    auto answer = bakePointsOnDevice(*buffer, count, time, samples, bounces, degree, transfer);
+    auto answer = bakePointsOnDevice(*buffer, count, time, samples, bounces, degree, transfer, 0, cellSide);
     if (!answer) return std::move(answer).error();
     // Already a point's entries together: read back as it is.
     return answer->readAll<float>(device);
@@ -1442,9 +1447,10 @@ Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& r
 
 Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                       uint32_t samples, uint32_t bounces, uint32_t degree,
-                                                      bool transfer, uint32_t batch) {
+                                                      bool transfer, uint32_t batch, uint32_t cellSide,
+                                                      uint32_t firstPoint) {
     Impl& impl = *impl_;
-    if (count == 0 || !rays.valid() || rays.bytes() < uint64_t{count} * 48) {
+    if (count == 0 || !rays.valid() || rays.bytes() < (uint64_t{firstPoint} + count) * 48) {
         return Error(ErrorCode::InvalidArgument, "bake: three float4 a point, and at least one point");
     }
     if (!impl.delegate->HasEngine()) {
@@ -1465,10 +1471,11 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
     if (!gather) return std::move(gather).error();
 
     const uint32_t coefficients = (std::min(degree, 3u) + 1) * (std::min(degree, 3u) + 1);
-    // A transfer writes two planes more: the others' alpha is the direct half
-    // of the transfer, so the coverage travels on its own, and after it the
-    // sixty-four visibility bits, carried as the floats they are the bits of.
-    const uint32_t entries = coefficients + (transfer ? 2u : 0u);
+    // A transfer writes planes more: the others' alpha is the direct half of
+    // the transfer, so the coverage travels on its own, and after it the
+    // visibility bits, carried as the floats they are the bits of -- sixty-four
+    // in one plane, or a plane of four words for every 128 cells of a finer grid.
+    const uint32_t entries = coefficients + technique::transferPlanes(transfer, transfer ? cellSide : 0u);
     gpu::BufferDesc desc;
     desc.bytes = uint64_t{count} * entries * 16;
     desc.elementBytes = 16;
@@ -1487,7 +1494,7 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
     // place. What the tracer allocates is sized by the pass.
     const uint32_t perPass = std::min(batch > 0 ? batch : kBakeBatch, count);
     gpu::Buffer passRays;
-    if (perPass < count) {
+    if (perPass < count || firstPoint > 0) {
         desc.bytes = uint64_t{perPass} * 48;
         desc.elementBytes = 16;
         desc.label = "bake.passRays";
@@ -1499,7 +1506,8 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
         const uint32_t n = std::min(perPass, count - first);
         if (passRays.valid()) {
             gpu::CommandBatch copy(device);
-            copy.encoder()->copyBuffer(passRays.rhi(), 0, rays.rhi(), uint64_t{first} * 48, uint64_t{n} * 48);
+            copy.encoder()->copyBuffer(passRays.rhi(), 0, rays.rhi(), (uint64_t{firstPoint} + first) * 48,
+                                       uint64_t{n} * 48);
             copy.markDirty();
             ATHENEA_TRY(copy.submit(true));
         }
@@ -1510,6 +1518,7 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
         bake.bounces = bounces;
         bake.coefficients = coefficients;
         bake.transfer = transfer;
+        bake.cellSide = transfer ? technique::transferCellSide(cellSide) : 0u;
         bake.out = &out;
         ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
         if (!out.colour.valid()) {

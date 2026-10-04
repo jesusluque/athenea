@@ -236,16 +236,35 @@ object through the glass wants a ray, which this is not."""
         interpolation = "vertex"
     )
     float[] primvars:athenea:splat:transferIndirect = [] (
-        doc = """The same, for the light that reached this gaussian after bouncing off what stands around it: twenty-seven floats a gaussian (elementSize 27), rgb a coefficient, because what it bounced off has a colour. Optional, and the frame can be asked to leave it out."""
+        doc = """The same, for the light that reached this gaussian after bouncing off what stands around it: twenty-seven floats a gaussian (elementSize 27), rgb a coefficient, because what it bounced off has a colour; forty-eight (elementSize 48) where the direct half is degree 3. Optional, and the frame can be asked to leave it out."""
         elementSize = 27
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:transferReflected = [] (
+        doc = """What a TX transfer's gaussian sees in the directions the scene closes, by direction: the radiance arriving along each after it met the scene, under a white sky of radiance one, projected onto sixteen harmonics (degree 3), rgb a coefficient -- forty-eight floats a gaussian (elementSize 48). A conversion fills it over the closed directions: along each, the mean of what the closed directions about it show; along an open one, the closed directions' mean. Under a real sky it is scaled by how much more the indirect half gathers under that sky than under the white one, and it is what a reflection shows where the open directions (shadowBits) say the sky does not reach. Only read beside transferIndirect."""
+        elementSize = 48
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:transferZonal = [] (
+        doc = """The direct half of the transfer as two zonal lobes in the gaussian's own frame, in place of `transferDirect`: ten floats a gaussian (elementSize 10), each lobe the octahedral square's (u, v) of its axis in the frame the gaussian's orientation gives and its three zonal coefficients, bands 0 to 2. The frame turns the axes into the world every frame, so a cloud a skeleton carries keeps its transfer through every pose. Where both are there this one is read. A reader that does not know it draws the cloud relit with no transfer."""
+        elementSize = 10
         interpolation = "vertex"
     )
     int[] primvars:athenea:splat:thinWalled = [] (
         doc = """Nonzero where the gaussian came from a thin-walled glass (OpenPBR's geometry_thin_walled): a sheet that sends what it does not reflect straight on. Its gaussians are as transparent as the sheet is -- their opacity is what it reflects head on -- so the blend is its transmission and the frame shades its reflection alone. One int a gaussian."""
         interpolation = "vertex"
     )
+    int[] primvars:athenea:splat:schlickMetal = [] (
+        doc = """Nonzero where the gaussian's metal is a Schlick -- OpenPBR's generalized_schlick_bsdf, glTF's -- from its colour head on to its specular colour at grazing, rather than a conductor of the artistic index standard_surface's and UsdPreviewSurface's are. One int a gaussian; only read beside the PBR arrays."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:curvature = [] (
+        doc = """How the surface turns under the gaussian: its shape operator in the gaussian's own first two axes (uu, uv, vv), so that the normal a step dx across the footprint away is n + S dx. Three floats a gaussian (elementSize 3), written by a TX transfer's conversion from the mesh's corner normals. A frame turns the transfer's reflection across the gaussian's footprint by it instead of showing the centre's over all of it. Without it the reflection is flat across each gaussian."""
+        elementSize = 3
+        interpolation = "vertex"
+    )
     int[] primvars:athenea:splat:shadowBits = [] (
-        doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer."""
+        doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits; or eight or thirty-two (a TX transfer's 16 x 16 or 32 x 32 grid over the whole sphere), which the count says. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer. Beside `transferZonal` the grid is over the gaussian's own frame rather than the field's space."""
         elementSize = 2
         interpolation = "vertex"
     )
@@ -255,6 +274,42 @@ object through the glass wants a ray, which this is not."""
     )
     color3f[] primvars:athenea:splat:emission = [] (
         doc = """The light each gaussian gives off by itself, linear radiance in the scene's units: what its material's emission was where it stood (standard_surface's `emission` times `emission_color`, OpenPBR's `emission_luminance` times `emission_color`, glTF's `emissive` times `emissive_strength`, UsdPreviewSurface's `emissiveColor`, each with its map). One a gaussian. A relit gaussian -- its colours an albedo, transferred or not -- adds it to what it reflects, unshadowed and the same from every side; one whose body was baked (`litBody`) does not, since the bake already holds it. It lights nothing else: an emissive gaussian is not a light. A capture has none."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:specularWeight = [] (
+        doc = """How much of the dielectric reflection each gaussian keeps, 0 to 1: OpenPBR's `specular_weight`, standard_surface's `specular`. One a gaussian, and one where it is not authored. With the other layers below it is what a relit gaussian reflects with on top of its metallic and roughness; a cloud that carries none of them reflects with weight one, white, at an index of 1.5."""
+        interpolation = "vertex"
+    )
+    color3f[] primvars:athenea:splat:specularColor = [] (
+        doc = """The tint of each gaussian's dielectric reflection and the edge colour of its metal, 0 to 1: OpenPBR's and standard_surface's `specular_color`. White where it is not authored."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:specularIor = [] (
+        doc = """The index of refraction each gaussian's dielectric reflection is taken at, 1 to 3: OpenPBR's `specular_ior`, standard_surface's `specular_IOR`, UsdPreviewSurface's `ior`. 1.5 where it is not authored. The bend of a converted glass is the field's own `ior`."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:coatWeight = [] (
+        doc = """How much of a clear coat lies over each gaussian, 0 to 1: OpenPBR's `coat_weight`, standard_surface's `coat`, UsdPreviewSurface's `clearcoat`. A dielectric layer of `coatRoughness` at `coatIor` that reflects over everything else and takes what it reflects from what reaches the base -- a car's lacquer over its metal. 0 where it is not authored."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:coatRoughness = [] (
+        doc = """The coat's roughness, 0 to 1: `coat_roughness`, UsdPreviewSurface's `clearcoatRoughness`."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:coatIor = [] (
+        doc = """The coat's index of refraction, 1 to 3: `coat_ior` (`coat_IOR`); 1.5 where it is not authored, which is UsdPreviewSurface's clear coat."""
+        interpolation = "vertex"
+    )
+    color3f[] primvars:athenea:splat:sheenColor = [] (
+        doc = """The sheen over each gaussian, its colour times its weight, 0 to 1: OpenPBR's `fuzz_weight` times `fuzz_color`, standard_surface's `sheen` times `sheen_color`. A retroreflective fuzz over the base that takes what it reflects from it -- velvet, dust, a tyre's bloom. Black where it is not authored."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:sheenRoughness = [] (
+        doc = """The sheen's roughness, 0 to 1: `sheen_roughness`, OpenPBR's `fuzz_roughness`."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:coatDarkening = [] (
+        doc = """Whether the coat darkens what lies under it, 0 to 1: OpenPBR's `coat_darkening` (1 by default there), the light the coat's inside reflects back into the base and the base absorbs. On at 0.5 and above. 0 where it is not authored, which is standard_surface's and UsdPreviewSurface's coat."""
         interpolation = "vertex"
     )
 }

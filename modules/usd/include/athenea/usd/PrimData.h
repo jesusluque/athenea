@@ -45,11 +45,19 @@ struct ParticleFieldArrays {
     /// indirect half was baked too.
     pxr::VtValue transferDirect;   ///< VtFloatArray
     pxr::VtValue transferIndirect; ///< VtFloatArray
+    /// A TX transfer's reflected field: 48 floats a gaussian (sixteen rgb
+    /// coefficients), beside the indirect half.
+    pxr::VtValue transferReflected; ///< VtFloatArray
+    /// The same direct half as two zonal lobes in each gaussian's own frame,
+    /// ten floats a gaussian, which turn with it (a cloud a skeleton carries).
+    pxr::VtValue transferZonal;    ///< VtFloatArray
     /// Which ways out of each gaussian are open: two int32 a gaussian, the
     /// bits of an 8 x 8 octahedral grid, baked beside the transfer.
     pxr::VtValue shadowBits;       ///< VtIntArray
     /// Nonzero where the gaussian came from a thin-walled glass.
     pxr::VtValue thinWalled;       ///< VtIntArray, one a gaussian
+    pxr::VtValue schlickMetal;     ///< VtIntArray, one a gaussian: its metal is a Schlick
+    pxr::VtValue curvature;        ///< VtFloatArray, three a gaussian: the shape operator (uu, uv, vv)
     /// The shading normal each gaussian keeps apart from its frame
     /// (`primvars:athenea:splat:normal`), in the field's own space. Empty for a
     /// capture, which is relit with the frame's short axis.
@@ -61,6 +69,20 @@ struct ParticleFieldArrays {
     /// (`primvars:athenea:splat:emission`), linear. Empty for a capture and
     /// for a conversion of materials that emit nothing.
     pxr::VtValue emission;         ///< VtVec3fArray or VtVec3hArray, one a gaussian
+    /// What the material layered over its base (`primvars:athenea:splat:
+    /// specularWeight`, `:specularColor`, `:specularIor`, `:coatWeight`,
+    /// `:coatRoughness`, `:coatIor`, `:sheenColor`, `:sheenRoughness`), one
+    /// value or one colour a gaussian. Empty for a capture and for a
+    /// conversion whose materials name none of it.
+    pxr::VtValue specularWeight;   ///< VtFloatArray or VtHalfArray
+    pxr::VtValue specularColour;   ///< VtVec3fArray or VtVec3hArray
+    pxr::VtValue specularIor;
+    pxr::VtValue coatWeight;
+    pxr::VtValue coatRoughness;
+    pxr::VtValue coatIor;
+    pxr::VtValue sheenColour;      ///< VtVec3fArray or VtVec3hArray
+    pxr::VtValue sheenRoughness;
+    pxr::VtValue coatDarkening;    ///< `:coatDarkening`, VtFloatArray or VtHalfArray
     std::string  cryptoManifest;   ///< {"<path>":"<hex8>"} as the primvar holds it
     /// A LEVEL OF DETAIL OF A CLOUD THAT MOVES: the same cloud converted at
     /// several cells, each its own prim with its own rig, named alike by

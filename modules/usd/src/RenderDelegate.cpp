@@ -359,6 +359,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudShadows.name = "Cloud shadows: a transmittance map at each light, no ray";
     cloudShadows.key = TfToken("athenea:cloudShadows");
     cloudShadows.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor domePrefiltered;
+    domePrefiltered.name = "Raster: a dome lights a mesh prefiltered, no sample and no ray";
+    domePrefiltered.key = TfToken("athenea:domePrefiltered");
+    domePrefiltered.defaultValue = VtValue(true);
     HdRenderSettingDescriptor cloudTexels;
     cloudTexels.name = "Cloud shadow map: texels a side, per light";
     cloudTexels.key = TfToken("athenea:cloudShadowResolution");
@@ -377,7 +381,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudDensity.defaultValue = VtValue(1.0f);
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        motion,      transferIndirect, reflectCloud, splatShadows,
-            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias};
+            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -403,6 +407,13 @@ bool HdAtheneaRenderDelegate::GetCloudShadows() const {
     // On unless the stage says otherwise: a cloud that casts nothing on the
     // floor under it is wrong, and the map costs one pass a light.
     const VtValue value = GetRenderSetting(TfToken("athenea:cloudShadows"));
+    return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+bool HdAtheneaRenderDelegate::GetDomePrefiltered() const {
+    // On unless the stage says otherwise: a sampled dome is grain and a ray a
+    // pixel on every mesh under it.
+    const VtValue value = GetRenderSetting(TfToken("athenea:domePrefiltered"));
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
 }
 

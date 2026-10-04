@@ -48,6 +48,7 @@
 
 #include "Commands.h"
 #include "Output.h"
+#include "Mesh2SplatValidate.h"
 #include "aofx/Effect.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
@@ -59,16 +60,20 @@
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/algo/PrefixSum.h"
+#include "athenea/gpu/algo/RadixSort.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/gpu_host/Context.h"
 #include "athenea/gpu_host/ImageStorage.h"
 #include "athenea/image/Image.h"
 #include "athenea/lod/Athc.h"
+#include "athenea/technique/PathTracer.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/material/TextureStore.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/scene/SplatSkinner.h"
 #include "athenea/usd/Export.h"
 #include "athenea/usd/MeshStage.h"
+#include "athenea/usd/ShadowCatcher.h"
 #include "athenea/usd/StageRenderer.h"
 
 namespace athenea::cli {
@@ -117,6 +122,10 @@ constexpr uint32_t kRowEntries = 4096;
 
 struct Options {
     std::vector<std::string> hidden;
+    /// Materials whose glass is a sheet though they do not say so, and
+    /// materials whose glass is solid whatever their mesh looks like.
+    std::vector<std::string> thinGlass;
+    std::vector<std::string> solidGlass;
     std::string              stage;
     std::string              output = "splats.usda";
     std::string              prim;
@@ -143,7 +152,10 @@ struct Options {
     double                   sigma = 1.0;
     double                   flatness = 0.1;
     double                   opacity = 1.0;
-    double                   minOpacity = 0.6;
+    /// What a fully transmitting solid covers; negative chooses: 1 with a
+    /// TX transfer, whose frame draws the lens's own image (its sky bent
+    /// through both faces, the field where the way is closed), 0.6 otherwise.
+    double                   minOpacity = -1.0;
     /// A cut-out map reads below this where there is no surface.
     double                   opacityCut = 0.5;
     uint32_t                 maxCells = 1u << 18;
@@ -177,6 +189,35 @@ struct Options {
     /// Excludes the radiance bake, which keeps one sky's light instead.
     bool                     transfer = false;
     bool                     indirect = true;
+    /// THE TRANSFER'S OPEN DIRECTIONS, cells a side of an octahedral grid
+    /// over the whole sphere: 16 (256 bits a gaussian) or 32 (1024), which is
+    /// what a reflection's occlusion and a glass's view through are read from
+    /// (task TX); 0, the first transfer's 64 over the half a gaussian faces.
+    uint32_t                 transferCells = 16;
+    /// THE TRANSFER'S DEGREE: 3 (sixteen coefficients direct, forty-eight
+    /// indirect: task TX, step 3), or 2 (nine and twenty-seven, the first
+    /// transfer's).
+    uint32_t                 transferDegree = 3;
+    /// HOW MUCH THE SURFACE'S TURN UNDER A GAUSSIAN ROUGHENS IT (Toksvig,
+    /// the effect's `normalSpread`): negative is 1 for --transfer and 0
+    /// otherwise, so a relit or baked conversion is what it was.
+    double                   specularFilter = -1.0;
+    /// Gaussians a slice of the transfer's bake (Converter::transfer); 0
+    /// chooses by memory.
+    uint32_t                 transferSlice = 0;
+    /// --validate DIR (Mesh2SplatValidate.h) and what it is measured with.
+    std::string              validate;
+    std::string              validateCamera;
+    std::vector<uint32_t>    validateSize;
+    uint32_t                 validatePaths = 512;
+    uint32_t                 validateBounces = 6;
+    std::vector<std::string> validateMaterials;
+    std::string              validateSky;
+    /// THE TRANSFER AS ZONAL LOBES in each gaussian's own frame (proposal 014
+    /// B): 1 or 2 lobes, which turn with the gaussian; 0 is nine harmonics in
+    /// the world for a still cloud and two lobes for one a skeleton carries,
+    /// whose gaussians turn every frame.
+    uint32_t                 transferLobes = 0;
     /// PATHS A GAUSSIAN, 256 on average since every gaussian is blended in
     /// linear light: these everywhere, then `bakeExtra` more shared out
     /// where the noise is (docs/decisions.md, "The bake's grain"). A transfer
@@ -206,6 +247,15 @@ struct Options {
     std::string              range;
     double                   time = 0.0;
     std::vector<std::string> paths;
+    /// THE GROUND'S SHADOW AS GAUSSIANS (usd/ShadowCatcher.h): convert, of the
+    /// stage, a patch on the ground under --prim and around it, baked as a
+    /// transfer with the object and the ground as what its rays meet, and
+    /// written as a catcher -- black, covering what the object takes.
+    bool                     shadowCatcher = false;
+    std::string              catcherGround;
+    double                   catcherMargin = 1.5;
+    /// The catcher's cell, world units; 0 is a hundredth of the object's height.
+    double                   catcherCell = 0.0;
 };
 
 /// One map the conversion reads, as a picture. Several materials name the same
@@ -221,6 +271,22 @@ struct MapKey {
         if (a.roughness != b.roughness) return a.roughness < b.roughness;
         return static_cast<int>(a.packed) < static_cast<int>(b.packed);
     }
+};
+
+/// A TRANSFER KEPT AS ZONAL LOBES IN EACH GAUSSIAN'S FRAME (proposal 014 B):
+/// the effect that fits them, how many, how the records are laid out (the
+/// cloud is decoded to learn each gaussian's frame as a frame will draw it),
+/// and -- for a cloud a skeleton carries -- the joints' transforms at the
+/// bake's instant, which pose the cloud onto the stage the bake traces.
+struct ZonalTransfer {
+    aofx::Effect*         effect = nullptr;
+    uint32_t              lobes = 2;
+    io::SplatEncoding     encoding;
+    /// Sixteen floats a joint at `--time`, as `MeshStage::skeletonTransforms`
+    /// gives them; empty for a cloud nothing carries.
+    std::vector<float>    xforms;
+    std::array<float, 16> geomBind{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+                                   0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
 };
 
 class Converter {
@@ -256,9 +322,18 @@ public:
         ATHENEA_TRY(make("athenea/usd/mesh2splat_span", "m2sRaySpan", raySpan_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sBakeInto", bakeInto_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_bake", "m2sTransferInto", transferInto_));
+        ATHENEA_TRY(make("athenea/usd/transfer_zonal_io", "zonalPoseRays", zonalPoseRays_));
+        ATHENEA_TRY(make("athenea/usd/transfer_zonal_io", "zonalPack", zonalPack_));
+        ATHENEA_TRY(make("athenea/usd/transfer_zonal_io", "zonalUnpack", zonalUnpack_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetFlags", subsetFlags_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_subset", "m2sSubsetScatter", subsetScatter_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_cells", "m2sCells", cells_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetEdges", sheetEdges_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetRuns", sheetRuns_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetSum", sheetSum_));
+        auto sort = gpu::RadixSort::create(*library_);
+        if (!sort) return std::move(sort).error();
+        sort_ = std::move(*sort);
         auto prefix = gpu::PrefixSum::create(*library_);
         if (!prefix) return std::move(prefix).error();
         prefix_ = std::move(*prefix);
@@ -342,6 +417,132 @@ public:
             }
         }
         return ok();
+    }
+
+    /// WHICH GLASS IS A SHEET, from the mesh and nothing else. A transmitting
+    /// piece whose material does not already say it is thin is read
+    /// thin-walled where it is a sheet or a slab:
+    ///
+    /// - open: its triangles leave edges with one triangle on them, or share
+    ///   one among more than two -- a windscreen modelled as one surface;
+    /// - thin: twice its volume over its area (2V/A, research 055) under four
+    ///   of the model's cells or a fiftieth of its own size (the root of its
+    ///   area) -- the Corvette's glass is closed slabs 3 to 4 mm thick, two
+    ///   parallel faces that bend nothing, where a ball reads two thirds of
+    ///   its radius and stays solid.
+    ///
+    /// Both measured on the device from the triangles the piece was packed
+    /// into (`mesh2splat_sheet`): the edges keyed by where their points
+    /// stand, sorted and their runs counted; the volume and the area summed.
+    /// Three counts and two sums come back. Over a two-hundredth of the edges
+    /// open is open, so a closed glass with a stray hole is not. Each decision
+    /// is printed. `--thin-glass` names one neither measure shows.
+    [[nodiscard]] Result<void> classifySheets() {
+        gpu::Device& device = library_->device();
+        sheet_.assign(pieces_.size(), false);
+        for (size_t p = 0; p < pieces_.size(); ++p) {
+            const Piece& piece = pieces_[p];
+            const usd::StageMaterial& material = *piece.material;
+            if (material.transmission <= 0.0F || material.thinWalled || piece.triangles == 0 ||
+                p >= streams_.size() || !streams_[p]) {
+                continue;
+            }
+            // `--solid-glass`: the caller's word over the mesh's.
+            const std::string name = material.path.substr(material.path.find_last_of('/') + 1);
+            if (std::any_of(options_->solidGlass.begin(), options_->solidGlass.end(),
+                            [&](const std::string& want) { return want == material.path || want == name; })) {
+                cli::out("mesh2splat: %s is solid glass (--solid-glass)\n", piece.path.c_str());
+                continue;
+            }
+            const uint32_t edges = piece.triangles * 3;
+            const auto words = [&](uint64_t n, uint32_t element, const char* label) {
+                gpu::BufferDesc desc;
+                desc.bytes = std::max<uint64_t>(n, 1) * element;
+                desc.elementBytes = element;
+                desc.label = label;
+                return gpu::Buffer::create(device, desc);
+            };
+            auto view = viewOf(*context_, streams_[p], "mesh2splat.sheetPicture");
+            if (!view) return std::move(view).error();
+            gpu::SortBuffers buffers;
+            auto lo = words(edges, 4, "mesh2splat.sheetKeysLo");
+            auto hi = words(edges, 4, "mesh2splat.sheetKeysHi");
+            auto values = words(edges, 4, "mesh2splat.sheetValues");
+            auto scratchLo = words(edges, 4, "mesh2splat.sheetScratchLo");
+            auto scratchHi = words(edges, 4, "mesh2splat.sheetScratchHi");
+            auto scratchValues = words(edges, 4, "mesh2splat.sheetScratchValues");
+            auto counts = words(3, 4, "mesh2splat.sheetCounts");
+            auto measures = words(piece.triangles, 8, "mesh2splat.sheetMeasures");
+            auto sums = words(2, 4, "mesh2splat.sheetSums");
+            if (!lo || !hi || !values || !scratchLo || !scratchHi || !scratchValues || !counts || !measures ||
+                !sums) {
+                return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot measure a glass");
+            }
+            buffers.keysLo = *lo;
+            buffers.keysHi = *hi;
+            buffers.values = *values;
+            buffers.scratchKeysLo = *scratchLo;
+            buffers.scratchKeysHi = *scratchHi;
+            buffers.scratchValues = *scratchValues;
+            const uint32_t zero[3] = {0, 0, 0};
+            ATHENEA_TRY(counts->write(device, 0, sizeof(zero), zero));
+            const auto bind = [&](rhi::ShaderCursor cursor) {
+                cursor["picture"].setBinding(view->rhi());
+                cursor["keysLo"].setBinding(buffers.keysLo.rhi());
+                cursor["keysHi"].setBinding(buffers.keysHi.rhi());
+                cursor["values"].setBinding(buffers.values.rhi());
+                cursor["counts"].setBinding(counts->rhi());
+                cursor["measures"].setBinding(measures->rhi());
+                cursor["sums"].setBinding(sums->rhi());
+                cursor["sheet"]["triangles"].setData(piece.triangles);
+                cursor["sheet"]["count"].setData(edges);
+                cursor["sheet"]["width"].setData(static_cast<uint32_t>(streams_[p]->bounds().width()));
+                cursor["sheet"]["stride"].setData(static_cast<uint32_t>(streams_[p]->stride()));
+            };
+            {
+                gpu::CommandBatch batch(device);
+                sheetEdges_.dispatch(batch, {piece.triangles, 1, 1}, bind);
+                ATHENEA_TRY(sort_.sort(batch, buffers, edges, 64));
+                sheetRuns_.dispatch(batch, {edges, 1, 1}, bind);
+                sheetSum_.dispatch(batch, {256, 1, 1}, bind);
+                ATHENEA_TRY(batch.submit(true));
+            }
+            uint32_t said[3] = {0, 0, 0};
+            float measured[2] = {0.0F, 0.0F};
+            ATHENEA_TRY(counts->read(device, 0, sizeof(said), said));
+            ATHENEA_TRY(sums->read(device, 0, sizeof(measured), measured));
+            const bool open = said[1] * 200u > said[0] || said[2] > 0;
+            const double area = std::max(static_cast<double>(measured[1]), 1.0e-30);
+            const double thickness = 2.0 * std::abs(static_cast<double>(measured[0])) / area;
+            const double size = std::sqrt(area);
+            const bool slab = !open && (thickness < 4.0 * modelCell_ || thickness < 0.02 * size);
+            // A TINTED SHEET STAYS SOLID, for now: a thin wall lets what
+            // stands behind it through by its coverage, which is grey -- the
+            // Corvette's tinted panes (transmission colour 0.52) let the cabin
+            // through untinted at twice the path traced brightness. A solid
+            // glass carries its tint in the field.
+            const auto& tint = material.transmissionColour;
+            const float through = 0.2126F * tint[0] + 0.7152F * tint[1] + 0.0722F * tint[2];
+            const bool tinted = through < 0.9F;
+            sheet_[p] = (open || slab) && !tinted;
+            cli::out("mesh2splat: %s is %s glass: %u of its %u edges open, %u shared by more than two; "
+                        "%.4g thick (2V/A) against a cell of %.4g and a size of %.4g\n",
+                        piece.path.c_str(),
+                        (open || slab) && tinted ? "tinted, kept solid"
+                        : open                   ? "sheet (thin-walled)"
+                        : slab                   ? "slab (thin-walled)"
+                                                 : "solid",
+                        said[1], said[0], said[2], thickness, modelCell_, size);
+        }
+        return ok();
+    }
+
+    /// Whether piece `p`'s glass is a sheet: its material says so, the
+    /// caller does (`--thin-glass`, read into the material), or its mesh
+    /// does (`classifySheets`).
+    [[nodiscard]] bool thinGlassOf(size_t p) const {
+        return thinGlass(*pieces_[p].material) ||
+               (p < sheet_.size() && sheet_[p] && pieces_[p].material->transmission > 0.0F);
     }
 
     /// Every piece's triangles into a picture of its own, and the model's box
@@ -652,6 +853,11 @@ public:
             // What it gives off, where that is a map. sRGB where the file
             // says so: a map of light is a colour like any other.
             ask(material.emissionMap);
+            // The maps on the layers, sRGB where the file says so: a
+            // specular or sheen colour is a colour.
+            for (const usd::StageMaterial::LayerMap& map : material.layerMaps) {
+                ask(map.texture);
+            }
             if (!options_->noDisplacement) {
                 ask(material.displacementMap);
             }
@@ -788,7 +994,19 @@ public:
         emits_ = std::any_of(pieces_.begin(), pieces_.end(),
                              [](const Piece& piece) { return piece.material->emits(); });
         raw.encoding.emission = emits_ ? 20u : io::SplatEncoding::kNoField;
-        raw.encoding.floatsPerRecord = 23 + raw.encoding.restPerColour * 3;
+        // AND WHAT THE MATERIALS LAYER OVER THEIR BASE -- a car's lacquer, a
+        // specular's tint, a sheen -- where any of the stage's does: thirteen
+        // floats more, last, after the harmonics the bake writes.
+        layered_ = std::any_of(pieces_.begin(), pieces_.end(),
+                               [](const Piece& piece) { return piece.material->layered(); });
+        // AND HOW THE SURFACE TURNS UNDER EACH GAUSSIAN, for a TX transfer: a
+        // frame turns the reflection across the gaussian by it. Apart from
+        // the records, three floats a gaussian; not where the levels of
+        // detail reorder the cloud or a skeleton carries it.
+        curved_ = options_->transfer && options_->transferCells > 0 && options_->lodLevels <= 1 &&
+                  !options_->skinned;
+        raw.encoding.floatsPerRecord = recordFloats();
+        raw.encoding.lobes = layered_ ? raw.encoding.floatsPerRecord - 13 : io::SplatEncoding::kNoField;
         raw.encoding.opacity_ = io::SplatEncoding::Opacity::Linear;
         raw.encoding.scale_ = io::SplatEncoding::Scale::Linear;
         // LINEAR LIGHT, BAKED OR NOT. Not baked, the colours are a
@@ -824,6 +1042,8 @@ public:
         wantedBy_.assign(pieces, 0);
         shareOf_.assign(pieces, 0);
         ATHENEA_TRY(deriveCells());
+        // Which glass is a sheet or a slab, now that the cell is known.
+        ATHENEA_TRY(classifySheets());
         if (perMesh_ && !camera_) {
             cli::out("mesh2splat: density per mesh: %u cells across each mesh's longest side, the cell "
                         "held between %.4g and %.4g (the model's is %.4g)\n",
@@ -915,6 +1135,17 @@ public:
                                         (what.emissionMap.empty() ? "" : " x '" + what.emissionMap.file + "'"))
                                            .c_str()
                                      : "");
+            if (what.layered()) {
+                cli::out("mesh2splat: %s layers specular %.2f x (%.2f %.2f %.2f) at %.3f, coat %.2f rough %.2f "
+                            "at %.3f, sheen (%.2f %.2f %.2f) rough %.2f\n",
+                            piece.path.c_str(), static_cast<double>(what.specularWeight),
+                            static_cast<double>(what.specularColour[0]), static_cast<double>(what.specularColour[1]),
+                            static_cast<double>(what.specularColour[2]), static_cast<double>(what.ior),
+                            static_cast<double>(what.coatWeight), static_cast<double>(what.coatRoughness),
+                            static_cast<double>(what.coatIor), static_cast<double>(what.sheenColour[0]),
+                            static_cast<double>(what.sheenColour[1]), static_cast<double>(what.sheenColour[2]),
+                            static_cast<double>(what.sheenRoughness));
+            }
             // A surface whose material says it is not there -- an opacity of
             // nothing, or a constant under its own threshold -- has no
             // gaussian worth writing.
@@ -997,17 +1228,22 @@ public:
                 // And whether it is a sheet: a thin wall's transmission is
                 // its gaussians' own transparency (see `glassOpacity`).
                 thinWalled_.insert(thinWalled_.end(), out->written,
-                                   thinGlass(material) ? int32_t{1} : int32_t{0});
+                                   thinGlassOf(k) ? int32_t{1} : int32_t{0});
+                // And whether its metal is a Schlick (OpenPBR, glTF) rather
+                // than a conductor: what a frame reflects a metal with.
+                schlickMetal_.insert(schlickMetal_.end(), out->written,
+                                     material.schlickMetal ? int32_t{1} : int32_t{0});
                 // AND WHAT ITS GLASS BENDS BY. A transmitting gaussian
                 // refracts only with an index (rt_shade: `ior > 1`), and a
                 // cloud keeps one: without it the pawn's glass head was a
                 // milky ball in every mode, relit, transferred or baked.
-                if (out->written > 0 && material.transmission > 0.0F && !material.thinWalled) {
+                if (out->written > 0 && material.transmission > 0.0F && !thinGlassOf(k)) {
                     const float ior = material.ior;
                     if (glassIor_ > 0.0F && glassIor_ != ior) {
                         cli::err(
-                                     "mesh2splat: %s bends by %.3f and an earlier glass by %.3f; a cloud keeps "
-                                     "one index, the first\n",
+                                     "mesh2splat: %s bends by %.3f and an earlier glass by %.3f; the cloud's "
+                                     "index is the first, and where the cloud carries the layers each gaussian "
+                                     "bends by its own specular index instead\n",
                                      piece.path.c_str(), static_cast<double>(ior),
                                      static_cast<double>(glassIor_));
                     } else {
@@ -1094,7 +1330,8 @@ private:
     /// reflects with, the shading normal, the emission, and the harmonics
     /// where a bake writes them.
     [[nodiscard]] uint32_t recordFloats() const {
-        return 23 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3;
+        return 23 + (options_->bake ? kRestPerDegree[std::min(options_->bakeDegree, 3u)] : 0) * 3 +
+               (layered_ ? 13u : 0u);
     }
 
     struct OneMesh {
@@ -1187,7 +1424,9 @@ private:
                 : image::ImagePtr{};
         const uint32_t ownEntries = kRecordEntries;
         // AND ONE FOR WHAT IT GIVES OFF, the last, where the stage emits.
-        const uint32_t recordEntries = kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U);
+        // AND FOUR FOR WHAT THE MATERIAL LAYERS OVER ITS BASE, after it.
+        const uint32_t recordEntries =
+            kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U) + (layered_ ? 4U : 0U) + (curved_ ? 1U : 0U);
         const image::PixelRect bounds = pictureFor(budget * recordEntries);
 
         // The box the density is measured over: the model's, or this mesh's
@@ -1212,6 +1451,16 @@ private:
         if (uv2s_[at]) job.inputs.push_back({"Texcoord2", uv2s_[at]});
         if (heightMap) job.inputs.push_back({"Displacement", heightMap});
         if (emissionMap) job.inputs.push_back({"Emission", emissionMap});
+        // The maps on the layers, Layer0..2, each for the input it stands for.
+        std::array<image::ImagePtr, 3> layerPictures{};
+        if (layered_ && !options_->noTextures) {
+            for (size_t k = 0; k < material.layerMaps.size() && k < 3; ++k) {
+                layerPictures[k] = mapOrNone(material.layerMaps[k].texture.file, {}, false);
+                if (layerPictures[k]) {
+                    job.inputs.push_back({"Layer" + std::to_string(k), layerPictures[k]});
+                }
+            }
+        }
 
         const auto number = [&job](const char* name, double value) {
             job.params.push_back(aofx::ParamValue{name, {value}, {}});
@@ -1235,15 +1484,20 @@ private:
         number("materialOpacity", static_cast<double>(material.opacity));
         // A THIN WALL IS ITS OWN TRANSPARENCY: it covers what the sheet
         // reflects head on at its index, which the effect works out
-        // (`m2sGlassCovers`). A solid covers `--glass-opacity`.
-        number("glassOpacity", options_->minOpacity);
-        number("thinWall", thinGlass(material) ? 1.0 : 0.0);
+        // (`m2sGlassCovers`). A solid covers `--glass-opacity`, 0.6 in every
+        // mode: a TX transfer's lens answers what is behind it from the
+        // domes alone, so at 1 a glass ball under a lamp lost the lit ground
+        // it shows (0.217 against the first transfer's 0.092; 0.0965 at 0.6).
+        number("glassOpacity", options_->minOpacity >= 0.0 ? options_->minOpacity : 0.6);
+        number("thinWall", thinGlassOf(at) ? 1.0 : 0.0);
         number("ior", static_cast<double>(material.ior));
         number("maxCells", static_cast<double>(options_->maxCells));
         number("cellMin", static_cast<double>(cellValues_[3 + 3 * pieces_.size() + at]));
         number("cellMax", static_cast<double>(cellValues_[3 + 4 * pieces_.size() + at]));
         number("cellByLongest", perMesh_ || camera_ ? 1.0 : 0.0);
         number("useNormalMap", options_->normalMapTurns ? 1.0 : 0.0);
+        number("normalSpread", options_->specularFilter >= 0.0 ? options_->specularFilter
+                                                               : (options_->transfer ? 1.0 : 0.0));
         number("simplify", options_->simplify);
         number("simplifyLevels", static_cast<double>(options_->simplifyLevels));
         if (cutMap) {
@@ -1308,6 +1562,45 @@ private:
                                                        : 0.0);
         }
 
+        number("writeCurvature", curved_ ? 1.0 : 0.0);
+        if (layered_) {
+            // Every piece writes them once one does, so the records stay one
+            // layout; a material that names none writes the plain ones.
+            number("writeLobes", 1.0);
+            number("specularWeight", static_cast<double>(material.specularWeight));
+            colour("specularColour", material.specularColour);
+            number("specularIor", static_cast<double>(material.ior));
+            number("coatWeight", static_cast<double>(material.coatWeight));
+            number("coatRoughness", static_cast<double>(material.coatRoughness));
+            number("coatIor", static_cast<double>(material.coatIor));
+            colour("sheenColour", material.sheenColour);
+            number("sheenRoughness", static_cast<double>(material.sheenRoughness));
+            number("coatDarkening", static_cast<double>(material.coatDarkening));
+            number("sheenWeight", static_cast<double>(material.sheenWeight));
+            const float weight = material.sheenWeight;
+            colour("sheenColourAlone",
+                   weight > 0.0F ? std::array<float, 3>{material.sheenColour[0] / weight,
+                                                        material.sheenColour[1] / weight,
+                                                        material.sheenColour[2] / weight}
+                                 : std::array<float, 3>{1.0F, 1.0F, 1.0F});
+            for (size_t k = 0; k < material.layerMaps.size() && k < 3; ++k) {
+                if (!layerPictures[k]) {
+                    continue;
+                }
+                const usd::StageMaterial::LayerMap& map = material.layerMaps[k];
+                const std::string n = std::to_string(k);
+                const char channel = map.texture.channel;
+                number(("layer" + n + "Target").c_str(), static_cast<double>(static_cast<uint32_t>(map.target)));
+                number(("layer" + n + "Channel").c_str(), channel == 'r'   ? 1.0
+                                                          : channel == 'g' ? 2.0
+                                                          : channel == 'b' ? 3.0
+                                                          : channel == 'a' ? 4.0
+                                                                           : 0.0);
+                number(("layer" + n + "Uv2").c_str(),
+                       uv2s_[at] && !map.texture.empty() && map.texture.uvSet == mesh.uv2 ? 1.0 : 0.0);
+            }
+        }
+
         auto rendered = aofx_host::renderEffect(*context_, effect, job);
         if (!rendered) return std::move(rendered).error();
         const image::Image& out = **rendered;
@@ -1362,6 +1655,9 @@ private:
         };
         ATHENEA_TRY(grown(records_, uint64_t{perRecord} * 4, 4, "mesh2splat.records"));
         ATHENEA_TRY(grown(rays_, 48, 16, "mesh2splat.rays"));
+        if (curved_) {
+            ATHENEA_TRY(grown(curvatures_, 12, 4, "mesh2splat.curvatures"));
+        }
         if (options_->skinned) {
             ATHENEA_TRY(grown(influences_, 32, 16, "mesh2splat.influences"));
             ATHENEA_TRY(grown(gradients_, 12, 4, "mesh2splat.weightGradients"));
@@ -1400,6 +1696,9 @@ private:
             cursor["gather"]["carried"].setData(carried ? 1u : 0u);
             cursor["gather"]["overArea"].setData(options_->simplify > 0.0 ? 1u : 0u);
             cursor["gather"]["emits"].setData(emits_ ? 1u : 0u);
+            cursor["gather"]["lobes"].setData(layered_ ? 1u : 0u);
+            cursor["gather"]["curved"].setData(curved_ ? 1u : 0u);
+            cursor["curvatures"].setBinding(curved_ ? curvatures_.rhi() : records_.rhi());
         };
         const uint32_t threads = static_cast<uint32_t>(run.written);
         gather_.dispatch(batch, {threads, 1, 1}, bind);
@@ -1479,20 +1778,59 @@ public:
     /// the half packed into the two pictures the effect reads, and its answer
     /// unpacked back over it (`athenea/usd/bake_filter_io`).
     [[nodiscard]] Result<void> filterIndirect(aofx::Effect& filter, usd::BakeSplit& split);
+    /// THE SAME FILTER OVER A TX TRANSFER'S BOUNCED HALVES: the indirect
+    /// half's rgb and the reflected field, in the answer the bake laid out
+    /// (`athenea/usd/transfer_filter_io`).
+    /// `base` and `count`: the gaussians the answer holds, a slice of the
+    /// cloud's (Converter::transfer bakes a large one in slices).
+    [[nodiscard]] Result<void> filterTransfer(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
+                                              uint32_t entries, uint32_t fieldFirst, uint32_t base,
+                                              uint32_t count);
+    [[nodiscard]] Result<void> filterTransferPart(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
+                                                  uint32_t entries, uint32_t fieldFirst, uint32_t part,
+                                                  uint32_t first, uint32_t chunk, uint32_t base, uint32_t count);
     /// How much of an environment reaches each gaussian, instead of the light.
+    /// With `zonal`, the cloud is posed where its skeleton stands at `time`
+    /// before the bake traces it, and what the file keeps is `zonalOut` --
+    /// ten floats a gaussian -- and the bits in each gaussian's frame, in
+    /// place of `direct` and `bounced`.
     [[nodiscard]] Result<void> transfer(const std::string& stage, double time, uint32_t samples,
-                                        uint32_t bounces, bool indirect, std::vector<float>& direct,
-                                        std::vector<float>& bounced, std::vector<int32_t>& shadowBits);
+                                        uint32_t bounces, bool indirect, uint32_t cells, uint32_t degree,
+                                        aofx::Effect* filter, const ZonalTransfer* zonal,
+                                        usd::TransferArrays& out);
+private:
+    /// The frame each gaussian has at the bake, a record each (its `shape`'s
+    /// four words; word 0 the rotation): the rest one, or for a cloud a
+    /// skeleton carries the posed one -- and then the bake's rays are moved
+    /// with their gaussians onto the posed stage.
+    [[nodiscard]] Result<gpu::Buffer> framesForBake(const ZonalTransfer& zonal);
+    /// The bake's nine harmonics and bits through the splat transfer zonal
+    /// fit (plugins/splattransferzonal), and its answer back as the file's.
+    [[nodiscard]] Result<void> fitZonal(const ZonalTransfer& zonal, const gpu::Buffer& frames,
+                                        const gpu::Buffer& directs, const gpu::Buffer& bits,
+                                        std::vector<float>& zonalOut, std::vector<int32_t>& shadowBits);
+
+public:
 
 private:
     /// Whether any material of the stage gives off light: the records then
     /// carry it (`io::SplatEncoding::emission`).
     bool                                     emits_ = false;
+    /// Whether any material of the stage layers anything over its base
+    /// (`usd::StageMaterial::layered`): the records then carry the thirteen
+    /// floats of `io::SplatEncoding::lobes`, last.
+    bool                                     layered_ = false;
+    /// Whether the effect writes each gaussian's shape operator, gathered
+    /// into `curvatures_` (three floats a gaussian).
+    bool                                     curved_ = false;
+    gpu::Buffer                              curvatures_;
     /// The Cryptomatte id of the prim each splat came from, in the same order,
     /// and what those ids are called.
     std::vector<uint32_t>                    cryptoIds_;
     /// 1 where the splat came from a thin-walled glass, in the same order.
     std::vector<int32_t>                     thinWalled_;
+    /// One a gaussian, 1 where its metal is a Schlick (StageMaterial::schlickMetal).
+    std::vector<int32_t>                     schlickMetal_;
     /// The index the cloud's transmitting gaussians bend by: the first glass
     /// met's. 0 while there is none.
     float                                    glassIor_ = 0.0F;
@@ -1522,6 +1860,18 @@ public:
     [[nodiscard]] const std::vector<uint32_t>& cryptoIds() const noexcept { return cryptoIds_; }
     [[nodiscard]] double modelCell() const noexcept { return modelCell_; }
     [[nodiscard]] const std::vector<int32_t>& thinWalled() const noexcept { return thinWalled_; }
+    [[nodiscard]] const std::vector<int32_t>& schlickMetal() const noexcept { return schlickMetal_; }
+    /// Each gaussian's shape operator (uu, uv, vv), read back for the file;
+    /// empty where the conversion did not write it.
+    [[nodiscard]] Result<std::vector<float>> curvature() {
+        std::vector<float> out;
+        if (!curved_ || !curvatures_.valid() || used_ == 0) {
+            return out;
+        }
+        out.resize(size_t{used_} * 3);
+        ATHENEA_TRY(curvatures_.read(library_->device(), 0, out.size() * sizeof(float), out.data()));
+        return out;
+    }
     [[nodiscard]] float glassIor() const noexcept { return glassIor_; }
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
@@ -1554,7 +1904,12 @@ private:
     gpu::ComputeKernel                       pack_, chunks_, reduce_, reduceSlices_, rows_;
     gpu::ComputeKernel                       gather_, noInfluence_, recordChunks_, raySpan_, bakeInto_,
                                              transferInto_, subsetFlags_, subsetScatter_;
+    gpu::ComputeKernel                       zonalPoseRays_, zonalPack_, zonalUnpack_;
     gpu::PrefixSum                           prefix_;
+    gpu::RadixSort                           sort_;
+    gpu::ComputeKernel                       sheetEdges_, sheetRuns_, sheetSum_;
+    /// A piece each: its glass is a sheet by its mesh (`classifySheets`).
+    std::vector<bool>                        sheet_;
     std::vector<Piece>                       pieces_;
     gpu::ComputeKernel                       cells_;
     gpu::Buffer                              boxes_;        ///< the model's box, then each mesh's
@@ -1638,8 +1993,10 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
         cursor["direct"].setBinding(none.rhi());
         cursor["bounced"].setBinding(none.rhi());
         cursor["shadowBits"].setBinding(none.rhi());
+        cursor["reflected"].setBinding(none.rhi());
         cursor["counts"].setBinding(lit->rhi());
         cursor["bake"]["count"].setData(count_);
+        cursor["bake"]["first"].setData(uint32_t{0});
         cursor["bake"]["coefficients"].setData(coefficients);
         cursor["bake"]["perRecord"].setData(recordFloats());
         cursor["bake"]["opacity"].setData(uint32_t{3});
@@ -1771,23 +2128,167 @@ Result<void> Converter::filterIndirect(aofx::Effect& filter, usd::BakeSplit& spl
 /// gathers. The frame then reads `albedo * dot(transfer, sky)` under whatever
 /// sky the cloud is put in. On the device as the bake is; the three arrays
 /// the file keeps come back as bytes.
+Result<void> Converter::filterTransfer(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
+                                       uint32_t entries, uint32_t fieldFirst, uint32_t base, uint32_t count) {
+    // The indirect half, then the field: apart, since the filter takes at
+    // most sixteen entries a gaussian.
+    // And a few values at a time: a picture of a whole half of a car (2.3
+    // million gaussians, sixteen values) is more than the device pool serves.
+    constexpr uint32_t kChunk = 4;
+    for (uint32_t part = 0; part < (fieldFirst != 0 ? 2u : 1u); ++part) {
+        const uint32_t values = part == 0 ? coefficients : 16u;
+        for (uint32_t first = 0; first < values; first += kChunk) {
+            ATHENEA_TRY(filterTransferPart(filter, answer, coefficients, entries, fieldFirst, part, first,
+                                           std::min(kChunk, values - first), base, count));
+        }
+    }
+    return ok();
+}
+
+Result<void> Converter::filterTransferPart(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
+                                           uint32_t entries, uint32_t fieldFirst, uint32_t part, uint32_t first,
+                                           uint32_t chunk, uint32_t base, uint32_t count) {
+    gpu::Device& device = library_->device();
+    const uint32_t perGaussian = chunk;
+    auto points = image::Image::create(pictureFor(uint64_t{count} * 3));
+    if (!points) return std::move(points).error();
+    auto light = image::Image::create(pictureFor(uint64_t{count} * perGaussian));
+    if (!light) return std::move(light).error();
+    auto pointsView = viewOf(*context_, *points, "mesh2splat.transferFilterPoints");
+    if (!pointsView) return std::move(pointsView).error();
+    auto lightView = viewOf(*context_, *light, "mesh2splat.transferFilterIn");
+    if (!lightView) return std::move(lightView).error();
+    std::vector<uint32_t> ids(count, 0);
+    if (cryptoIds_.size() == count_) {
+        std::copy_n(cryptoIds_.begin() + base, count, ids.begin());
+    }
+    auto idBuffer = gpu::Buffer::fromSpan<uint32_t>(device, ids, "mesh2splat.transferFilterIds");
+    if (!idBuffer) return std::move(idBuffer).error();
+    const auto kernel = [&](const char* entry) {
+        return gpu::ComputeKernel::create(*library_, "athenea/usd/transfer_filter_io", entry);
+    };
+    auto pack = kernel("transferFilterPoints");
+    if (!pack) return std::move(pack).error();
+    auto in = kernel("transferFilterIn");
+    if (!in) return std::move(in).error();
+    auto out = kernel("transferFilterOut");
+    if (!out) return std::move(out).error();
+    const auto bind = [&](rhi::ShaderCursor cursor, const gpu::Buffer& picture, const image::ImagePtr& image) {
+        cursor["rays"].setBinding(rays_.rhi());
+        cursor["records"].setBinding(records_.rhi());
+        cursor["ids"].setBinding(idBuffer->rhi());
+        cursor["answer"].setBinding(answer.rhi());
+        cursor["picture"].setBinding(picture.rhi());
+        cursor["io"]["count"].setData(count);
+        cursor["io"]["base"].setData(base);
+        cursor["io"]["coefficients"].setData(coefficients);
+        cursor["io"]["entries"].setData(entries);
+        cursor["io"]["fieldFirst"].setData(fieldFirst);
+        cursor["io"]["width"].setData(static_cast<uint32_t>(image->bounds().width()));
+        cursor["io"]["stride"].setData(static_cast<uint32_t>(image->stride()));
+        cursor["io"]["perRecord"].setData(recordFloats());
+        cursor["io"]["size"].setData(uint32_t{4});
+        cursor["io"]["part"].setData(part);
+        cursor["io"]["first"].setData(first);
+        cursor["io"]["chunk"].setData(chunk);
+    };
+    const uint32_t values = count * perGaussian;
+    {
+        gpu::CommandBatch batch(device);
+        pack->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *pointsView, *points); });
+        in->dispatch(batch, {values, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *lightView, *light); });
+        ATHENEA_TRY(batch.submit(true));
+        (*points)->deviceWrote();
+        (*light)->deviceWrote();
+    }
+    aofx_host::EffectJob job;
+    job.bounds = pictureFor(uint64_t{count} * perGaussian);
+    job.instance = "athenea/mesh2splat/transferfilter";
+    job.inputs.push_back({"Points", *points});
+    job.inputs.push_back({"Indirect", *light});
+    const auto number = [&job](const char* name, double value) {
+        job.params.push_back(aofx::ParamValue{name, {value}, {}});
+    };
+    number("count", static_cast<double>(count));
+    number("coefficients", static_cast<double>(perGaussian));
+    number("iterations", static_cast<double>(options_->bakeFilter));
+    number("sigmaLuminance", options_->bakeFilterLuminance);
+    auto rendered = aofx_host::renderEffect(*context_, filter, job);
+    if (!rendered) return std::move(rendered).error();
+    const std::vector<float>* said = (*rendered)->attached("filtered");
+    if (said != nullptr && said->size() >= 3) {
+        cli::out("mesh2splat: the transfer's bounced halves filtered over a %.3g cell\n",
+                    static_cast<double>((*said)[2]));
+    }
+    auto filtered = viewOf(*context_, *rendered, "mesh2splat.transferFiltered");
+    if (!filtered) return std::move(filtered).error();
+    gpu::CommandBatch batch(device);
+    out->dispatch(batch, {values, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *filtered, *rendered); });
+    return batch.submit(true);
+}
+
 Result<void> Converter::transfer(const std::string& stage, double time, uint32_t samples, uint32_t bounces,
-                                 bool indirect, std::vector<float>& direct, std::vector<float>& bounced,
-                                 std::vector<int32_t>& shadowBits) {
+                                 bool indirect, uint32_t cells, uint32_t degree, aofx::Effect* filter,
+                                 const ZonalTransfer* zonal, usd::TransferArrays& out) {
     ATHENEA_TRY(spanRays());
+    // Zonal: each gaussian's frame at the bake, and -- carried by a skeleton
+    // -- the rays posed where the stage the bake traces stands.
+    gpu::Buffer frames;
+    if (zonal != nullptr) {
+        auto made = framesForBake(*zonal);
+        if (!made) return std::move(made).error();
+        frames = std::move(*made);
+        // The lobes are fitted to the first transfer's nine harmonics and its
+        // 64 bits, with no indirect half: a TX transfer's cells, degree 3 and
+        // field are in the world and do not turn with a limb.
+        indirect = false;
+        cells = 0;
+        degree = 2;
+    }
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
     // Degree 2: nine coefficients hold the irradiance of any environment to
     // about a percent, and a transfer is exactly that shape.
-    const auto started = std::chrono::steady_clock::now();
-    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, 2, /*transfer=*/true);
-    if (!baked) return std::move(baked).error();
-    // The rays are the same rays whether the indirect half is kept or not, so
-    // this number is what says the second half costs no bake: only the copy
-    // below and the file differ.
-    const double traced =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    // Degree 3 for a TX transfer (--transfer-degree): sixteen and forty-eight.
+    const uint32_t side = technique::transferCellSide(cells);
+    const uint32_t bakeDegree = degree >= 3 ? 3u : 2u;
+    const uint32_t coefficients = (bakeDegree + 1) * (bakeDegree + 1);
+    // The reflected field is kept only with the cells and the indirect half.
+    const bool field = side > 0 && indirect;
     gpu::Device& device = library_->device();
+    const uint32_t entries = coefficients + technique::transferPlanes(true, side);
+    const uint32_t fieldFirst = field ? entries - technique::kTransferFieldPlanes : 0u;
+    // Two words of open directions a gaussian, or eight or thirty-two with
+    // the cells.
+    const uint32_t words = technique::transferCellWords(side);
+    // IN SLICES, WHERE THE CLOUD IS LARGE. The answer is `entries` float4 a
+    // gaussian, and the whole Corvette with the cells and the field asked
+    // for 7.8 GB of it at once where the machine had 5 free. A slice of the
+    // gaussians is baked, filtered, written and read back before the next,
+    // so what the device holds is one slice's answer and arrays; the filter
+    // then sees the neighbours within the slice, which the mesh's order keeps
+    // together. A zonal transfer is fitted on the device from the whole
+    // cloud's arrays, and stays in one piece (a skinned cloud is small).
+    // And the filter's pictures are the device pool's, which would not serve
+    // one of 176 MB (a slice of 2.8 million gaussians, four values each):
+    // a million gaussians a slice where the filter runs keeps them under 64.
+    constexpr uint64_t kSliceAnswerBytes = uint64_t{1536} << 20;
+    constexpr uint64_t kSliceFiltered = uint64_t{1} << 20;
+    uint32_t slice = count_;
+    if (zonal == nullptr) {
+        uint64_t fits = std::max<uint64_t>(kSliceAnswerBytes / (uint64_t{entries} * 16),
+                                           usd::StageRenderer::kBakeBatch);
+        if (filter != nullptr && indirect && side > 0 && options_->bakeFilter > 0) {
+            fits = std::min(fits, kSliceFiltered);
+        }
+        if (options_->transferSlice > 0) {
+            fits = options_->transferSlice;
+        }
+        slice = static_cast<uint32_t>(std::min<uint64_t>(fits, count_));
+    }
+    if (slice < count_) {
+        cli::out("mesh2splat: transfer baked in slices of %u gaussians\n", slice);
+    }
     const auto made = [&](uint64_t words, const char* label) {
         gpu::BufferDesc desc;
         desc.bytes = std::max<uint64_t>(words, 1) * 4;
@@ -1795,41 +2296,87 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         desc.label = label;
         return gpu::Buffer::create(device, desc);
     };
-    auto directs = made(uint64_t{count_} * 9, "mesh2splat.transferDirect");
-    auto bounceds = made(indirect ? uint64_t{count_} * 27 : 1, "mesh2splat.transferIndirect");
-    auto bits = made(uint64_t{count_} * 2, "mesh2splat.shadowBits");
-    auto found = counter();
-    if (!directs || !bounceds || !bits || !found) {
-        return Error(ErrorCode::OutOfMemory, "transfer: cannot allocate what the file keeps");
-    }
-    gpu::CommandBatch batch(device);
-    transferInto_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor cursor) {
-        cursor["baked"].setBinding(baked->rhi());
-        cursor["records"].setBinding(records_.rhi());
-        cursor["direct"].setBinding(directs->rhi());
-        cursor["bounced"].setBinding(bounceds->rhi());
-        cursor["shadowBits"].setBinding(bits->rhi());
-        cursor["counts"].setBinding(found->rhi());
-        cursor["bake"]["count"].setData(count_);
-        cursor["bake"]["coefficients"].setData(uint32_t{9});
-        cursor["bake"]["perRecord"].setData(recordFloats());
-        cursor["bake"]["opacity"].setData(uint32_t{3});
-        cursor["bake"]["dc0"].setData(uint32_t{11});
-        cursor["bake"]["restBase"].setData(uint32_t{23});
-        cursor["bake"]["indirect"].setData(indirect ? 1u : 0u);
-    });
-    ATHENEA_TRY(batch.submit(true));
-    // What a USD array holds, as bytes.
-    direct.resize(size_t{count_} * 9);
-    shadowBits.resize(size_t{count_} * 2);
-    bounced.resize(indirect ? size_t{count_} * 27 : 0);
-    ATHENEA_TRY(directs->read(device, 0, direct.size() * sizeof(float), direct.data()));
-    ATHENEA_TRY(bits->read(device, 0, shadowBits.size() * sizeof(int32_t), shadowBits.data()));
-    if (indirect) {
-        ATHENEA_TRY(bounceds->read(device, 0, bounced.size() * sizeof(float), bounced.data()));
+    if (zonal == nullptr) {
+        // What a USD array holds, as bytes, filled a slice at a time.
+        out.coefficients = coefficients;
+        out.shadowWords = words;
+        out.direct.resize(size_t{count_} * coefficients);
+        out.shadowBits.resize(size_t{count_} * words);
+        out.bounced.resize(indirect ? size_t{count_} * coefficients * 3 : 0);
+        out.reflected.resize(field ? size_t{count_} * 48 : 0);
     }
     uint32_t reached = 0;
-    ATHENEA_TRY(found->read(device, 0, sizeof(reached), &reached));
+    double traced = 0.0;
+    // The last slice's -- the whole cloud's, where a zonal fit reads them.
+    std::optional<gpu::Buffer> directs;
+    std::optional<gpu::Buffer> bits;
+    for (uint32_t base = 0; base < count_; base += slice) {
+        const uint32_t n = std::min(slice, count_ - base);
+        const auto started = std::chrono::steady_clock::now();
+        // The slice's rays are copied out by the bake itself, a pass at a
+        // time, as it copies a large cloud's passes.
+        auto baked = (*renderer)->bakePointsOnDevice(rays_, n, time, samples, bounces, bakeDegree,
+                                                     /*transfer=*/true, /*batch=*/0, side, base);
+        if (!baked) return std::move(baked).error();
+        // The rays are the same rays whether the indirect half is kept or
+        // not, so this number is what says the second half costs no bake:
+        // only the copy below and the file differ.
+        traced += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        // THE BOUNCED HALVES FILTERED between neighbours, where the splat
+        // bake filter is on the search path and --bake-filter asks for it:
+        // what a path saw after meeting the scene is the noisiest thing a
+        // transfer keeps.
+        if (filter != nullptr && indirect && side > 0 && options_->bakeFilter > 0) {
+            ATHENEA_TRY(filterTransfer(*filter, *baked, coefficients, entries, fieldFirst, base, n));
+        }
+        auto sliceDirects = made(uint64_t{n} * coefficients, "mesh2splat.transferDirect");
+        auto bounceds = made(indirect ? uint64_t{n} * coefficients * 3 : 1, "mesh2splat.transferIndirect");
+        auto fields = made(field ? uint64_t{n} * 48 : 1, "mesh2splat.transferReflected");
+        auto sliceBits = made(uint64_t{n} * words, "mesh2splat.shadowBits");
+        auto found = counter();
+        if (!sliceDirects || !bounceds || !fields || !sliceBits || !found) {
+            return Error(ErrorCode::OutOfMemory, "transfer: cannot allocate what the file keeps");
+        }
+        gpu::CommandBatch batch(device);
+        transferInto_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["baked"].setBinding(baked->rhi());
+            cursor["records"].setBinding(records_.rhi());
+            cursor["direct"].setBinding(sliceDirects->rhi());
+            cursor["bounced"].setBinding(bounceds->rhi());
+            cursor["shadowBits"].setBinding(sliceBits->rhi());
+            cursor["reflected"].setBinding(fields->rhi());
+            cursor["counts"].setBinding(found->rhi());
+            cursor["bake"]["count"].setData(n);
+            cursor["bake"]["first"].setData(base);
+            cursor["bake"]["coefficients"].setData(coefficients);
+            cursor["bake"]["perRecord"].setData(recordFloats());
+            cursor["bake"]["opacity"].setData(uint32_t{3});
+            cursor["bake"]["dc0"].setData(uint32_t{11});
+            cursor["bake"]["restBase"].setData(uint32_t{23});
+            cursor["bake"]["indirect"].setData(indirect ? 1u : 0u);
+            cursor["bake"]["cells"].setData(side == 0 ? 0u : words);
+        });
+        ATHENEA_TRY(batch.submit(true));
+        uint32_t here = 0;
+        ATHENEA_TRY(found->read(device, 0, sizeof(here), &here));
+        reached += here;
+        if (zonal == nullptr) {
+            ATHENEA_TRY(sliceDirects->read(device, 0, size_t{n} * coefficients * sizeof(float),
+                                           out.direct.data() + size_t{base} * coefficients));
+            ATHENEA_TRY(sliceBits->read(device, 0, size_t{n} * words * sizeof(int32_t),
+                                        out.shadowBits.data() + size_t{base} * words));
+            if (indirect) {
+                ATHENEA_TRY(bounceds->read(device, 0, size_t{n} * coefficients * 3 * sizeof(float),
+                                           out.bounced.data() + size_t{base} * coefficients * 3));
+            }
+            if (field) {
+                ATHENEA_TRY(fields->read(device, 0, size_t{n} * 48 * sizeof(float),
+                                         out.reflected.data() + size_t{base} * 48));
+            }
+        }
+        directs = std::move(*sliceDirects);
+        bits = std::move(*sliceBits);
+    }
     cli::out("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
                 reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
     if (reached * 2 < count_) {
@@ -1837,6 +2384,199 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
                      "mesh2splat: more than half the gaussians found no surface under them; the "
                      "transfer is unlikely to be what you want\n");
     }
+    if (zonal != nullptr) {
+        out.direct.clear();
+        out.bounced.clear();
+        out.reflected.clear();
+        out.shadowWords = 2;
+        return fitZonal(*zonal, frames, *directs, *bits, out.zonal, out.shadowBits);
+    }
+    return ok();
+}
+
+/// EACH GAUSSIAN'S FRAME AT THE BAKE, AND FOR A SKINNED CLOUD THE POSE.
+///
+/// The records are decoded as a frame decodes them (`CloudLoader`), so the
+/// frame the fit writes the lobes against is the one the renderer turns them
+/// with -- the packed quaternion, not the conversion's floats. A cloud a
+/// skeleton carries was built in the bind pose while the bake traces the
+/// stage posed at `--time`: the skinner poses the cloud there exactly as a
+/// frame will (`SplatSkinner`, the blend's whole Jacobian), each ray is
+/// carried by its gaussian's own motion, and the frames are the posed ones.
+/// The lobes then hold, in the gaussian's own frame, what the pose that was
+/// traced let through; every other pose turns them with the gaussian.
+Result<gpu::Buffer> Converter::framesForBake(const ZonalTransfer& zonal) {
+    gpu::Device& device = library_->device();
+    auto loader = scene::CloudLoader::create(*library_);
+    if (!loader) return std::move(loader).error();
+    auto rest = loader->upload(records_, count_, zonal.encoding, options_->stage, 0);
+    if (!rest) return std::move(rest).error();
+    auto restShape = loader->toRecords(*rest, rest->shape, 4, 0u, "mesh2splat.zonalRestShape");
+    if (!restShape) return std::move(restShape).error();
+    const bool carried = !zonal.xforms.empty() && influences_.valid();
+    if (!carried) {
+        return std::move(*restShape);
+    }
+    auto skinner = scene::SplatSkinner::create(*library_);
+    if (!skinner) return std::move(skinner).error();
+    auto influences = loader->keptOnly(*rest, influences_, 8, "mesh2splat.zonalInfluences");
+    if (!influences) return std::move(influences).error();
+    std::optional<gpu::Buffer> gradients;
+    if (gradients_.valid()) {
+        auto kept = loader->keptOnly(*rest, gradients_, 3, "mesh2splat.zonalGradients");
+        if (!kept) return std::move(kept).error();
+        gradients = std::move(*kept);
+    }
+    auto xforms = gpu::Buffer::fromSpan<float>(device, zonal.xforms, "mesh2splat.zonalXforms");
+    if (!xforms) return std::move(xforms).error();
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{rest->count} * 16;
+    desc.elementBytes = 16;
+    desc.label = "mesh2splat.zonalPosedPositions";
+    auto positions = gpu::Buffer::create(device, desc);
+    if (!positions) return std::move(positions).error();
+    desc.elementBytes = 4;
+    desc.label = "mesh2splat.zonalPosedShape";
+    auto shape = gpu::Buffer::create(device, desc);
+    if (!shape) return std::move(shape).error();
+    {
+        scene::SplatSkinInput input;
+        input.rest = &*rest;
+        input.influences = &*influences;
+        input.perSplat = 4;
+        input.weightGradients = gradients ? &*gradients : nullptr;
+        input.skinningXforms = &*xforms;
+        input.geomBindTransform = zonal.geomBind;
+        gpu::CommandBatch batch(device);
+        ATHENEA_TRY(skinner->skin(batch, input, *positions, *shape));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    // A record each again; a record validation dropped reads as a NaN.
+    constexpr uint32_t kDropped = 0x7FC00000u;
+    auto restPositions = loader->toRecords(*rest, rest->positions, 4, kDropped, "mesh2splat.zonalRestPositions");
+    if (!restPositions) return std::move(restPositions).error();
+    auto posedPositions = loader->toRecords(*rest, *positions, 4, kDropped, "mesh2splat.zonalPosedPositions");
+    if (!posedPositions) return std::move(posedPositions).error();
+    auto posedShape = loader->toRecords(*rest, *shape, 4, 0u, "mesh2splat.zonalPosedShape");
+    if (!posedShape) return std::move(posedShape).error();
+    auto none = counter();
+    if (!none) return std::move(none).error();
+    gpu::CommandBatch batch(device);
+    zonalPoseRays_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["restPositions"].setBinding(restPositions->rhi());
+        cursor["posedPositions"].setBinding(posedPositions->rhi());
+        cursor["restShape"].setBinding(restShape->rhi());
+        cursor["frames"].setBinding(posedShape->rhi());
+        cursor["rays"].setBinding(rays_.rhi());
+        // Declared by the module and not read here.
+        cursor["direct"].setBinding(none->rhi());
+        cursor["bitsIn"].setBinding(none->rhi());
+        cursor["picture"].setBinding(none->rhi());
+        cursor["zonal"].setBinding(none->rhi());
+        cursor["bitsOut"].setBinding(none->rhi());
+        cursor["io"]["count"].setData(count_);
+        cursor["io"]["width"].setData(uint32_t{1});
+        cursor["io"]["stride"].setData(uint32_t{1});
+    });
+    ATHENEA_TRY(batch.submit(true));
+    cli::out("mesh2splat: the cloud posed at the bake's instant (%u gaussians, %zu joints) so the transfer is "
+                "traced on the pose the stage holds\n",
+                rest->count, zonal.xforms.size() / 16);
+    return std::move(*posedShape);
+}
+
+/// THE FIT, AS AN AOFX EFFECT: the bake packed into the picture the effect
+/// reads, its answer unpacked into the ten floats and two words a gaussian
+/// the file keeps, and the error it measured said.
+Result<void> Converter::fitZonal(const ZonalTransfer& zonal, const gpu::Buffer& frames, const gpu::Buffer& directs,
+                                 const gpu::Buffer& bits, std::vector<float>& zonalOut,
+                                 std::vector<int32_t>& shadowBits) {
+    gpu::Device& device = library_->device();
+    const auto started = std::chrono::steady_clock::now();
+    auto picture = image::Image::create(pictureFor(uint64_t{count_} * 4));
+    if (!picture) return std::move(picture).error();
+    auto view = viewOf(*context_, *picture, "mesh2splat.zonalTransfer");
+    if (!view) return std::move(view).error();
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{count_} * 10 * 4;
+    desc.elementBytes = 4;
+    desc.label = "mesh2splat.transferZonal";
+    auto values = gpu::Buffer::create(device, desc);
+    if (!values) return std::move(values).error();
+    desc.bytes = uint64_t{count_} * 2 * 4;
+    desc.label = "mesh2splat.zonalBits";
+    auto localBits = gpu::Buffer::create(device, desc);
+    if (!localBits) return std::move(localBits).error();
+    auto none = counter();
+    if (!none) return std::move(none).error();
+    const auto bind = [&](rhi::ShaderCursor cursor, const gpu::Buffer& into, const image::ImagePtr& image) {
+        cursor["direct"].setBinding(directs.rhi());
+        cursor["bitsIn"].setBinding(bits.rhi());
+        cursor["frames"].setBinding(frames.rhi());
+        cursor["restPositions"].setBinding(none->rhi());
+        cursor["posedPositions"].setBinding(none->rhi());
+        cursor["restShape"].setBinding(none->rhi());
+        cursor["rays"].setBinding(none->rhi());
+        cursor["picture"].setBinding(into.rhi());
+        cursor["zonal"].setBinding(values->rhi());
+        cursor["bitsOut"].setBinding(localBits->rhi());
+        cursor["io"]["count"].setData(count_);
+        cursor["io"]["width"].setData(static_cast<uint32_t>(image->bounds().width()));
+        cursor["io"]["stride"].setData(static_cast<uint32_t>(image->stride()));
+    };
+    {
+        gpu::CommandBatch batch(device);
+        zonalPack_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *view, *picture); });
+        ATHENEA_TRY(batch.submit(true));
+        // Written on the device: the host must not hand the effect the copy
+        // it holds.
+        (*picture)->deviceWrote();
+    }
+    aofx_host::EffectJob job;
+    job.bounds = pictureFor(uint64_t{count_} * 3);
+    job.instance = "athenea/mesh2splat/transferzonal";
+    job.inputs.push_back({"Transfer", *picture});
+    job.params.push_back(aofx::ParamValue{"count", {static_cast<double>(count_)}, {}});
+    job.params.push_back(aofx::ParamValue{"lobes", {static_cast<double>(zonal.lobes)}, {}});
+    job.params.push_back(aofx::ParamValue{"rebin", {1.0}, {}});
+    auto rendered = aofx_host::renderEffect(*context_, *zonal.effect, job);
+    if (!rendered) return std::move(rendered).error();
+    const std::vector<float>* said = (*rendered)->attached("fitted");
+    if (said == nullptr || said->size() < 49) {
+        return Error(ErrorCode::DeviceFailure, "the splat transfer zonal fit did not say what it fitted");
+    }
+    auto answer = viewOf(*context_, *rendered, "mesh2splat.zonalFitted");
+    if (!answer) return std::move(answer).error();
+    {
+        gpu::CommandBatch batch(device);
+        zonalUnpack_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, *answer, *rendered); });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    zonalOut.resize(size_t{count_} * 10);
+    shadowBits.resize(size_t{count_} * 2);
+    ATHENEA_TRY(values->read(device, 0, zonalOut.size() * sizeof(float), zonalOut.data()));
+    ATHENEA_TRY(localBits->read(device, 0, shadowBits.size() * sizeof(int32_t), shadowBits.data()));
+    // THE ERROR AGAINST THE NINE HARMONICS, from the effect's histogram: the
+    // relative L2 distance between the lobes and the bake's own nine (over
+    // the sphere, which is the distance of the coefficients), by quarter
+    // octave from 2^-10. A percentile is the upper edge of its bucket.
+    const auto fitted = static_cast<uint64_t>((*said)[0]);
+    const auto percentile = [&](double fraction) {
+        uint64_t seen = 0;
+        for (uint32_t b = 0; b < 48; ++b) {
+            seen += static_cast<uint64_t>((*said)[1 + b]);
+            if (fitted > 0 && static_cast<double>(seen) >= fraction * static_cast<double>(fitted)) {
+                return std::exp2((static_cast<double>(b) - 40.0 + 1.0) / 4.0);
+            }
+        }
+        return std::exp2((47.0 - 40.0 + 1.0) / 4.0);
+    };
+    const double took =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    cli::out("mesh2splat: transfer kept as %u zonal lobe%s in each gaussian's frame for %llu gaussians in %.0f ms; "
+                "relative error against the nine harmonics: median %.3g, p90 %.3g, p99 %.3g\n",
+                zonal.lobes, zonal.lobes == 1 ? "" : "s", static_cast<unsigned long long>(fitted), took,
+                percentile(0.5), percentile(0.9), percentile(0.99));
     return ok();
 }
 
@@ -1853,6 +2593,14 @@ void addMesh2Splat(CLI::App& app) {
                     "the ParticleField stage to write (.usda, .usdc, .usd), or a .athc with levels of detail");
     cmd->add_option("--prim", o->prim, "only meshes at or under this prim path");
     cmd->add_option("--hide", o->hidden, "a prim to leave out with all beneath it, as if invisible (repeatable)");
+    cmd->add_option("--thin-glass", o->thinGlass,
+                    "a material (prim path or name) whose glass is one sheet though it does not say so -- a "
+                    "windscreen modelled as a single surface with a solid glass on it: converted thin-walled, "
+                    "so what stands behind it shows through (repeatable; the conversion already reads a sheet "
+                    "or a slab from the mesh, so this overrides)");
+    cmd->add_option("--solid-glass", o->solidGlass,
+                    "a material (prim path or name) whose glass is solid whatever its mesh looks like: the "
+                    "override the other way (repeatable)");
     cmd->add_option("--lod-levels", o->lodLevels,
                     "levels of detail: the conversion again at half the resolution each time, each level a "
                     "stage beside the output and the output one that draws them as one cloud (1: none)");
@@ -1922,6 +2670,51 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--transfer", o->transfer,
                   "bake how much of an environment reaches each gaussian instead of the light itself, "
                   "so the cloud can be lit by any sky (excludes the radiance bake)");
+    cmd->add_flag("--shadow-catcher", o->shadowCatcher,
+                  "convert the shadow --prim casts on its ground instead of --prim itself: a layer of gaussians "
+                  "on the ground under and around it, baked as a transfer (the object and the ground are what "
+                  "its rays meet) and drawn black, covering what the object takes of the light");
+    cmd->add_option("--catcher-ground", o->catcherGround,
+                    "--shadow-catcher: the ground prim (found by itself: the largest flat mesh outside --prim "
+                    "whose top is at its bottom)");
+    cmd->add_option("--catcher-margin", o->catcherMargin,
+                    "--shadow-catcher: how far past the object's footprint the catcher reaches, in its heights");
+    cmd->add_option("--catcher-cell", o->catcherCell,
+                    "--shadow-catcher: the catcher's cell, world units (0: a hundredth of the object's height)");
+    cmd->add_option("--validate", o->validate,
+                    "measure the conversion material by material against the stage path traced, into this "
+                    "directory: a table (validate.json) and GT, mesh and cloud side by side for each");
+    cmd->add_option("--validate-camera", o->validateCamera,
+                    "--validate: the camera (default: --cell-from-camera, else the stage's first)");
+    cmd->add_option("--validate-size", o->validateSize, "--validate: W H of the frames")->expected(2);
+    cmd->add_option("--validate-paths", o->validatePaths, "--validate: paths a pixel the GT holds");
+    cmd->add_option("--validate-bounces", o->validateBounces, "--validate: bounces of the GT's paths");
+    cmd->add_option("--validate-sky", o->validateSky,
+                    "--validate: draw every frame under another sky, 'white' or an image file, with the stage's "
+                    "other lights off");
+    cmd->add_option("--validate-material", o->validateMaterials,
+                    "--validate: only this material, by prim path or name (repeatable)");
+    cmd->add_option("--transfer-degree", o->transferDegree,
+                    "--transfer: the harmonics' degree, 3 (16 coefficients direct, 48 indirect) or 2 (9 and 27, "
+                    "the first transfer's)")
+        ->check(CLI::IsMember({2u, 3u}));
+    cmd->add_option("--transfer-cells", o->transferCells,
+                    "--transfer: cells a side of the grid of open directions over the whole sphere, 16 or 32; "
+                    "0 keeps the first transfer's 8 x 8 over the half a gaussian faces")
+        ->check(CLI::IsMember({0u, 16u, 32u}));
+    cmd->add_option("--transfer-slice", o->transferSlice,
+                    "--transfer: gaussians baked at a time (0: as memory allows; a million where the bounced "
+                    "halves are filtered)");
+    cmd->add_option("--specular-filter", o->specularFilter,
+                    "how much the turn of the surface under a gaussian widens its roughness and its coat's, "
+                    "so a reflection off a curved strip is the mean over the gaussian rather than a bead as "
+                    "wide as it (0 off; default 1 with --transfer, 0 otherwise)")
+        ->check(CLI::Range(-1.0, 4.0));
+    cmd->add_option("--transfer-lobes", o->transferLobes,
+                    "--transfer: keep it as this many zonal lobes in each gaussian's own frame, which turn "
+                    "with the gaussian, rather than nine harmonics in the world (0: two for --skinned, "
+                    "nine harmonics otherwise)")
+        ->check(CLI::Range(0u, 2u));
     cmd->add_flag("!--no-indirect", o->indirect,
                   "--transfer: leave out the interreflection, which costs no bake time and 27 floats a "
                   "gaussian to keep");
@@ -1948,7 +2741,8 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--skinned", o->skinned,
                   "carry the skeleton: the gaussians are built in the bind pose and each keeps the "
                   "four joints that move it, so the cloud deforms with the rig instead of being one "
-                  "pose. Forces --no-bake: a baked radiance does not turn with a limb");
+                  "pose. Forces --no-bake: a baked radiance does not turn with a limb (a --transfer does, "
+                  "kept as zonal lobes in each gaussian's frame)");
     cmd->add_option("--range", o->range,
                     "START:END[:STEP] in time codes: the instants a skinned cloud keeps its "
                     "skeleton's transforms at. The stage's own range by default, a code a step");
@@ -1984,6 +2778,37 @@ void addMesh2Splat(CLI::App& app) {
                         "roughness and transmission a relit cloud reflects with, the Cryptomatte ids, the glass "
                         "index and the stage's up axis and unit stay out\n");
         }
+        // THE SHADOW CATCHER: the stage again with a patch on the ground, and
+        // that patch is what is converted -- as a transfer, at a cell of its
+        // own -- the object staying in the stage as what the rays meet.
+        if (o->shadowCatcher) {
+            if (o->prim.empty()) {
+                cli::err( "--shadow-catcher needs --prim: the object whose shadow is caught\n");
+                throw CLI::RuntimeError(1);
+            }
+            usd::ShadowCatcherOptions catcher;
+            catcher.object = o->prim;
+            catcher.ground = o->catcherGround;
+            catcher.margin = o->catcherMargin;
+            catcher.cell = o->catcherCell;
+            const std::filesystem::path out(o->output);
+            const std::filesystem::path catcherStage =
+                out.parent_path() / (out.stem().string() + "_catcher_stage.usda");
+            auto made = usd::writeShadowCatcherStage(o->stage, catcher, catcherStage);
+            if (!made) {
+                cli::fail(made.error());
+            }
+            o->stage = made->stage.string();
+            o->prim = made->prim;
+            o->transfer = true;
+            o->density = "per-mesh";
+            o->cellFromCamera.clear();
+            const double cell = made->cell;
+            o->cellMin = cell;
+            o->cellMax = cell;
+            cli::out("mesh2splat: the shadow catcher of %s on %s, a cell of %.4g\n", catcher.object.c_str(),
+                        made->ground.c_str(), cell);
+        }
         gpu_host::Context* context = gpu_host::installProcessContext();
         if (context == nullptr || context->compute() == nullptr) {
             cli::err("no GPU compute device for AOFX kernels (gpe has no backend here)\n");
@@ -2007,12 +2832,31 @@ void addMesh2Splat(CLI::App& app) {
         // The filter a bake's indirect light goes through, where it is asked
         // for: missing, it is a conversion that cannot be what was asked.
         aofx::Effect* filter = nullptr;
-        if (o->bake && !o->transfer && o->bakeFilter > 0) {
+        // A TX transfer's bounced halves go through it too (a first transfer,
+        // --transfer-cells 0, is kept as it was).
+        if (((o->bake && !o->transfer) || (o->transfer && o->transferCells > 0)) && o->bakeFilter > 0) {
             filter = registry.find("rt.sparrow.aofx.splatbakefilter");
             if (filter == nullptr) {
                 cli::err("no SplatBakeFilter bundle on the AOFX search path (try `athenea aofx "
                                      "list`), and --bake-filter asks for it\n");
                 throw CLI::RuntimeError(1);
+            }
+        }
+
+        // THE ZONAL FIT a transfer goes through where it is kept as lobes in
+        // each gaussian's frame: asked for, or a skeleton carries the cloud.
+        const uint32_t lobes = !o->transfer ? 0u : o->transferLobes > 0 ? o->transferLobes : o->skinned ? 2u : 0u;
+        aofx::Effect* zonalFit = nullptr;
+        if (lobes > 0) {
+            zonalFit = registry.find("rt.sparrow.aofx.splattransferzonal");
+            if (zonalFit == nullptr) {
+                cli::err( "no SplatTransferZonal bundle on the AOFX search path (try `athenea aofx "
+                                     "list`), and a transfer kept as zonal lobes needs it\n");
+                throw CLI::RuntimeError(1);
+            }
+            if (o->indirect) {
+                cli::out("mesh2splat: a zonal transfer keeps the direct half alone; the indirect one stays in "
+                            "the world and would not turn with the gaussian\n");
             }
         }
 
@@ -2027,6 +2871,9 @@ void addMesh2Splat(CLI::App& app) {
         // (usd::writeLodAssembly). A cloud a skeleton carries cannot be
         // merged into coarser cells -- a cell that took wing and body would
         // not know which to move with -- but it can be converted again.
+        // THE CONVERSION, as asked: once, or (--validate) once a material.
+        uint32_t written = 0;
+        const auto runConversion = [&]() {
         const uint32_t lodLevels = std::max(o->lodLevels, 1u);
         const std::string assemblyPath = o->output;
         const uint32_t baseResolution = o->resolution;
@@ -2056,6 +2903,7 @@ void addMesh2Splat(CLI::App& app) {
             read.time = o->time;
             read.skinned = o->skinned;
             read.hidden = o->hidden;
+            read.thinGlass = o->thinGlass;
             if (o->transfer) {
                 // The two are different answers to the same question and the file
                 // has room for one: a transfer keeps the geometry, a radiance
@@ -2063,10 +2911,13 @@ void addMesh2Splat(CLI::App& app) {
                 o->bake = false;
             }
             if (o->skinned && o->transfer) {
-                // A transfer moves with the limb no better than a baked radiance
-                // does: what it holds is the visibility of a pose.
-                cli::out("mesh2splat: --skinned carries the material, not a transfer\n");
-                o->transfer = false;
+                // A TRANSFER IN THE WORLD DOES NOT TURN WITH A LIMB, but one
+                // kept as zonal lobes in each gaussian's own frame does: the
+                // frame the skeleton gives the gaussian every frame takes the
+                // lobes with it (proposal 014 B). What it holds is what the
+                // pose at `--time` let through around each gaussian; what other
+                // limbs cast on it in another pose it does not know.
+                cli::out("mesh2splat: --skinned keeps its transfer as zonal lobes in each gaussian's frame\n");
             }
             if (o->skinned && o->bake) {
                 // A BAKED RADIANCE DOES NOT TURN WITH A LIMB. What the harmonics
@@ -2105,16 +2956,39 @@ void addMesh2Splat(CLI::App& app) {
                 // integrator -- and stores what it answers. What that costs is
                 // the light: a baked cloud carries this scene's, and cannot be
                 // put under another.
-                std::vector<float> transferDirect;
-                std::vector<float> transferIndirect;
-                std::vector<int32_t> shadowBits;
+                usd::TransferArrays transferred;
                 if (o->transfer) {
                     // WHAT AN ENVIRONMENT PUTS ON EACH GAUSSIAN, rather than what
                     // this one did. The colours stay the material's albedo and
                     // the frame lights them with whatever sky it has, so the same
                     // file is right under every HDRI rather than under one.
-                    ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples + o->bakeExtra, o->bakeBounces, o->indirect,
-                                                   transferDirect, transferIndirect, shadowBits));
+                    //
+                    // As zonal lobes in each gaussian's own frame where they are
+                    // asked for or where a skeleton turns the gaussians; then
+                    // a skinned cloud is posed at `--time`, the instant the
+                    // bake traces, before it is.
+                    std::optional<ZonalTransfer> zonal;
+                    if (lobes > 0) {
+                        zonal.emplace();
+                        zonal->effect = zonalFit;
+                        zonal->lobes = lobes;
+                        zonal->encoding = raw->encoding;
+                        if (o->skinned) {
+                            for (const usd::StageMesh& one : *meshes) {
+                                if (!one.skinning.bound) {
+                                    continue;
+                                }
+                                auto at = (*stage).skeletonTransforms(one.skinning.skeleton, {o->time});
+                                if (!at) return std::move(at).error();
+                                zonal->xforms = std::move(*at);
+                                zonal->geomBind = one.skinning.geomBindTransform;
+                                break;
+                            }
+                        }
+                    }
+                    ATHENEA_TRY(converter.transfer(o->stage, o->time, o->bakeSamples + o->bakeExtra, o->bakeBounces,
+                                                   o->indirect, o->transferCells, o->transferDegree, filter,
+                                                   zonal ? &*zonal : nullptr, transferred));
                 } else if (o->bake) {
                     usd::BakeOptions bake;
                     bake.samples = o->bakeSamples;
@@ -2217,6 +3091,7 @@ void addMesh2Splat(CLI::App& app) {
                 // frame lights it whole; a radiance bake keeps the light on the
                 // body and the frame adds only the polish.
                 options.litBody = o->bake && !o->transfer;
+                options.catcher = o->shadowCatcher;
                 // Light, all of it: the albedo, the transfer's and the bake's.
                 options.linear = true;
                 // The matte's ancestry, gaussian by gaussian, as the conversion
@@ -2224,10 +3099,18 @@ void addMesh2Splat(CLI::App& app) {
                 options.cryptoObject = converter.cryptoIds();
                 options.cryptoManifest = converter.cryptoManifest();
                 options.thinWalled = converter.thinWalled();
+                options.schlickMetal = converter.schlickMetal();
+                auto curvature = converter.curvature();
+                if (!curvature) return std::move(curvature).error();
+                options.curvature = *curvature;
                 options.ior = converter.glassIor();
-                options.transferDirect = transferDirect;
-                options.transferIndirect = transferIndirect;
-                options.shadowBits = shadowBits;
+                options.transferDirect = transferred.direct;
+                options.transferIndirect = transferred.bounced;
+                options.transferReflected = transferred.reflected;
+                options.transferCoefficients = transferred.coefficients;
+                options.shadowBits = transferred.shadowBits;
+                options.shadowWords = transferred.shadowWords;
+                options.transferZonal = transferred.zonal;
                 // WHOLE OR NOT AT ALL: under another name beside it, and
                 // under its own only once it is complete, so a conversion
                 // that fails leaves no stage of half a cloud behind.
@@ -2244,6 +3127,7 @@ void addMesh2Splat(CLI::App& app) {
             }
             cli::out("mesh2splat: wrote %s (%u splats)\n", o->output.c_str(), count);
             levelFiles.push_back({o->output, levelCell});
+            written = count;
         }
         if (lodLevels > 1) {
             o->output = assemblyPath;
@@ -2258,6 +3142,52 @@ void addMesh2Splat(CLI::App& app) {
                 cli::fail(made.error());
             }
             cli::out("mesh2splat: wrote %s, %u levels of detail\n", assemblyPath.c_str(), lodLevels);
+        }
+        };
+        if (o->validate.empty()) {
+            runConversion();
+            return;
+        }
+        // --validate: the same conversion once a material, measured against
+        // the stage path traced (Mesh2SplatValidate.h).
+        aofx::Effect* measure = registry.find("rt.sparrow.aofx.measure");
+        if (measure == nullptr) {
+            cli::err( "no Measure bundle on the AOFX search path (try `athenea aofx list`), and "
+                                 "--validate measures with it\n");
+            throw CLI::RuntimeError(1);
+        }
+        ValidateJob job;
+        job.stage = o->stage;
+        job.directory = o->validate;
+        job.camera = !o->validateCamera.empty() ? o->validateCamera : o->cellFromCamera;
+        if (o->validateSize.size() == 2) {
+            job.width = o->validateSize[0];
+            job.height = o->validateSize[1];
+        }
+        job.gtPaths = o->validatePaths;
+        job.gtBounces = o->validateBounces;
+        job.time = o->time;
+        job.prim = o->prim;
+        job.hidden = o->hidden;
+        job.materials = o->validateMaterials;
+        job.sky = o->validateSky;
+        o->lodLevels = 1;
+        const std::vector<std::string> askedHidden = o->hidden;
+        auto validated = validateConversion(
+            job, *context, library, *measure,
+            [&](const std::string& stage, const std::vector<std::string>& hidden,
+                const std::string& output) -> Result<uint32_t> {
+                const std::string askedStage = o->stage;
+                o->stage = stage;
+                o->hidden = hidden;
+                o->output = output;
+                runConversion();
+                o->hidden = askedHidden;
+                o->stage = askedStage;
+                return written;
+            });
+        if (!validated) {
+            cli::fail(validated.error());
         }
     });
 }

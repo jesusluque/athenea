@@ -160,8 +160,43 @@ struct Mesh2SplatUniforms {
     /// `opacity`: the user's and the material's are two numbers.
     float    materialOpacity = 1.0F;
     uint32_t coveragePad = 0;
+
+    /// WHAT THE MATERIAL LAYERS OVER ITS BASE (proposal 026), written in
+    /// three entries of their own after everything else: (specular colour,
+    /// weight), (coat weight, roughness, index, the specular's index), (sheen
+    /// colour, roughness). Constants of the material.
+    float    specular[4] = {1.0F, 1.0F, 1.0F, 1.0F};
+    float    coat[4] = {0.0F, 0.0F, 1.5F, 1.5F};
+    float    sheen[4] = {0.0F, 0.0F, 0.0F, 0.3F};
+    /// 0: not written. Otherwise the first of the four entries.
+    uint32_t lobesEntry = 0;
+    /// The coat's darkening (OpenPBR `coat_darkening`), in the fourth entry.
+    float    coatDarkening = 0.0F;
+    /// How much the surface's turn across a gaussian widens its roughness
+    /// (m2sSpread); 0 leaves the material's.
+    float    normalSpread = 0.0F;
+    /// 0: not written. Otherwise the entry, after all the others, of the
+    /// surface's shape operator in the gaussian's own two axes (m2sShape).
+    uint32_t curvatureEntry = 0;
+
+    /// MAPS ON THE LAYERS (task TX): up to three clips, Layer0..2, each read
+    /// for one input in place of its constant -- `layerTarget` 1 specular
+    /// weight, 2 specular colour, 3 coat weight, 4 coat roughness, 5 sheen
+    /// colour, 6 sheen weight, 7 sheen roughness, 0 none -- on `layerChannel`
+    /// (0 rgb, 1..4 one channel), by the second coordinates where
+    /// `layerUv2`. The fourth of each is unused.
+    uint32_t layerTarget[4] = {0, 0, 0, 0};
+    uint32_t layerChannel[4] = {0, 0, 0, 0};
+    uint32_t layerUv2[4] = {0, 0, 0, 0};
+    uint32_t layerWidth[4] = {0, 0, 0, 0};
+    uint32_t layerHeight[4] = {0, 0, 0, 0};
+    uint32_t layerStride[4] = {0, 0, 0, 0};
+    /// The sheen's weight alone, for a map on its colour or on its weight;
+    /// then its colour alone.
+    float    sheenWeight = 0.0F;
+    float    sheenColourAlone[3] = {0.0F, 0.0F, 0.0F};
 };
-static_assert(sizeof(Mesh2SplatUniforms) == 368, "must match M2sParams exactly");
+static_assert(sizeof(Mesh2SplatUniforms) == 544, "must match M2sParams exactly");
 
 class Mesh2Splat final : public aofx::Effect {
 public:
@@ -204,6 +239,11 @@ public:
         // What the surface gives off by itself: multiplied into
         // `emissionColour`, its rgb or one channel of it (`emissionChannel`).
         clip("Emission", "Emission", true);
+        // Maps on the layers over the base (task TX): what each stands for is
+        // the `layer<k>Target` parameter.
+        clip("Layer0", "Layer map 0", true);
+        clip("Layer1", "Layer map 1", true);
+        clip("Layer2", "Layer map 2", true);
 
         aofx::ParamDesc opacityChannel;
         opacityChannel.name = "opacityChannel";
@@ -381,6 +421,30 @@ public:
         glass.hardMax = {1.0};
         into.params.push_back(glass);
 
+        aofx::ParamDesc spread;
+        spread.name = "normalSpread";
+        spread.label = "Normal Spread";
+        spread.hint =
+            "How much the turn of the surface under a gaussian widens its roughness and its coat's: "
+            "a gaussian has one normal, and a reflection off a strip of chrome it spans turns with "
+            "the surface. 0 keeps the material's roughness; 1 adds the normals' spread across the "
+            "gaussian's width as slope variance (Toksvig).";
+        spread.type = aofx::ParamType::Double;
+        spread.defaults = {0.0};
+        spread.hardMin = {0.0};
+        spread.hardMax = {4.0};
+        into.params.push_back(spread);
+
+        aofx::ParamDesc curved;
+        curved.name = "writeCurvature";
+        curved.label = "Write curvature";
+        curved.hint =
+            "One entry more a record, after everything else: how the surface's normal turns across the "
+            "gaussian, as the shape operator in its own two axes (uu, uv, vv, 0), from the corners' normals.";
+        curved.type = aofx::ParamType::Boolean;
+        curved.defaults = {0.0};
+        into.params.push_back(curved);
+
         aofx::ParamDesc metallic;
         metallic.name = "metallic";
         metallic.label = "Metallic";
@@ -490,6 +554,70 @@ public:
         emissionChannel.hardMin = {0.0};
         emissionChannel.hardMax = {4.0};
         into.params.push_back(emissionChannel);
+
+        // WHAT THE MATERIAL LAYERS OVER ITS BASE. Additive, as the ABI asks: a
+        // host that sends none of these gets records exactly as before.
+        const auto boolean = [&into](const char* name, const char* label, const char* hint) {
+            aofx::ParamDesc d;
+            d.name = name;
+            d.label = label;
+            d.hint = hint;
+            d.type = aofx::ParamType::Boolean;
+            d.defaults = {0.0};
+            into.params.push_back(d);
+        };
+        const auto scalar = [&into](const char* name, const char* label, const char* hint, double value,
+                                    double low, double high) {
+            aofx::ParamDesc d;
+            d.name = name;
+            d.label = label;
+            d.hint = hint;
+            d.type = aofx::ParamType::Double;
+            d.defaults = {value};
+            d.hardMin = {low};
+            d.hardMax = {high};
+            into.params.push_back(d);
+        };
+        const auto rgb = [&into](const char* name, const char* label, const char* hint, double value) {
+            aofx::ParamDesc d;
+            d.name = name;
+            d.label = label;
+            d.hint = hint;
+            d.type = aofx::ParamType::Colour;
+            d.dimension = 3;
+            d.defaults = {value, value, value};
+            into.params.push_back(d);
+        };
+        boolean("writeLobes", "Write specular, coat and sheen",
+                "Four entries more a record, after everything else: (specularColour, specularWeight), "
+                "(coatWeight, coatRoughness, coatIor, specularIor), (sheenColour, sheenRoughness), "
+                "(coatDarkening, 0, 0, 0).");
+        scalar("specularWeight", "Specular weight", "How much of the dielectric reflection is kept.", 1.0, 0.0, 1.0);
+        rgb("specularColour", "Specular colour", "The dielectric reflection's tint, and a metal's edge colour.", 1.0);
+        scalar("specularIor", "Specular index", "The dielectric reflection's index of refraction.", 1.5, 1.0, 3.0);
+        scalar("coatWeight", "Coat weight", "How much clear coat lies over the surface.", 0.0, 0.0, 1.0);
+        scalar("coatRoughness", "Coat roughness", "The coat's roughness.", 0.0, 0.0, 1.0);
+        scalar("coatIor", "Coat index", "The coat's index of refraction.", 1.5, 1.0, 3.0);
+        rgb("sheenColour", "Sheen", "The sheen's colour times its weight.", 0.0);
+        scalar("sheenRoughness", "Sheen roughness", "The sheen's roughness.", 0.3, 0.0, 1.0);
+        scalar("coatDarkening", "Coat darkening",
+               "How much the coat darkens what is under it (OpenPBR's coat_darkening).", 0.0, 0.0, 1.0);
+        scalar("sheenWeight", "Sheen weight", "The sheen's weight alone, for a map on its colour.", 0.0, 0.0, 1.0);
+        rgb("sheenColourAlone", "Sheen colour alone", "The sheen's colour alone, for a map on its weight.", 0.0);
+        for (const char* k : {"0", "1", "2"}) {
+            const std::string n(k);
+            const std::string target = "layer" + n + "Target", targetLabel = "Layer map " + n + " input";
+            const std::string channel = "layer" + n + "Channel", channelLabel = "Layer map " + n + " channel";
+            const std::string uv2 = "layer" + n + "Uv2", uv2Label = "Layer map " + n + " by the second set";
+            scalar(target.c_str(), targetLabel.c_str(),
+                   "What the clip stands for, in place of its constant: 0 nothing, 1 specular weight, 2 specular "
+                   "colour, 3 coat weight, 4 coat roughness, 5 sheen colour, 6 sheen weight, 7 sheen roughness.",
+                   0.0, 0.0, 7.0);
+            scalar(channel.c_str(), channelLabel.c_str(),
+                   "0 the clip's rgb; else one channel, 1 red, 2 green, 3 blue, 4 alpha.", 0.0, 0.0, 4.0);
+            scalar(uv2.c_str(), uv2Label.c_str(),
+                   "1: sampled by the Texcoord2 clip's coordinates.", 0.0, 0.0, 1.0);
+        }
 
         aofx::ParamDesc displace;
         displace.name = "displace";
@@ -670,6 +798,49 @@ public:
                     static_cast<uint32_t>(std::clamp(request.number("emissionChannel", 0.0), 0.0, 4.0));
             }
         }
+        // And what the material layers over its base, in four entries after
+        // all of those.
+        if (request.number("writeLobes", 0.0) >= 0.5) {
+            uniforms.lobesEntry = uniforms.recordPixels;
+            uniforms.recordPixels += 4U;
+            const auto unit = [](double v) { return static_cast<float>(std::clamp(v, 0.0, 1.0)); };
+            const auto index = [](double v) { return static_cast<float>(std::clamp(v, 1.0, 3.0)); };
+            for (size_t k = 0; k < 3; ++k) {
+                uniforms.specular[k] = unit(request.number("specularColour", 1.0, k));
+                uniforms.sheen[k] = unit(request.number("sheenColour", 0.0, k));
+            }
+            uniforms.specular[3] = unit(request.number("specularWeight", 1.0));
+            uniforms.coat[0] = unit(request.number("coatWeight", 0.0));
+            uniforms.coat[1] = unit(request.number("coatRoughness", 0.0));
+            uniforms.coat[2] = index(request.number("coatIor", 1.5));
+            uniforms.coat[3] = index(request.number("specularIor", 1.5));
+            uniforms.sheen[3] = unit(request.number("sheenRoughness", 0.3));
+            uniforms.coatDarkening = unit(request.number("coatDarkening", 0.0));
+            uniforms.sheenWeight = unit(request.number("sheenWeight", 0.0));
+            for (size_t k = 0; k < 3; ++k) {
+                uniforms.sheenColourAlone[k] = unit(request.number("sheenColourAlone", 0.0, k));
+            }
+            for (uint32_t k = 0; k < 3; ++k) {
+                const std::string n = std::to_string(k);
+                const aofx::InputPlane* plane = request.input(("Layer" + n).c_str());
+                if (plane == nullptr || !plane->buffer.isValid()) {
+                    continue;
+                }
+                uniforms.layerTarget[k] =
+                    static_cast<uint32_t>(std::clamp(request.number(("layer" + n + "Target").c_str(), 0.0), 0.0, 7.0));
+                uniforms.layerChannel[k] = static_cast<uint32_t>(
+                    std::clamp(request.number(("layer" + n + "Channel").c_str(), 0.0), 0.0, 4.0));
+                uniforms.layerUv2[k] = request.number(("layer" + n + "Uv2").c_str(), 0.0) >= 0.5 ? 1U : 0U;
+                uniforms.layerWidth[k] = static_cast<uint32_t>(plane->buffer.width);
+                uniforms.layerHeight[k] = static_cast<uint32_t>(plane->buffer.height);
+                uniforms.layerStride[k] = static_cast<uint32_t>(plane->buffer.stride);
+            }
+        }
+        // And how the surface turns under each gaussian, last of all.
+        if (request.number("writeCurvature", 0.0) >= 0.5) {
+            uniforms.curvatureEntry = uniforms.recordPixels;
+            uniforms.recordPixels += 1U;
+        }
         uniforms.dstWidth = static_cast<uint32_t>(target->buffer.width);
         uniforms.dstHeight = static_cast<uint32_t>(target->buffer.height);
         uniforms.dstStride = static_cast<uint32_t>(target->buffer.stride);
@@ -721,6 +892,7 @@ public:
         uniforms.glassOpacity =
             static_cast<float>(std::clamp(request.number("glassOpacity", 1.0), 0.0, 1.0));
         uniforms.useNormalMap = request.number("useNormalMap", 0.0) >= 0.5 ? 1U : 0U;
+        uniforms.normalSpread = static_cast<float>(std::clamp(request.number("normalSpread", 0.0), 0.0, 4.0));
         uniforms.metallic = static_cast<float>(std::clamp(request.number("metallic", 0.0), 0.0, 1.0));
         uniforms.roughness = static_cast<float>(std::clamp(request.number("roughness", 0.5), 0.0, 1.0));
         for (int k = 0; k < 3; ++k) {
@@ -811,6 +983,12 @@ public:
             scan == aofx::kInvalidKernel || emit == aofx::kInvalidKernel) {
             return false;
         }
+        // A layer map's clip where its target is set, the mesh where not.
+        const auto layerBuffer = [&](uint32_t k) {
+            const aofx::InputPlane* plane = request.input(("Layer" + std::to_string(k)).c_str());
+            return uniforms.layerTarget[k] != 0 && plane != nullptr && plane->buffer.isValid() ? plane->buffer
+                                                                                               : meshPlane->buffer;
+        };
         const std::vector<aofx::Buffer> buffers{
             meshPlane->buffer,
             albedo != nullptr && albedo->buffer.isValid() ? albedo->buffer : meshPlane->buffer,
@@ -823,7 +1001,8 @@ public:
             target->buffer,
             withUv2 ? uv2->buffer : meshPlane->buffer,
             withHeights ? heights->buffer : meshPlane->buffer,
-            uniforms.hasEmission != 0 ? emitted->buffer : meshPlane->buffer};
+            uniforms.hasEmission != 0 ? emitted->buffer : meshPlane->buffer,
+            layerBuffer(0), layerBuffer(1), layerBuffer(2)};
         // Count, then settle where each triangle's gaussians start, then
         // write. The order of the output is the mesh's own, which is what
         // lets a gaussian be followed from one frame to the next.

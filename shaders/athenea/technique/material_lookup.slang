@@ -11,6 +11,9 @@ public struct MaterialRecord {
     public uint function;   // 0: the fallback (displayColor); k: the k-th compiled module
     public uint blob;       // its first word in the blob
     public uint flags;
+    /// A transmitting row's (kMaterialTransmits) constants, for a ray that
+    /// does not evaluate it: the low 16 bits the transmission's weight times
+    /// its colour's luminance, the high 16 its index over 1 to 4, unorm.
     public uint pad0;
 };
 
@@ -19,10 +22,17 @@ public static const uint kMaterialCutout = 1u;   // its opacity says whether a s
 /// A UsdPreviewSurface in transparent opacity mode: the path tracer keeps the
 /// specular whole and lets (1 - opacity) straight through (MaterialPrograms.h).
 public static const uint kMaterialTransparent = 2u;
+/// It lets light through (a transmission, or a transparent opacity): a ray
+/// that asks only whether the way is open looks at it rather than stopping
+/// (the bake's cells, the path tracer's `pathThrough`).
+public static const uint kMaterialTransmits = 8u;
 /// The least probability a transparent surface is kept with, by a raster
 /// pixel's lot or a path's: held off zero so a window at opacity 0 still
 /// reflects, one sample in twenty at twenty times the weight.
 public static const float kTransparentKeep = 0.05;
+/// The same everywhere on a surface: no texture, no primvar, no pattern of
+/// position (technique::kMaterialUniform).
+public static const uint kMaterialUniform = 4u;
 
 public struct MaterialLookupParams {
     public float time;

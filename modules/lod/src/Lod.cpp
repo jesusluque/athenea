@@ -54,6 +54,56 @@ Result<scene::GpuSplats> packed(gpu::Device& device, uint32_t count, uint32_t re
     return out;
 }
 
+/// WHAT A CLOUD CARRIES BESIDE ITS GAUSSIANS (lod_extras.slang): a buffer, its
+/// words a gaussian, and how a level's group merges it -- 0 the first
+/// gaussian's, 1 f16 pairs averaged by opacity, 2 bits set where half the
+/// weight has them. The material and the matte's ids take one gaussian's; a
+/// transfer of harmonics is averaged (it is linear in the sky) and a zonal
+/// one, whose axes do not average, takes one gaussian's; the open directions
+/// go by weight.
+struct Extra {
+    gpu::Buffer scene::GpuSplats::* member;
+    uint32_t                        words;
+    uint32_t                        mode;
+};
+
+std::vector<Extra> extrasOf(const scene::GpuSplats& cloud) {
+    std::vector<Extra> out;
+    if (cloud.hasPbr()) out.push_back({&scene::GpuSplats::pbr, 1, 0});
+    if (cloud.hasLobes()) out.push_back({&scene::GpuSplats::lobes, 3, 0});
+    if (cloud.hasCrypto()) out.push_back({&scene::GpuSplats::crypto, 1, 0});
+    if (cloud.transfer.valid() && cloud.transferWords > 0) {
+        out.push_back({&scene::GpuSplats::transfer, cloud.transferWords, cloud.isZonal() ? 0u : 1u});
+    }
+    if (cloud.hasShadowBits() && cloud.shadowWords > 0) {
+        out.push_back({&scene::GpuSplats::shadowBits, cloud.shadowWords, 2});
+    }
+    return out;
+}
+
+/// `to` given room for `count` gaussians of every extra `like` carries, and
+/// the counts that say what its transfer and bits are.
+Result<void> allocateExtras(gpu::Device& device, const scene::GpuSplats& like, uint32_t count,
+                            scene::GpuSplats& to) {
+    for (const Extra& e : extrasOf(like)) {
+        auto made = buffer(device, uint64_t{std::max(count, 1u)} * e.words, 4, "lod.extra");
+        if (!made) return std::move(made).error();
+        to.*e.member = std::move(*made);
+    }
+    to.transferCount = like.transferCount;
+    to.transferWords = like.transferWords;
+    to.shadowWords = like.shadowWords;
+    return ok();
+}
+
+/// Whether `to` carries what `from` does, the same way.
+bool sameExtras(const scene::GpuSplats& from, const scene::GpuSplats& to) {
+    return from.hasPbr() == to.hasPbr() && from.hasLobes() == to.hasLobes() && from.hasCrypto() == to.hasCrypto() &&
+           from.transferWords == to.transferWords && from.transferCount == to.transferCount &&
+           from.shadowWords == to.shadowWords && from.transfer.valid() == to.transfer.valid() &&
+           from.hasShadowBits() == to.hasShadowBits();
+}
+
 /// The shading normals' bindings: the cloud's own where it keeps them, and a
 /// buffer of the right kind in their place where it does not, since every
 /// name a shader declares must be bound. `params.normals` says which.
@@ -104,6 +154,8 @@ Result<LodBuilder> LodBuilder::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(b.leafMoments_, "athenea/lod/lod_leaf_moments", "lodLeafMoments"));
     ATHENEA_TRY(make(b.mergeMoments_, "athenea/lod/lod_merge_moments", "lodMergeMoments"));
     ATHENEA_TRY(make(b.finalize_, "athenea/lod/lod_finalize", "lodFinalize"));
+    ATHENEA_TRY(make(b.extrasReorder_, "athenea/lod/lod_extras", "lodExtrasReorder"));
+    ATHENEA_TRY(make(b.extrasMerge_, "athenea/lod/lod_extras", "lodExtrasMerge"));
     return b;
 }
 
@@ -162,6 +214,25 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
             cursor["params"]["count"].setData(n);
             cursor["params"]["shWords"].setData(cloud.shWords);
         });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    // WHAT IT CARRIES BESIDE, into the same order.
+    ATHENEA_TRY(allocateExtras(device, cloud, n, *splats));
+    {
+        gpu::CommandBatch batch(device);
+        for (const Extra& e : extrasOf(cloud)) {
+            extrasReorder_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                for (const char* unused : {"starts", "selected", "dest"}) {
+                    cursor[unused].setBinding(sorting.values.rhi());
+                }
+                cursor["positions"].setBinding(cloud.positions.rhi());
+                cursor["order"].setBinding(sorting.values.rhi());
+                cursor["source"].setBinding((cloud.*e.member).rhi());
+                cursor["target"].setBinding(((*splats).*e.member).rhi());
+                cursor["params"]["count"].setData(n);
+                cursor["params"]["words"].setData(e.words);
+            });
+        }
         ATHENEA_TRY(batch.submit(true));
     }
     splats->source = cloud.source;
@@ -294,6 +365,23 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
             p["shWords"].setData(cloud.shWords);
             p["stride"].setData(stride);
         });
+        // And what the cloud carries beside, merged over each group's run.
+        ATHENEA_TRY(allocateExtras(device, lod.splats, level.groups, *gaussians));
+        for (const Extra& e : extrasOf(lod.splats)) {
+            extrasMerge_.dispatch(batch, {level.groups, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                for (const char* unused : {"order", "selected", "dest"}) {
+                    cursor[unused].setBinding(level.starts.rhi());
+                }
+                cursor["starts"].setBinding(level.starts.rhi());
+                cursor["positions"].setBinding(lod.splats.positions.rhi());
+                cursor["source"].setBinding((lod.splats.*e.member).rhi());
+                cursor["target"].setBinding(((*gaussians).*e.member).rhi());
+                cursor["params"]["count"].setData(level.groups);
+                cursor["params"]["words"].setData(e.words);
+                cursor["params"]["mode"].setData(e.mode);
+                cursor["params"]["splats"].setData(n);
+            });
+        }
         ATHENEA_TRY(batch.submit(true));
         gaussians->bounds = cloud.bounds;
         LodLevel out;
@@ -362,6 +450,7 @@ Result<CutSelector> CutSelector::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.cutSplats_, "athenea/lod/lod_cut", "lodCutSplats"));
     ATHENEA_TRY(make(c.chunkNeeds_, "athenea/lod/lod_cut", "lodChunkNeeds"));
     ATHENEA_TRY(make(c.gather_, "athenea/lod/lod_gather", "lodGather"));
+    ATHENEA_TRY(make(c.extrasGather_, "athenea/lod/lod_extras", "lodExtrasGather"));
     return c;
 }
 
@@ -536,11 +625,12 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         if (frame.capacity < drawn || frame.cloud.restPerColour != lod.splats.restPerColour ||
             frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid() ||
             frame.cloud.hasNormals() != lod.splats.hasNormals() ||
-            frame.cloud.hasEmission() != lod.splats.hasEmission()) {
+            frame.cloud.hasEmission() != lod.splats.hasEmission() || !sameExtras(lod.splats, frame.cloud)) {
             const uint32_t capacity = std::max(drawn, frame.capacity + frame.capacity / 2);
             auto made = packed(device, std::max(capacity, 1u), lod.splats.restPerColour, lod.splats.shWords,
                                "cut.frame", lod.splats.hasNormals(), lod.splats.hasEmission());
             if (!made) return std::move(made).error();
+            ATHENEA_TRY(allocateExtras(device, lod.splats, std::max(capacity, 1u), *made));
             frame.cloud = std::move(*made);
             frame.capacity = std::max(capacity, 1u);
         }
@@ -574,6 +664,26 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["params"]["offset"].setData(merged ? 0u : runs[part - levels].offset);
                     cursor["params"]["shWords"].setData(lod.splats.shWords);
                 });
+                // And what the cloud carries beside, the same gaussians'.
+                for (const Extra& e : extrasOf(lod.splats)) {
+                    if (!(source.*e.member).valid()) {
+                        continue;
+                    }
+                    extrasGather_.dispatch(batch, {countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                        for (const char* unused : {"order", "starts"}) {
+                            cursor[unused].setBinding(frame.dest[part].rhi());
+                        }
+                        cursor["positions"].setBinding(source.positions.rhi());
+                        cursor["selected"].setBinding(frame.selected[part].rhi());
+                        cursor["dest"].setBinding(frame.dest[part].rhi());
+                        cursor["source"].setBinding((source.*e.member).rhi());
+                        cursor["target"].setBinding((frame.cloud.*e.member).rhi());
+                        cursor["params"]["count"].setData(countOf(part));
+                        cursor["params"]["words"].setData(e.words);
+                        cursor["params"]["base"].setData(base);
+                        cursor["params"]["offset"].setData(merged ? 0u : runs[part - levels].offset);
+                    });
+                }
                 base += read[part];
             }
             ATHENEA_TRY(batch.submit(true));

@@ -39,7 +39,13 @@ constexpr uint32_t kHasEmission = 4;
 /// Every bit this reader knows. A bit outside it is refused, not ignored: a
 /// later bit may add a block, and a reader that skipped it would take every
 /// block after it from the wrong place.
-constexpr uint32_t kKnownFlags = kHasNormals | kLinear | kHasEmission;
+/// Bit 4: every block then carries the material (proposal 026): one `pbr`
+/// word an element and, where the extra header says, the three of its layers.
+constexpr uint32_t kHasMaterial = 16;
+/// Bit 5: and a transfer (task TX): its words an element, then its open
+/// directions' -- the counts in the extra header. Bit 3 is proposal 009's.
+constexpr uint32_t kHasTransfer = 32;
+constexpr uint32_t kKnownFlags = kHasNormals | kLinear | kHasEmission | kHasMaterial | kHasTransfer;
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'C'};
 /// Uploads staged before a submit: the staging heap holds them until then.
 constexpr uint64_t kStageBytes = uint64_t{256} << 20;
@@ -74,6 +80,41 @@ struct ChunkEntry {
     uint32_t pad;
 };
 static_assert(sizeof(FileHeader) == 104);
+/// After the header, where bit 4 or 5 is set: how many words of each extra a
+/// block element carries, in the order they follow the emission.
+struct ExtraHeader {
+    uint32_t pbrWords;        // 1 with bit 4
+    uint32_t lobesWords;      // 3 where the cloud carries its layers, else 0
+    uint32_t transferCount;   // the transfer's values (its layout: 9, 36, 84, 16, 64, 112 or 10)
+    uint32_t transferWords;   // f16 pairs of them
+    uint32_t shadowWords;     // its open directions: 2, 8 or 32
+    uint32_t pad[3];
+};
+static_assert(sizeof(ExtraHeader) == 32);
+constexpr uint64_t kExtraHeaderAt = sizeof(FileHeader);
+
+/// Each extra a block element carries, in order: the member of a cloud it
+/// fills and its words.
+std::vector<std::pair<gpu::Buffer scene::GpuSplats::*, uint32_t>> extrasOf(const ExtraHeader& x) {
+    std::vector<std::pair<gpu::Buffer scene::GpuSplats::*, uint32_t>> out;
+    if (x.pbrWords) out.emplace_back(&scene::GpuSplats::pbr, x.pbrWords);
+    if (x.lobesWords) out.emplace_back(&scene::GpuSplats::lobes, x.lobesWords);
+    if (x.transferWords) out.emplace_back(&scene::GpuSplats::transfer, x.transferWords);
+    if (x.shadowWords) out.emplace_back(&scene::GpuSplats::shadowBits, x.shadowWords);
+    return out;
+}
+
+uint32_t extraWords(const ExtraHeader& x) {
+    return x.pbrWords + x.lobesWords + x.transferWords + x.shadowWords;
+}
+
+/// Bytes an element of a block takes, the extras included.
+uint64_t elementBytes(uint32_t shWords, bool normals, bool emission);
+bool keepsNormals(const FileHeader& h);
+bool keepsEmission(const FileHeader& h);
+uint64_t elementBytesOf(const FileHeader& h, const ExtraHeader& x) {
+    return elementBytes(h.shWords, keepsNormals(h), keepsEmission(h)) + 4 * uint64_t{extraWords(x)};
+}
 static_assert(sizeof(LevelEntry) == 16);
 static_assert(sizeof(ChunkEntry) == 16);
 
@@ -95,12 +136,9 @@ bool keepsEmission(const FileHeader& h) {
     return (h.flags & kHasEmission) != 0;
 }
 
-uint64_t elementBytes(const FileHeader& h) {
-    return elementBytes(h.shWords, keepsNormals(h), keepsEmission(h));
-}
-
 struct Layout {
     FileHeader              header{};
+    ExtraHeader             extra{};
     std::vector<LevelEntry> levels;
     std::vector<ChunkEntry> chunks;
 };
@@ -127,6 +165,16 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
     if (h.version < 2) {
         h.flags = 0;
     }
+    if ((h.flags & (kHasMaterial | kHasTransfer)) != 0) {
+        std::memcpy(&layout.extra, bytes.data() + kExtraHeaderAt, sizeof layout.extra);
+        const ExtraHeader& x = layout.extra;
+        if (((h.flags & kHasMaterial) != 0) != (x.pbrWords == 1) || (x.lobesWords != 0 && x.lobesWords != 3) ||
+            ((h.flags & kHasTransfer) != 0) != (x.transferWords != 0) || x.transferWords > 64 ||
+            (x.shadowWords != 0 && x.shadowWords != 2 && x.shadowWords != 8 && x.shadowWords != 32) ||
+            x.transferWords != (x.transferCount + 1) / 2) {
+            return bad(path, "inconsistent extra header");
+        }
+    }
     if ((h.flags & ~kKnownFlags) != 0) {
         std::string bits;
         for (uint32_t b = 0; b < 32; ++b) {
@@ -134,7 +182,8 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
                 bits += (bits.empty() ? "" : ", ") + std::to_string(b);
             }
         }
-        return bad(path, "unknown flag bits " + bits + "; this reads bits 0 (normals), 1 (linear) and 2 (emission)");
+        return bad(path, "unknown flag bits " + bits +
+                             "; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material) and 5 (transfer)");
     }
     const auto within = [&](uint64_t offset, uint64_t size) {
         return offset <= bytes.size() && size <= bytes.size() - offset;
@@ -152,7 +201,7 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
     layout.chunks.resize(h.chunks);
     std::memcpy(layout.levels.data(), bytes.data() + h.levelTable, layout.levels.size() * sizeof(LevelEntry));
     std::memcpy(layout.chunks.data(), bytes.data() + h.chunkTable, layout.chunks.size() * sizeof(ChunkEntry));
-    const uint64_t per = elementBytes(h);
+    const uint64_t per = elementBytesOf(h, layout.extra);
     for (size_t l = 0; l < layout.levels.size(); ++l) {
         const LevelEntry& e = layout.levels[l];
         if (e.groups == 0 || !within(e.offset, e.groups * per) ||
@@ -187,8 +236,11 @@ Result<gpu::Buffer> deviceBuffer(gpu::Device& device, uint64_t count, uint32_t e
 /// and the emitted radiance after those (`emission` null otherwise).
 struct Block {
     const std::byte* positions, *shape, *sh, *tail, *normals, *emission;
+    /// The extras after them (bits 4 and 5), in the extra header's order.
+    std::vector<const std::byte*> extras;
 };
-Block blockAt(const std::byte* at, uint64_t n, uint32_t shWords, bool normals, bool emission) {
+Block blockAt(const std::byte* at, uint64_t n, uint32_t shWords, bool normals, bool emission,
+              const ExtraHeader& x = {}) {
     Block b;
     b.positions = at;
     b.shape = b.positions + n * 16;
@@ -196,7 +248,19 @@ Block blockAt(const std::byte* at, uint64_t n, uint32_t shWords, bool normals, b
     b.tail = b.sh + n * 4 * uint64_t{shWords};
     b.normals = normals ? b.tail + n * 4 : nullptr;
     b.emission = emission ? b.tail + n * 4 + (normals ? n * 4 : 0) : nullptr;
+    const std::byte* next = b.tail + n * 4 + (normals ? n * 4 : 0) + (emission ? n * 4 : 0);
+    for (const auto& [member, words] : extrasOf(x)) {
+        b.extras.push_back(next);
+        next += n * 4 * uint64_t{words};
+    }
     return b;
+}
+
+/// The extra header's counts on a cloud that carries them.
+void countsOf(const ExtraHeader& x, scene::GpuSplats& s) {
+    s.transferCount = x.transferCount;
+    s.transferWords = x.transferWords;
+    s.shadowWords = x.shadowWords;
 }
 
 scene::GpuSplats splatsLike(const FileHeader& h, const std::filesystem::path& path) {
@@ -221,7 +285,7 @@ Result<LodCloud> openCloud(gpu::Device& device, const platform::MappedFile& file
     lod.extent = h.extent;
     const std::byte* base = file.bytes().data();
     for (const LevelEntry& e : layout.levels) {
-        const Block b = blockAt(base + e.offset, e.groups, h.shWords, keepsNormals(h), keepsEmission(h));
+        const Block b = blockAt(base + e.offset, e.groups, h.shWords, keepsNormals(h), keepsEmission(h), layout.extra);
         LodLevel level;
         level.level = e.level;
         level.gaussians = splatsLike(h, path);
@@ -248,6 +312,15 @@ Result<LodCloud> openCloud(gpu::Device& device, const platform::MappedFile& file
             if (!emission) return std::move(emission).error();
             level.gaussians.emission = std::move(*emission);
         }
+        {
+            size_t k = 0;
+            for (const auto& [member, words] : extrasOf(layout.extra)) {
+                auto extra = deviceBuffer(device, uint64_t{e.groups} * words, 4, "athc.level", b.extras[k++]);
+                if (!extra) return std::move(extra).error();
+                level.gaussians.*member = std::move(*extra);
+            }
+            countsOf(layout.extra, level.gaussians);
+        }
         level.cells = std::move(*cells);
         lod.levels.push_back(std::move(level));
     }
@@ -258,8 +331,8 @@ Result<LodCloud> openCloud(gpu::Device& device, const platform::MappedFile& file
 }
 
 /// A store of `slots` chunks, and the per-chunk flags, all empty.
-Result<void> makeStore(gpu::Device& device, LodCloud& lod, const FileHeader& h, uint32_t slots,
-                       const std::filesystem::path& path) {
+Result<void> makeStore(gpu::Device& device, LodCloud& lod, const FileHeader& h, const ExtraHeader& x,
+                       uint32_t slots, const std::filesystem::path& path) {
     const uint64_t n = uint64_t{slots} * h.chunkSplats;
     lod.splats = splatsLike(h, path);
     lod.splats.count = static_cast<uint32_t>(std::min<uint64_t>(n, h.count));
@@ -285,6 +358,12 @@ Result<void> makeStore(gpu::Device& device, LodCloud& lod, const FileHeader& h, 
         if (!emission) return std::move(emission).error();
         lod.splats.emission = std::move(*emission);
     }
+    for (const auto& [member, words] : extrasOf(x)) {
+        auto extra = deviceBuffer(device, n * words, 4, "athc.store");
+        if (!extra) return std::move(extra).error();
+        lod.splats.*member = std::move(*extra);
+    }
+    countsOf(x, lod.splats);
     lod.groups = std::move(*g);
     lod.slots.assign(h.chunks, -1);
     const std::vector<uint32_t> none(h.chunks, 0);
@@ -295,10 +374,11 @@ Result<void> makeStore(gpu::Device& device, LodCloud& lod, const FileHeader& h, 
 }
 
 /// Records chunk `chunk`'s bytes (one block, `from`) into slot `slot`.
-void place(gpu::CommandBatch& batch, LodCloud& lod, uint32_t chunk, uint32_t slot, const std::byte* from) {
+void place(gpu::CommandBatch& batch, LodCloud& lod, uint32_t chunk, uint32_t slot, const std::byte* from,
+           const ExtraHeader& x) {
     const uint64_t n = lod.chunkCount(chunk);
     const uint64_t at = uint64_t{slot} * lod.chunkSplats;
-    const Block b = blockAt(from, n, lod.splats.shWords, lod.splats.hasNormals(), lod.splats.hasEmission());
+    const Block b = blockAt(from, n, lod.splats.shWords, lod.splats.hasNormals(), lod.splats.hasEmission(), x);
     rhi::ICommandEncoder* e = batch.encoder();
     e->uploadBufferData(lod.splats.positions.rhi(), at * 16, n * 16, b.positions);
     e->uploadBufferData(lod.splats.shape.rhi(), at * 16, n * 16, b.shape);
@@ -309,6 +389,12 @@ void place(gpu::CommandBatch& batch, LodCloud& lod, uint32_t chunk, uint32_t slo
     }
     if (b.emission != nullptr) {
         e->uploadBufferData(lod.splats.emission.rhi(), at * 4, n * 4, b.emission);
+    }
+    {
+        size_t k = 0;
+        for (const auto& [member, words] : extrasOf(x)) {
+            e->uploadBufferData((lod.splats.*member).rhi(), at * 4 * words, n * 4 * words, b.extras[k++]);
+        }
     }
     const uint32_t one = 1;
     e->uploadBufferData(lod.resident.rhi(), uint64_t{chunk} * 4, 4, &one);
@@ -342,12 +428,29 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     const bool emission = cloud.splats.hasEmission() &&
                           std::all_of(cloud.levels.begin(), cloud.levels.end(),
                                       [](const LodLevel& l) { return l.gaussians.hasEmission(); });
-    const uint64_t per = elementBytes(shWords, normals, emission);
+    // The material and the transfer, where every level carries them as the
+    // splats do (bits 4 and 5).
+    ExtraHeader x{};
+    const auto everywhere = [&](gpu::Buffer scene::GpuSplats::* member) {
+        return (cloud.splats.*member).valid() &&
+               std::all_of(cloud.levels.begin(), cloud.levels.end(),
+                           [&](const LodLevel& l) { return (l.gaussians.*member).valid(); });
+    };
+    if (everywhere(&scene::GpuSplats::pbr)) {
+        x.pbrWords = 1;
+        x.lobesWords = everywhere(&scene::GpuSplats::lobes) ? 3 : 0;
+    }
+    if (everywhere(&scene::GpuSplats::transfer) && cloud.splats.transferWords > 0) {
+        x.transferCount = cloud.splats.transferCount;
+        x.transferWords = cloud.splats.transferWords;
+        x.shadowWords = everywhere(&scene::GpuSplats::shadowBits) ? cloud.splats.shadowWords : 0;
+    }
+    const uint64_t per = elementBytes(shWords, normals, emission) + 4 * uint64_t{extraWords(x)};
     FileHeader h{};
     std::memcpy(h.magic, kMagic, 4);
     h.version = kVersion;
     h.flags = (normals ? kHasNormals : 0u) | (cloud.splats.linear ? kLinear : 0u) |
-              (emission ? kHasEmission : 0u);
+              (emission ? kHasEmission : 0u) | (x.pbrWords ? kHasMaterial : 0u) | (x.transferWords ? kHasTransfer : 0u);
     h.count = cloud.count;
     h.restPerColour = cloud.splats.restPerColour;
     h.shWords = shWords;
@@ -403,6 +506,9 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         return ok();
     };
     put(&h, sizeof h);
+    if ((h.flags & (kHasMaterial | kHasTransfer)) != 0) {
+        put(&x, sizeof x);
+    }
     padTo(h.levelTable);
     put(levels.data(), levels.size() * sizeof(LevelEntry));
     put(chunks.data(), chunks.size() * sizeof(ChunkEntry));
@@ -422,6 +528,9 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         if (emission) {
             ATHENEA_TRY(copy(level.gaussians.emission, 0, n * 4));
         }
+        for (const auto& [member, words] : extrasOf(x)) {
+            ATHENEA_TRY(copy(level.gaussians.*member, 0, n * 4 * words));
+        }
     }
     for (uint32_t c = 0; c < h.chunks; ++c) {
         const uint64_t n = chunks[c].count;
@@ -436,6 +545,9 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         }
         if (emission) {
             ATHENEA_TRY(copy(cloud.splats.emission, first * 4, n * 4));
+        }
+        for (const auto& [member, words] : extrasOf(x)) {
+            ATHENEA_TRY(copy(cloud.splats.*member, first * 4 * words, n * 4 * words));
         }
     }
     padTo(aligned(written));
@@ -530,12 +642,12 @@ Result<LodCloud> readAthc(gpu::Device& device, const std::filesystem::path& path
     auto lod = openCloud(device, *file, *layout, path);
     if (!lod) return std::move(lod).error();
     const FileHeader& h = layout->header;
-    ATHENEA_TRY(makeStore(device, *lod, h, h.chunks, path));
+    ATHENEA_TRY(makeStore(device, *lod, h, layout->extra, h.chunks, path));
     gpu::CommandBatch batch(device);
     uint64_t staged = 0;
     for (uint32_t c = 0; c < h.chunks; ++c) {
-        place(batch, *lod, c, c, file->bytes().data() + layout->chunks[c].offset);
-        staged += lod->chunkCount(c) * elementBytes(h);
+        place(batch, *lod, c, c, file->bytes().data() + layout->chunks[c].offset, layout->extra);
+        staged += lod->chunkCount(c) * elementBytesOf(h, layout->extra);
         if (staged >= kStageBytes) {
             ATHENEA_TRY(batch.submit(true));
             staged = 0;
@@ -569,7 +681,7 @@ struct StreamingPool::Impl {
     std::vector<std::thread>                              loaders;
 
     void load() {
-        const uint64_t per = elementBytes(layout.header);
+        const uint64_t per = elementBytesOf(layout.header, layout.extra);
         std::unique_lock lock(mutex);
         for (;;) {
             work.wait(lock, [&] { return stop || !queue.empty(); });
@@ -623,7 +735,7 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
     const FileHeader& h = p.layout.header;
     const uint32_t slots = static_cast<uint32_t>(
         std::clamp<uint64_t>(settings.budgetSplats / h.chunkSplats, 1, h.chunks));
-    ATHENEA_TRY(makeStore(device, p.cloud, h, slots, path));
+    ATHENEA_TRY(makeStore(device, p.cloud, h, p.layout.extra, slots, path));
     p.cloud.streamed = true;
     p.owner.assign(slots, -1);
     p.wantedNow.assign(h.chunks, 0);
@@ -751,7 +863,7 @@ Result<uint32_t> StreamingPool::update(bool wait) {
                                               &zero);
             ++p.counters.evictions;
         }
-        place(batch, lod, chunk, slot, bytes.data());
+        place(batch, lod, chunk, slot, bytes.data(), p.layout.extra);
         p.owner[slot] = static_cast<int32_t>(chunk);
         ++placed;
     }

@@ -42,6 +42,9 @@ struct PathParams {
     // cosine, projected onto the same basis, with the surface's own albedo
     // taken as one. What that buys is a cloud that can be lit by a sky it was
     // never baked under: the frame reads `albedo * dot(transfer, sky)`.
+    // 2: the same, and which ways out are open at 16 x 16 cells over the
+    // whole sphere rather than 8 x 8 over the half it faces; 3: at 32 x 32
+    // (BakePoints::cellSide).
     uint transfer;
     uint adaptive;     // 1: a converged pixel takes no more paths
     float errorTarget; // relative standard error of the mean a pixel stops at
@@ -453,11 +456,14 @@ void writeAuxAt(uint at, uint pixels, float4 albedo, float4 normal) {
 const char* kBake = R"(
 import athenea.common.bake_fit;
 static const bool kBake = true;
+/// Points a transfer's cells are traced from over the footprint (bakeCellOrigin).
+static const uint kCellOrigins = 4u;
 // Three entries a point: where it is and how far off to start; the normal of
 // the surface under it, which the ray is sent down to find that surface; and
 // the way the gaussian itself faces, w 1 where it is not the surface's -- a
 // displaced gaussian stands off the mesh, tilted by the relief, and is lit and
-// projected as the relief faces rather than as the flat mesh under it.
+// projected as the relief faces rather than as the flat mesh under it. That w
+// carries a quarter of the material's metalness too (`bakeMetalness`).
 StructuredBuffer<float4> bakeRays;
 
 /// Whether the gaussian stands off the surface, turned by a relief.
@@ -468,6 +474,16 @@ bool bakeRaised(uint at) {
 /// The normal of the flat surface under it.
 float3 bakeSurfaceNormal(uint at) {
     return normalize(bakeRays[at * 3 + 1].xyz);
+}
+
+/// THE METALNESS OF THE MATERIAL UNDER THE GAUSSIAN, as the conversion read
+/// it: carried in the quarter below the raised flag of the third entry's w
+/// (`1 + m / 4` raised, `m / 4` flat), so `w > 0.5` still says raised and
+/// every reader of that flag reads it as it did. Zero from a caller that
+/// writes no metalness, which then leaves the decision to the lobes alone.
+float bakeMetalness(uint at) {
+    const float w = bakeRays[at * 3 + 2].w;
+    return saturate((w > 0.5 ? w - 1.0 : w) * 4.0);
 }
 
 /// Which way the gaussian faces: its own where it said one, else the surface's.
@@ -491,9 +507,23 @@ float3 bakeFacing(uint at) {
 /// gold black. What it drops is the dielectric polish and the sheen, which
 /// `splat_relight` puts back at render time, from the metallic and roughness
 /// the gaussian carries, and puts back *with a direction in it*.
-LobeStack bakeBody(LobeStack stack) {
+LobeStack bakeBody(LobeStack stack, uint at) {
     LobeStack body = stack;
     body.count = 0;
+    // A METAL IS WHAT THE MATERIAL SAYS IS ONE, not only what reflects like
+    // one. The test below by reflectivity drops a dark metal: a car's paint
+    // is OpenPBR at metalness 1 over a base of 0.05, its metal a Schlick of
+    // F0 0.05, and every one of its gaussians baked to black. Where the
+    // conversion says the material is metal at all, and the material did not
+    // write its metal as a conductor (UsdPreviewSurface does, and then its
+    // Schlick lobes are its dielectric and its coat), the Schlick lobes are
+    // the metal: OpenPBR and standard_surface write their dielectric and
+    // their coat as `dielectric_bsdf`, never as a Schlick.
+    bool conductor = false;
+    for (uint k = 0; k < stack.count; ++k) {
+        conductor = conductor || stack.lobes[k].kind == kLobeConductor;
+    }
+    const bool saidMetal = bakeMetalness(at) > 0.0 && !conductor;
     for (uint k = 0; k < stack.count; ++k) {
         const Lobe lobe = stack.lobes[k];
         const bool diffuse = lobe.kind == kLobeOrenNayar || lobe.kind == kLobeBurley ||
@@ -515,7 +545,7 @@ LobeStack bakeBody(LobeStack stack) {
         // A conductor's is half the light or more, and coloured with it. So a
         // Schlick whose F0 stands above a fifth is the metal it stands for.
         const float f0 = max(max(lobe.colour0.x, lobe.colour0.y), lobe.colour0.z);
-        const bool metal = lobe.kind == kLobeConductor || (lobe.kind == kLobeSchlick && f0 > 0.2);
+        const bool metal = lobe.kind == kLobeConductor || (lobe.kind == kLobeSchlick && (f0 > 0.2 || saidMetal));
         const bool through = lobe.scatter == kScatterTransmit;
         if (diffuse || metal || through) {
             body.lobes[body.count] = lobe;
@@ -553,6 +583,21 @@ float3 bakeDirection(uint at, uint sample) {
     // Not cosine weighted: the cosine belongs to a reflection integral, and
     // this one is a projection.
     return bakeAim(n, u);
+}
+
+/// THE SAME OVER THE WHOLE SPHERE (task TX, step 5): the stratum's height
+/// stretched to [-1, 1], and a direction below the surface its mirror image
+/// through the tangent plane, so the grid covers both halves evenly. What a
+/// transmitting gaussian's transfer draws its first direction from.
+float3 bakeSphereDirection(uint at, uint sample) {
+    const float3 n = bakeFacing(at);
+    const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
+    const uint side = max(uint(sqrt(float(max(path.samples, 1u))) + 0.5), 1u);
+    const uint2 cell = uint2(sample % side, (sample / side) % side);
+    const float2 u = saturate((float2(cell) + random2(pixel, sample, 0u, 41u)) / float(side));
+    const float z = 2.0 * u.x - 1.0;
+    const float3 up = bakeAim(n, float2(abs(z), u.y));
+    return z >= 0.0 ? up : up - 2.0 * dot(up, n) * n;
 }
 
 /// Whether a sample looks at the surface from the side it faces. Every one of
@@ -637,20 +682,68 @@ float3 bakeNormalAt(uint at) {
     return bakeFacing(at);
 }
 
+/// WHERE A TRANSFER'S CELLS ARE TRACED FROM, over the gaussian's footprint:
+/// origin `k` of `kCellOrigins` comes down onto a point of a disc as wide as
+/// the gaussian (the w of the normal, negative where only the cells take it:
+/// the paths stay at the centre), and 0 is the centre the paths found. A
+/// cell traced from one point is a sample of one point: a gaussian over a
+/// groove narrower than itself read the groove's shadow whole, its neighbour
+/// none of it, and a lip of a pawn's gold ring drew a dashed dark line where
+/// the path traced frame has a faint, even one. An origin whose ray finds no
+/// surface, or one farther than the footprint, stands at the centre.
+bool bakeCellOrigin(uint at, uint k, uint mask, float3 centre, out float3 p, out float3 n) {
+    p = centre;
+    n = float3(0.0, 0.0, 1.0);
+    const float4 o = bakeRays[at * 3];
+    const float4 surface = bakeRays[at * 3 + 1];
+    const float wide = abs(surface.w);
+    if (k == 0u || !(wide > 0.0)) {
+        return false;
+    }
+    const float3 axis = normalize(surface.xyz);
+    // Stratified over the disc: the k-th of the ring's angles, a radius by
+    // the point's own hash so neighbours do not line up.
+    const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
+    const float2 u = random2(pixel, k, 0u, 47u);
+    const float radius = wide * sqrt((float(k) - 0.5 + 0.5 * u.x) / float(kCellOrigins - 1u));
+    const float phi = 2.0 * 3.14159265358979 * (float(k) + u.y) / float(kCellOrigins - 1u);
+    const float3 tangent = abs(axis.z) < 0.999 ? normalize(cross(float3(0.0, 0.0, 1.0), axis)) : float3(1.0, 0.0, 0.0);
+    const float3 bitangent = cross(axis, tangent);
+    const float3 from = o.xyz + axis * o.w + (tangent * cos(phi) + bitangent * sin(phi)) * radius;
+    const PathHit hit = traceNearestFrom(from, -axis, o.w * 0.01, mask, true);
+    const Found f = foundHit(hit, from, -axis);
+    if (!f.valid || length(f.positionWorld - centre) > 2.0 * wide) {
+        return false;
+    }
+    p = f.positionWorld;
+    n = normalize(applyRows(toWorld, f.s.normal, 0.0));
+    if (dot(n, axis) < 0.0) {
+        n = -n;
+    }
+    return true;
+}
+
 
 )";
 
 const char* kNoBake = R"(
 static const bool kBake = false;
+static const uint kCellOrigins = 4u;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
-LobeStack bakeBody(LobeStack stack) { return stack; }
+LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
+float3 bakeSphereDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float bakeBasisAt(uint at, uint sample, uint basis) { return 0.0; }
 bool bakeRaised(uint at) { return false; }
 float3 bakeSurfaceNormal(uint at) { return float3(0.0, 0.0, 1.0); }
 static const float kBakeMeasure = 0.0;
 uint bakeBand(uint k) { return 0; }
 float3 bakeNormalAt(uint at) { return float3(0.0, 0.0, 1.0); }
+bool bakeCellOrigin(uint at, uint k, uint mask, float3 centre, out float3 p, out float3 n) {
+    p = centre;
+    n = float3(0.0, 0.0, 1.0);
+    return false;
+}
 void bakeEncode(inout float3 c[16], uint count, float3 n, float3 brightest) {}
 void bakeGram(float3 n, out float e[6][10], uint evens[6], uint ne, uint odds[10], uint no) {
     for (uint i = 0; i < 6; ++i) {
@@ -953,6 +1046,74 @@ bool shadowPassesThrough(PathHit hit, float3 from, float3 direction) {
     key = pcgHash(key + asuint(f.positionWorld.z));
     key = pcgHash(key + path.accumulated + gShadowDraws++);
     return float(key >> 8) * (1.0 / 16777216.0) >= opacity;
+}
+
+/// HOW MUCH OF A DIRECTION GETS THROUGH, for a ray that only asks whether
+/// the way is open (a transfer's cells, its direct half): one past every
+/// surface whose material lets light through (`kMaterialTransmits`),
+/// straight on and weighed by what each passes, and nothing at the first
+/// that does not. What a surface passes is read from its row, not evaluated
+/// (`pad`: the transmission's weight times its colour's luminance, and its
+/// index, MaterialCompiler::transmission), less the Fresnel the dielectric
+/// reflects at the angle the ray meets it. Evaluating the material here made
+/// the bake kernel one material dispatch larger, and Metal's compiler gave up
+/// on the Corvette's. Straight, not bent: the cells say whether light gets
+/// here, and the lens's image is the frame's (splat_relight's lensExit).
+/// Opaque glass in these rays put a pawn's gold ring in the dark under its
+/// glass head, and a car's cabin under its windows.
+float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
+    const float scale = max(1.0, length(p));
+    const float3 away = dot(n, wi) < 0.0 ? -n : n;
+    float3 origin = p + (away + wi) * (1.0e-3 * scale);
+    float through = 1.0;
+    for (uint passes = 0; passes < 8u; ++passes) {
+        const PathHit hit = traceNearestFrom(origin, wi, 1.0e-3 * scale, mask, false);
+        if (hit.seen.x == 0) {
+            return through;
+        }
+        const Found f = foundHit(hit, origin, wi);
+        if (!f.valid) {
+            return through;
+        }
+        const MaterialRecord m = materials[materialRowOf(f.s)];
+        if ((m.flags & kMaterialTransmits) == 0u) {
+            return 0.0;
+        }
+        const float tint = float(m.pad0 & 0xffffu) / 65535.0;
+        const float index = 1.0 + 3.0 * float(m.pad0 >> 16) / 65535.0;
+        const float cosine = abs(dot(normalize(applyRows(toWorld, f.s.geometricNormal, 0.0)), wi));
+        const float reflected = index > 1.001 ? fresnelDielectric(max(cosine, 1.0e-3), index) : 0.0;
+        through *= saturate(tint * (1.0 - reflected));
+        if (through < 1.0e-3) {
+            return 0.0;
+        }
+        origin = origin + wi * (hit.t + 1.0e-3 * scale);
+    }
+    return through;
+}
+
+/// Whether a point's own surface lets light through: a transmitting lobe
+/// with any weight.
+bool stackTransmits(LobeStack stack) {
+    for (uint k = 0; k < stack.count; ++k) {
+        if (stack.lobes[k].scatter != kScatterReflect && any(stack.lobes[k].weight > float3(0.0))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// What a transfer's cell ray gets through from a point: past glass for what
+/// stands under it (`pathThrough`), and stopped by anything for the glass's
+/// own points. A glass's frame reads its cells as closed by its own far face
+/// -- the lens and the field answer there (splat_relight) -- and passing its
+/// own body opened them all: the gate's glass ball under the lamp went from
+/// 0.097 to 0.217.
+float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmits) {
+    if (selfTransmits) {
+        return pathOccluded(p, n, wi, 3.0e38, kLightUnlinked, mask) ? 0.0 : 1.0;
+    }
+    return pathThrough(p, n, wi, mask);
 }
 
 /// What was found, its material evaluated: the kernel's one call of it.
@@ -1303,6 +1464,15 @@ bool misWeighs(LightRecord l) {
            l.shadowCategory == kLightUnlinked;
 }
 
+/// `wi`, headed through a surface whose outside `n` faces, bent into a
+/// medium of index `ior` (Snell's law; going in, it never reflects whole).
+float3 refractInto(float3 wi, float3 n, float ior) {
+    const float cosIn = -dot(n, wi);
+    const float eta = 1.0 / ior;
+    const float k = max(1.0 - eta * eta * (1.0 - cosIn * cosIn), 0.0);
+    return normalize(eta * wi + (eta * cosIn - sqrt(k)) * n);
+}
+
 /// WHETHER `wi` GOES THROUGH A GLASS AT THIS VERTEX: the vertex's material
 /// has a dielectric lobe, and the direction crosses the surface or the
 /// surface was met from inside -- where the dielectric was told so
@@ -1518,6 +1688,12 @@ void tracePathsAt(uint2 group, uint index) {
     // With the bake split: the indirect half of the same sums, the direct
     // half being the whole less it.
     float3 indirectCoefficients[16];
+    // A TX transfer's closed directions, projected as the field is (task TX):
+    // one where the first ray met something, over the same samples and by
+    // the same measure, so the field over it is the radiance the closed
+    // directions show, not that radiance diluted by the open ones and by the
+    // half that was never drawn (m2sTransferInto).
+    float  closedCoefficients[16];
     // And what says how noisy each half is, and how much a path cost:
     // sums of each half's luminance and of its square, of their product,
     // and of the steps the paths took.
@@ -1547,11 +1723,28 @@ void tracePathsAt(uint2 group, uint index) {
     // which nine coefficients of a smooth visibility cannot say.
     uint shadowBits0 = 0u;
     uint shadowBits1 = 0u;
+    // AND SIXTEEN TIMES FINER, where the caller asked (`path.transfer` 2):
+    // 256 bits of a 16 x 16 octahedral grid over the whole sphere, the far
+    // half of it as well, since a glass sends the eye through it and a sheet
+    // is seen from both sides. What a reflection's lobe reads its occlusion
+    // from, not only where a sun is shadowed.
+    const bool cellsMode = transferMode && path.transfer >= 2u;
+    const uint cellSide = path.transfer >= 3u ? 32u : 16u;
+    // Four words a plane after the coverage, written as each is traced; a
+    // point whose first sample never reaches its surface leaves them zero,
+    // not whatever the last pass left there.
+    const uint cellPlanes = cellSide * cellSide / 128u;
+    if (cellsMode) {
+        for (uint plane = 0; plane < cellPlanes; ++plane) {
+            colour[(min(path.bakeCount, 16u) + 1u + plane) * (camera.width * camera.height) + at] = float4(0.0);
+        }
+    }
     if (kBake) {
         for (uint c = 0; c < 16; ++c) {
             coefficients[c] = float3(0.0);
             transferDirect[c] = 0.0;
             indirectCoefficients[c] = float3(0.0);
+            closedCoefficients[c] = 0.0;
         }
         for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
             if ((bakeBand(c) & 1u) == 0u) {
@@ -1598,6 +1791,21 @@ void tracePathsAt(uint2 group, uint index) {
         // sampling. Everything after is indirect.
         float3 directPart = float3(0.0);
         float3 throughput = float3(1.0);
+        // A transfer's first direction and what it weighed (the field's).
+        float3 firstDirection = float3(0.0, 0.0, 1.0);
+        float  firstWeight = 1.0;
+        // THE FAR HALF, where the material lets light through (task TX, step
+        // 5): a TX transfer at a transmitting gaussian draws its first
+        // direction over the whole sphere, so the field holds what stands
+        // behind the glass -- a cabin, a reflector -- as well as in front. A
+        // sample drawn behind feeds the field alone; the two transfer halves
+        // keep their estimator, over the front, from the samples drawn there.
+        bool   firstTransmits = false;
+        bool   backSample = false;
+        // The index a sample drawn behind enters by: one where the glass is a
+        // thin wall, which does not bend what crosses it.
+        float  firstIor = 1.0;
+        float  firstMeasure = 2.0 * 3.14159265358979;
         // The first vertex's opacity is the pixel's, and its depth; a
         // medium's collision is opaque.
         float  opacity = 0.0;
@@ -1677,16 +1885,38 @@ void tracePathsAt(uint2 group, uint index) {
                     // bounce it carries the colour of whatever it bounced
                     // off, which is the indirect half.
                     if (transferMode && bounce > 0) {
-                        for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
+                        // A sample drawn behind a glass feeds the field alone.
+                        for (uint c = 0; c < min(path.bakeCount, 16u) && !backSample; ++c) {
                             const float basis = shBasisValue(c, d);
                             if (bounce == 1) {
-                                transferDirect[c] += throughput.x * basis;
+                                // With the cells the direct half is their
+                                // quadrature (above), not these samples.
+                                transferDirect[c] += cellsMode ? 0.0 : throughput.x * basis;
                             } else {
                                 coefficients[c] += throughput * basis;
                             }
                         }
+                        // THE REFLECTED FIELD (task TX): what arrived along
+                        // the path's first direction after it met the scene,
+                        // under a white sky of radiance one -- the throughput
+                        // past the first vertex -- projected onto degree 3 of
+                        // that direction, uniform over the hemisphere it was
+                        // drawn from. In the split's sums, which a transfer
+                        // does not keep.
+                        if (cellsMode && bounce >= 2) {
+                            const float3 arrived = throughput / max(firstWeight, 1.0e-6) * firstMeasure;
+                            for (uint c = 0; c < 16u; ++c) {
+                                indirectCoefficients[c] += arrived * shBasisValue(c, firstDirection);
+                            }
+                        }
                     }
                     break;   // the ray escaped
+                }
+                // The first ray met something: a closed direction.
+                if (kBake && transferMode && cellsMode && bounce == 1) {
+                    for (uint c = 0; c < 16u; ++c) {
+                        closedCoefficients[c] += firstMeasure * shBasisValue(c, firstDirection);
+                    }
                 }
             }
             // The one place materials are evaluated; the camera's hit once a pixel.
@@ -1787,6 +2017,19 @@ void tracePathsAt(uint2 group, uint index) {
                     shaded.stack.emission /= keep;
                 }
                 cur = shaded;
+                if (cellsMode && bounce == 0) {
+                    // Before the body is kept: a glass's transmission is
+                    // its dielectric, which the body drops as polish.
+                    for (uint k = 0; k < shaded.stack.count; ++k) {
+                        const Lobe lobe = shaded.stack.lobes[k];
+                        const bool passes = lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0));
+                        firstTransmits = firstTransmits || passes;
+                        if (passes && lobe.kind == kLobeDielectric && (lobe.flags & kFlagThinWalled) == 0u &&
+                            lobe.ior > 1.0) {
+                            firstIor = lobe.ior;
+                        }
+                    }
+                }
                 if (kBake && bounce == 0) {
                     // The body of the material, never its polish (bakeBody
                     // says why). Baking the polish into harmonics was tried:
@@ -1796,7 +2039,7 @@ void tracePathsAt(uint2 group, uint index) {
                     // harmonics hold is how the body's own light changes with
                     // the direction; the reflection stays a lobe, which knows
                     // where the eye is.
-                    cur.stack = bakeBody(cur.stack);
+                    cur.stack = bakeBody(cur.stack, at);
                 }
                 if (kAux && bounce == 0 && path.writeAux != 0 && !auxWritten) {
                     writeAuxAt(at, pixels, float4(stackAlbedo(cur.stack, cur.toEye), 1.0),
@@ -1892,13 +2135,74 @@ void tracePathsAt(uint2 group, uint index) {
                 // ray, since the body facing away from it receives nothing.
                 const float3 np = cur.inputs.normalWorld;
                 const float3 pp = cur.inputs.positionWorld;
-                for (uint cell = 0; cell < 64u; ++cell) {
+                const bool selfTransmits = stackTransmits(cur.stack);
+                // The cells over the footprint: cell c from origin c % 4
+                // (bakeCellOrigin), the centre's normal where an origin
+                // stands at the centre.
+                float3 cellFrom[kCellOrigins];
+                float3 cellNormal[kCellOrigins];
+                for (uint k = 0; k < kCellOrigins; ++k) {
+                    float3 p;
+                    float3 n;
+                    const bool moved = bakeCellOrigin(at, k, mask, pp, p, n);
+                    cellFrom[k] = moved ? p : pp;
+                    cellNormal[k] = moved ? n : np;
+                }
+                // 256 cells over the whole sphere: `pathOccluded` starts a ray
+                // below the surface from its far side, so a direction behind
+                // a solid meets the solid and one behind a sheet leaves.
+                // Four words at a time, one plane, so nothing the size of the
+                // grid is held in registers.
+                for (uint plane = 0; cellsMode && plane < cellPlanes; ++plane) {
+                    uint4 words = uint4(0u, 0u, 0u, 0u);
+                    for (uint w = 0; w < 4u; ++w) {
+                        uint word = 0u;
+                        for (uint b = 0; b < 32u; ++b) {
+                            const uint cell = (plane * 4u + w) * 32u + b;
+                            const float2 uv = (float2(float(cell % cellSide), float(cell / cellSide)) + 0.5) /
+                                              float(cellSide);
+                            const float3 wd = octDecode(uv);
+                            // Past what lets light through (pathThrough): the
+                            // cell is open where at least half gets through.
+                            const uint origin = (cell + cell / cellSide) % kCellOrigins;
+                            const float through =
+                                cellThrough(cellFrom[origin], cellNormal[origin], wd, mask, selfTransmits);
+                            if (through > 0.0) {
+                                if (through >= 0.5) {
+                                    word |= 1u << b;
+                                }
+                                // THE DIRECT HALF BY QUADRATURE (proposal 032):
+                                // the same rays, each worth its cell's solid
+                                // angle -- the octahedral map's own, 4 / side^2
+                                // over |p|^3 for the point p of the octahedron
+                                // it decodes from -- times the cosine over pi.
+                                // No grain: what the sampled direct half had
+                                // is gone, and it is not summed below.
+                                const float cosine = dot(np, wd);
+                                if (cosine > 0.0) {
+                                    const float l1 = abs(wd.x) + abs(wd.y) + abs(wd.z);
+                                    const float solid = 4.0 / float(cellSide * cellSide) * l1 * l1 * l1;
+                                    const float worth =
+                                        through * cosine * solid / 3.14159265358979 * float(samples);
+                                    for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
+                                        transferDirect[c] += worth * shBasisValue(c, wd);
+                                    }
+                                }
+                            }
+                        }
+                        words[w] = word;
+                    }
+                    colour[(min(path.bakeCount, 16u) + 1u + plane) * (camera.width * camera.height) + at] =
+                        asfloat(words);
+                }
+                for (uint cell = 0; !cellsMode && cell < 64u; ++cell) {
                     const float2 uv = (float2(float(cell % 8u), float(cell / 8u)) + 0.5) / 8.0;
                     const float3 wd = octDecode(uv);
                     if (dot(np, wd) <= 0.0) {
                         continue;
                     }
-                    if (!pathOccluded(pp, np, wd, 3.0e38, kLightUnlinked, mask)) {
+                    const uint origin = (cell + cell / 8u) % kCellOrigins;
+                    if (cellThrough(cellFrom[origin], cellNormal[origin], wd, mask, selfTransmits) >= 0.5) {
                         if (cell < 32u) {
                             shadowBits0 |= 1u << cell;
                         } else {
@@ -1909,16 +2213,35 @@ void tracePathsAt(uint2 group, uint index) {
             }
             if (transferMode && bounce == 0) {
                 const float3 n = cur.inputs.normalWorld;
-                const float3 wi = bakeDirection(at, sample);
+                const bool sphere = cellsMode && firstTransmits;
+                const float3 wi = sphere ? bakeSphereDirection(at, sample) : bakeDirection(at, sample);
                 const float cosine = dot(n, wi);
-                if (!(cosine > 0.0)) {
+                backSample = sphere && cosine < 0.0;
+                if (!(cosine > 0.0) && !backSample) {
                     break;
                 }
+                // Over the sphere the density is 1/4pi, so the front's
+                // estimator is 4 cos where it was 2 cos; behind, the weight is
+                // one and the path carries the radiance that arrives.
+                const float weight = backSample ? 1.0 : (sphere ? 4.0 : 2.0) * cosine;
                 ms.valid = true;
-                ms.wi = wi;
+                // BEHIND, THE WAY IN BENDS. The field is read along the eye's
+                // ray through the glass (splat_relight's `through`), and what
+                // stands there for a solid is what that ray finds once the
+                // near face has bent it by the index. Sent on unbent, a ray
+                // met the far face of a ball as steeply as it entered, past
+                // the critical angle for most of the ball, and was held
+                // inside: the ball validated at half the path traced one
+                // (0.265 against 0.541 under a white dome), with the sky
+                // where a lens shows it upside down missing. Bent here, the
+                // path the tracer continues is the one a camera ray takes.
+                ms.wi = backSample && firstIor > 1.0 ? refractInto(wi, n, firstIor) : wi;
                 ms.pdf = 1.0;
                 ms.delta = false;
-                ms.weight = float3(2.0 * cosine);
+                ms.weight = float3(weight);
+                firstDirection = wi;
+                firstWeight = weight;
+                firstMeasure = (sphere ? 4.0 : 2.0) * 3.14159265358979;
             } else {
                 ms = stackSample(cur.stack, cur.toEye, float3(random2(tid, sample, bounce, 5u),
                                                               random(tid, sample, bounce, 7u)));
@@ -2082,7 +2405,16 @@ void tracePathsAt(uint2 group, uint index) {
         colour[count * pixels + at] = float4(0.0, 0.0, 0.0, alpha / float(samples));
         // The bits, carried as the floats they are the bits of: the host
         // reads them back and never does arithmetic on them.
-        colour[(count + 1) * pixels + at] = float4(asfloat(shadowBits0), asfloat(shadowBits1), 0.0, 0.0);
+        // With the cells, the planes after the coverage were written as they
+        // were traced, and the reflected field's sixteen follow them.
+        if (!cellsMode) {
+            colour[(count + 1) * pixels + at] = float4(asfloat(shadowBits0), asfloat(shadowBits1), 0.0, 0.0);
+        } else {
+            for (uint c = 0; c < 16u; ++c) {
+                colour[(count + 1 + cellPlanes + c) * pixels + at] = float4(indirectCoefficients[c] * over,
+                                                                             closedCoefficients[c] * over);
+            }
+        }
         return;
     }
     if (splitMode) {
@@ -2374,7 +2706,7 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     const uint32_t bakeCoefficients = bake != nullptr ? std::clamp(bake->coefficients, 1u, 16u) : 1u;
     const uint64_t planesOut = bake == nullptr ? 1u
                                : bake->split && !bake->transfer ? 2u * bakeCoefficients + 3u
-                                                                : bakeCoefficients + (bake->transfer ? 2u : 0u);
+                                                                : bakeCoefficients + transferPlanes(*bake);
     const bool resized = out.width != width || out.height != height || !out.colour.valid() ||
                          out.colour.bytes() < pixels * 16 * planesOut;
     if (resized) {
@@ -2488,7 +2820,8 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         }
         cursor["path"]["adaptive"].setData(uint32_t{settings.adaptive ? 1u : 0u});
         cursor["path"]["bakeCount"].setData(bake != nullptr ? std::clamp(bake->coefficients, 1u, 16u) : 1u);
-        cursor["path"]["transfer"].setData(uint32_t{bake != nullptr && bake->transfer ? 1u : 0u});
+        cursor["path"]["transfer"].setData(uint32_t{
+            bake == nullptr || !bake->transfer ? 0u : bake->cellSide >= 32 ? 3u : bake->cellSide >= 16 ? 2u : 1u});
         cursor["path"]["headlight"].setData(uint32_t{settings.headlight ? 1u : 0u});
         cursor["path"]["mis"].setData(uint32_t{settings.mis ? 1u : 0u});
         cursor["path"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});

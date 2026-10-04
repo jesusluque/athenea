@@ -67,6 +67,7 @@ public struct RtParams {
     public uint  hasPbr;         // 1: `pbr` holds this cloud's metallic and roughness
     public uint  hasNormals;     // 1: `normals` holds this cloud's shading normals
     public uint  hasEmission;    // 1: `emission` holds the radiance this cloud's gaussians give off
+    public uint  hasLobes;       // 1: `lobes` holds what this cloud's materials layered over the base
     public uint  litBody;        // 1: the colours are light already, and only the polish is added
     /// Lights an environment was prepared for: `envOfLight[k]` is the slice
     /// of light k, or `kEnvNone`. Zero: no sky prepared, and a dome is its
@@ -83,7 +84,8 @@ public struct RtParams {
     public uint  transferWords;
     public uint  transferCount;
     public uint  transferIndirect;
-    /// 1 where the cloud carries which ways out are open (`shadowBits`).
+    /// The words a gaussian of which ways out are open (`shadowBits`), 0 where
+    /// the cloud carries none: 2 for 8 x 8 cells, 8 or 32 for a TX transfer.
     public uint  shadowBits;
     /// The index a transmitting gaussian bends the sky by; 0 bends nothing.
     /// What it does and what it cannot is in splat_relight.slang.

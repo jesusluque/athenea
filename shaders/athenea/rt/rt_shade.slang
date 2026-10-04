@@ -33,6 +33,9 @@ StructuredBuffer<uint>     normals;
 // The radiance a splat gives off, RGB9E5, where the cloud carries it
 // (`params.hasEmission`).
 StructuredBuffer<uint>     emission;
+// What its material layered over the base, three words a splat, where the
+// cloud carries it (`params.hasLobes`).
+StructuredBuffer<uint>     lobes;
 StructuredBuffer<LightRecord> lights;
 StructuredBuffer<float>    shadowFactors;   // measured before the frame, where a cloud carries a baked visibility
 // The sky prepared for a kernel with no texture table; `params.envLights` of
@@ -108,6 +111,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[i]) : 1.0;
         surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
         surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
+        surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[i]);
         // WHAT A PICK MAY HAVE SAID ABOUT THIS PRIM, over what the file did.
         if (params.overrideCount != 0) {
             const SplatOverride said =
@@ -235,19 +239,37 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         }
         surface.lit = params.litBody != 0;
         surface.emission = params.hasEmission != 0 ? unpackRgb9e5(emission[i]) : float3(0.0);
+        surface.lobes = splatLobesOf(params.hasLobes != 0, lobes, i);
+        // THE INDEX A GAUSSIAN BENDS BY IS ITS OWN where its cloud carries
+        // the layers: the specular's index is the material's, where the
+        // cloud's single `ior` is whichever glass came first (task TX, step 5;
+        // the Corvette's read 1.053 for glass of 1.6). Only where the cloud
+        // bends at all, and only on what transmits.
+        if (params.hasLobes != 0 && surface.ior > 1.0 && surface.transmission > 0.0) {
+            surface.ior = max(surface.lobes.specularIor, 1.0);
+        }
         surface.transferCount = params.transferCount;
         surface.transferBase = i * params.transferWords * 2;
-        surface.hasShadowBits = params.shadowBits != 0 && params.transferCount >= 9;
+        // The frame the gaussian has now -- posed, for a cloud a skeleton
+        // carries -- which is what a zonal transfer's lobes turn with.
+        splatTransferFrame(surface, transfer, rotation, w0, w1, w2);
+        // `params.shadowBits` is the words a gaussian: two of the first
+        // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
+        surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;
         surface.shadowBits = surface.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
+        surface.cellWords = params.shadowBits >= 8u && params.transferCount >= 9 ? params.shadowBits : 0u;
+        surface.cellBase = i * surface.cellWords;
         // A traced frame has no shadow pass of its own, but a cloud that
         // carries a baked visibility had its factors measured before the
         // frame, and they are read here exactly as the rasteriser reads its.
-        colour = relitSplat(surface, normalize(eyeWorld - surface.position), lights,
+        // A ray meets a point, not a footprint: no slope.
+        SplatSlope flat = noSlope();
+        colour = relitSplat<2>(surface, normalize(eyeWorld - surface.position), lights,
                             params.lightCount, params.categoriesLo, params.categoriesHi,
                             shadowFactors, (params.shadowBase + i) * params.shadowLights,
                             params.shadowLights, envTexels, envSh, envOfLight,
-                            params.envLights, params.envBaseSide, envSun, transfer,
-                            params.transferIndirect != 0);
+                            params.envLights, params.envBaseSide, envSun, transfer, shadowBits,
+                            params.transferIndirect != 0, flat);
     }
     if (fate.graded) {
         colour = editGrade(params.edit, colour);

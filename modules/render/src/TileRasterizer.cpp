@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
@@ -73,6 +74,10 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
         return ok();
     };
     ATHENEA_TRY(make(r.project_, "athenea/splat/splat_project", "splatProject"));
+    ATHENEA_TRY(make(r.projectPlain_, "athenea/splat/splat_project", "splatProjectPlain"));
+    ATHENEA_TRY(make(r.projectFirst_, "athenea/splat/splat_project", "splatProjectFirst"));
+    ATHENEA_TRY(make(r.projectCatcher_, "athenea/splat/splat_project", "splatProjectCatcher"));
+    ATHENEA_TRY(make(r.viewless_, "athenea/splat/splat_project", "splatTransferViewless"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
     ATHENEA_TRY(make(r.pointsProject_, "athenea/splat/points_project", "pointsProject"));
     auto placeholderColour = buffer(*r.device_, 1, 16, "blend.noUnderColour");
@@ -147,6 +152,7 @@ Result<void> TileRasterizer::reserveSplats(uint32_t count) {
         return ok();
     };
     ATHENEA_TRY(assign(proj_, n, 48, "splat.proj"));
+    ATHENEA_TRY(assign(slopes_, n, 16, "splat.slopes"));
     ATHENEA_TRY(assign(cryptoIds_, n, 4, "splat.cryptoIds"));
     ATHENEA_TRY(assign(tileRects_, uint64_t{n} * 4, 4, "splat.tileRects"));
     ATHENEA_TRY(assign(tilesTouched_, n, 4, "splat.tilesTouched"));
@@ -329,6 +335,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         }
     }
     Stopwatch watch(batch, settings.timeStages);
+    ++frameOfCaches_;
     uint32_t base = 0;
     for (const SplatInstance& instance : instances) {
         const scene::GpuSplats* cloud = instance.splats;
@@ -338,7 +345,56 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
         const Vec3 eyeObject =
             aofx::xform::inverseAffine(instance.objectToWorld).point(projection.eyeWorld);
-        project_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        // Three kernels by what the cloud carries, each with what the others
+        // need compiled out (splat_project.slang's projectSplat): a TX
+        // transfer (the cells), the first transfer, none.
+        const bool txCells = cloud->hasTransfer() && cloud->shadowWords >= 8;
+        gpu::ComputeKernel& chosen = txCells ? project_ : cloud->hasTransfer() ? projectFirst_ : projectPlain_;
+        // And a shadow catcher's, beside them: black, as opaque as what its
+        // object took (splatProjectCatcher).
+        gpu::ComputeKernel& project = instance.catcher ? projectCatcher_ : chosen;
+        // WHAT THE EYE DOES NOT CHANGE, KEPT (splat_project's
+        // splatTransferViewless): a cloud with a transfer, under lights and a
+        // sky that say when they changed, keeps its view-independent terms a
+        // splat each, and they are worked out again only when something
+        // they depend on moved -- the lights, the sky, the cloud, its place.
+        TxCache* kept = nullptr;
+        bool keep = false;
+        if (txCells && !instance.catcher && instance.relight && lights != nullptr && lights->revision != 0 &&
+            lights->environment()) {
+            uint64_t key = lights->revision * 0x9E3779B97F4A7C15ULL;
+            const auto mix = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ULL; };
+            mix(cloud->revision);
+            mix(cloud->count);
+            mix(reinterpret_cast<uintptr_t>(cloud->transfer.rhi()));
+            mix(reinterpret_cast<uintptr_t>(cloud->positions.rhi()));
+            mix(instance.transferIndirect ? 1u : 0u);
+            for (float v : instance.objectToWorld.rows3x4()) {
+                uint32_t bits = 0;
+                std::memcpy(&bits, &v, 4);
+                mix(bits);
+            }
+            TxCache& entry = txCaches_[cloud];
+            entry.seen = frameOfCaches_;
+            if (!entry.buffer.valid() || entry.buffer.bytes() < uint64_t{cloud->count} * 16) {
+                auto made = buffer(*device_, cloud->count, 16, "splat.txCache");
+                if (!made) return std::move(made).error();
+                entry.buffer = *made;
+                entry.key = 0;
+            }
+            keep = entry.key != key;
+            entry.key = key;
+            kept = &entry;
+        }
+        bool viewless = false;
+        const auto bindProject = [&](rhi::ShaderCursor cursor) {
+            cursor["txCache"].setBinding(kept != nullptr ? kept->buffer.rhi() : slopes_.rhi());
+            cursor["params"]["txCache"].setData(uint32_t{kept != nullptr && !viewless ? 1u : 0u});
+            // How the surface turns under each splat, where the cloud keeps
+            // it: a TX transfer's reflection then gets its slope (`slopes`).
+            const bool curved = cloud->hasCurvature() && txCells;
+            cursor["curvature"].setBinding(curved ? cloud->curvature.rhi() : cloud->shape.rhi());
+            cursor["slopes"].setBinding(slopes_.rhi());
             cursor["positions"].setBinding(cloud->positions.rhi());
             cursor["shape"].setBinding(cloud->shape.rhi());
             cursor["sh"].setBinding(cloud->sh.rhi());
@@ -400,7 +456,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["params"]["transferCount"].setData(carried ? cloud->transferCount : 0u);
             const bool open = carried && cloud->hasShadowBits();
             cursor["shadowBits"].setBinding(open ? cloud->shadowBits.rhi() : cloud->shape.rhi());
-            cursor["params"]["shadowBits"].setData(open ? 1u : 0u);
+            // The words a gaussian, which is what says the grid: two of the
+            // first transfer's 64 bits, eight or thirty-two of a TX one's.
+            cursor["params"]["shadowBits"].setData(open ? cloud->shadowWords : 0u);
             cursor["params"]["transferIndirect"].setData(
                 uint32_t{carried && instance.transferIndirect && cloud->hasIndirect() ? 1u : 0u});
             cursor["params"]["ior"].setData(instance.ior);
@@ -418,6 +476,12 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // And the radiance its gaussians give off, where it has any.
             cursor["params"]["hasEmission"].setData(uint32_t{cloud->hasEmission() ? 1u : 0u});
             cursor["emission"].setBinding(cloud->hasEmission() ? cloud->emission.rhi() : cloud->shape.rhi());
+            // And what its material layered over the base: specular, coat,
+            // sheen, where the conversion met any.
+            cursor["params"]["hasLobes"].setData(uint32_t{cloud->hasLobes() ? 1u : 0u});
+            cursor["params"]["hasCurvature"].setData(
+                uint32_t{cloud->hasCurvature() && txCells ? 1u : 0u});
+            cursor["lobes"].setBinding(cloud->hasLobes() ? cloud->lobes.rhi() : cloud->shape.rhi());
             // What a pick said this prim is made of. Bound either way, as
             // every name a shader declares; `overrideCount` of 0 is what says
             // the table is not read.
@@ -442,9 +506,17 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                       static_cast<float>(std::max(common.width, common.height)) * 0.25F);
             cursor["motion"].setBinding(instance.motion != nullptr ? instance.motion->rhi()
                                                                    : emptyMotion_.rhi());
-        });
+        };
+        if (kept != nullptr && keep) {
+            viewless = true;
+            viewless_.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+            viewless = false;
+        }
+        project.dispatch(batch, {cloud->count, 1, 1}, bindProject);
         base += cloud->count;
     }
+    // A cloud no frame draws any more gives its terms back.
+    std::erase_if(txCaches_, [this](const auto& held) { return held.second.seen != frameOfCaches_; });
     for (const PointInstance& instance : points) {
         const scene::GpuPoints* cloud = instance.points;
         if (cloud == nullptr || cloud->count == 0) {
@@ -565,6 +637,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["ranges"].setBinding(ranges_buffer_.rhi());
         cursor["pairSplats"].setBinding(tileSort_.values.rhi());
         cursor["proj"].setBinding(proj_.rhi());
+        cursor["slopes"].setBinding(slopes_.rhi());
         cursor["underColour"].setBinding(under != nullptr ? under->colour.rhi() : placeholderColour_.rhi());
         cursor["underDepth"].setBinding(under != nullptr ? under->depth.rhi() : placeholderDepth_.rhi());
         cursor["colour"].setBinding(targets.colour.rhi());

@@ -3,6 +3,7 @@
 
 #include "athenea/core/Log.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <functional>
@@ -806,6 +807,78 @@ bool MaterialCompiler::transparentOpacity(const std::shared_ptr<void>& document)
                opacity->getValue()->asA<float>() < 1.0F;
     }
     return false;
+}
+
+std::optional<Transmission> MaterialCompiler::transmission(const std::shared_ptr<void>& document) {
+    // A surface shader whose transmission is not zero: OpenPBR's
+    // `transmission_weight`, standard_surface's and glTF's `transmission`, or
+    // a UsdPreviewSurface whose opacity is transparency. Driven by a graph
+    // counts as transmitting: a bit left open where the glass is clear is
+    // the smaller error. With it, the constants a ray that only asks how much
+    // gets through reads without evaluating the material: the weight times
+    // the transmission colour's luminance, and the index (the same node's
+    // `specular_ior`, `specular_IOR` or `ior`; 1.5 where none is a constant).
+    const auto doc = std::static_pointer_cast<mx::Document>(document);
+    if (!doc) {
+        return std::nullopt;
+    }
+    const auto constantFloat = [](const mx::NodePtr& node, const char* name) -> std::optional<float> {
+        const mx::InputPtr input = node->getInput(name);
+        if (!input || !input->getNodeName().empty() || !input->getNodeGraphString().empty() ||
+            !input->getInterfaceName().empty() || !input->getValue() || !input->getValue()->isA<float>()) {
+            return std::nullopt;
+        }
+        return input->getValue()->asA<float>();
+    };
+    if (transparentOpacity(document)) {
+        // What a transparent opacity leaves, straight through and with no
+        // index; a textured opacity lets half through.
+        Transmission out{0.5F, 1.0F};
+        for (const mx::ElementPtr& element : doc->traverseTree()) {
+            if (const mx::NodePtr node = element->asA<mx::Node>()) {
+                if (const std::optional<float> opacity = constantFloat(node, "opacity")) {
+                    out.tint = std::clamp(1.0F - *opacity, 0.0F, 1.0F);
+                }
+            }
+        }
+        return out;
+    }
+    for (const mx::ElementPtr& element : doc->traverseTree()) {
+        const mx::NodePtr node = element->asA<mx::Node>();
+        if (!node) {
+            continue;
+        }
+        for (const char* name : {"transmission_weight", "transmission"}) {
+            const mx::InputPtr input = node->getInput(name);
+            if (!input) {
+                continue;
+            }
+            const std::optional<float> weight = constantFloat(node, name);
+            if (weight && !(*weight > 0.0F)) {
+                continue;
+            }
+            Transmission out;
+            out.tint = weight ? std::min(*weight, 1.0F) : 1.0F;
+            const mx::InputPtr colour = node->getInput("transmission_color");
+            if (colour && colour->getNodeName().empty() && colour->getNodeGraphString().empty() &&
+                colour->getInterfaceName().empty() && colour->getValue() && colour->getValue()->isA<mx::Color3>()) {
+                const mx::Color3 c = colour->getValue()->asA<mx::Color3>();
+                out.tint *= std::clamp(0.2126F * c[0] + 0.7152F * c[1] + 0.0722F * c[2], 0.0F, 1.0F);
+            }
+            for (const char* ior : {"specular_ior", "specular_IOR", "ior"}) {
+                if (const std::optional<float> index = constantFloat(node, ior); index && *index >= 1.0F) {
+                    out.ior = *index;
+                    break;
+                }
+            }
+            return out;
+        }
+    }
+    return std::nullopt;
+}
+
+bool MaterialCompiler::transmits(const std::shared_ptr<void>& document) {
+    return transmission(document).has_value();
 }
 
 std::optional<VolumeCoefficients> MaterialCompiler::volumeCoefficients(const std::shared_ptr<void>& document) {

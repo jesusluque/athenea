@@ -1,0 +1,8 @@
+#usda 1.0
+# Copyright (c) 2026 jesus luque.
+(
+    defaultPrim = "World"
+    subLayers = [@../lobes/rubber.usda@, @./ground.usda@]
+    upAxis = "Y"
+)
+# The rubber ball of tests/data/lobes on a ground, for the TX transfer's tests.

@@ -73,6 +73,11 @@ struct ExportOptions {
     /// the material's body, not an albedo, so a frame that relights this
     /// cloud adds the polish and nothing else. What `athenea mesh2splat` bakes.
     bool     litBody = false;
+    /// Writes `primvars:athenea:splat:catcher = 1`: the gaussians are a
+    /// shadow catcher lying on a ground (`athenea mesh2splat --shadow-catcher`).
+    /// A frame draws them black, each covering what the object took of the
+    /// light reaching it, so they darken whatever is drawn behind them.
+    bool     catcher = false;
     /// Writes `primvars:athenea:splat:linear = 1`: the colours are linear
     /// light, not the sRGB a capture was trained in, and are drawn as they
     /// are. Also written whenever the records say so (`io::RawSplats::linear`,
@@ -106,15 +111,55 @@ struct ExportOptions {
     /// under, so the colours it carries are an albedo and nothing else.
     std::span<const float>          transferDirect;
     std::span<const float>          transferIndirect;
+    /// Coefficients a record of `transferDirect`: 9 (degree 2) or 16 (degree
+    /// 3, a TX transfer's); the indirect half is three times as many.
+    uint32_t                        transferCoefficients = 9;
+    /// THE REFLECTED FIELD of a TX transfer (docs/decisions.md, task TX): 48
+    /// floats a record, sixteen rgb coefficients of what arrives at the
+    /// gaussian by direction after meeting the scene, under a white sky of
+    /// radiance one. Written only beside `transferIndirect`.
+    std::span<const float>          transferReflected;
+    /// THE SAME, AS ZONAL LOBES IN EACH GAUSSIAN'S FRAME: ten floats a record,
+    /// two lobes of an axis (the octahedral square's u, v) and three zonal
+    /// coefficients. Written in place of `transferDirect` -- what a cloud a
+    /// skeleton carries keeps, since the lobes turn with the gaussian.
+    std::span<const float>          transferZonal;
     /// WHICH WAYS OUT ARE OPEN: two ints a record, sixty-four bits of an
     /// 8 x 8 octahedral grid over the sphere, set where a traced ray found
-    /// nothing. What lets a sun cast a hard shadow on a relit cloud.
+    /// nothing. What lets a sun cast a hard shadow on a relit cloud. Over the
+    /// world's sphere beside `transferDirect`, over the gaussian's own frame
+    /// beside `transferZonal`.
     std::span<const int32_t>        shadowBits;
+    /// Ints a record of `shadowBits`: 2, or 8 or 32 for the 256 or 1024 bits
+    /// of a 16 x 16 or 32 x 32 grid over the whole sphere (task TX), which a
+    /// reader tells apart by the count.
+    uint32_t                        shadowWords = 2;
     /// One int a record, 1 where the gaussian came from a thin-walled glass.
     std::span<const int32_t>        thinWalled;
+    /// One int a record, 1 where the gaussian's metal is a Schlick (OpenPBR,
+    /// glTF) rather than a conductor (`primvars:athenea:splat:schlickMetal`).
+    std::span<const int32_t>        schlickMetal;
+    /// Three floats a record, the surface's shape operator in the gaussian's
+    /// own two axes (uu, uv, vv): `primvars:athenea:splat:curvature`, what a
+    /// frame turns a TX transfer's reflection across the gaussian by.
+    std::span<const float>          curvature;
     /// `primvars:athenea:splat:ior` when above 1: the index the cloud's
     /// transmitting gaussians refract by. Not written at 0.
     float                           ior = 0.0F;
+};
+
+/// WHAT A TRANSFER BAKE HANDS THE FILE, as the arrays a stage keeps
+/// (`ExportOptions::transferDirect` and the rest).
+struct TransferArrays {
+    std::vector<float>   direct;
+    std::vector<float>   bounced;
+    std::vector<float>   reflected;
+    std::vector<int32_t> shadowBits;
+    /// Zonal lobes in each gaussian's frame, ten floats a gaussian, in place
+    /// of the rest (`ExportOptions::transferZonal`).
+    std::vector<float>   zonal;
+    uint32_t             coefficients = 9;
+    uint32_t             shadowWords = 2;
 };
 
 /// Writes `raw` as a UsdVolParticleField3DGaussianSplat at /World/Splats in a

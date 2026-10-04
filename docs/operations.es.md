@@ -46,7 +46,7 @@ el que corre el binario.
 | `ATHENEA_MATERIALX_ROOT` | un directorio que contiene los `libraries/` de MaterialX, que el compilador de materiales de hdAthenea lee en lugar de las bibliotecas que cargó el USD del host. Sin definir por defecto: se usan las del host. Para un host cuyo MaterialX es anterior al generador de Slang (Blender 5.3 trae 1.39.4: sin implementaciones `genslang` y con definiciones de nodo anteriores), se apunta a las de 1.39.5. Se lee una vez, cuando compila el primer material; los renderers propios del host conservan las suyas. |
 | `AOFX_PLUGIN_PATH` | directorios extra de bundles AOFX, buscados antes que la ruta del sistema y antes que `--path`. |
 | `ATHENEA_BACKEND` | qué dispositivo abrir, como un orden separado por comas: `metal,cuda,vulkan,d3d12`. Las palabras desconocidas avisan y se saltan. |
-| `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina, diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
+| `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina -- contando como libre lo que devuelve cuando se le pide (páginas inactivas, purgables y especulativas, y la caché de ficheros) -- diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
 | `ATHENEA_SHADER_CACHE` | dónde se cachean los shaders compilados entre ejecuciones. Por defecto, un directorio bajo el de caché de la plataforma. Borrarla cuesta un primer frame lento. |
 
 Un binario compilado sin `ATHENEA_BUILD_VIEW` no tiene el subcomando `athenea view`:
@@ -273,6 +273,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--splat-shadows` | flag | apagado | rt: una nube relit se sombrea a sí misma, un rayo por splat |
 | `--no-antialias` | flag | antialias encendido | |
 | `--no-cloud-shadows` | flag | sombras de nube encendidas | |
+| `--no-dome-prefilter` | flag | prefiltrado | raster: un domo ilumina una malla con una muestra por píxel y un rayo de sombra |
 | `--cloud-shadow-texels` | entero | `1024` | por lado, por luz |
 | `--cloud-shadow-density` | número | `1.0` | multiplicador de la profundidad óptica de la nube |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 es solo el total, el resto añaden pares de Fourier; 0 deja decidir a quien recibe |
@@ -375,6 +376,8 @@ receta es §3.1.
 | `-o`, `--output` | ruta | `splats.usda` | `.usda`, `.usdc`, `.usd`, o `.athc` con niveles de detalle: solo las gaussianas y sus normales de sombreado (sin metallic/roughness/transmission, ids Cryptomatte, índice del vidrio, eje vertical ni unidad); con él se rechazan `--skinned`, `--transfer` y `--lod-levels` |
 | `--prim` | ruta de prim | todas las mallas | solo las que cuelgan de esa ruta |
 | `--hide` | ruta de prim, repetible | ninguna | se deja fuera con todo lo que cuelga de ella, como invisible (opinión de sesión; el fichero no cambia) |
+| `--thin-glass` | ruta o nombre de material, repetible | ninguno | un ajuste a mano: un material que transmite leído como de pared delgada aunque ni él ni su malla lo digan. Un vidrio ya se lee de pared delgada donde su material lo dice o donde su malla es una lámina o una losa -- más de una doscientosava parte de sus aristas abiertas, o alguna compartida por más de dos, o el doble de su volumen sobre su área por debajo de cuatro celdas o de una cincuentava parte de su tamaño, lo que la conversión mide en el dispositivo e imprime por malla; esto nombra uno que la malla no muestra. Un vidrio sólido cubre `--glass-opacity` de lo que hay detrás; una pared delgada cubre lo que refleja de frente (menos de una décima), así que el habitáculo se ve |
+| `--solid-glass` | ruta o nombre de material, repetible | ninguno | el ajuste en el otro sentido: un material que transmite que se queda sólido mida lo que mida su malla |
 | `--resolution` | entero | `512` | celdas a lo largo del lado largo de la caja sobre la que se mide la densidad |
 | `--lod-levels` | entero | `1` | niveles de detalle: la conversión otra vez a la mitad de resolución cada vez; `-o` pasa a ser la escena que los dibuja como una nube, cada nivel un `<nombre>_lod<n>.usdc` a su lado |
 | `--density` | `per-model` \| `per-mesh` | `per-model` | qué caja es esa |
@@ -386,7 +389,7 @@ receta es §3.1.
 | `--sigma` | número | `1.0` | anchura de la gaussiana en celdas; la de mesh2splat es 0.65 |
 | `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos |
 | `--opacity` | número, de 0 a 1 | `1.0` | cobertura: cuánto de lo que hay detrás cubre la superficie convertida, multiplicado por la opacidad propia del material. Toda opacidad es cobertura -- esta, la constante del material, el valor de un mapa, lo que conserva un vidrio -- y cada gaussiana toma lo que necesita una de las varias que hay sobre un punto, así que 0.5 cubre la mitad a cualquier tamaño |
-| `--glass-opacity` | número, de 0 a 1 | `0.6` | cobertura que conserva un sólido que transmite del todo. Un vidrio de pared fina (y una opacidad de UsdPreviewSurface menor que uno en su modo `transparent` por defecto) cubre en cambio lo que la lámina refleja con su índice |
+| `--glass-opacity` | número, de 0 a 1 | `0.6` | cobertura que conserva un sólido que transmite del todo. El fotograma de un transfer TX dibuja la imagen propia de la lente -- el cielo doblado por las dos caras, la lejana estimada por la curvatura, y el campo donde el paso está cerrado --, pero esa imagen sale solo de las cúpulas, así que lo que el resto deja pasar recto es la otra luz de la escena: a 1 una bola de vidrio bajo una lámpara perdía el suelo iluminado que hay detrás. Un vidrio de pared fina (y una opacidad de UsdPreviewSurface menor que uno en su modo `transparent` por defecto) cubre en cambio lo que la lámina refleja con su índice |
 | `--opacity-cut` | número, de 0 a 1 | `0.5` | donde la opacidad de un material es un mapa sin umbral propio (el `opacity` de UsdPreviewSurface, el `opacity` de standard_surface, el `geometry_opacity` de OpenPBR, el `alpha` de glTF en BLEND): por debajo de esto no se escribe ninguna gaussiana; por encima, la superficie cubre lo que lee el mapa. El umbral propio del material (`opacityThreshold`, el `alpha_cutoff` de glTF en MASK) se usa en su lugar, y lo que conserva queda entero |
 | `--max-cells` | entero | `262144` | celdas como mucho que recorre un triángulo |
 | `--texture-size` | entero | `1024` | un mapa se lee no mayor que esto; 0 lo lee a su tamaño |
@@ -401,14 +404,30 @@ receta es §3.1.
 | `--bake-samples` | entero | `128` | caminos que toma primero cada gaussiana; una transferencia toma estos más `--bake-extra` |
 | `--bake-extra` | entero | `128` | caminos por gaussiana en promedio añadidos tras la primera pasada, repartidos por sqrt(varianza relativa / coste) de lo que vio la primera; 0 no traza ninguno |
 | `--bake-pass-samples` | entero, 1 a 4096 | `64` | caminos que da cada pasada añadida a las gaussianas para las que es; una gaussiana recibe como mucho 16 de ellas |
-| `--bake-filter` | entero, 0 a 8 | `3` | iteraciones à-trous del filtro de bake de splats (el bundle `SplatBakeFilter`) sobre la luz horneada; 0 no filtra nada. La primera alcanza una celda de 1.5 gaussianas, y cada una la dobla |
+| `--bake-filter` | entero, 0 a 8 | `3` | iteraciones à-trous del filtro de bake de splats (el bundle `SplatBakeFilter`) sobre la luz horneada, y sobre las mitades rebotadas de un transfer TX (su mitad indirecta y su campo reflejado); 0 no filtra nada. La primera alcanza una celda de 1.5 gaussianas, y cada una la dobla |
 | `--bake-filter-luminance` | número | `4` | el borde del filtro: una vecina cuya luz difiere en este número de desviaciones típicas del ruido de la gaussiana cuenta e^-1 veces. Más alto suaviza más y conserva menos un borde tenue |
 | `--bake-filter-indirect-only` | flag | desactivado | filtra solo la luz indirecta y deja la directa como se trazó |
 | `--bake-bounces` | entero | `3` | tras el primer impacto |
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
-| `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó |
-| `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake` |
+| `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó; un transfer zonal guarda sólo la mitad directa |
+| `--transfer-degree` | 2 o 3 | 3 | con `--transfer`: el grado de los armónicos, 16 coeficientes directos y 48 indirectos con 3, los 9 y 27 del primer transfer con 2 |
+| `--transfer-cells` | 0, 16 o 32 | 16 | con `--transfer`: celdas por lado de la rejilla de direcciones abiertas sobre la esfera entera (256 o 1024 bits por gaussiana); 0 escribe la de 8 x 8 del primer transfer sobre la mitad a la que mira la gaussiana |
+| `--transfer-slice` | entero | `0` | con `--transfer`: gaussianas horneadas a la vez. 0 toma tantas como caben en una respuesta de 1,5 GB, y como mucho un millón donde se filtran las mitades rebotadas; el lote propio del horneado (524288) es lo menos que toma una porción salvo que esto pida menos. El filtro ve los vecinos dentro de una porción |
+| `--specular-filter` | 0 a 4 | 1 con `--transfer`, si no 0 | cuánto ensancha la rugosidad de una gaussiana y la de su capa el giro de la superficie bajo ella: lo que se separan las normales de las esquinas, sobre el ancho de la gaussiana, sumado a la varianza de las pendientes (Toksvig). 0 deja la rugosidad del material; las conversiones relit y horneadas siguen en 0 salvo que se pida |
+| `--validate` | directorio | — | medir la conversión material a material frente a la escena trazada, en este directorio (abajo) |
+| `--validate-camera` | ruta de prim | `--cell-from-camera`, si no la primera cámara de la escena | la cámara de los fotogramas |
+| `--validate-size` | W H | `960 540` | los fotogramas, en píxeles |
+| `--validate-paths` | entero | `512` | caminos por píxel que reúne el GT |
+| `--validate-bounces` | entero | `6` | rebotes de los caminos del GT |
+| `--validate-material` | ruta de prim o nombre | todos los materiales | sólo este (repetible) |
+| `--validate-sky` | `white` o un fichero de imagen | las luces de la escena | cada fotograma bajo otro cielo -- una constante de radiancia uno, o esa imagen en los domos de la escena -- con sus demás luces apagadas; el GT se guarda como `gt_<cielo>.exr` |
+| `--shadow-catcher` | flag | apagado | convertir la sombra que `--prim` arroja sobre su suelo en vez de `--prim`: un parche de gaussianas sobre el suelo bajo él y alrededor, horneado como transfer TX (el objeto y el suelo son lo que encuentran sus rayos), escrito con `primvars:athenea:splat:catcher` y dibujado negro, cubriendo lo que el objeto quita de la luz. Implica `--transfer` y una sola celda en todas partes |
+| `--catcher-ground` | ruta de prim | encontrado | con `--shadow-catcher`: el suelo; se encuentra como la malla plana más grande fuera de `--prim` cuya cara superior está en su base y que llega por debajo de él |
+| `--catcher-margin` | número | `1.5` | con `--shadow-catcher`: hasta dónde pasa el parche de la huella del objeto, en alturas del objeto |
+| `--catcher-cell` | unidades del mundo | `0` | con `--shadow-catcher`: la celda del parche; 0 es una centésima de la altura del objeto |
+| `--transfer-lobes` | 0 a 2 | `0` | con `--transfer`: guardarlo como este número de lóbulos zonales en el marco propio de cada gaussiana (el bundle `SplatTransferZonal`); 0 es dos lóbulos con `--skinned` y nueve armónicos en el mundo en otro caso |
+| `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
 | `--default-lights` | flag | apagado | un dome y un sol para el bake, en una escena sin luces |
 | `--time` | número | `0` | el instante en que se posa la escena y traza el bake |
@@ -416,7 +435,8 @@ receta es §3.1.
 
 `--skinned` y un bake se rechazan juntos: una nube que se mueve no puede
 llevar luz horneada en una pose, así que la conversión lo dice y conserva el
-material.
+material. `--skinned` y `--transfer` van juntos: el transfer se guarda como
+lóbulos zonales en el marco de cada gaussiana, que giran con ella (abajo).
 
 Una malla cuyos GeomSubsets (familia `materialBind`) enlazan materiales
 propios se convierte un subset cada vez, cada uno con su material, y las caras
@@ -682,6 +702,43 @@ no hace es iluminar nada: los triángulos emisivos de la malla son una luz para
 el path tracer, las gaussianas de la nube no. Una capa de coat de OpenPBR sobre
 la emisión, que en la malla la tiñe y la atenúa, no se lleva.
 
+**Lo que pone sobre su base.** Lo que un material pone sobre su color, su
+metalness y su roughness se lleva como constantes del material: el peso y el
+tinte del reflejo dieléctrico (`specular_weight` y `specular_color` de
+OpenPBR, `specular` y `specular_color` de standard_surface, `specular` y
+`specular_color` de glTF; el tinte es también el color del borde de un metal)
+al índice del specular (`specular_ior`, `specular_IOR`, `ior`); una capa de
+coat transparente (`coat_weight`, `coat`, `clearcoat` de UsdPreviewSurface,
+`clearcoat` de glTF, con su roughness y su índice; el coat de
+UsdPreviewSurface está a su propio `ior`), con el `coat_darkening` de OpenPBR
+(1 por defecto allí, ninguno en los otros vocabularios); y un sheen, su color
+por su peso (el fuzz de OpenPBR, `fuzz_weight` x `fuzz_color`; `sheen` x
+`sheen_color` de standard_surface; `sheen_color` de glTF) con su roughness. Un UsdPreviewSurface en su flujo specular
+(`useSpecularWorkflow` 1) se lleva como el índice cuya reflectividad de frente
+es el canal más brillante de su `specularColor`, teñido por el color dividido
+por él, y sin metal. Un mapa sobre el peso o el color del specular, el peso o
+la roughness del coat, o el color, el peso o la roughness del sheen se
+muestrea en cada gaussiana, como los mapas de la base, en lugar de la
+constante de la entrada -- los tres primeros mapas que tenga un material; más
+allá de ellos, y sobre un índice o `coat_darkening`, queda la constante y el
+log lo dice. Donde no hay nada escrito se toman
+los valores por defecto de cada superficie (un coat de OpenPBR a 1.6, uno de
+standard_surface de roughness 0.1 a 1.5). La línea de log de una malla cuyo
+material pone algo encima dice qué:
+
+```
+mesh2splat: /World/Ball layers specular 1.00 x (1.00 1.00 1.00) at 1.500, coat 1.00 rough 0.00 at 1.450, sheen (0.00 0.00 0.00) rough 0.30
+```
+
+Se escriben (los nueve primvars de §4.3 desde `specularWeight`) sólo donde
+algún material de la escena difiere del specular simple -- peso uno, blanco,
+índice 1.5, sin coat, sin sheen -- y entonces para cada gaussiana. Las nubes
+reiluminadas, con transfer y horneadas reflejan con ellos al dibujarse: un
+bake guarda el cuerpo y deja los reflejos al frame. El bake distingue un metal
+de un pulido por la metalness del material, así que un metal oscuro bajo una
+laca (la pintura de un coche, una base de 0.05) se hornea como el metal que es
+y no como nada.
+
 **Menos gaussianas donde la superficie es igual.** Una gaussiana por celda es lo
 que cuesta la superficie esté donde esté, y casi toda una superficie -- un panel
 pintado, una pared, un suelo -- es igual de una celda a la siguiente.
@@ -761,6 +818,27 @@ mitad no cuesta bake, y `athenea:splatTransferIndirect` la apaga al renderizar s
 volver a hornear. Un transfer y un light bake son excluyentes: uno es lo que
 hizo la luz, el otro lo que haría cualquiera.
 
+**Un transfer que gira con la gaussiana.** Nueve armónicos están en el mundo y
+se quedan allí cuando un esqueleto gira la gaussiana. `--transfer-lobes 1` o
+`2` -- y `--skinned`, donde dos es el valor por defecto -- guarda en cambio la
+mitad directa como uno o dos lóbulos zonales por gaussiana, cada uno un eje
+escrito en el marco propio de la gaussiana y tres coeficientes: diez floats por
+gaussiana frente a nueve, sin mitad indirecta, y los bits de sombra dispuestos
+sobre el marco de la gaussiana. Cada frame gira los ejes con el marco que tenga
+la gaussiana, así que el transfer sigue al ala. Una nube con esqueleto se posa
+en `--time` antes de que el bake la trace, porque la escena que traza está
+posada ahí; lo que guardan los lóbulos es lo que esa pose dejó pasar alrededor
+de cada gaussiana, así que la oclusión de otra extremidad en otra pose no está
+en ellos. El ajuste es el bundle `SplatTransferZonal`, que tiene que estar en
+la ruta de búsqueda AOFX, y el log dice su error relativo frente a los nueve
+armónicos que sustituye, `|f - g| / |f|` sobre la esfera, como una mediana, un
+percentil 90 y un percentil 99 (cada uno el borde superior de un cuarto de
+octava):
+
+```
+mesh2splat: transfer kept as 2 zonal lobes in each gaussian's frame for <n> gaussians in <t> ms; relative error against the nine harmonics: median <a>, p90 <b>, p99 <c>
+```
+
 **Una nube que se mueve.** `--skinned` construye las gaussianas en la pose de
 bind y le da a cada una los joints que la llevan, así que la nube se deforma
 al renderizar con el Skeleton al que está atada. Un bake se rechaza con él,
@@ -781,6 +859,32 @@ athenea visibility bird_gs.usdc --skeleton-stage bird.usda --skeleton-prim /Worl
 La última línea es el tercer horneado: lo que la nube proyecta sobre sí misma,
 por partes, para que un ala sombree el cuerpo en cualquier pose sin un rayo.
 Edita el fichero de la nube en el sitio salvo que `-o` nombre otro.
+
+**Una conversión medida por el motor.** `--validate DIR` convierte la escena
+una vez por material, dejando como malla todas las demás, y mide cada una
+frente a la escena trazada, sobre los píxeles de ese material -- la máscara es
+el Cryptomatte del fotograma de mallas, así que una malla de dos materiales
+(GeomSubsets) cuenta en los dos. El GT se traza una vez en `DIR/gt.exr` y la
+siguiente ejecución del mismo tamaño lo vuelve a leer; bórralo para trazarlo de
+nuevo. Todas las demás opciones son las de la conversión, así que lo que se
+mide es `--transfer`, `--no-bake` y el resto. `--hide` deja sus prims fuera
+de todo -- el GT, cada fotograma y el horneado -- mediante `DIR/hidden.usda`,
+una capa que los desactiva; un GT trazado antes con otros prims ocultos se
+vuelve a leer igual, así que da a cada `--hide` su propio directorio. Lo que
+escribe:
+
+| fichero | qué |
+|---|---|
+| `validate.json` | por material: mallas, gaussianas, la parte del fotograma, relMSE, p99, media y media del GT sobre sus píxeles, y el relMSE y la media de la malla rasterizada |
+| `<material>.png`, `.exr` | el GT, la malla rasterizada y la nube, uno junto a otro, sobre la caja del material |
+| `<material>_gs.exr` | el fotograma entero de la nube |
+| `gt.exr`, `mesh.exr` | la escena trazada, y rasterizada como mallas |
+| `clouds/<material>.usdc`, `.usda` | la nube, y la escena en la que se dibujó |
+
+```sh
+athenea mesh2splat car.usda --transfer --cell-from-camera /World/Camera \
+    --validate car_validate --validate-size 1920 1080 --validate-paths 512
+```
 
 ### 3.2 Renderizar una escena
 
@@ -823,7 +927,21 @@ normalizado. Una `DomeLight` ignora `normalize`, como dice el esquema.
 **Sombras.** Las mallas sombrean por rayo en la ruta trazada. Una nube
 proyecta a través de un mapa de transmitancia en cada luz, sin rayo ninguno:
 `--cloud-shadow-texels`, `--cloud-shadow-density` y `--cloud-shadow-terms` lo
-gobiernan, y `--no-cloud-shadows` lo apaga. `--splat-shadows` es la otra
+gobiernan, y `--no-cloud-shadows` lo apaga. Una `DomeLight` también
+proyecta: en los huecos del mapa que dejan las luces (ocho en total), seis
+mapas a lo largo de su cenit y de un anillo a cuarenta grados de altura, y una
+muestra del domo en una malla lee el más cercano a su dirección. En la ruta
+raster un domo ilumina una malla **prefiltrado** por defecto: sin muestra y
+sin rayo, así que sin grano -- los lóbulos difusos toman la irradiancia de
+los armónicos del cielo más el sol sacado de ellos, los brillantes la imagen
+del domo desenfocada a su rugosidad, y la sombra de la nube son esos seis
+mapas suavizados por el ancho de cielo que representa cada uno. Lo que no ve
+es una malla sombreando a otra desde el domo, y una superficie que transmite
+(vidrio) sigue muestreando el domo. Donde todas las luces del frame son
+domos así, no se traza ningún rayo de sombra: el vidrio muestrea sus domos
+sombreados solo por las nubes. `--no-dome-prefilter` muestrea los domos en
+todas partes, como antes.
+`--splat-shadows` es la otra
 dirección en la ruta trazada: una nube relit sombreándose a sí misma, un rayo
 por splat.
 
@@ -888,9 +1006,16 @@ niveles fundidos la media ponderada de lo que representan; es el bit 2 de los
 `flags` de la cabecera (el bit 0 son las normales), así que un fichero sin ella
 se lee como antes. Una nube sin normales, sin emisión y en sRGB se sigue escribiendo como versión
 1, de modo que un lector que solo conoce la versión 1 la abre: la versión 2 se
-escribe solo donde los `flags` no son cero. Un bit de los `flags` que esta
-compilación no conoce (cualquiera pasado el bit 2) se rechaza, nombrando el
-fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
+escribe solo donde los `flags` no son cero. Una nube con material (`pbr`, y
+sus capas donde las tiene) lo guarda bajo el bit 4, una palabra por elemento
+y tres más para las capas; una con transfer lo guarda bajo el bit 5, sus
+valores como pares f16 y sus direcciones abiertas detrás -- los números en una
+cabecera de treinta y dos bytes tras la primera, y en los niveles fundidos el
+transfer de un grupo promediado por opacidad (uno zonal, cuyos ejes no se
+promedian, el de una gaussiana), sus bits puestos donde los tiene la mitad del
+peso, su material el de una gaussiana. El bit 3 se guarda para la propuesta
+009. Un bit de los `flags` que esta compilación no conoce (el bit 3, o pasado
+el bit 5) se rechaza, nombrando el fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
 leería cada bloque detrás de él desde el sitio equivocado.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado
@@ -1075,6 +1200,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:splatReflections` | bool | `false` | rt: una gaussiana refleja la nube a la que pertenece, un rayo cada una |
 | `athenea:splatShadows` | bool | `false` | rt: una nube relit se sombrea a sí misma |
 | `athenea:cloudShadows` | bool | `true` | el mapa de transmitancia de una nube en cada luz |
+| `athenea:domePrefiltered` | bool | `true` | raster: un domo ilumina una malla prefiltrado, sin muestra ni rayo |
 | `athenea:cloudShadowResolution` | int | `1024` | texels por lado, por luz |
 | `athenea:cloudShadowTerms` | int | `0` | 1 es solo el total; 3, 5, 7 añaden pares de Fourier; 0 deja decidir a quien recibe |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplicador de la profundidad óptica de la nube |
@@ -1103,17 +1229,31 @@ la radiancia que lleva.
 |---|---|---|
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
+| `primvars:athenea:splat:catcher` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
 | `primvars:athenea:splat:ior` | float | `0` |
-| `primvars:athenea:splat:transferDirect` | float[] ‹9 por gaussiana› | — |
-| `primvars:athenea:splat:transferIndirect` | float[] ‹27 por gaussiana› | — |
-| `primvars:athenea:splat:shadowBits` | int[] ‹2 por gaussiana› | — |
+| `primvars:athenea:splat:transferDirect` | float[] ‹9 o 16 por gaussiana› | — |
+| `primvars:athenea:splat:transferIndirect` | float[] ‹27 o 48 por gaussiana› | — |
+| `primvars:athenea:splat:transferReflected` | float[] ‹48 por gaussiana› | — |
+| `primvars:athenea:splat:transferZonal` | float[] ‹10 por gaussiana› | — |
+| `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 o 32 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:curvature` | float[] ‹3 por gaussiana› | — |
+| `primvars:athenea:splat:schlickMetal` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:specularWeight` | float[] ‹1 por gaussiana, 0 a 1› | `1` |
+| `primvars:athenea:splat:specularColor` | color3f[] ‹1 por gaussiana, 0 a 1› | `(1, 1, 1)` |
+| `primvars:athenea:splat:specularIor` | float[] ‹1 por gaussiana, 1 a 2.99› | `1.5` |
+| `primvars:athenea:splat:coatWeight` | float[] ‹1 por gaussiana, 0 a 1› | `0` |
+| `primvars:athenea:splat:coatRoughness` | float[] ‹1 por gaussiana, 0 a 1› | `0` |
+| `primvars:athenea:splat:coatIor` | float[] ‹1 por gaussiana, 1 a 2.98› | `1.5` |
+| `primvars:athenea:splat:sheenColor` | color3f[] ‹1 por gaussiana, 0 a 1› | `(0, 0, 0)` |
+| `primvars:athenea:splat:sheenRoughness` | float[] ‹1 por gaussiana, 0 a 1› | `0` |
+| `primvars:athenea:splat:coatDarkening` | float[] ‹1 por gaussiana, 0 a 1, activo desde 0.5› | `0` |
 
 `relight` dice que los colores son un albedo que las luces de la escena tienen
 que iluminar. `litBody` dice que ya son la luz sobre el cuerpo del material,
@@ -1133,13 +1273,75 @@ Los dos arrays de transfer son lo que escribe `--transfer` en su lugar: cuánto
 de cualquier cielo llega a la gaussiana, directo y tras un rebote, que el
 frame combina con el cielo que hay. Una nube que los lleva no necesita
 `litBody`, y no hay ningún atributo que lo diga: llevarlos es lo que lo
-dice.
+dice. Dieciséis y cuarenta y ocho por gaussiana son grado 3
+(`--transfer-degree 3`, el valor por omisión), multiplicados por dieciséis
+armónicos del cielo; nueve y veintisiete son los del primer transfer, que se
+leen como siempre.
+`transferZonal` es la mitad directa como dos lóbulos zonales en el marco propio
+de cada gaussiana, escrita en lugar de `transferDirect` (`--transfer-lobes`,
+`--skinned`): por cada lóbulo, el (u, v) del cuadrado octaédrico de su eje en el
+marco que da la orientación de la gaussiana, y luego sus coeficientes zonales de
+las bandas 0, 1 y 2 (un ajuste de un lóbulo escribe el segundo como ceros).
+Donde están los dos, es el que se lee. Un lector que no lo conoce dibuja la nube
+reiluminada sin transfer, y eso es todo su versionado: es un primvar nuevo, no
+un significado nuevo de uno viejo, y un `.athc` lleva cualquiera de las dos bajo su bit 5.
 `shadowBits` se escribe a su lado: sesenta y cuatro bits por gaussiana, uno por
 celda de una rejilla octaédrica de 8 x 8 sobre la esfera en el espacio propio
-de la nube, puesto donde el rayo del bake en esa dirección salió de la escena.
-Es lo que sombrea el sol que un frame saca del cielo; sólo se lee en una nube
-que lleva también `transferDirect`, y sin él el transfer sombrea el sol de
-forma suave.
+de la nube -- sobre el marco propio de la gaussiana junto a `transferZonal` --,
+puesto donde el rayo del bake en esa dirección salió de la escena. Es lo que
+sombrea el sol que un frame saca del cielo; sólo se lee en una nube que lleva
+también `transferDirect` o `transferZonal`, y sin él el transfer sombrea el sol
+de forma suave.
+Ocho o treinta y dos enteros por gaussiana son los del transfer TX
+(`--transfer-cells` 16 o 32): una rejilla de 16 x 16 o 32 x 32 sobre la esfera
+entera, trazada también la mitad de detrás de la superficie. El número es lo
+que dice cuál; nada más lo dice. Con ellos un frame sombrea el sol y cualquier
+luz que sea una dirección, y estrecha cada reflejo -- el de la base y el del
+coat -- por la parte de su propio lóbulo que los bits dejan abierta, en vez de
+por un número para todo el hemisferio.
+`transferReflected` es lo que muestran las direcciones cerradas: la luz que
+llega a la gaussiana por dirección después de encontrarse con la escena, bajo
+un cielo blanco de radiancia uno, como dieciséis armónicos rgb (grado 3). Un
+frame la escala al cielo que tiene -- por cuánto más recoge la mitad
+indirecta bajo ese cielo que bajo el blanco, contado el rebote del sol -- y un
+reflejo la muestra donde los bits dicen que el cielo no llega: la carrocería
+en el cromo, el suelo en la pintura. Se escribe con las celdas y la mitad
+indirecta, y sólo se lee junto a ellas; `athenea:splatTransferIndirect` la
+apaga con la mitad indirecta. Una conversión la rellena sobre las direcciones
+cerradas: a lo largo de cada una guarda la media de lo que muestran las
+direcciones cerradas en torno a ella, y a lo largo de una abierta la media de
+las cerradas, de modo que una dirección cerrada junto a una abierta no se lee
+diluida. Una nube convertida antes guarda la proyección tal como la hizo el
+horneado, y se lee igual.
+Una luz que no es el cielo -- distante, esfera, disco, rectángulo -- ilumina
+una nube con las celdas por los mismos lóbulos, sombreada por los bits sobre
+el cono que la luz subtiende desde cada gaussiana (su penumbra), y su rebote
+llega al cuerpo y a los reflejos como el del sol. Donde un frame midió
+además una sombra para ella (`--splat-shadows`, o el mapa de sombra de la
+nube), se queda la más oscura de las dos. Los bits dicen qué direcciones salen de la escena, no cuáles llegan a
+una lámpara: un objeto más allá de una lámpara que está entre cosas también
+la sombrea.
+Una gaussiana que transmite, en un transfer TX, guarda también la mitad de
+atrás: su campo se hornea sobre la esfera entera, así que el rasterizador
+muestra a través de un parabrisas el cielo donde los bits de detrás están
+abiertos y lo que guarda el campo -- el habitáculo -- donde no, a lo largo de
+la dirección que sigue recta, como la envía una lámina. Donde la nube lleva
+las capas, una gaussiana que transmite se dobla con su propio índice
+(`specularIor`) siempre que el `ior` de la nube diga que se dobla; el `ior`
+único de la nube es el del primer vidrio que encontró la conversión.
+`curvature` es cómo gira la superficie bajo la gaussiana: su operador de
+forma en los dos primeros ejes de la propia gaussiana (uu, uv, vv), a partir
+de las normales de las esquinas de la malla. `athenea mesh2splat --transfer`
+lo escribe (no con niveles de detalle ni con `--skinned`), y un fotograma
+gira entonces el reflejo a lo largo de la huella de cada gaussiana -- el
+brillo que muestra la laca de un coche se mueve por la gaussiana en vez de
+quedarse plano sobre ella.
+`schlickMetal` es distinto de cero donde el metal de la gaussiana es un
+Schlick -- el de OpenPBR y el de glTF, de su color de frente a su color
+especular rasante -- y no el conductor de índice artístico que son el de
+standard_surface y el de UsdPreviewSurface; `athenea mesh2splat` lo escribe
+según el vocabulario del material. Para un metal oscuro los dos se separan al
+doble a sesenta grados.
 `thinWalled` es distinto de cero donde la gaussiana vino de un vidrio de pared
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077
@@ -1178,7 +1380,26 @@ gaussiana en el fichero, cuatro en el dispositivo como RGB9E5: tres mantisas de
 9 bits bajo un exponente compartido, hasta 65408, cada canal a 1/512 del más
 brillante); una captura no tiene.
 
-**`AtheneaSplatSkinningAPI`** — los joints que llevan una nube.
+Los nueve de `specularWeight` a `coatDarkening` son lo que el material puso
+sobre su base, en las unidades de OpenPBR: el peso, el tinte y el índice del
+reflejo dieléctrico (el tinte es también el color del borde de un metal), un
+coat transparente sobre todo -- un dieléctrico GGX de su propia roughness e
+índice -- y un sheen (su color por su peso, el lóbulo de Imageworks). Cada capa
+le quita a lo que tiene debajo la parte que refleja hacia el ojo, como hace el
+`layer` de MaterialX, así que un coat oscurece en rasante el cuerpo que cubre y
+devuelve esa luz como reflejo propio; con `coatDarkening` la base bajo el coat
+es aún más oscura, por lo que la cara interior del coat le devuelve (el
+`(1 - K) / (1 - E K)` de OpenPBR). Una nube los lleva donde alguno está
+escrito y lee uno que falte con el valor por defecto de la tabla; una sin
+ninguno refleja con el specular simple, exactamente como antes de que
+existieran. Se recortan a sus rangos, y en el dispositivo son tres palabras por
+gaussiana, un byte por valor (un índice en pasos de 1/128, el del coat en pasos
+de 1/64 junto al bit de su oscurecimiento). `athenea mesh2splat` escribe los
+nueve donde algún material de la escena pone algo encima (52 bytes por
+gaussiana en el fichero, doce en el dispositivo). Los niveles de detalle y
+un `.athc` los llevan con el material (bit 4), tomando un grupo fundido los de
+una gaussiana.
+ — los joints que llevan una nube.
 
 | Atributo | Tipo | Nota |
 |---|---|---|
@@ -1649,9 +1870,9 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | los reflejos de una nube salen más planos que los de la malla | no lleva normal de sombreado (`primvars:athenea:splat:normal`): se convirtió antes de que las conversiones la escribieran | conviértela de nuevo; `--normal-map-turns` además gira los propios discos |
 | `cells of relief wanted more than N gaussians`, y el relieve muestra huecos en sus pendientes más fuertes | el relieve estiró esas celdas más de lo que permite la partición | sube `--displace-refine`; un polo de las coordenadas de textura estira sin límite y deja unas pocas sea cual sea el valor |
 | los reflejos de una nube salen más blandos que los de la malla | la celda de la conversión es el kernel de desenfoque: una nube se lee como la malla a `r + 9c/R`, con `c` la celda y `R` el radio de curvatura | convierte con `--resolution` más fina: un espejo de roughness `r` quiere una celda por debajo de `r/9` de ese radio. Lo paga el fichero, no el frame -- quince veces las gaussianas fueron un 36 % más de tiempo por frame y dieciséis veces el disco |
-| una bola de cristal enseña la sala pero no la dobla | la nube no tiene índice | `athenea mesh2splat` escribe el IOR del material de cristal; en una nube de otro origen pon `primvars:athenea:splat:ior` (1.5 es cristal). Una nube guarda un solo índice: con dos cristales de IOR distinto se queda el primero y la conversión lo avisa |
+| una bola de cristal enseña la sala pero no la dobla | la nube no tiene índice | `athenea mesh2splat` escribe el IOR del material de cristal; en una nube de otro origen pon `primvars:athenea:splat:ior` (1.5 es cristal). Una nube guarda un solo índice: con dos cristales de IOR distinto se queda el primero y la conversión lo avisa; una nube que lleva las capas dobla cada gaussiana por su propio índice especular |
 | una nube convertida sale negra | el bake no encontró luz | dale luces a la escena, o `--default-lights`, o `--no-bake` |
-| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear) and 2 (emission))` | el `.athc` lo escribió un motor más nuevo, con algo en sus bloques que esta compilación no sabe dónde buscar | léelo con ese motor, o actualiza este |
+| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material) and 5 (transfer))` | el `.athc` lo escribió un motor más nuevo, con algo en sus bloques que esta compilación no sabe dónde buscar | léelo con ese motor, o actualiza este |
 | una nube sale roma y luego se afina | todavía están llegando chunks | sube `--stream-budget`, o espera; una imagen fija se asienta antes |
 | `OutOfMemory: ... does not fit in the GPU's memory budget`, código de salida 3 | el frame necesitaba más que el presupuesto del dispositivo, aun después de que el motor devolviera lo que pudo y bajara de nivel | cierra lo que más ocupe la GPU, renderiza más pequeño, da a un asset en streaming un presupuesto menor; `ATHENEA_GPU_BUDGET` sube o baja el presupuesto |
 | `OutOfMemory: ... does not fit in the memory the system has free` | en Apple silicon, la memoria libre de la máquina menos su reserva de 1,5 GiB no cabría la reserva: otros procesos ocupan el resto | cierra lo que más corra, o renderiza más pequeño; la reserva no se configura |

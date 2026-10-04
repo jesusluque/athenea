@@ -22,7 +22,7 @@ RWStructuredBuffer<uint>     crypto;
 // and, where the file carries them, nine rgb triples after. Always bound;
 // `params.transferCount` is what says whether anything is written.
 RWStructuredBuffer<uint>     transfer;
-// Which ways out are open, two words a splat; `params.shadowBits` says whether
+// Which ways out are open, two words a splat (or eight); `params.shadowBits` says whether
 // the file carries them. Always bound.
 RWStructuredBuffer<uint>     shadowBits;
 // WHICH RECORD EACH KEPT SPLAT CAME FROM. Validation drops what cannot be
@@ -37,6 +37,9 @@ RWStructuredBuffer<uint>     normals;
 // `packRgb9e5`); `params.emission` says whether the file carries it. Always
 // bound.
 RWStructuredBuffer<uint>     emission;
+// The layers over the base, three words a splat (packing's `packLobes`);
+// `params.lobes` says whether the file carries them. Always bound.
+RWStructuredBuffer<uint>     lobes;
 ConstantBuffer<DecodeParams> params;
 
 [shader("compute")]
@@ -105,9 +108,19 @@ void splatDecode(uint3 tid: SV_DispatchThreadID) {
         emission[j] = packRgb9e5(float3(fieldOf(raw, i, s, params.emission), fieldOf(raw, i, s, params.emission + 1),
                                         fieldOf(raw, i, s, params.emission + 2)));
     }
+    // WHAT THE MATERIAL LAYERED OVER ITS BASE: a byte a value, packed here
+    // once. An index outside 1 to 3 is clamped into it.
+    if (params.lobes != kNoField) {
+        const uint3 words = packLobes(lobesOfRecord(raw, i, s, params.lobes));
+        lobes[j * 3] = words.x;
+        lobes[j * 3 + 1] = words.y;
+        lobes[j * 3 + 2] = words.z;
+    }
     if (params.shadowBits != kNoField) {
-        shadowBits[j * 2] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits));
-        shadowBits[j * 2 + 1] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits + 1));
+        const uint words = params.shadowWords >= 8u ? params.shadowWords : 2u;   // 2, 8 or 32
+        for (uint w = 0; w < words; ++w) {
+            shadowBits[j * words + w] = bit_cast<uint>(fieldOf(raw, i, s, params.shadowBits + w));
+        }
     }
     // A transfer is written as it stands: it is a number the frame multiplies
     // a sky by, not a colour to decode, and f16 is generous for a quantity

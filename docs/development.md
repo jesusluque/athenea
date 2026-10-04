@@ -51,7 +51,7 @@ document, the header is right.
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
-| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`) |
+| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
 | 20 | view | `view/Viewer.h` — the window's options |
@@ -128,10 +128,11 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
 
 - **The cross-module contract is `common/packing.slang`**: how a splat's
   opacity, scale, quaternion and DC colour are packed into four words, the
-  optional shading normal into one (`packNormal`) and the optional emission
-  into one (`packRgb9e5`). Anything that writes a cloud and anything that
-  reads one goes through it. An optional buffer of `GpuSplats` (`pbr`,
-  `normals`, `emission`) is bound whether or not the cloud has it --
+  optional shading normal into one (`packNormal`), the optional emission
+  into one (`packRgb9e5`) and the optional layers over the base -- specular,
+  coat, sheen -- into three (`packLobes`). Anything that writes a cloud and
+  anything that reads one goes through it. An optional buffer of `GpuSplats`
+  (`pbr`, `normals`, `emission`, `lobes`) is bound whether or not the cloud has it --
   the shape in its place -- and a flag in the parameters says which.
 - **A splat's index is not its record's.** Validation drops what cannot be
   drawn; `GpuSplats::origin` says which record each kept splat came from.
@@ -220,6 +221,16 @@ the README's *Building*. Tests run one at a time because they share one GPU:
 every test preset sets `jobs: 1`, and running two suites at once is how a
 timing becomes meaningless.
 
+**The TX gate.** A change to shading or to the conversion runs the gate
+before anything else: `ctest -L tx_gate` (and `tx_conversions_render_like_the_mesh`,
+whose glass ball is held to the first transfer too). It converts the pawn of
+the OpenChessSet under its workshop sky (`ATHENEA_BENCH_DIR`) and the
+Corvette (`ATHENEA_ASSETS_DIR`, labelled `slow`) with `--transfer` and with
+the first transfer, through `--validate`, and fails where a material comes
+out more than 5% worse in TX (`tests/regress/tx_against_first.cmake`); its
+GT|mesh|cloud pictures stay under `build/<preset>/tests/tx_gate`. A machine
+without those assets skips it.
+
 ### 3.2 A shader-only change
 
 Shaders are compiled at run time, not embedded, so a change to an existing
@@ -251,7 +262,7 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 | `ATHENEA_TEST_DUMP` | a directory for the images tests dump; without it they dump nothing |
 | `ATHENEA_VIEW_SWITCH_AT` | `=N`: the viewer flips its technique at frame N, as a click would, for reproducible `--frames` runs |
 | `ATHENEA_VIEW_ORBIT` | `=R`: the viewer's free camera turns R radians about its target every frame, as a drag would, to time a moving camera with `--frames` |
-| `ATHENEA_STAGES` | `=1`: a line a rasterised frame of splats saying where it went -- commit, per-part visibility, project, counts, depth sort, emit, tile sort, blend -- each stage waited for, so the frame is slower for it |
+| `ATHENEA_STAGES` | `=1`: a line a rasterised frame of splats saying where it went -- commit, per-part visibility, project, counts, depth sort, emit, tile sort, blend -- and, with meshes, a line for the mesh layer -- its preparation and the cloud shadow map in it, visibility, lobe directions, shadow rays, shading, the domes read prefiltered --; each stage waited for, so the frame is slower for it |
 | `ATHENEA_PORTABLE_SORT` | `=1`: every radix sort takes the chunked passes, as before the tiled route existed; to set a backend's tiled route aside |
 | `ATHENEA_ORACLE_*` | the Storm side-by-side oracle's inputs; seven of them, documented where the test reads them |
 | `HDX_MSAA_SAMPLE_COUNT` | must be `1` for the Storm oracle; ctest sets it, and the test fails with an explanation if it is not |
@@ -443,6 +454,15 @@ says how many pixels were wrong, not merely that something was.
 
 A timing worth keeping goes in `decisions.md` with the hardware and the
 preset in its caption, not in a comment.
+
+**Validating a conversion** (`athenea mesh2splat --validate`,
+`apps/athenea/src/Mesh2SplatValidate.cpp`). `usd::stageMaterialGroups`
+reads the stage's bindings (meshes and their GeomSubsets) on the processor;
+the conversion runs once a group with every other mesh in `--hide`, through
+the same `runConversion` the command runs once; the frames are
+`StageRenderer`'s; the mask, the masking and the side-by-side pictures are
+`athenea/usd/m2s_validate.slang`; the numbers are the Measure effect's, over
+the mask's box, divided by the mask's sum.
 
 ## 6. Baking a gaussian, in full
 
@@ -720,6 +740,29 @@ a clip or a parameter of the effect, the kernel's `m2sWrite` (and `m2sLookAt`,
 so `--simplify` compares it), the record layout in `convert`/`recordFloats`,
 and the encoding field the export and the decode read.
 
+**What the material layers over its base**, where some material of the stage
+layers anything (`StageMaterial::layered`): the specular's weight, colour and
+index, the coat's weight, roughness and index, the sheen's colour and
+roughness, the coat's darkening, constants of the material, sent to the
+effect as `writeLobes` and nine parameters -- and the maps on them as clips
+`Layer0`..`Layer2`, each with the input it stands for (`layer<k>Target`),
+sampled per gaussian by `m2sLayersAt` -- and written in four entries of
+their own after everything else; the gather puts them in the record's last
+thirteen floats, after the
+harmonics (`io::SplatEncoding::lobes`, packing.slang's `SplatLobes` order).
+On the device they are `GpuSplats::lobes`, three words a splat
+(`packLobes`), and `splat_relight` reads them for both routes
+(`splatLobesOf`): the coat and the specular are the same GGX it already had,
+the sheen the lobe library's Imageworks, each layered by MaterialX's `layer`
+rule (`splatLayers`). The plain lobes (`plainLobes`) are what a cloud without
+them reads, and must reflect bit for bit as before (the lobes check).
+
+**The bake's metalness.** The gather also writes a quarter of each gaussian's
+metalness into the w of its third ray entry (`1 + m/4` raised, `m/4` flat), so
+`w > 0.5` still says raised; `bakeBody` reads it (`bakeMetalness`) and keeps a
+Schlick lobe as the metal it is wherever the material is metal at all and was
+not written with a conductor, whatever its reflectivity.
+
 **Joints and weights**, with `--skinned`: four of each a gaussian, blended
 from the triangle's corners, so the cloud deforms with the skeleton that
 carried the mesh; and how those weights change across the gaussian, so it
@@ -788,7 +831,10 @@ does, the conversion may hand the halves to the splat bake filter
 gaussians, weighed by tangent-plane distance, normal, Cryptomatte id and each
 one's noise), packed into pictures and back by `athenea/usd/bake_filter_io`.
 `bakePointsOnDevice` stays what it was, the fit in the tracer, for a transfer
-and for the tests that ask for it.
+and for the tests that ask for it. A TX transfer's answer goes through the
+same filter before it is written (`athenea/usd/transfer_filter_io`): the
+indirect half's rgb and the reflected field, with a variance handed to the
+filter that never stops it, since a transfer keeps no moments.
 
 **A raised gaussian** is baked from the flat point under it, down the flat
 normal — a ray from where it stands would start under the surface wherever the
@@ -892,6 +938,56 @@ nothing occludes. The polish keeps the map's own sun and takes the share that
 does not get through back out as an analytic GGX lobe, clamped at zero, so a
 metal is shadowed too. A cloud with no transfer gets the sun back unshadowed.
 
+**The TX transfer's cells** (docs/decisions.md, task TX). `BakePoints::cellSide`
+16 or 32 (`path.transfer` 2 or 3 in the kernel) replaces the 64 rays with one
+a cell of a 16 x 16 or 32 x 32 octahedral grid over the whole sphere, the far
+half included -- `pathOccluded` starts a ray below the surface from its far
+side -- written four words a plane, a plane for every 128 cells, as they are
+traced, so nothing the size of the grid sits in registers
+(`technique::transferPlanes` says how many planes follow the coefficients).
+`m2sTransferInto` writes them as 8 or 32 ints a gaussian, and every reader
+tells the layout by that count (`GpuSplats::shadowWords`, the frame's
+`shadowBits` parameter). `splat_relight` reads them through `splatCellsOpen`
+(four cells bilinear, those behind an axis left out), `splatLobeOpen` (the
+lobe's centre and a ring at the angle its roughness spreads) and
+`splatOpenToward` (a light's direction).
+
+**The reflected field.** In the same mode a path that escapes after its
+first bounce also adds, to sixteen rgb sums, the throughput past its first
+vertex (the radiance that arrived along its first direction under a white
+sky) times `Y_j` of that first direction and `2 pi`: a projection of the
+incoming bounced light by arrival direction. The sums are the bake split's
+indirect ones, which a transfer does not use, and leave as sixteen planes
+after the cells. A transfer's values a gaussian are one run whose count is
+its layout (`athenea/common/transfer_layout.slang`): 9 or 16 direct, three
+times that indirect, 48 of field. `splatFieldCoupling` scales the field to a
+sky, `splatFieldAlong` reads it narrowed to a lobe, `splatIndirectAlong`
+reads the indirect half along a light (the sun's bounce).
+
+**Degree 3.** `technique::Environment` projects sixteen coefficients of each
+sky (`kEnvCoefficients`, `kEnvironmentCoefficients`), one thread each as
+before, so the first nine are the same sums; the irradiance and the first
+transfer read those nine (`kEnvIrradianceCoefficients`). A transfer of
+sixteen direct coefficients is dotted with all sixteen, as is its indirect
+half of forty-eight.
+
+**Lights that are not the sky.** `relitSplat` gives a light other than a dome,
+on a cloud with the cells, the bits' share over the cone it subtends
+(`splatConeOpen`, `lightHalfAngle`) as its shadow -- the darker of that and a
+measured one -- and adds `splatLightBounce`: the indirect half read along the
+light, on the body and the sheen, and the reflected field scaled to it where
+the base's and the coat's lobes are closed.
+
+**Glass in the transfer.** At a TX transfer's first vertex the kernel notes
+whether the material transmits (a lobe that does not only reflect, read
+before `bakeBody` drops the dielectric as polish); if it does, the first
+direction is drawn over the whole sphere (`bakeSphereDirection`, density
+`1/4pi`, the front's estimator `4 cos`), and a sample drawn behind feeds the
+field alone. `relitByDome` reads, for a transmitting gaussian with the field
+and nothing traced, the sky where the bits behind are open and the field
+where they are closed, along `-wo`. The kernels give a transmitting gaussian
+its own index from its layers when the cloud bends at all.
+
 **Saying otherwise about a prim.** The Cryptomatte id a gaussian carries is
 also a selection -- everything that came from one prim -- so
 `render::SplatOverride` is a row keyed on it: metallic, roughness,
@@ -957,6 +1053,39 @@ is the inverse transpose up to scale), so a limb's relief bends with it.
 
 A bake is refused with `--skinned`, because light baked in one pose is wrong in
 every other.
+
+**A transfer that turns with the gaussian** (proposal 014 B). A transfer is
+not refused: with `--skinned` (or `--transfer-lobes`) it is kept as zonal
+lobes in each gaussian's own frame, which a pose turns. The steps, in
+`Converter::transfer`:
+
+1. `framesForBake` decodes the records as a frame decodes them
+   (`CloudLoader`), so the frame the lobes are written against is the packed
+   quaternion a renderer reads. For a skinned cloud it then poses the cloud at
+   `--time` with `SplatSkinner` -- the joints' transforms at that instant,
+   `MeshStage::skeletonTransforms` -- and moves each bake ray with its
+   gaussian (`athenea/usd/transfer_zonal_io`, `zonalPoseRays`: the posed point,
+   and the turn from the rest frame to the posed one), because the stage the
+   bake traces is posed at `--time` and the cloud was built in the bind pose.
+2. `kTransfer` bakes the nine harmonics as for any transfer, the direct half
+   alone.
+3. `fitZonal` packs them, the bits and each gaussian's frame into a picture
+   (`zonalPack`) for the `SplatTransferZonal` bundle
+   (`plugins/splattransferzonal`, an AOFX effect), which fits one or two lobes
+   by searching the axis that keeps most of the harmonics' energy and
+   projecting onto it, refits the two against each other, writes the axes in
+   the gaussian's frame, lays the sixty-four bits out over that frame, and
+   attaches a histogram of its relative error; `zonalUnpack` writes the answer
+   as `transferZonal` (ten floats a gaussian) and the bits.
+
+The frame reads them through `splatTransferFrame` (`splat_relight.slang`),
+which both shading kernels call with the gaussian's current rotation and the
+instance's rows: each axis goes to the world by the frame and the rows, the
+lobes become nine harmonics (`z_l sqrt(4 pi / (2l + 1)) Y_lm(a)`, closed), and
+everything after it -- the body's dot with the sky, the sun's share, the
+openness -- reads those as it read the stored ones. `splatSunOpen` looks the
+sun up in the frame where the bits are the frame's. `transferCount` 10 is what
+says a cloud's transfer is zonal (`GpuSplats::isZonal`).
 
 ### 6.8 The visibility bake
 

@@ -152,6 +152,30 @@ struct M2sParams {
     float ior;               // the sheet's index
     float materialOpacity;   // the material's own coverage, multiplied into `opacity`
     uint  coveragePad;
+
+    // WHAT THE MATERIAL LAYERS OVER ITS BASE, four entries of their own
+    // after everything else: constants of the material.
+    float4 specular;         // colour, weight
+    float4 coat;             // weight, roughness, index, the specular's index
+    float4 sheen;            // colour (times its weight), roughness
+    uint  lobesEntry;        // 0: not written; else the first of the four
+    float coatDarkening;     // the fourth: (coat darkening, 0, 0, 0)
+    float normalSpread;      // m2sSpread: 0 the material's roughness as it is
+    uint  curvatureEntry;    // 0: not written; else the entry of the shape operator (m2sShape)
+
+    // MAPS ON THE LAYERS (task TX, m2sLayersAt): up to three, each read for
+    // one input in place of its constant. Target 1 specular weight, 2
+    // specular colour, 3 coat weight, 4 coat roughness, 5 sheen colour, 6
+    // sheen weight, 7 sheen roughness, 0 none.
+    uint4 layerTarget;
+    uint4 layerChannel;
+    uint4 layerUv2;
+    uint4 layerWidth;
+    uint4 layerHeight;
+    uint4 layerStride;
+    // The sheen's weight alone, then its colour alone: one float4, since a
+    // float3 after a float is aligned to sixteen on Metal (560 bytes, not 544).
+    float4 sheenAlone;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -166,6 +190,9 @@ RWStructuredBuffer<float4> records;     // the output plane
 StructuredBuffer<float4>   texcoord2;   // the mesh picture's shape: (u2, v2) a corner, where there is a second set
 StructuredBuffer<float4>   heightMap;   // the displacement, read on one channel
 StructuredBuffer<float4>   emissionMap; // what the surface gives off, rgb or one channel
+StructuredBuffer<float4>   layerMap0;   // the maps on the layers, where there are any (m2sLayersAt)
+StructuredBuffer<float4>   layerMap1;
+StructuredBuffer<float4>   layerMap2;
 ConstantBuffer<M2sParams>  params;
 
 /// The counters start a render, and a buffer the host handed over holds
@@ -658,6 +685,49 @@ float3 m2sMapTangent(const M2sTriangle t, float3 normal) {
 }
 
 /// What the cut-out map reads here: one where there is no map.
+/// ONE MAP ON THE LAYERS at `bary`: its rgb, or one channel as grey.
+float3 m2sLayerTexel(uint k, const M2sTriangle t, float3 bary) {
+    const float2 uv = params.layerUv2[k] != 0 ? m2sUv2At(t, bary) : m2sUvAt(t, bary);
+    float4 texel;
+    if (k == 0) {
+        texel = sampleWrapped(layerMap0, params.layerWidth[0], params.layerHeight[0], params.layerStride[0], uv);
+    } else if (k == 1) {
+        texel = sampleWrapped(layerMap1, params.layerWidth[1], params.layerHeight[1], params.layerStride[1], uv);
+    } else {
+        texel = sampleWrapped(layerMap2, params.layerWidth[2], params.layerHeight[2], params.layerStride[2], uv);
+    }
+    const uint c = params.layerChannel[k];
+    return c == 0 ? texel.xyz : c == 1 ? texel.xxx : c == 2 ? texel.yyy : c == 3 ? texel.zzz : texel.www;
+}
+
+/// WHAT THE MAPS ON THE LAYERS SAY at `bary` (task TX): each in place of the
+/// constant of the input it stands for. The sheen is its colour times its
+/// weight, so a map on one is multiplied by the other's constant.
+void m2sLayersAt(const M2sTriangle t, float3 bary, inout float4 specular, inout float4 coat, inout float4 sheen) {
+    [unroll] for (uint k = 0; k < 3; ++k) {
+        const uint target = params.layerTarget[k];
+        if (target == 0) {
+            continue;
+        }
+        const float3 v = saturate(m2sLayerTexel(k, t, bary));
+        if (target == 1) {
+            specular.w = v.x;
+        } else if (target == 2) {
+            specular.xyz = v;
+        } else if (target == 3) {
+            coat.x = v.x;
+        } else if (target == 4) {
+            coat.y = v.x;
+        } else if (target == 5) {
+            sheen.xyz = v * params.sheenAlone.x;
+        } else if (target == 6) {
+            sheen.xyz = params.sheenAlone.yzw * v.x;
+        } else if (target == 7) {
+            sheen.w = v.x;
+        }
+    }
+}
+
 /// WHAT THE SURFACE GIVES OFF at `bary`: the material's emission, times its
 /// map where it has one -- the map's colour, or one of its channels as grey.
 /// Linear: a map of colour was decoded out of sRGB on its way here.
@@ -982,6 +1052,65 @@ void m2sScan(uint3 gid: SV_GroupThreadID) {
     }
 }
 
+/// HOW FAR THE SURFACE TURNS UNDER A GAUSSIAN, as the spread of its normals
+/// (radians, one standard deviation) across the gaussian's width: the
+/// corners' normals apart over the corners apart, along the edge where they
+/// turn fastest, times the gaussian's wider size. A gaussian has one normal,
+/// so a reflection that turns with a strip of chrome across it came back
+/// as a bead as wide as the gaussian, at the full brightness of the light it
+/// met; the path traced strip shows a thin line, the mean over the gaussian's
+/// footprint of a highlight that moves. That mean is what a rougher lobe
+/// gives (Toksvig): the spread added to the slopes' variance.
+float m2sSpread(const M2sTriangle t, float3 scale) {
+    const float3 corners[3] = { t.p0.xyz, t.p1.xyz, t.p2.xyz };
+    const float3 normals[3] = { t.n0.xyz, t.n1.xyz, t.n2.xyz };
+    float turn = 0.0;
+    for (uint k = 0; k < 3; ++k) {
+        const uint j = (k + 1) % 3;
+        const float apart = length(corners[j] - corners[k]);
+        const float3 a = normalize(normals[k]);
+        const float3 b = normalize(normals[j]);
+        if (apart > 1.0e-12 && all(isfinite(a)) && all(isfinite(b))) {
+            turn = max(turn, acos(clamp(dot(a, b), -1.0, 1.0)) / apart);
+        }
+    }
+    return params.normalSpread * turn * max(scale.x, scale.y);
+}
+
+/// THE SHAPE OPERATOR UNDER A GAUSSIAN, in its own two axes `u` and `v`: how
+/// the normal turns as a point moves across the surface, `dn = S dx`, from
+/// the triangle's corners -- their normals apart against their positions
+/// apart -- made symmetric, as a shape operator is. (uu, uv, vv). What lets a
+/// frame turn the reflection across the gaussian's footprint instead of
+/// showing its centre's over all of it (docs/decisions.md, task TX).
+float3 m2sShape(const M2sTriangle t, float3 u, float3 v) {
+    const float3 e1 = t.p1.xyz - t.p0.xyz;
+    const float3 e2 = t.p2.xyz - t.p0.xyz;
+    const float3 n0 = normalize(t.n0.xyz);
+    const float3 d1 = normalize(t.n1.xyz) - n0;
+    const float3 d2 = normalize(t.n2.xyz) - n0;
+    const float a11 = dot(e1, u), a12 = dot(e2, u);
+    const float a21 = dot(e1, v), a22 = dot(e2, v);
+    const float det = a11 * a22 - a12 * a21;
+    if (!(abs(det) > 1.0e-24) || !all(isfinite(float3(d1 + d2)))) {
+        return float3(0.0);
+    }
+    const float i11 = a22 / det, i12 = -a12 / det, i21 = -a21 / det, i22 = a11 / det;
+    const float c11 = dot(d1, u), c12 = dot(d2, u);
+    const float c21 = dot(d1, v), c22 = dot(d2, v);
+    const float s11 = c11 * i11 + c12 * i21;
+    const float s12 = c11 * i12 + c12 * i22;
+    const float s21 = c21 * i11 + c22 * i21;
+    const float s22 = c21 * i12 + c22 * i22;
+    return float3(s11, 0.5 * (s12 + s21), s22);
+}
+
+/// A roughness (perceptual, alpha its square) widened by a spread of normals.
+float m2sWidened(float roughness, float spread) {
+    const float alpha = roughness * roughness;
+    return saturate(sqrt(sqrt(alpha * alpha + 2.0 * spread * spread)));
+}
+
 /// ONE GAUSSIAN, WRITTEN: what the maps say at `bary`, turned to `normal`
 /// with its first axis along `tangent`, `scale` wide. `false` where the frame
 /// collapsed and nothing was written. A displaced one carries three entries
@@ -1010,6 +1139,10 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
                                            params.mrStride, params.mrUv2 != 0 ? uv2 : uv);
         metallic *= texel.z;
         roughness *= texel.y;
+    }
+    const float spread = params.normalSpread > 0.0 ? m2sSpread(t, scale) : 0.0;
+    if (spread > 0.0) {
+        roughness = m2sWidened(roughness, spread);
     }
     float3 shading = normal;
     if (params.hasNormal != 0) {
@@ -1057,7 +1190,8 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     records[recordAt(slot, 3)] = float4(colour, 0.0);
     // The entries before the relief's three and the emission's one: 4, 6 or 9.
     const uint own = params.recordPixels - (params.displaceRefine != 0 ? 3u : 0u) -
-                     (params.emissionEntry != 0 ? 1u : 0u);
+                     (params.emissionEntry != 0 ? 1u : 0u) - (params.lobesEntry != 0 ? 4u : 0u) -
+                     (params.curvatureEntry != 0 ? 1u : 0u);
     if (own >= 6) {
         records[recordAt(slot, 4)] = float4(shading, metallic);
         records[recordAt(slot, 5)] = float4(roughness, params.transmission, uv.x, uv.y);
@@ -1088,6 +1222,22 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     }
     if (params.emissionEntry != 0) {
         records[recordAt(slot, params.emissionEntry)] = float4(m2sEmissionAt(t, bary), 0.0);
+    }
+    if (params.lobesEntry != 0) {
+        float4 specular = params.specular;
+        float4 coat = params.coat;
+        float4 sheen = params.sheen;
+        m2sLayersAt(t, bary, specular, coat, sheen);
+        if (spread > 0.0) {
+            coat.y = m2sWidened(coat.y, spread);
+        }
+        records[recordAt(slot, params.lobesEntry)] = specular;
+        records[recordAt(slot, params.lobesEntry + 1)] = coat;
+        records[recordAt(slot, params.lobesEntry + 2)] = sheen;
+        records[recordAt(slot, params.lobesEntry + 3)] = float4(params.coatDarkening, 0.0, 0.0, 0.0);
+    }
+    if (params.curvatureEntry != 0) {
+        records[recordAt(slot, params.curvatureEntry)] = float4(m2sShape(t, alongU, alongV), 0.0);
     }
     return true;
 }

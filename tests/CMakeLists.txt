@@ -108,12 +108,14 @@ athenea_test(athenea_volume_tests
 set_target_properties(athenea_volume_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_usd_tests
-    SOURCES usd/test_usd.cpp usd/test_migrate.cpp
+    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
                            ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
                            ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive"
+                           ATHENEA_LOBES_DIR="${CMAKE_CURRENT_BINARY_DIR}/lobes"
+                           ATHENEA_TX_DIR="${CMAKE_CURRENT_BINARY_DIR}/tx"
                            ATHENEA_TEST_MATERIALX_LIBRARIES="${ATHENEA_USD_ROOT}/libraries")
 # $ATHENEA_MATERIALX_ROOT is read once a process, so the case that sets it is
 # hidden from the discovery above and run here alone, with it set to a
@@ -185,11 +187,12 @@ athenea_test(athenea_gpu_host_tests
 add_subdirectory(aofx/bundles)
 athenea_test(athenea_aofx_tests
     SOURCES aofx/test_aofx.cpp aofx/test_mesh2splat.cpp aofx/test_bake_filter.cpp aofx/test_measure.cpp
+            aofx/test_transfer_zonal.cpp
     LIBS athenea::aofx_host athenea::render athenea::gpu
     LABELS gpe)
 # The conversion's own bundle, checked through the host like any other.
 add_dependencies(athenea_aofx_tests aofx_test_bundles athenea_aofx_mesh2splat athenea_aofx_measure
-                 athenea_aofx_splatbakefilter)
+                 athenea_aofx_splatbakefilter athenea_aofx_splattransferzonal)
 target_compile_definitions(athenea_aofx_tests PRIVATE
     ATHENEA_AOFX_TEST_BUNDLES="${ATHENEA_AOFX_TEST_BUNDLES}"
     ATHENEA_AOFX_TEST_RUN_BUNDLES="${ATHENEA_AOFX_TEST_RUN_BUNDLES}"
@@ -262,12 +265,26 @@ athenea_m2s_output(two_cards_athc ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usd
     --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.athc)
 athenea_m2s_output(two_cards_usd ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
     --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.usda)
+# A corner a joint turns, its transfer kept as zonal lobes in each gaussian's
+# frame and baked at the pose of time 1 (the cloud posed there first); and the
+# same corner still, its transfer fitted with two lobes, which says the fit's
+# error against the nine harmonics.
+athenea_m2s_output(skinned_transfer ${CMAKE_CURRENT_SOURCE_DIR}/data/skinned_corner.usda --skinned --transfer
+    --time 1 --bake-samples 64 --bake-extra 0 --bake-bounces 1 --resolution 32 --no-camera
+    -o ${ATHENEA_M2S_OUTPUTS}/skinned_transfer.usda)
+set_tests_properties(mesh2splat_output_skinned_transfer PROPERTIES
+    PASS_REGULAR_EXPRESSION "posed at the bake's instant.*transfer kept as 2 zonal lobes")
+athenea_m2s_output(still_transfer_zonal ${CMAKE_CURRENT_SOURCE_DIR}/data/skinned_corner.usda --transfer
+    --transfer-lobes 2 --bake-samples 64 --bake-extra 0 --bake-bounces 1 --resolution 32 --no-camera
+    -o ${ATHENEA_M2S_OUTPUTS}/still_transfer_zonal.usda)
+set_tests_properties(mesh2splat_output_still_transfer_zonal PROPERTIES
+    PASS_REGULAR_EXPRESSION "relative error against the nine harmonics: median")
 athenea_test(athenea_mesh2splat_tests
     SOURCES mesh2splat/test_outputs.cpp
     LIBS athenea::usd athenea::lod athenea::render athenea::scene
     LABELS gpe
     FIXTURES mesh2splat_outputs)
-add_dependencies(athenea_mesh2splat_tests athenea athenea_aofx_mesh2splat)
+add_dependencies(athenea_mesh2splat_tests athenea athenea_aofx_mesh2splat athenea_aofx_splattransferzonal)
 target_compile_definitions(athenea_mesh2splat_tests PRIVATE ATHENEA_M2S_OUTPUTS="${ATHENEA_M2S_OUTPUTS}")
 set_target_properties(athenea_mesh2splat_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 # What a converted lamp gives off. Two emissive quads -- a constant OpenPBR
@@ -304,6 +321,161 @@ add_test(NAME emissive_conversions_render_like_the_mesh
 set_tests_properties(emissive_conversions_render_like_the_mesh PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED emissive_clouds
+    LABELS gpe)
+
+# WHAT A MATERIAL LAYERS OVER ITS BASE, MATERIAL BY MATERIAL (proposal 026).
+# A ball of each -- a car's coated paint, chrome, rubber with a sheen, a
+# plastic whose specular is weighed and tinted, glass -- converted relit
+# (--no-bake) and baked; then a hidden case of the USD tests draws each
+# cloud rasterised against the mesh path traced and holds it to a bound a
+# material.
+set(ATHENEA_LOBES_DIR ${CMAKE_CURRENT_BINARY_DIR}/lobes)
+foreach(material paint chrome rubber plastic glass)
+    foreach(mode relit baked)
+        set(flags --bake-samples 64 --bake-degree 2)
+        if(mode STREQUAL "relit")
+            set(flags --no-bake)
+        endif()
+        add_test(NAME mesh2splat_lobes_${material}_${mode}
+            COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/${material}.usda ${flags} --no-camera
+                    --resolution 192 -o ${ATHENEA_LOBES_DIR}/${material}_${mode}.usda)
+        set_tests_properties(mesh2splat_lobes_${material}_${mode} PROPERTIES
+            ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+            FIXTURES_SETUP lobes_clouds
+            LABELS gpe)
+    endforeach()
+endforeach()
+# A MAP ON A LAYER (task TX): a card whose coat weight is half nothing and
+# half whole, its gaussians' coat weights read back by a hidden case.
+add_test(NAME mesh2splat_lobes_coat_map
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/coat_map.usda --no-bake --no-camera
+            --resolution 64 -o ${ATHENEA_LOBES_DIR}/coat_map.usda)
+set_tests_properties(mesh2splat_lobes_coat_map PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_SETUP coat_map_cloud
+    LABELS gpe)
+add_test(NAME a_map_on_a_layer_is_sampled_per_gaussian
+    COMMAND athenea_usd_tests "[layer_maps]")
+set_tests_properties(a_map_on_a_layer_is_sampled_per_gaussian PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED coat_map_cloud
+    LABELS gpe)
+add_test(NAME lobes_conversions_render_like_the_mesh
+    COMMAND athenea_usd_tests "[lobes_conversion]")
+set_tests_properties(lobes_conversions_render_like_the_mesh PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED lobes_clouds
+    LABELS gpe)
+
+# A TRANSFER RIGHT UNDER ANY SKY (task TX). The balls of tests/data/lobes on a
+# ground (tests/data/tx), the ball alone converted with --transfer twice: as
+# TX writes it and as the first transfer did (--transfer-cells 0); then a
+# hidden case of the USD tests draws both under two skies against the mesh
+# path traced, and holds TX to a bound and to doing better than the first.
+set(ATHENEA_TX_DIR ${CMAKE_CURRENT_BINARY_DIR}/tx)
+foreach(material paint chrome rubber glass)
+    foreach(mode tx first)
+        set(flags --transfer --bake-samples 256 --bake-extra 0 --prim /World/Ball)
+        if(mode STREQUAL "first")
+            list(APPEND flags --transfer-cells 0 --transfer-degree 2)
+        endif()
+        add_test(NAME mesh2splat_tx_${material}_${mode}
+            COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/${material}.usda ${flags} --no-camera
+                    --resolution 192 -o ${ATHENEA_TX_DIR}/${material}_${mode}.usdc)
+        set_tests_properties(mesh2splat_tx_${material}_${mode} PROPERTIES
+            ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+            FIXTURES_SETUP tx_clouds
+            LABELS gpe)
+    endforeach()
+endforeach()
+# THE TX GATE: a TX transfer no worse than the first, material by material,
+# on stages that are assets rather than tests (the pawn of the OpenChessSet
+# under its workshop sky, the Corvette's measured materials), wherever this
+# machine has them (ATHENEA_BENCH_DIR, ATHENEA_ASSETS_DIR); skipped where it
+# does not. Each run leaves its GT|mesh|cloud pictures under tests/tx_gate.
+set(ATHENEA_BENCH_DIR "$ENV{HOME}/luc/athenea-bench" CACHE PATH "scenes the TX gate measures (scenes/pawn_mesh.usda)")
+set(ATHENEA_ASSETS_DIR "$ENV{HOME}/tools/assets" CACHE PATH "assets the TX gate measures (CorvetteC7)")
+add_test(NAME tx_gate_pawn
+    COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
+            -DSTAGE=${ATHENEA_BENCH_DIR}/scenes/pawn_mesh.usda -DPRIM=/World/Subject -DCAMERA=/World/Cam
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/tx_gate/pawn -DSIZE=512 -DPATHS=512
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/regress/tx_against_first.cmake)
+set_tests_properties(tx_gate_pawn PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    SKIP_RETURN_CODE 77
+    LABELS "gpe;tx_gate")
+add_test(NAME tx_gate_corvette
+    COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
+            -DSTAGE=${ATHENEA_ASSETS_DIR}/CorvetteC7/usd/corvette_scene.usda -DPRIM=/World/Corvette
+            -DCAMERA=/World/Camera -DOUT=${CMAKE_CURRENT_BINARY_DIR}/tx_gate/corvette -DWIDTH=960 -DHEIGHT=540
+            -DPATHS=256
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/regress/tx_against_first.cmake)
+set_tests_properties(tx_gate_corvette PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 36000
+    LABELS "gpe;tx_gate;slow")
+# THE CATCHER'S GATE: the Corvette's shadow caught by gaussians on its ground
+# (mesh2splat --shadow-catcher), drawn on the raster route over the stage's
+# meshes, against the path traced frame in four windows of the ground.
+add_test(NAME catcher_gate_corvette
+    COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
+            -DSTAGE=${ATHENEA_ASSETS_DIR}/CorvetteC7/usd/corvette_scene.usda -DPRIM=/World/Corvette
+            -DCAMERA=/World/Camera -DOUT=${CMAKE_CURRENT_BINARY_DIR}/catcher_gate/corvette -DWIDTH=960 -DHEIGHT=540
+            -DPATHS=256
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/regress/catcher_against_gt.cmake)
+set_tests_properties(catcher_gate_corvette PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 7200
+    LABELS "gpe;tx_gate;slow")
+
+# A GLASS IS A SHEET BY ITS MESH: a pane modelled as one surface with a solid
+# glass on it converts thin-walled, the closed glass ball solid
+# (Converter::classifySheets), with nothing said per asset.
+add_test(NAME mesh2splat_sheet_pane
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/pane.usda --no-camera --resolution 64
+            -o ${ATHENEA_TX_DIR}/pane_sheet.usdc)
+set_tests_properties(mesh2splat_sheet_pane PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "Pane is sheet \\(thin-walled\\) glass"
+    LABELS gpe)
+add_test(NAME mesh2splat_sheet_ball
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/glass.usda --no-camera --resolution 64
+            -o ${ATHENEA_TX_DIR}/ball_sheet.usdc)
+set_tests_properties(mesh2splat_sheet_ball PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "Ball is solid glass"
+    LABELS gpe)
+
+# A transfer baked in slices (--transfer-slice) finds the surface under every
+# gaussian as one slice does: four slices of the paint ball, filtered.
+add_test(NAME mesh2splat_tx_sliced
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/paint.usda --prim /World/Ball --transfer
+            --bake-samples 16 --bake-extra 0 --transfer-slice 25000 --no-camera --resolution 192
+            -o ${ATHENEA_TX_DIR}/paint_sliced.usdc)
+set_tests_properties(mesh2splat_tx_sliced PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "transfer baked for 9[0-9][0-9][0-9][0-9] of 96130"
+    LABELS gpe)
+add_test(NAME tx_conversions_render_like_the_mesh
+    COMMAND athenea_usd_tests "[tx_conversion]")
+set_tests_properties(tx_conversions_render_like_the_mesh PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED tx_clouds
+    LABELS gpe)
+
+# A CONVERSION MEASURED BY THE ENGINE ITSELF (task TX): two balls of two
+# materials on a ground of a third (tests/data/validate), converted with a
+# transfer one material at a time and each measured against the stage path
+# traced over its own pixels.
+add_test(NAME mesh2splat_validate
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/validate/two_balls.usda --transfer
+            --bake-samples 64 --bake-extra 0 --resolution 96 --no-camera
+            --validate ${CMAKE_CURRENT_BINARY_DIR}/validate --validate-size 192 108 --validate-paths 64)
+set_tests_properties(mesh2splat_validate PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "validate: /World/Looks/Paint +[0-9]+ splats  relMSE.*validate: /World/Looks/Rubber +[0-9]+ splats  relMSE.*validate: wrote"
     LABELS gpe)
 
 # WHAT A CONVERTED SURFACE COVERS: the planes of tests/data/coverage converted

@@ -184,6 +184,17 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     if (s.transferIndirect.values() < uint64_t{s.count} * 27) {
         s.transferIndirect = {};
     }
+    // A TX transfer's reflected field, 48 floats a gaussian, only beside the
+    // indirect half.
+    s.transferReflected = streamOf(a.transferReflected);
+    if (s.transferIndirect.empty() || s.transferReflected.values() < uint64_t{s.count} * 48) {
+        s.transferReflected = {};
+    }
+    // Or the direct half as zonal lobes: ten floats a gaussian.
+    s.transferZonal = streamOf(a.transferZonal);
+    if (s.transferZonal.values() < uint64_t{s.count} * scene::GpuSplats::kTransferZonalCount) {
+        s.transferZonal = {};
+    }
     // Which gaussians are thin walls: ints, like the ids.
     if (a.thinWalled.IsHolding<pxr::VtIntArray>()) {
         const pxr::VtIntArray& thin = a.thinWalled.UncheckedGet<pxr::VtIntArray>();
@@ -191,9 +202,17 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
             s.thinWalled = {std::as_bytes(std::span<const int>(thin.cdata(), thin.size())), false, false};
         }
     }
+    if (a.schlickMetal.IsHolding<pxr::VtIntArray>()) {
+        const pxr::VtIntArray& schlick = a.schlickMetal.UncheckedGet<pxr::VtIntArray>();
+        if (schlick.size() >= s.count && s.count > 0) {
+            s.schlickMetal = {std::as_bytes(std::span<const int>(schlick.cdata(), schlick.size())), false, false};
+        }
+    }
     s.linear = a.linear;
     // The shading normal: three floats a gaussian, or nothing.
     s.normals = streamOf(a.normals);
+    // The shape operator: three floats a gaussian, or nothing.
+    s.curvature = streamOf(a.curvature);
     if (s.normals.values() < uint64_t{s.count} * 3) {
         s.normals = {};
     }
@@ -202,8 +221,23 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     if (s.emission.values() < uint64_t{s.count} * 3) {
         s.emission = {};
     }
+    // The layers over the base: one value or one colour a gaussian each, or
+    // nothing.
+    const auto wholeOr = [&s](const pxr::VtValue& value, uint32_t per) {
+        scene::FloatStream stream = streamOf(value);
+        return stream.values() < uint64_t{s.count} * per ? scene::FloatStream{} : stream;
+    };
+    s.specularWeight = wholeOr(a.specularWeight, 1);
+    s.specularColour = wholeOr(a.specularColour, 3);
+    s.specularIor = wholeOr(a.specularIor, 1);
+    s.coatWeight = wholeOr(a.coatWeight, 1);
+    s.coatRoughness = wholeOr(a.coatRoughness, 1);
+    s.coatIor = wholeOr(a.coatIor, 1);
+    s.sheenColour = wholeOr(a.sheenColour, 3);
+    s.sheenRoughness = wholeOr(a.sheenRoughness, 1);
+    s.coatDarkening = wholeOr(a.coatDarkening, 1);
     // Which ways out are open: bits, like the ids, and only beside a transfer.
-    if (!s.transferDirect.empty() && a.shadowBits.IsHolding<pxr::VtIntArray>()) {
+    if ((!s.transferDirect.empty() || !s.transferZonal.empty()) && a.shadowBits.IsHolding<pxr::VtIntArray>()) {
         const pxr::VtIntArray& bits = a.shadowBits.UncheckedGet<pxr::VtIntArray>();
         if (bits.size() >= size_t{s.count} * 2 && s.count > 0) {
             s.shadowBits = {std::as_bytes(std::span<const int>(bits.cdata(), bits.size())), false, false};

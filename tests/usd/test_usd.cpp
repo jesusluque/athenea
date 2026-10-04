@@ -56,6 +56,7 @@
 #include "athenea/usd/Export.h"
 #include "athenea/usd/PrimData.h"
 #include "athenea/technique/Denoiser.h"
+#include "athenea/technique/PathTracer.h"
 #include "athenea/scene/ThinWall.h"
 #include "athenea/colour/ColourCompiler.h"
 #include "athenea/usd/StageRenderer.h"
@@ -6527,6 +6528,9 @@ TEST_CASE("the raster sees a dome through glass as the path tracer does", "[usd]
         const gpu::Buffer ones = upload(std::vector<float>(size_t{w} * h * 4, 1.0F));
         auto renderer = usd::StageRenderer::open(path);
         if (!renderer) FAIL(renderer.error().toString());
+        // Sampled, as the raster's convergence is what this measures: read
+        // prefiltered (the default) a polished metal has no samples to count.
+        (*renderer)->setDomePrefiltered(false);
         for (const uint32_t lightSamples : {1u, 4u}) {
             (*renderer)->setLightSamples(lightSamples);
             auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
@@ -6550,6 +6554,9 @@ TEST_CASE("the raster sees a dome through glass as the path tracer does", "[usd]
             "  </standard_surface>\n");
         auto renderer = usd::StageRenderer::open(path);
         if (!renderer) FAIL(renderer.error().toString());
+        // Sampled, as the raster's convergence is what this measures: read
+        // prefiltered (the default) a polished metal has no samples to count.
+        (*renderer)->setDomePrefiltered(false);
         // The path tracer first, deep, as the answer; then the raster at two
         // sample counts. Its lobe choice between reflection and a tinted
         // transmission is noise, so agreement is stated as the error falling
@@ -6595,6 +6602,9 @@ TEST_CASE("the raster sees a dome through glass as the path tracer does", "[usd]
             "    <input name=\"bsdf\" type=\"BSDF\" nodename=\"b\" />\n  </surface>\n");
         auto renderer = usd::StageRenderer::open(path);
         if (!renderer) FAIL(renderer.error().toString());
+        // Sampled, as the raster's convergence is what this measures: read
+        // prefiltered (the default) a polished metal has no samples to count.
+        (*renderer)->setDomePrefiltered(false);
         (*renderer)->setPathBounces(1);
         (*renderer)->setPathTotal(4096);
         auto traced = (*renderer)->render("/Camera", 0.0, w, h, "rt");
@@ -8479,6 +8489,175 @@ TEST_CASE("a cloud its file says a skeleton carries moves with it", "[usd][gpu][
     CHECK(later.min[2] == Catch::Approx(first.min[2]).margin(1e-3));
 }
 
+// A SKINNED CLOUD'S TRANSFER TURNS WITH IT (proposal 014 B).
+//
+// A transfer kept as zonal lobes in each gaussian's own frame is turned into
+// the world by whatever frame the gaussian has: the one a skeleton's pose gave
+// it, or the one a prim's transform puts it in. So the same cloud turned by a
+// rigid rotation must shade the same either way -- carried by one joint whose
+// transform at time 1 is the rotation, or still and under an Xform of that
+// rotation -- under a sky whose image is not the same in any two directions.
+// And the same turned cloud without its transfer must shade otherwise: that is
+// what says the transfer is what the comparison compares.
+TEST_CASE("a skinned cloud's zonal transfer turns with it as a turned still cloud's does",
+          "[usd][gpu][skinning][transfer][zonal]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const io::RawSplats raw = cloud(512);
+    // Two lobes a gaussian: an axis in its frame (the octahedral square's u,
+    // v) and three coefficients, values a bake would give (a cosine-like
+    // lobe and a weaker second one).
+    std::vector<float> zonal(size_t{raw.count} * 10, 0.0F);
+    uint64_t state = 7;
+    const auto next = [&] {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<float>((state >> 40) & 0xFFFFFF) / 16777216.0F;
+    };
+    for (uint32_t k = 0; k < raw.count; ++k) {
+        float* one = zonal.data() + size_t{k} * 10;
+        one[0] = next();
+        one[1] = next();
+        one[2] = 0.5F + 0.4F * next();
+        one[3] = 0.3F + 0.4F * next();
+        one[4] = 0.1F * next();
+        one[5] = next();
+        one[6] = next();
+        one[7] = -0.2F * next();
+        one[8] = 0.2F * next() - 0.1F;
+        one[9] = 0.1F * next() - 0.05F;
+    }
+    // The turn: 60 degrees about (1, 2, 0.5).
+    const double angle = 60.0 * 3.14159265358979 / 180.0;
+    const double ax = 1.0 / std::sqrt(5.25), ay = 2.0 / std::sqrt(5.25), az = 0.5 / std::sqrt(5.25);
+    const double c = std::cos(angle), sn = std::sin(angle), t = 1.0 - c;
+    const double r[3][3] = {{t * ax * ax + c, t * ax * ay - sn * az, t * ax * az + sn * ay},
+                            {t * ax * ay + sn * az, t * ay * ay + c, t * ay * az - sn * ax},
+                            {t * ax * az - sn * ay, t * ay * az + sn * ax, t * az * az + c}};
+    // As USD holds a transform, vectors on the left: the transpose, by rows.
+    std::array<float, 16> turned{};
+    std::ostringstream matrix;
+    matrix << "( ";
+    for (int row = 0; row < 4; ++row) {
+        matrix << "(";
+        for (int column = 0; column < 4; ++column) {
+            const double value = row < 3 && column < 3 ? r[column][row] : (row == column ? 1.0 : 0.0);
+            turned[static_cast<size_t>(row * 4 + column)] = static_cast<float>(value);
+            matrix << value << (column < 3 ? ", " : "");
+        }
+        matrix << ")" << (row < 3 ? ", " : " ");
+    }
+    matrix << ")";
+
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.relight = true;
+    options.linear = true;
+    options.transferZonal = zonal;
+    const fs::path still = scratch("zonal-still.usda");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, still, options));
+    usd::SplatSkinning rig;
+    rig.skeleton = "/Root/Skel";
+    rig.joints = 1;
+    rig.influences.resize(size_t{raw.count} * 8, 0.0F);
+    for (uint32_t k = 0; k < raw.count; ++k) {
+        rig.influences[size_t{k} * 8 + 1] = 1.0F;   // joint 0, all of it
+    }
+    rig.times = {0.0, 1.0};
+    rig.xforms.assign(32, 0.0F);
+    rig.xforms[0] = rig.xforms[5] = rig.xforms[10] = rig.xforms[15] = 1.0F;
+    std::copy(turned.begin(), turned.end(), rig.xforms.begin() + 16);
+    REQUIRE(rig.valid());
+    options.skinning = &rig;
+    const fs::path carried = scratch("zonal-carried.usda");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, carried, options));
+
+    // A sky that differs in every direction: red across, green up, blue in a
+    // spot.
+    const fs::path png = scratch("zonal-sky.png");
+    {
+        std::vector<uint32_t> texels(size_t{64} * 32);
+        for (uint32_t y = 0; y < 32; ++y) {
+            for (uint32_t x = 0; x < 64; ++x) {
+                const uint32_t red = 40 + x * 3;
+                const uint32_t green = 30 + y * 6;
+                const uint32_t blue = (x > 40 && x < 50 && y > 8 && y < 16) ? 255 : 20;
+                texels[size_t{y} * 64 + x] = 0xFF000000u | (blue << 16) | (green << 8) | red;
+            }
+        }
+        HioImageSharedPtr image = HioImage::OpenForWriting(png.string());
+        REQUIRE(image);
+        HioImage::StorageSpec spec;
+        spec.width = 64;
+        spec.height = 32;
+        spec.depth = 1;
+        spec.format = HioFormatUNorm8Vec4;
+        spec.data = texels.data();
+        REQUIRE(image->Write(spec));
+    }
+    const auto wrapper = [&](const char* name, const fs::path& layer, const std::string& transform) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n    subLayers = [@" << layer.string() << "@]\n)\n";
+        if (!transform.empty()) {
+            out << "over \"World\"\n{\n    over \"Splats\"\n    {\n"
+                   "        matrix4d xformOp:transform = " << transform << "\n"
+                   "        uniform token[] xformOpOrder = [\"xformOp:transform\"]\n    }\n}\n";
+        }
+        out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 9)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n"
+               "    asset inputs:texture:file = @" << png.string() << "@\n}\n";
+        return path;
+    };
+    const fs::path stillTurned = wrapper("zonal-still-turned.usda", still, matrix.str());
+    usd::ExportOptions bare = options;
+    bare.transferZonal = {};
+    bare.skinning = nullptr;
+    const fs::path plain = scratch("zonal-plain.usda");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, plain, bare));
+    const fs::path plainTurned = wrapper("zonal-plain-turned.usda", plain, matrix.str());
+    const fs::path skinned = wrapper("zonal-carried-turned.usda", carried, "");
+
+    const uint32_t w = 160, h = 120;
+    std::vector<std::string> routes{"raster"};
+    const gpu::Caps& caps = gpu->device->caps();
+    if (caps.accelerationStructure && (caps.rayQuery || caps.rayTracing)) {
+        routes.push_back("rt");
+    }
+    for (const std::string& route : routes) {
+        const auto frame = [&](const fs::path& path) {
+            auto renderer = usd::StageRenderer::open(path);
+            if (!renderer) FAIL(renderer.error().toString());
+            auto image = (*renderer)->render("/Camera", 1.0, w, h, route);
+            if (!image) FAIL(image.error().toString());
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(made);
+            return std::move(*made);
+        };
+        const gpu::Buffer byXform = frame(stillTurned);
+        const gpu::Buffer bySkeleton = frame(skinned);
+        const gpu::Buffer untransferred = frame(plainTurned);
+        auto same = render::compareHdr(*gpu->library, bySkeleton, byXform, w, h);
+        auto moved = render::compareHdr(*gpu->library, untransferred, byXform, w, h);
+        REQUIRE(same);
+        REQUIRE(moved);
+        std::printf("  zonal transfer (%s): carried by the skeleton against the turned prim relMSE %.2e, p99 %.2e, "
+                    "max %.2e; the turned cloud without its transfer relMSE %.2e\n",
+                    route.c_str(), same->relMse, same->p99Relative, same->maxRelative, moved->relMse);
+        // The skinner's frame is re-packed in ten-bit quaternions and its
+        // eigen-decomposition rounds, so not bit for bit: within a hundredth
+        // at the 99th percentile.
+        CHECK(same->relMse < 1.0e-4);
+        CHECK(same->p99Relative < 1.0e-2);
+        CHECK(moved->relMse > 1.0e-3);
+    }
+}
+
 // THE SAME CLOUD, BOUND THE SPECIFICATION'S WAY.
 //
 // SkelBindingAPI on the ParticleField names a Skeleton, the Skeleton's
@@ -9892,13 +10071,17 @@ TEST_CASE("the raster shadows a lobe's own samples, and weighs them against the 
         return out.str();
     };
     const uint32_t w = 128, h = 96;
-    const gpu::Buffer covered = renderStageText("lobe_shadow_plate.usda", stage(true, "0.1"), "raster", w, h);
+    // The dome sampled, as this test is about its samples: read prefiltered
+    // (the default) no mesh shadows another from a dome at all.
+    const auto sampled = [](usd::StageRenderer& r) { r.setDomePrefiltered(false); };
+    const gpu::Buffer covered =
+        renderStageText("lobe_shadow_plate.usda", stage(true, "0.1"), "raster", w, h, sampled);
     auto under = render::imageStats(*gpu->library, covered, w, h, 0, 0, w, h / 2);
     REQUIRE(under);
     std::printf("  a polished floor under a plate, raster: mean %.4f (black wanted)\n", under->mean[0]);
     CHECK(under->mean[0] < 0.02);
 
-    const gpu::Buffer open = renderStageText("lobe_mis_open.usda", stage(false, "0.5"), "raster", w, h);
+    const gpu::Buffer open = renderStageText("lobe_mis_open.usda", stage(false, "0.5"), "raster", w, h, sampled);
     auto sky = render::imageStats(*gpu->library, open, w, h, 0, 0, w, h / 2);
     REQUIRE(sky);
     std::printf("  a rough metal floor under the open sky, raster: mean %.3f, brightest pixel %.2f\n",
@@ -9912,6 +10095,174 @@ TEST_CASE("the raster shadows a lobe's own samples, and weighs them against the 
 // `shadow:enable` turns it off, and `shadow:distance` ends it short of a
 // receiver further from the light than that. All three reach the map the
 // raster reads and the factors a relit cloud reads, through the light record.
+// A CLOUD SHADOWS A MESH UNDER A SKY, ON THE RASTER ROUTE (task TX).
+//
+// The map from the lights had no slot for a dome -- a dome has no direction
+// to build one about -- so a car converted to gaussians cast nothing on the
+// ground under a sky (CV2's Corvette: the ground under the car 0.217 where
+// the path traced mesh reads 0.182, and identical without cloud shadows). The
+// dome now gets maps along its zenith and a ring forty degrees up, and a
+// mesh's dome samples read the nearest. A wide slab of opaque gaussians low
+// over a floor under a plain sky: the floor under it, seen from the side,
+// must go well darker with the cloud's shadows than without.
+TEST_CASE("a cloud shadows a mesh under a dome on the raster route", "[usd][gpu][mesh][splat][lights][dome]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    const fs::path path = scratch("cloud_dome_shadow.usda");
+    {
+        std::ofstream out(path);
+        const int n = 21;
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n    metersPerUnit = 1\n)\n"
+               "def Mesh \"Ground\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-6, -6, 0), (6, -6, 0), (6, 6, 0), (-6, 6, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)] ( interpolation = \"constant\" )\n}\n"
+               "def ParticleField3DGaussianSplat \"Cloud\"\n{\n    point3f[] positions = [";
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                out << ((i || j) ? ", " : "") << "(" << (i - n / 2) * 0.09 << ", " << (j - n / 2) * 0.09 << ", 0.4)";
+            }
+        }
+        out << "]\n    quatf[] orientations = [";
+        for (int k = 0; k < n * n; ++k) out << (k ? ", " : "") << "(1, 0, 0, 0)";
+        out << "]\n    float3[] scales = [";
+        for (int k = 0; k < n * n; ++k) out << (k ? ", " : "") << "(0.07, 0.07, 0.02)";
+        out << "]\n    float[] opacities = [";
+        for (int k = 0; k < n * n; ++k) out << (k ? ", " : "") << "0.99";
+        out << "]\n    int radiance:sphericalHarmonicsDegree = 0\n"
+               "    float3[] radiance:sphericalHarmonicsCoefficients = [";
+        for (int k = 0; k < n * n; ++k) out << (k ? ", " : "") << "(0.5, 0.5, 0.5)";
+        out << "]\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 30\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 100)\n"
+               "    double3 xformOp:translate = (0, -2.5, 0.25)\n    float3 xformOp:rotateXYZ = (85, 0, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t w = 160, h = 120;
+    auto meanKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/patch_mean", "patchMean");
+    if (!meanKernel) FAIL(meanKernel.error().toString());
+    const auto under = [&](bool shadows) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setLightSamples(16);
+        (*renderer)->setCloudShadows(shadows);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto frame = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(frame);
+        const std::array<uint32_t, 4> zero{0, 0, 0, 0};
+        auto sums = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, std::span<const uint32_t>(zero), "dome.sums");
+        REQUIRE(sums);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            meanKernel->dispatch(batch, {12, 12, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["frame"].setBinding(frame->rhi());
+                cursor["sums"].setBinding(sums->rhi());
+                cursor["params"]["width"].setData(w);
+                // Below the middle, as the image is stored bottom row first:
+                // the floor under the slab. Above it the patch reached past
+                // the slab towards the horizon, and read the sky into it.
+                cursor["params"]["x0"].setData(w / 2 - 6);
+                cursor["params"]["y0"].setData(h / 2 - 10);
+                cursor["params"]["w"].setData(12u);
+                cursor["params"]["h"].setData(12u);
+                cursor["params"]["scale"].setData(4096.0F);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 4> read{};
+        REQUIRE(sums->read(*gpu->device, 0, sizeof(read), read.data()));
+        const double count = std::max<double>(read[3], 1.0) * 4096.0;
+        return (read[0] + read[1] + read[2]) / (3.0 * count);
+    };
+    const double with = under(true);
+    const double without = under(false);
+    std::printf("  the floor under a cloud, under a sky: %.4f with the cloud's shadows, %.4f without\n", with,
+                without);
+    CHECK(without > 0.1);
+    CHECK(with < 0.6 * without);
+}
+
+TEST_CASE("a dome read prefiltered lights a floor as its samples do, without them", "[usd][gpu][mesh][lights][dome]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    // A grey floor under a plain dome, seen from above at a slant: a Lambert
+    // surface under a constant sky L returns albedo * L whatever its normal,
+    // which the prefiltered read gives in closed form (the harmonics' first
+    // band) and the sampled one by its samples' mean.
+    const fs::path path = scratch("dome_prefiltered_floor.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n    metersPerUnit = 1\n)\n"
+               "def Mesh \"Ground\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-6, -6, 0), (6, -6, 0), (6, 6, 0), (-6, 6, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] ( interpolation = \"constant\" )\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 30\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 100)\n"
+               "    double3 xformOp:translate = (0, -2.5, 1.5)\n    float3 xformOp:rotateXYZ = (60, 0, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t w = 160, h = 120;
+    auto meanKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/patch_mean", "patchMean");
+    if (!meanKernel) FAIL(meanKernel.error().toString());
+    const auto floorMean = [&](bool prefiltered, uint32_t samples) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setLightSamples(samples);
+        (*renderer)->setDomePrefiltered(prefiltered);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto frame = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(frame);
+        const std::array<uint32_t, 4> zero{0, 0, 0, 0};
+        auto sums = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, std::span<const uint32_t>(zero), "dome.sums");
+        REQUIRE(sums);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            meanKernel->dispatch(batch, {40, 40, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["frame"].setBinding(frame->rhi());
+                cursor["sums"].setBinding(sums->rhi());
+                cursor["params"]["width"].setData(w);
+                cursor["params"]["x0"].setData(w / 2 - 20);
+                cursor["params"]["y0"].setData(h / 2 - 20);
+                cursor["params"]["w"].setData(40u);
+                cursor["params"]["h"].setData(40u);
+                cursor["params"]["scale"].setData(4096.0F);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 4> read{};
+        REQUIRE(sums->read(*gpu->device, 0, sizeof(read), read.data()));
+        const double count = std::max<double>(read[3], 1.0) * 4096.0;
+        return (read[0] + read[1] + read[2]) / (3.0 * count);
+    };
+    const double prefiltered = floorMean(true, 1);
+    const double sampled = floorMean(false, 64);
+    std::printf("  a grey floor under a plain dome: %.4f prefiltered, %.4f sampled (64 a pixel)\n", prefiltered,
+                sampled);
+    CHECK(sampled > 0.1);
+    CHECK(std::abs(prefiltered - sampled) < 0.03 * sampled);
+}
+
 TEST_CASE("a cloud's shadow on a plane is tinted, switched off and cut short as the light's ShadowAPI says",
           "[usd][gpu][mesh][splat][lights][shadowapi]") {
     ATHENEA_REQUIRE_GPU(gpu);
@@ -10960,6 +11311,84 @@ TEST_CASE("an unoccluded point transfers the cosine lobe, and that times a sky i
     CHECK(counts[2] == 0);       // and that sky reads as the sky
 }
 
+// AND AT DEGREE 3 (task TX, step 3): the clamped cosine lobe's band 3 is
+// zero, so an unoccluded point's sixteen coefficients are its first nine and
+// seven zeros, in a TX transfer's layout, whose coverage follows the
+// coefficients and whose cells and field follow that.
+TEST_CASE("an unoccluded point transfers the cosine lobe at degree 3, with nothing in band 3",
+          "[usd][gpu][mesh][bake][transfer][degree3]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("transfer_plane_degree3.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t count = 64;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = -1.5F + 3.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(count);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const uint32_t coefficients = 16;
+    auto baked = (*renderer)->bakePoints(rays, count, 0.0, 1024, 2, 3, /*transfer=*/true, nullptr, 16);
+    if (!baked) FAIL(baked.error().toString());
+    const uint32_t entries = coefficients + technique::transferPlanes(true, 16);
+    REQUIRE(baked->size() == size_t{count} * entries * 4);
+    gpu::BufferDesc desc;
+    desc.bytes = baked->size() * 4;
+    desc.elementBytes = 16;
+    auto values = gpu::Buffer::create(*gpu->device, desc, baked->data());
+    REQUIRE(values);
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "transfer3.stats");
+    const std::array<float, 8> zeros{};
+    gpu::BufferDesc worstDesc;
+    worstDesc.bytes = sizeof(zeros);
+    worstDesc.elementBytes = sizeof(float);
+    auto worst = gpu::Buffer::create(*gpu->device, worstDesc, zeros.data());
+    REQUIRE(worst);
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/transfer_check");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["baked"].setBinding(values->rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            cursor["worst"].setBinding(worst->rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            p["entries"].setData(entries);
+            p["coefficients"].setData(coefficients);
+            p["tolerance"].setData(0.03F);
+            const float normal[3] = {0.0F, 0.0F, 1.0F};
+            p["normal"].setData(normal, sizeof(normal));
+            p["skyRadiance"].setData(0.7F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    std::printf("  degree 3: %u points, %u beyond (worst coefficient %.4f), %u found nothing, sky worst %.4f\n",
+                counts[1], counts[0], double(counts[4]) * 1.0e-6, counts[3], double(counts[5]) * 1.0e-6);
+    CHECK(counts[1] == count);
+    CHECK(counts[3] == 0);
+    CHECK(counts[0] == 0);
+    CHECK(counts[2] == 0);
+}
+
 // WHICH WAYS OUT ARE OPEN IS A SHADOW WITH AN EDGE.
 //
 // The transfer is degree 2: it knows how much of the sky a point sees and
@@ -11054,6 +11483,412 @@ TEST_CASE("the open directions a transfer keeps are the ones a roof leaves",
     CHECK(counts[2] < counts[1]);            // and some of it is under the roof
     CHECK(counts[0] == 0);                   // and every bit is what the roof says
     CHECK(counts[3] == 0);                   // nothing was traced below the horizon
+}
+
+// AND SIXTEEN OR SIXTY-FOUR TIMES FINER, OVER THE WHOLE SPHERE (task TX).
+//
+// A TX transfer keeps 256 or 1024 bits a point, one traced ray a cell of a
+// 16 x 16 or 32 x 32 octahedral grid, the half below the surface traced as
+// well: a glass is looked through and a sheet is seen from behind. The same
+// roof, then, and its closed form above the floor; below it the floor is a
+// sheet over nothing, and every bit there must read open.
+TEST_CASE("the open directions a TX transfer keeps are the ones a roof leaves, over the whole sphere",
+          "[usd][gpu][mesh][bake][transfer][cells]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("transfer_roof_cells.usda");
+    const float roofHeight = 1.0F, roofHalf = 0.75F;
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Mesh \"Roof\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 3, 2, 1]\n"
+               "    point3f[] points = [(-0.75, -0.75, -0.5), (0.75, -0.75, -0.5), (0.75, 0.75, -0.5), "
+               "(-0.75, 0.75, -0.5)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t count = 64;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    std::vector<float> where(size_t{count} * 4, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = -2.5F + 5.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(count);
+        ray[1] = 0.1F;
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+        where[size_t{k} * 4] = ray[0];
+        where[size_t{k} * 4 + 1] = ray[1];
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const auto upload = [&](const std::vector<float>& values, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = values.size() * 4;
+        desc.elementBytes = 16;
+        desc.label = label;
+        auto made = gpu::Buffer::create(*gpu->device, desc, values.data());
+        REQUIRE(made);
+        return *made;
+    };
+    gpu::Buffer points = upload(where, "cells.points");
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/shadow_cells_check");
+    for (const uint32_t side : {16u, 32u}) {
+        const uint32_t coefficients = 9;
+        auto baked = (*renderer)->bakePoints(rays, count, 0.0, 64, 1, 2, /*transfer=*/true, nullptr, side);
+        if (!baked) FAIL(baked.error().toString());
+        const uint32_t entries = coefficients + technique::transferPlanes(true, side);
+        REQUIRE(entries == coefficients + 1 + side * side / 128 + technique::kTransferFieldPlanes);
+        REQUIRE(baked->size() == size_t{count} * entries * 4);
+        gpu::Buffer values = upload(*baked, "cells.baked");
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "cells.stats");
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            check.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["baked"].setBinding(values.rhi());
+                cursor["points"].setBinding(points.rhi());
+                cursor["stats"].setBinding(stats.rhi());
+                rhi::ShaderCursor p = cursor["params"];
+                p["count"].setData(count);
+                p["entries"].setData(entries);
+                p["firstPlane"].setData(coefficients + 1);
+                p["side"].setData(side);
+                p["roofHeight"].setData(roofHeight);
+                p["roofHalf"].setData(roofHalf);
+                p["margin"].setData(0.05F);
+                const float normal[3] = {0.0F, 0.0F, 1.0F};
+                p["normal"].setData(normal, sizeof(normal));
+            });
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 8> counts{};
+        REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+        std::printf("  %u x %u cells: %u above judged, %u open, %u wrong; %u below judged, %u of them closed; "
+                    "%u left out\n",
+                    side, side, counts[1], counts[2], counts[0], counts[5], counts[3], counts[4]);
+        INFO(side << " cells a side");
+        CHECK(counts[1] > count * side * side / 4);   // most of the upper half was judged
+        CHECK(counts[2] > 0);
+        CHECK(counts[2] < counts[1]);
+        CHECK(counts[0] == 0);                         // every bit is what the roof says
+        CHECK(counts[5] > count * side * side / 4);    // the lower half was traced too
+        CHECK(counts[3] == 0);                         // and under a sheet it is open
+    }
+}
+
+// THE WAY THROUGH GLASS IS OPEN. The same roof, made of glass: light gets
+// through it, so the cells under it must read open as if it were not there
+// (pathThrough: a transmitting surface is passed, weighed by what it lets
+// through, and a cell is open where half gets through). A gold ring under a
+// pawn's glass head read its sky closed by the glass, a row of dark dots.
+TEST_CASE("the open directions a TX transfer keeps pass through glass", "[usd][gpu][mesh][bake][transfer][cells][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("transfer_glass_roof_cells.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Mesh \"Roof\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 3, 2, 1]\n"
+               "    point3f[] points = [(-0.75, -0.75, -0.5), (0.75, -0.75, -0.5), (0.75, 0.75, -0.5), "
+               "(-0.75, 0.75, -0.5)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Glass>\n}\n"
+               "def Material \"Glass\"\n{\n"
+               "    token outputs:mtlx:surface.connect = </Glass/OpenPBR.outputs:out>\n"
+               "    def Shader \"OpenPBR\"\n    {\n"
+               "        uniform token info:id = \"ND_open_pbr_surface_surfaceshader\"\n"
+               "        float inputs:specular_roughness = 0\n        float inputs:specular_ior = 1.5\n"
+               "        float inputs:transmission_weight = 1\n        token outputs:out\n    }\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t count = 64;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    std::vector<float> where(size_t{count} * 4, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = -2.5F + 5.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(count);
+        ray[1] = 0.1F;
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+        where[size_t{k} * 4] = ray[0];
+        where[size_t{k} * 4 + 1] = ray[1];
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const auto upload = [&](const std::vector<float>& values, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = values.size() * 4;
+        desc.elementBytes = 16;
+        desc.label = label;
+        auto made = gpu::Buffer::create(*gpu->device, desc, values.data());
+        REQUIRE(made);
+        return *made;
+    };
+    gpu::Buffer points = upload(where, "glassCells.points");
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/shadow_cells_check");
+    const uint32_t side = 16, coefficients = 9;
+    auto baked = (*renderer)->bakePoints(rays, count, 0.0, 64, 1, 2, /*transfer=*/true, nullptr, side);
+    if (!baked) FAIL(baked.error().toString());
+    const uint32_t entries = coefficients + technique::transferPlanes(true, side);
+    gpu::Buffer values = upload(*baked, "glassCells.baked");
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "glassCells.stats");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["baked"].setBinding(values.rhi());
+            cursor["points"].setBinding(points.rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            p["entries"].setData(entries);
+            p["firstPlane"].setData(coefficients + 1);
+            p["side"].setData(side);
+            // No roof in the closed form: through glass, every direction above
+            // is open.
+            p["roofHeight"].setData(1.0F);
+            p["roofHalf"].setData(0.0F);
+            p["margin"].setData(0.05F);
+            const float normal[3] = {0.0F, 0.0F, 1.0F};
+            p["normal"].setData(normal, sizeof(normal));
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    std::printf("  under a glass roof: %u above judged, %u open, %u wrong\n", counts[1], counts[2], counts[0]);
+    CHECK(counts[1] > count * side * side / 4);
+    CHECK(counts[0] == 0);   // every bit above open, the glass roof included
+}
+
+// WHAT A TX TRANSFER'S CLOSED DIRECTIONS SHOW IS WHAT STANDS THERE (step 2).
+//
+// A point on a black floor beside a grey wall, under a white sky. The wall is
+// a vertical surface whose upper half of hemisphere is the sky and whose
+// lower half is the black floor, so it sends back exactly half its albedo,
+// and that is what the field must read toward it; straight up is open, and
+// the field -- which holds only what arrived after meeting the scene --
+// must read next to nothing there.
+TEST_CASE("a TX transfer's reflected field reads the wall that stands beside it", "[usd][gpu][mesh][bake][transfer][field]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const float albedo = 0.5F;
+    const fs::path path = scratch("transfer_field_wall.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    color3f[] primvars:displayColor = [(0, 0, 0)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Mesh \"Wall\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(2, -4, -1.5), (2, -4, 2.5), (2, 4, 2.5), (2, 4, -1.5)]\n"
+               "    normal3f[] normals = [(-1, 0, 0), (-1, 0, 0), (-1, 0, 0), (-1, 0, 0)] (interpolation = \"vertex\")\n"
+               "    color3f[] primvars:displayColor = [("
+            << albedo << ", " << albedo << ", " << albedo << ")]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    // The wall sends back half its albedo where its lower half sees the
+    // black floor and a little more higher up, where it sees past the
+    // floor's edge to the sky below the horizon.
+    const float wallRadiance = albedo * 0.55F;
+    // Near the wall, where it fills the half of the sky that faces it.
+    const uint32_t count = 32;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = 1.9F - 0.015F * static_cast<float>(k);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const uint32_t side = 16;
+    auto baked = (*renderer)->bakePoints(rays, count, 0.0, 1024, 3, 2, /*transfer=*/true, nullptr, side);
+    if (!baked) FAIL(baked.error().toString());
+    const uint32_t entries = 9 + technique::transferPlanes(true, side);
+    REQUIRE(baked->size() == size_t{count} * entries * 4);
+    gpu::BufferDesc desc;
+    desc.bytes = baked->size() * 4;
+    desc.elementBytes = 16;
+    auto values = gpu::Buffer::create(*gpu->device, desc, baked->data());
+    REQUIRE(values);
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "field.stats");
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "fieldBakeCheck");
+    if (!check) FAIL(check.error().toString());
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            for (const char* unused : {"halves", "transfer", "skies", "envSh", "worst"}) {
+                cursor[unused].setBinding(stats.rhi());
+            }
+            cursor["baked"].setBinding(values->rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            p["entries"].setData(entries);
+            p["firstField"].setData(entries - technique::kTransferFieldPlanes);
+            p["wallRadiance"].setData(wallRadiance);
+            p["tolerance"].setData(0.3F);
+            p["openFloor"].setData(wallRadiance * 0.3F);
+            p["roughness"].setData(0.0F);
+            const float towards[3] = {1.0F, 0.0F, 0.3F};
+            // The open side is read away from the wall: straight up lies on
+            // the edge of the wall's quarter of the sphere, where degree 3
+            // reads half the step, as any truncated series does at a step.
+            const float away[3] = {-1.0F, 0.0F, 0.3F};
+            p["awayFromWall"].setData(away, sizeof(away));
+            p["towardsWall"].setData(towards, sizeof(towards));
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    float worstWall = 0.0F, mostUp = 0.0F, worstFilled = 0.0F;
+    std::memcpy(&worstWall, &counts[4], 4);
+    std::memcpy(&mostUp, &counts[5], 4);
+    std::memcpy(&worstFilled, &counts[6], 4);
+    std::printf("  the field beside a wall: %u points, %u off the wall's %.3f (worst %.3f relative), %u reading "
+                "the open side (most %.4f); filled over the closed directions, %u off (worst %.3f)\n",
+                counts[2], counts[0], double(wallRadiance), double(worstWall), counts[1], double(mostUp), counts[3],
+                double(worstFilled));
+    CHECK(counts[2] == count);
+    CHECK(counts[1] == 0);
+    // What the file keeps is the field filled over the closed directions
+    // (m2sFieldOverClosed), and that is what is held to the wall. The bake's
+    // own projection is printed beside it: a closed direction this near the
+    // wall's edge reads it diluted by the open side, 0.317 off at worst where
+    // the filled field is 0.284 off.
+    CHECK(counts[3] == 0);
+}
+
+// WHAT A TX TRANSFER'S GLASS SEES THROUGH ITSELF (step 5).
+//
+// A pane of clear glass over a grey floor, under a white sky. A transmitting
+// gaussian's first directions are drawn over the whole sphere, so its field
+// holds what stands behind it: straight down, the floor, which the sky lights
+// through the pane and which sends back about half; straight up, the open
+// sky, where the field holds next to nothing.
+TEST_CASE("a TX transfer's glass holds what stands behind it", "[usd][gpu][mesh][bake][transfer][field][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const float albedo = 0.5F;
+    const fs::path path = scratch("transfer_field_pane.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-20, -20, -2.5), (20, -20, -2.5), (20, 20, -2.5), (-20, 20, -2.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    color3f[] primvars:displayColor = [("
+            << albedo << ", " << albedo << ", " << albedo << ")]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Mesh \"Pane\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-2, -2, -1.5), (2, -2, -1.5), (2, 2, -1.5), (-2, 2, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Glass>\n}\n"
+               "def Material \"Glass\"\n{\n"
+               "    token outputs:mtlx:surface.connect = </Glass/OpenPBR.outputs:out>\n"
+               "    def Shader \"OpenPBR\"\n    {\n"
+               "        uniform token info:id = \"ND_open_pbr_surface_surfaceshader\"\n"
+               "        float inputs:specular_roughness = 0\n        float inputs:specular_ior = 1.45\n"
+               "        float inputs:transmission_weight = 1\n        token outputs:out\n    }\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t count = 32;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = -0.8F + 0.05F * static_cast<float>(k);
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const uint32_t side = 16;
+    auto baked = (*renderer)->bakePoints(rays, count, 0.0, 1024, 3, 2, /*transfer=*/true, nullptr, side);
+    if (!baked) FAIL(baked.error().toString());
+    const uint32_t entries = 9 + technique::transferPlanes(true, side);
+    REQUIRE(baked->size() == size_t{count} * entries * 4);
+    gpu::BufferDesc desc;
+    desc.bytes = baked->size() * 4;
+    desc.elementBytes = 16;
+    auto values = gpu::Buffer::create(*gpu->device, desc, baked->data());
+    REQUIRE(values);
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "pane.stats");
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "fieldBakeCheck");
+    if (!check) FAIL(check.error().toString());
+    // What the floor sends back: its albedo times the white sky through the
+    // pane (a clear dielectric passes about 0.92 at the angles that matter
+    // most) over its upper hemisphere, where the pane is a small part.
+    const float floorRadiance = albedo * 0.95F;
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            for (const char* unused : {"halves", "transfer", "skies", "envSh", "worst"}) {
+                cursor[unused].setBinding(stats.rhi());
+            }
+            cursor["baked"].setBinding(values->rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            p["entries"].setData(entries);
+            p["firstField"].setData(entries - technique::kTransferFieldPlanes);
+            p["wallRadiance"].setData(floorRadiance);
+            p["tolerance"].setData(0.3F);
+            p["openFloor"].setData(floorRadiance * 0.3F);
+            p["roughness"].setData(0.0F);
+            const float towards[3] = {0.0F, 0.0F, -1.0F};
+            p["towardsWall"].setData(towards, sizeof(towards));
+            const float away[3] = {0.0F, 0.0F, 1.0F};
+            p["awayFromWall"].setData(away, sizeof(away));
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    float worstFloor = 0.0F, mostUp = 0.0F;
+    std::memcpy(&worstFloor, &counts[4], 4);
+    std::memcpy(&mostUp, &counts[5], 4);
+    std::printf("  the field of a glass pane: %u points, %u off the floor's %.3f below (worst %.3f relative), %u "
+                "reading the open sky above (most %.4f)\n",
+                counts[2], counts[0], double(floorRadiance), double(worstFloor), counts[1], double(mostUp));
+    CHECK(counts[2] == count);
+    CHECK(counts[0] == 0);
+    CHECK(counts[1] == 0);
 }
 
 // THE TEST THAT SAYS THE WHOLE CHAIN IS LINEAR.
@@ -12053,4 +12888,522 @@ TEST_CASE("an emissive quad converted relit, transferred or baked renders as the
             }
         }
     }
+}
+
+// WHAT A MATERIAL LAYERS OVER ITS BASE IS READ IN EACH VOCABULARY.
+//
+// Proposal 026: a gaussian carries its specular's weight, colour and index,
+// a clear coat and a sheen, read from the material as constants. OpenPBR
+// says `specular_weight`, `coat_weight` with its `coat_darkening`, and
+// `fuzz_weight` times `fuzz_color` for its sheen (its coat at 1.6 by default); standard_surface `specular`, `coat` (0.1
+// rough at 1.5), `sheen`; UsdPreviewSurface `clearcoat` and
+// `clearcoatRoughness` at its own `ior`, and in its specular workflow a
+// `specularColor` that is the reflectivity head on; glTF `clearcoat` and a
+// `sheen_color` with no weight. A material that names none of it is plain,
+// and its conversion carries none.
+TEST_CASE("a material's specular, coat and sheen are read in each vocabulary", "[usd][mesh][materials][lobes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path path = scratch("splat_lobes_read.usda");
+    const char* names[] = {"Open", "OpenPlain", "Standard", "Preview", "PreviewSpecular", "Gltf"};
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Z\"\n)\n";
+        for (const char* name : names) {
+            out << "def Mesh \"" << name << "\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+                << "    int[] faceVertexCounts = [3]\n    int[] faceVertexIndices = [0, 1, 2]\n"
+                   "    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n"
+                   "    uniform token subdivisionScheme = \"none\"\n"
+                << "    rel material:binding = </Looks/" << name << ">\n}\n";
+        }
+        const auto mx = [&out](const char* name, const char* id, const std::string& inputs) {
+            out << "    def Material \"" << name << "\"\n    {\n"
+                << "        token outputs:mtlx:surface.connect = </Looks/" << name << "/S.outputs:out>\n"
+                << "        def Shader \"S\"\n        {\n"
+                << "            uniform token info:id = \"" << id << "\"\n" << inputs
+                << "            token outputs:out\n        }\n    }\n";
+        };
+        const auto preview = [&out](const char* name, const std::string& inputs) {
+            out << "    def Material \"" << name << "\"\n    {\n"
+                << "        token outputs:surface.connect = </Looks/" << name << "/S.outputs:surface>\n"
+                << "        def Shader \"S\"\n        {\n"
+                << "            uniform token info:id = \"UsdPreviewSurface\"\n" << inputs
+                << "            token outputs:surface\n        }\n    }\n";
+        };
+        out << "def Scope \"Looks\"\n{\n";
+        mx("Open", "ND_open_pbr_surface_surfaceshader",
+           "            float inputs:specular_weight = 0.5\n"
+           "            color3f inputs:specular_color = (1, 0.5, 0.25)\n"
+           "            float inputs:specular_ior = 1.45\n"
+           "            float inputs:coat_weight = 1\n            float inputs:coat_roughness = 0.2\n"
+           "            float inputs:coat_ior = 1.45\n"
+           "            float inputs:coat_darkening = 0.25\n"
+           "            float inputs:fuzz_weight = 0.5\n            color3f inputs:fuzz_color = (1, 1, 0)\n"
+           "            float inputs:fuzz_roughness = 0.4\n");
+        mx("OpenPlain", "ND_open_pbr_surface_surfaceshader", "            float inputs:base_metalness = 1\n");
+        mx("Standard", "ND_standard_surface_surfaceshader",
+           "            float inputs:specular = 0.8\n            float inputs:coat = 0.7\n"
+           "            float inputs:sheen = 1\n            color3f inputs:sheen_color = (0.2, 0.4, 0.6)\n");
+        preview("Preview", "            float inputs:clearcoat = 1\n            float inputs:clearcoatRoughness = 0.05\n"
+                           "            float inputs:ior = 1.45\n            float inputs:metallic = 1\n");
+        preview("PreviewSpecular", "            int inputs:useSpecularWorkflow = 1\n"
+                                   "            color3f inputs:specularColor = (0.08, 0.04, 0.02)\n"
+                                   "            float inputs:metallic = 1\n");
+        mx("Gltf", "ND_gltf_pbr_surfaceshader",
+           "            float inputs:clearcoat = 0.5\n            float inputs:clearcoat_roughness = 0.3\n"
+           "            color3f inputs:sheen_color = (0.3, 0.3, 0.3)\n");
+        out << "}\n";
+    }
+    auto builder = geom::MeshBuilder::create(*gpu->library);
+    if (!builder) FAIL(builder.error().toString());
+    auto stage = usd::MeshStage::open(path);
+    if (!stage) FAIL(stage.error().toString());
+    auto meshes = stage->read(*builder, usd::MeshStageOptions{});
+    if (!meshes) FAIL(meshes.error().toString());
+    REQUIRE(meshes->size() == std::size(names));
+    const auto colour = [](const std::array<float, 3>& c, float r, float g, float b) {
+        CHECK(c[0] == Catch::Approx(r));
+        CHECK(c[1] == Catch::Approx(g));
+        CHECK(c[2] == Catch::Approx(b));
+    };
+    for (const usd::StageMesh& mesh : *meshes) {
+        INFO(mesh.path);
+        const usd::StageMaterial& m = mesh.material;
+        if (mesh.path == "/Open") {
+            CHECK(m.layered());
+            CHECK(m.specularWeight == Catch::Approx(0.5F));
+            colour(m.specularColour, 1.0F, 0.5F, 0.25F);
+            CHECK(m.ior == Catch::Approx(1.45F));
+            CHECK(m.coatWeight == Catch::Approx(1.0F));
+            CHECK(m.coatRoughness == Catch::Approx(0.2F));
+            CHECK(m.coatIor == Catch::Approx(1.45F));
+            CHECK(m.coatDarkening == Catch::Approx(0.25F));
+            colour(m.sheenColour, 0.5F, 0.5F, 0.0F);
+            CHECK(m.sheenRoughness == Catch::Approx(0.4F));
+        } else if (mesh.path == "/OpenPlain") {
+            // A dark metal names no layer: plain, and no conversion of it
+            // carries any.
+            CHECK_FALSE(m.layered());
+            CHECK(m.coatIor == Catch::Approx(1.6F));
+            CHECK(m.coatDarkening == Catch::Approx(1.0F));   // OpenPBR's default
+            CHECK(m.sheenRoughness == Catch::Approx(0.5F));  // fuzz_roughness's
+        } else if (mesh.path == "/Standard") {
+            CHECK(m.layered());
+            CHECK(m.specularWeight == Catch::Approx(0.8F));
+            CHECK(m.coatWeight == Catch::Approx(0.7F));
+            CHECK(m.coatRoughness == Catch::Approx(0.1F));
+            CHECK(m.coatIor == Catch::Approx(1.5F));
+            CHECK(m.coatDarkening == 0.0F);   // standard_surface's coat has none
+            colour(m.sheenColour, 0.2F, 0.4F, 0.6F);
+        } else if (mesh.path == "/Preview") {
+            CHECK(m.coatWeight == Catch::Approx(1.0F));
+            CHECK(m.coatRoughness == Catch::Approx(0.05F));
+            CHECK(m.coatIor == Catch::Approx(1.45F));
+            colour(m.sheenColour, 0.0F, 0.0F, 0.0F);
+        } else if (mesh.path == "/PreviewSpecular") {
+            // The reflectivity head on: 0.08 at the index that gives it,
+            // tinted by the colour over its brightest channel; no metal.
+            CHECK(m.metallic == 0.0F);
+            colour(m.specularColour, 1.0F, 0.5F, 0.25F);
+            const float r = (m.ior - 1.0F) / (m.ior + 1.0F);
+            CHECK(r * r == Catch::Approx(0.08F));
+        } else {
+            CHECK(m.coatWeight == Catch::Approx(0.5F));
+            CHECK(m.coatRoughness == Catch::Approx(0.3F));
+            colour(m.sheenColour, 0.3F, 0.3F, 0.3F);
+        }
+    }
+}
+
+namespace {
+
+/// The layers record `i % 5` of a table: plain, a car's lacquer, a tinted
+/// half specular with a coat and a sheen, the ends of every range, a dim
+/// sheen. Thirteen floats more a record, as `athenea mesh2splat` writes them.
+io::RawSplats withTableLobes(const io::RawSplats& raw) {
+    static const float kTable[5][13] = {
+        {1.0F, 1.0F, 1.0F, 1.0F, 1.5F, 0.0F, 0.0F, 1.5F, 0.0F, 0.0F, 0.0F, 0.3F, 0.0F},
+        {1.0F, 1.0F, 1.0F, 1.0F, 1.5F, 1.0F, 0.0F, 1.45F, 0.0F, 0.0F, 0.0F, 0.3F, 1.0F},
+        {0.5F, 1.0F, 0.5F, 0.25F, 1.45F, 0.25F, 0.4F, 1.6F, 0.2F, 0.4F, 0.6F, 0.5F, 0.0F},
+        {0.0F, 0.0F, 0.0F, 0.0F, 2.0F, 0.75F, 1.0F, 2.5F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F},
+        {0.8F, 0.9F, 0.9F, 0.9F, 1.33F, 0.0F, 0.0F, 1.5F, 0.05F, 0.05F, 0.05F, 0.1F, 0.0F}};
+    io::RawSplats out = raw;
+    const uint32_t stride = raw.encoding.floatsPerRecord;
+    out.records.clear();
+    for (uint32_t i = 0; i < raw.count; ++i) {
+        const float* from = raw.records.data() + size_t{i} * stride;
+        out.records.insert(out.records.end(), from, from + stride);
+        out.records.insert(out.records.end(), kTable[i % 5], kTable[i % 5] + 13);
+    }
+    out.encoding.floatsPerRecord = stride + 13;
+    out.encoding.lobes = stride;
+    return out;
+}
+
+}   // namespace
+
+// WHAT A MATERIAL LAYERS OVER ITS BASE GOES OUT AND COMES BACK.
+//
+// Nine primvars of AtheneaSplatLightingAPI in a stage (`specularWeight`,
+// `specularColor`, `specularIor`, `coatWeight`, `coatRoughness`, `coatIor`,
+// `sheenColor`, `sheenRoughness`, `coatDarkening`), three words a splat on the device. The
+// stage read as Hydra reads it must give back the words that went out, and a
+// cloud written without them must come back without them.
+TEST_CASE("a cloud's specular, coat and sheen survive USD", "[usd][gpu][export][lobes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    const io::RawSplats raw = withTableLobes(cloud(3000));
+    auto direct = loader->upload(raw, 0);
+    REQUIRE(direct);
+    REQUIRE(direct->hasLobes());
+    REQUIRE(direct->count == raw.count);
+
+    const fs::path path = scratch("splat_lobes.usda");
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.relight = true;
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, path, options));
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    REQUIRE(stage);
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath("/World/Splats"));
+    REQUIRE(prim);
+    CHECK(prim.HasAPI(TfToken("AtheneaSplatLightingAPI")));
+    usd::ParticleFieldArrays arrays;
+    const UsdVolParticleField3DGaussianSplat field(prim);
+    field.GetPositionsAttr().Get(&arrays.positions);
+    field.GetOrientationsAttr().Get(&arrays.orientations);
+    field.GetScalesAttr().Get(&arrays.scales);
+    field.GetOpacitiesAttr().Get(&arrays.opacities);
+    int degree = 0;
+    field.GetRadianceSphericalHarmonicsDegreeAttr().Get(&degree);
+    arrays.shDegree = degree;
+    field.GetRadianceSphericalHarmonicsCoefficientsAttr().Get(&arrays.shCoefficients);
+    const auto primvar = [&](const char* name, pxr::VtValue& into, const SdfValueTypeName& type) {
+        const UsdGeomPrimvar written = UsdGeomPrimvarsAPI(prim).GetPrimvar(TfToken(name));
+        REQUIRE(written);
+        CHECK(written.GetTypeName() == type);
+        CHECK(written.GetInterpolation() == UsdGeomTokens->vertex);
+        // Declared by the schema, so it is not a custom attribute.
+        CHECK_FALSE(written.GetAttr().IsCustom());
+        written.Get(&into);
+    };
+    primvar("athenea:splat:specularWeight", arrays.specularWeight, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:specularColor", arrays.specularColour, SdfValueTypeNames->Color3fArray);
+    primvar("athenea:splat:specularIor", arrays.specularIor, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:coatWeight", arrays.coatWeight, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:coatRoughness", arrays.coatRoughness, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:coatIor", arrays.coatIor, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:sheenColor", arrays.sheenColour, SdfValueTypeNames->Color3fArray);
+    primvar("athenea:splat:sheenRoughness", arrays.sheenRoughness, SdfValueTypeNames->FloatArray);
+    primvar("athenea:splat:coatDarkening", arrays.coatDarkening, SdfValueTypeNames->FloatArray);
+    const scene::SplatStreams streams = usd::splatStreams(arrays, "lobes streams");
+    auto back = loader->upload(streams, 0);
+    REQUIRE(back);
+    REQUIRE(back->hasLobes());
+    REQUIRE(back->count == direct->count);
+    auto apart = render::countDifferent(*gpu->library, back->lobes, direct->lobes, direct->count * 3);
+    REQUIRE(apart);
+    std::printf("  through Hydra's arrays: %llu of %u words apart from the cloud written\n",
+                static_cast<unsigned long long>(*apart), direct->count * 3);
+    CHECK(*apart == 0);
+
+    // Without them: nothing written, nothing carried.
+    const io::RawSplats plain = cloud(300);
+    const fs::path bare = scratch("splat_lobes_bare.usda");
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, plain, bare, options));
+    UsdStageRefPtr bareStage = UsdStage::Open(bare.string());
+    REQUIRE(bareStage);
+    CHECK_FALSE(UsdGeomPrimvarsAPI(bareStage->GetPrimAtPath(SdfPath("/World/Splats")))
+                    .GetPrimvar(TfToken("athenea:splat:coatWeight")));
+    auto none = loader->upload(plain, 0);
+    REQUIRE(none);
+    CHECK_FALSE(none->hasLobes());
+}
+
+// A BALL OF EACH MATERIAL, CONVERTED, RASTERISED, AGAINST THE MESH PATH TRACED.
+//
+// Proposal 026, material by material: what the user wants of a conversion is
+// the mesh's look in the gaussian rasteriser, and the mesh path traced is
+// the ground truth. Five balls under a pale sky and a sun
+// (tests/data/lobes/*.usda) -- a car's coated dark metal, chrome, rubber with
+// a sheen, a plastic whose specular is weighed and tinted, clear glass --
+// converted relit (--no-bake) and baked by ctest beforehand
+// (mesh2splat_lobes_*), are drawn here rasterised and held, each, to the mesh
+// path traced: the mean within a bound, and the 99th percentile of the
+// relative error within another. The paint is what this was written for: its
+// metal is a 0.05 green that reflects next to nothing, its colour is the
+// lacquer's reflection of the sky, and both a cloud with no coat and a bake
+// that dropped its dark metal as polish (`bakeBody`) came out black.
+//
+// Hidden: it reads what those conversions wrote, so ctest runs it after them
+// (lobes_conversions_render_like_the_mesh).
+TEST_CASE("a ball of each material converted relit or baked rasterises as the mesh path traces",
+          "[.][lobes_conversion][usd][gpu][splat][lobes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path data = fs::path(ATHENEA_TEST_DATA_DIR) / "lobes";
+    const fs::path converted(ATHENEA_LOBES_DIR);
+    const auto composed = [&](const std::string& name, const fs::path& source, const fs::path& cloud) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    subLayers = [";
+        if (!cloud.empty()) {
+            out << "@" << cloud.string() << "@, ";
+        }
+        out << "@" << source.string() << "@]\n    upAxis = \"Y\"\n)\n";
+        if (!cloud.empty()) {
+            out << "over \"World\"\n{\n    over \"Ball\" (\n        active = false\n    )\n    {\n    }\n}\n";
+        }
+        out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0, 3.6)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+        return path;
+    };
+    const uint32_t w = 192, h = 192;
+    const auto draw = [&](const fs::path& path, const char* technique, const std::string& keep) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        if (std::string(technique) == "rt") {
+            (*renderer)->setPathSamples(64);
+            (*renderer)->setPathTotal(1024);
+            (*renderer)->setPathBounces(6);
+        }
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+        if (!image) FAIL(image.error().toString());
+        // Kept beside the run, for a person to look at (EXR, linear).
+        const fs::path picture = scratch(keep + ".exr");
+        (void)io::writeExr(picture, w, h, image->rgba);
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    const auto mean = [&](const gpu::Buffer& image) {
+        auto stats = render::imageStats(*gpu->library, image, w, h);
+        REQUIRE(stats);
+        return (stats->mean[0] + stats->mean[1] + stats->mean[2]) / 3.0;
+    };
+    // THE BOUNDS, A MATERIAL AND A MODE: the mean of the cloud against the
+    // mesh's (relative), and the 99th percentile of the relative error over
+    // the frame. Set from the first measurement (decisions.md, proposal 026)
+    // with about a quarter of margin: chrome 0.081 relit and 0.115 baked,
+    // plastic 0.648 and 0.707 (mean 4.4 % off baked), glass 0.250 and 0.545
+    // (means 7.0 % and 4.0 % off), the paint baked 0.459. The paint relit
+    // (0.917, before the coat darkened the metal under it) was measured on
+    // what this no longer is; its bound is the paint baked's. The rubber was
+    // measured again, four runs alike: 0.841 both ways (relMSE 8.4e-3 and
+    // 8.6e-3, mean 3.3 % under), and holds to that with the same margin. Its
+    // data names the fuzz `sheen_*`, which OpenPBR does not declare, so
+    // neither the mesh nor the cloud carries one.
+    struct Bound {
+        const char* material;
+        double      mean;
+        double      p99Relit;
+        double      p99Baked;
+    };
+    const Bound bounds[] = {{"paint", 0.07, 0.6, 0.55},   {"chrome", 0.05, 0.12, 0.15},
+                            {"rubber", 0.08, 1.05, 1.05},   {"plastic", 0.06, 0.8, 0.85},
+                            {"glass", 0.09, 0.32, 0.65}};
+    for (const Bound& bound : bounds) {
+        const fs::path source = data / (std::string(bound.material) + ".usda");
+        const fs::path mesh = composed(std::string("lobes_mesh_") + bound.material + ".usda", source, {});
+        const gpu::Buffer meshTraced = draw(mesh, "rt", std::string("lobes_mesh_") + bound.material);
+        const double meshMean = mean(meshTraced);
+        for (const char* mode : {"relit", "baked"}) {
+            const fs::path cloudFile = converted / (std::string(bound.material) + "_" + mode + ".usda");
+            if (!fs::exists(cloudFile)) {
+                SKIP("'" << cloudFile.string() << "' is not there: ctest converts it first "
+                     "(lobes_conversions_render_like_the_mesh)");
+            }
+            const std::string name = std::string("lobes_cloud_") + bound.material + "_" + mode;
+            const fs::path card = composed(name + ".usda", source, cloudFile);
+            const gpu::Buffer c = draw(card, "raster", name);
+            auto diff = render::compareHdr(*gpu->library, c, meshTraced, w, h);
+            REQUIRE(diff);
+            const double cloudMean = mean(c);
+            std::printf("  %-8s %-6s raster: p99 %.3f relMSE %.2e against the mesh path traced; mean %.4f against "
+                        "the mesh's %.4f\n",
+                        bound.material, mode, diff->p99Relative, diff->relMse, cloudMean, meshMean);
+            INFO(bound.material << " " << mode);
+            CHECK(diff->p99Relative < (std::string(mode) == "relit" ? bound.p99Relit : bound.p99Baked));
+            CHECK(cloudMean == Catch::Approx(meshMean).epsilon(bound.mean));
+        }
+    }
+}
+
+// A TRANSFER RIGHT UNDER ANY SKY, BALL BY BALL (task TX).
+//
+// The balls of tests/data/lobes stand on a ground (tests/data/tx) that the
+// conversion leaves a mesh. Each ball alone was converted with --transfer
+// twice by ctest beforehand (mesh2splat_tx_*): as TX writes it, and as the
+// first transfer did (--transfer-cells 0, degree 2). Both are drawn
+// rasterised under two skies -- the pale dome and sun the stage was converted
+// under, and a sky the conversion never saw: an image with a window, no sun
+// -- against the mesh path traced under the same sky. What is held: TX
+// within a bound of the mesh, and, for the materials whose look is their
+// reflection (the coated paint, the chrome), closer to it than the first
+// transfer under both skies: that is what fails before TX.
+//
+// Hidden: it reads what those conversions wrote, so ctest runs it after them
+// (tx_conversions_render_like_the_mesh).
+TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path traces, under any sky",
+          "[.][tx_conversion][usd][gpu][splat][transfer]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path data = fs::path(ATHENEA_TEST_DATA_DIR) / "tx";
+    const fs::path converted(ATHENEA_TX_DIR);
+    // The second sky: a lat-long with a blue upper half, a dark brown lower
+    // one and a bright window, written by the test.
+    const fs::path window = scratch("tx_window_sky.png");
+    {
+        const uint32_t w = 64, h = 32;
+        std::vector<uint32_t> texels(size_t{w} * h);
+        for (uint32_t y = 0; y < h; ++y) {
+            for (uint32_t x = 0; x < w; ++x) {
+                uint32_t texel = y < h / 2 ? 0xFFE08050u : 0xFF20304Au;   // ABGR: blue above, brown below
+                if (y >= 8 && y < 14 && x >= 20 && x < 30) {
+                    texel = 0xFFFFFFFFu;
+                }
+                texels[size_t{y} * w + x] = texel;
+            }
+        }
+        HioImageSharedPtr image = HioImage::OpenForWriting(window.string());
+        REQUIRE(image);
+        HioImage::StorageSpec spec;
+        spec.width = static_cast<int>(w);
+        spec.height = static_cast<int>(h);
+        spec.depth = 1;
+        spec.format = HioFormatUNorm8Vec4;
+        spec.data = texels.data();
+        REQUIRE(image->Write(spec));
+    }
+    // 0: the pale dome and the sun it was converted under; 1: the window, no
+    // sun; 2: no sky at all, a lamp beside the ball (step 4).
+    const auto composed = [&](const std::string& name, const fs::path& source, const fs::path& cloud, int sky) {
+        const bool windowSky = sky == 1;
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    subLayers = [";
+        if (!cloud.empty()) {
+            out << "@" << cloud.string() << "@, ";
+        }
+        out << "@" << source.string() << "@]\n    upAxis = \"Y\"\n)\n";
+        out << "over \"World\"\n{\n";
+        if (!cloud.empty()) {
+            out << "    over \"Ball\" (\n        active = false\n    )\n    {\n    }\n";
+        }
+        if (sky == 2) {
+            out << "    over \"Sun\" (\n        active = false\n    )\n    {\n    }\n"
+                << "    over \"Sky\" (\n        active = false\n    )\n    {\n    }\n"
+                << "    def SphereLight \"Lamp\"\n    {\n        float inputs:radius = 0.3\n"
+                << "        float inputs:intensity = 40\n        double3 xformOp:translate = (2.2, 2.5, 1.5)\n"
+                << "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n";
+        }
+        if (windowSky) {
+            out << "    over \"Sun\" (\n        active = false\n    )\n    {\n    }\n"
+                << "    over \"Sky\"\n    {\n        color3f inputs:color = (1, 1, 1)\n"
+                << "        float inputs:intensity = 1.5\n"
+                << "        asset inputs:texture:file = @" << window.string() << "@\n    }\n";
+        }
+        out << "}\n";
+        out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0.4, 4.2)\n    float3 xformOp:rotateXYZ = (-8, 0, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n";
+        return path;
+    };
+    const uint32_t w = 192, h = 192;
+    const auto draw = [&](const fs::path& path, const char* technique, const std::string& keep) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        if (std::string(technique) == "rt") {
+            (*renderer)->setPathSamples(64);
+            (*renderer)->setPathTotal(1024);
+            (*renderer)->setPathBounces(6);
+        }
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, technique);
+        if (!image) FAIL(image.error().toString());
+        const fs::path picture = scratch(keep + ".exr");
+        (void)io::writeExr(picture, w, h, image->rgba);
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    // THE BOUNDS, A MATERIAL: TX's relMSE against the mesh over the frame,
+    // and whether TX must beat the first transfer. The ground is the same
+    // mesh in every frame and adds the same to both.
+    struct Bound {
+        const char* material;
+        double      relMse;
+        bool        beatsFirst;
+    };
+    const Bound bounds[] = {{"paint", 0.30, true}, {"chrome", 0.40, true}, {"rubber", 0.20, false},
+                            {"glass", 0.60, false}};
+    for (const Bound& bound : bounds) {
+        const fs::path source = data / (std::string(bound.material) + ".usda");
+        for (const int skyKind : {0, 1, 2}) {
+            const std::string sky = skyKind == 0 ? "pale" : skyKind == 1 ? "window" : "lamp";
+            const std::string meshName = std::string("tx_mesh_") + bound.material + "_" + sky;
+            const gpu::Buffer meshTraced = draw(composed(meshName + ".usda", source, {}, skyKind), "rt", meshName);
+            double relMse[2] = {0.0, 0.0};
+            const char* modes[2] = {"tx", "first"};
+            for (int k = 0; k < 2; ++k) {
+                const fs::path cloudFile = converted / (std::string(bound.material) + "_" + modes[k] + ".usdc");
+                if (!fs::exists(cloudFile)) {
+                    SKIP("'" << cloudFile.string() << "' is not there: ctest converts it first "
+                         "(tx_conversions_render_like_the_mesh)");
+                }
+                const std::string name = std::string("tx_cloud_") + bound.material + "_" + modes[k] + "_" + sky;
+                const gpu::Buffer c = draw(composed(name + ".usda", source, cloudFile, skyKind), "raster", name);
+                auto diff = render::compareHdr(*gpu->library, c, meshTraced, w, h);
+                REQUIRE(diff);
+                relMse[k] = diff->relMse;
+                std::printf("  %-7s %-6s %-5s raster: relMSE %.4f p99 %.3f against the mesh path traced\n",
+                            bound.material, sky.c_str(), modes[k], diff->relMse, diff->p99Relative);
+            }
+            INFO(bound.material << " under the " << sky << " sky");
+            CHECK(relMse[0] < bound.relMse);
+            if (bound.beatsFirst) {
+                CHECK(relMse[0] < relMse[1]);
+            } else {
+                // Glass: no worse than the first transfer, which drew a
+                // clear ball sharp against the sky it bends (the pawn's head
+                // came back milky when the field filled the whole lens).
+                CHECK(relMse[0] <= 1.05 * relMse[1]);
+            }
+        }
+    }
+}
+
+// A MAP ON A LAYER IS SAMPLED PER GAUSSIAN (task TX). A card whose coat
+// weight is a map, half nothing and half whole (tests/data/lobes/coat_map.usda),
+// converted by ctest beforehand: its gaussians carry both, about half each,
+// where a constant would have given every one the same.
+//
+// Hidden: it reads what that conversion wrote (a_map_on_a_layer_is_sampled_per_gaussian).
+TEST_CASE("a map on a layer is sampled per gaussian", "[.][layer_maps][usd][lobes]") {
+    const fs::path cloud = fs::path(ATHENEA_LOBES_DIR) / "coat_map.usda";
+    if (!fs::exists(cloud)) {
+        SKIP("'" << cloud.string() << "' is not there: ctest converts it first");
+    }
+    UsdStageRefPtr stage = UsdStage::Open(cloud.string());
+    REQUIRE(stage);
+    const UsdPrim splats = stage->GetPrimAtPath(SdfPath("/World/Splats"));
+    REQUIRE(splats);
+    VtFloatArray weights;
+    REQUIRE(UsdGeomPrimvarsAPI(splats).GetPrimvar(TfToken("primvars:athenea:splat:coatWeight")).Get(&weights));
+    size_t none = 0, whole = 0;
+    for (const float w : weights) {
+        none += w < 0.1F ? 1 : 0;
+        whole += w > 0.9F ? 1 : 0;
+    }
+    std::printf("  coat map: %zu gaussians, %zu with no coat, %zu with a whole one\n", weights.size(), none, whole);
+    REQUIRE(!weights.empty());
+    CHECK(none > weights.size() / 3);
+    CHECK(whole > weights.size() / 3);
 }

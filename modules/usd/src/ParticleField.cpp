@@ -132,6 +132,12 @@ bool litBodyOf(HdSceneDelegate* delegate, SdfPath const& id) {
     return boolOf(delegate->Get(id, kLit), false);
 }
 
+/// Whether it is a shadow catcher (`athenea mesh2splat --shadow-catcher`).
+bool catcherOf(HdSceneDelegate* delegate, SdfPath const& id) {
+    static const TfToken kCatcher("athenea:splat:catcher");
+    return boolOf(delegate->Get(id, kCatcher), false);
+}
+
 /// The index its transmitting gaussians bend by: 0, and nothing bends.
 float iorOf(HdSceneDelegate* delegate, SdfPath const& id) {
     static const TfToken kIor("athenea:splat:ior");
@@ -248,6 +254,12 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         static const TfToken kTransferIndirect("athenea:splat:transferIndirect");
         arrays.transferDirect = held(kTransferDirect);
         arrays.transferIndirect = held(kTransferIndirect);
+        static const TfToken kTransferReflected("athenea:splat:transferReflected");
+        arrays.transferReflected = held(kTransferReflected);
+        // The direct half as zonal lobes in each gaussian's frame, which turn
+        // with it: what a cloud a skeleton carries keeps.
+        static const TfToken kTransferZonal("athenea:splat:transferZonal");
+        arrays.transferZonal = held(kTransferZonal);
         static const TfToken kLodGroup("athenea:lod:group");
         static const TfToken kLodCell("athenea:lod:cell");
         static const TfToken kLodThreshold("athenea:lod:threshold");
@@ -256,6 +268,10 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.lodThreshold = floatOf(delegate->Get(id, kLodThreshold), 1.0F);
         static const TfToken kThinWalled("athenea:splat:thinWalled");
         arrays.thinWalled = held(kThinWalled);
+        static const TfToken kSchlickMetal("athenea:splat:schlickMetal");
+        arrays.schlickMetal = held(kSchlickMetal);
+        static const TfToken kCurvature("athenea:splat:curvature");
+        arrays.curvature = held(kCurvature);
         static const TfToken kShadowBits("athenea:splat:shadowBits");
         arrays.shadowBits = held(kShadowBits);
         // The shading normal a conversion keeps apart from the frame.
@@ -268,6 +284,25 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         // And the light it gives off by itself, a lamp's shade or a screen.
         static const TfToken kEmission("athenea:splat:emission");
         arrays.emission = held(kEmission);
+        // And what its material layered over the base: specular, coat, sheen.
+        static const TfToken kSpecularWeight("athenea:splat:specularWeight");
+        static const TfToken kSpecularColour("athenea:splat:specularColor");
+        static const TfToken kSpecularIor("athenea:splat:specularIor");
+        static const TfToken kCoatWeight("athenea:splat:coatWeight");
+        static const TfToken kCoatRoughness("athenea:splat:coatRoughness");
+        static const TfToken kCoatIor("athenea:splat:coatIor");
+        static const TfToken kSheenColour("athenea:splat:sheenColor");
+        static const TfToken kSheenRoughness("athenea:splat:sheenRoughness");
+        arrays.specularWeight = held(kSpecularWeight);
+        arrays.specularColour = held(kSpecularColour);
+        arrays.specularIor = held(kSpecularIor);
+        arrays.coatWeight = held(kCoatWeight);
+        arrays.coatRoughness = held(kCoatRoughness);
+        arrays.coatIor = held(kCoatIor);
+        arrays.sheenColour = held(kSheenColour);
+        arrays.sheenRoughness = held(kSheenRoughness);
+        static const TfToken kCoatDarkening("athenea:splat:coatDarkening");
+        arrays.coatDarkening = held(kCoatDarkening);
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();
@@ -392,7 +427,7 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
                           const VtArray<TfToken> cats = delegate->GetCategories(id);
                           return std::vector<TfToken>(cats.begin(), cats.end());
                       }(),
-                      litBodyOf(delegate, id), iorOf(delegate, id), transformStep);
+                      litBodyOf(delegate, id), iorOf(delegate, id), transformStep, catcherOf(delegate, id));
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }
 

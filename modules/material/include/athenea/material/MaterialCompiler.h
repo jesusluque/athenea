@@ -70,6 +70,14 @@ struct CompiledMaterial {
     uint32_t                  words = 0;
 };
 
+/// How much a transmitting material lets through, as constants: the
+/// transmission weight times its colour's luminance (one where a graph drives
+/// either), and the dielectric's index. MaterialCompiler::transmission.
+struct Transmission {
+    float tint = 1.0F;
+    float ior = 1.5F;
+};
+
 class MaterialCompiler {
 public:
     /// `searchPaths`: where MaterialX's libraries are (a folder holding
@@ -113,6 +121,13 @@ public:
     /// the diffuse goes down in favour of what is behind. The path tracer
     /// draws it that way; the raster, which can only cut by lot, does not.
     [[nodiscard]] static bool transparentOpacity(const std::shared_ptr<void>& document);
+    /// Whether the material lets light through at all (a transmission, or a
+    /// transparent opacity): what a ray that only asks whether the way is
+    /// open must look at instead of stopping (technique::kMaterialTransmits).
+    [[nodiscard]] static bool transmits(const std::shared_ptr<void>& document);
+    /// What it lets through, where it does (`transmits`): constants a ray
+    /// reads without evaluating the material (technique's `pathThrough`).
+    [[nodiscard]] static std::optional<Transmission> transmission(const std::shared_ptr<void>& document);
     /// What a Material's `volume` terminal says of the medium: MaterialX's
     /// `volume(vdf, edf)` with `anisotropic_vdf(absorption, scattering,
     /// anisotropy)` or `absorption_vdf(absorption)` for the vdf and

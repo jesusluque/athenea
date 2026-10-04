@@ -78,6 +78,9 @@ Result<Environment> Environment::create(gpu::ShaderLibrary& library) {
     env.project_ = std::move(*project);
     env.prefilter_ = std::move(*prefilter);
     env.sunKernel_ = std::move(*sun);
+    auto meshPack = gpu::ComputeKernel::create(library, "athenea/technique/env_mesh", "envMeshPack");
+    if (!meshPack) return std::move(meshPack).error();
+    env.meshPack_ = std::move(*meshPack);
     return env;
 }
 
@@ -198,6 +201,31 @@ Result<void> Environment::build(const light::LightTable& table, const material::
             cursor["params"]["roughness"].setData(roughness);
         });
     }
+    // And the harmonics and the sun copied into the texture a mesh's shading
+    // kernel reads, a row a slice (env_mesh.slang).
+    if (!mesh_.valid()) {
+        gpu::TextureDesc desc;
+        desc.type = rhi::TextureType::Texture2D;
+        desc.width = kEnvironmentMeshTexels;
+        desc.height = kEnvironmentDomes;
+        desc.format = rhi::Format::RGBA32Float;
+        desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+        desc.label = "environment.mesh";
+        auto made = gpu::Texture::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        mesh_ = std::move(*made);
+        auto view = mesh_.view(0);
+        if (!view) return std::move(view).error();
+        meshView_ = std::move(*view);
+    }
+    meshPack_.dispatch(batch, {kEnvironmentMeshTexels * kEnvironmentDomes, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["sh"].setBinding(sh_.rhi());
+        cursor["sun"].setBinding(sun_.rhi());
+        cursor["domeLights"].setBinding(sliceBuffer->rhi());
+        cursor["meshOut"].setBinding(meshView_.get());
+        cursor["params"]["domes"].setData(domes);
+        cursor["params"]["rows"].setData(kEnvironmentDomes);
+    });
     // Waits for the device: this is not a frame, and the frame that follows
     // reads what it wrote.
     ATHENEA_TRY(batch.submit(true));
@@ -209,13 +237,13 @@ Result<void> Environment::build(const light::LightTable& table, const material::
         for (uint32_t slice = 0; slice < domes; ++slice) {
             const float* row = read.data() + size_t{slice} * 8;
             if (row[3] > 0.0F) {
-                log::info("sky {}: a sun at ({:.3f}, {:.3f}, {:.3f}), {:.4f} sr, irradiance "
-                          "{:.3f} {:.3f} {:.3f}; it is {:.0f} degrees wide",
-                          slice, row[0], row[1], row[2], row[3], row[4], row[5], row[6],
-                          row[7] * 57.2957795F);
+                log::info("sky {}: a sun at ({:.3f}, {:.3f}, {:.3f}), {:.2f} degrees across, irradiance "
+                          "{:.3f} {:.3f} {:.3f} (its texels from {:.4g} up)",
+                          slice, row[0], row[1], row[2], 2.0F * row[3] * 57.2957795F, row[4], row[5], row[6],
+                          row[7]);
             } else {
-                log::info("sky {}: no sun ({:.0f} degrees of bright sky, which nine coefficients "
-                          "hold well enough)", slice, row[7] * 57.2957795F);
+                log::info("sky {}: no sun (nothing {:.0f} times its median and more: the harmonics hold it all)",
+                          slice, 32.0F);
             }
         }
     }

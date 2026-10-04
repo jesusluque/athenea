@@ -87,6 +87,7 @@ public struct FrameParams {
     public uint  hasPbr;         // 1: `pbr` holds this cloud's metallic and roughness
     public uint  hasNormals;     // 1: `normals` holds this cloud's shading normals
     public uint  hasEmission;    // 1: `emission` holds the radiance this cloud's gaussians give off
+    public uint  hasLobes;       // 1: `lobes` holds what this cloud's materials layered over the base
     public uint  litBody;        // 1: the colours are light already, and only the polish is added
     /// Lights an environment was prepared for: `envOfLight[k]` is the slice
     /// of light k, or `kEnvNone`. Zero: no sky prepared, and a dome is its
@@ -106,7 +107,8 @@ public struct FrameParams {
     public uint  transferWords;
     public uint  transferCount;
     public uint  transferIndirect;
-    /// 1 where the cloud carries which ways out are open (`shadowBits`).
+    /// The words a gaussian of which ways out are open (`shadowBits`), 0 where
+    /// the cloud carries none: 2 for 8 x 8 cells, 8 or 32 for a TX transfer.
     public uint  shadowBits;
     /// THE INDEX A TRANSMITTING GAUSSIAN BENDS BY, 0 where it bends nothing.
     ///
@@ -153,11 +155,26 @@ public struct FrameParams {
     public float s00; public float s01; public float s02; public float s03;
     public float s10; public float s11; public float s12; public float s13;
     public float s20; public float s21; public float s22; public float s23;
+    /// 1: `curvature` holds this cloud's shape operators, and a TX transfer's
+    /// reflection gets its slope across the footprint (splat_project).
+    public uint  hasCurvature;
+    /// 1: `txCache` holds this cloud's view-independent transfer terms
+    /// (splatTransferViewless), each with the dome slice it is for.
+    public uint  txCache;
     public EditParams edit;      // this cloud instance's SplatEdit (common/edit.slang)
 };
 
 /// What the projection leaves for the blend, one record per splat, so a pair
 /// costs the blend one memory access and not three.
+/// What a record's colour.w says when the splat's colour has a slope across
+/// its footprint in `slopes` (splat_project, splat_blend): neither 0, a plain
+/// splat, nor above a half, an opaque point of the layer under the splats.
+public static const float kSlopeMark = 0.25;
+/// A ProjRecord's colour.w for a shadow catcher's gaussian (splat_project's
+/// splatProjectCatcher): black, and drawn over an opaque layer under it
+/// even where its centre's depth reads behind that layer -- it lies on it.
+public static const float kCatcherMark = 0.125;
+
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power
     public float4 conic;    // a, b, c, alpha

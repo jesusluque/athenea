@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 #include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
@@ -11,11 +12,12 @@
 namespace athenea::technique {
 namespace {
 
-/// The shader's, and they must agree: twenty words a light slot, then the six
-/// the casters' box is reduced into.
-constexpr uint32_t kFrameWords = 20;
+/// The shader's, and they must agree: twenty-one words a light slot, then the
+/// six the casters' posed box is reduced into and the one their rest radius
+/// is.
+constexpr uint32_t kFrameWords = 21;
 constexpr uint32_t kSlots = 8;
-constexpr uint32_t kHeaderWords = kFrameWords * kSlots + 6;
+constexpr uint32_t kHeaderWords = kFrameWords * kSlots + 7;
 
 /// The rows of `objectToWorld`, by the names the parameter block gives them.
 constexpr const char* kRow[12] = {"w00", "w01", "w02", "w03", "w10", "w11",
@@ -41,6 +43,7 @@ Result<SplatShadowMap> SplatShadowMap::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(map.probe_, "shadowMapProbe"));
     ATHENEA_TRY(make(map.header_, "shadowMapHeader"));
     ATHENEA_TRY(make(map.resolve_, "shadowMapResolve"));
+    ATHENEA_TRY(make(map.chainLevel_, "shadowMapChain"));
     ATHENEA_TRY(make(map.factors_, "shadowMapFactors"));
     ATHENEA_TRY(make(map.clear_factors_, "shadowFactorsClear"));
     return map;
@@ -52,14 +55,17 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     if (lights == 0 || job.lights == nullptr || job.casters.empty()) {
         return ok();
     }
+    // The lights' slots, then the dome's directions in what is left.
+    const uint32_t domeSlots = std::min(job.domeSlots, kSlots - lights);
+    const uint32_t slots = lights + domeSlots;
     const uint32_t resolution = std::max(job.resolution, 16u);
     // One, three, five or seven: a total, and Fourier pairs after it.
     const uint32_t coefficients = std::max(job.coefficients | 1u, 1u);
-    // A texel keeps its coefficients and one word more, for the depth of the
-    // nearest caster in it.
-    const uint32_t stride = coefficients + 1;
+    // A texel keeps its coefficients and two words more, for the depths of
+    // the nearest caster in it and of the farthest.
+    const uint32_t stride = coefficients + 2;
     const uint64_t plane = uint64_t{resolution} * resolution * stride;
-    const uint64_t words = kHeaderWords + plane * lights;
+    const uint64_t words = kHeaderWords + plane * slots;
     if (!map_.valid() || map_.count() < words || resolution_ != resolution || coefficients_ != coefficients) {
         gpu::BufferDesc desc;
         desc.bytes = words * 4;
@@ -72,7 +78,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     // And the same map as a texture, which is how a kernel with no binding
     // slot left reads it: a layer a coefficient a light, and one more at the
     // front for the frames.
-    const uint32_t layers = lights * stride + 1;
+    const uint32_t layers = slots * stride + 1;
     if (!texture_.valid() || texture_.width() != resolution || texture_.desc().arrayLength != layers) {
         gpu::TextureDesc desc;
         desc.type = rhi::TextureType::Texture2DArray;
@@ -89,6 +95,31 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         if (!made_view) return std::move(made_view).error();
         view_ = std::move(*made_view);
     }
+    // The transmittance chain: a layer a light, every level down to one
+    // texel, written as level zero is and then averaged a level at a time.
+    if (!chain_.valid() || chain_.width() != resolution || chain_.desc().arrayLength != slots) {
+        gpu::TextureDesc desc;
+        desc.type = rhi::TextureType::Texture2DArray;
+        desc.width = resolution;
+        desc.height = resolution;
+        desc.arrayLength = slots;
+        desc.mipCount = 0;   // the whole chain
+        desc.format = rhi::Format::R32Float;
+        desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+        desc.label = "splat.shadowMap.chain";
+        auto made = gpu::Texture::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        chain_ = std::move(*made);
+        auto all = chain_.view(0, chain_.mipCount());
+        if (!all) return std::move(all).error();
+        chainView_ = std::move(*all);
+        chainLevels_.clear();
+        for (uint32_t level = 0; level < chain_.mipCount(); ++level) {
+            auto one = chain_.view(level);
+            if (!one) return std::move(one).error();
+            chainLevels_.push_back(std::move(*one));
+        }
+    }
     resolution_ = resolution;
     coefficients_ = coefficients;
     lights_ = lights;
@@ -102,7 +133,10 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         p["coefficients"].setData(coefficients);
         p["margin"].setData(job.margin);
         p["density"].setData(job.density);
+        p["selfBias"].setData(job.selfBias);
         p["lightCount"].setData(lights);
+        p["domeSlots"].setData(domeSlots);
+        p["slots"].setData(slots);
         cursor["shadowMap"].setBinding(map_.rhi());
         cursor["shadowLights"].setBinding(job.lights->rhi());
     };
@@ -111,6 +145,10 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         p["count"].setData(caster.cloud->count);
         p["boxMin"].setData(caster.cloud->bounds.min);
         p["boxMax"].setData(caster.cloud->bounds.max);
+        const scene::Bounds rest =
+            caster.restBounds.has_value() ? *caster.restBounds : caster.cloud->restBounds.value_or(caster.cloud->bounds);
+        p["restMin"].setData(rest.min);
+        p["restMax"].setData(rest.max);
         for (int k = 0; k < 12; ++k) {
             p[kRow[k]].setData(caster.objectToWorld[static_cast<size_t>(k)]);
         }
@@ -123,7 +161,8 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         setCommon(cursor, 0);
         setCaster(cursor, job.casters.front());
     });
-    // Where the casters stand, reduced on the device: eight corners a cloud.
+    // Where the casters stand and how far they reach at rest, reduced on the
+    // device: eight corners a cloud.
     for (const ShadowMapCaster& caster : job.casters) {
         if (caster.cloud == nullptr || caster.cloud->count == 0) {
             continue;
@@ -139,7 +178,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     });
     // And then the cloud, once a light. A light with no map of its own -- a
     // dome, one that casts no shadow -- leaves every thread at the first read.
-    for (uint32_t k = 0; k < lights; ++k) {
+    for (uint32_t k = 0; k < slots; ++k) {
         for (const ShadowMapCaster& caster : job.casters) {
             if (caster.cloud == nullptr || caster.cloud->count == 0) {
                 continue;
@@ -156,11 +195,21 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         setCaster(cursor, job.casters.front());
         cursor["shadowOut"].setBinding(view_.get());
     });
-    resolve_->dispatch(batch, {resolution, resolution, lights * stride}, [&](rhi::ShaderCursor cursor) {
+    resolve_->dispatch(batch, {resolution, resolution, slots * stride}, [&](rhi::ShaderCursor cursor) {
         setCommon(cursor, 0);
         setCaster(cursor, job.casters.front());
         cursor["shadowOut"].setBinding(view_.get());
+        cursor["shadowChainOut"].setBinding(chainLevels_.front().get());
     });
+    for (uint32_t level = 1; level < chain_.mipCount(); ++level) {
+        const uint32_t size = chain_.width(level);
+        chainLevel_->dispatch(batch, {size, size, slots}, [&](rhi::ShaderCursor cursor) {
+            setCommon(cursor, 0);
+            cursor["shadowParams"]["level"].setData(level);
+            cursor["shadowChainSource"].setBinding(chainLevels_[level - 1].get());
+            cursor["shadowChainOut"].setBinding(chainLevels_[level].get());
+        });
+    }
     valid_ = true;
     return ok();
 }
@@ -224,6 +273,29 @@ Result<double> SplatShadowMap::meanTransmittance(uint32_t light) {
     uint32_t summed = 0;
     ATHENEA_TRY(total->read(*device_, 0, sizeof(summed), &summed));
     return double(summed) / 65536.0 / (double(resolution_) * double(resolution_));
+}
+
+Result<SplatShadowMap::FrameInfo> SplatShadowMap::frameInfo(uint32_t light) {
+    FrameInfo info;
+    if (!valid_ || light >= lights_) {
+        return info;
+    }
+    std::array<uint32_t, kFrameWords> words{};
+    ATHENEA_TRY(map_.read(*device_, uint64_t{light} * kFrameWords * 4, sizeof(words), words.data()));
+    const auto real = [&](size_t at) {
+        float f = 0.0F;
+        std::memcpy(&f, &words[at], sizeof(f));
+        return f;
+    };
+    info.valid = words[19] != 0;
+    for (size_t k = 0; k < 4; ++k) {
+        info.rowU[k] = real(k);
+        info.rowV[k] = real(4 + k);
+        info.rowZ[k] = real(8 + k);
+    }
+    info.texelsPerUnit = real(15);
+    info.bias = real(20);
+    return info;
 }
 
 Result<std::vector<float>> SplatShadowMap::probe(uint32_t light, std::span<const std::array<float, 4>> points) {

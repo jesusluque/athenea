@@ -81,7 +81,7 @@ struct PathAux {
 /// Where a bake starts from: one ray a point, and the grid they are dispatched
 /// over (the kernel indexes them as it indexes pixels).
 struct BakePoints {
-    const gpu::Buffer* rays = nullptr;   ///< 3 float4 a point: the point + how far off to start, the surface's normal, the gaussian's facing (w 1 where it has one)
+    const gpu::Buffer* rays = nullptr;   ///< 3 float4 a point: the point + how far off to start, the surface's normal, the gaussian's facing (w 1 where it has one, plus a quarter of the material's metalness: `bakeMetalness`)
     uint32_t           count = 0;
     uint32_t           width = 0;        ///< the grid; `count` <= width * height
     uint32_t           height = 0;
@@ -96,6 +96,12 @@ struct BakePoints {
     /// and the direct half in their alpha, and one plane more carries the
     /// coverage that a bake puts in every plane's alpha.
     bool               transfer = false;
+    /// AND WHICH WAYS OUT ARE OPEN ON A FINER GRID, with `transfer`: 16 or
+    /// 32 cells a side of an octahedral grid over the whole sphere, a plane of
+    /// four words for every 128 cells after the coverage, where the old
+    /// transfer (0) writes 8 x 8 over the half a point faces in one plane of
+    /// two (task TX in docs/decisions.md).
+    uint32_t           cellSide = 0;
     /// KEEP THE SUMS, THE DIRECT LIGHT APART FROM THE INDIRECT: no fit.
     /// `2 * coefficients + 3` planes come back -- the direct half's sum
     /// against each harmonic, the indirect half's, then (brightest rgb, the
@@ -106,6 +112,31 @@ struct BakePoints {
     /// with `transfer`.
     bool               split = false;
 };
+
+/// THE CELLS A SIDE A TX TRANSFER'S GRID MAY HAVE: 16 or 32, or 0 for the
+/// first transfer's 8 x 8.
+[[nodiscard]] inline uint32_t transferCellSide(uint32_t asked) noexcept {
+    return asked >= 32 ? 32u : asked >= 16 ? 16u : 0u;
+}
+/// Words a gaussian its open directions take: 2, 8 or 32.
+[[nodiscard]] inline uint32_t transferCellWords(uint32_t cellSide) noexcept {
+    const uint32_t side = transferCellSide(cellSide);
+    return side == 0 ? 2u : side * side / 32u;
+}
+/// The reflected field a TX transfer keeps: sixteen rgb coefficients, a plane
+/// each after the cells (docs/decisions.md, task TX, step 2).
+inline constexpr uint32_t kTransferFieldPlanes = 16;
+/// THE PLANES A TRANSFER WRITES AFTER ITS COEFFICIENTS: the coverage, then the
+/// open directions -- one plane of two words, or a plane of four for every
+/// 128 cells of a finer grid and then the reflected field's sixteen. None for
+/// a bake that is not a transfer.
+[[nodiscard]] inline uint32_t transferPlanes(bool transfer, uint32_t cellSide) noexcept {
+    const uint32_t side = transferCellSide(cellSide);
+    return !transfer ? 0u : side == 0 ? 2u : 1u + side * side / 128u + kTransferFieldPlanes;
+}
+[[nodiscard]] inline uint32_t transferPlanes(const BakePoints& bake) noexcept {
+    return transferPlanes(bake.transfer, bake.cellSide);
+}
 
 class PathTracer {
 public:

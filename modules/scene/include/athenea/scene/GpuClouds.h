@@ -13,6 +13,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <cstddef>
 #include <span>
 #include <filesystem>
@@ -60,13 +61,17 @@ struct GpuSplats {
     /// HOW MUCH OF AN ENVIRONMENT REACHES EACH GAUSSIAN: `transferWords` uint
     /// a gaussian, f16 pairs, the nine scalars of the direct half first and
     /// then, where the cloud carries it, nine rgb triples of the indirect
-    /// one. Empty for a cloud baked the old way, whose colours are the light
-    /// of the dome it was baked under.
+    /// one. Or ten values, a ZONAL transfer (`isZonal`): two lobes, each an
+    /// axis in the gaussian's own frame (the octahedral square's u, v) and
+    /// three zonal coefficients, which turn with the gaussian -- what a cloud
+    /// a skeleton carries keeps. Empty for a cloud baked the old way, whose
+    /// colours are the light of the dome it was baked under.
     gpu::Buffer transfer;
     /// WHICH WAYS OUT ARE OPEN, two words a gaussian: sixty-four bits of an
     /// 8 x 8 octahedral grid over the sphere, set where a ray traced at the
     /// bake found nothing. What lets a sun cast a hard shadow. Empty for a
-    /// cloud that was not baked with a transfer.
+    /// cloud that was not baked with a transfer. Beside a zonal transfer the
+    /// grid is over the gaussian's own frame rather than the world.
     gpu::Buffer shadowBits;
     /// WHICH RECORD EACH SPLAT CAME FROM, one uint a splat: validation drops
     /// what cannot be drawn, so anything else the file keeps a gaussian --
@@ -82,6 +87,12 @@ struct GpuSplats {
     /// `hasNormals` is how a kernel asks. Whatever turns the frame (the
     /// skinner) turns this with it.
     gpu::Buffer normals;
+    /// HOW THE SURFACE TURNS UNDER EACH GAUSSIAN: three floats a splat, its
+    /// shape operator in the splat's own first two axes (uu, uv, vv;
+    /// `primvars:athenea:splat:curvature`). A frame turns a TX transfer's
+    /// reflection across the splat's footprint by it. Empty where the file
+    /// carries none, and on a cloud the levels of detail made.
+    gpu::Buffer curvature;
     /// THE LIGHT THE SURFACE GAVE OFF BY ITSELF: one uint a splat, linear
     /// radiance in RGB9E5 (packing.slang's `packRgb9e5`). A relit gaussian
     /// adds it, unshadowed, to what it reflects -- a converted lamp shade, a
@@ -90,8 +101,22 @@ struct GpuSplats {
     /// materials that give off nothing; `hasEmission` is how a kernel asks.
     /// Nothing turns it: it has no direction.
     gpu::Buffer emission;
+    /// WHAT THE MATERIAL LAYERED OVER ITS BASE: three uint a splat, the
+    /// specular's weight, colour and index, the coat's weight, roughness and
+    /// index, the sheen's colour and roughness, a byte each (packing.slang's
+    /// `packLobes`). What a relit gaussian reflects with on top of `pbr`'s
+    /// base -- a car's lacquer over its metal flake, velvet's sheen. Empty
+    /// for a capture and for a conversion whose materials name none of it,
+    /// which reflects with the plain specular (`plainLobes`); `hasLobes` is
+    /// how a kernel asks. Nothing turns it.
+    gpu::Buffer lobes;
+    /// Words a gaussian of `shadowBits`: 2 (8 x 8 cells over the sphere),
+    /// or 8 (16 x 16, a TX transfer's).
+    uint32_t    shadowWords = 0;
     uint32_t    transferWords = 0;
-    uint32_t    transferCount = 0;   ///< values a gaussian: 0, 9 or 36
+    /// Values a gaussian: 0, 10 (zonal lobes), or 9, 36, 84, 16, 64 or 112 --
+    /// the count is the layout (athenea/common/transfer_layout.slang).
+    uint32_t    transferCount = 0;
     /// THE SPACE ITS COLOURS ARE IN (`io::RawSplats::linear`): false for a
     /// capture, whose harmonics are sRGB and are decoded a splat at a time
     /// when they are evaluated; true for a cloud that holds light already.
@@ -111,6 +136,11 @@ struct GpuSplats {
     gpu::Buffer visibilityAmbient;   ///< a probe's mean over its directions, for domes
     uint32_t    visibilityPartCount = 0;
     Bounds      bounds;
+    /// THE BOX IT WAS BOUND IN, where `positions` are a pose of another
+    /// cloud's (a skinned cloud's posed copy): what does not breathe with
+    /// the wings, which is what a shadow map is sized from. Empty for a cloud
+    /// that is its own rest pose.
+    std::optional<Bounds> restBounds;
     /// Counted up by whatever rewrites `positions` or `shape` in place -- the
     /// skinner, a frame -- so a structure built over them (the ray tracer's
     /// proxies) can tell a cloud posed anew from the one it built for. The
@@ -121,12 +151,21 @@ struct GpuSplats {
     [[nodiscard]] bool hasPbr() const noexcept { return pbr.valid(); }
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
     [[nodiscard]] bool hasNormals() const noexcept { return normals.valid(); }
+    [[nodiscard]] bool hasCurvature() const noexcept { return curvature.valid(); }
     [[nodiscard]] bool hasEmission() const noexcept { return emission.valid(); }
+    [[nodiscard]] bool hasLobes() const noexcept { return lobes.valid(); }
     [[nodiscard]] bool hasTransfer() const noexcept { return transfer.valid() && transferCount >= 9; }
     /// Whether it carries which ways out are open (`shadowBits`).
     [[nodiscard]] bool hasShadowBits() const noexcept { return shadowBits.valid(); }
     /// Whether the indirect half is there as well as the direct one.
-    [[nodiscard]] bool hasIndirect() const noexcept { return transferCount >= 36; }
+    [[nodiscard]] bool hasIndirect() const noexcept {
+        return transferCount == 36 || transferCount == 84 || transferCount == 64 || transferCount == 112;
+    }
+    /// Whether the transfer is two zonal lobes in each gaussian's frame.
+    [[nodiscard]] bool isZonal() const noexcept { return transferCount == kTransferZonalCount; }
+    /// Values a gaussian of a zonal transfer (splat_relight.slang's
+    /// `kTransferZonalCount`).
+    static constexpr uint32_t kTransferZonalCount = 10;
     [[nodiscard]] bool hasVisibility() const noexcept {
         return visibilityPartCount > 0 && visibilityParts.valid() && visibilityTexels.valid() &&
                visibilityPartOf.valid();
@@ -183,11 +222,27 @@ struct SplatStreams {
     /// `:transferIndirect`).
     FloatStream transferDirect;
     FloatStream transferIndirect;
-    /// Two int32 a splat (`primvars:athenea:splat:shadowBits`), read as bits.
+    /// A TX transfer's reflected field (`primvars:athenea:splat:transferReflected`):
+    /// 48 floats a splat, read only beside the indirect half. Sixteen and
+    /// forty-eight in the two before it at degree 3; the counts say which
+    /// (athenea/common/transfer_layout.slang).
+    FloatStream transferReflected;
+    /// Ten floats a splat, a zonal transfer (`primvars:athenea:splat:transferZonal`):
+    /// two lobes, each an axis in the gaussian's frame and three coefficients.
+    /// Where it is there it is what the cloud carries, in place of the nine
+    /// harmonics.
+    FloatStream transferZonal;
+    /// Two int32 a splat (`primvars:athenea:splat:shadowBits`), read as bits;
+    /// or eight, the 256 cells of a TX transfer, which the count says.
     FloatStream shadowBits;
     /// One int32 a splat, nonzero for a thin-walled glass
     /// (`primvars:athenea:splat:thinWalled`); read only beside the PBR arrays.
     FloatStream thinWalled;
+    /// One int a splat, nonzero where its metal is a Schlick rather than a
+    /// conductor (`primvars:athenea:splat:schlickMetal`); beside the PBR arrays.
+    FloatStream schlickMetal;
+    /// Three floats a splat, the shape operator (`primvars:athenea:splat:curvature`).
+    FloatStream curvature;
     /// Three floats a splat, the shading normal (`primvars:athenea:splat:normal`).
     FloatStream normals;
     /// `primvars:athenea:splat:linear`: the colours are linear light
@@ -196,6 +251,21 @@ struct SplatStreams {
     /// Three floats a splat, the radiance it gives off
     /// (`primvars:athenea:splat:emission`).
     FloatStream emission;
+    /// The layers over the base, one array each, one value (or three, for a
+    /// colour) a splat: `primvars:athenea:splat:specularWeight`,
+    /// `:specularColor`, `:specularIor`, `:coatWeight`, `:coatRoughness`,
+    /// `:coatIor`, `:sheenColor`, `:sheenRoughness`, `:coatDarkening`. The cloud carries the
+    /// lobes where any of them is there; one that is missing takes its
+    /// default (packing.slang's `plainLobes`).
+    FloatStream specularWeight;
+    FloatStream specularColour;
+    FloatStream specularIor;
+    FloatStream coatWeight;
+    FloatStream coatRoughness;
+    FloatStream coatIor;
+    FloatStream sheenColour;
+    FloatStream sheenRoughness;
+    FloatStream coatDarkening;   ///< `:coatDarkening`, 0 where it is missing
     /// BLENDER'S LAYOUT. Four floats a splat, the DC coefficient's rgb and the
     /// opacity (a Gaussian-splat PointCloud's `radiance:base`); where present
     /// it stands for `opacities` and for the DC of `sh`.
@@ -264,8 +334,9 @@ private:
     [[nodiscard]] Result<void> sogSlice(const SogOnDevice& on, uint32_t first, uint32_t n, const gpu::Buffer& into);
     [[nodiscard]] Result<GpuSplats> startSplats(const std::string& source, uint32_t declared, uint32_t keep,
                                                 bool withPbr = false, bool withCrypto = false,
-                                                uint32_t transferCount = 0, bool withShadowBits = false,
-                                                bool withNormals = false, bool withEmission = false);
+                                                uint32_t transferCount = 0, uint32_t shadowWords = 0,
+                                                bool withNormals = false, bool withEmission = false,
+                                                bool withLobes = false);
     /// Validates and decodes `n` records in `raw` into `splats` after `written`;
     /// `recordBase` is the first of them in the whole cloud, for `origin`.
     [[nodiscard]] Result<uint32_t> decodeSlice(const gpu::Buffer& raw, const io::SplatEncoding& e, uint32_t n,

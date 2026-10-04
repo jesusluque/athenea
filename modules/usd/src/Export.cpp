@@ -91,6 +91,12 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     // below zero.
     VtVec3fArray emissions;
     const bool withEmission = e.emission != io::SplatEncoding::kNoField;
+    // What the material layered over the base, as the kernel leaves it:
+    // each value inside the range the cloud reads it in.
+    VtFloatArray specularWeights, specularIors, coatWeights, coatRoughnesses, coatIors, sheenRoughnesses,
+        coatDarkenings;
+    VtVec3fArray specularColours, sheenColours;
+    const bool withLobes = e.lobes != io::SplatEncoding::kNoField;
     const bool pbr = e.metallic != io::SplatEncoding::kNoField ||
                      e.roughness != io::SplatEncoding::kNoField ||
                      e.transmission != io::SplatEncoding::kNoField;
@@ -113,7 +119,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto normal = buffer(device, withNormals ? n : 1, 16, "export.normal");
         auto material = buffer(device, pbr ? n : 1, 16, "export.pbr");
         auto emitted = buffer(device, withEmission ? n : 1, 16, "export.emission");
-        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material || !emitted) {
+        auto layered = buffer(device, withLobes ? uint64_t{n} * 4 : 1, 16, "export.lobes");
+        if (!posOpacity || !rotation || !scaleValid || !coeff || !normal || !material || !emitted || !layered) {
             return Error(ErrorCode::OutOfMemory, "cannot allocate export buffers");
         }
         gpu::CommandBatch batch(device);
@@ -126,6 +133,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             cursor["normalOut"].setBinding(normal->rhi());
             cursor["pbrOut"].setBinding(material->rhi());
             cursor["emissionOut"].setBinding(emitted->rhi());
+            cursor["lobesOut"].setBinding(layered->rhi());
             scene::setDecodeParams(cursor, e, n, 0, keep, 1);
         });
         ATHENEA_TRY(batch.submit(true));
@@ -136,7 +144,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         auto no = normal->readAll<float>(device);
         auto pb = material->readAll<float>(device);
         auto eo = emitted->readAll<float>(device);
-        if (!po || !ro || !sv || !co || !no || !pb || !eo) {
+        auto lo3 = layered->readAll<float>(device);
+        if (!po || !ro || !sv || !co || !no || !pb || !eo || !lo3) {
             return Error(ErrorCode::DeviceFailure, "cannot read export values back");
         }
         for (uint32_t i = 0; i < n; ++i) {
@@ -172,6 +181,18 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             if (withEmission) {
                 const float* ee = eo->data() + size_t{i} * 4;
                 emissions.push_back(GfVec3f(ee[0], ee[1], ee[2]));
+            }
+            if (withLobes) {
+                const float* ll = lo3->data() + size_t{i} * 16;
+                specularWeights.push_back(ll[0]);
+                specularColours.push_back(GfVec3f(ll[1], ll[2], ll[3]));
+                specularIors.push_back(ll[4]);
+                coatWeights.push_back(ll[5]);
+                coatRoughnesses.push_back(ll[6]);
+                coatIors.push_back(ll[7]);
+                sheenColours.push_back(GfVec3f(ll[8], ll[9], ll[10]));
+                sheenRoughnesses.push_back(ll[11]);
+                coatDarkenings.push_back(ll[12]);
             }
             if (there) {
                 for (int axis = 0; axis < 3; ++axis) {
@@ -249,6 +270,31 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(emissions));
     }
 
+    // WHAT ITS MATERIAL LAYERED OVER THE BASE (AtheneaSplatLightingAPI): the
+    // specular's weight, colour and index, the coat, the sheen -- one array
+    // each, in OpenPBR's units. Written only where the conversion met a
+    // material that names any of it.
+    if (withLobes) {
+        UsdGeomPrimvarsAPI primvars(splats.GetPrim());
+        const auto floats = [&](const char* name, const VtFloatArray& values) {
+            primvars.CreatePrimvar(TfToken(name), SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex)
+                .Set(VtValue(values));
+        };
+        const auto colours = [&](const char* name, const VtVec3fArray& values) {
+            primvars.CreatePrimvar(TfToken(name), SdfValueTypeNames->Color3fArray, UsdGeomTokens->vertex)
+                .Set(VtValue(values));
+        };
+        floats("primvars:athenea:splat:specularWeight", specularWeights);
+        colours("primvars:athenea:splat:specularColor", specularColours);
+        floats("primvars:athenea:splat:specularIor", specularIors);
+        floats("primvars:athenea:splat:coatWeight", coatWeights);
+        floats("primvars:athenea:splat:coatRoughness", coatRoughnesses);
+        floats("primvars:athenea:splat:coatIor", coatIors);
+        colours("primvars:athenea:splat:sheenColor", sheenColours);
+        floats("primvars:athenea:splat:sheenRoughness", sheenRoughnesses);
+        floats("primvars:athenea:splat:coatDarkening", coatDarkenings);
+    }
+
     // WHICH PRIM EACH GAUSSIAN CAME FROM (AtheneaSplatCryptomatteAPI). One id a
     // record, empty slots included, so the primvar and the cloud's own arrays
     // stay index for index alike; the manifest says what the ids are called.
@@ -279,28 +325,86 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(thin));
     }
 
+    // WHICH GAUSSIANS' METAL IS A SCHLICK (OpenPBR, glTF) rather than a
+    // conductor of an artistic index. Written only where there is one.
+    if (options.schlickMetal.size() >= count && count > 0 &&
+        std::any_of(options.schlickMetal.begin(), options.schlickMetal.begin() + count,
+                    [](int32_t v) { return v != 0; })) {
+        VtIntArray schlick(options.schlickMetal.begin(), options.schlickMetal.begin() + count);
+        UsdGeomPrimvarsAPI(splats.GetPrim())
+            .CreatePrimvar(TfToken("primvars:athenea:splat:schlickMetal"), SdfValueTypeNames->IntArray,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(schlick));
+    }
+
+    // HOW THE SURFACE TURNS UNDER EACH GAUSSIAN: three floats a record, its
+    // shape operator in the gaussian's own two axes. Written only with them.
+    if (options.curvature.size() >= size_t{count} * 3 && count > 0) {
+        VtFloatArray shape(options.curvature.begin(), options.curvature.begin() + size_t{count} * 3);
+        UsdGeomPrimvar curvature = UsdGeomPrimvarsAPI(splats.GetPrim())
+                                       .CreatePrimvar(TfToken("primvars:athenea:splat:curvature"),
+                                                      SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex, 3);
+        curvature.Set(VtValue(shape));
+    }
+
     // HOW MUCH OF AN ENVIRONMENT REACHES EACH GAUSSIAN. Nine floats a record
     // of the direct half, and twenty-seven more of the indirect one where it
     // was baked, vertex-interpolated like everything else a gaussian carries.
     // A cloud with these is lit by whatever sky it is put under, which is the
     // whole reason they are here rather than a colour baked under one dome.
-    if (options.transferDirect.size() >= size_t{count} * 9 && count > 0) {
+    // Sixteen and forty-eight at degree 3, a TX transfer's; the count a
+    // record is the layout, as it is for everything else a transfer keeps.
+    const uint32_t transferPer = options.transferCoefficients == 16 ? 16u : 9u;
+    if (options.transferDirect.size() >= size_t{count} * transferPer && count > 0) {
         UsdGeomPrimvarsAPI primvars(splats.GetPrim());
         VtFloatArray direct(options.transferDirect.begin(),
-                            options.transferDirect.begin() + size_t{count} * 9);
+                            options.transferDirect.begin() + size_t{count} * transferPer);
         UsdGeomPrimvar made = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:transferDirect"),
                                                      SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex);
         made.Set(VtValue(direct));
-        made.SetElementSize(9);
-        if (options.transferIndirect.size() >= size_t{count} * 27) {
+        made.SetElementSize(static_cast<int>(transferPer));
+        if (options.transferIndirect.size() >= size_t{count} * transferPer * 3) {
             VtFloatArray indirect(options.transferIndirect.begin(),
-                                  options.transferIndirect.begin() + size_t{count} * 27);
+                                  options.transferIndirect.begin() + size_t{count} * transferPer * 3);
             UsdGeomPrimvar bounced = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:transferIndirect"),
                                                             SdfValueTypeNames->FloatArray,
                                                             UsdGeomTokens->vertex);
             bounced.Set(VtValue(indirect));
-            bounced.SetElementSize(27);
+            bounced.SetElementSize(static_cast<int>(transferPer * 3));
+            // THE REFLECTED FIELD, only beside the indirect half that couples
+            // it to a sky.
+            if (options.transferReflected.size() >= size_t{count} * 48) {
+                VtFloatArray field(options.transferReflected.begin(),
+                                   options.transferReflected.begin() + size_t{count} * 48);
+                UsdGeomPrimvar reflected = primvars.CreatePrimvar(
+                    TfToken("primvars:athenea:splat:transferReflected"), SdfValueTypeNames->FloatArray,
+                    UsdGeomTokens->vertex);
+                reflected.Set(VtValue(field));
+                reflected.SetElementSize(48);
+            }
         }
+        // Two ints a record, or eight or thirty-two: the count is the layout.
+        const uint32_t words = options.shadowWords == 8 || options.shadowWords == 32 ? options.shadowWords : 2u;
+        if (options.shadowBits.size() >= size_t{count} * words) {
+            VtIntArray bits(options.shadowBits.begin(), options.shadowBits.begin() + size_t{count} * words);
+            UsdGeomPrimvar open = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:shadowBits"),
+                                                         SdfValueTypeNames->IntArray, UsdGeomTokens->vertex);
+            open.Set(VtValue(bits));
+            open.SetElementSize(static_cast<int>(words));
+        }
+    } else if (options.transferZonal.size() >= size_t{count} * 10 && count > 0) {
+        // THE SAME, AS ZONAL LOBES IN EACH GAUSSIAN'S FRAME: ten floats a
+        // record, which turn with the gaussian. What a cloud a skeleton
+        // carries keeps (proposal 014 B); a reader that does not know the
+        // primvar draws the cloud relit with no transfer, which is what it
+        // drew before there was one. The shadow bits beside it are over the
+        // gaussian's own frame.
+        UsdGeomPrimvarsAPI primvars(splats.GetPrim());
+        VtFloatArray zonal(options.transferZonal.begin(), options.transferZonal.begin() + size_t{count} * 10);
+        UsdGeomPrimvar made = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:transferZonal"),
+                                                     SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex);
+        made.Set(VtValue(zonal));
+        made.SetElementSize(10);
         if (options.shadowBits.size() >= size_t{count} * 2) {
             VtIntArray bits(options.shadowBits.begin(), options.shadowBits.begin() + size_t{count} * 2);
             UsdGeomPrimvar open = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:shadowBits"),
@@ -335,6 +439,11 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         static const TfToken kLit("primvars:athenea:splat:litBody");
         splats.GetPrim().CreateAttribute(kLit, SdfValueTypeNames->Bool, true).Set(true);
     }
+    if (options.catcher) {
+        // A shadow catcher: drawn black, covering what the object took.
+        static const TfToken kCatcher("primvars:athenea:splat:catcher");
+        splats.GetPrim().CreateAttribute(kCatcher, SdfValueTypeNames->Bool, true).Set(true);
+    }
 
     // AND THE SCHEMA THOSE PRIMVARS ARE DECLARED BY. They were written and
     // the API never applied, so `relight` came out `custom` and a host that
@@ -347,8 +456,10 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             TfToken("primvars:athenea:splat:roughness"),    TfToken("primvars:athenea:splat:transmission"),
             TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
             TfToken("primvars:athenea:splat:thinWalled"),   TfToken("primvars:athenea:splat:shadowBits"),
+            TfToken("primvars:athenea:splat:schlickMetal"), TfToken("primvars:athenea:splat:curvature"),
             TfToken("primvars:athenea:splat:normal"),       TfToken("primvars:athenea:splat:linear"),
-            TfToken("primvars:athenea:splat:emission")};
+            TfToken("primvars:athenea:splat:emission"),     TfToken("primvars:athenea:splat:coatWeight"),
+            TfToken("primvars:athenea:splat:specularWeight"), TfToken("primvars:athenea:splat:sheenColor")};
         const UsdPrim prim = splats.GetPrim();
         if (std::any_of(std::begin(kLighting), std::end(kLighting),
                         [&](const TfToken& name) { return prim.GetAttribute(name).HasAuthoredValue(); })) {
