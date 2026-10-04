@@ -78,9 +78,11 @@ public:
                                      std::span<const uint32_t> domeTextures, uint32_t lightCount);
 
     /// THE SUN, TAKEN OUT OF EACH DOME: two float4 a slice, the first
-    /// (direction, solid angle) and the second (irradiance, the sky's mean
-    /// luminance). A solid angle of 0 says that dome has no sun and its
-    /// harmonics hold the whole sky, as they did before this existed.
+    /// (direction, the half angle of the cone its texels fill) and the second
+    /// (irradiance, the luminance its texels were cut at). A half angle of 0
+    /// says that dome has no sun and its harmonics hold the whole sky. The
+    /// texels are env_sun's `sunRegionOf`, which env_project skips: what
+    /// leaves the harmonics is what arrives as the light.
     ///
     /// The prefiltered map keeps its sun. A reflection of a disc is a
     /// highlight and the map at 2048 a side resolves it; what could not hold

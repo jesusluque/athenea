@@ -9,8 +9,9 @@
 //
 //   texels 0..8   the sky's radiance coefficients, degree 2 (rgb): what a
 //                 diffuse surface's irradiance is read from, the sun left out
-//   texel 9       the sun: its direction, and its solid angle (0: none)
-//   texel 10      the sun's irradiance at normal incidence, and its cone
+//   texel 9       the sun: its direction, and its cone's half angle (0: none)
+//   texel 10      the sun's irradiance at normal incidence, and the luminance
+//                 its texels were cut at
 //   texel 11      the light the row belongs to, plus one (0: an empty row)
 //
 // Nothing is computed: the values are copied as `env_project` and `env_sun`

@@ -12640,3 +12640,28 @@ ground 0.218 against 0.217 and 0.227 against 0.220. Within 10% of the GT
 under the car and on the open ground, and 40% at the contact, where the
 catcher is still dark: a gap of a few centimetres under the bumper against
 a 1.26 cm cell, with the light coming through a wedge at the horizon.
+
+## The sun is the texels that are it
+
+env_sun found a dome's sun on a grid of 1.8 degree cells, measured its
+profile in two degree rings and then summed it on the projection's texels
+within the ring it ended at: on goegap the sun is sharper than the rings,
+and its irradiance came out 0.07 (1%) of the 5.8 it delivers, the rest left
+in nine harmonics that cannot hold a disc. Now the sun is the texels that
+are it, on the level the harmonics are projected from (`sunRegionOf`): a
+sky has one where its brightest texel is over 32 times its median (a
+histogram of log luminance over the projection's own measure, which the sun
+cannot drag as it drags a mean), and its texels are those over 16 times the
+median and 2% of the peak, within ten degrees of the peak. The irradiance
+is their radiance times their solid angle in the projection's quadrature,
+the direction their luminance's centroid, and `env_project` skips the same
+texels by the same test (`sunHolds`): what leaves the harmonics is what
+arrives as the light. The buffer keeps its stride: (direction, the half
+angle of the cone its texels fill) and (irradiance, the luminance they were
+cut at); every reader asked only whether the first w was positive.
+
+goegap: a sun of 1.86 degrees and 5.8 of irradiance. autoshop: a lamp of
+6.35 degrees and 0.28, where the rings had found another at 0.11. The two
+`[environment][sun]` tests hold: a disc of nine texels taken whole (0.1084
+against its closed form 0.1084), the residual sky within 2.1%, an even sky
+left alone.

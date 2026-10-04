@@ -267,15 +267,17 @@ TEST_CASE("a sun is found in a sky, taken out of its harmonics and handed over a
     REQUIRE(environment->build(*table, **textures, domes, textureIds, 1));
 
     const SunReading sun = readSun(*gpu, *environment);
-    const float solidAngle = sun.axis[3];
+    // The half angle of the cone the sun's texels fill (env_sun).
+    const float cone = sun.axis[3];
+    const float solidAngle = 2.0F * 3.14159265F * (1.0F - std::cos(cone));
     const float irradiance = sun.power[1];   // green
-    std::printf("  sun: direction %.3f %.3f %.3f, solid angle %.4f sr, irradiance %.3f, sky mean %.4f\n",
-                double(sun.axis[0]), double(sun.axis[1]), double(sun.axis[2]), double(solidAngle),
+    std::printf("  sun: direction %.3f %.3f %.3f, cone %.4f rad (%.4f sr), irradiance %.3f, cut at %.4f\n",
+                double(sun.axis[0]), double(sun.axis[1]), double(sun.axis[2]), double(cone), double(solidAngle),
                 double(irradiance), double(sun.power[3]));
-    // A disc was found at all, and it is small: the cone is seven degrees,
-    // whose solid angle is 2 pi (1 - cos 7 deg) = 0.047 steradians.
-    CHECK(solidAngle > 0.0F);
-    CHECK(solidAngle < 0.08F);
+    // A disc was found at all, and it is small: its nine texels, a few
+    // degrees across.
+    CHECK(cone > 0.0F);
+    CHECK(cone < 0.08F);
     // It points where the image put it. `domeDirection` at (0.5, 0.5) is the
     // kernel's own answer, and the axis has to be within the cone of it.
     CHECK(std::abs(sun.axis[0] * sun.axis[0] + sun.axis[1] * sun.axis[1] + sun.axis[2] * sun.axis[2] - 1.0F) <
@@ -339,7 +341,6 @@ TEST_CASE("an even sky has no sun taken out of it", "[technique][environment][su
     const std::array<uint32_t, 1> textureIds{lamp.textureId};
     REQUIRE(environment->build(*table, **textures, domes, textureIds, 1));
     const SunReading sun = readSun(*gpu, *environment);
-    std::printf("  even sky: solid angle %.4f (want 0), sky mean %.4f\n", double(sun.axis[3]),
-                double(sun.power[3]));
+    std::printf("  even sky: cone %.4f (want 0)\n", double(sun.axis[3]));
     CHECK(sun.axis[3] == 0.0F);
 }

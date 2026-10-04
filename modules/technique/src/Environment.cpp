@@ -237,13 +237,13 @@ Result<void> Environment::build(const light::LightTable& table, const material::
         for (uint32_t slice = 0; slice < domes; ++slice) {
             const float* row = read.data() + size_t{slice} * 8;
             if (row[3] > 0.0F) {
-                log::info("sky {}: a sun at ({:.3f}, {:.3f}, {:.3f}), {:.4f} sr, irradiance "
-                          "{:.3f} {:.3f} {:.3f}; it is {:.0f} degrees wide",
-                          slice, row[0], row[1], row[2], row[3], row[4], row[5], row[6],
-                          row[7] * 57.2957795F);
+                log::info("sky {}: a sun at ({:.3f}, {:.3f}, {:.3f}), {:.2f} degrees across, irradiance "
+                          "{:.3f} {:.3f} {:.3f} (its texels from {:.4g} up)",
+                          slice, row[0], row[1], row[2], 2.0F * row[3] * 57.2957795F, row[4], row[5], row[6],
+                          row[7]);
             } else {
-                log::info("sky {}: no sun ({:.0f} degrees of bright sky, which nine coefficients "
-                          "hold well enough)", slice, row[7] * 57.2957795F);
+                log::info("sky {}: no sun (nothing {:.0f} times its median and more: the harmonics hold it all)",
+                          slice, 32.0F);
             }
         }
     }
