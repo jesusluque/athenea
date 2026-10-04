@@ -121,18 +121,22 @@ static const float kCatcherDepth = 6.2831853;
 /// WHAT THE OBJECT TOOK OF THE LIGHT REACHING A CATCHER GAUSSIAN, as the
 /// opacity that takes as much out of what is drawn behind it.
 ///
-/// The gaussian's transfer (a TX one: the object and the ground were what
-/// its bake's rays met) dotted with the frame's first prepared sky, plus the
-/// sun at the share of it its cells let through and its bounce, is the light
-/// that reaches it with the object there (transferViewless's `front`). With
-/// nothing there it would be the sky's irradiance at its normal and the
-/// sun's cosine, both over pi as the transfer is. Their ratio is what is left
-/// of the light; one less it is what the object took. The layer leaves
-/// exp(-kCatcherDepth a) of what is behind it, so a = -ln(ratio) / that.
-/// Light the object bounces onto the ground beyond what it takes (a ratio
-/// over one) is not drawn: a black layer can only take.
+/// Both sides of the ratio in one quadrature, so that a gaussian nothing
+/// shadows reads exactly one under any sky: over the cells of its open
+/// directions (the TX bake's rays, one a cell), the sky's radiance from the
+/// frame's harmonics times the cosine and the cell's solid angle -- with the
+/// object, the cells the bake found open; without it, every cell above the
+/// surface -- and the sun `env_sun` took out of the sky, at its cosine, read
+/// along its own direction through the same bits on the first side alone.
+/// The transfer's projection onto harmonics was the first try, against the
+/// sky's own irradiance on the other side: two band limits that do not cancel,
+/// and a ground that was not one where nothing stood over it.
+///
+/// The layer leaves exp(-kCatcherDepth a) of what is behind it, so a =
+/// -ln(ratio) / that. Light the object bounces onto the ground beyond what it
+/// takes (a ratio over one) is not drawn: a black layer can only take.
 float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
-    if (params.relight == 0 || params.transferCount < 9u || params.transferCount == kTransferZonalCount) {
+    if (params.relight == 0 || params.shadowBits < 8u) {
         return 0.0;
     }
     uint dome = kEnvNone;
@@ -148,27 +152,62 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     const float4 w0 = float4(params.w00, params.w01, params.w02, params.w03);
     const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
     const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
-    SplatSurface s = {};
-    s.normal = relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i));
-    s.transferCount = params.transferCount;
-    s.transferBase = i * params.transferWords * 2;
-    s.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u;
-    s.shadowBits = s.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
-    s.cellWords = params.shadowBits >= 8u ? params.shadowBits : 0u;
-    s.cellBase = i * s.cellWords;
-    float3 front;
-    float3 coupling;
-    float  sunShare;
-    transferViewless<2>(s, transfer, shadowBits, envSh, envSun, dome, params.transferIndirect != 0, front, coupling,
-                        sunShare);
-    float3 open = envIrradiance(envSh, dome, s.normal) * kOverPiSun;
+    const float3 n = relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i));
+    const uint words = params.shadowBits;
+    const uint side = splatCellSide(words);
+    const uint base = i * words;
+    const uint coefficients = 16u;
+    const float3 luma = float3(0.2126, 0.7152, 0.0722);
+    // The sky's luminance coefficients, once.
+    float sky[16];
+    [unroll] for (uint k = 0; k < coefficients; ++k) {
+        sky[k] = dot(envSh[dome * kEnvCoefficients + k].rgb, luma);
+    }
+    float with = 0.0;
+    float without = 0.0;
+    for (uint cell = 0; cell < side * side; ++cell) {
+        const float2 uv = (float2(float(cell % side), float(cell / side)) + 0.5) / float(side);
+        const float3 d = octDecode(uv);
+        const float cosine = dot(n, d);
+        if (!(cosine > 0.0)) {
+            continue;
+        }
+        float radiance = 0.0;
+        [unroll] for (uint k = 0; k < coefficients; ++k) {
+            radiance += sky[k] * envBasisValue(k, d);
+        }
+        const float l1 = abs(d.x) + abs(d.y) + abs(d.z);
+        const float worth = max(radiance, 0.0) * cosine * (4.0 / float(side * side)) * l1 * l1 * l1;
+        without += worth;
+        if (((shadowBits[base + (cell >> 5u)] >> (cell & 31u)) & 1u) != 0u) {
+            with += worth;
+        }
+    }
     const float4 disc = envSun[dome * 2];
     if (disc.w > 0.0) {
-        open += envSun[dome * 2 + 1].rgb * (max(dot(s.normal, disc.xyz), 0.0) * kOverPiSun);
+        const float facing = max(dot(n, disc.xyz), 0.0);
+        const float sun = dot(envSun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
+        // The sun's open share: its four cells about its direction, weighed
+        // bilinearly, those behind the surface left out (splatCellsOpen).
+        const float2 at = octEncode(disc.xyz) * float(side) - 0.5;
+        const float2 lo = floor(at);
+        const float2 f = at - lo;
+        float open = 0.0;
+        float weight = 0.0;
+        [unroll] for (uint k = 0; k < 4; ++k) {
+            const int2 c = clamp(int2(lo) + int2(k & 1, k >> 1), int2(0), int2(int(side) - 1));
+            const float wk = ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
+            if (wk <= 0.0 || dot(octDecode((float2(c) + 0.5) / float(side)), n) <= 0.0) {
+                continue;
+            }
+            const uint index = uint(c.y) * side + uint(c.x);
+            open += wk * float((shadowBits[base + (index >> 5u)] >> (index & 31u)) & 1u);
+            weight += wk;
+        }
+        with += sun * (weight > 0.0 ? open / weight : 1.0);
+        without += sun;
     }
-    const float3 luma = float3(0.2126, 0.7152, 0.0722);
-    const float lit = max(dot(open, luma), 1.0e-6);
-    const float ratio = saturate(dot(front, luma) / lit);
+    const float ratio = saturate(with / max(without, 1.0e-6));
     return opacity * saturate(-log(max(ratio, 1.0e-4)) / kCatcherDepth);
 }
 

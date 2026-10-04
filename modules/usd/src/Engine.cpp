@@ -2706,7 +2706,12 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             // lights leave: the car on the ground under a sky (task TX).
             job.domeSlots = 6;
             for (const render::SplatInstance& instance : splats) {
-                if (instance.splats == nullptr || instance.splats->count == 0) {
+                // A shadow catcher is a shadow already: cast into the map, it
+                // laid its own patch's outline on the ground beneath it once
+                // more along each of the dome's directions -- the straight-
+                // edged blocks under goegap's sun, and the mesh car's frame a
+                // third dark.
+                if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher) {
                     continue;
                 }
                 technique::ShadowMapCaster caster;

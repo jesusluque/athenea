@@ -415,6 +415,20 @@ set_tests_properties(tx_gate_corvette PROPERTIES
     SKIP_RETURN_CODE 77
     TIMEOUT 36000
     LABELS "gpe;tx_gate;slow")
+# THE CATCHER'S GATE: the Corvette's shadow caught by gaussians on its ground
+# (mesh2splat --shadow-catcher), drawn on the raster route over the stage's
+# meshes, against the path traced frame in four windows of the ground.
+add_test(NAME catcher_gate_corvette
+    COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
+            -DSTAGE=${ATHENEA_ASSETS_DIR}/CorvetteC7/usd/corvette_scene.usda -DPRIM=/World/Corvette
+            -DCAMERA=/World/Camera -DOUT=${CMAKE_CURRENT_BINARY_DIR}/catcher_gate/corvette -DWIDTH=960 -DHEIGHT=540
+            -DPATHS=256
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/regress/catcher_against_gt.cmake)
+set_tests_properties(catcher_gate_corvette PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 7200
+    LABELS "gpe;tx_gate;slow")
 
 # A GLASS IS A SHEET BY ITS MESH: a pane modelled as one surface with a solid
 # glass on it converts thin-walled, the closed glass ball solid

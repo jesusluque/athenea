@@ -171,8 +171,13 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             const ProjRecord record = sRecords[j];
             const float4 screen = record.screen;
             // A shadow catcher lies on the layer under it, so its centre's
-            // depth reads behind it as often as not: it is drawn whatever.
-            if (underHit && screen.z >= underZ && abs(record.colour.w - kCatcherMark) > 0.01) {
+            // depth reads behind it as often as not: it is drawn where it is
+            // within a percent and a half of that layer's depth -- the ground
+            // it lies on, seen at a slant -- and not where something stands
+            // in front of it (a mesh car's body over its own shadow, which
+            // went black when every catcher gaussian was drawn).
+            const bool lying = abs(record.colour.w - kCatcherMark) < 0.01 && screen.z <= underZ * 1.015;
+            if (underHit && screen.z >= underZ && !lying) {
                 done = true;
                 break;
             }

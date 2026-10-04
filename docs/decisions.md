@@ -12595,3 +12595,48 @@ shadow), against the path traced frame:
 And with no mesh at all -- the car and its catcher over the sky's floor --
 **147 ms** a frame (the car alone read 156 before the latest TX merge,
 whose playback work is in this build too: not a like-for-like pair).
+
+### Under another sky: what was wrong, and the gate
+
+The catcher was baked once, under the stage's own sky, and drawn under
+goegap (a desert with a sun of 1.2e5) against the path traced mesh car under
+goegap. Three things were wrong, none of them the transfer:
+
+- **It cast into the cloud shadow map.** A catcher is a cloud, so it was one
+  of the map's casters, and the ground under it received its patch's outline
+  along each of the dome's six directions: straight-edged blocks across the
+  ground under a sunny sky, a third of the light gone under a soft one (the
+  frames with a mesh car read 0.119 under the car for GT's 0.182). A
+  catcher casts nothing now.
+- **Its ratio was two projections.** The transfer dotted with the sky's
+  harmonics, against the harmonics' own irradiance at the normal: two band
+  limits that do not cancel, so a ground nothing stood over did not read
+  one. Both sides are one quadrature now -- over the cells of the bake's
+  open directions, the sky's radiance times the cosine and the cell's solid
+  angle, the open cells for one side and every cell above the surface for
+  the other, and the extracted sun on both, read through the same bits on
+  the first.
+- **Drawn over the layer under it everywhere.** A catcher gaussian is drawn
+  past the opaque layer's depth only within a percent and a half of it --
+  the ground it lies on -- so a mesh car's body is not painted with its own
+  shadow.
+
+And the sun: env_sun had taken goegap's as 0.07 of irradiance where it
+delivers 5.8 (next section), so its shadow was the harmonics' smear.
+
+| goegap, 960 x 540 | under the car | the sun's contact | open ground |
+|---|---|---|---|
+| path traced mesh | 0.354 | 0.016 | 0.352 / 0.348 |
+| catcher, first draw | 0.320 | 0.032 | 0.328 / 0.342 |
+| catcher, all of the above | **0.357** | **0.024** | **0.356 / 0.360** |
+
+**The gate** (`ctest -R catcher_gate`, `tests/regress/catcher_against_gt.cmake`):
+the Corvette's catcher baked, the stage's meshes drawn on the raster route
+with it (a prefiltered dome traces no ray, so the catcher is the ground's
+whole shadow), against a path traced frame of 256 paths at 960 x 540, in
+four windows of the ground measured by `athenea compare --window`: under
+the car 0.188 against 0.181, the contact 0.030 against 0.042, the open
+ground 0.218 against 0.217 and 0.227 against 0.220. Within 10% of the GT
+under the car and on the open ground, and 40% at the contact, where the
+catcher is still dark: a gap of a few centimetres under the bumper against
+a 1.26 cm cell, with the light coming through a wedge at the horizon.
