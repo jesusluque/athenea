@@ -964,7 +964,7 @@ float3 transmittedShare(SplatSurface s, float nDotV) {
                                             s.lobes.specularWeight);
 }
 
-float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
+float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord light, uint dome,
                    StructuredBuffer<uint> envTexels, StructuredBuffer<float4> envSh, uint envBaseSide,
                    StructuredBuffer<float4> envSun, StructuredBuffer<uint> transfer,
                    StructuredBuffer<uint> cellBits, bool withIndirect) {
@@ -982,7 +982,7 @@ float3 relitByDome(SplatSurface s, float3 wo, LightRecord light, uint dome,
     // body: a glass ball under a sky is its own colour, not a dark shell.
     // A cloud that carries a transfer answers the body from it, and answers
     // it for any sky: what it keeps is the geometry, not the light.
-    if (dome != kEnvNone && s.transferCount >= 9 && !s.lit) {
+    if (kTransfer != 0 && dome != kEnvNone && s.transferCount >= 9 && !s.lit) {
         float3 front = transferredBody(s, transfer, envSh, dome, withIndirect);
         // THE DISC THE HARMONICS NO LONGER HOLD. `env_sun` took it out of
         // them and handed over its direction and the irradiance it delivers,
@@ -1243,7 +1243,7 @@ public float3 splatLightBounce(SplatSurface s, float3 wo, LightSample ls, Struct
 /// `shadowLights` of 0 means nothing measured a shadow, and each light is
 /// taken whole; otherwise `shadowFactors[shadowBase + k]` is what reaches the
 /// splat from light k (splat_shadow.slang).
-public float3 relitSplat(SplatSurface s, float3 wo, StructuredBuffer<LightRecord> lights, uint lightCount,
+public float3 relitSplat<let kTransfer : int>(SplatSurface s, float3 wo, StructuredBuffer<LightRecord> lights, uint lightCount,
                          uint categoriesLo, uint categoriesHi, StructuredBuffer<float> shadowFactors,
                          uint shadowBase, uint shadowLights, StructuredBuffer<uint> envTexels,
                          StructuredBuffer<float4> envSh, StructuredBuffer<uint> envOfLight,
@@ -1263,7 +1263,7 @@ public float3 relitSplat(SplatSurface s, float3 wo, StructuredBuffer<LightRecord
             // A dome is everywhere and nowhere: no distance to fade over.
             const uint dome = k < envLights ? envOfLight[k] : kEnvNone;
             lit += shadowTint(light, through, 0.0) *
-                   relitByDome(s, wo, light, dome, envTexels, envSh, envBaseSide, envSun, transfer, cellBits,
+                   relitByDome<kTransfer>(s, wo, light, dome, envTexels, envSh, envBaseSide, envSun, transfer, cellBits,
                                withIndirect);
             continue;
         }
@@ -1277,7 +1277,7 @@ public float3 relitSplat(SplatSurface s, float3 wo, StructuredBuffer<LightRecord
         // ways leave the scene, so an occluder beyond a light inside the
         // scene shadows it too: right for a sun and a lamp far off, the
         // approximation for one standing among things.
-        if (s.cellWords >= 8u && (light.flags & kLightShadow) != 0u) {
+        if (kTransfer != 0 && s.cellWords >= 8u && (light.flags & kLightShadow) != 0u) {
             const float open = splatConeOpen(s, cellBits, ls.wi, lightHalfAngle(light, ls.distance), s.normal);
             const float bits = open >= 0.0 ? open : 1.0;
             const float shadowed = k < shadowLights ? min(through, bits) : bits;

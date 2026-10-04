@@ -262,7 +262,7 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         // A traced frame has no shadow pass of its own, but a cloud that
         // carries a baked visibility had its factors measured before the
         // frame, and they are read here exactly as the rasteriser reads its.
-        colour = relitSplat(surface, normalize(eyeWorld - surface.position), lights,
+        colour = relitSplat<1>(surface, normalize(eyeWorld - surface.position), lights,
                             params.lightCount, params.categoriesLo, params.categoriesHi,
                             shadowFactors, (params.shadowBase + i) * params.shadowLights,
                             params.shadowLights, envTexels, envSh, envOfLight,

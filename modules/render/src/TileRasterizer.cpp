@@ -73,6 +73,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
         return ok();
     };
     ATHENEA_TRY(make(r.project_, "athenea/splat/splat_project", "splatProject"));
+    ATHENEA_TRY(make(r.projectPlain_, "athenea/splat/splat_project", "splatProjectPlain"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
     ATHENEA_TRY(make(r.pointsProject_, "athenea/splat/points_project", "pointsProject"));
     auto placeholderColour = buffer(*r.device_, 1, 16, "blend.noUnderColour");
@@ -338,7 +339,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
         const Vec3 eyeObject =
             aofx::xform::inverseAffine(instance.objectToWorld).point(projection.eyeWorld);
-        project_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        gpu::ComputeKernel& project = cloud->hasTransfer() ? project_ : projectPlain_;
+        project.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["positions"].setBinding(cloud->positions.rhi());
             cursor["shape"].setBinding(cloud->shape.rhi());
             cursor["sh"].setBinding(cloud->sh.rhi());

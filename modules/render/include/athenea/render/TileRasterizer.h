@@ -312,6 +312,9 @@ private:
     gpu::PrefixSum     prefix_;
     gpu::RadixSort     sort_;
     gpu::ComputeKernel project_;
+    /// The same with the transfer's shading compiled out, for a cloud that
+    /// carries none (splat_project.slang's projectSplat says why).
+    gpu::ComputeKernel projectPlain_;
     gpu::ComputeKernel compact_;
     gpu::ComputeKernel pointsProject_;
     gpu::ComputeKernel gather_;

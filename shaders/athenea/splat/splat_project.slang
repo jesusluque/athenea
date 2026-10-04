@@ -84,9 +84,14 @@ void cull(uint slot, uint reason) {
     tileRects[slot * 4 + 3] = 0;
 }
 
-[shader("compute")]
-[numthreads(256, 1, 1)]
-void splatProject(uint3 tid: SV_DispatchThreadID) {
+/// ONE SPLAT PROJECTED, and shaded where its cloud is relit. `kTransfer` 0
+/// compiles the transfer's shading out (splatProjectPlain): a cloud with no
+/// transfer never takes it, and on Metal the kernel that holds it drew a
+/// relit cloud without one with whole splats gone wrong -- a stretched
+/// splat of one colour channel, a dozen a frame, somewhere new each run --
+/// where the same kernel with either branch compiled out drew it clean, and
+/// the ray traced route, the same shading, was clean too.
+void projectSplat<let kTransfer : int>(uint3 tid) {
     const uint i = tid.x;
     if (i >= params.count) {
         return;
@@ -362,7 +367,7 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
         surface.cellWords = params.shadowBits >= 8u && params.transferCount >= 9 ? params.shadowBits : 0u;
         surface.cellBase = i * surface.cellWords;
         const uint shadowLights = params.shadowRays != 0 ? params.shadowLights : 0;
-        colour = relitSplat(surface, normalize(eye - surface.position), lights,
+        colour = relitSplat<kTransfer>(surface, normalize(eye - surface.position), lights,
                             params.lightCount, params.categoriesLo, params.categoriesHi,
                             shadowFactors, slot * params.shadowLights, shadowLights,
                             envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
@@ -392,4 +397,19 @@ void splatProject(uint3 tid: SV_DispatchThreadID) {
     // radix passes instead of four; splats nearer each other than that keep
     // index order, as exact ties always did.
     depthKeys[slot] = bit_cast<uint>(t.z) >> 7;
+}
+
+/// A cloud that carries a transfer: everything.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void splatProject(uint3 tid: SV_DispatchThreadID) {
+    projectSplat<1>(tid);
+}
+
+/// A cloud that carries none: the same with the transfer's shading compiled
+/// out (projectSplat says why).
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void splatProjectPlain(uint3 tid: SV_DispatchThreadID) {
+    projectSplat<0>(tid);
 }

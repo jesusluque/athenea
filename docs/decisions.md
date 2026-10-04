@@ -11609,6 +11609,32 @@ mesh's mask its grazing Fresnel is read a pixel further in, lower.
 **Checked** (pending the GPU turn): the coat over black and the paint ball
 under white with `--validate`; the lobes conversions.
 
+### A cloud with no transfer is projected by a kernel without one
+
+The lobes conversions' relit chrome went from p99 0.081 to 0.46-0.84 against
+the mesh path traced, and the picture said why: a dozen splats a frame drawn
+stretched and of one colour channel (red, green, magenta...), somewhere new
+on every run of the same file. The cloud was clean (every gaussian Schlick,
+metallic one, roughness 0.1, one colour); the binary of 22:48 drew it clean,
+and every one after the transfer's shading grew (the cells, the field, the
+glass, the zonal frame) drew it blotched, with cloud shadows or without,
+with the fillers taken out or not. The ray traced route, the same shading,
+drew it clean, and so did `splatProject` with either the transfer's dome
+branch or its cells' light branch compiled out -- code this cloud never runs.
+So it is the size of the kernel, not its arithmetic: on Metal Slang keeps a
+kernel's state in thread memory, and a kernel that holds too much draws some
+of its threads wrong rather than failing (the iPad refused one outright;
+de0413c, 254a609).
+
+`splatProject` is now `projectSplat<kTransfer>`, two entry points: the one a
+cloud with a transfer takes, and `splatProjectPlain` with the transfer's
+shading compiled out (`relitSplat<0>`, `relitByDome<0>`), which every other
+cloud takes. A relit or baked cloud draws as it did before the transfer
+grew; the transfer's own kernel is the one to watch.
+
+**Checked** (pending the GPU turn): the frozen chrome card, three runs; the
+lobes conversions; a TX ball.
+
 ### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
 
 A car converted to gaussians cast nothing on the ground under a sky: the
