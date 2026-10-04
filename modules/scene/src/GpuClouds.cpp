@@ -981,6 +981,15 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
         written += *kept;
     }
     ATHENEA_TRY(finishSplats(*splats, written));
+    // The shape operator, three floats a record, laid out a kept splat each.
+    if (!in.curvature.empty() && !in.curvature.half && !in.curvature.isDouble &&
+        in.curvature.values() >= uint64_t{n} * 3) {
+        auto byRecord = streamBuffer(in.curvature, "splats.stream.curvature");
+        if (!byRecord) return std::move(byRecord).error();
+        auto kept = keptOnly(*splats, *byRecord, 3, "splats.curvature");
+        if (!kept) return std::move(kept).error();
+        splats->curvature = std::move(*kept);
+    }
     return splats;
 }
 

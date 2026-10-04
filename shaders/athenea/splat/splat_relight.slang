@@ -976,10 +976,37 @@ float3 transmittedShare(SplatSurface s, float nDotV) {
                                             s.lobes.specularWeight);
 }
 
+/// HOW THE REFLECTION TURNS ACROSS A GAUSSIAN'S FOOTPRINT (task TX). The
+/// caller says which way the surface faces a pixel to the right of the
+/// gaussian's centre and a pixel below it (`normalX`, `normalY`, in the
+/// world; `on` where it knows, from the cloud's curvature), and the dome's
+/// reflection answers how much its colour changes over those two steps:
+/// the sky read along the two mirrors the turned normals give, less what
+/// it reads along the centre's, times what the reflection is weighed by.
+/// A rasteriser adds that slope over the footprint, so a gaussian draws the
+/// highlight moving across it rather than its centre's flat over all of it.
+public struct SplatSlope {
+    public bool   on;
+    public float3 normalX;
+    public float3 normalY;
+    public float3 slopeX;   ///< the colour's change a pixel to the right
+    public float3 slopeY;   ///< and a pixel down
+};
+
+public SplatSlope noSlope() {
+    SplatSlope g;
+    g.on = false;
+    g.normalX = float3(0.0, 0.0, 1.0);
+    g.normalY = float3(0.0, 0.0, 1.0);
+    g.slopeX = float3(0.0);
+    g.slopeY = float3(0.0);
+    return g;
+}
+
 float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord light, uint dome,
                    StructuredBuffer<uint> envTexels, StructuredBuffer<float4> envSh, uint envBaseSide,
                    StructuredBuffer<float4> envSun, StructuredBuffer<uint> transfer,
-                   StructuredBuffer<uint> cellBits, bool withIndirect) {
+                   StructuredBuffer<uint> cellBits, bool withIndirect, inout SplatSlope slope) {
     const float nDotV = max(dot(s.normal, wo), 1.0e-4);
     const float3 mirror = reflect(-wo, s.normal);
     const float3 body = s.lit ? float3(0.0) : s.albedo * (1.0 - s.metallic);
@@ -1109,6 +1136,24 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // its albedo at this eye times the light the transfer says reaches
         // the gaussian, shadow and sun included -- under the coat.
         const float3 sheen = layers.belowCoat * layers.sheen * front;
+        // THE SLOPE: the open part of the reflection, read again along the
+        // mirrors a pixel away (SplatSlope).
+        if (kTransfer != 0 && slope.on && !s.hasReflection) {
+            const float3 mirrorX = reflect(-wo, slope.normalX);
+            const float3 mirrorY = reflect(-wo, slope.normalY);
+            const float3 polishWeight = layers.under * thinWallGain(s) * splatPolish(s, nDotV) * narrowed;
+            slope.slopeX = polishWeight * (envRadiance(envTexels, dome, mirrorX, s.roughness, envBaseSide) - seen);
+            slope.slopeY = polishWeight * (envRadiance(envTexels, dome, mirrorY, s.roughness, envBaseSide) - seen);
+            if (coated) {
+                const float3 coatSeen = envRadiance(envTexels, dome, mirror, s.lobes.coatRoughness, envBaseSide);
+                const float coatOpen = splatLobeOpen(s, cellBits, mirror, s.lobes.coatRoughness, s.normal);
+                const float3 coatWeight = layers.coat * (cells ? coatOpen : 1.0);
+                slope.slopeX += coatWeight * (envRadiance(envTexels, dome, mirrorX, s.lobes.coatRoughness,
+                                                          envBaseSide) - coatSeen);
+                slope.slopeY += coatWeight * (envRadiance(envTexels, dome, mirrorY, s.lobes.coatRoughness,
+                                                          envBaseSide) - coatSeen);
+            }
+        }
         if (field) {
             const float3 closed = coupling * splatFieldAlong(s, transfer, mirror, s.roughness);
             return body2 +
@@ -1260,7 +1305,8 @@ public float3 relitSplat<let kTransfer : int>(SplatSurface s, float3 wo, Structu
                          uint shadowBase, uint shadowLights, StructuredBuffer<uint> envTexels,
                          StructuredBuffer<float4> envSh, StructuredBuffer<uint> envOfLight,
                          uint envLights, uint envBaseSide, StructuredBuffer<float4> envSun,
-                         StructuredBuffer<uint> transfer, StructuredBuffer<uint> cellBits, bool withIndirect) {
+                         StructuredBuffer<uint> transfer, StructuredBuffer<uint> cellBits, bool withIndirect,
+                         inout SplatSlope slope) {
     // A baked body starts from the light it already carries -- its emission
     // in it; an albedo starts from what it gives off by itself and gathers.
     float3 lit = s.lit ? s.albedo : s.emission;
@@ -1276,7 +1322,7 @@ public float3 relitSplat<let kTransfer : int>(SplatSurface s, float3 wo, Structu
             const uint dome = k < envLights ? envOfLight[k] : kEnvNone;
             lit += shadowTint(light, through, 0.0) *
                    relitByDome<kTransfer>(s, wo, light, dome, envTexels, envSh, envBaseSide, envSun, transfer, cellBits,
-                               withIndirect);
+                               withIndirect, slope);
             continue;
         }
         const LightSample ls = sampleLight(light, s.position, s.normal, float2(0.5, 0.5));

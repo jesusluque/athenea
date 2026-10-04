@@ -847,6 +847,12 @@ public:
         // floats more, last, after the harmonics the bake writes.
         layered_ = std::any_of(pieces_.begin(), pieces_.end(),
                                [](const Piece& piece) { return piece.material->layered(); });
+        // AND HOW THE SURFACE TURNS UNDER EACH GAUSSIAN, for a TX transfer: a
+        // frame turns the reflection across the gaussian by it. Apart from
+        // the records, three floats a gaussian; not where the levels of
+        // detail reorder the cloud or a skeleton carries it.
+        curved_ = options_->transfer && options_->transferCells > 0 && options_->lodLevels <= 1 &&
+                  !options_->skinned;
         raw.encoding.floatsPerRecord = recordFloats();
         raw.encoding.lobes = layered_ ? raw.encoding.floatsPerRecord - 13 : io::SplatEncoding::kNoField;
         raw.encoding.opacity_ = io::SplatEncoding::Opacity::Linear;
@@ -1266,7 +1272,7 @@ private:
         // AND ONE FOR WHAT IT GIVES OFF, the last, where the stage emits.
         // AND FOUR FOR WHAT THE MATERIAL LAYERS OVER ITS BASE, after it.
         const uint32_t recordEntries =
-            kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U) + (layered_ ? 4U : 0U);
+            kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U) + (layered_ ? 4U : 0U) + (curved_ ? 1U : 0U);
         const image::PixelRect bounds = pictureFor(budget * recordEntries);
 
         // The box the density is measured over: the model's, or this mesh's
@@ -1399,6 +1405,7 @@ private:
                                                        : 0.0);
         }
 
+        number("writeCurvature", curved_ ? 1.0 : 0.0);
         if (layered_) {
             // Every piece writes them once one does, so the records stay one
             // layout; a material that names none writes the plain ones.
@@ -1491,6 +1498,9 @@ private:
         };
         ATHENEA_TRY(grown(records_, uint64_t{perRecord} * 4, 4, "mesh2splat.records"));
         ATHENEA_TRY(grown(rays_, 48, 16, "mesh2splat.rays"));
+        if (curved_) {
+            ATHENEA_TRY(grown(curvatures_, 12, 4, "mesh2splat.curvatures"));
+        }
         if (options_->skinned) {
             ATHENEA_TRY(grown(influences_, 32, 16, "mesh2splat.influences"));
             ATHENEA_TRY(grown(gradients_, 12, 4, "mesh2splat.weightGradients"));
@@ -1530,6 +1540,8 @@ private:
             cursor["gather"]["overArea"].setData(options_->simplify > 0.0 ? 1u : 0u);
             cursor["gather"]["emits"].setData(emits_ ? 1u : 0u);
             cursor["gather"]["lobes"].setData(layered_ ? 1u : 0u);
+            cursor["gather"]["curved"].setData(curved_ ? 1u : 0u);
+            cursor["curvatures"].setBinding(curved_ ? curvatures_.rhi() : records_.rhi());
         };
         const uint32_t threads = static_cast<uint32_t>(run.written);
         gather_.dispatch(batch, {threads, 1, 1}, bind);
@@ -1651,6 +1663,10 @@ private:
     /// (`usd::StageMaterial::layered`): the records then carry the thirteen
     /// floats of `io::SplatEncoding::lobes`, last.
     bool                                     layered_ = false;
+    /// Whether the effect writes each gaussian's shape operator, gathered
+    /// into `curvatures_` (three floats a gaussian).
+    bool                                     curved_ = false;
+    gpu::Buffer                              curvatures_;
     /// The Cryptomatte id of the prim each splat came from, in the same order,
     /// and what those ids are called.
     std::vector<uint32_t>                    cryptoIds_;
@@ -1688,6 +1704,17 @@ public:
     [[nodiscard]] double modelCell() const noexcept { return modelCell_; }
     [[nodiscard]] const std::vector<int32_t>& thinWalled() const noexcept { return thinWalled_; }
     [[nodiscard]] const std::vector<int32_t>& schlickMetal() const noexcept { return schlickMetal_; }
+    /// Each gaussian's shape operator (uu, uv, vv), read back for the file;
+    /// empty where the conversion did not write it.
+    [[nodiscard]] Result<std::vector<float>> curvature() {
+        std::vector<float> out;
+        if (!curved_ || !curvatures_.valid() || used_ == 0) {
+            return out;
+        }
+        out.resize(size_t{used_} * 3);
+        ATHENEA_TRY(curvatures_.read(library_->device(), 0, out.size() * sizeof(float), out.data()));
+        return out;
+    }
     [[nodiscard]] float glassIor() const noexcept { return glassIor_; }
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
@@ -2858,6 +2885,9 @@ void addMesh2Splat(CLI::App& app) {
                 options.cryptoManifest = converter.cryptoManifest();
                 options.thinWalled = converter.thinWalled();
                 options.schlickMetal = converter.schlickMetal();
+                auto curvature = converter.curvature();
+                if (!curvature) return std::move(curvature).error();
+                options.curvature = *curvature;
                 options.ior = converter.glassIor();
                 options.transferDirect = transferred.direct;
                 options.transferIndirect = transferred.bounced;

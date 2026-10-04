@@ -337,6 +337,16 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(schlick));
     }
 
+    // HOW THE SURFACE TURNS UNDER EACH GAUSSIAN: three floats a record, its
+    // shape operator in the gaussian's own two axes. Written only with them.
+    if (options.curvature.size() >= size_t{count} * 3 && count > 0) {
+        VtFloatArray shape(options.curvature.begin(), options.curvature.begin() + size_t{count} * 3);
+        UsdGeomPrimvar curvature = UsdGeomPrimvarsAPI(splats.GetPrim())
+                                       .CreatePrimvar(TfToken("primvars:athenea:splat:curvature"),
+                                                      SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex, 3);
+        curvature.Set(VtValue(shape));
+    }
+
     // HOW MUCH OF AN ENVIRONMENT REACHES EACH GAUSSIAN. Nine floats a record
     // of the direct half, and twenty-seven more of the indirect one where it
     // was baked, vertex-interpolated like everything else a gaussian carries.
@@ -441,7 +451,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             TfToken("primvars:athenea:splat:roughness"),    TfToken("primvars:athenea:splat:transmission"),
             TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
             TfToken("primvars:athenea:splat:thinWalled"),   TfToken("primvars:athenea:splat:shadowBits"),
-            TfToken("primvars:athenea:splat:schlickMetal"),
+            TfToken("primvars:athenea:splat:schlickMetal"), TfToken("primvars:athenea:splat:curvature"),
             TfToken("primvars:athenea:splat:normal"),       TfToken("primvars:athenea:splat:linear"),
             TfToken("primvars:athenea:splat:emission"),     TfToken("primvars:athenea:splat:coatWeight"),
             TfToken("primvars:athenea:splat:specularWeight"), TfToken("primvars:athenea:splat:sheenColor")};

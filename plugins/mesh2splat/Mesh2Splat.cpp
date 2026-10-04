@@ -174,7 +174,9 @@ struct Mesh2SplatUniforms {
     /// How much the surface's turn across a gaussian widens its roughness
     /// (m2sSpread); 0 leaves the material's.
     float    normalSpread = 0.0F;
-    uint32_t lobesPad2 = 0;
+    /// 0: not written. Otherwise the entry, after all the others, of the
+    /// surface's shape operator in the gaussian's own two axes (m2sShape).
+    uint32_t curvatureEntry = 0;
 
     /// MAPS ON THE LAYERS (task TX): up to three clips, Layer0..2, each read
     /// for one input in place of its constant -- `layerTarget` 1 specular
@@ -431,6 +433,16 @@ public:
         spread.hardMin = {0.0};
         spread.hardMax = {4.0};
         into.params.push_back(spread);
+
+        aofx::ParamDesc curved;
+        curved.name = "writeCurvature";
+        curved.label = "Write curvature";
+        curved.hint =
+            "One entry more a record, after everything else: how the surface's normal turns across the "
+            "gaussian, as the shape operator in its own two axes (uu, uv, vv, 0), from the corners' normals.";
+        curved.type = aofx::ParamType::Boolean;
+        curved.defaults = {0.0};
+        into.params.push_back(curved);
 
         aofx::ParamDesc metallic;
         metallic.name = "metallic";
@@ -822,6 +834,11 @@ public:
                 uniforms.layerHeight[k] = static_cast<uint32_t>(plane->buffer.height);
                 uniforms.layerStride[k] = static_cast<uint32_t>(plane->buffer.stride);
             }
+        }
+        // And how the surface turns under each gaussian, last of all.
+        if (request.number("writeCurvature", 0.0) >= 0.5) {
+            uniforms.curvatureEntry = uniforms.recordPixels;
+            uniforms.recordPixels += 1U;
         }
         uniforms.dstWidth = static_cast<uint32_t>(target->buffer.width);
         uniforms.dstHeight = static_cast<uint32_t>(target->buffer.height);

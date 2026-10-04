@@ -1113,6 +1113,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:transferZonal` | float[] ‹10 a gaussian› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 or 32 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:curvature` | float[] ‹3 a gaussian› | — |
 | `primvars:athenea:splat:schlickMetal` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 a gaussian› | — |
@@ -1194,6 +1195,12 @@ cabin -- where they are not, along the way straight through, as a slab sends
 it. Where a cloud carries the layers, a transmitting gaussian bends by its
 own index (`specularIor`) wherever the cloud's `ior` says it bends at all;
 the cloud's single `ior` is whichever glass the conversion met first.
+`curvature` is how the surface turns under the gaussian: its shape operator
+in the gaussian's own first two axes (uu, uv, vv), from the mesh's corner
+normals. `athenea mesh2splat --transfer` writes it (not with levels of detail
+or `--skinned`), and a frame then turns the reflection across each
+gaussian's footprint -- the highlight a car's lacquer shows moves across a
+gaussian rather than standing flat on it.
 `schlickMetal` is nonzero where the gaussian's metal is a Schlick -- OpenPBR's
 and glTF's, from its colour head on to its specular colour at grazing --
 rather than the conductor of an artistic index that standard_surface's and

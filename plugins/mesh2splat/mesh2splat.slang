@@ -164,7 +164,7 @@ struct M2sParams {
     uint  lobesEntry;        // 0: not written; else the first of the four
     float coatDarkening;     // the fourth: (coat darkening, 0, 0, 0)
     float normalSpread;      // m2sSpread: 0 the material's roughness as it is
-    uint  lobesPad2;
+    uint  curvatureEntry;    // 0: not written; else the entry of the shape operator (m2sShape)
 
     // MAPS ON THE LAYERS (task TX, m2sLayersAt): up to three, each read for
     // one input in place of its constant. Target 1 specular weight, 2
@@ -1080,6 +1080,34 @@ float m2sSpread(const M2sTriangle t, float3 scale) {
     return params.normalSpread * turn * max(scale.x, scale.y);
 }
 
+/// THE SHAPE OPERATOR UNDER A GAUSSIAN, in its own two axes `u` and `v`: how
+/// the normal turns as a point moves across the surface, `dn = S dx`, from
+/// the triangle's corners -- their normals apart against their positions
+/// apart -- made symmetric, as a shape operator is. (uu, uv, vv). What lets a
+/// frame turn the reflection across the gaussian's footprint instead of
+/// showing its centre's over all of it (docs/decisions.md, task TX).
+float3 m2sShape(const M2sTriangle t, float3 u, float3 v) {
+    const float3 e1 = t.p1.xyz - t.p0.xyz;
+    const float3 e2 = t.p2.xyz - t.p0.xyz;
+    const float3 n0 = normalize(t.n0.xyz);
+    const float3 d1 = normalize(t.n1.xyz) - n0;
+    const float3 d2 = normalize(t.n2.xyz) - n0;
+    const float a11 = dot(e1, u), a12 = dot(e2, u);
+    const float a21 = dot(e1, v), a22 = dot(e2, v);
+    const float det = a11 * a22 - a12 * a21;
+    if (!(abs(det) > 1.0e-24) || !all(isfinite(float3(d1 + d2)))) {
+        return float3(0.0);
+    }
+    const float i11 = a22 / det, i12 = -a12 / det, i21 = -a21 / det, i22 = a11 / det;
+    const float c11 = dot(d1, u), c12 = dot(d2, u);
+    const float c21 = dot(d1, v), c22 = dot(d2, v);
+    const float s11 = c11 * i11 + c12 * i21;
+    const float s12 = c11 * i12 + c12 * i22;
+    const float s21 = c21 * i11 + c22 * i21;
+    const float s22 = c21 * i12 + c22 * i22;
+    return float3(s11, 0.5 * (s12 + s21), s22);
+}
+
 /// A roughness (perceptual, alpha its square) widened by a spread of normals.
 float m2sWidened(float roughness, float spread) {
     const float alpha = roughness * roughness;
@@ -1165,7 +1193,8 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     records[recordAt(slot, 3)] = float4(colour, 0.0);
     // The entries before the relief's three and the emission's one: 4, 6 or 9.
     const uint own = params.recordPixels - (params.displaceRefine != 0 ? 3u : 0u) -
-                     (params.emissionEntry != 0 ? 1u : 0u) - (params.lobesEntry != 0 ? 4u : 0u);
+                     (params.emissionEntry != 0 ? 1u : 0u) - (params.lobesEntry != 0 ? 4u : 0u) -
+                     (params.curvatureEntry != 0 ? 1u : 0u);
     if (own >= 6) {
         records[recordAt(slot, 4)] = float4(shading, metallic);
         records[recordAt(slot, 5)] = float4(roughness, params.transmission, uv.x, uv.y);
@@ -1209,6 +1238,9 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         records[recordAt(slot, params.lobesEntry + 1)] = coat;
         records[recordAt(slot, params.lobesEntry + 2)] = sheen;
         records[recordAt(slot, params.lobesEntry + 3)] = float4(params.coatDarkening, 0.0, 0.0, 0.0);
+    }
+    if (params.curvatureEntry != 0) {
+        records[recordAt(slot, params.curvatureEntry)] = float4(m2sShape(t, alongU, alongV), 0.0);
     }
     return true;
 }

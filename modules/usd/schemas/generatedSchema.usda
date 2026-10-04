@@ -258,6 +258,11 @@ object through the glass wants a ray, which this is not."""
         doc = """Nonzero where the gaussian's metal is a Schlick -- OpenPBR's generalized_schlick_bsdf, glTF's -- from its colour head on to its specular colour at grazing, rather than a conductor of the artistic index standard_surface's and UsdPreviewSurface's are. One int a gaussian; only read beside the PBR arrays."""
         interpolation = "vertex"
     )
+    float[] primvars:athenea:splat:curvature = [] (
+        doc = """How the surface turns under the gaussian: its shape operator in the gaussian's own first two axes (uu, uv, vv), so that the normal a step dx across the footprint away is n + S dx. Three floats a gaussian (elementSize 3), written by a TX transfer's conversion from the mesh's corner normals. A frame turns the transfer's reflection across the gaussian's footprint by it instead of showing the centre's over all of it. Without it the reflection is flat across each gaussian."""
+        elementSize = 3
+        interpolation = "vertex"
+    )
     int[] primvars:athenea:splat:shadowBits = [] (
         doc = """Which ways out of this gaussian are open: sixty-four bits over an 8 x 8 octahedral grid of the sphere, a bit set where a ray traced at the bake left the scene. Two int32 a gaussian (elementSize 2), read as bits; or eight or thirty-two (a TX transfer's 16 x 16 or 32 x 32 grid over the whole sphere), which the count says. It is what lets a sun taken out of the sky cast a hard shadow on the cloud; without it that sun is weighed by the transfer's own direct half, which is soft. Only read beside a transfer. Beside `transferZonal` the grid is over the gaussian's own frame rather than the field's space."""
         elementSize = 2

@@ -155,11 +155,19 @@ public struct FrameParams {
     public float s00; public float s01; public float s02; public float s03;
     public float s10; public float s11; public float s12; public float s13;
     public float s20; public float s21; public float s22; public float s23;
+    /// 1: `curvature` holds this cloud's shape operators, and a TX transfer's
+    /// reflection gets its slope across the footprint (splat_project).
+    public uint  hasCurvature;
     public EditParams edit;      // this cloud instance's SplatEdit (common/edit.slang)
 };
 
 /// What the projection leaves for the blend, one record per splat, so a pair
 /// costs the blend one memory access and not three.
+/// What a record's colour.w says when the splat's colour has a slope across
+/// its footprint in `slopes` (splat_project, splat_blend): neither 0, a plain
+/// splat, nor above a half, an opaque point of the layer under the splats.
+public static const float kSlopeMark = 0.25;
+
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power
     public float4 conic;    // a, b, c, alpha

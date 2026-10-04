@@ -134,6 +134,10 @@ struct ExportOptions {
     /// One int a record, 1 where the gaussian's metal is a Schlick (OpenPBR,
     /// glTF) rather than a conductor (`primvars:athenea:splat:schlickMetal`).
     std::span<const int32_t>        schlickMetal;
+    /// Three floats a record, the surface's shape operator in the gaussian's
+    /// own two axes (uu, uv, vv): `primvars:athenea:splat:curvature`, what a
+    /// frame turns a TX transfer's reflection across the gaussian by.
+    std::span<const float>          curvature;
     /// `primvars:athenea:splat:ior` when above 1: the index the cloud's
     /// transmitting gaussians refract by. Not written at 0.
     float                           ior = 0.0F;

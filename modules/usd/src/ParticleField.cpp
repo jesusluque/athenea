@@ -264,6 +264,8 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.thinWalled = held(kThinWalled);
         static const TfToken kSchlickMetal("athenea:splat:schlickMetal");
         arrays.schlickMetal = held(kSchlickMetal);
+        static const TfToken kCurvature("athenea:splat:curvature");
+        arrays.curvature = held(kCurvature);
         static const TfToken kShadowBits("athenea:splat:shadowBits");
         arrays.shadowBits = held(kShadowBits);
         // The shading normal a conversion keeps apart from the frame.

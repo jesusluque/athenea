@@ -23,6 +23,11 @@ StructuredBuffer<uint>      sh;
 StructuredBuffer<uint>      pbr;      // metallic and roughness a splat, where the cloud carries them
 // The shading normal a splat, where the cloud carries one (`params.hasNormals`).
 StructuredBuffer<uint>      normals;
+// Three floats a splat, the shape operator in its first two axes, where
+// `params.hasCurvature`; and what the reflection's slope across the footprint
+// came to, a slot each, where the record's colour.w says so (kSlopeMark).
+StructuredBuffer<float>     curvature;
+RWStructuredBuffer<uint4>   slopes;
 // The radiance a splat gives off, RGB9E5, where the cloud carries it
 // (`params.hasEmission`).
 StructuredBuffer<uint>      emission;
@@ -292,6 +297,8 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
     const float3 dir = normalize(posOpacity.xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
     float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
+    // Whether `slopes[slot]` holds the reflection's slope (kSlopeMark).
+    bool sloped = false;
     if (params.relight != 0) {
         // AtheneaSplatLightingAPI: the radiance a capture was baked with replaced
         // by what this scene's lights put on it. What that means is in
@@ -367,12 +374,53 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         surface.cellWords = params.shadowBits >= 8u && params.transferCount >= 9 ? params.shadowBits : 0u;
         surface.cellBase = i * surface.cellWords;
         const uint shadowLights = params.shadowRays != 0 ? params.shadowLights : 0;
+        // WHICH WAY THE SURFACE FACES A PIXEL AWAY (SplatSlope): the shape
+        // operator, in the splat's first two axes, applied to the step in
+        // those axes that one pixel right and one pixel down are -- the
+        // projection's own linearisation (`tx3`, `ty3`), inverted on the
+        // splat's plane -- and turned with the normal the eye sees.
+        SplatSlope slope = noSlope();
+        if (kTransfer != 0 && params.hasCurvature != 0 && surface.cellWords >= 8u) {
+            const float3 u = float3(r[0][0], r[1][0], r[2][0]);
+            const float3 v = float3(r[0][1], r[1][1], r[2][1]);
+            const float2x2 toPixels = float2x2(dot(tx3, u), dot(tx3, v), dot(ty3, u), dot(ty3, v));
+            const float det = toPixels[0][0] * toPixels[1][1] - toPixels[0][1] * toPixels[1][0];
+            if (abs(det) > 1.0e-12) {
+                // A pixel right, (1, 0), and down, (0, 1), on the splat's plane.
+                const float2 stepX = float2(toPixels[1][1], -toPixels[1][0]) / det;
+                const float2 stepY = float2(-toPixels[0][1], toPixels[0][0]) / det;
+                const float3 shapeUV = float3(curvature[i * 3], curvature[i * 3 + 1], curvature[i * 3 + 2]);
+                const float2x2 shapeOf = float2x2(shapeUV.x, shapeUV.y, shapeUV.y, shapeUV.z);
+                // The shape operator was measured on the mesh's normal; the
+                // eye may be on the other side of the disc.
+                const float3 axis = float3(r[0][2], r[1][2], r[2][2]);
+                const float side = dot(cloudNormal, axis) >= 0.0 ? 1.0 : -1.0;
+                const float2 turnX = mul(shapeOf, stepX) * side;
+                const float2 turnY = mul(shapeOf, stepY) * side;
+                // A step the plane barely holds (a splat seen edge on) turns
+                // the normal at most this far.
+                const float most = 0.5;
+                const float3 dx = u * turnX.x + v * turnX.y;
+                const float3 dy = u * turnY.x + v * turnY.y;
+                const float3 nx = normalize(cloudNormal + dx * min(1.0, most / max(length(dx), 1.0e-9)));
+                const float3 ny = normalize(cloudNormal + dy * min(1.0, most / max(length(dy), 1.0e-9)));
+                slope.on = true;
+                slope.normalX = relightNormalToWorld(w0, w1, w2, nx);
+                slope.normalY = relightNormalToWorld(w0, w1, w2, ny);
+            }
+        }
         colour = relitSplat<kTransfer>(surface, normalize(eye - surface.position), lights,
                             params.lightCount, params.categoriesLo, params.categoriesHi,
                             shadowFactors, slot * params.shadowLights, shadowLights,
                             envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
                             envSun, transfer, shadowBits,
-                            params.transferIndirect != 0);
+                            params.transferIndirect != 0, slope);
+        if (kTransfer != 0 && slope.on) {
+            sloped = true;
+            slopes[slot] = uint4(packHalves(slope.slopeX.x, slope.slopeX.y),
+                                 packHalves(slope.slopeX.z, slope.slopeY.x),
+                                 packHalves(slope.slopeY.y, slope.slopeY.z), 0u);
+        }
     }
     if (fate.graded) {
         colour = editGrade(params.edit, colour);
@@ -381,7 +429,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     ProjRecord record;
     record.screen = float4(centre, t.z, cutoff);
     record.conic = float4(conic, alpha);
-    record.colour = float4(colour, 0.0);
+    record.colour = float4(colour, sloped ? kSlopeMark : 0.0);
     proj[slot] = record;
     if (params.cryptoMode != 0) {
         cryptoIds[slot] = params.cryptoMode == 1 ? cloudCrypto[i] : 0u;

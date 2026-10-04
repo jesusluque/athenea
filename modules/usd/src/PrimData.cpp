@@ -211,6 +211,8 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     s.linear = a.linear;
     // The shading normal: three floats a gaussian, or nothing.
     s.normals = streamOf(a.normals);
+    // The shape operator: three floats a gaussian, or nothing.
+    s.curvature = streamOf(a.curvature);
     if (s.normals.values() < uint64_t{s.count} * 3) {
         s.normals = {};
     }

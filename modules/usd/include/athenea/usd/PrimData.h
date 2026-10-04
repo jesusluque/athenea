@@ -57,6 +57,7 @@ struct ParticleFieldArrays {
     /// Nonzero where the gaussian came from a thin-walled glass.
     pxr::VtValue thinWalled;       ///< VtIntArray, one a gaussian
     pxr::VtValue schlickMetal;     ///< VtIntArray, one a gaussian: its metal is a Schlick
+    pxr::VtValue curvature;        ///< VtFloatArray, three a gaussian: the shape operator (uu, uv, vv)
     /// The shading normal each gaussian keeps apart from its frame
     /// (`primvars:athenea:splat:normal`), in the field's own space. Empty for a
     /// capture, which is relit with the frame's short axis.

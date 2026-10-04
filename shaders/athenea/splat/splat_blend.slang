@@ -3,11 +3,13 @@
 // Per pixel: its tile's splats, nearest first, until the pixel is opaque.
 module splat_blend;
 import athenea.common.color;
+import athenea.common.packing;
 import frame;
 
 StructuredBuffer<uint>      ranges;
 StructuredBuffer<uint>      pairSplats;
 StructuredBuffer<ProjRecord> proj;
+StructuredBuffer<uint4>     slopes;   // a slot each, read where the record is marked (kSlopeMark)
 // What is under the splats: a rasterised point layer (or nothing: bound to a
 // placeholder with params.hasUnder == 0). Linear, premultiplied, bottom row first.
 StructuredBuffer<float4>    underColour;
@@ -102,6 +104,9 @@ struct CryptoList {
 static const uint kBatch = kTile * kTile;
 groupshared ProjRecord sRecords[kBatch];
 groupshared uint       sSplats[kBatch];
+// The colour's slope across the footprint, where the record is marked so
+// (frame.slang's kSlopeMark): x then y, rgb each, as halves.
+groupshared uint3      sSlopes[kBatch];
 groupshared uint       sDone;
 
 void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
@@ -158,6 +163,7 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             const uint splat = pairSplats[mine];
             sSplats[lane] = splat;
             sRecords[lane] = proj[splat];
+            sSlopes[lane] = abs(sRecords[lane].colour.w - kSlopeMark) < 0.01 ? slopes[splat].xyz : uint3(0u);
         }
         GroupMemoryBarrierWithGroupSync();
         const uint count = min(kBatch, end - first);
@@ -192,7 +198,17 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             if (matte) {
                 list.add(cryptoIds[sSplats[j]], weight);
             }
-            rgb += weight * record.colour.xyz;
+            // A TX transfer's reflection turns across the footprint: the
+            // colour at this pixel is the centre's plus its slope over the
+            // step from the centre (splat_project's SplatSlope).
+            float3 shade = record.colour.xyz;
+            if (abs(record.colour.w - kSlopeMark) < 0.01) {
+                const uint3 w = sSlopes[j];
+                const float3 slopeX = float3(lowHalf(w.x), highHalf(w.x), lowHalf(w.y));
+                const float3 slopeY = float3(highHalf(w.y), lowHalf(w.z), highHalf(w.z));
+                shade = max(shade + slopeX * d.x + slopeY * d.y, float3(0.0));
+            }
+            rgb += weight * shade;
             depthSum += weight * screen.z;
             transmittance *= 1.0 - alpha;
             if (depthAt < 0.0 && 1.0 - transmittance >= params.depthThreshold) {

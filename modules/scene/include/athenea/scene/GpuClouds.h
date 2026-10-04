@@ -87,6 +87,12 @@ struct GpuSplats {
     /// `hasNormals` is how a kernel asks. Whatever turns the frame (the
     /// skinner) turns this with it.
     gpu::Buffer normals;
+    /// HOW THE SURFACE TURNS UNDER EACH GAUSSIAN: three floats a splat, its
+    /// shape operator in the splat's own first two axes (uu, uv, vv;
+    /// `primvars:athenea:splat:curvature`). A frame turns a TX transfer's
+    /// reflection across the splat's footprint by it. Empty where the file
+    /// carries none, and on a cloud the levels of detail made.
+    gpu::Buffer curvature;
     /// THE LIGHT THE SURFACE GAVE OFF BY ITSELF: one uint a splat, linear
     /// radiance in RGB9E5 (packing.slang's `packRgb9e5`). A relit gaussian
     /// adds it, unshadowed, to what it reflects -- a converted lamp shade, a
@@ -145,6 +151,7 @@ struct GpuSplats {
     [[nodiscard]] bool hasPbr() const noexcept { return pbr.valid(); }
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
     [[nodiscard]] bool hasNormals() const noexcept { return normals.valid(); }
+    [[nodiscard]] bool hasCurvature() const noexcept { return curvature.valid(); }
     [[nodiscard]] bool hasEmission() const noexcept { return emission.valid(); }
     [[nodiscard]] bool hasLobes() const noexcept { return lobes.valid(); }
     [[nodiscard]] bool hasTransfer() const noexcept { return transfer.valid() && transferCount >= 9; }
@@ -234,6 +241,8 @@ struct SplatStreams {
     /// One int a splat, nonzero where its metal is a Schlick rather than a
     /// conductor (`primvars:athenea:splat:schlickMetal`); beside the PBR arrays.
     FloatStream schlickMetal;
+    /// Three floats a splat, the shape operator (`primvars:athenea:splat:curvature`).
+    FloatStream curvature;
     /// Three floats a splat, the shading normal (`primvars:athenea:splat:normal`).
     FloatStream normals;
     /// `primvars:athenea:splat:linear`: the colours are linear light

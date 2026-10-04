@@ -148,6 +148,7 @@ Result<void> TileRasterizer::reserveSplats(uint32_t count) {
         return ok();
     };
     ATHENEA_TRY(assign(proj_, n, 48, "splat.proj"));
+    ATHENEA_TRY(assign(slopes_, n, 16, "splat.slopes"));
     ATHENEA_TRY(assign(cryptoIds_, n, 4, "splat.cryptoIds"));
     ATHENEA_TRY(assign(tileRects_, uint64_t{n} * 4, 4, "splat.tileRects"));
     ATHENEA_TRY(assign(tilesTouched_, n, 4, "splat.tilesTouched"));
@@ -341,6 +342,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             aofx::xform::inverseAffine(instance.objectToWorld).point(projection.eyeWorld);
         gpu::ComputeKernel& project = cloud->hasTransfer() ? project_ : projectPlain_;
         project.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            // How the surface turns under each splat, where the cloud keeps
+            // it: a TX transfer's reflection then gets its slope (`slopes`).
+            const bool curved = cloud->hasCurvature() && cloud->hasTransfer();
+            cursor["curvature"].setBinding(curved ? cloud->curvature.rhi() : cloud->shape.rhi());
+            cursor["slopes"].setBinding(slopes_.rhi());
             cursor["positions"].setBinding(cloud->positions.rhi());
             cursor["shape"].setBinding(cloud->shape.rhi());
             cursor["sh"].setBinding(cloud->sh.rhi());
@@ -425,6 +431,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // And what its material layered over the base: specular, coat,
             // sheen, where the conversion met any.
             cursor["params"]["hasLobes"].setData(uint32_t{cloud->hasLobes() ? 1u : 0u});
+            cursor["params"]["hasCurvature"].setData(
+                uint32_t{cloud->hasCurvature() && cloud->hasTransfer() ? 1u : 0u});
             cursor["lobes"].setBinding(cloud->hasLobes() ? cloud->lobes.rhi() : cloud->shape.rhi());
             // What a pick said this prim is made of. Bound either way, as
             // every name a shader declares; `overrideCount` of 0 is what says
@@ -573,6 +581,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["ranges"].setBinding(ranges_buffer_.rhi());
         cursor["pairSplats"].setBinding(tileSort_.values.rhi());
         cursor["proj"].setBinding(proj_.rhi());
+        cursor["slopes"].setBinding(slopes_.rhi());
         cursor["underColour"].setBinding(under != nullptr ? under->colour.rhi() : placeholderColour_.rhi());
         cursor["underDepth"].setBinding(under != nullptr ? under->depth.rhi() : placeholderDepth_.rhi());
         cursor["colour"].setBinding(targets.colour.rhi());

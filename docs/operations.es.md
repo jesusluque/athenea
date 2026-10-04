@@ -1135,6 +1135,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:transferZonal` | float[] ‹10 por gaussiana› | — |
 | `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 o 32 por gaussiana› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:curvature` | float[] ‹3 por gaussiana› | — |
 | `primvars:athenea:splat:schlickMetal` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
@@ -1222,6 +1223,13 @@ la dirección que sigue recta, como la envía una lámina. Donde la nube lleva
 las capas, una gaussiana que transmite se dobla con su propio índice
 (`specularIor`) siempre que el `ior` de la nube diga que se dobla; el `ior`
 único de la nube es el del primer vidrio que encontró la conversión.
+`curvature` es cómo gira la superficie bajo la gaussiana: su operador de
+forma en los dos primeros ejes de la propia gaussiana (uu, uv, vv), a partir
+de las normales de las esquinas de la malla. `athenea mesh2splat --transfer`
+lo escribe (no con niveles de detalle ni con `--skinned`), y un fotograma
+gira entonces el reflejo a lo largo de la huella de cada gaussiana -- el
+brillo que muestra la laca de un coche se mueve por la gaussiana en vez de
+quedarse plano sobre ella.
 `schlickMetal` es distinto de cero donde el metal de la gaussiana es un
 Schlick -- el de OpenPBR y el de glTF, de su color de frente a su color
 especular rasante -- y no el conductor de índice artístico que son el de

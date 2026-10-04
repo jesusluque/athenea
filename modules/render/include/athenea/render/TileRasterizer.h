@@ -331,6 +331,9 @@ private:
     uint32_t pairCapacity_ = 0;
     uint32_t tileCapacity_ = 0;
     gpu::Buffer proj_, tileRects_, tilesTouched_, visible_, depthKeys_;
+    /// A slot each beside `proj_`: a TX transfer's reflection's slope across
+    /// the footprint, read where the record is marked (frame.slang's kSlopeMark).
+    gpu::Buffer slopes_;
     gpu::Buffer visibleOffsets_, visibleTotal_, touchedOffsets_, touchedTotal_;
     gpu::SortBuffers depthSort_;   // keysLo = visible depth keys, values = splat index
     gpu::Buffer sortedCounts_, offsets_, totalPairs_;

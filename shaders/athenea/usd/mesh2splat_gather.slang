@@ -53,6 +53,9 @@ struct GatherParams {
     /// The picture's last four entries a gaussian are what the material
     /// layers over its base, and the record's last thirteen floats take them.
     uint lobes;
+    /// The picture's very last entry a gaussian is the surface's shape
+    /// operator (Mesh2Splat's `writeCurvature`), which goes to `curvatures`.
+    uint curved;
 };
 
 StructuredBuffer<float4>     picture;
@@ -60,6 +63,7 @@ RWStructuredBuffer<float>    records;
 RWStructuredBuffer<float4>   rays;
 RWStructuredBuffer<float4>   influences;
 RWStructuredBuffer<uint>     gradients;
+RWStructuredBuffer<float>    curvatures;   // three a gaussian, where `curved`
 ConstantBuffer<GatherParams> gather;
 
 float4 entryOf(uint splat, uint component) {
@@ -104,9 +108,10 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     records[at + 18] = shading.y;
     records[at + 19] = shading.z;
     // What it gives off: the record's last entry, where the stage emits.
+    const uint curveEntries = gather.curved != 0 ? 1u : 0u;
     const uint layerEntries = gather.lobes != 0 ? 4u : 0u;
     const float4 emitted =
-        gather.emits != 0 ? entryOf(splat, gather.recordEntries - 1 - layerEntries) : float4(0.0);
+        gather.emits != 0 ? entryOf(splat, gather.recordEntries - 1 - layerEntries - curveEntries) : float4(0.0);
     records[at + 20] = emitted.x;
     records[at + 21] = emitted.y;
     records[at + 22] = emitted.z;
@@ -118,10 +123,11 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     // WHAT THE MATERIAL LAYERS OVER ITS BASE: the record's last thirteen
     // floats, after the harmonics, in packing.slang's record order.
     if (gather.lobes != 0) {
-        const float4 specular = entryOf(splat, gather.recordEntries - 4);   // colour, weight
-        const float4 coat = entryOf(splat, gather.recordEntries - 3);       // weight, roughness, index, specular's index
-        const float4 sheen = entryOf(splat, gather.recordEntries - 2);      // colour, roughness
-        const float4 darkening = entryOf(splat, gather.recordEntries - 1);  // the coat's darkening
+        const uint last = gather.recordEntries - curveEntries;
+        const float4 specular = entryOf(splat, last - 4);   // colour, weight
+        const float4 coat = entryOf(splat, last - 3);       // weight, roughness, index, specular's index
+        const float4 sheen = entryOf(splat, last - 2);      // colour, roughness
+        const float4 darkening = entryOf(splat, last - 1);  // the coat's darkening
         const uint l = at + gather.perRecord - 13;
         records[l + 0] = specular.w;
         records[l + 1] = specular.x;
@@ -136,6 +142,12 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
         records[l + 10] = sheen.z;
         records[l + 11] = sheen.w;
         records[l + 12] = darkening.x;
+    }
+    if (gather.curved != 0) {
+        const float4 shape = entryOf(splat, gather.recordEntries - 1);
+        curvatures[out * 3 + 0] = shape.x;
+        curvatures[out * 3 + 1] = shape.y;
+        curvatures[out * 3 + 2] = shape.z;
     }
 
     // WHERE THE BAKE STANDS AND WHICH WAY IT LOOKS. A displaced gaussian is

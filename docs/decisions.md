@@ -11675,6 +11675,45 @@ specks of the mesh raster's own 1-sample noise, and its interior -- lens,
 reflector and housing left meshes -- reads black because the mesh raster does
 not see through glass. The whole car converted is what measures it.
 
+### A TX transfer's reflection turns across the gaussian (proposals 044, 046, 049)
+
+Research measured what the paint's error is (049, 050): sharpness, not
+energy. By the path traced frame's brightness the body read 1.3 to 1.5 times
+bright and the highlights 0.4 to 0.5 dark; against the path traced frame
+blurred by a pixel the paint's relMSE fell from 0.80 to 0.28. A gaussian
+showed its centre's reflection flat over its whole footprint: the highlight
+a lacquer shows, spread over the gaussian, and the limb's grazing Fresnel
+read at the centre's angle (044's bands, 1.00 / 0.95 / 0.90 / 0.81).
+
+- **The conversion keeps the curvature.** The Mesh2Splat effect writes each
+  gaussian's shape operator in its own two axes (`m2sShape`: the corners'
+  normals apart over their positions apart, made symmetric), gathered apart
+  from the records and written as `primvars:athenea:splat:curvature`
+  (three floats a gaussian) with `--transfer`; a stage brings it back to the
+  device as `GpuSplats::curvature`, laid out a kept splat each.
+- **The projection turns the normal a pixel away.** For a cloud with a
+  transfer and the curvature, `splatProject` inverts the projection's own
+  linearisation on the splat's plane, applies the shape operator to the step
+  one pixel right and one down are there, and hands the two turned normals to
+  the dome's shading (`SplatSlope`). That reads the sky again along the two
+  mirrors they give, for the polish and the coat, and returns how much the
+  open reflection's colour changes over each step, weighed as the
+  reflection is. Two values of three a slot go to `slopes`, as halves, and
+  the record's colour.w says so (`kSlopeMark`, 0.25).
+- **The blend adds the slope.** `splat_blend` takes the slope with the
+  record into group memory and draws `max(colour + slope . d, 0)` at the
+  pixel `d` from the centre. A record without the mark is drawn as it was.
+
+What it does not do: the field (closed directions) and the body stay flat
+across the gaussian; the slope is linear, so a highlight narrower than a
+gaussian is a ramp, not a line; a cloud with levels of detail or a skeleton
+carries no curvature. The turned normal is held to half a unit, so a splat
+seen edge on does not swing its reflection across the sky.
+
+**Checked** (pending the GPU turn): the TX balls and the Corvette's paint and
+chrome against the path traced frame; the frozen card for the projection
+kernel's size.
+
 ### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
 
 A car converted to gaussians cast nothing on the ground under a sky: the
