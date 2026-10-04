@@ -501,10 +501,22 @@ public:
             const double thickness = 2.0 * std::abs(static_cast<double>(measured[0])) / area;
             const double size = std::sqrt(area);
             const bool slab = !open && (thickness < 4.0 * modelCell_ || thickness < 0.02 * size);
-            sheet_[p] = open || slab;
+            // A TINTED SHEET STAYS SOLID, for now: a thin wall lets what
+            // stands behind it through by its coverage, which is grey -- the
+            // Corvette's tinted panes (transmission colour 0.52) let the cabin
+            // through untinted at twice the path traced brightness. A solid
+            // glass carries its tint in the field.
+            const auto& tint = material.transmissionColour;
+            const float through = 0.2126F * tint[0] + 0.7152F * tint[1] + 0.0722F * tint[2];
+            const bool tinted = through < 0.9F;
+            sheet_[p] = (open || slab) && !tinted;
             std::printf("mesh2splat: %s is %s glass: %u of its %u edges open, %u shared by more than two; "
                         "%.4g thick (2V/A) against a cell of %.4g and a size of %.4g\n",
-                        piece.path.c_str(), open ? "sheet (thin-walled)" : slab ? "slab (thin-walled)" : "solid",
+                        piece.path.c_str(),
+                        (open || slab) && tinted ? "tinted, kept solid"
+                        : open                   ? "sheet (thin-walled)"
+                        : slab                   ? "slab (thin-walled)"
+                                                 : "solid",
                         said[1], said[0], said[2], thickness, modelCell_, size);
         }
         return ok();

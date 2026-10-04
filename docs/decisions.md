@@ -11786,7 +11786,14 @@ and two thirds of a ball's radius. Under four of the model's cells or a
 fiftieth of the glass's own size (the root of its area) it is a slab, read
 thin-walled: two parallel faces bend nothing, so thin is right optically
 too. Both measures come from the triangles the piece was packed into, in
-the world. `--thin-glass` and `--solid-glass` are the overrides.
+the world. `--thin-glass` and `--solid-glass` are the overrides. A tinted
+sheet or slab (transmission colour under 0.9 in luminance) stays solid for
+now: a thin wall lets what stands behind it through by its coverage, which
+is grey, and the Corvette's tinted panes let the cabin through untinted --
+225 against the path traced frame where solid read 1.85. Classified, the
+windscreen read 6.2 against 0.26 per material: the cabin behind it, left a
+mesh in that measure, is the mesh raster's own noise (research 048's
+addendum); the whole car converted is what measures it.
 
 ### A transfer goes up a slice at a time
 
