@@ -2078,11 +2078,18 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     // then sees the neighbours within the slice, which the mesh's order keeps
     // together. A zonal transfer is fitted on the device from the whole
     // cloud's arrays, and stays in one piece (a skinned cloud is small).
+    // And the filter's pictures are the device pool's, which would not serve
+    // one of 176 MB (a slice of 2.8 million gaussians, four values each):
+    // a million gaussians a slice where the filter runs keeps them under 64.
     constexpr uint64_t kSliceAnswerBytes = uint64_t{1536} << 20;
+    constexpr uint64_t kSliceFiltered = uint64_t{1} << 20;
     uint32_t slice = count_;
     if (zonal == nullptr) {
-        const uint64_t fits = std::max<uint64_t>(kSliceAnswerBytes / (uint64_t{entries} * 16),
-                                                 usd::StageRenderer::kBakeBatch);
+        uint64_t fits = std::max<uint64_t>(kSliceAnswerBytes / (uint64_t{entries} * 16),
+                                           usd::StageRenderer::kBakeBatch);
+        if (filter != nullptr && indirect && side > 0 && options_->bakeFilter > 0) {
+            fits = std::min(fits, kSliceFiltered);
+        }
         slice = static_cast<uint32_t>(std::min<uint64_t>(fits, count_));
     }
     if (slice < count_) {

@@ -11650,7 +11650,9 @@ lobes conversions; a TX ball.
 The whole Corvette converted with `--transfer` (cells, degree 3, the field)
 asked for its bake's answer at once: 35 float4 a gaussian, 7.8 GB, where the
 machine had 5 free. `Converter::transfer` now takes the gaussians in slices
-whose answer is at most 1.5 GB (never under the bake's own batch, 2^19):
+whose answer is at most 1.5 GB (never under the bake's own batch, 2^19),
+and of at most a million gaussians where the filter runs, whose pictures the
+device pool would not serve at 2.8 million (176 MB):
 each slice's rays copied out on the device, baked, its bounced halves
 filtered, written by `m2sTransferInto` (`first`, the slice's place among the
 records) and read back into the file's arrays before the next. The filter
