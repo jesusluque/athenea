@@ -1260,8 +1260,23 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // -- small parts in a crowded scene -- the cells' openness read them
         // 1.64 and 0.221 against the path traced frame, the harmonics' 1.05
         // and 0.128, for the same mean. The coat keeps the cells (below).
+        // AND BY THE CELLS AT GRAZING. The harmonics' openness is the
+        // hemisphere's mean, and at the silhouette the mirror points out into
+        // the open while the mean counts the ground and the car below: the
+        // paint's base read 0.71 of the path traced frame within 3 pixels of
+        // its outline and 1.05 inside under a white dome (research 078 sec 8).
+        // So the two are blended by w = (1 - n.v)^2 -- the mean head on and on
+        // small parts, the cells along the mirror where the eye grazes: T1's
+        // relMSE 0.042 to 0.019, the Corvette's chrome 0.585 to 0.524 (under
+        // the first transfer's 0.551 for the first time), rough metal 0.080
+        // to 0.077 (s68). The fit given alpha instead of the perceptual
+        // roughness (Lagarde's "roughness" is alpha) measured no better.
+        const float meanOpen = specularOpenness(nDotV, splatOpenness(s, transfer), s.roughness);
         const float narrowed =
-            s.reflectionTraced ? 1.0 : specularOpenness(nDotV, splatOpenness(s, transfer), s.roughness);
+            s.reflectionTraced ? 1.0
+            : cells ? lerp(meanOpen, splatLobeOpen(s, cellBits, mirror, s.roughness, s.normal),
+                           (1.0 - nDotV) * (1.0 - nDotV))
+                    : meanOpen;
         // THE SUN IN THE POLISH. The prefiltered map kept its disc, so what
         // the polish reads carries the sun whether or not anything stands in
         // its way -- on a rough surface a broad lobe of it, and on a metal all
