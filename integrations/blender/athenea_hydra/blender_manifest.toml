@@ -2,15 +2,20 @@
 schema_version = "1.0.0"
 
 id = "athenea_hydra"
-version = "0.2.0"
-name = "Athenea (Hydra)"
-tagline = "Athenea's Hydra delegate as a Blender render engine"
+version = "0.3.0"
+name = "Athenea"
+tagline = "Meshes into gaussian splats relit by any sky, and their renderer"
 maintainer = "jesus luque <jesusluquemuriel@gmail.com>"
 type = "add-on"
-tags = ["Render"]
+tags = ["Render", "Import-Export", "Object"]
+# hdAthenea is built against Blender's own OpenUSD (26.08 in the 5.3
+# development build, in its own namespace); register() refuses another.
 blender_version_min = "5.3.0"
 license = ["SPDX:Apache-2.0"]
 platforms = ["macos-arm64"]
 
 [permissions]
-files = "Loads the hdAthenea Hydra plugin from disk"
+files = "Loads hdAthenea, writes meshes and converted clouds"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "*.pyc", ".*"]

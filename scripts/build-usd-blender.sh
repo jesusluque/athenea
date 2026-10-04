@@ -8,8 +8,9 @@
 #
 # What has to match Blender's build, from its
 # build_files/build_environment/cmake/usd.cmake and versions.cmake:
-#   - the OpenUSD tag (Blender 5.3 alpha ships 26.03: `nm libusd_ms.dylib`
-#     shows pxrBlender_v26_03__pxrReserved__);
+#   - the OpenUSD tag (`nm libusd_ms.dylib` shows it: the 5.3 alpha of
+#     1 Oct 2026 shipped 26.03, pxrBlender_v26_03__; the daily of 4 Oct
+#     2026, 26.08, pxrBlender_v26_08__);
 #   - PXR_SET_INTERNAL_NAMESPACE=pxrBlender_v<version>, every symbol's name;
 #   - Python support ON: it changes VtValue's type-info table and
 #     TfAnyWeakPtr's vtable, so a plugin compiled without it builds a VtValue
@@ -25,15 +26,15 @@
 # own compile flags, not in any installed header, so OpenVDB and the OIIO
 # plugin are left off here without changing what a consumer compiles.
 #
-# Usage: scripts/build-usd-blender.sh [usd-tag]   (default v26.03)
+# Usage: scripts/build-usd-blender.sh [usd-tag]   (default v26.08)
 set -euo pipefail
 
-VERSION="${1:-v26.03}"
+VERSION="${1:-v26.08}"
 V="${VERSION#v}"
 PREFIX="${ATHENEA_USD_BLENDER_ROOT:-$HOME/tools/usd-${V}-blender}"
 SRC="${ATHENEA_SRC:-$HOME/tools/src}"
 WORK="${PREFIX}-build"
-JOBS="${JOBS:-6}"
+JOBS="${JOBS:-2}"
 NAMESPACE="pxrBlender_v${V//./_}"
 TBB_TAG=v2022.3.0
 MATERIALX_TAG=v1.39.4
@@ -77,8 +78,10 @@ mkdir -p "$PREFIX/include/opensubdiv" "$PREFIX/lib"
 ln -sfn "$BLENDER_LIB/libosdCPU.dylib" "$PREFIX/lib/libosdCPU.dylib"
 ln -sfn "$BLENDER_LIB/libosdGPU.dylib" "$PREFIX/lib/libosdGPU.dylib"
 
-# OpenUSD, Blender's way. Blender's patch, as the rename it is.
-USD_SRC="$SRC/OpenUSD-$V"
+# OpenUSD, Blender's way. Blender's patch, as the rename it is, on a copy:
+# the source tree under $SRC may be another toolchain's (usd-26.08-mx).
+USD_SRC="$WORK/OpenUSD-$V-src"
+rsync -a --delete --exclude .git "$SRC/OpenUSD-$V/" "$USD_SRC/"
 for f in pxr/base/arch/attributes.h pxr/base/arch/attributes.cpp; do
     sed -i '' -e 's/pxrctor/pxbctor/g' -e 's/pxrdtor/pxbdtor/g' "$USD_SRC/$f"
 done

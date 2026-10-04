@@ -1129,12 +1129,16 @@ its own name, and the settings below appear in its renderer-settings panel.
 
 ### 4.1.1 Inside Blender
 
-Blender 5.3 draws through its own OpenUSD (26.03, in its `libusd_ms`), so
-hdAthenea for Blender is a separate build against that USD
-(`macos-arm64-blender`, see the development manual). The add-on in
-`integrations/blender/athenea_hydra` registers the render engine
-**Athenea** (`bl_delegate_id = HdAtheneaRendererPlugin`) and hands the plugin
-to USD with `pxr.Plug` when it is enabled, before the first render.
+The target is Blender's development build (5.3 alpha daily; the one of
+4 Oct 2026 carries OpenUSD 26.08 in its `libusd_ms`, namespace
+`pxrBlender_v26_08`). Blender draws through its own USD, so hdAthenea for
+Blender is a separate build against it (`macos-arm64-blender`, see the
+development manual). The add-on in `integrations/blender/athenea_hydra` is a
+Blender extension: it registers the render engine **Athenea**
+(`bl_delegate_id = HdAtheneaRendererPlugin`), hands the plugin to USD with
+`pxr.Plug` when it is enabled, and refuses to when `pxr.Usd.GetVersion()` is
+not the USD the plugin was built against (the render panel and the terminal
+say which, and what to rebuild).
 
 | Variable | What it does |
 |---|---|
@@ -1148,66 +1152,101 @@ ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
   -E ATHENEA_HYDRA -f 1
 ```
 
-A package to install from disk is made by
-`scripts/package-blender-addon.sh [build] [out]` (defaults
-`build/macos-arm64-blender` and `build/blender-addon`): the add-on directory
-with `plugin/usd` (hdAthenea, with libslang beside it), `plugin/materialx`,
-`plugin/aofx` (Mesh2Splat, SplatBakeFilter) and `shaders`, and
-`athenea_hydra-<version>.zip` of it. The add-on finds all of it from its own
-directory, with nothing set. Beside athenea's `LICENSE`, `NOTICE` and
+**The package.** `scripts/package-blender-addon.sh [build] [out]` (defaults
+`build/macos-arm64-blender` and `build/blender-addon`) makes the extension
+directory and `athenea_hydra-<version>.zip`, which *Edit > Preferences > Get
+Extensions > Install from Disk* (or `blender --command extension
+install-file -r user_default -e <zip>`) installs. It holds the Python,
+`blender_manifest.toml`, `plugin/usd` (hdAthenea with libslang, libzstd,
+libwebp and libsharpyuv beside it, named `@loader_path` and signed ad hoc),
+`plugin/materialx`, `plugin/aofx` (Mesh2Splat, SplatBakeFilter,
+SplatTransferZonal, Measure) and `shaders`, found from its own directory
+with nothing set. Beside athenea's `LICENSE`, `NOTICE` and
 `THIRD_PARTY_NOTICES.md` it carries `THIRD_PARTY_LICENSES.md` and
 `licenses/<component>/`: the licence files of what it carries (Slang,
-MaterialX 1.39.5, OpenVDB when the shaders hold `PNanoVDB.h`) and of what it
-is compiled against but leaves to Blender (OpenUSD, oneTBB, OpenColorIO,
-OIDN), copied from the toolchain's trees. The script stops if one is missing.
-zstd and libwebp are loaded from Homebrew's paths and not carried, so the
-package runs where Homebrew has them.
+MaterialX 1.39.5, zstd, libwebp, OpenVDB when the shaders hold `PNanoVDB.h`)
+and of what it is compiled against but leaves to Blender (OpenUSD, oneTBB,
+OpenColorIO, OIDN). The script stops if one is missing.
+`blender --command extension validate <zip>` checks the manifest.
 
-Final renders (F12, `-f`) work; the viewport is not tested headless. Blender's
-**Hydra** export method hands no point cloud to a delegate; with **USD**, a
-Gaussian-splat point cloud arrives as a `Points` prim and is drawn as a splat
-cloud (see *Blender's Gaussian splats as `UsdGeomPoints`* in 4.3). Its
-`radiance:base` (DC and opacity), which Blender's writer drops, is written by
-the add-on's USD export hook, `athenea_splat_export`, in every USD export
-made while the scene's render engine is Athenea -- a file export included.
-The export method is the scene's (`scene.hydra.export_method`, `HYDRA` by
-default); a render of a scene with splats under `HYDRA` prints so.
-Volumes (`.vdb`) are off in this build.
+**The render engine.** Blender's **Hydra** export method hands no point
+cloud to a delegate and runs no export hook; with **USD**, a converted
+cloud's Empty and a Gaussian-splat point cloud reach hdAthenea (see
+*Blender's Gaussian splats as `UsdGeomPoints`* in 4.3). Converting sets the
+scene's method to USD; the render panel says so when it is not. The world
+reaches the delegate as a `DomeLight` (Blender's own conversion: an
+*Environment Texture* world is its image; a procedural world is not
+translated), the lights as UsdLux lights. The settings the engine hands the
+delegate:
 
-In the viewport the add-on asks for the colour as half floats
-(`athenea:colourHalf`, 4.2): Blender copies the frame through host memory to
-show it, and halves are half the bytes. A final render keeps float.
+| Where | Settings |
+|---|---|
+| Viewport | `athenea:technique` `raster`, `athenea:colourHalf` (Blender copies the frame through host memory to show it; halves are half the bytes) |
+| F12 | `raster` or, with *Final render* Path traced, `rt` with `athenea:pathTotal` (*Paths*, 256), 16 a pass, 6 bounces and `athenea:denoise` (*Denoise*, on) |
+| Both | `athenea:splatTransferIndirect` (*Bounced light*, on) |
+
+F12's passes: Combined (`color`), Depth (`depth`), Normal (`normal`) and
+DiffCol (`albedo`), each where the view layer asks for it. Volumes (`.vdb`)
+are off in this build. The render panel (*Render Properties > Athenea*)
+holds those four settings and **Compare with Cycles**: the camera's frame
+rendered with Cycles -- the meshes a cloud was made from shown again, the
+ground a catcher stands for made Cycles' shadow catcher, a transparent film
+-- and with Athenea as the scene is, measured by `athenea compare` inside
+Blender (`athenea_compare`, the Measure effect): relMSE and the 8-bit p99 in
+the panel, and the images `Athenea Cycles`, `Athenea Render` and `Athenea
+Difference` (the heatmap) in Blender, written to `//splats/compare/`. The
+scene is put back. It needs a saved .blend and a camera.
 
 **Meshes into gaussians.** *View3D > Sidebar > Athenea > Gaussian Splats*
-converts the selected mesh objects with mesh2splat, run inside Blender
-through hdAthenea (`athenea_mesh2splat`, the same command as 2.8, on the
-GPU; a plugin built without `ATHENEA_HYDRA_COMMANDS` is refused, said in the
-panel). The .blend must be saved: everything is written beside it.
+converts the selected mesh objects with `athenea mesh2splat --transfer` (the
+TX transfer, 2.8), run inside Blender through hdAthenea
+(`athenea_mesh2splat`, on the GPU; a plugin built without
+`ATHENEA_HYDRA_COMMANDS` is refused, said in the panel). The .blend must be
+saved: everything is written beside it. What is per asset -- glass sheet,
+slab or solid, metals, the ground -- the conversion finds itself.
 
 | Option | Default | What it is |
 |---|---|---|
-| Budget | `2000000` | `--max-splats`, over the whole selection |
-| Resolution | `512` | `--resolution` |
-| Bake light | on | off is `--no-bake`: the cloud carries the material and is relit every frame |
-| Degree, Samples | `2`, `128` | `--bake-degree`, `--bake-samples` |
-| Lights | Scene | Scene exports the scene's visible lights and its world with the meshes; Default is `--default-lights` |
-| LOD levels | `1` | `--lod-levels`; USD only |
-| Skinned | off | `--skinned`: the armatures that deform the meshes are exported with their animation; no bake |
-| Format | USD (.usdc) | or `.athc`, which carries no rig, no relit material and no levels other than its own |
-| Bring in as | Referenced USD | an Empty, `<mesh>_splats`, whose custom property `athenea_cloud` names the file; the add-on's USD export hook references it under the Empty (a `.athc` through `AtheneaStreamedAssetAPI`), so hdAthenea draws everything the conversion wrote and Blender draws a box. Or Gaussian-splat points: Blender's own point cloud, imported, which keeps positions, sizes, rotations and harmonics and nothing else, and is marked `athenea_linear` so the hook says its colours are light |
-| Directory | `//splats/` | where `<blend>_<mesh>_mesh.usdc` (the exported meshes, kept) and `<blend>_<mesh>.usdc` or `.athc` are written; a selection of several is named `selection` |
-| Hide the meshes | on | the converted meshes are hidden in the viewport and in renders |
+| Quality | Final | Preview: `--resolution 256 --max-splats 1000000 --bake-samples 64 --bake-extra 0`. Final: `--density per-mesh --resolution 512 --max-splats 8000000 --bake-samples 256` |
+| Shadow catcher | on | a second conversion with `--shadow-catcher`: the shadow on the ground the conversion finds (the largest flat mesh at the selection's bottom) as gaussians drawn black. No ground found is reported and the object's cloud stays |
+| Result | Relit cloud | an Empty per cloud in a collection `<mesh>_splats`, whose `athenea_cloud` names the file; the export hook references it under the Empty and hdAthenea relights it every frame. Or Blender splats: the clouds flattened under the scene's world (`athenea flatten --format usdc`, below) and imported as Blender's own Gaussian-splat point cloud, lit once, which every engine draws |
+| Directory | `//splats/` | where the files are written (below) |
+| Hide the meshes | on | the converted meshes, and the ground a catcher replaces, hidden in the viewport and in renders |
 
-Refused before anything runs: no saved .blend, no mesh selected, a `.athc`
-with Skinned or LOD levels over 1, a `.athc` or a skinned or multi-level
-cloud brought in as points. The conversion runs on a thread; the panel and
-the status bar show its last line and a progress estimated from them (a
-level read, converted, baked, written), and the window stays live. It cannot
-be cancelled. Its warnings are reported, its lines printed to the terminal;
-an error is reported with the command's last line (exit 3, the GPU out of
-memory, says so). The scene's export method is set to USD, which the cloud
-needs. In the background (`blender -b`, a script) `bpy.ops.athenea.
-mesh_to_splats()` runs to its end before it returns.
+The *Overrides* subpanel (closed) holds what the engine otherwise decides:
+*Gaussians* (`--max-splats`, 0 the quality's), *Surroundings* (on: the
+scene's other visible meshes are exported as what the bake's rays meet; off,
+the selection alone and no catcher), *Thin glass* and *Solid glass* (comma
+lists, `--thin-glass` / `--solid-glass` one material each) and *Skinned*
+(`--skinned`, the armatures exported with their animation; the transfer kept
+in each gaussian's frame; not with Blender splats).
+
+The files, for a selection named `<mesh>` in `<blend>.blend`:
+`<blend>_<mesh>_object.usdc` (the selection, under `/object`),
+`_surroundings.usdc` (the other meshes, under `/surroundings`), `_mesh.usda`
+(the stage sublayering both, with the first one's up axis and unit), `.usdc`
+(the cloud), `_catcher.usdc` and `_catcher_stage.usda` (the catcher), and
+with Blender splats `_flatten_stage.usdc` and `_flat.usdc`. Where a drawn
+cloud's file is still open in Blender's USD, the next conversion is named
+`<mesh>_2` and so on.
+
+The conversion runs on a thread; the panel, the status bar and the progress
+cursor follow it -- the share in brackets of mesh2splat's `transfer N of M
+gaussians (P%)` lines while the transfer is baked, its phases otherwise --
+and the window stays live. **Esc** stops it: mesh2splat looks between the
+transfer's slices and between levels of detail, and returns 4. Its warnings
+are reported, its lines printed to the terminal; an error is reported with
+the command's last line (exit 3, the GPU out of memory, says so). In the
+background (`blender -b`, a script) `bpy.ops.athenea.mesh_to_splats()` runs
+to its end before it returns.
+
+**Gaussians out.** *File > Export > Gaussian Splats (Athenea)* and the
+sidebar's *Export Gaussian Splats* write the scene's visible clouds (their
+Empties; *Selected only* for the selected ones) under its world and lights
+with `athenea flatten` (2.8.1) inside Blender (`athenea_flatten`): SPZ
+(version 3), PLY or glTF (`.glb`), *Exposure* as `--exposure`. The stage it
+reads is Blender's USD export of the Empties, the visible lights and the
+world, `<file>_flatten_stage.usdc` beside the file.
 
 ### 4.2 Render settings
 
@@ -1867,7 +1906,7 @@ the README shows.
 | `sketchfab-to-usd.sh <zip> [name]` | a Sketchfab archive into a USD asset |
 | `readme-images.sh [outdir]` | the images in the README, from the sparrow asset |
 | `remote-test.sh [user@host] [preset]` | builds and runs the suite on another machine and brings the log back |
-| `package-blender-addon.sh [build] [out]` | the Blender add-on as a directory and a zip, with every third party's licence files (4.1.1) |
+| `package-blender-addon.sh [build] [out]` | the Blender extension as a directory and a zip, with zstd and libwebp carried and every third party's licence files (4.1.1) |
 | `scripts/film/` | the sparrow film: its frames, its camera and its shadow |
 | `bmw-to-usd.py`, `sparrow-*.py` | authoring helpers for those assets |
 

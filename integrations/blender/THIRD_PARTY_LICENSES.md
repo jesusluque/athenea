@@ -17,6 +17,8 @@ stops if one is missing.
 |---|---|---|---|---|
 | [Slang](https://github.com/shader-slang/slang) | 2026.14.1 | Apache-2.0 WITH LLVM-exception; its third parties under the licences in `LICENSES/` | `libslang-compiler` and `libslang-glsl-module` beside `hdAthenea` | `licenses/slang/` (`LICENSE`, `LICENSES/*`) |
 | [MaterialX](https://github.com/AcademySoftwareFoundation/MaterialX) | 1.39.5 | Apache-2.0 | `MaterialXGenSlang` and the hardware nodes compiled into `hdAthenea`; the `libraries/` data in `plugin/materialx` | `licenses/materialx/` (`LICENSE`, `THIRD-PARTY.md`) |
+| [zstd](https://github.com/facebook/zstd) | Homebrew's (1.5.7 at writing) | BSD 3-Clause (or GPL-2.0, at the user's choice) | `libzstd.1.dylib` beside `hdAthenea`, named `@loader_path`, signed ad hoc | `licenses/zstd/` (`LICENSE`, `COPYING`) |
+| [libwebp](https://chromium.googlesource.com/webm/libwebp) | Homebrew's | BSD 3-Clause | `libwebp.7.dylib` and its `libsharpyuv.0.dylib` beside `hdAthenea`, named `@loader_path`, signed ad hoc | `licenses/libwebp/COPYING` |
 | [OpenVDB / NanoVDB](https://github.com/AcademySoftwareFoundation/openvdb) | 10.1.0 | MPL-2.0 | `PNanoVDB.h` in `shaders/nanovdb`, only when the build had OpenVDB (the Blender build does not) | `licenses/openvdb/LICENSE` |
 
 ## Blender's own, not redistributed
@@ -29,19 +31,8 @@ files travel with it all the same.
 
 | Component | Headers built against | Blender's library | Licence | Licence files |
 |---|---|---|---|---|
-| [OpenUSD](https://github.com/PixarAnimationStudios/OpenUSD) | 26.03 | `libusd_ms` (26.03) | Apache-2.0 (Modified, as OpenUSD's `LICENSE.txt` states) | `licenses/openusd/` (`LICENSE.txt`, `NOTICE.txt`) |
+| [OpenUSD](https://github.com/PixarAnimationStudios/OpenUSD) | 26.08 | `libusd_ms` (26.08) | Apache-2.0 (Modified, as OpenUSD's `LICENSE.txt` states) | `licenses/openusd/` (`LICENSE.txt`, `NOTICE.txt`) |
 | [oneTBB](https://github.com/uxlfoundation/oneTBB) | 2022.3.0 | `libtbb` | Apache-2.0 | `licenses/onetbb/` (`LICENSE.txt`, `third-party-programs.txt`) |
 | [MaterialX](https://github.com/AcademySoftwareFoundation/MaterialX) | 1.39.4 configs | `libMaterialX*` (1.39.4) | Apache-2.0 | `licenses/materialx/` (above) |
 | [OpenColorIO](https://github.com/AcademySoftwareFoundation/OpenColorIO) | 2.5.2 | `libOpenColorIO` (2.5.0) | BSD 3-Clause | `licenses/opencolorio/` (`LICENSE`, `THIRD-PARTY.md`) |
 | [Open Image Denoise](https://github.com/RenderKit/oidn) | 2.5.1 | `libOpenImageDenoise*` (2.5.0) | Apache-2.0 | `licenses/oidn/` (`LICENSE.txt`, `third-party-programs.txt`, `third-party-programs-oneTBB.txt`, `third-party-programs-DPCPP.txt`) |
-
-## Linked from the system, not carried
-
-| Component | Where it is loaded from | Licence |
-|---|---|---|
-| [zstd](https://github.com/facebook/zstd) | `/opt/homebrew/opt/zstd/lib/libzstd.1.dylib` | BSD 3-Clause (or GPL-2.0) |
-| [libwebp](https://chromium.googlesource.com/webm/libwebp) | `/opt/homebrew/opt/webp/lib/libwebp.7.dylib` | BSD 3-Clause |
-
-`hdAthenea` names these by their Homebrew paths, so the package runs only on a
-machine that has them there. A package that carries them changes those names
-to `@loader_path` and carries their `LICENSE` / `COPYING` beside them.

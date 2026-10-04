@@ -13227,3 +13227,84 @@ loaded in Blender here (that opens the GPU).
   copies them beside hdAthenea, renames them to `@loader_path` with
   `install_name_tool`, re-signs, and adds their `LICENSE`/`COPYING`.
 - The zip is not signed or notarised.
+
+## Blender as a module: TX in, gaussians out, measured against Cycles (task BL3)
+
+The user (4 Oct 2026): finish the look and the Blender integration as a
+module, on Blender's development build. The engine line with the day's work
+was merged in first (`tx-transfer-complete`, then `txf`); the conflicts kept
+both sides, the engine's new lines going through `cli::out`/`cli::err`.
+
+**The target moved under it.** The 5.3 daily of 4 Oct 2026 carries OpenUSD
+26.08 (`pxrBlender_v26_08`), where the one of 1 Oct had 26.03. hdAthenea is
+rebuilt against it (`~/tools/usd-26.08-blender`, the same script, which now
+patches a copy of the source: the tree in `~/tools/src` is the desktop
+toolchain's too), and `register()` compares `pxr.Usd.GetVersion()` with the
+version it was built for and refuses with what to rebuild, rather than a
+plugin that does not load. No packaging per Blender release, no 5.4 work:
+the user asked for the development build only.
+
+**What the module is** (operations manual 4.1.1):
+- *Convert*: `mesh2splat --transfer` and, by default, a second conversion
+  with `--shadow-catcher`. The selection is exported under `/object` and the
+  other visible meshes under `/surroundings`, two layers a `.usda` sublayers
+  (with the first one's up axis and unit), so the engine finds the ground
+  itself among the surroundings and the bake's rays meet them -- no ground
+  picked in Python, nothing measured there. No surroundings, no catcher,
+  said. Two qualities (preview, final) are the only knob; glass, budget and
+  rig are overrides in a closed subpanel. The result is relit Empties (the
+  TX raster under the world, live) or Blender's own splats, made by
+  flattening under the current world and importing the ParticleField: the
+  only way a TX cloud becomes something Cycles and EEVEE draw.
+- *Render*: the viewport is the raster; F12 is the raster or, as ground
+  truth, the path tracer; Combined, Depth, Normal and DiffCol go to the
+  compositor. The world reaches the delegate as Blender makes it, a
+  DomeLight.
+- *Export*: `athenea flatten` into SPZ, PLY or glTF from the Empties, the
+  lights and the world Blender exports. The hook now references a cloud
+  under its Empty in every USD export, not only with Athenea as the engine:
+  the flatten stage is exported whatever the scene renders with.
+- *Compare with Cycles*: the meshes in Cycles (the ground made Cycles'
+  shadow catcher, the same idea as ours) against the clouds in Athenea,
+  measured by `athenea compare`, run inside Blender like the other two
+  commands. The look is judged against what the user would otherwise
+  render, in the tool they use.
+
+**Progress and stop.** mesh2splat now prints `transfer N of M gaussians
+(P%)` after each slice of a sliced transfer, and the add-on's bar follows
+the share; otherwise it moves by the phases the lines name. Esc calls
+`athenea_request_cancel()`: an atomic the command reads between slices and
+between levels of detail. A slice is the most it overruns. The structured
+progress of task PG (`render-progress`) is not merged into this line: it
+reports the radiance bake, which TX does not run; its `(P%)` lines would be
+read the same way.
+
+**One USD in the process has a cost.** Blender's Hydra keeps a drawn cloud's
+layer open, and a layer that is open cannot be written again under its name:
+the next conversion of the same selection takes `<name>_2`. The add-on
+composes its stages with Sdf alone and keeps nothing open.
+
+Checked without the GPU: the build against 26.08; the extension zip
+validated by `blender --command extension validate`, installed into a
+throwaway user profile and enabled from there (hdAthenea registered from
+the extension's own directory, libzstd and libwebp loaded through
+`@loader_path`); the three entry points answering `--help` through the sink
+from inside Blender; `tests/blender/test_module.py` (registration, the
+settings handed for viewport and F12, the stage and arguments a conversion
+builds, the stage an export builds: the Empty's reference, the world's
+DomeLight, no mesh).
+
+### Not done
+
+- Nothing here ran on the GPU: `tests/blender/tx_module.py` (convert with
+  the catcher, raster against the path traced GT, against Cycles, export,
+  Blender splats, Esc) and `viewport_readback.py` are queued.
+- A procedural world (sky texture, gradients) is not a DomeLight in Blender's
+  conversion and lights nothing; baking it to an EXR first is proposal 084's.
+- Light groups as passes, Cryptomatte to the compositor, and the comparison
+  per material (it is per frame).
+- Blender splats come from `flatten --format usdc` (display-referred, as a
+  standard file is); whether Blender's own engines read those colours as a
+  capture's is to be seen on the queued run.
+- The viewport still crosses host memory (the colour mapped and uploaded):
+  Blender's change, written up in phase 2.
