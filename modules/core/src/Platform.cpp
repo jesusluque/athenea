@@ -7,6 +7,7 @@
 #include <EGL/eglext.h>
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -372,7 +373,18 @@ uint64_t availablePhysicalMemory() {
         return 0;
     }
     const uint64_t page = static_cast<uint64_t>(::sysconf(_SC_PAGESIZE));
-    return (uint64_t{stats.free_count} + stats.inactive_count + stats.purgeable_count) * page;
+    // What the system hands back on demand counts as available, as
+    // memory_pressure counts it: the file cache too (`external_page_count`,
+    // file-backed pages, active or not), and the speculative read-ahead.
+    // Free, inactive and purgeable alone read 1.7 GB on a machine
+    // memory_pressure called 79% free after a large process had left its
+    // files cached, and a cloud that fitted was refused. The two counts
+    // overlap (a cached file page may be inactive), so the larger is taken.
+    const uint64_t reclaimable = uint64_t{stats.free_count} + stats.inactive_count + stats.purgeable_count +
+                                 stats.speculative_count;
+    const uint64_t cached = uint64_t{stats.free_count} + stats.external_page_count + stats.purgeable_count +
+                            stats.speculative_count;
+    return std::max(reclaimable, cached) * page;
 #elif defined(__linux__)
     FILE* file = std::fopen("/proc/meminfo", "r");
     if (file == nullptr) {
