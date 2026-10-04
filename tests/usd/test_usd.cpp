@@ -11498,6 +11498,100 @@ TEST_CASE("the open directions a TX transfer keeps are the ones a roof leaves, o
     }
 }
 
+// THE WAY THROUGH GLASS IS OPEN. The same roof, made of glass: light gets
+// through it, so the cells under it must read open as if it were not there
+// (pathThrough: a transmitting surface is passed, weighed by what it lets
+// through, and a cell is open where half gets through). A gold ring under a
+// pawn's glass head read its sky closed by the glass, a row of dark dots.
+TEST_CASE("the open directions a TX transfer keeps pass through glass", "[usd][gpu][mesh][bake][transfer][cells][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        SKIP("needs ray tracing");
+    }
+    const fs::path path = scratch("transfer_glass_roof_cells.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-4, -4, -1.5), (4, -4, -1.5), (4, 4, -1.5), (-4, 4, -1.5)]\n"
+               "    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = \"vertex\")\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Mesh \"Roof\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 3, 2, 1]\n"
+               "    point3f[] points = [(-0.75, -0.75, -0.5), (0.75, -0.75, -0.5), (0.75, 0.75, -0.5), "
+               "(-0.75, 0.75, -0.5)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Glass>\n}\n"
+               "def Material \"Glass\"\n{\n"
+               "    token outputs:mtlx:surface.connect = </Glass/OpenPBR.outputs:out>\n"
+               "    def Shader \"OpenPBR\"\n    {\n"
+               "        uniform token info:id = \"ND_open_pbr_surface_surfaceshader\"\n"
+               "        float inputs:specular_roughness = 0\n        float inputs:specular_ior = 1.5\n"
+               "        float inputs:transmission_weight = 1\n        token outputs:out\n    }\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    const uint32_t count = 64;
+    std::vector<float> rays(size_t{count} * 8, 0.0F);
+    std::vector<float> where(size_t{count} * 4, 0.0F);
+    for (uint32_t k = 0; k < count; ++k) {
+        float* ray = rays.data() + size_t{k} * 8;
+        ray[0] = -2.5F + 5.0F * (static_cast<float>(k) + 0.5F) / static_cast<float>(count);
+        ray[1] = 0.1F;
+        ray[2] = -1.5F;
+        ray[3] = 1.0e-3F;
+        ray[6] = 1.0F;
+        where[size_t{k} * 4] = ray[0];
+        where[size_t{k} * 4 + 1] = ray[1];
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    const auto upload = [&](const std::vector<float>& values, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = values.size() * 4;
+        desc.elementBytes = 16;
+        desc.label = label;
+        auto made = gpu::Buffer::create(*gpu->device, desc, values.data());
+        REQUIRE(made);
+        return *made;
+    };
+    gpu::Buffer points = upload(where, "glassCells.points");
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/shadow_cells_check");
+    const uint32_t side = 16, coefficients = 9;
+    auto baked = (*renderer)->bakePoints(rays, count, 0.0, 64, 1, 2, /*transfer=*/true, nullptr, side);
+    if (!baked) FAIL(baked.error().toString());
+    const uint32_t entries = coefficients + technique::transferPlanes(true, side);
+    gpu::Buffer values = upload(*baked, "glassCells.baked");
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "glassCells.stats");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["baked"].setBinding(values.rhi());
+            cursor["points"].setBinding(points.rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(count);
+            p["entries"].setData(entries);
+            p["firstPlane"].setData(coefficients + 1);
+            p["side"].setData(side);
+            // No roof in the closed form: through glass, every direction above
+            // is open.
+            p["roofHeight"].setData(1.0F);
+            p["roofHalf"].setData(0.0F);
+            p["margin"].setData(0.05F);
+            const float normal[3] = {0.0F, 0.0F, 1.0F};
+            p["normal"].setData(normal, sizeof(normal));
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    std::printf("  under a glass roof: %u above judged, %u open, %u wrong\n", counts[1], counts[2], counts[0]);
+    CHECK(counts[1] > count * side * side / 4);
+    CHECK(counts[0] == 0);   // every bit above open, the glass roof included
+}
+
 // WHAT A TX TRANSFER'S CLOSED DIRECTIONS SHOW IS WHAT STANDS THERE (step 2).
 //
 // A point on a black floor beside a grey wall, under a white sky. The wall is

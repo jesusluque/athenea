@@ -11776,6 +11776,23 @@ Measured as variants (once the colour): chrome 0.591, rough metal 0.0835,
 paint 0.341, against the first's 0.536, 0.0896 and 0.705. The chrome stays a
 tenth behind the first; what else of TX it pays for is not found yet.
 
+### The cells see through glass
+
+A transfer's cells and its direct half asked only whether a ray hit
+anything, so glass closed them as a wall would: a pawn's gold ring under its
+glass head read its sky closed in a row of dark dots, and the cabin under a
+car's windows the same. The bake's occlusion ray for both now passes every
+surface whose material lets light through (`kMaterialTransmits`, set where a
+material has a transmission weight or a cut-out opacity), straight on
+and weighed by what it passes: the luminance of its transmitting lobes less
+the Fresnel the dielectric reflects at that angle, or what a transparent
+opacity leaves. A cell is open where at least half gets through; the direct
+half's quadrature weighs each ray by what got through. The sun's share reads
+the cells, so it follows. Straight, not bent: the cells say whether light
+arrives, and the lens's image is the frame's (`lensExit`). Up to eight
+surfaces are passed; the ninth closes the way. Tested by a glass roof over a
+plate, whose cells all read open (`[cells][glass]`).
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

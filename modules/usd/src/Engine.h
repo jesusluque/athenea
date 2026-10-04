@@ -195,6 +195,7 @@ struct MaterialEntry {
     bool                                    pending = true;
     bool                                    cutout = false;        ///< its opacity cuts samples away: visibility evaluates it
     bool                                    transparent = false;   ///< opacityMode transparent: the tracer keeps the specular
+    bool                                    transmits = false;     ///< lets light through: the bake's open-or-not rays look
     std::optional<material::CompiledMaterial> compiled;
     /// Where it cuts: its opacity alone, what a shadow ray asks at a candidate.
     std::optional<material::CompiledMaterial> opacity;

@@ -999,6 +999,61 @@ bool shadowPassesThrough(PathHit hit, float3 from, float3 direction) {
     return float(key >> 8) * (1.0 / 16777216.0) >= opacity;
 }
 
+/// HOW MUCH OF A DIRECTION GETS THROUGH, for a ray that only asks whether
+/// the way is open (a transfer's cells, its direct half): one past every
+/// surface whose material lets light through (`kMaterialTransmits`),
+/// straight on and weighed by what each passes -- its transmitting lobes,
+/// less the Fresnel its dielectric reflects at that angle, or what a
+/// transparent opacity leaves -- and nothing at the first that does not.
+/// Straight, not bent: the cells say whether light gets here, and the lens's
+/// image is the frame's (splat_relight's lensExit). Opaque glass in these
+/// rays put a pawn's gold ring in the dark under its glass head, and a car's
+/// cabin under its windows.
+float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
+    const float scale = max(1.0, length(p));
+    const float3 away = dot(n, wi) < 0.0 ? -n : n;
+    float3 origin = p + (away + wi) * (1.0e-3 * scale);
+    float through = 1.0;
+    for (uint passes = 0; passes < 8u; ++passes) {
+        const PathHit hit = traceNearestFrom(origin, wi, 1.0e-3 * scale, mask, false);
+        if (hit.seen.x == 0) {
+            return through;
+        }
+        const Found f = foundHit(hit, origin, wi);
+        if (!f.valid) {
+            return through;
+        }
+        const MaterialRecord m = materials[materialRowOf(f.s)];
+        if ((m.flags & kMaterialTransmits) == 0u) {
+            return 0.0;
+        }
+        float passed = 0.0;
+        if ((m.flags & kMaterialTransparent) != 0u) {
+            const MaterialInputs inputs = materialInputsAt(camera, toWorld, 0u, 0u, f.s, lookup.time, false);
+            passed = 1.0 - evaluateOpacity(m.function, inputs, m.blob);
+        } else {
+            const Shaded sh = shadeSurface(uint2(0, 0), f.s);
+            const float cosine = abs(dot(sh.inputs.normalWorld, wi));
+            for (uint k = 0; k < sh.stack.count; ++k) {
+                const Lobe lobe = sh.stack.lobes[k];
+                if (lobe.scatter == kScatterReflect || !any(lobe.weight > float3(0.0))) {
+                    continue;
+                }
+                const float tint = dot(max(lobe.weight, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+                const float reflected =
+                    lobe.kind == kLobeDielectric ? fresnelDielectric(max(cosine, 1.0e-3), max(lobe.ior, 1.0)) : 0.0;
+                passed += tint * (1.0 - reflected);
+            }
+        }
+        through *= saturate(passed);
+        if (through < 1.0e-3) {
+            return 0.0;
+        }
+        origin = origin + wi * (hit.t + 1.0e-3 * scale);
+    }
+    return through;
+}
+
 /// What was found, its material evaluated: the kernel's one call of it.
 Shaded shadeFound(uint2 pixel, Found f) {
     Shaded out;
@@ -2032,8 +2087,13 @@ void tracePathsAt(uint2 group, uint index) {
                             const float2 uv = (float2(float(cell % cellSide), float(cell / cellSide)) + 0.5) /
                                               float(cellSide);
                             const float3 wd = octDecode(uv);
-                            if (!pathOccluded(pp, np, wd, 3.0e38, kLightUnlinked, mask)) {
-                                word |= 1u << b;
+                            // Past what lets light through (pathThrough): the
+                            // cell is open where at least half gets through.
+                            const float through = pathThrough(pp, np, wd, mask);
+                            if (through > 0.0) {
+                                if (through >= 0.5) {
+                                    word |= 1u << b;
+                                }
                                 // THE DIRECT HALF BY QUADRATURE (proposal 032):
                                 // the same rays, each worth its cell's solid
                                 // angle -- the octahedral map's own, 4 / side^2
@@ -2045,7 +2105,8 @@ void tracePathsAt(uint2 group, uint index) {
                                 if (cosine > 0.0) {
                                     const float l1 = abs(wd.x) + abs(wd.y) + abs(wd.z);
                                     const float solid = 4.0 / float(cellSide * cellSide) * l1 * l1 * l1;
-                                    const float worth = cosine * solid / 3.14159265358979 * float(samples);
+                                    const float worth =
+                                        through * cosine * solid / 3.14159265358979 * float(samples);
                                     for (uint c = 0; c < min(path.bakeCount, 16u); ++c) {
                                         transferDirect[c] += worth * shBasisValue(c, wd);
                                     }
@@ -2063,7 +2124,7 @@ void tracePathsAt(uint2 group, uint index) {
                     if (dot(np, wd) <= 0.0) {
                         continue;
                     }
-                    if (!pathOccluded(pp, np, wd, 3.0e38, kLightUnlinked, mask)) {
+                    if (pathThrough(pp, np, wd, mask) >= 0.5) {
                         if (cell < 32u) {
                             shadowBits0 |= 1u << cell;
                         } else {

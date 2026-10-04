@@ -808,6 +808,41 @@ bool MaterialCompiler::transparentOpacity(const std::shared_ptr<void>& document)
     return false;
 }
 
+bool MaterialCompiler::transmits(const std::shared_ptr<void>& document) {
+    // A surface shader whose transmission is not zero: OpenPBR's
+    // `transmission_weight`, standard_surface's and glTF's `transmission`, or
+    // a UsdPreviewSurface whose opacity is transparency. Driven by a graph
+    // counts as transmitting: a bit left open where the glass is clear is
+    // the smaller error.
+    const auto doc = std::static_pointer_cast<mx::Document>(document);
+    if (!doc) {
+        return false;
+    }
+    if (transparentOpacity(document)) {
+        return true;
+    }
+    for (const mx::ElementPtr& element : doc->traverseTree()) {
+        const mx::NodePtr node = element->asA<mx::Node>();
+        if (!node) {
+            continue;
+        }
+        for (const char* name : {"transmission_weight", "transmission"}) {
+            const mx::InputPtr input = node->getInput(name);
+            if (!input) {
+                continue;
+            }
+            if (!input->getNodeName().empty() || !input->getNodeGraphString().empty() ||
+                !input->getInterfaceName().empty()) {
+                return true;
+            }
+            if (input->getValue() && input->getValue()->isA<float>() && input->getValue()->asA<float>() > 0.0F) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::optional<VolumeCoefficients> MaterialCompiler::volumeCoefficients(const std::shared_ptr<void>& document) {
     const auto doc = std::static_pointer_cast<mx::Document>(document);
     if (!doc) {

@@ -48,6 +48,8 @@ inline constexpr uint32_t kMaterialCutout = 1u;
 /// The path tracer keeps its specular and emission at full weight and lets
 /// (1 - opacity) of the light straight through; the raster still cuts by lot.
 inline constexpr uint32_t kMaterialTransparent = 2u;
+/// It lets light through: the bake's open-or-not rays look at it (material_lookup.slang).
+inline constexpr uint32_t kMaterialTransmits = 4u;
 
 class MaterialPrograms {
 public:

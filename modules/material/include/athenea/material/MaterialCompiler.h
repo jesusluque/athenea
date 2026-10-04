@@ -113,6 +113,10 @@ public:
     /// the diffuse goes down in favour of what is behind. The path tracer
     /// draws it that way; the raster, which can only cut by lot, does not.
     [[nodiscard]] static bool transparentOpacity(const std::shared_ptr<void>& document);
+    /// Whether the material lets light through at all (a transmission, or a
+    /// transparent opacity): what a ray that only asks whether the way is
+    /// open must look at instead of stopping (technique::kMaterialTransmits).
+    [[nodiscard]] static bool transmits(const std::shared_ptr<void>& document);
     /// What a Material's `volume` terminal says of the medium: MaterialX's
     /// `volume(vdf, edf)` with `anisotropic_vdf(absorption, scattering,
     /// anisotropy)` or `absorption_vdf(absorption)` for the vdf and

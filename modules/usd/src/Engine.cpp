@@ -448,6 +448,7 @@ void Engine::setMaterial(const pxr::SdfPath& id, std::shared_ptr<void> mtlxDocum
     entry.document = std::move(mtlxDocument);
     entry.cutout = material::MaterialCompiler::cutsOut(entry.document);
     entry.transparent = material::MaterialCompiler::transparentOpacity(entry.document);
+    entry.transmits = material::MaterialCompiler::transmits(entry.document);
     entry.volume = material::MaterialCompiler::volumeCoefficients(entry.document);
     entry.pending = true;
 }
@@ -1637,7 +1638,8 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
                        entry.compiled->module, files);
         }
         const uint32_t flags = (entry.cutout ? technique::kMaterialCutout : 0u) |
-                               (entry.transparent ? technique::kMaterialTransparent : 0u);
+                               (entry.transparent ? technique::kMaterialTransparent : 0u) |
+                               (entry.transmits ? technique::kMaterialTransmits : 0u);
         materialCutouts_ = materialCutouts_ || entry.cutout;
         rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, 0});
         blob.insert(blob.end(), words.begin(), words.end());
