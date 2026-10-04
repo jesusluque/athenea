@@ -72,6 +72,24 @@
       }
     },
     {
+      "name": "macos-arm64-webgpu",
+      "inherits": "macos-arm64-release",
+      "displayName": "macOS arm64 Release (Metal + WebGPU through Dawn)",
+      "cacheVariables": {
+        "ATHENEA_WEBGPU": "ON",
+        "ATHENEA_DAWN_ROOT": "$env{HOME}/tools/dawn-138.0.7204.168"
+      }
+    },
+    {
+      "name": "linux-x86_64-webgpu",
+      "inherits": "linux-x86_64-release",
+      "displayName": "Linux x86_64 Release (CUDA/Vulkan + WebGPU through Dawn)",
+      "cacheVariables": {
+        "ATHENEA_WEBGPU": "ON",
+        "ATHENEA_DAWN_ROOT": "$env{HOME}/tools/dawn-138.0.7204.168"
+      }
+    },
+    {
       "name": "ios-base",
       "hidden": true,
       "generator": "Ninja",
@@ -126,6 +144,14 @@
       "configurePreset": "linux-x86_64-release"
     },
     {
+      "name": "macos-arm64-webgpu",
+      "configurePreset": "macos-arm64-webgpu"
+    },
+    {
+      "name": "linux-x86_64-webgpu",
+      "configurePreset": "linux-x86_64-webgpu"
+    },
+    {
       "name": "ios-arm64-debug",
       "configurePreset": "ios-arm64-debug"
     },
@@ -168,6 +194,26 @@
     {
       "name": "linux-x86_64-release",
       "configurePreset": "linux-x86_64-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1
+      }
+    },
+    {
+      "name": "macos-arm64-webgpu",
+      "configurePreset": "macos-arm64-webgpu",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1
+      }
+    },
+    {
+      "name": "linux-x86_64-webgpu",
+      "configurePreset": "linux-x86_64-webgpu",
       "output": {
         "outputOnFailure": true
       },

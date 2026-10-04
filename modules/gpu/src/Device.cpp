@@ -39,6 +39,7 @@ rhi::DeviceType toRhi(Backend backend) {
     case Backend::CUDA: return rhi::DeviceType::CUDA;
     case Backend::Vulkan: return rhi::DeviceType::Vulkan;
     case Backend::D3D12: return rhi::DeviceType::D3D12;
+    case Backend::WebGPU: return rhi::DeviceType::WGPU;
     }
     return rhi::DeviceType::Default;
 }
@@ -54,6 +55,57 @@ std::vector<Backend> platformPreference() {
     // without an NVIDIA card, where gpe has no backend at all.
     return {Backend::CUDA, Backend::Vulkan};
 #endif
+}
+
+/// The limits a browser grants, for a native WebGPU device to be held to
+/// ($ATHENEA_WEBGPU_WEB_LIMITS). Not set, or 0: the adapter's own, which on a
+/// desktop GPU are far above any browser's.
+struct WebLimits {
+    const char* name = "";
+    uint32_t    storageBuffers = 0;   // maxStorageBuffersPerShaderStage
+    uint32_t    workgroupBytes = 0;   // maxComputeWorkgroupStorageSize
+    uint64_t    bindingBytes = 0;     // maxStorageBufferBindingSize
+    uint64_t    bufferBytes = 0;      // maxBufferSize
+};
+
+/// `1` or `default`: the WebGPU specification's defaults, which every browser
+/// grants without being asked -- 8 storage buffers a stage, 16 KiB of
+/// workgroup memory, 128 MiB a storage binding, 256 MiB a buffer.
+/// `10` or `typical`: what 98-99% of adapters report (web3dsurvey,
+/// proposal 071) -- 10 buffers, 32 KiB, 256 MiB a binding; the buffer size was
+/// not surveyed and stays at the default.
+/// `S,W,B,F`: storage buffers, workgroup bytes, binding MiB, buffer MiB.
+std::optional<WebLimits> webLimitsFromEnv() {
+    const std::string value = platform::env("ATHENEA_WEBGPU_WEB_LIMITS");
+    constexpr uint64_t kMiB = uint64_t{1} << 20;
+    if (value.empty() || value == "0") {
+        return std::nullopt;
+    }
+    if (value == "1" || value == "default") {
+        return WebLimits{"default", 8, 16384, 128 * kMiB, 256 * kMiB};
+    }
+    if (value == "10" || value == "typical") {
+        return WebLimits{"typical", 10, 32768, 256 * kMiB, 256 * kMiB};
+    }
+    unsigned long long field[4] = {};
+    size_t start = 0;
+    for (int i = 0; i < 4; ++i) {
+        const size_t comma = value.find(',', start);
+        if ((i < 3) == (comma == std::string::npos)) {
+            log::warn("ATHENEA_WEBGPU_WEB_LIMITS: '{}' is not 1, 10, default, typical or S,W,B,F", value);
+            return std::nullopt;
+        }
+        const std::string part = value.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        char* end = nullptr;
+        field[i] = std::strtoull(part.c_str(), &end, 10);
+        if (part.empty() || end == nullptr || *end != '\0' || field[i] == 0) {
+            log::warn("ATHENEA_WEBGPU_WEB_LIMITS: '{}' is not 1, 10, default, typical or S,W,B,F", value);
+            return std::nullopt;
+        }
+        start = comma + 1;
+    }
+    return WebLimits{"given", static_cast<uint32_t>(field[0]), static_cast<uint32_t>(field[1]), field[2] * kMiB,
+                     field[3] * kMiB};
 }
 
 /// Messages from slang-rhi's validation and the drivers, into the engine log.
@@ -131,6 +183,7 @@ const char* toString(Backend backend) noexcept {
     case Backend::CUDA: return "CUDA";
     case Backend::Vulkan: return "Vulkan";
     case Backend::D3D12: return "D3D12";
+    case Backend::WebGPU: return "WebGPU";
     }
     return "?";
 }
@@ -183,7 +236,8 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
             else if (word == "cuda") named.push_back(Backend::CUDA);
             else if (word == "vulkan") named.push_back(Backend::Vulkan);
             else if (word == "d3d12") named.push_back(Backend::D3D12);
-            else if (!word.empty()) log::warn("ATHENEA_BACKEND: '{}' is not a backend (metal, cuda, vulkan, d3d12)", word);
+            else if (word == "webgpu") named.push_back(Backend::WebGPU);
+            else if (!word.empty()) log::warn("ATHENEA_BACKEND: '{}' is not a backend (metal, cuda, vulkan, d3d12, webgpu)", word);
             if (comma == std::string::npos) break;
             start = comma + 1;
         }
@@ -272,6 +326,20 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
             rhiDesc.slang.slangGlobalSession = cudaGlobalSession();
         }
         rhiDesc.persistentShaderCache = device->shaderCache_.get();
+        rhi::WGPUDeviceExtendedDesc webLimits;
+        if (backend == Backend::WebGPU) {
+            if (auto limits = webLimitsFromEnv()) {
+                webLimits.maxStorageBuffersPerShaderStage = limits->storageBuffers;
+                webLimits.maxComputeWorkgroupStorageSize = limits->workgroupBytes;
+                webLimits.maxStorageBufferBindingSize = limits->bindingBytes;
+                webLimits.maxBufferSize = limits->bufferBytes;
+                rhiDesc.next = &webLimits;
+                log::info("WebGPU held to a browser's limits ({}): {} storage buffers a stage, {} bytes of "
+                          "workgroup memory, {} MiB a storage binding, {} MiB a buffer",
+                          limits->name, limits->storageBuffers, limits->workgroupBytes, limits->bindingBytes >> 20,
+                          limits->bufferBytes >> 20);
+            }
+        }
 
         rhi::ComPtr<rhi::IDevice> made;
         gDebugLog.lastError.clear();

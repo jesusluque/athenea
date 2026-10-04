@@ -1210,7 +1210,16 @@ transform), Open Image Denoise (denoising), libwebp (`.sog`), OpenVDB
 are found only in their own prefix, and each prints a status line at configure
 time saying whether it was found. That line is the diagnostic.
 
-**The five slang-rhi patches** are in `cmake/patches/`, applied at fetch time
+**Dawn, only when asked.** `ATHENEA_WEBGPU=ON` (the `*-webgpu` presets) turns on
+slang-rhi's WebGPU backend over Dawn as `scripts/build-dawn.sh` puts it in
+`ATHENEA_DAWN_ROOT`: the binaries slang-rhi is written against, at the version
+its own CMake names, and slang-rhi's `FetchPackage(dawn)` is pointed there so
+the configure step downloads nothing. A missing Dawn is a fatal error naming
+the script. `libdawn` is copied into `bin/`, where slang-rhi opens it by name
+at run time. `gpu::Backend::WebGPU` is never a platform's preference; it is
+opened only when named.
+
+**The six slang-rhi patches** are in `cmake/patches/`, applied at fetch time
 by a script that skips any already applied, because FetchContent re-runs the
 command on a tree that may already carry them:
 
@@ -1221,6 +1230,7 @@ command on a tree that may already carry them:
 | CUDA driver symbol shadowing | a driver symbol shadowed by the runtime's |
 | Metal acceleration structures | acceleration structure handling on Metal |
 | Metal command buffer errors | a command buffer that failed on the device (out of memory) asserted and aborted the process; now the next `submit` or `waitOnHost` returns `SLANG_E_OUT_OF_MEMORY`, which `gpu::CommandBatch::submit` turns into `OutOfMemory` |
+| WebGPU device limits | a WebGPU device asked for every limit its adapter had, and nothing could hold it lower; a `WGPUDeviceExtendedDesc` in the device's chain now lowers four of them, which is how `ATHENEA_WEBGPU_WEB_LIMITS` holds a native run to a browser's |
 
 **Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
 tracks `main`. A change to gpe is committed in the submodule, not here.

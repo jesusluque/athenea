@@ -66,10 +66,26 @@ set(SLANG_RHI_BUILD_TESTS_WITH_GLFW OFF CACHE BOOL "" FORCE)
 set(SLANG_RHI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SLANG_RHI_INSTALL OFF CACHE BOOL "" FORCE)
 # No CPU backend: nothing in this engine may run its numbers on the CPU, and a
-# backend that exists gets used as a fallback by someone. No WebGPU: Dawn is a
-# large download for a target this engine does not have.
+# backend that exists gets used as a fallback by someone.
 set(SLANG_RHI_ENABLE_CPU OFF CACHE BOOL "" FORCE)
-set(SLANG_RHI_ENABLE_WGPU OFF CACHE BOOL "" FORCE)
+# WebGPU only when asked (ATHENEA_WEBGPU, the *-webgpu presets): the backend the
+# browser build will have, run natively on Dawn to find what the web's limits
+# and WGSL refuse before there is a browser in the loop. Dawn comes prebuilt
+# from scripts/build-dawn.sh, and slang-rhi's FetchPackage(dawn) is pointed at
+# it, so the configure step downloads nothing.
+option(ATHENEA_WEBGPU "The WebGPU backend (Dawn), beside the platform's own" OFF)
+set(ATHENEA_DAWN_ROOT "$ENV{HOME}/tools/dawn-138.0.7204.168" CACHE PATH
+    "Dawn as scripts/build-dawn.sh installs it (include/dawn/webgpu.h, lib/)")
+if(ATHENEA_WEBGPU)
+    if(NOT EXISTS "${ATHENEA_DAWN_ROOT}/include/dawn/webgpu.h")
+        message(FATAL_ERROR "ATHENEA_WEBGPU: no Dawn at ${ATHENEA_DAWN_ROOT}. Run scripts/build-dawn.sh, "
+                            "or set ATHENEA_DAWN_ROOT.")
+    endif()
+    set(SLANG_RHI_ENABLE_WGPU ON CACHE BOOL "" FORCE)
+    set(FETCHCONTENT_SOURCE_DIR_DAWN "${ATHENEA_DAWN_ROOT}" CACHE PATH "" FORCE)
+else()
+    set(SLANG_RHI_ENABLE_WGPU OFF CACHE BOOL "" FORCE)
+endif()
 set(SLANG_RHI_ENABLE_D3D11 OFF CACHE BOOL "" FORCE)
 if(APPLE)
     # Metal only. Vulkan on macOS is MoltenVK over Metal, which is the device
@@ -109,6 +125,11 @@ endif()
 #     -- and waitOnHost no longer waits on a tracking event a failed buffer
 #     never signals. A buffer or acceleration structure Metal will not make
 #     is SLANG_E_OUT_OF_MEMORY rather than SLANG_FAIL.
+#   - slang-rhi-wgpu-limits.patch: a WebGPU device asked for every limit
+#     its adapter has and nothing could hold it lower. A WGPUDeviceExtendedDesc
+#     in DeviceDesc's chain now lowers four of them (storage buffers per stage,
+#     workgroup memory, storage binding size, buffer size), which is how a
+#     native run is held to a browser's (ATHENEA_WEBGPU_WEB_LIMITS).
 #   - slang-rhi-ios.patch (iOS only): two things the backend assumes a Mac
 #     for. Slang is linked statically, as everything in an app bundle is, and
 #     the imported target had no iOS branch to say so. And the Metal target
@@ -120,7 +141,8 @@ set(ATHENEA_RHI_PATCHES
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-acceleration-structures.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-texture-view-format.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-driver-symbols.patch"
-    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-command-buffer-errors.patch")
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-command-buffer-errors.patch"
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-wgpu-limits.patch")
 if(ATHENEA_IOS)
     list(APPEND ATHENEA_RHI_PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-ios.patch")
 endif()
@@ -138,6 +160,24 @@ FetchContent_Declare(slang_rhi
     UPDATE_DISCONNECTED TRUE
     SYSTEM)
 FetchContent_MakeAvailable(slang_rhi)
+endif()
+
+# slang-rhi opens libdawn by name from the directory of the binary that links
+# it (src/wgpu/wgpu-api.cpp), and every binary here lands in bin/.
+if(ATHENEA_WEBGPU AND TARGET slang-rhi)
+    if(APPLE)
+        set(ATHENEA_DAWN_LIBRARY "${ATHENEA_DAWN_ROOT}/lib/libdawn.dylib")
+    elseif(WIN32)
+        set(ATHENEA_DAWN_LIBRARY "${ATHENEA_DAWN_ROOT}/bin/dawn.dll")
+    else()
+        set(ATHENEA_DAWN_LIBRARY "${ATHENEA_DAWN_ROOT}/lib64/libdawn.so")
+    endif()
+    if(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+        file(COPY "${ATHENEA_DAWN_LIBRARY}" DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+    else()
+        message(WARNING "ATHENEA_WEBGPU: copy ${ATHENEA_DAWN_LIBRARY} beside the binaries that link slang-rhi")
+    endif()
+    message(STATUS "gpu: WebGPU through Dawn at ${ATHENEA_DAWN_ROOT}")
 endif()
 
 if(ATHENEA_IOS AND TARGET slang-rhi)

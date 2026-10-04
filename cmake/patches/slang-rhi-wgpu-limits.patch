@@ -1,0 +1,63 @@
+diff --git a/include/slang-rhi.h b/include/slang-rhi.h
+index 871dbe7e..b8018e5c 100644
+--- a/include/slang-rhi.h
++++ b/include/slang-rhi.h
+@@ -87,6 +87,8 @@ enum class StructType
+     D3D12ExperimentalFeaturesDesc,
+ 
+     VulkanDeviceExtendedDesc,
++
++    WGPUDeviceExtendedDesc,
+ };
+ 
+ // TODO: Implementation or backend or something else?
+@@ -4274,6 +4276,21 @@ struct VulkanDeviceExtendedDesc
+     const char* const* deviceExtensions = nullptr;
+ };
+ 
++/// Limits a WebGPU device is created with, below what the adapter offers: how
++/// a native build is held to what a browser grants. Zero leaves a limit at the
++/// adapter's maximum, which is what the device asks for otherwise.
++struct WGPUDeviceExtendedDesc
++{
++    static constexpr StructType kStructType = StructType::WGPUDeviceExtendedDesc;
++    StructType structType = kStructType;
++    const void* next = nullptr;
++
++    uint32_t maxStorageBuffersPerShaderStage = 0;
++    uint32_t maxComputeWorkgroupStorageSize = 0;
++    uint64_t maxStorageBufferBindingSize = 0;
++    uint64_t maxBufferSize = 0;
++};
++
+ } // namespace rhi
+ 
+ /// Get the global interface to the RHI.
+diff --git a/src/wgpu/wgpu-device.cpp b/src/wgpu/wgpu-device.cpp
+index 2d410073..75d331a2 100644
+--- a/src/wgpu/wgpu-device.cpp
++++ b/src/wgpu/wgpu-device.cpp
+@@ -114,6 +114,23 @@ Result DeviceImpl::initialize(const DeviceDesc& desc, BackendImpl* backend)
+ 
+     // We request a device with the maximum available limits and filtered feature set.
+     WGPULimits requiredLimits = adapterLimits;
++    // A WGPUDeviceExtendedDesc in the chain holds some of them lower.
++    for (const ChainedStructHeader* header = static_cast<const ChainedStructHeader*>(desc.next); header;
++         header = static_cast<const ChainedStructHeader*>(header->next))
++    {
++        if (header->type != StructType::WGPUDeviceExtendedDesc)
++            continue;
++        const auto* extended = reinterpret_cast<const WGPUDeviceExtendedDesc*>(header);
++        auto lower = [](auto& limit, auto wanted)
++        {
++            if (wanted != 0 && wanted < limit)
++                limit = wanted;
++        };
++        lower(requiredLimits.maxStorageBuffersPerShaderStage, extended->maxStorageBuffersPerShaderStage);
++        lower(requiredLimits.maxComputeWorkgroupStorageSize, extended->maxComputeWorkgroupStorageSize);
++        lower(requiredLimits.maxStorageBufferBindingSize, extended->maxStorageBufferBindingSize);
++        lower(requiredLimits.maxBufferSize, extended->maxBufferSize);
++    }
+     WGPUDeviceDescriptor deviceDesc = {};
+     deviceDesc.requiredFeatures = enabledFeatures.data();
+     deviceDesc.requiredFeatureCount = static_cast<uint32_t>(enabledFeatures.size());

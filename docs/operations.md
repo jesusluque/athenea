@@ -35,8 +35,12 @@ is on and the flag turns it off.
 
 The README's *Building* section has the prerequisites with their versions and
 prefixes, the three dependency scripts, the submodules, and the four CMake
-presets. It is not repeated here. What matters afterwards is the environment
-the binary runs in.
+presets. It is not repeated here. Two more presets, `macos-arm64-webgpu` and
+`linux-x86_64-webgpu`, are the release build with the WebGPU backend beside the
+platform's own (`ATHENEA_WEBGPU=ON`, §1.4); they need Dawn in
+`~/tools/dawn-138.0.7204.168` (`scripts/build-dawn.sh`, or `ATHENEA_DAWN_ROOT`)
+and put `libdawn` beside the binaries in `bin/`. What matters afterwards is the
+environment the binary runs in.
 
 ### 1.2 The runtime environment
 
@@ -46,7 +50,8 @@ the binary runs in.
 | `PXR_PLUGINPATH_NAME` | points a USD application at `<build>/plugin/usd`, which holds both the Hydra delegate and the codeless schemas. Needed by any host that is not `athenea` itself. `athenea` registers `<its binary>/../plugin/usd` on its own at start-up, so the schemas a converted cloud applies are written whether this is set or not. |
 | `ATHENEA_MATERIALX_ROOT` | a directory holding MaterialX's `libraries/`, read by hdAthenea's material compiler in place of the libraries the host's USD loaded. Unset by default: the host's are used. For a host whose MaterialX predates the Slang generator (Blender 5.3 ships 1.39.4: no `genslang` implementations, older node definitions), pointed at 1.39.5's. Read once, when the first material compiles; the host's own renderers keep theirs. |
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. |
-| `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
+| `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12,webgpu`. Unknown words warn and are skipped. `webgpu` is opened only when named, and only by a build with `ATHENEA_WEBGPU` (otherwise it is reported as `not built in`). |
+| `ATHENEA_WEBGPU_WEB_LIMITS` | holds a WebGPU device to a browser's limits instead of its adapter's. Unset or `0`: the adapter's. `1` or `default`: the WebGPU specification's defaults, which every browser grants -- 8 storage buffers per shader stage, 16384 bytes of workgroup memory, 128 MiB per storage binding, 256 MiB per buffer. `10` or `typical`: what 98-99% of adapters report -- 10 buffers, 32768 bytes, 256 MiB per binding, 256 MiB per buffer (that last one is not surveyed, so it stays at the default). `S,W,B,F`: storage buffers, workgroup bytes, MiB per binding, MiB per buffer. A limit is only ever lowered, never raised past the adapter's. A kernel over a limit fails when its pipeline is made, naming the limit. The device prints the limits it was held to. Read only by the WebGPU backend. |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
 | `ATHENEA_SHADER_CACHE` | where compiled shaders are cached between runs. The default is a directory under the platform's cache directory. Deleting it costs one slow first frame. |
 
@@ -66,6 +71,7 @@ Everything here is found at configure time, and the effect is felt at run time.
 | OpenVDB | `.vdb` volume fields are refused when read. |
 | OptiX headers (CUDA) | ray tracing by pipeline on CUDA; inline ray queries still work, so most of the engine does. |
 | zstd | `.spz` clouds are refused, with `this build reads no .spz`. |
+| Dawn (`ATHENEA_WEBGPU` off, the default) | the WebGPU backend: `ATHENEA_BACKEND=webgpu` reports `WebGPU (not built in)`. Nothing else. |
 
 ### 1.4 Metal and CUDA
 
@@ -82,6 +88,13 @@ What differs between them, in practice:
   queue. On Vulkan it runs through CUDA with imported memory.
 - **Half precision.** Reported by `athenea info`; where it is absent the engine
   keeps float buffers and nothing else changes.
+- **WebGPU** (a `*-webgpu` build, `ATHENEA_BACKEND=webgpu`) is Dawn, the
+  WebGPU of Chrome, on Metal or Vulkan underneath. It is there to run the
+  browser's backend natively: no ray queries, no acceleration structures, no
+  denoiser, no wave operations, and shaders compiled to WGSL. Today the splat
+  raster's kernels compile to WGSL; with `ATHENEA_WEBGPU_WEB_LIMITS` the
+  projection and the decode do not fit a browser's storage-buffer limit yet
+  (docs/decisions.md, "WebGPU").
 
 ### 1.5 Exit codes, and where an error is printed
 
@@ -116,7 +129,7 @@ own, and the tag `vX.Y.Z` the build came from when it came from a release
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
-| `--backend` | `metal` \| `cuda` \| `vulkan` | the platform's preference | one backend, not a list |
+| `--backend` | `metal` \| `cuda` \| `vulkan` \| `webgpu` | the platform's preference | one backend, not a list; `webgpu` only in a build with `ATHENEA_WEBGPU` |
 
 Prints the backend and adapter, whether it rasterises, traces rays by pipeline
 and by ray query, whether it has timestamps, half and unified memory, the
@@ -1692,6 +1705,7 @@ the README shows.
 | `build-usd.sh [version\|dev]` | builds OpenUSD with MaterialX and OpenVDB into its prefix, without Python |
 | `build-oidn.sh [version]` | builds Open Image Denoise, GPU devices only |
 | `build-ocio.sh [version]` | builds OpenColorIO with its dependencies linked statically |
+| `build-dawn.sh` | puts Dawn 138.0.7204.168, prebuilt, in `~/tools/dawn-<version>` (`ATHENEA_DAWN_ROOT` overrides), checked against its SHA-256 |
 | `fetch-fox.sh [dir]` | the Khronos Fox, through Blender, for a skinned conversion |
 | `sketchfab-to-usd.sh <zip> [name]` | a Sketchfab archive into a USD asset |
 | `readme-images.sh [outdir]` | the images in the README, from the sparrow asset |

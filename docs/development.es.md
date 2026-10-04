@@ -1265,7 +1265,17 @@ Open Image Denoise (el denoising), libwebp (`.sog`), OpenVDB (`.vdb`), zstd
 buscan solo en su propio prefijo, y cada uno imprime una línea de estado al
 configurar diciendo si se encontró. Esa línea es el diagnóstico.
 
-**Los cinco parches a slang-rhi** están en `cmake/patches/`, aplicados al
+**Dawn, solo si se pide.** `ATHENEA_WEBGPU=ON` (los presets `*-webgpu`) enciende
+el backend WebGPU de slang-rhi sobre Dawn tal como lo deja
+`scripts/build-dawn.sh` en `ATHENEA_DAWN_ROOT`: los binarios contra los que está
+escrito slang-rhi, en la versión que nombra su propio CMake, y el
+`FetchPackage(dawn)` de slang-rhi apunta ahí, así que el configurado no
+descarga nada. Si falta Dawn es un error fatal que nombra el script. `libdawn`
+se copia a `bin/`, donde slang-rhi lo abre por nombre en ejecución.
+`gpu::Backend::WebGPU` nunca es la preferencia de una plataforma; solo se abre
+si se nombra.
+
+**Los seis parches a slang-rhi** están en `cmake/patches/`, aplicados al
 traerlo por un script que se salta los ya aplicados, porque FetchContent
 vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 
@@ -1276,6 +1286,7 @@ vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 | símbolos del driver de CUDA | un símbolo del driver tapado por el del runtime |
 | estructuras de aceleración en Metal | su manejo en Metal |
 | errores de command buffer en Metal | un command buffer que fallaba en el dispositivo (sin memoria) disparaba un assert y abortaba el proceso; ahora el siguiente `submit` o `waitOnHost` devuelve `SLANG_E_OUT_OF_MEMORY`, que `gpu::CommandBatch::submit` convierte en `OutOfMemory` |
+| límites del dispositivo WebGPU | un dispositivo WebGPU pedía todos los límites de su adaptador, y nada podía bajarlos; un `WGPUDeviceExtendedDesc` en la cadena del dispositivo baja ahora cuatro, que es como `ATHENEA_WEBGPU_WEB_LIMITS` sujeta una ejecución nativa a los de un navegador |
 
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
 `third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el

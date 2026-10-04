@@ -20,12 +20,13 @@ namespace athenea::cli {
 void addInfo(CLI::App& app) {
     auto* cmd = app.add_subcommand("info", "the device, what it can do, and the toolchain");
     auto backend = std::make_shared<std::string>();
-    cmd->add_option("--backend", *backend, "metal | cuda | vulkan");
+    cmd->add_option("--backend", *backend, "metal | cuda | vulkan | webgpu");
     cmd->callback([backend] {
         gpu::DeviceDesc desc;
         if (*backend == "metal") desc.backends = {gpu::Backend::Metal};
         if (*backend == "cuda") desc.backends = {gpu::Backend::CUDA};
         if (*backend == "vulkan") desc.backends = {gpu::Backend::Vulkan};
+        if (*backend == "webgpu") desc.backends = {gpu::Backend::WebGPU};
 
         auto device = gpu::Device::create(desc);
         if (!device) {

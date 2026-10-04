@@ -33,14 +33,17 @@
 
 namespace athenea::gpu {
 
-enum class Backend { Metal, CUDA, Vulkan, D3D12 };
+/// WebGPU is Dawn, built in only with ATHENEA_WEBGPU (docs/decisions.md,
+/// "WebGPU"): never a platform's preference, only named.
+enum class Backend { Metal, CUDA, Vulkan, D3D12, WebGPU };
 
 [[nodiscard]] const char* toString(Backend) noexcept;
 
 struct DeviceDesc {
     /// Empty means the platform's preference: Metal on Apple, CUDA then Vulkan
     /// on Linux, D3D12 then Vulkan on Windows. There is no CPU entry and there
-    /// never will be.
+    /// never will be. WebGPU only when named, here or in $ATHENEA_BACKEND; on
+    /// it, $ATHENEA_WEBGPU_WEB_LIMITS holds the device to a browser's limits.
     std::vector<Backend> backends;
     /// slang-rhi's own validation layer. Slow; for tests and debugging.
     bool validation = false;
