@@ -11788,10 +11788,14 @@ anything, so glass closed them as a wall would: a pawn's gold ring under its
 glass head read its sky closed in a row of dark dots, and the cabin under a
 car's windows the same. The bake's occlusion ray for both now passes every
 surface whose material lets light through (`kMaterialTransmits`, set where a
-material has a transmission weight or a cut-out opacity), straight on
-and weighed by what it passes: the luminance of its transmitting lobes less
-the Fresnel the dielectric reflects at that angle, or what a transparent
-opacity leaves. A cell is open where at least half gets through; the direct
+material has a transmission weight or a transparent opacity), straight on
+and weighed by what it passes: its transmission weight times its colour's
+luminance, less the Fresnel its index reflects at that angle, or what a
+transparent opacity leaves. Those are read from the material's row as
+constants (MaterialCompiler::transmission; one where a graph drives them,
+half for a textured opacity): evaluating the material at every hit made the
+bake kernel one material dispatch larger, and Metal's compiler gave up on
+the Corvette's (XPC_ERROR_CONNECTION_INTERRUPTED, the s49 gate). A cell is open where at least half gets through; the direct
 half's quadrature weighs each ray by what got through. The sun's share reads
 the cells, so it follows. Straight, not bent: the cells say whether light
 arrives, and the lens's image is the frame's (`lensExit`). Up to eight

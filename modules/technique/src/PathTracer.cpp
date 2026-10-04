@@ -1002,13 +1002,16 @@ bool shadowPassesThrough(PathHit hit, float3 from, float3 direction) {
 /// HOW MUCH OF A DIRECTION GETS THROUGH, for a ray that only asks whether
 /// the way is open (a transfer's cells, its direct half): one past every
 /// surface whose material lets light through (`kMaterialTransmits`),
-/// straight on and weighed by what each passes -- its transmitting lobes,
-/// less the Fresnel its dielectric reflects at that angle, or what a
-/// transparent opacity leaves -- and nothing at the first that does not.
-/// Straight, not bent: the cells say whether light gets here, and the lens's
-/// image is the frame's (splat_relight's lensExit). Opaque glass in these
-/// rays put a pawn's gold ring in the dark under its glass head, and a car's
-/// cabin under its windows.
+/// straight on and weighed by what each passes, and nothing at the first
+/// that does not. What a surface passes is read from its row, not evaluated
+/// (`pad`: the transmission's weight times its colour's luminance, and its
+/// index, MaterialCompiler::transmission), less the Fresnel the dielectric
+/// reflects at the angle the ray meets it. Evaluating the material here made
+/// the bake kernel one material dispatch larger, and Metal's compiler gave up
+/// on the Corvette's. Straight, not bent: the cells say whether light gets
+/// here, and the lens's image is the frame's (splat_relight's lensExit).
+/// Opaque glass in these rays put a pawn's gold ring in the dark under its
+/// glass head, and a car's cabin under its windows.
 float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
@@ -1027,25 +1030,11 @@ float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
         if ((m.flags & kMaterialTransmits) == 0u) {
             return 0.0;
         }
-        float passed = 0.0;
-        if ((m.flags & kMaterialTransparent) != 0u) {
-            const MaterialInputs inputs = materialInputsAt(camera, toWorld, 0u, 0u, f.s, lookup.time, false);
-            passed = 1.0 - evaluateOpacity(m.function, inputs, m.blob);
-        } else {
-            const Shaded sh = shadeSurface(uint2(0, 0), f.s);
-            const float cosine = abs(dot(sh.inputs.normalWorld, wi));
-            for (uint k = 0; k < sh.stack.count; ++k) {
-                const Lobe lobe = sh.stack.lobes[k];
-                if (lobe.scatter == kScatterReflect || !any(lobe.weight > float3(0.0))) {
-                    continue;
-                }
-                const float tint = dot(max(lobe.weight, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
-                const float reflected =
-                    lobe.kind == kLobeDielectric ? fresnelDielectric(max(cosine, 1.0e-3), max(lobe.ior, 1.0)) : 0.0;
-                passed += tint * (1.0 - reflected);
-            }
-        }
-        through *= saturate(passed);
+        const float tint = float(m.pad0 & 0xffffu) / 65535.0;
+        const float index = 1.0 + 3.0 * float(m.pad0 >> 16) / 65535.0;
+        const float cosine = abs(dot(normalize(applyRows(toWorld, f.s.geometricNormal, 0.0)), wi));
+        const float reflected = index > 1.001 ? fresnelDielectric(max(cosine, 1.0e-3), index) : 0.0;
+        through *= saturate(tint * (1.0 - reflected));
         if (through < 1.0e-3) {
             return 0.0;
         }

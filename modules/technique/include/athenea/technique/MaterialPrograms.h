@@ -38,7 +38,7 @@ struct MaterialRecord {
     uint32_t function = 0;
     uint32_t blob = 0;      ///< its first word in the blob
     uint32_t flags = 0;
-    uint32_t pad = 0;
+    uint32_t pad = 0;       ///< a transmitting row's tint and index, unorm 16 each (material_lookup.slang)
 };
 
 /// MaterialRecord::flags: the material's opacity cuts samples out instead of

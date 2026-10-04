@@ -448,7 +448,7 @@ void Engine::setMaterial(const pxr::SdfPath& id, std::shared_ptr<void> mtlxDocum
     entry.document = std::move(mtlxDocument);
     entry.cutout = material::MaterialCompiler::cutsOut(entry.document);
     entry.transparent = material::MaterialCompiler::transparentOpacity(entry.document);
-    entry.transmits = material::MaterialCompiler::transmits(entry.document);
+    entry.transmission = material::MaterialCompiler::transmission(entry.document);
     entry.volume = material::MaterialCompiler::volumeCoefficients(entry.document);
     entry.pending = true;
 }
@@ -1639,9 +1639,19 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
         }
         const uint32_t flags = (entry.cutout ? technique::kMaterialCutout : 0u) |
                                (entry.transparent ? technique::kMaterialTransparent : 0u) |
-                               (entry.transmits ? technique::kMaterialTransmits : 0u);
+                               (entry.transmission ? technique::kMaterialTransmits : 0u);
         materialCutouts_ = materialCutouts_ || entry.cutout;
-        rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, 0});
+        // What a transmitting row lets through, for a ray that does not
+        // evaluate it (technique::MaterialRecord::pad): the tint's and the
+        // index's unorm 16 bits, the index over 1 to 4.
+        uint32_t passes = 0;
+        if (entry.transmission) {
+            const auto unorm = [](float v) {
+                return static_cast<uint32_t>(std::lround(std::clamp(v, 0.0F, 1.0F) * 65535.0F));
+            };
+            passes = unorm(entry.transmission->tint) | (unorm((entry.transmission->ior - 1.0F) / 3.0F) << 16);
+        }
+        rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, passes});
         blob.insert(blob.end(), words.begin(), words.end());
     }
     if (blob.empty()) {

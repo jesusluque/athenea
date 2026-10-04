@@ -11,6 +11,9 @@ public struct MaterialRecord {
     public uint function;   // 0: the fallback (displayColor); k: the k-th compiled module
     public uint blob;       // its first word in the blob
     public uint flags;
+    /// A transmitting row's (kMaterialTransmits) constants, for a ray that
+    /// does not evaluate it: the low 16 bits the transmission's weight times
+    /// its colour's luminance, the high 16 its index over 1 to 4, unorm.
     public uint pad0;
 };
 
