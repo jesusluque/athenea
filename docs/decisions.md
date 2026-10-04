@@ -12471,7 +12471,7 @@ are still the paths'. Checked (pending the GPU turn): the unoccluded
 point's sixteen coefficients against the clamped cosine's, at 16 cells
 (`[degree3]`).
 
-## WebGPU: the raster in a browser's backend (proposal 071, M1 prepared)
+## WebGPU: the raster in a browser's backend (proposals 071 and 072, E1 prepared)
 
 The web viewer the user asked for (proposal 071, option (b)) is this engine's
 own splat raster -- TX relighting, lobes, the reflected field, the slope, the
@@ -12630,45 +12630,76 @@ for the catcher), which group as:
 
 ### The M1 plan
 
-**1. The arena: 29 storage bindings into at most 8, bound by name.** Three
-byte-address buffers, one per group above, and the offsets in the frame's
-uniform block:
+Proposal 072 makes 071 a plan by modules and stages: W-shell (the page),
+W-probe (the device's tier), W-host (this engine in wasm), W-io, W-raster,
+W-lod, and features F1-F10 switched on one at a time, each measured with
+`athenea compare` against native. Stage **E1** is this one: the native WebGPU
+backend, with arenas and the web's limits forced. The plan below follows it.
 
-- `ByteAddressBuffer cloudArena`, `ByteAddressBuffer lightArena`,
-  `RWByteAddressBuffer frameArena`; each stream an offset (in words, `uint`) in
-  `FrameParams` (`positionsAt`, `shapeAt`, ... `txCacheAt`), read by a typed
-  accessor in one Slang module (`common/arena.slang`: `float4
-  cloudPosition(uint i)`, `ProjRecord` stored and loaded as a struct through
-  `Load<T>`/`Store<T>`), so the kernels read as they do now and only the
-  accessors know the layout. Binding stays by name: `cursor["cloudArena"]`,
+**1. Arenas by feature: 29 storage bindings into 6, bound by name.** Grouped
+by the feature that needs them, not by type, so a feature that is off binds a
+16-byte placeholder and the kernel is organised by feature rather than by
+history. The same layout serves native.
+
+| Arena | Holds (today's names, all 29 of the WGSL) | Feature | Access |
+|---|---|---|---|
+| A0 base | `positions`, `shape`, `sh` | always | read |
+| A1 output | `proj`, `visible`, `tileRects`, `tilesTouched`, `depthKeys`, `slopes`, `cryptoIds` | always (`slopes` with F4) | write |
+| A2 sky and lights | `lights`, `iesRecords`, `iesValues`, `envTexels`, `envSh`, `envSun`, `envOfLight`, `shadowFactors` | F1, F3 | read |
+| A3 transfer | `transfer`, `txCache`, `shadowBits` | F1, F2 | read; `txCache` written |
+| A4 material | `pbr`, `normals`, `curvature`, `lobes`, `emission` | F3, F6 | read |
+| A5 edit | `splatOverrides`, `cloudCrypto`, `motion` | F9, F10, tools | read |
+
+Six storage bindings and the uniform: the specification's 8 with one to
+spare. A3 mixes a read stream and a written cache, so it is a
+`RWByteAddressBuffer` (or `txCache` moves to A1, which is written anyway --
+to be decided with TX, whose cache it is).
+
+- **Form.** Each arena a `ByteAddressBuffer` (or a few `StructuredBuffer`s
+  where a feature wants them), each stream's offset in words in `FrameParams`
+  (`shAt`, `pbrAt`, ...), read through typed accessors in one module
+  (`common/arena.slang`: `float4 basePosition(uint i)`, `ProjRecord` through
+  `Load<T>`/`Store<T>`), so the kernels read as now and only the accessors
+  know the layout. Binding stays by name: `cursor["arenaBase"]`,
   `cursor["params"]["shAt"]`.
-- **The cloud's arena is the cloud's own allocation.** `GpuSplats` keeps its
-  streams as ranges of one buffer instead of one buffer each: the loader's
-  decode writes into ranges (`splatStreams` and `splatDecode`, 29 and 14
-  bindings today, take the same arena and so fit too), and every other user of
-  a stream -- the ray tracer, the LOD, the bake -- binds the same buffer with a
-  range (slang-rhi's `Binding(buffer, BufferRange)`; offsets aligned to
-  `minStorageBufferOffsetAlignment`, 256 bytes), so nothing else changes.
-- **The frame's results** are sub-allocations of one buffer, sized by the
-  scratch logic that sizes them now; emit, sort and blend keep their own names
-  and bind ranges of it (they are at 7 or under already).
-- **The lighting** is built once per light revision by GPU copies
-  (`copyBuffer`) into its arena -- bookkeeping, no arithmetic on the CPU.
-- **Size.** A binding is 128 MiB by default and 256 MiB on 98% of adapters; a
-  buffer 256 MiB by default. A TX cloud is 256 B a gaussian on the device, so
-  1 M gaussians do not fit one binding. The cloud's arena is therefore laid
-  out by slices of splats -- every stream of slice 0, then of slice 1 -- each
-  slice its own buffer of at most the binding limit, and `splatProject` is
-  dispatched a slice at a time with that slice bound. The frame arena is
-  sliced the same way where it must be (`proj` is 48 B a splat).
-- **Budget:** `splatProject` 3 storage + 1 uniform; the decode 2-3; the blend
-  (11 today: `ranges`, `pairSplats`, `proj`, `slopes`, `underColour`,
-  `underDepth`, `colour`, `depth`, the crypto pair) 2 by putting the
-  read-only ones in the frame arena; all at or under 8, which is the
-  specification's default and so every browser's.
+- **An arena is the cloud's own allocation.** `GpuSplats` keeps a feature's
+  streams as ranges of one buffer: the decode writes into ranges
+  (`splatStreams` 29 and `splatDecode` 14 bindings today take the same arenas
+  and fit too), and every other user of a stream -- the ray tracer, the LOD,
+  the bake -- binds the same buffer with a range (slang-rhi's
+  `Binding(buffer, BufferRange)`, offsets aligned to 256 bytes), so nothing
+  else changes. The order of the arenas is the order of 072's `.athc`
+  sections (S0 base and the flattened SH3 of 070, S1-S2 transfer, S3
+  visibility bits, S4 material...), so a section streamed in is an arena
+  filled.
+- **A1** is sub-allocated from one buffer sized by today's scratch logic;
+  emit, sort and blend keep their names and bind ranges of it (7 or fewer
+  already). **A2** is built per light revision by GPU copies -- bookkeeping,
+  no arithmetic on the CPU.
+- **Size.** A binding is 128 MiB by default (T1), 644 MB on 93% of adapters
+  (T2), 1.25 GB on 78% (T3). A TX cloud is 256 B a gaussian on the device, of
+  which A3 is most; at 1 M gaussians A3 alone passes T1's binding. An arena is
+  therefore laid out by slices of splats, each slice its own buffer of at
+  most the binding limit, and `splatProject` dispatched a slice at a time.
+  The slice size comes from the tier.
+- **Features as specialization constants.** Slang's `[SpecializationConstant]`
+  becomes a WGSL `override` (checked: `@id(0) override kRelight_0 : bool`,
+  which Tint and Naga take) and a Metal function constant, so one WGSL module
+  a kernel and one pipeline per combination of features, with no recompile;
+  today's `plain`, `first` and TX variants become combinations. **But
+  slang-rhi at the pin has no way to set one** (no constants on its pipeline
+  descriptors, for WGPU or Metal): a patch passing `WGPUComputeState.constants`
+  and `MTLFunctionConstantValues`, or Slang's link-time constants (a compile
+  a combination, cached on disk as today). The patch is the one that matches
+  072; it is part of E1.
+- **Budget after it:** `splatProject` 6 + 1 uniform; the decode at most 6;
+  the blend (11 today: `ranges`, `pairSplats`, `proj`, `slopes`,
+  `underColour`, `underDepth`, `colour`, `depth`, the crypto pair) at 6 by
+  reading `proj` and `slopes` from A1 and the under layer as one arena; every
+  kernel of the raster at or under 8.
 - Done after TX settles, in one change across `frame.slang`,
   `splat_project.slang`, `GpuSplats`/`CloudLoader` and `TileRasterizer`, and
-  measured on Metal against the build before it (`athenea compare`, and ms a
+  measured on Metal against the build before it (`athenea compare`, ms a
   frame) before it is measured on WebGPU.
 
 **2. Workgroup memory.** Request the adapter's `maxComputeWorkgroupStorageSize`
@@ -12683,8 +12714,11 @@ variant under 16 KiB for the 1% that give no more:
 | `splatCounters` | 44 | yes | |
 | everything else | 0 | yes | |
 
-The variant is a compile-time constant chosen by the device's limit, so the
-desktop keeps the faster form.
+The variant is a compile-time constant chosen by the device's tier (072's
+W-probe: T1 has 16 KiB, T2 and up 32 KiB), so the desktop keeps the faster
+form. 072 has the blend at 16388 bytes and four to trim; in WGSL it is 17416
+(a `uint3` takes 16 bytes in an array), so T1 needs the smaller batch, not a
+trimmed word.
 
 **3. Dispatch size.** `ComputeKernel::dispatch` takes threads and divides by
 the group size in one dimension; WebGPU allows 65535 groups a dimension, so a
@@ -12705,7 +12739,7 @@ slots, and Dawn takes some for itself), so whether `splatProject`'s 29 and a
 uniform fit is what the run says -- and once with it, to see each over-limit
 kernel refused by name.
 
-**5. The wasm host (M2).** The C++ core compiled to wasm with Emscripten and
+**5. The wasm host (072's W-host, stage E2).** The C++ core compiled to wasm with Emscripten and
 slang-rhi's WGPU backend on `emdawnwebgpu`, not a TypeScript orchestration: one
 `RadixSort.cpp`, one `FrameParams`, one dispatch order.
 
@@ -12727,7 +12761,18 @@ slang-rhi's WGPU backend on `emdawnwebgpu`, not a TypeScript orchestration: one
   `AsyncReadback`'s reads) need JSPI (or ASYNCIFY) -- or the frame loop
   restructured so it never waits, which `AsyncReadback` already is.
 - **Threads** in wasm need cross-origin isolation (COOP/COEP headers, which
-  Cloudflare can set); the raster needs none of its own.
+  Cloudflare can set; the site's README notes it); the raster needs none of
+  its own.
+- **The page.** The viewer at athenea.lucab.co.uk (repo `athenea-web`) has a
+  slot for this renderer: a module in `site/src/renderers/` exporting
+  `createRenderer({canvas, scene, file, url, onProgress})` with the interface
+  `renderers/index.js` documents (`bounds`, `setCamera`, `getCamera`,
+  `setBackground`, `setDetail`, `stats`, `snapshot`, `dispose`), registered in
+  `RENDERERS` and `RENDERER_INFO` as `athenea-webgpu`, and asked for by a
+  scene with `"renderer": "athenea-webgpu"`. W-host's API (`load`,
+  `setCamera`, `setSky`, `setLightState`, `setFeatures`, `frame`) maps onto
+  it; `setBackground`'s `hdriUrl` is `setSky`. That module comes after E1, and
+  is written with the session that owns the site.
 
 Not done:
 - no GPU has run any of this: not the backend, not the three migrated kernels
