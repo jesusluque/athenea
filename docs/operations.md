@@ -417,6 +417,10 @@ recipe is §3.1 below.
 | `--validate-bounces` | integer | `6` | bounces of the GT's paths |
 | `--validate-material` | prim path or name | every material | only this one (repeatable) |
 | `--validate-sky` | `white` or an image file | the stage's lights | every frame under another sky -- a constant of radiance one, or that image on the stage's domes -- with its other lights off; the GT is kept as `gt_<sky>.exr` |
+| `--shadow-catcher` | flag | off | convert the shadow `--prim` casts on its ground instead of `--prim`: a patch of gaussians on the ground under and around it, baked as a TX transfer (the object and the ground are what its rays meet), written with `primvars:athenea:splat:catcher` and drawn black, covering what the object takes of the light. Implies `--transfer` and one cell everywhere |
+| `--catcher-ground` | prim path | found | with `--shadow-catcher`: the ground; found as the largest flat mesh outside `--prim` whose top is at its bottom and which reaches under it |
+| `--catcher-margin` | number | `1.5` | with `--shadow-catcher`: how far past the object's footprint the patch reaches, in heights of the object |
+| `--catcher-cell` | world units | `0` | with `--shadow-catcher`: the patch's cell; 0 is a hundredth of the object's height |
 | `--transfer-lobes` | 0 to 2 | `0` | with `--transfer`: keep it as this many zonal lobes in each gaussian's own frame (the `SplatTransferZonal` bundle); 0 is two lobes with `--skinned` and nine harmonics in the world otherwise |
 | `--skinned` | flag | off | carry the skeleton; forces `--no-bake`, keeps a `--transfer` as zonal lobes |
 | `--range` | `START:END[:STEP]` | the stage's own range | time codes a skinned cloud keeps |
@@ -1115,6 +1119,7 @@ showing the radiance it carries.
 |---|---|---|
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
+| `primvars:athenea:splat:catcher` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |

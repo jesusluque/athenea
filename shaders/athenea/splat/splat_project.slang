@@ -104,6 +104,74 @@ float3 storedFacing(float3x3 r, float3 scale, uint i) {
     return normalize(float3(r[0][shortest], r[1][shortest], r[2][shortest]));
 }
 
+/// `projectSplat`'s kTransfer for a SHADOW CATCHER (athenea mesh2splat
+/// --shadow-catcher): projected as any splat, drawn black, its opacity what
+/// the object took of the light reaching it (catcherOpacity).
+static const int kProjectCatcher = 3;
+
+/// HOW MANY OF A CATCHER'S GAUSSIANS A POINT OF IT LIES UNDER, weighed by
+/// their falloff: a square lattice of cell d whose gaussians are sigma d
+/// wide sums to 2 pi sigma^2 everywhere, and the conversion's sigma is 1. A
+/// gaussian of opacity a then leaves about exp(-2 pi a) of what is behind
+/// the layer. (2.4, the coverage a converted surface reaches at opacity one,
+/// was the first guess: the Corvette's shadow came out 2.2 to 3 times as
+/// deep as the path traced frame's in optical depth, which is 2 pi over 2.4.)
+static const float kCatcherDepth = 6.2831853;
+
+/// WHAT THE OBJECT TOOK OF THE LIGHT REACHING A CATCHER GAUSSIAN, as the
+/// opacity that takes as much out of what is drawn behind it.
+///
+/// The gaussian's transfer (a TX one: the object and the ground were what
+/// its bake's rays met) dotted with the frame's first prepared sky, plus the
+/// sun at the share of it its cells let through and its bounce, is the light
+/// that reaches it with the object there (transferViewless's `front`). With
+/// nothing there it would be the sky's irradiance at its normal and the
+/// sun's cosine, both over pi as the transfer is. Their ratio is what is left
+/// of the light; one less it is what the object took. The layer leaves
+/// exp(-kCatcherDepth a) of what is behind it, so a = -ln(ratio) / that.
+/// Light the object bounces onto the ground beyond what it takes (a ratio
+/// over one) is not drawn: a black layer can only take.
+float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
+    if (params.relight == 0 || params.transferCount < 9u || params.transferCount == kTransferZonalCount) {
+        return 0.0;
+    }
+    uint dome = kEnvNone;
+    for (uint k = 0; k < params.lightCount && k < params.envLights; ++k) {
+        if (lights[k].kind == kLightDome && envOfLight[k] != kEnvNone) {
+            dome = envOfLight[k];
+            break;
+        }
+    }
+    if (dome == kEnvNone) {
+        return 0.0;
+    }
+    const float4 w0 = float4(params.w00, params.w01, params.w02, params.w03);
+    const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
+    const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
+    SplatSurface s = {};
+    s.normal = relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i));
+    s.transferCount = params.transferCount;
+    s.transferBase = i * params.transferWords * 2;
+    s.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u;
+    s.shadowBits = s.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
+    s.cellWords = params.shadowBits >= 8u ? params.shadowBits : 0u;
+    s.cellBase = i * s.cellWords;
+    float3 front;
+    float3 coupling;
+    float  sunShare;
+    transferViewless<2>(s, transfer, shadowBits, envSh, envSun, dome, params.transferIndirect != 0, front, coupling,
+                        sunShare);
+    float3 open = envIrradiance(envSh, dome, s.normal) * kOverPiSun;
+    const float4 disc = envSun[dome * 2];
+    if (disc.w > 0.0) {
+        open += envSun[dome * 2 + 1].rgb * (max(dot(s.normal, disc.xyz), 0.0) * kOverPiSun);
+    }
+    const float3 luma = float3(0.2126, 0.7152, 0.0722);
+    const float lit = max(dot(open, luma), 1.0e-6);
+    const float ratio = saturate(dot(front, luma) / lit);
+    return opacity * saturate(-log(max(ratio, 1.0e-4)) / kCatcherDepth);
+}
+
 /// ONE SPLAT PROJECTED, and shaded where its cloud is relit. `kTransfer` 0
 /// compiles the transfer's shading out (splatProjectPlain): a cloud with no
 /// transfer never takes it, and on Metal the kernel that holds it drew a
@@ -275,6 +343,9 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // splat that kept its peak would gain energy and the wings, or the bokeh,
     // would burn.
     const float paid = params.antialias != 0 ? sqrt(max(detBefore, 0.0) / det) : spreadPaid;
+    if (kTransfer == kProjectCatcher) {
+        posOpacity.w = catcherOpacity(i, r, scale, posOpacity.w);
+    }
     const float alpha = paidOpacity(posOpacity.w, paid);
     if (!(alpha >= 1.0 / 255.0)) {
         cull(slot, kCullFaint);
@@ -314,7 +385,9 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
     // Whether `slopes[slot]` holds the reflection's slope (kSlopeMark).
     bool sloped = false;
-    if (params.relight != 0) {
+    if (kTransfer == kProjectCatcher) {
+        colour = float3(0.0);   // black: it only takes
+    } else if (params.relight != 0) {
         // AtheneaSplatLightingAPI: the radiance a capture was baked with replaced
         // by what this scene's lights put on it. What that means is in
         // splat_relight.slang, which the ray traced route reads too.
@@ -458,7 +531,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     ProjRecord record;
     record.screen = float4(centre, t.z, cutoff);
     record.conic = float4(conic, alpha);
-    record.colour = float4(colour, sloped ? kSlopeMark : 0.0);
+    record.colour = float4(colour, sloped ? kSlopeMark : kTransfer == kProjectCatcher ? kCatcherMark : 0.0);
     proj[slot] = record;
     if (params.cryptoMode != 0) {
         cryptoIds[slot] = params.cryptoMode == 1 ? cloudCrypto[i] : 0u;
@@ -474,6 +547,15 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // radix passes instead of four; splats nearer each other than that keep
     // index order, as exact ties always did.
     depthKeys[slot] = bit_cast<uint>(t.z) >> 7;
+}
+
+/// A SHADOW CATCHER: projected, black, as opaque as what its object took
+/// (catcherOpacity) -- no relighting at all, so a kernel of its own and a
+/// small one.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void splatProjectCatcher(uint3 tid: SV_DispatchThreadID) {
+    projectSplat<kProjectCatcher>(tid);
 }
 
 /// A cloud that carries a TX transfer (the cells): everything.

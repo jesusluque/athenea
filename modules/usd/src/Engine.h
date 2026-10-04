@@ -110,6 +110,9 @@ struct SplatEntry {
     /// `primvars:athenea:splat:litBody`: its colours are light already, so what
     /// relighting adds is the polish alone (`athenea mesh2splat --bake`).
     bool                                litBody = false;
+    /// `primvars:athenea:splat:catcher`: a shadow catcher, drawn black as
+    /// opaque as what its object took (`athenea mesh2splat --shadow-catcher`).
+    bool                                catcher = false;
     /// `primvars:athenea:splat:ior`: the index its transmitting gaussians bend
     /// the sky by. 0 bends nothing, which is every cloud that does not say.
     float                               ior = 0.0F;
@@ -337,7 +340,8 @@ public:
                    std::optional<std::vector<pxr::TfToken>> categories = std::nullopt,
                    std::optional<bool> litBody = std::nullopt,
                    std::optional<float> ior = std::nullopt,
-                   std::optional<render::Mat4> transformStep = std::nullopt);
+                   std::optional<render::Mat4> transformStep = std::nullopt,
+                   std::optional<bool> catcher = std::nullopt);
     void setPoints(const pxr::SdfPath& id, std::optional<PointsArrays> raw,
                    const render::Mat4* transform, std::optional<bool> visible,
                    std::optional<render::PointStyle> style);

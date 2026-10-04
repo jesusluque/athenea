@@ -51,7 +51,7 @@ coinciden, la cabecera tiene razón.
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`) |
+| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él) |
 | 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
 | 20 | view | `view/Viewer.h` — las opciones de la ventana |

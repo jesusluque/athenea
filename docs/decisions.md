@@ -12526,3 +12526,72 @@ past the slab, and was aimed under it); `[shadowmap]` with the farthest
 depth. The two tests about the raster's dome samples (their convergence
 through glass, a lobe's shadow under a plate) sample the dome, which they
 measure.
+
+## The ground's shadow as gaussians: a shadow catcher (task PLAY-G)
+
+The direction for the ground: its shadows become gaussians, drawn in the same
+raster as the car, and the geometric plane stays only as something to
+compare against. A catcher is a layer of gaussians lying on the ground under
+and around the object, drawn black, each covering what the object takes of
+the light reaching it -- so it darkens whatever is behind it: the sky's own
+floor, a backplate, a mesh.
+
+### Where it stands, and what it knows
+
+`athenea mesh2splat STAGE --prim OBJECT --shadow-catcher` finds the ground
+(`usd/ShadowCatcher.h`: the largest mesh outside the object, flat along the
+up axis, whose top is at the object's bottom and which reaches under it;
+`--catcher-ground` names one), writes a stage that is the source with a
+patch on the ground's plane -- the object's footprint widened by
+`--catcher-margin` heights (1.5), a grid of quads about 64 cells a side each,
+since a conversion walks at most `--max-cells` cells a triangle and two
+triangles left a third of the Corvette's patch unsampled -- and converts the
+patch alone, at one cell (`--catcher-cell`, a hundredth of the object's
+height), as a TX transfer. The object and the ground stay in that stage as
+what the bake's rays meet, so each catcher gaussian keeps, independent of
+the sky, how much of every direction is open (the cells), the transfer's
+direct and bounced halves, and the sun's share by the same bits. The boxes
+are the meshes' authored extents (`UsdGeomBBoxCache` with the hint):
+metadata, read.
+
+The Corvette's: /World/Ground/Plane found, a 5.9 x 8.3 m patch, 11 x 11
+quads, 309 k gaussians at a 1.26 cm cell, baked in 79 s (64 paths, 3
+bounces).
+
+### How it is drawn
+
+`primvars:athenea:splat:catcher` reaches `SplatInstance::catcher`, and the
+rasteriser projects such a cloud with a kernel of its own,
+`splatProjectCatcher` (`projectSplat<kProjectCatcher>`: no relighting, 68
+KB of Metal against the TX kernel's 179), beside TX's choice:
+
+- the light that reaches the gaussian with the object there is its transfer
+  dotted with the frame's sky plus the sun at its open share and bounce
+  (`transferViewless`'s front); with nothing there it would be the sky's
+  irradiance at its normal plus the sun's cosine, over pi as the transfer is;
+- their ratio is what is left; the gaussian's opacity is -ln(ratio) / 2 pi,
+  since a lattice of gaussians sigma = 1 cell wide sums to 2 pi everywhere
+  and a layer of opacity a leaves exp(-2 pi a) of what is behind it. (2.4,
+  the coverage a converted surface reaches, was the first guess: the
+  shadow came out 2.2 to 3 times as deep as the path traced frame's.)
+- black, and marked (`kCatcherMark`), so the blend draws it over an opaque
+  layer under it even where its centre's depth reads behind that layer: it
+  lies on it.
+
+Light the object bounces onto the ground beyond what it takes is not
+drawn: a black layer can only take.
+
+### Measured (M5 Pro, 1920 x 1080, the TX car and its catcher)
+
+On the mesh ground with the cloud map's shadow off (the catcher is the
+shadow), against the path traced frame:
+
+| | under the car (GT 0.182) | the bumper's contact (GT 0.043) | under the body (0.020) | open ground (0.217) | ground error, full / quarter | median a frame |
+|---|---|---|---|---|---|---|
+| the mesh ground's own map | 0.182 | 0.041 | 0.020 | 0.215 | 12% / 5.5% | 201 ms |
+| catcher, depth 2.4, two triangles | 0.144 | 0.002 | 0.020 | 0.206 | 16.5% / 12.2% | 187 ms |
+| catcher, depth 2 pi, a grid | **0.192** | **0.030** | 0.020 | **0.220** | **11.3% / 4.8%** | 186 ms |
+
+And with no mesh at all -- the car and its catcher over the sky's floor --
+**147 ms** a frame (the car alone read 156 before the latest TX merge,
+whose playback work is in this build too: not a like-for-like pair).

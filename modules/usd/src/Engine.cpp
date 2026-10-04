@@ -211,7 +211,8 @@ void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays
                        std::optional<render::SplatEdit> edit, std::optional<StreamedAsset> asset,
                        std::optional<bool> relight,
                        std::optional<std::vector<pxr::TfToken>> categories, std::optional<bool> litBody,
-                       std::optional<float> ior, std::optional<render::Mat4> transformStep) {
+                       std::optional<float> ior, std::optional<render::Mat4> transformStep,
+                       std::optional<bool> catcher) {
     const std::lock_guard<std::mutex> held(guard_);
     SplatEntry& entry = splats_[id];
     if (transformStep) {
@@ -228,6 +229,9 @@ void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays
     }
     if (litBody) {
         entry.litBody = *litBody;
+    }
+    if (catcher) {
+        entry.catcher = *catcher;
     }
     if (ior) {
         entry.ior = *ior;
@@ -2247,6 +2251,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 splats.back().transferIndirect = transferIndirect_.load();
                 splats.back().reflectCloud = splatReflections_.load();
                 splats.back().ior = entry.ior;
+                splats.back().catcher = entry.catcher;
                 // What the shutter moved each gaussian, where a skeleton
                 // carries the cloud and the camera's is open. The rasteriser
                 // smears the splat along it; the tracer ignores it, since its
@@ -2290,6 +2295,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                     splats.back().transferIndirect = transferIndirect_.load();
                     splats.back().reflectCloud = splatReflections_.load();
                     splats.back().ior = entry.ior;
+                    splats.back().catcher = entry.catcher;
+                splats.back().catcher = entry.catcher;
                     frameSlots_ += entry.lodCloud->splats.count;
                 } else {
                     log::warn("hdAthenea: {}: a streamed asset is drawn by the rasteriser only", id.GetString());

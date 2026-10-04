@@ -132,6 +132,12 @@ bool litBodyOf(HdSceneDelegate* delegate, SdfPath const& id) {
     return boolOf(delegate->Get(id, kLit), false);
 }
 
+/// Whether it is a shadow catcher (`athenea mesh2splat --shadow-catcher`).
+bool catcherOf(HdSceneDelegate* delegate, SdfPath const& id) {
+    static const TfToken kCatcher("athenea:splat:catcher");
+    return boolOf(delegate->Get(id, kCatcher), false);
+}
+
 /// The index its transmitting gaussians bend by: 0, and nothing bends.
 float iorOf(HdSceneDelegate* delegate, SdfPath const& id) {
     static const TfToken kIor("athenea:splat:ior");
@@ -421,7 +427,7 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
                           const VtArray<TfToken> cats = delegate->GetCategories(id);
                           return std::vector<TfToken>(cats.begin(), cats.end());
                       }(),
-                      litBodyOf(delegate, id), iorOf(delegate, id), transformStep);
+                      litBodyOf(delegate, id), iorOf(delegate, id), transformStep, catcherOf(delegate, id));
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }
 

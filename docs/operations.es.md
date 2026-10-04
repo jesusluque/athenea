@@ -422,6 +422,10 @@ receta es §3.1.
 | `--validate-bounces` | entero | `6` | rebotes de los caminos del GT |
 | `--validate-material` | ruta de prim o nombre | todos los materiales | sólo este (repetible) |
 | `--validate-sky` | `white` o un fichero de imagen | las luces de la escena | cada fotograma bajo otro cielo -- una constante de radiancia uno, o esa imagen en los domos de la escena -- con sus demás luces apagadas; el GT se guarda como `gt_<cielo>.exr` |
+| `--shadow-catcher` | flag | apagado | convertir la sombra que `--prim` arroja sobre su suelo en vez de `--prim`: un parche de gaussianas sobre el suelo bajo él y alrededor, horneado como transfer TX (el objeto y el suelo son lo que encuentran sus rayos), escrito con `primvars:athenea:splat:catcher` y dibujado negro, cubriendo lo que el objeto quita de la luz. Implica `--transfer` y una sola celda en todas partes |
+| `--catcher-ground` | ruta de prim | encontrado | con `--shadow-catcher`: el suelo; se encuentra como la malla plana más grande fuera de `--prim` cuya cara superior está en su base y que llega por debajo de él |
+| `--catcher-margin` | número | `1.5` | con `--shadow-catcher`: hasta dónde pasa el parche de la huella del objeto, en alturas del objeto |
+| `--catcher-cell` | unidades del mundo | `0` | con `--shadow-catcher`: la celda del parche; 0 es una centésima de la altura del objeto |
 | `--transfer-lobes` | 0 a 2 | `0` | con `--transfer`: guardarlo como este número de lóbulos zonales en el marco propio de cada gaussiana (el bundle `SplatTransferZonal`); 0 es dos lóbulos con `--skinned` y nueve armónicos en el mundo en otro caso |
 | `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
@@ -1138,6 +1142,7 @@ la radiancia que lleva.
 |---|---|---|
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
+| `primvars:athenea:splat:catcher` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |

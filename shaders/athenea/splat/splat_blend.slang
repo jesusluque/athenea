@@ -170,7 +170,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
         for (uint j = 0; j < count && !done; ++j) {
             const ProjRecord record = sRecords[j];
             const float4 screen = record.screen;
-            if (underHit && screen.z >= underZ) {
+            // A shadow catcher lies on the layer under it, so its centre's
+            // depth reads behind it as often as not: it is drawn whatever.
+            if (underHit && screen.z >= underZ && abs(record.colour.w - kCatcherMark) > 0.01) {
                 done = true;
                 break;
             }
