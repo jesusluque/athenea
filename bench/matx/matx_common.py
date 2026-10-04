@@ -57,6 +57,85 @@ GATE = ["mx_open_pbr_default", "mx_standard_surface_chrome", "mx_open_pbr_carpai
         "mx_open_pbr_velvet", "mx_open_pbr_ketchup"]
 
 
+# THE GT CACHE: a path-traced GT is kept per material x sky and handed back to --validate, so
+# every run of a stage measures its cloud against the same GT and the GT's own noise cannot
+# move a result. Shared by the sweep and the ctest gate (MATX_OUT does not move it).
+GT_CACHE = os.path.expanduser(os.environ.get("MATX_GT_CACHE", os.path.join(HOME, "luc/athenea-renders/matx/gt_cache")))
+# What re-renders a GT besides its stage, its size and its paths:
+#  - the path tracer's shaders, as the build copied them (pt_fingerprint: every directory the
+#    path tracer imports from, and technique/ but for its splat_* kernels; the conversion's
+#    usd/, splat/ and lod/ are left out, so a change to the bake or the raster keeps the GT);
+#  - GT_EPOCH, bumped by hand in the commit that changes how the path tracer's kernel is
+#    generated or bound in C++ (technique/src/PathTracer.cpp, usd/src/StageRenderer.cpp),
+#    which no shader file shows.
+GT_EPOCH = 1
+GT_BOUNCES = 6     # --validate-bounces' default; part of the key
+PT_SHADER_DIRS = ("algo", "common", "geom", "light", "material", "rt", "scene", "volume", "world", "technique")
+
+
+_DIGESTS = {}
+
+
+def _sha(h, path):
+    """Feeds `h` a file's digest (each file read once a process: the skies are tens of MB)."""
+    if path not in _DIGESTS:
+        import hashlib
+        d = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                d.update(block)
+        _DIGESTS[path] = d.digest()
+    h.update(_DIGESTS[path])
+
+
+def shader_dir():
+    """The shaders the binary runs: ATHENEA_SHADER_DIR, else the build's, beside bin/."""
+    if os.environ.get("ATHENEA_SHADER_DIR"):
+        return os.environ["ATHENEA_SHADER_DIR"]
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(ATHENEA))), "shaders")
+
+
+def pt_fingerprint():
+    import hashlib
+    root = os.path.join(shader_dir(), "athenea")
+    if not os.path.isdir(root):
+        raise SystemExit(f"no shaders at {root} (ATHENEA_SHADER_DIR): the GT cache cannot key the path tracer")
+    h = hashlib.sha256(f"epoch {GT_EPOCH}".encode())
+    for d in PT_SHADER_DIRS:
+        for base, dirs, files in sorted(os.walk(os.path.join(root, d))):
+            dirs.sort()
+            for f in sorted(files):
+                if d == "technique" and f.startswith("splat_"):
+                    continue
+                path = os.path.join(base, f)
+                h.update(os.path.relpath(path, root).encode())
+                _sha(h, path)
+    return h.hexdigest()[:16]
+
+
+def gt_key(entry, sky, size, paths, fingerprint):
+    """What a GT depends on: the stage and every file it composes (the base scene, the ball, the
+    material and its textures), the sky that replaces the dome, the frame, the paths, the bounces
+    and the path tracer."""
+    import hashlib
+    import re
+    stage = stage_path(entry)
+    material = os.path.join(WORK, "materials", entry["id"] + ".usda")
+    files = [stage, os.path.join(WORK, "scene", "base.usda"), os.path.join(WORK, "scene", "shaderball.usdc"), material]
+    files += sorted(set(re.findall(r"@(/[^@]+)@", open(material).read())))
+    files += [AUTOSHOP] + ([SKIES[sky]] if SKIES[sky] else [])
+    h = hashlib.sha256(f"{sky} {size} {paths} {GT_BOUNCES} {fingerprint}".encode())
+    for f in files:
+        h.update(os.path.basename(f).encode())
+        _sha(h, f)
+    return h.hexdigest()[:20]
+
+
+def gt_name(sky):
+    """The file --validate reads its GT from (Mesh2SplatValidate.cpp: gt.exr, or gt_<sky's stem>.exr)."""
+    return "gt.exr" if not SKIES[sky] else "gt_" + os.path.splitext(os.path.basename(SKIES[sky]))[0] + ".exr"
+
+
 def stage_path(entry):
     """manifest.json keeps paths portable: a stage relative to WORK, a .mtlx relative to its root."""
     return os.path.join(WORK, entry["stage"])

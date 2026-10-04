@@ -254,7 +254,10 @@ python3 compare_matx.py                                                     # ag
 `compare_matx.py --write-baseline` rewrites the baseline from a sweep; it
 changes in the commit whose effect it records. `MATX_MX_RESOURCES`,
 `MATX_AUTOSHOP`, `MATX_WORK` and `MATX_OUT` say where the inputs are and
-where the outputs go (`matx_common.py`).
+where the outputs go (`matx_common.py`). The path traced GT is cached a
+material and a sky, keyed by the stage, the frame, the paths and the path
+tracer's shaders, so every run measures against the same GT; `GT_EPOCH` in
+`matx_common.py` is bumped by the commit that changes the path tracer's C++.
 
 ### 3.2 A shader-only change
 

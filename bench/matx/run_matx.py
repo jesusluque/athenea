@@ -11,6 +11,12 @@ phase 2 goegap, so a cut-short sweep still has whole columns.
 
   python3 run_matx.py [--phase 1|2|all] [--sky autoshop|goegap|all] [--only <id>...] [--gate] [--dry]
   --gate: the regression gate's subset (matx_common.GATE, one material a lobe class, phase 1)
+  --fresh-gt: trace the selection's GTs again; --adopt-gt: cache the GTs an earlier sweep left (CPU)
+
+THE GT IS CACHED (matx_common.GT_CACHE, MATX_GT_CACHE), keyed by the stage and every file it
+composes, the sky, the size, the paths, the bounces and the path tracer (its shaders as the build
+copied them, and GT_EPOCH): a run is handed the GT the last run of the same key traced, so the
+measure moves only when the cloud does. A GT is traced again when its key changes.
   env: MATX_BIN (athenea), MATX_SIZE (512), MATX_PATHS (256), MATX_BAKE (64),
        MATX_CAMERA_PIXELS (512), MATX_MAX_SPLATS (600000), MATX_TIMEOUT (900 s),
        MATX_CATCHER=1 also converts the ground's shadow catcher once per sky (mx_open_pbr_default)
@@ -25,6 +31,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -73,12 +80,40 @@ def raster_ms(cloud_stage, out_exr):
     return float(mm.group(1)) if mm else None
 
 
-def run_one(e, sky, results):
+def gt_restore(e, sky, run_dir, fingerprint):
+    """Puts the cached GT where --validate reads it, or clears the way for a fresh one.
+    Returns (key, whether it was cached)."""
+    key = m.gt_key(e, sky, SIZE, PATHS, fingerprint)
+    for old in glob.glob(os.path.join(run_dir, "gt*.exr")):
+        os.remove(old)   # a GT an earlier run left is not taken unless the cache says it is this one
+    cached = os.path.join(m.GT_CACHE, key + ".exr")
+    if os.path.exists(cached):
+        shutil.copyfile(cached, os.path.join(run_dir, m.gt_name(sky)))
+        return key, True
+    return key, False
+
+
+def gt_store(e, sky, run_dir, key, fingerprint, source="traced"):
+    gt = os.path.join(run_dir, m.gt_name(sky))
+    if not os.path.exists(gt):
+        return False
+    os.makedirs(m.GT_CACHE, exist_ok=True)
+    shutil.copyfile(gt, os.path.join(m.GT_CACHE, key + ".exr.part"))
+    os.replace(os.path.join(m.GT_CACHE, key + ".exr.part"), os.path.join(m.GT_CACHE, key + ".exr"))
+    json.dump({"id": e["id"], "sky": sky, "size": SIZE, "paths": PATHS, "bounces": m.GT_BOUNCES,
+               "pt_fingerprint": fingerprint, "gt_epoch": m.GT_EPOCH, "bin": m.ATHENEA, "source": source,
+               "written": time.strftime("%Y-%m-%d %H:%M:%S")},
+              open(os.path.join(m.GT_CACHE, key + ".json"), "w"), indent=1)
+    return True
+
+
+def run_one(e, sky, results, fingerprint):
     res_path = os.path.join(results, f"{e['id']}__{sky}.json")
     if os.path.exists(res_path):
         return "skip"
     run_dir = os.path.join(m.RENDERS, "runs", sky, e["id"])
     os.makedirs(run_dir, exist_ok=True)
+    key, cached = gt_restore(e, sky, run_dir, fingerprint)
     out, code, wall = sh(convert_args(m.stage_path(e), run_dir, sky), os.path.join(run_dir, "mesh2splat.log"))
     # Whatever would make every later run fail the same way stops the sweep, with no result written.
     for fatal, code_out in (("Reentrancy avoided", 3), ("no Measure bundle", 4)):
@@ -86,7 +121,7 @@ def run_one(e, sky, results):
             print(f"[matx] '{fatal}' in {e['id']}'s log: the sweep stops (see {run_dir}/mesh2splat.log)", flush=True)
             sys.exit(code_out)
     r = {"id": e["id"], "sky": sky, "phase": e["phase"], "classes": e.get("classes", []), "material": e.get("material"),
-         "wall_s": round(wall, 1), "exit": code, "bin": m.ATHENEA, "size": SIZE, "gt_paths": PATHS, "bake_samples": BAKE}
+         "wall_s": round(wall, 1), "exit": code, "bin": m.ATHENEA, "gt_key": key, "size": SIZE, "gt_paths": PATHS, "bake_samples": BAKE}
     bakes = [int(x) for x in re.findall(r"transfer baked for \d+ of \d+ gaussians .*? in (\d+) ms", out)]
     r["bake_ms"] = sum(bakes) if bakes else None
     vj = os.path.join(run_dir, "validate.json")
@@ -98,6 +133,14 @@ def run_one(e, sky, results):
                 r["err"] = rows[0]["error"]
     else:
         r["err"] = (out.strip().splitlines() or ["no output"])[-1][-400:]
+    if cached and "GT read from" not in out:
+        r["gt"] = "cached, but not read"   # --validate path traced its own: the size did not match
+    elif cached:
+        r["gt"] = "cached"
+    else:
+        r["gt"] = "traced" if "GT path traced" in out else "none"
+        if r["gt"] == "traced":   # a GT traced is good whatever became of the cloud
+            gt_store(e, sky, run_dir, key, fingerprint)
     if code != 0 and "err" not in r:
         r["err"] = f"exit {code}: " + out.strip()[-400:]
     # Raster time: the cloud is the same under both skies, so it is timed once, under the stage's own.
@@ -155,6 +198,11 @@ def main():
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--gate", action="store_true")
     ap.add_argument("--dry", action="store_true")
+    ap.add_argument("--fresh-gt", action="store_true", help="drop the selection's cached GTs: trace them again")
+    ap.add_argument("--adopt-gt", action="store_true",
+                    help="CPU only: cache the GT each selected run directory holds as the GT of its stage as it is "
+                         "now, under the path tracer MATX_BIN's shaders are; for a sweep run before the cache, "
+                         "on the same stages and the same build")
     a = ap.parse_args()
     if a.gate:
         a.phase, a.only = "1", m.GATE
@@ -168,13 +216,32 @@ def main():
     left = [t for t in todo if not os.path.exists(os.path.join(results, f"{t[0]['id']}__{t[1]}.json"))]
     print(f"[matx] {len(todo)} runs, {len(left)} to do; {SIZE} px, GT {PATHS} paths, bake {BAKE} paths, "
           f"{m.ATHENEA}", flush=True)
+    fingerprint = m.pt_fingerprint()
+    if a.adopt_gt:
+        n = 0
+        for e, sky in todo:
+            run_dir = os.path.join(m.RENDERS, "runs", sky, e["id"])
+            key = m.gt_key(e, sky, SIZE, PATHS, fingerprint)
+            if not os.path.exists(os.path.join(m.GT_CACHE, key + ".exr")):
+                n += gt_store(e, sky, run_dir, key, fingerprint, source="adopted from " + run_dir)
+        print(f"[matx] {n} GTs adopted into {m.GT_CACHE} (path tracer {fingerprint})")
+        return
+    if a.fresh_gt:
+        for e, sky in left:
+            for ext in (".exr", ".json"):
+                f = os.path.join(m.GT_CACHE, m.gt_key(e, sky, SIZE, PATHS, fingerprint) + ext)
+                if os.path.exists(f):
+                    os.remove(f)
+    cached = sum(os.path.exists(os.path.join(m.GT_CACHE, m.gt_key(e, sky, SIZE, PATHS, fingerprint) + ".exr"))
+                 for e, sky in left)
+    print(f"[matx] path tracer {fingerprint}: {cached} of {len(left)} GTs cached in {m.GT_CACHE}", flush=True)
     if a.dry:
         for e, sky in left:
             print("  " + " ".join(convert_args(m.stage_path(e), os.path.join(m.RENDERS, "runs", sky, e["id"]), sky)))
         return
     t0 = time.time()
     for k, (e, sky) in enumerate(left):
-        run_one(e, sky, results)
+        run_one(e, sky, results, fingerprint)
         el = time.time() - t0
         print(f"[matx] {k + 1}/{len(left)}, {el / 60:.1f} min, ~{el / (k + 1) * (len(left) - k - 1) / 60:.0f} min left",
               flush=True)

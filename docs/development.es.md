@@ -259,7 +259,11 @@ en `baseline.csv` o la razón de medias de un canal se ha movido más de 0,05.
 `compare_matx.py --write-baseline` reescribe la referencia a partir de un
 barrido; cambia en el commit cuyo efecto registra. `MATX_MX_RESOURCES`,
 `MATX_AUTOSHOP`, `MATX_WORK` y `MATX_OUT` dicen dónde están las entradas y
-adónde van las salidas (`matx_common.py`).
+adónde van las salidas (`matx_common.py`). El GT trazado se guarda por
+material y cielo, con una clave de la escena, el cuadro, los caminos y los
+shaders del path tracer, así que cada ejecución se mide frente al mismo GT;
+`GT_EPOCH` en `matx_common.py` lo sube el commit que cambia el C++ del path
+tracer.
 
 ### 3.2 Un cambio de solo shader
 

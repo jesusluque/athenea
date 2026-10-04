@@ -12898,12 +12898,28 @@ worse or whose mean ratio moved by more than 0.05; `ctest -L matx` does it
 for six materials, one a class (OpenPBR default, standard_surface chrome,
 OpenPBR carpaint, glass, velvet and ketchup), under both skies.
 
+**The GT is kept.** At 256 paths a pixel the path tracer's own noise moves
+a glass's relMSE by about the 5% the check allows, so two runs of an
+unchanged cloud against two fresh GTs could disagree by a regression. Each
+GT is cached (`gt_cache/<key>.exr`, beside the renders; `MATX_GT_CACHE`)
+and handed back to `--validate`, which reads a GT of the frame's size
+instead of tracing one. The key is a hash of everything the GT depends on:
+the stage and each file it composes (the base scene, the ball, the
+material and its textures, the autoshop sky, the sky swapped in), the
+size, the paths, the bounces, and the path tracer. The path tracer is the
+build's copy of the shader directories it imports from (algo, common, geom,
+light, material, rt, scene, volume, world, and technique but for its
+`splat_*` kernels), so a change to the conversion (usd/, splat/, lod/)
+keeps every GT and a change to a lobe traces them again; what C++ decides
+about the kernel (PathTracer.cpp, StageRenderer.cpp) no shader shows, and
+`GT_EPOCH` in `matx_common.py` is bumped by hand in the commit that changes
+it. The measure then moves only when the cloud does. A sweep run before
+the cache hands its GTs over with `run_matx.py --adopt-gt`;
+`--fresh-gt` traces a selection again.
+
 ### Not done
 
 - The baseline: written from the first whole sweep, in the commit after it.
-- 5% is about the GT's own noise at 256 paths on a glass; a material whose
-  relMSE wanders by that much from run to run will need a wider slack or a
-  GT kept between runs.
 - Thin film is accepted by the lobes and not drawn; both sides of the
   measure leave it out, so it compares equal and says nothing about it.
 - The deferred part of the 52 (Khronos, AMD, Poly Haven), and the path
