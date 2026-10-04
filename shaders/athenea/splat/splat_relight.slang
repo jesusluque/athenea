@@ -837,12 +837,14 @@ public float splatLobeOpen(SplatSurface s, StructuredBuffer<uint> cellBits, floa
 
 /// THE SAME OVER A CONE OF HALF ANGLE `spread`: a reflection's lobe, or the
 /// disc a sphere, a rect or a sun subtends, whose penumbra this is (step 4).
-public float splatConeOpen(SplatSurface s, StructuredBuffer<uint> cellBits, float3 m, float spread, float3 axis) {
+public float splatConeOpen(SplatSurface s, StructuredBuffer<uint> cellBits, float3 m, float spreadIn, float3 axis) {
     const float centre = splatCellsOpen(s, cellBits, m, axis);
     const float halfCell = 3.14159265358979 / float(splatCellSide(s.cellWords) * 2u);
-    if (spread < halfCell) {
-        return centre >= 0.0 ? centre : 1.0;
-    }
+    // NEVER NARROWER THAN A CELL: a cone inside one cell read that cell's one
+    // bit, and a mirror's reflection came out speckled bit by bit across the
+    // gaussians (the Corvette's paint, 0.393 against the path traced frame;
+    // 0.298 with the cone held to a cell).
+    const float spread = max(spreadIn, 2.0 * halfCell);
     const float3 helper = abs(m.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
     const float3 t = normalize(cross(helper, m));
     const float3 b = cross(m, t);
@@ -1185,10 +1187,13 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
                                 : envRadiance(envTexels, dome, mirror, s.roughness, envBaseSide);
         // A TX transfer asks its lobe which of its directions are open; the
         // first transfer had one number for the whole hemisphere.
+        // THE BASE'S POLISH IS OPEN BY THE HARMONICS, as the first transfer
+        // had it, not by the cells: on the Corvette's chrome and rough metal
+        // -- small parts in a crowded scene -- the cells' openness read them
+        // 1.64 and 0.221 against the path traced frame, the harmonics' 1.05
+        // and 0.128, for the same mean. The coat keeps the cells (below).
         const float narrowed =
-            s.reflectionTraced ? 1.0
-            : cells            ? splatLobeOpen(s, cellBits, mirror, s.roughness, s.normal)
-                               : specularOpenness(nDotV, splatOpenness(s, transfer), s.roughness);
+            s.reflectionTraced ? 1.0 : specularOpenness(nDotV, splatOpenness(s, transfer), s.roughness);
         // THE SUN IN THE POLISH. The prefiltered map kept its disc, so what
         // the polish reads carries the sun whether or not anything stands in
         // its way -- on a rough surface a broad lobe of it, and on a metal all
@@ -1246,7 +1251,11 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             }
         }
         if (field) {
-            const float3 closed = coupling * fieldPolish;
+            // The field is the coat's: on the base's polish it read the metals
+            // a third bright (chrome 0.261 where the path traced frame reads
+            // 0.197, exact without it), while the paint's closed reflections
+            // are its lacquer's.
+            const float3 closed = float3(0.0);
             return body2 +
                    layers.under * thinWallGain(s) *
                        max(splatPolish(s, nDotV) * (narrowed * seen + (1.0 - narrowed) * closed) -

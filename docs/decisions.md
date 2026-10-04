@@ -11740,6 +11740,31 @@ seen edge on does not swing its reflection across the sky.
 chrome against the path traced frame; the frozen card for the projection
 kernel's size.
 
+### The metals against the first transfer (the TX gate)
+
+With the gate in place (the first transfer, on the same build and with every
+shared fix -- Toksvig, Schlick, the coat's Fresnel, the slope -- against TX,
+material by material), TX lost on the Corvette's chrome (1.64 against 0.536)
+and rough metal (0.221 against 0.0896) while it won on the paint (0.393
+against 0.705). Re-rendering the same clouds with one term changed at a time
+(research's oracle idea, by shader variants): the closed field made the
+metals a third bright (chrome 0.261 where the path traced frame reads 0.197,
+exact without it); the cells' openness made the per-pixel error (chrome 1.05
+and rough metal 0.128 with the harmonics' openness instead, for the same
+mean); the paint's coat wanted its cone no narrower than a cell (0.298); the
+slope helped the paint (0.30 against 0.50) and cost the chrome strips. What
+is now the default, all of it generic:
+
+- the base's polish is open by the harmonics (`specularOpenness`), as the
+  first transfer's was; the coat keeps the cells;
+- no cone is narrower than a cell (`splatConeOpen`), for every user of it;
+- the closed field is the coat's alone;
+- the slope's ramp across the footprint is at most twice the colour.
+
+Measured as variants (once the colour): chrome 0.591, rough metal 0.0835,
+paint 0.341, against the first's 0.536, 0.0896 and 0.705. The chrome stays a
+tenth behind the first; what else of TX it pays for is not found yet.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

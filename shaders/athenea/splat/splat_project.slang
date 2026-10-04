@@ -445,6 +445,16 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                             envSun, transfer, shadowBits,
                             params.transferIndirect != 0, slope);
         if (kTransfer >= 2 && slope.on) {
+            // THE RAMP IS NEVER MORE THAN TWICE THE COLOUR across the
+            // footprint (three sigma of the projected covariance): a chrome
+            // strip turns its normal so fast that a pixel's slope, carried
+            // across the gaussian, went far past the highlight -- the strips
+            // 0.77 against the path traced frame, 0.59 held to once the
+            // colour; the paint 0.30 and 0.34, so twice.
+            const float reach = 3.0 * sqrt(max(max(a, c), 1.0e-6));
+            const float3 most = 2.0 * max(colour, float3(1.0e-4)) / max(reach, 1.0);
+            slope.slopeX = clamp(slope.slopeX, -most, most);
+            slope.slopeY = clamp(slope.slopeY, -most, most);
             sloped = true;
             slopes[slot] = uint4(packHalves(slope.slopeX.x, slope.slopeX.y),
                                  packHalves(slope.slopeX.z, slope.slopeY.x),
