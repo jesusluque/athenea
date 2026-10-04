@@ -11767,10 +11767,16 @@ are sorted and their runs counted on the device; an edge one triangle uses
 is open, one more than two use is no solid's. Over a two-hundredth of the
 edges open, or any shared by more than two, is a sheet, read thin-walled;
 a closed glass with a stray hole stays solid. Each decision is printed per
-mesh. `--thin-glass NAME` (`MeshStageOptions::thinGlass`) is the override,
-for a sheet the mesh does not show -- a thin slab modelled closed, which the
-edges call solid. Measuring thickness by rays, which would catch that too,
-is not done.
+mesh. But research measured the Corvette's glass in Blender (proposal 055):
+closed slabs, two parallel faces 3 to 4 mm apart, only one of them open --
+so the edges alone call nearly all of it solid. The thickness reads them:
+twice the volume over the area (2V/A, the signed tetrahedra to the origin
+and the triangles' areas summed by one group on the device) is a slab's gap
+and two thirds of a ball's radius. Under four of the model's cells or a
+fiftieth of the glass's own size (the root of its area) it is a slab, read
+thin-walled: two parallel faces bend nothing, so thin is right optically
+too. Both measures come from the triangles the piece was packed into, in
+the world. `--thin-glass` and `--solid-glass` are the overrides.
 
 ### A transfer goes up a slice at a time
 

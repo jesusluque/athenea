@@ -1,34 +1,44 @@
 // Copyright (c) 2026 jesus luque.
 //
-// WHETHER A GLASS IS A SHEET: the edges of a piece's triangles, by where the
-// points they join stand, sorted, and their runs counted. An edge one triangle uses is
-// open -- the rim of a windscreen modelled as one surface -- and an edge
-// more than two use is not a solid's either; a closed solid uses every edge
-// twice. mesh2splat reads a transmitting piece with enough open edges as
-// thin-walled, with no word from the material (Converter::classifySheets).
+// WHETHER A GLASS IS A SHEET, from the triangles a piece was packed into
+// (the conversion's own picture: per triangle its three corners and their
+// normals, in the world). Two measures, both on the device:
+//
+// - its edges, keyed by where the two points stand, sorted, and their runs
+//   counted: an edge one triangle uses is open (a windscreen modelled as one
+//   surface), one more than two use is no solid's;
+// - its thickness as twice its volume over its area (2V/A, research 055):
+//   a slab's two faces a few millimetres apart give their gap, a ball two
+//   thirds of its radius.
+//
+// Converter::classifySheets reads the three counts and the two sums back.
 module mesh2splat_sheet;
 
 struct SheetParams {
     uint triangles;   ///< the piece's
-    uint listed;      ///< 1: the piece's triangles are `list`'s, a subset's; 0: the mesh's, in order
     uint count;       ///< edges: three a triangle
-    uint pad0;
+    uint width;       ///< entries a row of the picture
+    uint stride;      ///< pixels a row of it, padded
 };
 
-StructuredBuffer<uint>       indices;    // the mesh's: three points a triangle
-StructuredBuffer<float4>     positions;  // the mesh's points
-StructuredBuffer<uint>       list;       // a subset's triangles, where `listed`
+StructuredBuffer<float4>     picture;    // six float4 a triangle: (p, u) (n, v) three times
 RWStructuredBuffer<uint>     keysLo;     // an edge's smaller point
 RWStructuredBuffer<uint>     keysHi;     // and its larger
 RWStructuredBuffer<uint>     values;     // the sort's companions, unused
 RWStructuredBuffer<uint>     counts;     // 0 edges, 1 open (one use), 2 more than two uses
+RWStructuredBuffer<float2>   measures;   // a triangle each: signed volume to the origin, area
+RWStructuredBuffer<float>    sums;       // 0 the volume, 1 the area
 ConstantBuffer<SheetParams>  sheet;
+
+float3 cornerOf(uint t, uint c) {
+    const uint e = t * 6 + c * 2;
+    return picture[(e / sheet.width) * sheet.stride + e % sheet.width].xyz;
+}
 
 /// A point by where it stands, not by its index: a sphere whose seam repeats
 /// its points for the texture coordinates is closed all the same. The bits
 /// of the three coordinates, mixed (murmur's finaliser).
-uint pointKey(uint index) {
-    const float3 p = positions[index].xyz;
+uint pointKey(float3 p) {
     uint h = 0x9E3779B9u;
     [unroll] for (uint k = 0; k < 3; ++k) {
         uint v = asuint(p[k] == 0.0 ? 0.0 : p[k]);   // -0 is 0
@@ -50,22 +60,23 @@ uint pointKey(uint index) {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void m2sSheetEdges(uint3 tid: SV_DispatchThreadID) {
-    const uint k = tid.x;
-    if (k >= sheet.triangles) {
+    const uint t = tid.x;
+    if (t >= sheet.triangles) {
         return;
     }
-    const uint t = sheet.listed != 0 ? list[k] : k;
-    const uint a = pointKey(indices[t * 3]), b = pointKey(indices[t * 3 + 1]), c = pointKey(indices[t * 3 + 2]);
-    const uint3 from = uint3(a, b, c);
-    const uint3 to = uint3(b, c, a);
+    const float3 p0 = cornerOf(t, 0), p1 = cornerOf(t, 1), p2 = cornerOf(t, 2);
+    const uint3 from = uint3(pointKey(p0), pointKey(p1), pointKey(p2));
+    const uint3 to = from.yzx;
     [unroll] for (uint e = 0; e < 3; ++e) {
         // An edge from a point to itself (a collapsed corner at a sphere's
         // pole) is not an edge: kept out of the counts.
         const bool collapsed = from[e] == to[e];
-        keysLo[k * 3 + e] = collapsed ? 0xFFFFFFFFu : min(from[e], to[e]);
-        keysHi[k * 3 + e] = collapsed ? 0xFFFFFFFFu : max(from[e], to[e]);
-        values[k * 3 + e] = 0u;
+        keysLo[t * 3 + e] = collapsed ? 0xFFFFFFFFu : min(from[e], to[e]);
+        keysHi[t * 3 + e] = collapsed ? 0xFFFFFFFFu : max(from[e], to[e]);
+        values[t * 3 + e] = 0u;
     }
+    // The tetrahedron the triangle makes with the origin, signed, and its area.
+    measures[t] = float2(dot(p0, cross(p1, p2)) / 6.0, 0.5 * length(cross(p1 - p0, p2 - p0)));
 }
 
 /// After the sort: each run of one edge, counted where it starts.
@@ -90,5 +101,30 @@ void m2sSheetRuns(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(counts[1], 1u);
     } else if (length > 2u) {
         InterlockedAdd(counts[2], 1u);
+    }
+}
+
+/// The two sums, by one group: each thread a strided share, then the group's.
+groupshared float2 sPartial[256];
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void m2sSheetSum(uint3 gid: SV_GroupThreadID) {
+    const uint lane = gid.x;
+    float2 sum = float2(0.0);
+    for (uint t = lane; t < sheet.triangles; t += 256u) {
+        sum += measures[t];
+    }
+    sPartial[lane] = sum;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint step = 128u; step > 0u; step >>= 1) {
+        if (lane < step) {
+            sPartial[lane] += sPartial[lane + step];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (lane == 0u) {
+        sums[0] = sPartial[0].x;
+        sums[1] = sPartial[0].y;
     }
 }

@@ -208,7 +208,7 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
     }
     // Which ways out are open: bits, carried as the floats they are.
     if (params.shadowBase != kNoPbr) {
-        const uint words = params.shadowWords == 8u ? 8u : 2u;
+        const uint words = params.shadowWords >= 8u ? params.shadowWords : 2u;   // 2, 8 or 32
         for (uint w = 0; w < words; ++w) {
             records[r + params.shadowBase + w] =
                 present(kShadowBits) ? bit_cast<float>(shadowBits[(e - params.transferFirst) * words + w]) : 0.0;
