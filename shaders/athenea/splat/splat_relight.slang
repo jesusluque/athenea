@@ -1014,9 +1014,12 @@ public SplatSlope noSlope() {
 /// so a highlight narrower than the footprint -- a window in the chrome --
 /// is not extrapolated into a halo across the gaussian.
 float3 slopeBetween(float3 back, float3 centre, float3 forward) {
-    const float3 ahead = forward - centre;
-    const float3 behind = centre - back;
-    return select(ahead * behind > float3(0.0), sign(ahead) * min(abs(ahead), abs(behind)), float3(0.0));
+    // Central: the derivative at the centre. Minmod (zero where the two
+    // steps disagree, the smaller where they agree) took the paint from
+    // 0.393 to 0.564 and the black paint from 0.255 to 0.938 against the
+    // path traced frame: a lacquer's reflection is all crests, and minmod
+    // flattens every one of them and weakens the slopes between.
+    return 0.5 * (forward - back);
 }
 
 float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord light, uint dome,
