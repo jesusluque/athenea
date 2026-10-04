@@ -11600,7 +11600,17 @@ is within 3% at alpha 0.3 and 0.6 for N.V 0.3 to 0.6, where the fit was 8 to
 16% under). What passes under the coat stays the complement of the fit,
 which is what the path tracer's layer weighs the base by (`lobeAlbedo`).
 Only the coat: the plain lobes and the specular layer keep the fit, so a
-cloud without a coat draws as it did.
+cloud without a coat draws as it did. Below alpha 1e-3 (the Corvette's coat is a mirror)
+the coat is the exact Fresnel itself; the fit was 7% over it head on.
+
+By N.V on the coat over black (gaussians at --resolution 384): 1.00 of the
+path traced one above 0.7, 0.95 from 0.4 to 0.7, 0.90 from 0.15 to 0.4 and
+0.81 at the rim; the dark metal alone is the same (1.00, 0.96, 0.91, 0.72),
+and with the coat's openness forced to one nothing changes on an open ball
+(0.0733 against 0.0734), so it is not the bits. The cloud's ball stands 2%
+wider than the mesh's (a white metal's area, 57811 pixels against 55569):
+the gaussians' own extent at the limb, which shifts the steep grazing
+Fresnel a pixel or two inwards.
 
 The rest of the dark metal's gap is not the lobe: across the ball the cloud's
 silhouette stands a pixel out of the mesh's (at 384 pixels), so inside the
