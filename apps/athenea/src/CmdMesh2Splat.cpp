@@ -1078,8 +1078,9 @@ public:
                     const float ior = material.ior;
                     if (glassIor_ > 0.0F && glassIor_ != ior) {
                         std::fprintf(stderr,
-                                     "mesh2splat: %s bends by %.3f and an earlier glass by %.3f; a cloud keeps "
-                                     "one index, the first\n",
+                                     "mesh2splat: %s bends by %.3f and an earlier glass by %.3f; the cloud's "
+                                     "index is the first, and where the cloud carries the layers each gaussian "
+                                     "bends by its own specular index instead\n",
                                      piece.path.c_str(), static_cast<double>(ior),
                                      static_cast<double>(glassIor_));
                     } else {
@@ -1608,11 +1609,14 @@ public:
     /// THE SAME FILTER OVER A TX TRANSFER'S BOUNCED HALVES: the indirect
     /// half's rgb and the reflected field, in the answer the bake laid out
     /// (`athenea/usd/transfer_filter_io`).
+    /// `base` and `count`: the gaussians the answer holds, a slice of the
+    /// cloud's (Converter::transfer bakes a large one in slices).
     [[nodiscard]] Result<void> filterTransfer(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
-                                              uint32_t entries, uint32_t fieldFirst);
+                                              uint32_t entries, uint32_t fieldFirst, uint32_t base,
+                                              uint32_t count);
     [[nodiscard]] Result<void> filterTransferPart(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
                                                   uint32_t entries, uint32_t fieldFirst, uint32_t part,
-                                                  uint32_t first, uint32_t chunk);
+                                                  uint32_t first, uint32_t chunk, uint32_t base, uint32_t count);
     /// How much of an environment reaches each gaussian, instead of the light.
     /// With `zonal`, the cloud is posed where its skeleton stands at `time`
     /// before the bake traces it, and what the file keeps is `zonalOut` --
@@ -1801,6 +1805,7 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
         cursor["reflected"].setBinding(none.rhi());
         cursor["counts"].setBinding(lit->rhi());
         cursor["bake"]["count"].setData(count_);
+        cursor["bake"]["first"].setData(uint32_t{0});
         cursor["bake"]["coefficients"].setData(coefficients);
         cursor["bake"]["perRecord"].setData(recordFloats());
         cursor["bake"]["opacity"].setData(uint32_t{3});
@@ -1933,7 +1938,7 @@ Result<void> Converter::filterIndirect(aofx::Effect& filter, usd::BakeSplit& spl
 /// sky the cloud is put in. On the device as the bake is; the three arrays
 /// the file keeps come back as bytes.
 Result<void> Converter::filterTransfer(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
-                                       uint32_t entries, uint32_t fieldFirst) {
+                                       uint32_t entries, uint32_t fieldFirst, uint32_t base, uint32_t count) {
     // The indirect half, then the field: apart, since the filter takes at
     // most sixteen entries a gaussian.
     // And a few values at a time: a picture of a whole half of a car (2.3
@@ -1943,7 +1948,7 @@ Result<void> Converter::filterTransfer(aofx::Effect& filter, gpu::Buffer& answer
         const uint32_t values = part == 0 ? coefficients : 16u;
         for (uint32_t first = 0; first < values; first += kChunk) {
             ATHENEA_TRY(filterTransferPart(filter, answer, coefficients, entries, fieldFirst, part, first,
-                                           std::min(kChunk, values - first)));
+                                           std::min(kChunk, values - first), base, count));
         }
     }
     return ok();
@@ -1951,9 +1956,8 @@ Result<void> Converter::filterTransfer(aofx::Effect& filter, gpu::Buffer& answer
 
 Result<void> Converter::filterTransferPart(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
                                            uint32_t entries, uint32_t fieldFirst, uint32_t part, uint32_t first,
-                                           uint32_t chunk) {
+                                           uint32_t chunk, uint32_t base, uint32_t count) {
     gpu::Device& device = library_->device();
-    const uint32_t count = count_;
     const uint32_t perGaussian = chunk;
     auto points = image::Image::create(pictureFor(uint64_t{count} * 3));
     if (!points) return std::move(points).error();
@@ -1964,8 +1968,8 @@ Result<void> Converter::filterTransferPart(aofx::Effect& filter, gpu::Buffer& an
     auto lightView = viewOf(*context_, *light, "mesh2splat.transferFilterIn");
     if (!lightView) return std::move(lightView).error();
     std::vector<uint32_t> ids(count, 0);
-    if (cryptoIds_.size() == count) {
-        ids = cryptoIds_;
+    if (cryptoIds_.size() == count_) {
+        std::copy_n(cryptoIds_.begin() + base, count, ids.begin());
     }
     auto idBuffer = gpu::Buffer::fromSpan<uint32_t>(device, ids, "mesh2splat.transferFilterIds");
     if (!idBuffer) return std::move(idBuffer).error();
@@ -1985,6 +1989,7 @@ Result<void> Converter::filterTransferPart(aofx::Effect& filter, gpu::Buffer& an
         cursor["answer"].setBinding(answer.rhi());
         cursor["picture"].setBinding(picture.rhi());
         cursor["io"]["count"].setData(count);
+        cursor["io"]["base"].setData(base);
         cursor["io"]["coefficients"].setData(coefficients);
         cursor["io"]["entries"].setData(entries);
         cursor["io"]["fieldFirst"].setData(fieldFirst);
@@ -2059,23 +2064,29 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     const uint32_t coefficients = (bakeDegree + 1) * (bakeDegree + 1);
     // The reflected field is kept only with the cells and the indirect half.
     const bool field = side > 0 && indirect;
-    const auto started = std::chrono::steady_clock::now();
-    auto baked = (*renderer)->bakePointsOnDevice(rays_, count_, time, samples, bounces, bakeDegree,
-                                                 /*transfer=*/true, /*batch=*/0, side);
-    if (!baked) return std::move(baked).error();
-    // The rays are the same rays whether the indirect half is kept or not, so
-    // this number is what says the second half costs no bake: only the copy
-    // below and the file differ.
-    const double traced =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     gpu::Device& device = library_->device();
-    // THE BOUNCED HALVES FILTERED between neighbours, where the splat bake
-    // filter is on the search path and --bake-filter asks for it: what a
-    // path saw after meeting the scene is the noisiest thing a transfer keeps.
-    if (filter != nullptr && indirect && side > 0 && options_->bakeFilter > 0) {
-        const uint32_t entries = coefficients + technique::transferPlanes(true, side);
-        const uint32_t fieldFirst = field ? entries - technique::kTransferFieldPlanes : 0u;
-        ATHENEA_TRY(filterTransfer(*filter, *baked, coefficients, entries, fieldFirst));
+    const uint32_t entries = coefficients + technique::transferPlanes(true, side);
+    const uint32_t fieldFirst = field ? entries - technique::kTransferFieldPlanes : 0u;
+    // Two words of open directions a gaussian, or eight or thirty-two with
+    // the cells.
+    const uint32_t words = technique::transferCellWords(side);
+    // IN SLICES, WHERE THE CLOUD IS LARGE. The answer is `entries` float4 a
+    // gaussian, and the whole Corvette with the cells and the field asked
+    // for 7.8 GB of it at once where the machine had 5 free. A slice of the
+    // gaussians is baked, filtered, written and read back before the next,
+    // so what the device holds is one slice's answer and arrays; the filter
+    // then sees the neighbours within the slice, which the mesh's order keeps
+    // together. A zonal transfer is fitted on the device from the whole
+    // cloud's arrays, and stays in one piece (a skinned cloud is small).
+    constexpr uint64_t kSliceAnswerBytes = uint64_t{1536} << 20;
+    uint32_t slice = count_;
+    if (zonal == nullptr) {
+        const uint64_t fits = std::max<uint64_t>(kSliceAnswerBytes / (uint64_t{entries} * 16),
+                                                 usd::StageRenderer::kBakeBatch);
+        slice = static_cast<uint32_t>(std::min<uint64_t>(fits, count_));
+    }
+    if (slice < count_) {
+        std::printf("mesh2splat: transfer baked in slices of %u gaussians\n", slice);
     }
     const auto made = [&](uint64_t words, const char* label) {
         gpu::BufferDesc desc;
@@ -2084,38 +2095,94 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         desc.label = label;
         return gpu::Buffer::create(device, desc);
     };
-    auto directs = made(uint64_t{count_} * coefficients, "mesh2splat.transferDirect");
-    auto bounceds = made(indirect ? uint64_t{count_} * coefficients * 3 : 1, "mesh2splat.transferIndirect");
-    auto fields = made(field ? uint64_t{count_} * 48 : 1, "mesh2splat.transferReflected");
-    // Two words of open directions a gaussian, or eight or thirty-two with
-    // the cells.
-    const uint32_t words = technique::transferCellWords(side);
-    auto bits = made(uint64_t{count_} * words, "mesh2splat.shadowBits");
-    auto found = counter();
-    if (!directs || !bounceds || !fields || !bits || !found) {
-        return Error(ErrorCode::OutOfMemory, "transfer: cannot allocate what the file keeps");
+    if (zonal == nullptr) {
+        // What a USD array holds, as bytes, filled a slice at a time.
+        out.coefficients = coefficients;
+        out.shadowWords = words;
+        out.direct.resize(size_t{count_} * coefficients);
+        out.shadowBits.resize(size_t{count_} * words);
+        out.bounced.resize(indirect ? size_t{count_} * coefficients * 3 : 0);
+        out.reflected.resize(field ? size_t{count_} * 48 : 0);
     }
-    gpu::CommandBatch batch(device);
-    transferInto_.dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor cursor) {
-        cursor["baked"].setBinding(baked->rhi());
-        cursor["records"].setBinding(records_.rhi());
-        cursor["direct"].setBinding(directs->rhi());
-        cursor["bounced"].setBinding(bounceds->rhi());
-        cursor["shadowBits"].setBinding(bits->rhi());
-        cursor["reflected"].setBinding(fields->rhi());
-        cursor["counts"].setBinding(found->rhi());
-        cursor["bake"]["count"].setData(count_);
-        cursor["bake"]["coefficients"].setData(coefficients);
-        cursor["bake"]["perRecord"].setData(recordFloats());
-        cursor["bake"]["opacity"].setData(uint32_t{3});
-        cursor["bake"]["dc0"].setData(uint32_t{11});
-        cursor["bake"]["restBase"].setData(uint32_t{23});
-        cursor["bake"]["indirect"].setData(indirect ? 1u : 0u);
-        cursor["bake"]["cells"].setData(side == 0 ? 0u : words);
-    });
-    ATHENEA_TRY(batch.submit(true));
     uint32_t reached = 0;
-    ATHENEA_TRY(found->read(device, 0, sizeof(reached), &reached));
+    double traced = 0.0;
+    // The last slice's -- the whole cloud's, where a zonal fit reads them.
+    std::optional<gpu::Buffer> directs;
+    std::optional<gpu::Buffer> bits;
+    for (uint32_t base = 0; base < count_; base += slice) {
+        const uint32_t n = std::min(slice, count_ - base);
+        gpu::Buffer rays = rays_;
+        if (n < count_) {
+            auto part = made(uint64_t{n} * 12, "mesh2splat.transferRaysSlice");
+            if (!part) return std::move(part).error();
+            gpu::CommandBatch copy(device);
+            copy.encoder()->copyBuffer(part->rhi(), 0, rays_.rhi(), uint64_t{base} * 48, uint64_t{n} * 48);
+            ATHENEA_TRY(copy.submit(true));
+            rays = std::move(*part);
+        }
+        const auto started = std::chrono::steady_clock::now();
+        auto baked = (*renderer)->bakePointsOnDevice(rays, n, time, samples, bounces, bakeDegree,
+                                                     /*transfer=*/true, /*batch=*/0, side);
+        if (!baked) return std::move(baked).error();
+        // The rays are the same rays whether the indirect half is kept or
+        // not, so this number is what says the second half costs no bake:
+        // only the copy below and the file differ.
+        traced += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        // THE BOUNCED HALVES FILTERED between neighbours, where the splat
+        // bake filter is on the search path and --bake-filter asks for it:
+        // what a path saw after meeting the scene is the noisiest thing a
+        // transfer keeps.
+        if (filter != nullptr && indirect && side > 0 && options_->bakeFilter > 0) {
+            ATHENEA_TRY(filterTransfer(*filter, *baked, coefficients, entries, fieldFirst, base, n));
+        }
+        auto sliceDirects = made(uint64_t{n} * coefficients, "mesh2splat.transferDirect");
+        auto bounceds = made(indirect ? uint64_t{n} * coefficients * 3 : 1, "mesh2splat.transferIndirect");
+        auto fields = made(field ? uint64_t{n} * 48 : 1, "mesh2splat.transferReflected");
+        auto sliceBits = made(uint64_t{n} * words, "mesh2splat.shadowBits");
+        auto found = counter();
+        if (!sliceDirects || !bounceds || !fields || !sliceBits || !found) {
+            return Error(ErrorCode::OutOfMemory, "transfer: cannot allocate what the file keeps");
+        }
+        gpu::CommandBatch batch(device);
+        transferInto_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["baked"].setBinding(baked->rhi());
+            cursor["records"].setBinding(records_.rhi());
+            cursor["direct"].setBinding(sliceDirects->rhi());
+            cursor["bounced"].setBinding(bounceds->rhi());
+            cursor["shadowBits"].setBinding(sliceBits->rhi());
+            cursor["reflected"].setBinding(fields->rhi());
+            cursor["counts"].setBinding(found->rhi());
+            cursor["bake"]["count"].setData(n);
+            cursor["bake"]["first"].setData(base);
+            cursor["bake"]["coefficients"].setData(coefficients);
+            cursor["bake"]["perRecord"].setData(recordFloats());
+            cursor["bake"]["opacity"].setData(uint32_t{3});
+            cursor["bake"]["dc0"].setData(uint32_t{11});
+            cursor["bake"]["restBase"].setData(uint32_t{23});
+            cursor["bake"]["indirect"].setData(indirect ? 1u : 0u);
+            cursor["bake"]["cells"].setData(side == 0 ? 0u : words);
+        });
+        ATHENEA_TRY(batch.submit(true));
+        uint32_t here = 0;
+        ATHENEA_TRY(found->read(device, 0, sizeof(here), &here));
+        reached += here;
+        if (zonal == nullptr) {
+            ATHENEA_TRY(sliceDirects->read(device, 0, size_t{n} * coefficients * sizeof(float),
+                                           out.direct.data() + size_t{base} * coefficients));
+            ATHENEA_TRY(sliceBits->read(device, 0, size_t{n} * words * sizeof(int32_t),
+                                        out.shadowBits.data() + size_t{base} * words));
+            if (indirect) {
+                ATHENEA_TRY(bounceds->read(device, 0, size_t{n} * coefficients * 3 * sizeof(float),
+                                           out.bounced.data() + size_t{base} * coefficients * 3));
+            }
+            if (field) {
+                ATHENEA_TRY(fields->read(device, 0, size_t{n} * 48 * sizeof(float),
+                                         out.reflected.data() + size_t{base} * 48));
+            }
+        }
+        directs = std::move(*sliceDirects);
+        bits = std::move(*sliceBits);
+    }
     std::printf("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
                 reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
     if (reached * 2 < count_) {
@@ -2129,21 +2196,6 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         out.reflected.clear();
         out.shadowWords = 2;
         return fitZonal(*zonal, frames, *directs, *bits, out.zonal, out.shadowBits);
-    }
-    // What a USD array holds, as bytes.
-    out.coefficients = coefficients;
-    out.shadowWords = words;
-    out.direct.resize(size_t{count_} * coefficients);
-    out.shadowBits.resize(size_t{count_} * words);
-    out.bounced.resize(indirect ? size_t{count_} * coefficients * 3 : 0);
-    out.reflected.resize(field ? size_t{count_} * 48 : 0);
-    ATHENEA_TRY(directs->read(device, 0, out.direct.size() * sizeof(float), out.direct.data()));
-    ATHENEA_TRY(bits->read(device, 0, out.shadowBits.size() * sizeof(int32_t), out.shadowBits.data()));
-    if (indirect) {
-        ATHENEA_TRY(bounceds->read(device, 0, out.bounced.size() * sizeof(float), out.bounced.data()));
-    }
-    if (field) {
-        ATHENEA_TRY(fields->read(device, 0, out.reflected.size() * sizeof(float), out.reflected.data()));
     }
     return ok();
 }

@@ -11635,6 +11635,19 @@ grew; the transfer's own kernel is the one to watch.
 **Checked** (pending the GPU turn): the frozen chrome card, three runs; the
 lobes conversions; a TX ball.
 
+### A large transfer is baked in slices
+
+The whole Corvette converted with `--transfer` (cells, degree 3, the field)
+asked for its bake's answer at once: 35 float4 a gaussian, 7.8 GB, where the
+machine had 5 free. `Converter::transfer` now takes the gaussians in slices
+whose answer is at most 1.5 GB (never under the bake's own batch, 2^19):
+each slice's rays copied out on the device, baked, its bounced halves
+filtered, written by `m2sTransferInto` (`first`, the slice's place among the
+records) and read back into the file's arrays before the next. The filter
+sees the neighbours within a slice (`transfer_filter_io`'s `base`), which the
+mesh's order keeps together; a cloud that fits in one slice is what it was.
+A zonal transfer is fitted from the whole cloud's arrays and stays in one.
+
 ### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
 
 A car converted to gaussians cast nothing on the ground under a sky: the

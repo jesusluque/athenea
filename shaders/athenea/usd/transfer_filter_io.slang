@@ -38,7 +38,9 @@ struct TransferFilterIo {
     /// a time is the same answer.
     uint first;
     uint chunk;
-    uint pad2;
+    /// The answer's first gaussian in the cloud: the rays, records and ids
+    /// are the whole cloud's, the answer a slice of it (Converter::transfer).
+    uint base;
 };
 
 StructuredBuffer<float4>       rays;     // 3 a gaussian (bakePointsOnDevice's layout)
@@ -69,12 +71,13 @@ void transferFilterPoints(uint3 tid: SV_DispatchThreadID) {
     if (k >= io.count) {
         return;
     }
-    const float4 point = rays[k * 3];
-    const float spread = rays[k * 3 + 1].w;
-    const float footprint = spread > 0.0 ? spread : records[k * io.perRecord + io.size];
+    const uint g = io.base + k;
+    const float4 point = rays[g * 3];
+    const float spread = rays[g * 3 + 1].w;
+    const float footprint = spread > 0.0 ? spread : records[g * io.perRecord + io.size];
     picture[at(k * 3)] = float4(point.xyz, footprint);
-    const float4 own = rays[k * 3 + 2];
-    const float3 facing = own.w > 0.5 ? normalize(own.xyz) : normalize(rays[k * 3 + 1].xyz);
+    const float4 own = rays[g * 3 + 2];
+    const float3 facing = own.w > 0.5 ? normalize(own.xyz) : normalize(rays[g * 3 + 1].xyz);
     picture[at(k * 3 + 1)] = float4(facing, asfloat(ids[k]));
     // The luminance of what bounced, and a variance no step in it exceeds.
     const float3 bounced = answer[k * io.entries + (io.part == 0u ? 0u : io.fieldFirst)].rgb;

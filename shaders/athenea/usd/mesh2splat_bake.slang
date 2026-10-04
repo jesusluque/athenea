@@ -41,6 +41,7 @@ struct BakeParams {
     uint restBase;       ///< the harmonics' first field
     uint indirect;       ///< the transfer keeps its indirect half
     uint cells;          ///< words a gaussian of a TX grid, 8 or 32, in entries of four after the coverage; 0 the first two
+    uint first;          ///< m2sTransferInto: the slice's first gaussian in `records` (the answer and arrays are the slice's)
 };
 
 StructuredBuffer<float4>     baked;
@@ -95,7 +96,7 @@ void m2sTransferInto(uint3 tid: SV_DispatchThreadID) {
     if (!found) {
         // A transfer of nothing is black under every sky: transparent
         // instead, as the radiance bake does, and its arrays zero.
-        records[k * bake.perRecord + bake.opacity] = 0.0;
+        records[(bake.first + k) * bake.perRecord + bake.opacity] = 0.0;
     }
     if (bake.cells != 0) {
         for (uint plane = 0; plane < bake.cells / 4u; ++plane) {
