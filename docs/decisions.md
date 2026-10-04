@@ -12863,3 +12863,12 @@ a white dome read 5% bright (0.249 against 0.236). A catcher gaussian under
 kCatcherFloor (0.03) is drawn at it by a lot -- a hash of its index -- with
 probability its opacity over that, the same coverage in the mean: 0.2386
 against 0.2361.
+
+**A catcher's open directions on a 32 x 32 grid.** Under goegap's sun the
+contact under the bumper read 0.029 against the path traced 0.016: the sun's
+shadow edge there is narrower than a 16 x 16 cell (11 degrees), and its
+share is read through four of them. On 32 x 32 (5.6 degrees, 1024 bits a
+gaussian) it reads 0.021, the workshop sky unchanged (0.038 against 0.043),
+so `--shadow-catcher` takes 32 unless told. Weighing the four cells nearer
+than bilinearly (a smoothstep on the fractions) was tried and left out: rows
+430 and 440 came closer, the contact window went the other way (0.023).

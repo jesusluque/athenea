@@ -417,7 +417,7 @@ recipe is §3.1 below.
 | `--validate-bounces` | integer | `6` | bounces of the GT's paths |
 | `--validate-material` | prim path or name | every material | only this one (repeatable) |
 | `--validate-sky` | `white` or an image file | the stage's lights | every frame under another sky -- a constant of radiance one, or that image on the stage's domes -- with its other lights off; the GT is kept as `gt_<sky>.exr` |
-| `--shadow-catcher` | flag | off | convert the shadow `--prim` casts on its ground instead of `--prim`: a patch of gaussians on the ground under and around it, baked as a TX transfer (the object and the ground are what its rays meet), written with `primvars:athenea:splat:catcher` and drawn black, covering what the object takes of the light. Implies `--transfer` and one cell everywhere |
+| `--shadow-catcher` | flag | off | convert the shadow `--prim` casts on its ground instead of `--prim`: a patch of gaussians on the ground under and around it, baked as a TX transfer (the object and the ground are what its rays meet), written with `primvars:athenea:splat:catcher` and drawn black, covering what the object takes of the light. Implies `--transfer`, one cell everywhere and `--transfer-cells 32` unless that is given (a sun's shadow edge under the object is narrower than 16 x 16 cells) |
 | `--catcher-ground` | prim path | found | with `--shadow-catcher`: the ground; found as the largest flat mesh outside `--prim` whose top is at its bottom and which reaches under it |
 | `--catcher-margin` | number | `1.5` | with `--shadow-catcher`: how far past the object's footprint the patch reaches, in heights of the object |
 | `--catcher-cell` | world units | `0` | with `--shadow-catcher`: the patch's cell; 0 is a hundredth of the object's height |
