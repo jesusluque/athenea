@@ -11700,15 +11700,17 @@ read at the centre's angle (044's bands, 1.00 / 0.95 / 0.90 / 0.81).
   open reflection's colour changes over each step, weighed as the
   reflection is. Two values of three a slot go to `slopes`, as halves, and
   the record's colour.w says so (`kSlopeMark`, 0.25).
-- **Central, not limited.** The sky is read a pixel each way along both
-  axes and the slope is half the difference. Measured against the path
-  traced frame: one-sided (a pixel ahead) took the Corvette's
-  Car_Paint_Main from 0.629 to 0.393 and Car_Paint_Black from 1.20 (whole
-  car) to 0.255, the chrome from 1.35 to 1.64; limited by minmod (research
-  proposal 051) the paint went back to 0.564 and the black paint to 0.938,
-  the chrome 1.57 -- a lacquer's reflection is all crests, which minmod
-  flattens. The balls, whose skies hold no feature a gaussian wide, did not
-  move either way.
+- **A pixel ahead, by measure.** The slope is the change a pixel right and a
+  pixel down, one-sided. Against the path traced frame, the Corvette's
+  Car_Paint_Main went from 0.629 to 0.393 and Car_Paint_Black from 1.20
+  (whole car) to 0.255 with it, the chrome from 1.35 to 1.64. The central
+  difference (a pixel each way, half the difference) read 0.584 and 0.894,
+  chrome 1.75; minmod (research proposal 051) 0.564 and 0.938, chrome 1.57.
+  Why the one-sided slope does better than the derivative is not
+  understood -- a step scale or a sign the central one gets wrong is the
+  first suspect -- and it is also the cheaper: two sky readings a lobe,
+  not four. The balls, whose skies hold no feature a gaussian wide, did not
+  move with any of the three.
 - **The blend adds the slope.** `splat_blend` takes the slope with the
   record into group memory and draws `max(colour + slope . d, 0)` at the
   pixel `d` from the centre. A record without the mark is drawn as it was.

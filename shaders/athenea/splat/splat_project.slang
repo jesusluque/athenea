@@ -407,8 +407,6 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 slope.on = true;
                 slope.normalX = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hx));
                 slope.normalY = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hy));
-                slope.normalXBack = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal - hx));
-                slope.normalYBack = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal - hy));
             }
         }
         colour = relitSplat<kTransfer>(surface, normalize(eye - surface.position), lights,

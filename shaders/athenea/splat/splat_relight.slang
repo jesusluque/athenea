@@ -989,8 +989,6 @@ public struct SplatSlope {
     public bool   on;
     public float3 normalX;
     public float3 normalY;
-    public float3 normalXBack;   ///< a pixel to the left
-    public float3 normalYBack;   ///< and a pixel up
     public float3 slopeX;   ///< the colour's change a pixel to the right
     public float3 slopeY;   ///< and a pixel down
 };
@@ -1000,26 +998,9 @@ public SplatSlope noSlope() {
     g.on = false;
     g.normalX = float3(0.0, 0.0, 1.0);
     g.normalY = float3(0.0, 0.0, 1.0);
-    g.normalXBack = float3(0.0, 0.0, 1.0);
-    g.normalYBack = float3(0.0, 0.0, 1.0);
     g.slopeX = float3(0.0);
     g.slopeY = float3(0.0);
     return g;
-}
-
-/// THE SLOPE THAT STAYS BETWEEN ITS NEIGHBOURS (research proposal 051): of
-/// the change a step forward and the change a step back, per channel, the
-/// smaller where the two agree in sign and nothing where they do not
-/// (minmod). A ramp built on it never leaves the range of the three readings,
-/// so a highlight narrower than the footprint -- a window in the chrome --
-/// is not extrapolated into a halo across the gaussian.
-float3 slopeBetween(float3 back, float3 centre, float3 forward) {
-    // Central: the derivative at the centre. Minmod (zero where the two
-    // steps disagree, the smaller where they agree) took the paint from
-    // 0.393 to 0.564 and the black paint from 0.255 to 0.938 against the
-    // path traced frame: a lacquer's reflection is all crests, and minmod
-    // flattens every one of them and weakens the slopes between.
-    return 0.5 * (forward - back);
 }
 
 float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord light, uint dome,
@@ -1160,24 +1141,16 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         if (kTransfer != 0 && slope.on && !s.hasReflection) {
             const float3 mirrorX = reflect(-wo, slope.normalX);
             const float3 mirrorY = reflect(-wo, slope.normalY);
-            const float3 mirrorXBack = reflect(-wo, slope.normalXBack);
-            const float3 mirrorYBack = reflect(-wo, slope.normalYBack);
             const float3 polishWeight = layers.under * thinWallGain(s) * splatPolish(s, nDotV) * narrowed;
-            slope.slopeX = polishWeight * slopeBetween(envRadiance(envTexels, dome, mirrorXBack, s.roughness, envBaseSide),
-                                                       seen,
-                                                       envRadiance(envTexels, dome, mirrorX, s.roughness, envBaseSide));
-            slope.slopeY = polishWeight * slopeBetween(envRadiance(envTexels, dome, mirrorYBack, s.roughness, envBaseSide),
-                                                       seen,
-                                                       envRadiance(envTexels, dome, mirrorY, s.roughness, envBaseSide));
+            slope.slopeX = polishWeight * (envRadiance(envTexels, dome, mirrorX, s.roughness, envBaseSide) - seen);
+            slope.slopeY = polishWeight * (envRadiance(envTexels, dome, mirrorY, s.roughness, envBaseSide) - seen);
             if (coated) {
                 const float r = s.lobes.coatRoughness;
                 const float3 coatSeen = envRadiance(envTexels, dome, mirror, r, envBaseSide);
                 const float coatOpen = splatLobeOpen(s, cellBits, mirror, r, s.normal);
                 const float3 coatWeight = layers.coat * (cells ? coatOpen : 1.0);
-                slope.slopeX += coatWeight * slopeBetween(envRadiance(envTexels, dome, mirrorXBack, r, envBaseSide), coatSeen,
-                                                          envRadiance(envTexels, dome, mirrorX, r, envBaseSide));
-                slope.slopeY += coatWeight * slopeBetween(envRadiance(envTexels, dome, mirrorYBack, r, envBaseSide), coatSeen,
-                                                          envRadiance(envTexels, dome, mirrorY, r, envBaseSide));
+                slope.slopeX += coatWeight * (envRadiance(envTexels, dome, mirrorX, r, envBaseSide) - coatSeen);
+                slope.slopeY += coatWeight * (envRadiance(envTexels, dome, mirrorY, r, envBaseSide) - coatSeen);
             }
         }
         if (field) {
