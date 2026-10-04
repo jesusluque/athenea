@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -49,7 +50,22 @@ struct ValidateJob {
     /// Another sky for every frame: "white" (a constant of one), or an image
     /// file; the stage's other lights off. Empty: the stage as it is.
     std::string              sky;
+    /// The clouds' frames blended as a standard viewer blends them, sRGB
+    /// values summed (`athenea:splatDisplayBlend`): what `athenea flatten
+    /// --validate` measures a standard file under.
+    bool                     displayBlend = false;
+    /// One cloud stands for every measured material at once (a flattened
+    /// stage): each frame of it switches off the meshes of all of them, not
+    /// only the material measured.
+    bool                     wholeCloud = false;
 };
+
+/// A layer over `source`: nested overs down to each prim of `off`, switched
+/// off, and to each of `bodies`, given those attribute lines -- as USD
+/// composes them. `tail` is written after.
+[[nodiscard]] std::string overLayer(const std::string& source, const std::vector<std::string>& off,
+                                    const std::map<std::string, std::string>& bodies, char upAxis,
+                                    double metersPerUnit, const std::string& tail);
 
 /// Converts `stage` with `hidden` left out into `output`, returning the
 /// gaussians written: the caller's own conversion, with everything else it

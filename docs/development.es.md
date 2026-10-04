@@ -39,12 +39,12 @@ coinciden, la cabecera tiene razón.
 | 2 | ui | `ui/Controls.h` (qué es un panel), `ui/ViewerPanels.h` (los paneles del visor), `ui/GaussianPanel.h` y `ui/GaussianReport.h` (el panel Gaussians, y el registro que el motor rellena para él) — descritos una vez, dibujados por `athenea view` y la app de iOS |
 | 3 | sched | `sched/FrameClock.h` — genlock, PTP y alineamiento ST 2059-1 |
 | 4 | image | `image/Image.h` — la imagen de host que el host AOFX pasa de un lado a otro |
-| 5 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout |
+| 5 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — uno por formato, cada uno con su layout; `io/SplatWriters.h` para los ficheros estándar que escribe `athenea flatten` |
 | 6 | gpu | `gpu/Device.h` (backends, el directorio de shaders, la caché), `gpu/ComputeKernel.h` (enlace por nombre), `gpu/AsyncReadback.h` (números de un frame sin esperarlo) |
 | 7 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
 | 8 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
 | 9 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
-| 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h` |
+| 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h`, `render/Flatten.h` (una nube TX como armónicos estándar) |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
 | 13 | light | `light/LightTable.h` — una luz en el dispositivo |
@@ -1263,6 +1263,46 @@ la causa y la medida.
   enseñar un occluder, y la enseñó la esquina de un transfer.
 - `--glass-opacity` se enviaba a la conversión con el nombre de un edit, así
   que el número no llegaba a ninguna parte y todo cristal salía opaco.
+
+### 6.12 Aplanado para un visor estándar (`athenea flatten`)
+
+Una nube TX es un máster: se vuelve a sombrear bajo cada cielo. `athenea
+flatten` (`apps/athenea/src/CmdFlatten.cpp`, `render/Flatten.h`) la convierte
+en lo que puede dibujar un visor que solo conoce armónicos de grado 3, en tres
+pasos, todos en el dispositivo:
+
+1. **La matriz del ajuste, una vez** (`shaders/athenea/splat/flatten_fit.slang`).
+   En el marco propio de una gaussiana (+z su orientación) las N direcciones
+   de Fibonacci y sus pesos son los mismos para todas las gaussianas de una
+   clase -- una superficie, con peso `--back-weight` por detrás; una pared
+   fina, con peso en toda la esfera --, así que los mínimos cuadrados
+   ponderados y regularizados son una sola matriz M (16 x N por clase),
+   resuelta con un Cholesky en el dispositivo. Ahí se encuentra también el
+   suelo de rugosidad.
+2. **El frame** (`splatFlatten`, en `splat_project.slang`). El sombreado relit
+   de la proyección es una sola función, `relitToward`, a la que `projectSplat`
+   llama para la cámara y `splatFlatten` para un ojo en cada dirección: una
+   nube aplanada es lo que dibuja el raster, por construcción. Lo que muestra
+   cada dirección -- codificado en sRGB, como lo mostrará un visor -- entra en
+   M, las bandas altas se encogen hasta que nada por delante baja de negro, y
+   el ajuste se gira al marco del fichero con la regla de 26 puntos de
+   Lebedev (exacta para grado 3 por grado 3; sin matrices de Wigner).
+   `TileRasterizer::render` hace esto en lugar de dibujar cuando
+   `RenderSettings::flatten` está puesto, una porción de 65 536 gaussianas por
+   envío; `StageRenderer::flatten` lo pone durante un frame. Un receptor de
+   sombra se aplana a negro con la opacidad que le da el frame
+   (`catcherOpacity`).
+3. **El empaquetado** (`flatten_pack.slang`): floats de PLY, los seis flujos
+   de SPZ (cada byte calculado como lo calcula el empaquetador de Niantic,
+   cuatro por hilo), bloques de glTF. `io/SplatWriters.h` los enmarca y los
+   escribe; gzip y ZSTD son lo único que se les hace a los bytes.
+
+No es un bundle AOFX: su sombreado es el sombreado relit del propio motor bajo
+el cielo preparado del frame, al que un bundle no llega. Añadir un formato es
+un kernel en `flatten_pack.slang`, un método en `FlattenPack`, un escritor en
+`io/SplatWriters.h` y una línea en `CmdFlatten.cpp`; el viaje de ida y vuelta
+por el lector de este motor es lo que comprueba
+`athenea_render_tests "[flatten]"`.
 
 ## 7. Dependencias y toolchain
 

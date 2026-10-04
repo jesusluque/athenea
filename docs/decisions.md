@@ -12866,6 +12866,117 @@ goegap: a sun of 1.86 degrees and 5.8 of irradiance. autoshop: a lamp of
 against its closed form 0.1084), the residual sky within 2.1%, an even sky
 left alone.
 
+## A TX cloud as standard Gaussian Splatting files: `athenea flatten` (task TXF)
+
+The TX transfer is the master (the user accepted the TX bake on 4 Oct 2026).
+What leaves the engine for other viewers is a flattening of it: the transfer
+under one sky and one set of lights, as the degree 3 harmonics every 3DGS
+viewer reads, with no bake again (proposals 033 and 070). The mesh is not
+needed; only the TX cloud and the lights.
+
+### What is fitted, and how
+
+- **The signal is what the viewer will show.** A viewer evaluates
+  `0.5 + sum c_k Y_k(v)`, clamps at zero, and blends sRGB-encoded values, so
+  by default the fit's target along each direction is the sRGB encoding of
+  the light the raster computes for an eye there (`--referred scene` fits
+  linear light, for PLY and USD). Exposure is applied before the encoding.
+- **The shading is the raster's.** The relit part of `projectSplat` became
+  `relitToward`, called by the projection for the camera and by
+  `splatFlatten` for each direction: the surface built from the cloud, the
+  overrides, the lobes, the cached view-independent terms, `relitSplat`. The
+  only differences are the ones a frame has and a direction does not: no
+  slope across a footprint (that is a screen-space ramp), and the roughness
+  floor below.
+- **Directions and weights.** N Fibonacci directions (256 by default) in the
+  gaussian's frame, +z the facing its transfer was measured for. A surface
+  weighs its back hemisphere 0.01; a thin wall weighs the whole sphere. In
+  that frame M = (YᵀWY + λ diag(l²(l+1)²))⁻¹ YᵀW is the same for every
+  gaussian of a class, so it is solved once (`flattenGram`, `flattenSolve`)
+  and a gaussian's fit is a 16 x N product with what it showed, accumulated
+  as it is shaded -- no buffer of samples.
+- **Into the file's frame by quadrature.** The local fit is read at the 26
+  points of Lebedev's rule in the file's frame and projected back onto the
+  harmonics there. A product of two degree 3 harmonics is degree 6 and the
+  rule is exact to degree 7, so the turn is exact; no Wigner rotation.
+- **Positive where seen.** A viewer clamps at zero, and a ring of negative
+  values round a highlight reads as a dark halo. After the fit, the higher
+  bands are scaled by the largest factor that keeps every front direction
+  (every direction, for a thin wall) at or above zero, channel by channel;
+  the constant part is held at zero or above first. The share of gaussians
+  shrunk is printed.
+- **The roughness floor.** Degree 3 cannot hold a sharp reflection; fitting
+  one rings. Before evaluating, the polish and the coat take
+  `max(roughness, floor)`, the floor being the least of 64 candidates whose
+  GGX reflection lobe keeps all but 5% of its square integral in bands 0 to 3
+  (`flattenRoughnessFloor`, Legendre projection on the device). It blurs
+  instead of ringing, and keeps the highlight's energy. `--no-roughness-floor`
+  is the variant to measure it against.
+- **A shadow catcher** is flattened as what the frame draws: black (the DC
+  is `-0.5/C0`) at `catcherOpacity`'s opacity under the export sky, so a car
+  and its ground shadow leave as one standard file.
+
+### The files
+
+One fit, several files, all Y up and in metres whatever the stage's axis and
+unit (three.js, Spark, SuperSplat and glTF take that as it is), the same
+coordinates in every one:
+
+- **PLY**, INRIA's layout, float32, 248 B a gaussian, nothing else in it.
+- **SPZ**, version 3 by default because Spark 2.3.1 reads 1 to 3 and not 4
+  (measured by sysop on athenea.lucab.co.uk); version 4 (ZSTD) on request.
+  Harmonics at 8/8 bits, not the packer's 5/4: a flattened reflection lives
+  in bands 1 to 3. The bytes are worked out on the device exactly as
+  Niantic's `packGaussians` works them out; harmonics past SPZ's [-1, 1] are
+  scaled whole rather than clipped; the fixed point is chosen from the box
+  (one bit to spare, never past 20; Niantic's packer always writes 12).
+- **glTF** `.glb`, one POINTS primitive with `KHR_gaussian_splatting`, in
+  `extensionsUsed` only. The attribute names follow the ratified extension as
+  proposal 070 reads it; no viewer has opened one yet.
+- **USD**, a ParticleField as `athenea convert` writes it.
+
+Scales: Spark keeps ln σ in [-12, 9], and a converted pawn's thin axes are far
+below that in metres. Floored at -12 in PLY and glTF (a few micrometres:
+invisible), SPZ's own byte floors at -10; both fractions are printed.
+
+### Why not an AOFX bundle
+
+The data-processing steps of a conversion are bundles (mesh2splat, the bake
+filter, the zonal fit). Flattening is not one: what it evaluates is the
+engine's own relit shading under the frame's prepared sky -- the prefiltered
+dome, the cached terms, the lights' records -- which only a frame has. The
+fit and the packing could move into a bundle later; they would have to take
+the radiance samples as an input, which the fused kernel never stores.
+
+### Measured in the engine
+
+`athenea flatten --validate` reads the written file back through this
+engine's own readers (SPZ through Niantic's decompression), puts it where the
+meshes stand, rasterises it with `athenea:splatDisplayBlend` -- each splat
+sRGB-encoded before the blend and the pixel decoded after, as Spark draws --
+and measures it material by material against the meshes path traced under
+the same sky, with mesh2splat's validation (level A of proposal 070).
+
+Measurements (the pawn and the Corvette under the baked sky and under
+table_mountain, flatten times, file sizes) are queued for the GPU and not in
+yet.
+
+### Not done
+
+- The convention battery of proposal 070 §7.3 (one coefficient a gaussian, in
+  each viewer): the axes and signs are checked against this engine's readers
+  only (`athenea_render_tests "[flatten]"`), not against Spark, SuperSplat,
+  Blender or three.js.
+- Quantisation by the Gram metric and positivity checked after quantising
+  (070 §4.3, §4.5); a fit weighted by the cells' own visibility (031 bits) or
+  by a camera distribution; degree per gaussian; SH4; SOG; lobes in an
+  `ATHENEA_gaussian_splatting` extension; a 3D mip filter baked into the
+  covariance.
+- A cloud a skeleton carries is flattened in the pose of the frame; levels of
+  detail are flattened as the frame's cut.
+- Non-uniform object scales are taken as their axis lengths, which is right
+  for the rigid transforms clouds stand under and only approximate otherwise.
+
 ## mesh2splat inside hdAthenea, and the colour a host copies
 
 A host that draws through hdAthenea has loaded a USD of its own, and the

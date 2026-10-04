@@ -79,7 +79,7 @@ std::string fileNameOf(const std::string& material) {
 /// A layer over `source`: nested overs down to each prim of `off`, switched
 /// off, and to each of `bodies`, given those attribute lines -- as USD
 /// composes them. `tail` is written after.
-std::string overLayer(const std::string& source, const std::vector<std::string>& off,
+std::string overLayerImpl(const std::string& source, const std::vector<std::string>& off,
                       const std::map<std::string, std::string>& bodies, char upAxis, double metersPerUnit,
                       const std::string& tail) {
     struct Node {
@@ -127,7 +127,7 @@ std::string overLayer(const std::string& source, const std::vector<std::string>&
 std::string composedStage(const std::string& source, const std::vector<std::string>& meshes, const std::string& cloud,
                           char upAxis, double metersPerUnit) {
     // Typeless, so the reference gives it the ParticleField it is.
-    return overLayer(source, meshes, {}, upAxis, metersPerUnit,
+    return overLayerImpl(source, meshes, {}, upAxis, metersPerUnit,
                      "def \"AtheneaValidateCloud\" (\n    prepend references = @" + cloud +
                          "@</World/Splats>\n)\n{\n}\n");
 }
@@ -149,6 +149,12 @@ std::string jsonOf(const std::string& text) {
 }
 
 }   // namespace
+
+std::string overLayer(const std::string& source, const std::vector<std::string>& off,
+                      const std::map<std::string, std::string>& bodies, char upAxis, double metersPerUnit,
+                      const std::string& tail) {
+    return overLayerImpl(source, off, bodies, upAxis, metersPerUnit, tail);
+}
 
 Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& context, gpu::ShaderLibrary& library,
                                 aofx::Effect& measure, const ValidateConvert& convert) {
@@ -329,13 +335,22 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         const fs::path composed = dir / "clouds" / (name + ".usda");
         {
             std::ofstream out(composed);
-            out << composedStage(source.string(), group.meshes, cloud.string(), upAxis, metersPerUnit);
+            std::vector<std::string> off = group.meshes;
+            if (job.wholeCloud) {
+                for (const usd::MaterialGroup& other : *groups) {
+                    off.insert(off.end(), other.meshes.begin(), other.meshes.end());
+                }
+                std::sort(off.begin(), off.end());
+                off.erase(std::unique(off.begin(), off.end()), off.end());
+            }
+            out << composedStage(source.string(), off, cloud.string(), upAxis, metersPerUnit);
         }
         Result<void> measured = ok();
         auto drew = context.run([&] {
             measured = [&]() -> Result<void> {
                 auto renderer = usd::StageRenderer::open(composed, context.deviceShared());
                 if (!renderer) return std::move(renderer).error();
+                (*renderer)->setSplatDisplayBlend(job.displayBlend);
                 auto frame = (*renderer)->render(camera, job.time, w, h, "raster");
                 if (!frame) return std::move(frame).error();
                 ATHENEA_TRY(io::writeExr(dir / (name + "_gs.exr"), w, h, frame->rgba, {}, false));

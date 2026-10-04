@@ -9,6 +9,7 @@ add_executable(athenea
     src/CmdAofx.cpp
     src/CmdMesh2Splat.cpp
     src/Mesh2SplatValidate.cpp
+    src/CmdFlatten.cpp
     src/CmdVisibility.cpp
     src/CmdLive.cpp
     src/Output.cpp)

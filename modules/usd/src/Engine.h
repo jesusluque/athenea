@@ -383,6 +383,16 @@ public:
     void setSplatTransferIndirect(bool indirect);
     /// Whether a gaussian reflects the cloud it belongs to, at a ray each.
     void setSplatReflections(bool reflect);
+    /// Whether splats are blended as a standard viewer blends them, sRGB
+    /// values summed (render::RenderSettings::displayBlend), rather than in
+    /// linear light (`athenea:splatBlend`).
+    void setSplatDisplayBlend(bool display);
+    /// THE NEXT RASTERISED FRAME FLATTENS RATHER THAN DRAWS (`athenea
+    /// flatten`, render/Flatten.h): `request` is filled with a record set a
+    /// relit TX cloud, and `flattenedPrims` says whose each instance was.
+    /// Null: frames draw again.
+    void setFlatten(render::SplatFlatten* request);
+    [[nodiscard]] std::vector<std::string> flattenedPrims() const;
 
     /// WHAT A FRAME SAYS A PRIM IS MADE OF, keyed on the Cryptomatte id its
     /// gaussians carry: what a host edits after picking one.
@@ -757,6 +767,9 @@ private:
     std::atomic<bool>                         pathAdaptive_{false};
     std::atomic<bool>                         pathMis_{true};
     std::atomic<bool>                         transferIndirect_{true};
+    std::atomic<bool>                         displayBlend_{false};
+    render::SplatFlatten*                     flattenRequest_ = nullptr;
+    std::vector<std::string>                  flattenedPrims_;
     /// How many times a cloud's arrays were uploaded: once a cloud, unless
     /// what it holds changed (tests hold a time step to it).
     double                                    lastCommitMs_ = 0.0;   ///< ATHENEA_STAGES: the last commit's time

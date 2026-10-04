@@ -266,6 +266,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--refine` | integer | `0` | subdivision levels; 0 draws the control mesh |
 | `--light-samples` | integer | `1` | samples per light per pixel |
 | `--no-transfer-indirect` | flag | the half is added | draw a transferred cloud without its bounced half |
+| `--splat-display-blend` | flag | linear blend | raster: splats blended as a standard viewer blends them, sRGB values summed (`athenea:splatDisplayBlend`) |
 | `--splat-reflections` | flag | off | rt: a gaussian reflects the cloud it belongs to rather than only the sky |
 | `--splat-shadows` | flag | off | rt: a relit cloud shadows itself, one ray a splat |
 | `--no-antialias` | flag | antialias on | |
@@ -443,6 +444,68 @@ in the same directory, and renamed to `-o` once it is complete. A conversion
 that fails leaves nothing under `-o` -- or the file that was there before, as
 it was -- and removes its partial file. With `--lod-levels`, each level and
 the stage that draws them are written so.
+
+### 2.8.1 `athenea flatten` — a TX cloud as standard Gaussian Splatting files
+
+A stage's TX clouds (`mesh2splat --transfer`) and shadow catchers, under its
+own lights or another sky, written as degree 3 harmonics a standard viewer
+reads -- no bake again, no mesh. Each gaussian is shaded from `--directions`
+directions exactly as the rasteriser shades it, what a viewer would show
+there is fitted, and the fit is written in every format asked for. The stage
+is composed with its meshes switched off (`<output>_flatten_stage.usda`,
+kept beside the files).
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `stage` | path, required | — | a stage holding TX clouds and a dome: the bake's own scene, or a cloud with `--sky` |
+| `-o`, `--output` | path | `flat` | without an extension, every format of `--format` beside each other; with one of them, that format alone |
+| `--format` | comma list of `ply`, `spz`, `glb`, `usdc`, `usda` | `ply,spz,glb` | |
+| `--sky` | image path \| `white` | the stage's lights | the stage's domes take the image and its other lights go off; a stage with no dome gets one, turned to its up axis |
+| `--hide` | prim path ‹repeatable› | none | left out, as if inactive |
+| `--directions` | integer, at least 16 | `256` | directions a gaussian is looked at from; 1024 for sharper metals |
+| `--exposure` | stops | `0` | on the light, before it is encoded |
+| `--referred` | `display` \| `scene` | `display` | `display` fits the sRGB colour a viewer shows; `scene` fits linear light, for `ply` and USD only |
+| `--no-roughness-floor` | flag | the floor on | reflections as sharp as the material; ringing where degree 3 cannot hold them |
+| `--roughness-floor-share` | 0..1 | `0.05` | the share of a reflection lobe's energy the floor leaves above band 3 |
+| `--fit-lambda` | number | `1e-4` | the fit's regularisation, times l²(l+1)² |
+| `--back-weight` | number | `0.01` | what a surface's back hemisphere weighs in the fit; a thin wall weighs all round |
+| `--spz-version` | `3` \| `4` | `3` | 3 is gzip and what Spark reads; 4 is ZSTD and needs it in the build |
+| `--spz-sh1-bits`, `--spz-sh-rest-bits` | 1..8 | `8`, `8` | bits SPZ keeps of band 1, and of bands 2 and 3 |
+| `--time` | number | `0` | USD time code |
+| `--validate` | directory | none | measure a written file against the meshes path traced, material by material (§3.1, *A conversion measured*) |
+| `--validate-stage` | path | the input | the stage of meshes the GT is traced from |
+| `--validate-format` | `ply` \| `spz` | `spz` | which file is read back and measured |
+| `--validate-camera`, `--validate-size`, `--validate-paths`, `--validate-bounces`, `--validate-material` | | as `mesh2splat --validate` | |
+| `--path` | directory ‹repeatable› | none | extra AOFX bundle directories (the Measure effect) |
+
+**The files.** Y up, metres, whatever the stage's axis and unit: what
+three.js, Spark, SuperSplat and glTF take as they are. The same coordinates
+in every format. Colours are what a viewer shows, sRGB-encoded, `0.5 + SH·C0`
+at the constant term, negative values clamped by the viewer; the fit keeps
+every direction in front of a surface gaussian (all round for a thin wall) at
+or above zero by shrinking its higher bands.
+
+- **PLY**: 3DGS's layout (INRIA's): `x y z nx ny nz f_dc_0..2 f_rest_0..44
+  opacity scale_0..2 rot_0..3`, float32, opacity a logit, scales ln σ,
+  rotation w x y z; 248 bytes a gaussian. No property beyond those.
+- **SPZ**: Niantic's, degree 3, harmonics at 8 bits (5 and 4 is the
+  packer's default; flattened reflections live in the higher bands), the
+  antialiased flag set, the fixed point chosen from the box (at most 20
+  bits). Harmonics past SPZ's [-1, 1] are scaled down whole, not clipped.
+- **glTF** (`.glb`): one `POINTS` primitive with `KHR_gaussian_splatting`
+  (`kernel` `ellipse`, `colorSpace` `srgb_rec709_display`), float `POSITION`,
+  `ROTATION` (x y z w), linear `SCALE`, linear `OPACITY` and
+  `SH_DEGREE_l_COEF_n`, in `extensionsUsed` only. Not yet opened in a viewer.
+- **USD** (`.usdc`, `.usda`): a `ParticleField3DGaussianSplat` as
+  `athenea convert` writes one, up axis Y, a metre a unit.
+
+**Floors.** No axis of a PLY or glTF goes below ln σ = -12 (Spark's range);
+SPZ's own floor is -10. The fraction floored is printed, as are the share of
+gaussians whose bands were shrunk and of SPZ's scaled into range.
+
+**Printed.** Each cloud and its count, the roughness floor found, the box,
+the losses above, each file's size and bytes a gaussian, and how long the
+shading and fit and the packing and writing took.
 
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part
 
@@ -1170,6 +1233,7 @@ found and does not.
 | `athenea:motionBuckets` | int | `4` | rt: shutter slices, 1 to 8 |
 | `athenea:antialias` | bool | `true` | a sub-pixel offset per pass |
 | `athenea:splatTransferIndirect` | bool | `true` | a transferred cloud adds its bounced half |
+| `athenea:splatDisplayBlend` | bool | `false` | raster: each splat sRGB-encoded before the blend and the pixel decoded after, as Spark, SuperSplat and the 3DGS rasteriser draw |
 | `athenea:splatReflections` | bool | `false` | rt: a gaussian reflects the cloud it belongs to, one ray each |
 | `athenea:splatShadows` | bool | `false` | rt: a relit cloud shadows itself |
 | `athenea:cloudShadows` | bool | `true` | a cloud's transmittance map at each light |
@@ -1763,6 +1827,10 @@ chunked container).
 photometric profiles; and material textures through OpenUSD's image plugins,
 so whatever that build reads.
 
+**Clouds written.** `athenea flatten` writes 3DGS `.ply`, `.spz` (versions 3
+and 4; 4 needs zstd), glTF `.glb` with `KHR_gaussian_splatting`, and USD
+(§2.8.1).
+
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
 default with a `Z` channel; a render product's channels follow its vars, and a
@@ -1780,6 +1848,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
 | `athenea mesh2splat` | a USD stage holding the cloud |
+| `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
 | `athenea visibility` | the cloud's file, edited in place or copied |
 | `athenea aofx run` | one EXR |
 | `athenea migrate` | a copy of the stage, package or cloud; with `--recursive`, of what it names too |

@@ -120,6 +120,12 @@ public:
     /// direct transfer alone, which is what the interreflection is worth.
     [[nodiscard]] bool GetSplatTransferIndirect() const;
 
+    /// "athenea:splatDisplayBlend": splats blended as a standard viewer blends
+    /// them, their sRGB values summed and the pixel decoded after (false, the
+    /// default: linear light). What a file `athenea flatten` wrote is measured
+    /// under.
+    [[nodiscard]] bool GetSplatDisplayBlend() const;
+
     /// "athenea:pathMis": light and material sampling weighed (true, the default).
     [[nodiscard]] bool GetPathMis() const;
     [[nodiscard]] float GetPathError() const;

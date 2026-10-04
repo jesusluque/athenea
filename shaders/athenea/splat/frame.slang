@@ -161,6 +161,13 @@ public struct FrameParams {
     /// 1: `txCache` holds this cloud's view-independent transfer terms
     /// (splatTransferViewless), each with the dome slice it is for.
     public uint  txCache;
+    /// 1: BLENDED AS A STANDARD VIEWER BLENDS. Each splat's colour is
+    /// sRGB-encoded at its projection, the blend sums encoded values over the
+    /// encoded layer under it, and the pixel is decoded to linear once at the
+    /// end -- what Spark, SuperSplat and the 3DGS rasteriser draw, for
+    /// measuring a file written for them (athenea flatten). 0: linear light,
+    /// as every other frame.
+    public uint  displayBlend;
     public EditParams edit;      // this cloud instance's SplatEdit (common/edit.slang)
 };
 
