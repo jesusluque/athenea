@@ -24,7 +24,11 @@ public:
     /// (float, or 8-bit linear; sRGB formats are not writable as storage).
     /// `srgb`: the texels hold sRGB-encoded colour (an 8-bit texture sampled
     /// through an sRGB view); levels average light and store it encoded.
-    [[nodiscard]] Result<void> generate(CommandBatch& batch, const Texture& texture, bool srgb = false) const;
+    /// `latLong`: the texture is a lat-long image (a dome's), and each level
+    /// keeps its solid-angle mean -- a row weighed by sin(theta) of where it
+    /// stands -- rather than its area mean.
+    [[nodiscard]] Result<void> generate(CommandBatch& batch, const Texture& texture, bool srgb = false,
+                                        bool latLong = false) const;
 
 private:
     Device*       device_ = nullptr;

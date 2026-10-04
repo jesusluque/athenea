@@ -7,11 +7,13 @@
 
 #include <catch2/catch_approx.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <tuple>
 #include <vector>
 
 #include "athenea/gpu/RasterKernel.h"
@@ -145,6 +147,60 @@ TEST_CASE("every mip level keeps level 0's mean, whatever the sizes", "[gpu][tex
         CHECK(t.mipCount() == gpu::mipChain(w, h));
         for (const float m : means) {
             CHECK(std::abs(m - means.front()) <= 2e-6F);
+        }
+    }
+}
+
+// A DOME'S LAT-LONG KEEPS ITS SOLID-ANGLE MEAN DOWN THE CHAIN (research 087):
+// each source row weighed by the band of the sphere it stands for, so the
+// coarse levels a rough lobe reads do not over-weigh the poles. Halving
+// sizes keep it to rounding; an odd edge's three taps to half a percent.
+TEST_CASE("a lat-long's mip levels keep its solid-angle mean", "[gpu][texture][mips]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kFill = kernelOf(*gpu, "textureFill");
+    static gpu::ComputeKernel kMean = kernelOf(*gpu, "textureMeanLatLong");
+    auto mips = gpu::MipGenerator::create(*gpu->library);
+    if (!mips) FAIL(mips.error().toString());
+    for (const auto [w, h, tolerance] : {std::tuple{128u, 64u, 2e-5F}, std::tuple{64u, 32u, 2e-5F},
+                                         std::tuple{74u, 37u, 5e-3F}}) {
+        gpu::Texture t = texture(*gpu, w, h, 0, "latlong");
+        auto level0 = t.view(0);
+        REQUIRE(level0);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            kFill.dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["written"].setBinding((*level0).get());
+                cursor["params"]["width"].setData(w);
+                cursor["params"]["height"].setData(h);
+            });
+            REQUIRE(mips->generate(batch, t, false, /*latLong=*/true));
+            REQUIRE(batch.submit(true));
+        }
+        std::vector<float> means;
+        for (uint32_t mip = 0; mip < t.mipCount() && t.height(mip) >= 2; ++mip) {
+            auto view = t.view(mip);
+            REQUIRE(view);
+            gpu::BufferDesc desc;
+            desc.bytes = 4;
+            desc.elementBytes = 4;
+            auto mean = gpu::Buffer::create(*gpu->device, desc);
+            REQUIRE(mean);
+            gpu::CommandBatch batch(*gpu->device);
+            kMean.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["texture"].setBinding((*view).get());
+                cursor["mean"].setBinding(mean->rhi());
+                cursor["params"]["width"].setData(t.width(mip));
+                cursor["params"]["height"].setData(t.height(mip));
+            });
+            REQUIRE(batch.submit(true));
+            float value = 0.0F;
+            REQUIRE(mean->read(*gpu->device, 0, sizeof(value), &value));
+            means.push_back(value);
+        }
+        std::printf("  %ux%u lat-long: solid-angle mean %.6f at 0, %.6f at the last level of two rows or more\n", w,
+                    h, static_cast<double>(means.front()), static_cast<double>(means.back()));
+        for (const float m : means) {
+            CHECK(std::abs(m - means.front()) <= tolerance * std::max(1.0F, std::abs(means.front())));
         }
     }
 }

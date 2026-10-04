@@ -1908,7 +1908,7 @@ Result<void> Engine::prepareLightImages(std::vector<light::Light>& lamps) {
         if (lamp.texture.empty()) {
             continue;
         }
-        lamp.textureId = textures_->request(lamp.texture, lamp.textureColourSpace);
+        lamp.textureId = textures_->request(lamp.texture, lamp.textureColourSpace, /*latLong=*/true);
         // Lat-long: around in u, clamped at the poles.
         lamp.sampler = textures_->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
         domeTextures = true;
