@@ -191,6 +191,9 @@ struct Options {
     /// the effect's `normalSpread`): negative is 1 for --transfer and 0
     /// otherwise, so a relit or baked conversion is what it was.
     double                   specularFilter = -1.0;
+    /// Gaussians a slice of the transfer's bake (Converter::transfer); 0
+    /// chooses by memory.
+    uint32_t                 transferSlice = 0;
     /// --validate DIR (Mesh2SplatValidate.h) and what it is measured with.
     std::string              validate;
     std::string              validateCamera;
@@ -2090,6 +2093,9 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         if (filter != nullptr && indirect && side > 0 && options_->bakeFilter > 0) {
             fits = std::min(fits, kSliceFiltered);
         }
+        if (options_->transferSlice > 0) {
+            fits = options_->transferSlice;
+        }
         slice = static_cast<uint32_t>(std::min<uint64_t>(fits, count_));
     }
     if (slice < count_) {
@@ -2120,7 +2126,13 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         const uint32_t n = std::min(slice, count_ - base);
         gpu::Buffer rays = rays_;
         if (n < count_) {
-            auto part = made(uint64_t{n} * 12, "mesh2splat.transferRaysSlice");
+            // Three float4 a gaussian, bound as float4: a buffer of floats
+            // read as one of float4 gave every slice rays of nothing.
+            gpu::BufferDesc desc;
+            desc.bytes = uint64_t{n} * 48;
+            desc.elementBytes = 16;
+            desc.label = "mesh2splat.transferRaysSlice";
+            auto part = gpu::Buffer::create(device, desc);
             if (!part) return std::move(part).error();
             gpu::CommandBatch copy(device);
             copy.encoder()->copyBuffer(part->rhi(), 0, rays_.rhi(), uint64_t{base} * 48, uint64_t{n} * 48);
@@ -2494,6 +2506,9 @@ void addMesh2Splat(CLI::App& app) {
                     "--transfer: cells a side of the grid of open directions over the whole sphere, 16 or 32; "
                     "0 keeps the first transfer's 8 x 8 over the half a gaussian faces")
         ->check(CLI::IsMember({0u, 16u, 32u}));
+    cmd->add_option("--transfer-slice", o->transferSlice,
+                    "--transfer: gaussians baked at a time (0: as memory allows; a million where the bounced "
+                    "halves are filtered)");
     cmd->add_option("--specular-filter", o->specularFilter,
                     "how much the turn of the surface under a gaussian widens its roughness and its coat's, "
                     "so a reflection off a curved strip is the mean over the gaussian rather than a bead as "
