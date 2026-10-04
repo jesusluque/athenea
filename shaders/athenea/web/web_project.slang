@@ -50,6 +50,14 @@ public struct WebArena {
     public uint touchedAt;
     public uint keysAt;
     public uint rectsAt;
+    /// The depth key: 0 the native 24 bits of the float (three 8-bit radix
+    /// passes), 16 a log-spaced key over [near, far] of the cloud, which
+    /// gives a near splat as fine a step, relatively, as a far one, in two
+    /// passes (082 section 1.3: PlayCanvas's camera-relative bins).
+    public uint  keyBits;
+    public float keyLogNear;    // log of the nearest depth the cloud reaches
+    public float keyLogScale;   // 65535 over the log of far over near
+    public uint  pad0;
 };
 
 StructuredBuffer<float4>       positions;
@@ -191,5 +199,7 @@ void webProject(uint3 tid: SV_DispatchThreadID) {
     frameWords[at + 3] = rect.w;
     frameWords[arena.touchedAt + slot] = touched;
     frameWords[arena.visibleAt + slot] = 1;
-    frameWords[arena.keysAt + slot] = bit_cast<uint>(t.z) >> 7;
+    frameWords[arena.keysAt + slot] = arena.keyBits == 16u
+        ? uint(clamp((log(t.z) - arena.keyLogNear) * arena.keyLogScale, 0.0, 65535.0))
+        : bit_cast<uint>(t.z) >> 7;
 }

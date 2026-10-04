@@ -12970,6 +12970,44 @@ Slang interfaces yet (sh is an override of the projection, not an
 `ISplatColour`); presets are not yet resolved by the build from the
 manifests.
 
+**Where it stands (2026-10-04, paused by the user).**
+- **Loadable:** the viewer directory (`scripts/web-kernels.py --out DIR`, served
+  as it is at the site's `/viewer/`, `build.json` naming the commit), opening a
+  file, `?url=` or a catalogue scene by `?s=<id>[&f=]`; core-raster, sh and
+  lod; the site's slot on the same engine. `check.mjs` passes at T1-T3. Not run
+  on a GPU: the coordinator holds `web_e2_gpu.sh` (Chrome on pawn-hq, pawn-r10
+  and soar, PLY and SPZ, against `athenea render`). That run also checks the
+  SPZ axes: the site's pawn-hq must come out between about (-0.021, 0, -0.021)
+  and (0.021, 0.081, 0.021) m from both its PLY and its SPZ (the viewer logs
+  `bounds` with its stats); a box is a GPU reduction, so it is not checked on
+  the CPU.
+- **Started, compiled, not yet wired into the frame:** 082's sort facade.
+  `web_sort.slang` (the chunked radix and prefix sum with their count read
+  from a buffer and the digit width a WGSL override, 8 or 4 bits),
+  `web_tiles.slang` (`webArgs` writes the clamped counts and the indirect
+  arguments; gather, emit and ranges read their count from it, folded into 2D
+  past 32768 groups), the 16-bit log depth keys in `webProject`
+  (`WebArena.keyBits`, 0 keeps the 24-bit keys the frame still uses), and
+  `Gpu.sortCounted`, `prefixCounted` and `dispatchIndirect` in `lib/gpu.js`.
+  All of it compiles and passes Naga and Tint at the default limits (`webEmit`
+  at exactly 8 storage buffers).
+
+**Next, in order:**
+1. The frame on the facade: one submit, no `mapAsync` inside it -- project,
+   the two prefix sums, `webArgs`, compact, `sortCounted` (16-bit keys; 4-bit
+   digits at T1, 8 above), indirect gather, `prefixCounted`, indirect emit,
+   `sortCounted` of the pairs, indirect ranges, blend, present -- the pair
+   capacity grown from stats a frame late; stats (counts, the LOD's drawn)
+   copied into a ring of readback buffers mapped without waiting, with
+   `timestamp-query` around the stages where the adapter has it; at most two
+   frames in flight. check.mjs then holds `frame()` to returning while its
+   readback is still unmapped.
+2. Presets resolved at build time from the manifests (081 section 4), with
+   `ISplatColour` (E4) and `IBlendTerm` (E7) as the Slang interfaces the
+   modules implement.
+3. The T2 preset with TX: `relight.dome`, `catcher`, `sun.bits` from `.athc`
+   sections.
+
 Not done:
 - no GPU has run any of this: not the backend, not the three migrated kernels
   on Metal, not the web module in a browser (the first run: `test.html` with

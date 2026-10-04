@@ -120,6 +120,22 @@ export class Gpu {
    * range, a texture view, or (a uniform) an object of field values.
    */
   dispatch(pass, name, threads, bind, constants) {
+    const k = this.bindKernel(pass, name, bind, constants);
+    const [wx, wy] = k.workgroupSize;
+    const [tx, ty] = Array.isArray(threads) ? threads : [threads, 1];
+    const gx = Math.ceil(tx / wx), gy = Math.ceil(ty / wy);
+    const most = this.limits.maxComputeWorkgroupsPerDimension;
+    if (gx > most || gy > most) throw new Error(`${name}: ${gx} x ${gy} groups is past the device's ${most}`);
+    if (gx > 0 && gy > 0) pass.dispatchWorkgroups(gx, gy, 1);
+  }
+
+  /** One dispatch of `name` whose group counts a kernel wrote at `offset` bytes of `args`. */
+  dispatchIndirect(pass, name, args, offset, bind, constants) {
+    this.bindKernel(pass, name, bind, constants);
+    pass.dispatchWorkgroupsIndirect(args, offset);
+  }
+
+  bindKernel(pass, name, bind, constants) {
     const k = this.manifest.kernels[name];
     if (!k) throw new Error(`no kernel '${name}' in the manifest`);
     const pipeline = this.pipeline(name, constants);
@@ -139,12 +155,7 @@ export class Gpu {
     const group = this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries, label: name });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, group);
-    const [wx, wy] = k.workgroupSize;
-    const [tx, ty] = Array.isArray(threads) ? threads : [threads, 1];
-    const gx = Math.ceil(tx / wx), gy = Math.ceil(ty / wy);
-    const most = this.limits.maxComputeWorkgroupsPerDimension;
-    if (gx > most || gy > most) throw new Error(`${name}: ${gx} x ${gy} groups is past the device's ${most}`);
-    if (gx > 0 && gy > 0) pass.dispatchWorkgroups(gx, gy, 1);
+    return k;
   }
 
   /** The largest storage binding (and buffer) this device takes, in bytes. */
@@ -230,6 +241,55 @@ export class Gpu {
       encoder.copyBufferToBuffer(src[0], 0, keys, 0, count * 4);
       encoder.copyBufferToBuffer(src[1], 0, values, 0, count * 4);
     }
+  }
+
+  /**
+   * A prefix sum whose count is word `countAt` of `counts` (at most
+   * `capacity`), written there earlier in the frame: no count read back.
+   * `total` is a 4-byte range of another buffer.
+   */
+  prefixCounted(pass, input, output, total, counts, countAt, capacity) {
+    const chunk = chunkFor(capacity);
+    const chunks = Math.max(1, Math.ceil(capacity / chunk));
+    const partTotals = this.storage("cprefix.totals", chunks * 4);
+    const partStarts = this.storage("cprefix.starts", chunks * 4);
+    const sorting = { countAt, capacity, chunkSize: chunk, shift: 0 };
+    this.dispatch(pass, "webPrefixTotals", chunks, { counts, input, partTotals, sorting });
+    this.dispatch(pass, "webPrefixStarts", 1, { counts, partStarts, partSums: partTotals, total, sorting });
+    this.dispatch(pass, "webPrefixLocal", chunks, { counts, startsOfParts: partStarts, input, output, sorting });
+  }
+
+  /**
+   * THE SORT FACADE (082): `keyBits`-bit keys and their values, as many as
+   * word `countAt` of `counts` says (at most `capacity`), by `digitBits`
+   * (4 or 8) a pass, with no count read back: one thread a chunk of the
+   * capacity, a chunk past the count idle. Returns the buffers that hold the
+   * result -- the inputs or the scratch ones, by the passes' parity -- so no
+   * copy is made. `timing` brackets the passes with timestamps.
+   */
+  sortCounted(encoder, { keys, values, scratchKeys, scratchValues, counts, countAt, capacity, keyBits, digitBits = 8, label = "sort", timing }) {
+    const chunk = chunkFor(capacity);
+    const chunks = Math.max(1, Math.ceil(capacity / chunk));
+    const digits = 1 << digitBits;
+    const histogram = this.storage(`${label}.histogram`, chunks * digits * 4);
+    const chunkStarts = this.storage(`${label}.chunkStarts`, chunks * digits * 4);
+    const digitTotals = this.storage(`${label}.digitTotals`, 256 * 4);
+    const constants = { kDigitBits: digitBits };
+    let src = [keys, values], dst = [scratchKeys, scratchValues];
+    const passes = Math.ceil(keyBits / digitBits);
+    for (let p = 0; p < passes; ++p) {
+      const sorting = { countAt, capacity, chunkSize: chunk, shift: p * digitBits };
+      const pass = encoder.beginComputePass({ label: `${label} ${p}`, ...(timing?.(p === 0, p === passes - 1) ?? {}) });
+      this.dispatch(pass, "webRadixHistogram", chunks, { counts, keys: src[0], histogram, sorting }, constants);
+      this.dispatch(pass, "webRadixTotals", digits, { counts, counted: histogram, digitTotals, sorting }, constants);
+      this.dispatch(pass, "webRadixStarts", digits, { counts, counted: histogram, totalsOfDigits: digitTotals, chunkStarts, sorting }, constants);
+      this.dispatch(pass, "webRadixScatter", chunks, {
+        counts, keys: src[0], srcValues: src[1], dstKeys: dst[0], dstValues: dst[1], chunkStarts, sorting,
+      }, constants);
+      pass.end();
+      [src, dst] = [dst, src];
+    }
+    return { keys: src[0], values: src[1] };
   }
 
   destroy() {

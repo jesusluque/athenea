@@ -64,6 +64,20 @@ KERNELS = [
     ("athenea/splat/splat_emit", "splatEmit"),
     ("athenea/splat/splat_tiles_clear", "splatTilesClear"),
     ("athenea/splat/splat_ranges", "splatRanges"),
+    # The frame sized on the GPU (082): the sort and prefix sum read their
+    # counts from a buffer, the gather, emit and ranges are dispatched
+    # indirectly.
+    ("athenea/web/web_tiles", "webArgs"),
+    ("athenea/web/web_sort", "webRadixHistogram"),
+    ("athenea/web/web_sort", "webRadixTotals"),
+    ("athenea/web/web_sort", "webRadixStarts"),
+    ("athenea/web/web_sort", "webRadixScatter"),
+    ("athenea/web/web_sort", "webPrefixTotals"),
+    ("athenea/web/web_sort", "webPrefixStarts"),
+    ("athenea/web/web_sort", "webPrefixLocal"),
+    ("athenea/web/web_tiles", "webGather"),
+    ("athenea/web/web_tiles", "webEmit"),
+    ("athenea/web/web_tiles", "webRanges"),
     ("athenea/web/web_blend", "webBlend"),
     # The level of detail (lib/modules/lod.js): the native build and cut, and
     # the web's reorder and list.

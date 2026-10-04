@@ -201,7 +201,7 @@ async function run() {
         const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `${name}.webp` });
         a.click();
       }, "image/webp", 0.9);
-      console.log("athenea-viewer stats", JSON.stringify({ ...lastStats, fps, tier: engine.tier }));
+      console.log("athenea-viewer stats", JSON.stringify({ ...lastStats, fps, tier: engine.tier, bounds: engine.bounds() }));
     }
     await new Promise((r) => requestAnimationFrame(r));
   }
