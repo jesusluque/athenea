@@ -11948,7 +11948,12 @@ the panel's normal mirrors it, and a facade as an image rather than patches.
 What it costs: one sky read per pixel per sharp record, and the slope's
 group memory widened from three words a record to four (17412 of WebGPU's
 17416 bytes). What it does not do: the base's polish under the coat keeps
-its centre's value (no ramp), and only the first dome is read per pixel.
+its centre's value (no ramp), and only the first dome is read per pixel. The
+centre's reading is taken out of the colour unclamped, so where the coat's
+share of a shadowed sun was taken back out the record keeps that negative,
+and the blend clamps after adding its per-pixel sky: clamped in the
+projection, a gaussian whose centre mirrored a shadowed sun lost its body
+and drew the sun back whole.
 
 ### A TX frame computes what the eye changes (playback)
 

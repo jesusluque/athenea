@@ -231,7 +231,8 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 const float2 at = float2(lowHalf(w.x), highHalf(w.x)) + float2(lowHalf(w.y), highHalf(w.y)) * d.x +
                                   float2(lowHalf(w.z), highHalf(w.z)) * d.y;
                 const float3 mirror = octDecode(saturate(at));
-                shade += lowHalf(w.w) * envRadiance(envTexels, 0u, mirror, highHalf(w.w), params.envBaseSide);
+                shade = max(shade + lowHalf(w.w) * envRadiance(envTexels, 0u, mirror, highHalf(w.w), params.envBaseSide),
+                            float3(0.0));
             }
             rgb += weight * shade;
             depthSum += weight * screen.z;

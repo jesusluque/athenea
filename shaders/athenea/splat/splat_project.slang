@@ -599,7 +599,10 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             // pixel down. A turn across the octahedron's fold is not a step
             // and is left flat.
             const float scale = sheet ? alphaOwn / alpha : 1.0;
-            colour = max(colour - slope.sharpWeight * slope.sharpSeen, float3(0.0));
+            // Not clamped: where the coat's share of a shadowed sun was taken
+            // back out, the colour keeps that as a negative the blend's
+            // per-pixel sky is added to, and clamps after.
+            colour = colour - slope.sharpWeight * slope.sharpSeen;
             const float2 at = octEncode(slope.sharpMirror);
             float2 stepX = octEncode(slope.sharpMirrorX) - at;
             float2 stepY = octEncode(slope.sharpMirrorY) - at;
