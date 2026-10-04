@@ -1091,7 +1091,8 @@ por etapa, 16384 bytes de memoria de workgroup.
 
 | Ruta | Qué es |
 |---|---|
-| `viewer/index.html` | la página del visor |
+| `index.html`, `viewer.js`, `viewer.css` | la página del visor |
+| `build.json` | el commit desde el que se construyó el directorio (`commit`, `short`, `branch`, `dirty`), que la página muestra en su cabecera |
 | `athenea-webgpu.js` | el mismo motor como renderer del sitio athenea-web: `createRenderer`, `RENDERER_INFO` |
 | `lib/engine.js` | W-host: `Engine`, la API de la página de abajo |
 | `lib/gpu.js`, `lib/probe.js`, `lib/orbit.js`, `lib/math.js` | el ejecutor de kernels, la sonda de tier, la órbita, las matrices de la cámara |
@@ -1106,14 +1107,18 @@ Todas las rutas son relativas y todos los imports se resuelven desde
 tal cual, en cualquier sitio, y se carga con `import(url)`. Sin hilos, así que
 sin cabeceras COOP/COEP.
 
-**El visor** (`viewer/index.html`). Un fichero se suelta en la página, se abre
-con el botón, o se da en la dirección:
+**El visor** (`index.html`): el directorio se sirve tal cual, en cualquier ruta
+(el `/viewer/` del sitio). Un fichero se suelta en la página, se abre con el
+botón, o se da en la dirección:
 
 | Parámetro | Recibe | Por defecto |
 |---|---|---|
+| `s` | una escena del catálogo del sitio: `<assets>/<s>/scene.json` da el fichero, su transformación (la del fichero, o la de la escena), la primera cámara y el fondo | ninguno |
+| `f` | con `s`: el formato que abrir, `spz` o `ply` | el primero de `spz`, `ply` que tenga la escena |
+| `assets` | dónde están las escenas | `https://athenea-assets.lucab.co.uk/scenes/` |
 | `url` | un `.ply` o `.spz`, relativo a la página o absoluto (con CORS) | ninguno: la página espera un fichero |
 | `tier` | `T1`, `T2`, `T3` | el de la sonda (abajo) |
-| `transform` | JSON, como lo da un scene.json: `{"position": [x,y,z], "rotation": [x,y,z] (grados, XYZ), "scale": s}` | ninguno |
+| `transform` | JSON, como lo da un scene.json, sobre el de la escena: `{"position": [x,y,z], "rotation": [x,y,z] (grados, XYZ), "scale": s}` | ninguno |
 | `eye`, `target`, `fov` | `x,y,z`, `x,y,z`, grados verticales | la nube encuadrada, 50 |
 | `modules` | ids, separados por comas | `core-raster,sh,lod` |
 | `features` | JSON, las opciones de abajo: `{"linear": true, "lodThreshold": 2}` | el valor por defecto de cada opción |

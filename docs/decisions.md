@@ -12877,7 +12877,7 @@ directory served as it is: every path relative, every import by
 | `lib/engine.js` | W-host: the cloud, the camera, the modules, the frame; the page's API (`load`, `setCamera`, `setSky`, `setLightState`, `setFeatures`, `frame`) |
 | `lib/loaders/*.js` | file headers into records the GPU decodes: PLY, SPZ v2-v3 (gzip, by the browser's `DecompressionStream`); SOG and the sectioned `.athc` later |
 | `lib/modules/*.js` | the modules |
-| `viewer/` | the page: canvas, orbit, a panel made from the modules' options, stats, the tier |
+| `index.html`, `viewer.js` | the page, at the directory's root: canvas, orbit, a panel made from the modules' options, stats, the tier; `?s=` opens a scene of the site's catalogue |
 | `athenea-webgpu.js` | the same engine as a renderer of the site's viewer |
 
 **The frame's stages are fixed** (081 section 2); a module hooks into them and
@@ -12937,7 +12937,7 @@ tablet: 1.25 M drawn, a 1.5 px floor, at most 1.5 x resolution; T2 32 KiB of
 workgroup memory and 644 MB a binding: 2.5 M, 1 px, 2 x; T3 1.25 GB a binding
 and BC textures: 4.5 M, 1 px, the display's own.
 
-**Built (the shell and the first modules).** `web/viewer/` (the page, the
+**Built (the shell and the first modules).** `web/index.html` (the page, the
 panel from the modules' ui, the stats, drop or `?url=`), `web/lib/` (engine,
 kernel runner, probe, orbit, PLY and SPZ loaders, core-raster, sh, lod) and
 the site's slot over the same engine. 30 kernels, every one under the default

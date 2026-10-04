@@ -1069,7 +1069,8 @@ stage, 16384 bytes of workgroup memory.
 
 | Path | What it is |
 |---|---|
-| `viewer/index.html` | the viewer page |
+| `index.html`, `viewer.js`, `viewer.css` | the viewer page |
+| `build.json` | the commit the directory was built from (`commit`, `short`, `branch`, `dirty`), shown in the page's header |
 | `athenea-webgpu.js` | the same engine as a renderer of the athenea-web site: `createRenderer`, `RENDERER_INFO` |
 | `lib/engine.js` | W-host: `Engine`, the page's API below |
 | `lib/gpu.js`, `lib/probe.js`, `lib/orbit.js`, `lib/math.js` | the kernel runner, the tier probe, the orbit, the camera's matrices |
@@ -1083,14 +1084,18 @@ Every path is relative and every import resolved from `import.meta.url`, with
 no bare import: the directory is served as it is, anywhere, and loaded with
 `import(url)`. No threads, so no COOP/COEP headers.
 
-**The viewer** (`viewer/index.html`). A file is dropped on the page, opened
-with the button, or given in the address:
+**The viewer** (`index.html`): the directory is served as it is, at any path
+(the site's `/viewer/`). A file is dropped on the page, opened with the
+button, or given in the address:
 
 | Parameter | Takes | Default |
 |---|---|---|
+| `s` | a scene of the site's catalogue: `<assets>/<s>/scene.json` gives the file, its transform (the file's, or the scene's), the first camera and the background | none |
+| `f` | with `s`: the format to open, `spz` or `ply` | the first of `spz`, `ply` the scene has |
+| `assets` | where scenes are | `https://athenea-assets.lucab.co.uk/scenes/` |
 | `url` | a `.ply` or `.spz`, relative to the page or absolute (with CORS) | none: the page waits for a file |
 | `tier` | `T1`, `T2`, `T3` | probed (below) |
-| `transform` | JSON, as a scene.json gives it: `{"position": [x,y,z], "rotation": [x,y,z] (degrees, XYZ), "scale": s}` | none |
+| `transform` | JSON, as a scene.json gives it, over the scene's: `{"position": [x,y,z], "rotation": [x,y,z] (degrees, XYZ), "scale": s}` | none |
 | `eye`, `target`, `fov` | `x,y,z`, `x,y,z`, vertical degrees | the cloud framed, 50 |
 | `modules` | ids, comma-separated | `core-raster,sh,lod` |
 | `features` | JSON, the options below: `{"linear": true, "lodThreshold": 2}` | each option's default |

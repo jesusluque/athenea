@@ -4,8 +4,8 @@
 # THE WEB VIEWER, BUILT: the kernels its modules dispatch (proposal 072,
 # docs/decisions.md "The web viewer") compiled from the one Slang source to
 # WGSL, a manifest of what each binds and by what name, and web/ beside them
-# -- the directory a site serves as it is: the viewer (viewer/index.html) and
-# the site's `athenea-webgpu` renderer (athenea-webgpu.js).
+# -- the directory a site serves as it is: the viewer (index.html) and the
+# site's `athenea-webgpu` renderer (athenea-webgpu.js).
 #
 #   <out>/manifest.json        what the host reads: per kernel its file, its
 #                              workgroup size, every parameter by name (its
@@ -13,8 +13,12 @@
 #                              of every field), its override constants, and
 #                              what it asks of the device
 #   <out>/kernels/<entry>.wgsl one module a kernel
-#   <out>/...                  web/, copied: lib/, viewer/, athenea-webgpu.js,
-#                              check.mjs
+#   <out>/...                  web/, copied: index.html (the viewer), lib/,
+#                              athenea-webgpu.js, check.mjs
+#   <out>/build.json           the commit it was built from
+#
+# The directory is the viewer: served as it is at any path (the site's
+# /viewer/), index.html at its root, everything relative.
 #
 # Every kernel must compile, pass Naga (Firefox) and Tint (Chrome, through
 # Dawn's null backend: scripts/wgsl-tint.cpp, with the pipeline checked against
@@ -235,7 +239,16 @@ def main():
             target = out / f.relative_to(page)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, target)
-    print(f"\nthe web module in {out}", file=sys.stderr)
+    # What was built from: the commit (and whether the tree had changes), for
+    # a page's footer and for knowing what a deployed directory is.
+    def git(*a):
+        return subprocess.run(["git", "-C", str(HERE), *a], capture_output=True, text=True).stdout.strip()
+    build = {"commit": git("rev-parse", "HEAD"), "short": git("rev-parse", "--short", "HEAD"),
+             "dirty": bool(git("status", "--porcelain", "--", "web", "shaders", "scripts")),
+             "branch": git("rev-parse", "--abbrev-ref", "HEAD")}
+    (out / "build.json").write_text(json.dumps(build, indent=1) + "\n")
+    print(f"\nthe web viewer in {out} ({build['short']}{' + changes' if build['dirty'] else ''}): "
+          "serve it as it is, index.html at its root", file=sys.stderr)
 
 
 if __name__ == "__main__":

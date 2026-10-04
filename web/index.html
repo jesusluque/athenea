@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- Copyright (c) 2026 jesus luque. -->
 <!-- athenea's own web viewer (docs/decisions.md, "The web viewer"; docs/operations.md 3.6).
-     ?url=<a .ply or .spz>  &tier=T1|T2|T3  &transform={"scale":0.01}  &eye=x,y,z&target=x,y,z&fov=deg
+     ?s=<scene id>[&f=spz|ply]  or  ?url=<a .ply or .spz>  &tier=T1|T2|T3  &transform={"scale":0.01}  &eye=x,y,z&target=x,y,z&fov=deg
      &modules=core-raster,sh,lod  &features={"linear":true}  &shot=<name> (downloads a webp once the view has settled)
      A file can also be dropped on the page or opened with the button. -->
 <html lang="en">
@@ -10,13 +10,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>athenea viewer</title>
 <link rel="stylesheet" href="./viewer.css">
+<link rel="icon" href="data:,">
 </head>
 <body>
 <canvas id="view"></canvas>
 <header>
   <strong>athenea</strong>
   <label class="button">Open<input id="open" type="file" accept=".ply,.spz" hidden></label>
-  <span id="status">drop a .ply or .spz, or give ?url=</span>
+  <span id="status">drop a .ply or .spz, or give ?s= or ?url=</span>
+  <span id="build"></span>
 </header>
 <aside id="panel" hidden>
   <section id="tier"></section>

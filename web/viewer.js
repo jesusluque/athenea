@@ -4,14 +4,21 @@
 // (each module's manifest says what it offers: lib/modules/*.js), the tier
 // the probe chose, and the frame's stats. Everything it shows of a cloud the
 // engine computed on the GPU; this file only wires the page.
+//
+// A scene of the site's catalogue is `?s=<id>[&f=<format>]`: its scene.json
+// (under `assets`, by default the site's asset host) gives the file, its
+// transform, the first camera and the background.
 
-import { Engine, DEFAULT_MODULES } from "../lib/engine.js";
-import { Orbit } from "../lib/orbit.js";
+import { Engine, DEFAULT_MODULES } from "./lib/engine.js";
+import { Orbit } from "./lib/orbit.js";
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const canvas = $("view");
 const status = (text) => { $("status").textContent = text; };
+const ASSETS = "https://athenea-assets.lucab.co.uk/scenes/";
+/** The formats this page reads, in the order it prefers them for a scene. */
+const FORMATS = ["spz", "ply"];
 
 let engine = null, orbit = null, running = false, lastStats = null;
 
@@ -28,8 +35,12 @@ async function start() {
   resize();
   buildPanel();
   wireFiles();
+  fetch(new URL("./build.json", import.meta.url)).then((r) => (r.ok ? r.json() : null)).then((b) => {
+    if (b) $("build").textContent = `webgpu ${b.short}${b.dirty ? "+" : ""}`;
+  }).catch(() => {});
   const url = params.get("url");
-  if (url) await open({ url: new URL(url, location.href).href, name: url });
+  if (params.get("s")) await openScene(params.get("s"), params.get("f"));
+  else if (url) await open({ url: new URL(url, location.href).href, name: url });
 }
 
 function resize() {
@@ -109,19 +120,48 @@ function wireFiles() {
   });
 }
 
-async function open({ url, blob, name }) {
+/**
+ * A scene of the catalogue: scenes/<id>/scene.json, its file in `format` (or
+ * the first this page reads), that file's transform or the scene's, its first
+ * camera, its background.
+ */
+async function openScene(id, format) {
+  const base = new URL(`${encodeURIComponent(id)}/`, new URL(params.get("assets") ?? ASSETS, location.href));
+  status(`scene ${id}…`);
+  const response = await fetch(new URL("scene.json", base));
+  if (!response.ok) { status(`scene ${id}: HTTP ${response.status}`); return; }
+  const scene = await response.json();
+  const files = scene.files ?? [];
+  const pick = format ? files.find((f) => f.format === format)
+    : FORMATS.map((f) => files.find((x) => x.format === f)).find(Boolean);
+  if (!pick || !FORMATS.includes(pick.format)) {
+    status(`scene ${id}: no ${format ?? FORMATS.join(" or ")} file (it has ${files.map((f) => f.format).join(", ")})`);
+    return;
+  }
+  document.title = `${scene.title ?? id} · athenea`;
+  if (scene.background?.color) engine.setSky({ color: scene.background.color });
+  const camera = scene.cameras?.[0];
+  const transform = pick.transform && Object.keys(pick.transform).length ? pick.transform : scene.transform;
+  await open({
+    url: new URL(pick.url ?? pick.path, base).href, name: `${scene.title ?? id} (${pick.format})`, format: pick.format,
+    transform, camera,
+  });
+}
+
+async function open({ url, blob, name, format, transform: given, camera }) {
   running = false;
   status(`loading ${name}…`);
   const t0 = performance.now();
   try {
-    const transform = params.get("transform") ? JSON.parse(params.get("transform")) : undefined;
+    const transform = params.get("transform") ? JSON.parse(params.get("transform")) : given;
     const loaded = await engine.load({
-      url, blob, transform,
+      url, blob, transform, format,
       onProgress: (f, bytes) => status(`loading ${name} ${f == null ? "" : `${Math.round(f * 100)}% `}${(bytes / 1e6).toFixed(1)} MB`),
     });
     status(`${name} · ${loaded.count.toLocaleString("en")} splats · ${((performance.now() - t0) / 1000).toFixed(1)} s to load and build`);
     const vec = (k) => params.get(k)?.split(",").map(Number);
     if (params.get("eye")) orbit.set({ position: vec("eye"), target: vec("target") ?? [0, 0, 0], fov: Number(params.get("fov") ?? 50) });
+    else if (camera) orbit.set(camera);
     else orbit.frame(loaded.bounds);
     if (params.get("features")) engine.setFeatures(JSON.parse(params.get("features")));
     buildPanel();
