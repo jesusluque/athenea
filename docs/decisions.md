@@ -11918,34 +11918,6 @@ every level keeps the sky's solid-angle mean (exact where a level halves,
 to half a percent on an odd edge's three taps; `[mips]`). The lamps
 themselves, taken out as lights of their own, are the next step.
 
-### The base's polish opens with the cells where the eye grazes
-
-Under a white dome with its coat off the paint's base read 0.954 of the
-path traced frame, and by distance from its outline 0.71 within 3 pixels,
-0.79 at 8 to 20 and 1.05 inside (research 078 sec 8). Not its Fresnel fit
-(within 2% of the numeric one even at 84 degrees): the polish's openness.
-`specularOpenness` -- Lagarde and de Rousiers' fit -- at the paint's
-roughness is the hemisphere's mean openness at every angle, and at the
-silhouette the mirror points out into the open while the mean counts the
-ground and the car beneath. The cells say which ways are open, but taken
-alone they read the Corvette's chrome strips 1.13 against the path traced
-frame. So the two are blended, `lerp(mean, cells along the mirror,
-(1 - n.v)^2)`: head on and on small parts the mean, at grazing the cells.
-Measured as shader variants on the same clouds (s68):
-
-| | T1 relMSE | Chrome | Metal_rough |
-|---|---|---|---|
-| the mean (before) | 0.0423 | 0.585 | 0.0795 |
-| the fit given alpha | 0.0414 | 0.617 | 0.0755 |
-| the cells (R4) | 0.0181 | 1.13 | 0.139 |
-| the blend | 0.0192 | 0.524 | 0.0771 |
-| alpha and the blend | 0.0189 | 0.561 | 0.0742 |
-
-The blend is the default: the chrome under the first transfer's 0.551 for
-the first time. The fit's own parameter is alpha in Frostbite's notes and we
-pass the perceptual roughness; given alpha it measured no better here, so
-that is left as it is.
-
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew
