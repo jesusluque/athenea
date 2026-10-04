@@ -11660,6 +11660,21 @@ sees the neighbours within a slice (`transfer_filter_io`'s `base`), which the
 mesh's order keeps together; a cloud that fits in one slice is what it was.
 A zonal transfer is fitted from the whole cloud's arrays and stays in one.
 
+### A thin wall reflects at its own index
+
+The conversion gives a thin wall's gaussians `2R/(1+R)` of opacity at the
+material's index (`m2sGlassCovers`), and the frame scales the reflection back
+by `1/R` -- at the index held to 1.5 at least. The Corvette's headlight cover
+is a sheet at 1.15: 0.0097 of opacity and a gain of 25 where 205 makes it
+whole, so every sheet under 1.5 reflected about eight times too little (the
+windscreen is 1.16). `thinWallGain` now takes the gaussian's own index, and
+1.5 only where none was kept (research proposal 048, H1).
+
+The headlight's relMSE of 16 is not this: 1% of its pixels carry 99% of it,
+specks of the mesh raster's own 1-sample noise, and its interior -- lens,
+reflector and housing left meshes -- reads black because the mesh raster does
+not see through glass. The whole car converted is what measures it.
+
 ### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
 
 A car converted to gaussians cast nothing on the ground under a sky: the

@@ -904,11 +904,17 @@ public float3 splatPolish(SplatSurface s, float nDotV) {
 /// What a thin wall's reflection is scaled by: the sheet reflects `2/(1+R0)`
 /// of one face's Fresnel, and its gaussians were given `2R0/(1+R0)` of
 /// opacity, so the blend leaves the reflection whole at `1/R0` of a face's.
+/// At the sheet's own index, as the conversion gave it its opacity
+/// (m2sGlassCovers): held to 1.5 at least, a headlight's cover at 1.15 was
+/// given 0.0097 of opacity and a gain of 25 where it needs 205, and every
+/// sheet under 1.5 reflected that much too little. 1.5 only where no index
+/// was kept.
 float thinWallGain(SplatSurface s) {
     if (!s.thinWalled) {
         return 1.0;
     }
-    const float r = (max(s.ior, 1.5) - 1.0) / (max(s.ior, 1.5) + 1.0);
+    const float index = s.ior > 1.0 ? s.ior : 1.5;
+    const float r = (index - 1.0) / (index + 1.0);
     return 1.0 / max(r * r, 1.0e-3);
 }
 
