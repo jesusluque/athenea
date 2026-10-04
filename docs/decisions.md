@@ -11580,6 +11580,35 @@ converted before keeps its projection.
 the wall toward it within the tolerance the bake's own does ([field] in
 athenea_usd_tests); the paint and its terms on the Corvette.
 
+### A coat reflects by the exact Fresnel
+
+The paint ball under a white dome with nothing around it read 13% under the
+path traced one, relit and TX alike (0.1034 against 0.1186), so the
+transfer was not it. By layer (`--validate`, the paint's OpenPBR with one
+input changed): a white metal 0.8999 against 0.9006, the dark metal alone
+7.5% under, the coat over black 15% under (0.0838 against 0.0991).
+
+The coat's reflection was the DFG fit, which is Schlick's between F0 and one,
+and Schlick is low through the middle of a dielectric's curve: at sixty
+degrees a lacquer at 1.45 reflects 0.081 and Schlick says 0.070. A uniform
+sky integrates that over the whole ball; averaged over a disc the fit is
+0.079 where the exact Fresnel is 0.084. The path tracer samples the coat with
+the exact Fresnel. The coat's reflection is now the fit times the exact
+Fresnel over Schlick's at the eye, exact on a mirror and fading to the fit as
+alpha grows (`ggxEnvDielectricExactAt`; against a quadrature of the lobe it
+is within 3% at alpha 0.3 and 0.6 for N.V 0.3 to 0.6, where the fit was 8 to
+16% under). What passes under the coat stays the complement of the fit,
+which is what the path tracer's layer weighs the base by (`lobeAlbedo`).
+Only the coat: the plain lobes and the specular layer keep the fit, so a
+cloud without a coat draws as it did.
+
+The rest of the dark metal's gap is not the lobe: across the ball the cloud's
+silhouette stands a pixel out of the mesh's (at 384 pixels), so inside the
+mesh's mask its grazing Fresnel is read a pixel further in, lower.
+
+**Checked** (pending the GPU turn): the coat over black and the paint ball
+under white with `--validate`; the lobes conversions.
+
 ### A dome casts the cloud's shadow on a mesh (CV2's Corvette)
 
 A car converted to gaussians cast nothing on the ground under a sky: the

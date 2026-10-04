@@ -395,6 +395,26 @@ public float3 ggxEnvDielectricAt(float roughness, float nDotV, float ior) {
            ggxEnergyCompensation(nDotV, alpha, F);
 }
 
+/// WHAT A SMOOTH DIELECTRIC REFLECTS OF A SKY, with its Fresnel taken
+/// exactly. The fit above is Schlick's between its two ends, and Schlick is
+/// low through the middle of the curve -- 0.070 at sixty degrees where a
+/// lacquer at 1.45 reflects 0.081 -- which a uniform sky shows over a whole
+/// ball: a coat over black read 0.084 against the path traced 0.099, whose
+/// coat is sampled with the exact Fresnel. So the fit is scaled by the exact
+/// Fresnel over Schlick's at the eye: exact on a mirror, and fading as the
+/// lobe widens and averages the curve over directions the ratio does not
+/// hold for (alpha, from a quadrature of the lobe at 0.1, 0.3 and 0.6).
+/// For a reflection only: what passes under it is the lobe library's
+/// complement of the fit (`lobeAlbedo`), as the path tracer's layer takes it.
+public float3 ggxEnvDielectricExactAt(float roughness, float nDotV, float ior) {
+    const float alpha = max(roughness * roughness, 1.0e-4);
+    const float index = max(ior, 1.0);
+    const float f0 = dielectricF0(index);
+    const float schlick = f0 + (1.0 - f0) * pow(1.0 - saturate(nDotV), 5.0);
+    const float ratio = fresnelDielectric(nDotV, index) / max(schlick, 1.0e-6);
+    return ggxEnvDielectricAt(roughness, nDotV, ior) * lerp(ratio, 1.0, saturate(alpha));
+}
+
 float3 ggxEnvConductor(float3 albedo, float roughness, float nDotV) {
     return ggxEnvConductorEdged(albedo, float3(1.0), roughness, nDotV);
 }
@@ -472,15 +492,21 @@ public struct SplatLayers {
 
 public SplatLayers splatLayers(SplatSurface s, float nDotV) {
     SplatLayers l;
+    // What the coat reflects, with its Fresnel exact (ggxEnvDielectricExactAt),
+    // and what it lets through, the complement of the fit, as the path
+    // tracer's layer weighs the base.
+    const float3 fitted = s.lobes.coatWeight > 0.0
+                              ? s.lobes.coatWeight * ggxEnvDielectricAt(s.lobes.coatRoughness, nDotV, s.lobes.coatIor)
+                              : float3(0.0);
     l.coat = s.lobes.coatWeight > 0.0
-                 ? s.lobes.coatWeight * ggxEnvDielectricAt(s.lobes.coatRoughness, nDotV, s.lobes.coatIor)
+                 ? s.lobes.coatWeight * ggxEnvDielectricExactAt(s.lobes.coatRoughness, nDotV, s.lobes.coatIor)
                  : float3(0.0);
     const float sheenAlbedo = any(s.lobes.sheenColour > float3(0.0))
                                   ? imageworksSheenDirectionalAlbedo(nDotV, max(s.lobes.sheenRoughness, 0.01))
                                   : 0.0;
     l.sheen = s.lobes.sheenColour * sheenAlbedo;
     const float sheenWeight = max(max(s.lobes.sheenColour.x, s.lobes.sheenColour.y), s.lobes.sheenColour.z);
-    l.belowCoat = saturate(float3(1.0) - l.coat);
+    l.belowCoat = saturate(float3(1.0) - fitted);
     l.under = l.belowCoat * saturate(1.0 - sheenWeight * sheenAlbedo);
     // OPENPBR'S COAT DARKENING. Light that enters a coat and comes back up
     // from the base is partly reflected down again at the coat's underside,
