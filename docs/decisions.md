@@ -11499,6 +11499,14 @@ that route was missing in the rasteriser, **what stands behind**:
   reflected field alone, which then holds the cabin behind a windscreen as
   well as the ground in front of it. The bits were already traced behind
   (step 1); behind a solid slab they read closed, its own far face.
+  A sample drawn behind a solid (not thin-walled) dielectric is bent into it
+  by the lobe's index before the tracer goes on (`refractInto`), so the field
+  along `-wo` holds what the eye's ray finds through both faces. Sent on
+  unbent, it met a ball's far face as steeply as it entered -- past the
+  critical angle over most of the ball -- and stayed inside: `--validate`
+  read the glass ball at half the path traced one (0.096 against 0.195 under
+  the stage sky, 0.265 against 0.541 under a white dome), grey and without
+  the sky a lens turns upside down. A thin wall does not bend what crosses it.
 - **The frame**, for a transmitting gaussian with the field and nothing
   traced (the rasteriser), sees through along `-wo` -- straight on, as a
   slab sends it; the single bend at one face is not what a sheet of glass

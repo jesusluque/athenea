@@ -1347,6 +1347,15 @@ bool misWeighs(LightRecord l) {
            l.shadowCategory == kLightUnlinked;
 }
 
+/// `wi`, headed through a surface whose outside `n` faces, bent into a
+/// medium of index `ior` (Snell's law; going in, it never reflects whole).
+float3 refractInto(float3 wi, float3 n, float ior) {
+    const float cosIn = -dot(n, wi);
+    const float eta = 1.0 / ior;
+    const float k = max(1.0 - eta * eta * (1.0 - cosIn * cosIn), 0.0);
+    return normalize(eta * wi + (eta * cosIn - sqrt(k)) * n);
+}
+
 /// WHETHER `wi` GOES THROUGH A GLASS AT THIS VERTEX: the vertex's material
 /// has a dielectric lobe, and the direction crosses the surface or the
 /// surface was met from inside -- where the dielectric was told so
@@ -1669,6 +1678,9 @@ void tracePathsAt(uint2 group, uint index) {
         // keep their estimator, over the front, from the samples drawn there.
         bool   firstTransmits = false;
         bool   backSample = false;
+        // The index a sample drawn behind enters by: one where the glass is a
+        // thin wall, which does not bend what crosses it.
+        float  firstIor = 1.0;
         float  firstMeasure = 2.0 * 3.14159265358979;
         // The first vertex's opacity is the pixel's, and its depth; a
         // medium's collision is opaque.
@@ -1880,8 +1892,12 @@ void tracePathsAt(uint2 group, uint index) {
                     // its dielectric, which the body drops as polish.
                     for (uint k = 0; k < shaded.stack.count; ++k) {
                         const Lobe lobe = shaded.stack.lobes[k];
-                        firstTransmits = firstTransmits ||
-                                         (lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0)));
+                        const bool passes = lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0));
+                        firstTransmits = firstTransmits || passes;
+                        if (passes && lobe.kind == kLobeDielectric && (lobe.flags & kFlagThinWalled) == 0u &&
+                            lobe.ior > 1.0) {
+                            firstIor = lobe.ior;
+                        }
                     }
                 }
                 if (kBake && bounce == 0) {
@@ -2057,7 +2073,17 @@ void tracePathsAt(uint2 group, uint index) {
                 // one and the path carries the radiance that arrives.
                 const float weight = backSample ? 1.0 : (sphere ? 4.0 : 2.0) * cosine;
                 ms.valid = true;
-                ms.wi = wi;
+                // BEHIND, THE WAY IN BENDS. The field is read along the eye's
+                // ray through the glass (splat_relight's `through`), and what
+                // stands there for a solid is what that ray finds once the
+                // near face has bent it by the index. Sent on unbent, a ray
+                // met the far face of a ball as steeply as it entered, past
+                // the critical angle for most of the ball, and was held
+                // inside: the ball validated at half the path traced one
+                // (0.265 against 0.541 under a white dome), with the sky
+                // where a lens shows it upside down missing. Bent here, the
+                // path the tracer continues is the one a camera ray takes.
+                ms.wi = backSample && firstIor > 1.0 ? refractInto(wi, n, firstIor) : wi;
                 ms.pdf = 1.0;
                 ms.delta = false;
                 ms.weight = float3(weight);
