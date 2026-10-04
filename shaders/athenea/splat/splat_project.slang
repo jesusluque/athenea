@@ -113,14 +113,30 @@ float3 storedFacing(float3x3 r, float3 scale, uint i) {
 /// the object took of the light reaching it (catcherOpacity).
 static const int kProjectCatcher = 3;
 
-/// HOW MANY OF A CATCHER'S GAUSSIANS A POINT OF IT LIES UNDER, weighed by
-/// their falloff: a square lattice of cell d whose gaussians are sigma d
-/// wide sums to 2 pi sigma^2 everywhere, and the conversion's sigma is 1. A
-/// gaussian of opacity a then leaves about exp(-2 pi a) of what is behind
-/// the layer. (2.4, the coverage a converted surface reaches at opacity one,
-/// was the first guess: the Corvette's shadow came out 2.2 to 3 times as
-/// deep as the path traced frame's in optical depth, which is 2 pi over 2.4.)
-static const float kCatcherDepth = 6.2831853;
+
+/// THE OPACITY THAT LEAVES `ratio` OF WHAT IS BEHIND THE LAYER, measured
+/// rather than modelled: over a square lattice of gaussians sigma = 1 cell
+/// wide, each of opacity a, composited as the blend composites -- the
+/// product of (1 - a g), each term dropped below 1/255 -- the mean
+/// transmission over a cell, inverted at eight ratios (scratch lattice.py,
+/// task PLAY-G) and read here between them in ln(ratio). -ln(ratio) / 2 pi,
+/// the exponential's own, is a product of exp(-a g): the darker the shadow
+/// the further 1 - a g falls below that, 8% dark at a ratio of 0.2.
+float catcherAlphaFor(float ratio) {
+    static const float kLn[8] = { -0.0513, -0.2231, -0.5108, -0.9163, -1.6094, -2.3026, -2.9957, -3.9120 };
+    static const float kA[8]  = { 0.0121, 0.0390, 0.0835, 0.1443, 0.2434, 0.3368, 0.4244, 0.5315 };
+    const float l = log(max(ratio, 1.0e-4));
+    if (l >= kLn[0]) {
+        return kA[0] * l / kLn[0];
+    }
+    for (uint k = 1; k < 8; ++k) {
+        if (l >= kLn[k]) {
+            const float t = (l - kLn[k - 1]) / (kLn[k] - kLn[k - 1]);
+            return lerp(kA[k - 1], kA[k], t);
+        }
+    }
+    return saturate(kA[7] + (l - kLn[7]) * (kA[7] - kA[6]) / (kLn[7] - kLn[6]));
+}
 
 /// WHAT THE OBJECT TOOK OF THE LIGHT REACHING A CATCHER GAUSSIAN, as the
 /// opacity that takes as much out of what is drawn behind it.
@@ -136,8 +152,8 @@ static const float kCatcherDepth = 6.2831853;
 /// sky's own irradiance on the other side: two band limits that do not cancel,
 /// and a ground that was not one where nothing stood over it.
 ///
-/// The layer leaves exp(-kCatcherDepth a) of what is behind it, so a =
-/// -ln(ratio) / that. Light the object bounces onto the ground beyond what it
+/// The opacity that leaves that ratio of what is behind the layer is
+/// catcherAlphaFor's. Light the object bounces onto the ground beyond what it
 /// takes (a ratio over one) is not drawn: a black layer can only take.
 float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     if (params.relight == 0 || params.shadowBits < 8u) {
@@ -212,7 +228,7 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
         without += sun;
     }
     const float ratio = saturate(with / max(without, 1.0e-6));
-    return opacity * saturate(-log(max(ratio, 1.0e-4)) / kCatcherDepth);
+    return opacity * catcherAlphaFor(ratio);
 }
 
 /// ONE SPLAT PROJECTED, and shaded where its cloud is relit. `kTransfer` 0

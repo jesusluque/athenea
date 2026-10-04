@@ -14,7 +14,7 @@
 # machine.
 #
 #   cmake -DATHENEA=... -DSTAGE=... -DPRIM=... -DCAMERA=... -DOUT=... [-DGT=gt.exr]
-#         [-DWIDTH=960 -DHEIGHT=540] [-DPATHS=256] [-DTOL=0.10] [-DCONTACT_TOL=0.40]
+#         [-DWIDTH=960 -DHEIGHT=540] [-DPATHS=256] [-DTOL=0.10] [-DCONTACT_TOL=0.25]
 #         -P catcher_against_gt.cmake
 #
 # The windows are the Corvette's (research 056's crops at 960 x 540): under
@@ -39,7 +39,7 @@ if(NOT DEFINED TOL)
     set(TOL 0.10)
 endif()
 if(NOT DEFINED CONTACT_TOL)
-    set(CONTACT_TOL 0.40)
+    set(CONTACT_TOL 0.25)
 endif()
 file(MAKE_DIRECTORY "${OUT}")
 execute_process(

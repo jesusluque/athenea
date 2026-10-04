@@ -12818,3 +12818,24 @@ goegap: a sun of 1.86 degrees and 5.8 of irradiance. autoshop: a lamp of
 `[environment][sun]` tests hold: a disc of nine texels taken whole (0.1084
 against its closed form 0.1084), the residual sky within 2.1%, an even sky
 left alone.
+
+### The contact under the bumper: what the layer composites
+
+The catcher read the bumper's contact 30% dark (0.030 against the path
+traced 0.043 at 960 x 540) whatever its cell (1.26 cm and 0.6 cm alike). Read
+off the catcher's file on the CPU, its bits were right -- the cosine-weighted
+open share under the bumper, row by row, 0.200 / 0.232 / 0.306 of the open
+ground's against the path traced 0.184 / 0.209 / 0.277 -- with no noise to
+speak of (0.008 between neighbours) and no bounce (0.3%). Under a plain white
+dome, where the expected ratio is exactly the bits', the frame drew 15% dark
+at the contact: the layer composites the product of (1 - a g), not of
+exp(-a g), and the darker the shadow the further the one falls below the
+other. The opacity is now read off a lattice simulated the way the blend
+composites -- sigma one cell, each term dropped below 1/255 -- and inverted
+at eight ratios (`catcherAlphaFor`): under white, 6% dark at the contact
+where it was 15%; under the workshop sky the contact crop 0.034 against
+0.043 (0.030 before), under the car 0.184 against 0.182.
+
+What is left is the sky's: the workshop's light is a ceiling of lamps, and
+the catcher weighs its open cells by a degree-3 sky that cannot place them.
+The gate's contact tolerance is 25% now (40%).
