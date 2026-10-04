@@ -107,15 +107,24 @@ groupshared uint       sSplats[kBatch];
 // The colour's slope across the footprint, where the record is marked so
 // (frame.slang's kSlopeMark): x then y, rgb each, as halves.
 groupshared uint3      sSlopes[kBatch];
-groupshared uint       sDone;
+// How many of the group's pixels have stopped walking: an Atomic<T>, since
+// WGSL has atomics only as a type. What the group then decides from it is
+// read through sDoneAll and workgroupUniformLoad, the one read WGSL's
+// uniformity analysis takes as the same for every thread -- a branch on group
+// memory read any other way may not hold a barrier (Tint refuses it).
+groupshared Atomic<uint> sDone;
+groupshared uint         sDoneAll;
 
-void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
+void blendPixel(uint3 tid, uint3 groupThread, uint3 group, bool composite, bool matte) {
     const uint px = tid.x;
     const uint py = tid.y;
     const uint lane = groupThread.y * kTile + groupThread.x;
     // Outside the image: no pixel, but a pair of hands for the loads.
     const bool inside = px < params.width && py < params.height;
-    const uint tile = (py / kTile) * params.tilesX + px / kTile;
+    // The group is the tile. Taken from the group's id, not the pixel's, so
+    // the walk's bounds are uniform across the group: the loop below holds
+    // barriers, and WGSL allows those only under uniform control flow.
+    const uint tile = group.y * params.tilesX + group.x;
     const uint start = ranges[tile * 2];
     const uint end = ranges[tile * 2 + 1];
     const float2 pixel = float2(float(px) + 0.5, float(py) + 0.5);
@@ -148,14 +157,20 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
     for (uint first = start; first < end; first += kBatch) {
         // Stop loading once every pixel of the tile has stopped walking.
         if (lane == 0) {
-            sDone = 0;
+            sDone.store(0u);
         }
         GroupMemoryBarrierWithGroupSync();
         if (done) {
-            InterlockedAdd(sDone, 1u);
+            sDone.add(1u);
         }
         GroupMemoryBarrierWithGroupSync();
-        if (sDone == kBatch) {
+        if (lane == 0) {
+            sDoneAll = sDone.load();
+        }
+        // workgroupUniformLoad is a barrier and a load on WGSL and a plain
+        // load elsewhere, so the barrier is written for the others.
+        GroupMemoryBarrierWithGroupSync();
+        if (workgroupUniformLoad(sDoneAll) == kBatch) {
             break;
         }
         const uint mine = first + lane;
@@ -259,24 +274,24 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
-void splatBlend(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, false, false);
+void splatBlend(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID, uint3 group: SV_GroupID) {
+    blendPixel(tid, groupThread, group, false, false);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
-void splatBlendComposite(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, true, false);
+void splatBlendComposite(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID, uint3 group: SV_GroupID) {
+    blendPixel(tid, groupThread, group, true, false);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
-void splatBlendCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, false, true);
+void splatBlendCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID, uint3 group: SV_GroupID) {
+    blendPixel(tid, groupThread, group, false, true);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
-void splatBlendCompositeCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, true, true);
+void splatBlendCompositeCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID, uint3 group: SV_GroupID) {
+    blendPixel(tid, groupThread, group, true, true);
 }

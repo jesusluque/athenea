@@ -45,7 +45,10 @@ RWStructuredBuffer<uint>    dstKeysHi;
 RWStructuredBuffer<uint>    dstValues;
 ConstantBuffer<BlockParams> blockParams;
 
-groupshared uint sCount[kDigits];
+// A digit's count, added to by every thread of the group at once. Atomic<T>
+// rather than InterlockedAdd on a plain array: WGSL has atomics only as a
+// type (atomic<u32>), and Slang emits the same atomic on Metal and CUDA.
+groupshared Atomic<uint> sCount[kDigits];
 groupshared uint sStart[kDigits];
 groupshared uint sScan[kBlockThreads];
 groupshared uint sLo[kTile];
@@ -81,18 +84,18 @@ uint digitHere(uint lo, uint hi) {
 void radixBlockHistogram(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) {
     const uint lane = thread.x;
     const uint block = group.x;
-    sCount[lane] = 0;
+    sCount[lane].store(0u);
     GroupMemoryBarrierWithGroupSync();
     const uint base = block * kTile;
     for (uint k = 0; k < kPerThread; ++k) {
         const uint i = base + k * kBlockThreads + lane;   // neighbouring threads, neighbouring keys
         if (i < blockParams.count) {
             const uint hi = blockParams.wide != 0 ? keysHi[i] : 0u;
-            InterlockedAdd(sCount[digitHere(keysLo[i], hi)], 1u);
+            sCount[digitHere(keysLo[i], hi)].add(1u);
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    blockHistogram[lane * blockParams.blocks + block] = sCount[lane];
+    blockHistogram[lane * blockParams.blocks + block] = sCount[lane].load();
 }
 
 [shader("compute")]
@@ -105,7 +108,7 @@ void radixBlockScatter(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) 
 
     // The tile, in its order. What lies past the end takes the last digit,
     // so the splits leave it after every real pair and nothing writes it.
-    sCount[lane] = 0;
+    sCount[lane].store(0u);
     GroupMemoryBarrierWithGroupSync();
     for (uint k = 0; k < kPerThread; ++k) {
         const uint local = k * kBlockThreads + lane;
@@ -115,7 +118,7 @@ void radixBlockScatter(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) 
             sLo[local] = lo;
             sHi[local] = hi;
             sVal[local] = srcValues[base + local];
-            InterlockedAdd(sCount[digitHere(lo, hi)], 1u);
+            sCount[digitHere(lo, hi)].add(1u);
         } else {
             sLo[local] = 0xFFFFFFFFu;
             sHi[local] = 0xFFFFFFFFu;
@@ -125,7 +128,7 @@ void radixBlockScatter(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) 
     GroupMemoryBarrierWithGroupSync();
     // Where each digit starts in the sorted tile.
     uint unused;
-    sStart[lane] = groupExclusive(sCount[lane], lane, unused);
+    sStart[lane] = groupExclusive(sCount[lane].load(), lane, unused);
 
     // Sorted by the digit, a bit at a time: each split puts the zeros first
     // and keeps order within each side. This thread owns four neighbours.

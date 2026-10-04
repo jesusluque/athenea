@@ -38,16 +38,18 @@ StructuredBuffer<uint>       visibleOffsets;
 StructuredBuffer<uint>       visibleTotal;
 StructuredBuffer<uint>       touchedOffsets;
 StructuredBuffer<uint>       touchedTotal;
-RWStructuredBuffer<uint>     counters;
+// Atomic<T>, not InterlockedAdd on uint: WGSL has atomics only as a type
+// (atomic<u32>). The words are the same 4 bytes SplatCounters reads.
+RWStructuredBuffer<Atomic<uint>> counters;
 ConstantBuffer<CounterParams> params;
 
-groupshared uint tally[kTally];
+groupshared Atomic<uint> tally[kTally];
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void splatCountersClear(uint3 tid: SV_DispatchThreadID) {
     if (tid.x < params.words) {
-        counters[tid.x] = tid.x == kCloudRows ? params.cloudCount : 0u;
+        counters[tid.x].store(tid.x == kCloudRows ? params.cloudCount : 0u);
     }
 }
 
@@ -55,29 +57,30 @@ void splatCountersClear(uint3 tid: SV_DispatchThreadID) {
 [numthreads(256, 1, 1)]
 void splatCounters(uint3 tid: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     if (lid.x < kTally) {
-        tally[lid.x] = 0;
+        tally[lid.x].store(0u);
     }
     GroupMemoryBarrierWithGroupSync();
     const uint i = tid.x;
     if (i < params.count) {
-        InterlockedAdd(tally[kSlots], 1u);
+        tally[kSlots].add(1u);
         if (visible[i] != 0) {
             const uint tiles = tilesTouched[i];
-            InterlockedAdd(tally[kVisible], 1u);
-            InterlockedAdd(tally[kPairs], tiles);
-            InterlockedMax(tally[kMaxTiles], tiles);
+            tally[kVisible].add(1u);
+            tally[kPairs].add(tiles);
+            tally[kMaxTiles].max(tiles);
         } else {
             const uint key = depthKeys[i];
             const uint reason = (key & 0xFF000000u) == kCulledKey ? min(key & 0xFFu, kCullReasons - 1) : 0u;
-            InterlockedAdd(tally[kCulled + reason], 1u);
+            tally[kCulled + reason].add(1u);
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    if (lid.x < kTally && tally[lid.x] != 0) {
+    const uint mine = lid.x < kTally ? tally[lid.x].load() : 0u;
+    if (mine != 0) {
         if (lid.x == kMaxTiles) {
-            InterlockedMax(counters[lid.x], tally[lid.x]);
+            counters[lid.x].max(mine);
         } else {
-            InterlockedAdd(counters[lid.x], tally[lid.x]);
+            counters[lid.x].add(mine);
         }
     }
 }
@@ -94,6 +97,6 @@ void splatCountersCloud(uint3 tid: SV_DispatchThreadID) {
     const uint end = params.base + params.cloudCount;
     const uint visibleEnd = end < params.all ? visibleOffsets[end] : visibleTotal[0];
     const uint touchedEnd = end < params.all ? touchedOffsets[end] : touchedTotal[0];
-    counters[kClouds + params.index * 2] = visibleEnd - visibleOffsets[params.base];
-    counters[kClouds + params.index * 2 + 1] = touchedEnd - touchedOffsets[params.base];
+    counters[kClouds + params.index * 2].store(visibleEnd - visibleOffsets[params.base]);
+    counters[kClouds + params.index * 2 + 1].store(touchedEnd - touchedOffsets[params.base]);
 }

@@ -158,6 +158,14 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   (`atheneaQuadPixel`), because bump takes its screen derivatives from the
   thread's quad. A kernel that walks them in raster order gets flat bump and
   nothing says so.
+- **A kernel of the splat raster stays WGSL.** An atomic is an `Atomic<T>`
+  (`.add`, `.max`, `.load`, `.store`), in group memory too, never
+  `InterlockedAdd` on a plain value: WGSL has atomics only as a type, and the
+  same source gives Metal and CUDA their own. A barrier sits only under
+  control flow that is the same for the whole group -- bounds from
+  `SV_GroupID` rather than the pixel, a decision from group memory read
+  through `workgroupUniformLoad` -- or Tint refuses the kernel.
+  `scripts/wgsl-report.py` checks all of them.
 
 ## 2. The rules, and what each is there to prevent
 

@@ -162,6 +162,14 @@ comprobación.
   quad (`atheneaQuadPixel`), porque el bump toma sus derivadas de pantalla del
   quad del hilo. Uno que los recorra en orden de raster saca el bump plano y
   nadie avisa.
+- **Un kernel del raster de splats sigue siendo WGSL.** Un atómico es un
+  `Atomic<T>` (`.add`, `.max`, `.load`, `.store`), también en memoria de
+  grupo, nunca `InterlockedAdd` sobre un valor normal: WGSL solo tiene
+  atómicos como tipo, y la misma fuente da a Metal y a CUDA los suyos. Una
+  barrera solo va bajo un control de flujo que es el mismo para todo el grupo
+  -- límites desde `SV_GroupID` y no desde el píxel, una decisión sobre
+  memoria de grupo leída con `workgroupUniformLoad` -- o Tint rechaza el
+  kernel. `scripts/wgsl-report.py` los comprueba todos.
 
 ## 2. Las reglas, y qué evita cada una
 
