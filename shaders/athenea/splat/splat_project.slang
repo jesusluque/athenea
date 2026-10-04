@@ -402,11 +402,13 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 const float most = 0.5;
                 const float3 dx = u * turnX.x + v * turnX.y;
                 const float3 dy = u * turnY.x + v * turnY.y;
-                const float3 nx = normalize(cloudNormal + dx * min(1.0, most / max(length(dx), 1.0e-9)));
-                const float3 ny = normalize(cloudNormal + dy * min(1.0, most / max(length(dy), 1.0e-9)));
+                const float3 hx = dx * min(1.0, most / max(length(dx), 1.0e-9));
+                const float3 hy = dy * min(1.0, most / max(length(dy), 1.0e-9));
                 slope.on = true;
-                slope.normalX = relightNormalToWorld(w0, w1, w2, nx);
-                slope.normalY = relightNormalToWorld(w0, w1, w2, ny);
+                slope.normalX = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hx));
+                slope.normalY = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hy));
+                slope.normalXBack = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal - hx));
+                slope.normalYBack = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal - hy));
             }
         }
         colour = relitSplat<kTransfer>(surface, normalize(eye - surface.position), lights,

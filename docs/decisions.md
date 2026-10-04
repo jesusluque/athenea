@@ -11700,6 +11700,15 @@ read at the centre's angle (044's bands, 1.00 / 0.95 / 0.90 / 0.81).
   open reflection's colour changes over each step, weighed as the
   reflection is. Two values of three a slot go to `slopes`, as halves, and
   the record's colour.w says so (`kSlopeMark`, 0.25).
+- **Limited, as a scheme for a conservation law is (051).** The sky is read
+  a pixel each way along both axes, and the slope per channel is the smaller
+  of the step forward and the step back where they agree in sign, nothing
+  where they do not (minmod): the ramp never leaves the range of the three
+  readings, so a window narrower than the gaussian in the chrome is not
+  carried across the footprint as a halo. Measured before the limiter: the
+  Corvette's Car_Paint_Main 0.629 to 0.393 and Car_Paint_Black 1.20 (whole
+  car) to 0.255, the chrome 1.35 to 1.64; the balls, whose skies hold no
+  feature a gaussian wide, did not move.
 - **The blend adds the slope.** `splat_blend` takes the slope with the
   record into group memory and draws `max(colour + slope . d, 0)` at the
   pixel `d` from the centre. A record without the mark is drawn as it was.
