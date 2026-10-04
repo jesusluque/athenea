@@ -189,7 +189,10 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             }
             if (composite && record.colour.w > 0.5) {
                 opaqueHit = true;
-                opaqueColour = float4(record.colour.rgb, 1.0);
+                // A point of the opaque layer: linear, encoded here for a
+                // display blend as a splat is at its projection.
+                opaqueColour = float4(params.displayBlend != 0 ? linearToSrgb(record.colour.rgb)
+                                                               : record.colour.rgb, 1.0);
                 opaqueZ = screen.z;
                 if (matte) {
                     opaqueId = cryptoIds[sSplats[j]];
@@ -234,6 +237,11 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
     if (!opaqueHit && underHit) {
         opaqueHit = true;
         opaqueColour = underColour[at];
+        // The layer under the splats is linear light; a display blend
+        // composites over it encoded, as the splats are (FrameParams).
+        if (params.displayBlend != 0) {
+            opaqueColour.rgb = linearToSrgb(opaqueColour.rgb);
+        }
         opaqueZ = underZ;
         if (matte && params.hasUnderCrypto != 0) {
             opaqueId = underCrypto[at];
@@ -260,7 +268,17 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
         }
     }
     const float total = opaqueHit ? 1.0 : coverage;
-    colour[at] = float4(linearRgb + transmittance * behind.rgb, coverage + transmittance * behind.w);
+    float4 pixelColour = float4(linearRgb + transmittance * behind.rgb, coverage + transmittance * behind.w);
+    if (params.displayBlend != 0) {
+        // Summed encoded (FrameParams): the background was given linear, and
+        // the pixel goes back to linear light once, unpremultiplied.
+        if (!opaqueHit) {
+            pixelColour.rgb = linearRgb + transmittance * linearToSrgb(behind.rgb);
+        }
+        pixelColour.rgb = pixelColour.w > 1.0e-6 ? srgbToLinear(pixelColour.rgb / pixelColour.w) * pixelColour.w
+                                                 : float3(0.0);
+    }
+    colour[at] = pixelColour;
     depth[at] = params.depthMode == 0 ? (total > 1e-6 ? depthSum / total : 0.0) : max(depthAt, 0.0);
 }
 

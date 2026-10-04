@@ -18,6 +18,7 @@
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/algo/RadixSort.h"
 #include "athenea/render/Camera.h"
+#include "athenea/render/Flatten.h"
 #include "athenea/render/Points.h"
 #include "athenea/scene/GpuClouds.h"
 
@@ -218,6 +219,17 @@ struct RenderSettings {
     /// small dispatches and a copy; off, nothing is counted.
     bool     countSplats = false;
     uint64_t countersTag = 0;
+    /// BLENDED AS A STANDARD VIEWER BLENDS: every splat sRGB-encoded before
+    /// the blend and the pixel decoded after it (Spark, SuperSplat, the 3DGS
+    /// rasteriser), for measuring a file written for them. False: linear
+    /// light, as every frame of this engine.
+    bool     displayBlend = false;
+    /// FLATTEN INSTEAD OF DRAWING (`athenea flatten`, Flatten.h): every relit
+    /// cloud that carries a TX transfer, and every shadow catcher, shaded from
+    /// `flatten->settings.directions` directions and fitted to degree 3
+    /// harmonics into `flatten->clouds`. Nothing is drawn: `targets` is left
+    /// as it was.
+    SplatFlatten* flatten = nullptr;
 };
 
 /// WHAT A FRAME OF SPLATS DID, as the device counted it
@@ -333,6 +345,10 @@ private:
     /// A transfer cloud's view-independent terms, a splat each, kept while
     /// the lights, the sky, the cloud and its place stand (`txCaches_`).
     gpu::ComputeKernel viewless_;
+    gpu::ComputeKernel flatten_;
+    gpu::ComputeKernel flattenCatcher_;
+    gpu::Buffer        emptyFlat_;   ///< bound where a frame flattens nothing
+    bool               flattenMade_ = false;
     struct TxCache {
         gpu::Buffer buffer;
         uint64_t    key = 0;

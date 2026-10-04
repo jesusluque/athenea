@@ -15,6 +15,7 @@ import splat_relight;
 import athenea.common.color;
 import athenea.scene.splat_encoding;
 import athenea.common.splat_override;
+import flatten_basis;
 // A shadow ray against the cloud's own proxies, where the caller built them.
 
 StructuredBuffer<float4>    positions;
@@ -209,6 +210,112 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     }
     const float ratio = saturate(with / max(without, 1.0e-6));
     return opacity * saturate(-log(max(ratio, 1.0e-4)) / kCatcherDepth);
+}
+
+/// WHAT A RELIT SPLAT SHOWS AN EYE, in linear light: the surface built from
+/// the cloud and handed to splat_relight, for `projectSplat` (one eye, the
+/// camera) and `splatFlatten` (an eye along each of many directions). One
+/// function, so a flattened cloud is what the raster draws by construction.
+/// `position` is the splat in the cloud's space, `eyeCloud` and `eyeWorld`
+/// the same eye in the cloud's space and the world, `colour` what its
+/// harmonics show that eye; `roughnessFloor` (0 for a frame) is the least
+/// roughness the reflections are evaluated at, which is what a flatten to
+/// band-limited harmonics asks for. `slope` comes in with the reflection's
+/// slope set up and leaves with the cached terms read.
+float3 relitToward<let kTransfer : int>(uint i, uint slot, float3 position, float3x3 r, float3 scale,
+                                        float3 cloudNormal, float3 eyeCloud, float3 eyeWorld, float3 colour,
+                                        float roughnessFloor, inout SplatSlope slope) {
+    const float4 w0 = float4(params.w00, params.w01, params.w02, params.w03);
+    const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
+    const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
+    SplatSurface surface;
+    surface.position = relightToWorld(w0, w1, w2, position);
+    surface.normal = relightNormalToWorld(w0, w1, w2, cloudNormal);
+    // What the cloud shows in this direction, in linear light already.
+    // The harmonics are part of it -- a baked cloud keeps the body's own
+    // change with direction in them -- so it is the evaluated colour and
+    // not the constant term alone.
+    surface.albedo = colour;
+    surface.metallic = params.hasPbr != 0 ? pbrMetallic(pbr[i]) : 0.0;
+    surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[i]) : 1.0;
+    surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
+    surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
+    surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[i]);
+    // WHAT A PICK MAY HAVE SAID ABOUT THIS PRIM. The id a gaussian carries
+    // is the one the matte writes, so a table keyed on it is a material
+    // override addressed by clicking (athenea/common/splat_override.slang).
+    if (params.overrideCount != 0) {
+        const SplatOverride said =
+            splatOverrideFor(splatOverrides, params.overrideCount, cloudCrypto[i]);
+        if (said.found) {
+            surface.metallic = splatOverrideOf(surface.metallic, said.metallic);
+            surface.roughness = splatOverrideOf(surface.roughness, said.roughness);
+            surface.transmission = splatOverrideOf(surface.transmission, said.transmission);
+            surface.albedo = splatOverrideColour(surface.albedo, said);
+        }
+    }
+    surface.ior = params.ior;
+    surface.backFacing =
+        splatFacing(r, scale, position, eyeCloud) < 0.0;
+    // The rasteriser traces nothing, so its glass bends once and shows
+    // the sky alone.
+    surface.hasBehind = false;
+    surface.behindColour = float3(0.0);
+    surface.exitThrough = float3(1.0);
+    surface.hasReflection = false;
+    surface.reflectionColour = float3(0.0);
+    surface.reflectionTraced = false;
+    surface.hasExit = false;
+    surface.exitDirection = float3(0.0, 0.0, 1.0);
+    surface.lit = params.litBody != 0;
+    surface.emission = params.hasEmission != 0 ? unpackRgb9e5(emission[i]) : float3(0.0);
+    surface.lobes = splatLobesOf(params.hasLobes != 0, lobes, i);
+    // THE INDEX A GAUSSIAN BENDS BY IS ITS OWN where its cloud carries
+    // the layers: the specular's index is the material's, where the
+    // cloud's single `ior` is whichever glass came first (task TX, step 5;
+    // the Corvette's read 1.053 for glass of 1.6). Only where the cloud
+    // bends at all, and only on what transmits.
+    if (params.hasLobes != 0 && surface.ior > 1.0 && surface.transmission > 0.0) {
+        surface.ior = max(surface.lobes.specularIor, 1.0);
+    }
+    surface.transferCount = params.transferCount;
+    surface.transferBase = i * params.transferWords * 2;
+    // The frame the gaussian has now -- posed, for a cloud a skeleton
+    // carries -- which is what a zonal transfer's lobes turn with.
+    splatTransferFrame(surface, transfer, r, w0, w1, w2);
+    // `params.shadowBits` is the words a gaussian: two of the first
+    // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
+    surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;
+    surface.shadowBits = surface.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
+    surface.cellWords = params.shadowBits >= 8u && params.transferCount >= 9 ? params.shadowBits : 0u;
+    surface.cellBase = i * surface.cellWords;
+    const uint shadowLights = params.shadowRays != 0 ? params.shadowLights : 0;
+    // THE LEAST ROUGHNESS, where a flatten asks for one: the polish and the
+    // coat evaluated no sharper than the harmonics they are fitted to can hold.
+    if (roughnessFloor > 0.0) {
+        surface.roughness = max(surface.roughness, roughnessFloor);
+        surface.lobes.coatRoughness = max(surface.lobes.coatRoughness, roughnessFloor);
+    }
+    // WHAT THE EYE DOES NOT CHANGE, kept from when the sky and the lights
+    // last changed (splatTransferViewless), where the eye sees the face
+    // the terms were kept for.
+    if (kTransfer >= 2 && params.txCache != 0 && surface.transferCount != kTransferZonalCount &&
+        dot(cloudNormal, storedFacing(r, scale, i)) > 0.0) {
+        const uint4 kept = txCache[i];
+        if (kept.w != 0u) {
+            slope.cached = true;
+            slope.cachedDome = uint(highHalf(kept.w) + 0.5) - 1u;
+            slope.cachedFront = float3(lowHalf(kept.x), highHalf(kept.x), lowHalf(kept.y));
+            slope.cachedCoupling = float3(highHalf(kept.y), lowHalf(kept.z), highHalf(kept.z));
+            slope.cachedSunShare = lowHalf(kept.w);
+        }
+    }
+    return relitSplat<kTransfer>(surface, normalize(eyeWorld - surface.position), lights,
+                        params.lightCount, params.categoriesLo, params.categoriesHi,
+                        shadowFactors, slot * params.shadowLights, shadowLights,
+                        envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
+                        envSun, transfer, shadowBits,
+                        params.transferIndirect != 0, slope);
 }
 
 /// ONE SPLAT PROJECTED, and shaded where its cloud is relit. `kTransfer` 0
@@ -439,68 +546,6 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         const float3 cloudNormal =
             splatShadingNormal(r, scale, posOpacity.xyz, float3(params.eyeX, params.eyeY, params.eyeZ),
                                params.hasNormals != 0, params.hasNormals != 0 ? normals[i] : 0u);
-        SplatSurface surface;
-        surface.position = relightToWorld(w0, w1, w2, posOpacity.xyz);
-        surface.normal = relightNormalToWorld(w0, w1, w2, cloudNormal);
-        // What the cloud shows in this direction, in linear light already.
-        // The harmonics are part of it -- a baked cloud keeps the body's own
-        // change with direction in them -- so it is the evaluated colour and
-        // not the constant term alone.
-        surface.albedo = colour;
-        surface.metallic = params.hasPbr != 0 ? pbrMetallic(pbr[i]) : 0.0;
-        surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[i]) : 1.0;
-        surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
-        surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
-        surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[i]);
-        // WHAT A PICK MAY HAVE SAID ABOUT THIS PRIM. The id a gaussian carries
-        // is the one the matte writes, so a table keyed on it is a material
-        // override addressed by clicking (athenea/common/splat_override.slang).
-        if (params.overrideCount != 0) {
-            const SplatOverride said =
-                splatOverrideFor(splatOverrides, params.overrideCount, cloudCrypto[i]);
-            if (said.found) {
-                surface.metallic = splatOverrideOf(surface.metallic, said.metallic);
-                surface.roughness = splatOverrideOf(surface.roughness, said.roughness);
-                surface.transmission = splatOverrideOf(surface.transmission, said.transmission);
-                surface.albedo = splatOverrideColour(surface.albedo, said);
-            }
-        }
-        surface.ior = params.ior;
-        surface.backFacing =
-            splatFacing(r, scale, posOpacity.xyz, float3(params.eyeX, params.eyeY, params.eyeZ)) < 0.0;
-        // The rasteriser traces nothing, so its glass bends once and shows
-        // the sky alone.
-        surface.hasBehind = false;
-        surface.behindColour = float3(0.0);
-        surface.exitThrough = float3(1.0);
-        surface.hasReflection = false;
-        surface.reflectionColour = float3(0.0);
-        surface.reflectionTraced = false;
-        surface.hasExit = false;
-        surface.exitDirection = float3(0.0, 0.0, 1.0);
-        surface.lit = params.litBody != 0;
-        surface.emission = params.hasEmission != 0 ? unpackRgb9e5(emission[i]) : float3(0.0);
-        surface.lobes = splatLobesOf(params.hasLobes != 0, lobes, i);
-        // THE INDEX A GAUSSIAN BENDS BY IS ITS OWN where its cloud carries
-        // the layers: the specular's index is the material's, where the
-        // cloud's single `ior` is whichever glass came first (task TX, step 5;
-        // the Corvette's read 1.053 for glass of 1.6). Only where the cloud
-        // bends at all, and only on what transmits.
-        if (params.hasLobes != 0 && surface.ior > 1.0 && surface.transmission > 0.0) {
-            surface.ior = max(surface.lobes.specularIor, 1.0);
-        }
-        surface.transferCount = params.transferCount;
-        surface.transferBase = i * params.transferWords * 2;
-        // The frame the gaussian has now -- posed, for a cloud a skeleton
-        // carries -- which is what a zonal transfer's lobes turn with.
-        splatTransferFrame(surface, transfer, r, w0, w1, w2);
-        // `params.shadowBits` is the words a gaussian: two of the first
-        // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
-        surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;
-        surface.shadowBits = surface.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
-        surface.cellWords = params.shadowBits >= 8u && params.transferCount >= 9 ? params.shadowBits : 0u;
-        surface.cellBase = i * surface.cellWords;
-        const uint shadowLights = params.shadowRays != 0 ? params.shadowLights : 0;
         // WHICH WAY THE SURFACE FACES A PIXEL AWAY (SplatSlope): the shape
         // operator, in the splat's first two axes, applied to the step in
         // those axes that one pixel right and one pixel down are -- the
@@ -515,7 +560,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             const float faces = dot(cloudNormal, axisN) >= 0.0 ? 1.0 : -1.0;
             slope.curvature = faces * 0.5 * (curvature[i * 3] + curvature[i * 3 + 2]);
         }
-        if (kTransfer >= 2 && params.hasCurvature != 0 && surface.cellWords >= 8u) {
+        if (kTransfer >= 2 && params.hasCurvature != 0 && params.shadowBits >= 8u && params.transferCount >= 9) {
             const float3 u = float3(r[0][0], r[1][0], r[2][0]);
             const float3 v = float3(r[0][1], r[1][1], r[2][1]);
             const float2x2 toPixels = float2x2(dot(tx3, u), dot(tx3, v), dot(ty3, u), dot(ty3, v));
@@ -544,26 +589,8 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 slope.normalY = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hy));
             }
         }
-        // WHAT THE EYE DOES NOT CHANGE, kept from when the sky and the lights
-        // last changed (splatTransferViewless), where the eye sees the face
-        // the terms were kept for.
-        if (kTransfer >= 2 && params.txCache != 0 && surface.transferCount != kTransferZonalCount &&
-            dot(cloudNormal, storedFacing(r, scale, i)) > 0.0) {
-            const uint4 kept = txCache[i];
-            if (kept.w != 0u) {
-                slope.cached = true;
-                slope.cachedDome = uint(highHalf(kept.w) + 0.5) - 1u;
-                slope.cachedFront = float3(lowHalf(kept.x), highHalf(kept.x), lowHalf(kept.y));
-                slope.cachedCoupling = float3(highHalf(kept.y), lowHalf(kept.z), highHalf(kept.z));
-                slope.cachedSunShare = lowHalf(kept.w);
-            }
-        }
-        colour = relitSplat<kTransfer>(surface, normalize(eye - surface.position), lights,
-                            params.lightCount, params.categoriesLo, params.categoriesHi,
-                            shadowFactors, slot * params.shadowLights, shadowLights,
-                            envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
-                            envSun, transfer, shadowBits,
-                            params.transferIndirect != 0, slope);
+        colour = relitToward<kTransfer>(i, slot, posOpacity.xyz, r, scale, cloudNormal,
+                                        float3(params.eyeX, params.eyeY, params.eyeZ), eye, colour, 0.0, slope);
         if (kTransfer >= 2 && slope.on) {
             // THE RAMP NEVER GOES BELOW BLACK INSIDE THE FOOTPRINT. A
             // chrome strip turns its normal so fast that a pixel's slope,
@@ -594,6 +621,15 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     }
     if (fate.graded) {
         colour = editGrade(params.edit, colour);
+    }
+    // DRAWN AS A STANDARD VIEWER DRAWS IT (`params.displayBlend`): every
+    // splat's colour sRGB-encoded before the blend, which then sums encoded
+    // values as Spark, SuperSplat and the 3DGS rasteriser do, and the pixel
+    // is decoded once at the end (splat_blend). A slope across the footprint
+    // is linear light, so such a frame draws the splat flat.
+    if (params.displayBlend != 0) {
+        colour = linearToSrgb(colour);
+        sloped = false;
     }
 
     ProjRecord record;
@@ -703,4 +739,224 @@ void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
     // The slice, one up, in the last half: zero is "not kept".
     txCache[i] = uint4(packHalves(front.x, front.y), packHalves(front.z, coupling.x),
                        packHalves(coupling.y, coupling.z), packHalves(sunShare, float(dome + 1u)));
+}
+
+// ---------------------------------------------------------------------------
+// FLATTEN (athenea flatten, docs/decisions.md task TXF): a TX cloud under this
+// frame's sky and lights, as degree 3 harmonics a standard file holds.
+
+struct FlattenParams {
+    uint  directions;      // N, the Fibonacci directions a gaussian is looked at from
+    uint  first;           // first gaussian of this slice
+    uint  display;         // 1: fit sRGB-encoded colours (what a viewer shows); 0: linear light
+    uint  roughnessFloor;  // 1: `flatFloor[0]` holds the floor's candidate
+    float exposure;        // linear factor before the encoding
+    float unitScale;       // the world's unit in the file's
+    // World -> file, rows of a rotation (the file's axes).
+    float o00; float o01; float o02;
+    float o10; float o11; float o12;
+    float o20; float o21; float o22;
+};
+ConstantBuffer<FlattenParams> flat;
+// M: two classes (a surface, a thin wall) of N columns of 16 (flatten_fit.slang).
+StructuredBuffer<float>     flatBasisRows;
+// The roughness floor's candidate index (flatten_fit.slang's flattenRoughnessFloor).
+StructuredBuffer<uint>      flatFloor;
+// kFlatStride floats a gaussian of this cloud (flatten_basis.slang).
+RWStructuredBuffer<float>   flatOut;
+
+/// The inverse of the cloud-to-world linear part: what turns a direction of
+/// the world into the cloud's.
+float3x3 inverseLinear(float3x3 m) {
+    const float3 a = float3(m[0][0], m[1][0], m[2][0]);
+    const float3 b = float3(m[0][1], m[1][1], m[2][1]);
+    const float3 c = float3(m[0][2], m[1][2], m[2][2]);
+    const float3 bc = cross(b, c);
+    const float det = dot(a, bc);
+    const float inv = abs(det) > 1.0e-30 ? 1.0 / det : 0.0;
+    // Rows of the inverse are the cofactor columns over the determinant.
+    const float3 r0 = bc * inv;
+    const float3 r1 = cross(c, a) * inv;
+    const float3 r2 = cross(a, b) * inv;
+    return float3x3(r0, r1, r2);
+}
+
+/// ONE GAUSSIAN FLATTENED: looked at from N directions of its own frame,
+/// shaded each time exactly as the raster shades it for an eye there
+/// (`relitToward`), what that shows fitted (flatten_basis.slang), the higher
+/// bands shrunk until no direction in front of it goes below black (a viewer
+/// clamps at zero, and a ring below it is a dark halo), and the fit and the
+/// gaussian written in the file's frame and unit. A shadow catcher is black
+/// harmonics at the opacity the frame draws it with (catcherOpacity).
+void flattenSplat<let kTransfer : int>(uint i) {
+    const uint slot = params.base + i;
+    const float4 posOpacity = positions[i];
+    const uint row = i * 4;
+    const float3 scale = exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2])));
+    const EditFate fate = editFate(params.edit, posOpacity.xyz, posOpacity.w, scale);
+    const float4 q = decodeQuaternion(shape[row]);
+    const float3x3 r = splatRotation(q);
+    float opacity = fate.removed ? 0.0 : fate.opacity;
+
+    const float4 w0 = float4(params.w00, params.w01, params.w02, params.w03);
+    const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
+    const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
+    const float3x3 linear = float3x3(w0.xyz, w1.xyz, w2.xyz);
+    const float3x3 toCloud = inverseLinear(linear);
+    const float3x3 toFile = float3x3(flat.o00, flat.o01, flat.o02, flat.o10, flat.o11, flat.o12,
+                                     flat.o20, flat.o21, flat.o22);
+    const float3 pWorld = relightToWorld(w0, w1, w2, posOpacity.xyz);
+    const float3 facing = relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i));
+    float3 t, b;
+    flatFrame(facing, t, b);
+    const bool thin = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
+    const uint cls = thin ? 1u : 0u;
+    const uint n = flat.directions;
+
+    float3 c[16];
+    [ForceUnroll]
+    for (uint k = 0; k < 16; ++k) {
+        c[k] = float3(0.0);
+    }
+    uint flags = thin ? 1u : 0u;
+    float shrink = 1.0;
+    if (kTransfer == kProjectCatcher) {
+        // Black, and as opaque as the frame draws it: the colour 0.5 + Y0 c0
+        // is zero.
+        opacity = catcherOpacity(i, r, scale, opacity);
+        c[0] = float3(-kShDcOffset);
+        flags |= 2u;
+    } else {
+        const float leastRoughness = flat.roughnessFloor != 0 ? flatFloorCandidate(flatFloor[0]) : 0.0;
+        const float3 base = float3(highHalf(shape[row + 2]), lowHalf(shape[row + 3]), highHalf(shape[row + 3]));
+        const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
+        for (uint k = 0; k < n; ++k) {
+            const float3 l = fibonacciDirection(k, n);
+            const float3 omega = t * l.x + b * l.y + facing * l.z;   // the world, towards the eye
+            const float3 omegaCloud = normalize(mul(toCloud, omega));
+            const float3 eyeCloud = posOpacity.xyz + omegaCloud;
+            float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, -omegaCloud),
+                                       params.linearCloud != 0);
+            if (params.relight != 0) {
+                const float3 cloudNormal = splatShadingNormal(r, scale, posOpacity.xyz, eyeCloud,
+                                                              params.hasNormals != 0,
+                                                              params.hasNormals != 0 ? normals[i] : 0u);
+                SplatSlope slope = noSlope();
+                colour = relitToward<kTransfer>(i, slot, posOpacity.xyz, r, scale, cloudNormal, eyeCloud,
+                                                pWorld + omega, colour, leastRoughness, slope);
+            }
+            if (fate.graded) {
+                colour = editGrade(params.edit, colour);
+            }
+            colour = max(colour * flat.exposure, float3(0.0));
+            const float3 g = (flat.display != 0 ? linearToSrgb(colour) : colour) - 0.5;
+            const uint at = (cls * n + k) * 16;
+            [ForceUnroll]
+            for (uint j = 0; j < 16; ++j) {
+                c[j] += flatBasisRows[at + j] * g;
+            }
+        }
+        // POSITIVE WHERE IT IS SEEN: the constant part at or above zero,
+        // then the higher bands scaled by the largest factor that keeps every
+        // direction in front of the gaussian (all of them for a thin wall) at
+        // or above zero, channel by channel.
+        float3 dc = 0.5 + c[0] * kShY0;
+        if (any(dc < 0.0)) {
+            c[0] = max(c[0], float3(-kShDcOffset));
+            dc = max(dc, float3(0.0));
+        }
+        for (uint k = 0; k < n; ++k) {
+            const float3 l = fibonacciDirection(k, n);
+            if (!thin && l.z <= 0.0) {
+                continue;
+            }
+            float y[16];
+            flatBasis(-l, y);
+            float3 rest = float3(0.0);
+            [ForceUnroll]
+            for (uint j = 1; j < 16; ++j) {
+                rest += c[j] * y[j];
+            }
+            [ForceUnroll]
+            for (uint ch = 0; ch < 3; ++ch) {
+                if (rest[ch] < 0.0) {
+                    shrink = min(shrink, dc[ch] / -rest[ch]);
+                }
+            }
+        }
+        shrink = saturate(shrink);
+        [ForceUnroll]
+        for (uint j = 1; j < 16; ++j) {
+            c[j] *= shrink;
+        }
+    }
+
+    // INTO THE FILE'S FRAME: the local frame's axes written there, and the
+    // fit turned by them.
+    const float3 tFile = mul(toFile, t);
+    const float3 bFile = mul(toFile, b);
+    const float3 nFile = mul(toFile, facing);
+    const float3x3 fileToLocal = float3x3(tFile, bFile, nFile);
+    float3 turned[16];
+    flatRotate(c, fileToLocal, turned);
+
+    // The gaussian: its axes through the cloud's transform and the file's
+    // turn, its sizes by the transform's scale and the file's unit.
+    const float3x3 axes = mul(toFile, mul(linear, r));
+    const float3 lengths = float3(length(float3(axes[0][0], axes[1][0], axes[2][0])),
+                                  length(float3(axes[0][1], axes[1][1], axes[2][1])),
+                                  length(float3(axes[0][2], axes[1][2], axes[2][2])));
+    const float3 unitLengths = max(lengths, float3(1.0e-30));
+    const float3x3 rotation = float3x3(axes[0] / unitLengths, axes[1] / unitLengths, axes[2] / unitLengths);
+    const float4 quaternion = flatQuaternion(rotation);
+    const float3 position = mul(toFile, pWorld) * flat.unitScale;
+    const float3 logScale = log(max(scale * lengths * flat.unitScale, float3(1.0e-30)));
+
+    const uint out = i * kFlatStride;
+    flatOut[out + kFlatPosition] = position.x;
+    flatOut[out + kFlatPosition + 1] = position.y;
+    flatOut[out + kFlatPosition + 2] = position.z;
+    flatOut[out + kFlatOpacity] = opacity;
+    flatOut[out + kFlatLogScale] = logScale.x;
+    flatOut[out + kFlatLogScale + 1] = logScale.y;
+    flatOut[out + kFlatLogScale + 2] = logScale.z;
+    flatOut[out + kFlatRotation] = quaternion.x;
+    flatOut[out + kFlatRotation + 1] = quaternion.y;
+    flatOut[out + kFlatRotation + 2] = quaternion.z;
+    flatOut[out + kFlatRotation + 3] = quaternion.w;
+    [ForceUnroll]
+    for (uint k = 0; k < 16; ++k) {
+        flatOut[out + kFlatSh + k * 3] = turned[k].x;
+        flatOut[out + kFlatSh + k * 3 + 1] = turned[k].y;
+        flatOut[out + kFlatSh + k * 3 + 2] = turned[k].z;
+    }
+    flatOut[out + kFlatNormal] = nFile.x;
+    flatOut[out + kFlatNormal + 1] = nFile.y;
+    flatOut[out + kFlatNormal + 2] = nFile.z;
+    flatOut[out + kFlatShrink] = shrink;
+    flatOut[out + kFlatFlags] = float(flags);
+}
+
+/// A TX cloud's gaussians, `flat.first` on, a thread each (a slice at a time:
+/// each looks N times, so a whole cloud in one dispatch would hold the device
+/// for seconds).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void splatFlatten(uint3 tid: SV_DispatchThreadID) {
+    const uint i = flat.first + tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    flattenSplat<2>(i);
+}
+
+/// A shadow catcher's (splatProjectCatcher, flattened).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void splatFlattenCatcher(uint3 tid: SV_DispatchThreadID) {
+    const uint i = flat.first + tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    flattenSplat<kProjectCatcher>(i);
 }

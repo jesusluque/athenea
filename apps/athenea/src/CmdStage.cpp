@@ -110,6 +110,7 @@ void addStage(CLI::App& app) {
         uint32_t lightSamples = 1;
         bool denoise = false, frameAll = false, splatShadows = false, defaultLights = false;
         bool transferIndirect = true;
+        bool splatDisplayBlend = false;
         bool splatReflections = false;
         bool cloudShadows = true;
         bool domePrefiltered = true;
@@ -153,6 +154,9 @@ void addStage(CLI::App& app) {
     cmd->add_flag("--splat-reflections", o->splatReflections,
                   "rt: a gaussian reflects the cloud it belongs to rather than only the prepared sky, "
                   "at one ray each -- a collar under a glass ball reflects the ball");
+    cmd->add_flag("--splat-display-blend", o->splatDisplayBlend,
+                  "raster: splats blended as a standard viewer blends them, sRGB values summed "
+                  "(athenea:splatDisplayBlend)");
     cmd->add_flag("!--no-transfer-indirect", o->transferIndirect,
                   "a cloud that carries a transfer is drawn without the indirect half of it -- the "
                   "light it bounced off the scene it was converted in (it is added by default), so "
@@ -228,6 +232,7 @@ void addStage(CLI::App& app) {
         (*renderer)->setLightSamples(o->lightSamples);
         (*renderer)->setSplatShadows(o->splatShadows);
         (*renderer)->setSplatTransferIndirect(o->transferIndirect);
+        (*renderer)->setSplatDisplayBlend(o->splatDisplayBlend);
         (*renderer)->setSplatReflections(o->splatReflections);
         (*renderer)->setCloudShadows(o->cloudShadows);
         (*renderer)->setDomePrefiltered(o->domePrefiltered);

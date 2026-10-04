@@ -345,6 +345,13 @@ public:
     [[nodiscard]] char upAxis() const;
     /// The stage's metersPerUnit, USD's fallback included.
     [[nodiscard]] double metersPerUnit() const;
+    /// THE AXIS AND UNIT THE STAGE'S CONTENT WAS AUTHORED IN: the root
+    /// layer's where it says them, else the first sublayer down its stack
+    /// that does, else USD's fallbacks. A layer over a scene -- a bake's
+    /// wrapper, a validation's -- often says neither, and USD reads only the
+    /// root, so `upAxis` and `metersPerUnit` take such a wrapper over a scene
+    /// in metres as centimetres. What `athenea flatten` writes its files in.
+    [[nodiscard]] std::pair<char, double> authoredFrame() const;
 
     /// The `UsdGeomCamera` at `path`, at `time`: its world transform, focal
     /// length, horizontal aperture and near clip, as authored.

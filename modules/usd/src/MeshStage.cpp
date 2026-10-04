@@ -878,6 +878,30 @@ double MeshStage::metersPerUnit() const {
     return UsdGeomGetStageMetersPerUnit(impl_->stage);
 }
 
+std::pair<char, double> MeshStage::authoredFrame() const {
+    if (impl_ == nullptr) {
+        return {'y', 1.0};
+    }
+    std::optional<char> axis;
+    std::optional<double> unit;
+    const SdfPath root = SdfPath::AbsoluteRootPath();
+    for (const SdfLayerHandle& layer : impl_->stage->GetLayerStack(false)) {
+        if (!axis && layer->HasField(root, UsdGeomTokens->upAxis)) {
+            const VtValue v = layer->GetField(root, UsdGeomTokens->upAxis);
+            if (v.IsHolding<TfToken>()) {
+                axis = v.UncheckedGet<TfToken>() == UsdGeomTokens->z ? 'z' : 'y';
+            }
+        }
+        if (!unit && layer->HasField(root, UsdGeomTokens->metersPerUnit)) {
+            const VtValue v = layer->GetField(root, UsdGeomTokens->metersPerUnit);
+            if (v.IsHolding<double>()) {
+                unit = v.UncheckedGet<double>();
+            }
+        }
+    }
+    return {axis.value_or(upAxis()), unit.value_or(metersPerUnit())};
+}
+
 Result<StageCamera> MeshStage::camera(const std::string& path, double time) const {
     if (impl_ == nullptr) {
         return Error(ErrorCode::InvalidArgument, "no stage");

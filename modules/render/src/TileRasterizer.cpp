@@ -109,6 +109,11 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     auto emptyMotion = buffer(*r.device_, 2, 4, "splat.motion.empty");
     if (!emptyMotion) return std::move(emptyMotion).error();
     r.emptyMotion_ = *emptyMotion;
+    // What splat_project's flatten entries read and write, bound to every
+    // projection, which reads none of it.
+    auto emptyFlat = buffer(*r.device_, 1, 4, "splat.flatten.empty");
+    if (!emptyFlat) return std::move(emptyFlat).error();
+    r.emptyFlat_ = *emptyFlat;
     // A relit splat's shadow ray is traced inline, which not every device can.
     r.shadowsSupported_ = r.device_->caps().rayQuery && r.device_->caps().accelerationStructure;
     if (r.shadowsSupported_) {
@@ -334,6 +339,25 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             at += cloud->count;
         }
     }
+    // A flatten's kernels, made the first time one is asked for (each holds
+    // the whole relit shading, and a frame that never flattens should not
+    // wait for them), and what was queued above done before its slices.
+    const auto flattenStart = std::chrono::steady_clock::now();
+    if (settings.flatten != nullptr) {
+        if (settings.flatten->basis == nullptr || settings.flatten->floor == nullptr) {
+            return Error(ErrorCode::InvalidArgument, "flatten: the fit's matrix was not prepared (FlattenFit)");
+        }
+        if (!flattenMade_) {
+            auto made = gpu::ComputeKernel::create(*library_, "athenea/splat/splat_project", "splatFlatten");
+            if (!made) return std::move(made).error();
+            auto catcher = gpu::ComputeKernel::create(*library_, "athenea/splat/splat_project", "splatFlattenCatcher");
+            if (!catcher) return std::move(catcher).error();
+            flatten_ = std::move(*made);
+            flattenCatcher_ = std::move(*catcher);
+            flattenMade_ = true;
+        }
+        ATHENEA_TRY(batch.submit(true));
+    }
     Stopwatch watch(batch, settings.timeStages);
     ++frameOfCaches_;
     uint32_t base = 0;
@@ -387,6 +411,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             kept = &entry;
         }
         bool viewless = false;
+        const gpu::Buffer* flatOut = nullptr;   // this cloud's records, while it is flattened
+        uint32_t flatFirst = 0;
         const auto bindProject = [&](rhi::ShaderCursor cursor) {
             cursor["txCache"].setBinding(kept != nullptr ? kept->buffer.rhi() : slopes_.rhi());
             cursor["params"]["txCache"].setData(uint32_t{kept != nullptr && !viewless ? 1u : 0u});
@@ -506,7 +532,59 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                       static_cast<float>(std::max(common.width, common.height)) * 0.25F);
             cursor["motion"].setBinding(instance.motion != nullptr ? instance.motion->rhi()
                                                                    : emptyMotion_.rhi());
+            // A flatten's matrix, floor and records, where this frame flattens
+            // (Flatten.h); bound either way, as every name a shader declares.
+            const bool flattening = settings.flatten != nullptr && flatOut != nullptr;
+            cursor["flatBasisRows"].setBinding(flattening ? settings.flatten->basis->rhi() : emptyFlat_.rhi());
+            cursor["flatFloor"].setBinding(flattening ? settings.flatten->floor->rhi() : emptyFlat_.rhi());
+            cursor["flatOut"].setBinding(flattening ? flatOut->rhi() : emptyFlat_.rhi());
+            if (flattening) {
+                const FlattenSettings& f = settings.flatten->settings;
+                rhi::ShaderCursor p = cursor["flat"];
+                p["directions"].setData(f.directions);
+                p["first"].setData(flatFirst);
+                p["display"].setData(uint32_t{f.display ? 1u : 0u});
+                p["roughnessFloor"].setData(uint32_t{f.roughnessFloor ? 1u : 0u});
+                p["exposure"].setData(f.exposure);
+                p["unitScale"].setData(f.unitScale);
+                static const char* kFileRow[9] = {"o00", "o01", "o02", "o10", "o11", "o12", "o20", "o21", "o22"};
+                for (size_t k = 0; k < 9; ++k) {
+                    p[kFileRow[k]].setData(f.toFile[k]);
+                }
+            }
         };
+        if (settings.flatten != nullptr) {
+            // FLATTEN, NOT DRAW: the cloud's view-independent terms first, as a
+            // frame keeps them, then its gaussians a slice a submission, each
+            // shaded from every direction by the projection's own shading.
+            if (kept != nullptr && keep) {
+                viewless = true;
+                viewless_.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+                viewless = false;
+                ATHENEA_TRY(batch.submit(true));
+            }
+            const bool lit = instance.relight && lights != nullptr && lights->any();
+            if (lit && (instance.catcher || txCells)) {
+                auto records = buffer(*device_, uint64_t{cloud->count} * kFlatStride, 4, "splat.flatten.records");
+                if (!records) return std::move(records).error();
+                flatOut = &*records;
+                gpu::ComputeKernel& kernel = instance.catcher ? flattenCatcher_ : flatten_;
+                const uint32_t slice = std::max<uint32_t>(settings.flatten->settings.slice, 64);
+                for (flatFirst = 0; flatFirst < cloud->count; flatFirst += slice) {
+                    kernel.dispatch(batch, {std::min(slice, cloud->count - flatFirst), 1, 1}, bindProject);
+                    ATHENEA_TRY(batch.submit(true));
+                }
+                flatOut = nullptr;
+                FlatCloud flat;
+                flat.instance = static_cast<uint32_t>(&instance - instances.data());
+                flat.count = cloud->count;
+                flat.catcher = instance.catcher;
+                flat.records = std::move(*records);
+                settings.flatten->clouds.push_back(std::move(flat));
+            }
+            base += cloud->count;
+            continue;
+        }
         if (kept != nullptr && keep) {
             viewless = true;
             viewless_.dispatch(batch, {cloud->count, 1, 1}, bindProject);
@@ -514,6 +592,12 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         }
         project.dispatch(batch, {cloud->count, 1, 1}, bindProject);
         base += cloud->count;
+    }
+    if (settings.flatten != nullptr) {
+        settings.flatten->milliseconds = std::chrono::duration<double, std::milli>(
+                                             std::chrono::steady_clock::now() - flattenStart)
+                                             .count();
+        return stats;
     }
     // A cloud no frame draws any more gives its terms back.
     std::erase_if(txCaches_, [this](const auto& held) { return held.second.seen != frameOfCaches_; });

@@ -269,6 +269,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--refine` | entero | `0` | niveles de subdivisión; 0 dibuja la malla de control |
 | `--light-samples` | entero | `1` | muestras por luz y píxel |
 | `--no-transfer-indirect` | flag | se suma | dibujar una nube con transfer sin su mitad rebotada |
+| `--splat-display-blend` | flag | mezcla lineal | raster: los splats se mezclan como los mezcla un visor estándar, sumando valores sRGB (`athenea:splatDisplayBlend`) |
 | `--splat-reflections` | flag | apagado | rt: una gaussiana refleja la nube a la que pertenece, no sólo el cielo |
 | `--splat-shadows` | flag | apagado | rt: una nube relit se sombrea a sí misma, un rayo por splat |
 | `--no-antialias` | flag | antialias encendido | |
@@ -448,6 +449,74 @@ en el mismo directorio, y renombrada a `-o` cuando está completa. Una
 conversión que falla no deja nada en `-o` -- o deja el fichero que ya había,
 tal como estaba -- y borra su fichero parcial. Con `--lod-levels`, cada nivel
 y la escena que los dibuja se escriben así.
+
+### 2.8.1 `athenea flatten` — una nube TX como ficheros estándar de Gaussian Splatting
+
+Las nubes TX (`mesh2splat --transfer`) y los receptores de sombra de una
+escena, bajo sus propias luces o bajo otro cielo, escritas como los armónicos
+de grado 3 que lee un visor estándar: sin volver a hornear y sin malla. Cada
+gaussiana se sombrea desde `--directions` direcciones exactamente como la
+sombrea el rasterizador, se ajusta lo que un visor mostraría ahí, y el ajuste
+se escribe en cada formato pedido. La escena se compone con sus mallas
+apagadas (`<output>_flatten_stage.usda`, que se queda junto a los ficheros).
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `stage` | ruta, obligatoria | — | una escena con nubes TX y una cúpula: la propia del bake, o una nube con `--sky` |
+| `-o`, `--output` | ruta | `flat` | sin extensión, cada formato de `--format` uno al lado de otro; con una de ellas, ese formato solo |
+| `--format` | lista separada por comas de `ply`, `spz`, `glb`, `usdc`, `usda` | `ply,spz,glb` | |
+| `--sky` | ruta de imagen \| `white` | las luces de la escena | las cúpulas de la escena toman la imagen y sus demás luces se apagan; una escena sin cúpula recibe una, girada hacia su eje vertical |
+| `--hide` | ruta de prim ‹repetible› | ninguna | se deja fuera, como si estuviera inactiva |
+| `--directions` | entero, al menos 16 | `256` | direcciones desde las que se mira cada gaussiana; 1024 para metales más nítidos |
+| `--exposure` | pasos | `0` | sobre la luz, antes de codificarla |
+| `--referred` | `display` \| `scene` | `display` | `display` ajusta el color sRGB que muestra un visor; `scene` ajusta luz lineal, solo para `ply` y USD |
+| `--no-roughness-floor` | flag | suelo activo | reflejos tan nítidos como el material; anillos donde el grado 3 no puede sostenerlos |
+| `--roughness-floor-share` | 0..1 | `0.05` | la parte de la energía de un lóbulo de reflexión que el suelo deja por encima de la banda 3 |
+| `--fit-lambda` | número | `1e-4` | la regularización del ajuste, por l²(l+1)² |
+| `--back-weight` | número | `0.01` | lo que pesa en el ajuste el hemisferio trasero de una superficie; una pared fina pesa en toda la esfera |
+| `--spz-version` | `3` \| `4` | `3` | 3 es gzip y lo que lee Spark; 4 es ZSTD y necesita ZSTD en la compilación |
+| `--spz-sh1-bits`, `--spz-sh-rest-bits` | 1..8 | `8`, `8` | bits que SPZ guarda de la banda 1, y de las bandas 2 y 3 |
+| `--time` | número | `0` | time code de USD |
+| `--validate` | directorio | ninguno | medir un fichero escrito contra las mallas trazadas, material a material (§3.1, *Una conversión medida*) |
+| `--validate-stage` | ruta | la de entrada | la escena de mallas desde la que se traza el GT |
+| `--validate-format` | `ply` \| `spz` | `spz` | qué fichero se vuelve a leer y se mide |
+| `--validate-camera`, `--validate-size`, `--validate-paths`, `--validate-bounces`, `--validate-material` | | como en `mesh2splat --validate` | |
+| `--path` | directorio ‹repetible› | ninguno | directorios extra de bundles AOFX (el efecto Measure) |
+
+**Los ficheros.** Y arriba, metros, sea cual sea el eje y la unidad de la
+escena: lo que three.js, Spark, SuperSplat y glTF toman tal cual. Las mismas
+coordenadas en todos los formatos. Los colores son lo que muestra un visor,
+codificados en sRGB, `0.5 + SH·C0` en el término constante, y el visor
+recorta los negativos; el ajuste mantiene cada dirección delante de una
+gaussiana de superficie (en toda la esfera para una pared fina) en cero o
+por encima, encogiendo sus bandas altas.
+
+- **PLY**: la disposición de 3DGS (la de INRIA): `x y z nx ny nz f_dc_0..2
+  f_rest_0..44 opacity scale_0..2 rot_0..3`, float32, la opacidad como
+  logit, las escalas como ln σ, la rotación w x y z; 248 bytes por gaussiana.
+  Ninguna propiedad más.
+- **SPZ**: el de Niantic, grado 3, armónicos a 8 bits (5 y 4 es lo que pone
+  su empaquetador por defecto; los reflejos aplanados viven en las bandas
+  altas), la bandera antialiased puesta, el punto fijo elegido a partir de la
+  caja (como mucho 20 bits). Los armónicos que se salen del [-1, 1] de SPZ se
+  escalan enteros, no se recortan.
+- **glTF** (`.glb`): una primitiva `POINTS` con `KHR_gaussian_splatting`
+  (`kernel` `ellipse`, `colorSpace` `srgb_rec709_display`), `POSITION`,
+  `ROTATION` (x y z w), `SCALE` lineal, `OPACITY` lineal y
+  `SH_DEGREE_l_COEF_n` en float, solo en `extensionsUsed`. Aún no se ha
+  abierto en un visor.
+- **USD** (`.usdc`, `.usda`): un `ParticleField3DGaussianSplat` como el que
+  escribe `athenea convert`, eje Y arriba, un metro por unidad.
+
+**Suelos.** Ningún eje de un PLY o un glTF baja de ln σ = -12 (el rango de
+Spark); el suelo propio de SPZ es -10. Se imprime la fracción que se lleva al
+suelo, igual que la de gaussianas cuyas bandas se encogieron y la de las que
+SPZ escaló para que cupieran.
+
+**Lo que imprime.** Cada nube y su número de gaussianas, el suelo de
+rugosidad encontrado, la caja, las pérdidas de arriba, el tamaño de cada
+fichero y los bytes por gaussiana, y lo que tardaron el sombreado y el
+ajuste, y el empaquetado y la escritura.
 
 ### 2.9 `athenea visibility` — lo que proyecta una nube con esqueleto, por partes
 
@@ -1111,6 +1180,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:motionBuckets` | int | `4` | rt: rodajas del obturador, de 1 a 8 |
 | `athenea:antialias` | bool | `true` | un desplazamiento subpíxel por pasada |
 | `athenea:splatTransferIndirect` | bool | `true` | una nube con transfer suma su mitad rebotada |
+| `athenea:splatDisplayBlend` | bool | `false` | raster: cada splat se codifica en sRGB antes de la mezcla y el píxel se decodifica después, como dibujan Spark, SuperSplat y el rasterizador de 3DGS |
 | `athenea:splatReflections` | bool | `false` | rt: una gaussiana refleja la nube a la que pertenece, un rayo cada una |
 | `athenea:splatShadows` | bool | `false` | rt: una nube relit se sombrea a sí misma |
 | `athenea:cloudShadows` | bool | `true` | el mapa de transmitancia de una nube en cada luz |
@@ -1718,6 +1788,10 @@ zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.athc`
 fotométricos IESNA LM-63; y las texturas de materiales por los plugins de
 imagen de OpenUSD, así que lo que lea esa compilación.
 
+**Nubes que se escriben.** `athenea flatten` escribe `.ply` de 3DGS, `.spz`
+(versiones 3 y 4; la 4 necesita zstd), `.glb` de glTF con
+`KHR_gaussian_splatting`, y USD (§2.8.1).
+
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere
 el formato. Un frame va en media por defecto con un canal `Z`; los canales de
@@ -1736,6 +1810,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea view` | nada, o un EXR con `--snapshot` |
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
 | `athenea mesh2splat` | una escena USD con la nube |
+| `athenea flatten` | ficheros `.ply`, `.spz`, `.glb` y USD de las nubes aplanadas, la escena compuesta junto a ellos, y con `--validate` lo que escribe `mesh2splat --validate` |
 | `athenea visibility` | el fichero de la nube, editado en el sitio o copiado |
 | `athenea aofx run` | un EXR |
 | `athenea migrate` | una copia de la escena, el paquete o la nube; con `--recursive`, también de lo que nombra |

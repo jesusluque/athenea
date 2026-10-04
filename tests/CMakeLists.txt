@@ -69,6 +69,7 @@ athenea_test(athenea_render_tests
     SOURCES render/test_splat_render.cpp render/test_points.cpp render/test_ray_tracing.cpp
             render/test_splat_motion.cpp render/test_splat_lens.cpp
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_spz.cpp>
+            $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_flatten.cpp>
             $<$<BOOL:${ATHENEA_HAVE_WEBP}>:render/test_sog.cpp>
     LIBS athenea::render athenea::io athenea::light)
 target_compile_definitions(athenea_render_tests PRIVATE ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")

@@ -39,12 +39,12 @@ document, the header is right.
 | 2 | ui | `ui/Controls.h` (what a panel is), `ui/ViewerPanels.h` (the viewer's panels), `ui/GaussianPanel.h` and `ui/GaussianReport.h` (the Gaussians panel, and the record the engine fills for it) — described once, drawn by `athenea view` and the iOS app |
 | 3 | sched | `sched/FrameClock.h` — genlock, PTP and ST 2059-1 alignment |
 | 4 | image | `image/Image.h` — the host-side image the AOFX host passes about |
-| 5 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — one per format, each with its own layout |
+| 5 | io | `io/Sog.h`, `io/Exr.h`, `io/Vdb.h` — one per format, each with its own layout; `io/SplatWriters.h` for the standard files `athenea flatten` writes |
 | 6 | gpu | `gpu/Device.h` (backends, the shader directory, the cache), `gpu/ComputeKernel.h` (binding by name), `gpu/AsyncReadback.h` (numbers from a frame without waiting for it) |
 | 7 | gpu_host | `gpu_host/Context.h` — one device, two runtimes on it, one thread that talks to it |
 | 8 | colour | `colour/ColourCompiler.h` (OpenColorIO as a compiler of Slang functions and LUTs), `colour/ColourNames.h` (what a colour space's name means) |
 | 9 | scene | `scene/GpuClouds.h` — the cloud layout every renderer reads |
-| 10 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h` |
+| 10 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h`, `render/Flatten.h` (a TX cloud as standard harmonics) |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
 | 13 | light | `light/LightTable.h` — a light on the device |
@@ -1193,6 +1193,43 @@ symptom, the cause and the measurement.
   show, and a transfer's corner did.
 - `--glass-opacity` was sent to the conversion under the name of an edit, so
   the number reached nothing and every glass came out opaque.
+
+### 6.12 Flattened for a standard viewer (`athenea flatten`)
+
+A TX cloud is a master: it is shaded again under every sky. `athenea flatten`
+(`apps/athenea/src/CmdFlatten.cpp`, `render/Flatten.h`) turns it into what a
+viewer that knows only degree 3 harmonics can draw, in three steps, every one
+on the device:
+
+1. **The fit's matrix, once** (`shaders/athenea/splat/flatten_fit.slang`).
+   In a gaussian's own frame (+z its facing) the N Fibonacci directions and
+   their weights are the same for every gaussian of a class -- a surface,
+   weighed `--back-weight` behind; a thin wall, weighed all round -- so the
+   weighted, regularised least squares is one matrix M (16 x N a class),
+   solved by a Cholesky on the device. The roughness floor is found there
+   too.
+2. **The frame** (`splat_project.slang`'s `splatFlatten`). The projection's
+   relit shading is one function, `relitToward`, which `projectSplat` calls
+   for the camera and `splatFlatten` for an eye along each direction: a
+   flattened cloud is what the raster draws, by construction. What each
+   direction shows -- sRGB-encoded, as a viewer will show it -- goes into M,
+   the higher bands are shrunk until nothing in front goes below black, and
+   the fit is turned into the file's frame by Lebedev's 26-point rule (exact
+   for degree 3 times degree 3; no Wigner matrices). `TileRasterizer::render`
+   does this instead of drawing when `RenderSettings::flatten` is set, a
+   slice of 65 536 gaussians a submission; `StageRenderer::flatten` sets it
+   for one frame. A shadow catcher is flattened to black at the opacity the
+   frame gives it (`catcherOpacity`).
+3. **The packing** (`flatten_pack.slang`): PLY floats, SPZ's six streams
+   (each byte worked out as Niantic's packer works it, four a thread), glTF
+   blocks. `io/SplatWriters.h` frames and writes them; gzip and ZSTD are the
+   only things done to the bytes.
+
+It is not an AOFX bundle: its shading is the engine's own relit shading under
+the frame's prepared sky, which a bundle cannot reach. Adding a format is a
+kernel in `flatten_pack.slang`, a method on `FlattenPack`, a writer in
+`io/SplatWriters.h`, and a line in `CmdFlatten.cpp`; the round trip through
+this engine's reader is what `athenea_render_tests "[flatten]"` checks.
 
 ## 7. Dependencies and toolchain
 

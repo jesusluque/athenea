@@ -528,6 +528,24 @@ void Engine::setChooseLights(bool choose) {
     }
 }
 
+void Engine::setSplatDisplayBlend(bool display) {
+    if (displayBlend_.exchange(display) != display) {
+        revision_.fetch_add(1);
+    }
+}
+
+void Engine::setFlatten(render::SplatFlatten* request) {
+    flattenRequest_ = request;
+    if (request != nullptr) {
+        flattenedPrims_.clear();
+        revision_.fetch_add(1);
+    }
+}
+
+std::vector<std::string> Engine::flattenedPrims() const {
+    return flattenedPrims_;
+}
+
 void Engine::setSplatTransferIndirect(bool indirect) {
     if (transferIndirect_.exchange(indirect) != indirect) {
         revision_.fetch_add(1);
@@ -3298,6 +3316,13 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     splatSettings.timeStages = splatSettings.timeStages || stages || timeSplatStages_.load();
     splatSettings.countSplats = countSplats_.load();
     splatSettings.countersTag = frameSerial_;
+    splatSettings.displayBlend = displayBlend_.load();
+    // A frame asked to flatten (setFlatten) flattens and draws nothing; whose
+    // each instance was is kept for the caller.
+    splatSettings.flatten = flattenRequest_;
+    if (flattenRequest_ != nullptr) {
+        flattenedPrims_ = instancePrims;
+    }
     if (splatSettings.countSplats) {
         // The prims of this frame's instances, kept until its counts arrive.
         countedFrames_.push_back({frameSerial_, instancePrims});
