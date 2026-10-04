@@ -184,6 +184,16 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     if (!meshStage) return std::move(meshStage).error();
     const char upAxis = meshStage->upAxis();
     const double metersPerUnit = meshStage->metersPerUnit();
+    // WHAT --hide LEAVES OUT IS LEFT OUT OF EVERYTHING: the GT, the mesh's
+    // frame, the clouds' frames and the bake, as a layer that switches those
+    // prims off. Without it a hidden ground stood in every frame and the
+    // measure said nothing of what hiding it does.
+    if (!job.hidden.empty()) {
+        const fs::path hiddenStage = dir / "hidden.usda";
+        std::ofstream(hiddenStage) << overLayer(source.string(), job.hidden, {}, upAxis, metersPerUnit, "");
+        source = fs::absolute(hiddenStage);
+    }
+    const std::string bakeStage = source.string();
     // ANOTHER SKY (--validate-sky): every frame -- the GT's, the mesh's, the
     // clouds' -- drawn under it rather than the stage's own lights. "white":
     // the stage's domes a constant of radiance one; a file: its domes that
@@ -307,7 +317,7 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         }
         std::sort(hidden.begin(), hidden.end());
         hidden.erase(std::unique(hidden.begin(), hidden.end()), hidden.end());
-        auto converted = convert(hidden, cloud.string());
+        auto converted = convert(bakeStage, hidden, cloud.string());
         if (!converted) {
             row.error = converted.error().toString();
             std::printf("validate: %s: %s\n", row.material.c_str(), row.error.c_str());

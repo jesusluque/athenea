@@ -859,7 +859,11 @@ el Cryptomatte del fotograma de mallas, así que una malla de dos materiales
 (GeomSubsets) cuenta en los dos. El GT se traza una vez en `DIR/gt.exr` y la
 siguiente ejecución del mismo tamaño lo vuelve a leer; bórralo para trazarlo de
 nuevo. Todas las demás opciones son las de la conversión, así que lo que se
-mide es `--transfer`, `--no-bake` y el resto. Lo que escribe:
+mide es `--transfer`, `--no-bake` y el resto. `--hide` deja sus prims fuera
+de todo -- el GT, cada fotograma y el horneado -- mediante `DIR/hidden.usda`,
+una capa que los desactiva; un GT trazado antes con otros prims ocultos se
+vuelve a leer igual, así que da a cada `--hide` su propio directorio. Lo que
+escribe:
 
 | fichero | qué |
 |---|---|

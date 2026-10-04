@@ -843,7 +843,10 @@ mesh frame's Cryptomatte, so a mesh of two materials (GeomSubsets) counts in
 both. The GT is traced once into `DIR/gt.exr` and read back by the next run of
 the same size; delete it to trace it again. Every other option is the
 conversion's, so `--transfer`, `--no-bake` and the rest are what is measured.
-What it writes:
+`--hide` leaves its prims out of everything -- the GT, every frame and the
+bake -- through `DIR/hidden.usda`, a layer that switches them off; a GT
+traced before with other prims hidden is read back all the same, so give
+each `--hide` its own directory. What it writes:
 
 | file | what |
 |---|---|

@@ -2869,11 +2869,15 @@ void addMesh2Splat(CLI::App& app) {
         const std::vector<std::string> askedHidden = o->hidden;
         auto validated = validateConversion(
             job, *context, library, *measure,
-            [&](const std::vector<std::string>& hidden, const std::string& output) -> Result<uint32_t> {
+            [&](const std::string& stage, const std::vector<std::string>& hidden,
+                const std::string& output) -> Result<uint32_t> {
+                const std::string askedStage = o->stage;
+                o->stage = stage;
                 o->hidden = hidden;
                 o->output = output;
                 runConversion();
                 o->hidden = askedHidden;
+                o->stage = askedStage;
                 return written;
             });
         if (!validated) {

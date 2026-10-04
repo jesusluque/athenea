@@ -51,10 +51,12 @@ struct ValidateJob {
     std::string              sky;
 };
 
-/// Converts `hidden` left out into `output`, returning the gaussians written:
-/// the caller's own conversion, with everything else it was asked.
-using ValidateConvert =
-    std::function<Result<uint32_t>(const std::vector<std::string>& hidden, const std::string& output)>;
+/// Converts `stage` with `hidden` left out into `output`, returning the
+/// gaussians written: the caller's own conversion, with everything else it
+/// was asked. `stage` is the job's, with the job's `hidden` switched off in a
+/// layer over it, so the bake does not see them either.
+using ValidateConvert = std::function<Result<uint32_t>(const std::string& stage, const std::vector<std::string>& hidden,
+                                                       const std::string& output)>;
 
 [[nodiscard]] Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& context,
                                               gpu::ShaderLibrary& library, aofx::Effect& measure,
