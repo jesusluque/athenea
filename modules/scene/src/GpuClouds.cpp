@@ -740,9 +740,14 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     // Two words a gaussian of which ways out are open, only beside a transfer.
     const bool haveShadowBits = transferCount > 0 && !in.shadowBits.empty() &&
                                 in.shadowBits.values() >= uint64_t{n} * 2;
-    // Eight words a gaussian where the stage carries the 256 cells of a TX
-    // transfer, two where it carries the 64 of the first: the count says.
-    const uint32_t shadowWords = !haveShadowBits ? 0u : in.shadowBits.values() >= uint64_t{n} * 8 ? 8u : 2u;
+    // Thirty-two or eight words a gaussian where the stage carries the 1024
+    // or 256 cells of a TX transfer, two where it carries the 64 of the
+    // first: the count says. (Thirty-two was read as eight: a TX transfer of
+    // 32 x 32 cells loaded from a stage read its bits a quarter in.)
+    const uint32_t shadowWords = !haveShadowBits                                 ? 0u
+                                 : in.shadowBits.values() >= uint64_t{n} * 32 ? 32u
+                                 : in.shadowBits.values() >= uint64_t{n} * 8  ? 8u
+                                                                               : 2u;
     // The shading normal, three floats a gaussian, where the stage carries it.
     const bool haveNormals = !in.normals.empty() && in.normals.values() >= uint64_t{n} * 3;
     // The radiance it gives off, three floats a gaussian, where the stage carries it.
@@ -885,21 +890,26 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!transmission) return std::move(transmission).error();
     auto cryptoObject = streamBuffer(in.cryptoObject, "splats.stream.crypto");
     if (!cryptoObject) return std::move(cryptoObject).error();
-    auto transferDirect = streamBuffer(in.transferDirect, "splats.stream.transferDirect");
-    if (!transferDirect) return std::move(transferDirect).error();
-    auto transferIndirect = streamBuffer(in.transferIndirect, "splats.stream.transferIndirect");
-    if (!transferIndirect) return std::move(transferIndirect).error();
-    auto transferReflected =
-        streamBuffer(haveField ? in.transferReflected : FloatStream{}, "splats.stream.transferReflected");
-    if (!transferReflected) return std::move(transferReflected).error();
-    auto transferZonal = streamBuffer(haveZonal ? in.transferZonal : FloatStream{}, "splats.stream.transferZonal");
-    if (!transferZonal) return std::move(transferZonal).error();
+    // THE TRANSFER'S STREAMS AND THE OPEN DIRECTIONS GO UP A SLICE AT A TIME
+    // (below): as a whole the TX Corvette's were 7 GB beside the 3 GB the
+    // decoded transfer then asked for. A stream's slice is its bytes for the
+    // slice's elements, `perElement` values each.
+    const auto sliceOf = [](const FloatStream& stream, uint64_t perElement, uint32_t first, uint32_t count) {
+        if (stream.empty()) {
+            return stream;
+        }
+        FloatStream part = stream;
+        const uint64_t bytes = perElement * (stream.isDouble ? 8u : stream.half ? 2u : 4u);
+        const uint64_t from = std::min<uint64_t>(uint64_t{first} * bytes, stream.bytes.size());
+        const uint64_t length = std::min<uint64_t>(uint64_t{count} * bytes, stream.bytes.size() - from);
+        part.bytes = stream.bytes.subspan(from, length);
+        return part;
+    };
+    const uint32_t directPer = directCount;
     auto thinWalled = streamBuffer(haveThin ? in.thinWalled : FloatStream{}, "splats.stream.thinWalled");
     if (!thinWalled) return std::move(thinWalled).error();
     auto schlickMetal = streamBuffer(haveSchlick ? in.schlickMetal : FloatStream{}, "splats.stream.schlickMetal");
     if (!schlickMetal) return std::move(schlickMetal).error();
-    auto shadowBits = streamBuffer(haveShadowBits ? in.shadowBits : FloatStream{}, "splats.stream.shadowBits");
-    if (!shadowBits) return std::move(shadowBits).error();
     auto normals = streamBuffer(haveNormals ? in.normals : FloatStream{}, "splats.stream.normals");
     if (!normals) return std::move(normals).error();
     auto emission = streamBuffer(haveEmission ? in.emission : FloatStream{}, "splats.stream.emission");
@@ -920,6 +930,23 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
         const uint32_t count = std::min(perSlice, n - first);
         auto records = deviceBuffer(*device_, uint64_t{count} * e.floatsPerRecord, 4, "splats.raw");
         if (!records) return std::move(records).error();
+        auto transferDirect = streamBuffer(sliceOf(in.transferDirect, directPer, first, count),
+                                           "splats.stream.transferDirect");
+        if (!transferDirect) return std::move(transferDirect).error();
+        auto transferIndirect = streamBuffer(sliceOf(in.transferIndirect, uint64_t{directPer} * 3, first, count),
+                                             "splats.stream.transferIndirect");
+        if (!transferIndirect) return std::move(transferIndirect).error();
+        auto transferReflected = streamBuffer(haveField ? sliceOf(in.transferReflected, 48, first, count)
+                                                        : FloatStream{},
+                                              "splats.stream.transferReflected");
+        if (!transferReflected) return std::move(transferReflected).error();
+        auto transferZonal = streamBuffer(haveZonal ? sliceOf(in.transferZonal, 10, first, count) : FloatStream{},
+                                          "splats.stream.transferZonal");
+        if (!transferZonal) return std::move(transferZonal).error();
+        auto shadowBits = streamBuffer(haveShadowBits ? sliceOf(in.shadowBits, shadowWords, first, count)
+                                                      : FloatStream{},
+                                       "splats.stream.shadowBits");
+        if (!shadowBits) return std::move(shadowBits).error();
         {
             gpu::CommandBatch batch(*device_);
             splatStreams_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -973,6 +1000,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 p["normalBase"].setData(haveNormals ? e.normal : io::SplatEncoding::kNoField);
                 p["emissionBase"].setData(haveEmission ? e.emission : io::SplatEncoding::kNoField);
                 p["lobesBase"].setData(haveLobes ? e.lobes : io::SplatEncoding::kNoField);
+                p["transferFirst"].setData(first);
             });
             ATHENEA_TRY(batch.submit(true));
         }

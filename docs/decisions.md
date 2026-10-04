@@ -11764,6 +11764,16 @@ bright behind it. `--thin-glass NAME` reads a material as thin-walled
 from the mesh: whether a surface is a sheet is the mesh's topology, and
 nothing here measures it yet.
 
+### A transfer goes up a slice at a time
+
+A cloud's streams went to the device whole before the decode took them a
+slice at a time: the whole TX Corvette's transfer streams and open
+directions were 7 GB (f32 from the file) beside the 3 GB of decoded transfer
+they were for, which is the load that ran out of memory. They now go up with
+the slice that reads them (`StreamParams::transferFirst`), so the device
+holds a slice of them at once. And a stage's 32 words a gaussian of a 32 x 32
+grid were read as 8 -- the bits a quarter in -- which the count now says.
+
 ### Free memory counts what the system gives back
 
 On Apple silicon an allocation must fit the memory the system has free less

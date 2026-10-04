@@ -104,6 +104,10 @@ struct StreamParams {
     uint lobesBase;
     // kShPlanes: the splats a plane holds (the whole cloud's, not the slice's).
     uint planeLength;
+    // The element the transfer's streams and the open directions' start at:
+    // they are uploaded a slice at a time (the whole TX Corvette's are 7 GB),
+    // so they hold the slice's elements alone and `first` is theirs.
+    uint transferFirst;
 };
 
 static const uint kNoPbr = 0xFFFFFFFFu;
@@ -207,7 +211,7 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
         const uint words = params.shadowWords == 8u ? 8u : 2u;
         for (uint w = 0; w < words; ++w) {
             records[r + params.shadowBase + w] =
-                present(kShadowBits) ? bit_cast<float>(shadowBits[e * words + w]) : 0.0;
+                present(kShadowBits) ? bit_cast<float>(shadowBits[(e - params.transferFirst) * words + w]) : 0.0;
         }
     }
     // The shading normal, as the stage holds it; the decode normalises it.
@@ -248,27 +252,28 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
     // nothing here and the decode writes no buffer.
     if (params.transferCount > 0 && params.transferBase != kNoPbr && present(kTransferZonal)) {
         for (uint k = 0; k < params.transferCount; ++k) {
-            records[r + params.transferBase + k] = streamValue(transferZonal, isHalf(kTransferZonal), e * 10 + k);
+            records[r + params.transferBase + k] = streamValue(transferZonal, isHalf(kTransferZonal), (e - params.transferFirst) * 10 + k);
         }
     } else if (params.transferCount > 0 && params.transferBase != kNoPbr) {
         const uint direct = transferDirectCount(params.transferCount);
         const uint indirect = transferIndirectCount(params.transferCount);
         for (uint k = 0; k < direct && k < params.transferCount; ++k) {
             records[r + params.transferBase + k] =
-                present(kTransferDirect) ? streamValue(transferDirect, isHalf(kTransferDirect), e * direct + k)
+                present(kTransferDirect) ? streamValue(transferDirect, isHalf(kTransferDirect), (e - params.transferFirst) * direct + k)
                                          : 0.0;
         }
         for (uint k = direct; k < direct + indirect; ++k) {
             records[r + params.transferBase + k] =
                 present(kTransferIndirect)
-                    ? streamValue(transferIndirect, isHalf(kTransferIndirect), e * indirect + (k - direct))
+                    ? streamValue(transferIndirect, isHalf(kTransferIndirect),
+                                  (e - params.transferFirst) * indirect + (k - direct))
                     : 0.0;
         }
         for (uint k = direct + indirect; k < params.transferCount; ++k) {
             records[r + params.transferBase + k] =
                 present(kTransferReflected)
                     ? streamValue(transferReflected, isHalf(kTransferReflected),
-                                  e * kTransferFieldValues + (k - direct - indirect))
+                                  (e - params.transferFirst) * kTransferFieldValues + (k - direct - indirect))
                     : 0.0;
         }
     }
