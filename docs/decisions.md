@@ -12032,6 +12032,25 @@ dim to be a sun stays one peak and every level its light; a sun is taken out
 of every level 2-6 to 2% of the sky and leaves no texel brighter than fifty
 times the sky (`[prefilter]`).
 
+### The path traced frame was too bright under an HDR's sun
+
+The floating metal ball under a sky that is one sun read 0.76 of the path
+traced frame by every route -- the map's split sum, the analytic sun, the
+exact BRDF at each gaussian (0.79) -- with the cells' share one and the
+polish's weight right. Its peak, 86 against 157, is what an exact GGX at
+alpha 0.117 gives for the sun env_sun measures (17.58, the authored texels'
+own 17.5): it was the path traced frame that was off. 2ef1ca1 had the
+dome's texture mipped by the lat-long's solid angle, and the path tracer
+divides by that chain's 1x1 mean as an AREA mean when it gives the density
+of the direction it drew (domeImagePdf: luminance / (mean 2 pi^2 sin
+theta)). A solid-angle mean of a sun at theta is pi sin theta / 2 of the
+area mean -- 1.27 for this sun -- so every dome-lit path traced frame since
+was that much too bright where the sun lit it. The dome's texture keeps area
+mips again; the prefilter, which wants the solid-angle mean, reads its own
+residual lat-long, mipped that way. GTs path traced under an image dome
+between 2ef1ca1 and this (from tx-s69) have to be traced again; white domes
+and the gate's Corvette GT, traced before, are not affected.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

@@ -1908,7 +1908,13 @@ Result<void> Engine::prepareLightImages(std::vector<light::Light>& lamps) {
         if (lamp.texture.empty()) {
             continue;
         }
-        lamp.textureId = textures_->request(lamp.texture, lamp.textureColourSpace, /*latLong=*/true);
+        // Area mips, not the lat-long solid-angle mean: the path tracer draws a
+        // dome's directions down this chain and divides by its 1x1 mean as an
+        // area mean (lights_image's domeImagePdf), and a solid-angle mean
+        // there made every dome-lit path traced frame too bright by pi sin
+        // theta / 2 at its sun -- 1.27 for san_giuseppe's (s93). The
+        // prefilter's own lat-long is its residual, mipped the other way.
+        lamp.textureId = textures_->request(lamp.texture, lamp.textureColourSpace);
         // Lat-long: around in u, clamped at the poles.
         lamp.sampler = textures_->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
         domeTextures = true;
