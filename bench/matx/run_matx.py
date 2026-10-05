@@ -48,18 +48,40 @@ CAMERA = "/World/Camera"
 PRIM = "/World/ShaderBall"
 
 
+ENV = None   # child_env(), once
+
+
 def sh(cmd, log=None, timeout=TIMEOUT):
+    """Runs cmd with stdout and stderr into one file (the log, or a scratch one), not a pipe: what
+    athenea says goes to disk as it says it, and a run cut short leaves what it got to."""
+    global ENV
+    if ENV is None:
+        ENV = m.child_env()
+    path = log or os.path.join(m.RENDERS, ".sh.log")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     t0 = time.time()
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        out, code = r.stdout + r.stderr, r.returncode
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        out += f"\n[matx] timeout after {timeout} s\n"
-        code = -9
-    if log:
-        open(log, "w").write(" ".join(cmd) + "\n\n" + out)
+    with open(path, "w") as fh:
+        fh.write(" ".join(cmd) + "\n\n")
+        fh.flush()
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT, env=ENV)
+        try:
+            code = p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            code = -9
+            fh.write(f"\n[matx] killed after {timeout} s\n")
+    out = open(path, errors="replace").read().split("\n\n", 1)[-1]
     return out, code, time.time() - t0
+
+
+def failure(code, out):
+    """What a run that did not measure died of: a signal says more than its last line."""
+    if code < 0:
+        sig = -code
+        name = {9: "SIGKILL (timeout)", 11: "SIGSEGV", 6: "SIGABRT", 10: "SIGBUS"}.get(sig, f"signal {sig}")
+        return f"crashed: {name}; last line: " + (out.strip().splitlines() or [""])[-1][-200:]
+    return f"exit {code}: " + (out.strip().splitlines() or ["no output"])[-1][-400:]
 
 
 def convert_args(stage, run_dir, sky):
@@ -107,9 +129,19 @@ def gt_store(e, sky, run_dir, key, fingerprint, source="traced"):
     return True
 
 
+def done(res_path):
+    """A result counts as done unless its run crashed or was killed (exit < 0): those are tried again."""
+    if not os.path.exists(res_path):
+        return False
+    try:
+        return json.load(open(res_path)).get("exit", 0) >= 0
+    except ValueError:
+        return False
+
+
 def run_one(e, sky, results, fingerprint):
     res_path = os.path.join(results, f"{e['id']}__{sky}.json")
-    if os.path.exists(res_path):
+    if done(res_path):
         return "skip"
     run_dir = os.path.join(m.RENDERS, "runs", sky, e["id"])
     os.makedirs(run_dir, exist_ok=True)
@@ -132,7 +164,7 @@ def run_one(e, sky, results, fingerprint):
             if "error" in rows[0]:
                 r["err"] = rows[0]["error"]
     else:
-        r["err"] = (out.strip().splitlines() or ["no output"])[-1][-400:]
+        r["err"] = failure(code, out)
     if cached and "GT read from" not in out:
         r["gt"] = "cached, but not read"   # --validate path traced its own: the size did not match
     elif cached:
@@ -142,7 +174,7 @@ def run_one(e, sky, results, fingerprint):
         if r["gt"] == "traced":   # a GT traced is good whatever became of the cloud
             gt_store(e, sky, run_dir, key, fingerprint)
     if code != 0 and "err" not in r:
-        r["err"] = f"exit {code}: " + out.strip()[-400:]
+        r["err"] = failure(code, out)
     # Raster time: the cloud is the same under both skies, so it is timed once, under the stage's own.
     if "err" not in r and sky == "autoshop":
         name = os.path.basename(e["material"] or "")
@@ -213,7 +245,7 @@ def main():
     skies = list(m.SKIES) if a.sky == "all" else [a.sky]
     todo = [(e, sky) for p in phases for sky in skies for e in manifest
             if e["phase"] == p and e["status"] == "ok" and (not a.only or e["id"] in a.only)]
-    left = [t for t in todo if not os.path.exists(os.path.join(results, f"{t[0]['id']}__{t[1]}.json"))]
+    left = [t for t in todo if not done(os.path.join(results, f"{t[0]['id']}__{t[1]}.json"))]
     print(f"[matx] {len(todo)} runs, {len(left)} to do; {SIZE} px, GT {PATHS} paths, bake {BAKE} paths, "
           f"{m.ATHENEA}", flush=True)
     fingerprint = m.pt_fingerprint()
@@ -240,8 +272,15 @@ def main():
             print("  " + " ".join(convert_args(m.stage_path(e), os.path.join(m.RENDERS, "runs", sky, e["id"]), sky)))
         return
     t0 = time.time()
+    quick_crashes = 0
     for k, (e, sky) in enumerate(left):
         run_one(e, sky, results, fingerprint)
+        r = json.load(open(os.path.join(results, f"{e['id']}__{sky}.json")))
+        quick_crashes = quick_crashes + 1 if r.get("exit", 0) < 0 and r.get("wall_s", 99) < 30 else 0
+        if quick_crashes >= 3:
+            print(f"[matx] three runs in a row crashed within seconds ({r.get('err')}): the sweep stops; "
+                  f"see {os.path.join(m.RENDERS, 'runs', sky, e['id'], 'mesh2splat.log')}", flush=True)
+            return 5
         el = time.time() - t0
         print(f"[matx] {k + 1}/{len(left)}, {el / 60:.1f} min, ~{el / (k + 1) * (len(left) - k - 1) / 60:.0f} min left",
               flush=True)

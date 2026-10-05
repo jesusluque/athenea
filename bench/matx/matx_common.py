@@ -88,11 +88,32 @@ def _sha(h, path):
     h.update(_DIGESTS[path])
 
 
-def shader_dir():
-    """The shaders the binary runs: ATHENEA_SHADER_DIR, else the build's, beside bin/."""
-    if os.environ.get("ATHENEA_SHADER_DIR"):
-        return os.environ["ATHENEA_SHADER_DIR"]
+def build_shaders():
+    """The shaders the build of ATHENEA copied, beside its bin/ (what the binary finds by itself)."""
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(ATHENEA))), "shaders")
+
+
+_WARNED = []
+
+
+def child_env():
+    """The environment athenea runs in. ATHENEA_SHADER_DIR is kept only where it is the binary's own
+    build's shaders, or MATX_KEEP_SHADER_DIR=1 says it is meant: a binary compiling another build's
+    shaders crashes (the first phase-1 sweep: tx-s76 handed tx-s59's, every run SIGSEGV in a second)."""
+    env = dict(os.environ)
+    given = env.get("ATHENEA_SHADER_DIR")
+    if given and os.path.realpath(given) != os.path.realpath(build_shaders()) and env.get("MATX_KEEP_SHADER_DIR") != "1":
+        if not _WARNED:
+            _WARNED.append(given)
+            print(f"[matx] ATHENEA_SHADER_DIR={given} is not the shaders of {ATHENEA}'s build: dropped "
+                  f"(MATX_KEEP_SHADER_DIR=1 keeps it)", flush=True)
+        del env["ATHENEA_SHADER_DIR"]
+    return env
+
+
+def shader_dir():
+    """The shaders the binary runs: the ones child_env() leaves it."""
+    return child_env().get("ATHENEA_SHADER_DIR") or build_shaders()
 
 
 def pt_fingerprint():
