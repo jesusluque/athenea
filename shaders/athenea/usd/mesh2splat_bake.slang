@@ -26,7 +26,7 @@
 // the reflected field, kept as forty-eight floats; and with `coefficients` 16
 // the two halves are degree 3, sixteen and forty-eight.
 //
-// With `material` the bake read the material back at each gaussian too, three
+// With `material` the bake read the material back at each gaussian too, four
 // float4 after everything else (technique::BakePoints::material), and where
 // the gaussian's `samplings` say a field could not be read off the stage --
 // a graph computes it, or a coat colour tints it -- the record takes it from
@@ -101,7 +101,7 @@ void m2sTransferInto(uint3 tid: SV_DispatchThreadID) {
     // The coverage, the bits, and with the cells the reflected field's
     // sixteen (technique::transferPlanes).
     const uint entries = coefficients + 1u + (bake.cells != 0 ? bake.cells / 4u + 16u : 1u) +
-                         (bake.material != 0 ? 3u : 0u);
+                         (bake.material != 0 ? 4u : 0u);
     const uint first = k * entries;
     const bool found = baked[first + coefficients].w > 0.0;
     if (!found) {
@@ -156,7 +156,7 @@ void m2sTransferInto(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(counts[0], 1u);
     }
     if (found && bake.material != 0) {
-        m2sMaterialInto(k, first + entries - 3u);
+        m2sMaterialInto(k, first + entries - 4u);
     }
 }
 
@@ -170,7 +170,8 @@ static const uint kSampleEmission = 16u;
 /// WHAT THE STAGE COULD NOT SAY, FROM THE MATERIAL ITSELF: the fields its
 /// `samplings` name, taken from the three planes the bake read back
 /// (material_sample.slang: base colour and how much of it a diffuse lobe
-/// gave; roughness, metalness, coat roughness; emission and the samples).
+/// gave; roughness, metalness, coat roughness; emission and the samples; the
+/// tint over the reflection).
 /// -1 is a field the material had no lobe for, which keeps the record's.
 void m2sMaterialInto(uint k, uint planes) {
     const uint4 says = samplings[bake.first + k];
@@ -180,6 +181,7 @@ void m2sMaterialInto(uint k, uint planes) {
     const float4 colour = baked[planes];
     const float4 surface = baked[planes + 1u];
     const float4 light = baked[planes + 2u];
+    const float4 tint = baked[planes + 3u];
     if (!(light.w > 0.0)) {
         return;   // no sample met the material
     }
@@ -191,6 +193,16 @@ void m2sMaterialInto(uint k, uint planes) {
         records[at + bake.dc0] = base.x;
         records[at + bake.dc0 + 1u] = base.y;
         records[at + bake.dc0 + 2u] = base.z;
+        // AND THE SAME TINT AT THE EDGE: the frame reflects a metal's base
+        // colour head on and the specular colour at grazing, and the coat's
+        // colour tints both (`reflectionTint`). An edge left white turned a
+        // brass ball under its gold coat pale at every rim.
+        if (bake.layered != 0u && tint.x >= 0.0) {
+            const uint l = at + bake.perRecord - 13u;
+            records[l + 1u] = saturate(records[l + 1u] * tint.x);
+            records[l + 2u] = saturate(records[l + 2u] * tint.y);
+            records[l + 3u] = saturate(records[l + 3u] * tint.z);
+        }
     }
     if ((says.x & kSampleRoughness) != 0u && surface.x >= 0.0) {
         // THE WIDENING the conversion gave the roughness it was handed

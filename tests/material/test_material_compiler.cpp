@@ -408,6 +408,8 @@ const char* kReadBack = R"(
 import athenea.material.material_runtime;
 import athenea.material.material_sample;
 import LOBES_MODULE;
+// The closures' marks, as the bake asks for them.
+export static const bool kAtheneaMarkLobes = true;
 
 struct ReadBackParams {
     uint   count;
@@ -416,9 +418,10 @@ struct ReadBackParams {
     uint   pad0;
     float4 albedo;     // rgb, the diffuse share
     float4 surface;    // roughness, metallic, coat roughness (-1: none), 0
+    float4 tint;       // the tint over the reflection
 };
 
-RWStructuredBuffer<uint>       misses;   // [albedo, diffuse share, roughness, metallic, coat roughness, seen]
+RWStructuredBuffer<uint>       misses;   // [albedo, diffuse share, roughness, metallic, coat roughness, seen, tint]
 ConstantBuffer<ReadBackParams> params;
 
 [shader("compute")]
@@ -486,6 +489,9 @@ void materialReadBack(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(misses[4], 1u);
     }
     InterlockedAdd(misses[5], 1u);
+    if (m.reflectionTintSeen < 0.5 || any(abs(m.reflectionTint - params.tint.xyz) > t)) {
+        InterlockedAdd(misses[6], 1u);
+    }
 }
 )";
 
@@ -507,6 +513,7 @@ TEST_CASE("a surface shader's lobes read back as the inputs a gaussian carries",
         std::string          xml;
         std::array<float, 4> albedo;    // rgb, diffuse share
         std::array<float, 4> surface;   // roughness, metallic, coat roughness (-1: none), 0
+        std::array<float, 4> tint;      // the coat's colour over the metal or the specular
     };
     const std::vector<Case> cases{
         {"standard_surface: a dielectric under a tinted coat",
@@ -517,7 +524,8 @@ TEST_CASE("a surface shader's lobes read back as the inputs a gaussian carries",
                                      "    <input name=\"coat_color\" type=\"color3\" value=\"1, 0.5, 0.25\" />\n"
                                      "    <input name=\"coat_roughness\" type=\"float\" value=\"0.1\" />\n"),
          {0.6F, 0.2F, 0.075F, 1.0F},
-         {0.35F, 0.0F, 0.1F, 0.0F}},
+         {0.35F, 0.0F, 0.1F, 0.0F},
+         {1.0F, 0.5F, 0.25F, 0.0F}},
         {"standard_surface: a pale metal under a gold coat, as the brass example",
          surface("standard_surface", "    <input name=\"base_color\" type=\"color3\" value=\"0.8, 0.8, 0.8\" />\n"
                                      "    <input name=\"base\" type=\"float\" value=\"1\" />\n"
@@ -528,12 +536,14 @@ TEST_CASE("a surface shader's lobes read back as the inputs a gaussian carries",
                                      "    <input name=\"coat_color\" type=\"color3\" value=\"0.9, 0.6, 0.2\" />\n"
                                      "    <input name=\"coat_roughness\" type=\"float\" value=\"0.05\" />\n"),
          {0.72F, 0.48F, 0.16F, 0.0F},
-         {0.3F, 1.0F, 0.05F, 0.0F}},
+         {0.3F, 1.0F, 0.05F, 0.0F},
+         {0.9F, 0.6F, 0.2F, 0.0F}},
         {"open_pbr_surface: a plain dielectric, no coat",
          surface("open_pbr_surface", "    <input name=\"base_color\" type=\"color3\" value=\"0.3, 0.5, 0.7\" />\n"
                                      "    <input name=\"specular_roughness\" type=\"float\" value=\"0.4\" />\n"),
          {0.3F, 0.5F, 0.7F, 1.0F},
-         {0.4F, 0.0F, -1.0F, 0.0F}},
+         {0.4F, 0.0F, -1.0F, 0.0F},
+         {1.0F, 1.0F, 1.0F, 0.0F}},
     };
     constexpr uint32_t kPoints = 4096;
     for (const Case& c : cases) {
@@ -564,7 +574,7 @@ TEST_CASE("a surface shader's lobes read back as the inputs a gaussian carries",
             auto placeholder4 = gpu::Buffer::create(*gpu->device, desc);
             REQUIRE(placeholder4);
             gpu::Buffer placeholder = test::uintBuffer(*gpu->device, 4, "readback.placeholder");
-            gpu::Buffer misses = test::uintBuffer(*gpu->device, 6, "readback.misses");
+            gpu::Buffer misses = test::uintBuffer(*gpu->device, 7, "readback.misses");
             {
                 gpu::CommandBatch batch(*gpu->device);
                 kernel->dispatch(batch, {kPoints, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -581,20 +591,22 @@ TEST_CASE("a surface shader's lobes read back as the inputs a gaussian carries",
                     cursor["params"]["tolerance"].setData(2e-3F);
                     cursor["params"]["albedo"].setData(c.albedo.data(), sizeof(float) * 4);
                     cursor["params"]["surface"].setData(c.surface.data(), sizeof(float) * 4);
+                    cursor["params"]["tint"].setData(c.tint.data(), sizeof(float) * 4);
                 });
                 REQUIRE(batch.submit(true));
             }
-            uint32_t n[6] = {};
+            uint32_t n[7] = {};
             REQUIRE(misses.read(*gpu->device, 0, sizeof(n), n));
-            std::printf("  %s: of %u points, %u albedo, %u diffuse share, %u roughness, %u metallic and %u coat "
-                        "readings off\n",
-                        c.name, n[5], n[0], n[1], n[2], n[3], n[4]);
+            std::printf("  %s: of %u points, %u albedo, %u diffuse share, %u roughness, %u metallic, %u coat and "
+                        "%u tint readings off\n",
+                        c.name, n[5], n[0], n[1], n[2], n[3], n[4], n[6]);
             CHECK(n[5] == kPoints);
             CHECK(n[0] == 0);
             CHECK(n[1] == 0);
             CHECK(n[2] == 0);
             CHECK(n[3] == 0);
             CHECK(n[4] == 0);
+            CHECK(n[6] == 0);
         }
     }
 }

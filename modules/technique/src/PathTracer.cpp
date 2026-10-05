@@ -91,7 +91,7 @@ struct PathParams {
     uint bakeSplit;
     // A TX TRANSFER THAT ALSO READS THE MATERIAL BACK (BakePoints::material):
     // 1: what the material is at each point's first vertex, averaged over
-    // its samples, in three planes after everything else
+    // its samples, in four planes after everything else
     // (material_sample.slang).
     uint bakeMaterial;
 };
@@ -463,6 +463,9 @@ void writeAuxAt(uint at, uint pixels, float4 albedo, float4 normal) {
 const char* kBake = R"(
 import athenea.common.bake_fit;
 static const bool kBake = true;
+// The closures mark their lobes in this kernel alone, for the material read
+// back at the first vertex (material_runtime's kAtheneaMarkLobes).
+export static const bool kAtheneaMarkLobes = true;
 /// Points a transfer's cells are traced from over the footprint (bakeCellOrigin).
 static const uint kCellOrigins = 4u;
 // Three entries a point: where it is and how far off to start; the normal of
@@ -2438,17 +2441,19 @@ void tracePathsAt(uint2 group, uint index) {
                                                                              closedCoefficients[c] * over);
             }
         }
-        // AND THE MATERIAL, three planes after everything else
+        // AND THE MATERIAL, four planes after everything else
         // (technique::kBakeMaterialPlanes).
         if (materialMode) {
             const uint after = count + (cellsMode ? 1u + cellPlanes + 16u : 2u);
             float4 p0;
             float4 p1;
             float4 p2;
-            materialSumsPlanes(materialSums, p0, p1, p2);
+            float4 p3;
+            materialSumsPlanes(materialSums, p0, p1, p2, p3);
             colour[after * pixels + at] = p0;
             colour[(after + 1u) * pixels + at] = p1;
             colour[(after + 2u) * pixels + at] = p2;
+            colour[(after + 3u) * pixels + at] = p3;
         }
         return;
     }

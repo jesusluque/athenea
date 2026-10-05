@@ -4,6 +4,7 @@
 #include "athenea/core/Log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <cstdio>
 #include <functional>
@@ -29,6 +30,26 @@ namespace mx = MaterialX;
 namespace athenea::material {
 
 namespace {
+
+/// `ddx(` and `ddy(` as calls -- not a variable of that name, nor a member --
+/// made the quad's (material_inputs.slang's atheneaDdx, atheneaDdy).
+std::string quadDerivatives(std::string text) {
+    const auto identifier = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '.'; };
+    for (const char* call : {"ddx(", "ddy(", "ddx_coarse(", "ddy_coarse(", "ddx_fine(", "ddy_fine("}) {
+        const std::string from(call);
+        const std::string to = std::string(from[2] == 'x' ? "atheneaDdx" : "atheneaDdy") + "(";
+        for (size_t at = text.find(from); at != std::string::npos; at = text.find(from, at)) {
+            if (at > 0 && identifier(text[at - 1])) {
+                at += from.size();
+                continue;
+            }
+            text.replace(at, from.size(), to);
+            at += to.size();
+        }
+    }
+    return text;
+}
+
 
 const std::string kFunctionPlaceholder = "ATHENEA_MATERIAL_FUNCTION";
 /// MaterialX's UsdPreviewSurface nodegraph, replaced by the engine's own.
@@ -1075,7 +1096,15 @@ Result<CompiledMaterial> MaterialCompiler::compileDocument(const std::shared_ptr
         options.hwDirectionalAlbedoMethod = mx::DIRECTIONAL_ALBEDO_ANALYTIC;
         mx::ShaderPtr shader = generator->generate("athenea_material", renderable, context);
         CompiledMaterial compiled;
-        const std::string source = shader->getSourceCode(mx::Stage::PIXEL);
+        // SCREEN DERIVATIVES FROM THE QUAD. A node borrowed from genglsl
+        // (hextiledimage's mx_hextile.glsl) asks dFdx, which the generator
+        // spells `ddx` -- a fragment stage's, which no compute kernel has: the
+        // onyx example failed every kernel it was in. The engine's own
+        // derivatives take it from the thread's quad (atheneaDdx), as bump
+        // does; a kernel that does not walk quads (a bake, a shadow ray)
+        // gets the difference to a neighbour that is not one, which moves a
+        // map's level of detail and nothing else.
+        const std::string source = quadDerivatives(shader->getSourceCode(mx::Stage::PIXEL));
         const std::string hash = hexHash(source);
         const char* modulePrefix = variant == ClosureVariant::Lobes     ? "athenea_mat_"
                                    : variant == ClosureVariant::Opacity ? "athenea_opa_"

@@ -48,6 +48,13 @@ public BSDF athenea_bsdf_zero() {
 
 // ---- the build stack --------------------------------------------------------------
 
+/// WHETHER THE CLOSURES MARK THEIR LOBES for a conversion to read back
+/// (lobeTint, lobeLayersOver; material_sample.slang): a link-time constant,
+/// false unless the kernel exports it true -- the path tracer's bake does --
+/// so every other kernel compiles exactly what it did before the marks
+/// existed. The shadowed shading kernel stands at what Metal will build.
+public extern static const bool kAtheneaMarkLobes = false;
+
 public static Lobe  gAtheneaLobes[kBuildLobes];
 public static uint  gAtheneaLobeCount;
 /// The surface constructor's `thin_walled` (OpenPBR's `geometry_thin_walled`):
@@ -90,9 +97,9 @@ public Lobe atheneaLobe(uint kind) {
     lobe.colour1 = float3(0.0);
     lobe.exponent = 5.0;
     lobe.colour2 = float3(1.0);
-    lobe.pad1 = 1.0;   // the tint (lobeTint): none yet
+    lobe.pad1 = kAtheneaMarkLobes ? 1.0 : 0.0;   // the tint (lobeTint): none yet
     lobe.alpha = float2(0.0);
-    lobe.pad2 = float2(1.0);
+    lobe.pad2 = float2(kAtheneaMarkLobes ? 1.0 : 0.0);
     lobe.normal = float3(0.0, 0.0, 1.0);
     lobe.pad3 = 0.0;
     lobe.tangent = float3(1.0, 0.0, 0.0);

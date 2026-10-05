@@ -47,6 +47,13 @@ public struct MaterialSample {
     public float  coatRoughness;
     public float  coatSeen;
     public float3 emission;
+    /// THE TINT OVER THE REFLECTION UNDER THE COAT: the colours `multiply`
+    /// nodes put on the metal and the specular (a coat colour). Folded into
+    /// the base colour above, it must reach the edge too: a metal reflects
+    /// its base colour head on and its edge colour at grazing, and an edge
+    /// left white whitens what the coat tints gold at every angle.
+    public float3 reflectionTint;
+    public float  reflectionTintSeen;
 };
 
 float sampleHeft(float3 weight) { return dot(max(weight, float3(0.0)), kSampleLuminance) + 1.0e-6; }
@@ -88,6 +95,8 @@ public MaterialSample materialSampleOf(LobeStack stack, bool saidMetal) {
     out.coatRoughness = 0.0;
     out.coatSeen = 0.0;
     out.emission = stack.emission;
+    out.reflectionTint = float3(1.0);
+    out.reflectionTintSeen = 0.0;
     bool conductor = false;
     for (uint k = 0; k < stack.count; ++k) {
         conductor = conductor || stack.lobes[k].kind == kLobeConductor;
@@ -140,6 +149,7 @@ public MaterialSample materialSampleOf(LobeStack stack, bool saidMetal) {
                                                           : shallowest;
     float specularHeft = 0.0;
     float specularRoughness = 0.0;
+    float3 specularTint = float3(0.0);
     float coatHeft = 0.0;
     float coatRoughness = 0.0;
     for (uint k = 0; k < stack.count; ++k) {
@@ -155,6 +165,7 @@ public MaterialSample materialSampleOf(LobeStack stack, bool saidMetal) {
         } else {
             specularHeft += heft;
             specularRoughness += roughnessOfAlpha(lobe.alpha) * heft;
+            specularTint += lobeTint(lobe) * heft;
         }
     }
     if (metalHeft > 1.0e-5) {
@@ -168,12 +179,26 @@ public MaterialSample materialSampleOf(LobeStack stack, bool saidMetal) {
         out.coatRoughness = coatRoughness / coatHeft;
         out.coatSeen = 1.0;
     }
+    // The metal's tint where there is one, the specular's otherwise.
+    float3 metalTint = float3(0.0);
+    for (uint k = 0; k < stack.count; ++k) {
+        const Lobe lobe = stack.lobes[k];
+        if (lobe.kind != kLobeHair && sampleIsMetal(lobe, saidMetal, conductor)) {
+            metalTint += lobeTint(lobe) * sampleHeft(lobe.weight);
+        }
+    }
+    if (metalHeft > 1.0e-5) {
+        out.reflectionTint = metalTint / metalHeft;
+        out.reflectionTintSeen = 1.0;
+    } else if (specularHeft > 1.0e-5) {
+        out.reflectionTint = specularTint / specularHeft;
+        out.reflectionTintSeen = 1.0;
+    }
     return out;
 }
 
-/// THE SUMS A BAKE KEEPS OVER ITS SAMPLES, and the three planes they become:
-/// (albedo, its diffuse share), (roughness, metallic, coat roughness, the
-/// coat's share of samples), (emission, the samples that saw a surface).
+/// THE SUMS A BAKE KEEPS OVER ITS SAMPLES, and the four planes they become
+/// (materialSumsPlanes).
 public struct MaterialSums {
     public float4 albedo;      ///< rgb summed where seen, w the count
     public float  diffuse;     ///< diffuse shares summed where the albedo was seen
@@ -182,6 +207,7 @@ public struct MaterialSums {
     public float  metallic;    ///< summed over every sample
     public float3 emission;
     public float  samples;
+    public float4 reflectionTint;   ///< rgb summed where seen, w the count
 };
 
 public MaterialSums materialSumsZero() {
@@ -193,6 +219,7 @@ public MaterialSums materialSumsZero() {
     s.metallic = 0.0;
     s.emission = float3(0.0);
     s.samples = 0.0;
+    s.reflectionTint = float4(0.0);
     return s;
 }
 
@@ -204,15 +231,19 @@ public void materialSumsAdd(inout MaterialSums sums, MaterialSample m) {
     sums.metallic += m.metallic;
     sums.emission += m.emission;
     sums.samples += 1.0;
+    sums.reflectionTint += float4(m.reflectionTint * m.reflectionTintSeen, m.reflectionTintSeen);
 }
 
 /// The planes, as means: (albedo, diffuse share), (roughness or -1, metallic,
-/// coat roughness or -1, 0), (emission, samples). -1: never seen.
-public void materialSumsPlanes(MaterialSums sums, out float4 p0, out float4 p1, out float4 p2) {
+/// coat roughness or -1, 0), (emission, samples), (the reflection's tint or
+/// -1, 0). -1: never seen.
+public void materialSumsPlanes(MaterialSums sums, out float4 p0, out float4 p1, out float4 p2, out float4 p3) {
     const float n = max(sums.samples, 1.0);
     p0 = sums.albedo.w > 0.0 ? float4(sums.albedo.xyz / sums.albedo.w, sums.diffuse / sums.albedo.w)
                              : float4(-1.0, -1.0, -1.0, 0.0);
     p1 = float4(sums.roughness.y > 0.0 ? sums.roughness.x / sums.roughness.y : -1.0, sums.metallic / n,
                 sums.coat.y > 0.0 ? sums.coat.x / sums.coat.y : -1.0, 0.0);
     p2 = float4(sums.emission / n, sums.samples);
+    p3 = sums.reflectionTint.w > 0.0 ? float4(sums.reflectionTint.xyz / sums.reflectionTint.w, 0.0)
+                                     : float4(-1.0, -1.0, -1.0, 0.0);
 }

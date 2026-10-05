@@ -809,12 +809,14 @@ back from the material itself: the path tracer's first vertex evaluates the
 compiled material at the gaussian anyway, and with `BakePoints::material` it
 reduces that lobe stack to the gaussian's numbers
 (`athenea/material/material_sample`) and averages them over the samples into
-three planes after the transfer's; `m2sTransferInto` writes the fields the
+four planes after the transfer's; `m2sTransferInto` writes the fields the
 gaussian's `samplings` word names into its record. The reduction reads two
 things the closures leave on each lobe: the colours `multiply` nodes put on
 it (`lobeTint`, how a coat colour reaches the base) and how many `layer`
 nodes it is the base of (`lobeLayersOver`, how a coat is told from the
-specular). A material of constants and plain maps samples nothing.
+specular), in a kernel that exports `kAtheneaMarkLobes` true -- a link-time
+constant, false everywhere else, so no other kernel grows by it. A material
+of constants and plain maps samples nothing.
 
 ### 6.6 The light bake
 

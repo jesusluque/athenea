@@ -13125,8 +13125,54 @@ material named. The reduction:
   share of the base's weight.
 
 A material of constants and plain maps samples nothing and converts as it
-did, bit for bit: the planes are not even asked for. The pads the two
-closures write are free on every lobe but hair, which neither touches.
+did, bit for bit: the planes are not even asked for (the first run held
+velvet, ketchup and chrome to the sweep's numbers to the fourth digit). The
+pads the two closures write are free on every lobe but hair, which neither
+touches, and they write them only in a kernel that exports
+`kAtheneaMarkLobes` true -- a link-time constant of `material_runtime`,
+false by default, which the bake and the read-back test export: every
+other kernel compiles exactly what it did. The shadowed shading kernel
+stands at what Metal will build on this machine, so this was measured
+rather than assumed: compiled offline (slangc, then `metal -emit-llvm`)
+around the brass ball and its ground, its IR is the same, instruction for
+instruction and alloca for alloca, as with tx-s82's shaders.
+
+**The first run (m1)**, autoshop, against the path traced mesh:
+
+| material | relMSE before | relMSE | mean ratio |
+|---|---|---|---|
+| brick_procedural | 7.82 | 0.033 | 1.02 / 0.99 / 0.91 |
+| wood_tiled | -- | 0.011 | 1.03 / 0.98 / 0.89 |
+| marble_solid | -- | 0.111 | 1.07 / 1.07 / 1.06 |
+| brass_tiled | 4.59 | 0.62 | 0.85 / 1.01 / 1.31 |
+| onyx_hextiled | -- | failed | -- |
+
+Two things it found, both fixed:
+
+- **The brass's rims were pale.** Its gold is the coat colour over a white
+  metal, folded into the base colour; but the frame reflects a metal's base
+  colour head on and the specular colour at grazing (`splat_relight`'s
+  Schlick to the edge), and the edge stayed white. The read-back now carries
+  the tint over the metal's or the specular's reflection too
+  (`reflectionTint`, a fourth plane) and multiplies the record's specular
+  colour by it.
+- **The onyx compiled in no kernel.** `hextiledimage` has no genslang
+  implementation, so MaterialX takes genglsl's `mx_hextile.glsl`, whose
+  `dFdx` the generator writes as `ddx` -- a fragment stage's, which a compute
+  kernel has not ("unavailable features in entry point"). A generated
+  source's `ddx(` and `ddy(` calls are now the quad's (`atheneaDdx`), as
+  bump's are. In a kernel that does not walk quads -- the bake, a shadow
+  ray -- the difference is to a neighbour that is not one, which moves the
+  map's level of detail and nothing else.
+
+The run's step under goegap failed at its first material, the carpaint, a
+material of constants: "cannot make a pipeline for ..._shade_shadowed_
+cloudshadow", after "Unable to reach MTLCompilerService ... Broken pipe".
+That is Metal's compiler service gone (the window manager hung minutes
+later, and the TX gate after it could not reach the service at all), not
+the kernel: the same kernel for the same materials had built minutes
+before under autoshop. `run_matx.py` now stops on that line as it stops on
+"Reentrancy avoided".
 
 **How it is checked.** `[material][readback]`: three surface shaders
 compiled, evaluated at 4096 points of random normal and view, and their
@@ -13142,7 +13188,7 @@ held to `baseline.csv` as the gate holds them.
 
 ### Not done
 
-- Measured on the GPU: not yet (the run is `gpu_m1.sh`'s).
+- Under goegap, and the TX gate: not yet (m2).
 - A transmitting material keeps its base colour as read: the conversion
   tints it towards the transmission colour, which the colour read back has
   no room for.

@@ -841,12 +841,14 @@ un material así los lee del propio material: el primer vértice del path tracer
 evalúa de todos modos el material compilado en la gaussiana, y con
 `BakePoints::material` reduce esa pila de lóbulos a los números de la
 gaussiana (`athenea/material/material_sample`) y los promedia sobre las
-muestras en tres planos tras los del transfer; `m2sTransferInto` escribe en su
+muestras en cuatro planos tras los del transfer; `m2sTransferInto` escribe en su
 registro los campos que nombra la palabra `samplings` de la gaussiana. La
 reducción lee dos cosas que los closures dejan en cada lóbulo: los colores que
 le ponen los nodos `multiply` (`lobeTint`, por donde el color del coat llega a
 la base) y de cuántos nodos `layer` es la base (`lobeLayersOver`, por donde se
-distingue un coat del especular). Un material de constantes y mapas simples no
+distingue un coat del especular), en un kernel que exporta `kAtheneaMarkLobes`
+como verdadero -- una constante de enlace, falsa en todos los demás, así que
+ningún otro kernel crece por ella. Un material de constantes y mapas simples no
 muestrea nada.
 
 ### 6.6 El bake de luz

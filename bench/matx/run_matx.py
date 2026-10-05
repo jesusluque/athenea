@@ -148,7 +148,10 @@ def run_one(e, sky, results, fingerprint):
     key, cached = gt_restore(e, sky, run_dir, fingerprint)
     out, code, wall = sh(convert_args(m.stage_path(e), run_dir, sky), os.path.join(run_dir, "mesh2splat.log"))
     # Whatever would make every later run fail the same way stops the sweep, with no result written.
-    for fatal, code_out in (("Reentrancy avoided", 3), ("no Measure bundle", 4)):
+    # "Unable to reach MTLCompilerService": Metal's compiler service died (m1, 09:35: every kernel after
+    # it fails to build, whatever it is, and the window manager hung with it).
+    for fatal, code_out in (("Reentrancy avoided", 3), ("Unable to reach MTLCompilerService", 3),
+                            ("no Measure bundle", 4)):
         if fatal in out:
             print(f"[matx] '{fatal}' in {e['id']}'s log: the sweep stops (see {run_dir}/mesh2splat.log)", flush=True)
             sys.exit(code_out)

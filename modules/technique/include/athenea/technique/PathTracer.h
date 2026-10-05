@@ -115,7 +115,8 @@ struct BakePoints {
     /// each point's first vertex, averaged over its samples, in
     /// `kBakeMaterialPlanes` planes after everything else -- (base colour,
     /// the share of it a diffuse lobe gave), (roughness, metalness, the
-    /// coat's roughness, 0), (emission, the samples) -- with -1 where the
+    /// coat's roughness, 0), (emission, the samples), (the tint over the
+    /// metal's or the specular's reflection, 0) -- with -1 where the
     /// material had no such lobe (`athenea/material/material_sample`). What
     /// a conversion uses where an input is computed by a graph and a
     /// constant or a plain map cannot carry it.
@@ -123,7 +124,7 @@ struct BakePoints {
 };
 
 /// The planes a transfer that reads the material back writes after the rest.
-inline constexpr uint32_t kBakeMaterialPlanes = 3;
+inline constexpr uint32_t kBakeMaterialPlanes = 4;
 [[nodiscard]] inline uint32_t bakeMaterialPlanes(bool transfer, bool material) noexcept {
     return transfer && material ? kBakeMaterialPlanes : 0u;
 }
