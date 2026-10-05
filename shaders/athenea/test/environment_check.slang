@@ -189,3 +189,36 @@ void environmentEnergy(uint3 tid: SV_DispatchThreadID) {
     }
     worst[0] = sum + carry;
 }
+
+
+/// WHAT THE FRAME'S OWN LOOKUP READS IN ALL (research 078 sec 11): the map
+/// read through `envRadiance` -- the levels it blends, the octahedral texel
+/// it lands in, bilinear -- at roughness `readRoughness`, integrated over the
+/// sphere along a Fibonacci spiral of `count` directions. A read that loses
+/// light where the level holds it loses it here. worst[0] the integral.
+struct EnvReadParams {
+    uint  dome;
+    uint  count;
+    uint  baseSide;
+    float readRoughness;
+};
+ConstantBuffer<EnvReadParams> reads;
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void environmentReadEnergy(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    float sum = 0.0;
+    float carry = 0.0;
+    for (uint i = 0; i < reads.count; ++i) {
+        const float3 d = spiralDirection(i, reads.count);
+        const float term =
+            dot(envRadiance(envTexels, reads.dome, d, reads.readRoughness, reads.baseSide), float3(0.2126, 0.7152, 0.0722));
+        const float t = sum + term;
+        carry += abs(sum) >= abs(term) ? (sum - t) + term : (term - t) + sum;
+        sum = t;
+    }
+    worst[0] = (sum + carry) * (4.0 * 3.14159265358979 / float(reads.count));
+}

@@ -464,6 +464,44 @@ TEST_CASE("a compact bright source prefilters to a single lobe", "[technique][en
                     double(held) / source);
         CHECK(double(held) == Catch::Approx(source).epsilon(0.02));
     }
+    // AND THE FRAME'S OWN READ KEEPS IT: `envRadiance` -- the levels blended,
+    // the octahedral texel, bilinear -- integrated over the sphere at the
+    // roughness of each level and between them (the paint's 0.34), against
+    // the source. The floating ball lost a fifth more than the split sum
+    // explains at a forced level whose integral was whole (research 078 sec
+    // 11); a read that loses light shows here.
+    auto readKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/environment_check", "environmentReadEnergy");
+    if (!readKernel) FAIL(readKernel.error().toString());
+    for (const float roughness : {0.0816F, 0.1837F, 0.3265F, 0.3421F, 0.5102F, 0.7347F}) {
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "environment.read");
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        const std::array<float, 8> zeros{};
+        auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+        REQUIRE(worst);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            readKernel->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["envTexels"].setBinding(environment->texels().rhi());
+                cursor["envSh"].setBinding(environment->sh().rhi());
+                cursor["stats"].setBinding(stats.rhi());
+                cursor["worst"].setBinding(worst->rhi());
+                cursor["params"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["dome"].setData(uint32_t{0});
+                cursor["reads"]["dome"].setData(uint32_t{0});
+                cursor["reads"]["count"].setData(uint32_t{262144});
+                cursor["reads"]["baseSide"].setData(environment->baseSide());
+                cursor["reads"]["readRoughness"].setData(roughness);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        float read = 0.0F;
+        REQUIRE(worst->read(*gpu->device, 0, sizeof(read), &read));
+        std::printf("  read at roughness %.4f: %.4f of the source's %.4f (%.4f)\n", double(roughness), double(read),
+                    source, double(read) / source);
+        CHECK(double(read) == Catch::Approx(source).epsilon(0.02));
+    }
 }
 
 // A SUN IS TAKEN OUT OF THE PREFILTERED SKY (s90). The split sum reads a compact
