@@ -449,7 +449,7 @@ if(ATHENEA_PYTHON3)
         LABELS "gpe;matx;slow")
     # WHAT ONLY THE MATERIAL CAN SAY (bench/matx/check_sampled.py): the
     # shader balls whose base colour a graph computes, a tiled map carries
-    # or a coat colour tints -- brick, brass, wood, marble, onyx -- keep
+    # or a coat colour tints -- brick, brass, wood, marble, onyx, copper -- keep
     # their colour against the path traced mesh, and the six above stay
     # where baseline.csv has them.
     add_test(NAME matx_sampled

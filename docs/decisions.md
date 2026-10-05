@@ -13174,12 +13174,35 @@ the kernel: the same kernel for the same materials had built minutes
 before under autoshop. `run_matx.py` now stops on that line as it stops on
 "Reentrancy avoided".
 
+**m2** (the five under both skies): onyx 0.099 and 0.107; brick, wood and
+marble kept their colour under goegap too. The brass did not: 0.75 / 0.83 /
+1.04 of the GT under the shop, 0.42 / 0.47 / 0.63 under goegap. Its level is
+the TX metal's under a compact light (the balls' 0.54 to 0.83), not this;
+its hue is. Split by region (the triptych, cut by window), the body and the
+interior keep the GT's hue to a few per cent (b/g 0.388 against 0.370,
+0.349 against 0.324); what is off is the mixture. Decomposing each mean
+into the metal's gold (the interior's hue) and a neutral part: the cloud's
+metal stands at 0.73 of the GT's and its neutral part at 1.9 times. One
+neutral part is the folded tint itself: a conductor's Fresnel goes white at
+grazing whatever its two ends say -- the frame's environment term for a
+standard_surface metal is MaterialX's artistic index made from them -- so
+gold folded into both ends still whitens at the rim. Over a sphere's disc,
+smooth, that is b/g 0.413 where the tint outside a white conductor gives
+0.339 (a fifth too blue, as measured); a Schlick's two ends are linear in
+the tint, and give 0.339 exactly. So a standard_surface metal whose colour
+comes through its coat is now carried as a Schlick metal
+(`StageMaterial::schlickMetal`, a per-material decision): F0 the tinted
+reflectivity, F90 the tinted edge. The coat's colour is applied once in the
+GT as here (`coat_attenuation` multiplies the base's BSDF once); the
+standard_surface copper, a constant coat colour over its metal (0.66 / 1.84 /
+2.51 in the first sweep), is the same case and joins the five.
+
 **How it is checked.** `[material][readback]`: three surface shaders
 compiled, evaluated at 4096 points of random normal and view, and their
 stacks read back against the inputs they were authored with -- a dielectric
 under a tinted coat, a pale metal under a gold one, a plain OpenPBR -- to
 2e-3. `matx_sampled` (`bench/matx/check_sampled.py`, label `matx`): brick,
-brass, wood, marble and onyx converted with `--transfer` on the shader ball
+brass, wood, marble, onyx and copper converted with `--transfer` on the shader ball
 and measured against the path traced mesh, with nothing said per material:
 each channel's mean within 0.70 to 1.45 of the GT's and the three within
 1.25 of each other (the white brick was 3.8 apart, the silver brass 4.3), the
@@ -13188,7 +13211,11 @@ held to `baseline.csv` as the gate holds them.
 
 ### Not done
 
-- Under goegap, and the TX gate: not yet (m2).
+- The brass's level under a compact light, and the goegap means of the
+  other four a little low in red (0.79 and 0.74 of the GT for brick and
+  wood): the TX metal's and the sun's own open questions, measured again
+  once those land.
+- The TX gate on this branch (m2's was running when this was written).
 - A transmitting material keeps its base colour as read: the conversion
   tints it towards the transmission colour, which the colour read back has
   no room for.

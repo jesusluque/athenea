@@ -257,7 +257,7 @@ python3 compare_matx.py                                                     # fr
 (unos diez minutos) y falla donde el relMSE de TX es más de un 5% peor que
 en `baseline.csv` o la razón de medias de un canal se ha movido más de 0,05.
 `matx_sampled` (misma etiqueta) convierte los cinco cuyo color base solo
-puede decir el material -- ladrillo, latón, madera, mármol, ónice -- y exige
+puede decir el material -- ladrillo, latón, madera, mármol, ónice, cobre -- y exige
 que conserven su color frente a la malla trazada (`check_sampled.py`).
 `compare_matx.py --write-baseline` reescribe la referencia a partir de un
 barrido; cambia en el commit cuyo efecto registra. `MATX_MX_RESOURCES`,

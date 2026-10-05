@@ -728,6 +728,17 @@ void warnOnce(const std::string& material, const std::string& topic, std::format
                 const bool white = coatColour[0] == 1.0F && coatColour[1] == 1.0F && coatColour[2] == 1.0F;
                 if (!white || connected("coat_color")) {
                     out.sampled |= M::kSampleBaseColour;
+                    // AND ITS METAL A SCHLICK. The coat's colour multiplies
+                    // the metal's whole reflection, grazing included, and the
+                    // conversion folds it into the metal's two ends. A
+                    // conductor's Fresnel goes white at grazing whatever its
+                    // ends say, so folded into one the rim whitened: the
+                    // brass ball's mean came back a fifth too blue. A
+                    // Schlick's F0 and F90 are linear in the tint, so the
+                    // fold is exact there (decisions.md, matx).
+                    if (out.metallic > 0.0F || !out.metallicMap.empty()) {
+                        out.schlickMetal = true;
+                    }
                 }
             }
             if (graph(preview || gltf ? "roughness" : "specular_roughness")) {

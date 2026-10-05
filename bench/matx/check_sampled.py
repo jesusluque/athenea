@@ -9,7 +9,8 @@ constant the stage reader fell back on: the brick white, the brass silver. The T
 fields back from the material on the device (StageMaterial::sampled). What this holds, with nothing said
 per material:
 
-  - SAMPLED (brick, brass, wood, marble, onyx): the cloud keeps the material's colour -- each channel's
+  - SAMPLED (brick, brass, wood, marble, onyx, and copper, whose colour is a constant coat colour over
+    its metal): the cloud keeps the material's colour -- each channel's
     mean within [0.70, 1.45] of the GT's, and the three channels' ratios within 1.25 of each other (a
     white brick against red bricks is 3.8 apart, an untinted brass 4.3) -- and its relMSE is within
     twice the mesh raster's plus 0.1 (the mesh raster is the reference column, not the target);
@@ -31,7 +32,7 @@ import matx_common as m
 
 SAMPLED = ["mx_standard_surface_brick_procedural", "mx_standard_surface_brass_tiled",
            "mx_standard_surface_wood_tiled", "mx_standard_surface_marble_solid",
-           "mx_standard_surface_onyx_hextiled"]
+           "mx_standard_surface_onyx_hextiled", "mx_standard_surface_copper"]
 RATIO_LOW, RATIO_HIGH = 0.70, 1.45
 CHROMA = 1.25
 

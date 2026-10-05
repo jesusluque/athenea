@@ -252,7 +252,7 @@ python3 compare_matx.py                                                     # ag
 (about ten minutes) and fails where TX's relMSE is more than 5% worse than
 `baseline.csv` or a channel's mean ratio moved by more than 0.05.
 `matx_sampled` (same label) converts the five whose base colour only the
-material can say -- brick, brass, wood, marble, onyx -- and holds their
+material can say -- brick, brass, wood, marble, onyx, copper -- and holds their
 colour against the path traced mesh (`check_sampled.py`).
 `compare_matx.py --write-baseline` rewrites the baseline from a sweep; it
 changes in the commit whose effect it records. `MATX_MX_RESOURCES`,
