@@ -102,8 +102,8 @@ void environmentCheck(uint3 tid: SV_DispatchThreadID) {
 
 
 /// A ROUGH LEVEL HOLDS A COMPACT BRIGHT SOURCE AS ONE LOBE: the texels of
-/// `level` brighter than a fiftieth of the level's brightest and brighter than
-/// all eight neighbours. One where the prefilter converged; a scatter of them
+/// `level` over a quarter of the way from its darkest to its brightest and
+/// brighter than all eight neighbours. One where the prefilter converged; a scatter of them
 /// where its samples hit the source in a pattern (s81).
 /// stats[0] such peaks, stats[1] texels scanned; worst[0] the brightest.
 struct EnvPeaksParams {
@@ -126,16 +126,21 @@ void environmentPeaks(uint3 tid: SV_DispatchThreadID) {
     }
     const uint side = envSideOf(peaks.level, peaks.baseSide);
     float brightest = 0.0;
+    float darkest = 3.0e38;
     for (uint y = 0; y < side; ++y) {
         for (uint x = 0; x < side; ++x) {
             brightest = max(brightest, peakLum(uint2(x, y)));
+            darkest = min(darkest, peakLum(uint2(x, y)));
         }
     }
+    // Over a quarter of the way from the sky's floor to the brightest: a
+    // source on a grey sky as well as on a black one.
+    const float above = darkest + 0.25 * (brightest - darkest);
     uint found = 0;
     for (uint y = 1; y + 1 < side; ++y) {
         for (uint x = 1; x + 1 < side; ++x) {
             const float v = peakLum(uint2(x, y));
-            if (v < brightest / 50.0) {
+            if (v < above) {
                 continue;
             }
             bool top = true;

@@ -359,7 +359,7 @@ private:
     /// A slot each beside `proj_`: a TX transfer's reflection's slope across
     /// the footprint, read where the record is marked (frame.slang's kSlopeMark).
     gpu::Buffer slopes_;
-    gpu::Buffer sharpPolish_;   ///< a sharp record's base polish, two words a slot (kSharpMark)
+    gpu::Buffer sharpPolish_;   ///< a sharp record's base polish and its sun weights, four words a slot (kSharpMark)
     gpu::Buffer visibleOffsets_, visibleTotal_, touchedOffsets_, touchedTotal_;
     gpu::SortBuffers depthSort_;   // keysLo = visible depth keys, values = splat index
     gpu::Buffer sortedCounts_, offsets_, totalPairs_;

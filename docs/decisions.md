@@ -12002,6 +12002,33 @@ their lobes are narrower than their own texels, so a texel read the sky at
 its centre only and a source smaller than the spacing fell between centres.
 Each sample now reads the source at least as wide as the texel it writes.
 
+### The sun goes through a reflection analytically
+
+A floating metal ball (no ground, nothing to occlude it) read 0.999 of the
+path traced under a white dome and 0.74 under a sky that is one compact sun,
+and forcing the polish to each prefiltered level from 2 to 6 never reached
+the path traced (0.57-0.74; s90) while every level held the sun's light
+(0.98-0.99). Not the map and not the level: the split sum -- the sky
+prefiltered with the eye along the normal, times the lobe's directional
+albedo -- is right for a sky that changes slowly across a lobe and wrong for
+a compact source, worst at the limb.
+
+So the prefiltered map is the sky without its sun (env_prefilter's
+`skyResidualAt`: each read loses the sun's share of the footprint it
+averages, a cone of the same solid angle against the sun's disc), and the
+sun comes back analytically through each lobe (`sunReflectPdf`: the lobe's
+distribution of reflected directions with the eye along the normal, D(h)/4
+for the half vector between the mirror and the sun, the disc folded into
+alpha; it integrates to one, so weight x irradiance x it is the sun's whole
+reflection, put where the lobe sends it), by the share of the sun the cells
+let through. That replaces the shadowed share the polish and the coat took
+back out of a map that held the sun. Per pixel where the lobe is sharp: the
+sun's weights ride with the polish's in `sharpPolish`, now four words a slot,
+and the blend evaluates the lobe at each pixel's mirror. Tested: a source too
+dim to be a sun stays one peak and every level its light; a sun is taken out
+of every level 2-6 to 2% of the sky and leaves no texel brighter than fifty
+times the sky (`[prefilter]`).
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

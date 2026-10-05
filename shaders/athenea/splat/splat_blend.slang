@@ -7,6 +7,7 @@ import athenea.common.packing;
 import frame;
 import athenea.common.octahedral;
 import athenea.light.environment;
+import splat_relight;
 
 StructuredBuffer<uint>      ranges;
 StructuredBuffer<uint>      pairSplats;
@@ -15,7 +16,9 @@ StructuredBuffer<uint4>     slopes;   // a slot each, read where the record is m
 // The first dome's prefiltered sky, which a sharp lobe reads per pixel
 // (kSharpMark; athenea/light/environment.slang). Bound whether or not one is.
 StructuredBuffer<uint>      envTexels;
-StructuredBuffer<uint2>     sharpPolish;   // a sharp record's base polish (kSharpMark)
+StructuredBuffer<uint4>     sharpPolish;   // a sharp record's base polish and its sun weights (kSharpMark)
+// The first dome's sun, as env_sun hands it over: (direction, half angle), (irradiance, threshold).
+StructuredBuffer<float4>    envSun;
 // What is under the splats: a rasterised point layer (or nothing: bound to a
 // placeholder with params.hasUnder == 0). Linear, premultiplied, bottom row first.
 StructuredBuffer<float4>    underColour;
@@ -239,10 +242,19 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 // The base's polish along the same mirror, its weight and
                 // roughness read from memory: one record's for every pixel
                 // of the tile, so it stays in cache.
-                const uint2 p = sharpPolish[sSplats[j]];
+                const uint4 p = sharpPolish[sSplats[j]];
                 const float3 polish = float3(lowHalf(p.x), highHalf(p.x), lowHalf(p.y));
                 if (any(polish > float3(0.0))) {
                     sky += polish * envRadiance(envTexels, 0u, mirror, highHalf(p.y), params.envBaseSide);
+                }
+                // The sun, which the map does not hold: through each lobe at
+                // this pixel's mirror (splat_relight's sunReflectPdf).
+                const float4 disc = envSun[0];
+                if (disc.w > 0.0) {
+                    const float3 irradiance = envSun[1].rgb;
+                    const float3 polishSun = float3(lowHalf(p.z), highHalf(p.z), lowHalf(p.w));
+                    sky += irradiance * (polishSun * sunReflectPdf(mirror, disc.xyz, highHalf(p.y), disc.w) +
+                                         highHalf(p.w) * sunReflectPdf(mirror, disc.xyz, highHalf(w.w), disc.w));
                 }
                 shade = max(shade + sky, float3(0.0));
             }

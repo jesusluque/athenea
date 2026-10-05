@@ -153,7 +153,7 @@ Result<void> TileRasterizer::reserveSplats(uint32_t count) {
     };
     ATHENEA_TRY(assign(proj_, n, 48, "splat.proj"));
     ATHENEA_TRY(assign(slopes_, n, 16, "splat.slopes"));
-    ATHENEA_TRY(assign(sharpPolish_, n, 8, "splat.sharpPolish"));
+    ATHENEA_TRY(assign(sharpPolish_, n, 16, "splat.sharpPolish"));
     ATHENEA_TRY(assign(cryptoIds_, n, 4, "splat.cryptoIds"));
     ATHENEA_TRY(assign(tileRects_, uint64_t{n} * 4, 4, "splat.tileRects"));
     ATHENEA_TRY(assign(tilesTouched_, n, 4, "splat.tilesTouched"));
@@ -644,6 +644,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         // The first dome's sky, which a sharp lobe reads per pixel (kSharpMark).
         const bool sky = lights != nullptr && lights->environment();
         cursor["envTexels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());
+        cursor["envSun"].setBinding(sky ? lights->envSun->rhi() : emptyEnvSh_.rhi());
         cursor["underColour"].setBinding(under != nullptr ? under->colour.rhi() : placeholderColour_.rhi());
         cursor["underDepth"].setBinding(under != nullptr ? under->depth.rhi() : placeholderDepth_.rhi());
         cursor["colour"].setBinding(targets.colour.rhi());

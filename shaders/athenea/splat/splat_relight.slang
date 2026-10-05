@@ -1101,6 +1101,27 @@ public void transferViewless<let kCells : int>(SplatSurface s, StructuredBuffer<
 /// it reads along the centre's, times what the reflection is weighed by.
 /// A rasteriser adds that slope over the footprint, so a gaussian draws the
 /// highlight moving across it rather than its centre's flat over all of it.
+/// THE SUN IN A REFLECTION, ANALYTIC. The prefiltered sky is the sky without
+/// its sun (env_prefilter's residual): the split sum is right for a sky that
+/// changes slowly across a lobe and a quarter short for a compact sun -- a
+/// floating metal ball under one read 0.57-0.74 of the path traced at every
+/// level the map holds (s90). So the sun comes back as what it is, a light
+/// of irradiance E from one direction, through the lobe's own distribution of
+/// reflected directions: with the eye along the normal, as the map assumes,
+/// that is D(h) / 4 for the half vector between the mirror and the sun, and
+/// it integrates to one over the sphere -- so a lobe's weight (its
+/// directional albedo, the split sum's other half) times E times this is the
+/// sun's whole reflection, put where the lobe sends it. The disc is folded
+/// into the lobe's width (its half angle added in quadrature to alpha).
+public float sunReflectPdf(float3 mirror, float3 toSun, float roughness, float discHalfAngle) {
+    const float alpha = max(roughness * roughness, 1.0e-3);
+    const float a2 = alpha * alpha + discHalfAngle * discHalfAngle;
+    const float cosTheta = clamp(dot(mirror, toSun), -1.0, 1.0);
+    const float cosHalf2 = saturate(0.5 * (1.0 + cosTheta));   // cos^2 of the half angle
+    const float d = cosHalf2 * (a2 - 1.0) + 1.0;
+    return a2 / (3.14159265358979 * d * d) * 0.25;
+}
+
 /// The roughest coat drawn per pixel (SplatSlope's sharp lobe): past it the
 /// prefiltered sky is smooth enough over a footprint for the slope to hold.
 public static const float kSharpRoughness = 0.2;
@@ -1148,6 +1169,13 @@ public struct SplatSlope {
     public float3 sharpPolish;
     public float  sharpPolishRoughness;
     public float3 sharpPolishSeen;
+    /// The sun through each sharp lobe, per pixel too (sunReflectPdf): the
+    /// coat's weight as a luminance and the polish's as rgb, each times the
+    /// share of the sun the cells let through, and what the centre's own sun
+    /// came to, taken out of the colour with the centre's sky.
+    public float  sharpSunCoat;
+    public float3 sharpSunPolish;
+    public float3 sharpSunCentre;
     /// Either lobe handed back: the mirror and its turn are written.
     public bool   sharpOn;
 };
@@ -1175,6 +1203,9 @@ public SplatSlope noSlope() {
     g.sharpPolishRoughness = 1.0;
     g.sharpPolishSeen = float3(0.0);
     g.sharpOn = false;
+    g.sharpSunCoat = 0.0;
+    g.sharpSunPolish = float3(0.0);
+    g.sharpSunCentre = float3(0.0);
     return g;
 }
 
@@ -1304,22 +1335,20 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // and 0.128, for the same mean. The coat keeps the cells (below).
         const float narrowed =
             s.reflectionTraced ? 1.0 : specularOpenness(nDotV, splatOpenness(s, transfer), s.roughness);
-        // THE SUN IN THE POLISH. The prefiltered map kept its disc, so what
-        // the polish reads carries the sun whether or not anything stands in
-        // its way -- on a rough surface a broad lobe of it, and on a metal all
-        // of the sun there is, since a metal has no body to shadow. The share
-        // that does not get through is taken back out as the analytic lobe of
-        // a directional light of that irradiance, which is what the map's own
-        // sun is where the surface is rough enough for it to matter. On a
-        // mirror the analytic lobe is a spike the map does not hold, so the
-        // sum is clamped rather than let go below nothing. A traced
-        // reflection replaced the map and has no sun of its own to take back.
-        const float3 shadowedSun = s.hasReflection
-                                       ? float3(0.0)
-                                       : specularLobe(s, wo, disc.xyz) * irradiance * (cosine * (1.0 - sunShare));
+        // THE SUN IN THE POLISH, analytic (sunReflectPdf): the map no longer
+        // holds it, so what the polish reflects of it is its lobe's weight
+        // times the irradiance through the lobe, by the share the cells let
+        // through. Before, the map kept the sun and its shadowed share was
+        // taken back out; a compact sun read through the split sum came out a
+        // quarter short whatever the level (s90). A traced reflection replaced
+        // the map and brings what it found.
+        const float3 sunPolish = s.hasReflection || !(disc.w > 0.0)
+                                     ? float3(0.0)
+                                     : splatPolish(s, nDotV) * irradiance *
+                                           (sunShare * sunReflectPdf(mirror, disc.xyz, s.roughness, disc.w));
         // THE COAT: the same reflection at its own roughness and index, over
         // everything, narrowed by what this gaussian sees of the sky at that
-        // roughness, and with its own share of a shadowed sun taken back out.
+        // roughness, and its own analytic sun by the share the cells let through.
         float3 coat = float3(0.0);
         if (coated) {
             const float3 coatSeen = s.hasReflection
@@ -1329,9 +1358,10 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
                 s.reflectionTraced ? 1.0
                 : cells            ? splatLobeOpen(s, cellBits, mirror, s.lobes.coatRoughness, s.normal)
                                    : specularOpenness(nDotV, splatOpenness(s, transfer), s.lobes.coatRoughness);
-            const float3 coatSun = s.hasReflection
+            const float3 coatSun = s.hasReflection || !(disc.w > 0.0)
                                        ? float3(0.0)
-                                       : coatLobe(s, wo, disc.xyz) * irradiance * (cosine * (1.0 - sunShare));
+                                       : layers.coat * irradiance *
+                                             (sunShare * sunReflectPdf(mirror, disc.xyz, s.lobes.coatRoughness, disc.w));
             // A coat smooth enough is drawn per pixel (SplatSlope's sharp
             // lobe): the first dome's, where the cloud keeps the curvature
             // the mirror turns by.
@@ -1344,13 +1374,14 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
                 slope.sharpMirrorX = reflect(-wo, slope.normalX);
                 slope.sharpMirrorY = reflect(-wo, slope.normalY);
                 slope.sharpOn = true;
+                slope.sharpSunCoat = dot(layers.coat, float3(0.2126, 0.7152, 0.0722)) * sunShare;
+                slope.sharpSunCentre += coatSun;
             }
-            coat = field ? max(layers.coat * (coatNarrowed * coatSeen +
-                                              (1.0 - coatNarrowed) * coupling *
-                                                  fieldCoat) -
-                                   coatNarrowed * coatSun,
-                               float3(0.0))
-                         : max(layers.coat * coatNarrowed * coatSeen - coatNarrowed * coatSun, float3(0.0));
+            coat = (field ? max(layers.coat * (coatNarrowed * coatSeen +
+                                               (1.0 - coatNarrowed) * coupling * fieldCoat),
+                                float3(0.0))
+                          : layers.coat * coatNarrowed * coatSeen) +
+                   coatSun;
         }
         // THE SHEEN: a lobe as broad as a body's, so it is answered as one --
         // its albedo at this eye times the light the transfer says reaches
@@ -1368,6 +1399,8 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
                 slope.sharpPolish = polishWeight;
                 slope.sharpPolishRoughness = s.roughness;
                 slope.sharpPolishSeen = seen;
+                slope.sharpSunPolish = layers.under * thinWallGain(s) * splatPolish(s, nDotV) * sunShare;
+                slope.sharpSunCentre += layers.under * thinWallGain(s) * sunPolish;
                 slope.sharpMirror = mirror;
                 slope.sharpMirrorX = mirrorX;
                 slope.sharpMirrorY = mirrorY;
@@ -1395,14 +1428,13 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             const float3 closed = float3(0.0);
             return body2 +
                    layers.under * thinWallGain(s) *
-                       max(splatPolish(s, nDotV) * (narrowed * seen + (1.0 - narrowed) * closed) -
-                               narrowed * shadowedSun,
-                           float3(0.0)) +
+                       (max(splatPolish(s, nDotV) * (narrowed * seen + (1.0 - narrowed) * closed), float3(0.0)) +
+                        sunPolish) +
                    coat + sheen;
         }
         return body2 +
                layers.under * thinWallGain(s) *
-                   max(splatPolish(s, nDotV) * narrowed * seen - narrowed * shadowedSun, float3(0.0)) +
+                   (splatPolish(s, nDotV) * narrowed * seen + sunPolish) +
                coat + sheen;
     }
     float3 above, behind, reflected;

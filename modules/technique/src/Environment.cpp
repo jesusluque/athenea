@@ -197,6 +197,7 @@ Result<void> Environment::build(const light::LightTable& table, const material::
             textures.bind(cursor["gTextures"]);
             cursor["domeLights"].setBinding(sliceBuffer->rhi());
             cursor["texelsOut"].setBinding(texels_.rhi());
+            cursor["sun"].setBinding(sun_.rhi());   // the map is the sky without its sun
             cursor["params"]["domes"].setData(domes);
             cursor["params"]["level"].setData(level);
             cursor["params"]["samples"].setData(samplesOf(level));
