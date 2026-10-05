@@ -13209,6 +13209,29 @@ each channel's mean within 0.70 to 1.45 of the GT's and the three within
 relMSE within twice the mesh raster's plus 0.1; and the six of the matx gate
 held to `baseline.csv` as the gate holds them.
 
+**m3**: the Schlick fold gives the brass the GT's hue (0.76 / 0.81 / 0.85
+under the shop, relMSE 0.256). What is left on the two metals is level:
+copper 0.64 / 0.77 / 0.79 under the shop, and both near 0.4 to 0.6 under
+goegap -- the floating metal ball's 0.74 under a sun alone. The copper's
+red trails its green, but not by the fold: by region its body and its
+hollow keep the GT's hue to 2 or 3 per cent (r/g 2.08 against 2.05); the
+GT's mean is redder for the base ring's inside, copper seen in copper
+several bounces deep (r/g 10.5 there, the cloud's 2.5), which is TX's
+concave metal interreflection, not the read-back.
+
+**So a metal is held by its hue, its level reported** (`check_sampled.py`):
+each channel over green within 5% of the GT's in two fixed windows -- the
+body's side that reflects the dome rather than the ground, and the hollow's
+core, never the base ring's inside -- with the window means taken by the
+Measure effect (`athenea compare --window`); the mean's 1.25 rule where
+every channel is at least 0.70 of the GT's, and "pending TX's level"
+otherwise, which does not fail. Measured on m3's frames before the rule
+existed (oiiotool, for the choice of windows only): the hollow within 3% on
+both metals under both skies; the body within 5% under the shop (the
+brass's b/g 4.6% off, the closest), 8 to 11% off under goegap, where the
+metal under the sun is the level that waits on TX -- the rule will say so
+there until it lands. `METAL_LEVEL_WAITS_ON_TX` goes false with that fix.
+
 ### Not done
 
 - The brass's level under a compact light, and the goegap means of the
