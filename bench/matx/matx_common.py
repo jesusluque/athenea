@@ -68,7 +68,7 @@ GT_CACHE = os.path.expanduser(os.environ.get("MATX_GT_CACHE", os.path.join(HOME,
 #  - GT_EPOCH, bumped by hand in the commit that changes how the path tracer's kernel is
 #    generated or bound in C++ (technique/src/PathTracer.cpp, usd/src/StageRenderer.cpp),
 #    which no shader file shows.
-GT_EPOCH = 1
+GT_EPOCH = 2   # 2: 6c422c7, the dome's area mips (every GT under an image dome since 2ef1ca1 was too bright)
 GT_BOUNCES = 6     # --validate-bounces' default; part of the key
 PT_SHADER_DIRS = ("algo", "common", "geom", "light", "material", "rt", "scene", "volume", "world", "technique")
 
