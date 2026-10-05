@@ -212,6 +212,7 @@ void envSun(uint3 tid: SV_DispatchThreadID) {
     float3 delivered = float3(0.0);
     float3 centre = float3(0.0);
     float solid = 0.0;
+    float weight = 0.0;
     if (region.found) {
         const TextureRecord record = gTextures.records[light.texture];
         const uint w = max(uint(record.width) >> params.projectLevel, 1u);
@@ -234,14 +235,26 @@ void envSun(uint3 tid: SV_DispatchThreadID) {
                 const float omega = sinTheta * area;
                 delivered += rgb * omega;
                 centre += dir * (dot(rgb, kSunGrey) * omega);
+                weight += dot(rgb, kSunGrey) * omega;
                 solid += omega;
             }
         }
     }
-    const bool isSun = region.found && solid > 0.0 && dot(centre, centre) > 0.0;
-    const float3 direction = isSun ? normalize(centre) : region.axis;
     // The cone it stands in: the solid angle's own, as a disc would.
-    const float cone = isSun ? acos(saturate(1.0 - solid / (2.0 * kSunPi))) : 0.0;
+    const float discCone = solid > 0.0 ? acos(saturate(1.0 - solid / (2.0 * kSunPi))) : 0.0;
+    // A SUN IS A DISC, not a scatter. Its texels' light-weighted spread about
+    // their centre -- <theta^2> = 2 (1 - |mean direction|) -- is what a disc
+    // of that solid angle has, cone^2 / 2. A shop's lamps that pass the
+    // threshold within ten degrees of each other are no sun: taken out and
+    // given back as one disc at their centroid, they put one highlight where a
+    // chrome strip mirrors several, and the Corvette's chrome went 0.527 to
+    // 0.581 against the path traced frame (s94). A region spread past twice a
+    // disc's mean square angle stays in the sky (no sun is taken out).
+    const float spread = weight > 0.0 ? 2.0 * max(1.0 - length(centre) / weight, 0.0) : 0.0;
+    const bool compact = spread <= 2.0 * 0.5 * discCone * discCone + 1.0e-6;
+    const bool isSun = region.found && solid > 0.0 && dot(centre, centre) > 0.0 && compact;
+    const float3 direction = isSun ? normalize(centre) : region.axis;
+    const float cone = isSun ? discCone : 0.0;
     sunOut[dome * 2] = float4(direction, isSun ? max(cone, 1.0e-4) : 0.0);
     // The irradiance, and the threshold the region was cut at -- which is
     // what `env_project` cuts the same texels out of the harmonics with.

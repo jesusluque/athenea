@@ -595,3 +595,46 @@ TEST_CASE("a sun is taken out of the prefiltered sky", "[technique][environment]
         CHECK(brightest < 50.0F * kSky);
     }
 }
+
+// A SCATTER OF LAMPS IS NO SUN (s94). Three small bright sources a few degrees
+// apart pass the threshold within ten degrees of each other; taken out as one
+// disc at their centroid they put one highlight where a mirror shows three.
+// env_sun keeps a region only where its light is as concentrated as a disc of
+// its solid angle; this one stays in the sky.
+TEST_CASE("a scatter of lamps is not taken out as a sun", "[technique][environment][sun]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    constexpr uint32_t kW = 512, kH = 256;
+    std::vector<float> rgba(size_t{kW} * kH * 4, 0.0F);
+    for (uint32_t y = 0; y < kH; ++y) {
+        for (uint32_t x = 0; x < kW; ++x) {
+            float* t = rgba.data() + (size_t{y} * kW + x) * 4;
+            // three 1-texel lamps, about 5 degrees apart along the row
+            const bool lamp = y == 128 && (x == 250 || x == 257 || x == 264);
+            t[0] = t[1] = t[2] = lamp ? 3000.0F : 0.05F;
+            t[3] = 1.0F;
+        }
+    }
+    const fs::path exr = scratchPath("sky_lamps.exr");
+    REQUIRE(io::writeExr(exr, kW, kH, rgba, {}, /*half=*/false));
+    auto textures = material::TextureStore::create(*gpu->library);
+    if (!textures) FAIL(textures.error().toString());
+    light::Light lamp;
+    lamp.kind = light::LightKind::Dome;
+    lamp.texture = exr.string();
+    lamp.textureId = (*textures)->request(exr.string(), "raw");
+    lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    lamp.intensity = 1.0F;
+    lamp.shadow = false;
+    REQUIRE((*textures)->commit());
+    auto table = light::LightTable::create(*gpu->library);
+    if (!table) FAIL(table.error().toString());
+    REQUIRE(table->set(std::span<const light::Light>(&lamp, 1)));
+    auto environment = technique::Environment::create(*gpu->library);
+    if (!environment) FAIL(environment.error().toString());
+    const std::array<uint32_t, 1> domes{0};
+    const std::array<uint32_t, 1> textureIds{lamp.textureId};
+    REQUIRE(environment->build(*table, **textures, domes, textureIds, 1));
+    const SunReading sun = readSun(*gpu, *environment);
+    std::printf("  three lamps: cone %.4f (want 0: no sun)\n", double(sun.axis[3]));
+    CHECK(sun.axis[3] == 0.0F);
+}

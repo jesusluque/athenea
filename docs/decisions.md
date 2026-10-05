@@ -12051,6 +12051,22 @@ residual lat-long, mipped that way. GTs path traced under an image dome
 between 2ef1ca1 and this (from tx-s69) have to be traced again; white domes
 and the gate's Corvette GT, traced before, are not affected.
 
+### A sun is a disc, and the sharp levels read at their own footprint
+
+Two costs of the last steps, measured against the gate's unbiased Corvette
+frame by switching each off (s94): the analytic sun took the chrome from
+0.527 to 0.581, and the footprint floor of the sharp levels the paint from
+0.285 to 0.309 and the rims from 0.023 to 0.026. Chrome's mean was right,
+its placement not: under the shop, env_sun took a cluster of lamps within
+ten degrees of each other for a sun and gave it back as one disc at their
+centroid, one highlight where a chrome strip mirrors several. A sun is now
+a region whose light is as concentrated as a disc of its solid angle (its
+light-weighted mean square angle about its centre no more than twice a
+disc's, cone^2 / 2); a scatter stays in the sky, the map and the harmonics
+(`[sun]` test: three lamps five degrees apart are no sun). And the floor is
+gone: with the sun out of the map the sharp levels read each sample at its
+own footprint again; the energy and read-back tests hold on what is left.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew
