@@ -11965,7 +11965,10 @@ and once per gaussian. So the base's polish smoother than
 and turn: its weight (rgb, a metal's colour) and roughness in a buffer of
 two words a slot (`sharpPolish`), read from memory beside the group's
 records -- the group memory is full. A sharp record no longer carries the
-polish's ramp.
+polish's ramp. Measured (s76): the fender's blotches did not go (they are not
+the lookup), but the gate passed whole for the first time -- the Corvette's
+chrome 0.585 to 0.545, under the first transfer's 0.551 -- with the rest
+unchanged (paint 0.281, rough metal 0.083, windshield 0.064).
 
 ### A TX frame computes what the eye changes (playback)
 
