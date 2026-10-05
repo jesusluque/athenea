@@ -30,6 +30,8 @@ struct EnvPrefilterParams {
     uint  sourceLevel; ///< the coarsest source level a sample may read
     uint  baseSide;    ///< the octahedral side of level 0, this sky's own
     float roughness;   ///< of this level
+    uint  domeFirst;     ///< the dome this dispatch writes (one a dispatch: each has its own residual)
+    uint  residualLevel; ///< the source's level the residual is a copy of
     float pad0; float pad1;
 };
 
@@ -40,10 +42,12 @@ uniform uint                  lightCount;
 StructuredBuffer<uint>           domeLights;
 RWStructuredBuffer<uint>         texelsOut;
 /// `env_sun`'s answer, two float4 a dome: (direction, the disc's half angle) and
-/// (irradiance with the dome's emission in it, threshold). The prefiltered map
-/// is the sky WITHOUT its sun (`skyResidualAt`): what reflects the sun takes it
-/// as an analytic lobe instead (splat_relight's polish and coat).
+/// (irradiance with the dome's emission in it, threshold). Bound for the record;
+/// the prefiltered map reads the sky without its sun (`residual`), and what
+/// reflects the sun takes it as an analytic lobe (splat_relight).
 StructuredBuffer<float4>         sun;
+Texture2D<float4>                residual;
+SamplerState                     residualSampler;
 ConstantBuffer<EnvPrefilterParams> params;
 
 static const float kPrefilterPi = 3.14159265358979;
@@ -59,33 +63,15 @@ float3 skyAt(LightRecord light, float3 dir, float level) {
         .rgb;
 }
 
-/// THE SKY WITHOUT ITS SUN, read along `dir` at `level` of the source. A mip
-/// texel at `level` is the mean over `footprint` steradians, and the sun, of
-/// irradiance `E` (the source's own units) over its disc, gives that mean
-/// `E / max(footprint, disc)` where the footprint holds it -- a cone of the
-/// same solid angle, its overlap with the disc's cone falling linearly from
-/// whole to none. Taken out, clamped at nothing. What is left is the sky the
-/// split sum is right for; a compact sun through it read a quarter short on a
-/// metal ball (s90: no level reaches the path traced, 0.57-0.74).
-float3 skyResidualAt(LightRecord light, uint dome, float3 dir, float level, float sourceTexelSolidAngle) {
-    const float3 sky = skyAt(light, dir, level);
-    const float4 disc = sun[dome * 2];
-    if (!(disc.w > 0.0)) {
-        return sky;
+/// THE SKY WITHOUT ITS SUN (env_residual): this dome's lat-long with the sun's
+/// texels cut, a copy of the source's level `residualLevel` with its own mips,
+/// read at `level` of the source -- the same texels, the same solid-angle
+/// mips, less the sun. A dome with no image reads as it always did.
+float3 skyResidualAt(LightRecord light, float3 dir, float level) {
+    if (light.texture == 0xFFFFFFFFu) {
+        return skyAt(light, dir, level);
     }
-    const float3 emission = lightEmission(light);
-    const float3 delivered = sun[dome * 2 + 1].rgb;
-    const float3 irradiance = float3(emission.r > 0.0 ? delivered.r / emission.r : 0.0,
-                                     emission.g > 0.0 ? delivered.g / emission.g : 0.0,
-                                     emission.b > 0.0 ? delivered.b / emission.b : 0.0);
-    const float discSolid = 2.0 * kPrefilterPi * (1.0 - cos(disc.w));
-    const float footprint = sourceTexelSolidAngle * exp2(2.0 * level);
-    const float footprintCone = acos(saturate(1.0 - footprint / (2.0 * kPrefilterPi)));
-    const float apart = acos(clamp(dot(dir, disc.xyz), -1.0, 1.0));
-    const float inner = abs(footprintCone - disc.w);
-    const float outer = footprintCone + disc.w;
-    const float overlap = saturate((outer - apart) / max(outer - inner, 1.0e-6));
-    return max(sky - irradiance * (overlap / max(footprint, discSolid)), float3(0.0));
+    return residual.SampleLevel(residualSampler, domeUv(light, dir), max(level - float(params.residualLevel), 0.0)).rgb;
 }
 
 /// An orthonormal frame about `z`. (Duff et al., the same construction the
@@ -115,9 +101,9 @@ void envPrefilter(uint3 tid: SV_DispatchThreadID) {
     const uint side = envSideOf(params.level, params.baseSide);
     const uint perDome = side * side;
     const uint at = tid.x;
-    const uint dome = at / perDome;
+    const uint dome = params.domeFirst + at / perDome;
     const uint texel = at % perDome;
-    if (dome >= params.domes) {
+    if (at / perDome >= params.domes) {
         return;
     }
     const LightRecord light = lights[domeLights[dome]];
@@ -148,7 +134,7 @@ void envPrefilter(uint3 tid: SV_DispatchThreadID) {
         const float mapSolidAngle = 4.0 * kPrefilterPi / float(side * side);
         const float level = clamp(0.5 * log2(mapSolidAngle / texelSolidAngle), 0.0,
                                   float(params.sourceLevel));
-        sum = skyResidualAt(light, dome, normal, level, texelSolidAngle);
+        sum = skyResidualAt(light, normal, level);
     } else {
         const float alpha = max(params.roughness * params.roughness, 1.0e-3);
         const float2 alpha2 = float2(alpha, alpha);
@@ -195,11 +181,11 @@ void envPrefilter(uint3 tid: SV_DispatchThreadID) {
             // 0.58), and every gaussian and pixel read one of them -- the
             // fender's blotches under a sunny sky.
             const float level = clamp(0.5 * log2(sampleSolidAngle / texelSolidAngle) + 1.0, 0.0, coarsest);
-            sum += skyResidualAt(light, dome, wi, level, texelSolidAngle) * nDotL;
+            sum += skyResidualAt(light, wi, level) * nDotL;
             weight += nDotL;
         }
         sum = weight > 0.0 ? sum / weight
-                           : skyResidualAt(light, dome, normal, float(params.sourceLevel), texelSolidAngle);
+                           : skyResidualAt(light, normal, float(params.sourceLevel));
     }
     sum *= lightEmission(light);
 

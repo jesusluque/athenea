@@ -12013,9 +12013,12 @@ prefiltered with the eye along the normal, times the lobe's directional
 albedo -- is right for a sky that changes slowly across a lobe and wrong for
 a compact source, worst at the limb.
 
-So the prefiltered map is the sky without its sun (env_prefilter's
-`skyResidualAt`: each read loses the sun's share of the footprint it
-averages, a cone of the same solid angle against the sun's disc), and the
+So the prefiltered map is the sky without its sun: a lat-long copy of the
+source at the level the sun was measured on, its sun's texels cut as the
+harmonics cut them (env_residual), with its own lat-long mips, is what every
+prefilter read samples. (A model of each read's footprint against the sun's
+disc left 60% of the sun in the map, s91: a bilinear read of two box-filtered
+levels is not a cone.) And the
 sun comes back analytically through each lobe (`sunReflectPdf`: the lobe's
 distribution of reflected directions with the eye along the normal, D(h)/4
 for the half vector between the mirror and the sun, the disc folded into

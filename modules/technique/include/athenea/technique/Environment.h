@@ -24,13 +24,16 @@
 // colour, which is what every dome did before this existed.
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Texture.h"
+#include "athenea/gpu/algo/Mips.h"
 
 namespace athenea::light {
 class LightTable;
@@ -130,6 +133,14 @@ private:
     gpu::ComputeKernel prefilter_;
     gpu::ComputeKernel sunKernel_;
     gpu::ComputeKernel meshPack_;
+    /// THE SKY WITHOUT ITS SUN, a lat-long a dome with its own mips
+    /// (env_residual): what the prefilter reads, the sun's texels cut as the
+    /// harmonics cut them, since the reflections take the sun analytically.
+    gpu::ComputeKernel residualKernel_;
+    std::array<gpu::Texture, kEnvironmentDomes> residual_;
+    gpu::Texture       residualNone_;   ///< 1 x 1, bound where a dome has no image
+    gpu::Sampler       residualSampler_;
+    std::shared_ptr<gpu::MipGenerator> mips_;
     gpu::Texture       mesh_;
     rhi::ComPtr<rhi::ITextureView> meshView_;
     gpu::Buffer        texels_;

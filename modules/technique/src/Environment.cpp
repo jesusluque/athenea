@@ -7,6 +7,7 @@
 
 #include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
+#include "athenea/gpu/algo/Mips.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/light/LightTable.h"
@@ -85,6 +86,30 @@ Result<Environment> Environment::create(gpu::ShaderLibrary& library) {
     auto meshPack = gpu::ComputeKernel::create(library, "athenea/technique/env_mesh", "envMeshPack");
     if (!meshPack) return std::move(meshPack).error();
     env.meshPack_ = std::move(*meshPack);
+    auto residual = gpu::ComputeKernel::create(library, "athenea/technique/env_residual", "envResidual");
+    if (!residual) return std::move(residual).error();
+    env.residualKernel_ = std::move(*residual);
+    auto mips = gpu::MipGenerator::create(library);
+    if (!mips) return std::move(mips).error();
+    env.mips_ = std::make_shared<gpu::MipGenerator>(std::move(*mips));
+    rhi::SamplerDesc sampler;
+    sampler.addressU = rhi::TextureAddressingMode::Wrap;
+    sampler.addressV = rhi::TextureAddressingMode::ClampToEdge;
+    sampler.minFilter = rhi::TextureFilteringMode::Linear;
+    sampler.magFilter = rhi::TextureFilteringMode::Linear;
+    sampler.mipFilter = rhi::TextureFilteringMode::Linear;
+    auto made = gpu::Sampler::create(*env.device_, sampler);
+    if (!made) return std::move(made).error();
+    env.residualSampler_ = std::move(*made);
+    gpu::TextureDesc none;
+    none.width = 1;
+    none.height = 1;
+    none.format = rhi::Format::RGBA16Float;
+    none.usage = rhi::TextureUsage::ShaderResource | rhi::TextureUsage::UnorderedAccess;
+    none.label = "environment.residualNone";
+    auto blank = gpu::Texture::create(*env.device_, none);
+    if (!blank) return std::move(blank).error();
+    env.residualNone_ = std::move(*blank);
     return env;
 }
 
@@ -187,24 +212,74 @@ Result<void> Environment::build(const light::LightTable& table, const material::
         cursor["params"]["domes"].setData(domes);
         cursor["params"]["level"].setData(projectLevel);
     });
-    for (uint32_t level = 0; level < kEnvironmentLevels; ++level) {
-        const uint32_t side = sideOf(level, baseSide);
-        // (k/7)^2, the curve `envRadiance` walks back with a square root.
-        const float step = static_cast<float>(level) / static_cast<float>(kEnvironmentLevels - 1);
-        const float roughness = step * step;
-        prefilter_.dispatch(batch, {domes * side * side, 1, 1}, [&](rhi::ShaderCursor cursor) {
+    // THE SKY WITHOUT ITS SUN, a dome at a time: the source at the level the
+    // sun was measured on, its sun's texels cut (env_residual), and its mips
+    // (lat-long weighted). What every read of the prefilter samples.
+    std::array<bool, kEnvironmentDomes> hasResidual{};
+    for (uint32_t slice = 0; slice < domes; ++slice) {
+        const uint32_t id = slice < domeTextures.size() ? domeTextures[slice] : kEnvironmentNone;
+        if (id >= textures.count()) {
+            continue;
+        }
+        const auto info = textures.info(id);
+        const uint32_t w = std::max(info.width >> sunLevel, 1U);
+        const uint32_t h = std::max(info.height >> sunLevel, 1U);
+        gpu::Texture& residual = residual_[slice];
+        if (!residual.valid() || residual.width() != w || residual.height() != h) {
+            gpu::TextureDesc desc;
+            desc.width = w;
+            desc.height = h;
+            desc.mipCount = 0;
+            desc.format = rhi::Format::RGBA16Float;
+            desc.usage = rhi::TextureUsage::ShaderResource | rhi::TextureUsage::UnorderedAccess;
+            desc.label = "environment.residual";
+            auto made = gpu::Texture::create(*device_, desc);
+            if (!made) return std::move(made).error();
+            residual = std::move(*made);
+        }
+        auto target = residual.view(0);
+        if (!target) return std::move(target).error();
+        residualKernel_.dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
             table.bind(cursor);
             textures.bind(cursor["gTextures"]);
             cursor["domeLights"].setBinding(sliceBuffer->rhi());
-            cursor["texelsOut"].setBinding(texels_.rhi());
-            cursor["sun"].setBinding(sun_.rhi());   // the map is the sky without its sun
-            cursor["params"]["domes"].setData(domes);
-            cursor["params"]["level"].setData(level);
-            cursor["params"]["samples"].setData(samplesOf(level));
-            cursor["params"]["sourceLevel"].setData(projectLevel);
-            cursor["params"]["baseSide"].setData(baseSide);
-            cursor["params"]["roughness"].setData(roughness);
+            cursor["sun"].setBinding(sun_.rhi());
+            cursor["residualOut"].setBinding((*target).get());
+            cursor["params"]["dome"].setData(slice);
+            cursor["params"]["sourceLevel"].setData(sunLevel);
+            cursor["params"]["width"].setData(w);
+            cursor["params"]["height"].setData(h);
         });
+        ATHENEA_TRY(mips_->generate(batch, residual, false, /*latLong=*/true));
+        hasResidual[slice] = true;
+    }
+    for (uint32_t slice = 0; slice < domes; ++slice) {
+        const gpu::Texture& residual = hasResidual[slice] ? residual_[slice] : residualNone_;
+        auto source = residual.view(0, residual.mipCount());
+        if (!source) return std::move(source).error();
+        for (uint32_t level = 0; level < kEnvironmentLevels; ++level) {
+            const uint32_t side = sideOf(level, baseSide);
+            // (k/7)^2, the curve `envRadiance` walks back with a square root.
+            const float step = static_cast<float>(level) / static_cast<float>(kEnvironmentLevels - 1);
+            const float roughness = step * step;
+            prefilter_.dispatch(batch, {side * side, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                table.bind(cursor);
+                textures.bind(cursor["gTextures"]);
+                cursor["domeLights"].setBinding(sliceBuffer->rhi());
+                cursor["texelsOut"].setBinding(texels_.rhi());
+                cursor["sun"].setBinding(sun_.rhi());
+                cursor["residual"].setBinding((*source).get());
+                cursor["residualSampler"].setBinding(residualSampler_.rhi());
+                cursor["params"]["domes"].setData(uint32_t{1});
+                cursor["params"]["domeFirst"].setData(slice);
+                cursor["params"]["residualLevel"].setData(sunLevel);
+                cursor["params"]["level"].setData(level);
+                cursor["params"]["samples"].setData(samplesOf(level));
+                cursor["params"]["sourceLevel"].setData(projectLevel);
+                cursor["params"]["baseSide"].setData(baseSide);
+                cursor["params"]["roughness"].setData(roughness);
+            });
+        }
     }
     // And the harmonics and the sun copied into the texture a mesh's shading
     // kernel reads, a row a slice (env_mesh.slang).
