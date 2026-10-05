@@ -20,6 +20,7 @@
 #include "../gpu/GpuTest.h"
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -418,5 +419,48 @@ TEST_CASE("a compact bright source prefilters to a single lobe", "[technique][en
                     double(values[0]), counts[1]);
         CHECK(counts[0] >= 1);
         CHECK(counts[0] <= 2);   // one, or its two halves across the octahedron's fold
+    }
+    // AND IT KEEPS THE SKY'S LIGHT. A convolution moves light about and keeps
+    // all of it: every level's integral over the sphere is the source's, to
+    // two percent (research 078 sec 9 asked whether the prefilter loses a
+    // sun's energy; it ought not to). The source's integral in closed form:
+    // each texel its band of the sphere, (2 pi / W) (cos theta0 - cos theta1).
+    double source = 0.0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        const double band = (2.0 * 3.14159265358979 / kW) *
+                            (std::cos(3.14159265358979 * y / kH) - std::cos(3.14159265358979 * (y + 1) / kH));
+        for (uint32_t x = 0; x < kW; ++x) {
+            source += double(rgba[(size_t{y} * kW + x) * 4]) * band;
+        }
+    }
+    auto energyKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/environment_check", "environmentEnergy");
+    if (!energyKernel) FAIL(energyKernel.error().toString());
+    for (const uint32_t level : {2u, 3u, 4u, 5u, 6u}) {
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "environment.energy");
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        const std::array<float, 8> zeros{};
+        auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+        REQUIRE(worst);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            energyKernel->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["envTexels"].setBinding(environment->texels().rhi());
+                cursor["envSh"].setBinding(environment->sh().rhi());
+                cursor["stats"].setBinding(stats.rhi());
+                cursor["worst"].setBinding(worst->rhi());
+                cursor["params"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["level"].setData(level);
+                cursor["peaks"]["baseSide"].setData(environment->baseSide());
+            });
+            REQUIRE(batch.submit(true));
+        }
+        float held = 0.0F;
+        REQUIRE(worst->read(*gpu->device, 0, sizeof(held), &held));
+        std::printf("  level %u holds %.4f of the source's %.4f (%.4f)\n", level, double(held), source,
+                    double(held) / source);
+        CHECK(double(held) == Catch::Approx(source).epsilon(0.02));
     }
 }

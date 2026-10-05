@@ -17,6 +17,7 @@
 //                   two, which is what a convolution is.
 module environment_check;
 import athenea.light.environment;
+import athenea.common.octahedral;
 
 struct EnvCheckParams {
     uint  dome;
@@ -151,4 +152,35 @@ void environmentPeaks(uint3 tid: SV_DispatchThreadID) {
     stats[0] = found;
     stats[1] = side * side;
     worst[0] = brightest;
+}
+
+
+/// WHAT A LEVEL HOLDS IN ALL: its radiance over the sphere, each texel by the
+/// solid angle it stands for (the octahedral decode's Jacobian), luminance.
+/// A convolution moves light about and keeps all of it, so every level of a
+/// prefiltered sky must hold what the source does (research 078 sec 9).
+/// worst[0] the level's integral.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void environmentEnergy(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    const uint side = envSideOf(peaks.level, peaks.baseSide);
+    float sum = 0.0;
+    float carry = 0.0;
+    for (uint y = 0; y < side; ++y) {
+        for (uint x = 0; x < side; ++x) {
+            const float2 uv = (float2(x, y) + 0.5) / float(side);
+            const float h = 0.25 / float(side);
+            const float3 du = octDecode(uv + float2(h, 0.0)) - octDecode(uv - float2(h, 0.0));
+            const float3 dv = octDecode(uv + float2(0.0, h)) - octDecode(uv - float2(0.0, h));
+            const float omega = length(cross(du, dv)) / (4.0 * h * h) / float(side * side);
+            const float term = peakLum(uint2(x, y)) * omega;
+            const float t = sum + term;
+            carry += abs(sum) >= abs(term) ? (sum - t) + term : (term - t) + sum;
+            sum = t;
+        }
+    }
+    worst[0] = sum + carry;
 }

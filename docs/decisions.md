@@ -11994,7 +11994,9 @@ so a coarse level is the sky's own average); the sequence is turned by a
 hash of each texel, so what aliasing is left is noise, not a pattern; and the
 counts go up, 64 at level 1 doubling to 1024 -- the coarse levels are small.
 Tested by a dark sky with one source of two texels at thirty thousand, whose
-levels 4 and 5 must each hold a single peak (`[prefilter]`).
+levels 4 and 5 must each hold a single peak (`[prefilter]`), and every level from 2 to 6 the
+source's whole light to 2%: its integral over the sphere, each octahedral
+texel by its own solid angle, against the lat-long's in closed form.
 
 ### A TX frame computes what the eye changes (playback)
 
