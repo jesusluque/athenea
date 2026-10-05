@@ -20,8 +20,9 @@ per material:
     mean is at least 0.70 of the GT's and is listed "pending TX's level" otherwise, with the exit code
     left alone; and what blocks is the hue in two fixed windows of the shader ball -- the body's
     sky-facing right side and the hollow's core, not the base ring's inside, which is multi-bounce metal
-    -- each channel over green within 5% of the GT's. Once TX's fix lands, metals return to the full rule
-    (METAL_LEVEL_WAITS_ON_TX below);
+    -- each channel over green within 5% of the GT's; the body's is pending in its turn where its own level
+    in the window is under 0.70 (a hard sun: the hue moves with the level there), the hollow's never. Once
+    TX's fix lands, metals return to the full rule (METAL_LEVEL_WAITS_ON_TX below);
   - ALREADY RIGHT (matx_common.GATE, one a lobe class): held to baseline.csv as compare_matx.py holds the
     gate (relMSE 5% worse, a mean ratio moved by 0.05), where the baseline has the row.
 
@@ -54,6 +55,12 @@ HUE = 0.05   # a window's channel over green, against the GT's
 # dome rather than the ground, and the core inside the hollow. Not the base ring's inside: what lights it
 # is metal seen in metal, several bounces deep, which is TX's to carry.
 WINDOWS = {"body": (345, 272, 385, 322), "hollow": (175, 312, 235, 352)}
+# THE BODY'S HUE WAITS ON TX TOO, where its own level does: under a hard sun the body's metal arrives at
+# half its light while the coat's neutral reflection arrives whole, and the mixture's hue moves with the
+# level, not with the read-back. Pending (not failing) where any channel's mean in the window is under
+# RATIO_LOW of the GT's; cleared with METAL_LEVEL_WAITS_ON_TX. The hollow, lit by the dome alone, always
+# holds.
+LEVEL_PENDING_WINDOWS = {"body"}
 
 
 def window_hue(gs, gt, box):
@@ -68,11 +75,13 @@ def window_hue(gs, gt, box):
     if "image" not in means or "reference" not in means:
         return None, (out.stdout + out.stderr).strip()[-200:]
     hue = lambda c: (c[0] / max(c[1], 1e-9), c[2] / max(c[1], 1e-9))
-    return (hue(means["image"]), hue(means["reference"])), None
+    level = min(a / max(b, 1e-9) for a, b in zip(means["image"], means["reference"]))
+    return (hue(means["image"]), hue(means["reference"]), level), None
 
 
 def regional(material, sky):
-    """The metal's hue in each window: [(window, ours, the GT's, off)], or an error."""
+    """The metal's hue in each window: [(window, ours, the GT's, off, level)], or an error. `level`: the
+    lowest channel's mean in the window over the GT's."""
     import glob
     run = os.path.join(m.RENDERS, "runs", sky, material)
     gts = glob.glob(os.path.join(run, "gt*.exr"))
@@ -84,9 +93,9 @@ def regional(material, sky):
         hues, err = window_hue(gss[0], gts[0], box)
         if err:
             return None, f"{name}: {err}"
-        ours, theirs = hues
+        ours, theirs, level = hues
         off = max(abs(ours[k] / max(theirs[k], 1e-9) - 1.0) for k in range(2))
-        rows.append((name, ours, theirs, off))
+        rows.append((name, ours, theirs, off, level))
     return rows, None
 
 
@@ -157,6 +166,7 @@ def main():
             metal = METAL_LEVEL_WAITS_ON_TX and "metal" in classes.get(g, [])
             why = []
             note = []
+            window_waits = False
             level_ok = all(x is not None and RATIO_LOW <= x <= RATIO_HIGH for x in ratios)
             chroma_ok = all(x is not None for x in ratios) and max(ratios) / max(min(ratios), 1e-6) <= CHROMA
             relmse_ok = mesh is None or r["relMSE_tx"] <= 2.0 * mesh + 0.1
@@ -180,10 +190,16 @@ def main():
                 if err:
                     why.append("windows: " + err)
                 else:
-                    for name, ours, theirs, off in rows:
+                    for name, ours, theirs, off, level in rows:
                         tag = (f"{name} r/g {ours[0]:.3f} b/g {ours[1]:.3f} (GT {theirs[0]:.3f} {theirs[1]:.3f})")
-                        (why if off > HUE else note).append(tag + (f" off {off:.1%}" if off > HUE else ""))
-            waits = metal and not all(x is not None and x >= RATIO_LOW for x in ratios)
+                        if off <= HUE:
+                            note.append(tag)
+                        elif name in LEVEL_PENDING_WINDOWS and level < RATIO_LOW:
+                            note.append(tag + f" off {off:.1%}, pendiente del nivel de TX (level {level:.2f})")
+                            window_waits = True
+                        else:
+                            why.append(tag + f" off {off:.1%}")
+            waits = metal and (window_waits or not all(x is not None and x >= RATIO_LOW for x in ratios))
             failed += bool(why)
             pending += bool(waits and not why)
             state = "FAIL" if why else "PENDING" if waits else "ok"

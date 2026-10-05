@@ -259,8 +259,10 @@ compact sun: each channel over green within 5% of the GT's in two fixed
 windows of the ball (the body's sky-facing side, the hollow's core; the
 means are the Measure effect's), and the mean's 1.25 rule where every
 channel is at least 0.70 of the GT's -- below that it is listed as pending
-TX's level and does not fail. `METAL_LEVEL_WAITS_ON_TX` returns metals to
-the full rule once TX's fix lands.
+TX's level and does not fail. The body's window is pending in the same way
+where its own level is under 0.70 of the GT's (a hard sun, where the hue
+moves with the level); the hollow's always holds. `METAL_LEVEL_WAITS_ON_TX`
+returns metals to the full rule once TX's fix lands.
 `compare_matx.py --write-baseline` rewrites the baseline from a sweep; it
 changes in the commit whose effect it records. `MATX_MX_RESOURCES`,
 `MATX_AUTOSHOP`, `MATX_WORK` and `MATX_OUT` say where the inputs are and

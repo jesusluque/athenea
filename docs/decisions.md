@@ -13229,8 +13229,11 @@ otherwise, which does not fail. Measured on m3's frames before the rule
 existed (oiiotool, for the choice of windows only): the hollow within 3% on
 both metals under both skies; the body within 5% under the shop (the
 brass's b/g 4.6% off, the closest), 8 to 11% off under goegap, where the
-metal under the sun is the level that waits on TX -- the rule will say so
-there until it lands. `METAL_LEVEL_WAITS_ON_TX` goes false with that fix.
+metal under the sun is the level that waits on TX. So the body's window is
+pending, not failing, wherever its own level in the window is under 0.70 of
+the GT's -- generic, not by sky; a test red for a cause someone else owns
+would hide this branch's own regressions -- and the hollow's always holds.
+`METAL_LEVEL_WAITS_ON_TX` goes false with that fix, and both pendings go.
 
 ### Not done
 
