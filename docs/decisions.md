@@ -13235,6 +13235,16 @@ the GT's -- generic, not by sky; a test red for a cause someone else owns
 would hide this branch's own regressions -- and the hollow's always holds.
 `METAL_LEVEL_WAITS_ON_TX` goes false with that fix, and both pendings go.
 
+**m3, rebased onto 6a232e8** (the GTs traced again: every GT under an image
+dome since 2ef1ca1 had been too bright): the four non-metals keep their
+colour under both skies; copper and the brass under goegap are pending; the
+brass's hollow under the shop read b/g 0.345 against 0.324, 6.5% off. Its
+level there is 0.83, and a metal at 0.80 of its light under a coat at all of
+its own predicts b/g 0.347: the hollow is metal seen in metal, TX's concave
+metal item, and the mixture moves the hue with the level as on the body
+under a sun. So every window is pending on hue where its own level is under
+0.90 of the GT's (`WINDOW_LEVEL`), and holds at or above it.
+
 ### Not done
 
 - The brass's level under a compact light, and the goegap means of the

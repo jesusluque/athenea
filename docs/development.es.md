@@ -264,9 +264,9 @@ de TX bajo un sol compacto: cada canal sobre el verde a menos de un 5 % del
 GT en dos ventanas fijas de la bola (el lado del cuerpo que mira al cielo y
 el núcleo del hueco; las medias son las del efecto Measure), y la regla de
 1,25 de la media donde cada canal es al menos 0,70 del GT -- por debajo se
-lista como pendiente del nivel de TX y no falla. La ventana del cuerpo queda
-pendiente igual donde su propio nivel está por debajo de 0,70 del GT (un sol
-duro, donde el tono se mueve con el nivel); la del hueco siempre cuenta.
+lista como pendiente del nivel de TX y no falla. Una ventana queda pendiente
+igual donde su propio nivel está por debajo de 0,90 del GT (el tono se mueve
+con el nivel ahí) y cuenta en otro caso.
 `METAL_LEVEL_WAITS_ON_TX` devuelve los metales a la regla completa cuando
 llegue el arreglo de TX.
 `compare_matx.py --write-baseline` reescribe la referencia a partir de un
