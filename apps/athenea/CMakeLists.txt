@@ -12,7 +12,8 @@ add_executable(athenea
     src/CmdFlatten.cpp
     src/CmdVisibility.cpp
     src/CmdLive.cpp)
-target_link_libraries(athenea PRIVATE athenea::usd athenea::lod athenea::sched athenea::technique athenea::aofx_host CLI11::CLI11)
+target_link_libraries(athenea PRIVATE athenea::usd athenea::lod athenea::sched athenea::technique athenea::aofx_host CLI11::CLI11
+                      nlohmann_json::nlohmann_json)
 if(ATHENEA_BUILD_VIEW)
     target_sources(athenea PRIVATE src/CmdView.cpp)
     target_link_libraries(athenea PRIVATE athenea::view)
@@ -34,6 +35,17 @@ if(TARGET athenea_aofx_invert)
                      athenea_aofx_splatbakefilter)
 endif()
 target_include_directories(athenea PRIVATE src)
+# The commit a build is of (cmake/WriteCommit.cmake), which `athenea flatten`
+# records in what it writes: generated at every build, rewritten only when it
+# changed.
+set(ATHENEA_COMMIT_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/athenea/Commit.h)
+add_custom_target(athenea_commit
+    COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_SOURCE_DIR} -DOUT=${ATHENEA_COMMIT_HEADER}
+            -P ${CMAKE_SOURCE_DIR}/cmake/WriteCommit.cmake
+    BYPRODUCTS ${ATHENEA_COMMIT_HEADER}
+    COMMENT "athenea: the commit this build is of")
+add_dependencies(athenea athenea_commit)
+target_include_directories(athenea PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 athenea_set_target_defaults(athenea)
 set_target_properties(athenea PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF)
 athenea_copy_shaders(athenea)

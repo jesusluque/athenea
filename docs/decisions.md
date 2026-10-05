@@ -13100,6 +13100,26 @@ needed; only the TX cloud and the lights.
   only differences are the ones a frame has and a direction does not: no
   slope across a footprint (that is a screen-space ramp), and the roughness
   floor below.
+- **What the frame does per pixel is done per direction at the centre.**
+  Since the TX work of early October (6a232e8 and before it) the frame draws
+  three things per pixel in the blend: the sun as an analytic GGX lobe out of
+  the residual sky, the sharp coat and the sharp base polish read along each
+  pixel's mirror (kSharpMark). `relitToward` hands those back only when the
+  projection sets up a slope; a flatten sets none, so each direction keeps
+  the centre's reading of all of them -- the analytic sun included -- in its
+  colour, and the fit holds them as harmonics. That is the one way a
+  standard file can hold them: a gaussian has one colour function and no
+  footprint of its own. The roughness floor widens the sun's lobe with the
+  rest (`sunReflectPdf` takes the floored roughness). A frame drawn as a
+  standard viewer draws (`displayBlend`) keeps the centre's reading too, so
+  `athenea stage --splat-display-blend` of a TX cloud is what its flatten
+  would hold at that eye.
+- **A thin sheet of glass is flattened as the frame draws it**: at
+  `kSheetAlpha` (0.1) with its colour scaled by its own coverage over that,
+  which keeps alpha x colour. Its own coverage (0.002 to 0.006 on the
+  Corvette) is under a viewer's 1/255 cut, and its 1/F0 colour past what 8
+  bits hold. The scale is applied after the sRGB encoding, as the display
+  blend applies it.
 - **Directions and weights.** N Fibonacci directions (256 by default) in the
   gaussian's frame, +z the facing its transfer was measured for. A surface
   weighs its back hemisphere 0.01; a thin wall weighs the whole sphere. In
@@ -13130,11 +13150,12 @@ needed; only the TX cloud and the lights.
 
 ### The files
 
-One fit, several files, all Y up and in metres whatever the stage's axis and
-unit (three.js, Spark, SuperSplat and glTF take that as it is), the same
-coordinates in every one:
+One fit, several files, all Y up whatever the stage's axis (three.js, Spark,
+SuperSplat and glTF take that as it is), the same coordinates in every one --
+SPZ's right-up-back is that frame -- in one unit (below):
 
-- **PLY**, INRIA's layout, float32, 248 B a gaussian, nothing else in it.
+- **PLY**, INRIA's layout, float32, 248 B a gaussian, `f_rest` by colour
+  (all red, then green, then blue), how it was made in `comment` lines.
 - **SPZ**, version 3 by default because Spark 2.3.1 reads 1 to 3 and not 4
   (measured by sysop on athenea.lucab.co.uk); version 4 (ZSTD) on request.
   Harmonics at 8/8 bits, not the packer's 5/4: a flattened reflection lives
@@ -13143,13 +13164,73 @@ coordinates in every one:
   scaled whole rather than clipped; the fixed point is chosen from the box
   (one bit to spare, never past 20; Niantic's packer always writes 12).
 - **glTF** `.glb`, one POINTS primitive with `KHR_gaussian_splatting`, in
-  `extensionsUsed` only. The attribute names follow the ratified extension as
-  proposal 070 reads it; no viewer has opened one yet.
-- **USD**, a ParticleField as `athenea convert` writes it.
+  `extensionsUsed` only. Checked against the extension's README (Khronos,
+  October 2026): linear SCALE, linear OPACITY, ROTATION in glTF's x y z w,
+  `colorSpace` required, POINTS mode, `SH_DEGREE_l_COEF_n`. glTF's unit is
+  the metre, so a file in centimetres puts its gaussians under a node scaled
+  by 0.01, which the extension allows (a uniform positive scale). This
+  engine reads it back (`io::readGlbGaussians`, its own layout only, node
+  transforms not applied); no other viewer has opened one yet.
+- **USD**, a ParticleField as `athenea convert` writes it, `metersPerUnit`
+  the file's unit, how it was made in `customData`.
+- **SPZ v3 and v4 in one run** (`--format spz3,spz4`): Spark reads 3, three.js
+  r186 reads 4 (sysop, 5 Oct 2026); the streams are packed once.
 
-Scales: Spark keeps ln σ in [-12, 9], and a converted pawn's thin axes are far
-below that in metres. Floored at -12 in PLY and glTF (a few micrometres:
-invisible), SPZ's own byte floors at -10; both fractions are printed.
+### Any HDR, turned, and the stage's lights
+
+`--hdri` gives the stage's domes an image and keeps every other light on;
+`--sky` (kept from the first version) turns them off, which is what a sky's
+own measure wants. `--hdri-rotate` turns the domes about the stage's up axis:
+the local transform written is `parent^-1 * world * turn` (USD's row-vector
+order), so a dome under a rotated parent, or one already turned to lie level
+on a Z-up stage, turns about the world's up and nothing else. A stage with no
+dome gets one, its top turned to the up axis and then by the turn. The same
+`skyLayer` composes the stage flattened and the stage `--validate` traces, so
+the GT is under the same sky, turn and lights.
+
+### Units
+
+Spark keeps ln σ in [-12, 9] (and f16 centres), SPZ in [-10, 5.94]. A
+mesh2splat surface gaussian is a disc whose third axis is micrometres or
+less; in metres most of a small object's axes are under e^-12 (65% of the TX
+pawn's gaussians, sysop). The floor lifting a disc's thin axis changes
+nothing face on, so the count that matters more is the gaussians a floor
+*distorts* -- an axis lifted past a tenth of the gaussian's largest -- and
+both are counted on the device for metres, centimetres and millimetres.
+`--units auto` takes the largest unit with at most 1% of axes under the
+floor (SPZ's as well where SPZ is written) and no more over a ceiling than
+metres; failing that, the fewest lost. sysop prefers centimetres for the web,
+which `auto` lands on for a small object and `--units cm` forces. The unit is
+in every file's metadata and the sidecar as `metersPerUnit`.
+
+### Traceable and the same every time
+
+What a frozen version needs to be taken elsewhere and made again: every file
+records the tool, its version, the build's commit (`git describe --dirty`,
+generated at build time), the source, the HDR and its mode, the turn, the
+exposure, the fit's settings, the roughness floor, the unit and the count, in
+the place its format has for it (PLY comments, glTF `asset.extras`, USD
+`customData`; SPZ has none), and `<out>.flatten.json` says it for all of them
+with what packing lost and what `--validate` measured. Nothing in it is a
+time, so the same inputs on the same build write the same bytes; gpu_f1
+checks that by flattening the pawn twice.
+
+### The higher bands against Spark's clamp
+
+Spark quantises each higher band to 8 bits over [-m, m], m the 95th
+percentile of |c| over the band and at least 1 (sysop, from Spark's source),
+and cuts what lies past m. A flattened highlight is exactly a large higher
+band. The packing kernels measure it -- a histogram of |c| per band, the
+percentile from it, the share of coefficients past it and the largest ratio
+-- and it is printed and in the sidecar. The fit is not changed for Spark
+before it is measured. If the share is large, the remedy within the standard
+is to carry the sharpest part of a highlight in fewer, brighter gaussians of
+their own rather than in the bands of every gaussian under it; until then it
+is a known limit of Spark's packing, not of the file.
+
+Scales: floored at -12 in PLY and glTF, SPZ's own byte floors at -10 and
+tops at 5.94; what each unit loses is printed and in the sidecar (above,
+*Units*).
 
 ### Why not an AOFX bundle
 
@@ -13166,19 +13247,36 @@ the radiance samples as an input, which the fused kernel never stores.
 engine's own readers (SPZ through Niantic's decompression), puts it where the
 meshes stand, rasterises it with `athenea:splatDisplayBlend` -- each splat
 sRGB-encoded before the blend and the pixel decoded after, as Spark draws --
-and measures it material by material against the meshes path traced under
-the same sky, with mesh2splat's validation (level A of proposal 070).
+and measures it material by material, and all materials at once as
+`(all)`, against the meshes path traced under the same sky, its turn and its
+lights, with mesh2splat's validation (level A of proposal 070). Beside it in
+every row and every side by side is athenea's own raster of the TX clouds
+under that sky (the composed stage): PT | TX raster | file, so flatten's loss
+against TX and TX's against PT are read off the same masks. Each format
+asked for is measured on its own (`--validate-format ply,spz3,spz4,glb`)
+against one GT, and the numbers land in the sidecar under `quality`. A whole
+cloud's frame is the same for every material, so it is read, placed and
+drawn once a format and each material only masks it (the Corvette has 39
+materials and fifteen million gaussians). A ground the file carries only as
+a shadow catcher is left a mesh in every frame and not measured
+(`--validate-skip-material`).
 
-Measurements (the pawn and the Corvette under the baked sky and under
-table_mountain, flatten times, file sizes) are queued for the GPU and not in
-yet.
+Measurements (gpu_f1: the pawn and the Corvette with its catcher under
+san_giuseppe, and the pawn under table_mountain turned, through `--hdri`)
+are queued for the GPU and not in yet. The path traced GTs are traced on
+this build, after the dome pdf fix (6c422c7): GTs under image domes from
+builds since tx-s69 read 1.27 times too bright and are not used.
 
 ### Not done
 
 - The convention battery of proposal 070 §7.3 (one coefficient a gaussian, in
   each viewer): the axes and signs are checked against this engine's readers
-  only (`athenea_render_tests "[flatten]"`), not against Spark, SuperSplat,
-  Blender or three.js.
+  only (`athenea_render_tests "[flatten]"`: PLY, SPZ 3 and 4, glTF and a PLY
+  in centimetres draw alike), not against Spark, SuperSplat, Blender, Unreal,
+  Unity or three.js. sysop compares Spark's .rad against the PLY per splat.
+- The sharp lobes and the analytic sun that a frame draws per pixel are a
+  centre's reading per direction in a file (above): a gaussian wider than
+  what its mirror sweeps over shows the highlight blurred by its own size.
 - Quantisation by the Gram metric and positivity checked after quantising
   (070 §4.3, §4.5); a fit weighted by the cells' own visibility (031 bits) or
   by a camera distribution; degree per gaussian; SH4; SOG; lobes in an

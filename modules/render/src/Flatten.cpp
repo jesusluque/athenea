@@ -6,6 +6,7 @@
 #include "athenea/render/Flatten.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "athenea/gpu/CommandBatch.h"
@@ -111,6 +112,9 @@ Result<FlattenPack> FlattenPack::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(pack.ply_, "flattenPackPly"));
     ATHENEA_TRY(make(pack.spz_, "flattenPackSpz"));
     ATHENEA_TRY(make(pack.glb_, "flattenPackGlb"));
+    ATHENEA_TRY(make(pack.shHistogram_, "flattenShHistogram"));
+    ATHENEA_TRY(make(pack.shPercentile_, "flattenShPercentile"));
+    ATHENEA_TRY(make(pack.shClamp_, "flattenShClamp"));
     return pack;
 }
 
@@ -126,11 +130,21 @@ void bindPack(rhi::ShaderCursor c, const gpu::Buffer& records, const gpu::Buffer
     c["stats"].setBinding(stats.rhi());
 }
 
+void bindUnit(rhi::ShaderCursor c, float unit) {
+    c["params"]["unit"].setData(unit);
+    c["params"]["logUnit"].setData(std::log(unit));
+}
+
 }   // namespace
 
-Result<FlatStats> FlattenPack::stats(const std::vector<FlatCloud>& clouds, float logScaleFloor) {
+Result<FlatStats> FlattenPack::stats(const std::vector<FlatCloud>& clouds, float logScaleFloor, float unit) {
+    if (!(unit > 0.0F)) {
+        return Error(ErrorCode::InvalidArgument, "flatten: a file's unit is a positive number of them a metre");
+    }
     gpu::Device& device = library_->device();
-    std::array<uint32_t, 32> start{};
+    // flatten_pack.slang's layout: 64 words, then a histogram of 256 bins
+    // for each of three bands.
+    std::vector<uint32_t> start(64 + 3 * 256, 0u);
     for (int a = 0; a < 3; ++a) {
         start[static_cast<size_t>(a)] = 0xFFFFFFFFu;
     }
@@ -142,15 +156,37 @@ Result<FlatStats> FlattenPack::stats(const std::vector<FlatCloud>& clouds, float
             bindPack(c, cloud.records, cloud.records, *stats, *stats);
             c["params"]["count"].setData(cloud.count);
             c["params"]["logScaleFloor"].setData(logScaleFloor);
+            bindUnit(c, unit);
         });
     }
     resolve_.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor c) {
         const FlatCloud* any = clouds.empty() ? nullptr : &clouds.front();
         bindPack(c, any != nullptr ? any->records : *stats, *stats, *stats, *stats);
         c["params"]["count"].setData(0u);
+        bindUnit(c, unit);
     });
+    for (const FlatCloud& cloud : clouds) {
+        shHistogram_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor c) {
+            bindPack(c, cloud.records, cloud.records, *stats, *stats);
+            c["params"]["count"].setData(cloud.count);
+            bindUnit(c, unit);
+        });
+    }
+    shPercentile_.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor c) {
+        const FlatCloud* any = clouds.empty() ? nullptr : &clouds.front();
+        bindPack(c, any != nullptr ? any->records : *stats, *stats, *stats, *stats);
+        c["params"]["count"].setData(0u);
+        bindUnit(c, unit);
+    });
+    for (const FlatCloud& cloud : clouds) {
+        shClamp_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor c) {
+            bindPack(c, cloud.records, cloud.records, *stats, *stats);
+            c["params"]["count"].setData(cloud.count);
+            bindUnit(c, unit);
+        });
+    }
     ATHENEA_TRY(batch.submit(true));
-    std::array<uint32_t, 32> got{};
+    std::array<uint32_t, 64> got{};
     ATHENEA_TRY(stats->read(device, 0, sizeof(got), got.data()));
     FlatStats out;
     for (size_t a = 0; a < 3; ++a) {
@@ -161,11 +197,21 @@ Result<FlatStats> FlattenPack::stats(const std::vector<FlatCloud>& clouds, float
     out.spzSaturated = got[7];
     out.shrunk = got[8];
     out.spzSizesFloored = got[9];
+    out.sizesCeiled = got[10];
+    out.spzSizesCeiled = got[11];
+    out.distorted = got[12];
+    for (size_t b = 0; b < 3; ++b) {
+        std::memcpy(&out.shClamp[b], &got[40 + b], 4);
+        out.shPast[b] = got[44 + b];
+        std::memcpy(&out.shWorst[b], &got[48 + b], 4);
+        out.shCoefficients[b] = got[52 + b];
+    }
+    out.spzDistorted = got[13];
     out.fractionalBits = got[22];
     return out;
 }
 
-Result<std::vector<float>> FlattenPack::ply(const FlatCloud& cloud, float logScaleFloor) {
+Result<std::vector<float>> FlattenPack::ply(const FlatCloud& cloud, float logScaleFloor, float unit) {
     gpu::Device& device = library_->device();
     auto floats = floatsBuffer(device, uint64_t{cloud.count} * 62, "flatten.ply");
     if (!floats) return std::move(floats).error();
@@ -176,6 +222,7 @@ Result<std::vector<float>> FlattenPack::ply(const FlatCloud& cloud, float logSca
             c["params"]["count"].setData(cloud.count);
             c["params"]["base"].setData(0u);
             c["params"]["logScaleFloor"].setData(logScaleFloor);
+            bindUnit(c, unit);
         });
         ATHENEA_TRY(batch.submit(true));
     }
@@ -185,7 +232,7 @@ Result<std::vector<float>> FlattenPack::ply(const FlatCloud& cloud, float logSca
 }
 
 Result<SpzStreams> FlattenPack::spz(const std::vector<FlatCloud>& clouds, uint32_t fractionalBits,
-                                    uint32_t sh1Bits, uint32_t shRestBits) {
+                                    uint32_t sh1Bits, uint32_t shRestBits, float unit) {
     if (sh1Bits < 1 || sh1Bits > 8 || shRestBits < 1 || shRestBits > 8) {
         return Error(ErrorCode::InvalidArgument, "flatten: SPZ keeps 1 to 8 bits of a harmonic");
     }
@@ -214,6 +261,7 @@ Result<SpzStreams> FlattenPack::spz(const std::vector<FlatCloud>& clouds, uint32
                     c["params"]["fractionalBits"].setData(fractionalBits);
                     c["params"]["sh1Bits"].setData(sh1Bits);
                     c["params"]["shRestBits"].setData(shRestBits);
+                    bindUnit(c, unit);
                 });
                 ATHENEA_TRY(batch.submit(true));
             }
@@ -228,7 +276,7 @@ Result<SpzStreams> FlattenPack::spz(const std::vector<FlatCloud>& clouds, uint32
     return out;
 }
 
-Result<std::vector<float>> FlattenPack::glb(const FlatCloud& cloud, float logScaleFloor) {
+Result<std::vector<float>> FlattenPack::glb(const FlatCloud& cloud, float logScaleFloor, float unit) {
     gpu::Device& device = library_->device();
     auto floats = floatsBuffer(device, uint64_t{cloud.count} * 59, "flatten.glb");
     if (!floats) return std::move(floats).error();
@@ -240,6 +288,7 @@ Result<std::vector<float>> FlattenPack::glb(const FlatCloud& cloud, float logSca
             c["params"]["base"].setData(0u);
             c["params"]["total"].setData(cloud.count);
             c["params"]["logScaleFloor"].setData(logScaleFloor);
+            bindUnit(c, unit);
         });
         ATHENEA_TRY(batch.submit(true));
     }

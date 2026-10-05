@@ -448,63 +448,127 @@ the stage that draws them are written so.
 ### 2.8.1 `athenea flatten` — a TX cloud as standard Gaussian Splatting files
 
 A stage's TX clouds (`mesh2splat --transfer`) and shadow catchers, under its
-own lights or another sky, written as degree 3 harmonics a standard viewer
-reads -- no bake again, no mesh. Each gaussian is shaded from `--directions`
-directions exactly as the rasteriser shades it, what a viewer would show
-there is fitted, and the fit is written in every format asked for. The stage
-is composed with its meshes switched off (`<output>_flatten_stage.usda`,
-kept beside the files).
+own lights or any HDR image, written as degree 3 harmonics a standard viewer
+reads -- no bake again, no mesh: a version frozen to take to other software.
+Each gaussian is shaded from `--directions` directions exactly as the
+rasteriser shades it, what a viewer would show there is fitted, and the fit
+is written in every format asked for. The stage is composed with its meshes
+switched off and the sky on its domes (`<output>_flatten_stage.usda`, kept
+beside the files: `athenea stage` draws it as the TX raster under that sky).
+
+```sh
+athenea flatten scene_tx.usda --hdri goegap.hdr --hdri-rotate 90 --exposure 0.5 -o out/car --format ply,spz3,spz4,glb
+```
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
-| `stage` | path, required | — | a stage holding TX clouds and a dome: the bake's own scene, or a cloud with `--sky` |
-| `-o`, `--output` | path | `flat` | without an extension, every format of `--format` beside each other; with one of them, that format alone |
-| `--format` | comma list of `ply`, `spz`, `glb`, `usdc`, `usda` | `ply,spz,glb` | |
-| `--sky` | image path \| `white` | the stage's lights | the stage's domes take the image and its other lights go off; a stage with no dome gets one, turned to its up axis |
+| `stage` | path, required | — | a stage holding TX clouds (the bake's own scene, or one that references the clouds), or a TX cloud's own file with `--hdri` |
+| `-o`, `--output` | path | `flat` | without an extension, every format of `--format` beside each other; with `.ply`, `.spz`, `.glb`, `.usdc` or `.usda`, that format alone |
+| `--format` | comma list of `ply`, `spz`, `spz3`, `spz4`, `glb`, `usdc`, `usda` | `ply,spz,glb` | `spz` is `<out>.spz` at `--spz-version`; `spz3` and `spz4` are `<out>.v3.spz` and `<out>.v4.spz`, both in one run |
+| `--hdri` | image path (`.hdr`, `.exr`) | the stage's own sky | the stage's domes take the image; its other lights **stay on**; a stage with no dome gets one, its top turned to the stage's up axis |
+| `--sky` | image path \| `white` | the stage's own sky | as `--hdri`, but the stage's other lights go **off**: the sky alone. Not with `--hdri` |
+| `--hdri-rotate` | degrees | `0` | the domes turned about the stage's up axis, counter-clockwise seen from above, whatever their own transform and their parents' |
 | `--hide` | prim path ‹repeatable› | none | left out, as if inactive |
 | `--directions` | integer, at least 16 | `256` | directions a gaussian is looked at from; 1024 for sharper metals |
 | `--exposure` | stops | `0` | on the light, before it is encoded |
 | `--referred` | `display` \| `scene` | `display` | `display` fits the sRGB colour a viewer shows; `scene` fits linear light, for `ply` and USD only |
+| `--units` | `auto` \| `m` \| `cm` \| `mm` | `auto` | the files' unit (below, *Units*) |
 | `--no-roughness-floor` | flag | the floor on | reflections as sharp as the material; ringing where degree 3 cannot hold them |
 | `--roughness-floor-share` | 0..1 | `0.05` | the share of a reflection lobe's energy the floor leaves above band 3 |
 | `--fit-lambda` | number | `1e-4` | the fit's regularisation, times l²(l+1)² |
 | `--back-weight` | number | `0.01` | what a surface's back hemisphere weighs in the fit; a thin wall weighs all round |
-| `--spz-version` | `3` \| `4` | `3` | 3 is gzip and what Spark reads; 4 is ZSTD and needs it in the build |
+| `--spz-version` | `3` \| `4` | `3` | the version `--format spz` writes: 3 is gzip, 4 is ZSTD and needs it in the build |
 | `--spz-sh1-bits`, `--spz-sh-rest-bits` | 1..8 | `8`, `8` | bits SPZ keeps of band 1, and of bands 2 and 3 |
 | `--time` | number | `0` | USD time code |
-| `--validate` | directory | none | measure a written file against the meshes path traced, material by material (§3.1, *A conversion measured*) |
-| `--validate-stage` | path | the input | the stage of meshes the GT is traced from |
-| `--validate-format` | `ply` \| `spz` | `spz` | which file is read back and measured |
+| `--validate` | directory | none | measure written files against the meshes path traced under the same sky, its turn and its lights, material by material and all of them at once (§3.1, *A conversion measured*) |
+| `--validate-stage` | path | the input | the stage of meshes the GT is traced from; its domes should be the TX stage's, so the turn is the same |
+| `--validate-format` | comma list of `ply`, `spz`, `spz3`, `spz4`, `glb` | `spz` | which written files are read back and measured; each into `<validate>/<format>/`, one GT shared in `<validate>` |
+| `--validate-skip-material` | material prim path or name ‹repeatable› | none | not measured, and left a mesh in every frame: a ground the file carries only as a shadow catcher |
 | `--validate-camera`, `--validate-size`, `--validate-paths`, `--validate-bounces`, `--validate-material` | | as `mesh2splat --validate` | |
 | `--path` | directory ‹repeatable› | none | extra AOFX bundle directories (the Measure effect) |
 
-**The files.** Y up, metres, whatever the stage's axis and unit: what
-three.js, Spark, SuperSplat and glTF take as they are. The same coordinates
-in every format. Colours are what a viewer shows, sRGB-encoded, `0.5 + SH·C0`
-at the constant term, negative values clamped by the viewer; the fit keeps
-every direction in front of a surface gaussian (all round for a thin wall) at
-or above zero by shrinking its higher bands.
+**The files.** Y up, whatever the stage's axis: x right, y up, z towards the
+viewer, the frame glTF and three.js take. The same coordinates in every
+format: inside SPZ that is Niantic's right-up-back, as its packer writes it.
+Colours are what a viewer shows, sRGB-encoded, `0.5 + 0.2820948 f_dc` at the
+constant term, negative values clamped by the viewer; the fit keeps every
+direction in front of a surface gaussian (all round for a thin wall) at or
+above zero by shrinking its higher bands.
 
 - **PLY**: 3DGS's layout (INRIA's): `x y z nx ny nz f_dc_0..2 f_rest_0..44
-  opacity scale_0..2 rot_0..3`, float32, opacity a logit, scales ln σ,
-  rotation w x y z; 248 bytes a gaussian. No property beyond those.
+  opacity scale_0..2 rot_0..3`, float32, `f_rest` all red, then all green,
+  then all blue (15 each), opacity a logit, scales ln σ, rotation w x y z;
+  248 bytes a gaussian. How it was made is in `comment athenea key=value`
+  header lines.
 - **SPZ**: Niantic's, degree 3, harmonics at 8 bits (5 and 4 is the
   packer's default; flattened reflections live in the higher bands), the
   antialiased flag set, the fixed point chosen from the box (at most 20
   bits). Harmonics past SPZ's [-1, 1] are scaled down whole, not clipped.
+  SPZ has no place for metadata: the sidecar says it.
 - **glTF** (`.glb`): one `POINTS` primitive with `KHR_gaussian_splatting`
   (`kernel` `ellipse`, `colorSpace` `srgb_rec709_display`), float `POSITION`,
   `ROTATION` (x y z w), linear `SCALE`, linear `OPACITY` and
-  `SH_DEGREE_l_COEF_n`, in `extensionsUsed` only. Not yet opened in a viewer.
+  `SH_DEGREE_l_COEF_n`, in `extensionsUsed` only. A file in another unit than
+  the metre is under a node scaled back to metres. How it was made is the
+  asset's `extras`.
 - **USD** (`.usdc`, `.usda`): a `ParticleField3DGaussianSplat` as
-  `athenea convert` writes one, up axis Y, a metre a unit.
+  `athenea convert` writes one, up axis Y, `metersPerUnit` the file's unit;
+  how it was made is the prim's `customData` under `athenea`.
+- **The sidecar** `<out>.flatten.json`: how it was made (the tool, its
+  version and the build's commit -- `-dirty` when built from uncommitted
+  changes -- the source, the HDR and whether the stage's lights stayed on,
+  the turn, the exposure, the fit's settings, the roughness floor, the unit
+  and `metersPerUnit`, the count), what packing lost (below), each file and
+  its size, and with `--validate` each measured format's rows under
+  `quality`: `relMSE`, `p99`, `mean` and `meanPT` of the file against the
+  path traced meshes, and `txRelMSE`, `txP99`, `txMean` of athenea's own TX
+  raster under the same sky, per material and as `(all)`.
 
-**Floors.** No axis of a PLY or glTF goes below ln σ = -12 (Spark's range);
-SPZ's own floor is -10. The fraction floored is printed, as are the share of
-gaussians whose bands were shrunk and of SPZ's scaled into range.
+Nothing written depends on when or how fast the run went: the same inputs on
+the same build write the same bytes.
 
-**Printed.** Each cloud and its count, the roughness floor found, the box,
-the losses above, each file's size and bytes a gaussian, and how long the
+**Units.** Spark keeps ln σ in [-12, 9] and SPZ in [-10, 5.94]. A small
+object in metres has axes under the floor (a pawn's discs are micrometres
+thick); a large one in millimetres has axes over SPZ's ceiling (0.38 m).
+`auto` takes the largest of metres, centimetres and millimetres that leaves
+no more than 1% of axes under the floor -- SPZ's too where SPZ is written --
+and no more over a ceiling than metres would; failing that, the one that
+loses fewest. The unit is in every file's metadata and the sidecar
+(`metersPerUnit`: 1, 0.01, 0.001); PLY and SPZ have no unit of their own, so a
+reader scales by it.
+
+**What packing loses**, printed and in the sidecar under `lost`: for each unit
+the axes under each floor and over each ceiling, and the gaussians a floor
+distorts (an axis lifted past a tenth of the largest; a surface disc's thin
+axis lifted to the floor changes nothing face on); the gaussians whose bands
+were shrunk to stay positive and those SPZ scaled into [-1, 1]; and for each
+higher band, Spark's 8-bit clamp (the 95th percentile of |c| over the band,
+at least 1), the share of coefficients past it and the largest over it.
+
+**Which file for which software.** What each target is said to read, and the
+conventions of each format. "Checked" is what this engine's own readers and
+writers check (`athenea_render_tests "[flatten]"` reads back PLY, SPZ 3 and 4
+and glTF and draws them alike); everything else is to be verified.
+
+| Target | Format | Checked |
+|---|---|---|
+| Spark 2.3.1, the web viewers on it | `ply`, `spz3` (Spark reads SPZ 1 to 3, not 4) | to be verified |
+| three.js r186 (WebGPU) | `spz4`, `glb`, `ply` | to be verified |
+| Blender's 3DGS add-ons | `ply` | to be verified |
+| Unreal and Unity 3DGS plug-ins | `ply` | to be verified |
+| USD (`UsdVolParticleField3DGaussianSplat`, OpenUSD 26) | `usdc` | written and read back by this engine; Omniverse to be verified |
+| this engine (`athenea stage`, `view`) | any of them | yes |
+
+| Format | Frame | Unit | Colour | SH |
+|---|---|---|---|---|
+| PLY | Y up as written; a viewer that turns INRIA's y-down captures over turns this one upside down | the file's (`metersPerUnit` in its comments) | sRGB display-referred, `0.5 + C0 f_dc` | degree 3, `f_rest` by colour |
+| SPZ | right-up-back (Niantic's) | the file's (the sidecar) | as PLY, 8 bits | degree 3, 8 bits a coefficient |
+| glTF | Y up, metres (glTF's), the unit's scale on the node | metres | `srgb_rec709_display` | degree 3, float |
+| USD | Y up | `metersPerUnit` | as PLY | degree 3 |
+
+**Printed.** Each cloud and its count, the roughness floor found, the sky,
+its turn and the exposure, the losses above for each unit and which was
+written, the box, each file's size and bytes a gaussian, and how long the
 shading and fit and the packing and writing took.
 
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part
@@ -1743,7 +1807,7 @@ so whatever that build reads.
 
 **Clouds written.** `athenea flatten` writes 3DGS `.ply`, `.spz` (versions 3
 and 4; 4 needs zstd), glTF `.glb` with `KHR_gaussian_splatting`, and USD
-(§2.8.1).
+(§2.8.1). It reads back what it wrote, `.glb` included, to measure it.
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
@@ -1762,7 +1826,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
 | `athenea mesh2splat` | a USD stage holding the cloud |
-| `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
+| `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, `<out>.flatten.json`, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes, a directory a format |
 | `athenea visibility` | the cloud's file, edited in place or copied |
 | `athenea aofx run` | one EXR |
 | `athenea migrate` | a copy of the stage, package or cloud; with `--recursive`, of what it names too |

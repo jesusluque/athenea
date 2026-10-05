@@ -6,11 +6,13 @@
 // - the fit: degree 3 harmonics known in a file's frame, seen from a
 //   gaussian's random frame and fitted through the matrix the device solved,
 //   come back as they went in -- for a surface's weighting and a thin wall's;
-// - the files: the same flattened gaussians written as PLY and as SPZ
-//   (versions 3 and 4) by this engine's packers, read back by its readers
-//   (the SPZ one is Niantic's decompression), render alike. SPZ is right-up-
-//   back and the engine reads it as right-down-front, so its frame is drawn
-//   turned half about x -- which is what puts it where the PLY is.
+// - the files: the same flattened gaussians written as PLY, as SPZ
+//   (versions 3 and 4) and as glTF by this engine's packers, read back by its
+//   readers (the SPZ one is Niantic's decompression), render alike -- one
+//   frame in every format. SPZ is right-up-back and the engine reads it as
+//   right-down-front, so its frame is drawn turned half about x -- which is
+//   what puts it where the PLY is. And a file written in centimetres is the
+//   one in metres a hundred times as large.
 //
 // Everything compared on the device; only counters and the image metrics
 // come back.
@@ -19,6 +21,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -78,12 +81,13 @@ TEST_CASE("flatten's fit gives back degree 3 harmonics in any frame", "[render][
     CHECK(*floor < 1.0F);
 }
 
-TEST_CASE("a flattened cloud written as PLY and as SPZ renders alike", "[render][flatten][io][gpu]") {
+TEST_CASE("a flattened cloud written as PLY, SPZ and glTF renders alike", "[render][flatten][io][gpu]") {
     ATHENEA_REQUIRE_GPU(gpu);
-    const uint32_t version = GENERATE(3u, 4u);
-    if (version == 4 && !io::writesSpzVersion4()) {
+    const std::string format = GENERATE("spz3", "spz4", "glb", "ply-cm");
+    if (format == "spz4" && !io::writesSpzVersion4()) {
         SKIP("this build writes no SPZ version 4 (no ZSTD)");
     }
+    const uint32_t version = format == "spz4" ? 4u : 3u;
     constexpr uint32_t kCount = 1500;
     gpu::BufferDesc desc;
     desc.bytes = uint64_t{kCount} * render::kFlatStride * 4;
@@ -118,18 +122,41 @@ TEST_CASE("a flattened cloud written as PLY and as SPZ renders alike", "[render]
     const fs::path dir = fs::temp_directory_path() / "athenea-tests";
     fs::create_directories(dir);
     const fs::path plyPath = dir / "flattened.ply";
-    const fs::path spzPath = dir / ("flattened-v" + std::to_string(version) + ".spz");
     auto ply = pack->ply(cloud, -12.0F);
     REQUIRE(ply);
     const std::vector<std::vector<float>> chunks{*ply};
     REQUIRE(io::writePly3dgs(plyPath, chunks, std::vector<std::string>{"test"}));
-    auto streams = pack->spz(clouds, stats->fractionalBits, 8, 8);
-    REQUIRE(streams);
-    io::SpzHeader header;
-    header.version = version;
-    header.count = kCount;
-    header.fractionalBits = stats->fractionalBits;
-    REQUIRE(io::writeSpz(spzPath, header, streams->streams));
+    // The other file: what the case is about.
+    const bool spz = format.rfind("spz", 0) == 0;
+    const float unit = format == "ply-cm" ? 100.0F : 1.0F;
+    fs::path spzPath;
+    if (spz) {
+        spzPath = dir / ("flattened-v" + std::to_string(version) + ".spz");
+        auto streams = pack->spz(clouds, stats->fractionalBits, 8, 8);
+        REQUIRE(streams);
+        io::SpzHeader header;
+        header.version = version;
+        header.count = kCount;
+        header.fractionalBits = stats->fractionalBits;
+        REQUIRE(io::writeSpz(spzPath, header, streams->streams));
+    } else if (format == "glb") {
+        spzPath = dir / "flattened.glb";
+        auto blocks = pack->glb(cloud, -12.0F);
+        REQUIRE(blocks);
+        io::GlbGaussians glb;
+        glb.counts.push_back(kCount);
+        glb.chunks.push_back(*blocks);
+        glb.min = stats->min;
+        glb.max = stats->max;
+        glb.extras = "{\"test\": true}";
+        REQUIRE(io::writeGlbGaussians(spzPath, glb));
+    } else {
+        spzPath = dir / "flattened-cm.ply";
+        auto cm = pack->ply(cloud, -12.0F - std::log(unit), unit);
+        REQUIRE(cm);
+        const std::vector<std::vector<float>> cmChunks{*cm};
+        REQUIRE(io::writePly3dgs(spzPath, cmChunks, std::vector<std::string>{"test cm"}));
+    }
 
     auto loader = scene::CloudLoader::create(*gpu->library);
     REQUIRE(loader);
@@ -157,10 +184,16 @@ TEST_CASE("a flattened cloud written as PLY and as SPZ renders alike", "[render]
     settings.height = 190;
     render::Camera camera = render::Camera::lookingAt({1.5, 1.0, 4.5}, {0.0, 0.0, 0.0});
     camera.lens.focal = 30.0;
-    // SPZ read as right-down-front: half a turn about x puts it back.
+    // SPZ read as right-down-front: half a turn about x puts it back; a file
+    // in centimetres is scaled back to metres.
     render::Mat4 turned = render::Mat4::identity();
-    turned.m[5] = -1.0;
-    turned.m[10] = -1.0;
+    if (spz) {
+        turned.m[5] = -1.0;
+        turned.m[10] = -1.0;
+    }
+    for (int k : {0, 5, 10}) {
+        turned.m[k] /= static_cast<double>(unit);
+    }
     for (uint32_t degree : {0u, 3u}) {
         settings.maxShDegree = degree;
         render::RenderTargets a, b;
@@ -172,11 +205,12 @@ TEST_CASE("a flattened cloud written as PLY and as SPZ renders alike", "[render]
         REQUIRE(raster->render(camera, spzInstance, settings, b));
         auto diff = render::compareImages(*gpu->library, a.colour, b.colour, settings.width, settings.height);
         REQUIRE(diff);
-        std::printf("  SPZ v%u vs PLY, degree %u: p99 %u, max %u, %llu of %llu pixels over 2\n", version, degree,
+        std::printf("  %s vs PLY, degree %u: p99 %u, max %u, %llu of %llu pixels over 2\n", format.c_str(), degree,
                     diff->p99, diff->max, static_cast<unsigned long long>(diff->over2),
                     static_cast<unsigned long long>(diff->pixels));
         // 8-bit colour, 1/16-stop sizes and 8-bit harmonics: a few code
-        // values; a wrong axis or sign is tens.
-        CHECK(diff->p99 <= (degree == 0 ? 4u : 8u));
+        // values; a wrong axis or sign is tens. glTF and PLY hold the same
+        // floats, so they draw the same to rounding.
+        CHECK(diff->p99 <= (spz ? (degree == 0 ? 4u : 8u) : 1u));
     }
 }

@@ -1308,8 +1308,12 @@ pasos, todos en el dispositivo:
    (`catcherOpacity`).
 3. **El empaquetado** (`flatten_pack.slang`): floats de PLY, los seis flujos
    de SPZ (cada byte calculado como lo calcula el empaquetador de Niantic,
-   cuatro por hilo), bloques de glTF. `io/SplatWriters.h` los enmarca y los
-   escribe; gzip y ZSTD son lo único que se les hace a los bytes.
+   cuatro por hilo), bloques de glTF, todo en la unidad elegida (las
+   posiciones por ella, ln σ más su logaritmo). `io/SplatWriters.h` los
+   enmarca y los escribe; gzip y ZSTD son lo único que se les hace a los
+   bytes. Los mismos kernels cuentan lo que perdería cada unidad y miden las
+   bandas altas contra el recorte de 8 bits de Spark (un histograma de |c| por
+   banda, cuyo percentil 95 se encuentra en un kernel de un hilo).
 
 No es un bundle AOFX: su sombreado es el sombreado relit del propio motor bajo
 el cielo preparado del frame, al que un bundle no llega. Añadir un formato es
@@ -1317,6 +1321,18 @@ un kernel en `flatten_pack.slang`, un método en `FlattenPack`, un escritor en
 `io/SplatWriters.h` y una línea en `CmdFlatten.cpp`; el viaje de ida y vuelta
 por el lector de este motor es lo que comprueba
 `athenea_render_tests "[flatten]"`.
+
+**Procedencia.** `cmake/WriteCommit.cmake` escribe `athenea/Commit.h`
+(`ATHENEA_COMMIT`, `git describe --always --dirty`) en cada compilación del
+target `athenea`, y solo lo reescribe cuando el commit cambió. Lo que un
+fichero aplanado dice de cómo se hizo se construye una vez en `CmdFlatten.cpp`
+y se escribe en el sitio que tiene cada formato para ello; nada de lo que se
+añada ahí puede depender de la hora ni de la velocidad de la pasada, para que
+una pasada repetida escriba los mismos bytes. El cielo, su giro y sus luces
+pasan por `skyLayer` (`Mesh2SplatValidate.h`), igual para la escena que se
+aplana que para el GT que traza `--validate`, y el giro de una cúpula es
+`usd::stageDomeTurns`: la transformación local que la gira alrededor del eje
+vertical del mundo hagan lo que hagan sus padres.
 
 ## 7. Dependencias y toolchain
 

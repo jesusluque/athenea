@@ -1,8 +1,10 @@
 // Copyright (c) 2026 jesus luque.
 #include <algorithm>
 #include <cstring>
+#include <span>
 #include <string>
 
+#include <nlohmann/json.hpp>
 #include <tbb/parallel_for.h>
 
 #include "athenea/core/Log.h"
@@ -39,6 +41,9 @@ Result<RawSplats> readSplats(const std::filesystem::path& path) {
     }
     if (ext == ".spz") {
         return readSpz(path);
+    }
+    if (ext == ".glb") {
+        return readGlbGaussians(path);
     }
     if (ext == ".sog" || path.filename() == "meta.json") {
         return Error::make(ErrorCode::Unsupported,
@@ -326,6 +331,166 @@ Result<RawSplats> readSpz(const std::filesystem::path& path) {
     });
     return raw;
 #endif
+}
+
+Result<RawSplats> readGlbGaussians(const std::filesystem::path& path) {
+    auto file = platform::MappedFile::open(path);
+    if (!file) {
+        return std::move(file).error();
+    }
+    const auto mapped = file->bytes();
+    const std::span<const uint8_t> bytes(reinterpret_cast<const uint8_t*>(mapped.data()), mapped.size());
+    const auto word = [&](size_t at) {
+        uint32_t v = 0;
+        std::memcpy(&v, bytes.data() + at, 4);
+        return v;
+    };
+    if (bytes.size() < 20 || word(0) != 0x46546C67u || word(16) != 0x4E4F534Au) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': not a glTF binary", path.string());
+    }
+    const size_t jsonLength = word(12);
+    if (20 + jsonLength + 8 > bytes.size()) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': a glTF binary shorter than its chunks", path.string());
+    }
+    const auto doc = nlohmann::json::parse(reinterpret_cast<const char*>(bytes.data()) + 20,
+                                           reinterpret_cast<const char*>(bytes.data()) + 20 + jsonLength, nullptr, false);
+    const size_t binAt = 20 + jsonLength;
+    if (doc.is_discarded() || word(binAt + 4) != 0x004E4942u) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': no JSON and BIN chunks", path.string());
+    }
+    const size_t binLength = word(binAt);
+    const uint8_t* bin = bytes.data() + binAt + 8;
+    if (binAt + 8 + binLength > bytes.size()) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': the BIN chunk runs past the file", path.string());
+    }
+    const nlohmann::json* attributes = nullptr;
+    for (const auto& mesh : doc.value("meshes", nlohmann::json::array())) {
+        for (const auto& primitive : mesh.value("primitives", nlohmann::json::array())) {
+            if (primitive.contains("extensions") && primitive["extensions"].contains("KHR_gaussian_splatting")) {
+                attributes = &primitive["attributes"];
+                break;
+            }
+        }
+        if (attributes != nullptr) break;
+    }
+    if (attributes == nullptr) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': no KHR_gaussian_splatting primitive", path.string());
+    }
+    // AN ACCESSOR AS A SPAN OF FLOATS: tightly packed float components of a
+    // view of buffer 0, as flatten writes them.
+    struct Floats {
+        const uint8_t* at = nullptr;
+        uint32_t       width = 0;
+    };
+    uint64_t count = 0;
+    const auto floatsOf = [&](const std::string& name, uint32_t width) -> Result<Floats> {
+        if (!attributes->contains(name)) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': no {}", path.string(), name);
+        }
+        const auto& accessor = doc["accessors"].at((*attributes)[name].get<size_t>());
+        const auto& view = doc["bufferViews"].at(accessor.at("bufferView").get<size_t>());
+        const uint64_t n = accessor.at("count").get<uint64_t>();
+        if (accessor.at("componentType").get<int>() != 5126 || view.value("buffer", 0) != 0 ||
+            view.value("byteStride", width * 4u) != width * 4u) {
+            return Error::make(ErrorCode::Unsupported, "'{}': {} is not packed floats", path.string(), name);
+        }
+        const uint64_t offset = view.value("byteOffset", uint64_t{0}) + accessor.value("byteOffset", uint64_t{0});
+        if (offset + n * width * 4 > binLength) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': {} runs past the buffer", path.string(), name);
+        }
+        if (count == 0) {
+            count = n;
+        } else if (n != count) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': attributes of different counts", path.string());
+        }
+        return Floats{bin + offset, width};
+    };
+    std::vector<Floats> fields;   // position, rotation, scale, opacity, then the harmonics
+    for (const auto& [name, width] : std::initializer_list<std::pair<const char*, uint32_t>>{
+             {"POSITION", 3},
+             {"KHR_gaussian_splatting:ROTATION", 4},
+             {"KHR_gaussian_splatting:SCALE", 3},
+             {"KHR_gaussian_splatting:OPACITY", 1}}) {
+        auto f = floatsOf(name, width);
+        if (!f) return std::move(f).error();
+        fields.push_back(*f);
+    }
+    uint32_t rest = 0;
+    for (uint32_t k = 0; k < 16; ++k) {
+        const uint32_t l = k == 0 ? 0 : k < 4 ? 1 : k < 9 ? 2 : 3;
+        const std::string name = "KHR_gaussian_splatting:SH_DEGREE_" + std::to_string(l) + "_COEF_" +
+                                 std::to_string(k - l * l);
+        if (!attributes->contains(name)) {
+            if (k == 0) {
+                return Error::make(ErrorCode::InvalidArgument, "'{}': no {}", path.string(), name);
+            }
+            break;
+        }
+        auto f = floatsOf(name, 3);
+        if (!f) return std::move(f).error();
+        fields.push_back(*f);
+        rest = k;
+    }
+    // Whole bands only.
+    rest = rest >= 15 ? 15 : rest >= 8 ? 8 : rest >= 3 ? 3 : 0;
+    if (count == 0 || count > 0xFFFFFFFFull) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': {} gaussians", path.string(), count);
+    }
+    RawSplats raw;
+    raw.source = path.string();
+    raw.count = static_cast<uint32_t>(count);
+    SplatEncoding& e = raw.encoding;
+    e.floatsPerRecord = 14 + rest * 3;
+    e.x = 0; e.y = 1; e.z = 2; e.opacity = 3;
+    e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
+    e.rotW = 7; e.rotX = 8; e.rotY = 9; e.rotZ = 10;
+    e.dc0 = 11; e.dc1 = 12; e.dc2 = 13;
+    e.restBase = 14;
+    e.restPerColour = rest;
+    e.restColourOuter = 0;   // rgb per basis
+    e.opacity_ = SplatEncoding::Opacity::Linear;
+    e.scale_ = SplatEncoding::Scale::Linear;
+    e.colour = SplatEncoding::Colour::ShDc;
+    e.rotation = SplatEncoding::Rotation::Float;
+    e.rest = SplatEncoding::Rest::Float;
+    // glTF's colour space is the display's: the colours are sRGB values, as a
+    // capture's are, unless the file says linear.
+    for (const auto& mesh : doc["meshes"]) {
+        for (const auto& primitive : mesh["primitives"]) {
+            if (primitive.contains("extensions") && primitive["extensions"].contains("KHR_gaussian_splatting")) {
+                raw.linear = primitive["extensions"]["KHR_gaussian_splatting"].value("colorSpace", "") ==
+                             "lin_rec709_display";
+            }
+        }
+    }
+    // The planar attributes laid out a record a gaussian: copied, not
+    // computed (ROTATION's x y z w to the record's w x y z by position).
+    const uint32_t per = e.floatsPerRecord;
+    raw.records.assign(size_t{raw.count} * per, 0.0F);
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, raw.count, kGrain), [&](const tbb::blocked_range<size_t>& r) {
+        for (size_t i = r.begin(); i < r.end(); ++i) {
+            float* out = raw.records.data() + i * per;
+            const auto copy = [&](const Floats& f, uint32_t component, float* to) {
+                std::memcpy(to, f.at + (i * f.width + component) * 4, 4);
+            };
+            for (uint32_t a = 0; a < 3; ++a) {
+                copy(fields[0], a, out + a);
+                copy(fields[2], a, out + 4 + a);
+                copy(fields[4], a, out + 11 + a);
+            }
+            copy(fields[3], 0, out + 3);
+            copy(fields[1], 3, out + 7);   // w
+            copy(fields[1], 0, out + 8);
+            copy(fields[1], 1, out + 9);
+            copy(fields[1], 2, out + 10);
+            for (uint32_t k = 1; k <= rest; ++k) {
+                for (uint32_t c = 0; c < 3; ++c) {
+                    copy(fields[4 + k], c, out + 14 + (k - 1) * 3 + c);
+                }
+            }
+        }
+    });
+    return raw;
 }
 
 }   // namespace athenea::io

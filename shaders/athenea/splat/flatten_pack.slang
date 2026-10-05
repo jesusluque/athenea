@@ -29,6 +29,8 @@ struct PackParams {
     float logScaleFloor;    // ln sigma no size goes below (PLY, glTF)
     uint  base;             // where this cloud's gaussians start in the output (PLY, glTF)
     uint  total;            // gaussians of the whole output (glTF's blocks)
+    float unit;             // the file's units a metre (1, 100, 1000): positions times it
+    float logUnit;          // ln unit: what it adds to ln sigma
 };
 ConstantBuffer<PackParams> params;
 StructuredBuffer<float>   records;
@@ -36,12 +38,23 @@ RWStructuredBuffer<float> floats;   // PLY records or glTF blocks
 RWStructuredBuffer<uint>  words;    // an SPZ stream
 // [0..2] min, [3..5] max of x y z as ordered bits; [6] sizes under the floor;
 // [7] gaussians with an SPZ harmonic past one; [8] gaussians shrunk;
-// [9] sizes under SPZ's floor; then, resolved: [16..21] the box as float
-// bits, [22] SPZ's fractional bits.
+// [9] sizes under SPZ's floor; [10] sizes over the ceiling of PLY and glTF
+// (Spark's); [11] sizes over SPZ's; [12] gaussians the floor of PLY and
+// glTF distorts (an axis lifted past a tenth of the largest), [13] SPZ's
+// floor; then, resolved: [16..21] the box as float
+// bits, [22] SPZ's fractional bits. The harmonics against Spark's 8-bit
+// clamp: [40 + b] band b's clamp as float bits, [44 + b] coefficients past it,
+// [48 + b] the largest |c| over the clamp as float bits, [52 + b] coefficients
+// of the band, and from [64] a histogram of |c|, 256 bins a band (bands 1 to 3
+// as b = 0 to 2).
 RWStructuredBuffer<uint>  stats;
 
 static const float kSpzColourScale = 0.15;
 static const float kSpzLogScaleFloor = -10.0;
+/// The largest ln sigma SPZ's byte holds: 255 / 16 - 10.
+static const float kSpzLogScaleCeiling = 5.9375;
+/// The largest ln sigma Spark keeps (proposal 070 section 9): its [-12, 9].
+static const float kLogScaleCeiling = 9.0;
 
 uint orderedBits(float f) {
     const uint u = asuint(f);
@@ -54,6 +67,16 @@ float fromOrdered(uint u) {
 
 float rec(uint g, uint k) {
     return records[g * kFlatStride + k];
+}
+
+/// A coordinate in the file's unit (`params.unit` to the metre).
+float position(uint g, uint a) {
+    return rec(g, kFlatPosition + a) * params.unit;
+}
+
+/// ln sigma in the file's unit.
+float logScaleIn(uint g, uint a) {
+    return rec(g, kFlatLogScale + a) + params.logUnit;
 }
 
 float3 coefficient(uint g, uint k) {
@@ -82,15 +105,35 @@ void flattenBounds(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     for (uint a = 0; a < 3; ++a) {
-        const uint bits = orderedBits(rec(g, kFlatPosition + a));
+        const uint bits = orderedBits(position(g, a));
         InterlockedMin(stats[a], bits);
         InterlockedMax(stats[3 + a], bits);
     }
-    uint floored = 0, spzFloored = 0;
+    uint floored = 0, spzFloored = 0, ceiled = 0, spzCeiled = 0;
     for (uint a = 0; a < 3; ++a) {
-        const float s = rec(g, kFlatLogScale + a);
+        const float s = logScaleIn(g, a);
         floored += s < params.logScaleFloor ? 1u : 0u;
         spzFloored += s < kSpzLogScaleFloor ? 1u : 0u;
+        ceiled += s > kLogScaleCeiling ? 1u : 0u;
+        spzCeiled += s > kSpzLogScaleCeiling ? 1u : 0u;
+    }
+    if (ceiled != 0) {
+        InterlockedAdd(stats[10], ceiled);
+    }
+    // DISTORTED, NOT ONLY THINNER: a floor that lifts an axis to more than a
+    // tenth of the gaussian's largest changes what it covers. A surface's
+    // gaussian is a disc whose third axis is far under any floor by design,
+    // and lifting that one to a few micrometres changes nothing a viewer
+    // shows face on.
+    const float largest = max(logScaleIn(g, 0), max(logScaleIn(g, 1), logScaleIn(g, 2)));
+    if (floored != 0 && largest < params.logScaleFloor + 2.302585) {
+        InterlockedAdd(stats[12], 1u);
+    }
+    if (spzFloored != 0 && largest < kSpzLogScaleFloor + 2.302585) {
+        InterlockedAdd(stats[13], 1u);
+    }
+    if (spzCeiled != 0) {
+        InterlockedAdd(stats[11], spzCeiled);
     }
     if (floored != 0) {
         InterlockedAdd(stats[6], floored);
@@ -122,7 +165,7 @@ void flattenBoundsResolve(uint3 tid: SV_DispatchThreadID) {
 }
 
 float logScaleOf(uint g, uint a) {
-    return max(rec(g, kFlatLogScale + a), params.logScaleFloor);
+    return max(logScaleIn(g, a), params.logScaleFloor);
 }
 
 [shader("compute")]
@@ -134,7 +177,7 @@ void flattenPackPly(uint3 tid: SV_DispatchThreadID) {
     }
     const uint out = (params.base + g) * 62;
     for (uint a = 0; a < 3; ++a) {
-        floats[out + a] = rec(g, kFlatPosition + a);
+        floats[out + a] = position(g, a);
         floats[out + 3 + a] = rec(g, kFlatNormal + a);
     }
     const float3 dc = coefficient(g, 0);
@@ -198,7 +241,7 @@ uint spzByte(uint g, uint o) {
     switch (params.stream) {
     case 0: {
         const float scale = float(1u << params.fractionalBits);
-        const int fixed = int(round(rec(g, kFlatPosition + o / 3) * scale));
+        const int fixed = int(round(position(g, o / 3) * scale));
         return uint(fixed >> (8 * int(o % 3))) & 0xFFu;
     }
     case 1:
@@ -206,7 +249,7 @@ uint spzByte(uint g, uint o) {
     case 2:
         return toByte(coefficient(g, 0)[o] * (kSpzColourScale * 255.0) + 0.5 * 255.0);
     case 3:
-        return toByte((rec(g, kFlatLogScale + o) + 10.0) * 16.0);
+        return toByte((logScaleIn(g, o) + 10.0) * 16.0);
     case 4:
         return (smallestThree(g) >> (8 * o)) & 0xFFu;
     default: {
@@ -246,7 +289,7 @@ void flattenPackGlb(uint3 tid: SV_DispatchThreadID) {
     const uint n = params.total;
     const uint at = params.base + g;
     for (uint a = 0; a < 3; ++a) {
-        floats[at * 3 + a] = rec(g, kFlatPosition + a);
+        floats[at * 3 + a] = position(g, a);
     }
     // KHR_gaussian_splatting:ROTATION is x y z w, as every glTF rotation.
     floats[3 * n + at * 4] = rec(g, kFlatRotation + 1);
@@ -265,3 +308,82 @@ void flattenPackGlb(uint3 tid: SV_DispatchThreadID) {
         floats[block + at * 3 + 2] = c.z;
     }
 }
+
+// ---------------------------------------------------------------------------
+// THE HARMONICS AGAINST SPARK'S CLAMP. Spark keeps each band of the higher
+// harmonics in 8 bits over [-m, m], m the 95th percentile of |c| over the
+// band's coefficients and at least one (sysop, from Spark's source): what lies
+// past m is cut. A flattened highlight is a large higher band, so how much of
+// it lies past is measured: a histogram of |c| a band, the percentile from
+// it, and the coefficients past it and how far.
+
+static const uint kHistogram = 64;
+static const uint kBins = 256;
+
+uint binOf(float a) {
+    // An eighth of an octave a bin, 2^-16 to 2^16.
+    return uint(clamp(floor((log2(max(a, 1.0e-30)) + 16.0) * 8.0), 0.0, float(kBins - 1)));
+}
+
+uint bandOf(uint k) {
+    return k < 4 ? 0u : k < 9 ? 1u : 2u;
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void flattenShHistogram(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) {
+        return;
+    }
+    for (uint k = 1; k < 16; ++k) {
+        const float3 c = abs(coefficient(g, k));
+        const uint band = bandOf(k);
+        for (uint ch = 0; ch < 3; ++ch) {
+            InterlockedAdd(stats[kHistogram + band * kBins + binOf(c[ch])], 1u);
+        }
+        InterlockedAdd(stats[52 + band], 3u);
+    }
+}
+
+/// The 95th percentile a band, as the upper edge of the bin it falls in, and
+/// never under one.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void flattenShPercentile(uint3 tid: SV_DispatchThreadID) {
+    for (uint band = 0; band < 3; ++band) {
+        const uint total = stats[52 + band];
+        const uint wanted = uint(ceil(0.95 * float(total)));
+        uint seen = 0;
+        float edge = 0.0;
+        for (uint b = 0; b < kBins; ++b) {
+            seen += stats[kHistogram + band * kBins + b];
+            if (seen >= wanted) {
+                edge = exp2(float(b + 1) / 8.0 - 16.0);
+                break;
+            }
+        }
+        stats[40 + band] = asuint(max(edge, 1.0));
+    }
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void flattenShClamp(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) {
+        return;
+    }
+    for (uint k = 1; k < 16; ++k) {
+        const float3 c = abs(coefficient(g, k));
+        const uint band = bandOf(k);
+        const float m = asfloat(stats[40 + band]);
+        for (uint ch = 0; ch < 3; ++ch) {
+            if (c[ch] > m) {
+                InterlockedAdd(stats[44 + band], 1u);
+                InterlockedMax(stats[48 + band], asuint(c[ch] / m));
+            }
+        }
+    }
+}
+

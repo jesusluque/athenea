@@ -9,6 +9,7 @@
 #include <optional>
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/rotation.h>
 #include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec4f.h>
@@ -1358,6 +1359,57 @@ Result<std::vector<std::pair<std::string, bool>>> stageLights(const std::filesys
         if (type.size() > 5 && type.compare(type.size() - 5, 5, "Light") == 0) {
             out.emplace_back(p.GetPath().GetString(), type == "DomeLight" || type == "DomeLight_1");
         }
+    }
+    return out;
+}
+
+namespace {
+
+std::array<double, 16> rowsOf16(const GfMatrix4d& m) {
+    std::array<double, 16> out{};
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            out[static_cast<size_t>(r * 4 + c)] = m[r][c];
+        }
+    }
+    return out;
+}
+
+GfMatrix4d upTurn(char upAxis, double degrees) {
+    GfMatrix4d turn(1.0);
+    turn.SetRotate(GfRotation(upAxis == 'z' ? GfVec3d(0.0, 0.0, 1.0) : GfVec3d(0.0, 1.0, 0.0), degrees));
+    return turn;
+}
+
+}   // namespace
+
+std::array<double, 16> turnedAboutUp(const std::array<double, 16>& local, char upAxis, double degrees) {
+    GfMatrix4d m;
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            m[r][c] = local[static_cast<size_t>(r * 4 + c)];
+        }
+    }
+    return rowsOf16(m * upTurn(upAxis, degrees));
+}
+
+Result<std::vector<DomeTurn>> stageDomeTurns(const std::filesystem::path& path, double degrees, double time) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::NotFound, "'{}': not a stage USD opens", path.string());
+    }
+    const char upAxis = UsdGeomGetStageUpAxis(stage) == UsdGeomTokens->z ? 'z' : 'y';
+    const GfMatrix4d turn = upTurn(upAxis, degrees);
+    UsdGeomXformCache cache{UsdTimeCode(time)};
+    std::vector<DomeTurn> out;
+    for (const UsdPrim& p : stage->Traverse()) {
+        const std::string type = p.GetTypeName().GetString();
+        if (type != "DomeLight" && type != "DomeLight_1") {
+            continue;
+        }
+        const GfMatrix4d world = cache.GetLocalToWorldTransform(p);
+        const GfMatrix4d parent = cache.GetParentToWorldTransform(p);
+        out.push_back({p.GetPath().GetString(), rowsOf16(world * turn * parent.GetInverse())});
     }
     return out;
 }

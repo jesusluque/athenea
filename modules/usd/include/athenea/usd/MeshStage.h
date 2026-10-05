@@ -237,6 +237,22 @@ struct MaterialGroup {
 /// Every UsdLux light of a stage, and whether it is a dome.
 [[nodiscard]] Result<std::vector<std::pair<std::string, bool>>> stageLights(const std::filesystem::path& path);
 
+/// A DOME TURNED ABOUT THE STAGE'S UP AXIS: the local transform that leaves
+/// a dome where it stood turned by `degrees` about the world's up axis
+/// (counter-clockwise looked at from above), whatever its parents do --
+/// `parent^-1 * world * turn` in USD's row-vector order. Row-major, as
+/// `matrix4d` is written in a layer. One for every dome of the stage at `time`.
+struct DomeTurn {
+    std::string           path;
+    std::array<double, 16> local{};
+};
+[[nodiscard]] Result<std::vector<DomeTurn>> stageDomeTurns(const std::filesystem::path& path, double degrees,
+                                                           double time);
+/// `local` (row-major) followed by a turn of `degrees` about `upAxis` ('y' or
+/// 'z'): for a dome with no parent transform, made where it is written.
+[[nodiscard]] std::array<double, 16> turnedAboutUp(const std::array<double, 16>& local, char upAxis,
+                                                   double degrees);
+
 /// The first camera of a stage, in traversal order, or "" where it has none.
 [[nodiscard]] Result<std::string> stageFirstCamera(const std::filesystem::path& path);
 

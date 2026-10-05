@@ -256,11 +256,26 @@ Result<void> writeGlbGaussians(const std::filesystem::path& path, const GlbGauss
         {"mode", 0},
         {"attributes", attributesJson},
         {"extensions", {{"KHR_gaussian_splatting", {{"kernel", "ellipse"}, {"colorSpace", g.colorSpace}}}}}};
-    nlohmann::json doc = {{"asset", {{"version", "2.0"}, {"generator", g.generator}}},
+    nlohmann::json asset = {{"version", "2.0"}, {"generator", g.generator}};
+    if (!g.extras.empty()) {
+        auto extras = nlohmann::json::parse(g.extras, nullptr, false);
+        if (extras.is_discarded() || !extras.is_object()) {
+            return Error(ErrorCode::InvalidArgument, "glb: extras is not a JSON object");
+        }
+        asset["extras"] = extras;
+    }
+    nlohmann::json node = {{"mesh", 0}};
+    if (g.metresPerUnit != 1.0) {
+        if (!(g.metresPerUnit > 0.0)) {
+            return Error(ErrorCode::InvalidArgument, "glb: metres a unit is a positive number");
+        }
+        node["scale"] = {g.metresPerUnit, g.metresPerUnit, g.metresPerUnit};
+    }
+    nlohmann::json doc = {{"asset", asset},
                           {"extensionsUsed", {"KHR_gaussian_splatting"}},
                           {"scene", 0},
                           {"scenes", {{{"nodes", {0}}}}},
-                          {"nodes", {{{"mesh", 0}}}},
+                          {"nodes", {node}},
                           {"meshes", {{{"primitives", {primitive}}}}},
                           {"buffers", {{{"byteLength", offset}}}},
                           {"bufferViews", bufferViews},

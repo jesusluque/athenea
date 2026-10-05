@@ -8,7 +8,7 @@
 
 namespace athenea::io {
 
-/// A Gaussian splat file by extension: .ply (3DGS), .splat, .spz.
+/// A Gaussian splat file by extension: .ply (3DGS), .splat, .spz, .glb.
 [[nodiscard]] Result<RawSplats> readSplats(const std::filesystem::path& path);
 
 [[nodiscard]] Result<RawSplats> readSplatPly(const std::filesystem::path& path);
@@ -17,6 +17,12 @@ namespace athenea::io {
 /// bytes; the GPU decode dequantises them and turns right-up-back into the
 /// PLY's right-down-front.
 [[nodiscard]] Result<RawSplats> readSpz(const std::filesystem::path& path);
+/// A glTF binary with one KHR_gaussian_splatting primitive whose attributes
+/// are float accessors of their own buffer views -- what `athenea flatten`
+/// writes, read back to be checked. Node transforms are not applied: a file
+/// of another unit than the metre is placed by whoever reads it (its scale
+/// is the node's, `metresPerUnit` in what flatten writes beside it).
+[[nodiscard]] Result<RawSplats> readGlbGaussians(const std::filesystem::path& path);
 
 /// A point file by name: .ply (ascii or binary), .xyz/.txt/.pts/.csv,
 /// COLMAP points3D.txt / points3D.bin.

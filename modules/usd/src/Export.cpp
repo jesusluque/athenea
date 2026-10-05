@@ -30,6 +30,7 @@
 #include <pxr/base/gf/quath.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/base/vt/types.h>
+#include <pxr/base/vt/dictionary.h>
 
 #include "athenea/core/Hash.h"
 #include "athenea/core/Log.h"
@@ -232,6 +233,17 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     if (options.rotateXDegrees != 0.0) {
         UsdGeomXformCommonAPI(splats.GetPrim()).SetRotate(
             GfVec3f(static_cast<float>(options.rotateXDegrees), 0.0F, 0.0F));
+    }
+    if (options.uniformScale != 1.0) {
+        const auto k = static_cast<float>(options.uniformScale);
+        UsdGeomXformCommonAPI(splats.GetPrim()).SetScale(GfVec3f(k, k, k));
+    }
+    if (!options.customData.empty()) {
+        VtDictionary made;
+        for (const auto& [key, value] : options.customData) {
+            made[key] = VtValue(value);
+        }
+        splats.GetPrim().SetCustomDataByKey(TfToken("athenea"), VtValue(made));
     }
 
     if (pbr) {

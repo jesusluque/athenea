@@ -1250,14 +1250,29 @@ on the device:
    frame gives it (`catcherOpacity`).
 3. **The packing** (`flatten_pack.slang`): PLY floats, SPZ's six streams
    (each byte worked out as Niantic's packer works it, four a thread), glTF
-   blocks. `io/SplatWriters.h` frames and writes them; gzip and ZSTD are the
-   only things done to the bytes.
+   blocks, all in the unit chosen (positions times it, ln σ plus its log).
+   `io/SplatWriters.h` frames and writes them; gzip and ZSTD are the only
+   things done to the bytes. The same kernels count what each unit would
+   lose and measure the higher bands against Spark's 8-bit clamp (a
+   histogram of |c| a band, its 95th percentile found in a one-thread
+   kernel).
 
 It is not an AOFX bundle: its shading is the engine's own relit shading under
 the frame's prepared sky, which a bundle cannot reach. Adding a format is a
 kernel in `flatten_pack.slang`, a method on `FlattenPack`, a writer in
 `io/SplatWriters.h`, and a line in `CmdFlatten.cpp`; the round trip through
 this engine's reader is what `athenea_render_tests "[flatten]"` checks.
+
+**Provenance.** `cmake/WriteCommit.cmake` writes `athenea/Commit.h`
+(`ATHENEA_COMMIT`, `git describe --always --dirty`) at every build of the
+`athenea` target, rewriting it only when the commit changed. What a flattened
+file says of how it was made is built once in `CmdFlatten.cpp` and written in
+each format's place for it; anything added there must not depend on the time
+or the run's speed, so a run again writes the same bytes. The sky, its turn
+and its lights go through `skyLayer` (`Mesh2SplatValidate.h`), the same for
+the stage flattened and for the GT `--validate` traces, and a dome's turn is
+`usd::stageDomeTurns` -- the local transform that turns it about the world's
+up axis whatever its parents do.
 
 ## 7. Dependencies and toolchain
 

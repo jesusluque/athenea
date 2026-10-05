@@ -64,6 +64,13 @@ struct ExportOptions {
     bool     addCamera = true;
     /// COLMAP-trained clouds are y-down; turn them over on the prim's xform.
     double   rotateXDegrees = 0.0;
+    /// A uniform scale on the prim's xform, beside the turn: what places a
+    /// file written in another unit in a stage of this one.
+    double   uniformScale = 1.0;
+    /// HOW THE FILE WAS MADE: string entries written as the prim's
+    /// `customData` under `athenea` (`athenea flatten` keeps its provenance
+    /// there). Empty writes none.
+    std::map<std::string, std::string> customData;
     /// Writes `primvars:athenea:splat:relight = 1` (AtheneaSplatLightingAPI): the
     /// colours are an albedo the scene's lights are to light, not radiance
     /// somebody captured. True for a cloud converted from a mesh, false for a

@@ -6,6 +6,7 @@
 #include "Mesh2SplatValidate.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -13,6 +14,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 
 #include "aofx/Effect.h"
@@ -155,6 +157,84 @@ std::string overLayer(const std::string& source, const std::vector<std::string>&
     return overLayerImpl(source, off, bodies, upAxis, metersPerUnit, tail);
 }
 
+namespace {
+
+/// A dome's transform as layer lines: one matrix op, the only one, so what
+/// the dome had is replaced by what the turn made of it.
+std::string turnLines(const std::array<double, 16>& m) {
+    std::string out = "    matrix4d xformOp:transform:atheneaTurn = (";
+    char number[32];
+    for (int r = 0; r < 4; ++r) {
+        out += r == 0 ? "(" : ", (";
+        for (int c = 0; c < 4; ++c) {
+            std::snprintf(number, sizeof(number), "%.17g", m[static_cast<size_t>(r * 4 + c)]);
+            out += (c == 0 ? "" : ", ") + std::string(number);
+        }
+        out += ")";
+    }
+    return out + ")\n    uniform token[] xformOpOrder = [\"xformOp:transform:atheneaTurn\"]\n";
+}
+
+std::string degreesName(double degrees) {
+    char text[32];
+    std::snprintf(text, sizeof(text), "%g", degrees);
+    return text;
+}
+
+}   // namespace
+
+Result<SkyLayer> skyLayer(const fs::path& source, const std::string& sky, double rotate, bool keepLights,
+                          char upAxis, double time, bool addDome, std::vector<std::string>& off) {
+    SkyLayer layer;
+    if (sky.empty() && rotate == 0.0) {
+        return layer;
+    }
+    auto lights = usd::stageLights(source);
+    if (!lights) return std::move(lights).error();
+    const bool white = sky == "white";
+    const std::string file = white || sky.empty() ? std::string() : fs::absolute(sky).string();
+    const std::string texture = sky.empty() ? std::string()
+                                : white     ? "    asset inputs:texture:file = @@\n    color3f inputs:color = (1, 1, 1)\n"
+                                              "    float inputs:intensity = 1\n    float inputs:exposure = 0\n"
+                                            : "    asset inputs:texture:file = @" + file + "@\n";
+    std::map<std::string, std::array<double, 16>> turns;
+    if (rotate != 0.0) {
+        auto domes = usd::stageDomeTurns(source, rotate, time);
+        if (!domes) return std::move(domes).error();
+        for (const usd::DomeTurn& d : *domes) {
+            turns[d.path] = d.local;
+        }
+    }
+    for (const auto& [path, dome] : *lights) {
+        if (dome) {
+            layer.bodies[path] = texture + (rotate != 0.0 ? turnLines(turns[path]) : std::string());
+        } else if (!sky.empty() && !keepLights) {
+            off.push_back(path);
+        }
+    }
+    if (layer.bodies.empty()) {
+        if (sky.empty() || !addDome) {
+            return Error(ErrorCode::InvalidArgument, "the stage has no dome to give another sky or turn");
+        }
+        // A dome of its own, its image's top turned to the stage's up, then
+        // about the up axis.
+        std::array<double, 16> base{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        if (upAxis == 'z') {
+            base = {1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1};   // rotateX 90, row-vector order
+        }
+        const auto local = usd::turnedAboutUp(base, upAxis, rotate);
+        layer.tail = "def DomeLight \"AtheneaSky\"\n{\n" + texture + turnLines(local) + "}\n";
+    }
+    layer.name = sky.empty() ? std::string("own") : white ? std::string("white") : fs::path(sky).stem().string();
+    if (rotate != 0.0) {
+        layer.name += "_r" + degreesName(rotate);
+    }
+    if (!sky.empty() && keepLights) {
+        layer.name += "_lit";
+    }
+    return layer;
+}
+
 Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& context, gpu::ShaderLibrary& library,
                                 aofx::Effect& measure, const ValidateConvert& convert) {
     const fs::path dir(job.directory);
@@ -186,6 +266,26 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     if (groups->empty()) {
         return Error(ErrorCode::NotFound, "--validate: no material to measure");
     }
+    std::erase_if(*groups, [&](const usd::MaterialGroup& g) {
+        return std::any_of(job.skipMaterials.begin(), job.skipMaterials.end(), [&](const std::string& skip) {
+            return skip == g.material || skip == fileNameOf(g.material);
+        });
+    });
+    if (groups->empty()) {
+        return Error(ErrorCode::NotFound, "--validate: every material skipped");
+    }
+    // A WHOLE CLOUD IS MEASURED WHOLE TOO: one more row over every
+    // material's pixels at once.
+    if (job.wholeCloud && groups->size() > 1) {
+        usd::MaterialGroup all;
+        all.material = "(all)";
+        for (const usd::MaterialGroup& g : *groups) {
+            all.meshes.insert(all.meshes.end(), g.meshes.begin(), g.meshes.end());
+        }
+        std::sort(all.meshes.begin(), all.meshes.end());
+        all.meshes.erase(std::unique(all.meshes.begin(), all.meshes.end()), all.meshes.end());
+        groups->push_back(std::move(all));
+    }
     auto meshStage = usd::MeshStage::open(source);
     if (!meshStage) return std::move(meshStage).error();
     const char upAxis = meshStage->upAxis();
@@ -207,30 +307,22 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     // measured is the sky alone. The conversion still bakes the stage as it
     // is; a transfer does not depend on the light it is baked under.
     std::string gtName = "gt.exr";
-    if (!job.sky.empty()) {
-        auto lights = usd::stageLights(source);
-        if (!lights) return std::move(lights).error();
+    if (!job.sky.empty() || job.skyRotate != 0.0) {
         std::vector<std::string> off;
-        std::map<std::string, std::string> bodies;
-        const bool white = job.sky == "white";
-        const std::string file = white ? std::string() : fs::absolute(job.sky).string();
-        for (const auto& [path, dome] : *lights) {
-            if (!dome) {
-                off.push_back(path);
-                continue;
-            }
-            bodies[path] = white ? "    asset inputs:texture:file = @@\n    color3f inputs:color = (1, 1, 1)\n"
-                                   "    float inputs:intensity = 1\n    float inputs:exposure = 0\n"
-                                 : "    asset inputs:texture:file = @" + file + "@\n";
-        }
-        if (bodies.empty()) {
-            return Error(ErrorCode::InvalidArgument, "--validate-sky: the stage has no dome to give another sky");
+        // A stage of meshes keeps its own dome or has none to turn: a dome is
+        // added only for a sky, as flatten adds one.
+        auto layer = skyLayer(source, job.sky, job.skyRotate, job.skyKeepsLights, upAxis, job.time, true, off);
+        if (!layer) {
+            return Error::make(ErrorCode::InvalidArgument, "--validate: {}", layer.error().toString());
         }
         const fs::path skyStage = dir / "sky.usda";
-        std::ofstream(skyStage) << overLayer(source.string(), off, bodies, upAxis, metersPerUnit, "");
+        std::ofstream(skyStage) << overLayer(source.string(), off, layer->bodies, upAxis, metersPerUnit, layer->tail);
         source = fs::absolute(skyStage);
-        gtName = "gt_" + (white ? std::string("white") : fs::path(job.sky).stem().string()) + ".exr";
-        std::printf("validate: under %s, the stage's other lights off\n", white ? "a white sky" : file.c_str());
+        gtName = "gt_" + layer->name + ".exr";
+        std::printf("validate: under %s%s, turned %g degrees about the up axis\n",
+                    job.sky.empty() ? "the stage's own sky" : job.sky == "white" ? "a white sky" : job.sky.c_str(),
+                    job.sky.empty() || job.skyKeepsLights ? ", the stage's lights on" : ", the stage's other lights off",
+                    job.skyRotate);
     }
     std::printf("validate: %zu materials, %ux%u through %s\n", groups->size(), job.width, job.height,
                 camera.c_str());
@@ -241,12 +333,13 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     // the next validation of the same stage at the same size.
     usd::StageImage gt;
     usd::StageImage meshFrame;
+    usd::StageImage middleFrame;
     std::vector<float> matte;
     uint32_t layers = 0;
     Result<void> inside = ok();
     auto ran = context.run([&] {
         inside = [&]() -> Result<void> {
-            const fs::path gtFile = dir / gtName;
+            const fs::path gtFile = (job.gtDirectory.empty() ? dir : fs::path(job.gtDirectory)) / gtName;
             if (auto kept = io::readExr(gtFile); kept && kept->width == w && kept->height == h) {
                 gt = {w, h, std::move(kept->rgba)};
                 std::printf("validate: GT read from %s\n", gtFile.string().c_str());
@@ -283,6 +376,14 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
                 std::memcpy(matte.data() + at, bytes->data(), size_t{pixels} * 16);
                 ++layers;
             }
+            if (!job.middleStage.empty()) {
+                auto middle = usd::StageRenderer::open(job.middleStage, context.deviceShared());
+                if (!middle) return std::move(middle).error();
+                auto drawn = (*middle)->render(camera, job.time, w, h, "raster");
+                if (!drawn) return std::move(drawn).error();
+                middleFrame = std::move(*drawn);
+                ATHENEA_TRY(io::writeExr(dir / "middle.exr", w, h, middleFrame.rgba, {}, false));
+            }
             return ok();
         }();
     });
@@ -291,7 +392,7 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
 
     auto gtPicture = pictureOf(gt);
     if (!gtPicture) return std::move(gtPicture).error();
-    auto meshPicture = pictureOf(meshFrame);
+    auto meshPicture = pictureOf(job.middleStage.empty() ? meshFrame : middleFrame);
     if (!meshPicture) return std::move(meshPicture).error();
 
     struct Row {
@@ -304,6 +405,8 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         std::string error;
     };
     std::vector<Row> rows;
+    std::optional<uint32_t> wholeSplats;
+    usd::StageImage cloudFrame;
     for (const usd::MaterialGroup& group : *groups) {
         Row row;
         row.material = group.material.empty() ? "(none)" : group.material;
@@ -323,7 +426,11 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         }
         std::sort(hidden.begin(), hidden.end());
         hidden.erase(std::unique(hidden.begin(), hidden.end()), hidden.end());
-        auto converted = convert(bakeStage, hidden, cloud.string());
+        // A WHOLE CLOUD'S FRAME IS THE SAME FOR EVERY MATERIAL (every
+        // material's meshes off, the one cloud on): converted and drawn once,
+        // and each material only masks it.
+        const bool again = job.wholeCloud && wholeSplats.has_value() && !cloudFrame.rgba.empty();
+        auto converted = again ? Result<uint32_t>(*wholeSplats) : convert(bakeStage, hidden, cloud.string());
         if (!converted) {
             row.error = converted.error().toString();
             std::printf("validate: %s: %s\n", row.material.c_str(), row.error.c_str());
@@ -331,6 +438,9 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
             continue;
         }
         row.splats = *converted;
+        if (job.wholeCloud) {
+            wholeSplats = *converted;
+        }
         const fs::path composed = dir / "clouds" / (name + ".usda");
         {
             std::ofstream out(composed);
@@ -347,12 +457,17 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         Result<void> measured = ok();
         auto drew = context.run([&] {
             measured = [&]() -> Result<void> {
-                auto renderer = usd::StageRenderer::open(composed, context.deviceShared());
-                if (!renderer) return std::move(renderer).error();
-                (*renderer)->setSplatDisplayBlend(job.displayBlend);
-                auto frame = (*renderer)->render(camera, job.time, w, h, "raster");
-                if (!frame) return std::move(frame).error();
-                ATHENEA_TRY(io::writeExr(dir / (name + "_gs.exr"), w, h, frame->rgba, {}, false));
+                if (!again) {
+                    auto renderer = usd::StageRenderer::open(composed, context.deviceShared());
+                    if (!renderer) return std::move(renderer).error();
+                    (*renderer)->setSplatDisplayBlend(job.displayBlend);
+                    auto drawn = (*renderer)->render(camera, job.time, w, h, "raster");
+                    if (!drawn) return std::move(drawn).error();
+                    cloudFrame = std::move(*drawn);
+                    const std::string drawnName = (job.wholeCloud ? std::string("cloud") : name + "_gs") + ".exr";
+                    ATHENEA_TRY(io::writeExr(dir / drawnName, w, h, cloudFrame.rgba, {}, false));
+                }
+                const usd::StageImage* frame = &cloudFrame;
                 auto cloudPicture = pictureOf(*frame);
                 if (!cloudPicture) return std::move(cloudPicture).error();
 
@@ -531,9 +646,10 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
             row.error = measured.error().toString();
         }
         if (row.error.empty()) {
-            std::printf("validate: %-36s %9u splats  relMSE %8.4f  (mesh raster %8.4f)  p99 %.3f  mean %.4f %.4f "
+            std::printf("validate: %-36s %9u splats  relMSE %8.4f  (%s %8.4f)  p99 %.3f  mean %.4f %.4f "
                         "%.4f  GT %.4f %.4f %.4f\n",
-                        row.material.c_str(), row.splats, row.cloud.relMse, row.mesh.relMse, row.cloud.p99,
+                        row.material.c_str(), row.splats, row.cloud.relMse, job.middleLabel.c_str(), row.mesh.relMse,
+                        row.cloud.p99,
                         row.cloud.mean[0], row.cloud.mean[1], row.cloud.mean[2], row.cloud.reference[0],
                         row.cloud.reference[1], row.cloud.reference[2]);
         } else {
@@ -546,7 +662,7 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     std::ostringstream json;
     json << "{\n  \"stage\": " << jsonOf(source.string()) << ",\n  \"camera\": " << jsonOf(camera)
          << ",\n  \"width\": " << w << ",\n  \"height\": " << h << ",\n  \"gtPaths\": " << job.gtPaths
-         << ",\n  \"materials\": [\n";
+         << ",\n  \"middle\": " << jsonOf(job.middleLabel) << ",\n  \"materials\": [\n";
     for (size_t k = 0; k < rows.size(); ++k) {
         const Row& r = rows[k];
         const auto triple = [](const double v[3]) {
@@ -559,7 +675,8 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         if (r.error.empty()) {
             json << ", \"relMSE\": " << r.cloud.relMse << ", \"p99\": " << r.cloud.p99
                  << ", \"mean\": " << triple(r.cloud.mean) << ", \"meanGT\": " << triple(r.cloud.reference)
-                 << ", \"meshRelMSE\": " << r.mesh.relMse << ", \"meshMean\": " << triple(r.mesh.mean);
+                 << ", \"meshRelMSE\": " << r.mesh.relMse << ", \"meshMean\": " << triple(r.mesh.mean)
+                 << ", \"meshP99\": " << r.mesh.p99;
         } else {
             json << ", \"error\": " << jsonOf(r.error);
         }
@@ -567,6 +684,26 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     }
     json << "  ]\n}\n";
     std::ofstream(dir / "validate.json") << json.str();
+    if (job.results != nullptr) {
+        for (const Row& r : rows) {
+            ValidateRow out;
+            out.material = r.material;
+            out.meshes = r.meshes;
+            out.splats = r.splats;
+            out.cover = r.cover;
+            out.relMse = r.cloud.relMse;
+            out.p99 = r.cloud.p99;
+            out.middleRelMse = r.mesh.relMse;
+            out.middleP99 = r.mesh.p99;
+            for (int c = 0; c < 3; ++c) {
+                out.mean[c] = r.cloud.mean[c];
+                out.meanGt[c] = r.cloud.reference[c];
+                out.middleMean[c] = r.mesh.mean[c];
+            }
+            out.error = r.error;
+            job.results->push_back(out);
+        }
+    }
     std::printf("validate: wrote %s\n", (dir / "validate.json").string().c_str());
     return ok();
 }

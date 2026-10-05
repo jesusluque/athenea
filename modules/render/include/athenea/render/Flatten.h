@@ -99,9 +99,20 @@ struct FlatStats {
     std::array<float, 3> max{};
     uint32_t sizesFloored = 0;      ///< axes under the floor of PLY and glTF
     uint32_t spzSizesFloored = 0;   ///< axes under SPZ's
+    uint32_t sizesCeiled = 0;       ///< axes over e^9, the ceiling Spark keeps
+    uint32_t spzSizesCeiled = 0;    ///< axes over SPZ's e^5.94
+    uint32_t distorted = 0;         ///< gaussians PLY's and glTF's floor lifts an axis of past a tenth of the largest
+    uint32_t spzDistorted = 0;      ///< the same under SPZ's floor
     uint32_t spzSaturated = 0;      ///< gaussians whose harmonics SPZ's [-1, 1] scaled down
     uint32_t shrunk = 0;            ///< gaussians whose higher bands positivity scaled down
     uint32_t fractionalBits = 12;   ///< SPZ's fixed point for these positions
+    /// THE HIGHER BANDS AGAINST SPARK'S 8-BIT CLAMP (bands 1, 2, 3): the
+    /// clamp, the 95th percentile of |c| over the band and at least one; the
+    /// coefficients past it, of how many; and the largest |c| over it.
+    std::array<float, 3>    shClamp{};
+    std::array<uint32_t, 3> shPast{};
+    std::array<uint32_t, 3> shCoefficients{};
+    std::array<float, 3>    shWorst{};
 };
 
 /// The six streams of an SPZ body, bytes of every cloud in order.
@@ -109,27 +120,30 @@ struct SpzStreams {
     std::array<std::vector<uint8_t>, 6> streams;   ///< positions, alphas, colours, scales, rotations, harmonics
 };
 
-/// Records into a format's numbers, on the device.
+/// Records into a format's numbers, on the device. `unit` is the file's units
+/// a metre (1 for metres, 100 for centimetres, 1000 for millimetres): the
+/// records are in metres, and positions and sizes are written times it.
 class FlattenPack {
 public:
     [[nodiscard]] static Result<FlattenPack> create(gpu::ShaderLibrary& library);
 
-    /// The box and what each format loses, over all `clouds`.
-    [[nodiscard]] Result<FlatStats> stats(const std::vector<FlatCloud>& clouds, float logScaleFloor);
+    /// The box and what each format loses, over all `clouds`, in `unit`.
+    [[nodiscard]] Result<FlatStats> stats(const std::vector<FlatCloud>& clouds, float logScaleFloor,
+                                          float unit = 1.0F);
     /// 62 floats a gaussian of one cloud (flatten_pack.slang's flattenPackPly).
-    [[nodiscard]] Result<std::vector<float>> ply(const FlatCloud& cloud, float logScaleFloor);
+    [[nodiscard]] Result<std::vector<float>> ply(const FlatCloud& cloud, float logScaleFloor, float unit = 1.0F);
     /// The SPZ streams of all clouds, at `fractionalBits`, harmonics kept to
     /// `sh1Bits` and `shRestBits`.
     [[nodiscard]] Result<SpzStreams> spz(const std::vector<FlatCloud>& clouds, uint32_t fractionalBits,
-                                         uint32_t sh1Bits, uint32_t shRestBits);
+                                         uint32_t sh1Bits, uint32_t shRestBits, float unit = 1.0F);
     /// One cloud's glTF blocks: position (3), rotation x y z w (4), linear
     /// scale (3), opacity (1), then sixteen harmonics (3 each), each block
     /// `count` long.
-    [[nodiscard]] Result<std::vector<float>> glb(const FlatCloud& cloud, float logScaleFloor);
+    [[nodiscard]] Result<std::vector<float>> glb(const FlatCloud& cloud, float logScaleFloor, float unit = 1.0F);
 
 private:
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  bounds_, resolve_, ply_, spz_, glb_;
+    gpu::ComputeKernel  bounds_, resolve_, ply_, spz_, glb_, shHistogram_, shPercentile_, shClamp_;
 };
 
 }   // namespace athenea::render

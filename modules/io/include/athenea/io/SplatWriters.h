@@ -60,6 +60,13 @@ struct GlbGaussians {
     uint32_t                        degree = 3;
     std::string                     colorSpace = "srgb_rec709_display";
     std::string                     generator = "athenea flatten";
+    /// Metres a unit of the blocks: glTF's unit is the metre, so blocks in
+    /// another unit are put under a node scaled by this (uniform, positive,
+    /// as KHR_gaussian_splatting allows a node's transform to be).
+    double                          metresPerUnit = 1.0;
+    /// A JSON object written as the asset's `extras` (how the file was made);
+    /// empty writes none.
+    std::string                     extras;
 };
 [[nodiscard]] Result<void> writeGlbGaussians(const std::filesystem::path& path, const GlbGaussians& gaussians);
 
