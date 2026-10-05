@@ -6,6 +6,7 @@
 #include "../gpu/GpuTest.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -394,6 +395,206 @@ TEST_CASE("a surface shader's lobes evaluate as MaterialX's own genglsl closures
                         c.name, n[2], n[1], kSamples, double(w[3]), n[0], double(w[0]), double(w[1]), double(w[2]));
             CHECK(n[1] > kSamples / 2);
             CHECK(n[0] == 0);
+        }
+    }
+}
+
+namespace {
+
+/// One point of a compiled material, its lobe stack read back as a converted
+/// gaussian reads it (athenea/material/material_sample), against what the
+/// material was authored with: a counter of fields that came back otherwise.
+const char* kReadBack = R"(
+import athenea.material.material_runtime;
+import athenea.material.material_sample;
+import LOBES_MODULE;
+
+struct ReadBackParams {
+    uint   count;
+    uint   seed;
+    float  tolerance;
+    uint   pad0;
+    float4 albedo;     // rgb, the diffuse share
+    float4 surface;    // roughness, metallic, coat roughness (-1: none), 0
+};
+
+RWStructuredBuffer<uint>       misses;   // [albedo, diffuse share, roughness, metallic, coat roughness, seen]
+ConstantBuffer<ReadBackParams> params;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void materialReadBack(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    Rng rng = Rng(i, params.seed);
+    const float3 n = normalize(sampleUniformSphere(float2(rng.next(), rng.next())));
+    const Frame frame = Frame(n, float3(0.3, 0.9, 0.1));
+    const float3 v = frame.toWorld(sampleCosineHemisphere(float2(rng.next(), rng.next())));
+    MaterialInputs inputs;
+    inputs.positionWorld = float3(0.0);
+    inputs.normalWorld = n;
+    inputs.tangentWorld = frame.x;
+    inputs.bitangentWorld = frame.y;
+    inputs.positionObject = float3(0.0);
+    inputs.normalObject = n;
+    inputs.tangentObject = frame.x;
+    inputs.bitangentObject = frame.y;
+    inputs.viewPosition = v * 4.0;
+    inputs.uvDx = float2(0.0);
+    inputs.uvDy = float2(0.0);
+    inputs.frame = 0.0;
+    inputs.time = 0.0;
+    inputs.inside = false;
+    inputs.worldFromObject0 = float4(1.0, 0.0, 0.0, 0.0);
+    inputs.worldFromObject1 = float4(0.0, 1.0, 0.0, 0.0);
+    inputs.worldFromObject2 = float4(0.0, 0.0, 1.0, 0.0);
+    inputs.mesh.firstPoint = 0;
+    inputs.mesh.points = 0;
+    inputs.mesh.firstTriangle = 0;
+    inputs.mesh.triangles = 0;
+    inputs.mesh.hasNormals = 0;
+    inputs.mesh.nodeBase = 0;
+    inputs.mesh.slotBase = 0;
+    inputs.mesh.subsetBase = 0;
+    inputs.mesh.boundsLo = float4(0.0);
+    inputs.mesh.boundsHi = float4(0.0);
+    inputs.triangle = 0;
+    inputs.points = uint3(0);
+    inputs.weights = float3(1.0, 0.0, 0.0);
+    inputs.displayColor = float4(0.18, 0.18, 0.18, 1.0);
+    LOBES_FUNCTION(inputs, 0);
+    const MaterialSample m = materialSampleOf(gAtheneaResult, false);
+    const float t = params.tolerance;
+    if (m.albedoSeen < 0.5 || any(abs(m.albedo - params.albedo.xyz) > t)) {
+        InterlockedAdd(misses[0], 1u);
+    }
+    if (abs(m.diffuseShare - params.albedo.w) > t) {
+        InterlockedAdd(misses[1], 1u);
+    }
+    if (m.roughnessSeen < 0.5 || abs(m.roughness - params.surface.x) > t) {
+        InterlockedAdd(misses[2], 1u);
+    }
+    // The metal's share of the base is a share of weights, which the
+    // specular over the diffuse moves: only all or nothing is held.
+    if ((params.surface.y >= 0.5) != (m.metallic >= 0.5)) {
+        InterlockedAdd(misses[3], 1u);
+    }
+    const bool wantCoat = params.surface.z >= 0.0;
+    if ((m.coatSeen > 0.5) != wantCoat || (wantCoat && abs(m.coatRoughness - params.surface.z) > t)) {
+        InterlockedAdd(misses[4], 1u);
+    }
+    InterlockedAdd(misses[5], 1u);
+}
+)";
+
+}   // namespace
+
+// A MATERIAL READ BACK INTO A GAUSSIAN'S NUMBERS (StageMaterial::sampled):
+// the lobe stack a surface shader builds, reduced by material_sample.slang,
+// gives back the base colour times the coat colour over it, the specular's
+// or the metal's roughness and the coat's -- whatever the view, since none
+// of these depends on it. What a TX bake does at each gaussian of a material
+// whose fields the stage reader cannot say.
+TEST_CASE("a surface shader's lobes read back as the inputs a gaussian carries", "[material][materialx][readback]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto mx = compiler(*gpu);
+    auto textures = material::TextureStore::create(*gpu->library);
+    if (!textures) FAIL(textures.error().toString());
+    struct Case {
+        const char*          name;
+        std::string          xml;
+        std::array<float, 4> albedo;    // rgb, diffuse share
+        std::array<float, 4> surface;   // roughness, metallic, coat roughness (-1: none), 0
+    };
+    const std::vector<Case> cases{
+        {"standard_surface: a dielectric under a tinted coat",
+         surface("standard_surface", "    <input name=\"base_color\" type=\"color3\" value=\"0.6, 0.4, 0.3\" />\n"
+                                     "    <input name=\"base\" type=\"float\" value=\"0.8\" />\n"
+                                     "    <input name=\"specular_roughness\" type=\"float\" value=\"0.35\" />\n"
+                                     "    <input name=\"coat\" type=\"float\" value=\"1\" />\n"
+                                     "    <input name=\"coat_color\" type=\"color3\" value=\"1, 0.5, 0.25\" />\n"
+                                     "    <input name=\"coat_roughness\" type=\"float\" value=\"0.1\" />\n"),
+         {0.6F, 0.2F, 0.075F, 1.0F},
+         {0.35F, 0.0F, 0.1F, 0.0F}},
+        {"standard_surface: a pale metal under a gold coat, as the brass example",
+         surface("standard_surface", "    <input name=\"base_color\" type=\"color3\" value=\"0.8, 0.8, 0.8\" />\n"
+                                     "    <input name=\"base\" type=\"float\" value=\"1\" />\n"
+                                     "    <input name=\"metalness\" type=\"float\" value=\"1\" />\n"
+                                     "    <input name=\"specular\" type=\"float\" value=\"0\" />\n"
+                                     "    <input name=\"specular_roughness\" type=\"float\" value=\"0.3\" />\n"
+                                     "    <input name=\"coat\" type=\"float\" value=\"1\" />\n"
+                                     "    <input name=\"coat_color\" type=\"color3\" value=\"0.9, 0.6, 0.2\" />\n"
+                                     "    <input name=\"coat_roughness\" type=\"float\" value=\"0.05\" />\n"),
+         {0.72F, 0.48F, 0.16F, 0.0F},
+         {0.3F, 1.0F, 0.05F, 0.0F}},
+        {"open_pbr_surface: a plain dielectric, no coat",
+         surface("open_pbr_surface", "    <input name=\"base_color\" type=\"color3\" value=\"0.3, 0.5, 0.7\" />\n"
+                                     "    <input name=\"specular_roughness\" type=\"float\" value=\"0.4\" />\n"),
+         {0.3F, 0.5F, 0.7F, 1.0F},
+         {0.4F, 0.0F, -1.0F, 0.0F}},
+    };
+    constexpr uint32_t kPoints = 4096;
+    for (const Case& c : cases) {
+        SECTION(c.name) {
+            auto lobes = mx->compileXml(c.xml);
+            if (!lobes) FAIL(lobes.error().toString());
+            REQUIRE(gpu->library->loadSource(lobes->module, lobes->source, {}));
+            const auto noSlot = [](const std::string&) { return uint32_t{0xFFFFFFFF}; };
+            std::vector<float> blob = material::MaterialCompiler::parameters(*lobes, **textures, noSlot);
+            REQUIRE((*textures)->commit());
+            std::string source = replaceAll(kReadBack, "LOBES_MODULE", lobes->module);
+            source = replaceAll(source, "LOBES_FUNCTION", lobes->function);
+            const std::string name = "athenea_readback_" + lobes->module.substr(8);
+            if (auto loaded = gpu->library->loadSource(name, source, {"materialReadBack"}); !loaded) {
+                FAIL(loaded.error().toString());
+            }
+            auto kernel = gpu::ComputeKernel::create(*gpu->library, name, "materialReadBack");
+            if (!kernel) FAIL(kernel.error().toString());
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<uint64_t>(blob.size(), 1) * 4;
+            desc.elementBytes = 4;
+            desc.label = "readback.blob";
+            auto blobBuffer = gpu::Buffer::create(*gpu->device, desc, blob.data());
+            REQUIRE(blobBuffer);
+            desc.bytes = 16;
+            desc.elementBytes = 16;
+            desc.label = "readback.placeholder4";
+            auto placeholder4 = gpu::Buffer::create(*gpu->device, desc);
+            REQUIRE(placeholder4);
+            gpu::Buffer placeholder = test::uintBuffer(*gpu->device, 4, "readback.placeholder");
+            gpu::Buffer misses = test::uintBuffer(*gpu->device, 6, "readback.misses");
+            {
+                gpu::CommandBatch batch(*gpu->device);
+                kernel->dispatch(batch, {kPoints, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["gMaterialBlob"].setBinding(blobBuffer->rhi());
+                    (*textures)->bind(cursor["gTextures"]);
+                    cursor["primvarRecords"].setBinding(placeholder.rhi());
+                    cursor["primvarValues"].setBinding(placeholder4->rhi());
+                    cursor["primvarSlots"].setBinding(placeholder.rhi());
+                    cursor["triangleCorners"].setBinding(placeholder.rhi());
+                    cursor["triangleFaces"].setBinding(placeholder.rhi());
+                    cursor["misses"].setBinding(misses.rhi());
+                    cursor["params"]["count"].setData(kPoints);
+                    cursor["params"]["seed"].setData(uint32_t{91});
+                    cursor["params"]["tolerance"].setData(2e-3F);
+                    cursor["params"]["albedo"].setData(c.albedo.data(), sizeof(float) * 4);
+                    cursor["params"]["surface"].setData(c.surface.data(), sizeof(float) * 4);
+                });
+                REQUIRE(batch.submit(true));
+            }
+            uint32_t n[6] = {};
+            REQUIRE(misses.read(*gpu->device, 0, sizeof(n), n));
+            std::printf("  %s: of %u points, %u albedo, %u diffuse share, %u roughness, %u metallic and %u coat "
+                        "readings off\n",
+                        c.name, n[5], n[0], n[1], n[2], n[3], n[4]);
+            CHECK(n[5] == kPoints);
+            CHECK(n[0] == 0);
+            CHECK(n[1] == 0);
+            CHECK(n[2] == 0);
+            CHECK(n[3] == 0);
+            CHECK(n[4] == 0);
         }
     }
 }

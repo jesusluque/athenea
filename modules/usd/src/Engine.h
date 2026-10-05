@@ -266,6 +266,8 @@ struct BakeRequest {
     uint32_t           cellSide = 0;
     /// KEEP THE SUMS, DIRECT APART FROM INDIRECT (technique::BakePoints::split).
     bool               split = false;
+    /// AND READ THE MATERIAL BACK at each point (technique::BakePoints::material).
+    bool               material = false;
     /// Which paths these are: a pass that adds to an earlier one draws
     /// others. The same seed draws the same paths.
     uint32_t           seed = 0;

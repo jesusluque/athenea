@@ -184,6 +184,30 @@ struct StageMaterial {
         return !layerMaps.empty() || specularWeight != 1.0F || !white(specularColour) || ior != 1.5F || coatWeight > 0.0F ||
                sheenColour[0] > 0.0F || sheenColour[1] > 0.0F || sheenColour[2] > 0.0F;
     }
+
+    /// WHAT THE CONVERSION READS BACK FROM THE MATERIAL ITSELF, on the device:
+    /// the fields a constant or a plain map cannot carry -- an input a graph
+    /// computes (a procedural brick, a marble's noise, a hexagonal tiling, a
+    /// map tiled or offset), a vocabulary these readers do not know, and the
+    /// coat's colour, which tints everything under the coat and has no number
+    /// of its own on a gaussian. A TX transfer's bake evaluates the compiled
+    /// material at each gaussian and the conversion writes these fields from
+    /// what it found there (technique::BakePoints::material); everywhere
+    /// else the constant stands, and the log says which input it stood for.
+    /// Bits of `kSample*`; zero for a material of constants and plain maps,
+    /// which stays exactly as read here.
+    enum SampleBits : uint32_t {
+        kSampleBaseColour = 1,
+        kSampleRoughness = 2,
+        kSampleCoatRoughness = 4,
+        kSampleMetallic = 8,
+        kSampleEmission = 16,
+    };
+    uint32_t               sampled = 0;
+    /// The base layer's weight (`base`, OpenPBR's `base_weight`), which a
+    /// diffuse lobe's colour does not carry -- its weight does -- and which a
+    /// sampled base colour is multiplied by, as `baseColour` was.
+    float                  baseWeight = 1.0F;
 };
 
 /// WHAT CARRIES A MESH WHEN ITS SKELETON MOVES.

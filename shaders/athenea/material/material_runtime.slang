@@ -90,9 +90,9 @@ public Lobe atheneaLobe(uint kind) {
     lobe.colour1 = float3(0.0);
     lobe.exponent = 5.0;
     lobe.colour2 = float3(1.0);
-    lobe.pad1 = 0.0;
+    lobe.pad1 = 1.0;   // the tint (lobeTint): none yet
     lobe.alpha = float2(0.0);
-    lobe.pad2 = float2(0.0);
+    lobe.pad2 = float2(1.0);
     lobe.normal = float3(0.0, 0.0, 1.0);
     lobe.pad3 = 0.0;
     lobe.tangent = float3(1.0, 0.0, 0.0);

@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <format>
 #include <map>
+#include <mutex>
 #include <set>
 #include <optional>
 
@@ -56,6 +58,13 @@ struct Resolved {
     bool         hasValue = false;
     VtValue      value;
     StageTexture texture;
+    /// Connected to something computed -- a mix, a noise, a hexagonal
+    /// tiling -- which a constant or a map cannot hold: `node` says what.
+    bool         computed = false;
+    /// A map read through a placement the conversion's sampler does not
+    /// apply: a tiledimage tiled or offset.
+    bool         inexact = false;
+    std::string  node;
 };
 
 [[nodiscard]] bool isImageNode(const TfToken& id) {
@@ -172,6 +181,22 @@ struct Resolved {
             shader.GetShaderId(&id);
             if (isImageNode(id)) {
                 out.texture = fileOf(shader);
+                // A TILED MAP IS A PLACEMENT AS WELL AS A FILE, and the
+                // conversion samples the file at the mesh's own coordinates.
+                if (id.GetString().rfind("ND_tiledimage_", 0) == 0) {
+                    GfVec2f tiling(1.0F, 1.0F);
+                    GfVec2f offset(0.0F, 0.0F);
+                    if (const UsdShadeInput in = shader.GetInput(TfToken("uvtiling"))) {
+                        in.Get(&tiling);
+                    }
+                    if (const UsdShadeInput in = shader.GetInput(TfToken("uvoffset"))) {
+                        in.Get(&offset);
+                    }
+                    if (tiling != GfVec2f(1.0F, 1.0F) || offset != GfVec2f(0.0F, 0.0F)) {
+                        out.inexact = true;
+                        out.node = id.GetString();
+                    }
+                }
                 // `outputs:a` is not `outputs:rgb`. A cut-out mask is read off
                 // one channel of a map that holds something else, and which
                 // channel is part of the connection, not of the file.
@@ -189,7 +214,11 @@ struct Resolved {
             }
             // Something computed: a mix, a multiply, a noise. There is no
             // answer here without shading the point, so the caller's default
-            // stands and the material says so in the log.
+            // stands here, the material says so in the log, and a TX bake
+            // reads the field back from the material itself
+            // (StageMaterial::sampled).
+            out.computed = true;
+            out.node = id.GetString();
             continue;
         }
         const UsdShadeInput held(attribute);
@@ -267,6 +296,22 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
 
 /// What a material says, as far as a gaussian can carry it.
 ///
+/// A warning said once a material and topic, whichever of its meshes reads
+/// it first: a ball of two meshes wearing one material said each thing once.
+template <typename... Args>
+void warnOnce(const std::string& material, const std::string& topic, std::format_string<Args...> format,
+              Args&&... args) {
+    static std::mutex said;
+    static std::set<std::string> already;
+    {
+        const std::lock_guard<std::mutex> lock(said);
+        if (!already.insert(material + "\n" + topic).second) {
+            return;
+        }
+    }
+    athenea::log::warn(format, std::forward<Args>(args)...);
+}
+
 /// Two vocabularies are read: MaterialX's `standard_surface`, which is what
 /// every asset built from a .mtlx arrives as, and `UsdPreviewSurface`, which is
 /// what a file written for the viewport uses. They name the same things
@@ -318,7 +363,14 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     out.metallic = gltf ? 1.0F : 0.0F;
     out.roughness = preview ? 0.5F : gltf ? 1.0F : openPbr ? 0.3F : 0.2F;
 
-    const auto read = [&surface](const char* name) { return resolve(surface.GetInput(TfToken(name))); };
+    // Every input read, by name, for what the end of this decides the device
+    // reads back (StageMaterial::sampled).
+    std::map<std::string, Resolved> seen;
+    const auto read = [&surface, &seen](const char* name) {
+        Resolved r = resolve(surface.GetInput(TfToken(name)));
+        seen[name] = r;
+        return r;
+    };
     const Resolved colour = read(preview ? "diffuseColor" : "base_color");
     takeColour(colour, out.baseColour);
     out.albedo = colour.texture;
@@ -335,6 +387,7 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         for (float& c : out.baseColour) {
             c *= weight;
         }
+        out.baseWeight = weight;
     }
 
     // A MAP IS THE VALUE, NOT A FACTOR ON THE DEFAULT. The conversion
@@ -630,6 +683,96 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         }
         out.coatIor = std::clamp(out.coatIor, 1.0F, 2.98F);
         out.coatDarkening = unit(out.coatDarkening);
+    }
+
+    // WHAT THE DEVICE READS BACK (StageMaterial::sampled): every field whose
+    // input a constant or a plain map cannot carry, decided here once a
+    // material. A material of constants and plain maps samples nothing and
+    // converts exactly as it did.
+    {
+        using M = StageMaterial;
+        const bool standardSurface = id.GetString().rfind("ND_standard_surface", 0) == 0 ||
+                                     id == TfToken("standard_surface");
+        const bool known = preview || openPbr || gltf || standardSurface;
+        const auto graph = [&](const char* name) {
+            const auto it = seen.find(name);
+            if (it == seen.end()) {
+                seen[name] = resolve(surface.GetInput(TfToken(name)));
+            }
+            const Resolved& r = seen[name];
+            return r.computed || r.inexact;
+        };
+        const auto connected = [&](const char* name) {
+            graph(name);
+            const Resolved& r = seen[name];
+            return r.computed || r.inexact || !r.texture.empty();
+        };
+        if (!known) {
+            // A VOCABULARY NOT READ HERE (Disney's principled, a studio's
+            // own): its inputs are not where these readers look, and every
+            // field would stand at its default. The device reads them back.
+            out.sampled = M::kSampleBaseColour | M::kSampleRoughness | M::kSampleMetallic | M::kSampleEmission;
+        } else {
+            const bool tinted = !preview && !gltf;
+            if (graph(preview ? "diffuseColor" : "base_color") ||
+                (tinted && (graph(openPbr ? "base_weight" : "base") || graph("subsurface_color")))) {
+                out.sampled |= M::kSampleBaseColour;
+            }
+            // THE COAT'S COLOUR tints the base under it (standard_surface's
+            // `mix(1, coat_color, coat)` over the base, OpenPBR's coat
+            // absorption): folded into the base colour by the device, which
+            // sees it on the lobes it tints.
+            if (tinted && out.coatWeight > 0.0F) {
+                std::array<float, 3> coatColour{1.0F, 1.0F, 1.0F};
+                takeColour(seen.count("coat_color") ? seen["coat_color"] : read("coat_color"), coatColour);
+                const bool white = coatColour[0] == 1.0F && coatColour[1] == 1.0F && coatColour[2] == 1.0F;
+                if (!white || connected("coat_color")) {
+                    out.sampled |= M::kSampleBaseColour;
+                }
+            }
+            if (graph(preview || gltf ? "roughness" : "specular_roughness")) {
+                out.sampled |= M::kSampleRoughness;
+            }
+            if (graph(preview ? "clearcoatRoughness" : gltf ? "clearcoat_roughness" : "coat_roughness")) {
+                out.sampled |= M::kSampleCoatRoughness;
+            }
+            if (graph(preview || gltf ? "metallic" : openPbr ? "base_metalness" : "metalness")) {
+                out.sampled |= M::kSampleMetallic;
+            }
+            if (graph(preview ? "emissiveColor" : gltf ? "emissive" : "emission_color") ||
+                (!preview && graph(gltf ? "emissive_strength" : openPbr ? "emission_luminance" : "emission"))) {
+                out.sampled |= M::kSampleEmission;
+            }
+        }
+        // A colour the material lets light through keeps what is read here:
+        // the conversion tints it towards the transmission colour, which a
+        // colour read back from the lobes has no room for.
+        if (out.transmission > 0.0F && (out.sampled & M::kSampleBaseColour) != 0) {
+            out.sampled &= ~uint32_t{M::kSampleBaseColour};
+            warnOnce(out.path, "transmits", "mesh2splat: '{}' transmits; its base colour is read as a constant, "
+                                            "not from the material on the device", out.path);
+        }
+        // SAID, NOT LEFT TO BE NOTICED: every input a graph computes, and
+        // what becomes of it. Once a material and input, whatever meshes
+        // wear it.
+        if (!known) {
+            warnOnce(out.path, id.GetString(),
+                     "mesh2splat: '{}' is a {} these readers do not know: a TX bake (--transfer) reads its base "
+                     "colour, roughness, metalness and emission back from the material on the device; without "
+                     "one they stand at their defaults", out.path, id.GetString());
+        }
+        for (const auto& [name, r] : seen) {
+            if (!r.computed && !r.inexact) {
+                continue;
+            }
+            warnOnce(out.path, name,
+                     "mesh2splat: '{}': '{}' is {} ({}); {}", out.path, name,
+                     r.computed ? "computed by a graph" : "a map through a placement the conversion does not apply",
+                     r.node,
+                     out.sampled != 0 ? "a TX bake (--transfer) reads what it can of it back from the material "
+                                        "on the device; otherwise the value read here stands"
+                                      : "the value read here stands");
+        }
     }
 
     // DISPLACEMENT: a height along the normal, which a gaussian can carry for

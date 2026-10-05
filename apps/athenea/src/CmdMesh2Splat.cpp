@@ -997,6 +997,10 @@ public:
         // floats more, last, after the harmonics the bake writes.
         layered_ = std::any_of(pieces_.begin(), pieces_.end(),
                                [](const Piece& piece) { return piece.material->layered(); });
+        // AND WHETHER ANY MATERIAL HAS A FIELD THE STAGE COULD NOT SAY, which a
+        // TX bake then reads back from the material itself (StageMaterial::sampled).
+        sampling_ = std::any_of(pieces_.begin(), pieces_.end(),
+                                [](const Piece& piece) { return piece.material->sampled != 0; });
         // AND HOW THE SURFACE TURNS UNDER EACH GAUSSIAN, for a TX transfer: a
         // frame turns the reflection across the gaussian by it. Apart from
         // the records, three floats a gaussian; not where the levels of
@@ -1217,7 +1221,7 @@ public:
                 // Into the cloud's own buffers, after everything before it,
                 // on the device: the records, where the bake starts from,
                 // and the joints.
-                ATHENEA_TRY(keep(*out, written - out->written));
+                ATHENEA_TRY(keep(*out, written - out->written, material));
                 displaced_ = displaced_ || (out->written > 0 && displaces(material));
                 // WHICH PRIM THESE GAUSSIANS CAME FROM. The conversion knows
                 // it -- this run is one mesh -- so the ancestry a matte needs
@@ -1653,6 +1657,7 @@ private:
         };
         ATHENEA_TRY(grown(records_, uint64_t{perRecord} * 4, 4, "mesh2splat.records"));
         ATHENEA_TRY(grown(rays_, 48, 16, "mesh2splat.rays"));
+        ATHENEA_TRY(grown(samplings_, 16, 16, "mesh2splat.samplings"));
         if (curved_) {
             ATHENEA_TRY(grown(curvatures_, 12, 4, "mesh2splat.curvatures"));
         }
@@ -1666,7 +1671,7 @@ private:
 
     /// One run's gaussians into the cloud's buffers, from `destFirst` on: the
     /// records, where each one's bake starts, and the joints that carry it.
-    [[nodiscard]] Result<void> keep(const OneMesh& run, uint64_t destFirst) {
+    [[nodiscard]] Result<void> keep(const OneMesh& run, uint64_t destFirst, const usd::StageMaterial& material) {
         if (run.written == 0) {
             return ok();
         }
@@ -1697,6 +1702,13 @@ private:
             cursor["gather"]["lobes"].setData(layered_ ? 1u : 0u);
             cursor["gather"]["curved"].setData(curved_ ? 1u : 0u);
             cursor["curvatures"].setBinding(curved_ ? curvatures_.rhi() : records_.rhi());
+            cursor["samplings"].setBinding(samplings_.rhi());
+            // What a TX bake reads back of this run's material, and what the
+            // effect was handed for it: only a transfer reads it.
+            cursor["gather"]["sampled"].setData(options_->transfer ? material.sampled : 0u);
+            cursor["gather"]["baseWeight"].setData(material.baseWeight);
+            cursor["gather"]["roughness"].setData(material.roughness);
+            cursor["gather"]["coatRoughness"].setData(material.coatRoughness);
         };
         const uint32_t threads = static_cast<uint32_t>(run.written);
         gather_.dispatch(batch, {threads, 1, 1}, bind);
@@ -1821,6 +1833,11 @@ private:
     /// Whether the effect writes each gaussian's shape operator, gathered
     /// into `curvatures_` (three floats a gaussian).
     bool                                     curved_ = false;
+    /// A material of the stage has a field the bake reads back (StageMaterial::sampled).
+    bool                                     sampling_ = false;
+    /// Four words a gaussian: what its material's bake reads back, and what
+    /// the conversion was handed (mesh2splat_gather's `samplings`).
+    gpu::Buffer                              samplings_;
     gpu::Buffer                              curvatures_;
     /// The Cryptomatte id of the prim each splat came from, in the same order,
     /// and what those ids are called.
@@ -2001,6 +2018,7 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
         cursor["bake"]["dc0"].setData(uint32_t{11});
         cursor["bake"]["restBase"].setData(uint32_t{23});
         cursor["bake"]["indirect"].setData(uint32_t{0});
+        cursor["samplings"].setBinding(samplings_.rhi());
     });
     ATHENEA_TRY(batch.submit(true));
     uint32_t found = 0;
@@ -2254,8 +2272,13 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     // The reflected field is kept only with the cells and the indirect half.
     const bool field = side > 0 && indirect;
     gpu::Device& device = library_->device();
-    const uint32_t entries = coefficients + technique::transferPlanes(true, side);
-    const uint32_t fieldFirst = field ? entries - technique::kTransferFieldPlanes : 0u;
+    // The material read back where a material has a field the stage could not
+    // say (StageMaterial::sampled): three entries after the rest. Not for a
+    // zonal transfer, whose bake is of the bind pose's frames.
+    const bool material = sampling_ && zonal == nullptr;
+    const uint32_t transferEntries = coefficients + technique::transferPlanes(true, side);
+    const uint32_t entries = transferEntries + technique::bakeMaterialPlanes(true, material);
+    const uint32_t fieldFirst = field ? transferEntries - technique::kTransferFieldPlanes : 0u;
     // Two words of open directions a gaussian, or eight or thirty-two with
     // the cells.
     const uint32_t words = technique::transferCellWords(side);
@@ -2304,6 +2327,7 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         out.reflected.resize(field ? size_t{count_} * 48 : 0);
     }
     uint32_t reached = 0;
+    uint32_t readBack = 0;   // gaussians the material was read back into
     double traced = 0.0;
     // The last slice's -- the whole cloud's, where a zonal fit reads them.
     std::optional<gpu::Buffer> directs;
@@ -2314,7 +2338,7 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         // The slice's rays are copied out by the bake itself, a pass at a
         // time, as it copies a large cloud's passes.
         auto baked = (*renderer)->bakePointsOnDevice(rays_, n, time, samples, bounces, bakeDegree,
-                                                     /*transfer=*/true, /*batch=*/0, side, base);
+                                                     /*transfer=*/true, /*batch=*/0, side, base, material);
         if (!baked) return std::move(baked).error();
         // The rays are the same rays whether the indirect half is kept or
         // not, so this number is what says the second half costs no bake:
@@ -2353,11 +2377,15 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
             cursor["bake"]["restBase"].setData(uint32_t{23});
             cursor["bake"]["indirect"].setData(indirect ? 1u : 0u);
             cursor["bake"]["cells"].setData(side == 0 ? 0u : words);
+            cursor["bake"]["material"].setData(material ? 1u : 0u);
+            cursor["bake"]["layered"].setData(layered_ ? 1u : 0u);
+            cursor["samplings"].setBinding(samplings_.rhi());
         });
         ATHENEA_TRY(batch.submit(true));
-        uint32_t here = 0;
-        ATHENEA_TRY(found->read(device, 0, sizeof(here), &here));
-        reached += here;
+        uint32_t here[2] = {0, 0};
+        ATHENEA_TRY(found->read(device, 0, sizeof(here), here));
+        reached += here[0];
+        readBack += here[1];
         if (zonal == nullptr) {
             ATHENEA_TRY(sliceDirects->read(device, 0, size_t{n} * coefficients * sizeof(float),
                                            out.direct.data() + size_t{base} * coefficients));
@@ -2377,6 +2405,10 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     }
     std::printf("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
                 reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
+    if (material) {
+        std::printf("mesh2splat: the material read back on the device into %u gaussians (fields the stage "
+                    "could not say)\n", readBack);
+    }
     if (reached * 2 < count_) {
         std::fprintf(stderr,
                      "mesh2splat: more than half the gaussians found no surface under them; the "

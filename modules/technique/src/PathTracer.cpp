@@ -19,6 +19,8 @@ namespace {
 /// dispatches to whatever materials the frame compiled.
 const char* kPrelude = R"(
 import athenea.light.lights_image;
+// What a bake reads back of the material at its first vertex (BakePoints::material).
+import athenea.material.material_sample;
 import athenea.light.light_bvh;
 // The harmonics a bake projects onto, and the space a cloud is blended in.
 import athenea.common.sh;
@@ -87,6 +89,11 @@ struct PathParams {
     // at the end (`athenea/usd/bake_resolve`). The fit is linear, so the two
     // fitted halves sum to what the fit of the whole gives.
     uint bakeSplit;
+    // A TX TRANSFER THAT ALSO READS THE MATERIAL BACK (BakePoints::material):
+    // 1: what the material is at each point's first vertex, averaged over
+    // its samples, in three planes after everything else
+    // (material_sample.slang).
+    uint bakeMaterial;
 };
 
 Texture2D<uint4>               visibility;   // (instance + 1, triangle); row 0 on top
@@ -486,6 +493,12 @@ float bakeMetalness(uint at) {
     return saturate((w > 0.5 ? w - 1.0 : w) * 4.0);
 }
 
+/// THE MATERIAL AT THE FIRST VERTEX, read back (BakePoints::material): one
+/// sample of it into the point's sums, before the bake keeps only its body.
+void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {
+    materialSumsAdd(sums, materialSampleOf(stack, bakeMetalness(at) > 0.0));
+}
+
 /// Which way the gaussian faces: its own where it said one, else the surface's.
 float3 bakeFacing(uint at) {
     const float4 own = bakeRays[at * 3 + 2];
@@ -731,6 +744,7 @@ static const bool kBake = false;
 static const uint kCellOrigins = 4u;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
 LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
+void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {}
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float3 bakeSphereDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float bakeBasisAt(uint at, uint sample, uint basis) { return 0.0; }
@@ -1717,6 +1731,10 @@ void tracePathsAt(uint2 group, uint index) {
     // coloured by what the light bounced off, so one is a float and the other
     // an rgb.
     const bool transferMode = kBake && path.transfer != 0;
+    // What the material is under the point, where the caller asked
+    // (BakePoints::material): a sample of it at each path's first vertex.
+    const bool materialMode = transferMode && path.bakeMaterial != 0;
+    MaterialSums materialSums = materialSumsZero();
     float transferDirect[16];
     // WHICH WAYS OUT ARE OPEN, one bit a direction of an 8 x 8 octahedral
     // grid over the whole sphere: what a sun needs to know to cast a shadow,
@@ -2029,6 +2047,11 @@ void tracePathsAt(uint2 group, uint index) {
                             firstIor = lobe.ior;
                         }
                     }
+                }
+                if (kBake && bounce == 0 && materialMode) {
+                    // The whole material, before the body is kept: the
+                    // conversion reads its coat and its metal back as well.
+                    bakeMaterialAdd(materialSums, cur.stack, at);
                 }
                 if (kBake && bounce == 0) {
                     // The body of the material, never its polish (bakeBody
@@ -2415,6 +2438,18 @@ void tracePathsAt(uint2 group, uint index) {
                                                                              closedCoefficients[c] * over);
             }
         }
+        // AND THE MATERIAL, three planes after everything else
+        // (technique::kBakeMaterialPlanes).
+        if (materialMode) {
+            const uint after = count + (cellsMode ? 1u + cellPlanes + 16u : 2u);
+            float4 p0;
+            float4 p1;
+            float4 p2;
+            materialSumsPlanes(materialSums, p0, p1, p2);
+            colour[after * pixels + at] = p0;
+            colour[(after + 1u) * pixels + at] = p1;
+            colour[(after + 2u) * pixels + at] = p2;
+        }
         return;
     }
     if (splitMode) {
@@ -2706,7 +2741,8 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     const uint32_t bakeCoefficients = bake != nullptr ? std::clamp(bake->coefficients, 1u, 16u) : 1u;
     const uint64_t planesOut = bake == nullptr ? 1u
                                : bake->split && !bake->transfer ? 2u * bakeCoefficients + 3u
-                                                                : bakeCoefficients + transferPlanes(*bake);
+                                                                : bakeCoefficients + transferPlanes(*bake) +
+                                                                      bakeMaterialPlanes(*bake);
     const bool resized = out.width != width || out.height != height || !out.colour.valid() ||
                          out.colour.bytes() < pixels * 16 * planesOut;
     if (resized) {
@@ -2826,6 +2862,7 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         cursor["path"]["mis"].setData(uint32_t{settings.mis ? 1u : 0u});
         cursor["path"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});
         cursor["path"]["bakeSplit"].setData(uint32_t{bake != nullptr && bake->split ? 1u : 0u});
+        cursor["path"]["bakeMaterial"].setData(uint32_t{bake != nullptr && bake->transfer && bake->material ? 1u : 0u});
         // The emitting triangles, where the kernel samples them: their table,
         // or a word to bind in its place.
         if (const rhi::ShaderCursor table = cursor["emissiveTable"]; table.isValid()) {

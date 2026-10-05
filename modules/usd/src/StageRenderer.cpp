@@ -1422,7 +1422,7 @@ Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& r
 Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                       uint32_t samples, uint32_t bounces, uint32_t degree,
                                                       bool transfer, uint32_t batch, uint32_t cellSide,
-                                                      uint32_t firstPoint) {
+                                                      uint32_t firstPoint, bool material) {
     Impl& impl = *impl_;
     if (count == 0 || !rays.valid() || rays.bytes() < (uint64_t{firstPoint} + count) * 48) {
         return Error(ErrorCode::InvalidArgument, "bake: three float4 a point, and at least one point");
@@ -1449,7 +1449,9 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
     // the transfer, so the coverage travels on its own, and after it the
     // visibility bits, carried as the floats they are the bits of -- sixty-four
     // in one plane, or a plane of four words for every 128 cells of a finer grid.
-    const uint32_t entries = coefficients + technique::transferPlanes(transfer, transfer ? cellSide : 0u);
+    // And the material read back after the rest, where asked.
+    const uint32_t entries = coefficients + technique::transferPlanes(transfer, transfer ? cellSide : 0u) +
+                             technique::bakeMaterialPlanes(transfer, material);
     gpu::BufferDesc desc;
     desc.bytes = uint64_t{count} * entries * 16;
     desc.elementBytes = 16;
@@ -1493,6 +1495,7 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
         bake.coefficients = coefficients;
         bake.transfer = transfer;
         bake.cellSide = transfer ? technique::transferCellSide(cellSide) : 0u;
+        bake.material = transfer && material;
         bake.out = &out;
         ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
         if (!out.colour.valid()) {

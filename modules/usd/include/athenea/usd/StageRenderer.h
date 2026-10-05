@@ -348,11 +348,14 @@ public:
     /// is the same in distribution, not in bits, whatever the batch.
     /// `firstPoint`: the points are `count` of `rays` from that one on (a
     /// caller baking a large cloud in slices); the answer is theirs alone.
+    /// `material`, with `transfer`: the material at each point read back too,
+    /// `technique::kBakeMaterialPlanes` entries more after the rest
+    /// (technique::BakePoints::material).
     [[nodiscard]] Result<gpu::Buffer> bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                          uint32_t samples = 64, uint32_t bounces = 3,
                                                          uint32_t degree = 0, bool transfer = false,
                                                          uint32_t batch = 0, uint32_t cellSide = 0,
-                                                         uint32_t firstPoint = 0);
+                                                         uint32_t firstPoint = 0, bool material = false);
     /// THE SAME BAKE, ITS DIRECT LIGHT KEPT APART FROM ITS INDIRECT, and
     /// taken adaptively where `options.extraSamples` asks: a first pass of
     /// `samples` paths at every gaussian, then passes of `passSamples` at the

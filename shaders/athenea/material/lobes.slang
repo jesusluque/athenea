@@ -66,6 +66,19 @@ public struct Lobe {
 public float3 hairAbsorption(Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
 public float2 hairRoughnessTT(Lobe lobe) { return float2(lobe.pad3, lobe.pad4); }
 public float2 hairRoughnessTRT(Lobe lobe) { return float2(lobe.exponent, asfloat(lobe.pad0)); }
+/// WHAT A LOBE'S COLOUR WAS MULTIPLIED BY, AND HOW MANY LAYERS LIE OVER IT,
+/// in the pads every lobe but hair leaves free: the colours `multiply` nodes
+/// put on it (standard_surface's coat colour over its base) and the `layer`
+/// nodes it is the base of. Nothing that shades reads them; a conversion that
+/// reads a material back into a gaussian's few numbers does
+/// (material_sample.slang), since a lobe's weight mixes the two with
+/// everything else.
+public float3 lobeTint(Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
+public void setLobeTint(inout Lobe lobe, float3 tint) {
+    lobe.pad1 = tint.x;
+    lobe.pad2 = tint.yz;
+}
+public float lobeLayersOver(Lobe lobe) { return lobe.pad3; }
 public void setHair(inout Lobe lobe, float3 absorption, float2 roughnessTT, float2 roughnessTRT) {
     lobe.pad1 = absorption.x;
     lobe.pad2 = absorption.yz;

@@ -111,7 +111,25 @@ struct BakePoints {
     /// the indirect half and fits once (`athenea/usd/bake_resolve`). Not
     /// with `transfer`.
     bool               split = false;
+    /// AND READ THE MATERIAL BACK, with `transfer`: what the material is at
+    /// each point's first vertex, averaged over its samples, in
+    /// `kBakeMaterialPlanes` planes after everything else -- (base colour,
+    /// the share of it a diffuse lobe gave), (roughness, metalness, the
+    /// coat's roughness, 0), (emission, the samples) -- with -1 where the
+    /// material had no such lobe (`athenea/material/material_sample`). What
+    /// a conversion uses where an input is computed by a graph and a
+    /// constant or a plain map cannot carry it.
+    bool               material = false;
 };
+
+/// The planes a transfer that reads the material back writes after the rest.
+inline constexpr uint32_t kBakeMaterialPlanes = 3;
+[[nodiscard]] inline uint32_t bakeMaterialPlanes(bool transfer, bool material) noexcept {
+    return transfer && material ? kBakeMaterialPlanes : 0u;
+}
+[[nodiscard]] inline uint32_t bakeMaterialPlanes(const BakePoints& bake) noexcept {
+    return bakeMaterialPlanes(bake.transfer, bake.material);
+}
 
 /// THE CELLS A SIDE A TX TRANSFER'S GRID MAY HAVE: 16 or 32, or 0 for the
 /// first transfer's 8 x 8.

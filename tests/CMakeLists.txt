@@ -447,6 +447,20 @@ if(ATHENEA_PYTHON3)
         SKIP_RETURN_CODE 77
         TIMEOUT 3600
         LABELS "gpe;matx;slow")
+    # WHAT ONLY THE MATERIAL CAN SAY (bench/matx/check_sampled.py): the
+    # shader balls whose base colour a graph computes, a tiled map carries
+    # or a coat colour tints -- brick, brass, wood, marble, onyx -- keep
+    # their colour against the path traced mesh, and the six above stay
+    # where baseline.csv has them.
+    add_test(NAME matx_sampled
+        COMMAND ${CMAKE_COMMAND} -E env MATX_BIN=$<TARGET_FILE:athenea>
+                MATX_WORK=${CMAKE_CURRENT_BINARY_DIR}/matx/work MATX_OUT=${CMAKE_CURRENT_BINARY_DIR}/matx
+                ${ATHENEA_PYTHON3} ${PROJECT_SOURCE_DIR}/bench/matx/check_sampled.py)
+    set_tests_properties(matx_sampled PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 3600
+        LABELS "gpe;matx;slow")
 endif()
 
 # A GLASS IS A SHEET BY ITS MESH: a pane modelled as one surface with a solid
