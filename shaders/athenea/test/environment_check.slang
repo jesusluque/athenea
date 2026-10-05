@@ -98,3 +98,57 @@ void environmentCheck(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(stats[4], 1u);
     }
 }
+
+
+/// A ROUGH LEVEL HOLDS A COMPACT BRIGHT SOURCE AS ONE LOBE: the texels of
+/// `level` brighter than a fiftieth of the level's brightest and brighter than
+/// all eight neighbours. One where the prefilter converged; a scatter of them
+/// where its samples hit the source in a pattern (s81).
+/// stats[0] such peaks, stats[1] texels scanned; worst[0] the brightest.
+struct EnvPeaksParams {
+    uint dome;
+    uint level;
+    uint baseSide;
+    uint pad0;
+};
+ConstantBuffer<EnvPeaksParams> peaks;
+
+float peakLum(uint2 uv) {
+    return dot(envTexelAt(envTexels, peaks.dome, peaks.level, uv, peaks.baseSide), float3(0.2126, 0.7152, 0.0722));
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void environmentPeaks(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    const uint side = envSideOf(peaks.level, peaks.baseSide);
+    float brightest = 0.0;
+    for (uint y = 0; y < side; ++y) {
+        for (uint x = 0; x < side; ++x) {
+            brightest = max(brightest, peakLum(uint2(x, y)));
+        }
+    }
+    uint found = 0;
+    for (uint y = 1; y + 1 < side; ++y) {
+        for (uint x = 1; x + 1 < side; ++x) {
+            const float v = peakLum(uint2(x, y));
+            if (v < brightest / 50.0) {
+                continue;
+            }
+            bool top = true;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if ((dx != 0 || dy != 0) && peakLum(uint2(int(x) + dx, int(y) + dy)) >= v) {
+                        top = false;
+                    }
+                }
+            }
+            found += top ? 1u : 0u;
+        }
+    }
+    stats[0] = found;
+    stats[1] = side * side;
+    worst[0] = brightest;
+}

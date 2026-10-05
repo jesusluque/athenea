@@ -11970,6 +11970,32 @@ the lookup), but the gate passed whole for the first time -- the Corvette's
 chrome 0.585 to 0.545, under the first transfer's 0.551 -- with the rest
 unchanged (paint 0.281, rough metal 0.083, windshield 0.064).
 
+### The sky's rough levels hold a sun as one lobe
+
+The fender's blotches under a sunny sky were in the prefiltered sky itself.
+A paint ball at the polish's roughness (0.34) under san_giuseppe, converted
+and drawn beside the mesh path traced (s81): the path traced highlight one
+soft lobe, ours a scatter of small bright blobs across the ball, read at the
+centre or per pixel alike -- band 4-16 px 2.13 times the path traced, mean
+0.58. Every lookup was right; the map it looked up was not. Level 4 took 128
+samples of the GGX lobe a texel along one Hammersley sequence, each reading
+the source at the level its own solid angle asked for, capped at the level
+the projection reads: a sun of a degree and a half at thirty six thousand
+was a texel a few samples hit and the rest missed, in a pattern that moved
+texel by texel. Every gaussian of a curved panel, and every pixel, read one
+of those blobs; clamping the sky took them away (hdr_clamp), autoshop with
+nothing above 93 never had them, and none of the frame's terms or lookups
+could.
+
+Now filtered importance sampling (Krivanek and Colbert): each sample reads
+the source one level coarser than its own solid angle asks, as far down the
+source's chain as that goes (the lat-long mips keep the solid-angle mean,
+so a coarse level is the sky's own average); the sequence is turned by a
+hash of each texel, so what aliasing is left is noise, not a pattern; and the
+counts go up, 64 at level 1 doubling to 1024 -- the coarse levels are small.
+Tested by a dark sky with one source of two texels at thirty thousand, whose
+levels 4 and 5 must each hold a single peak (`[prefilter]`).
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew

@@ -39,7 +39,11 @@ uint32_t sideOf(uint32_t level, uint32_t baseSide) {
 /// level halves going up the chain instead of staying flat, which is what
 /// keeps a 2048 base to about thirty million samples in all.
 uint32_t samplesOf(uint32_t level) {
-    return level == 0 ? 1U : std::min(16U << (level - 1), 128U);
+    // A sun of tens of thousands in a lobe wants many more than the sky's
+    // own noise does: 128 at level 4 drew the polish's highlight as a
+    // scatter of blobs (s81). Filtered importance sampling takes most of
+    // that; the count does the rest, and the coarse levels are small.
+    return level == 0 ? 1U : std::min(64U << (level - 1), 1024U);
 }
 
 }   // namespace
