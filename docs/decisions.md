@@ -11996,7 +11996,11 @@ counts go up, 64 at level 1 doubling to 1024 -- the coarse levels are small.
 Tested by a dark sky with one source of two texels at thirty thousand, whose
 levels 4 and 5 must each hold a single peak (`[prefilter]`), and every level from 2 to 6 the
 source's whole light to 2%: its integral over the sphere, each octahedral
-texel by its own solid angle, against the lat-long's in closed form.
+texel by its own solid angle, against the lat-long's in closed form. It
+failed at first (s88: levels 2 and 3 held 0.85 and 0.80 of the source):
+their lobes are narrower than their own texels, so a texel read the sky at
+its centre only and a source smaller than the spacing fell between centres.
+Each sample now reads the source at least as wide as the texel it writes.
 
 ### A TX frame computes what the eye changes (playback)
 

@@ -141,7 +141,15 @@ void envPrefilter(uint3 tid: SV_DispatchThreadID) {
             const float pdf = max(ggxVisibleNormalPdf(float3(0.0, 0.0, 1.0), h, alpha2) /
                                       (4.0 * max(h.z, 1.0e-6)),
                                   1.0e-9);
-            const float sampleSolidAngle = 1.0 / (float(params.samples) * pdf);
+            // NEVER NARROWER THAN THE TEXEL IT WRITES: a lobe narrower than
+            // the level's own texel is read at that texel's centre only, so a
+            // source smaller than the texel spacing fell between centres and
+            // the level held less than the sky did -- 0.85 and 0.80 of a two
+            // texel sun at levels 2 and 3 (the [prefilter] energy test, s88).
+            // Read at least as wide as the texel, each texel takes its share of
+            // the source by area, as the source's own mips keep it.
+            const float sampleSolidAngle =
+                max(1.0 / (float(params.samples) * pdf), 4.0 * kPrefilterPi / float(side * side));
             // FILTERED IMPORTANCE SAMPLING (Krivanek and Colbert): each
             // sample reads the source at the level whose texel is as wide as
             // the solid angle it stands for, one level coarser still, so a
