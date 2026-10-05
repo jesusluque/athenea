@@ -12965,7 +12965,11 @@ Disney names). No material is classified by hand.
 the ball converted (`--cell-from-camera`, 512 camera pixels, 64 bake paths)
 and rasterised with the ground left a mesh, against the path tracer's 256
 paths a pixel; relMSE, p99 and the mean of each channel over the ball's
-pixels. The mesh raster is a reference column, not the target.
+pixels. The mesh raster is a reference column, not the target. Bake,
+raster and wall times are logged and are not data: the sweep shares the
+Mac with whoever is at it, so the table leaves them out (summary.csv keeps
+them as `*_not_comparable`; `MATX_TIMINGS=1` shows them for a sweep on an
+idle machine) and the baseline holds quality alone.
 `report_matx.py` writes the table, the breakdown by lobe class with the
 worst offenders, and a GT | GS contact sheet a sky.
 

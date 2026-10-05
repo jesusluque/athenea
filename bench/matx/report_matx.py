@@ -21,7 +21,11 @@ import matx_common as m
 
 TILE = 224
 FLAG_REL = 0.10      # relMSE TX above this: flagged
-FLAG_MEAN = 0.15     # any channel's mean off the GT's by more than this fraction: flagged
+FLAG_MEAN = 0.15
+# TIMINGS ARE NOT DATA unless the machine was idle for the whole sweep (MATX_TIMINGS=1): with
+# someone at the Mac, bake, raster and wall times measure the desktop as much as athenea. By
+# default the table leaves them out and the CSV keeps them under *_not_comparable names.
+TIMINGS = os.environ.get("MATX_TIMINGS") == "1"     # any channel's mean off the GT's by more than this fraction: flagged
 
 
 def load():
@@ -55,8 +59,10 @@ def flat(r):
         "relMSE_tx": v.get("relMSE"), "relMSE_mesh_raster": v.get("meshRelMSE"),
         "mean_ratio_r": rr[0] if rr else None, "mean_ratio_g": rr[1] if rr else None,
         "mean_ratio_b": rr[2] if rr else None, "p99": v.get("p99"), "splats": v.get("splats"),
-        "bake_s": round(r["bake_ms"] / 1000, 1) if r.get("bake_ms") else None, "raster_ms": r.get("raster_ms"),
-        "wall_s": r.get("wall_s"), "error": (r.get("err") or "")[:160],
+        **{k + ("" if TIMINGS else "_not_comparable"): v for k, v in (
+            ("bake_s", round(r["bake_ms"] / 1000, 1) if r.get("bake_ms") else None),
+            ("raster_ms", r.get("raster_ms")), ("wall_s", r.get("wall_s")))},
+        "error": (r.get("err") or "")[:160],
     }
 
 
@@ -87,18 +93,23 @@ def tables(flats):
     md = ["# matx: MaterialX materials, TX against athenea's path tracer", "",
           f"Shader ball, 512 px, TX (`--transfer`), GT path traced by athenea. The mesh raster is a reference column. "
           f"Mean ratio = TX mean / GT mean over the ball's pixels. Flagged: relMSE > {FLAG_REL}, a channel's mean off "
-          f"by > {int(FLAG_MEAN * 100)} %, or TX worse than the mesh raster.", ""]
+          f"by > {int(FLAG_MEAN * 100)} %, or TX worse than the mesh raster.",
+          "" if TIMINGS else "Timings are left out: the machine was in use during the sweep, so bake and raster "
+          "times are not comparable (summary.csv keeps them as *_not_comparable; MATX_TIMINGS=1 shows them).", ""]
+    tcols = " bake s | raster ms |" if TIMINGS else ""
     for sky in m.SKIES:
         md += [f"## {sky}", "",
-               "| material | classes | relMSE TX | relMSE mesh raster | mean ratio R/G/B | p99 | splats | bake s | raster ms | flag |",
-               "|---|---|---|---|---|---|---|---|---|---|"]
+               f"| material | classes | relMSE TX | relMSE mesh raster | mean ratio R/G/B | p99 | splats |{tcols} flag |",
+               "|---|---|---|---|---|---|---|" + ("---|---|" if TIMINGS else "") + "---|"]
         for f in sorted((f for f in flats if f["sky"] == sky), key=lambda f: (f["phase"], f["material"])):
             if f["status"] != "ok":
-                md.append(f"| {f['material']} | {f['classes']} | {f['status']} {f['error'][:80]} | | | | | | | |")
+                md.append(f"| {f['material']} | {f['classes']} | {f['status']} {f['error'][:80]} | | | | |"
+                          + (" | |" if TIMINGS else "") + " |")
                 continue
             mr = "/".join(fmt(f[k], 2) for k in ("mean_ratio_r", "mean_ratio_g", "mean_ratio_b"))
             md.append(f"| {f['material']} | {f['classes']} | {fmt(f['relMSE_tx'])} | {fmt(f['relMSE_mesh_raster'])} | {mr} | "
-                      f"{fmt(f['p99'], 3)} | {fmt(f['splats'])} | {fmt(f['bake_s'], 1)} | {fmt(f['raster_ms'], 2)} | "
+                      f"{fmt(f['p99'], 3)} | {fmt(f['splats'])} | "
+                      + (f"{fmt(f['bake_s'], 1)} | {fmt(f['raster_ms'], 2)} | " if TIMINGS else "") +
                       f"{'; '.join(flagged(f))} |")
         md.append("")
     open(os.path.join(m.RENDERS, "summary.md"), "w").write("\n".join(md) + "\n")

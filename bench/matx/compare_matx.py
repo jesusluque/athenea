@@ -26,6 +26,8 @@ import matx_common as m
 BASELINE = os.path.join(m.SRC, "baseline.csv")
 REL_SLACK = float(os.environ.get("MATX_REL_SLACK", "1.05"))
 MEAN_SLACK = float(os.environ.get("MATX_MEAN_SLACK", "0.05"))
+# Quality only. Bake, raster and wall times stay in each run's JSON and are never written here,
+# compared or gated on: the sweep shares the Mac with whoever is using it.
 FIELDS = ["material", "sky", "relMSE_tx", "mean_ratio_r", "mean_ratio_g", "mean_ratio_b", "p99", "relMSE_mesh_raster",
           "splats", "size", "gt_paths", "bake_samples", "bin"]
 
