@@ -13077,3 +13077,77 @@ the cache hands its GTs over with `run_matx.py --adopt-gt`;
   measure leave it out, so it compares equal and says nothing about it.
 - The deferred part of the 52 (Khronos, AMD, Poly Haven), and the path
   tracer against Cycles or the Render Fidelity goldens.
+
+## A material's fields read back from the material itself (matx)
+
+The first matx sweep (bench/matx) found the splats losing a base colour the
+mesh kept: the procedural brick came out a white ball (relMSE 7.82 against
+the mesh raster's 0.131, the mean 3 to 12 times the GT's by channel) and the
+tiled brass an untinted silver (the mean 1.3, 2.2 and 5.6 times the GT's).
+The conversion reads a gaussian's material on the processor, off the stage
+(`MeshStage::materialOf`): a constant, or a plain map the effect samples. The
+brick's `base_color` is a `clamp` of `mix`es of maps, which that reading
+cannot follow, so the default stood without a word; the brass's gold is
+entirely its `coat_color`, over a white metal, and a gaussian has no coat
+colour. The marble (`mix` of noise), the onyx (`hextiledimage`) and the wood
+(a map tiled four times, read as if once) fall the same way, and so does
+every input of a Disney principled shader, whose names the reader does not
+know.
+
+**What changed.** The stage reader now says which fields it could not read
+(`StageMaterial::sampled`: base colour, roughness, coat roughness, metalness,
+emission) and warns once a material and input. A TX bake of such a material
+reads them back from the material: the path tracer's first vertex already
+evaluates the compiled MaterialX graph at each gaussian, so with
+`BakePoints::material` it reduces that lobe stack to the gaussian's numbers
+(`material/material_sample.slang`), averages them over the bake's samples
+(the cells' origins spread them over the footprint), and writes three planes
+after the transfer's; `m2sTransferInto` takes the fields the gaussian's
+material named. The reduction:
+
+- **the base colour** is the diffuse lobes' colour, which is the base colour
+  before the base weight (that went into the lobe's weight, and the record
+  multiplies it back in), or with no diffuse a metal's reflectivity -- a
+  conductor's from its index and extinction, which MaterialX's artistic index
+  made from exactly that colour. Times **the colours `multiply` nodes put on
+  the lobe**, which `athenea_multiply_bsdf_color3` now keeps on it
+  (`lobeTint`): standard_surface's `coat_attenuation` over the base is how
+  the brass's gold arrives;
+- **the coat and the specular** are both reflecting dielectrics, told apart
+  by how many `layer` nodes each is the base of, which `athenea_layer_bsdf`
+  now counts on it (`lobeLayersOver`): the coat lies under fewer than the
+  metal, which sits beside the specular; with no metal, the shallower of two
+  at different depths is the coat, and a lone one is the specular;
+- **roughness** is the metal's or the specular's, `sqrt` of the geometric
+  mean of its two alphas; the widening the conversion gave the roughness it
+  was handed (`m2sWidened`) is carried over to the one read back;
+- **metalness** (an unknown shader, or a computed one) is the metal lobes'
+  share of the base's weight.
+
+A material of constants and plain maps samples nothing and converts as it
+did, bit for bit: the planes are not even asked for. The pads the two
+closures write are free on every lobe but hair, which neither touches.
+
+**How it is checked.** `[material][readback]`: three surface shaders
+compiled, evaluated at 4096 points of random normal and view, and their
+stacks read back against the inputs they were authored with -- a dielectric
+under a tinted coat, a pale metal under a gold one, a plain OpenPBR -- to
+2e-3. `matx_sampled` (`bench/matx/check_sampled.py`, label `matx`): brick,
+brass, wood, marble and onyx converted with `--transfer` on the shader ball
+and measured against the path traced mesh, with nothing said per material:
+each channel's mean within 0.70 to 1.45 of the GT's and the three within
+1.25 of each other (the white brick was 3.8 apart, the silver brass 4.3), the
+relMSE within twice the mesh raster's plus 0.1; and the six of the matx gate
+held to `baseline.csv` as the gate holds them.
+
+### Not done
+
+- Measured on the GPU: not yet (the run is `gpu_m1.sh`'s).
+- A transmitting material keeps its base colour as read: the conversion
+  tints it towards the transmission colour, which the colour read back has
+  no room for.
+- OpenPBR's coat darkening is a colour multiply too, so a sampled OpenPBR
+  base under a coat carries it once in the colour and once in the frame
+  (`coatDarkening`); it is sampled only where the coat colour is not white.
+- The specular colour, the sheen and the transmission colour are not read
+  back; nothing in the examples computes them.

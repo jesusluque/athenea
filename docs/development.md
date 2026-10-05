@@ -251,6 +251,9 @@ python3 compare_matx.py                                                     # ag
 `ctest -L matx` runs six of them, one a lobe class, under both skies
 (about ten minutes) and fails where TX's relMSE is more than 5% worse than
 `baseline.csv` or a channel's mean ratio moved by more than 0.05.
+`matx_sampled` (same label) converts the five whose base colour only the
+material can say -- brick, brass, wood, marble, onyx -- and holds their
+colour against the path traced mesh (`check_sampled.py`).
 `compare_matx.py --write-baseline` rewrites the baseline from a sweep; it
 changes in the commit whose effect it records. `MATX_MX_RESOURCES`,
 `MATX_AUTOSHOP`, `MATX_WORK` and `MATX_OUT` say where the inputs are and
@@ -796,6 +799,22 @@ the pole of a sphere's texture coordinates stretches without bound and sized
 by that a gaussian was a spike across the frame. Three entries more a record
 carry what the bake and a later move of the relief need: the flat point with
 the height, the flat normal, and the relief's normal.
+
+**What only the material can say.** The record's material fields are read on
+the processor off the stage (§6.3): a constant, or a map the effect samples.
+An input a graph computes, a tiled map, an unknown surface shader or a coat
+colour cannot be carried so, and `MeshStage` marks which fields
+(`StageMaterial::sampled`) and warns. A TX bake of such a material reads them
+back from the material itself: the path tracer's first vertex evaluates the
+compiled material at the gaussian anyway, and with `BakePoints::material` it
+reduces that lobe stack to the gaussian's numbers
+(`athenea/material/material_sample`) and averages them over the samples into
+three planes after the transfer's; `m2sTransferInto` writes the fields the
+gaussian's `samplings` word names into its record. The reduction reads two
+things the closures leave on each lobe: the colours `multiply` nodes put on
+it (`lobeTint`, how a coat colour reaches the base) and how many `layer`
+nodes it is the base of (`lobeLayersOver`, how a coat is told from the
+specular). A material of constants and plain maps samples nothing.
 
 ### 6.6 The light bake
 

@@ -438,6 +438,23 @@ is converted a subset at a time, each with its material, and the faces no
 subset claims with the mesh's; the log names each subset's prim. Their
 gaussians keep the mesh's Cryptomatte id.
 
+A material input that a constant or a plain map cannot carry -- one a graph
+computes (a mix, a noise, a hexagonal tiling), a `tiledimage` tiled or
+offset, a surface shader other than `standard_surface`, OpenPBR, glTF's or
+UsdPreviewSurface, or a coat colour -- is named in the log, once a material
+and input:
+
+```
+mesh2splat: '/World/Looks/Materials/M_BrickPattern': 'base_color' is computed by a graph (ND_clamp_color3); a TX bake (--transfer) reads what it can of it back from the material on the device; otherwise the value read here stands
+```
+
+With `--transfer` the bake reads those fields back from the material at each
+gaussian -- the base colour (times the coat colour over it), the roughness of
+the specular and of the coat, the metalness and the emission -- and says into
+how many gaussians: `mesh2splat: the material read back on the device into N
+gaussians`. Without it they keep the constant the stage gave. A material that
+transmits keeps its base colour as read.
+
 The output is written whole or not at all: under `.<name>.partial-<pid>.<ext>`
 in the same directory, and renamed to `-o` once it is complete. A conversion
 that fails leaves nothing under `-o` -- or the file that was there before, as

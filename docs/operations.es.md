@@ -443,6 +443,23 @@ propios se convierte un subset cada vez, cada uno con su material, y las caras
 que no reclama ningún subset con el de la malla; el log nombra el prim de cada
 subset. Sus gaussianas conservan el id Cryptomatte de la malla.
 
+Una entrada del material que no cabe en una constante ni en un mapa simple --
+una que calcula un grafo (un mix, un ruido, un teselado hexagonal), un
+`tiledimage` repetido o desplazado, un shader de superficie que no sea
+`standard_surface`, OpenPBR, el de glTF o UsdPreviewSurface, o un color de
+coat -- se nombra en el log, una vez por material y entrada:
+
+```
+mesh2splat: '/World/Looks/Materials/M_BrickPattern': 'base_color' is computed by a graph (ND_clamp_color3); a TX bake (--transfer) reads what it can of it back from the material on the device; otherwise the value read here stands
+```
+
+Con `--transfer` el bake lee esos campos del propio material en cada
+gaussiana -- el color base (por el color del coat que tiene encima), la
+rugosidad del especular y la del coat, la metalicidad y la emisión -- y dice en
+cuántas gaussianas: `mesh2splat: the material read back on the device into N
+gaussians`. Sin él conservan la constante que dio el stage. Un material que
+transmite conserva su color base tal como se leyó.
+
 La salida se escribe entera o no se escribe: como `.<nombre>.partial-<pid>.<ext>`
 en el mismo directorio, y renombrada a `-o` cuando está completa. Una
 conversión que falla no deja nada en `-o` -- o deja el fichero que ya había,

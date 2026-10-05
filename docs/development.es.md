@@ -256,6 +256,9 @@ python3 compare_matx.py                                                     # fr
 `ctest -L matx` ejecuta seis, uno por clase de lóbulo, bajo los dos cielos
 (unos diez minutos) y falla donde el relMSE de TX es más de un 5% peor que
 en `baseline.csv` o la razón de medias de un canal se ha movido más de 0,05.
+`matx_sampled` (misma etiqueta) convierte los cinco cuyo color base solo
+puede decir el material -- ladrillo, latón, madera, mármol, ónice -- y exige
+que conserven su color frente a la malla trazada (`check_sampled.py`).
 `compare_matx.py --write-baseline` reescribe la referencia a partir de un
 barrido; cambia en el commit cuyo efecto registra. `MATX_MX_RESOURCES`,
 `MATX_AUTOSHOP`, `MATX_WORK` y `MATX_OUT` dicen dónde están las entradas y
@@ -828,6 +831,23 @@ estira sin límite y, dimensionada por eso, una gaussiana era un pincho que
 cruzaba el frame. Tres entradas más por registro llevan lo que necesitan el
 bake y un movimiento posterior del relieve: el punto plano con la altura, la
 normal plana y la normal del relieve.
+
+**Lo que solo el material puede decir.** Los campos de material del registro
+se leen en el procesador a partir del stage (§6.3): una constante, o un mapa
+que muestrea el efecto. Una entrada que calcula un grafo, un mapa repetido, un
+shader de superficie desconocido o un color de coat no caben así, y
+`MeshStage` marca qué campos (`StageMaterial::sampled`) y avisa. Un bake TX de
+un material así los lee del propio material: el primer vértice del path tracer
+evalúa de todos modos el material compilado en la gaussiana, y con
+`BakePoints::material` reduce esa pila de lóbulos a los números de la
+gaussiana (`athenea/material/material_sample`) y los promedia sobre las
+muestras en tres planos tras los del transfer; `m2sTransferInto` escribe en su
+registro los campos que nombra la palabra `samplings` de la gaussiana. La
+reducción lee dos cosas que los closures dejan en cada lóbulo: los colores que
+le ponen los nodos `multiply` (`lobeTint`, por donde el color del coat llega a
+la base) y de cuántos nodos `layer` es la base (`lobeLayersOver`, por donde se
+distingue un coat del especular). Un material de constantes y mapas simples no
+muestrea nada.
 
 ### 6.6 El bake de luz
 
