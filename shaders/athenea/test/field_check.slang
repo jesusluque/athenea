@@ -89,6 +89,7 @@ void fieldCouplingCheck(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     SplatSurface s;
+    s.materialRoughness = -1.0;
     s.normal = float3(0.0, 0.0, 1.0);
     s.transferBase = 0;
     s.transferCount = 84;

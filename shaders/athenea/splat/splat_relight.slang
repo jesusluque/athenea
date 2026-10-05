@@ -123,6 +123,12 @@ public struct SplatSurface {
     /// sixty degrees: a car's paint read matte and bright as a conductor.
     public bool   schlickMetal;
     public float  roughness;   ///< 1 is the Lambert-only answer this had before
+    /// THE MATERIAL'S OWN ROUGHNESS, before the conversion widened
+    /// `roughness` by the spread of normals under the gaussian
+    /// (`--specular-filter`); -1 where the cloud does not carry it. What says
+    /// whether the reflected field answers the polish's closed part
+    /// (`kPolishFieldRoughness`).
+    public float  materialRoughness;
     /// What the material lets through, and the reason a splat can be
     /// translucent at all. A gaussian cannot refract; what it can do is send
     /// on the light that arrives from **behind** it, which is what glass lit
@@ -1129,6 +1135,14 @@ public static const float kSharpRoughness = 0.2;
 /// and every polish smoother, whose sky -- and its sun -- changes across a
 /// curved panel faster than a gaussian is wide.
 public static const float kSharpPolishRoughness = 0.5;
+/// THE SMOOTHEST MATERIAL WHOSE POLISH THE REFLECTED FIELD ANSWERS where its
+/// lobe is closed: a lobe this wide is wider than what the field's degree
+/// holds, so what blocks it -- a ball's ground -- is what the field says. A
+/// sharper one reflects detail the field cannot hold, and on the Corvette's
+/// chrome (0) and rough metal (0.22) the field read them a third bright.
+/// Read against the material's own roughness (`SplatSurface::materialRoughness`),
+/// not the stored one: `--specular-filter` widens a thin chrome tube's past it.
+public static const float kPolishFieldRoughness = 0.3;
 
 public struct SplatSlope {
     public bool   on;
@@ -1333,8 +1347,15 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // -- small parts in a crowded scene -- the cells' openness read them
         // 1.64 and 0.221 against the path traced frame, the harmonics' 1.05
         // and 0.128, for the same mean. The coat keeps the cells (below).
+        // A POLISH AS WIDE AS THE FIELD (kPolishFieldRoughness) asks its own
+        // lobe's cells, as the coat does, and the field answers what they
+        // close: a green ball on a grey ground reflected the sky in its lower
+        // half where the path traced ball shows the ground.
+        const bool polishField = field && s.materialRoughness >= kPolishFieldRoughness;
         const float narrowed =
-            s.reflectionTraced ? 1.0 : specularOpenness(nDotV, splatOpenness(s, transfer), s.roughness);
+            s.reflectionTraced ? 1.0
+            : polishField      ? splatLobeOpen(s, cellBits, mirror, s.roughness, s.normal)
+                               : specularOpenness(nDotV, splatOpenness(s, transfer), s.roughness);
         // THE SUN IN THE POLISH, analytic (sunReflectPdf): the map no longer
         // holds it, so what the polish reflects of it is its lobe's weight
         // times the irradiance through the lobe, by the share the cells let
@@ -1421,11 +1442,12 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             }
         }
         if (field) {
-            // The field is the coat's: on the base's polish it read the metals
-            // a third bright (chrome 0.261 where the path traced frame reads
-            // 0.197, exact without it), while the paint's closed reflections
-            // are its lacquer's.
-            const float3 closed = float3(0.0);
+            // The field answers the polish's closed part where the material's
+            // lobe is as wide as the field (polishField); on a sharper one it
+            // read the metals a third bright (chrome 0.261 where the path
+            // traced frame reads 0.197, exact without it), and its closed
+            // part stays dark.
+            const float3 closed = polishField ? coupling * fieldPolish : float3(0.0);
             return body2 +
                    layers.under * thinWallGain(s) *
                        (max(splatPolish(s, nDotV) * (narrowed * seen + (1.0 - narrowed) * closed), float3(0.0)) +

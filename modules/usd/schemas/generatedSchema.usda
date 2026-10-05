@@ -258,6 +258,10 @@ object through the glass wants a ray, which this is not."""
         doc = """Nonzero where the gaussian's metal is a Schlick -- OpenPBR's generalized_schlick_bsdf, glTF's -- from its colour head on to its specular colour at grazing, rather than a conductor of the artistic index standard_surface's and UsdPreviewSurface's are. One int a gaussian; only read beside the PBR arrays."""
         interpolation = "vertex"
     )
+    float[] primvars:athenea:splat:materialRoughness = [] (
+        doc = """The roughness the gaussian's material itself has, 0 to 1, before the conversion widened the stored `roughness` by the spread of normals under the gaussian (mesh2splat's --specular-filter); -1 where the material reads it from a map. One float a gaussian; only read beside the PBR arrays. Where it is at least 0.3 a TX transfer's reflected field answers what the polish's own lobe finds closed -- a ball shows its ground -- and below that, or without it, the closed part stays dark."""
+        interpolation = "vertex"
+    )
     float[] primvars:athenea:splat:curvature = [] (
         doc = """How the surface turns under the gaussian: its shape operator in the gaussian's own first two axes (uu, uv, vv), so that the normal a step dx across the footprint away is n + S dx. Three floats a gaussian (elementSize 3), written by a TX transfer's conversion from the mesh's corner normals. A frame turns the transfer's reflection across the gaussian's footprint by it instead of showing the centre's over all of it. Without it the reflection is flat across each gaussian."""
         elementSize = 3

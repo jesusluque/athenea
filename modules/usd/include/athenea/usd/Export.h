@@ -139,6 +139,10 @@ struct ExportOptions {
     /// One int a record, 1 where the gaussian's metal is a Schlick (OpenPBR,
     /// glTF) rather than a conductor (`primvars:athenea:splat:schlickMetal`).
     std::span<const int32_t>        schlickMetal;
+    /// One float a record, the material's own roughness before the conversion
+    /// widened it by the spread of normals (`primvars:athenea:splat:materialRoughness`):
+    /// what says whether a frame's reflected field answers the polish.
+    std::span<const float>          materialRoughness;
     /// Three floats a record, the surface's shape operator in the gaussian's
     /// own two axes (uu, uv, vv): `primvars:athenea:splat:curvature`, what a
     /// frame turns a TX transfer's reflection across the gaussian by.

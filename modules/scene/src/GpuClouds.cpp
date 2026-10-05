@@ -688,7 +688,7 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kCoatRoughness = 1u << 22, kCoatIor = 1u << 23, kSheenColour = 1u << 24,
                    kSheenRoughness = 1u << 25, kCoatDarkening = 1u << 26, kTransferReflected = 1u << 27,
                    kTransferZonal = 1u << 28,
-                   kSchlickMetal = 1u << 29;
+                   kSchlickMetal = 1u << 29, kMaterialRoughness = 1u << 30;
 
 }   // namespace
 
@@ -850,6 +850,10 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (haveSchlick) {
         note(in.schlickMetal, kSchlickMetal);
     }
+    const bool haveOwnRoughness = havePbr && !in.materialRoughness.empty() && in.materialRoughness.values() >= n;
+    if (haveOwnRoughness) {
+        note(in.materialRoughness, kMaterialRoughness);
+    }
     note(in.radianceBase, kBase);
     if (haveSh) {
         note(planes ? in.shPlanes.front() : in.sh, kSh);
@@ -910,6 +914,9 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!thinWalled) return std::move(thinWalled).error();
     auto schlickMetal = streamBuffer(haveSchlick ? in.schlickMetal : FloatStream{}, "splats.stream.schlickMetal");
     if (!schlickMetal) return std::move(schlickMetal).error();
+    auto materialRoughness = streamBuffer(haveOwnRoughness ? in.materialRoughness : FloatStream{},
+                                          "splats.stream.materialRoughness");
+    if (!materialRoughness) return std::move(materialRoughness).error();
     auto normals = streamBuffer(haveNormals ? in.normals : FloatStream{}, "splats.stream.normals");
     if (!normals) return std::move(normals).error();
     auto emission = streamBuffer(haveEmission ? in.emission : FloatStream{}, "splats.stream.emission");
@@ -967,6 +974,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 cursor["shadowBits"].setBinding(haveShadowBits ? shadowBits->rhi() : none->rhi());
                 cursor["thinWalled"].setBinding(haveThin ? thinWalled->rhi() : none->rhi());
                 cursor["schlickMetal"].setBinding(haveSchlick ? schlickMetal->rhi() : none->rhi());
+                cursor["materialRoughness"].setBinding(haveOwnRoughness ? materialRoughness->rhi() : none->rhi());
                 cursor["normals"].setBinding(haveNormals ? normals->rhi() : none->rhi());
                 cursor["emission"].setBinding(haveEmission ? emission->rhi() : none->rhi());
                 {

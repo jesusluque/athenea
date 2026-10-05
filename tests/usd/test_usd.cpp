@@ -13120,6 +13120,134 @@ TEST_CASE("a cloud's specular, coat and sheen survive USD", "[usd][gpu][export][
     CHECK_FALSE(none->hasLobes());
 }
 
+// THE MATERIAL'S OWN ROUGHNESS GOES OUT AND COMES BACK, beside the marks it
+// shares the transmission with.
+//
+// `primvars:athenea:splat:materialRoughness` is what says whether a frame's
+// reflected field answers a polish (splat_relight's kPolishFieldRoughness):
+// `--specular-filter` widens a thin chrome tube's stored roughness past the
+// gate, its material's is 0. It reaches the pbr word as a mark on the
+// transmission, as a thin wall and a Schlick metal do, so the three are
+// written together here -- every combination, roughnesses across the range
+// and -1 for a material that reads it from a map -- and the word read back
+// through Hydra's arrays must hold each, with the metallic, roughness and
+// transmission bytes of the same cloud uploaded directly. A cloud written
+// without it says it carries none.
+TEST_CASE("a cloud's own material roughness survives USD beside its thin walls and Schlick metals",
+          "[usd][gpu][export][pbr]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    constexpr uint32_t kCount = 2000;
+    const io::RawSplats base = cloud(kCount);
+    io::RawSplats raw = base;
+    raw.records.clear();
+    const uint32_t stride = base.encoding.floatsPerRecord;
+    std::vector<float> own(kCount);
+    std::vector<int32_t> thin(kCount), schlick(kCount);
+    std::vector<float> expected(size_t{kCount} * 4, 0.0F);
+    for (uint32_t i = 0; i < kCount; ++i) {
+        const float* from = base.records.data() + size_t{i} * stride;
+        raw.records.insert(raw.records.end(), from, from + stride);
+        // Metallic, roughness, transmission: every byte of each range, apart.
+        const float pbr[3] = {float(i % 256) / 255.0F, float((i * 7) % 256) / 255.0F,
+                              float((i * 13) % 256) / 255.0F};
+        raw.records.insert(raw.records.end(), pbr, pbr + 3);
+        own[i] = i % 17 == 0 ? -1.0F : float(i % 101) / 100.0F;
+        thin[i] = (i / 3) % 2 == 0 ? 1 : 0;
+        schlick[i] = (i / 6) % 2 == 0 ? 1 : 0;
+        expected[size_t{i} * 4 + 0] = own[i];
+        expected[size_t{i} * 4 + 1] = float(thin[i]);
+        expected[size_t{i} * 4 + 2] = float(schlick[i]);
+    }
+    raw.encoding.floatsPerRecord = stride + 3;
+    raw.encoding.metallic = stride;
+    raw.encoding.roughness = stride + 1;
+    raw.encoding.transmission = stride + 2;
+    auto direct = loader->upload(raw, 0);
+    REQUIRE(direct);
+    REQUIRE(direct->hasPbr());
+
+    gpu::BufferDesc desc;
+    desc.bytes = expected.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto wanted = gpu::Buffer::create(*gpu->device, desc, expected.data());
+    REQUIRE(wanted);
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/pbr_marks_check", "pbrMarksCheck");
+    if (!check) FAIL(check.error().toString());
+
+    const auto through = [&](const std::string& name, bool withOwn) {
+        const fs::path path = scratch(name);
+        usd::ExportOptions options;
+        options.addCamera = false;
+        options.relight = true;
+        options.thinWalled = thin;
+        options.schlickMetal = schlick;
+        if (withOwn) {
+            options.materialRoughness = own;
+        }
+        REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, path, options));
+        UsdStageRefPtr stage = UsdStage::Open(path.string());
+        REQUIRE(stage);
+        const UsdPrim prim = stage->GetPrimAtPath(SdfPath("/World/Splats"));
+        REQUIRE(prim);
+        usd::ParticleFieldArrays arrays;
+        const UsdVolParticleField3DGaussianSplat field(prim);
+        field.GetPositionsAttr().Get(&arrays.positions);
+        field.GetOrientationsAttr().Get(&arrays.orientations);
+        field.GetScalesAttr().Get(&arrays.scales);
+        field.GetOpacitiesAttr().Get(&arrays.opacities);
+        int degree = 0;
+        field.GetRadianceSphericalHarmonicsDegreeAttr().Get(&degree);
+        arrays.shDegree = degree;
+        field.GetRadianceSphericalHarmonicsCoefficientsAttr().Get(&arrays.shCoefficients);
+        const UsdGeomPrimvarsAPI primvars(prim);
+        primvars.GetPrimvar(TfToken("athenea:splat:metallic")).Get(&arrays.metallic);
+        primvars.GetPrimvar(TfToken("athenea:splat:roughness")).Get(&arrays.roughness);
+        primvars.GetPrimvar(TfToken("athenea:splat:transmission")).Get(&arrays.transmission);
+        primvars.GetPrimvar(TfToken("athenea:splat:thinWalled")).Get(&arrays.thinWalled);
+        primvars.GetPrimvar(TfToken("athenea:splat:schlickMetal")).Get(&arrays.schlickMetal);
+        const UsdGeomPrimvar written = primvars.GetPrimvar(TfToken("athenea:splat:materialRoughness"));
+        CHECK(static_cast<bool>(written) == withOwn);
+        if (written) {
+            CHECK(written.GetTypeName() == SdfValueTypeNames->FloatArray);
+            CHECK(written.GetInterpolation() == UsdGeomTokens->vertex);
+            // Declared by the schema, so it is not a custom attribute.
+            CHECK_FALSE(written.GetAttr().IsCustom());
+            written.Get(&arrays.materialRoughness);
+        }
+        const scene::SplatStreams streams = usd::splatStreams(arrays, "pbr marks streams");
+        auto back = loader->upload(streams, 0);
+        REQUIRE(back);
+        REQUIRE(back->hasPbr());
+        REQUIRE(back->count == direct->count);
+        gpu::Buffer counts = test::uintBuffer(*gpu->device, 8, "pbr_marks.counts");
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            check->dispatch(batch, {kCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["carried"].setBinding(back->pbr.rhi());
+                cursor["plain"].setBinding(direct->pbr.rhi());
+                cursor["expected"].setBinding(wanted->rhi());
+                cursor["counts"].setBinding(counts.rhi());
+                cursor["params"]["count"].setData(kCount);
+                cursor["params"]["carriesOwn"].setData(withOwn ? 1u : 0u);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 8> seen{};
+        REQUIRE(counts.read(*gpu->device, 0, sizeof(seen), seen.data()));
+        std::printf("  %s: %u checked; bytes apart %u, marks apart %u, presence apart %u, own roughness off %u\n",
+                    name.c_str(), seen[4], seen[0], seen[1], seen[2], seen[3]);
+        CHECK(seen[4] == kCount);
+        CHECK(seen[0] == 0);
+        CHECK(seen[1] == 0);
+        CHECK(seen[2] == 0);
+        CHECK(seen[3] == 0);
+    };
+    through("splat_own_roughness.usda", true);
+    through("splat_own_roughness_bare.usda", false);
+}
+
 // A BALL OF EACH MATERIAL, CONVERTED, RASTERISED, AGAINST THE MESH PATH TRACED.
 //
 // Proposal 026, material by material: what the user wants of a conversion is

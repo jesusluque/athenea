@@ -1133,6 +1133,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:curvature` | float[] ‹3 a gaussian› | — |
 | `primvars:athenea:splat:schlickMetal` | int[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:materialRoughness` | float[] ‹1 a gaussian, 0 to 1, or -1› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:specularWeight` | float[] ‹1 a gaussian, 0 to 1› | `1` |
@@ -1224,6 +1225,12 @@ and glTF's, from its colour head on to its specular colour at grazing --
 rather than the conductor of an artistic index that standard_surface's and
 UsdPreviewSurface's are; `athenea mesh2splat` writes it from the material's
 vocabulary. For a dark metal the two part by twice at sixty degrees.
+`materialRoughness` is the roughness of the gaussian's material itself, before
+`--specular-filter` widened the stored `roughness` by the spread of normals
+under the gaussian; -1 where the material reads it from a map. `athenea
+mesh2splat` writes it. Where it is at least 0.3 a TX transfer's reflected
+field answers what the polish's own lobe finds closed -- a ball shows its
+ground -- and below that, or in a cloud without it, that part stays dark.
 `thinWalled` is nonzero where the gaussian came from a thin-walled glass
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame

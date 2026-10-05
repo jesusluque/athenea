@@ -1231,6 +1231,14 @@ public:
                 // than a conductor: what a frame reflects a metal with.
                 schlickMetal_.insert(schlickMetal_.end(), out->written,
                                      material.schlickMetal ? int32_t{1} : int32_t{0});
+                // And the material's own roughness, before --specular-filter
+                // widens the stored one: what says whether a frame's field
+                // answers the polish (splat_relight's kPolishFieldRoughness).
+                // Under a map it is the map's, which a gaussian's record holds
+                // widened; -1 then, which a frame reads as sharp.
+                materialRoughness_.insert(
+                    materialRoughness_.end(), out->written,
+                    material.roughnessMap.empty() || options_->noTextures ? material.roughness : -1.0F);
                 // AND WHAT ITS GLASS BENDS BY. A transmitting gaussian
                 // refracts only with an index (rt_shade: `ior > 1`), and a
                 // cloud keeps one: without it the pawn's glass head was a
@@ -1829,6 +1837,8 @@ private:
     std::vector<int32_t>                     thinWalled_;
     /// One a gaussian, 1 where its metal is a Schlick (StageMaterial::schlickMetal).
     std::vector<int32_t>                     schlickMetal_;
+    /// One a gaussian, its material's own roughness (-1 under a map).
+    std::vector<float>                       materialRoughness_;
     /// The index the cloud's transmitting gaussians bend by: the first glass
     /// met's. 0 while there is none.
     float                                    glassIor_ = 0.0F;
@@ -1859,6 +1869,7 @@ public:
     [[nodiscard]] double modelCell() const noexcept { return modelCell_; }
     [[nodiscard]] const std::vector<int32_t>& thinWalled() const noexcept { return thinWalled_; }
     [[nodiscard]] const std::vector<int32_t>& schlickMetal() const noexcept { return schlickMetal_; }
+    [[nodiscard]] const std::vector<float>& materialRoughness() const noexcept { return materialRoughness_; }
     /// Each gaussian's shape operator (uu, uv, vv), read back for the file;
     /// empty where the conversion did not write it.
     [[nodiscard]] Result<std::vector<float>> curvature() {
@@ -3096,6 +3107,7 @@ void addMesh2Splat(CLI::App& app) {
                 options.cryptoManifest = converter.cryptoManifest();
                 options.thinWalled = converter.thinWalled();
                 options.schlickMetal = converter.schlickMetal();
+                options.materialRoughness = converter.materialRoughness();
                 auto curvature = converter.curvature();
                 if (!curvature) return std::move(curvature).error();
                 options.curvature = *curvature;

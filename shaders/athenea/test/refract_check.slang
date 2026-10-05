@@ -40,6 +40,7 @@ void refractCheck(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     SplatSurface s;
+    s.materialRoughness = -1.0;
     s.lobes = plainLobes();
     s.thinWalled = false;
     s.schlickMetal = false;

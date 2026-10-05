@@ -337,6 +337,16 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(schlick));
     }
 
+    // THE MATERIAL'S OWN ROUGHNESS, before `--specular-filter` widened the
+    // stored one by the spread of normals under each gaussian.
+    if (options.materialRoughness.size() >= count && count > 0) {
+        VtFloatArray own(options.materialRoughness.begin(), options.materialRoughness.begin() + count);
+        UsdGeomPrimvarsAPI(splats.GetPrim())
+            .CreatePrimvar(TfToken("primvars:athenea:splat:materialRoughness"), SdfValueTypeNames->FloatArray,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(own));
+    }
+
     // HOW THE SURFACE TURNS UNDER EACH GAUSSIAN: three floats a record, its
     // shape operator in the gaussian's own two axes. Written only with them.
     if (options.curvature.size() >= size_t{count} * 3 && count > 0) {
@@ -459,7 +469,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             TfToken("primvars:athenea:splat:schlickMetal"), TfToken("primvars:athenea:splat:curvature"),
             TfToken("primvars:athenea:splat:normal"),       TfToken("primvars:athenea:splat:linear"),
             TfToken("primvars:athenea:splat:emission"),     TfToken("primvars:athenea:splat:coatWeight"),
-            TfToken("primvars:athenea:splat:specularWeight"), TfToken("primvars:athenea:splat:sheenColor")};
+            TfToken("primvars:athenea:splat:specularWeight"), TfToken("primvars:athenea:splat:sheenColor"),
+            TfToken("primvars:athenea:splat:materialRoughness")};
         const UsdPrim prim = splats.GetPrim();
         if (std::any_of(std::begin(kLighting), std::end(kLighting),
                         [&](const TfToken& name) { return prim.GetAttribute(name).HasAuthoredValue(); })) {

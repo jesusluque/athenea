@@ -73,6 +73,12 @@ static const uint kTransferZonal = 1u << 28;
 // back off (splat_encoding's kSchlickMetalMark).
 static const uint kSchlickMetal = 1u << 29;
 static const float kSchlickMetalMark = 4.0;
+// One float a splat, the material's own roughness before the conversion widened
+// it (`primvars:athenea:splat:materialRoughness`): carried as eight times one
+// more than its 5-bit step on the transmission (splat_encoding's
+// kMaterialRoughnessMark).
+static const uint kMaterialRoughness = 1u << 30;
+static const float kMaterialRoughnessMark = 8.0;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;
@@ -129,6 +135,7 @@ StructuredBuffer<uint>     transferZonal;    // ten a splat: two lobes in the ga
 StructuredBuffer<uint>     shadowBits;       // two words a splat, or eight, bits
 StructuredBuffer<uint>     schlickMetal;     // one int a splat, nonzero for a Schlick metal
 StructuredBuffer<uint>     thinWalled;       // one int a splat, nonzero for a thin wall
+StructuredBuffer<uint>     materialRoughness;   // one float a splat, the material's own roughness
 StructuredBuffer<uint>     normals;          // xyz a splat, the shading normal
 StructuredBuffer<uint>     emission;         // rgb a splat, the radiance it gives off
 StructuredBuffer<uint>     radianceBase;     // DC rgb, opacity: four a splat (kBase)
@@ -197,7 +204,12 @@ void splatStreams(uint3 tid: SV_DispatchThreadID) {
         records[r + params.pbrBase + 1] = present(kRoughness) ? streamValue(roughness, isHalf(kRoughness), e) : 1.0;
         // A thin wall rides on the transmission, two higher (splat_encoding).
         const float thin = (present(kThinWalled) && thinWalled[e] != 0u ? kThinWalledMark : 0.0) +
-                           (present(kSchlickMetal) && schlickMetal[e] != 0u ? kSchlickMetalMark : 0.0);
+                           (present(kSchlickMetal) && schlickMetal[e] != 0u ? kSchlickMetalMark : 0.0) +
+                           (present(kMaterialRoughness)
+                                ? kMaterialRoughnessMark *
+                                      (1.0 + round(saturate(streamValue(materialRoughness,
+                                                                        isHalf(kMaterialRoughness), e)) * 31.0))
+                                : 0.0);
         records[r + params.pbrBase + 2] =
             (present(kTransmission) ? streamValue(transmission, isHalf(kTransmission), e) : 0.0) + thin;
     }

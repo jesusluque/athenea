@@ -484,6 +484,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
         surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
         surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[i]);
+        surface.materialRoughness = params.hasPbr != 0 ? pbrMaterialRoughness(pbr[i]) : -1.0;
         // WHAT A PICK MAY HAVE SAID ABOUT THIS PRIM. The id a gaussian carries
         // is the one the matte writes, so a table keyed on it is a material
         // override addressed by clicking (athenea/common/splat_override.slang).
@@ -493,6 +494,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             if (said.found) {
                 surface.metallic = splatOverrideOf(surface.metallic, said.metallic);
                 surface.roughness = splatOverrideOf(surface.roughness, said.roughness);
+                surface.materialRoughness = splatOverrideOf(surface.materialRoughness, said.roughness);
                 surface.transmission = splatOverrideOf(surface.transmission, said.transmission);
                 surface.albedo = splatOverrideColour(surface.albedo, said);
             }
