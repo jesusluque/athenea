@@ -55,18 +55,59 @@ struct CellParams {
     float4 toWorld0;       ///< the camera's transform, three rows of four
     float4 toWorld1;
     float4 toWorld2;
+
+    float  refineMetal;    ///< the most a sharp reflector's cell is made finer; 1: not at all
+    float  refineTexture;  ///< the same for a busy albedo
+    float  turnPerLobe;    ///< how many lobes a cell may turn the normal by
+    float  alphaMin;       ///< the narrowest lobe a rule counts with
+
+    float  sharpRoughness; ///< a base roughness this or rougher is not sharp
+    float  detailShare;    ///< the share of the area that must be busy
+    float  coarsen;        ///< a level of detail's: the camera's cell this many times coarser
+    float  pad2;
 };
+
+/// The measures a piece, as the effect attaches them (`m2sMeasure`).
+static const uint kMeasureWords = 50;
+static const uint kMeasureBins = 24;
+static const uint kCurvatureAt = 0;
+static const uint kTexelAt = 24;
+static const uint kWeightAt = 48;
+static const uint kDetailAt = 49;
 
 StructuredBuffer<float4>   bounds;      // the model's low and high, then each mesh's
 StructuredBuffer<uint>     pieceMesh;   // the mesh each piece is of
 StructuredBuffer<uint>     wanted;      // what each piece wants; 0 before it is counted
 StructuredBuffer<uint>     share;       // what the budget gives it; 0: all it wants
+StructuredBuffer<float>    measures;    // kMeasureWords a piece; all 0 before it is measured
+StructuredBuffer<float4>   looks;       // a piece's material: base roughness, metallic, specular weight, transmission
 RWStructuredBuffer<float>  cells;
 ConstantBuffer<CellParams> params;
 
 float longestOf(float3 low, float3 high) {
     const float3 extent = high - low;
     return max(max(extent.x, extent.y), max(extent.z, 1.0e-20));
+}
+
+/// The value the bins of a histogram reach `fraction` of their total at:
+/// the middle of that half-octave bin (the effect's `m2sMeasureBin`), and 0
+/// for the first, which holds nothing worth a number.
+float quantileOf(uint at, float fraction) {
+    float total = 0.0;
+    for (uint b = 0; b < kMeasureBins; ++b) {
+        total += measures[at + b];
+    }
+    if (!(total > 0.0)) {
+        return 0.0;
+    }
+    float running = 0.0;
+    for (uint b = 0; b < kMeasureBins; ++b) {
+        running += measures[at + b];
+        if (running >= fraction * total) {
+            return b == 0 ? 0.0 : exp2((float(b) - 16.0 + 0.5) * 0.5);
+        }
+    }
+    return exp2((float(kMeasureBins) - 16.0 - 0.5) * 0.5);
 }
 
 [shader("compute")]
@@ -95,6 +136,7 @@ void m2sCells(uint3 tid: SV_DispatchThreadID) {
         const float3 nearest = clamp(eye, low, high);
         const float z = max(length(nearest - eye), max(params.near, 1.0e-6));
         cell = z * (params.aperture / max(params.pixels, 1.0)) / max(params.focal, 1.0e-6);
+        cell *= max(params.coarsen, 1.0);
     } else {
         const float longest = perMesh ? longestOf(low, high) : longestOf(bounds[0].xyz, bounds[1].xyz);
         cell = longest / resolution;
@@ -105,10 +147,44 @@ void m2sCells(uint3 tid: SV_DispatchThreadID) {
     if (cellMax > 0.0) {
         cell = min(cell, cellMax);
     }
+    // WHAT THE SURFACE ASKS: a finer cell for a sharp reflector that turns
+    // under it, and for an albedo that moves across it.
+    const uint n = params.pieces;
+    const uint at = p * kMeasureWords;
+    const float4 look = looks[p];
+    const float turn = quantileOf(at + kCurvatureAt, 0.75);
+    float byMetal = 1.0;
+    const bool sharp = look.w <= 0.0 && (look.y >= 0.5 || look.z >= 0.5) && look.x < params.sharpRoughness;
+    if (params.refineMetal > 1.0 && sharp && turn > 0.0) {
+        const float alpha = max(look.x * look.x, params.alphaMin);
+        byMetal = clamp(turn / (params.turnPerLobe * alpha), 1.0, params.refineMetal);
+    }
+    const float all = measures[at + kWeightAt];
+    const float busy = all > 0.0 ? measures[at + kDetailAt] / all : 0.0;
+    const float texel = quantileOf(at + kTexelAt, 0.5);
+    float byTexture = 1.0;
+    if (params.refineTexture > 1.0 && busy >= params.detailShare && texel > 0.0) {
+        byTexture = clamp(0.5 / texel, 1.0, params.refineTexture);
+    }
+    const float refine = max(byMetal, byTexture);
+    const float cellUnrefined = cell;
+    if (refine > 1.0) {
+        cell /= refine;
+        if (params.cellMin > 0.0) {
+            cell = max(cell, params.cellMin);   // the user's floor holds
+        }
+    }
+    const float finer = cell > 0.0 && refine > 1.0 ? min(refine, cellUnrefined / cell) : 1.0;
+    cells[3 + 5 * n + p] = finer;
+    cells[3 + 6 * n + p] = byMetal;
+    cells[3 + 7 * n + p] = byTexture;
+    cells[3 + 8 * n + p] = turn;
+    cells[3 + 9 * n + p] = texel;
+    cells[3 + 10 * n + p] = busy;
+
     const uint want = wanted[p];
     const uint given = share[p];
     const float factor = given > 0 && want > given ? sqrt(float(want) / float(given)) : 1.0;
-    const uint n = params.pieces;
     cells[3 + p] = cell * factor;
     cells[3 + n + p] = factor;
     if (params.camera != 0) {
@@ -116,8 +192,10 @@ void m2sCells(uint3 tid: SV_DispatchThreadID) {
         cells[3 + 3 * n + p] = cell * factor;
         cells[3 + 4 * n + p] = cell * factor;
     } else {
-        cells[3 + 2 * n + p] = resolution / factor;
-        cells[3 + 3 * n + p] = cellMin * factor;
-        cells[3 + 4 * n + p] = cellMax * factor;
+        cells[3 + 2 * n + p] = resolution * finer / factor;
+        // Finer, but never past the user's own floor.
+        cells[3 + 3 * n + p] = params.cellMin > 0.0 ? max(cellMin / finer, params.cellMin) * factor
+                                                    : cellMin * factor / finer;
+        cells[3 + 4 * n + p] = cellMax * factor / finer;
     }
 }

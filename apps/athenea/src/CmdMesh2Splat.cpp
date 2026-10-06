@@ -37,6 +37,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -144,6 +145,18 @@ struct Options {
     /// is nearest (Mesh2GS). Empty: the density's box does.
     std::string              cellFromCamera;
     uint32_t                 cameraPixels = 1920;
+    /// A LEVEL OF DETAIL'S CELL FROM A CAMERA: the camera's pixel this many
+    /// times wider (set by the levels' loop, 2^level), as `resolution` is
+    /// halved for a box.
+    double                   lodCoarsen = 1.0;
+    /// FINER WHERE THE SURFACE ASKS (mesh2splat_cells): a sharp reflector
+    /// whose normal turns under a cell, and an albedo that moves across one.
+    /// "auto" (the most a cell is made finer: 4), "off", or that most as a
+    /// number; parsed into the two below.
+    std::string              refineMetal = "auto";
+    std::string              refineTexture = "auto";
+    double                   refineMetalMost = 4.0;
+    double                   refineTextureMost = 4.0;
     // Their 0.65 is the width they chose for their own renderer; traced here
     // it leaves a converted surface 30% transparent (docs/decisions.md has
     // the table). 1.0 closes it to 91%, 1.2 to 96%.
@@ -343,6 +356,56 @@ public:
 
     /// A piece that is a whole mesh, not one of its subsets.
     static constexpr uint32_t kWhole = 0xFFFFFFFF;
+
+    /// FINER WHERE THE SURFACE ASKS: the effect's measures a piece (two
+    /// histograms of 24 half-octave bins and two sums, `m2sMeasure`), the
+    /// rows `mesh2splat_cells` writes a piece, and the rules' constants,
+    /// calibrated on the Corvette (docs/decisions.md, "Finer where the
+    /// surface asks"): a cell may turn a sharp reflector's normal by four
+    /// lobes over three quarters of its area, a lobe being roughness^2 and
+    /// no narrower than 0.02; sharp is a base roughness under 0.2; an albedo
+    /// is busy where its brightness spreads by 0.02 across a cell, over a
+    /// tenth of the piece's area at least.
+    static constexpr uint32_t kMeasureWords = 50;
+    static constexpr uint32_t kCellRows = 11;
+    static constexpr float    kTurnPerLobe = 4.0F;
+    static constexpr float    kAlphaMin = 0.02F;
+    static constexpr float    kSharpRoughness = 0.2F;
+    static constexpr float    kDetailShare = 0.1F;
+    static constexpr double   kDetailFloor = 0.02;
+
+    /// How much finer piece `p` walks for what its surface asks (1: as it was).
+    [[nodiscard]] double refinedBy(size_t p) const {
+        const size_t n = pieces_.size();
+        const size_t at = 3 + 5 * n + p;
+        return at < cellValues_.size() ? static_cast<double>(cellValues_[at]) : 1.0;
+    }
+
+    /// What the log says of it: nothing for a piece left as it was.
+    [[nodiscard]] std::string refinedSaying(size_t p) const {
+        const double finer = refinedBy(p);
+        if (!(finer > 1.0)) {
+            return {};
+        }
+        const size_t n = pieces_.size();
+        const double byMetal = static_cast<double>(cellValues_[3 + 6 * n + p]);
+        const double byTexture = static_cast<double>(cellValues_[3 + 7 * n + p]);
+        char said[256];
+        if (byMetal >= byTexture) {
+            std::snprintf(said, sizeof(said),
+                          ", refined x%.2f for its curvature: a sharp reflector (roughness %.2f) whose normal turns "
+                          "%.3g rad a cell over a quarter of it",
+                          finer, static_cast<double>(pieces_[p].material->roughness),
+                          static_cast<double>(cellValues_[3 + 8 * n + p]));
+        } else {
+            std::snprintf(said, sizeof(said),
+                          ", refined x%.2f for its texture: a texel is %.3g of a cell where the albedo moves, on "
+                          "%.0f%% of it",
+                          finer, static_cast<double>(cellValues_[3 + 9 * n + p]),
+                          100.0 * static_cast<double>(cellValues_[3 + 10 * n + p]));
+        }
+        return said;
+    }
 
     /// WHAT ONE RUN OF THE EFFECT CONVERTS: a mesh; or, where its GeomSubsets
     /// bind materials of their own, the triangles of one subset, or those no
@@ -783,12 +846,33 @@ public:
         auto meshBuffer = gpu::Buffer::fromSpan<uint32_t>(device, meshOf, "mesh2splat.pieceMesh");
         auto wantBuffer = gpu::Buffer::fromSpan<uint32_t>(device, wantedBy_, "mesh2splat.wanted");
         auto shareBuffer = gpu::Buffer::fromSpan<uint32_t>(device, shareOf_, "mesh2splat.share");
+        // What each piece's surface asks (the effect's measures, zero before
+        // it is measured), and the four numbers of its material the rules
+        // read: base roughness, metallic, specular weight, transmission.
+        measures_.resize(uint64_t{pieces} * kMeasureWords, 0.0F);
+        std::vector<float> looks(uint64_t{pieces} * 4, 0.0F);
+        for (uint32_t p = 0; p < pieces; ++p) {
+            const usd::StageMaterial& m = *pieces_[p].material;
+            looks[uint64_t{p} * 4 + 0] = m.roughness;
+            looks[uint64_t{p} * 4 + 1] = m.metallic;
+            looks[uint64_t{p} * 4 + 2] = m.specularWeight;
+            looks[uint64_t{p} * 4 + 3] = m.transmission;
+        }
+        std::vector<float> measured = measures_;
+        if (measured.empty()) {
+            measured.assign(1, 0.0F);
+        }
+        auto measureBuffer = gpu::Buffer::fromSpan<float>(device, measured, "mesh2splat.measures");
+        if (looks.empty()) {
+            looks.assign(4, 0.0F);
+        }
+        auto lookBuffer = gpu::Buffer::fromSpan<float>(device, looks, "mesh2splat.looks");
         gpu::BufferDesc desc;
-        desc.bytes = (3 + uint64_t{pieces} * 5) * 4;
+        desc.bytes = (3 + uint64_t{pieces} * kCellRows) * 4;
         desc.elementBytes = 4;
         desc.label = "mesh2splat.cells";
         auto cells = gpu::Buffer::create(device, desc);
-        if (!meshBuffer || !wantBuffer || !shareBuffer || !cells) {
+        if (!meshBuffer || !wantBuffer || !shareBuffer || !measureBuffer || !lookBuffer || !cells) {
             return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot work out the cells");
         }
         gpu::CommandBatch batch(device);
@@ -797,6 +881,8 @@ public:
             cursor["pieceMesh"].setBinding(meshBuffer->rhi());
             cursor["wanted"].setBinding(wantBuffer->rhi());
             cursor["share"].setBinding(shareBuffer->rhi());
+            cursor["measures"].setBinding(measureBuffer->rhi());
+            cursor["looks"].setBinding(lookBuffer->rhi());
             cursor["cells"].setBinding(cells->rhi());
             rhi::ShaderCursor c = cursor["params"];
             c["pieces"].setData(pieces);
@@ -805,6 +891,13 @@ public:
             c["cellMax"].setData(static_cast<float>(options_->cellMax));
             c["perMesh"].setData(perMesh_ ? 1u : 0u);
             c["camera"].setData(camera_ ? 1u : 0u);
+            c["refineMetal"].setData(static_cast<float>(options_->refineMetalMost));
+            c["refineTexture"].setData(static_cast<float>(options_->refineTextureMost));
+            c["turnPerLobe"].setData(kTurnPerLobe);
+            c["alphaMin"].setData(kAlphaMin);
+            c["sharpRoughness"].setData(kSharpRoughness);
+            c["detailShare"].setData(kDetailShare);
+            c["coarsen"].setData(static_cast<float>(options_->lodCoarsen));
             if (camera_) {
                 c["aperture"].setData(camera_->horizontalAperture);
                 c["focal"].setData(camera_->focalLength);
@@ -1043,6 +1136,7 @@ public:
         const size_t pieces = pieces_.size();
         wantedBy_.assign(pieces, 0);
         shareOf_.assign(pieces, 0);
+        measures_.assign(pieces * kMeasureWords, 0.0F);
         ATHENEA_TRY(deriveCells());
         // Which glass is a sheet or a slab, now that the cell is known.
         ATHENEA_TRY(classifySheets());
@@ -1063,15 +1157,38 @@ public:
         // to what each wants -- which is the same as one density floor for
         // all of them: every piece walks a cell sqrt(wanted / budget) times
         // coarser, so every mesh loses density alike and none is dropped.
+        //
+        // AND WHAT EACH PIECE'S SURFACE ASKS, measured by the same run
+        // (`m2sMeasure`): how its normal turns under a cell, how fine and how
+        // busy its albedo is there. `mesh2splat_cells` makes the cell of a
+        // sharp reflector that turns, and of a busy map, finer; those pieces
+        // are counted again at their new cell before the budget is shared.
+        const bool refining = options_->refineMetalMost > 1.0 || options_->refineTextureMost > 1.0;
         uint64_t total = 0;
         for (size_t k = 0; k < pieces; ++k) {
             if (triangles_[k] == 0 || coversNothing(*pieces_[k].material)) {
                 continue;
             }
-            auto counted = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0);
+            auto counted = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0, refining);
             if (!counted) return std::move(counted).error();
             wantedBy_[k] = static_cast<uint32_t>(std::min<uint64_t>(counted->wanted, 0xFFFFFFFFu));
             total += wantedBy_[k];
+            if (refining && counted->measures.size() == kMeasureWords) {
+                std::copy(counted->measures.begin(), counted->measures.end(),
+                          measures_.begin() + static_cast<std::ptrdiff_t>(k * kMeasureWords));
+            }
+        }
+        if (refining) {
+            ATHENEA_TRY(deriveCells());
+            total = 0;
+            for (size_t k = 0; k < pieces; ++k) {
+                if (wantedBy_[k] > 0 && refinedBy(k) > 1.0) {
+                    auto counted = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0);
+                    if (!counted) return std::move(counted).error();
+                    wantedBy_[k] = static_cast<uint32_t>(std::min<uint64_t>(counted->wanted, 0xFFFFFFFFu));
+                }
+                total += wantedBy_[k];
+            }
         }
         if (total > options_->maxSplats) {
             // A slot for every piece that wants any, and the rest of the
@@ -1275,10 +1392,11 @@ public:
             // fit its share. Said here so a log reads what a part got.
             const double cell = static_cast<double>(cellValues_[3 + k]);
             const double factor = static_cast<double>(cellValues_[3 + pieces + k]);
-            std::printf("mesh2splat: %s -> %llu splats of %llu wanted (%u triangles%s, cell %.4g%s)%s\n",
+            std::printf("mesh2splat: %s -> %llu splats of %llu wanted (%u triangles%s, cell %.4g%s%s)%s\n",
                         piece.path.c_str(), static_cast<unsigned long long>(meshWritten),
                         static_cast<unsigned long long>(meshWanted), triangles_[k],
                         slices > 1 ? (", " + std::to_string(slices) + " slices").c_str() : "", cell,
+                        refinedSaying(k).c_str(),
                         factor > 1.0 ? (", " + std::to_string(factor).substr(0, 4) + "x coarser for the budget").c_str()
                                      : "",
                         carried ? (", carried by " + owner.skinning.skeleton).c_str() : "");
@@ -1359,10 +1477,13 @@ private:
         /// four times a gaussian, beside the record rather than in it --
         /// `io::SplatEncoding` has no field for a skeleton.
         bool               carried = false;
+        /// What the surface asks of the density (`m2sMeasure`), where the
+        /// run measured it: kMeasureWords counts.
+        std::vector<float> measures;
     };
 
     [[nodiscard]] Result<OneMesh> runOne(aofx::Effect& effect, const usd::StageMesh& mesh, size_t at,
-                                         uint64_t room, uint32_t firstTriangle = 0) {
+                                         uint64_t room, uint32_t firstTriangle = 0, bool measure = false) {
         const usd::StageMaterial& material = *pieces_[at].material;
         // A MAP THAT WILL NOT FIT IS A MAP THIS MATERIAL DOES NOT HAVE.
         //
@@ -1565,6 +1686,8 @@ private:
         }
 
         number("writeCurvature", curved_ ? 1.0 : 0.0);
+        number("measure", measure ? 1.0 : 0.0);
+        number("detailFloor", kDetailFloor);
         if (layered_) {
             // Every piece writes them once one does, so the records stay one
             // layout; a material that names none writes the plain ones.
@@ -1619,6 +1742,11 @@ private:
                                            : uint64_t{triangles_[at]};
         answer.written = std::min(answer.written, budget);
         answer.capped = counted->size() >= 7 ? static_cast<uint64_t>(std::max((*counted)[6], 0.0F)) : 0;
+        if (measure) {
+            if (const std::vector<float>* measured = out.attached("measures"); measured != nullptr) {
+                answer.measures = *measured;
+            }
+        }
 
         answer.picture = *rendered;
         answer.recordEntries = recordEntries;
@@ -1928,6 +2056,7 @@ private:
     std::vector<Piece>                       pieces_;
     gpu::ComputeKernel                       cells_;
     gpu::Buffer                              boxes_;        ///< the model's box, then each mesh's
+    std::vector<float>                       measures_;     ///< kMeasureWords a piece (m2sMeasure)
     std::vector<uint32_t>                    wantedBy_;     ///< what each piece wants, counted
     std::vector<uint32_t>                    shareOf_;      ///< what the budget gives it
     std::vector<float>                       cellValues_;   ///< mesh2splat_cells' answer
@@ -2652,6 +2781,12 @@ void addMesh2Splat(CLI::App& app) {
                     "nearest to it, bounded by --cell-min and --cell-max (replaces --density)");
     cmd->add_option("--camera-pixels", o->cameraPixels, "--cell-from-camera: pixels across the camera's image")
         ->check(CLI::Range(1u, 65536u));
+    cmd->add_option("--refine-metal", o->refineMetal,
+                    "a finer cell for a sharp reflector whose normal turns under one (metallic or specular, "
+                    "base roughness under 0.2, no glass): auto, off, or the most it is made finer");
+    cmd->add_option("--refine-texture", o->refineTexture,
+                    "a finer cell, down to two texels, where the albedo map moves across one: auto, off, or "
+                    "the most it is made finer");
     cmd->add_option("--sigma", o->sigma,
                     "how wide a gaussian is against its cell; mesh2splat's own number is 0.65, which "
                     "leaves a traced surface 30% transparent");
@@ -2786,6 +2921,22 @@ void addMesh2Splat(CLI::App& app) {
             std::fprintf(stderr, "--density wants per-model or per-mesh, not '%s'\n", o->density.c_str());
             throw CLI::RuntimeError(1);
         }
+        // FINER WHERE THE SURFACE ASKS: auto is at most four times finer,
+        // off is not at all, a number is the most.
+        const auto most = [](const std::string& said, const char* flag) {
+            if (said == "auto") return 4.0;
+            if (said == "off") return 1.0;
+            char* end = nullptr;
+            const double value = std::strtod(said.c_str(), &end);
+            if (end == said.c_str() || *end != '\0' || !(value >= 1.0) || value > 16.0) {
+                std::fprintf(stderr, "%s wants auto, off, or how much finer at most (1 to 16), not '%s'\n", flag,
+                             said.c_str());
+                throw CLI::RuntimeError(1);
+            }
+            return value;
+        };
+        o->refineMetalMost = most(o->refineMetal, "--refine-metal");
+        o->refineTextureMost = most(o->refineTexture, "--refine-texture");
         // WHAT A .ATHC CAN CARRY: the gaussians -- position, opacity, sizes,
         // rotation, harmonics -- and the shading normal. It has no room for
         // a rig, a transfer, the material a relit cloud reflects with, the
@@ -2912,6 +3063,10 @@ void addMesh2Splat(CLI::App& app) {
                 o->output = (out.parent_path() / (out.stem().string() + "_lod" + std::to_string(level) + ".usdc"))
                                 .string();
                 o->resolution = std::max(baseResolution >> level, 1u);
+                // From a camera the resolution says nothing (mesh2splat_cells
+                // takes the pixel), so a level's cell is the pixel this many
+                // times wider: every level was the first before.
+                o->lodCoarsen = static_cast<double>(uint64_t{1} << level);
             }
             double levelCell = 0.0;
             uint32_t count = 0;
@@ -2966,8 +3121,13 @@ void addMesh2Splat(CLI::App& app) {
                     auto camera = (*stage).camera(o->cellFromCamera, o->time);
                     if (!camera) return std::move(camera).error();
                     converter.setCamera(*camera, o->cameraPixels);
-                    std::printf("mesh2splat: the cell is a pixel of %s, %u across\n", o->cellFromCamera.c_str(),
-                                o->cameraPixels);
+                    std::printf("mesh2splat: the cell is a pixel of %s, %u across%s\n", o->cellFromCamera.c_str(),
+                                o->cameraPixels,
+                                o->lodCoarsen > 1.0
+                                    ? (", " + std::to_string(static_cast<int>(o->lodCoarsen)) +
+                                       " pixels wide for this level of detail")
+                                          .c_str()
+                                    : "");
                 }
                 ATHENEA_TRY(converter.loadTextures());
                 auto raw = converter.convert(*effect, *meshes);
@@ -3160,6 +3320,7 @@ void addMesh2Splat(CLI::App& app) {
         if (lodLevels > 1) {
             o->output = assemblyPath;
             o->resolution = baseResolution;
+            o->lodCoarsen = 1.0;
             if (auto made = platform::writeAtomically(assemblyPath,
                                                       [&](const std::filesystem::path& partial) {
                                                           return usd::writeLodAssembly(

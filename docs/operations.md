@@ -374,13 +374,15 @@ recipe is §3.1 below.
 | `--thin-glass` | material path or name, repeatable | none | an override: a transmitting material read as thin-walled though neither it nor its mesh says so. A glass is already read thin-walled where its material says so or where its mesh is a sheet or a slab -- over a two-hundredth of its edges open, or any shared by more than two, or twice its volume over its area under four cells or a fiftieth of its size, which the conversion measures on the device and prints per mesh; this names one the mesh does not show. A solid glass covers `--glass-opacity` of what stands behind it; a thin wall covers what it reflects head on (under a tenth), so the cabin shows through |
 | `--solid-glass` | material path or name, repeatable | none | the override the other way: a transmitting material kept solid whatever its mesh measures |
 | `--resolution` | integer | `512` | cells across the longest side of the box the density is measured over |
-| `--lod-levels` | integer | `1` | levels of detail: the conversion again at half the resolution each time; `-o` becomes the stage that draws them as one cloud, each level a `<name>_lod<n>.usdc` beside it |
+| `--lod-levels` | integer | `1` | levels of detail: the conversion again at half the resolution each time (with `--cell-from-camera`, at a camera pixel twice as wide each time); `-o` becomes the stage that draws them as one cloud, each level a `<name>_lod<n>.usdc` beside it |
 | `--density` | `per-model` \| `per-mesh` | `per-model` | which box that is |
 | `--cell-min` | number | `0`, derived | world units; per-mesh, the finest a cell may be |
 | `--cell-max` | number | `0`, derived | world units; per-mesh, the coarsest |
 | `--max-splats` | integer | `2000000` | the budget, over the whole stage, shared between the meshes in proportion to what each wants |
 | `--cell-from-camera` | camera prim path | none | each mesh's cell is what one pixel of that camera covers where the mesh's box is nearest to it (held to the near plane), at `--time`; replaces `--density`. `--cell-min`/`--cell-max` bound it, given; nothing is derived |
 | `--camera-pixels` | integer, 1 to 65536 | `1920` | with `--cell-from-camera`: pixels across the camera's horizontal aperture |
+| `--refine-metal` | `auto` \| `off` \| number, 1 to 16 | `auto` (4) | the most a sharp reflector's cell is made finer where its normal turns under it: metallic or specular weight at least 0.5, base roughness under 0.2, no transmission; the cell is made finer until three quarters of the piece's area turns by at most four lobes (roughness², at least 0.02) a cell. A number is the most; `off` keeps every cell |
+| `--refine-texture` | `auto` \| `off` \| number, 1 to 16 | `auto` (4) | the most a piece's cell is made finer where its albedo map moves across a cell (its brightness, the root of its luminance, spreading by over 0.02 on at least a tenth of the area): down to two texels of the map |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
 | `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
 | `--opacity` | number, 0 to 1 | `1.0` | coverage: how much of what stands behind it the converted surface covers, multiplied into the material's own opacity. Every opacity is coverage -- this, the material's constant, a map's value, what a glass keeps -- and each gaussian takes what one of the several over a point needs for it, so 0.5 covers half at any size |
@@ -649,7 +651,22 @@ that will look at it (Mesh2GS's rule): `z × (aperture / pixels) / focal`,
 near clip at least, and zero inside the box), so one cell covers about one
 pixel where the mesh is nearest. Every triangle of the mesh walks exactly
 that cell. A free camera that is not in the stage is not known to the
-conversion, so this is an option and not the default.
+conversion, so this is an option and not the default. With `--lod-levels`,
+level *n* walks a pixel 2^*n* wide.
+
+**Finer where the surface asks.** Two rules make a piece's cell finer, each
+at most four times (`--refine-metal`, `--refine-texture`), with or without a
+camera, and are on by default. A sharp reflector -- metallic or specular,
+base roughness under 0.2, not glass, the coat not asked -- whose normal turns
+under a cell gets a cell over which three quarters of its area turns by at
+most four lobes, a lobe being roughness² (0.02 at least): chrome trim, a
+badge, a lamp's reflector. An albedo map that moves across a cell -- its
+brightness spreading by more than 0.02 on a tenth of the piece at least --
+gets a cell of two texels: a decal's letters, not a brushed metal's grain.
+A paint, a rough metal, a plain map keep their cell exactly. The finer cell
+still respects `--cell-min`, and the budget coarsens it like any other. Each
+piece's log line says what it got and why (`refined x4.00 for its curvature:
+...`); `off` for both is the conversion as it was.
 
 **Textures.** Each map travels to the device as float4, sixteen bytes a texel,
 so a 4k map is 268 MB and a car with fifteen of them does not fit. The

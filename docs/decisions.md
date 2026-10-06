@@ -10483,6 +10483,103 @@ no share and is skipped): `ctest -R "mesh2splat|platform|emissive|emission|
 covers what|opacity is read"` 20 of 20, `athenea_coverage_tests` and
 `athenea_render_tests` all pass, no case skipped. A `.athc` does not carry the
 emission either.
+## Finer where the surface asks (task d1)
+
+The cell a piece walks was one number for the whole piece: its box over
+`--resolution`, or a camera's pixel where the piece is nearest, coarsened
+alike for the budget. Nothing about the surface entered it, so the Corvette's
+chrome trim, badges and lamp reflectors got the paint's cell. Measured on the
+s65 car (14 705 297 gaussians, the gate camera): logos, emblems and chrome
+trim are 1.0 to 1.8 gaussians a triangle -- the floor of one a triangle, since
+their triangles are finer than the cell -- and a TX gaussian's stored
+roughness on them is widened by the specular filter (Toksvig) by 0.08 on
+chrome and 0.6 on the logos, because the normal turns across the gaussian.
+The user asked for more detail on small, chrome and reflective parts, the
+paint and the rough metal left as they are, decided by the conversion.
+
+**What the surface asks is measured where the piece is counted.** The
+Mesh2Splat effect has a fifth kernel, `m2sMeasure`, run by the count's run
+when the host asks (`measure`, additive): one thread a triangle, weighed by
+its area in sixteenths of a cell (one at least, 1024 at most, so a piece's
+sums stay inside a word), it adds to two histograms of 24 half-octave bins in
+the counters past the eighth word:
+
+- how far the normal turns across one cell -- the larger principal curvature
+  of the shape operator TX already writes (`m2sShape`), times the cell;
+- where the material has an albedo map, how big a texel is against the cell
+  (the triangle's area over its area in texels), counted only where the map
+  moves across that cell: four by four samples of the albedo over one cell
+  at the triangle's middle, their spread in perceived brightness (the root of
+  the luminance) past 0.02. A brushed metal's grain moves by a few
+  thousandths, a decal's letters by tenths (the Corvette's
+  `Brushed_steel_baseColor` and `Corvette_logo_Diffuse`, measured on the
+  processor for the calibration only).
+
+The fifty numbers are attached as `measures`; the host relays them, with four
+numbers of each piece's material, to `mesh2splat_cells`, which decides.
+
+**Two rules, each at most four times finer.**
+
+- *A sharp reflector* -- metallic or a specular weight at least a half, base
+  roughness under 0.2, no transmission; the coat is not asked, so a lacquered
+  paint is not one -- walks a cell over which three quarters of its area turn
+  the normal by at most four lobes, a lobe being roughness² (at least 0.02).
+- *A busy albedo* -- at least a tenth of the area moving across a cell --
+  walks a cell of two texels (the median texel of what moves).
+
+A piece both rules leave alone keeps its cell to the bit: the cell is only
+divided where the factor is over one. The finer cell is held to the user's
+`--cell-min`; the budget's factor applies after, as before. Without a camera
+the factor multiplies the resolution and divides the bounds. The pieces made
+finer are counted again before the budget is shared, so the shares are of
+what they will want. Each piece's log line says what it got and why.
+`--refine-metal` and `--refine-texture` take `auto` (four), `off`, or the
+most as a number.
+
+**Calibrated on the Corvette, on the processor, from the s65 cloud** (each
+gaussian's curvature and size; a gaussian smaller than its cell standing for
+its triangle's area). Four lobes a cell and a cap of four:
+
+| constants | added gaussians |
+|---|---|
+| 1 lobe, alpha at least 0.01 | +3.91 M (+27 %) |
+| 2 lobes, 0.02 | +2.58 M (+18 %) |
+| **4 lobes, 0.02** | **+1.93 M (+13 %)** |
+
+Almost every sharp piece reaches the cap: the grille's chrome bar (turn 0.39
+radians a cell over a quarter of its area), the headlight housings (Chrome_Dark
+0.1, 0.1 to 0.4), the rear reflectors, the badges (5 to 25 radians: their
+slivers' normals turn by tens of degrees over a tenth of a millimetre). The
+paint (0.34, coated), the rims (Rim_Paint 0.34), Metal_rough (0.22) and
+Metal_Rough_Black (0.20) are outside the rule, so the gate's paint, rim and
+rough metal clouds are the same clouds. The texture rule finds two maps on
+the car: the logos' (a texel 0.15 to 0.47 of a cell; most of their triangles
+are still finer than the finer cell, so they gain little) and the brake
+rotors' brushed steel (a texel 0.007 of a cell, but its spread under the
+floor, so not refined). The estimate does not see that a badge's triangles
+stay at one gaussian each past a cell of their size; the counts the
+conversion logs are the measure.
+
+**Levels of detail from a camera were all the first.** `--lod-levels` halves
+`--resolution` a level, and a camera's cell never read the resolution, so
+every level was the same cloud. A level's camera cell is now the pixel 2^level
+wide (`coarsen`, set by the levels' loop), and the log says so.
+
+Tests (`tests/data/density/refine.usda`: a half-cylinder strip of radius 1 cm
+as chrome, as a rough metal and as a coated paint, a flat chrome card, a card
+with a fine checker and one with plain grey): the chrome strip and the
+checker are refined, nothing else is (`mesh2splat_refine_chrome`, `_decal`,
+`_keeps`), nothing is with both rules off (`_off`), and levels of detail from
+a camera say their wider pixel (`mesh2splat_lod_from_camera`).
+
+**Not measured yet** (GPU turn, `~/luc/athenea-gpu/gpu_d1.sh`): the car
+before and after at four close-up cameras (front logo, headlight, front-left
+wheel, the chrome bar) against 2048-path frames at 1024 px, the counts per
+group, and the gate against s95. **Not done:** a sub-cell triangle's gaussian
+is still a disc as wide as its longest edge, and the specular filter still
+multiplies the fastest turn by the wider size; on slivers both blur what a
+finer cell cannot reach (the analysis's R1 and R2).
+
 ## A posed cloud refits its ray tracing structure
 
 A skinned cloud is posed into the same two buffers every frame, and

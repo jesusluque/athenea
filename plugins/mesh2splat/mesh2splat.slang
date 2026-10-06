@@ -179,6 +179,15 @@ struct M2sParams {
     // The sheen's weight alone, then its colour alone: one float4, since a
     // float3 after a float is aligned to sixteen on Metal (560 bytes, not 544).
     float4 sheenAlone;
+    // WHAT THE SURFACE ASKS OF THE DENSITY (m2sMeasure): with `measure` set,
+    // a run that counts also writes, into the counters past the eighth, how
+    // its triangles turn under a cell and how fine and how busy its albedo
+    // is there. The host hands those to `mesh2splat_cells`, which decides
+    // whether the piece walks a finer cell.
+    uint  measure;           // 1: m2sMeasure runs after the count
+    float detailFloor;       // the albedo's spread across a cell (sqrt luminance) that counts as detail
+    uint  measurePad0;
+    uint  measurePad1;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -187,7 +196,8 @@ StructuredBuffer<float4>   normalMap;
 StructuredBuffer<float4>   metallicRoughness;
 StructuredBuffer<float4>   opacityMask; // a cut-out, read on one channel
 StructuredBuffer<float4>   influences;  // 2 entries a corner: (joint, weight) twice
-RWStructuredBuffer<uint>   counters;    // [wanted, written, degenerate, dropped, done: first triangle the budget cut]
+RWStructuredBuffer<uint>   counters;    // [wanted, written, degenerate, dropped, done: first triangle the budget cut,
+                                        //  capped, -, -, then the measures: m2sMeasure]
 RWStructuredBuffer<uint>   cellCounts;  // a triangle's covered cells, then where they start
 RWStructuredBuffer<float4> records;     // the output plane
 StructuredBuffer<float4>   texcoord2;   // the mesh picture's shape: (u2, v2) a corner, where there is a second set
@@ -197,6 +207,16 @@ StructuredBuffer<float4>   layerMap0;   // the maps on the layers, where there a
 StructuredBuffer<float4>   layerMap1;
 StructuredBuffer<float4>   layerMap2;
 ConstantBuffer<M2sParams>  params;
+
+/// HOW MANY WORDS THE COUNTERS ARE, and where the measures lie in them
+/// (m2sMeasure): two histograms of kMeasureBins half-octave bins each, then
+/// two sums. Must match Mesh2Splat.cpp.
+static const uint kCounterWords = 64;
+static const uint kMeasureBins = 24;
+static const uint kCurvatureAt = 8;    // the normal's turn across a cell, by area
+static const uint kTexelAt = 32;       // the albedo's texel against the cell, where the albedo is busy, by area
+static const uint kWeightAt = 56;      // every triangle measured, by area
+static const uint kDetailAt = 57;      // those whose albedo moves across a cell, by area
 
 /// The counters start a render, and a buffer the host handed over holds
 /// whatever it held before. Cleared in a dispatch of its own so that no thread
@@ -213,6 +233,9 @@ void m2sClear(uint3 tid: SV_DispatchThreadID) {
     counters[3] = 0;
     counters[4] = params.triangles;
     counters[5] = 0;   // cells the relief would have split finer than displaceRefine allows   // every triangle fits until the scan says which did not
+    for (uint k = 6; k < kCounterWords; ++k) {
+        counters[k] = 0;   // the measures (m2sMeasure), and what is unused
+    }
 }
 
 /// Where one component of a record lands. A record is several entries long
@@ -471,6 +494,7 @@ struct M2sTriangle {
     float2 edge1, edge2;
     float  inverseTwice;
     float  cell;
+    float  cellWorld;      ///< the cell, in the world's units
     int2   first;
     uint2  span;
     uint   cells;          ///< walked, after the per-triangle bound
@@ -485,6 +509,7 @@ M2sTriangle m2sTriangleOf(uint triangle) {
     t.span = uint2(1, 1);
     t.first = int2(0, 0);
     t.cell = 1.0;
+    t.cellWorld = 1.0;
     t.oa = float2(0.0);
     t.edge1 = float2(0.0);
     t.edge2 = float2(0.0);
@@ -611,6 +636,7 @@ M2sTriangle m2sTriangleOf(uint triangle) {
     const float2 lowest = min(t.oa, min(ob, oc));
     const float2 highest = max(t.oa, max(ob, oc));
     t.cell = perCell;
+    t.cellWorld = perCell * range;
     t.first = int2(floor(lowest / t.cell));
     const int2 last = int2(floor(highest / t.cell));
     t.span = uint2(max(last.x - t.first.x + 1, 1), max(last.y - t.first.y + 1, 1));
@@ -1662,5 +1688,97 @@ void m2sEmit(uint3 tid: SV_DispatchThreadID) {
         m2sWrite(triangle, t, slot, middle, m2sFlatAt(t, middle), m2sNormalAt(t, middle), t.tangent, t.scale,
                  0.0, m2sFlatAt(t, middle), m2sNormalAt(t, middle), 0.0);
         ++slot;
+    }
+}
+
+/// A HALF-OCTAVE BIN of a positive number: bin `b` holds `2^((b - 16) / 2)`
+/// up to the next, the first everything below `2^-8` (and nothing), the last
+/// everything past `2^3.5`. `mesh2splat_cells` reads them back the same way.
+uint m2sMeasureBin(float x) {
+    if (!(x > 0.0)) {
+        return 0u;
+    }
+    return uint(clamp(int(floor(2.0 * log2(x))) + 16, 0, int(kMeasureBins) - 1));
+}
+
+/// Brightness as the eye spaces it, near enough: the root of the luminance.
+float m2sPerceived(float3 colour) {
+    return sqrt(max(dot(colour, float3(0.2126, 0.7152, 0.0722)), 0.0));
+}
+
+/// WHAT A TRIANGLE ASKS OF THE DENSITY, measured where a run counts
+/// (`measure`), one thread a triangle, weighed by its area in sixteenths of
+/// a cell (one at least, so a triangle finer than a cell is not nothing, and
+/// at most 1024, so a piece's sums stay inside a word):
+///
+/// - how far its normal turns across one cell: the shape operator's larger
+///   principal curvature (`m2sShape`, the corners' normals apart over their
+///   positions apart) times the cell -- a chrome strip's turn is what a
+///   reflection sweeps across a gaussian;
+/// - where it has an albedo map, how big a texel of it is against the cell
+///   (its area in the world over its area in texels), counted only where the
+///   map moves across that cell: four by four samples of the albedo over one
+///   cell at the triangle's middle, their spread in perceived brightness past
+///   `detailFloor`. A brushed metal's fine grain moves by a few thousandths
+///   and a decal's letters by tenths.
+///
+/// `mesh2splat_cells` turns the histograms into a piece's finer cell.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void m2sMeasure(uint3 tid: SV_DispatchThreadID) {
+    const uint triangle = tid.x;
+    if (triangle >= params.triangles || triangle < params.firstTriangle) {
+        return;
+    }
+    const M2sTriangle t = m2sTriangleOf(triangle);
+    if (!t.valid) {
+        return;
+    }
+    const float area = 0.5 * length(cross(t.b - t.a, t.c - t.a));
+    const float cellWorld = max(t.cellWorld, 1.0e-20);
+    const uint weight = uint(clamp(area / (cellWorld * cellWorld) * 16.0 + 0.5, 1.0, 1024.0));
+
+    const float3 u = t.tangent;
+    const float3 v = normalize(cross(t.geometric, u));
+    const float3 shape = m2sShape(t, u, v);
+    const float mean = 0.5 * (shape.x + shape.z);
+    const float apart = sqrt(0.25 * (shape.x - shape.z) * (shape.x - shape.z) + shape.y * shape.y);
+    const float curvature = abs(mean) + apart;
+    InterlockedAdd(counters[kCurvatureAt + m2sMeasureBin(curvature * cellWorld)], weight);
+    InterlockedAdd(counters[kWeightAt], weight);
+
+    if (params.hasAlbedo == 0 || params.albedoWidth == 0 || params.albedoHeight == 0) {
+        return;
+    }
+    const bool second = params.albedoUv2 != 0;
+    const float2 st0 = second ? t.t0 : float2(t.p0.w, t.n0.w);
+    const float2 st1 = second ? t.t1 : float2(t.p1.w, t.n1.w);
+    const float2 st2 = second ? t.t2 : float2(t.p2.w, t.n2.w);
+    const float2 d1 = st1 - st0;
+    const float2 d2 = st2 - st0;
+    const float texels = 0.5 * abs(d1.x * d2.y - d1.y * d2.x) * float(params.albedoWidth) * float(params.albedoHeight);
+    if (!(texels > 1.0e-12)) {
+        return;   // a map with no extent on this triangle says nothing about its size
+    }
+    const float texel = sqrt(area / texels);
+    const float across = cellWorld / max(texel, 1.0e-20);   // texels a cell
+    const float2 side = float2(across / float(params.albedoWidth), across / float(params.albedoHeight));
+    const float2 middle = (st0 + st1 + st2) / 3.0;
+    float sum = 0.0;
+    float squares = 0.0;
+    for (uint j = 0; j < 4; ++j) {
+        for (uint i = 0; i < 4; ++i) {
+            const float2 at = middle + ((float2(float(i), float(j)) + 0.5) / 4.0 - 0.5) * side;
+            const float4 texel4 = sampleWrapped(albedo, params.albedoWidth, params.albedoHeight, params.albedoStride, at);
+            const float b = m2sPerceived(texel4.xyz * params.materialColour.xyz);
+            sum += b;
+            squares += b * b;
+        }
+    }
+    const float average = sum / 16.0;
+    const float spread = sqrt(max(squares / 16.0 - average * average, 0.0));
+    if (spread > params.detailFloor) {
+        InterlockedAdd(counters[kTexelAt + m2sMeasureBin(texel / cellWorld)], weight);
+        InterlockedAdd(counters[kDetailAt], weight);
     }
 }

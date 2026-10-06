@@ -194,8 +194,22 @@ struct Mesh2SplatUniforms {
     /// then its colour alone.
     float    sheenWeight = 0.0F;
     float    sheenColourAlone[3] = {0.0F, 0.0F, 0.0F};
+    /// WHAT THE SURFACE ASKS OF THE DENSITY (m2sMeasure): 1 measures, after
+    /// the count, how the triangles turn under a cell and how fine and busy
+    /// the albedo is there, and attaches it as `measures`.
+    uint32_t measure = 0;
+    /// The albedo's spread across a cell, in the root of its luminance, that
+    /// counts as detail.
+    float    detailFloor = 0.02F;
+    uint32_t measurePad[2] = {0, 0};
 };
-static_assert(sizeof(Mesh2SplatUniforms) == 544, "must match M2sParams exactly");
+static_assert(sizeof(Mesh2SplatUniforms) == 560, "must match M2sParams exactly");
+
+/// The counters' words and where the measures lie in them: must match
+/// `kCounterWords`, `kCurvatureAt` and the rest in mesh2splat.slang.
+constexpr uint32_t kCounterWords = 64;
+constexpr uint32_t kMeasuresAt = 8;
+constexpr uint32_t kMeasureWords = 50;   // two histograms of 24, then two sums
 
 class Mesh2Splat final : public aofx::Effect {
 public:
@@ -443,6 +457,30 @@ public:
         curved.type = aofx::ParamType::Boolean;
         curved.defaults = {0.0};
         into.params.push_back(curved);
+
+        aofx::ParamDesc measure;
+        measure.name = "measure";
+        measure.label = "Measure the surface";
+        measure.hint =
+            "Attach, as 'measures', what the surface asks of the density: how far the normal turns across "
+            "one cell (a histogram by area, in half octaves) and, where an albedo map moves across a cell, "
+            "how big its texel is against the cell (the same), then the area measured and the area "
+            "whose albedo moves. Fifty numbers; the host decides the cell from them.";
+        measure.type = aofx::ParamType::Boolean;
+        measure.defaults = {0.0};
+        into.params.push_back(measure);
+
+        aofx::ParamDesc detailFloor;
+        detailFloor.name = "detailFloor";
+        detailFloor.label = "Detail floor";
+        detailFloor.hint =
+            "How much the albedo's brightness (the root of its luminance) must spread across one cell "
+            "for the measure to count it as detail.";
+        detailFloor.type = aofx::ParamType::Double;
+        detailFloor.defaults = {0.02};
+        detailFloor.hardMin = {0.0};
+        detailFloor.hardMax = {1.0};
+        into.params.push_back(detailFloor);
 
         aofx::ParamDesc metallic;
         metallic.name = "metallic";
@@ -954,8 +992,11 @@ public:
 
         // Five numbers: splats wanted, splats written, triangles with no
         // frame, cells the per-triangle bound left out, and the first
-        // triangle the budget cut into. Two pixels hold eight.
-        const aofx::Buffer counters = request.gpu->scratch(2, 1);
+        // triangle the budget cut into; and after the eighth the measures
+        // (m2sMeasure). Four to a pixel.
+        uniforms.measure = request.number("measure", 0.0) >= 0.5 ? 1U : 0U;
+        uniforms.detailFloor = static_cast<float>(std::max(request.number("detailFloor", 0.02), 0.0));
+        const aofx::Buffer counters = request.gpu->scratch(static_cast<int>(kCounterWords / 4), 1);
         if (!counters.isValid()) {
             request.complaint = "mesh2splat could not take the four numbers it counts with";
             return false;
@@ -978,8 +1019,10 @@ public:
         const aofx::KernelId count = request.gpu->load("m2sCount");
         const aofx::KernelId scan = request.gpu->load("m2sScan");
         const aofx::KernelId emit = request.gpu->load("m2sEmit");
+        const aofx::KernelId measure = uniforms.measure != 0 ? request.gpu->load("m2sMeasure") : aofx::kInvalidKernel;
         if (clear == aofx::kInvalidKernel || count == aofx::kInvalidKernel ||
-            scan == aofx::kInvalidKernel || emit == aofx::kInvalidKernel) {
+            scan == aofx::kInvalidKernel || emit == aofx::kInvalidKernel ||
+            (uniforms.measure != 0 && measure == aofx::kInvalidKernel)) {
             return false;
         }
         // A layer map's clip where its target is set, the mesh where not.
@@ -1012,6 +1055,10 @@ public:
                               sizeof(uniforms))) {
             return false;
         }
+        if (uniforms.measure != 0 &&
+            !request.gpu->run(measure, aofx::Grid{triangles, 1, 1}, buffers, &uniforms, sizeof(uniforms))) {
+            return false;
+        }
         if (!request.gpu->run(scan, aofx::Grid{256, 1, 1}, buffers, &uniforms, sizeof(uniforms))) {
             return false;
         }
@@ -1020,8 +1067,8 @@ public:
             return false;
         }
 
-        uint32_t counted[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-        if (!request.gpu->read(counters, counted, sizeof(counted))) {
+        uint32_t counted[kCounterWords] = {};
+        if (!request.gpu->read(counters, counted, uniforms.measure != 0 ? sizeof(counted) : 8 * sizeof(uint32_t))) {
             request.complaint = "mesh2splat could not read back how many splats it wrote";
             return false;
         }
@@ -1035,6 +1082,15 @@ public:
                                   static_cast<float>(counted[2]), static_cast<float>(counted[3]),
                                   static_cast<float>(uniforms.recordPixels), static_cast<float>(counted[4]),
                                   static_cast<float>(counted[5])});
+        // The measures, where they were asked for: counts, as the host's
+        // `mesh2splat_cells` reads them.
+        if (uniforms.measure != 0) {
+            std::vector<float> measures(kMeasureWords);
+            for (uint32_t k = 0; k < kMeasureWords; ++k) {
+                measures[k] = static_cast<float>(counted[kMeasuresAt + k]);
+            }
+            request.attach("measures", std::move(measures));
+        }
         // A budget too small is not a failure: the splats that fit are real,
         // and the host is told what was wanted so it can say so or run again
         // with room. `complaint` is not the place for it -- the host ignores

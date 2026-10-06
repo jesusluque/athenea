@@ -239,6 +239,46 @@ set_tests_properties(mesh2splat_density_per-model PROPERTIES
 set_tests_properties(mesh2splat_density_per-mesh PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [1-9][0-9][0-9]+ splats of")
 
+# FINER WHERE THE SURFACE ASKS (mesh2splat_cells): of a curved strip as chrome,
+# as a rough metal and as a coated paint, a flat chrome card and two textured
+# cards, only the chrome strip (for its curvature) and the fine checker (for
+# its texture) walk a finer cell; the rest keep theirs to the bit. With the
+# rules off nothing is refined. The log line of each piece says what it got.
+set(ATHENEA_REFINE_STAGE ${CMAKE_CURRENT_SOURCE_DIR}/data/density/refine.usda)
+foreach(rule chrome decal keeps)
+    add_test(NAME mesh2splat_refine_${rule}
+        COMMAND athenea mesh2splat ${ATHENEA_REFINE_STAGE} --no-bake --no-camera --resolution 64
+                -o ${CMAKE_CURRENT_BINARY_DIR}/refine_${rule}.usda)
+    set_tests_properties(mesh2splat_refine_${rule} PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        LABELS gpe)
+endforeach()
+set_tests_properties(mesh2splat_refine_chrome PROPERTIES
+    PASS_REGULAR_EXPRESSION "ChromeStrip -> [^)]*refined x[1-9][.][0-9]+ for its curvature")
+set_tests_properties(mesh2splat_refine_decal PROPERTIES
+    PASS_REGULAR_EXPRESSION "Decal -> [^)]*refined x[1-9][.][0-9]+ for its texture")
+set_tests_properties(mesh2splat_refine_keeps PROPERTIES
+    PASS_REGULAR_EXPRESSION "wrote .*refine_keeps.usda"
+    FAIL_REGULAR_EXPRESSION "(RoughStrip|PaintPanel|FlatChrome|PlainDecal) -> [^)]*refined")
+add_test(NAME mesh2splat_refine_off
+    COMMAND athenea mesh2splat ${ATHENEA_REFINE_STAGE} --no-bake --no-camera --resolution 64
+            --refine-metal off --refine-texture off -o ${CMAKE_CURRENT_BINARY_DIR}/refine_off.usda)
+set_tests_properties(mesh2splat_refine_off PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "wrote .*refine_off.usda"
+    FAIL_REGULAR_EXPRESSION "refined x"
+    LABELS gpe)
+# Levels of detail from a camera: each level's cell is the camera's pixel
+# 2^level wide (the resolution says nothing to a camera's cell, so every
+# level used to be the first).
+add_test(NAME mesh2splat_lod_from_camera
+    COMMAND athenea mesh2splat ${ATHENEA_REFINE_STAGE} --no-bake --cell-from-camera /World/Camera
+            --camera-pixels 64 --lod-levels 2 -o ${CMAKE_CURRENT_BINARY_DIR}/refine_lod.usda)
+set_tests_properties(mesh2splat_lod_from_camera PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    PASS_REGULAR_EXPRESSION "2 pixels wide for this level of detail"
+    LABELS gpe)
+
 # WHAT `athenea mesh2splat` WRITES, checked on the device. The conversions run
 # first (the `mesh2splat_outputs` fixture) into one directory, and
 # athenea_mesh2splat_tests reads them back and counts with kernels.
