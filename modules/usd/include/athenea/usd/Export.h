@@ -78,6 +78,11 @@ struct ExportOptions {
     /// A frame draws them black, each covering what the object took of the
     /// light reaching it, so they darken whatever is drawn behind them.
     bool     catcher = false;
+    /// Writes `primvars:athenea:splat:lightCatcher = 1`: the gaussians lie on
+    /// a ground and carry light on it (`athenea mesh2splat --light-catcher`).
+    /// A frame draws only the lamps' layers they carry, added over whatever
+    /// is behind them: they never darken it (docs/decisions.md, light groups).
+    bool     lightCatcher = false;
     /// Writes `primvars:athenea:splat:linear = 1`: the colours are linear
     /// light, not the sRGB a capture was trained in, and are drawn as they
     /// are. Also written whenever the records say so (`io::RawSplats::linear`,

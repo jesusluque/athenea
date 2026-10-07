@@ -10,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -811,6 +812,50 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
                     // A dome switched off leaves the Sky block with it.
                     lights = stage.lights();
                     domes = stage.domes();
+                }
+            }
+            // THE LAMPS (usd/LightGroups.h): a state to start from, and each
+            // group's switch and level over it. Each change is a render
+            // setting, which the next frame turns into the groups' weights --
+            // no reload, nothing baked again.
+            if (const usd::LightRig& rig = stage.lightRig(); !rig.empty()) {
+                ImGui::SeparatorText("Lamps");
+                const std::string state = stage.lightState();
+                if (ImGui::BeginCombo("State", state.empty() ? "(as each starts)" : state.c_str())) {
+                    if (ImGui::Selectable("(as each starts)", state.empty())) {
+                        stage.setLightState({});
+                    }
+                    for (const usd::LightState& option : rig.states) {
+                        if (ImGui::Selectable(option.name.c_str(), option.name == state)) {
+                            stage.setLightState(option.name);
+                            // A state chosen is the state: levels set over
+                            // the last one go.
+                            for (const usd::LightGroup& group : rig.groups) {
+                                stage.setLightLevel(group.name, std::nullopt);
+                            }
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                const std::map<std::string, float> levels = stage.lightLevels();
+                for (const usd::LightGroup& group : rig.groups) {
+                    ImGui::PushID(group.name.c_str());
+                    const auto found = levels.find(group.name);
+                    float level = found != levels.end() ? found->second : 0.0F;
+                    bool on = level > 0.0F;
+                    if (ImGui::Checkbox("##on", &on)) {
+                        stage.setLightLevel(group.name, on ? 1.0F : 0.0F);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SliderFloat(group.name.c_str(), &level, 0.0F, 4.0F, "%.2f")) {
+                        stage.setLightLevel(group.name, level);
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("%s: %.4g x (%.3g, %.3g, %.3g) at level 1", group.prim.c_str(),
+                                          double(group.luminance), double(group.colour[0]),
+                                          double(group.colour[1]), double(group.colour[2]));
+                    }
+                    ImGui::PopID();
                 }
             }
             // THE SKY, AS A LIST YOU CAN WALK. One combo a dome, holding

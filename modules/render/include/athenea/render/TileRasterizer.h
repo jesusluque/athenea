@@ -130,6 +130,15 @@ struct SplatInstance {
     /// --shadow-catcher), projected by a kernel of its own: black, as opaque
     /// as what its object took of the light reaching it.
     bool                    catcher = false;
+    /// `primvars:athenea:splat:lightCatcher`: a light catcher (athenea
+    /// mesh2splat --light-catcher), projected by a kernel of its own: its
+    /// colour the lamps' layers alone, added over what is drawn behind it.
+    bool                    lightCatcher = false;
+    /// THE LAMPS' WEIGHTS, a float4 a light layer of the cloud
+    /// (`scene::GpuSplats::lightLayers`): linear rgb, the group's level times
+    /// its radiance and colour. Null: the layers are not added. Per frame
+    /// and per instance, which is why it is here and not on the cloud.
+    const gpu::Buffer*      lightWeights = nullptr;
 };
 
 /// The frame's lights, as a renderer that must not depend on the light module
@@ -330,6 +339,8 @@ private:
     /// A shadow catcher's (splatProjectCatcher): black, as opaque as what
     /// its object took, no relighting.
     gpu::ComputeKernel projectCatcher_;
+    /// A light catcher's (splatProjectLightCatcher): the lamps' layers, added.
+    gpu::ComputeKernel projectLightCatcher_;
     /// A transfer cloud's view-independent terms, a splat each, kept while
     /// the lights, the sky, the cloud and its place stand (`txCaches_`).
     gpu::ComputeKernel viewless_;

@@ -138,6 +138,13 @@ bool catcherOf(HdSceneDelegate* delegate, SdfPath const& id) {
     return boolOf(delegate->Get(id, kCatcher), false);
 }
 
+/// Whether it is a light catcher (`athenea mesh2splat --light-catcher`): the
+/// lamps' light on a ground, added over whatever is drawn.
+bool lightCatcherOf(HdSceneDelegate* delegate, SdfPath const& id) {
+    static const TfToken kLightCatcher("athenea:splat:lightCatcher");
+    return boolOf(delegate->Get(id, kLightCatcher), false);
+}
+
 /// The index its transmitting gaussians bend by: 0, and nothing bends.
 float iorOf(HdSceneDelegate* delegate, SdfPath const& id) {
     static const TfToken kIor("athenea:splat:ior");
@@ -303,6 +310,19 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.sheenRoughness = held(kSheenRoughness);
         static const TfToken kCoatDarkening("athenea:splat:coatDarkening");
         arrays.coatDarkening = held(kCoatDarkening);
+        // THE LAMPS' LAYERS, one primvar a group, named after it: whatever
+        // the field carries under the prefix, in the order Hydra lists them.
+        static const std::string kLightLayer = "athenea:splat:lightLayer:";
+        for (const HdInterpolation interpolation :
+             {HdInterpolationVertex, HdInterpolationVarying, HdInterpolationUniform, HdInterpolationFaceVarying,
+              HdInterpolationConstant}) {
+            for (const HdPrimvarDescriptor& primvar : delegate->GetPrimvarDescriptors(id, interpolation)) {
+                const std::string& name = primvar.name.GetString();
+                if (name.size() > kLightLayer.size() && name.compare(0, kLightLayer.size(), kLightLayer) == 0) {
+                    arrays.lightLayers.emplace_back(name.substr(kLightLayer.size()), held(primvar.name));
+                }
+            }
+        }
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();
@@ -427,7 +447,8 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
                           const VtArray<TfToken> cats = delegate->GetCategories(id);
                           return std::vector<TfToken>(cats.begin(), cats.end());
                       }(),
-                      litBodyOf(delegate, id), iorOf(delegate, id), transformStep, catcherOf(delegate, id));
+                      litBodyOf(delegate, id), iorOf(delegate, id), transformStep, catcherOf(delegate, id),
+                      lightCatcherOf(delegate, id));
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }
 

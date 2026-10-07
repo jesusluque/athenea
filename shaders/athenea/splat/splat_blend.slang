@@ -136,6 +136,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
 
     float3 rgb = float3(0.0);
     float transmittance = 1.0;
+    // What a light catcher's own gaussians have left of each other (it never
+    // takes from `transmittance`).
+    float lampTransmittance = 1.0;
     float depthSum = 0.0;
     float depthAt = -1.0;
     // What ends the walk from behind: the raster under-layer, or the first
@@ -186,7 +189,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             // it lies on, seen at a slant -- and not where something stands
             // in front of it (a mesh car's body over its own shadow, which
             // went black when every catcher gaussian was drawn).
-            const bool lying = abs(record.colour.w - kCatcherMark) < 0.01 && screen.z <= underZ * 1.015;
+            // A light catcher lies on it the same way (kLightCatcherMark).
+            const bool adds = abs(record.colour.w - kLightCatcherMark) < 0.01;
+            const bool lying = (abs(record.colour.w - kCatcherMark) < 0.01 || adds) && screen.z <= underZ * 1.015;
             if (underHit && screen.z >= underZ && !lying) {
                 done = true;
                 break;
@@ -212,6 +217,17 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 continue;
             }
             const float weight = transmittance * alpha;
+            // A LIGHT CATCHER ADDS: the lamps' light on the ground under it,
+            // seen through what is in front, and nothing taken from behind --
+            // no coverage, no depth, no matte.
+            // Among themselves its gaussians blend as any layer does
+            // (`lampTransmittance`), so the light is the patch's coverage of
+            // it and not the sum of overlapping footprints.
+            if (adds) {
+                rgb += weight * lampTransmittance * record.colour.xyz;
+                lampTransmittance *= 1.0 - alpha;
+                continue;
+            }
             if (matte) {
                 list.add(cryptoIds[sSplats[j]], weight);
             }

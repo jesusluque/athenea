@@ -263,6 +263,8 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--variant` | `/World{set=value}` ‹repeatable› | none | a variant selection before the first frame |
 | `--motion-buckets` | 1..8 | `4` | rt: shutter slices |
 | `--splat-override` | `PRIM=M,R,T[,R,G,B[,REPLACE]]` ‹repeatable› | none | metallic, roughness, transmission and a tint for the gaussians that came from `PRIM` (a path in the cloud's Cryptomatte manifest, `*` for every one); `-1` keeps the gaussian's own; `REPLACE` 1 makes R,G,B the colour rather than a factor on it. Only a cloud converted with ids has a manifest. Fails on a prim none names |
+| `--light-state` | name | none | the stage's light state whose levels its lamp groups take (`athenea:lightState`, §4.2); none leaves each group at its `initialOn` |
+| `--light-level` | `GROUP=LEVEL` ‹repeatable› | none | a lamp group's level over the state's (`athenea:lightLevel:GROUP`): 0 off, 1 its radiance, more for a lamp two functions share (a brake lamp at 4 its tail lamp). Fails on a group the stage does not carry |
 | `--refine` | integer | `0` | subdivision levels; 0 draws the control mesh |
 | `--light-samples` | integer | `1` | samples per light per pixel |
 | `--no-transfer-indirect` | flag | the half is added | draw a transferred cloud without its bounced half |
@@ -476,6 +478,42 @@ the stage that draws them are written so.
 | `--octave` | integer | `16` | directions along each side of the octahedral map |
 | `--cut` | number | `0.001` | transmittance under which a bake ray stops |
 | `--time` | number | `0` | the instant the stage is committed at |
+
+### 2.9.1 `athenea lights merge` — a cloud with its lamps
+
+The base cloud (every lamp off) and one cloud a group of lamps into the base
+with a light layer a group, which a frame adds times each group's weight
+(§3.6). Each layer cloud must be the same conversion of the same geometry as
+the base, with that group alone lit at radiance one.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `base` | path, required | — | `.usd`, `.usda`, `.usdc`: the cloud with every lamp off |
+| `--layer` | `GROUP=CLOUD` ‹repeatable›, required | — | a group's cloud; `GROUP` becomes `primvars:athenea:splat:lightLayer:GROUP` and must be a valid identifier. Its constant term is taken (`0.5 + SH0 dc`, linear where the cloud says `primvars:athenea:splat:linear`, else through the sRGB curve); its other harmonics are not |
+| `--lights` | path | none | a `.lights.usda` sidecar whose `LightGroups`, `LightStates` and `LightRules` Scopes are copied under the cloud's prim, wherever in the sidecar they stand |
+| `--prim` | prim path | the first ParticleField | the base's field; a layer's is its first |
+| `--tolerance` | number | `1e-4` | how far a layer's gaussian may stand from the base's, per coordinate, relative to the coordinate (absolute below 1) |
+| `--drop-below` | number | `0` | a layer none of whose gaussians sends out more than this per unit of radiance (in any channel) is dropped and said so |
+| `-o`, `--output` | path, required | — | the base's root layer, its layers authored on its field |
+
+It prints a line a group (`lights merge: cruce: 412093 of 3061200 gaussians
+lit`, `, dropped` for one dropped), a line a Scope copied, and `lights merge:
+wrote PATH`. It refuses, and writes nothing, when a layer holds another
+number of gaussians:
+
+```
+lights merge: 'layer_drl.usdc' (drl): 3061199 gaussians where the base 'base_tx.usdc' has 3061200; a layer must be the same conversion of the same geometry
+```
+
+or when any of its gaussians stands elsewhere:
+
+```
+lights merge: 'layer_drl.usdc' (drl): 12 of its 3061200 gaussians are not where the base's are (tolerance 0.0001); a layer must be the same conversion of the same geometry
+```
+
+A layer that does not say its colours are linear is read as sRGB and warned
+about. The comparison and the conversion are a kernel each layer; two
+counters and the layer's floats cross back.
 
 ### 2.10 `athenea aofx` — the effect plugins
 
@@ -1069,6 +1107,36 @@ Each EXR carries its timecode, its rate as a rational, the TAI instant, the
 frame index, the USD time and how late the wake was, so a frame can be placed
 on a timeline by what is inside it.
 
+### 3.6 A car's lamps
+
+A car whose lamps switch at run time is the base cloud and a light layer a
+group of lamps (docs/decisions.md, light groups). Each comes out of the same
+conversion of the same geometry: the base with every lamp off, and one a group
+with that group alone lit at radiance one and the dome black. Then the layers
+are merged onto the base, with the groups and states of the `.lights.usda`:
+
+```sh
+athenea mesh2splat base.usda --prim /World/Corvette --transfer ... -o base_tx.usdc
+athenea mesh2splat group_cruce.usda --prim /World/Corvette ... -o layer_cruce.usdc   # and each group
+athenea lights merge base_tx.usdc --layer cruce=layer_cruce.usdc --layer drl=layer_drl.usdc \
+    --lights corvette.lights.usda -o corvette_lights.usdc
+athenea stage night.usda --light-state noche_ciudad -o night.exr
+athenea stage night.usda --light-state aparcado --light-level drl=0.5 -o drl.exr
+```
+
+The light the lamps throw on the ground is a light catcher (`mesh2splat
+--light-catcher`), converted the same way -- a base and one a group, on the
+same stages -- and merged the same way; the same weights light the car and its
+pool. A frame draws, for each group, its level times its
+`emissionLuminance` times its `emissionColor` times its layer, added to what
+the cloud shows; a group's level is `athenea:lightLevel:<group>` where set,
+else the state's target (`athenea:lightState:target:<group>`, 0 where the
+state does not name it), else 1 for `initialOn` and 0 otherwise. A layer is
+light per unit of the group's radiance: the group's material at
+`emission_luminance` 1 when it was baked. Switching a lamp uploads nothing.
+Rules and time curves are not evaluated (a state and levels are what a frame
+takes), and only the rasteriser adds the layers.
+
 ## 4. Authoring for this engine in USD
 
 ### 4.1 Pointing an application at the plugin
@@ -1123,6 +1191,8 @@ Read but not declared:
 | `athenea:disableMotionBlur` | bool | settings or product | for this product |
 | `athenea:disableDepthOfField` | bool | settings or product | for this product |
 | `athenea:lightGroup` | string | a light prim | the group a light's contribution is gathered under |
+| `athenea:lightState` | string | settings prim, or a host | the light state whose targets a stage's lamp groups take; empty: each at its `initialOn` (§3.6). Read by `StageRenderer`, not by hdAthenea under another host |
+| `athenea:lightLevel:<group>` | float | settings prim, or a host | that lamp group's level over the state's: 0 off, 1 its radiance |
 
 ### 4.3 The API schemas
 
@@ -1396,6 +1466,24 @@ bound to say it.
 A Material with a `volume` terminal is the standard way to say the same
 thing, and where one is bound it wins.
 
+**Light groups**, which no schema declares yet. A cloud's lamps are a primvar
+a group on its field, and its groups and states are attributes on Scope prims
+-- children of a `LightGroups` and of a `LightStates` Scope anywhere on the
+stage, the first of a name winning (§3.6):
+
+| Attribute | On | Type | Default |
+|---|---|---|---|
+| `primvars:athenea:splat:lightLayer:<group>` | the field | color3f[] ‹1 a gaussian, linear, per unit of radiance› | — |
+| `primvars:athenea:splat:lightCatcher` | the field | bool | `false` |
+| `athenea:lightGroup:emissionLuminance` | a group | float | `1` (`:radiance` where this is missing) |
+| `athenea:lightGroup:emissionColor` | a group | color3f | `(1, 1, 1)` (`:color` where this is missing) |
+| `athenea:lightGroup:initialOn` | a group | bool | `false` |
+| `athenea:lightState:target:<group>` | a state | double | a group not named is at `0` |
+
+A cloud carries at most 16 layers; a layer not three floats a gaussian is
+left out with a warning. A light catcher draws its layers alone, added over
+whatever is behind it, and casts nothing.
+
 ### 4.4 What the engine ignores, and what it refuses
 
 It **ignores** what it has no meaning for: a primvar it does not read, a
@@ -1438,7 +1526,8 @@ display encoding; exposure; the shutter; the render scale, which draws at a
 fraction of the window and costs proportionally; the timeline with play,
 pause, step and *every frame*; the variant sets the stage carries, with a
 filter when one has more than a dozen variants; the **Lights** block; the
-**Sky** block; and, at the
+**Lamps** block, where the stage carries light groups; the **Sky** block;
+and, at the
 bottom, the device, the frame's timings, what the last frame held, and what
 was picked.
 
@@ -1488,6 +1577,14 @@ is never edited. It is how a sky is judged alone: a stage's own
 and leaves a highlight no sky explains. A dome switched off takes its sky,
 background included, and leaves the **Sky** block until it is switched back
 on; switching a dome back costs the rebuild a new sky costs.
+
+**Lamps** is the stage's light groups (§3.6): a *State* combo -- *(as each
+starts)* and every state the stage carries; choosing one clears the levels set
+over the last -- and for each group a switch and a *Level* slider, 0 to 4.
+Each is a render setting (`athenea:lightState`, `athenea:lightLevel:<group>`),
+which the next frame turns into the groups' weights: nothing is reloaded or
+baked again. Hovering a group says its prim, its `emissionLuminance` and its
+`emissionColor`.
 
 **Stage** is the prim tree, and what is picked is selected in it.
 

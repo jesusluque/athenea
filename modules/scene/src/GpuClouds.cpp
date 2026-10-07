@@ -100,6 +100,7 @@ Result<CloudLoader> CloudLoader::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(loader.pointStreams_, "athenea/scene/streams", "pointStreams"));
     ATHENEA_TRY(make(loader.boundsChunks_, "athenea/scene/bounds_chunks", "boundsChunks"));
     ATHENEA_TRY(make(loader.boundsReduce_, "athenea/scene/bounds_reduce", "boundsReduce"));
+    ATHENEA_TRY(make(loader.lightLayerPack_, "athenea/scene/light_layers", "lightLayerPack"));
     return loader;
 }
 
@@ -320,6 +321,54 @@ Result<gpu::Buffer> CloudLoader::keptOnly(const GpuSplats& splats, const gpu::Bu
     });
     ATHENEA_TRY(batch.submit(true));
     return *packed;
+}
+
+Result<void> CloudLoader::uploadLightLayers(GpuSplats& splats,
+                                            const std::vector<std::pair<std::string, FloatStream>>& layers) {
+    splats.lightLayers = {};
+    splats.lightLayerCount = 0;
+    splats.lightGroups.clear();
+    std::vector<const std::pair<std::string, FloatStream>*> kept;
+    for (const auto& layer : layers) {
+        if (layer.second.isDouble || layer.second.values() < uint64_t{splats.declared} * 3) {
+            log::warn("{}: light layer '{}' is not three values a gaussian; left out", splats.source, layer.first);
+            continue;
+        }
+        if (kept.size() == GpuSplats::kMaxLightGroups) {
+            log::warn("{}: more than {} light layers; '{}' and the rest are left out", splats.source,
+                      GpuSplats::kMaxLightGroups, layer.first);
+            break;
+        }
+        kept.push_back(&layer);
+    }
+    if (kept.empty()) {
+        return ok();
+    }
+    const uint32_t columns = static_cast<uint32_t>(kept.size());
+    auto byRecord = deviceBuffer(*device_, uint64_t{splats.declared} * columns, 4, "splats.lightLayers.records");
+    if (!byRecord) return std::move(byRecord).error();
+    for (uint32_t k = 0; k < columns; ++k) {
+        auto stream = streamBuffer(kept[k]->second, "splats.stream.lightLayer");
+        if (!stream) return std::move(stream).error();
+        gpu::CommandBatch batch(*device_);
+        lightLayerPack_.dispatch(batch, {splats.declared, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["layerStream"].setBinding(stream->rhi());
+            cursor["packed"].setBinding(byRecord->rhi());
+            cursor["packParams"]["count"].setData(splats.declared);
+            cursor["packParams"]["layers"].setData(columns);
+            cursor["packParams"]["layer"].setData(k);
+            cursor["packParams"]["half"].setData(uint32_t{kept[k]->second.half ? 1u : 0u});
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    auto bySplat = keptOnly(splats, *byRecord, columns, "splats.lightLayers");
+    if (!bySplat) return std::move(bySplat).error();
+    splats.lightLayers = std::move(*bySplat);
+    splats.lightLayerCount = columns;
+    for (const auto* layer : kept) {
+        splats.lightGroups.push_back(layer->first);
+    }
+    return ok();
 }
 
 Result<gpu::Buffer> CloudLoader::toRecords(const GpuSplats& splats, const gpu::Buffer& bySplat, uint32_t words,

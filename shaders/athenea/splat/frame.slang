@@ -161,6 +161,11 @@ public struct FrameParams {
     /// 1: `txCache` holds this cloud's view-independent transfer terms
     /// (splatTransferViewless), each with the dome slice it is for.
     public uint  txCache;
+    /// THE LAMPS' LAYERS (GpuSplats::lightLayers): how many groups this
+    /// cloud carries, a word each a splat in `lightLayers`, each added
+    /// times its weight in `lightWeights` (splat_project's lampLight). 0:
+    /// none, and nothing is read.
+    public uint  lightLayers;
     public EditParams edit;      // this cloud instance's SplatEdit (common/edit.slang)
 };
 
@@ -174,6 +179,11 @@ public static const float kSlopeMark = 0.25;
 /// splatProjectCatcher): black, and drawn over an opaque layer under it
 /// even where its centre's depth reads behind that layer -- it lies on it.
 public static const float kCatcherMark = 0.125;
+/// A ProjRecord's colour.w for a LIGHT CATCHER's gaussian (splat_project's
+/// splatProjectLightCatcher): the lamps' light on the ground, drawn over the
+/// layer under it as a catcher is, and added -- it takes nothing from what
+/// is behind it, so it can only brighten.
+public static const float kLightCatcherMark = 0.0625;
 /// A record whose sharp lobe the blend draws per pixel (splat_project's
 /// SplatSlope sharp lobe): `slopes` holds its mirror and the mirror's turn.
 public static const float kSharpMark = 0.375;

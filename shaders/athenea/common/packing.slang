@@ -285,6 +285,14 @@ public float halfSafe(float v) { return clamp(v, -65000.0, 65000.0); }
 
 public static const float kSH0 = 0.28209479177387814;
 
+/// WHAT A LAMP'S LAYER IS PACKED AT (GpuSplats::lightLayers): its light per
+/// unit of the group's radiance times this, in RGB9E5. The light a lamp
+/// leaves on a body a few metres away is 1e-5 of its radiance and less, where
+/// RGB9E5's smallest exponent leaves a few steps; scaled, full precision
+/// reaches down to 1e-9 and the top is 4 -- an emitter seen through clear
+/// glass is 1.
+public static const float kLightLayerScale = 16384.0;
+
 /// Harmonic words per splat for `restPerColour` basis functions (3, 8, 15).
 public uint shWordsFor(uint restPerColour) { return (restPerColour * 3 + 1) / 2; }
 

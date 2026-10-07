@@ -113,6 +113,14 @@ struct SplatEntry {
     /// `primvars:athenea:splat:catcher`: a shadow catcher, drawn black as
     /// opaque as what its object took (`athenea mesh2splat --shadow-catcher`).
     bool                                catcher = false;
+    /// `primvars:athenea:splat:lightCatcher`: a light catcher, the lamps'
+    /// light on a ground, added over whatever is drawn (`athenea mesh2splat
+    /// --light-catcher`). Only its layers are drawn.
+    bool                                lightCatcher = false;
+    /// This frame's weight of each of its lamps' layers, a float4 a layer
+    /// (`Engine::setLightWeights`), and which weights it was written from.
+    gpu::Buffer                         lightWeights;
+    uint64_t                            lightWeightsVersion = 0;
     /// `primvars:athenea:splat:ior`: the index its transmitting gaussians bend
     /// the sky by. 0 bends nothing, which is every cloud that does not say.
     float                               ior = 0.0F;
@@ -344,7 +352,8 @@ public:
                    std::optional<bool> litBody = std::nullopt,
                    std::optional<float> ior = std::nullopt,
                    std::optional<render::Mat4> transformStep = std::nullopt,
-                   std::optional<bool> catcher = std::nullopt);
+                   std::optional<bool> catcher = std::nullopt,
+                   std::optional<bool> lightCatcher = std::nullopt);
     void setPoints(const pxr::SdfPath& id, std::optional<PointsArrays> raw,
                    const render::Mat4* transform, std::optional<bool> visible,
                    std::optional<render::PointStyle> style);
@@ -385,6 +394,13 @@ public:
     void setSplatTransferIndirect(bool indirect);
     /// Whether a gaussian reflects the cloud it belongs to, at a ray each.
     void setSplatReflections(bool reflect);
+    /// THE LAMPS' WEIGHTS, by group name: linear rgb, a group's level times
+    /// its radiance and colour, what each of a cloud's light layers is added
+    /// times (docs/decisions.md, light groups). A group not named is off.
+    /// Changing them changes four floats a layer on the device and nothing
+    /// else: no upload, no bake.
+    void setLightWeights(std::map<std::string, std::array<float, 3>> weights);
+    [[nodiscard]] std::map<std::string, std::array<float, 3>> lightWeights() const;
 
     /// WHAT A FRAME SAYS A PRIM IS MADE OF, keyed on the Cryptomatte id its
     /// gaussians carry: what a host edits after picking one.
@@ -764,6 +780,9 @@ private:
     std::vector<uint64_t>                     cloudShadowKey_;
     std::atomic<uint64_t>                     cloudUploads_{0};
     std::atomic<bool>                         splatReflections_{false};
+    /// `setLightWeights`'s, under `guard_`, and how many times they changed.
+    std::map<std::string, std::array<float, 3>> lightWeights_;
+    uint64_t                                  lightWeightsVersion_ = 1;
     /// The per-prim material table and the buffer it is uploaded into. The
     /// rows are the host's; `splatOverrideRows_` is what the frame bound.
     std::vector<render::SplatOverride>        splatOverrides_;

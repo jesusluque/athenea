@@ -51,7 +51,7 @@ coinciden, la cabecera tiene razón.
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él) |
+| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
 | 20 | view | `view/Viewer.h` — las opciones de la ventana |
@@ -133,9 +133,11 @@ comprobación.
   en cuatro palabras la opacidad, la escala, el cuaternión y el color DC de un
   splat, en una la normal de sombreado opcional (`packNormal`), en una la
   emisión opcional (`packRgb9e5`) y en tres las capas opcionales sobre la base
-  -- specular, coat, sheen -- (`packLobes`). Todo lo que escribe una nube y
-  todo lo que la lee pasa por ahí. Un buffer opcional de `GpuSplats` (`pbr`,
-  `normals`, `emission`, `lobes`) se enlaza tenga o no la nube -- la forma en
+  -- specular, coat, sheen -- (`packLobes`), y en una por grupo las capas
+  opcionales de las lámparas (`packRgb9e5` por `kLightLayerScale`). Todo lo
+  que escribe una nube y todo lo que la lee pasa por ahí. Un buffer opcional
+  de `GpuSplats` (`pbr`, `normals`, `emission`, `lobes`, `lightLayers`) se
+  enlaza tenga o no la nube -- la forma en
   su lugar -- y un flag en los parámetros dice cuál.
 - **El índice de un splat no es el de su registro.** La validación descarta
   lo que no se puede dibujar; `GpuSplats::origin` dice de qué registro vino
@@ -1218,7 +1220,9 @@ los colores de toda conversión son luz lineal -- y metallic, roughness,
 transmission, la normal de sombreado y la emisión por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
 tiene esqueleto, `AtheneaSplatCryptomatteAPI` con un id por gaussiana y el
 manifest que los nombra, y `AtheneaSplatVisibilityAPI` una vez que ha corrido `athenea
-visibility`. La referencia de atributos es
+visibility`. Un shadow catcher dice `catcher`, un light catcher
+`lightCatcher`; `athenea lights merge` añade a una copia un
+`lightLayer:<grupo>` por grupo de lámparas. La referencia de atributos es
 [`operations.es.md §4.3`](operations.es.md#43-los-schemas-de-api).
 
 Cada slot se escribe, sobreviviera o no una gaussiana en él: uno vacío lleva

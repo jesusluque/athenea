@@ -8,6 +8,7 @@
 
 #include <array>
 #include <optional>
+#include <utility>
 #include <vector>
 #include <string>
 
@@ -83,6 +84,11 @@ struct ParticleFieldArrays {
     pxr::VtValue sheenColour;      ///< VtVec3fArray or VtVec3hArray
     pxr::VtValue sheenRoughness;
     pxr::VtValue coatDarkening;    ///< `:coatDarkening`, VtFloatArray or VtHalfArray
+    /// THE LAMPS' LAYERS: one array a group of lamps, named by the group
+    /// (`primvars:athenea:splat:lightLayer:<group>`), the light each gaussian
+    /// sends out from that group per unit of its radiance (`athenea lights
+    /// merge` writes them). Empty for a cloud with no lamps.
+    std::vector<std::pair<std::string, pxr::VtValue>> lightLayers;   ///< VtVec3fArray or VtVec3hArray each
     std::string  cryptoManifest;   ///< {"<path>":"<hex8>"} as the primvar holds it
     /// A LEVEL OF DETAIL OF A CLOUD THAT MOVES: the same cloud converted at
     /// several cells, each its own prim with its own rig, named alike by

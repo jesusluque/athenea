@@ -77,6 +77,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.projectPlain_, "athenea/splat/splat_project", "splatProjectPlain"));
     ATHENEA_TRY(make(r.projectFirst_, "athenea/splat/splat_project", "splatProjectFirst"));
     ATHENEA_TRY(make(r.projectCatcher_, "athenea/splat/splat_project", "splatProjectCatcher"));
+    ATHENEA_TRY(make(r.projectLightCatcher_, "athenea/splat/splat_project", "splatProjectLightCatcher"));
     ATHENEA_TRY(make(r.viewless_, "athenea/splat/splat_project", "splatTransferViewless"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
     ATHENEA_TRY(make(r.pointsProject_, "athenea/splat/points_project", "pointsProject"));
@@ -353,7 +354,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         gpu::ComputeKernel& chosen = txCells ? project_ : cloud->hasTransfer() ? projectFirst_ : projectPlain_;
         // And a shadow catcher's, beside them: black, as opaque as what its
         // object took (splatProjectCatcher).
-        gpu::ComputeKernel& project = instance.catcher ? projectCatcher_ : chosen;
+        // And a light catcher's: the lamps' light on a ground, added.
+        gpu::ComputeKernel& project = instance.catcher        ? projectCatcher_
+                                      : instance.lightCatcher ? projectLightCatcher_
+                                                              : chosen;
         // WHAT THE EYE DOES NOT CHANGE, KEPT (splat_project's
         // splatTransferViewless): a cloud with a transfer, under lights and a
         // sky that say when they changed, keeps its view-independent terms a
@@ -361,7 +365,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         // they depend on moved -- the lights, the sky, the cloud, its place.
         TxCache* kept = nullptr;
         bool keep = false;
-        if (txCells && !instance.catcher && instance.relight && lights != nullptr && lights->revision != 0 &&
+        if (txCells && !instance.catcher && !instance.lightCatcher && instance.relight && lights != nullptr && lights->revision != 0 &&
             lights->environment()) {
             uint64_t key = lights->revision * 0x9E3779B97F4A7C15ULL;
             const auto mix = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ULL; };
@@ -484,6 +488,14 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["params"]["hasCurvature"].setData(
                 uint32_t{cloud->hasCurvature() && txCells ? 1u : 0u});
             cursor["lobes"].setBinding(cloud->hasLobes() ? cloud->lobes.rhi() : cloud->shape.rhi());
+            // The lamps' layers and this frame's weight of each, where the
+            // cloud carries them and the frame weighs them. Bound either way,
+            // as every name a shader declares; `lightLayers` of 0 says not read.
+            const bool lamps = cloud->hasLightLayers() && instance.lightWeights != nullptr &&
+                               instance.lightWeights->valid();
+            cursor["params"]["lightLayers"].setData(lamps ? cloud->lightLayerCount : 0u);
+            cursor["lightLayers"].setBinding(lamps ? cloud->lightLayers.rhi() : cloud->shape.rhi());
+            cursor["lightWeights"].setBinding(lamps ? instance.lightWeights->rhi() : emptyEnvSh_.rhi());
             // What a pick said this prim is made of. Bound either way, as
             // every name a shader declares; `overrideCount` of 0 is what says
             // the table is not read.

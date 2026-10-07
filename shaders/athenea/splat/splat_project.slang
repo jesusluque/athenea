@@ -48,6 +48,12 @@ StructuredBuffer<uint>      emission;
 // What its material layered over the base, three words a splat, where the
 // cloud carries it (`params.hasLobes`).
 StructuredBuffer<uint>      lobes;
+// THE LAMPS (GpuSplats::lightLayers): `params.lightLayers` words a splat,
+// RGB9E5, the light each group sends out of the gaussian per unit of the
+// group's radiance; and this frame's weight of each group (linear rgb: its
+// level times its radiance and colour), one float4 a layer.
+StructuredBuffer<uint>      lightLayers;
+StructuredBuffer<float4>    lightWeights;
 // Per-prim material overrides, keyed on the id each gaussian carries:
 // `params.overrideCount` of 0 is what says there are none.
 StructuredBuffer<float4>    splatOverrides;
@@ -117,6 +123,25 @@ float3 storedFacing(float3x3 r, float3 scale, uint i) {
 /// --shadow-catcher): projected as any splat, drawn black, its opacity what
 /// the object took of the light reaching it (catcherOpacity).
 static const int kProjectCatcher = 3;
+/// And for a LIGHT CATCHER (athenea mesh2splat --light-catcher): projected as
+/// any splat, its colour the lamps' layers alone, added by the blend.
+static const int kProjectLightCatcher = 4;
+
+/// WHAT THE LAMPS ADD TO A GAUSSIAN: the sum over the groups its cloud
+/// carries of this frame's weight times its layer. Light is linear, so a
+/// lamp switched, dimmed or tinted is a weight and nothing else
+/// (docs/decisions.md, light groups).
+float3 lampLight(uint i) {
+    float3 sum = float3(0.0);
+    const uint base = i * params.lightLayers;
+    for (uint k = 0; k < params.lightLayers; ++k) {
+        const float3 w = lightWeights[k].rgb;
+        if (any(w != float3(0.0))) {
+            sum += w * (unpackRgb9e5(lightLayers[base + k]) / kLightLayerScale);
+        }
+    }
+    return sum;
+}
 
 /// HOW MANY OF A CATCHER'S GAUSSIANS A POINT OF IT LIES UNDER, weighed by
 /// their falloff: a square lattice of cell d whose gaussians are sigma d
@@ -408,7 +433,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // transmittance of its own); measured on the Corvette's windshield it is
     // the smaller error by far (s62b: relMSE 2.26 to 0.89 under the shop,
     // 0.31 to 0.067 under goegap).
-    const bool sheet = kTransfer != kProjectCatcher && params.hasPbr != 0 && pbrThinWalled(pbr[i]) &&
+    const bool sheet = kTransfer < kProjectCatcher && params.hasPbr != 0 && pbrThinWalled(pbr[i]) &&
                        pbrTransmission(pbr[i]) > 0.5;
     // A sheet's own share is its coverage as the conversion solved it, without
     // the 1/255 m2sCoverageAlpha adds for the radius it would be cut at: drawn
@@ -458,6 +483,10 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     bool sharp = false;
     if (kTransfer == kProjectCatcher) {
         colour = float3(0.0);   // black: it only takes
+    } else if (kTransfer == kProjectLightCatcher) {
+        // The ground's own light is the frame's already (the ground, its
+        // shadow catcher): what this layer adds is the lamps' alone.
+        colour = float3(0.0);
     } else if (params.relight != 0) {
         // AtheneaSplatLightingAPI: the radiance a capture was baked with replaced
         // by what this scene's lights put on it. What that means is in
@@ -658,6 +687,11 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                                  packHalves(slope.slopeY.y, slope.slopeY.z), 0u);
         }
     }
+    // THE LAMPS, over whatever the cloud shows: added after the relighting,
+    // whatever it did, since each layer is light already.
+    if (kTransfer != kProjectCatcher && params.lightLayers != 0) {
+        colour += lampLight(i);
+    }
     if (fate.graded) {
         colour = editGrade(params.edit, colour);
     }
@@ -668,7 +702,11 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         colour *= alphaOwn / alpha;   // the sheet's alpha x colour, as its own opacity had it
     }
     record.conic = float4(conic, alpha);
-    record.colour = float4(colour, sharp ? kSharpMark : sloped ? kSlopeMark : kTransfer == kProjectCatcher ? kCatcherMark : 0.0);
+    record.colour = float4(colour, sharp                                ? kSharpMark
+                                   : sloped                             ? kSlopeMark
+                                   : kTransfer == kProjectCatcher       ? kCatcherMark
+                                   : kTransfer == kProjectLightCatcher ? kLightCatcherMark
+                                                                        : 0.0);
     proj[slot] = record;
     if (params.cryptoMode != 0) {
         cryptoIds[slot] = params.cryptoMode == 1 ? cloudCrypto[i] : 0u;
@@ -693,6 +731,14 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
 [numthreads(256, 1, 1)]
 void splatProjectCatcher(uint3 tid: SV_DispatchThreadID) {
     projectSplat<kProjectCatcher>(tid);
+}
+
+/// A LIGHT CATCHER: projected, its colour the lamps' layers, added by the
+/// blend (kLightCatcherMark) -- no relighting either.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void splatProjectLightCatcher(uint3 tid: SV_DispatchThreadID) {
+    projectSplat<kProjectLightCatcher>(tid);
 }
 
 /// A cloud that carries a TX transfer (the cells): everything.

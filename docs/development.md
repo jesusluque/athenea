@@ -51,7 +51,7 @@ document, the header is right.
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
-| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it) |
+| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
 | 20 | view | `view/Viewer.h` — the window's options |
@@ -130,9 +130,11 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   opacity, scale, quaternion and DC colour are packed into four words, the
   optional shading normal into one (`packNormal`), the optional emission
   into one (`packRgb9e5`) and the optional layers over the base -- specular,
-  coat, sheen -- into three (`packLobes`). Anything that writes a cloud and
-  anything that reads one goes through it. An optional buffer of `GpuSplats`
-  (`pbr`, `normals`, `emission`, `lobes`) is bound whether or not the cloud has it --
+  coat, sheen -- into three (`packLobes`), and the optional lamps' layers
+  into one a group (`packRgb9e5` times `kLightLayerScale`). Anything that
+  writes a cloud and anything that reads one goes through it. An optional
+  buffer of `GpuSplats` (`pbr`, `normals`, `emission`, `lobes`,
+  `lightLayers`) is bound whether or not the cloud has it --
   the shape in its place -- and a flag in the parameters says which.
 - **A splat's index is not its record's.** Validation drops what cannot be
   drawn; `GpuSplats::origin` says which record each kept splat came from.
@@ -1164,6 +1166,8 @@ every conversion's colours are linear light -- and metallic, roughness,
 transmission, the shading normal and the emission a gaussian), `AtheneaSplatSkinningAPI` where the cloud
 is skinned, `AtheneaSplatCryptomatteAPI` with an id a gaussian and the manifest
 that names them, and `AtheneaSplatVisibilityAPI` once `athenea visibility` has run.
+A shadow catcher says `catcher`, a light catcher `lightCatcher`; `athenea
+lights merge` adds a `lightLayer:<group>` a group of lamps to a copy.
 [`operations.md §4.3`](operations.md#43-the-api-schemas) is the attribute
 reference.
 

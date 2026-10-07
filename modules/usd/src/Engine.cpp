@@ -212,7 +212,7 @@ void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays
                        std::optional<bool> relight,
                        std::optional<std::vector<pxr::TfToken>> categories, std::optional<bool> litBody,
                        std::optional<float> ior, std::optional<render::Mat4> transformStep,
-                       std::optional<bool> catcher) {
+                       std::optional<bool> catcher, std::optional<bool> lightCatcher) {
     const std::lock_guard<std::mutex> held(guard_);
     SplatEntry& entry = splats_[id];
     if (transformStep) {
@@ -232,6 +232,9 @@ void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays
     }
     if (catcher) {
         entry.catcher = *catcher;
+    }
+    if (lightCatcher) {
+        entry.lightCatcher = *lightCatcher;
     }
     if (ior) {
         entry.ior = *ior;
@@ -650,6 +653,21 @@ Result<render::SplatIdReading> Engine::measureSplatId(uint32_t id) {
         }
     }
     return total;
+}
+
+void Engine::setLightWeights(std::map<std::string, std::array<float, 3>> weights) {
+    const std::lock_guard<std::mutex> held(guard_);
+    if (weights == lightWeights_) {
+        return;
+    }
+    lightWeights_ = std::move(weights);
+    ++lightWeightsVersion_;
+    revision_.fetch_add(1);
+}
+
+std::map<std::string, std::array<float, 3>> Engine::lightWeights() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    return lightWeights_;
 }
 
 void Engine::setSplatReflections(bool reflect) {
@@ -1401,6 +1419,20 @@ Result<size_t> Engine::commit() {
                     entry.gpu.reset();
                 } else {
                     entry.gpu = std::make_unique<scene::GpuSplats>(std::move(*splats));
+                    // THE LAMPS' LAYERS, where the field carries them: a
+                    // column a group, beside the cloud (docs/decisions.md,
+                    // light groups). A cloud without them is drawn as ever.
+                    if (!streams.lightLayers.empty()) {
+                        if (auto layers = loader_->uploadLightLayers(*entry.gpu, streams.lightLayers); !layers) {
+                            if (layers.error().code() == ErrorCode::OutOfMemory) {
+                                return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(),
+                                                   layers.error().message());
+                            }
+                            log::warn("hdAthenea: {}: its light layers did not upload: {}", id.GetString(),
+                                      layers.error().toString());
+                        }
+                        entry.lightWeightsVersion = 0;
+                    }
                     // THE BAKED FIELDS, where the file carries them: two
                     // arrays that go up as they are, the same words the bake
                     // wrote (`athenea visibility`), and nothing computed here.
@@ -2251,8 +2283,13 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 if (!posed) return posed;
             }
         }
-        for (const auto& [id, entry] : splats_) {
+        for (auto& [id, entry] : splats_) {
             if (!entry.visible) {
+                continue;
+            }
+            // A light catcher draws nothing but the lamps' light, and only
+            // the rasteriser adds it (docs/decisions.md, light groups).
+            if (entry.lightCatcher && technique == Technique::RayTraced) {
                 continue;
             }
             // One level of a cloud that has several: the one this view wants.
@@ -2279,6 +2316,39 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                     splats.back().motionScale = entry.motionScale;
                 }
                 splats.back().viewStep = viewStepOf(entry.objectToWorld, entry.transformStep);
+                splats.back().lightCatcher = entry.lightCatcher;
+                // THE LAMPS: this frame's weight of each layer the cloud
+                // carries, by its group's name -- a group the frame does not
+                // name is off. Written when the weights change, a float4 a
+                // layer; the arithmetic that made them is a few numbers a
+                // frame (StageRenderer's light rig).
+                if (drawn == entry.gpu.get() && entry.gpu->hasLightLayers()) {
+                    if (!entry.lightWeights.valid() || entry.lightWeightsVersion != lightWeightsVersion_) {
+                        std::vector<float> rows(size_t{scene::GpuSplats::kMaxLightGroups} * 4, 0.0F);
+                        for (size_t k = 0; k < entry.gpu->lightGroups.size(); ++k) {
+                            if (const auto found = lightWeights_.find(entry.gpu->lightGroups[k]);
+                                found != lightWeights_.end()) {
+                                rows[k * 4] = found->second[0];
+                                rows[k * 4 + 1] = found->second[1];
+                                rows[k * 4 + 2] = found->second[2];
+                            }
+                        }
+                        if (!entry.lightWeights.valid()) {
+                            gpu::BufferDesc desc;
+                            desc.bytes = rows.size() * sizeof(float);
+                            desc.elementBytes = 16;   // a float4 a layer
+                            desc.label = "splat.lightWeights";
+                            auto made = gpu::Buffer::create(*device_, desc, rows.data());
+                            if (!made) return std::move(made).error();
+                            entry.lightWeights = std::move(*made);
+                        } else {
+                            ATHENEA_TRY(entry.lightWeights.write(*device_, 0, rows.size() * sizeof(float),
+                                                                 rows.data()));
+                        }
+                        entry.lightWeightsVersion = lightWeightsVersion_;
+                    }
+                    splats.back().lightWeights = &entry.lightWeights;
+                }
                 if (entry.relight && entry.gpu->hasVisibility()) {
                     MeasuredCloud m;
                     m.drawn = drawn;
@@ -2729,7 +2799,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 // more along each of the dome's directions -- the straight-
                 // edged blocks under goegap's sun, and the mesh car's frame a
                 // third dark.
-                if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher) {
+                // A light catcher is light on the ground: it casts nothing.
+                if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher ||
+                    instance.lightCatcher) {
                     continue;
                 }
                 technique::ShadowMapCaster caster;

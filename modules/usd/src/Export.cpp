@@ -444,6 +444,11 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         static const TfToken kCatcher("primvars:athenea:splat:catcher");
         splats.GetPrim().CreateAttribute(kCatcher, SdfValueTypeNames->Bool, true).Set(true);
     }
+    if (options.lightCatcher) {
+        // A light catcher: its lamps' layers drawn, added, and nothing else.
+        static const TfToken kLightCatcher("primvars:athenea:splat:lightCatcher");
+        splats.GetPrim().CreateAttribute(kLightCatcher, SdfValueTypeNames->Bool, true).Set(true);
+    }
 
     // AND THE SCHEMA THOSE PRIMVARS ARE DECLARED BY. They were written and
     // the API never applied, so `relight` came out `custom` and a host that

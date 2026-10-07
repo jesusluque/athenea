@@ -13274,3 +13274,155 @@ spread) instead of `--time`'s. `--time` still says the instant of everything
 else. Not done: a cloud with more than four influences a gaussian (P014C),
 which would also make its animation the mesh's to the millimetre at the wing
 tips.
+
+## A car's lamps switched at run time: light groups (proposals 062, 066)
+
+A car's lamps -- low beam, high beam, daytime running lights, tail lamps, the
+third brake light -- are switched, dimmed and tinted while the frame runs,
+with no bake and no ray. The web side reads the same model
+(sparkwebGPU `docs/athl.md`); this is the engine's half.
+
+Light is linear. Group k baked once with every other light off and the group
+at radiance one gives, per gaussian, `layer_k`: the light that gaussian sends
+out from the group, per unit of the group's radiance. Every state of the car
+is then
+
+    colour = base + sum_k w_k layer_k,   w_k = level_k x emissionLuminance_k x emissionColor_k
+
+with `base` the cloud baked with every lamp off (a TX transfer, relit by the
+frame's sky as ever). `w_k` is a few numbers a frame, worked out on the
+processor; everything per gaussian is a kernel.
+
+### The file
+
+One primvar a group on the cloud's ParticleField,
+`primvars:athenea:splat:lightLayer:<group>`: `color3f[]`, vertex, linear,
+per unit of radiance. Floats, not halves: a lamp's light on a body a few
+metres away is 1e-5 of its radiance and less, where a half has a handful of
+bits left. On the device the layers are one buffer beside the cloud
+(`GpuSplats::lightLayers`), a word a group a gaussian in RGB9E5 scaled by
+`kLightLayerScale` = 2^14 (packing.slang) -- full precision from 1e-9 to 4 per
+unit of radiance, an emitter behind clear glass reading 1. Five groups over a
+3 M-gaussian car are 60 MB on the device (half3 would be 90) and 180 MB in the
+file. At most 16 groups a cloud. A layer is dense: a group that reaches a tenth
+of the car still costs a word a gaussian (the web side's `.athl` is sparse by
+block; here that is v2).
+
+The groups, states and rules stay where the sidecar keeps them: namespaced
+attributes on Scope prims (`.lights.usda`, proposal 067), children of a
+`LightGroups` Scope (`athenea:lightGroup:emissionLuminance`, `:emissionColor`,
+`:initialOn`; `:radiance` and `:color` read where those are missing) and of a
+`LightStates` Scope (`athenea:lightState:target:<group>`, a level; a group a
+state does not name is at 0). `athenea lights merge --lights` copies the three
+Scopes under the cloud's prim, so a stage that references the cloud's prim
+brings its lamps along.
+
+### `athenea lights merge`
+
+The base and one cloud a group, each the same `athenea mesh2splat` command on
+the same geometry -- the group alone lit at radiance one, the dome black.
+For each layer, one kernel (light_layers.slang's `lightLayerFromCloud`)
+reads both clouds' positions as the files hold them (float or half), counts
+the gaussians not within `--tolerance` (1e-4, relative) of the base's, makes
+the constant term light -- `0.5 + SH0 dc`, through the sRGB curve where the
+cloud does not say it is linear -- and counts the gaussians above
+`--drop-below`. Two counters cross back; a layer with a gaussian out of place,
+or a different count, is refused, and nothing is written. A layer with nothing
+lit is dropped. The base's root layer is exported to `-o` and the layers are
+authored on its field; the light is copied into the array as the device wrote
+it, not computed.
+
+The layer keeps the constant term alone: the harmonics a bake fits, how the
+group's light changes with the eye, are not carried -- a glossy panel's
+reflection of a lamp is the web side's view-dependent field, v2 here.
+
+### The frame
+
+`StageRenderer` reads the rig when the stage opens (and when a variant
+recomposes it: `readLightRig`, the first prim of a name wins, so a car and its
+light catcher that both carry the Scopes are one rig), and before each frame
+turns two render settings into the weights:
+
+- `athenea:lightState` (string): the state whose targets are the levels;
+  empty, each group at `initialOn`.
+- `athenea:lightLevel:<group>` (float): that group's level over the state's.
+
+`Engine::setLightWeights` keeps them by name; a cloud's weights (a float4 a
+layer, by its own layer names) are written to the device only when they
+change. The rasteriser's projection adds `sum_k w_k layer_k` to the
+gaussian's colour after whatever relighting did (splat_project's
+`lampLight`), so a relit TX car and a plain baked cloud take their lamps alike.
+A lamp switched uploads nothing: the cloud's upload count is checked to stay
+put across six frames of different levels.
+
+`athenea stage --light-state NAME --light-level GROUP=LEVEL`, the render
+settings prim's `athenea:` attributes, and `athenea view`'s **Lamps** block (a
+state combo, a switch and a level slider a group, also in the panels'
+description every front end draws) all set the same two settings.
+
+### The ground: a light catcher
+
+The light the lamps throw on the road -- the low beam's pool, the red glow
+behind the tail lamps -- is gaussians too, as the shadow is: `athenea
+mesh2splat --light-catcher` writes the same patch the shadow catcher does
+(`usd/ShadowCatcher.h`), reaching `--light-reach` of the object's lengths
+past either end along its longer axis (3: a low beam lights the road metres
+ahead) and `--catcher-margin` heights across, at a cell of a thirtieth of
+the object's height (the light is smooth), under `/AtheneaLightCatcher`. It
+is converted as a radiance bake -- with the dome black and one group on at
+radiance one, that is the group's light on the ground per unit of radiance --
+and written with `primvars:athenea:splat:lightCatcher`. One conversion a group
+plus a base, merged by `athenea lights merge` exactly as the car's, give the
+ground the car's layers, and the same weights light the car and its pool
+together.
+
+It is drawn by a kernel of its own (`splatProjectLightCatcher`): its colour is
+the lamps' layers alone -- its own baked colour is the ground under the base
+stage's light, which the frame already draws (the ground, its shadow
+catcher) -- marked `kLightCatcherMark`, drawn over an opaque layer under it
+as a catcher is, and ADDED in the blend: its gaussians blend among themselves
+over a transmittance of their own, so the light is the patch's coverage of it
+and not the sum of overlapping footprints, and they take nothing from what is
+behind. Off, the frame is what it was without it; it casts nothing into the
+cloud shadow map, and the ray traced route leaves it out.
+
+### How it is checked
+
+`athenea_usd_tests "[lights]"`, on frames drawn through Hydra and combined
+and compared on the device (`test/light_layers_check`, `compareImages`):
+
+- image(A) + image(B) - image(off) against image(A and B), and
+  2 image(A) - image(off) against image(A at level 2), p99 <= 1 and max <= 2
+  code values, on a synthetic cloud with two layers; a state equals its
+  levels; the layers are seen at all (max >= 10 against off), which is what
+  fails before this; and no upload between the frames.
+- merge refuses a layer one gaussian short, and one whose gaussians stand
+  elsewhere, and writes nothing.
+- a light catcher off draws the frame without it (max <= 1), on adds, and
+  2 image(1) - image(0) is image(2).
+
+The Corvette (base TX, five groups, its ground per group) is
+`~/luc/athenea-gpu/gpu_l1.sh`: the merge, and raster frames at the front and
+rear cameras for aparcado, diurno, noche_ciudad and noche_carretera under the
+sky at 0.005. Its numbers go here once run.
+
+### Not done (v2)
+
+- Rules (`athenea:lightRule:*`: the DRL off with the low beam, the high beam
+  needing the low), sequences, time curves (an LED's ramp, a xenon's
+  warm-up, a blinker): the web side evaluates them; here a state and levels
+  are all a frame takes.
+- Sparse layers, and the direct term from the emitter polygons (060, LTC),
+  the lens profile and the beam map (076).
+- The ray traced route: it draws the cloud without its layers, and a light
+  catcher not at all.
+- A cloud a skeleton poses, a level of detail or a `.athc`: the layers ride
+  the cloud as uploaded only.
+- A host that drives hdAthenea without `StageRenderer` (usdview, Blender)
+  has no rig, so the layers are off: the rig would have to reach the
+  delegate through Hydra.
+- The tail and brake glass: `tubo_trasero`'s group carries a red
+  `emissionColor` and its material is red already; if its layer was baked
+  with the OpenPBR colour in it, its weight should be the luminance alone.
+  The sidecar's convention (`emission_luminance x emission_color` is the
+  radiance) is what the weights follow.

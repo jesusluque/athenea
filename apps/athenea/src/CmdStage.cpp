@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -117,6 +118,8 @@ void addStage(CLI::App& app) {
         uint32_t cloudShadowTexels = 1024;
         uint32_t cloudShadowTerms = 0;
         double cloudShadowDensity = 1.0;
+        std::string lightState;
+        std::vector<std::string> lightLevels;   ///< group=level
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("stage", "render a USD stage through the engine's Hydra delegate");
@@ -139,6 +142,11 @@ void addStage(CLI::App& app) {
     cmd->add_option("--variant", o->variants,
                     "a variant selection, as USD writes one in a path: /World{clip=air_fly_A0}. "
                     "Repeatable, applied in order, in the session layer");
+    cmd->add_option("--light-state", o->lightState,
+                    "the stage's light state whose levels its lamp groups take (athenea:lightState)");
+    cmd->add_option("--light-level", o->lightLevels,
+                    "GROUP=LEVEL: a lamp group's level over the state's (athenea:lightLevel:GROUP). Repeatable")
+        ->allow_extra_args(false);
     cmd->add_option("--splat-override", o->splatOverrides,
                     "PRIM=METALLIC,ROUGHNESS,TRANSMISSION[,R,G,B[,REPLACE]]: what the gaussians that came from "
                     "PRIM (a path the cloud's Cryptomatte manifest names, or * for all of them) are "
@@ -235,6 +243,34 @@ void addStage(CLI::App& app) {
         (*renderer)->setCloudShadowTerms(o->cloudShadowTerms);
         (*renderer)->setCloudShadowDensity(static_cast<float>(o->cloudShadowDensity));
         (*renderer)->setAntialias(o->antialias);
+        // The lamps: a state, and levels over it (usd/LightGroups.h).
+        if (!o->lightState.empty()) {
+            (*renderer)->setLightState(o->lightState);
+        }
+        for (const std::string& said : o->lightLevels) {
+            const size_t equals = said.find('=');
+            char* end = nullptr;
+            const float level = equals == std::string::npos ? 0.0F : std::strtof(said.c_str() + equals + 1, &end);
+            if (equals == std::string::npos || equals == 0 || end == said.c_str() + equals + 1 || *end != '\0') {
+                std::fprintf(stderr, "stage: --light-level %s: write it GROUP=LEVEL\n", said.c_str());
+                throw CLI::RuntimeError(kExitFailure);
+            }
+            const std::string group = said.substr(0, equals);
+            const auto& groups = (*renderer)->lightRig().groups;
+            if (std::none_of(groups.begin(), groups.end(), [&](const usd::LightGroup& g) { return g.name == group; })) {
+                std::fprintf(stderr, "stage: --light-level: the stage carries no light group '%s'\n", group.c_str());
+                throw CLI::RuntimeError(kExitFailure);
+            }
+            (*renderer)->setLightLevel(group, level);
+        }
+        if (!(*renderer)->lightRig().empty()) {
+            std::string said;
+            for (const auto& [group, level] : (*renderer)->lightLevels()) {
+                said += " " + group + " " + std::to_string(level).substr(0, 4);
+            }
+            std::printf("stage: lamps%s%s:%s\n", o->lightState.empty() ? "" : " in state ", o->lightState.c_str(),
+                        said.c_str());
+        }
         if (o->defaultLights) {
             if (auto lit = (*renderer)->setDefaultLights(true); !lit) {
                 cli::fail(lit.error());
