@@ -42,6 +42,10 @@
 #include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdHydra/renderPassAPI.h>
 #include <pxr/usd/usdLux/distantLight.h>
+#include <pxr/usd/usdSkel/bindingAPI.h>
+#include <pxr/usd/usdSkel/skeleton.h>
+#include <pxr/usd/usdSkel/topology.h>
+#include <pxr/usd/usdSkel/utils.h>
 #include <pxr/usd/usdLux/domeLight.h>
 #include <pxr/usd/usdLux/lightAPI.h>
 #include <pxr/usd/usdRender/pass.h>
@@ -1073,6 +1077,33 @@ bool StageRenderer::hasLights() const {
         }
     }
     return false;
+}
+
+Result<void> StageRenderer::holdBindPose() {
+    Impl& impl = *impl_;
+    const UsdEditContext session(impl.stage, impl.stage->GetSessionLayer());
+    for (const UsdPrim& prim : impl.stage->Traverse()) {
+        const UsdSkelSkeleton skeleton(prim);
+        if (!skeleton) {
+            continue;
+        }
+        VtTokenArray joints;
+        VtMatrix4dArray bind;
+        skeleton.GetJointsAttr().Get(&joints);
+        skeleton.GetBindTransformsAttr().Get(&bind);
+        if (joints.empty() || bind.size() != joints.size()) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': a skeleton without a bind pose to hold",
+                               prim.GetPath().GetString());
+        }
+        VtMatrix4dArray rest;
+        if (!UsdSkelComputeJointLocalTransforms(UsdSkelTopology(joints), bind, &rest)) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': its bind transforms do not make local ones",
+                               prim.GetPath().GetString());
+        }
+        skeleton.GetRestTransformsAttr().Set(rest);
+        UsdSkelBindingAPI(prim).CreateAnimationSourceRel().SetTargets({});
+    }
+    return ok();
 }
 
 Result<void> StageRenderer::setDefaultLights(bool on) {

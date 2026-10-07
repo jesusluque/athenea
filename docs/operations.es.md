@@ -427,7 +427,7 @@ receta es §3.1.
 | `--catcher-margin` | número | `1.5` | con `--shadow-catcher`: hasta dónde pasa el parche de la huella del objeto, en alturas del objeto |
 | `--catcher-cell` | unidades del mundo | `0` | con `--shadow-catcher`: la celda del parche; 0 es una centésima de la altura del objeto |
 | `--transfer-lobes` | 0 a 2 | `0` | con `--transfer`: guardarlo como este número de lóbulos zonales en el marco propio de cada gaussiana (el bundle `SplatTransferZonal`); 0 es dos lóbulos con `--skinned` y nueve armónicos en el mundo en otro caso |
-| `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales |
+| `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales, trazado en la pose de bind (los esqueletos de la escena se fijan ahí en la capa de sesión) diga lo que diga `--time` |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
 | `--default-lights` | flag | apagado | un dome y un sol para el bake, en una escena sin luces |
 | `--time` | número | `0` | el instante en que se posa la escena y traza el bake |

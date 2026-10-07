@@ -266,14 +266,15 @@ athenea_m2s_output(two_cards_athc ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usd
 athenea_m2s_output(two_cards_usd ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
     --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.usda)
 # A corner a joint turns, its transfer kept as zonal lobes in each gaussian's
-# frame and baked at the pose of time 1 (the cloud posed there first); and the
+# frame and baked at the bind pose (the stage's skeleton held there, whatever
+# --time says, so the gaussians and the mesh are one shape); and the
 # same corner still, its transfer fitted with two lobes, which says the fit's
 # error against the nine harmonics.
 athenea_m2s_output(skinned_transfer ${CMAKE_CURRENT_SOURCE_DIR}/data/skinned_corner.usda --skinned --transfer
     --time 1 --bake-samples 64 --bake-extra 0 --bake-bounces 1 --resolution 32 --no-camera
     -o ${ATHENEA_M2S_OUTPUTS}/skinned_transfer.usda)
 set_tests_properties(mesh2splat_output_skinned_transfer PROPERTIES
-    PASS_REGULAR_EXPRESSION "posed at the bake's instant.*transfer kept as 2 zonal lobes")
+    PASS_REGULAR_EXPRESSION "held at the bind pose.*transfer kept as 2 zonal lobes")
 athenea_m2s_output(still_transfer_zonal ${CMAKE_CURRENT_SOURCE_DIR}/data/skinned_corner.usda --transfer
     --transfer-lobes 2 --bake-samples 64 --bake-extra 0 --bake-bounces 1 --resolution 32 --no-camera
     -o ${ATHENEA_M2S_OUTPUTS}/still_transfer_zonal.usda)

@@ -422,7 +422,7 @@ recipe is §3.1 below.
 | `--catcher-margin` | number | `1.5` | with `--shadow-catcher`: how far past the object's footprint the patch reaches, in heights of the object |
 | `--catcher-cell` | world units | `0` | with `--shadow-catcher`: the patch's cell; 0 is a hundredth of the object's height |
 | `--transfer-lobes` | 0 to 2 | `0` | with `--transfer`: keep it as this many zonal lobes in each gaussian's own frame (the `SplatTransferZonal` bundle); 0 is two lobes with `--skinned` and nine harmonics in the world otherwise |
-| `--skinned` | flag | off | carry the skeleton; forces `--no-bake`, keeps a `--transfer` as zonal lobes |
+| `--skinned` | flag | off | carry the skeleton; forces `--no-bake`, keeps a `--transfer` as zonal lobes, traced at the bind pose (the stage's skeletons held there in the session layer) whatever `--time` says |
 | `--range` | `START:END[:STEP]` | the stage's own range | time codes a skinned cloud keeps |
 | `--default-lights` | flag | off | a dome and a sun for the bake, on a stage with none |
 | `--time` | number | `0` | the instant the stage is posed and the bake traces at |

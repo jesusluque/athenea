@@ -293,6 +293,15 @@ public:
     /// the renderer through Hydra as authored ones do.
     [[nodiscard]] Result<void> setDefaultLights(bool on);
 
+    /// Every skeleton of the stage held at its bind pose, in the session
+    /// layer: no animation, and rest transforms that are the bind transforms
+    /// made local. A skinned cloud is built in the bind pose and keeps only
+    /// four influences a gaussian, so a bake that posed it to meet a mesh
+    /// skinned by all of its own (ten and twenty-five a vertex on the
+    /// sparrow's feathers) missed the surface wherever they disagree; at the
+    /// bind pose the two are the same shape. The file is not touched.
+    [[nodiscard]] Result<void> holdBindPose();
+
     /// The light this stage's meshes carry, at points somebody names.
     ///
     /// `rays` holds two `float4` a point -- where its ray starts and how near

@@ -2263,6 +2263,9 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     }
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
+    if (zonal != nullptr && !zonal->xforms.empty()) {
+        ATHENEA_TRY((*renderer)->holdBindPose());
+    }
     // Degree 2: nine coefficients hold the irradiance of any environment to
     // about a percent, and a transfer is exactly that shape.
     // Degree 3 for a TX transfer (--transfer-degree): sixteen and forty-eight.
@@ -2509,8 +2512,8 @@ Result<gpu::Buffer> Converter::framesForBake(const ZonalTransfer& zonal) {
         cursor["io"]["stride"].setData(uint32_t{1});
     });
     ATHENEA_TRY(batch.submit(true));
-    std::printf("mesh2splat: the cloud posed at the bake's instant (%u gaussians, %zu joints) so the transfer is "
-                "traced on the pose the stage holds\n",
+    std::printf("mesh2splat: the cloud and the stage's skeletons held at the bind pose (%u gaussians, %zu joints) "
+                "for the transfer's bake\n",
                 rest->count, zonal.xforms.size() / 16);
     return std::move(*posedShape);
 }
@@ -2779,7 +2782,7 @@ void addMesh2Splat(CLI::App& app) {
                   "lights of its own (what athenea view offers)");
     cmd->add_option("--time", o->time,
                     "the USD time code the stage is read at: the pose that becomes gaussians, "
-                    "and the instant the bake traces. A skinned stage is posed for it");
+                    "and the instant the bake traces; a skinned transfer is traced at the bind pose");
     cmd->add_option("--path", o->paths, "extra AOFX bundle directories");
     cmd->callback([o] {
         if (o->density != "per-model" && o->density != "per-mesh") {
@@ -2993,8 +2996,8 @@ void addMesh2Splat(CLI::App& app) {
                     //
                     // As zonal lobes in each gaussian's own frame where they are
                     // asked for or where a skeleton turns the gaussians; then
-                    // a skinned cloud is posed at `--time`, the instant the
-                    // bake traces, before it is.
+                    // a skinned cloud is traced at its bind pose, the stage's
+                    // skeletons held there for the bake.
                     std::optional<ZonalTransfer> zonal;
                     if (lobes > 0) {
                         zonal.emplace();
@@ -3006,9 +3009,17 @@ void addMesh2Splat(CLI::App& app) {
                                 if (!one.skinning.bound) {
                                     continue;
                                 }
-                                auto at = (*stage).skeletonTransforms(one.skinning.skeleton, {o->time});
-                                if (!at) return std::move(at).error();
-                                zonal->xforms = std::move(*at);
+                                // Traced at the bind pose (StageRenderer::holdBindPose),
+                                // where every joint's skinning transform is the
+                                // identity.
+                                auto joints = (*stage).joints(one.skinning.skeleton);
+                                if (!joints) return std::move(joints).error();
+                                zonal->xforms.assign(joints->size() * 16, 0.0F);
+                                for (size_t j = 0; j < joints->size(); ++j) {
+                                    for (size_t d = 0; d < 4; ++d) {
+                                        zonal->xforms[j * 16 + d * 5] = 1.0F;
+                                    }
+                                }
                                 zonal->geomBind = one.skinning.geomBindTransform;
                                 break;
                             }

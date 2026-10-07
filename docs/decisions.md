@@ -13250,3 +13250,27 @@ would hide this branch's own regressions -- and the hollow's always holds.
   (`coatDarkening`); it is sampled only where the coat colour is not white.
 - The specular colour, the sheen and the transmission colour are not read
   back; nothing in the examples computes them.
+
+## A skinned transfer is traced at the bind pose
+
+`--skinned --transfer` posed the cloud at `--time` with its four influences a
+gaussian and traced the stage there, the mesh skinned by all of its own. The
+sparrow's feathers carry ten a vertex and its wings twenty-five, so wherever
+the four and the whole disagreed the bake's ray from a gaussian missed its
+surface, and a transfer of nothing is written transparent: 566 603 of
+1 504 160 gaussians (the feathers' edges, the wing tips, the tail) came out
+with opacity 0, and the web viewer drew the plumage as loose dots. The same
+stage converted still at frame 16 found the surface for 1 559 010 of
+1 559 047; skinned, 937 669 at frame 1 and 883 334 at frame 16.
+
+The bake now holds the stage's skeletons at their bind pose in the session
+layer (`StageRenderer::holdBindPose`: no animation, rest transforms the bind
+transforms made local) and poses the cloud with identity skinning transforms,
+which is where it was built. On the sparrow: 1 504 156 of 1 504 160 found (8
+paths each). The zonal lobes live in each gaussian's frame, so a transfer
+traced at the bind pose turns with the bone like one traced at any other; what
+changes is which pose's self-shadowing it holds, the bind pose's (the wings
+spread) instead of `--time`'s. `--time` still says the instant of everything
+else. Not done: a cloud with more than four influences a gaussian (P014C),
+which would also make its animation the mesh's to the millimetre at the wing
+tips.
