@@ -110,10 +110,15 @@ Result<ShadowCatcherStage> writeShadowCatcherStage(const std::filesystem::path& 
     // rather than the ground.
     const int a = 0;
     const int b = up == 2 ? 1 : 2;
-    const double reach = options.margin * height;
+    // Along the object's longer horizontal axis a light catcher reaches
+    // further: `reachLong` of its lengths past either end.
+    const int along = objectBox.GetSize()[a] >= objectBox.GetSize()[b] ? a : b;
     double lo[3] = {0, 0, 0};
     double hi[3] = {0, 0, 0};
     for (const int k : {a, b}) {
+        const double reach = k == along && options.reachLong > 0.0
+                                 ? std::max(options.margin * height, options.reachLong * objectBox.GetSize()[k])
+                                 : options.margin * height;
         lo[k] = objectBox.GetMin()[k] - reach;
         hi[k] = objectBox.GetMax()[k] + reach;
         if (!groundBox.IsEmpty()) {
@@ -127,7 +132,7 @@ Result<ShadowCatcherStage> writeShadowCatcherStage(const std::filesystem::path& 
     // A GRID OF QUADS, about 64 cells a side each: a conversion walks a
     // triangle's cells up to --max-cells, and two triangles over the
     // Corvette's 6 x 8 m left a third of the patch unsampled.
-    const double cell = options.cell > 0.0 ? options.cell : height / 100.0;
+    const double cell = options.cell > 0.0 ? options.cell : height / std::max(options.cellsPerHeight, 1.0);
     const double across = std::max(hi[a] - lo[a], hi[b] - lo[b]);
     const uint32_t quads =
         static_cast<uint32_t>(std::clamp(std::ceil(across / std::max(cell * 64.0, 1.0e-9)), 1.0, 256.0));
@@ -158,7 +163,7 @@ Result<ShadowCatcherStage> writeShadowCatcherStage(const std::filesystem::path& 
     text << "    metersPerUnit = " << UsdGeomGetStageMetersPerUnit(stage) << "\n";
     text << "    upAxis = \"" << (up == 2 ? "Z" : "Y") << "\"\n";
     text << "    subLayers = [@" << std::filesystem::absolute(source).string() << "@]\n)\n\n";
-    text << "def Xform \"AtheneaShadowCatcher\"\n{\n";
+    text << "def Xform \"" << options.root << "\"\n{\n";
     text << "    def Mesh \"Patch\" (\n        prepend apiSchemas = [\"MaterialBindingAPI\"]\n    )\n    {\n";
     text << "        uniform bool doubleSided = 1\n";
     text << "        float3[] extent = [" << point(0, 0) << ", " << point(quads, quads) << "]\n";
@@ -201,16 +206,16 @@ Result<ShadowCatcherStage> writeShadowCatcherStage(const std::filesystem::path& 
     }
     ShadowCatcherStage made;
     made.stage = into;
-    made.prim = "/AtheneaShadowCatcher/Patch";
+    made.prim = "/" + options.root + "/Patch";
     made.ground = ground.GetPath().GetString();
     made.height = height;
     made.cell = cell;
     made.quads = quads;
     made.min = {lo[0], lo[1], lo[2]};
     made.max = {hi[0], hi[1], hi[2]};
-    log::info("shadow catcher: {} on {}, {:.3f} x {:.3f} at {:.4f} ({:.3f} high, {:.2f} heights around), "
+    log::info("{}: {} on {}, {:.3f} x {:.3f} at {:.4f} ({:.3f} high, {:.2f} heights around), "
               "{} x {} quads for a cell of {:.4g}",
-              objectPath.GetString(), made.ground, hi[a] - lo[a], hi[b] - lo[b], level, height, options.margin, quads,
+              options.root, objectPath.GetString(), made.ground, hi[a] - lo[a], hi[b] - lo[b], level, height, options.margin, quads,
               quads, cell);
     return made;
 }

@@ -44,6 +44,18 @@ struct ShadowCatcherOptions {
     /// of the object's height. The patch is a grid of quads about 64 cells a
     /// side each, so no triangle walks more cells than a conversion takes.
     double      cell = 0.0;
+    /// What a `cell` of 0 divides the object's height by: 100 for a shadow,
+    /// whose edge is sharp under a sun; a light catcher's light is smooth.
+    double      cellsPerHeight = 100.0;
+    /// HOW FAR ALONG THE OBJECT'S LONGER HORIZONTAL AXIS THE PATCH REACHES,
+    /// past either end, in lengths of the object along that axis; 0 is
+    /// `margin` heights, as across. A light catcher's (`athenea mesh2splat
+    /// --light-catcher`): a car's low beam lights the road metres ahead and
+    /// its tail lamps the road behind.
+    double      reachLong = 0.0;
+    /// The Xform the patch is written under: a shadow catcher's, or a light
+    /// catcher's.
+    std::string root = "AtheneaShadowCatcher";
 };
 
 struct ShadowCatcherStage {

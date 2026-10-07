@@ -252,8 +252,16 @@ struct Options {
     bool                     shadowCatcher = false;
     std::string              catcherGround;
     double                   catcherMargin = 1.5;
-    /// The catcher's cell, world units; 0 is a hundredth of the object's height.
+    /// The catcher's cell, world units; 0 is a hundredth of the object's height
+    /// (a thirtieth for a light catcher, whose light is smooth).
     double                   catcherCell = 0.0;
+    /// THE LAMPS' LIGHT ON THE GROUND AS GAUSSIANS: the same patch, reaching
+    /// `lightReach` of the object's lengths ahead and behind, baked as the
+    /// radiance it sends out under the stage's lights and written as a light
+    /// catcher -- added over whatever is drawn (docs/decisions.md, light
+    /// groups). One per group, with the group alone lit, makes its layers.
+    bool                     lightCatcher = false;
+    double                   lightReach = 3.0;
 };
 
 /// One map the conversion reads, as a picture. Several materials name the same
@@ -2705,13 +2713,21 @@ void addMesh2Splat(CLI::App& app) {
                   "convert the shadow --prim casts on its ground instead of --prim itself: a layer of gaussians "
                   "on the ground under and around it, baked as a transfer (the object and the ground are what "
                   "its rays meet) and drawn black, covering what the object takes of the light");
+    cmd->add_flag("--light-catcher", o->lightCatcher,
+                  "convert the light the stage's lamps throw on --prim's ground instead of --prim itself: the "
+                  "same patch, reaching --light-reach ahead and behind, baked as the radiance it sends out and "
+                  "drawn added over whatever is behind it");
+    cmd->add_option("--light-reach", o->lightReach,
+                    "--light-catcher: how far past the object's ends, along its longer axis, the patch reaches, in "
+                    "its lengths");
     cmd->add_option("--catcher-ground", o->catcherGround,
-                    "--shadow-catcher: the ground prim (found by itself: the largest flat mesh outside --prim "
+                    "--shadow-catcher, --light-catcher: the ground prim (found by itself: the largest flat mesh outside --prim "
                     "whose top is at its bottom)");
     cmd->add_option("--catcher-margin", o->catcherMargin,
-                    "--shadow-catcher: how far past the object's footprint the catcher reaches, in its heights");
+                    "--shadow-catcher, --light-catcher: how far past the object's footprint the catcher reaches, in its heights");
     cmd->add_option("--catcher-cell", o->catcherCell,
-                    "--shadow-catcher: the catcher's cell, world units (0: a hundredth of the object's height)");
+                    "--shadow-catcher, --light-catcher: the catcher's cell, world units (0: a hundredth of the "
+                    "object's height; a thirtieth for a light catcher)");
     cmd->add_option("--validate", o->validate,
                     "measure the conversion material by material against the stage path traced, into this "
                     "directory: a table (validate.json) and GT, mesh and cloud side by side for each");
@@ -2812,9 +2828,22 @@ void addMesh2Splat(CLI::App& app) {
         // THE SHADOW CATCHER: the stage again with a patch on the ground, and
         // that patch is what is converted -- as a transfer, at a cell of its
         // own -- the object staying in the stage as what the rays meet.
-        if (o->shadowCatcher) {
+        // THE LIGHT CATCHER: the same patch, further along the object, baked
+        // as the light it sends out rather than as a transfer -- the lamps'
+        // light on the ground, which the frame adds.
+        if (o->shadowCatcher && o->lightCatcher) {
+            std::fprintf(stderr, "--shadow-catcher and --light-catcher are two conversions: ask for one\n");
+            throw CLI::RuntimeError(1);
+        }
+        if (o->shadowCatcher || o->lightCatcher) {
             if (o->prim.empty()) {
-                std::fprintf(stderr, "--shadow-catcher needs --prim: the object whose shadow is caught\n");
+                std::fprintf(stderr, "%s needs --prim: the object whose %s is caught\n",
+                             o->lightCatcher ? "--light-catcher" : "--shadow-catcher",
+                             o->lightCatcher ? "lamps' light" : "shadow");
+                throw CLI::RuntimeError(1);
+            }
+            if (o->lightCatcher && o->transfer) {
+                std::fprintf(stderr, "--light-catcher bakes the light the ground sends out: drop --transfer\n");
                 throw CLI::RuntimeError(1);
             }
             usd::ShadowCatcherOptions catcher;
@@ -2822,6 +2851,11 @@ void addMesh2Splat(CLI::App& app) {
             catcher.ground = o->catcherGround;
             catcher.margin = o->catcherMargin;
             catcher.cell = o->catcherCell;
+            if (o->lightCatcher) {
+                catcher.reachLong = o->lightReach;
+                catcher.cellsPerHeight = 30.0;
+                catcher.root = "AtheneaLightCatcher";
+            }
             const std::filesystem::path out(o->output);
             const std::filesystem::path catcherStage =
                 out.parent_path() / (out.stem().string() + "_catcher_stage.usda");
@@ -2831,14 +2865,17 @@ void addMesh2Splat(CLI::App& app) {
             }
             o->stage = made->stage.string();
             o->prim = made->prim;
-            o->transfer = true;
+            // A shadow is a transfer -- what the object takes of any sky --
+            // and the lamps' light is light, baked as it stands.
+            o->transfer = o->shadowCatcher;
+            o->bake = o->bake || o->lightCatcher;
             o->density = "per-mesh";
             o->cellFromCamera.clear();
             const double cell = made->cell;
             o->cellMin = cell;
             o->cellMax = cell;
-            std::printf("mesh2splat: the shadow catcher of %s on %s, a cell of %.4g\n", catcher.object.c_str(),
-                        made->ground.c_str(), cell);
+            std::printf("mesh2splat: the %s catcher of %s on %s, a cell of %.4g\n",
+                        o->lightCatcher ? "light" : "shadow", catcher.object.c_str(), made->ground.c_str(), cell);
         }
         gpu_host::Context* context = gpu_host::installProcessContext();
         if (context == nullptr || context->compute() == nullptr) {
@@ -3131,6 +3168,7 @@ void addMesh2Splat(CLI::App& app) {
                 // body and the frame adds only the polish.
                 options.litBody = o->bake && !o->transfer;
                 options.catcher = o->shadowCatcher;
+                options.lightCatcher = o->lightCatcher;
                 // Light, all of it: the albedo, the transfer's and the bake's.
                 options.linear = true;
                 // The matte's ancestry, gaussian by gaussian, as the conversion
