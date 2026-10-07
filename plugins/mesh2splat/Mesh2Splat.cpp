@@ -763,7 +763,8 @@ public:
         return {aofx::KernelDesc{"m2sClear", "m2sClear", k_mesh2splat, k_mesh2splatBytes},
                 aofx::KernelDesc{"m2sCount", "m2sCount", k_mesh2splat, k_mesh2splatBytes},
                 aofx::KernelDesc{"m2sScan", "m2sScan", k_mesh2splat, k_mesh2splatBytes},
-                aofx::KernelDesc{"m2sEmit", "m2sEmit", k_mesh2splat, k_mesh2splatBytes}};
+                aofx::KernelDesc{"m2sEmit", "m2sEmit", k_mesh2splat, k_mesh2splatBytes},
+                aofx::KernelDesc{"m2sMeasure", "m2sMeasure", k_mesh2splat, k_mesh2splatBytes}};
     }
 
     bool process(const aofx::RenderRequest& request) override {
