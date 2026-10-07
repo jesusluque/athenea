@@ -382,6 +382,7 @@ recipe is §3.1 below.
 | `--cell-from-camera` | camera prim path | none | each mesh's cell is what one pixel of that camera covers where the mesh's box is nearest to it (held to the near plane), at `--time`; replaces `--density`. `--cell-min`/`--cell-max` bound it, given; nothing is derived |
 | `--camera-pixels` | integer, 1 to 65536 | `1920` | with `--cell-from-camera`: pixels across the camera's horizontal aperture |
 | `--refine-metal` | `auto` \| `off` \| number, 1 to 16 | `auto` (4) | the most a sharp reflector's cell is made finer where its normal turns under it: metallic or specular weight at least 0.5, base roughness under 0.2, no transmission; the cell is made finer until three quarters of the piece's area turns by at most four lobes (roughness², at least 0.02) a cell. A number is the most; `off` keeps every cell |
+| `--refine-glass` | `auto` \| `off` \| number, 1 to 16 | `auto` (4) | the same as `--refine-metal`, for a clear glass: transmission over 0, base roughness under 0.2 (a headlight's cover, a lens); a frosted glass keeps its cell |
 | `--refine-texture` | `auto` \| `off` \| number, 1 to 16 | `auto` (4) | the most a piece's cell is made finer where its albedo map moves across a cell (its brightness, the root of its luminance, spreading by over 0.02 on at least a tenth of the area): down to two texels of the map |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
 | `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
@@ -654,19 +655,21 @@ that cell. A free camera that is not in the stage is not known to the
 conversion, so this is an option and not the default. With `--lod-levels`,
 level *n* walks a pixel 2^*n* wide.
 
-**Finer where the surface asks.** Two rules make a piece's cell finer, each
-at most four times (`--refine-metal`, `--refine-texture`), with or without a
-camera, and are on by default. A sharp reflector -- metallic or specular,
+**Finer where the surface asks.** Three rules make a piece's cell finer, each
+at most four times (`--refine-metal`, `--refine-glass`, `--refine-texture`),
+with or without a camera, and are on by default. A sharp reflector -- metallic or specular,
 base roughness under 0.2, not glass, the coat not asked -- whose normal turns
 under a cell gets a cell over which three quarters of its area turns by at
 most four lobes, a lobe being roughness² (0.02 at least): chrome trim, a
-badge, a lamp's reflector. An albedo map that moves across a cell -- its
+badge, a lamp's reflector. A clear glass -- transmitting, base roughness
+under 0.2 -- is specular too and gets the same cell for the same turn: a
+headlight's cover, a lens; a frosted glass does not. An albedo map that moves across a cell -- its
 brightness spreading by more than 0.02 on a tenth of the piece at least --
 gets a cell of two texels: a decal's letters, not a brushed metal's grain.
 A paint, a rough metal, a plain map keep their cell exactly. The finer cell
 still respects `--cell-min`, and the budget coarsens it like any other. Each
 piece's log line says what it got and why (`refined x4.00 for its curvature:
-...`); `off` for both is the conversion as it was.
+...`); `off` for all three is the conversion as it was.
 
 **Textures.** Each map travels to the device as float4, sixteen bytes a texel,
 so a 4k map is 268 MB and a car with fifteen of them does not fit. The

@@ -64,7 +64,7 @@ struct CellParams {
     float  sharpRoughness; ///< a base roughness this or rougher is not sharp
     float  detailShare;    ///< the share of the area that must be busy
     float  coarsen;        ///< a level of detail's: the camera's cell this many times coarser
-    float  pad2;
+    float  refineGlass;    ///< the same as refineMetal, for a sharp glass
 };
 
 /// The measures a piece, as the effect attaches them (`m2sMeasure`).
@@ -159,6 +159,15 @@ void m2sCells(uint3 tid: SV_DispatchThreadID) {
         const float alpha = max(look.x * look.x, params.alphaMin);
         byMetal = clamp(turn / (params.turnPerLobe * alpha), 1.0, params.refineMetal);
     }
+    // Glass is specular too: what it reflects and what it bends sweep across
+    // a gaussian as its normal turns, so a clear glass that turns under a
+    // cell walks the same finer cell (a frosted one, rough, does not).
+    float byGlass = 1.0;
+    const bool glass = look.w > 0.0 && look.x < params.sharpRoughness;
+    if (params.refineGlass > 1.0 && glass && turn > 0.0) {
+        const float alpha = max(look.x * look.x, params.alphaMin);
+        byGlass = clamp(turn / (params.turnPerLobe * alpha), 1.0, params.refineGlass);
+    }
     const float all = measures[at + kWeightAt];
     const float busy = all > 0.0 ? measures[at + kDetailAt] / all : 0.0;
     const float texel = quantileOf(at + kTexelAt, 0.5);
@@ -166,7 +175,7 @@ void m2sCells(uint3 tid: SV_DispatchThreadID) {
     if (params.refineTexture > 1.0 && busy >= params.detailShare && texel > 0.0) {
         byTexture = clamp(0.5 / texel, 1.0, params.refineTexture);
     }
-    const float refine = max(byMetal, byTexture);
+    const float refine = max(max(byMetal, byGlass), byTexture);
     const float cellUnrefined = cell;
     if (refine > 1.0) {
         cell /= refine;
@@ -181,6 +190,7 @@ void m2sCells(uint3 tid: SV_DispatchThreadID) {
     cells[3 + 8 * n + p] = turn;
     cells[3 + 9 * n + p] = texel;
     cells[3 + 10 * n + p] = busy;
+    cells[3 + 11 * n + p] = byGlass;
 
     const uint want = wanted[p];
     const uint given = share[p];

@@ -240,12 +240,12 @@ set_tests_properties(mesh2splat_density_per-mesh PROPERTIES
     PASS_REGULAR_EXPRESSION "/World/Small -> [1-9][0-9][0-9]+ splats of")
 
 # FINER WHERE THE SURFACE ASKS (mesh2splat_cells): of a curved strip as chrome,
-# as a rough metal and as a coated paint, a flat chrome card and two textured
-# cards, only the chrome strip (for its curvature) and the fine checker (for
-# its texture) walk a finer cell; the rest keep theirs to the bit. With the
-# rules off nothing is refined. The log line of each piece says what it got.
+# as a rough metal, as a coated paint, as a clear and as a frosted glass, a flat
+# chrome card and two textured cards, only the chrome and clear glass strips
+# (for their curvature) and the fine checker (for its texture) walk a finer
+# cell; the rest keep theirs to the bit. With the rules off nothing is refined. The log line of each piece says what it got.
 set(ATHENEA_REFINE_STAGE ${CMAKE_CURRENT_SOURCE_DIR}/data/density/refine.usda)
-foreach(rule chrome decal keeps)
+foreach(rule chrome glass decal keeps)
     add_test(NAME mesh2splat_refine_${rule}
         COMMAND athenea mesh2splat ${ATHENEA_REFINE_STAGE} --no-bake --no-camera --resolution 64
                 -o ${CMAKE_CURRENT_BINARY_DIR}/refine_${rule}.usda)
@@ -255,14 +255,17 @@ foreach(rule chrome decal keeps)
 endforeach()
 set_tests_properties(mesh2splat_refine_chrome PROPERTIES
     PASS_REGULAR_EXPRESSION "ChromeStrip -> [^)]*refined x[1-9][.][0-9]+ for its curvature")
+set_tests_properties(mesh2splat_refine_glass PROPERTIES
+    PASS_REGULAR_EXPRESSION "GlassStrip -> [^)]*refined x[1-9][.][0-9]+ for its curvature: a sharp glass")
 set_tests_properties(mesh2splat_refine_decal PROPERTIES
     PASS_REGULAR_EXPRESSION "Decal -> [^)]*refined x[1-9][.][0-9]+ for its texture")
 set_tests_properties(mesh2splat_refine_keeps PROPERTIES
     PASS_REGULAR_EXPRESSION "wrote .*refine_keeps.usda"
-    FAIL_REGULAR_EXPRESSION "(RoughStrip|PaintPanel|FlatChrome|PlainDecal) -> [^)]*refined")
+    FAIL_REGULAR_EXPRESSION "(RoughStrip|PaintPanel|FlatChrome|PlainDecal|FrostedStrip) -> [^)]*refined")
 add_test(NAME mesh2splat_refine_off
     COMMAND athenea mesh2splat ${ATHENEA_REFINE_STAGE} --no-bake --no-camera --resolution 64
-            --refine-metal off --refine-texture off -o ${CMAKE_CURRENT_BINARY_DIR}/refine_off.usda)
+            --refine-metal off --refine-texture off --refine-glass off
+            -o ${CMAKE_CURRENT_BINARY_DIR}/refine_off.usda)
 set_tests_properties(mesh2splat_refine_off PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     PASS_REGULAR_EXPRESSION "wrote .*refine_off.usda"

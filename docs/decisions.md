@@ -10560,22 +10560,52 @@ floor, so not refined). The estimate does not see that a badge's triangles
 stay at one gaussian each past a cell of their size; the counts the
 conversion logs are the measure.
 
+**Glass is specular too (a third rule, `--refine-glass`).** The headlight
+close-up barely moved under the first two (relMSE 0.355 to 0.350 against the
+2048-path frame): its cover and lenses are clear glass (Glass_Headlight,
+Glass_Clear: transmission 1, roughness 0), outside the reflector rule, and
+what they reflect and bend is what the frame lost. A clear glass -- any
+transmission, base roughness under 0.2 -- now walks the cell the reflector
+rule would give it for the same turn, four lobes of roughness² (0.02 at
+least) over three quarters of its area, at most four times finer. A frosted
+glass (Glass_Red_Blured, 0.4) and Glass_Orange_Bump (0.2) keep their cell.
+The log says `a sharp glass` where this rule decided. Measured on the headlights alone (the rest of the car hidden from the conversion, the bake still tracing it): only Main_Lens is refined (x1.31); the cover bends too gently for a 2 mm cell, and the close-up stays at 0.350. What the headlight lacks is not density but the sharpness of what the cover reflects and shows through it. Tested by the same strip
+as a clear glass (refined) and as a frosted one (kept), `mesh2splat_refine_glass`
+and `_keeps`.
+
 **Levels of detail from a camera were all the first.** `--lod-levels` halves
 `--resolution` a level, and a camera's cell never read the resolution, so
 every level was the same cloud. A level's camera cell is now the pixel 2^level
 wide (`coarsen`, set by the levels' loop), and the log says so.
 
 Tests (`tests/data/density/refine.usda`: a half-cylinder strip of radius 1 cm
-as chrome, as a rough metal and as a coated paint, a flat chrome card, a card
+as chrome, as a rough metal, as a coated paint and as a clear and a frosted
+glass, a flat chrome card, a card
 with a fine checker and one with plain grey): the chrome strip and the
 checker are refined, nothing else is (`mesh2splat_refine_chrome`, `_decal`,
 `_keeps`), nothing is with both rules off (`_off`), and levels of detail from
 a camera say their wider pixel (`mesh2splat_lod_from_camera`).
 
-**Not measured yet** (GPU turn, `~/luc/athenea-gpu/gpu_d1.sh`): the car
-before and after at four close-up cameras (front logo, headlight, front-left
-wheel, the chrome bar) against 2048-path frames at 1024 px, the counts per
-group, and the gate against s95. **Not done:** a sub-cell triangle's gaussian
+**Measured** (the metal and texture rules, `~/luc/athenea-gpu/gpu_d1.sh`): the
+car before and after at four close-up cameras against 2048-path frames at
+1024 px, relMSE and the mean of the frame's middle against the trace's:
+
+| close-up | relMSE before | after | middle before | after | traced |
+|---|---|---|---|---|---|
+| front logo | 1.005 | 0.240 | 0.146 | 0.080 | 0.059 |
+| headlight | 0.355 | 0.350 | 0.130 | 0.130 | 0.136 |
+| front-left wheel | 0.0182 | 0.0163 | 0.0112 | 0.0107 | 0.0111 |
+| chrome bar | 0.168 | 0.065 | 0.025 | 0.0185 | 0.0185 |
+
+14 705 297 gaussians became 14 977 717 (+1.9 %, not the estimate's +13 %:
+most refined triangles stay one gaussian each): chrome x2.12, logos x1.28,
+headlights x1.29; paint, rims and Metal_rough the same clouds. The TX
+balls' gate gives s95's numbers to the digit; the Corvette's per-material gate
+does not: Chrome 0.53 to 1.66 (first 0.55 to 1.44), the rest identical. 82 % of
+that error is some twenty pixels of the side emblem's flagpole, drawn 3 to 4.5
+where the trace has 0.05 to 0.1: its sliver triangles, each finer than the
+cell, become discs as wide as their longest edge, and refining makes more of
+them. Not pushed for that. **Not done:** a sub-cell triangle's gaussian
 is still a disc as wide as its longest edge, and the specular filter still
 multiplies the fastest turn by the wider size; on slivers both blur what a
 finer cell cannot reach (the analysis's R1 and R2).

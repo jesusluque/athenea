@@ -387,6 +387,7 @@ receta es §3.1.
 | `--cell-from-camera` | ruta de un prim cámara | ninguna | la celda de cada malla es lo que cubre un píxel de esa cámara donde la caja de la malla le queda más cerca (como poco el plano cercano), en `--time`; sustituye a `--density`. `--cell-min`/`--cell-max` la acotan, si se dan; no se deriva nada |
 | `--camera-pixels` | entero, de 1 a 65536 | `1920` | con `--cell-from-camera`: píxeles a lo ancho de la apertura horizontal de la cámara |
 | `--refine-metal` | `auto` \| `off` \| número, de 1 a 16 | `auto` (4) | lo más que se afina la celda de un reflector nítido donde su normal gira bajo ella: metálico o con peso especular de al menos 0.5, rugosidad base por debajo de 0.2, sin transmisión; la celda se afina hasta que tres cuartos del área de la pieza giran como mucho cuatro lóbulos (rugosidad², al menos 0.02) por celda. Un número es el máximo; `off` deja todas las celdas como están |
+| `--refine-glass` | `auto` \| `off` \| número, de 1 a 16 | `auto` (4) | lo mismo que `--refine-metal`, para un vidrio transparente: transmisión por encima de 0, rugosidad base por debajo de 0.2 (la tapa de un faro, una lente); un vidrio esmerilado deja su celda como está |
 | `--refine-texture` | `auto` \| `off` \| número, de 1 a 16 | `auto` (4) | lo más que se afina la celda de una pieza donde su mapa de albedo se mueve dentro de una celda (su brillo, la raíz de su luminancia, se dispersa más de 0.02 en al menos una décima del área): hasta dos texels del mapa |
 | `--sigma` | número | `1.0` | anchura de la gaussiana en celdas; la de mesh2splat es 0.65 |
 | `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos |
@@ -663,14 +664,16 @@ está en la escena no la conoce la conversión, así que es una opción y no lo
 de por defecto. Con `--lod-levels`, el nivel *n* recorre un píxel 2^*n* veces
 más ancho.
 
-**Más fina donde la superficie lo pide.** Dos reglas afinan la celda de una
-pieza, cada una como mucho cuatro veces (`--refine-metal`,
+**Más fina donde la superficie lo pide.** Tres reglas afinan la celda de una
+pieza, cada una como mucho cuatro veces (`--refine-metal`, `--refine-glass`,
 `--refine-texture`), con cámara o sin ella, y están activas por defecto. Un
 reflector nítido -- metálico o especular, rugosidad base por debajo de 0.2,
 que no es vidrio, sin mirar el barniz -- cuya normal gira bajo una celda
 recibe una celda en la que tres cuartos de su área giran como mucho cuatro
 lóbulos, siendo un lóbulo rugosidad² (como poco 0.02): molduras cromadas, un
-emblema, el reflector de un faro. Un mapa de albedo que se mueve dentro de una
+emblema, el reflector de un faro. Un vidrio transparente -- que transmite,
+con rugosidad base por debajo de 0.2 -- también es especular y recibe la misma
+celda por el mismo giro: la tapa de un faro, una lente; uno esmerilado no. Un mapa de albedo que se mueve dentro de una
 celda -- su brillo se dispersa más de 0.02 en al menos una décima de la pieza
 -- recibe una celda de dos texels: las letras de una calcomanía, no el grano
 de un metal cepillado. Una pintura, un metal rugoso o un mapa liso conservan

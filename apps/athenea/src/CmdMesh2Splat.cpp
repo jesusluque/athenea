@@ -150,12 +150,14 @@ struct Options {
     /// halved for a box.
     double                   lodCoarsen = 1.0;
     /// FINER WHERE THE SURFACE ASKS (mesh2splat_cells): a sharp reflector
-    /// whose normal turns under a cell, and an albedo that moves across one.
-    /// "auto" (the most a cell is made finer: 4), "off", or that most as a
-    /// number; parsed into the two below.
+    /// whose normal turns under a cell -- a metal or a clear glass -- and an
+    /// albedo that moves across one. "auto" (the most a cell is made finer:
+    /// 4), "off", or that most as a number; parsed into the three below.
     std::string              refineMetal = "auto";
     std::string              refineTexture = "auto";
+    std::string              refineGlass = "auto";
     double                   refineMetalMost = 4.0;
+    double                   refineGlassMost = 4.0;
     double                   refineTextureMost = 4.0;
     // Their 0.65 is the width they chose for their own renderer; traced here
     // it leaves a converted surface 30% transparent (docs/decisions.md has
@@ -367,7 +369,7 @@ public:
     /// is busy where its brightness spreads by 0.02 across a cell, over a
     /// tenth of the piece's area at least.
     static constexpr uint32_t kMeasureWords = 50;
-    static constexpr uint32_t kCellRows = 11;
+    static constexpr uint32_t kCellRows = 12;
     static constexpr float    kTurnPerLobe = 4.0F;
     static constexpr float    kAlphaMin = 0.02F;
     static constexpr float    kSharpRoughness = 0.2F;
@@ -390,12 +392,14 @@ public:
         const size_t n = pieces_.size();
         const double byMetal = static_cast<double>(cellValues_[3 + 6 * n + p]);
         const double byTexture = static_cast<double>(cellValues_[3 + 7 * n + p]);
+        const double byGlass = static_cast<double>(cellValues_[3 + 11 * n + p]);
         char said[256];
-        if (byMetal >= byTexture) {
+        if (std::max(byMetal, byGlass) >= byTexture) {
             std::snprintf(said, sizeof(said),
-                          ", refined x%.2f for its curvature: a sharp reflector (roughness %.2f) whose normal turns "
+                          ", refined x%.2f for its curvature: a sharp %s (roughness %.2f) whose normal turns "
                           "%.3g rad a cell over a quarter of it",
-                          finer, static_cast<double>(pieces_[p].material->roughness),
+                          finer, byGlass > byMetal ? "glass" : "reflector",
+                          static_cast<double>(pieces_[p].material->roughness),
                           static_cast<double>(cellValues_[3 + 8 * n + p]));
         } else {
             std::snprintf(said, sizeof(said),
@@ -893,6 +897,7 @@ public:
             c["camera"].setData(camera_ ? 1u : 0u);
             c["refineMetal"].setData(static_cast<float>(options_->refineMetalMost));
             c["refineTexture"].setData(static_cast<float>(options_->refineTextureMost));
+            c["refineGlass"].setData(static_cast<float>(options_->refineGlassMost));
             c["turnPerLobe"].setData(kTurnPerLobe);
             c["alphaMin"].setData(kAlphaMin);
             c["sharpRoughness"].setData(kSharpRoughness);
@@ -1163,7 +1168,8 @@ public:
         // busy its albedo is there. `mesh2splat_cells` makes the cell of a
         // sharp reflector that turns, and of a busy map, finer; those pieces
         // are counted again at their new cell before the budget is shared.
-        const bool refining = options_->refineMetalMost > 1.0 || options_->refineTextureMost > 1.0;
+        const bool refining =
+            options_->refineMetalMost > 1.0 || options_->refineTextureMost > 1.0 || options_->refineGlassMost > 1.0;
         uint64_t total = 0;
         for (size_t k = 0; k < pieces; ++k) {
             if (triangles_[k] == 0 || coversNothing(*pieces_[k].material)) {
@@ -2784,6 +2790,9 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_option("--refine-metal", o->refineMetal,
                     "a finer cell for a sharp reflector whose normal turns under one (metallic or specular, "
                     "base roughness under 0.2, no glass): auto, off, or the most it is made finer");
+    cmd->add_option("--refine-glass", o->refineGlass,
+                    "the same for a clear glass (transmitting, base roughness under 0.2) whose normal turns under "
+                    "a cell: auto, off, or the most it is made finer");
     cmd->add_option("--refine-texture", o->refineTexture,
                     "a finer cell, down to two texels, where the albedo map moves across one: auto, off, or "
                     "the most it is made finer");
@@ -2937,6 +2946,7 @@ void addMesh2Splat(CLI::App& app) {
         };
         o->refineMetalMost = most(o->refineMetal, "--refine-metal");
         o->refineTextureMost = most(o->refineTexture, "--refine-texture");
+        o->refineGlassMost = most(o->refineGlass, "--refine-glass");
         // WHAT A .ATHC CAN CARRY: the gaussians -- position, opacity, sizes,
         // rotation, harmonics -- and the shading normal. It has no room for
         // a rig, a transfer, the material a relit cloud reflects with, the

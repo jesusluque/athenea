@@ -19,6 +19,7 @@ compile_commands.json
 *.usda
 !modules/usd/schemas/*.usda
 !tests/data/*.usda
+!tests/data/density/*.usda
 *.fbx
 *.blend
 *.blend[0-9]
