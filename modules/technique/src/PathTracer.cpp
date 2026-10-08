@@ -245,13 +245,25 @@ float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCate
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
     ray.Origin = p + (away + wi) * (1.0e-3 * scale);
-    ray.Direction = wi;
     ray.TMin = 1.0e-3 * scale;
-    // To `distance` from p, not from the origin: moved up to 2e-3 of the
-    // scale along the ray, the origin carried the end that far past, and an
-    // emitter's shadow ray had to stop 3e-3 short -- before a lens's far face
-    // where the lamp sits 5 mm behind it, so the light through paid one face.
-    ray.TMax = max(distance - dot(ray.Origin - p, wi), 0.0);
+    // AIMED AT THE POINT IT ENDS AT, `p + wi * distance`, from the origin it
+    // actually leaves: the origin stands a millimetre off p, across the ray
+    // as well as along it, and a ray sent along `wi` from there for
+    // `distance` ended that millimetre aside of the point -- through an
+    // emitter's plane when it came at a slant, where the lamp then shadowed
+    // itself (a glass box's floor went from 0.64 to 0.003). Before, its end
+    // rode on the origin and an emitter's ray stopped 3e-3 of the scale short,
+    // which stopped it before a lens's far face with the lamp 5 mm behind.
+    // A light at infinity (a dome, a sun) is a direction, and keeps `wi`.
+    float3 dir = wi;
+    float reach = distance;
+    if (distance < 1.0e29) {
+        const float3 to = p + wi * distance - ray.Origin;
+        reach = length(to);
+        dir = reach > 0.0 ? to / reach : wi;
+    }
+    ray.Direction = dir;
+    ray.TMax = max(reach, 0.0);
     if (ray.TMax <= ray.TMin) {
         return float3(1.0);
     }
@@ -281,11 +293,11 @@ float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCate
             hit.seen = uint4(query.CommittedInstanceID() + 1, query.CommittedPrimitiveIndex(), 0, 0);
             hit.t = query.CommittedRayT();
             hit.barycentrics = query.CommittedTriangleBarycentrics();
-            if (path.shadowCutouts == 0 || !shadowPassesThrough(hit, ray.Origin, wi)) {
+            if (path.shadowCutouts == 0 || !shadowPassesThrough(hit, ray.Origin, dir)) {
                 if (!glass || layers >= kGlassLayers) {
                     return float3(0.0);
                 }
-                through *= glassPasses(hit, ray.Origin, wi);
+                through *= glassPasses(hit, ray.Origin, dir);
                 ++layers;
                 if (!any(through > float3(1.0e-4))) {
                     return float3(0.0);
@@ -425,13 +437,25 @@ float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCate
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
     ray.Origin = p + (away + wi) * (1.0e-3 * scale);
-    ray.Direction = wi;
     ray.TMin = 1.0e-3 * scale;
-    // To `distance` from p, not from the origin: moved up to 2e-3 of the
-    // scale along the ray, the origin carried the end that far past, and an
-    // emitter's shadow ray had to stop 3e-3 short -- before a lens's far face
-    // where the lamp sits 5 mm behind it, so the light through paid one face.
-    ray.TMax = max(distance - dot(ray.Origin - p, wi), 0.0);
+    // AIMED AT THE POINT IT ENDS AT, `p + wi * distance`, from the origin it
+    // actually leaves: the origin stands a millimetre off p, across the ray
+    // as well as along it, and a ray sent along `wi` from there for
+    // `distance` ended that millimetre aside of the point -- through an
+    // emitter's plane when it came at a slant, where the lamp then shadowed
+    // itself (a glass box's floor went from 0.64 to 0.003). Before, its end
+    // rode on the origin and an emitter's ray stopped 3e-3 of the scale short,
+    // which stopped it before a lens's far face with the lamp 5 mm behind.
+    // A light at infinity (a dome, a sun) is a direction, and keeps `wi`.
+    float3 dir = wi;
+    float reach = distance;
+    if (distance < 1.0e29) {
+        const float3 to = p + wi * distance - ray.Origin;
+        reach = length(to);
+        dir = reach > 0.0 ? to / reach : wi;
+    }
+    ray.Direction = dir;
+    ray.TMax = max(reach, 0.0);
     if (ray.TMax <= ray.TMin) {
         return float3(1.0);
     }
@@ -2276,10 +2300,11 @@ void tracePathsAt(uint2 group, uint index) {
                         const float3 f = stackEval(cur.stack, cur.toEye, lp.wi);
                         // The shadow ray stops short of the emitting triangle, or it
                         // meets the triangle itself and every sample is its own
-                        // shadow: by ten rayMargins, now that it ends at its distance
-                        // from the point (shadowWalk). It stopped 3e-3 of the scale
-                        // short when its end rode on its origin, and a lamp 5 mm
-                        // behind its lens lit the ground through one face of two.
+                        // shadow: by ten rayMargins, now that it is aimed at a point
+                        // on the line from here to the sampled one (shadowWalk). It
+                        // stopped 3e-3 of the scale short when its end rode on its
+                        // origin, and a lamp 5 mm behind its lens lit the ground
+                        // through one face of two.
                         const float shortOf = 10.0 * rayMargin(length(cur.inputs.positionWorld));
                         // Through glass where the frame lets it (pathShadow): a
                         // lamp behind its lens lights what stands in front.

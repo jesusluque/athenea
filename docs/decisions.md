@@ -13572,11 +13572,16 @@ far face and met the lamp with one tint. The material conversion was right
   shadow ray. A transfer's origins are a gaussian's footprint, and with the
   hair there too one point of 32 in the transfer-against-bake test read
   60% off ("no wall"; 0.0% with the millimetre).
-- **A shadow ray ends at its distance from the point**, not from its
-  moved origin (`shadowWalk`, inline and pipeline), so an emitting
-  triangle's shadow ray stops ten margins short of it where it stopped
-  3e-3 of the scale short -- before a lens's far face, with the lamp 5 mm
-  behind it. Between faces of glass it already went on by 1e-4.
+- **A shadow ray is aimed at the point it ends at**, `p + wi * distance`,
+  from the origin it actually leaves (`shadowWalk`, inline and pipeline; a
+  light at infinity keeps `wi`), so an emitting triangle's shadow ray stops
+  ten margins short of the sampled point where it stopped 3e-3 of the scale
+  short -- before a lens's far face, with the lamp 5 mm behind it. Sent
+  along `wi` from the millimetre-moved origin and ended at its distance
+  from p (d2e7aff), it ended a millimetre aside of the point, through the
+  emitter's plane at a slant: the glass box's floor read 0.0033 where it
+  reads 0.64, and the emitting quad against a rect light failed. Between
+  faces of glass it already went on by 1e-4.
 - **`pathThrough`** leaves by the millimetre and goes from face to face by
   `rayMargin` from the face it met (it stepped 2e-3 of the scale past each).
 - No buffer: `Shaded` is thread memory, and every variant binds what it did
