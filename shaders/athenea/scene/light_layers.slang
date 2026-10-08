@@ -104,7 +104,11 @@ void lightLayerFromCloud(uint3 tid: SV_DispatchThreadID) {
     const bool shHalf = mergeParams.shHalf != 0;
     const float3 dc = float3(streamValue(layerSh, shHalf, at), streamValue(layerSh, shHalf, at + 1),
                              streamValue(layerSh, shHalf, at + 2));
-    const float3 light = cloudLight(float3(0.5) + kSH0 * dc, mergeParams.linearCloud != 0);
+    // A gaussian the bake found no surface for is written with every
+    // coefficient zero (its slot kept, its opacity 0), which reads as 0.5,
+    // not as black: it carries no light. A baked black is dc = -0.5 / kSH0.
+    const bool unbaked = all(dc == float3(0.0));
+    const float3 light = unbaked ? float3(0.0) : cloudLight(float3(0.5) + kSH0 * dc, mergeParams.linearCloud != 0);
     if (max(light.x, max(light.y, light.z)) > mergeParams.floor) {
         InterlockedAdd(counters[1], 1u);
     }
