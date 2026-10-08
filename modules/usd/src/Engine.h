@@ -117,9 +117,11 @@ struct SplatEntry {
     /// light on a ground, added over whatever is drawn (`athenea mesh2splat
     /// --light-catcher`). Only its layers are drawn.
     bool                                lightCatcher = false;
-    /// This frame's weight of each of its lamps' layers, a float4 a layer
-    /// (`Engine::setLightWeights`), and which weights it was written from.
-    gpu::Buffer                         lightWeights;
+    /// This frame's weight of each of its lamps' layers, a float4 a layer,
+    /// `GpuSplats::kMaxLightGroups` of them (`Engine::setLightWeights`), and
+    /// which weights it was written from. The projection takes them in its
+    /// constants (render::SplatInstance::lightWeights).
+    std::vector<float>                  lightWeights;
     uint64_t                            lightWeightsVersion = 0;
     /// `primvars:athenea:splat:ior`: the index its transmitting gaussians bend
     /// the sky by. 0 bends nothing, which is every cloud that does not say.

@@ -22,10 +22,6 @@ import athenea.common.splat_override;
 static const float kSheetAlpha = 0.1;
 // A shadow ray against the cloud's own proxies, where the caller built them.
 
-/// A sharp record's base polish (kSharpMark): its weight, rgb, and roughness,
-/// then the sun's weights through it (rgb) and through the coat, as halves --
-/// what the blend reads beside `slopes` from memory.
-RWStructuredBuffer<uint4>   sharpPolish;
 StructuredBuffer<float4>    positions;
 StructuredBuffer<uint>      shape;
 StructuredBuffer<uint>      sh;
@@ -35,6 +31,10 @@ StructuredBuffer<uint>      normals;
 // Three floats a splat, the shape operator in its first two axes, where
 // `params.hasCurvature`; and what the reflection's slope across the footprint
 // came to, a slot each, where the record's colour.w says so (kSlopeMark).
+// After them, from `params.polishPlane`, a sharp record's base polish
+// (kSharpMark): its weight, rgb, and roughness, then the sun's weights
+// through it (rgb) and through the coat, as halves -- what the blend reads
+// beside the slope from memory.
 StructuredBuffer<float>     curvature;
 RWStructuredBuffer<uint4>   slopes;
 // A splat each: a TX transfer's view-independent terms -- the body's light
@@ -50,10 +50,10 @@ StructuredBuffer<uint>      emission;
 StructuredBuffer<uint>      lobes;
 // THE LAMPS (GpuSplats::lightLayers): `params.lightLayers` words a splat,
 // RGB9E5, the light each group sends out of the gaussian per unit of the
-// group's radiance; and this frame's weight of each group (linear rgb: its
-// level times its radiance and colour), one float4 a layer.
+// group's radiance. This frame's weight of each group is in `params`
+// (lightWeights): a buffer of its own put the TX entry point past Metal's
+// thirty-one, as a separate `sharpPolish` did (it lives in `slopes`).
 StructuredBuffer<uint>      lightLayers;
-StructuredBuffer<float4>    lightWeights;
 // Per-prim material overrides, keyed on the id each gaussian carries:
 // `params.overrideCount` of 0 is what says there are none.
 StructuredBuffer<float4>    splatOverrides;
@@ -135,7 +135,7 @@ float3 lampLight(uint i) {
     float3 sum = float3(0.0);
     const uint base = i * params.lightLayers;
     for (uint k = 0; k < params.lightLayers; ++k) {
-        const float3 w = lightWeights[k].rgb;
+        const float3 w = params.lightWeights[k].rgb;
         if (any(w != float3(0.0))) {
             sum += w * (unpackRgb9e5(lightLayers[base + k]) / kLightLayerScale);
         }
@@ -647,9 +647,9 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                                  packHalves(slope.sharpWeight * scale, slope.sharpRoughness));
             const float3 polish = slope.sharpPolish * scale;
             const float3 polishSun = slope.sharpSunPolish * scale;
-            sharpPolish[slot] = uint4(packHalves(polish.x, polish.y), packHalves(polish.z, slope.sharpPolishRoughness),
-                                      packHalves(polishSun.x, polishSun.y),
-                                      packHalves(polishSun.z, slope.sharpSunCoat * scale));
+            slopes[params.polishPlane + slot] = uint4(packHalves(polish.x, polish.y), packHalves(polish.z, slope.sharpPolishRoughness),
+                                                      packHalves(polishSun.x, polishSun.y),
+                                                      packHalves(polishSun.z, slope.sharpSunCoat * scale));
         } else if (kTransfer >= 2 && slope.on) {
             // THE RAMP NEVER GOES BELOW BLACK INSIDE THE FOOTPRINT. A
             // chrome strip turns its normal so fast that a pixel's slope,

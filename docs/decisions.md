@@ -13348,12 +13348,26 @@ turns two render settings into the weights:
 - `athenea:lightLevel:<group>` (float): that group's level over the state's.
 
 `Engine::setLightWeights` keeps them by name; a cloud's weights (a float4 a
-layer, by its own layer names) are written to the device only when they
-change. The rasteriser's projection adds `sum_k w_k layer_k` to the
-gaussian's colour after whatever relighting did (splat_project's
-`lampLight`), so a relit TX car and a plain baked cloud take their lamps alike.
+layer, by its own layer names, sixteen at most) are made only when they
+change, and reach the projection in its constants
+(`FrameParams::lightWeights`), not as a buffer. The rasteriser's projection
+adds `sum_k w_k layer_k` to the gaussian's colour after whatever relighting
+did (splat_project's `lampLight`), so a relit TX car and a plain baked cloud
+take their lamps alike.
 A lamp switched uploads nothing: the cloud's upload count is checked to stay
 put across six frames of different levels.
+
+**Metal's thirty-one buffers.** As first written the layers and the weights
+were two new buffers of the projection module, and its TX entry point
+(`splatProject`) put `iesValues` at `buffer(32)`: no pipeline could be made
+on Metal, so every frame of the tile rasteriser failed, the relit splat tests
+and the light tests with it, though `slangc` was happy. Two slots came back:
+the weights went into `FrameParams` (sixteen float4, the most layers a cloud
+carries), and a sharp record's polish (`sharpPolish`, n uint4) went into the
+`slopes` buffer after the slopes, from `params.polishPlane` (the rasteriser's
+slot capacity) -- both are per slot, written by the projection and read by
+the blend. Every projection entry point now ends at `buffer(30)` or below,
+checked with `slangc -target metal` on each.
 
 `athenea stage --light-state NAME --light-level GROUP=LEVEL`, the render
 settings prim's `athenea:` attributes, and `athenea view`'s **Lamps** block (a

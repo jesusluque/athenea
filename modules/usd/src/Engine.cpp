@@ -2319,13 +2319,15 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 splats.back().lightCatcher = entry.lightCatcher;
                 // THE LAMPS: this frame's weight of each layer the cloud
                 // carries, by its group's name -- a group the frame does not
-                // name is off. Written when the weights change, a float4 a
+                // name is off. Made when the weights change, a float4 a
                 // layer; the arithmetic that made them is a few numbers a
-                // frame (StageRenderer's light rig).
+                // frame (StageRenderer's light rig), and they reach the
+                // projection as its constants.
                 if (drawn == entry.gpu.get() && entry.gpu->hasLightLayers()) {
-                    if (!entry.lightWeights.valid() || entry.lightWeightsVersion != lightWeightsVersion_) {
+                    if (entry.lightWeights.empty() || entry.lightWeightsVersion != lightWeightsVersion_) {
                         std::vector<float> rows(size_t{scene::GpuSplats::kMaxLightGroups} * 4, 0.0F);
-                        for (size_t k = 0; k < entry.gpu->lightGroups.size(); ++k) {
+                        for (size_t k = 0; k < entry.gpu->lightGroups.size() && k < scene::GpuSplats::kMaxLightGroups;
+                             ++k) {
                             if (const auto found = lightWeights_.find(entry.gpu->lightGroups[k]);
                                 found != lightWeights_.end()) {
                                 rows[k * 4] = found->second[0];
@@ -2333,21 +2335,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                 rows[k * 4 + 2] = found->second[2];
                             }
                         }
-                        if (!entry.lightWeights.valid()) {
-                            gpu::BufferDesc desc;
-                            desc.bytes = rows.size() * sizeof(float);
-                            desc.elementBytes = 16;   // a float4 a layer
-                            desc.label = "splat.lightWeights";
-                            auto made = gpu::Buffer::create(*device_, desc, rows.data());
-                            if (!made) return std::move(made).error();
-                            entry.lightWeights = std::move(*made);
-                        } else {
-                            ATHENEA_TRY(entry.lightWeights.write(*device_, 0, rows.size() * sizeof(float),
-                                                                 rows.data()));
-                        }
+                        entry.lightWeights = std::move(rows);
                         entry.lightWeightsVersion = lightWeightsVersion_;
                     }
-                    splats.back().lightWeights = &entry.lightWeights;
+                    splats.back().lightWeights = entry.lightWeights.data();
                 }
                 if (entry.relight && entry.gpu->hasVisibility()) {
                     MeasuredCloud m;

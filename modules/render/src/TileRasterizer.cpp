@@ -153,8 +153,8 @@ Result<void> TileRasterizer::reserveSplats(uint32_t count) {
         return ok();
     };
     ATHENEA_TRY(assign(proj_, n, 48, "splat.proj"));
-    ATHENEA_TRY(assign(slopes_, n, 16, "splat.slopes"));
-    ATHENEA_TRY(assign(sharpPolish_, n, 16, "splat.sharpPolish"));
+    // The slopes, then a sharp record's polish from slot n on (polishPlane).
+    ATHENEA_TRY(assign(slopes_, uint64_t{n} * 2, 16, "splat.slopes"));
     ATHENEA_TRY(assign(cryptoIds_, n, 4, "splat.cryptoIds"));
     ATHENEA_TRY(assign(tileRects_, uint64_t{n} * 4, 4, "splat.tileRects"));
     ATHENEA_TRY(assign(tilesTouched_, n, 4, "splat.tilesTouched"));
@@ -400,7 +400,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             const bool curved = cloud->hasCurvature() && txCells;
             cursor["curvature"].setBinding(curved ? cloud->curvature.rhi() : cloud->shape.rhi());
             cursor["slopes"].setBinding(slopes_.rhi());
-            cursor["sharpPolish"].setBinding(sharpPolish_.rhi());
+            cursor["params"]["polishPlane"].setData(splatCapacity_);
             cursor["positions"].setBinding(cloud->positions.rhi());
             cursor["shape"].setBinding(cloud->shape.rhi());
             cursor["sh"].setBinding(cloud->sh.rhi());
@@ -491,11 +491,16 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // The lamps' layers and this frame's weight of each, where the
             // cloud carries them and the frame weighs them. Bound either way,
             // as every name a shader declares; `lightLayers` of 0 says not read.
-            const bool lamps = cloud->hasLightLayers() && instance.lightWeights != nullptr &&
-                               instance.lightWeights->valid();
-            cursor["params"]["lightLayers"].setData(lamps ? cloud->lightLayerCount : 0u);
+            // The weights go in the constants: a buffer of their own put the
+            // TX entry point at `buffer(32)`, past Metal's thirty-one.
+            const bool lamps = cloud->hasLightLayers() && instance.lightWeights != nullptr;
+            cursor["params"]["lightLayers"].setData(
+                lamps ? std::min(cloud->lightLayerCount, scene::GpuSplats::kMaxLightGroups) : 0u);
             cursor["lightLayers"].setBinding(lamps ? cloud->lightLayers.rhi() : cloud->shape.rhi());
-            cursor["lightWeights"].setBinding(lamps ? instance.lightWeights->rhi() : emptyEnvSh_.rhi());
+            if (lamps) {
+                cursor["params"]["lightWeights"].setData(instance.lightWeights,
+                                                         sizeof(float) * 4 * scene::GpuSplats::kMaxLightGroups);
+            }
             // What a pick said this prim is made of. Bound either way, as
             // every name a shader declares; `overrideCount` of 0 is what says
             // the table is not read.
@@ -652,7 +657,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["pairSplats"].setBinding(tileSort_.values.rhi());
         cursor["proj"].setBinding(proj_.rhi());
         cursor["slopes"].setBinding(slopes_.rhi());
-        cursor["sharpPolish"].setBinding(sharpPolish_.rhi());
+        cursor["params"]["polishPlane"].setData(splatCapacity_);
         // The first dome's sky, which a sharp lobe reads per pixel (kSharpMark).
         const bool sky = lights != nullptr && lights->environment();
         cursor["envTexels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());

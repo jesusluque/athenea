@@ -163,9 +163,18 @@ public struct FrameParams {
     public uint  txCache;
     /// THE LAMPS' LAYERS (GpuSplats::lightLayers): how many groups this
     /// cloud carries, a word each a splat in `lightLayers`, each added
-    /// times its weight in `lightWeights` (splat_project's lampLight). 0:
-    /// none, and nothing is read.
+    /// times its weight in `lightWeights` below (splat_project's lampLight).
+    /// 0: none, and nothing is read.
     public uint  lightLayers;
+    /// WHERE A SHARP RECORD'S POLISH STARTS IN `slopes`, in uint4 entries:
+    /// the slot's slope at [slot], its base polish and sun weights at
+    /// [polishPlane + slot]. One buffer, not two: the TX projection binds
+    /// as many as Metal's thirty-one allow (splat_project).
+    public uint  polishPlane;
+    /// The lamps' weights this frame, a float4 a layer (linear rgb: the
+    /// group's level times its radiance and colour), GpuSplats::
+    /// kMaxLightGroups of them. Here and not a buffer, for the same count.
+    public float4 lightWeights[16];
     public EditParams edit;      // this cloud instance's SplatEdit (common/edit.slang)
 };
 

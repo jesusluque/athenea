@@ -12,11 +12,13 @@ import splat_relight;
 StructuredBuffer<uint>      ranges;
 StructuredBuffer<uint>      pairSplats;
 StructuredBuffer<ProjRecord> proj;
-StructuredBuffer<uint4>     slopes;   // a slot each, read where the record is marked (kSlopeMark, kSharpMark)
+// A slot each, read where the record is marked (kSlopeMark, kSharpMark); a
+// sharp record's base polish and its sun weights after them, from
+// `params.polishPlane` (splat_project).
+StructuredBuffer<uint4>     slopes;
 // The first dome's prefiltered sky, which a sharp lobe reads per pixel
 // (kSharpMark; athenea/light/environment.slang). Bound whether or not one is.
 StructuredBuffer<uint>      envTexels;
-StructuredBuffer<uint4>     sharpPolish;   // a sharp record's base polish and its sun weights (kSharpMark)
 // The first dome's sun, as env_sun hands it over: (direction, half angle), (irradiance, threshold).
 StructuredBuffer<float4>    envSun;
 // What is under the splats: a rasterised point layer (or nothing: bound to a
@@ -258,7 +260,7 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 // The base's polish along the same mirror, its weight and
                 // roughness read from memory: one record's for every pixel
                 // of the tile, so it stays in cache.
-                const uint4 p = sharpPolish[sSplats[j]];
+                const uint4 p = slopes[params.polishPlane + sSplats[j]];
                 const float3 polish = float3(lowHalf(p.x), highHalf(p.x), lowHalf(p.y));
                 if (any(polish > float3(0.0))) {
                     sky += polish * envRadiance(envTexels, 0u, mirror, highHalf(p.y), params.envBaseSide);
