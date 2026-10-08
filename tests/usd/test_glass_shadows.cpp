@@ -193,16 +193,11 @@ TEST_CASE("a lamp in a glass box lights the floor through the glass by its shado
     CHECK(floorOff.mean[1] > 0.05);                                   // the lamp does reach the floor
     CHECK(floorShallow.mean[1] > 0.5 * floorOff.mean[1]);             // and 32 paths see it
     CHECK(errOn->relMse < errOff->relMse / 8.0);                      // by the shadow rays: fails before
-    // The same light, counted once -- twice would be nearly double -- within
-    // what the two strategies disagree by: a shadow ray pays the thin wall's
-    // 2R / (1 + R), and the material's ray pays that and the specular layer's
-    // Fresnel over again, (1 - F) at index 1.5 (lobes.slang takes a
-    // transmission's Fresnel twice under OpenPBR's layer: docs/decisions.md,
-    // "A ray leaves a surface by a hair"). Their weighed sum lies between
-    // the material's rays alone and those over (1 - F): 3.45% over, measured.
-    const double fresnel = (0.5 / 2.5) * (0.5 / 2.5);
-    CHECK(floorOn.mean[1] > 0.99 * floorOff.mean[1]);
-    CHECK(floorOn.mean[1] < 1.01 * floorOff.mean[1] / (1.0 - fresnel));
+    // The same light, counted once. It read 3.45% over while the material's
+    // rays paid the thin wall's Fresnel and the specular layer's again and the
+    // shadow rays the wall's alone (until kFlagOwnFresnel: docs/decisions.md,
+    // "A transmission pays its Fresnel once").
+    CHECK(std::abs(floorOn.mean[1] / floorOff.mean[1] - 1.0) < 0.03);
 }
 
 // A tinted glass tints the light its shadow rays let through, as the glass
@@ -263,19 +258,21 @@ TEST_CASE("a thin glass's shadow rays are unbiased: the glass is the lamp scaled
     const gpu::Buffer reference = frame(gpu, stage("glass_box_grey_bare.usda", bare), true, 8192);
     // The glass's own noise at 64 paths, not the bare scene's: the material's
     // rays that cross the glass onto the lamp make the glass frame far the
-    // noisier of the two (relMSE 3.3e-2 at 4096 paths, where the bare one
-    // reads 6.4e-4 at 64), and that is variance, not bias. Unbiased, the
-    // error falls as the paths grow: 64 times the paths, at least 8 times
-    // less error, where a bias would hold it at a floor.
+    // noisier of the two, and that is variance, not bias. And over the floor
+    // in front of the box alone (the frame's lower third, rows bottom first):
+    // the camera sees the grey box itself, and what stands behind it at half,
+    // which no lamp scaled by a transmittance is -- over the whole frame the
+    // error held at 3.3e-2 from 64 paths to 4096. Unbiased, the floor's error
+    // falls as the paths grow: 64 times the paths, at least 8 times less.
     const gpu::Buffer shallow = frame(gpu, stage("glass_box_grey.usda", grey), true, 64);
-    auto same = render::compareHdr(*gpu->library, through, reference, kWidth, kHeight);
-    auto noise = render::compareHdr(*gpu->library, shallow, reference, kWidth, kHeight);
+    auto same = render::compareHdr(*gpu->library, through, reference, kWidth, kHeight / 3);
+    auto noise = render::compareHdr(*gpu->library, shallow, reference, kWidth, kHeight / 3);
     REQUIRE(same);
     REQUIRE(noise);
     const render::ImageStats floor = floorOf(gpu, through);
     const render::ImageStats truth = floorOf(gpu, reference);
     std::printf("  a lamp in a grey thin glass box against the bare lamp at half its emission: the floor %.4f "
-                "against %.4f (%.2f%%); relMSE %.3e, where 64 paths of the glass read %.3e\n",
+                "against %.4f (%.2f%%); over the floor relMSE %.3e, where 64 paths of the glass read %.3e\n",
                 floor.mean[1], truth.mean[1], 100.0 * (floor.mean[1] / truth.mean[1] - 1.0), same->relMse,
                 noise->relMse);
     REQUIRE(truth.mean[1] > 0.05);

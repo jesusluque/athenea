@@ -1046,7 +1046,10 @@ float3 transmittedBehind(SplatSurface s, float3 wo, uint dome, StructuredBuffer<
 }
 
 /// How much of it passes: what the polish does not reflect, and nothing on
-/// the far face of a solid, whose share the near face already sent on.
+/// the far face of a solid, whose share the near face already sent on. One
+/// Fresnel at the near face, as the mesh's transmission lobe pays it since
+/// the specular over it stopped charging it a second (kFlagOwnFresnel); the
+/// far face's is `exitThrough`'s.
 float3 transmittedShare(SplatSurface s, float nDotV) {
     return s.backFacing && s.ior > 1.0
                ? float3(0.0)
@@ -1314,7 +1317,9 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // strength is more light than arrived: a glass ball came back half
         // again as bright as the mesh beside it, with a rim two and a half
         // times too hot. `lobes.slang` writes the same complement for a
-        // transmitting lobe (`kScatterTransmit`), so the two agree.
+        // transmitting lobe (`kScatterTransmit`), once: the specular layered
+        // over it no longer charges it again (kFlagOwnFresnel), so the two
+        // agree -- one Fresnel a face, as the shadow rays and Cycles pay.
         // The far face of a solid transmits nothing of its own: its share of
         // the light is what the near face already sent on.
         const float3 passes = transmittedShare(s, nDotV);

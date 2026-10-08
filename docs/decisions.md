@@ -13605,11 +13605,62 @@ lobe library's T lobe takes `1 - F` again (`lobeSample`, `evalLocal`,
 `lobeAlbedo`). A thin wall reads 0.7066 = 0.8319 x 0.8989 x 0.9467: its own
 `1 - 2R / (1 + R)` and the layer's plain `1 - F`. The glass shadows test's
 3.45% between its deep frames is this too: the shadow ray pays the thin
-wall's Fresnel once, the material's rays twice. **Not fixed here**: the
-splat conversion and the relit cloud read the lobes' complement
-(`splat_relight`'s `transmittedShare`) and are validated against the mesh,
-so the fix moves both sides and wants its own run. The tests hold the slab
-to the 10 cm slab rather than to a closed form, and the glass shadows test
-bounds its two frames by that one Fresnel.
+wall's Fresnel once, the material's rays twice. Fixed in the next section.
 
 **Not done.** The splat route (`rt_integrate.slang`) has its own offsets.
+
+## A transmission pays its Fresnel once
+
+**What was measured** (the section above, gpu_t1): a slab of OpenPBR glass,
+index 1.6, transmission colour (0.8319, 0, 0.1049), passed 0.5556 of a white
+emitter at 1 mm and at 10 cm, where two faces of one Fresnel each pass
+0.692 x (1 - 0.0533)^2 = 0.620: 0.5556 = 0.692 x 0.9467^4. A pure red
+(0.8, 0, 0) passed 0.5135 for 0.574, a thin wall 0.7066 = 0.8319 x 0.8989 x
+0.9467 for 0.748. The glass shadows test's thin box read 3.45% brighter with
+shadow rays than with the material's rays alone (index 1.5).
+
+**The cause.** OpenPBR (and standard_surface) layer the specular, a
+dielectric that only reflects, over the transmission, a dielectric that only
+transmits at the same index. `athenea_layer_bsdf` weighs the base by the
+top's throughput, `1 - albedo` -- one Fresnel -- and the lobe library's
+transmission lobe pays `1 - F` again in its sample, its response and its
+albedo, exactly, at the angle and side it crosses. genglsl's T response
+carries no Fresnel (the layer is its Fresnel); a path tracer's must, since
+only the lobe knows the side (from inside, the index inverts and total
+internal reflection takes it all). A shadow ray through glass pays one
+(`glassPasses`), so the two strategies disagreed by a Fresnel, and the relit
+cloud pays one (`transmittedShare` at the near face, `exitThrough` at the
+far), so the mesh it is validated against read a Fresnel a face darker.
+
+**What changed.**
+
+- **`kFlagOwnFresnel`** (`lobes.slang`): `athenea_layer_bsdf` passes a
+  dielectric transmission in its base whole when the top holds a dielectric
+  reflection at the same index (to 1e-4), and marks it, once: the
+  transmission's own `1 - F` is the layer's share, exact where the layer's
+  is a fit. A layer further out -- a coat, at its own index -- charges it as
+  it charges anything; so does a reflection at another index. The rest of
+  the base (OpenPBR's opaque base under a transmission weight under one)
+  pays the layer as before.
+- **A thin wall's layer albedo** (`athenea_dielectric_bsdf`): the thin
+  wall reflects `2R / (1 + R)` (`dielectricF`), so what its layer lets the
+  base have is the rest of that, F0 and F both, not one face's.
+- **The relit cloud** already paid one Fresnel a face (`transmittedShare`,
+  `exitThrough`, and a thin wall's opacity `2R0 / (1 + R0)`): unchanged,
+  and now the mesh agrees with it.
+
+**Expected** (`tests/usd/test_glass_tint.cpp`, the closed forms restored):
+the 1 mm slab 0.620, the pure red 0.574, the thin wall 0.748, each within
+3%; the glass shadows test's deep frames within 3% of each other again.
+Its unbiasedness check compares the floor in front of the box only (the
+camera sees the grey box itself, and the room behind it at half, which no
+lamp scaled by a transmittance is: over the whole frame its error held at
+3.3e-2 from 64 paths to 4096, at index 1.0, where no Fresnel enters).
+Numbers go here once run (`~/luc/athenea-gpu/gpu_t3.sh`, which prints the
+glass validations' relMSE rows beside their values before this change).
+
+**Not done.** `generalized_schlick_bsdf` transmitting under a Schlick
+reflection keeps its double charge: no stage here layers one that way.
+The layer's own throughput from inside a solid still uses the outside fit,
+which only the opaque base under a transmission weight under one sees.
+

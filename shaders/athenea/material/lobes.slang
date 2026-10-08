@@ -28,6 +28,16 @@ public static const uint kFlagEnergyCompensation = 1;   // Oren-Nayar: OpenPBR's
 public static const uint kFlagInside = 2;               // the surface is seen from inside: the ior inverts
 public static const uint kFlagZeltner = 4;              // sheen: Zeltner's LTC instead of Imageworks'
 public static const uint kFlagThinWalled = 8;           // dielectric: a sheet with no inside (thin_walled)
+/// A DIELECTRIC TRANSMISSION PAYS ITS OWN FRESNEL: its sample and its
+/// response carry `1 - F` at the angle and the side they cross (`1 - 2R/(1+R)`
+/// for a thin wall), exactly. So the reflection layered straight over it --
+/// OpenPBR's and standard_surface's specular, the same dielectric at the same
+/// index -- does not charge it again (athenea_layer_bsdf); a layer further
+/// out (a coat) does. Set once that reflection has been passed over. Charged
+/// twice, a red lens 1 mm thick read 0.5556 where its two faces let 0.620
+/// through, and a shadow ray (one Fresnel a face) disagreed with the
+/// material's rays through the same glass.
+public static const uint kFlagOwnFresnel = 16;
 
 public static const uint kScatterReflect = 0;
 public static const uint kScatterTransmit = 1;

@@ -162,15 +162,20 @@ void report(const char* what, const render::ImageStats& s) {
 
 }   // namespace
 
-// Before: B/R 0.1261 -- one face of the 1 mm slab, the ray into it started
-// past the other. After: both faces, each tinting, as OpenPBR's transmission
-// tint (transmission_depth 0) and Cycles have it: B/R (0.1049 / 0.8319)^2 =
-// 0.0159, measured 0.01590. The level is held to the same slab 10 cm thick,
-// which no margin ever stepped through -- the same kernel, the same faces --
-// rather than to a closed form: the lobe library takes each face's Fresnel
-// twice for a transmission under OpenPBR's specular layer (0.5556 =
-// 0.692 x 0.9467^4 where one Fresnel a face is 0.620), a defect of its own
-// (docs/decisions.md), and a closed form here would hold that in place.
+/// What a smooth dielectric of index 1.6 lets through at normal incidence,
+/// one face: 1 - R, R = ((n - 1) / (n + 1))^2.
+constexpr double kReflect = (0.6 / 2.6) * (0.6 / 2.6);
+constexpr double kFace = 1.0 - kReflect;
+
+// Before f6688cc: B/R 0.1261 -- one face of the 1 mm slab, the ray into it
+// started past the other. After: both faces, each tinting and each taking its
+// Fresnel once, as OpenPBR's transmission tint (transmission_depth 0) and
+// Cycles have it: B/R (0.1049 / 0.8319)^2 = 0.0159 (measured 0.01590) and R
+// 0.8319^2 (1 - R)^2 = 0.620. Until the transmission paid its Fresnel once
+// (kFlagOwnFresnel) the specular layer over it charged it a second time:
+// 0.5556 = 0.692 x 0.9467^4 at both thicknesses, 0.5135 the pure red, 0.7066
+// the thin wall. Held as well to the same slab 10 cm thick, which no margin
+// ever stepped through.
 TEST_CASE("a red lens 1 mm thick tints the lamp behind it at both its faces",
           "[usd][gpu][mesh][path][emissive][glass]") {
     ATHENEA_REQUIRE_GPU(gpu);
@@ -214,4 +219,9 @@ TEST_CASE("a red lens 1 mm thick tints the lamp behind it at both its faces",
     CHECK(redThin.mean[0] == Catch::Approx(redDeep.mean[0]).epsilon(0.01));
     // A thin wall is one face: one tint.
     CHECK(wall.mean[2] / wall.mean[0] == Catch::Approx(tB / tR).epsilon(0.02));
+    // The levels, one Fresnel a face (the light bouncing inside a solid adds
+    // R^2 of it, 0.3%): a face's 1 - R, and a thin wall's 1 - 2R / (1 + R).
+    CHECK(thin.mean[0] == Catch::Approx(tR * tR * kFace * kFace).epsilon(0.03));
+    CHECK(redThin.mean[0] == Catch::Approx(0.8 * 0.8 * kFace * kFace).epsilon(0.03));
+    CHECK(wall.mean[0] == Catch::Approx(tR * (1.0 - 2.0 * kReflect / (1.0 + kReflect))).epsilon(0.03));
 }
