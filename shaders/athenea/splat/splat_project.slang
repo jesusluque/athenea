@@ -416,6 +416,15 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // splat that kept its peak would gain energy and the wings, or the bokeh,
     // would burn.
     const float paid = params.antialias != 0 ? sqrt(max(detBefore, 0.0) / det) : spreadPaid;
+    // A SURFEL, where it can be drawn as one: the disc's own plane, from the
+    // ray through each pixel, with no blur of the shutter or the lens -- those
+    // two stay the gaussian's convolutions, and a surfel under them is drawn
+    // as the thin gaussian it projects to. Its footprint is what the conic
+    // bounds, and the conic is the affine projection's: widened by half
+    // again, and by the 2DGS screen filter's variance (1/2 pixel squared),
+    // so the tiles hold the whole disc where perspective stretches it.
+    const bool surfel = params.surfels != 0 && isSurfel(scale) && params.motion == 0 &&
+                        !(params.lensRadius > 0.0 && !ortho);
     if (kTransfer == kProjectCatcher) {
         posOpacity.w = catcherOpacity(i, r, scale, posOpacity.w);
     }
@@ -440,13 +449,19 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // at the floor, nothing of it is cut, and at 0.0018 of coverage that
     // 1/255 had tripled it -- the windshield read 3.9 times the path traced
     // one under the shop's lamps (s65).
-    const float alphaOwn = sheet ? paid * max(posOpacity.w - 1.0 / 255.0, 0.0) : paidOpacity(posOpacity.w, paid);
+    // A surfel pays nothing back: no mip filter widened it (its screen filter
+    // is a max, not a convolution), so its opacity is its own, as Spark draws it.
+    const float alphaOwn = sheet   ? paid * max(posOpacity.w - 1.0 / 255.0, 0.0)
+                           : surfel ? posOpacity.w
+                                    : paidOpacity(posOpacity.w, paid);
     const float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
     if (!(alpha >= 1.0 / 255.0)) {
         cull(slot, kCullFaint);
         return;
     }
-    const float3 conic = float3(c / det, -b / det, a / det);
+    const float3 bound = surfel ? float3(a * 2.25 + 0.5, b * 2.25, c * 2.25 + 0.5) : float3(a, b, c);
+    const float boundDet = bound.x * bound.z - bound.y * bound.y;
+    const float3 conic = float3(bound.z / boundDet, -bound.y / boundDet, bound.x / boundDet);
     const float cutoff = cutoffPower(alpha);
     const float2 extent = footprintExtent(conic, cutoff);
     uint4 rect;
@@ -701,7 +716,26 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     if (sheet) {
         colour *= alphaOwn / alpha;   // the sheet's alpha x colour, as its own opacity had it
     }
-    record.conic = float4(conic, alpha);
+    record.conic = float4(conic, surfel ? -alpha : alpha);
+    record.surfel = uint4(0u);
+    if (surfel) {
+        // The disc's two wide axes, scale times direction, in the view; the
+        // flat one is left out.
+        const uint flat = scale.x == 0.0 ? 0u : scale.y == 0.0 ? 1u : 2u;
+        const uint ua = flat == 0u ? 1u : 0u;
+        const uint va = flat == 2u ? 1u : 2u;
+        const float3 axisU = mul(wv, float3(m[0][ua], m[1][ua], m[2][ua]));
+        const float3 axisV = mul(wv, float3(m[0][va], m[1][va], m[2][va]));
+        // Homogeneous screen coordinates of a direction: (fx x + cx z,
+        // fy y + cy z, z) through a pinhole, (fx x, fy y, 0) orthographic.
+        const float3 hu = ortho ? float3(params.focalX * axisU.x, params.focalY * axisU.y, 0.0)
+                                : float3(params.focalX * axisU.x + params.centreX * axisU.z,
+                                         params.focalY * axisU.y + params.centreY * axisU.z, axisU.z);
+        const float3 hv = ortho ? float3(params.focalX * axisV.x, params.focalY * axisV.y, 0.0)
+                                : float3(params.focalX * axisV.x + params.centreX * axisV.z,
+                                         params.focalY * axisV.y + params.centreY * axisV.z, axisV.z);
+        record.surfel = uint4(packHalves(hu.x, hu.y), packHalves(hu.z, hv.x), packHalves(hv.y, hv.z), 0u);
+    }
     record.colour = float4(colour, sharp                                ? kSharpMark
                                    : sloped                             ? kSlopeMark
                                    : kTransfer == kProjectCatcher       ? kCatcherMark

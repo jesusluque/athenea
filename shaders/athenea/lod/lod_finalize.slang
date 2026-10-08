@@ -63,8 +63,7 @@ void lodFinalize(uint3 tid: SV_DispatchThreadID) {
         axes[2][2] = -axes[2][2];
     }
     const float3 s = sqrt(max(float3(cov[0][0], cov[1][1], cov[2][2]), float3(1e-14)));
-    const float smallest = min(min(s.x, s.y), s.z);
-    const float area = s.x * s.y * s.z / max(smallest, 1e-20);
+    const float area = discArea(s);
     const float opacity = min(moments[at] / max(area, 1e-30), 0.99);
     const float3 base = float3(moments[at + 10], moments[at + 11], moments[at + 12]) / weight;
 

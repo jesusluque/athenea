@@ -74,9 +74,25 @@ public float3 decodePosition(StructuredBuffer<float> raw, uint record, DecodePar
     return p.flipYZ != 0 ? float3(v.x, -v.y, -v.z) : v;
 }
 
+/// A SURFEL'S FLAT AXIS (docs/decisions.md, surfels): a scale of exactly 0
+/// -- or, stored as a logarithm, under e^-30, Spark's own reading of a PLY --
+/// is -infinity here, and stays a zero through the f16 the shape holds it in.
+/// Every other scale is the logarithm it was.
+public static const float kSurfelLogScale = -1.0 / 0.0;
+
 public float decodeLogScale(float v, uint mode) {
     if (mode == 2) return v / 16.0 - 10.0;         // SPZ byte
-    return mode == 0 ? v : log(max(v, 1e-30));
+    if (mode == 0) return v < -30.0 ? kSurfelLogScale : v;
+    return v == 0.0 ? kSurfelLogScale : log(max(v, 1e-30));
+}
+
+/// Whether a record's three log scales are a gaussian's (all finite) or a
+/// surfel's (one, and only one, flat axis); the rest within e^+-60.
+public bool scalesValid(float3 ls) {
+    const bool3 flat = ls == float3(kSurfelLogScale);
+    const uint flats = uint(flat.x) + uint(flat.y) + uint(flat.z);
+    const float3 kept = select(flat, float3(0.0), ls);
+    return flats <= 1u && all(isfinite(kept)) && all(abs(kept) < 60.0);
 }
 
 public float decodeColour(float v, uint mode) {

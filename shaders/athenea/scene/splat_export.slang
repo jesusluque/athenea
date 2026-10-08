@@ -46,7 +46,7 @@ void splatExport(uint3 tid: SV_DispatchThreadID) {
     const float3 ls = float3(decodeLogScale(fieldOf(raw, i, s, params.scale0), params.scaleMode),
                              decodeLogScale(fieldOf(raw, i, s, params.scale1), params.scaleMode),
                              decodeLogScale(fieldOf(raw, i, s, params.scale2), params.scaleMode));
-    const bool valid = all(isfinite(p)) && all(isfinite(ls)) && all(abs(ls) < 60.0) && a >= 1.0 / 255.0;
+    const bool valid = all(isfinite(p)) && scalesValid(ls) && a >= 1.0 / 255.0;   // a surfel: one scale exactly 0
     float4 q = decodeQuaternion(raw, i, params);
     const float qLength = length(q);
     q = qLength > 1e-8 ? q / qLength : float4(0, 0, 0, 1);

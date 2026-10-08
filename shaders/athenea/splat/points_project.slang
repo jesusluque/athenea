@@ -73,6 +73,7 @@ void pointsProject(uint3 tid: SV_DispatchThreadID) {
         rgb = float3(lowHalf(colours[i * 2]), highHalf(colours[i * 2]), lowHalf(colours[i * 2 + 1]));
     }
     ProjRecord record;
+    record.surfel = uint4(0u);
     record.screen = float4(centre, t.z, cutoff);
     record.conic = float4(conic, 1.0);
     record.colour = float4(rgb, 1.0);

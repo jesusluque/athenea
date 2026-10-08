@@ -208,6 +208,11 @@ struct RenderSettings {
     uint32_t width = 1920;
     uint32_t height = 1080;
     bool     antialias = true;
+    /// SURFELS: a gaussian with a flat axis (a scale of exactly 0) drawn as
+    /// the disc it is, by the ray through each pixel, with the 2DGS screen
+    /// filter (docs/decisions.md, surfels). Off, it is the thin gaussian it
+    /// projects to. A cloud with no flat axis draws the same either way.
+    bool     surfels = true;
     uint32_t maxShDegree = 3;
     /// Premultiplied, linear. Transparent by default.
     std::array<float, 4> background{0, 0, 0, 0};

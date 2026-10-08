@@ -171,6 +171,10 @@ public struct FrameParams {
     /// [polishPlane + slot]. One buffer, not two: the TX projection binds
     /// as many as Metal's thirty-one allow (splat_project).
     public uint  polishPlane;
+    /// SURFELS (docs/decisions.md, surfels): 1 draws a gaussian with a flat
+    /// axis -- a scale of exactly 0 -- as the disc it is, by the ray through
+    /// each pixel (ProjRecord::surfel), 0 as the thin gaussian it projects to.
+    public uint  surfels;
     /// The lamps' weights this frame, a float4 a layer (linear rgb: the
     /// group's level times its radiance and colour), GpuSplats::
     /// kMaxLightGroups of them. Here and not a buffer, for the same count.
@@ -201,6 +205,14 @@ public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power
     public float4 conic;    // a, b, c, alpha
     public float4 colour;   // rgb (linear), 0
+    /// A SURFEL'S DISC ON SCREEN, where conic.w < 0 marks one: its two axes
+    /// (scale times direction) in homogeneous screen coordinates -- (x w, y w,
+    /// w) of the disc's u and v -- as halves, u.xy, u.w v.x, v.y v.w, 0. With
+    /// the centre's own (screen.xy times its depth, and the depth) they are
+    /// the 3x3 map from the disc's plane to the screen that the blend inverts
+    /// at every pixel (Huang et al. 2024, ray-splat intersection). 0 for a
+    /// gaussian.
+    public uint4  surfel;
 };
 
 public float3 toView(FrameParams f, float3 p) {

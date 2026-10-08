@@ -114,6 +114,34 @@ struct CryptoList {
 // is done still loads for the others; the group stops loading when all are.
 static const uint kBatch = kTile * kTile;
 groupshared ProjRecord sRecords[kBatch];
+
+/// WHERE A PIXEL'S RAY MEETS A SURFEL, as a power: the squared radius in the
+/// disc's own axes at the point the ray crosses its plane (Huang et al. 2024,
+/// ray-splat intersection: the pixel's two planes x = px and y = py, pulled
+/// back through the disc's 3x3 map to the screen, meet in one point of the
+/// disc's plane, their cross product). Then the screen filter: the larger of
+/// the disc and a gaussian of sigma sqrt(2)/2 pixel round the centre, which
+/// keeps a disc seen edge on from thinning into aliasing (agreed with
+/// sparkwebGPU, which draws the same files). A ray along the plane meets
+/// nothing but the filter.
+float surfelPower(ProjRecord record, float2 pixel, float2 d) {
+    const uint4 w = record.surfel;
+    const float3 hu = float3(lowHalf(w.x), highHalf(w.x), lowHalf(w.y));
+    const float3 hv = float3(highHalf(w.y), lowHalf(w.z), highHalf(w.z));
+    const float z = record.screen.z;
+    const float3 hc = params.orthographic != 0 ? float3(record.screen.xy, 1.0)
+                                               : float3(record.screen.xy * z, z);
+    const float3 rowX = float3(hu.x, hv.x, hc.x);
+    const float3 rowY = float3(hu.y, hv.y, hc.y);
+    const float3 rowW = float3(hu.z, hv.z, hc.z);
+    const float3 uv = cross(rowX - pixel.x * rowW, rowY - pixel.y * rowW);
+    const float filter = 2.0 * dot(d, d);   // |d|^2 / sigma^2, sigma^2 = 1/2
+    if (!(abs(uv.z) > 1.0e-20)) {
+        return filter;
+    }
+    const float2 at = uv.xy / uv.z;
+    return min(dot(at, at), filter);
+}
 groupshared uint       sSplats[kBatch];
 // The colour's slope across the footprint, where the record is marked so
 // (frame.slang's kSlopeMark): x then y, rgb each, as halves.
@@ -200,7 +228,8 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             }
             const float2 d = pixel - screen.xy;
             const float4 conic = record.conic;
-            const float power = conic.x * d.x * d.x + 2.0 * conic.y * d.x * d.y + conic.z * d.y * d.y;
+            const float power = conic.w < 0.0 ? surfelPower(record, pixel, d)
+                                              : conic.x * d.x * d.x + 2.0 * conic.y * d.x * d.y + conic.z * d.y * d.y;
             if (power > screen.w) {
                 continue;
             }
@@ -214,7 +243,7 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 done = true;
                 break;
             }
-            const float alpha = min(0.99, conic.w * exp(-0.5 * power));
+            const float alpha = min(0.99, abs(conic.w) * exp(-0.5 * power));
             if (alpha < 1.0 / 255.0) {
                 continue;
             }

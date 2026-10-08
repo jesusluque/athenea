@@ -44,8 +44,7 @@ void lodLeafMoments(uint3 tid: SV_DispatchThreadID) {
         const float3x3 m = float3x3(r[0] * s, r[1] * s, r[2] * s);
         const float3x3 cov = mul(m, transpose(m));
         // The area it covers face on: its two longest axes.
-        const float smallest = min(min(s.x, s.y), s.z);
-        const float area = s.x * s.y * s.z / max(smallest, 1e-20);
+        const float area = discArea(s);
         const float weight = p.w * area;
         moments[at] += weight;
         moments[at + 1] += weight * p.x;

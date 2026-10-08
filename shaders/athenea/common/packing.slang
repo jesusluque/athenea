@@ -283,6 +283,31 @@ public float highHalf(uint word) { return f16tof32(word >> 16); }
 /// covariance turns into NaN. Clamped, not trusted.
 public float halfSafe(float v) { return clamp(v, -65000.0, 65000.0); }
 
+/// A SURFEL TO A RAY (docs/decisions.md, surfels): its flat axis -- a scale of
+/// exactly 0, stored as the f16 floor of its logarithm -- held to a ten
+/// thousandth of its widest, so a ray tracer that takes a particle to the
+/// unit sphere (rt_frames) can: its peak along a ray is then where the ray
+/// crosses the disc's plane, and the response there the disc's own, which is
+/// a 2D gaussian's ray-splat intersection. A gaussian with no flat axis is as
+/// it was.
+public static const float kSurfelThin = 1.0e-4;
+
+public float3 surfelSafeScale(float3 s) {
+    return max(s, float3(kSurfelThin * max(max(s.x, s.y), s.z)));
+}
+
+/// The area of a gaussian's two widest axes: what the levels of detail and a
+/// decimation weigh a splat by (opacity times this). Not the product of all
+/// three over the smallest, which a surfel's zero takes to nothing.
+public float discArea(float3 s) {
+    return max(max(s.x * s.y, s.y * s.z), s.x * s.z);
+}
+
+/// Whether a shape's scales hold a surfel's flat axis.
+public bool isSurfel(float3 s) {
+    return min(min(s.x, s.y), s.z) == 0.0;
+}
+
 public static const float kSH0 = 0.28209479177387814;
 
 /// WHAT A LAMP'S LAYER IS PACKED AT (GpuSplats::lightLayers): its light per

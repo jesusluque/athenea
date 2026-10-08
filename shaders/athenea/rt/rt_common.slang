@@ -130,7 +130,7 @@ public float3x3 rotationOf(float4 q) {
 /// of its shape record. One function for the build (bvh_leaves) and the
 /// refit (bvh_refit_level), so a refitted tree bounds exactly what a built one does.
 public void rtParticleBox(float4 p, uint q, uint s01, uint s2, out float3 lo, out float3 hi) {
-    const float3 s = exp(float3(lowHalf(s01), highHalf(s01), lowHalf(s2)));
+    const float3 s = surfelSafeScale(exp(float3(lowHalf(s01), highHalf(s01), lowHalf(s2))));
     const float3x3 rs = mul(rotationOf(decodeQuaternion(q)),
                             float3x3(s.x, 0.0, 0.0, 0.0, s.y, 0.0, 0.0, 0.0, s.z));
     // The ellipsoid x = c + (R S) u, |u| <= r, reaches r |row a of R S| along axis a.

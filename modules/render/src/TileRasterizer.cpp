@@ -152,7 +152,7 @@ Result<void> TileRasterizer::reserveSplats(uint32_t count) {
         into = *made;
         return ok();
     };
-    ATHENEA_TRY(assign(proj_, n, 48, "splat.proj"));
+    ATHENEA_TRY(assign(proj_, n, 64, "splat.proj"));   // ProjRecord: screen, conic, colour, surfel
     // The slopes, then a sharp record's polish from slot n on (polishPlane).
     ATHENEA_TRY(assign(slopes_, uint64_t{n} * 2, 16, "splat.slopes"));
     ATHENEA_TRY(assign(cryptoIds_, n, 4, "splat.cryptoIds"));
