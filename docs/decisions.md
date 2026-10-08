@@ -13664,3 +13664,30 @@ reflection keeps its double charge: no stage here layers one that way.
 The layer's own throughput from inside a solid still uses the outside fit,
 which only the opaque base under a transmission weight under one sees.
 
+
+## A bake's ray into a lens leaves by a hair too
+
+**What was measured** (the Corvette's `pilotos` layer re-baked on 1dae928):
+its 8853 lens gaussians held mean (0.274, 0.0068, 0.040), blue 0.146 of
+red; less the white their green says the reflection left (0.0068 in each
+channel), the transmitted light reads 0.124 -- one face's tint, where the
+path traced frame reads 0.0149 through the same lens.
+
+**The cause.** A path's next ray leaves by the hair only where it crosses
+(`throughGlass`), and that asks the shading normal. A bake's point is
+shaded with the gaussian's own normal where it carries one, which on a lens
+need not face the eye: the ray sampled into the lens counted as not
+crossing, left by the millimetre and stepped over the far face 1.1 mm in.
+And a glass gaussian's transfer cells (`cellThrough`, its own points) left
+by the millimetre into the lens and read past its own far face.
+
+**What changed** (`PathTracer.cpp`): `entersGlass` asks the triangle's own
+normal whether the ray leaves on the other side from the eye into a
+transmitting dielectric; such a ray crosses whatever the shading normal
+says -- it leaves by the hair and sees back faces. A glass point's cell ray
+into its own surface first looks for its far face by the hair: met beyond
+four margins and within the 3e-3 of the scale the millimetre steps over, the
+cell is closed. Rays from a gaussian that do not enter glass leave by the
+millimetre as before (what the transfer-against-bake test needs).
+Numbers go here once run (`~/luc/athenea-gpu/gpu_t4.sh`: the pilotos layer
+re-baked, its lens gaussians' B/R).

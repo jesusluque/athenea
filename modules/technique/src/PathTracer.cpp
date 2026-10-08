@@ -1306,8 +1306,22 @@ bool stackTransmits(LobeStack stack) {
 /// -- the lens and the field answer there (splat_relight) -- and passing its
 /// own body opened them all: the gate's glass ball under the lamp went from
 /// 0.097 to 0.217.
+///
+/// Into its own glass, its far face is looked for by a hair first: the
+/// millimetre the ray otherwise leaves by stepped over a lens 1.1 mm thick,
+/// and the cells behind it read open through the lens's own body.
 float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmits) {
     if (selfTransmits) {
+        if (dot(n, wi) < 0.0) {
+            const float scale = max(1.0, length(p));
+            const float margin = rayMargin(scale);
+            const PathHit far = traceNearestFrom(leaveSurface(p, n, wi, margin), wi, margin, mask, false);
+            // Past its own face (a shading normal off the triangle's can leave
+            // the origin a hair outside), within what the millimetre steps over.
+            if (far.seen.x != 0 && far.t > 4.0 * margin && far.t < 3.0e-3 * scale) {
+                return 0.0;   // its own far face
+            }
+        }
         return pathOccluded(p, n, wi, 3.0e38, kLightUnlinked, mask) ? 0.0 : 1.0;
     }
     return pathThrough(p, n, wi, mask);
@@ -1684,6 +1698,27 @@ bool throughGlass(Shaded sh, float3 wi) {
         const Lobe lobe = sh.stack.lobes[k];
         if (lobe.kind == kLobeDielectric && any(lobe.weight > float3(0.0)) &&
             (crosses || (lobe.flags & kFlagInside) != 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// WHETHER `wi` ENTERS A GLASS BY THE TRIANGLE ITSELF: the vertex's material
+/// transmits through a dielectric, and the direction leaves the triangle on
+/// the other side from the eye. The same question as throughGlass asked of
+/// the geometric normal, not the shading one: a bake's point carries the
+/// gaussian's normal, which on a lens need not face the eye, and a ray into
+/// the lens it said did not cross left by the millimetre, past the far face
+/// 1.1 mm in -- the tail lamps' lens gaussians baked one tint, B/R 0.146
+/// where the frame reads 0.0149.
+bool entersGlass(Shaded sh, float3 wi) {
+    if (dot(sh.geometricNormal, wi) * dot(sh.geometricNormal, sh.toEye) >= 0.0) {
+        return false;
+    }
+    for (uint k = 0; k < sh.stack.count; ++k) {
+        const Lobe lobe = sh.stack.lobes[k];
+        if (lobe.kind == kLobeDielectric && lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0))) {
             return true;
         }
     }
@@ -2508,10 +2543,13 @@ void tracePathsAt(uint2 group, uint index) {
             // millimetre still: a bake's point and a transfer's are a
             // gaussian's, not a hit's, and by a hair one transfer point of 32
             // read 60% off its bake.
+            // A ray into a glass by the triangle itself (entersGlass) crosses
+            // as well, whatever the shading normal says.
+            const bool crossing = through || entersGlass(cur, ms.wi);
             const float scale = max(1.0, length(p));
-            const float margin = through ? rayMargin(max(length(p), length(p - cur.inputs.viewPosition)))
-                                         : 1.0e-3 * scale;
-            if (through) {
+            const float margin = crossing ? rayMargin(max(length(p), length(p - cur.inputs.viewPosition)))
+                                          : 1.0e-3 * scale;
+            if (crossing) {
                 o = leaveSurface(p, cur.geometricNormal, ms.wi, margin);
             } else {
                 const float3 away = dot(n, ms.wi) < 0.0 ? -n : n;
@@ -2525,7 +2563,7 @@ void tracePathsAt(uint2 group, uint index) {
             // face from behind, and with it culled the ray left the ball
             // without its second bend: a thick lens drawn as one interface,
             // the pawn's glass head showing the room barely turned.
-            const PathHit hit = traceNearestFrom(o, d, margin, mask, !through);
+            const PathHit hit = traceNearestFrom(o, d, margin, mask, !crossing);
             // STRAIGHT THROUGH GLASS A SHADOW RAY PASSES, the path is still
             // the draw of the vertex before (glassCarriesWeight): what it
             // meets of the lights is weighed against next event estimation
