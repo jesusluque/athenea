@@ -750,6 +750,37 @@ bool bakeInFront(uint at, uint sample) {
     return dot(bakeDirection(at, sample), bakeFacing(at)) > 0.0;
 }
 
+/// THE SURFACE UNDER A GAUSSIAN, MET FROM OUTSIDE ITS GLASS. The ray down
+/// the normal starts `offset` over the gaussian's centre -- a ten-thousandth
+/// of the model (mesh2splat_span), half a millimetre on a car -- and a
+/// gaussian of a solid thinner than its cell stands inside it: the Corvette's
+/// tail lenses are 1.1 mm thick under cells of 8.8 mm, and a lens gaussian's
+/// ray started between the faces and met the far one from inside. Its bake
+/// then saw the lamp through that face alone: 7371 of the pilotos layer's
+/// lens gaussians facing the eye read blue 0.125 of red, one tint, and the
+/// 416 facing the lamp 0.016. So where the ray meets a transmitting face
+/// from behind, it started inside that glass: the face over the centre, a
+/// little way back along the normal, is the one to come down onto from
+/// outside -- found by a ray up the normal, and the ray down starts past it.
+PathHit bakeSurfaceUnder(float3 from, float3 n, float offset, uint mask) {
+    const PathHit hit = traceNearestFrom(from, -n, offset * 0.01, mask, true);
+    const Found f = foundHit(hit, from, -n);
+    if (!f.valid) {
+        return hit;
+    }
+    const float3 ng = normalize(applyRows(toWorld, f.s.geometricNormal, 0.0));
+    if (dot(ng, -n) <= 0.0 || (materials[materialRowOf(f.s)].flags & kMaterialTransmits) == 0u) {
+        return hit;   // met from outside, or no glass
+    }
+    const float scale = max(1.0, length(from));
+    const PathHit over = traceNearestFrom(from, n, offset * 0.01, mask, false);
+    if (over.seen.x == 0 || over.t > 1.0e-2 * scale) {
+        return hit;
+    }
+    const PathHit outside = traceNearestFrom(from + n * (over.t + offset), -n, offset * 0.01, mask, true);
+    return outside.seen.x != 0 ? outside : hit;
+}
+
 Found foundBaked(uint at, uint sample, uint mask) {
     const float4 o = bakeRays[at * 3];   // the point, and how far off the surface to start
     if (!bakeInFront(at, sample)) {
@@ -786,7 +817,7 @@ Found foundBaked(uint at, uint sample, uint mask) {
         const float3 bitangent = cross(n, tangent);
         from += (tangent * cos(phi) + bitangent * sin(phi)) * radius;
     }
-    const PathHit hit = traceNearestFrom(from, -n, o.w * 0.01, mask, true);
+    const PathHit hit = bakeSurfaceUnder(from, n, o.w, mask);
     Found f = foundHit(hit, from, -n);
     if (f.valid) {
         // A DISPLACED GAUSSIAN IS SHADED AS THE RELIEF FACES. The mesh the
@@ -853,7 +884,7 @@ bool bakeCellOrigin(uint at, uint k, uint mask, float3 centre, out float3 p, out
     const float3 tangent = abs(axis.z) < 0.999 ? normalize(cross(float3(0.0, 0.0, 1.0), axis)) : float3(1.0, 0.0, 0.0);
     const float3 bitangent = cross(axis, tangent);
     const float3 from = o.xyz + axis * o.w + (tangent * cos(phi) + bitangent * sin(phi)) * radius;
-    const PathHit hit = traceNearestFrom(from, -axis, o.w * 0.01, mask, true);
+    const PathHit hit = bakeSurfaceUnder(from, axis, o.w, mask);
     const Found f = foundHit(hit, from, -axis);
     if (!f.valid || length(f.positionWorld - centre) > 2.0 * wide) {
         return false;

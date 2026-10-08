@@ -474,6 +474,19 @@ public:
         tint.defaults = {1.0, 1.0, 1.0};
         into.params.push_back(tint);
 
+        aofx::ParamDesc tintsBase;
+        tintsBase.name = "transmissionTintsBase";
+        tintsBase.label = "Transmission takes the base colour";
+        tintsBase.hint =
+            "How much of the material's colour what it transmits keeps, times the transmission colour: 1, "
+            "as glTF tints its transmission by the base colour; 0, as OpenPBR and standard_surface, whose "
+            "transmission takes its own colour alone.";
+        tintsBase.type = aofx::ParamType::Double;
+        tintsBase.defaults = {1.0};
+        tintsBase.hardMin = {0.0};
+        tintsBase.hardMax = {1.0};
+        into.params.push_back(tintsBase);
+
         aofx::ParamDesc useNormalMap;
         useNormalMap.name = "useNormalMap";
         useNormalMap.label = "Turn by the normal map";
@@ -900,6 +913,9 @@ public:
             uniforms.transmissionColour[k] = static_cast<float>(
                 request.number("transmissionColour", 1.0, static_cast<size_t>(k)));
         }
+        // Its w: how much of the material's colour the transmission keeps.
+        uniforms.transmissionColour[3] =
+            static_cast<float>(std::clamp(request.number("transmissionTintsBase", 1.0), 0.0, 1.0));
 
         // Every map the kernel declares must be bound whether or not it is
         // there; `has...` is what stops it being read.

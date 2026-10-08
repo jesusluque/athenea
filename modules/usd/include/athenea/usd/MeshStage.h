@@ -75,6 +75,12 @@ struct StageMaterial {
     /// comes through it, and the colour it takes doing so.
     float                  transmission = 0.0F;
     std::array<float, 3>   transmissionColour{1.0F, 1.0F, 1.0F};
+    /// The transmission's colour is its own, not the base colour's: OpenPBR
+    /// and standard_surface tint what they transmit by `transmission_color`
+    /// alone (their base colour is the opaque base's, which a transmission
+    /// of one leaves out). glTF tints it by the base colour, and a
+    /// UsdPreviewSurface's transmission is coverage of its diffuse.
+    bool                   ownTransmissionColour = false;
     /// The dielectric's index (`specular_ior`, `specular_IOR`, `ior`).
     float                  ior = 1.5F;
     /// A sheet, not a solid (OpenPBR's `geometry_thin_walled`): what it

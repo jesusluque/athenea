@@ -1561,6 +1561,11 @@ private:
         };
         colour("materialColour", material.baseColour);
         colour("transmissionColour", material.transmissionColour);
+        // OpenPBR's and standard_surface's transmission is tinted by its own
+        // colour alone: their base colour times it made the lobes test's
+        // glass 0.787 x 0.8871 a crossing where the mesh's is 0.8871, and the
+        // relit ball 10% under the mesh path traced.
+        number("transmissionTintsBase", material.ownTransmissionColour ? 0.0 : 1.0);
         if (emits_) {
             number("writeEmission", 1.0);
             colour("emissionColour", material.emission);

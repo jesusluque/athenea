@@ -473,6 +473,7 @@ void warnOnce(const std::string& material, const std::string& topic, std::format
             // glTF's transmission takes the base colour as its tint and has
             // no input of its own for it.
             takeColour(read("transmission_color"), out.transmissionColour);
+            out.ownTransmissionColour = true;
         }
         // THE SAME COVERAGE, IN MATERIALX. `opacity` (`geometry_opacity` in
         // OpenPBR, `alpha` in glTF) is coverage there too -- where it reads

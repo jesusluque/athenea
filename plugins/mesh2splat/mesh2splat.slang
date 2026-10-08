@@ -71,7 +71,7 @@ struct M2sParams {
     uint  useNormalMap;
 
     float4 materialColour;    // multiplied into the albedo; w unused
-    float4 transmissionColour;
+    float4 transmissionColour;   // w: how much of the material's colour the transmission keeps
 
     uint  countWidth;     // the per-triangle cell counts, one uint a triangle
     float metallic;       // the material's own, multiplied into the map where there is one
@@ -1177,7 +1177,12 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     const float covered = mask > 0.0 ? m2sMaskCoverage(mask) : 0.0;
     const float keptOpacity =
         m2sCoverageAlpha(params.opacity * params.materialOpacity * covered * lerp(1.0, m2sGlassCovers(), params.transmission));
-    colour = lerp(colour, colour * params.transmissionColour.xyz, params.transmission);
+    // What it transmits takes the transmission colour, and the material's
+    // own as far as `transmissionColour.w` says: wholly for glTF, whose
+    // transmission is tinted by the base colour; not at all for OpenPBR and
+    // standard_surface, whose base colour is the opaque base's.
+    colour = lerp(colour, lerp(float3(1.0), colour, params.transmissionColour.w) * params.transmissionColour.xyz,
+                  params.transmission);
 
     const float3 shortAxis = params.useNormalMap != 0 ? shading : normal;
     float3 alongU = tangent - shortAxis * dot(shortAxis, tangent);

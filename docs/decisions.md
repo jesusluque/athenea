@@ -13707,3 +13707,47 @@ cell is closed. Rays from a gaussian that do not enter glass leave by the
 millimetre as before (what the transfer-against-bake test needs).
 Numbers go here once run (`~/luc/athenea-gpu/gpu_t4.sh`: the pilotos layer
 re-baked, its lens gaussians' B/R).
+
+**Measured** (gpu_t5, 31ac546): no change -- the pilotos layer's red lens
+gaussians read blue 0.1207 of red against 0.1245 before. **The real cause**
+is not the ray leaving the first vertex but the ray finding it. Split by
+the normal each gaussian carries, the 7371 facing the eye read 0.125 (one
+tint) and the 416 facing the lamp 0.016 (two). A bake comes down onto its
+surface from `offset` (mesh2splat_span: a ten-thousandth of the model, half
+a millimetre on the car) over the gaussian's centre, and a lens 1.1 mm thick
+under cells of 8.8 mm holds its gaussians' centres between its faces: the
+ray started inside the glass and met the far face from behind, and the
+gaussian baked the lamp as that face alone lets it through.
+`bakeSurfaceUnder` (`foundBaked`, `bakeCellOrigin`): where the ray meets a
+transmitting face from behind, it started inside that glass, so a ray up
+the normal finds the face over the centre (within 1e-2 of the scale) and the
+ray down starts past it, meeting the glass from outside. `entersGlass` stays:
+it is right, and was not what this was.
+
+## A glass gaussian's colour is its transmission's own
+
+**What was measured** (gpu_t5, after 0ac9260): the lobes test's glass
+(OpenPBR, base colour 0.787, transmission colour 0.8871, weight 1) relit
+read a mean of 0.378 against the mesh path traced 0.4217 (0.3737 against
+0.4019 before), 10% under where its bound is 9%, while its baked cloud read
+0.4225. The TX glass rows moved away too (pale 0.0441 to 0.0529, window
+0.0553 to 0.0592 relMSE).
+
+**The cause.** mesh2splat took a transmitting gaussian's colour as the
+base colour times the transmission colour (`colour * tint`), and the relit
+cloud tints a crossing by that colour (`lensExitThrough`, the body): 0.787 x
+0.8871 = 0.698 a crossing where the mesh's is 0.8871 -- the transmitted
+light 21% low, and a second Fresnel a face in the mesh hid most of it.
+OpenPBR and standard_surface tint their transmission by `transmission_color`
+alone; their base colour is the opaque base's, which a weight of one leaves
+out. glTF does tint it by its base colour, and a UsdPreviewSurface's
+transmission is coverage of its diffuse.
+
+**What changed.** `StageMaterial::ownTransmissionColour` (MeshStage: a
+MaterialX surface that reads `transmission_color`), handed to the bundle as
+`transmissionTintsBase` (0 there, 1 for glTF and UsdPreviewSurface, the
+default 1 keeping what any other caller had), in the `transmissionColour`
+w the uniform block left unused: the transmitted colour is the transmission
+colour times as much of the material's colour as that says. The baked
+cloud is unaffected (its body is the bake's). Numbers go here once run
+(`~/luc/athenea-gpu/gpu_t6.sh`).
