@@ -13659,6 +13659,22 @@ lamp scaled by a transmittance is: over the whole frame its error held at
 Numbers go here once run (`~/luc/athenea-gpu/gpu_t3.sh`, which prints the
 glass validations' relMSE rows beside their values before this change).
 
+**Measured** (gpu_t3, 0ac9260): the glass box's deep frames agree (-0.69%,
+was 3.45%), the tint test holds its closed forms, the thin-glass test passes.
+And a clear ball of tint (1, 1, 0.5) under a uniform sky, through its
+middle, read 0.9998 (was 0.9205) where its cloud reads 0.9519. That is the
+mesh right, not a Fresnel lost: through two faces 0.92, the near face's
+polish 0.04, and the light the far face reflects back out through the near
+one, 0.037 -- in a uniform sky a clear ball returns all of it (blue: 0.25 x
+0.92 + 0.04 + 0.009 = 0.2795, as read). Before, the second Fresnel a face
+took 0.07 off the first term and the mesh happened to sit near the cloud.
+The cloud leaves the far face's reflection out (`lensExitThrough` loses
+it), so `splat_relight` now gives it back (`farFaceReflected`): in at the
+near face, the tint, the far face's R, the tint, out at the near face, of
+what lies along the mirror direction -- the polish's own reading, for a ball
+the direction the light comes in from. Expected 0.989 and 0.2788 for the
+ball's cloud against the mesh's 0.9998 and 0.2795 (gpu_t5.sh).
+
 **Not done.** `generalized_schlick_bsdf` transmitting under a Schlick
 reflection keeps its double charge: no stage here layers one that way.
 The layer's own throughput from inside a solid still uses the outside fit,

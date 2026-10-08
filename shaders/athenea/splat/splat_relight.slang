@@ -1057,6 +1057,27 @@ float3 transmittedShare(SplatSurface s, float nDotV) {
                                             s.lobes.specularWeight);
 }
 
+/// WHAT THE FAR FACE OF A SOLID SENDS BACK OUT THROUGH THE NEAR ONE: light
+/// that came in along the mirror direction, crossed the glass, met the far
+/// face and was reflected back to the eye -- in at the near face (1 - R),
+/// the tint, the far face's R, the tint again, out at the near face (1 - R);
+/// the gaussian's colour carries the first tint, as it does for the light
+/// let through (`lensExitThrough`). For a ball the far face meets the ray at
+/// the angle the near one bent it to, which reflects as much as the near
+/// face does from outside (reciprocity). Left out, a clear ball under a
+/// uniform sky read 0.952 where the mesh path traced, once its transmission
+/// paid one Fresnel a face, reads 0.9998: what passes both faces (0.92),
+/// the near face's polish (0.04), and this (0.037). Nothing for a thin wall
+/// (the blend is its whole transmission) or a far face seen from behind.
+float3 farFaceReflected(SplatSurface s, float nDotV, float3 alongMirror) {
+    if (s.thinWalled || s.backFacing || !(s.ior > 1.0)) {
+        return float3(0.0);
+    }
+    const float r = fresnelDielectric(saturate(nDotV), s.ior);
+    const float3 tint = lerp(float3(1.0), saturate(s.albedo), s.transmission);
+    return (1.0 - r) * r * tint * (1.0 - r) * alongMirror;
+}
+
 /// WHAT A TX TRANSFER GIVES A GAUSSIAN WHATEVER THE EYE: the body's light
 /// under this sky (the transfer dotted with it, the sun's exact cosine at
 /// the share the cells let through, the sun's bounce), that share, and the
@@ -1323,14 +1344,15 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // The far face of a solid transmits nothing of its own: its share of
         // the light is what the near face already sent on.
         const float3 passes = transmittedShare(s, nDotV);
-        const float3 body2 = layers.under * s.albedo * (1.0 - s.metallic) *
-                             ((1.0 - s.transmission) * front + transmittedWeight(s) * passes * behind);
         // What the reflection sees: the cloud itself where a ray found it,
         // and the sky narrowed by how much of it this gaussian can see where
         // nothing was traced.
         const float3 seen = s.hasReflection
                                 ? s.reflectionColour
                                 : envRadiance(envTexels, dome, mirror, s.roughness, envBaseSide);
+        const float3 body2 = layers.under * s.albedo * (1.0 - s.metallic) *
+                             ((1.0 - s.transmission) * front +
+                              transmittedWeight(s) * (passes * behind + farFaceReflected(s, nDotV, seen)));
         // A TX transfer asks its lobe which of its directions are open; the
         // first transfer had one number for the whole hemisphere.
         // THE BASE'S POLISH IS OPEN BY THE HARMONICS, as the first transfer
@@ -1480,7 +1502,10 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
                                                                  envBaseSide);
         coat = layers.coat * coatSeen;
     }
-    return layers.under * body * ((1.0 - s.transmission) * above + transmittedWeight(s) * behind) +
+    const float3 alongMirror = s.hasReflection ? s.reflectionColour : reflected;
+    return layers.under * body *
+               ((1.0 - s.transmission) * above +
+                transmittedWeight(s) * (behind + farFaceReflected(s, nDotV, alongMirror))) +
            layers.under * thinWallGain(s) * splatPolish(s, nDotV) *
                (s.hasReflection ? s.reflectionColour : reflected) +
            coat + layers.belowCoat * layers.sheen * above;
