@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -775,6 +776,116 @@ TEST_CASE("a decimation carries ids, rigs, bits and floats with the gaussians, a
     CHECK((*violations)[1] == 0);
     CHECK((*violations)[2] == 0);
     CHECK((*violations)[3] == 0);
+}
+
+// A MERGE BY PAIRS KEEPS WHAT IT MERGES (lod::Decimator::decimatePairs).
+// A floor of surfels -- discs as wide as their spacing, the third scale 0 --
+// whose left half is one prim (id 7) and right half another (id 9), one
+// colour, merged until eight times fewer: every kept gaussian holds the mass
+// of what it stands for (opacity times area, where its opacity was not held
+// at 0.99), has a shape in range and a covariance symmetric and positive
+// semidefinite, stands for one side only, and a float its records carry --
+// their x -- comes back inside its members' range. Flat merges of discs come
+// back discs: surfels.
+TEST_CASE("a merge by pairs keeps mass, a covariance and its attributes, and crosses no id",
+          "[lod][gpu][decimate][pairs]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    auto decimator = lod::Decimator::create(*gpu->library);
+    if (!decimator) FAIL(decimator.error().toString());
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/pairs_check", "pairsCheck");
+    if (!check) FAIL(check.error().toString());
+    constexpr int kSide = 64;
+    constexpr float kSpacing = 2.0F / kSide;
+    CloudBuilder built;
+    std::vector<uint32_t> xs, ids;
+    for (int y = 0; y < kSide; ++y) {
+        for (int x = 0; x < kSide; ++x) {
+            const float px = -1.0F + (x + 0.5F) * kSpacing;
+            built.add(px, -1.0F + (y + 0.5F) * kSpacing, 0.0F, 0.6F, kSpacing * 0.6F, kSpacing * 0.6F, 0.0F,
+                      {1.0F, 0.0F, 0.0F, 0.0F}, {0.5F, 0.4F, 0.3F});
+            xs.push_back(std::bit_cast<uint32_t>(px));
+            ids.push_back(x < kSide / 2 ? 7u : 9u);
+        }
+    }
+    const uint32_t records = kSide * kSide;
+    const auto upload = [&](const std::vector<uint32_t>& v, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = v.size() * 4;
+        desc.elementBytes = 4;
+        desc.label = label;
+        auto made = gpu::Buffer::create(*gpu->device, desc, v.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    const gpu::Buffer xBuffer = upload(xs, "check.x");
+    const gpu::Buffer idBuffer = upload(ids, "check.ids");
+    gpu::Buffer keys = upload(std::vector<uint32_t>(records, 0u), "check.keys");
+    REQUIRE(decimator->addKey(keys, records, idBuffer, 1, lod::AttributeMerge::First));
+    auto cloud = h->loader.upload(built.raw, 0);
+    REQUIRE(cloud);
+    REQUIRE(cloud->count == records);   // a surfel's zero scale is kept, not dropped
+    auto lod = h->builder.build(*cloud);
+    if (!lod) FAIL(lod.error().toString());
+    lod::DecimateCarried carried;
+    carried.keys = &keys;
+    lod::PairSettings settings;
+    settings.ratio = 8.0F;
+    lod::DecimateStats stats;
+    auto kept = decimator->decimatePairs(*lod, cloud->origin, settings, carried, &stats);
+    if (!kept) FAIL(kept.error().toString());
+    const uint32_t count = kept->cloud.count;
+    std::printf("  %u of %u kept in %u passes, %u surfels\n", count, stats.before, stats.passes, stats.surfels);
+    // A floor of one colour and one shape: every pair costs the same, the
+    // last pass's threshold bin holds them all, and it may take the count
+    // past the ratio by up to half of what that pass started from.
+    CHECK(count <= records / 8 + records / 64);
+    CHECK(count * 10 >= records);
+    auto meanX = decimator->mergeAttribute(*lod, *kept, xBuffer, 1, lod::AttributeMerge::Mean);
+    REQUIRE(meanX);
+    gpu::Buffer counts = upload(std::vector<uint32_t>(8, 0u), "check.counts");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["positions"].setBinding(kept->cloud.positions.rhi());
+            cursor["shape"].setBinding(kept->cloud.shape.rhi());
+            cursor["ranges"].setBinding(kept->ranges.rhi());
+            cursor["storePositions"].setBinding(kept->storePositions.rhi());
+            cursor["storeShape"].setBinding(kept->storeShape.rhi());
+            cursor["recordOf"].setBinding(kept->recordOf.rhi());
+            cursor["ids"].setBinding(idBuffer.rhi());
+            cursor["xs"].setBinding(xBuffer.rhi());
+            cursor["meanX"].setBinding(meanX->first.rhi());
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["count"].setData(count);
+            cursor["params"]["tolerance"].setData(1.0e-5F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    auto v = counts.readAll<uint32_t>(*gpu->device);
+    REQUIRE(v);
+    std::printf("  mass %u, shape %u, covariance %u, across ids %u, float out of range %u; surfels %u\n", (*v)[0],
+                (*v)[1], (*v)[2], (*v)[3], (*v)[4], (*v)[5]);
+    CHECK((*v)[0] == 0);
+    CHECK((*v)[1] == 0);
+    CHECK((*v)[2] == 0);
+    CHECK((*v)[3] == 0);
+    CHECK((*v)[4] == 0);
+    CHECK((*v)[5] > count / 2);
+    CHECK((*v)[5] == stats.surfels);
+
+    // The same with the merge tree asked for: the flat cloud is the same cut,
+    // and the tree holds every leaf and every merge it took to get there and
+    // on, so at least the merges to the cut.
+    lod::DecimateResult tree;
+    lod::DecimateStats treeStats;
+    settings.treeRatio = 64.0F;
+    auto again = decimator->decimatePairs(*lod, cloud->origin, settings, carried, &treeStats, &tree);
+    if (!again) FAIL(again.error().toString());
+    std::printf("  tree: %u gaussians (%u leaves), the cut %u\n", tree.cloud.count, records, again->cloud.count);
+    CHECK(again->cloud.count == count);
+    CHECK(tree.cloud.count >= records + (records - count));
+    CHECK(tree.parent.valid());
 }
 
 // A MERGE OF SHADING NORMALS IS A NORMAL BETWEEN THEM.

@@ -217,6 +217,36 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--reach` | 0.1..10 | `1.5` | a cuántas de sus desviaciones típicas puede estar una gaussiana de la fusión que la sustituye |
 | `--degree` | 0..3 | `3` | armónicos que se conservan |
 | `--no-camera` | flag | apagado | no añadir `/World/Camera` |
+| `--ratio` | 1..10000 | apagado | fundir por pares en vez de cortar el octree, hasta tener estas veces menos gaussianas; entonces no se leen las cuatro tolerancias de arriba |
+| `--edge` | 0..2 | `0.15` | `--ratio`: una diferencia de color, codificada en sRGB, que nunca se funde |
+| `--max-angle` | grados, 0..180 | `60` | `--ratio`: normales más separadas no se funden nunca |
+| `--no-surfels` | flag | apagado | `--ratio`: una fusión plana sigue siendo una gaussiana fina en vez de un surfel |
+| `--surfel-flatness` | 0..1 | `0.12` | `--ratio`: una fusión de discos cuyo eje más fino está por debajo de esta fracción del mediano se escribe como surfel |
+| `--highlight-cone` | 0..1000 | `1` | `--ratio`: en una superficie brillante (alpha GGX por debajo de 0.1), normales más separadas que esto por sqrt(alpha) radianes no se funden nunca -- la fusión movería el brillo; grande deja decidir solo a la proporción |
+| `--tree` | ruta | — | `--ratio`: además, el árbol de fusiones entero aquí: las hojas en orden de profundidad y luego cada fusión, con `primvars:athenea:splat:lodParent` y `lodCost` y la constante `lodTree` |
+| `--camera` | ruta de prim | `/World/Camera` donde la hay | `--ratio`: la cámara para la que se hace la nube; una fusión de menos de medio píxel en ella no cuesta nada de su forma |
+| `--camera-pixels` | 1..65536 | `1920` | `--ratio`: píxeles de ancho de la imagen de esa cámara |
+
+**Por pares** (`--ratio`). En cada pasada, cada gaussiana -- o fusión hasta
+entonces -- pesa una fusión con sus 16 vecinas a lo largo de dos órdenes de
+Morton de los centros, y los pares que se han elegido mutuamente se funden, los
+más baratos primero, como mucho la mitad de lo que queda por pasada, hasta
+llegar a la cuenta o hasta que nada más pueda fundirse (el log dice cuál, y
+cuántas pasadas). El coste: cuánto más ancha es la fusión que lo que sustituye,
+sin escala y ponderado por lo ancha que es en la pantalla de la cámara (nada
+por debajo de medio píxel, todo a partir de dos); cuánto más gruesa que sus
+discos; el giro de las normales, más en un espejo (mueve el brillo); el color,
+codificado en sRGB; metallic, roughness y transmisión. Nunca se funde: una
+clave (ids, articulaciones, láminas, paredes finas, metales Schlick), vidrio
+con lo que no lo es, un espejo (roughness por debajo de 0.1) con lo que no lo
+es, normales más allá de `--max-angle`, un color más allá de `--edge`. Una
+fusión de discos plana hasta 0.12 de su anchura se escribe como surfel (una
+escala exactamente 0, `primvars:athenea:splat:surfel`); su opacidad es su masa
+entre su área, topada en 0.99, y la masa entre el área sin tope se escribe como
+`primvars:athenea:splat:coverage`. Cada array se funde sobre los registros que
+representa una gaussiana conservada, como abajo; `transferZonal` y
+`curvature`, que están en el marco propio de cada gaussiana, a través del marco
+de cada una al mundo y al de la conservada.
 
 Una escena sale como entró, con menos gaussianas: se copia su capa raíz -- el
 rig y su animación, las luces, la cámara, el manifiesto Cryptomatte, las
@@ -245,6 +275,7 @@ metros.
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
 athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
+athenea decimate car_tx.usdc car_tx_10x.usdc --ratio 10
 ```
 
 ### 2.5 `athenea stage` — una escena USD por el delegate de Hydra
@@ -389,7 +420,7 @@ receta es §3.1.
 | `--cell-from-camera` | ruta de un prim cámara | ninguna | la celda de cada malla es lo que cubre un píxel de esa cámara donde la caja de la malla le queda más cerca (como poco el plano cercano), en `--time`; sustituye a `--density`. `--cell-min`/`--cell-max` la acotan, si se dan; no se deriva nada |
 | `--camera-pixels` | entero, de 1 a 65536 | `1920` | con `--cell-from-camera`: píxeles a lo ancho de la apertura horizontal de la cámara |
 | `--sigma` | número | `1.0` | anchura de la gaussiana en celdas; la de mesh2splat es 0.65 |
-| `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos |
+| `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos; `0` hace de cada gaussiana un surfel -- el disco de los otros dos, una escala exactamente 0, dibujado por el rayo de cada píxel (gaussian splatting 2D) -- y marca la nube con `primvars:athenea:splat:surfel` |
 | `--opacity` | número, de 0 a 1 | `1.0` | cobertura: cuánto de lo que hay detrás cubre la superficie convertida, multiplicado por la opacidad propia del material. Toda opacidad es cobertura -- esta, la constante del material, el valor de un mapa, lo que conserva un vidrio -- y cada gaussiana toma lo que necesita una de las varias que hay sobre un punto, así que 0.5 cubre la mitad a cualquier tamaño |
 | `--glass-opacity` | número, de 0 a 1 | `0.6` | cobertura que conserva un sólido que transmite del todo. El fotograma de un transfer TX dibuja la imagen propia de la lente -- el cielo doblado por las dos caras, la lejana estimada por la curvatura, y el campo donde el paso está cerrado --, pero esa imagen sale solo de las cúpulas, así que lo que el resto deja pasar recto es la otra luz de la escena: a 1 una bola de vidrio bajo una lámpara perdía el suelo iluminado que hay detrás. Un vidrio de pared fina (y una opacidad de UsdPreviewSurface menor que uno en su modo `transparent` por defecto) cubre en cambio lo que la lámina refleja con su índice |
 | `--opacity-cut` | número, de 0 a 1 | `0.5` | donde la opacidad de un material es un mapa sin umbral propio (el `opacity` de UsdPreviewSurface, el `opacity` de standard_surface, el `geometry_opacity` de OpenPBR, el `alpha` de glTF en BLEND): por debajo de esto no se escribe ninguna gaussiana; por encima, la superficie cubre lo que lee el mapa. El umbral propio del material (`opacityThreshold`, el `alpha_cutoff` de glTF en MASK) se usa en su lugar, y lo que conserva queda entero |
@@ -1235,6 +1266,8 @@ la radiancia que lleva.
 | `primvars:athenea:splat:litBody` | bool | `false` |
 | `primvars:athenea:splat:catcher` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
+| `primvars:athenea:splat:surfel` | bool | `false` |
+| `primvars:athenea:splat:coverage` | float[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |

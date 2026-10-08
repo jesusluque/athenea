@@ -2672,7 +2672,8 @@ void addMesh2Splat(CLI::App& app) {
                     "how wide a gaussian is against its cell; mesh2splat's own number is 0.65, which "
                     "leaves a traced surface 30% transparent");
     cmd->add_option("--flatness", o->flatness,
-                    "the third size, as a fraction of the smaller of the other two");
+                    "the third size, as a fraction of the smaller of the other two; 0 makes every "
+                    "gaussian a surfel, the disc of the other two (2D gaussian splatting)");
     cmd->add_option("--opacity", o->opacity,
                     "how much of what stands behind it the converted surface covers, multiplied into "
                     "the material's own opacity");
@@ -3174,6 +3175,8 @@ void addMesh2Splat(CLI::App& app) {
                 options.litBody = o->bake && !o->transfer;
                 options.catcher = o->shadowCatcher;
                 options.lightCatcher = o->lightCatcher;
+                // A thickness of nothing: every gaussian a surfel, a disc.
+                options.surfel = o->flatness == 0.0;
                 // Light, all of it: the albedo, the transfer's and the bake's.
                 options.linear = true;
                 // The matte's ancestry, gaussian by gaussian, as the conversion

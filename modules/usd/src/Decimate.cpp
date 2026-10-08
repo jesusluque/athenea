@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "athenea/gpu/Buffer.h"
@@ -16,6 +17,10 @@
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/scene/GpuClouds.h"
+
+#include <pxr/base/gf/camera.h>
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/camera.h>
 
 namespace athenea::usd {
 
@@ -88,6 +93,10 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             plans[k].how = ends(a.name, "shadowBits") ? lod::AttributeMerge::Bits : lod::AttributeMerge::First;
         } else if (ends(a.name, "athenea:splat:normal") && a.width == 3) {
             plans[k].how = lod::AttributeMerge::Normal;   // a direction: averaged, and a unit again
+        } else if (ends(a.name, "athenea:splat:transferZonal") && a.width == 10) {
+            plans[k].how = lod::AttributeMerge::Zonal;   // axes in each gaussian's own frame
+        } else if (ends(a.name, "athenea:splat:curvature") && a.width == 3) {
+            plans[k].how = lod::AttributeMerge::Curvature;   // in the frame's first two axes
         }
     }
     for (Plan& plan : plans) {
@@ -150,66 +159,137 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
     carried.keys = keyed ? &keys : nullptr;
     carried.material = materialled ? &material : nullptr;
     lod::DecimateStats stats;
-    auto decimated = decimator->decimate(*lod, cloud->origin, settings, carried, &stats);
-    if (!decimated) return std::move(decimated).error();
-    auto kept = loader->records(decimated->cloud);
-    if (!kept) return std::move(kept).error();
-
-    // Every array, and every sample of it, merged over what each kept
-    // gaussian stands for.
-    const uint32_t count = decimated->cloud.count;
-    for (const Plan& plan : plans) {
-        if (plan.skip) {
-            continue;
-        }
-        GaussianArray& a = arrays[plan.array];
-        GaussianArray* w = plan.weightsOf >= 0 ? &arrays[static_cast<size_t>(plan.weightsOf)] : nullptr;
-        for (size_t v = 0; v < a.values.size(); ++v) {
-            auto valuesMade = upload(a.values[v], "decimate.values");
-            if (!valuesMade) return std::move(valuesMade).error();
-            const gpu::Buffer values = std::move(*valuesMade);
-            std::optional<gpu::Buffer> weights;
-            if (w != nullptr) {
-                auto made = upload(w->values[std::min(v, w->values.size() - 1)], "decimate.weights");
-                if (!made) return std::move(made).error();
-                weights = std::move(*made);
-            }
-            auto merged = decimator->mergeAttribute(*lod, *decimated, values, a.width, plan.how,
-                                                    weights ? &*weights : nullptr);
-            if (!merged) return std::move(merged).error();
-            auto back = merged->first.readAll<uint32_t>(device);
-            if (!back) return std::move(back).error();
-            back->resize(size_t{count} * a.width);
-            a.values[v] = std::move(*back);
-            if (w != nullptr && v < w->values.size()) {
-                auto backWeights = merged->second.readAll<uint32_t>(device);
-                if (!backWeights) return std::move(backWeights).error();
-                backWeights->resize(size_t{count} * a.width);
-                w->values[v] = std::move(*backWeights);
-            }
+    lod::PairSettings pairSettings = o.pairSettings;
+    if (o.pairs && usd) {
+        // The camera, read on the host: where it stands and how many pixels a
+        // unit of length covers at a distance of one.
+        const pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(input.string());
+        const std::string path = o.camera.empty() ? std::string("/World/Camera") : o.camera;
+        const pxr::UsdGeomCamera camera(stage ? stage->GetPrimAtPath(pxr::SdfPath(path)) : pxr::UsdPrim());
+        if (camera) {
+            const pxr::GfCamera gf = camera.GetCamera(pxr::UsdTimeCode::Default());
+            const pxr::GfVec3d eye = gf.GetTransform().ExtractTranslation();
+            pairSettings.eye[0] = static_cast<float>(eye[0]);
+            pairSettings.eye[1] = static_cast<float>(eye[1]);
+            pairSettings.eye[2] = static_cast<float>(eye[2]);
+            pairSettings.pixelsPerUnit = gf.GetHorizontalAperture() > 0.0F
+                                             ? gf.GetFocalLength() / gf.GetHorizontalAperture() *
+                                                   static_cast<float>(o.cameraPixels)
+                                             : 0.0F;
+            std::printf("decimate: seen from %s, %.0f pixels a unit at a distance of one\n", path.c_str(),
+                        pairSettings.pixelsPerUnit);
+        } else if (!o.camera.empty()) {
+            return Error(ErrorCode::InvalidArgument, "decimate: no camera at " + o.camera);
         }
     }
+    lod::DecimateResult treeResult;
+    const bool tree = o.pairs && !o.treeOutput.empty();
+    auto decimated = o.pairs ? decimator->decimatePairs(*lod, cloud->origin, pairSettings, carried, &stats,
+                                                        tree ? &treeResult : nullptr)
+                             : decimator->decimate(*lod, cloud->origin, settings, carried, &stats);
+    if (!decimated) return std::move(decimated).error();
+    const std::vector<GaussianArray> source = arrays;
 
-    ExportOptions options;
-    options.maxDegree = o.degree;
-    options.addCamera = o.addCamera;
-    if (usd) {
-        // The gaussians themselves to a stage of their own, and from it
-        // into a copy of the stage they came from, beside everything else.
-        // Only that stage's arrays are read: the copy keeps the source's
-        // metersPerUnit and upAxis, so this one's (metres) are never seen.
-        const std::filesystem::path gaussians =
-            std::filesystem::temp_directory_path() /
-            ("athenea_decimate_" + output.stem().string() + ".usdc");
-        options.addCamera = false;
-        if (auto written = writeParticleFieldStage(library, *kept, gaussians, options); !written) {
-            return std::move(written).error();
+    // ONE RESULT WRITTEN: every array, and every sample of it, merged over
+    // what each of its gaussians stands for, beside what the merge adds.
+    const auto write = [&](lod::DecimateResult& result, const std::filesystem::path& to,
+                           std::vector<GaussianArray> added, bool surfel, bool lodTree) -> Result<void> {
+        std::vector<GaussianArray> merged = source;
+        auto kept = loader->records(result.cloud);
+        if (!kept) return std::move(kept).error();
+        const uint32_t count = result.cloud.count;
+        for (const Plan& plan : plans) {
+            if (plan.skip) {
+                continue;
+            }
+            GaussianArray& a = merged[plan.array];
+            GaussianArray* w = plan.weightsOf >= 0 ? &merged[static_cast<size_t>(plan.weightsOf)] : nullptr;
+            for (size_t v = 0; v < a.values.size(); ++v) {
+                auto valuesMade = upload(source[plan.array].values[v], "decimate.values");
+                if (!valuesMade) return std::move(valuesMade).error();
+                const gpu::Buffer values = std::move(*valuesMade);
+                std::optional<gpu::Buffer> weights;
+                if (w != nullptr) {
+                    const GaussianArray& sw = source[static_cast<size_t>(plan.weightsOf)];
+                    auto made = upload(sw.values[std::min(v, sw.values.size() - 1)], "decimate.weights");
+                    if (!made) return std::move(made).error();
+                    weights = std::move(*made);
+                }
+                auto m = decimator->mergeAttribute(*lod, result, values, a.width, plan.how,
+                                                   weights ? &*weights : nullptr);
+                if (!m) return std::move(m).error();
+                auto back = m->first.readAll<uint32_t>(device);
+                if (!back) return std::move(back).error();
+                back->resize(size_t{count} * a.width);
+                a.values[v] = std::move(*back);
+                if (w != nullptr && v < w->values.size()) {
+                    auto backWeights = m->second.readAll<uint32_t>(device);
+                    if (!backWeights) return std::move(backWeights).error();
+                    backWeights->resize(size_t{count} * a.width);
+                    w->values[v] = std::move(*backWeights);
+                }
+            }
         }
-        auto written = writeDecimatedStage(input, output, where, gaussians, arrays);
-        std::filesystem::remove(gaussians);
-        if (!written) return std::move(written).error();
-    } else if (auto written = writeParticleFieldStage(library, *kept, output, options); !written) {
-        return std::move(written).error();
+        for (GaussianArray& a : added) {
+            std::erase_if(merged, [&](const GaussianArray& m) { return m.name == a.name; });
+            merged.push_back(std::move(a));
+        }
+        ExportOptions options;
+        options.surfel = surfel;
+        options.lodTree = lodTree;
+        options.maxDegree = o.degree;
+        options.addCamera = o.addCamera;
+        if (usd) {
+            // The gaussians themselves to a stage of their own, and from it
+            // into a copy of the stage they came from, beside everything else.
+            // Only that stage's arrays are read: the copy keeps the source's
+            // metersPerUnit and upAxis, so this one's (metres) are never seen.
+            const std::filesystem::path gaussians =
+                std::filesystem::temp_directory_path() / ("athenea_decimate_" + to.stem().string() + ".usdc");
+            options.addCamera = false;
+            ATHENEA_TRY(writeParticleFieldStage(library, *kept, gaussians, options));
+            auto written = writeDecimatedStage(input, to, where, gaussians, merged);
+            std::filesystem::remove(gaussians);
+            return written;
+        }
+        return writeParticleFieldStage(library, *kept, to, options);
+    };
+    const auto floats = [&](const gpu::Buffer& b, uint32_t count, const char* name,
+                            const char* type) -> Result<GaussianArray> {
+        auto words = b.readAll<uint32_t>(device);
+        if (!words) return std::move(words).error();
+        words->resize(count);
+        GaussianArray a;
+        a.name = name;
+        a.typeName = type;
+        a.interpolation = "vertex";
+        a.values.push_back(std::move(*words));
+        return a;
+    };
+    std::vector<GaussianArray> added;
+    if (o.pairs && decimated->coverage.valid()) {
+        // What each merge covers, beside the opacity held at 0.99.
+        auto a = floats(decimated->coverage, decimated->cloud.count, "primvars:athenea:splat:coverage", "float[]");
+        if (!a) return std::move(a).error();
+        added.push_back(std::move(*a));
+    }
+    ATHENEA_TRY(write(*decimated, output, std::move(added), o.pairs && stats.surfels > 0, false));
+    if (tree) {
+        // THE MERGE TREE, a file of its own: every merge a gaussian after the
+        // leaves, its parent and its cost (`athenea:splat:lodParent`,
+        // `lodCost`), the leaves in depth-first order.
+        const uint32_t n = treeResult.cloud.count;
+        std::vector<GaussianArray> treeAdded;
+        for (auto [buffer, name, type] :
+             {std::tuple{&treeResult.coverage, "primvars:athenea:splat:coverage", "float[]"},
+              std::tuple{&treeResult.parent, "primvars:athenea:splat:lodParent", "int[]"},
+              std::tuple{&treeResult.cost, "primvars:athenea:splat:lodCost", "float[]"}}) {
+            auto a = floats(*buffer, n, name, type);
+            if (!a) return std::move(a).error();
+            treeAdded.push_back(std::move(*a));
+        }
+        ATHENEA_TRY(write(treeResult, o.treeOutput, std::move(treeAdded), true, true));
+        std::printf("decimate: wrote the merge tree, %u gaussians, to %s\n", n, o.treeOutput.string().c_str());
     }
     return stats;
 }

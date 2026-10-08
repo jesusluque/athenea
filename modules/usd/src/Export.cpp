@@ -439,6 +439,15 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         static const TfToken kLit("primvars:athenea:splat:litBody");
         splats.GetPrim().CreateAttribute(kLit, SdfValueTypeNames->Bool, true).Set(true);
     }
+    if (options.lodTree) {
+        static const TfToken kTree("primvars:athenea:splat:lodTree");
+        splats.GetPrim().CreateAttribute(kTree, SdfValueTypeNames->Bool, true).Set(true);
+    }
+    if (options.surfel) {
+        // Surfels among the gaussians: a scale of exactly 0, drawn as discs.
+        static const TfToken kSurfel("primvars:athenea:splat:surfel");
+        splats.GetPrim().CreateAttribute(kSurfel, SdfValueTypeNames->Bool, true).Set(true);
+    }
     if (options.catcher) {
         // A shadow catcher: drawn black, covering what the object took.
         static const TfToken kCatcher("primvars:athenea:splat:catcher");
@@ -457,6 +466,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     {
         static const TfToken kLighting[] = {
             TfToken("primvars:athenea:splat:relight"),      TfToken("primvars:athenea:splat:litBody"),
+            TfToken("primvars:athenea:splat:surfel"),
             TfToken("primvars:athenea:splat:ior"),          TfToken("primvars:athenea:splat:metallic"),
             TfToken("primvars:athenea:splat:roughness"),    TfToken("primvars:athenea:splat:transmission"),
             TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
@@ -1152,9 +1162,43 @@ Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::
     if (field.GetPrim().HasAttribute(TfToken("orientationsh")) && fewer.GetOrientationsAttr()) {
         field.GetPrim().RemoveProperty(TfToken("orientationsh"));
     }
+    // The constants the decimation says about what it wrote: surfels among
+    // the gaussians, a merge tree.
+    for (const char* name : {"primvars:athenea:splat:surfel", "primvars:athenea:splat:lodTree"}) {
+        const UsdAttribute from = fewer.GetPrim().GetAttribute(TfToken(name));
+        bool value = false;
+        if (from && from.Get(&value) && value) {
+            field.GetPrim().CreateAttribute(TfToken(name), SdfValueTypeNames->Bool, false).Set(true);
+        }
+    }
     // Everything else a gaussian carries, merged.
     for (const GaussianArray& array : arrays) {
         UsdAttribute to = field.GetPrim().GetAttribute(TfToken(array.name));
+        if (!to && array.times.empty() && !array.values.empty() &&
+            (array.typeName == "float[]" || array.typeName == "int[]")) {
+            // One the source did not have -- what the decimation adds (the
+            // coverage, the tree): a primvar a gaussian, as its words say.
+            const bool integer = array.typeName == "int[]";
+            UsdGeomPrimvar primvar = UsdGeomPrimvarsAPI(field.GetPrim())
+                                         .CreatePrimvar(TfToken(array.name.substr(std::string("primvars:").size())),
+                                                        integer ? SdfValueTypeNames->IntArray
+                                                                : SdfValueTypeNames->FloatArray,
+                                                        UsdGeomTokens->vertex);
+            if (integer) {
+                VtIntArray v(array.values[0].size());
+                for (size_t k = 0; k < v.size(); ++k) {
+                    v[k] = static_cast<int>(array.values[0][k]);
+                }
+                primvar.Set(v);
+            } else {
+                VtFloatArray v(array.values[0].size());
+                for (size_t k = 0; k < v.size(); ++k) {
+                    std::memcpy(&v[k], &array.values[0][k], 4);
+                }
+                primvar.Set(v);
+            }
+            continue;
+        }
         if (!to) {
             continue;
         }
@@ -1169,8 +1213,17 @@ Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::
             to.Set(valueLike(like, array.values[0]));
         }
     }
-    if (!stage->GetRootLayer()->Save()) {
-        return Error::make(ErrorCode::IoFailure, "cannot save '{}'", output.string());
+    // Written whole, not saved over: a crate saved in place appends what
+    // changed and keeps what it replaced, and a copy of a 600k cloud cut to
+    // 55k came out larger than the cloud (366 MB against 335).
+    const std::filesystem::path fresh = output.string() + ".fresh" + output.extension().string();
+    if (!stage->GetRootLayer()->Export(fresh.string())) {
+        return Error::make(ErrorCode::IoFailure, "cannot write '{}'", fresh.string());
+    }
+    std::error_code moved;
+    std::filesystem::rename(fresh, output, moved);
+    if (moved) {
+        return Error::make(ErrorCode::IoFailure, "cannot replace '{}': {}", output.string(), moved.message());
     }
     return ok();
 }

@@ -216,6 +216,34 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--reach` | 0.1..10 | `1.5` | how many of its standard deviations a gaussian may stand from the merge that replaces it |
 | `--degree` | 0..3 | `3` | harmonics kept |
 | `--no-camera` | flag | off | do not add `/World/Camera` |
+| `--ratio` | 1..10000 | off | merge by pairs instead of cutting the octree, until this many times fewer gaussians; the four tolerances above are not read then |
+| `--edge` | 0..2 | `0.15` | `--ratio`: a colour difference, sRGB-encoded, never merged across |
+| `--max-angle` | degrees, 0..180 | `60` | `--ratio`: normals further apart are never merged |
+| `--no-surfels` | flag | off | `--ratio`: a flat merge stays a thin gaussian rather than a surfel |
+| `--surfel-flatness` | 0..1 | `0.12` | `--ratio`: a merge of discs whose thinnest axis is under this fraction of its middle one is written a surfel |
+| `--highlight-cone` | 0..1000 | `1` | `--ratio`: on a glossy surface (GGX alpha under 0.1), normals further apart than this times sqrt(alpha) radians never merge -- the merge would move the highlight; large lets the ratio decide alone |
+| `--tree` | path | — | `--ratio`: the whole merge tree written here as well: the leaves in depth-first order, then every merge, with `primvars:athenea:splat:lodParent` and `lodCost` and the constant `lodTree` |
+| `--camera` | prim path | `/World/Camera` where there is one | `--ratio`: the camera the cloud is made for; a merge under half a pixel there costs nothing of its shape |
+| `--camera-pixels` | 1..65536 | `1920` | `--ratio`: pixels across that camera's image |
+
+**By pairs** (`--ratio`). Each pass, every gaussian -- or merge so far -- weighs
+a merge with its 16 neighbours along two Morton orders of the centres, and
+pairs that chose each other merge, the cheapest first, at most half of what is
+left a pass, until the count is reached or nothing more may merge (the log
+says which, and how many passes). The cost: how much wider the merge is than
+what it replaces, free of scale and weighed by how wide it is on the camera's
+screen (nothing under half a pixel, all of it from two); how much thicker than
+its discs; the normals' turn, more for a mirror (it moves the highlight); the
+colour, sRGB-encoded; metallic, roughness and transmission. Never merged: a
+key (ids, joints, sheets, thin walls, Schlick metals), glass with what is not,
+a mirror (roughness under 0.1) with what is not, normals past `--max-angle`, a
+colour past `--edge`. A merge of discs flat to within 0.12 of its width is
+written a surfel (one scale exactly 0, `primvars:athenea:splat:surfel`); its
+opacity is its mass over its area held at 0.99, and the mass over the area
+unheld is written as `primvars:athenea:splat:coverage`. Every array merges
+over the records a kept gaussian stands for, as below; `transferZonal` and
+`curvature`, which are in each gaussian's own frame, through each one's frame
+to the world and into the kept one's.
 
 A stage comes out as it went in, with fewer gaussians: its root layer is
 copied -- the rig and its animation, the lights, the camera, the Cryptomatte
@@ -242,6 +270,7 @@ file is written as a new stage, as `athenea convert` writes one, in metres.
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
 athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
+athenea decimate car_tx.usdc car_tx_10x.usdc --ratio 10
 ```
 
 ### 2.5 `athenea stage` — a USD stage through the Hydra delegate
@@ -384,7 +413,7 @@ recipe is §3.1 below.
 | `--cell-from-camera` | camera prim path | none | each mesh's cell is what one pixel of that camera covers where the mesh's box is nearest to it (held to the near plane), at `--time`; replaces `--density`. `--cell-min`/`--cell-max` bound it, given; nothing is derived |
 | `--camera-pixels` | integer, 1 to 65536 | `1920` | with `--cell-from-camera`: pixels across the camera's horizontal aperture |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
-| `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
+| `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two; `0` makes every gaussian a surfel -- the disc of the other two, one scale exactly 0, drawn by the ray through each pixel (2D gaussian splatting) -- and marks the cloud `primvars:athenea:splat:surfel` |
 | `--opacity` | number, 0 to 1 | `1.0` | coverage: how much of what stands behind it the converted surface covers, multiplied into the material's own opacity. Every opacity is coverage -- this, the material's constant, a map's value, what a glass keeps -- and each gaussian takes what one of the several over a point needs for it, so 0.5 covers half at any size |
 | `--glass-opacity` | number, 0 to 1 | `0.6` | coverage a fully transmitting solid keeps. A TX transfer's frame draws the lens's own image -- the sky bent through both faces, the far one guessed from the curvature, and the field where the way through is closed -- but that image comes from the domes alone, so what the rest lets through straight is the scene's other light: at 1 a glass ball under a lamp lost the lit ground behind it. A thin-walled glass (and a UsdPreviewSurface opacity under one in its default `transparent` mode) covers what the sheet reflects at its index instead |
 | `--opacity-cut` | number, 0 to 1 | `0.5` | where a material's opacity is a map with no threshold of its own (UsdPreviewSurface's `opacity`, standard_surface's `opacity`, OpenPBR's `geometry_opacity`, glTF's `alpha` in BLEND): below this no gaussian is written; above it the surface covers what the map reads. A material's own threshold (`opacityThreshold`, glTF's `alpha_cutoff` in MASK) is used instead, and what it keeps is whole |
@@ -1211,6 +1240,8 @@ showing the radiance it carries.
 | `primvars:athenea:splat:litBody` | bool | `false` |
 | `primvars:athenea:splat:catcher` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
+| `primvars:athenea:splat:surfel` | bool | `false` |
+| `primvars:athenea:splat:coverage` | float[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |

@@ -73,6 +73,15 @@ struct ExportOptions {
     /// the material's body, not an albedo, so a frame that relights this
     /// cloud adds the polish and nothing else. What `athenea mesh2splat` bakes.
     bool     litBody = false;
+    /// Writes `primvars:athenea:splat:surfel = 1`: some gaussians are surfels,
+    /// a scale of exactly 0 (`athenea mesh2splat --flatness 0`, a merge that
+    /// keeps discs flat), for a reader that draws them only when asked --
+    /// Spark's enable2DGS.
+    bool     surfel = false;
+    /// Writes `primvars:athenea:splat:lodTree = 1`: the gaussians are a merge
+    /// tree (`athenea decimate --tree`), its nodes each beside its parent --
+    /// to be cut, not drawn whole.
+    bool     lodTree = false;
     /// Writes `primvars:athenea:splat:catcher = 1`: the gaussians are a
     /// shadow catcher lying on a ground (`athenea mesh2splat --shadow-catcher`).
     /// A frame draws them black, each covering what the object took of the
@@ -248,6 +257,18 @@ struct DecimateStageOptions {
     uint32_t              degree = 3;    ///< harmonics kept
     bool                  addCamera = true;   ///< for a splat file only: a stage keeps its own
     lod::DecimateSettings settings;
+    /// MERGE BY PAIRS (lod::Decimator::decimatePairs) instead of cutting the
+    /// octree: `pairSettings.ratio` times fewer, the cheapest merges first.
+    bool                  pairs = false;
+    lod::PairSettings     pairSettings;
+    /// The camera the cloud is made for, a prim of the input stage: a merge
+    /// it would see under half a pixel costs nothing of its shape. Empty:
+    /// /World/Camera where the stage has one, else none.
+    std::string           camera;
+    uint32_t              cameraPixels = 1920;   ///< across the camera's image
+    /// With `pairs`: the whole merge tree written here as well -- the leaves
+    /// in depth-first order, then every merge, each with its parent and cost.
+    std::filesystem::path treeOutput;
 };
 
 /// FEWER GAUSSIANS, AND EVERYTHING THEY CARRIED. A stage's ParticleField --

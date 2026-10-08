@@ -13751,3 +13751,87 @@ w the uniform block left unused: the transmitted colour is the transmission
 colour times as much of the material's colour as that says. The baked
 cloud is unaffected (its body is the bake's). Numbers go here once run
 (`~/luc/athenea-gpu/gpu_t6.sh`).
+
+## Simplify: fewer gaussians by pairs, and surfels
+
+**Why.** A baked cloud is dense where nothing needs it: a car's panels, a
+ball's flat stretches, all at the conversion camera's pixel. The octree
+decimation (`athenea decimate`, above) stops at about 3x on the matx shader
+ball whatever its tolerance (chrome 600k to 198k at 0.4) and dirties the
+reflections inside the ball's cavity, its merges averaging normals the
+highlight turns with; a coarser conversion (a smaller `--max-splats`) cuts
+pieces short -- the ball's base lost whole parts at 5x and 10x (M2SB) -- and
+at 10x is 20.4 dB against the full cloud on chrome (LPIPS 0.197).
+
+**Merge by pairs** (`--ratio`, lod_pairs.slang; NanoGS, Xiong et al. 2026,
+arXiv 2603.16103, on the device and for a cloud that carries more than a
+colour). A node is moments -- mass W (opacity times the area of the two widest
+axes, the levels of detail's weight), W mu, W (Sigma + mu mu^T), and W times
+what the cost compares -- so a merge is a sum and a node stands for the moment
+matched gaussian of every record under it, whatever order the merges came
+in. Candidates are 8 neighbours each side along two Morton orders (the second
+shifted half a cell); pairs that chose each other merge, at most half the
+nodes a pass, the cheapest first: a host histogram of log10 costs (256 bins)
+sets each pass's threshold so the pass takes the count no further than the
+ratio. Every attribute is then merged once from the records each kept
+gaussian stands for (lodMergeAttribute, mass weighted), which is what merging
+pair by pair gives: the clusters are made runs of a permuted store
+(`DecimateResult::storePositions`), so the octree's machinery reads them.
+
+**The cost**, between two nodes and the gaussian their moments make:
+- shape: 1/2 [log I2(m) - pi log I2(i) - (1 - pi) log I2(j)], I2 the sum of
+  the covariance's eigenvalue products by twos (a disc's area squared, read
+  without the eigenvalues), pi = W_i / W: Runnalls' bound on the KL a merge
+  loses, per unit mass and with the area in place of the volume a surfel does
+  not have. Scale free, not mass weighted: weighted by mass the smallest
+  gaussians are the cheapest, and small details go first. Instead it is
+  weighed by what the merge changes on screen: smoothstep(0.5, 2) of the
+  merged width in pixels from the conversion camera (`--camera`).
+- flat: how much thicker than its members the merge comes out (two discs on a
+  curve make a lens).
+- normal: (1 - cos)(1 + F0 / alpha^2): a mirror's highlight moves with its
+  normal, a rough surface's barely.
+- colour, sRGB-encoded, so dark detail on light counts as it is seen;
+  metallic, sqrt(alpha), transmission.
+Never merged: a key (ids, joints, sheets, thin walls, Schlick metals), glass
+with what is not, a mirror (alpha < 0.01) with what is not, normals past 60
+degrees, a colour past 0.15 (an edge).
+
+**A surfel** is a gaussian with one scale exactly 0: the disc of the other
+two. A merge whose members are discs and which comes out flat to within 0.12
+of its middle axis is written as one. The loader keeps a zero scale (a log
+under -30, Spark's own PLY rule; it was read as log(1e-30) and dropped as out
+of range); the f16 shape holds it as -65000, never -inf. The raster draws one
+by the ray through each pixel (Huang et al. 2024): the disc's two axes in
+homogeneous screen coordinates (`ProjRecord::surfel`, halves; the centre's
+column from the record's own centre and depth) pulled back through the
+pixel's two planes, the larger of the disc and a gaussian of sigma sqrt(2)/2
+pixel round the centre as the screen filter -- agreed with sparkwebGPU, which
+draws the same files (one zero axis only, normals sent, opacity as 3DGS's).
+Its opacity pays nothing back (no mip convolution widened it); under the
+shutter or a lens it is drawn as the thin gaussian it projects to. The record
+grew to 64 bytes rather than bind another buffer: splatProject binds the 31
+Metal allows. The path tracer clamps the flat axis to 1e-4 of the widest
+(`surfelSafeScale`), so a particle's peak along a ray falls where the ray
+crosses the disc's plane, which is the same intersection. The LOD and the
+decimation weighed a splat by the product of its scales over the smallest,
+which a surfel's zero takes to nothing: they weigh the two widest
+(`discArea`). `mesh2splat --flatness 0` bakes a whole cloud of them.
+
+**Coverage.** A merge's opacity is W over its area held at 0.99; past one the
+discs it merged overlapped, and a renderer drawing by the held value reopens
+the gaps (sparkwebGPU's 6 October fix, AK). The unheld value is written as
+`primvars:athenea:splat:coverage`.
+
+**Frames.** `transferZonal` (two lobes, their axes in each gaussian's own
+frame) and `curvature` (a shape operator in the frame's first two axes) are
+merged through each member's frame to the world and into the kept gaussian's
+(AttributeMerge::Zonal, Curvature); averaged as numbers they mixed axes of
+frames turned apart. The octree decimation reads them the same way.
+
+**Not done.** The merge tree is not written (each merge is a parent node;
+2x..20x would be cuts of one file); the curvature is the members' average, not
+refitted from their normals; the roughness is not widened by the normals'
+spread; light layers and the TX reflected field are merged but not in the
+cost; an error target instead of a ratio. Measurements: below, as they land
+(`~/luc/athenea-gpu/gpu_p1.sh`).
