@@ -476,6 +476,9 @@ public:
     /// has stopped or `pathTotal` is reached, whichever first.
     void setPathAdaptive(bool adaptive);
     void setPathMis(bool mis);
+    /// Let the path tracer's shadow rays through glass whose transmission
+    /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
+    void setGlassShadows(bool glass);
     void setPathError(float error);
 
     /// How many paths a pixel the path traced frame on screen has gathered,
@@ -772,6 +775,7 @@ private:
     std::atomic<uint32_t>                     pathTotal_{1};
     std::atomic<bool>                         pathAdaptive_{false};
     std::atomic<bool>                         pathMis_{true};
+    std::atomic<bool>                         glassShadows_{true};
     std::atomic<bool>                         transferIndirect_{true};
     /// How many times a cloud's arrays were uploaded: once a cloud, unless
     /// what it holds changed (tests hold a time step to it).
@@ -819,6 +823,7 @@ private:
         uint32_t     bounces = 0;
         bool         adaptive = false;
         bool         mis = true;
+        bool         glassShadows = true;
         bool         cameraMoves = false;
         render::Mat4 cameraStart = render::Mat4::identity();
         render::Mat4 cameraEnd = render::Mat4::identity();
@@ -845,6 +850,7 @@ private:
                    lensRadius == o.lensRadius && focusDistance == o.focusDistance &&
                    distortionK1 == o.distortionK1 && distortionK2 == o.distortionK2 && width == o.width &&
                    height == o.height && samples == o.samples && bounces == o.bounces && adaptive == o.adaptive && mis == o.mis &&
+                   glassShadows == o.glassShadows &&
                    error == o.error && revision == o.revision && tags == o.tags && traced == o.traced;
         }
     };
@@ -865,6 +871,7 @@ private:
     [[nodiscard]] uint64_t categoryMask(const std::vector<pxr::TfToken>& names);
     bool                                      materialsChanged_ = true;
     bool                                      materialCutouts_ = false;   ///< a material in the frame cuts samples away
+    bool                                      materialGlass_ = false;     ///< a material in the frame lets a shadow ray through, tinted (kMaterialGlassShadow)
     std::unique_ptr<material::MaterialCompiler> compiler_;
     bool                                      compilerFailed_ = false;
     std::unique_ptr<material::TextureStore>   textures_;

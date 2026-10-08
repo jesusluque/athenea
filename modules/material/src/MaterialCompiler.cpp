@@ -836,29 +836,49 @@ std::optional<Transmission> MaterialCompiler::transmission(const std::shared_ptr
     // a UsdPreviewSurface whose opacity is transparency. Driven by a graph
     // counts as transmitting: a bit left open where the glass is clear is
     // the smaller error. With it, the constants a ray that only asks how much
-    // gets through reads without evaluating the material: the weight times
-    // the transmission colour's luminance, and the index (the same node's
-    // `specular_ior`, `specular_IOR` or `ior`; 1.5 where none is a constant).
+    // gets through reads without evaluating the material: the weight and the
+    // transmission colour (multiplied on the device, never here), the index
+    // (the same node's `specular_ior`, `specular_IOR` or `ior`; 1.5 where
+    // none is a constant), and whether a shadow ray may pass it tinted: a
+    // thin wall, or a smooth solid (Transmission::clear).
     const auto doc = std::static_pointer_cast<mx::Document>(document);
     if (!doc) {
         return std::nullopt;
     }
-    const auto constantFloat = [](const mx::NodePtr& node, const char* name) -> std::optional<float> {
-        const mx::InputPtr input = node->getInput(name);
-        if (!input || !input->getNodeName().empty() || !input->getNodeGraphString().empty() ||
-            !input->getInterfaceName().empty() || !input->getValue() || !input->getValue()->isA<float>()) {
+    const auto driven = [](const mx::InputPtr& input) {
+        return !input->getNodeName().empty() || !input->getNodeGraphString().empty() ||
+               !input->getInterfaceName().empty();
+    };
+    // The node's own value, or its definition's default where it has none
+    // (a document Hydra builds carries only what was authored).
+    const auto constantValue = [&](const mx::NodePtr& node, const char* name) -> mx::ValuePtr {
+        if (const mx::InputPtr input = node->getInput(name)) {
+            return driven(input) ? nullptr : input->getValue();
+        }
+        const mx::NodeDefPtr def = node->getNodeDef();
+        const mx::InputPtr fallback = def ? def->getActiveInput(name) : nullptr;
+        return fallback ? fallback->getValue() : nullptr;
+    };
+    const auto constantFloat = [&](const mx::NodePtr& node, const char* name) -> std::optional<float> {
+        const mx::ValuePtr value = constantValue(node, name);
+        if (!value || !value->isA<float>()) {
             return std::nullopt;
         }
-        return input->getValue()->asA<float>();
+        return value->asA<float>();
     };
     if (transparentOpacity(document)) {
         // What a transparent opacity leaves, straight through and with no
         // index; a textured opacity lets half through.
-        Transmission out{0.5F, 1.0F};
+        Transmission out;
+        out.tint = {0.5F, 0.5F, 0.5F};
+        out.ior = 1.0F;
         for (const mx::ElementPtr& element : doc->traverseTree()) {
             if (const mx::NodePtr node = element->asA<mx::Node>()) {
-                if (const std::optional<float> opacity = constantFloat(node, "opacity")) {
-                    out.tint = std::clamp(1.0F - *opacity, 0.0F, 1.0F);
+                if (const mx::InputPtr input = node->getInput("opacity"); input && !driven(input)) {
+                    if (const std::optional<float> opacity = constantFloat(node, "opacity")) {
+                        const float left = std::clamp(1.0F - *opacity, 0.0F, 1.0F);
+                        out.tint = {left, left, left};
+                    }
                 }
             }
         }
@@ -879,12 +899,15 @@ std::optional<Transmission> MaterialCompiler::transmission(const std::shared_ptr
                 continue;
             }
             Transmission out;
-            out.tint = weight ? std::min(*weight, 1.0F) : 1.0F;
-            const mx::InputPtr colour = node->getInput("transmission_color");
-            if (colour && colour->getNodeName().empty() && colour->getNodeGraphString().empty() &&
-                colour->getInterfaceName().empty() && colour->getValue() && colour->getValue()->isA<mx::Color3>()) {
-                const mx::Color3 c = colour->getValue()->asA<mx::Color3>();
-                out.tint *= std::clamp(0.2126F * c[0] + 0.7152F * c[1] + 0.0722F * c[2], 0.0F, 1.0F);
+            const float w = weight ? std::min(*weight, 1.0F) : 1.0F;
+            out.tint = {w, w, w};
+            const mx::ValuePtr colour = constantValue(node, "transmission_color");
+            const bool colourDriven = node->getInput("transmission_color") && !colour;
+            if (colour && colour->isA<mx::Color3>()) {
+                const mx::Color3 c = colour->asA<mx::Color3>();
+                for (int k = 0; k < 3; ++k) {
+                    out.tint[k] = w * std::clamp(c[k], 0.0F, 1.0F);
+                }
             }
             for (const char* ior : {"specular_ior", "specular_IOR", "ior"}) {
                 if (const std::optional<float> index = constantFloat(node, ior); index && *index >= 1.0F) {
@@ -892,6 +915,25 @@ std::optional<Transmission> MaterialCompiler::transmission(const std::shared_ptr
                     break;
                 }
             }
+            for (const char* thin : {"geometry_thin_walled", "thin_walled"}) {
+                if (const mx::InputPtr wall = node->getInput(thin); wall && !driven(wall) && wall->getValue()) {
+                    const mx::ValuePtr v = wall->getValue();
+                    out.thinWalled = (v->isA<bool>() && v->asA<bool>()) || (v->isA<int>() && v->asA<int>() != 0);
+                    break;
+                }
+            }
+            // Smooth where the roughness is a constant under the delta's
+            // bound; a graph's roughness, or a colour a graph drives (which
+            // the tint could not carry), passes nothing.
+            std::optional<float> roughness;
+            for (const char* r : {"specular_roughness", "roughness"}) {
+                if (node->getInput(r) || (node->getNodeDef() && node->getNodeDef()->getActiveInput(r))) {
+                    roughness = constantFloat(node, r);
+                    break;
+                }
+            }
+            const bool smoothSolid = roughness && *roughness < kGlassShadowRoughness;
+            out.clear = weight.has_value() && !colourDriven && (out.thinWalled || smoothSolid);
             return out;
         }
     }

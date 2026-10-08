@@ -122,6 +122,9 @@ public:
 
     /// "athenea:pathMis": light and material sampling weighed (true, the default).
     [[nodiscard]] bool GetPathMis() const;
+    /// "athenea:glassShadows": the path tracer's shadow rays pass glass whose
+    /// transmission is a delta, tinted (true, the default).
+    [[nodiscard]] bool GetGlassShadows() const;
     [[nodiscard]] float GetPathError() const;
     /// `athenea:visibility`: "automatic" (default), "raster", "rays" or "bvh".
     [[nodiscard]] athenea::usd::MeshVisibility GetMeshVisibility() const;

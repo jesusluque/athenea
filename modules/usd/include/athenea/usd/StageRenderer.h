@@ -451,6 +451,10 @@ public:
     /// Weigh light sampling and material sampling by the power heuristic
     /// (the default), or light a surface by light sampling alone.
     void setPathMis(bool mis);
+    /// Let the path tracer's shadow rays through clear glass, tinted
+    /// (`athenea:glassShadows`, on by default): a lamp behind its lens lights
+    /// what stands in front by next event estimation. Off: glass stops them.
+    void setGlassShadows(bool glass);
     void setPathError(float error);
 
     /// How many paths a pixel the frame on the device holds, and whether it

@@ -53,6 +53,13 @@ struct PathSettings {
     /// by the power heuristic (false: next event estimation alone lights a
     /// surface, as before MIS; a comparison's other half).
     bool     mis = true;
+    /// Let next event estimation's shadow rays through glass whose
+    /// transmission is a delta -- a thin wall, a smooth solid -- tinted by
+    /// what each face lets through, and weigh the material's rays that reach
+    /// a light through the same glass against them (`athenea:glassShadows`).
+    /// False: glass stops a shadow ray, and a lamp behind its lens lights
+    /// only what the material's rays find through it.
+    bool     glassShadows = true;
 };
 
 /// How much of a frame has converged, for the adaptive gate: pixels the

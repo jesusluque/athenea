@@ -336,6 +336,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     mis.name = "Weigh light sampling and material sampling (MIS) (rt)";
     mis.key = _atheneaSettings->pathMis;
     mis.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor glassShadows;
+    glassShadows.name = "Shadow rays pass clear glass, tinted (rt)";
+    glassShadows.key = TfToken("athenea:glassShadows");
+    glassShadows.defaultValue = VtValue(true);
     HdRenderSettingDescriptor motion;
     motion.name = "Motion blur: shutter slices, 1 to 8 (rt)";
     motion.key = _atheneaSettings->motionBuckets;
@@ -380,7 +384,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudDensity.key = TfToken("athenea:cloudShadowDensity");
     cloudDensity.defaultValue = VtValue(1.0f);
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
-            total,     denoise,     adaptive,    error,       mis,        motion,      transferIndirect, reflectCloud, splatShadows,
+            total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered};
 }
 
@@ -499,6 +503,11 @@ bool HdAtheneaRenderDelegate::GetSplatTransferIndirect() const {
 
 bool HdAtheneaRenderDelegate::GetPathMis() const {
     const VtValue value = GetRenderSetting(_atheneaSettings->pathMis);
+    return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+bool HdAtheneaRenderDelegate::GetGlassShadows() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:glassShadows"));
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
 }
 

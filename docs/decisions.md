@@ -13440,3 +13440,99 @@ sky at 0.005. Its numbers go here once run.
   with the OpenPBR colour in it, its weight should be the luminance alone.
   The sidecar's convention (`emission_luminance x emission_color` is the
   radiance) is what the weights follow.
+
+
+## A lamp behind its lens: shadow rays through glass
+
+**What was measured.** The Corvette's lamps are emitting meshes
+(`EmissiveTable`) behind lenses of clear or tinted glass. Baked one group
+at a time (`mesh2splat --bake`, the dome black), only the emitter's own
+gaussians took light -- 120 to 1150 of 3 M -- and the body and the ground
+none: next event estimation's shadow ray from a surface to the emitter
+stopped at the lens, and only the paths that refracted through it by chance
+reached the lamp. Cycles draws those as fireflies on the ground, and so did
+the path traced night frame.
+
+**What changed** (`PathTracer.cpp`, `athenea:glassShadows`, on by default):
+
+- **The shadow ray goes on through glass whose transmission is a delta**,
+  up to `kGlassLayers` (4) faces, and is weighed by what each face lets
+  through: its row's tint -- the transmission weight times its colour, rgb
+  -- times what the dielectric does not reflect where the ray meets it,
+  `1 - R` for a face of a solid (the far face pays it again) and
+  `1 - 2R / (1 + R)` for a thin wall, which is `lobes.slang`'s
+  `dielectricF`. Read from the material row (`glassPasses`), not evaluated,
+  as `pathThrough` reads it: the kernel keeps its one call of the material.
+  An opaque hit still stops it; a cut-out still passes by its lot. The
+  pipeline route (OptiX) does the same in its any hit, and sees back faces
+  where glass is let through, as the inline route does.
+- **Which glass.** `material::Transmission::clear`, read once from the
+  document: a thin wall (`geometry_thin_walled`, `thin_walled`) at any
+  roughness -- the lobe library sends a thin wall's transmission straight
+  on as a delta -- or a solid whose specular roughness is a constant under
+  `kGlassShadowRoughness` (0.03: alpha = roughness^2 under the 1e-3 at which
+  `smooth()` makes the lobe a delta). A weight or a colour a graph drives
+  passes nothing, and neither does a transparent opacity (coverage). The
+  row's flags say it (`kMaterialGlassShadow`, `kMaterialThinGlass`), and its
+  pad word now holds the tint as rgb and the index as unorm 8 bits each
+  (it held the tint's luminance, computed on the host, and the index in 16
+  each); `pathThrough` takes the luminance on the device.
+- **Every light**, not only emitting triangles: `gatherLight` and
+  `gatherLightMedium` take the colour through and tint the shadow channel by
+  channel (`lerp(full shadow, none, through)`, which is `shadowTint` with a
+  fractional `through`). The radiance bake, the split bake and a frame are
+  one kernel, so all three get it; a transfer gathers no light and its
+  cells keep `pathThrough`.
+
+**The estimator, and MIS.** A path that leaves a vertex `x` by its material
+(density `p`), then goes straight through such glass by the glass's delta
+transmission, is a draw of `x` still: the light it meets is weighed by the
+power heuristic against next event estimation from `x` (the emitting
+triangle's tabled density from `x`, or the light's `lightPdf` at `x` times
+its choice), as next event estimation from `x` through the same glass is
+weighed against `p`. The path keeps `x`, its normal, its categories and `p`
+across up to `kGlassLayers` faces (`glassCarried`); a reflection off the
+glass, a rough or a driven glass, a face past the fourth, or the setting off
+end it, and what is met after keeps a weight of one, as before -- and
+next event estimation through that glass is zero, so nothing is counted
+twice. Before, a delta vertex always gave the light it met a weight of one;
+with shadows through the glass that would have counted it twice.
+
+- **Thin glass: unbiased.** A thin wall bends nothing, so the shadow ray and
+  the material's ray through it are the same path, its transmission the
+  same `tint (1 - 2R / (1 + R))` in both, and the two weights sum to one.
+- **Solid glass: biased, by the lens's offset.** The shadow ray goes
+  straight; the material's ray is bent at both faces and meets the lamp a
+  little aside, and its weight is taken with next event estimation's density
+  for the point it met as seen straight from `x`. The two strategies then
+  estimate slightly different light -- the lamp displaced by the lens's
+  thickness times the bend -- and the weights do not sum to exactly one over
+  either. For a lamp lens a few millimetres thick at a metre that is well
+  under the noise; for a thick lens close to what it lights (a glass ball on
+  a table) it is the caustic, which next event estimation cannot draw
+  anyway. The Fresnel at each face is taken at the angle the straight ray
+  meets it, from outside, which for parallel faces is what the bent ray pays
+  by reciprocity; light reflected inside the solid is left to the material's
+  rays. A coat or any layer over the glass, and a shading normal that
+  differs from the geometric one (a ridged lens's normal map), are not seen
+  by the shadow ray.
+
+**Checked** (`athenea_usd_tests "[glass]"`, `tests/usd/test_glass_shadows.cpp`,
+a 0.5 x 0.5 emitting quad inside a closed box of thin OpenPBR glass over a
+grey floor): at 32 paths the floor's relMSE against a deep frame of the
+material's rays alone is at least 8 times lower with the shadow rays (before:
+the same, the setting did nothing), and the deep frames with and without
+agree on the floor within 3% at index 1.5; under a glass of colour
+(1, 0.5, 0.25) the floor's green and blue are a half and a quarter of its red
+and each within 5% of the bare lamp of that colour; and a grey thin glass of
+0.5 is the bare lamp at half its emission, the floor within 2% and the deep
+frames' relMSE under an eighth of 64 paths'. Numbers go here once run
+(`~/luc/athenea-gpu/gpu_g1.sh`, which also re-bakes the Corvette's `cruce`
+group and counts the gaussians it lights against the old 120 to 1150).
+
+**Not done.** The ray traced splat route (`rt_integrate.slang`) has no
+emitting meshes to reach, so nothing changes there. Rough solid glass still
+stops a shadow ray: weighing a glossy refraction against a straight one has
+no single density, and passing it would count the light twice. The OptiX
+any hit may run twice for one triangle unless the acceleration structure
+forbids it, which would tint that face twice.

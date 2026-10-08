@@ -71,12 +71,26 @@ struct CompiledMaterial {
 };
 
 /// How much a transmitting material lets through, as constants: the
-/// transmission weight times its colour's luminance (one where a graph drives
-/// either), and the dielectric's index. MaterialCompiler::transmission.
+/// transmission weight times its colour (one where a graph drives either),
+/// and the dielectric's index. MaterialCompiler::transmission.
 struct Transmission {
-    float tint = 1.0F;
-    float ior = 1.5F;
+    std::array<float, 3> tint{1.0F, 1.0F, 1.0F};   ///< linear rgb, each in [0, 1]
+    float                ior = 1.5F;
+    /// ITS DIELECTRIC LETS LIGHT THROUGH ALONG A DELTA, which is what a
+    /// shadow ray may pass tinted (technique::kMaterialGlassShadow): a thin
+    /// wall at any roughness (the lobe library sends a thin wall's
+    /// transmission straight on, a delta), or a solid whose specular
+    /// roughness is a constant under `kGlassShadowRoughness`, where the
+    /// lobe is a smooth one. Not a transparent opacity, which is coverage.
+    bool                 clear = false;
+    /// `thin_walled` (standard_surface) or `geometry_thin_walled` (OpenPBR).
+    bool                 thinWalled = false;
 };
+
+/// The specular roughness under which a solid dielectric is smooth: lobes.slang
+/// takes a lobe of alpha = roughness^2 under 1e-3 as a delta, and 0.03^2 is
+/// 9e-4.
+inline constexpr float kGlassShadowRoughness = 0.03F;
 
 class MaterialCompiler {
 public:

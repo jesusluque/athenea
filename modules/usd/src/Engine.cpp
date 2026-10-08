@@ -748,6 +748,7 @@ void Engine::setDenoise(bool denoise) { denoise_.store(denoise); }
 
 void Engine::setPathAdaptive(bool adaptive) { pathAdaptive_.store(adaptive); }
 void Engine::setPathMis(bool mis) { pathMis_.store(mis); }
+void Engine::setGlassShadows(bool glass) { glassShadows_.store(glass); }
 
 void Engine::setPathError(float error) { pathError_.store(std::max(error, 1.0e-4F)); }
 
@@ -1654,6 +1655,7 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
     std::vector<float> blob;
     materialRows_.clear();
     materialCutouts_ = false;
+    materialGlass_ = false;
     for (const auto& [id, entry] : materials_) {
         if (!entry.compiled) {
             continue;
@@ -1698,20 +1700,29 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
             std::none_of(std::begin(kPlaceDependent), std::end(kPlaceDependent), [&](const char* token) {
                 return entry.compiled->source.find(token) != std::string::npos;
             });
+        // A SHADOW RAY PASSES IT, TINTED: a dielectric whose transmission is
+        // a delta (material::Transmission::clear), thin or solid.
+        const bool glass = entry.transmission && entry.transmission->clear && !entry.cutout && !entry.transparent;
         const uint32_t flags = (entry.cutout ? technique::kMaterialCutout : 0u) |
                                (entry.transparent ? technique::kMaterialTransparent : 0u) |
                                (uniform && !entry.cutout && !entry.transparent ? technique::kMaterialUniform : 0u) |
-                               (entry.transmission ? technique::kMaterialTransmits : 0u);
+                               (entry.transmission ? technique::kMaterialTransmits : 0u) |
+                               (glass ? technique::kMaterialGlassShadow : 0u) |
+                               (glass && entry.transmission->thinWalled ? technique::kMaterialThinGlass : 0u);
         materialCutouts_ = materialCutouts_ || entry.cutout;
+        materialGlass_ = materialGlass_ || glass;
         // What a transmitting row lets through, for a ray that does not
-        // evaluate it (technique::MaterialRecord::pad): the tint's and the
-        // index's unorm 16 bits, the index over 1 to 4.
+        // evaluate it (technique::MaterialRecord::pad): the tint's rgb and
+        // the index as unorm 8 bits each, the index over 1 to 4. The values
+        // as the material says them; what they come to is the device's.
         uint32_t passes = 0;
         if (entry.transmission) {
             const auto unorm = [](float v) {
-                return static_cast<uint32_t>(std::lround(std::clamp(v, 0.0F, 1.0F) * 65535.0F));
+                return static_cast<uint32_t>(std::lround(std::clamp(v, 0.0F, 1.0F) * 255.0F));
             };
-            passes = unorm(entry.transmission->tint) | (unorm((entry.transmission->ior - 1.0F) / 3.0F) << 16);
+            const auto& t = entry.transmission->tint;
+            passes = unorm(t[0]) | (unorm(t[1]) << 8) | (unorm(t[2]) << 16) |
+                     (unorm((entry.transmission->ior - 1.0F) / 3.0F) << 24);
         }
         rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, passes});
         blob.insert(blob.end(), words.begin(), words.end());
@@ -2861,6 +2872,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frame.programs = &*materialPrograms_;
         frame.alphaDither = technique == Technique::RayTraced ? 0u : 1u;
         frame.cutouts = materialCutouts_ || scene_->anyHidden();
+        frame.glass = materialGlass_;
         frame.scene = &*scene_;
         frame.records = &materialRecords_;
         frame.blob = &materialBlob_;
@@ -3084,6 +3096,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             paths.bounces = pathBounces_.load();
             paths.adaptive = pathAdaptive_.load();
             paths.mis = pathMis_.load();
+            paths.glassShadows = glassShadows_.load();
             paths.errorTarget = pathError_.load();
             paths.headlight = frame.lights == nullptr || frame.lights->count() == 0;
             PathState now;
@@ -3107,6 +3120,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             now.bounces = paths.bounces;
             now.adaptive = paths.adaptive;
             now.mis = paths.mis;
+            now.glassShadows = paths.glassShadows;
             now.cameraMoves = projection.cameraMoves;
             now.cameraStart = projection.viewToWorldStart;
             now.cameraEnd = projection.viewToWorldEnd;

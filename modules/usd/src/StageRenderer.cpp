@@ -1261,6 +1261,10 @@ void StageRenderer::setPathMis(bool mis) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathMis"), VtValue(mis));
 }
 
+void StageRenderer::setGlassShadows(bool glass) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:glassShadows"), VtValue(glass));
+}
+
 void StageRenderer::setPathAdaptive(bool adaptive) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathAdaptive"), VtValue(adaptive));
 }
