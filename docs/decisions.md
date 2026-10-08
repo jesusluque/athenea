@@ -13541,17 +13541,16 @@ forbids it, which would tint that face twice.
 
 **What was measured.** The Corvette's tail lamps are white emitters behind
 `Rear_LIghts_Lens*`, closed solids of OpenPBR glass 0.97 to 1.78 mm thick
-(median 1.1 mm), about 2.3 m from the stage's origin. The outer faces are
-Glass_Red, the inner ones Glass_Red_Blured and Glass_Red_Ridged, every one
-with `transmission_color` = sqrt(`base_color`) = (0.8319, 0, 0.1049), so
-that the two faces give the base colour between them, as Cycles' Principled
-tints each refraction. Cycles reads the lens's mean transmittance as
-(0.533, 0.0002, 0.0082), blue 1.5% of red, and the lamps red. The path
-traced night frame read blue exactly 0.1261 of red in every bright pixel of
-the lamps -- one face's tint, 0.1049 / 0.8319 -- and red at one face's
-Fresnel (about 390 for an emitter of 500): one interface of two, and under
-AgX the lamps magenta. The baked cloud read the same (0.13), since its
-paths are this kernel's.
+(median 1.1 mm), about 2.3 m from the stage's origin, 5 to 17 mm in front of
+the emitters. The outer faces are Glass_Red, the inner ones
+Glass_Red_Blured and Glass_Red_Ridged, every one with `transmission_color` =
+sqrt(`base_color`) = (0.8319, 0, 0.1049), so that the two faces give the
+base colour between them, as Cycles' Principled tints each refraction.
+Cycles reads the lens's mean transmittance as (0.533, 0.0002, 0.0082), blue
+1.5% of red, and the lamps red. The path traced night frame read blue
+exactly 0.1261 of red in every bright pixel of the lamps -- one face's
+tint, 0.1049 / 0.8319 -- and under AgX the lamps magenta. The baked cloud
+read the same (0.13): its paths are this kernel's.
 
 **The cause.** A path that left a vertex started its next ray at
 `p + (away + wi) * 1e-3 * |p|` with a TMin of `1e-3 * |p|` again: some 7 mm
@@ -13562,41 +13561,50 @@ far face and met the lamp with one tint. The material conversion was right
 
 **What changed** (`PathTracer.cpp`):
 
-- **`rayMargin` and `leaveSurface`.** A ray leaves its surface by
-  `kRayMargin` (1e-5) of the magnitude its position was computed at --
-  about eighty float ulps, and what the cut-out pass already went on by --
-  off the surface on the side it goes to, and starts at TMin = the same
-  margin. No step along the ray.
-- **The path's next ray** leaves by the triangle's **geometric** normal
-  (`Shaded::geometricNormal`, world, filled where the material is
-  evaluated; no buffer, the kernel stays at buffer(30) at most in the
-  variants it had there), and its margin takes the larger of |p| and the
-  distance to the camera, since a hit is rebuilt in view space.
-- **Shadow rays** (`shadowWalk`, inline and pipeline) and **`pathThrough`**
-  leave by the same margin, on the side of the normal their caller passes
-  (the shading normal, as before); `pathThrough` goes on from the face it met
-  rather than a millimetre past it. An emitting triangle's shadow ray stops
-  ten margins short of it (it was 3e-3 of the scale, which was the old
-  origin's step along the ray and would stop before a lens's far face when
-  the lamp sits close behind).
-- **Kept**: `splatVisibility` offsets by the millimetre still -- a cloud on a
-  surface straddles it, and a ray that left by a hair would be shadowed by
-  the gaussians of its own surface. A hit on the triangle the ray left is
-  not rejected by id: the nearest-hit query is opaque and one `Proceed`,
-  and a rejection would take a candidate loop in every variant; leaving on
-  the geometric normal's side keeps that triangle behind the origin.
+- **The path's next ray, where it crosses a surface** (`throughGlass`:
+  into a dielectric, or on inside one), leaves by `rayMargin` -- `kRayMargin`
+  (1e-5) of the larger of |p| and the distance to the camera, since a hit is
+  rebuilt in view space; about eighty float ulps, what the cut-out pass
+  already went on by -- off the triangle's own plane on the side it goes to
+  (`leaveSurface`, `Shaded::geometricNormal`, world), with TMin the same
+  margin and no step along the ray. Every other ray leaves as it did, by
+  the millimetre: those of a bake's point, of a transfer's cells, of a
+  shadow ray. A transfer's origins are a gaussian's footprint, and with the
+  hair there too one point of 32 in the transfer-against-bake test read
+  60% off ("no wall"; 0.0% with the millimetre).
+- **A shadow ray ends at its distance from the point**, not from its
+  moved origin (`shadowWalk`, inline and pipeline), so an emitting
+  triangle's shadow ray stops ten margins short of it where it stopped
+  3e-3 of the scale short -- before a lens's far face, with the lamp 5 mm
+  behind it. Between faces of glass it already went on by 1e-4.
+- **`pathThrough`** leaves by the millimetre and goes from face to face by
+  `rayMargin` from the face it met (it stepped 2e-3 of the scale past each).
+- No buffer: `Shaded` is thread memory, and every variant binds what it did
+  (slangc, all 32 inline combinations against f0510de, the same highest
+  index in each).
 
-**Checked** (`athenea_usd_tests "a red lens 1 mm thick*"`,
-`tests/usd/test_glass_tint.cpp`): a white emitter of radiance 1 behind a
-1 x 1 slab of OpenPBR glass, index 1.6, three metres from the origin, the
-camera at the origin. 1 mm solid of colour (0.8319, 0, 0.1049): G/R under
-1e-3, B/R (0.1049 / 0.8319)^2 = 0.0159 within 15% (0.126 before) and R
-0.8319^2 x 0.947^2 = 0.620 within 3%; 10 cm the same (it passed before); a
-pure red (0.8, 0, 0) G/R and B/R under 1e-3; a thin wall one tint, B/R 0.126.
-Numbers go here once run (`~/luc/athenea-gpu/gpu_t1.sh`, which also renders
-the night stage at /World/CameraRear and prints the lamps' B/R).
+**Measured** (`~/luc/athenea-gpu/gpu_t1.sh`). The Corvette at
+/World/CameraRear, 960x540, 256 paths: the tail lamps' blue over red 0.0118
+(Cycles 0.0154, before 0.1261), green 0.0027. The slab
+(`tests/usd/test_glass_tint.cpp`, a white emitter of radiance 1 behind a
+slab of OpenPBR glass, index 1.6, three metres out): B/R 0.01590 at 1 mm and
+at 10 cm, 0.12610 for a thin wall, G 0.
 
-**Not done.** A smooth-shaded low-poly surface lit near its terminator may
-now shadow itself where the millimetre hid it (the shadow terminator a
-shading normal makes); the regression set gpu_t1.sh runs is what says
-whether a test's sphere shows it. The splat route (`rt_integrate.slang`) has its own offsets.
+**Found on the way: a transmission's Fresnel is taken twice.** The slab's
+red is 0.5556 at both thicknesses, where two faces of tint 0.8319 and a
+Fresnel of 0.0533 each give 0.620: 0.5556 = 0.692 x 0.9467^4, the Fresnel
+twice at each face. OpenPBR layers its specular reflection (scatter R) over
+a transmission (scatter T), so the layer's throughput already holds
+`1 - albedo`, and genglsl's T response carries no Fresnel of its own; the
+lobe library's T lobe takes `1 - F` again (`lobeSample`, `evalLocal`,
+`lobeAlbedo`). A thin wall reads 0.7066 = 0.8319 x 0.8989 x 0.9467: its own
+`1 - 2R / (1 + R)` and the layer's plain `1 - F`. The glass shadows test's
+3.45% between its deep frames is this too: the shadow ray pays the thin
+wall's Fresnel once, the material's rays twice. **Not fixed here**: the
+splat conversion and the relit cloud read the lobes' complement
+(`splat_relight`'s `transmittedShare`) and are validated against the mesh,
+so the fix moves both sides and wants its own run. The tests hold the slab
+to the 10 cm slab rather than to a closed form, and the glass shadows test
+bounds its two frames by that one Fresnel.
+
+**Not done.** The splat route (`rt_integrate.slang`) has its own offsets.

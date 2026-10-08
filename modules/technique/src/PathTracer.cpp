@@ -237,16 +237,21 @@ PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask,
 /// WHAT A SHADOW RAY GETS THROUGH between a surface and a light: one where
 /// nothing stands, nothing where something opaque does, and -- with `glass`
 /// -- the product of what each face of glass on the way lets through
-/// (glassPasses), up to kGlassLayers of them. Off the surface by rayMargin
-/// on `wi`'s side of `n`: a millimetre's margin went past a thin lens's far
-/// face, and the light through it paid one face of two.
+/// (glassPasses), up to kGlassLayers of them. It leaves its surface by the
+/// millimetre (its origin is often no traced hit: a bake's point, a cell's
+/// origin), and goes from face to face by a hair, so a thin lens is two faces.
 float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask, bool glass) {
-    const float margin = rayMargin(length(p));
+    const float scale = max(1.0, length(p));
+    const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
-    ray.Origin = leaveSurface(p, n, wi, margin);
+    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
     ray.Direction = wi;
-    ray.TMin = margin;
-    ray.TMax = max(distance - ray.TMin, 0.0);
+    ray.TMin = 1.0e-3 * scale;
+    // To `distance` from p, not from the origin: moved up to 2e-3 of the
+    // scale along the ray, the origin carried the end that far past, and an
+    // emitter's shadow ray had to stop 3e-3 short -- before a lens's far face
+    // where the lamp sits 5 mm behind it, so the light through paid one face.
+    ray.TMax = max(distance - dot(ray.Origin - p, wi), 0.0);
     if (ray.TMax <= ray.TMin) {
         return float3(1.0);
     }
@@ -416,12 +421,17 @@ PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask,
 }
 
 float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask, bool glass) {
-    const float margin = rayMargin(length(p));
+    const float scale = max(1.0, length(p));
+    const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
-    ray.Origin = leaveSurface(p, n, wi, margin);
+    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
     ray.Direction = wi;
-    ray.TMin = margin;
-    ray.TMax = max(distance - ray.TMin, 0.0);
+    ray.TMin = 1.0e-3 * scale;
+    // To `distance` from p, not from the origin: moved up to 2e-3 of the
+    // scale along the ray, the origin carried the end that far past, and an
+    // emitter's shadow ray had to stop 3e-3 short -- before a lens's far face
+    // where the lamp sits 5 mm behind it, so the light through paid one face.
+    ray.TMax = max(distance - dot(ray.Origin - p, wi), 0.0);
     if (ray.TMax <= ray.TMin) {
         return float3(1.0);
     }
@@ -508,10 +518,8 @@ PackedShadow splatTables() {
 }
 
 /// What the cloud lets through between a surface and a light: one, where it
-/// stands in no light's way. Offset off the surface by a millimetre's margin,
-/// not pathOccluded's rayMargin: a gaussian is no face a ray meets once, and a
-/// cloud on a surface straddles it, so a ray that left by a hair would be
-/// shadowed by the cloud of its own surface.
+/// stands in no light's way. Offset off the surface exactly as pathOccluded
+/// offsets, so the two answers are about the same segment.
 float splatVisibility(float3 p, float3 n, float3 wi, float distance) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
@@ -1220,14 +1228,18 @@ bool glassCarriesWeight(Shaded sh, float3 wi) {
 /// here, and the lens's image is the frame's (splat_relight's lensExit).
 /// Opaque glass in these rays put a pawn's gold ring in the dark under its
 /// glass head, and a car's cabin under its windows.
-/// Off the surface and from face to face by rayMargin: by a millimetre, a
-/// thin lens's far face was stepped over and the lens passed as one face.
+/// Off its own surface by the millimetre, since a cell's origin is a
+/// gaussian's footprint and not a traced hit; from face to face by
+/// rayMargin, since those are the ray's own hits: stepping a millimetre past
+/// each face stepped over a thin lens's far face, which then passed as one.
 float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
-    const float margin = rayMargin(length(p));
-    float3 origin = leaveSurface(p, n, wi, margin);
+    const float scale = max(1.0, length(p));
+    const float3 away = dot(n, wi) < 0.0 ? -n : n;
+    float3 origin = p + (away + wi) * (1.0e-3 * scale);
+    float tMin = 1.0e-3 * scale;
     float through = 1.0;
     for (uint passes = 0; passes < 8u; ++passes) {
-        const PathHit hit = traceNearestFrom(origin, wi, margin, mask, false);
+        const PathHit hit = traceNearestFrom(origin, wi, tMin, mask, false);
         if (hit.seen.x == 0) {
             return through;
         }
@@ -1247,7 +1259,8 @@ float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
         if (through < 1.0e-3) {
             return 0.0;
         }
-        origin = origin + wi * hit.t;   // on the face met; the next ray starts past it by TMin
+        origin = origin + wi * hit.t;   // on the face met; the next ray starts past it by a hair
+        tMin = rayMargin(length(origin));
     }
     return through;
 }
@@ -2261,12 +2274,12 @@ void tracePathsAt(uint2 group, uint index) {
                                                          random2(tid, sample, bounce, 3u));
                     if (lp.valid) {
                         const float3 f = stackEval(cur.stack, cur.toEye, lp.wi);
-                        // The shadow ray stops short of the emitting triangle by more
-                        // than its origin is moved off the surface: ten times
-                        // rayMargin. (When the origin moved 2e-3 of the scale along the
-                        // ray, a relative 1e-4 short reached the triangle itself and
-                        // every sample was its own shadow; 3e-3 short then stopped
-                        // before a lens's far face where the lamp sits close behind it.)
+                        // The shadow ray stops short of the emitting triangle, or it
+                        // meets the triangle itself and every sample is its own
+                        // shadow: by ten rayMargins, now that it ends at its distance
+                        // from the point (shadowWalk). It stopped 3e-3 of the scale
+                        // short when its end rode on its origin, and a lamp 5 mm
+                        // behind its lens lit the ground through one face of two.
                         const float shortOf = 10.0 * rayMargin(length(cur.inputs.positionWorld));
                         // Through glass where the frame lets it (pathShadow): a
                         // lamp behind its lens lights what stands in front.
@@ -2462,12 +2475,23 @@ void tracePathsAt(uint2 group, uint index) {
             }
             const float3 p = cur.inputs.positionWorld;
             const float3 n = cur.inputs.normalWorld;
-            // Off the triangle's own plane, on the side the ray goes to, by
-            // rayMargin of what the position was computed at (world, and the
-            // view space it was rebuilt in): a millimetre's margin started a
-            // ray into a lens 1.1 mm thick past its far face (leaveSurface).
-            const float margin = rayMargin(max(length(p), length(p - cur.inputs.viewPosition)));
-            o = leaveSurface(p, cur.geometricNormal, ms.wi, margin);
+            // A RAY THAT CROSSES LEAVES BY A HAIR: off the triangle's own
+            // plane, on the side it goes to, by rayMargin of what the position
+            // was computed at (world, and the view space it was rebuilt in).
+            // By the millimetre a ray into a lens 1.1 mm thick started past
+            // its far face (leaveSurface). Every other ray leaves by the
+            // millimetre still: a bake's point and a transfer's are a
+            // gaussian's, not a hit's, and by a hair one transfer point of 32
+            // read 60% off its bake.
+            const float scale = max(1.0, length(p));
+            const float margin = through ? rayMargin(max(length(p), length(p - cur.inputs.viewPosition)))
+                                         : 1.0e-3 * scale;
+            if (through) {
+                o = leaveSurface(p, cur.geometricNormal, ms.wi, margin);
+            } else {
+                const float3 away = dot(n, ms.wi) < 0.0 ? -n : n;
+                o = p + (away + ms.wi) * margin;
+            }
             d = ms.wi;
             // A RAY THAT WENT THROUGH SEES BACK FACES. Back faces are culled
             // for a ray that bounced off a surface, which is what a
