@@ -303,6 +303,31 @@ public float discArea(float3 s) {
     return max(max(s.x * s.y, s.y * s.z), s.x * s.z);
 }
 
+/// A FRAME WITH ITS THINNEST AXIS THIRD. A conversion writes a disc's
+/// thickness as its third scale, and every reader takes the third axis for
+/// the normal and the first two for its plane -- the relight, the curvature
+/// and the zonal transfer read in them, sparkwebGPU likewise. Eigenvectors
+/// come in whatever order the solver left them: the matx car paint merged
+/// 10x had its normal first or second in 48910 of 55477 merges, its
+/// curvature then projected on a plane holding the normal. So the columns
+/// (the axes) and their scales are turned cyclically -- which keeps the
+/// frame's handedness -- until the thinnest is third.
+public void thinAxisThird(inout float3x3 axes, inout float3 scales) {
+    const uint thin = scales.x <= scales.y ? (scales.x <= scales.z ? 0u : 2u) : (scales.y <= scales.z ? 1u : 2u);
+    if (thin == 2u) {
+        return;
+    }
+    const float3 c0 = float3(axes[0][0], axes[1][0], axes[2][0]);
+    const float3 c1 = float3(axes[0][1], axes[1][1], axes[2][1]);
+    const float3 c2 = float3(axes[0][2], axes[1][2], axes[2][2]);
+    // thin 0: (1, 2, 0); thin 1: (2, 0, 1).
+    const float3 n0 = thin == 0u ? c1 : c2;
+    const float3 n1 = thin == 0u ? c2 : c0;
+    const float3 n2 = thin == 0u ? c0 : c1;
+    axes = float3x3(n0.x, n1.x, n2.x, n0.y, n1.y, n2.y, n0.z, n1.z, n2.z);
+    scales = thin == 0u ? float3(scales.y, scales.z, scales.x) : float3(scales.z, scales.x, scales.y);
+}
+
 /// Whether a shape's scales hold a surfel's flat axis.
 public bool isSurfel(float3 s) {
     return min(min(s.x, s.y), s.z) == 0.0;

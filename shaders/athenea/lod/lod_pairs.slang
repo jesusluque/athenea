@@ -73,7 +73,9 @@ public struct PairParams {
     public float normalWeight;
     public float materialWeight;
     public float flatWeight;
-    public float highlightCone;  // glossy normals further apart than this times sqrt(alpha) radians never merge
+    public float highlightCone;
+    public uint  mergeGlass;
+    public float maxAspect;      // a merge's plane longer than this against its width is refused     // 1: transmitting gaussians merge among themselves  // glossy normals further apart than this times sqrt(alpha) radians never merge
     public uint  tree;           // 1: record the merges as a tree
     public uint  leaves;         // the store's splats: the tree's first node after them
     public uint  pass;           // the pass a merge is made in; pairTreeOffsets: the pass to place
@@ -218,6 +220,15 @@ float secondInvariant(float3x3 s) {
            s[0][2] * s[0][2];
 }
 
+/// How long a node's plane is against its width: the square root of its two
+/// wide eigenvalues' ratio.
+float aspectOf(float3x3 s) {
+    const float t = s[0][0] + s[1][1] + s[2][2];
+    const float q = max(secondInvariant(s), 0.0);
+    const float r = sqrt(max(t * t - 4.0 * q, 0.0));
+    return sqrt((t + r) / max(t - r, 1.0e-30));
+}
+
 /// WHAT MERGING TWO NODES COSTS; kNoMerge where they may not merge.
 float mergeCost(Node a, Node b) {
     if (a.key != b.key) {
@@ -225,6 +236,12 @@ float mergeCost(Node a, Node b) {
     }
     if ((a.transmission > 0.5) != (b.transmission > 0.5)) {
         return kNoMerge;   // glass with what is not
+    }
+    // Glass with glass only when asked: a window is a sheet drawn as a layer
+    // of the reflection it gives head on (splat_project's kSheetAlpha), and
+    // the Corvette's windshield merged 10x came out a rainbow moire.
+    if (params.mergeGlass == 0 && a.transmission > 0.5) {
+        return kNoMerge;
     }
     if ((a.alpha < 0.01) != (b.alpha < 0.01)) {
         return kNoMerge;   // a mirror (roughness under 0.1) with what is not
@@ -268,6 +285,17 @@ float mergeCost(Node a, Node b) {
     const float det = max(determinant(sigma), 0.0);
     const float thick = sqrt(det * trace / (i2 * i2));
     const float flat = max(thick - max(a.thickness, b.thickness), 0.0);
+    // NO NEEDLES. Merged along a strip -- a trim, a badge's edge, a crease --
+    // a chain of discs moment-matches into a needle, and a needle widened
+    // smears across what is beside it: the Corvette merged 10x streaked.
+    // The aspect of the merge's plane (its two wide eigenvalues, from the
+    // trace and I2 without solving: e = (t +- sqrt(t^2 - 4 I2)) / 2) may not
+    // pass `maxAspect`, or its members' own if they were longer already.
+    const float root = sqrt(max(trace * trace - 4.0 * i2, 0.0));
+    const float aspect = sqrt((trace + root) / max(trace - root, 1.0e-30));
+    if (aspect > max(params.maxAspect, 1.25 * max(aspectOf(a.sigma), aspectOf(b.sigma)))) {
+        return kNoMerge;
+    }
     // What the screen sees of it: the merged gaussian's width in pixels.
     float seen = 1.0;
     if (params.pixelsPerUnit > 0.0) {

@@ -288,6 +288,26 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             if (!a) return std::move(a).error();
             treeAdded.push_back(std::move(*a));
         }
+        // Each node's run of leaves, as two ints: where it starts, how many.
+        {
+            auto words = treeResult.run.readAll<uint32_t>(device);
+            if (!words) return std::move(words).error();
+            words->resize(size_t{n} * 2);
+            GaussianArray start, size;
+            start.name = "primvars:athenea:splat:lodStart";
+            size.name = "primvars:athenea:splat:lodSize";
+            for (GaussianArray* a : {&start, &size}) {
+                a->typeName = "int[]";
+                a->interpolation = "vertex";
+                a->values.emplace_back(n);
+            }
+            for (uint32_t k = 0; k < n; ++k) {
+                start.values[0][k] = (*words)[size_t{k} * 2];
+                size.values[0][k] = (*words)[size_t{k} * 2 + 1];
+            }
+            treeAdded.push_back(std::move(start));
+            treeAdded.push_back(std::move(size));
+        }
         ATHENEA_TRY(write(treeResult, o.treeOutput, std::move(treeAdded), true, true));
         std::printf("decimate: wrote the merge tree, %u gaussians, to %s\n", n, o.treeOutput.string().c_str());
     }

@@ -782,8 +782,8 @@ TEST_CASE("a decimation carries ids, rigs, bits and floats with the gaussians, a
 // A floor of surfels -- discs as wide as their spacing, the third scale 0 --
 // whose left half is one prim (id 7) and right half another (id 9), one
 // colour, merged until eight times fewer: every kept gaussian holds the mass
-// of what it stands for (opacity times area, where its opacity was not held
-// at 0.99), has a shape in range and a covariance symmetric and positive
+// of what it stands for (its coverage times its area) and draws with its
+// members' mean opacity, has a shape in range and a covariance symmetric and positive
 // semidefinite, stands for one side only, and a float its records carry --
 // their x -- comes back inside its members' range. Flat merges of discs come
 // back discs: surfels.
@@ -856,6 +856,7 @@ TEST_CASE("a merge by pairs keeps mass, a covariance and its attributes, and cro
             cursor["ids"].setBinding(idBuffer.rhi());
             cursor["xs"].setBinding(xBuffer.rhi());
             cursor["meanX"].setBinding(meanX->first.rhi());
+            cursor["coverage"].setBinding(kept->coverage.rhi());
             cursor["counts"].setBinding(counts.rhi());
             cursor["params"]["count"].setData(count);
             cursor["params"]["tolerance"].setData(1.0e-5F);
@@ -864,8 +865,9 @@ TEST_CASE("a merge by pairs keeps mass, a covariance and its attributes, and cro
     }
     auto v = counts.readAll<uint32_t>(*gpu->device);
     REQUIRE(v);
-    std::printf("  mass %u, shape %u, covariance %u, across ids %u, float out of range %u; surfels %u\n", (*v)[0],
-                (*v)[1], (*v)[2], (*v)[3], (*v)[4], (*v)[5]);
+    std::printf("  mass %u, shape %u, covariance %u, across ids %u, float out of range %u, opacity %u; surfels %u\n",
+                (*v)[0], (*v)[1], (*v)[2], (*v)[3], (*v)[4], (*v)[6], (*v)[5]);
+    CHECK((*v)[6] == 0);
     CHECK((*v)[0] == 0);
     CHECK((*v)[1] == 0);
     CHECK((*v)[2] == 0);

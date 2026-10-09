@@ -4,7 +4,9 @@
 // the records each kept gaussian stands for: counters of violations, which
 // must come back zero, and of surfels.
 //   [0] mass not kept: W, the members' opacity times area summed, against the
-//       kept one's, where its opacity was not held at 0.99
+//       kept one's coverage times its area (its opacity is the members' mean,
+//       drawn as they overlapped; the coverage is its mass)
+//   [6] an opacity off its members' area-weighted mean (held at 0.99)
 //   [1] a shape out of range: opacity outside (0, 1], a centre or scale not
 //       finite, a negative scale, more than one axis at 0
 //   [2] a covariance not symmetric positive semidefinite
@@ -30,6 +32,7 @@ StructuredBuffer<uint>    recordOf;         // per permuted store splat
 StructuredBuffer<uint>    ids;              // per record
 StructuredBuffer<uint>    xs;               // per record
 StructuredBuffer<uint>    meanX;            // per kept gaussian
+StructuredBuffer<float>   coverage;         // per kept gaussian
 RWStructuredBuffer<uint>  counts;
 ConstantBuffer<PairsCheckParams> params;
 
@@ -76,6 +79,8 @@ void pairsCheck(uint3 tid: SV_DispatchThreadID) {
     }
     const uint2 run = ranges[o];
     float w = 0.0;
+    float areas = 0.0;
+    float alphas = 0.0;
     float lo = 1.0e30;
     float hi = -1.0e30;
     const uint id = ids[recordOf[run.x]];
@@ -83,15 +88,21 @@ void pairsCheck(uint3 tid: SV_DispatchThreadID) {
     for (uint m = run.x; m < run.y; ++m) {
         const float3 ms = scalesOf(storeShape[m * 4 + 1], storeShape[m * 4 + 2]);
         w += storePositions[m].w * discArea(ms);
+        areas += discArea(ms);
+        alphas += storePositions[m].w * discArea(ms);
         const float x = asfloat(xs[recordOf[m]]);
         lo = min(lo, x);
         hi = max(hi, x);
         crossed = crossed || ids[recordOf[m]] != id;
     }
-    const float kept = p.w * discArea(s);
     // Two scales as f16 logarithms: a step of 1/256 near e^-4, so 2% of area.
-    if (run.y - run.x > 1u && p.w < 0.98 && abs(kept - w) > 2.0e-2 * w) {
+    const float kept = coverage[o] * discArea(s);
+    if (run.y - run.x > 1u && abs(kept - w) > 2.0e-2 * w) {
         InterlockedAdd(counts[0], 1u);
+    }
+    const float mean = min(alphas / max(areas, 1.0e-30), 0.99);
+    if (run.y - run.x > 1u && abs(p.w - mean) > 1.0e-3) {
+        InterlockedAdd(counts[6], 1u);
     }
     if (crossed) {
         InterlockedAdd(counts[3], 1u);

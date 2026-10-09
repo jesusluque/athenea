@@ -839,6 +839,8 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         p["materialWeight"].setData(settings.materialWeight);
         p["flatWeight"].setData(settings.flatWeight);
         p["highlightCone"].setData(settings.highlightCone);
+        p["mergeGlass"].setData(uint32_t{settings.mergeGlass ? 1u : 0u});
+        p["maxAspect"].setData(settings.maxAspect);
         p["histogramBins"].setData(kHistogramBins);
         p["histogramLo"].setData(kHistogramLo);
         p["histogramStep"].setData(kHistogramStep);
@@ -1158,7 +1160,8 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         auto treeCounts = make(outputs, 4, "pairs.treeCounts");
         auto parentOut = make(outputs, 4, "pairs.parent");
         auto costOut = make(outputs, 4, "pairs.cost");
-        if (!treeMembers || !treeStarts || !treeCounts || !parentOut || !costOut) {
+        auto runOut = make(outputs, 8, "pairs.run");
+        if (!treeMembers || !treeStarts || !treeCounts || !parentOut || !costOut || !runOut) {
             return Error(ErrorCode::OutOfMemory, "decimate: cannot allocate the merge tree");
         }
         {
@@ -1192,6 +1195,7 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
                 c["counts"].setBinding(treeCounts->rhi());
                 c["outParent"].setBinding(parentOut->rhi());
                 c["outCost"].setBinding(costOut->rhi());
+                c["outRun"].setBinding(runOut->rhi());
                 c["params"]["count"].setData(outputs);
                 c["params"]["treeLeaves"].setData(n);
             });
@@ -1201,6 +1205,7 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         ATHENEA_TRY(finalize(outputs, *treeMembers, *treeStarts, *treeCounts, *treeOut, treeSurfels));
         treeOut->parent = std::move(*parentOut);
         treeOut->cost = std::move(*costOut);
+        treeOut->run = std::move(*runOut);
         std::printf("decimate: the merge tree: %u leaves, %u merges, %u roots, %u passes\n", n, made, count, passes);
     }
     if (stats != nullptr) {

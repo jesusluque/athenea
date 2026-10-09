@@ -59,6 +59,7 @@ StructuredBuffer<uint>      treeParent;
 StructuredBuffer<float>     treeCost;
 RWStructuredBuffer<uint>    outParent;     // per output: its parent's output (a root its own)
 RWStructuredBuffer<float>   outCost;       // per output: the merge's cost (0 a leaf)
+RWStructuredBuffer<uint2>   outRun;        // per output: its first leaf and how many it stands for
 
 uint treeOut(uint node, uint leaves) {
     return node < leaves ? treeStart[node] : node;
@@ -84,6 +85,7 @@ void pairTreeLayout(uint3 tid: SV_DispatchThreadID) {
     }
     outParent[out] = treeOut(treeParent[node], leaves);
     outCost[out] = treeCost[node];
+    outRun[out] = node < leaves ? uint2(out, 1u) : uint2(treeStart[node], treeSize[node]);
 }
 
 [shader("compute")]
@@ -222,18 +224,73 @@ void pairFinalize(uint3 tid: SV_DispatchThreadID) {
         axes[2][2] = -axes[2][2];
     }
     float3 scale = sqrt(max(float3(cov[0][0], cov[1][1], cov[2][2]), float3(1e-14)));
-    const uint thin = scale.x <= scale.y ? (scale.x <= scale.z ? 0u : 2u) : (scale.y <= scale.z ? 1u : 2u);
+    thinAxisThird(axes, scale);
+    // The disc's normal on the side the members' shading normals face, as
+    // the conversion baked it: the third axis turned over, and the first
+    // with it, so the frame stays right handed.
+    if (params.normals != 0 && dot(float3(axes[0][2], axes[1][2], axes[2][2]), normal) < 0.0) {
+        [unroll] for (uint r = 0; r < 3; ++r) {
+            axes[r][2] = -axes[r][2];
+            axes[r][0] = -axes[r][0];
+        }
+    }
+    const uint thin = 2u;
     const float widest = max(max(scale.x, scale.y), scale.z);
     const float middle = scale.x + scale.y + scale.z - scale[thin] - widest;
-    const float area = discArea(scale);
-    // THE COVERAGE, AND THE OPACITY IT IS DRAWN WITH. W / area is what the
-    // merge covers; past one -- discs that overlapped, merged into one no
-    // wider -- the opacity is held at 0.99, and a renderer that blends that
-    // reopens the gaps the overlap had closed (a merged shell seen through
-    // from afar). So the coverage is written as it is beside it
-    // (`athenea:splat:coverage`), for a reader that draws by it.
-    const float coverage = w / max(area, 1e-30);
-    const float opacity = min(coverage, 0.99);
+    // A MERGE THAT COVERS WHAT IT REPLACES (lodDecimateShape's rule, by the
+    // same reasoning). The moments keep the second moment of the members,
+    // and a cluster of discs each as wide as their spacing merges into one
+    // narrower than the span they covered: the merges overlap less than
+    // their members did, and their seams show -- the Corvette's paint merged
+    // 5x was a snake's skin (PSNR 28.8 against the full cloud). Holding the
+    // mass instead (widening until 0.99 of the area is W) overshot: a sum of
+    // overlapping discs is not their union, and the 10x car came out smeared
+    // past its edges. So along each of the merge's two wide axes: the
+    // members' centres' variance v, the spacing d a grid of n of them over
+    // that spread has (d^2 = 12 sqrt(v_u v_v) / (n - 1)), their own mean
+    // width c along it; the cluster spans e = sqrt(12 v + d^2), and the merge
+    // is c / d of that -- never narrower than its moments, never past twice
+    // them. Its opacity is its members', area weighted, since it now covers
+    // as they did. W / its own area is written as the coverage
+    // (`athenea:splat:coverage`).
+    const uint ua = thin == 0u ? 1u : 0u;
+    const uint va = thin == 2u ? 1u : 2u;
+    const float3 au = float3(axes[0][ua], axes[1][ua], axes[2][ua]);
+    const float3 av = float3(axes[0][va], axes[1][va], axes[2][va]);
+    float vu = 0.0, vv = 0.0, cu = 0.0, cv = 0.0, areaSum = 0.0, alphaSum = 0.0;
+    for (uint p = first; p < first + n; ++p) {
+        const uint s = members[p];
+        const Blob b = blobOf(storePositions[s], storeShape[s * 4], storeShape[s * 4 + 1], storeShape[s * 4 + 2],
+                              storeShape[s * 4 + 3]);
+        const float area = discArea(b.scale);
+        const float3 off = b.centre - mu;
+        vu += area * dot(off, au) * dot(off, au);
+        vv += area * dot(off, av) * dot(off, av);
+        // The member's width along an axis: sqrt(a^T Sigma a), its rows the axes.
+        float wu = 0.0, wv = 0.0;
+        for (uint k = 0; k < 3; ++k) {
+            wu += b.scale[k] * b.scale[k] * dot(b.axes[k], au) * dot(b.axes[k], au);
+            wv += b.scale[k] * b.scale[k] * dot(b.axes[k], av) * dot(b.axes[k], av);
+        }
+        cu += area * sqrt(wu);
+        cv += area * sqrt(wv);
+        areaSum += area;
+        alphaSum += area * b.opacity;
+    }
+    const float inv = 1.0 / max(areaSum, 1e-30);
+    vu *= inv;
+    vv *= inv;
+    cu *= inv;
+    cv *= inv;
+    const float d = sqrt(12.0 * sqrt(max(vu * vv, 0.0)) / float(max(n, 2u) - 1u));
+    if (d > 1.0e-20) {
+        const float wideU = cu / d * sqrt(12.0 * vu + d * d);
+        const float wideV = cv / d * sqrt(12.0 * vv + d * d);
+        scale[ua] = clamp(wideU, scale[ua], 2.0 * scale[ua]);
+        scale[va] = clamp(wideV, scale[va], 2.0 * scale[va]);
+    }
+    const float coverage = w / max(discArea(scale), 1e-30);
+    const float opacity = min(alphaSum * inv, 0.99);
     outCoverage[c] = coverage;
     // A disc of discs stays one.
     const bool surfel = params.surfels != 0 && discs && scale[thin] <= params.flatTolerance * middle;

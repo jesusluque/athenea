@@ -220,10 +220,12 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--ratio` | 1..10000 | apagado | fundir por pares en vez de cortar el octree, hasta tener estas veces menos gaussianas; entonces no se leen las cuatro tolerancias de arriba |
 | `--edge` | 0..2 | `0.15` | `--ratio`: una diferencia de color, codificada en sRGB, que nunca se funde |
 | `--max-angle` | grados, 0..180 | `60` | `--ratio`: normales más separadas no se funden nunca |
+| `--max-aspect` | 1..1000 | `1000` (apagado) | `--ratio`: se rechaza una fusión cuyo plano sale más largo que esto frente a su anchura (o que 1.25 veces lo que ya eran sus miembros) -- una cadena de discos a lo largo de un embellecedor se fundiría en una aguja que emborrona |
+| `--merge-glass` | flag | apagado | `--ratio`: las gaussianas que transmiten (vidrio) también se funden entre sí; apagado, el vidrio se conserva tal cual |
 | `--no-surfels` | flag | apagado | `--ratio`: una fusión plana sigue siendo una gaussiana fina en vez de un surfel |
 | `--surfel-flatness` | 0..1 | `0.12` | `--ratio`: una fusión de discos cuyo eje más fino está por debajo de esta fracción del mediano se escribe como surfel |
 | `--highlight-cone` | 0..1000 | `1` | `--ratio`: en una superficie brillante (alpha GGX por debajo de 0.1), normales más separadas que esto por sqrt(alpha) radianes no se funden nunca -- la fusión movería el brillo; grande deja decidir solo a la proporción |
-| `--tree` | ruta | — | `--ratio`: además, el árbol de fusiones entero aquí: las hojas en orden de profundidad y luego cada fusión, con `primvars:athenea:splat:lodParent` y `lodCost` y la constante `lodTree` |
+| `--tree` | ruta | — | `--ratio`: además, el árbol de fusiones entero aquí: las hojas en orden de profundidad y luego cada fusión, con `primvars:athenea:splat:lodParent`, `lodCost`, `lodStart` y `lodSize` (su tramo de hojas) y la constante `lodTree` |
 | `--camera` | ruta de prim | `/World/Camera` donde la hay | `--ratio`: la cámara para la que se hace la nube; una fusión de menos de medio píxel en ella no cuesta nada de su forma |
 | `--camera-pixels` | 1..65536 | `1920` | `--ratio`: píxeles de ancho de la imagen de esa cámara |
 
@@ -585,8 +587,10 @@ athenea aofx run tv.mediapro.aofx.invert shot.exr -o inverted.exr
 Con una imagen imprime la media y el valor más alto de cada canal. Con dos, eso
 mismo para ambas y después cuánto se aleja la primera de la segunda, que se
 toma como referencia: el error HDR relativo (`relMSE`, p99 y mayor diferencia
-relativa) y la distribución en valores de código sRGB de 8 bits (p99, máximo,
-píxeles por encima de 2). La CPU solo lee los ficheros; cada número es de un
+relativa), la distribución en valores de código sRGB de 8 bits (p99, máximo,
+píxeles por encima de 2) y lo que se ve: el PSNR del color codificado en sRGB y
+la SSIM media de su luminancia en una caja de 7 x 7 (`display`). La CPU solo lee
+los ficheros; cada número es de un
 kernel. Los kernels son los del efecto Measure (§7.1), corridos por el host
 AOFX como los corre un compositor, así que el bundle tiene que estar en la
 ruta de búsqueda: uno compilado en este árbol siempre lo está.
@@ -1841,6 +1845,7 @@ cada uno exacto (alto es 0 por debajo de 16 777 216):
 | `reference` | lo mismo de Reference; solo si está conectada |
 | `hdr` | relMSE, diferencia relativa p99, mayor diferencia relativa, la suma del error cuadrático relativo, píxeles (alto, bajo) |
 | `codes` | p99 de 8 bits, máximo de 8 bits, píxeles por encima de `threshold` (alto, bajo), `threshold`, píxeles (alto, bajo) |
+| `display` | PSNR del color codificado en sRGB (dB, 999 si son iguales), SSIM media de la luminancia codificada en una caja de 7 × 7, el error cuadrático medio del color codificado |
 
 La diferencia relativa va en bins de un octavo de octava desde 2^-16, así que
 su p99 y su máximo son la cota superior de un bin (en torno al 9 %). Las sumas

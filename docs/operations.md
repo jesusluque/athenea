@@ -219,10 +219,12 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--ratio` | 1..10000 | off | merge by pairs instead of cutting the octree, until this many times fewer gaussians; the four tolerances above are not read then |
 | `--edge` | 0..2 | `0.15` | `--ratio`: a colour difference, sRGB-encoded, never merged across |
 | `--max-angle` | degrees, 0..180 | `60` | `--ratio`: normals further apart are never merged |
+| `--max-aspect` | 1..1000 | `1000` (off) | `--ratio`: a merge whose plane comes out longer than this against its width (or than 1.25 times its members' already were) is refused -- a chain of discs along a trim would merge into a needle that smears |
+| `--merge-glass` | flag | off | `--ratio`: transmitting gaussians (glass) merge among themselves too; off, glass is kept as it is |
 | `--no-surfels` | flag | off | `--ratio`: a flat merge stays a thin gaussian rather than a surfel |
 | `--surfel-flatness` | 0..1 | `0.12` | `--ratio`: a merge of discs whose thinnest axis is under this fraction of its middle one is written a surfel |
 | `--highlight-cone` | 0..1000 | `1` | `--ratio`: on a glossy surface (GGX alpha under 0.1), normals further apart than this times sqrt(alpha) radians never merge -- the merge would move the highlight; large lets the ratio decide alone |
-| `--tree` | path | — | `--ratio`: the whole merge tree written here as well: the leaves in depth-first order, then every merge, with `primvars:athenea:splat:lodParent` and `lodCost` and the constant `lodTree` |
+| `--tree` | path | — | `--ratio`: the whole merge tree written here as well: the leaves in depth-first order, then every merge, with `primvars:athenea:splat:lodParent`, `lodCost`, `lodStart` and `lodSize` (its run of leaves) and the constant `lodTree` |
 | `--camera` | prim path | `/World/Camera` where there is one | `--ratio`: the camera the cloud is made for; a merge under half a pixel there costs nothing of its shape |
 | `--camera-pixels` | 1..65536 | `1920` | `--ratio`: pixels across that camera's image |
 
@@ -578,8 +580,9 @@ athenea aofx run tv.mediapro.aofx.invert shot.exr -o inverted.exr
 One image prints the mean and the largest value of each channel. Two print that
 for both, then how far the first is from the second, the second taken as the
 reference: the relative HDR error (`relMSE`, p99 and largest relative
-difference) and the 8-bit sRGB code-value distribution (p99, largest, pixels
-over 2). The CPU only reads the files; every number is a kernel's. The kernels
+difference), the 8-bit sRGB code-value distribution (p99, largest, pixels
+over 2), and as it is seen: PSNR of the sRGB-encoded colour and the mean SSIM
+of its luminance over a 7 x 7 box (`display`). The CPU only reads the files; every number is a kernel's. The kernels
 are the Measure effect's (§7.1), run through the AOFX host as a compositor runs
 them, so the bundle must be on the search path: one built in this tree always
 is.
@@ -1797,6 +1800,7 @@ exact (high is 0 below 16 777 216):
 | `reference` | the same for Reference; only when it is wired |
 | `hdr` | relMSE, p99 relative difference, largest relative difference, the relative squared error's sum, pixels (high, low) |
 | `codes` | 8-bit p99, 8-bit largest, pixels over `threshold` (high, low), `threshold`, pixels (high, low) |
+| `display` | PSNR of the sRGB-encoded colour (dB, 999 when equal), mean SSIM of the encoded luminance over a 7 × 7 box, the encoded colour's mean squared error |
 
 The relative difference is binned in eighths of an octave from 2^-16, so its
 p99 and largest are a bin's upper bound (about 9 %). The sums are there for a

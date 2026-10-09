@@ -34,10 +34,12 @@ void addDecimate(CLI::App& app) {
         bool noCamera = false;
         float ratio = 0.0F;
         float edge = 0.15F;
+        float maxAspect = 1000.0F;
         float maxAngle = 60.0F;
         float highlightCone = 1.0F;
         float surfelFlatness = -1.0F;
         bool noSurfels = false;
+        bool mergeGlass = false;
         std::string camera;
         unsigned cameraPixels = 1920;
         std::string tree;
@@ -80,6 +82,11 @@ void addDecimate(CLI::App& app) {
                     "--ratio: a merge of discs whose thinnest axis is under this fraction of its middle one is "
                     "written a surfel (default 0.12)")
         ->check(CLI::Range(0.0F, 1.0F));
+    cmd->add_option("--max-aspect", o->maxAspect,
+                    "--ratio: a merge longer than this against its width (or 1.25 times its members) is refused")
+        ->check(CLI::Range(1.0F, 1000.0F));
+    cmd->add_flag("--merge-glass", o->mergeGlass,
+                  "--ratio: merge transmitting gaussians (glass) among themselves too; off, they are kept");
     cmd->add_flag("--no-surfels", o->noSurfels, "--ratio: keep a flat merge a thin gaussian, not a surfel");
     cmd->add_option("--camera", o->camera,
                     "--ratio: the camera the cloud is made for (default /World/Camera where there is one)");
@@ -112,6 +119,8 @@ void addDecimate(CLI::App& app) {
             options.pairSettings.flatTolerance = o->surfelFlatness;
         }
         options.pairSettings.surfels = !o->noSurfels;
+        options.pairSettings.mergeGlass = o->mergeGlass;
+        options.pairSettings.maxAspect = o->maxAspect;
         options.camera = o->camera;
         options.cameraPixels = o->cameraPixels;
         options.treeOutput = o->tree;

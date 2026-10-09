@@ -13795,7 +13795,11 @@ pair by pair gives: the clusters are made runs of a permuted store
   metallic, sqrt(alpha), transmission.
 Never merged: a key (ids, joints, sheets, thin walls, Schlick metals), glass
 with what is not, a mirror (alpha < 0.01) with what is not, normals past 60
-degrees, a colour past 0.15 (an edge).
+degrees, a colour past 0.15 (an edge). `--max-aspect` refuses a merge whose plane
+comes out longer than that against its width (a chain along a trim merges into a
+needle that smears; the Corvette merged 10x streaked), off by default: at 4, with
+the edge at 0.10, the Corvette at 10x measured worse (26.9 dB and LPIPS 0.124
+against 27.9 and 0.110), the ratio being taken from merges that cost more.
 
 **A surfel** is a gaussian with one scale exactly 0: the disc of the other
 two. A merge whose members are discs and which comes out flat to within 0.12
@@ -13818,10 +13822,26 @@ decimation weighed a splat by the product of its scales over the smallest,
 which a surfel's zero takes to nothing: they weigh the two widest
 (`discArea`). `mesh2splat --flatness 0` bakes a whole cloud of them.
 
-**Coverage.** A merge's opacity is W over its area held at 0.99; past one the
-discs it merged overlapped, and a renderer drawing by the held value reopens
-the gaps (sparkwebGPU's 6 October fix, AK). The unheld value is written as
-`primvars:athenea:splat:coverage`.
+**Coverage.** A merge's moments keep the second moment of its members, and a
+cluster of discs each as wide as their spacing merges into one narrower than
+the span they covered: merges overlapped less than their members had, and
+their seams showed -- the Corvette's paint merged 5x was a snake's skin, dark
+rims round every merge (PSNR 28.8 against the full cloud at the front
+camera). Holding the mass instead (widening until 0.99 of the area is W)
+fixed the balls (car paint 10x from 31.1 dB / LPIPS 0.160 to 36.2 / 0.040,
+chrome 5x 22.0 / 0.128 to 27.3 / 0.074, surfels then level with thin
+gaussians) and smeared the car past its edges: a sum of overlapping discs is
+not their union. So a merge is widened as the octree decimation widens one
+(lodDecimateShape): along each wide axis, the members' spacing d from their
+centres' spread and count, their mean width c, the span e = sqrt(12 v + d^2),
+the merge c / d of that, between its moments and twice them; its opacity
+their area-weighted mean. Its mass, W over its area, is written as
+`primvars:athenea:splat:coverage` -- what the test holds, and what a reader
+blending by coverage (sparkwebGPU's AK) draws by.
+
+**Glass** merges only with `--merge-glass`: a window is a sheet drawn as a
+layer of the reflection it gives head on, and the Corvette's windshield
+merged 10x shimmered in a rainbow moire.
 
 **Frames.** `transferZonal` (two lobes, their axes in each gaussian's own
 frame) and `curvature` (a shape operator in the frame's first two axes) are
@@ -13829,9 +13849,38 @@ merged through each member's frame to the world and into the kept gaussian's
 (AttributeMerge::Zonal, Curvature); averaged as numbers they mixed axes of
 frames turned apart. The octree decimation reads them the same way.
 
-**Not done.** The merge tree is not written (each merge is a parent node;
-2x..20x would be cuts of one file); the curvature is the members' average, not
-refitted from their normals; the roughness is not widened by the normals'
-spread; light layers and the TX reflected field are merged but not in the
-cost; an error target instead of a ratio. Measurements: below, as they land
-(`~/luc/athenea-gpu/gpu_p1.sh`).
+**Measured** (bench/simplify/validate.py, build s5: the matx shader ball, four
+cameras on an orbit, the mesh path traced at 512 paths as the reference; PSNR
+and SSIM by `athenea compare`, LPIPS AlexNet; "vs full" against the full TX
+cloud's own frames, which is what the merge alone loses):
+
+| material | full | 2x | 5x | 10x | 20x |
+|---|---|---|---|---|---|
+| car paint, vs full: PSNR / SSIM | -- | 47.0 / 0.997 | 43.0 / 0.994 | 41.0 / 0.990 | 39.3 / 0.987 |
+| car paint, vs the PT: LPIPS | 0.569 | 0.568 | 0.573 | 0.576 | 0.579 |
+| chrome (reflection), vs full | -- | 40.6 / 0.994 | 36.3 / 0.987 | 33.6 / 0.978 | 32.0 / 0.971 |
+| chrome, vs the PT: LPIPS | 0.561 | 0.562 | 0.568 | 0.570 | 0.574 |
+| glass (refraction, --merge-glass), vs full | -- | 38.0 / 0.974 | 34.9 / 0.948 | 31.4 / 0.916 | 29.1 / 0.890 |
+| glass, vs the PT: LPIPS | 0.681 | 0.679 | 0.695 | 0.712 | 0.722 |
+
+Against the PT the full cloud's own error (TX, and the reference's noise at
+512 paths) dominates at every ratio: car paint 26.9 dB full, 26.5 at 20x.
+Merging takes 23-37 s for 600k gaussians (wall time, the machine shared). The
+Corvette (5.38M, TX and five light layers), front camera by day against the
+full cloud: 5x 30.6 dB / LPIPS 0.061, 10x 27.9 / 0.110 -- its small pieces
+(badges, the grille, trims) are where 10x shows. Before the merged frames had
+their thinnest axis third, chrome at 5x glittered (22.0 dB against the full
+cloud on one camera; 33.1 after): the curvature and the zonal lobes were read
+in a plane holding the normal.
+
+**Not done.** The curvature is the members' average, not refitted from their
+normals; the roughness is not widened by the normals' spread; light layers and
+the TX reflected field are merged but not in the cost; an error target instead
+of a ratio; pairing greedily among the three cheapest rather than by mutual
+choice (sparkwebGPU: pairs that chose each other leave many unpaired); a
+surfel under a pixel draws its full opacity over the screen filter's disc and
+over-covers (a far car's glass x0.72 in sparkwebGPU) -- their remedy, the
+disc's own affine footprint convolved with the AA blur at the opacity that
+keeps its mass, is the next step here; the octree's own finalize does not yet
+put the thinnest axis third (doing it broke the .athc and transfer tests, not
+yet looked into).

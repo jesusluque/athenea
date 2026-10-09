@@ -203,6 +203,9 @@ struct DecimateResult {
     /// node stands for a run of them.
     gpu::Buffer      parent;
     gpu::Buffer      cost;
+    /// uint2 per gaussian of a merge tree: its first leaf and how many leaves
+    /// it stands for (a leaf: itself and one).
+    gpu::Buffer      run;
 };
 
 /// FEWER GAUSSIANS BY PAIRS (`Decimator::decimatePairs`, lod_pairs.slang):
@@ -224,6 +227,16 @@ struct PairSettings {
     /// this times sqrt(alpha) radians -- the lobe's width -- never merge: the
     /// merge would move the highlight. Large: the ratio decides alone.
     float highlightCone = 1.0F;
+    /// Transmitting gaussians (glass) merge among themselves; off, they stay
+    /// as they are -- a window is a sheet drawn as a layer, and merged it
+    /// shimmers.
+    bool  mergeGlass = false;
+    /// A merge whose plane comes out longer than this against its width (or
+    /// than 1.25 times its members' already were) is refused: a chain of
+    /// discs along a trim merges into a needle that smears. Off by default:
+    /// at 4 the Corvette merged 10x came out worse (26.9 dB against 27.9), the
+    /// ratio then taken from merges that cost more.
+    float maxAspect = 1000.0F;
     /// A merge of discs whose thinnest axis is under this fraction of its
     /// middle one is written as a surfel, a scale of exactly 0 (when `surfels`).
     float flatTolerance = 0.12F;

@@ -221,6 +221,17 @@ the screen -- not drawn whole."""
 into, by index; a root's is its own. One a gaussian."""
         interpolation = "vertex"
     )
+    int[] primvars:athenea:splat:lodStart = [] (
+        doc = """In a merge tree (`lodTree`): the first leaf the gaussian stands for (the
+leaves being the first gaussians, in depth-first order); a leaf's own index. One a
+gaussian."""
+        interpolation = "vertex"
+    )
+    int[] primvars:athenea:splat:lodSize = [] (
+        doc = """In a merge tree (`lodTree`): how many leaves the gaussian stands for, from
+`lodStart` on; a leaf 1. One a gaussian."""
+        interpolation = "vertex"
+    )
     float[] primvars:athenea:splat:lodCost = [] (
         doc = """In a merge tree (`lodTree`): what the merge that made the gaussian cost
 (`athenea decimate --ratio`'s cost: shape against what the camera sees, colour,
