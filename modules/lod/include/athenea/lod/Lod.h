@@ -248,6 +248,11 @@ struct PairSettings {
     /// at 4 the Corvette merged 10x came out worse (26.9 dB against 27.9), the
     /// ratio then taken from merges that cost more.
     float maxAspect = 1000.0F;
+    /// With a tree: once nothing more may merge, the roots go on with the
+    /// colour edge, the angle, the glass, the aspect and the pixel limit
+    /// lifted, so a far view has coarse levels to cut to (the flat cloud is
+    /// what stood before).
+    bool  relaxTop = true;
     /// A merge of discs whose thinnest axis is under this fraction of its
     /// middle one is written as a surfel, a scale of exactly 0 (when `surfels`).
     float flatTolerance = 0.12F;

@@ -46,6 +46,7 @@ void addDecimate(CLI::App& app) {
         std::string tree;
         bool dropHidden = false;
         uint32_t cutBudget = 0;
+        std::string cameraStage;
         float cutPixels = 0.0F;
         std::string transferBasis;
         uint32_t transferClusters = 256;
@@ -117,6 +118,8 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--tree", o->tree,
                     "--ratio: also write the whole merge tree here -- leaves in depth-first order, then every "
                     "merge with its parent and cost -- for a reader that cuts it");
+    cmd->add_option("--camera-stage", o->cameraStage,
+                    "--camera is read from this stage rather than the input (a view the cloud was not baked for)");
     cmd->add_option("--cut-budget", o->cutBudget,
                     "the input is a merge tree (--tree): keep only the cut a renderer would draw from --camera "
                     "with at most this many gaussians (with --ratio 1: nothing more merges)");
@@ -192,6 +195,7 @@ void addDecimate(CLI::App& app) {
         options.cameraPixels = o->cameraPixels;
         options.treeOutput = o->tree;
         options.cutBudget = o->cutBudget;
+        options.cameraStage = o->cameraStage;
         options.cutPixels = o->cutPixels;
         options.transferBasis = o->transferBasis;
         options.transferClusters = o->transferClusters;

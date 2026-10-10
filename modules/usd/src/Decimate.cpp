@@ -267,7 +267,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
     if (o.pairs && usd) {
         // The camera, read on the host: where it stands and how many pixels a
         // unit of length covers at a distance of one.
-        const pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(input.string());
+        const pxr::UsdStageRefPtr stage =
+            pxr::UsdStage::Open(o.cameraStage.empty() ? input.string() : o.cameraStage.string());
         const std::string path = o.camera.empty() ? std::string("/World/Camera") : o.camera;
         const pxr::UsdGeomCamera camera(stage ? stage->GetPrimAtPath(pxr::SdfPath(path)) : pxr::UsdPrim());
         if (camera) {

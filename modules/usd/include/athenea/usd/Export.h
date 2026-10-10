@@ -266,6 +266,8 @@ struct DecimateStageOptions {
     /// /World/Camera where the stage has one, else none.
     std::string           camera;
     uint32_t              cameraPixels = 1920;   ///< across the camera's image
+    /// The stage `camera` is read from (empty: the input's own).
+    std::filesystem::path cameraStage;
     /// With `pairs`: the whole merge tree written here as well -- the leaves
     /// in depth-first order, then every merge, each with its parent and cost.
     std::filesystem::path treeOutput;

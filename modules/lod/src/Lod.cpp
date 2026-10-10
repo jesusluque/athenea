@@ -943,6 +943,11 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
     // The second Morton order's shift: half the finest cell a 30-bit code
     // tells apart, on every axis.
     const float shift = lod.extent / static_cast<float>(1u << 10) * 0.5F;
+    // ABOVE WHAT THE GUARDS ALLOW, for a tree: once nothing more may merge,
+    // the roots go on merging with the colour edge, the normals' angle, the
+    // glass, the aspect and the pixel limit lifted, so that a far view has
+    // coarse levels to cut to. The flat cloud is what stood before.
+    bool relaxed = false;
     const auto setParams = [&](rhi::ShaderCursor p, uint32_t count) {
         p["count"].setData(count);
         p["keyed"].setData(uint32_t{carried.keys != nullptr ? 1u : 0u});
@@ -959,16 +964,17 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         p["eyeX"].setData(settings.eye[0]);
         p["eyeY"].setData(settings.eye[1]);
         p["eyeZ"].setData(settings.eye[2]);
-        p["edge"].setData(settings.edge);
-        p["maxCos"].setData(static_cast<float>(std::cos(settings.maxAngle * 3.14159265358979 / 180.0)));
+        p["edge"].setData(relaxed ? 2.0F : settings.edge);
+        p["maxCos"].setData(relaxed ? -1.0F
+                                    : static_cast<float>(std::cos(settings.maxAngle * 3.14159265358979 / 180.0)));
         p["colourWeight"].setData(settings.colourWeight);
         p["normalWeight"].setData(settings.normalWeight);
         p["materialWeight"].setData(settings.materialWeight);
         p["flatWeight"].setData(settings.flatWeight);
         p["highlightCone"].setData(settings.highlightCone);
-        p["mergeGlass"].setData(uint32_t{settings.mergeGlass ? 1u : 0u});
-        p["maxAspect"].setData(settings.maxAspect);
-        p["maxPixels"].setData(settings.maxPixels);
+        p["mergeGlass"].setData(uint32_t{settings.mergeGlass || relaxed ? 1u : 0u});
+        p["maxAspect"].setData(relaxed ? 1.0e30F : settings.maxAspect);
+        p["maxPixels"].setData(relaxed ? 0.0F : settings.maxPixels);
         p["histogramBins"].setData(kHistogramBins);
         p["histogramLo"].setData(kHistogramLo);
         p["histogramStep"].setData(kHistogramStep);
@@ -1124,6 +1130,13 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
             pairs += b;
         }
         if (pairs == 0) {
+            if (tree && settings.relaxTop && !relaxed) {
+                if (flatCount == 0) {
+                    ATHENEA_TRY(snapshot());
+                }
+                relaxed = true;
+                continue;
+            }
             break;   // nothing left may merge
         }
         // As many of the cheapest pairs as take the count to the target --
@@ -1191,6 +1204,13 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         ATHENEA_TRY(total->read(device, 0, 4, &kept));
         std::swap(nodes, spare);
         if (kept == count) {
+            if (tree && settings.relaxTop && !relaxed) {
+                if (flatCount == 0) {
+                    ATHENEA_TRY(snapshot());
+                }
+                relaxed = true;
+                continue;
+            }
             break;
         }
         count = kept;
