@@ -338,6 +338,84 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
         }
     }
+    if (o.cutBudget > 0 || o.cutPixels > 0.0F) {
+        // A CUT THROUGH THE MERGE TREE the input is (lod_tree_cut.slang):
+        // each gaussian's width on the camera's screen, then the threshold
+        // searched whose cut holds the budget, and the store pruned to it.
+        const GaussianArray* parentArray = nullptr;
+        const GaussianArray* leavesArray = nullptr;
+        for (const GaussianArray& a : arrays) {
+            if (ends(a.name, "athenea:splat:lodParent")) parentArray = &a;
+            if (ends(a.name, "athenea:splat:lodSize")) leavesArray = &a;
+        }
+        if (parentArray == nullptr || leavesArray == nullptr || !(pairSettings.pixelsPerUnit > 0.0F)) {
+            return Error(ErrorCode::InvalidArgument,
+                         "decimate: a cut needs a merge tree (decimate --tree) and a camera (--ratio 1)");
+        }
+        const lod::LodCloud& from = pruned ? *pruned : *lod;
+        const uint32_t n = from.count;
+        auto widthKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCutWidth");
+        if (!widthKernel) return std::move(widthKernel).error();
+        auto keepKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCutKeep");
+        if (!keepKernel) return std::move(keepKernel).error();
+        auto parents = upload(parentArray->values[0], "decimate.cutParent");
+        auto leaves = upload(leavesArray->values[0], "decimate.cutLeaves");
+        auto widths = upload(std::vector<uint32_t>(n, 0u), "decimate.cutWidth");
+        auto score = upload(std::vector<uint32_t>(n, 0u), "decimate.cutScore");
+        auto counter = upload(std::vector<uint32_t>(1, 0u), "decimate.cutCount");
+        if (!parents || !leaves || !widths || !score || !counter) {
+            return Error(ErrorCode::OutOfMemory, "decimate: the cut");
+        }
+        float threshold = 1.0F;
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["storeOrder"].setBinding(from.order.rhi());
+            cursor["positions"].setBinding(from.splats.positions.rhi());
+            cursor["shape"].setBinding(from.splats.shape.rhi());
+            cursor["parent"].setBinding(parents->rhi());
+            cursor["leaves"].setBinding(leaves->rhi());
+            cursor["width"].setBinding(widths->rhi());
+            cursor["score"].setBinding(score->rhi());
+            cursor["counter"].setBinding(counter->rhi());
+            cursor["params"]["count"].setData(n);
+            cursor["params"]["threshold"].setData(threshold);
+            cursor["params"]["pixelsPerUnit"].setData(pairSettings.pixelsPerUnit);
+            cursor["params"]["maxDepth"].setData(uint32_t{256});
+            const float eye[4] = {pairSettings.eye[0], pairSettings.eye[1], pairSettings.eye[2], 1.0F};
+            cursor["params"]["eye"].setData(eye, 16);
+        };
+        {
+            gpu::CommandBatch batch(device);
+            widthKernel->dispatch(batch, {n, 1, 1}, bind);
+            ATHENEA_TRY(batch.submit(true));
+        }
+        const auto cutAt = [&](float t) -> Result<uint32_t> {
+            threshold = t;
+            const uint32_t zero = 0;
+            ATHENEA_TRY(counter->write(device, 0, 4, &zero));
+            gpu::CommandBatch batch(device);
+            keepKernel->dispatch(batch, {n, 1, 1}, bind);
+            ATHENEA_TRY(batch.submit(true));
+            uint32_t kept = 0;
+            ATHENEA_TRY(counter->read(device, 0, 4, &kept));
+            return kept;
+        };
+        // The count falls as the threshold rises: bisected in its logarithm
+        // for the smallest threshold whose cut fits.
+        double low = std::log(1.0e-3), high = std::log(o.cutPixels > 0.0F ? double(o.cutPixels) : 1.0e5);
+        for (int k = 0; k < 40 && o.cutPixels <= 0.0F; ++k) {
+            const double mid = 0.5 * (low + high);
+            auto kept = cutAt(static_cast<float>(std::exp(mid)));
+            if (!kept) return std::move(kept).error();
+            (*kept > o.cutBudget ? low : high) = mid;
+        }
+        auto kept = cutAt(static_cast<float>(std::exp(high)));
+        if (!kept) return std::move(kept).error();
+        std::printf("decimate: the cut from the camera at %.3g pixels holds %u of the tree's %u gaussians\n",
+                    std::exp(high), *kept, n);
+        auto cut = decimator->prune(from, *score, 0.5F);
+        if (!cut) return std::move(cut).error();
+        pruned = std::move(*cut);
+    }
     const lod::LodCloud& store = pruned ? *pruned : *lod;
     lod::DecimateResult treeResult;
     const bool tree = o.pairs && !o.treeOutput.empty();

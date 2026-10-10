@@ -269,6 +269,15 @@ struct DecimateStageOptions {
     /// With `pairs`: the whole merge tree written here as well -- the leaves
     /// in depth-first order, then every merge, each with its parent and cost.
     std::filesystem::path treeOutput;
+    /// A CUT THROUGH A MERGE TREE (`input` written by `treeOutput`): for
+    /// `camera` at `cameraPixels`, the leaves and merges a renderer would
+    /// draw so that at most this many are drawn -- each leaf once, by itself
+    /// or by the highest merge over it no wider on screen than a threshold
+    /// searched for the budget (lod_tree_cut.slang). 0: no cut.
+    uint32_t              cutBudget = 0;
+    /// Or the threshold itself, in pixels: one number for every piece cut, so
+    /// that pieces cut apart are cut as one tree would be. 0: searched.
+    float                 cutPixels = 0.0F;
     /// WHAT NO CAMERA SEES, LEFT OUT FIRST (lod::Decimator::prune): the cloud
     /// drawn from `hiddenViews` directions round its bounds, at three
     /// distances (2.5, 1.6 and 1.15 times the bounding sphere's radius,

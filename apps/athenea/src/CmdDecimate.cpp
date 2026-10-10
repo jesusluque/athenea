@@ -45,6 +45,8 @@ void addDecimate(CLI::App& app) {
         unsigned cameraPixels = 1920;
         std::string tree;
         bool dropHidden = false;
+        uint32_t cutBudget = 0;
+        float cutPixels = 0.0F;
         unsigned hiddenViews = 256;
         unsigned hiddenSize = 1024;
         float hiddenPixels = 0.02F;
@@ -111,6 +113,12 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--tree", o->tree,
                     "--ratio: also write the whole merge tree here -- leaves in depth-first order, then every "
                     "merge with its parent and cost -- for a reader that cuts it");
+    cmd->add_option("--cut-budget", o->cutBudget,
+                    "the input is a merge tree (--tree): keep only the cut a renderer would draw from --camera "
+                    "with at most this many gaussians (with --ratio 1: nothing more merges)");
+    cmd->add_option("--cut-pixels", o->cutPixels,
+                    "the input is a merge tree: keep the cut whose merges are no wider than this on --camera's "
+                    "screen (in place of --cut-budget)");
     cmd->add_flag("--drop-hidden", o->dropHidden,
                   "first leave out what no camera round the cloud sees (an orbit drawn by raster); with no "
                   "--ratio, only that");
@@ -170,6 +178,8 @@ void addDecimate(CLI::App& app) {
         options.camera = o->camera;
         options.cameraPixels = o->cameraPixels;
         options.treeOutput = o->tree;
+        options.cutBudget = o->cutBudget;
+        options.cutPixels = o->cutPixels;
         options.dropHidden = o->dropHidden;
         options.hiddenViews = std::max(o->hiddenViews, 1u);
         options.hiddenSize = std::max(o->hiddenSize, 16u);
