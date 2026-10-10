@@ -1,7 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 //
 // A CLOUD'S GEOMETRY AT THE BITS A PHONE'S CHUNK GIVES IT, and back
-// (`athenea decimate --quantize`; research 097's S0 stream, 23 bytes): in
+// (`athenea decimate --quantize`; research 097's S0 stream, 24 bytes): in
 // chunks of `chunk` gaussians in the file's order, each chunk's box and
 // ranges first, then every gaussian
 //   position   3 x 16 bits in the chunk's box
@@ -9,10 +9,10 @@
 //              (a surfel's zero scale kept as it is)
 //   rotation   32 bits: the three smallest components, 10 bits each, and
 //              which was largest
-//   opacity    8 bits
+//   opacity    8 bits of its square root (a glass's small alphas)
 //   colour     3 x 8 bits of the base colour's coefficient in the chunk's range
-//   normal     16 bits, octahedral
-//   curvature  3 x 8 bits signed, over the chunk's largest
+//   normal     24 bits, octahedral, 12 an axis (8 moved the coat's reflections)
+//   curvature  3 x 8 bits: a sign and log2 of the size over the chunk's range
 //   material   an index (not touched here: a table of the stage's materials)
 // and written back as what a reader decodes, so a frame of the output shows
 // what the layout costs. The records are the raw floats a cloud is read into
@@ -63,7 +63,7 @@ void quantizeRanges(uint3 tid: SV_DispatchThreadID) {
     }
     const uint last = min(first + params.chunk, params.count);
     float3 lo = float3(3.4e38), hi = float3(-3.4e38);
-    float sLo = 3.4e38, sHi = -3.4e38, dLo = 3.4e38, dHi = -3.4e38, kMax = 0.0;
+    float sLo = 3.4e38, sHi = -3.4e38, dLo = 3.4e38, dHi = -3.4e38, kMax = -3.4e38, kMin = 3.4e38;
     for (uint g = first; g < last; ++g) {
         const float3 p = float3(field(g, params.x), field(g, params.y), field(g, params.z));
         lo = min(lo, p);
@@ -79,13 +79,19 @@ void quantizeRanges(uint3 tid: SV_DispatchThreadID) {
         dLo = min(dLo, min(d.x, min(d.y, d.z)));
         dHi = max(dHi, max(d.x, max(d.y, d.z)));
         if (params.hasCurvature != 0) {
-            kMax = max(kMax, max(abs(curvature[g * 3]), max(abs(curvature[g * 3 + 1]), abs(curvature[g * 3 + 2]))));
+            [unroll] for (uint k = 0; k < 3; ++k) {
+                const float m = abs(curvature[g * 3 + k]);
+                if (m > 1.0e-6) {
+                    kMax = max(kMax, log2(m));
+                    kMin = min(kMin, log2(m));
+                }
+            }
         }
     }
     ranges[c * 4] = float4(lo, 0.0);
     ranges[c * 4 + 1] = float4(hi, 0.0);
-    ranges[c * 4 + 2] = float4(sLo, dLo, kMax, 0.0);
-    ranges[c * 4 + 3] = float4(sHi, dHi, 0.0, 0.0);
+    ranges[c * 4 + 2] = float4(sLo, dLo, kMin, 0.0);
+    ranges[c * 4 + 3] = float4(sHi, dHi, kMax, 0.0);
 }
 
 float quantize(float v, float lo, float hi, float steps) {
@@ -96,13 +102,13 @@ float quantize(float v, float lo, float hi, float steps) {
     return lo + round(saturate((v - lo) / span) * steps) / steps * span;
 }
 
-float2 octEncode16(float3 n) {
+float2 octEncode24(float3 n) {
     n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1.0e-20);
     float2 e = n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
-    return round(saturate(e * 0.5 + 0.5) * 255.0) / 255.0 * 2.0 - 1.0;
+    return round(saturate(e * 0.5 + 0.5) * 4095.0) / 4095.0 * 2.0 - 1.0;
 }
 
-float3 octDecode16(float2 e) {
+float3 octDecode24(float2 e) {
     float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));
     if (n.z < 0.0) {
         n.xy = (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
@@ -160,7 +166,8 @@ void quantizeRecords(uint3 tid: SV_DispatchThreadID) {
     if (params.linearValues != 0) {
         const float o = field(g, params.opacity);
         if (o <= 1.0) {
-            setField(g, params.opacity, round(saturate(o) * 255.0) / 255.0);
+            const float root = round(sqrt(saturate(o)) * 255.0) / 255.0;   // small alphas (glass) keep their steps
+            setField(g, params.opacity, root * root);
         }
     } else {
         const float logit = field(g, params.opacity);
@@ -176,16 +183,20 @@ void quantizeRecords(uint3 tid: SV_DispatchThreadID) {
     if (params.hasNormal != 0) {
         const float3 n = float3(field(g, params.normal), field(g, params.normal + 1), field(g, params.normal + 2));
         if (dot(n, n) > 1.0e-20) {
-            const float3 back = octDecode16(octEncode16(n));
+            const float3 back = octDecode24(octEncode24(n));
             setField(g, params.normal, back.x);
             setField(g, params.normal + 1, back.y);
             setField(g, params.normal + 2, back.z);
         }
     }
-    // Curvature: 8 bits signed over the chunk's largest.
+    // Curvature: a sign and 7 bits of log2 of its size over the chunk's range
+    // (a panel's 0.002 and a lip's thousands per metre in one chunk); under
+    // 1e-6 it is flat.
     if (params.hasCurvature != 0) {
         [unroll] for (uint k = 0; k < 3; ++k) {
-            curvature[g * 3 + k] = quantize(curvature[g * 3 + k], -a.z, a.z, 254.0);
+            const float v = curvature[g * 3 + k];
+            const float m = abs(v);
+            curvature[g * 3 + k] = m > 1.0e-6 && b.z >= a.z ? sign(v) * exp2(quantize(log2(m), a.z, b.z, 127.0)) : 0.0;
         }
     }
 }

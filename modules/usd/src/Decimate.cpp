@@ -309,7 +309,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             bent->resize(curvatureArray->values[0].size());
             curvatureArray->values[0] = std::move(*bent);
         }
-        std::printf("decimate: the geometry quantised in %u chunks of %u (23 B a gaussian)\n", chunks,
+        std::printf("decimate: the geometry quantised in %u chunks of %u (24 B a gaussian)\n", chunks,
                     o.quantizeChunk);
     }
     auto cloud = loader->upload(*raw, o.degree);
