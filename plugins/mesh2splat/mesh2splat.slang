@@ -1367,7 +1367,12 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         float4 coat = params.coat;
         float4 sheen = params.sheen;
         m2sLayersAt(t, bary, specular, coat, sheen);
-        if (spread > 0.0) {
+        // Not where the curvature is written: the raster then turns a
+        // smooth coat's mirror across the footprint pixel by pixel
+        // (SplatSlope's sharp lobe), and widened as well it was blurred
+        // twice -- the hood's reflections of the dome came out soft where
+        // the path tracer draws them sharp (research 095, D2; pieces T5/T6).
+        if (spread > 0.0 && params.curvatureEntry == 0) {
             coat.y = m2sWidened(coat.y, spread);
         }
         records[recordAt(slot, params.lobesEntry)] = specular;
