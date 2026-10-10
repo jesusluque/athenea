@@ -294,6 +294,11 @@ struct DecimateStageOptions {
     /// gaussian's bits replaced by its centroid's before anything else. 0: none.
     uint32_t              shadowCodebook = 0;
     uint32_t              shadowRounds = 12;
+    /// THE GEOMETRY AT A PHONE CHUNK'S BITS (geometry_quantize.slang): in
+    /// chunks of this many gaussians, positions, scales, rotation, opacity,
+    /// colour, normal and curvature quantised as research 097's S0 stream
+    /// (23 bytes) and decoded again. 0: as they are.
+    uint32_t              quantizeChunk = 0;
     /// WHAT NO CAMERA SEES, LEFT OUT FIRST (lod::Decimator::prune): the cloud
     /// drawn from `hiddenViews` directions round its bounds, at three
     /// distances (2.5, 1.6 and 1.15 times the bounding sphere's radius,

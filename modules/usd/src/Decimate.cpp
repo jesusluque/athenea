@@ -236,6 +236,82 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         std::printf("decimate: the shadow bits from %u centroids (%u rounds): bits off, median %u, p90 %u, p99 %u "
                     "of %u\n", c, o.shadowRounds, p50 - 1, p90 - 1, p99 - 1, words * 32);
     }
+    if (o.quantizeChunk > 0) {
+        // THE GEOMETRY AT A PHONE CHUNK'S BITS (geometry_quantize.slang).
+        GaussianArray* curvatureArray = nullptr;
+        for (GaussianArray& a : arrays) {
+            const std::string tail("athenea:splat:curvature");
+            if (!a.integer && a.width == 3 && a.name.size() >= tail.size() &&
+                a.name.compare(a.name.size() - tail.size(), tail.size(), tail) == 0) {
+                curvatureArray = &a;
+            }
+        }
+        const io::SplatEncoding& e = raw->encoding;
+        const uint32_t n = raw->count;
+        const uint32_t chunks = (n + o.quantizeChunk - 1) / o.quantizeChunk;
+        const auto put = [&](uint64_t count, const void* data, const char* label) {
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<uint64_t>(count, 1) * 4;
+            desc.elementBytes = 4;
+            desc.label = label;
+            return gpu::Buffer::create(device, desc, data);
+        };
+        auto records = put(raw->records.size(), raw->records.data(), "decimate.quantizeRecords");
+        auto curv = put(curvatureArray ? curvatureArray->values[0].size() : 1,
+                        curvatureArray ? curvatureArray->values[0].data() : nullptr, "decimate.quantizeCurvature");
+        auto ranges = put(uint64_t{chunks} * 16, nullptr, "decimate.quantizeRanges");
+        if (!records || !curv || !ranges) return Error(ErrorCode::OutOfMemory, "decimate: the quantizer");
+        auto rangesKernel = gpu::ComputeKernel::create(library, "athenea/lod/geometry_quantize", "quantizeRanges");
+        auto recordsKernel = gpu::ComputeKernel::create(library, "athenea/lod/geometry_quantize", "quantizeRecords");
+        if (!rangesKernel || !recordsKernel) return Error(ErrorCode::InternalError, "decimate: the quantizer's kernels");
+        const bool hasNormal = e.normal != io::SplatEncoding::kNoField;
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["records"].setBinding(records->rhi());
+            cursor["curvature"].setBinding(curv->rhi());
+            cursor["ranges"].setBinding(ranges->rhi());
+            auto p = cursor["params"];
+            p["count"].setData(n);
+            p["chunk"].setData(o.quantizeChunk);
+            p["stride"].setData(e.floatsPerRecord);
+            p["hasNormal"].setData(uint32_t{hasNormal ? 1u : 0u});
+            p["x"].setData(e.x);
+            p["y"].setData(e.y);
+            p["z"].setData(e.z);
+            p["opacity"].setData(e.opacity);
+            p["s0"].setData(e.scale0);
+            p["s1"].setData(e.scale1);
+            p["s2"].setData(e.scale2);
+            p["rw"].setData(e.rotW);
+            p["rx"].setData(e.rotX);
+            p["ry"].setData(e.rotY);
+            p["rz"].setData(e.rotZ);
+            p["dc0"].setData(e.dc0);
+            p["dc1"].setData(e.dc1);
+            p["dc2"].setData(e.dc2);
+            p["normal"].setData(hasNormal ? e.normal : 0u);
+            p["hasCurvature"].setData(uint32_t{curvatureArray != nullptr ? 1u : 0u});
+            p["linearValues"].setData(uint32_t{e.opacity_ == io::SplatEncoding::Opacity::Linear ? 1u : 0u});
+        };
+        {
+            gpu::CommandBatch batch(device);
+            rangesKernel->dispatch(batch, {chunks, 1, 1}, bind);
+            batch.markDirty();
+            recordsKernel->dispatch(batch, {n, 1, 1}, bind);
+            ATHENEA_TRY(batch.submit(true));
+        }
+        auto back = records->readAll<float>(device);
+        if (!back) return std::move(back).error();
+        back->resize(raw->records.size());
+        raw->records = std::move(*back);
+        if (curvatureArray != nullptr) {
+            auto bent = curv->readAll<uint32_t>(device);
+            if (!bent) return std::move(bent).error();
+            bent->resize(curvatureArray->values[0].size());
+            curvatureArray->values[0] = std::move(*bent);
+        }
+        std::printf("decimate: the geometry quantised in %u chunks of %u (23 B a gaussian)\n", chunks,
+                    o.quantizeChunk);
+    }
     auto cloud = loader->upload(*raw, o.degree);
     if (!cloud) return std::move(cloud).error();
     auto builder = lod::LodBuilder::create(library);
@@ -684,7 +760,15 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         return a;
     };
     std::vector<GaussianArray> added;
-    if (o.pairs && decimated->coverage.valid()) {
+    // A cloud that already carries what each gaussian covers -- a merge tree
+    // cut (`cutPixels`, `cutBudget`), whose merges' coverage is not held under
+    // 0.99 -- keeps its own: written again from a pass that merged nothing it
+    // would be the capped opacity, and a reader that draws coverage past one
+    // (sparkwebGPU) found the cut's merges too thin.
+    const bool carriesCoverage = std::any_of(arrays.begin(), arrays.end(), [&](const GaussianArray& a) {
+        return ends(a.name, "athenea:splat:coverage");
+    });
+    if (o.pairs && decimated->coverage.valid() && !carriesCoverage) {
         // What each merge covers, beside the opacity held at 0.99.
         auto a = floats(decimated->coverage, decimated->cloud.count, "primvars:athenea:splat:coverage", "float[]");
         if (!a) return std::move(a).error();

@@ -54,6 +54,7 @@ void addDecimate(CLI::App& app) {
         uint32_t transferBits = 8;
         uint32_t shadowCodebook = 0;
         uint32_t shadowRounds = 12;
+        uint32_t quantizeChunk = 0;
         unsigned hiddenViews = 256;
         unsigned hiddenSize = 1024;
         float hiddenPixels = 0.02F;
@@ -142,6 +143,10 @@ void addDecimate(CLI::App& app) {
                     "so the output draws what one index a gaussian and a codebook keep (0: none)")
         ->check(CLI::Range(0u, 65536u));
     cmd->add_option("--shadow-rounds", o->shadowRounds, "--shadow-codebook: k-means rounds");
+    cmd->add_option("--quantize", o->quantizeChunk,
+                    "the geometry at a phone chunk's bits, in chunks of this many gaussians (8192): 16 bit positions "
+                    "in the chunk's box, 8 bit scales, 32 bit rotations, 8 bit opacity and colour, 16 bit normals, "
+                    "8 bit curvature -- decoded again, so the output draws what that layout keeps (0: none)");
     cmd->add_flag("--drop-hidden", o->dropHidden,
                   "first leave out what no camera round the cloud sees (an orbit drawn by raster); with no "
                   "--ratio, only that");
@@ -210,6 +215,7 @@ void addDecimate(CLI::App& app) {
         options.transferBits = o->transferBits;
         options.shadowCodebook = o->shadowCodebook;
         options.shadowRounds = std::max(o->shadowRounds, 1u);
+        options.quantizeChunk = o->quantizeChunk;
         options.dropHidden = o->dropHidden;
         options.hiddenViews = std::max(o->hiddenViews, 1u);
         options.hiddenSize = std::max(o->hiddenSize, 16u);
