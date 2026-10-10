@@ -48,6 +48,7 @@ void addDecimate(CLI::App& app) {
         uint32_t cutBudget = 0;
         std::string cameraStage;
         float cutPixels = 0.0F;
+        float cutError = 0.0F;
         std::string transferBasis;
         uint32_t transferClusters = 256;
         uint32_t transferComponents = 8;
@@ -126,6 +127,9 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--cut-budget", o->cutBudget,
                     "the input is a merge tree (--tree): keep only the cut a renderer would draw from --camera "
                     "with at most this many gaussians (with --ratio 1: nothing more merges)");
+    cmd->add_option("--cut-error", o->cutError,
+                    "the input is a merge tree: keep the cut whose error, projected on --camera's screen, is no "
+                    "more than this many pixels while its parent's is more (research 100; in place of --cut-pixels)");
     cmd->add_option("--cut-pixels", o->cutPixels,
                     "the input is a merge tree: keep the cut whose merges are no wider than this on --camera's "
                     "screen (in place of --cut-budget)");
@@ -209,6 +213,7 @@ void addDecimate(CLI::App& app) {
         options.cutBudget = o->cutBudget;
         options.cameraStage = o->cameraStage;
         options.cutPixels = o->cutPixels;
+        options.cutError = o->cutError;
         options.transferBasis = o->transferBasis;
         options.transferClusters = o->transferClusters;
         options.transferComponents = o->transferComponents;

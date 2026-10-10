@@ -86,3 +86,80 @@ void treeCutKeep(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(counter[0], 1u);
     }
 }
+
+// A CUT BY ERROR, NOT BY SIZE (research 100, after Nanite and 3D Tiles):
+// each node's error in metres, eps(n) = max(r(n) |cost(n)|, eps(children))
+// -- r the node's size, sqrt of its covariance's trace, cost its merge's
+// (lodCost, whatever its sign) -- held monotonic up the tree, and the sphere
+// round its leaves, rho(n) = max over children of |mu(n) - mu(c)| + rho(c)
+// (a leaf's is twice its widest size). The error projected at the sphere's
+// nearest point, P(n) = eps ppu / max(d - rho, near), and a node is in the
+// cut when P(n) <= threshold < P(parent): no walk up the ancestors, one cut.
+RWStructuredBuffer<uint>   errorBits;   // file gaussian -> eps as a float's bits (positive: ordered as uints)
+RWStructuredBuffer<uint>   radiusBits;  // file gaussian -> rho, the same
+RWStructuredBuffer<float4> centre;      // file gaussian -> its position
+RWStructuredBuffer<uint>   changed;     // [nodes raised this round]
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeErrorOwn(uint3 tid: SV_DispatchThreadID) {
+    const uint s = tid.x;
+    if (s >= params.count) {
+        return;
+    }
+    const uint i = storeOrder[s];
+    const float4 p = positions[s];
+    const Blob b = blobOf(p, shape[s * 4], shape[s * 4 + 1], shape[s * 4 + 2], shape[s * 4 + 3]);
+    const float size = sqrt(dot(b.scale, b.scale));
+    centre[i] = float4(p.xyz, 0.0);
+    const bool leaf = leaves[i] <= 1u;
+    errorBits[i] = asuint(leaf ? 0.0 : size * abs(cost[i]));
+    radiusBits[i] = asuint(2.0 * max(b.scale.x, max(b.scale.y, b.scale.z)));
+}
+
+/// One level of the climb: each node raises its parent's error and sphere to
+/// cover its own. Run until nothing changes.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeErrorUp(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint up = parent[i];
+    if (up == i || up == kRoot || up >= params.count) {
+        return;
+    }
+    uint was;
+    InterlockedMax(errorBits[up], errorBits[i], was);
+    if (errorBits[i] > was) {
+        InterlockedAdd(changed[0], 1u);
+    }
+    const float reach = length(centre[i].xyz - centre[up].xyz) + asfloat(radiusBits[i]);
+    InterlockedMax(radiusBits[up], asuint(reach), was);
+    if (asuint(reach) > was) {
+        InterlockedAdd(changed[0], 1u);
+    }
+}
+
+float projectedError(uint i) {
+    const float d = length(centre[i].xyz - params.eye.xyz) - asfloat(radiusBits[i]);
+    return asfloat(errorBits[i]) * params.pixelsPerUnit / max(d, 1.0e-3);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeErrorKeep(uint3 tid: SV_DispatchThreadID) {
+    const uint s = tid.x;
+    if (s >= params.count) {
+        return;
+    }
+    const uint i = storeOrder[s];
+    const uint up = parent[i];
+    const bool root = up == i || up == kRoot || up >= params.count;
+    const bool keep = projectedError(i) <= params.threshold && (root || projectedError(up) > params.threshold);
+    score[s] = keep ? 1.0 : 0.0;
+    if (keep) {
+        InterlockedAdd(counter[0], 1u);
+    }
+}

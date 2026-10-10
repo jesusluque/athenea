@@ -280,6 +280,11 @@ struct DecimateStageOptions {
     /// Or the threshold itself, in pixels: one number for every piece cut, so
     /// that pieces cut apart are cut as one tree would be. 0: searched.
     float                 cutPixels = 0.0F;
+    /// Or a cut by error (research 100): each node's error in metres, held
+    /// monotonic up the tree, projected at the nearest point of its sphere;
+    /// a node is in the cut when that is no more than this many pixels and
+    /// its parent's is more. 0: by size.
+    float                 cutError = 0.0F;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
     /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
     /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to
