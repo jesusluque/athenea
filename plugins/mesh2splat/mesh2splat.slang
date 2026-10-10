@@ -1423,7 +1423,10 @@ void m2sOwnSize(const M2sTriangle t, float3 normal, inout float3 tangent, inout 
     const float mean = 0.5 * (uu + vv);
     const float spread = sqrt(max(0.25 * (uu - vv) * (uu - vv) + uv * uv, 0.0));
     const float most = max(scale.x, scale.y);
-    const float wide = min(sqrt(max(mean + spread, 0.0)), most);
+    // Never under a twentieth of the cell: a sliver of a triangle (two corners
+    // almost on each other) gave a gaussian of 1e-7 m that merged into nodes
+    // with no size at all (research, the grille's tree).
+    const float wide = clamp(sqrt(max(mean + spread, 0.0)), 0.05 * most, most);
     const float narrow = min(max(sqrt(max(mean - spread, 0.0)), 0.02 * wide), wide);
     if (!(wide > 0.0)) {
         return;
