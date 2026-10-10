@@ -2,7 +2,7 @@
 //
 // A CUT THROUGH A MERGE TREE, for one camera (`athenea decimate --cut-budget`).
 // `decimate --tree` writes every merge after the leaves, each with its
-// parent (`lodParent`, -1 at a root) and the run of leaves it stands for
+// parent (`lodParent`, itself at a root) and the run of leaves it stands for
 // (`lodSize`, 1 a leaf). A node passes when it is a leaf or when it is no
 // wider on the camera's screen than `threshold` pixels; the cut is every
 // node that passes while none of its ancestors does -- so each leaf is drawn
@@ -26,7 +26,7 @@ struct CutParams {
 StructuredBuffer<uint>    storeOrder;   // store splat -> file gaussian
 StructuredBuffer<float4>  positions;    // the store's
 StructuredBuffer<uint>    shape;        // the store's, four words a splat
-StructuredBuffer<uint>    parent;       // file gaussian -> its parent's file index (-1 as a uint: a root)
+StructuredBuffer<uint>    parent;       // file gaussian -> its parent's file index (itself at a root)
 StructuredBuffer<uint>    leaves;       // file gaussian -> how many leaves it stands for
 RWStructuredBuffer<float> width;        // file gaussian -> its width on screen, pixels
 RWStructuredBuffer<float> score;        // store splat -> 1 in the cut, 0 not
@@ -64,9 +64,12 @@ void treeCutKeep(uint3 tid: SV_DispatchThreadID) {
     }
     const uint i = storeOrder[s];
     bool keep = passes(i);
+    uint at = i;
     uint up = parent[i];
-    for (uint depth = 0; keep && up != kRoot && up < params.count && depth < params.maxDepth; ++depth) {
+    // A root is its own parent (lod_pairs_final's treeOut); -1 is one too.
+    for (uint depth = 0; keep && up != at && up != kRoot && up < params.count && depth < params.maxDepth; ++depth) {
         keep = !passes(up);
+        at = up;
         up = parent[up];
     }
     score[s] = keep ? 1.0 : 0.0;
