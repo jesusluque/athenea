@@ -593,6 +593,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             const float faces = dot(cloudNormal, axisN) >= 0.0 ? 1.0 : -1.0;
             slope.curvature = faces * 0.5 * (curvature[i * 3] + curvature[i * 3 + 2]);
         }
+        float pixelTurn2 = 0.0;
         if (kTransfer >= 2 && params.hasCurvature != 0 && surface.cellWords >= 8u) {
             const float3 u = float3(r[0][0], r[1][0], r[2][0]);
             const float3 v = float3(r[0][1], r[1][1], r[2][1]);
@@ -617,6 +618,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 const float3 dy = u * turnY.x + v * turnY.y;
                 const float3 hx = dx * min(1.0, most / max(length(dx), 1.0e-9));
                 const float3 hy = dy * min(1.0, most / max(length(dy), 1.0e-9));
+                pixelTurn2 = dot(dx, dx) + dot(dy, dy);
                 slope.on = true;
                 slope.normalX = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hx));
                 slope.normalY = relightNormalToWorld(w0, w1, w2, normalize(cloudNormal + hy));
@@ -660,8 +662,16 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             stepX = all(abs(stepX) < 0.25) ? stepX : float2(0.0);
             stepY = all(abs(stepY) < 0.25) ? stepY : float2(0.0);
             sharp = true;
+            // THE PIXEL'S OWN SPREAD: the read is at the pixel's centre, and the
+            // normal turns by dx, dy across it -- a box of slopes whose
+            // variance, twice for the mirror, widens the lobe (alpha^2 +=
+            // 2 (|dx|^2 + |dy|^2) / 12).
+            const float coatAlpha = slope.sharpRoughness * slope.sharpRoughness;
+            const float coatR = sqrt(sqrt(min(coatAlpha * coatAlpha + pixelTurn2 / 6.0, 1.0)));
+            const float polishAlpha = slope.sharpPolishRoughness * slope.sharpPolishRoughness;
+            slope.sharpPolishRoughness = sqrt(sqrt(min(polishAlpha * polishAlpha + pixelTurn2 / 6.0, 1.0)));
             slopes[slot] = uint4(packHalves(at.x, at.y), packHalves(stepX.x, stepX.y), packHalves(stepY.x, stepY.y),
-                                 packHalves(slope.sharpWeight * scale, slope.sharpRoughness));
+                                 packHalves(slope.sharpWeight * scale, coatR));
             const float3 polish = slope.sharpPolish * scale;
             const float3 polishSun = slope.sharpSunPolish * scale;
             slopes[params.polishPlane + slot] = uint4(packHalves(polish.x, polish.y), packHalves(polish.z, slope.sharpPolishRoughness),
