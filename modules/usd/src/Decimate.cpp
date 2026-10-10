@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -603,10 +604,12 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         const GaussianArray* parentArray = nullptr;
         const GaussianArray* leavesArray = nullptr;
         const GaussianArray* costArray = nullptr;
+        const GaussianArray* roughArray = nullptr;
         for (const GaussianArray& a : arrays) {
             if (ends(a.name, "athenea:splat:lodParent")) parentArray = &a;
             if (ends(a.name, "athenea:splat:lodSize")) leavesArray = &a;
             if (ends(a.name, "athenea:splat:lodCost")) costArray = &a;
+            if (ends(a.name, "athenea:splat:roughness") && a.width == 1 && !a.integer) roughArray = &a;
         }
         if (parentArray == nullptr || leavesArray == nullptr || !(pairSettings.pixelsPerUnit > 0.0F)) {
             return Error(ErrorCode::InvalidArgument,
@@ -629,6 +632,18 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         auto radiusBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutRadii");
         auto centres = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutCentres");
         auto changed = upload(std::vector<uint32_t>(1, 0u), "decimate.cutChanged");
+        auto spreadBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutSpread");
+        auto coneBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutCone");
+        auto looks = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutLook");
+        auto facings = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutFacing");
+        const float half = 0.5F;
+        uint32_t halfBits;
+        std::memcpy(&halfBits, &half, 4);
+        auto roughs = upload(roughArray != nullptr ? roughArray->values[0] : std::vector<uint32_t>(n, halfBits),
+                             "decimate.cutRoughness");
+        if (!spreadBits || !coneBits || !looks || !facings || !roughs) {
+            return Error(ErrorCode::OutOfMemory, "decimate: the cut's bounds");
+        }
         if (!errorBits || !radiusBits || !centres || !changed) return Error(ErrorCode::OutOfMemory, "decimate: the cut");
         if (!parents || !leaves || !costs || !widths || !score || !counter) {
             return Error(ErrorCode::OutOfMemory, "decimate: the cut");
@@ -649,6 +664,18 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["radiusBits"].setBinding(radiusBits->rhi());
             cursor["centre"].setBinding(centres->rhi());
             cursor["changed"].setBinding(changed->rhi());
+            cursor["spreadBits"].setBinding(spreadBits->rhi());
+            cursor["coneBits"].setBinding(coneBits->rhi());
+            cursor["look"].setBinding(looks->rhi());
+            cursor["facing"].setBinding(facings->rhi());
+            cursor["roughness"].setBinding(roughs->rhi());
+            cursor["storeNormals"].setBinding(from.splats.hasNormals() ? from.splats.normals.rhi() : parents->rhi());
+            cursor["params"]["hasNormals"].setData(uint32_t{from.splats.hasNormals() ? 1u : 0u});
+            cursor["params"]["colourWeight"].setData(10.0F);
+            cursor["params"]["normalWeight"].setData(1.0F);
+            cursor["params"]["guard"].setData(4.0F);
+            cursor["params"]["floorSize"].setData(2.0F);
+            cursor["params"]["cullBack"].setData(uint32_t{o.cutCullBack && o.cutBounds ? 1u : 0u});
             cursor["params"]["count"].setData(n);
             cursor["params"]["threshold"].setData(threshold);
             cursor["params"]["pixelsPerUnit"].setData(pairSettings.pixelsPerUnit);
@@ -674,31 +701,77 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 own->dispatch(batch, {n, 1, 1}, bind);
                 ATHENEA_TRY(batch.submit(true));
             }
-            uint32_t rounds = 0;
-            for (; rounds < 512; ++rounds) {
-                const uint32_t zero = 0;
-                ATHENEA_TRY(changed->write(device, 0, 4, &zero));
-                gpu::CommandBatch batch(device);
-                up->dispatch(batch, {n, 1, 1}, bind);
-                ATHENEA_TRY(batch.submit(true));
-                uint32_t raised = 0;
-                ATHENEA_TRY(changed->read(device, 0, 4, &raised));
-                if (raised == 0) {
-                    break;
+            // Climb a kernel up the tree until no parent is raised.
+            const auto climb = [&](gpu::ComputeKernel& kernel) -> Result<uint32_t> {
+                uint32_t rounds = 0;
+                for (; rounds < 512; ++rounds) {
+                    const uint32_t zero = 0;
+                    ATHENEA_TRY(changed->write(device, 0, 4, &zero));
+                    gpu::CommandBatch batch(device);
+                    kernel.dispatch(batch, {n, 1, 1}, bind);
+                    ATHENEA_TRY(batch.submit(true));
+                    uint32_t raised = 0;
+                    ATHENEA_TRY(changed->read(device, 0, 4, &raised));
+                    if (raised == 0) {
+                        break;
+                    }
                 }
+                return rounds;
+            };
+            uint32_t rounds = 0;
+            if (o.cutBounds) {
+                // The bounds and the sphere first, then each node's own error
+                // with them, then the error's climb.
+                auto boundsUp = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeBoundsUp");
+                auto bounded = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorBounded");
+                auto errorClimb = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorClimb");
+                if (!boundsUp || !bounded || !errorClimb) {
+                    return Error(ErrorCode::InternalError, "decimate: the bounds' kernels");
+                }
+                auto first = climb(*boundsUp);
+                if (!first) return std::move(first).error();
+                {
+                    gpu::CommandBatch batch(device);
+                    bounded->dispatch(batch, {n, 1, 1}, bind);
+                    ATHENEA_TRY(batch.submit(true));
+                }
+                auto second = climb(*errorClimb);
+                if (!second) return std::move(second).error();
+                rounds = *first + *second;
+            } else {
+                auto both = climb(*up);
+                if (!both) return std::move(both).error();
+                rounds = *both;
             }
-            threshold = o.cutError;
-            const uint32_t zero = 0;
-            ATHENEA_TRY(counter->write(device, 0, 4, &zero));
-            {
+            const auto keepAt = [&](float t) -> Result<uint32_t> {
+                threshold = t;
+                const uint32_t zero = 0;
+                ATHENEA_TRY(counter->write(device, 0, 4, &zero));
                 gpu::CommandBatch batch(device);
                 keepByError->dispatch(batch, {n, 1, 1}, bind);
                 ATHENEA_TRY(batch.submit(true));
+                uint32_t held = 0;
+                ATHENEA_TRY(counter->read(device, 0, 4, &held));
+                return held;
+            };
+            float at = o.cutError;
+            if (o.cutBudget > 0) {
+                // With a budget too, the error threshold that fills it,
+                // bisected in its logarithm (the count falls as it rises).
+                double low = std::log(1.0e-4), high = std::log(1.0e4);
+                for (int k = 0; k < 40; ++k) {
+                    const double mid = 0.5 * (low + high);
+                    auto held = keepAt(static_cast<float>(std::exp(mid)));
+                    if (!held) return std::move(held).error();
+                    (*held > o.cutBudget ? low : high) = mid;
+                }
+                at = static_cast<float>(std::exp(high));
             }
-            uint32_t kept = 0;
-            ATHENEA_TRY(counter->read(device, 0, 4, &kept));
+            auto keptAt = keepAt(at);
+            if (!keptAt) return std::move(keptAt).error();
+            const uint32_t kept = *keptAt;
             std::printf("decimate: the cut by error from the camera at %.3g pixels holds %u of the tree's %u "
-                        "gaussians (%u rounds up the tree)\n", o.cutError, kept, n, rounds);
+                        "gaussians (%u rounds up the tree)\n", at, kept, n, rounds);
             auto cut = decimator->prune(from, *score, 0.5F);
             if (!cut) return std::move(cut).error();
             pruned = std::move(*cut);

@@ -22,7 +22,13 @@ struct CutParams {
     uint   maxDepth;        ///< how far up a branch is walked
     float4 eye;             ///< the camera's position
     float  relaxedShare;    ///< a merge past the guards passes only this far under the threshold
-    uint   pad0, pad1, pad2;
+    float  colourWeight;    ///< w_c: the colour spread's weight in the error (research 100 §3.2; 0: none)
+    float  normalWeight;    ///< w_n: the normal cone's
+    uint   hasNormals;
+    float  guard;           ///< a merge past the guards: its own error times this ...
+    float  floorSize;       ///< ... and at least this many times its size
+    uint   cullBack;        ///< 1: a node whose whole normal cone faces away is not drawn (a closed one-sided part)
+    uint   pad0;
 };
 
 StructuredBuffer<uint>    storeOrder;   // store splat -> file gaussian
@@ -99,6 +105,12 @@ RWStructuredBuffer<uint>   errorBits;   // file gaussian -> eps as a float's bit
 RWStructuredBuffer<uint>   radiusBits;  // file gaussian -> rho, the same
 RWStructuredBuffer<float4> centre;      // file gaussian -> its position
 RWStructuredBuffer<uint>   changed;     // [nodes raised this round]
+RWStructuredBuffer<uint>   spreadBits;  // file gaussian -> s_c: how far a leaf's colour strays from the node's
+RWStructuredBuffer<uint>   coneBits;    // file gaussian -> theta: how far a leaf's normal turns from the node's
+RWStructuredBuffer<float4> look;        // file gaussian -> colour (rgb) and roughness
+RWStructuredBuffer<float4> facing;      // file gaussian -> normal
+StructuredBuffer<uint>     storeNormals;   // the store's, packed (packing's unpackNormal)
+StructuredBuffer<float>    roughness;      // file gaussian -> its roughness
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -115,6 +127,91 @@ void treeErrorOwn(uint3 tid: SV_DispatchThreadID) {
     const bool leaf = leaves[i] <= 1u;
     errorBits[i] = asuint(leaf ? 0.0 : size * abs(cost[i]));
     radiusBits[i] = asuint(2.0 * max(b.scale.x, max(b.scale.y, b.scale.z)));
+    look[i] = float4(b.colour, roughness[i]);
+    facing[i] = float4(params.hasNormals != 0 ? unpackNormal(storeNormals[s]) : b.axes[2], 0.0);
+    spreadBits[i] = 0u;
+    coneBits[i] = 0u;
+}
+
+/// One level of the bounds' climb (research 100 §3.2): a parent's colour
+/// spread and normal cone cover each child's, plus how far the child's own
+/// colour and normal stand from the parent's -- bounds on every leaf under it,
+/// by the triangle inequality, which the merge's own cost (the last pair's)
+/// does not give: a chain of merges each within the edge drifts across it.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeBoundsUp(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint up = parent[i];
+    if (up == i || up == kRoot || up >= params.count) {
+        return;
+    }
+    uint was;
+    const float spread = asfloat(spreadBits[i]) + length(look[i].xyz - look[up].xyz);
+    InterlockedMax(spreadBits[up], asuint(spread), was);
+    if (asuint(spread) > was) {
+        InterlockedAdd(changed[0], 1u);
+    }
+    const float turn = asfloat(coneBits[i]) + acos(clamp(dot(facing[i].xyz, facing[up].xyz), -1.0, 1.0));
+    InterlockedMax(coneBits[up], asuint(turn), was);
+    if (asuint(turn) > was) {
+        InterlockedAdd(changed[0], 1u);
+    }
+    const float reach = length(centre[i].xyz - centre[up].xyz) + asfloat(radiusBits[i]);
+    InterlockedMax(radiusBits[up], asuint(reach), was);
+    if (asuint(reach) > was) {
+        InterlockedAdd(changed[0], 1u);
+    }
+}
+
+/// A node's own error with its bounds, once they hold: r (|cost| + w_c s_c +
+/// w_n theta^2 / alpha), and a merge past the guards (cost negative) times
+/// `guard` and at least `floorSize` r -- its cost does not measure what it
+/// breaks (a glass's moire).
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeErrorBounded(uint3 tid: SV_DispatchThreadID) {
+    const uint s = tid.x;
+    if (s >= params.count) {
+        return;
+    }
+    const uint i = storeOrder[s];
+    if (leaves[i] <= 1u) {
+        errorBits[i] = 0u;
+        return;
+    }
+    const Blob b = blobOf(positions[s], shape[s * 4], shape[s * 4 + 1], shape[s * 4 + 2], shape[s * 4 + 3]);
+    const float size = sqrt(dot(b.scale, b.scale));
+    const float alpha = max(look[i].w, 0.02) * max(look[i].w, 0.02);
+    const float theta = asfloat(coneBits[i]);
+    float e = size * (abs(cost[i]) + params.colourWeight * asfloat(spreadBits[i]) +
+                      params.normalWeight * theta * theta / alpha);
+    if (cost[i] < 0.0) {
+        e = max(params.guard * e, params.floorSize * size);
+    }
+    errorBits[i] = asuint(e);
+}
+
+/// One level of the error's climb alone (the sphere already holds).
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeErrorClimb(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint up = parent[i];
+    if (up == i || up == kRoot || up >= params.count) {
+        return;
+    }
+    uint was;
+    InterlockedMax(errorBits[up], errorBits[i], was);
+    if (errorBits[i] > was) {
+        InterlockedAdd(changed[0], 1u);
+    }
 }
 
 /// One level of the climb: each node raises its parent's error and sphere to
@@ -157,7 +254,19 @@ void treeErrorKeep(uint3 tid: SV_DispatchThreadID) {
     const uint i = storeOrder[s];
     const uint up = parent[i];
     const bool root = up == i || up == kRoot || up >= params.count;
-    const bool keep = projectedError(i) <= params.threshold && (root || projectedError(up) > params.threshold);
+    bool keep = projectedError(i) <= params.threshold && (root || projectedError(up) > params.threshold);
+    // ITS BACK, NOT DRAWN (research, on the grille at 393 px): the faces of a
+    // closed one-sided part that look away are hidden by its front, but at a
+    // pixel or less the front does not cover and the back adds black. A node
+    // whose whole cone of normals faces away -- n.v < -sin(theta) -- goes;
+    // every leaf under it faces away too.
+    if (keep && params.cullBack != 0) {
+        const float3 v = normalize(params.eye.xyz - centre[i].xyz);
+        const float theta = asfloat(coneBits[i]);
+        if (theta < 1.5707963 && dot(facing[i].xyz, v) < -sin(theta)) {
+            keep = false;
+        }
+    }
     score[s] = keep ? 1.0 : 0.0;
     if (keep) {
         InterlockedAdd(counter[0], 1u);

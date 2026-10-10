@@ -285,6 +285,15 @@ struct DecimateStageOptions {
     /// a node is in the cut when that is no more than this many pixels and
     /// its parent's is more. 0: by size.
     float                 cutError = 0.0F;
+    /// With `cutError`: each node's error also bounds how far its leaves'
+    /// colours and normals stray from its own (research 100 §3.2, the weights
+    /// of its prototype: colour 10, normals 1, a merge past the guards x4 and
+    /// at least twice its size).
+    bool                  cutBounds = false;
+    /// With `cutBounds`: a node whose whole normal cone faces away from the
+    /// camera is left out (for a closed, one-sided part only: glass, sheets and
+    /// two-sided parts keep their backs).
+    bool                  cutCullBack = false;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
     /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
     /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to
