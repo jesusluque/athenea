@@ -47,6 +47,10 @@ void addDecimate(CLI::App& app) {
         bool dropHidden = false;
         uint32_t cutBudget = 0;
         float cutPixels = 0.0F;
+        std::string transferBasis;
+        uint32_t transferClusters = 256;
+        uint32_t transferComponents = 8;
+        uint32_t transferBits = 8;
         unsigned hiddenViews = 256;
         unsigned hiddenSize = 1024;
         float hiddenPixels = 0.02F;
@@ -119,6 +123,15 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--cut-pixels", o->cutPixels,
                     "the input is a merge tree: keep the cut whose merges are no wider than this on --camera's "
                     "screen (in place of --cut-budget)");
+    cmd->add_option("--transfer-basis", o->transferBasis,
+                    "a clustered PCA basis (f32): the transfer is coded with it and decoded again before "
+                    "anything else, so the output draws what that codec keeps");
+    cmd->add_option("--transfer-clusters", o->transferClusters, "--transfer-basis: its centroids")
+        ->check(CLI::Range(1u, 65536u));
+    cmd->add_option("--transfer-components", o->transferComponents, "--transfer-basis: its axes a block")
+        ->check(CLI::Range(1u, 16u));
+    cmd->add_option("--transfer-bits", o->transferBits, "--transfer-basis: bits a weight (8 or 4)")
+        ->check(CLI::IsMember({4u, 8u}));
     cmd->add_flag("--drop-hidden", o->dropHidden,
                   "first leave out what no camera round the cloud sees (an orbit drawn by raster); with no "
                   "--ratio, only that");
@@ -180,6 +193,10 @@ void addDecimate(CLI::App& app) {
         options.treeOutput = o->tree;
         options.cutBudget = o->cutBudget;
         options.cutPixels = o->cutPixels;
+        options.transferBasis = o->transferBasis;
+        options.transferClusters = o->transferClusters;
+        options.transferComponents = o->transferComponents;
+        options.transferBits = o->transferBits;
         options.dropHidden = o->dropHidden;
         options.hiddenViews = std::max(o->hiddenViews, 1u);
         options.hiddenSize = std::max(o->hiddenSize, 16u);

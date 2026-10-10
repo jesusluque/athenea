@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -15,6 +16,7 @@
 
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/CommandBatch.h"
+#include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/lod/Lod.h"
@@ -55,6 +57,93 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         raw = scene::readSplatRecords(*loader, input, o.degree);
     }
     if (!raw) return std::move(raw).error();
+    if (!o.transferBasis.empty()) {
+        // THE TRANSFER THROUGH ITS CODEC AND BACK (transfer_codec.slang),
+        // before anything reads it.
+        GaussianArray* blocks[3] = {nullptr, nullptr, nullptr};
+        const char* names[3] = {"athenea:splat:transferDirect", "athenea:splat:transferIndirect",
+                                "athenea:splat:transferReflected"};
+        const uint32_t dims[3] = {16, 48, 48};
+        for (GaussianArray& a : arrays) {
+            for (int b = 0; b < 3; ++b) {
+                const std::string tail(names[b]);
+                if (a.name.size() >= tail.size() &&
+                    a.name.compare(a.name.size() - tail.size(), tail.size(), tail) == 0 && a.width == dims[b]) {
+                    blocks[b] = &a;
+                }
+            }
+        }
+        if (blocks[0] == nullptr || blocks[1] == nullptr || blocks[2] == nullptr) {
+            return Error(ErrorCode::InvalidArgument, "decimate: --transfer-basis needs a degree 3 transfer");
+        }
+        const uint64_t c = o.transferClusters, k = o.transferComponents;
+        uint64_t floats = c * 112 + 3;
+        uint32_t meanAt[3] = {0, 0, 0};
+        for (int b = 0; b < 3; ++b) {
+            meanAt[b] = static_cast<uint32_t>(floats);
+            floats += c * dims[b] + c * dims[b] * k + c * k;
+        }
+        std::vector<uint32_t> words(floats);
+        std::ifstream in(o.transferBasis, std::ios::binary | std::ios::ate);
+        if (!in || static_cast<uint64_t>(in.tellg()) != floats * 4) {
+            return Error(ErrorCode::InvalidArgument, "decimate: " + o.transferBasis.string() +
+                                                         " is not a basis of that many clusters and axes");
+        }
+        in.seekg(0);
+        in.read(reinterpret_cast<char*>(words.data()), static_cast<std::streamsize>(floats * 4));
+        const auto put = [&](const std::vector<uint32_t>& v, const char* label) {
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<size_t>(v.size(), 1) * 4;
+            desc.elementBytes = 4;
+            desc.label = label;
+            return gpu::Buffer::create(device, desc, v.empty() ? nullptr : v.data());
+        };
+        auto basisBuffer = put(words, "decimate.transferBasis");
+        auto d0 = put(blocks[0]->values[0], "decimate.transferDirect");
+        auto d1 = put(blocks[1]->values[0], "decimate.transferIndirect");
+        auto d2 = put(blocks[2]->values[0], "decimate.transferReflected");
+        auto clipped = put(std::vector<uint32_t>(1, 0u), "decimate.transferClipped");
+        if (!basisBuffer || !d0 || !d1 || !d2 || !clipped) {
+            return Error(ErrorCode::OutOfMemory, "decimate: the transfer codec");
+        }
+        auto codec = gpu::ComputeKernel::create(library, "athenea/lod/transfer_codec", "transferCodec");
+        if (!codec) return std::move(codec).error();
+        const uint32_t n = raw->count;
+        {
+            gpu::CommandBatch batch(device);
+            codec->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["basis"].setBinding(basisBuffer->rhi());
+                cursor["direct"].setBinding(d0->rhi());
+                cursor["indirect"].setBinding(d1->rhi());
+                cursor["reflected"].setBinding(d2->rhi());
+                cursor["counters"].setBinding(clipped->rhi());
+                cursor["params"]["count"].setData(n);
+                cursor["params"]["clusters"].setData(o.transferClusters);
+                cursor["params"]["components"].setData(o.transferComponents);
+                cursor["params"]["levels"].setData(o.transferBits == 4 ? 7.0F : 127.0F);
+                cursor["params"]["meanAt0"].setData(meanAt[0]);
+                cursor["params"]["meanAt1"].setData(meanAt[1]);
+                cursor["params"]["meanAt2"].setData(meanAt[2]);
+                cursor["params"]["normAt"].setData(static_cast<uint32_t>(c * 112));
+            });
+            ATHENEA_TRY(batch.submit(true));
+        }
+        // Back into the arrays the output is written from.
+        for (int b = 0; b < 3; ++b) {
+            const gpu::Buffer& from = b == 0 ? *d0 : (b == 1 ? *d1 : *d2);
+            auto back = from.readAll<uint32_t>(device);
+            if (!back) return std::move(back).error();
+            back->resize(blocks[b]->values[0].size());
+            blocks[b]->values[0] = std::move(*back);
+        }
+        uint32_t clips = 0;
+        ATHENEA_TRY(clipped->read(device, 0, 4, &clips));
+        std::printf("decimate: the transfer coded with %s (%llu clusters, %llu axes, %u bit weights: %llu B a "
+                    "gaussian), %u weights clipped\n",
+                    o.transferBasis.string().c_str(), static_cast<unsigned long long>(c),
+                    static_cast<unsigned long long>(k), o.transferBits,
+                    static_cast<unsigned long long>((c > 256 ? 2 : 1) + (3 * k * o.transferBits + 7) / 8), clips);
+    }
     auto cloud = loader->upload(*raw, o.degree);
     if (!cloud) return std::move(cloud).error();
     auto builder = lod::LodBuilder::create(library);

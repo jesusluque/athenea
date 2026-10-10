@@ -278,6 +278,15 @@ struct DecimateStageOptions {
     /// Or the threshold itself, in pixels: one number for every piece cut, so
     /// that pieces cut apart are cut as one tree would be. 0: searched.
     float                 cutPixels = 0.0F;
+    /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
+    /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
+    /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to
+    /// the transfer before anything else, so the output shows what a file
+    /// holding one cluster id and the weights would draw. Empty: none.
+    std::filesystem::path transferBasis;
+    uint32_t              transferClusters = 256;
+    uint32_t              transferComponents = 8;
+    uint32_t              transferBits = 8;
     /// WHAT NO CAMERA SEES, LEFT OUT FIRST (lod::Decimator::prune): the cloud
     /// drawn from `hiddenViews` directions round its bounds, at three
     /// distances (2.5, 1.6 and 1.15 times the bounding sphere's radius,
