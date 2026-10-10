@@ -28,7 +28,7 @@ struct CutParams {
     float  guard;           ///< a merge past the guards: its own error times this ...
     float  floorSize;       ///< ... and at least this many times its size
     uint   cullBack;        ///< 1: a node whose whole normal cone faces away is not drawn (a closed one-sided part)
-    uint   pad0;
+    uint   maxRun;          ///< treeCoverage: the longest run of leaves composited
 };
 
 StructuredBuffer<uint>    storeOrder;   // store splat -> file gaussian
@@ -271,4 +271,94 @@ void treeErrorKeep(uint3 tid: SV_DispatchThreadID) {
     if (keep) {
         InterlockedAdd(counter[0], 1u);
     }
+}
+
+// WHAT A KEPT MERGE REALLY COVERS (research, the grille at 393 px): mass over
+// the moment ellipse counts the leaves' overlapping tails twice and paints the
+// merge darker than its leaves drew. For each node the cut keeps, its leaves
+// are projected on its plane and composited on an 8 x 8 grid over its +-2
+// sigma as the raster would, 1 - prod(1 - alpha G); the node's opacity becomes
+// that coverage weighted by its own footprint. Runs longer than `maxRun`
+// keep mass over area (far views, where it shows least).
+RWStructuredBuffer<uint>   storeOf;     // file gaussian -> its store splat
+StructuredBuffer<uint>     runStart;    // file gaussian -> its first leaf's file index (lodStart)
+RWStructuredBuffer<float4> outPositions;   // the store's positions, w the opacity, rewritten
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeStoreOf(uint3 tid: SV_DispatchThreadID) {
+    const uint s = tid.x;
+    if (s < params.count) {
+        storeOf[storeOrder[s]] = s;
+    }
+}
+
+float3x3 covarianceOf(const Blob b) {
+    // axes: its columns are the gaussian's axes
+    const float3 s2 = b.scale * b.scale;
+    float3x3 c = float3x3(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    [unroll] for (uint k = 0; k < 3; ++k) {
+        const float3 a = float3(b.axes[0][k], b.axes[1][k], b.axes[2][k]);
+        c += s2[k] * float3x3(a.x * a, a.y * a, a.z * a);
+    }
+    return c;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void treeCoverage(uint3 tid: SV_DispatchThreadID) {
+    const uint s = tid.x;
+    if (s >= params.count || !(score[s] > 0.5)) {
+        return;
+    }
+    const uint i = storeOrder[s];
+    const uint run = leaves[i];
+    if (run <= 1u || run > params.maxRun) {
+        return;
+    }
+    const Blob n = blobOf(positions[s], shape[s * 4], shape[s * 4 + 1], shape[s * 4 + 2], shape[s * 4 + 3]);
+    // The node's plane: its two widest axes.
+    uint k0 = 0, k1 = 1, k2 = 2;
+    if (n.scale.x <= n.scale.y && n.scale.x <= n.scale.z) { k0 = 1; k1 = 2; k2 = 0; }
+    else if (n.scale.y <= n.scale.z) { k0 = 0; k1 = 2; k2 = 1; }
+    const float3 u = float3(n.axes[0][k0], n.axes[1][k0], n.axes[2][k0]);
+    const float3 v = float3(n.axes[0][k1], n.axes[1][k1], n.axes[2][k1]);
+    const float su = max(n.scale[k0], 1.0e-9), sv = max(n.scale[k1], 1.0e-9);
+    static const uint kGrid = 8;
+    float through[64];
+    for (uint c = 0; c < 64; ++c) {
+        through[c] = 1.0;
+    }
+    const uint first = runStart[i];
+    for (uint l = 0; l < run; ++l) {
+        const uint ls = storeOf[first + l];
+        const Blob f = blobOf(positions[ls], shape[ls * 4], shape[ls * 4 + 1], shape[ls * 4 + 2], shape[ls * 4 + 3]);
+        const float3x3 c3 = covarianceOf(f);
+        // Its covariance on the node's plane, and its centre there.
+        const float3 cu = mul(c3, u), cv = mul(c3, v);
+        const float a = dot(u, cu) + 1.0e-12, bb = dot(u, cv), d = dot(v, cv) + 1.0e-12;
+        const float det = max(a * d - bb * bb, 1.0e-30);
+        const float2 m = float2(dot(f.centre - n.centre, u), dot(f.centre - n.centre, v));
+        const float alpha = min(f.opacity, 0.99);
+        for (uint y = 0; y < kGrid; ++y) {
+            for (uint x = 0; x < kGrid; ++x) {
+                const float2 p = float2((float(x) + 0.5) / kGrid * 4.0 - 2.0, (float(y) + 0.5) / kGrid * 4.0 - 2.0) *
+                                 float2(su, sv) - m;
+                const float q = (d * p.x * p.x - 2.0 * bb * p.x * p.y + a * p.y * p.y) / det;
+                through[y * kGrid + x] *= 1.0 - alpha * exp(-0.5 * q);
+            }
+        }
+    }
+    float sum = 0.0, weight = 0.0;
+    for (uint y = 0; y < kGrid; ++y) {
+        for (uint x = 0; x < kGrid; ++x) {
+            const float2 p = float2((float(x) + 0.5) / kGrid * 4.0 - 2.0, (float(y) + 0.5) / kGrid * 4.0 - 2.0);
+            const float g = exp(-0.5 * dot(p, p));
+            sum += g * (1.0 - through[y * kGrid + x]);
+            weight += g;
+        }
+    }
+    float4 out = positions[s];
+    out.w = clamp(sum / max(weight, 1.0e-12), 0.0, 0.99);
+    outPositions[s] = out;
 }

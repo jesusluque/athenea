@@ -294,6 +294,10 @@ struct DecimateStageOptions {
     /// camera is left out (for a closed, one-sided part only: glass, sheets and
     /// two-sided parts keep their backs).
     bool                  cutCullBack = false;
+    /// With `cutError`: each kept merge's opacity becomes what its leaves,
+    /// composited on its plane as the raster does, really cover -- not mass
+    /// over its moment ellipse, which counts overlapping tails twice.
+    bool                  cutCoverage = false;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
     /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
     /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to

@@ -604,11 +604,13 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         const GaussianArray* parentArray = nullptr;
         const GaussianArray* leavesArray = nullptr;
         const GaussianArray* costArray = nullptr;
+        const GaussianArray* startArray = nullptr;
         const GaussianArray* roughArray = nullptr;
         for (const GaussianArray& a : arrays) {
             if (ends(a.name, "athenea:splat:lodParent")) parentArray = &a;
             if (ends(a.name, "athenea:splat:lodSize")) leavesArray = &a;
             if (ends(a.name, "athenea:splat:lodCost")) costArray = &a;
+            if (ends(a.name, "athenea:splat:lodStart")) startArray = &a;
             if (ends(a.name, "athenea:splat:roughness") && a.width == 1 && !a.integer) roughArray = &a;
         }
         if (parentArray == nullptr || leavesArray == nullptr || !(pairSettings.pixelsPerUnit > 0.0F)) {
@@ -633,6 +635,10 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         auto centres = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutCentres");
         auto changed = upload(std::vector<uint32_t>(1, 0u), "decimate.cutChanged");
         auto spreadBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutSpread");
+        auto storeOfs = upload(std::vector<uint32_t>(n, 0u), "decimate.cutStoreOf");
+        auto starts = upload(startArray != nullptr ? startArray->values[0] : std::vector<uint32_t>(n, 0u),
+                             "decimate.cutRunStart");
+        if (!storeOfs || !starts) return Error(ErrorCode::OutOfMemory, "decimate: the cut's coverage");
         auto coneBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutCone");
         auto looks = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutLook");
         auto facings = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutFacing");
@@ -669,6 +675,10 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["look"].setBinding(looks->rhi());
             cursor["facing"].setBinding(facings->rhi());
             cursor["roughness"].setBinding(roughs->rhi());
+            cursor["storeOf"].setBinding(storeOfs->rhi());
+            cursor["runStart"].setBinding(starts->rhi());
+            cursor["outPositions"].setBinding(from.splats.positions.rhi());
+            cursor["params"]["maxRun"].setData(uint32_t{2048});
             cursor["storeNormals"].setBinding(from.splats.hasNormals() ? from.splats.normals.rhi() : parents->rhi());
             cursor["params"]["hasNormals"].setData(uint32_t{from.splats.hasNormals() ? 1u : 0u});
             cursor["params"]["colourWeight"].setData(10.0F);
@@ -770,6 +780,20 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             auto keptAt = keepAt(at);
             if (!keptAt) return std::move(keptAt).error();
             const uint32_t kept = *keptAt;
+            if (o.cutCoverage) {
+                if (startArray == nullptr) {
+                    return Error(ErrorCode::InvalidArgument, "decimate: --cut-coverage needs the tree's lodStart");
+                }
+                auto storeOfKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeStoreOf");
+                auto coverage = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCoverage");
+                if (!storeOfKernel || !coverage) return Error(ErrorCode::InternalError, "decimate: the coverage kernels");
+                gpu::CommandBatch batch(device);
+                storeOfKernel->dispatch(batch, {n, 1, 1}, bind);
+                batch.markDirty();
+                coverage->dispatch(batch, {n, 1, 1}, bind);
+                ATHENEA_TRY(batch.submit(true));
+                std::printf("decimate: the kept merges' opacity is what their leaves cover\n");
+            }
             std::printf("decimate: the cut by error from the camera at %.3g pixels holds %u of the tree's %u "
                         "gaussians (%u rounds up the tree)\n", at, kept, n, rounds);
             auto cut = decimator->prune(from, *score, 0.5F);

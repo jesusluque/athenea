@@ -51,6 +51,7 @@ void addDecimate(CLI::App& app) {
         float cutError = 0.0F;
         bool cutBounds = false;
         bool cutCullBack = false;
+        bool cutCoverage = false;
         std::string transferBasis;
         uint32_t transferClusters = 256;
         uint32_t transferComponents = 8;
@@ -137,6 +138,8 @@ void addDecimate(CLI::App& app) {
     cmd->add_flag("--cut-cull-back", o->cutCullBack,
                   "--cut-bounds: leave out the nodes whose whole cone of normals faces away from --camera (a closed, "
                   "one-sided part: not glass, sheets or two-sided parts)");
+    cmd->add_flag("--cut-coverage", o->cutCoverage,
+                  "--cut-error: a kept merge's opacity is what its leaves really cover, composited on its plane");
     cmd->add_option("--cut-pixels", o->cutPixels,
                     "the input is a merge tree: keep the cut whose merges are no wider than this on --camera's "
                     "screen (in place of --cut-budget)");
@@ -223,6 +226,7 @@ void addDecimate(CLI::App& app) {
         options.cutError = o->cutError;
         options.cutBounds = o->cutBounds;
         options.cutCullBack = o->cutCullBack;
+        options.cutCoverage = o->cutCoverage;
         options.transferBasis = o->transferBasis;
         options.transferClusters = o->transferClusters;
         options.transferComponents = o->transferComponents;
