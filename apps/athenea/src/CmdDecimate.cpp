@@ -52,6 +52,8 @@ void addDecimate(CLI::App& app) {
         uint32_t transferClusters = 256;
         uint32_t transferComponents = 8;
         uint32_t transferBits = 8;
+        uint32_t shadowCodebook = 0;
+        uint32_t shadowRounds = 12;
         unsigned hiddenViews = 256;
         unsigned hiddenSize = 1024;
         float hiddenPixels = 0.02F;
@@ -135,6 +137,11 @@ void addDecimate(CLI::App& app) {
         ->check(CLI::Range(1u, 16u));
     cmd->add_option("--transfer-bits", o->transferBits, "--transfer-basis: bits a weight (8 or 4)")
         ->check(CLI::IsMember({4u, 8u}));
+    cmd->add_option("--shadow-codebook", o->shadowCodebook,
+                    "the shadow bits replaced by the nearest of this many centroids (Hamming k-means on the GPU), "
+                    "so the output draws what one index a gaussian and a codebook keep (0: none)")
+        ->check(CLI::Range(0u, 65536u));
+    cmd->add_option("--shadow-rounds", o->shadowRounds, "--shadow-codebook: k-means rounds");
     cmd->add_flag("--drop-hidden", o->dropHidden,
                   "first leave out what no camera round the cloud sees (an orbit drawn by raster); with no "
                   "--ratio, only that");
@@ -201,6 +208,8 @@ void addDecimate(CLI::App& app) {
         options.transferClusters = o->transferClusters;
         options.transferComponents = o->transferComponents;
         options.transferBits = o->transferBits;
+        options.shadowCodebook = o->shadowCodebook;
+        options.shadowRounds = std::max(o->shadowRounds, 1u);
         options.dropHidden = o->dropHidden;
         options.hiddenViews = std::max(o->hiddenViews, 1u);
         options.hiddenSize = std::max(o->hiddenSize, 16u);

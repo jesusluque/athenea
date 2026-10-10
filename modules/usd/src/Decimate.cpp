@@ -144,6 +144,98 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     static_cast<unsigned long long>(k), o.transferBits,
                     static_cast<unsigned long long>((c > 256 ? 2 : 1) + (3 * k * o.transferBits + 7) / 8), clips);
     }
+    if (o.shadowCodebook > 0) {
+        // THE SHADOW BITS FROM A CODEBOOK (shadow_vq.slang), before anything
+        // reads them.
+        GaussianArray* shadow = nullptr;
+        for (GaussianArray& a : arrays) {
+            const std::string tail("shadowBits");
+            if (a.integer && a.name.size() >= tail.size() &&
+                a.name.compare(a.name.size() - tail.size(), tail.size(), tail) == 0) {
+                shadow = &a;
+            }
+        }
+        if (shadow == nullptr || shadow->width == 0 || shadow->width > 8) {
+            return Error(ErrorCode::InvalidArgument, "decimate: --shadow-codebook needs shadow bits (up to 8 words)");
+        }
+        const uint32_t n = raw->count, c = o.shadowCodebook, words = shadow->width;
+        const auto put = [&](uint64_t count, const uint32_t* data, const char* label) {
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<uint64_t>(count, 1) * 4;
+            desc.elementBytes = 4;
+            desc.label = label;
+            return gpu::Buffer::create(device, desc, data);
+        };
+        std::vector<uint32_t> zeros(std::max<uint64_t>(uint64_t{c} * words * 32, 257), 0u);
+        auto bitsBuffer = put(uint64_t{n} * words, shadow->values[0].data(), "decimate.shadowBits");
+        auto centroids = put(uint64_t{c} * words, zeros.data(), "decimate.shadowCentroids");
+        auto assigned = put(n, nullptr, "decimate.shadowAssigned");
+        auto ones = put(uint64_t{c} * words * 32, zeros.data(), "decimate.shadowOnes");
+        auto members = put(c, zeros.data(), "decimate.shadowMembers");
+        auto distances = put(257, zeros.data(), "decimate.shadowDistances");
+        if (!bitsBuffer || !centroids || !assigned || !ones || !members || !distances) {
+            return Error(ErrorCode::OutOfMemory, "decimate: the shadow codebook");
+        }
+        const auto kernel = [&](const char* entry) {
+            return gpu::ComputeKernel::create(library, "athenea/lod/shadow_vq", entry);
+        };
+        auto seed = kernel("vqSeed");
+        auto assign = kernel("vqAssign");
+        auto update = kernel("vqUpdate");
+        auto clear = kernel("vqClearMembers");
+        auto apply = kernel("vqApply");
+        if (!seed || !assign || !update || !clear || !apply) {
+            return Error(ErrorCode::InternalError, "decimate: the shadow codebook's kernels");
+        }
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["bits"].setBinding(bitsBuffer->rhi());
+            cursor["centroids"].setBinding(centroids->rhi());
+            cursor["assigned"].setBinding(assigned->rhi());
+            cursor["ones"].setBinding(ones->rhi());
+            cursor["members"].setBinding(members->rhi());
+            cursor["distances"].setBinding(distances->rhi());
+            cursor["params"]["count"].setData(n);
+            cursor["params"]["clusters"].setData(c);
+            cursor["params"]["words"].setData(words);
+        };
+        {
+            gpu::CommandBatch batch(device);
+            seed->dispatch(batch, {c, 1, 1}, bind);
+            ATHENEA_TRY(batch.submit(true));
+        }
+        for (uint32_t round = 0; round < o.shadowRounds; ++round) {
+            gpu::CommandBatch batch(device);
+            clear->dispatch(batch, {c, 1, 1}, bind);
+            batch.markDirty();
+            assign->dispatch(batch, {n, 1, 1}, bind);
+            batch.markDirty();
+            if (round + 1 < o.shadowRounds) {
+                update->dispatch(batch, {c * words, 1, 1}, bind);
+            }
+            ATHENEA_TRY(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(device);
+            apply->dispatch(batch, {n, 1, 1}, bind);
+            ATHENEA_TRY(batch.submit(true));
+        }
+        auto back = bitsBuffer->readAll<uint32_t>(device);
+        if (!back) return std::move(back).error();
+        back->resize(shadow->values[0].size());
+        shadow->values[0] = std::move(*back);
+        std::vector<uint32_t> histogram(257, 0u);
+        ATHENEA_TRY(distances->read(device, 0, 257 * 4, histogram.data()));
+        uint64_t seen = 0;
+        uint32_t p50 = 0, p90 = 0, p99 = 0;
+        for (uint32_t d = 0; d < 257; ++d) {
+            seen += histogram[d];
+            if (p50 == 0 && seen * 2 >= n) p50 = d + 1;
+            if (p90 == 0 && seen * 10 >= uint64_t{n} * 9) p90 = d + 1;
+            if (p99 == 0 && seen * 100 >= uint64_t{n} * 99) p99 = d + 1;
+        }
+        std::printf("decimate: the shadow bits from %u centroids (%u rounds): bits off, median %u, p90 %u, p99 %u "
+                    "of %u\n", c, o.shadowRounds, p50 - 1, p90 - 1, p99 - 1, words * 32);
+    }
     auto cloud = loader->upload(*raw, o.degree);
     if (!cloud) return std::move(cloud).error();
     auto builder = lod::LodBuilder::create(library);

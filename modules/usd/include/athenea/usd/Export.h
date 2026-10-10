@@ -289,6 +289,11 @@ struct DecimateStageOptions {
     uint32_t              transferClusters = 256;
     uint32_t              transferComponents = 8;
     uint32_t              transferBits = 8;
+    /// THE SHADOW BITS FROM A CODEBOOK (shadow_vq.slang): `shadowCodebook`
+    /// centroids found by Hamming k-means over `shadowRounds` rounds, each
+    /// gaussian's bits replaced by its centroid's before anything else. 0: none.
+    uint32_t              shadowCodebook = 0;
+    uint32_t              shadowRounds = 12;
     /// WHAT NO CAMERA SEES, LEFT OUT FIRST (lod::Decimator::prune): the cloud
     /// drawn from `hiddenViews` directions round its bounds, at three
     /// distances (2.5, 1.6 and 1.15 times the bounding sphere's radius,
