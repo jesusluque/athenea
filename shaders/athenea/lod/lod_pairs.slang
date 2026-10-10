@@ -83,6 +83,7 @@ public struct PairParams {
     public uint  histogramBins;
     public float histogramLo;    // log10 of the cheapest cost the histogram holds
     public float histogramStep;  // log10 a bin
+    public uint  relaxed;        // 1: the guards are lifted (Lod.cpp, relaxTop); its merges' costs are recorded negative
 };
 
 ConstantBuffer<PairParams>  params;
@@ -434,7 +435,9 @@ void pairMerge(uint3 tid: SV_DispatchThreadID) {
         treeParent[right] = node;
         treeParent[node] = node;
         treeChildren[made] = uint2(left, right);
-        treeCost[node] = bestCost[i];
+        // A merge past the guards is marked by its cost's sign, so a cut can
+        // hold it to a far view (lod_tree_cut.slang).
+        treeCost[node] = params.relaxed != 0 ? -max(bestCost[i], 1.0e-30) : bestCost[i];
         treePass[made] = params.pass;
         nodes[a + 23] = asfloat(node);
     }

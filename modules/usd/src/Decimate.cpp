@@ -602,9 +602,11 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         // searched whose cut holds the budget, and the store pruned to it.
         const GaussianArray* parentArray = nullptr;
         const GaussianArray* leavesArray = nullptr;
+        const GaussianArray* costArray = nullptr;
         for (const GaussianArray& a : arrays) {
             if (ends(a.name, "athenea:splat:lodParent")) parentArray = &a;
             if (ends(a.name, "athenea:splat:lodSize")) leavesArray = &a;
+            if (ends(a.name, "athenea:splat:lodCost")) costArray = &a;
         }
         if (parentArray == nullptr || leavesArray == nullptr || !(pairSettings.pixelsPerUnit > 0.0F)) {
             return Error(ErrorCode::InvalidArgument,
@@ -618,10 +620,12 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         if (!keepKernel) return std::move(keepKernel).error();
         auto parents = upload(parentArray->values[0], "decimate.cutParent");
         auto leaves = upload(leavesArray->values[0], "decimate.cutLeaves");
+        auto costs = upload(costArray != nullptr ? costArray->values[0] : std::vector<uint32_t>(n, 0u),
+                            "decimate.cutCost");
         auto widths = upload(std::vector<uint32_t>(n, 0u), "decimate.cutWidth");
         auto score = upload(std::vector<uint32_t>(n, 0u), "decimate.cutScore");
         auto counter = upload(std::vector<uint32_t>(1, 0u), "decimate.cutCount");
-        if (!parents || !leaves || !widths || !score || !counter) {
+        if (!parents || !leaves || !costs || !widths || !score || !counter) {
             return Error(ErrorCode::OutOfMemory, "decimate: the cut");
         }
         float threshold = 1.0F;
@@ -631,6 +635,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["shape"].setBinding(from.splats.shape.rhi());
             cursor["parent"].setBinding(parents->rhi());
             cursor["leaves"].setBinding(leaves->rhi());
+            cursor["cost"].setBinding(costs->rhi());
+            cursor["params"]["relaxedShare"].setData(0.25F);
             cursor["width"].setBinding(widths->rhi());
             cursor["score"].setBinding(score->rhi());
             cursor["counter"].setBinding(counter->rhi());

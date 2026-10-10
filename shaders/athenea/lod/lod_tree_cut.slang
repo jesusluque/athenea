@@ -21,6 +21,8 @@ struct CutParams {
     float  pixelsPerUnit;   ///< pixels a unit of length covers at a distance of one
     uint   maxDepth;        ///< how far up a branch is walked
     float4 eye;             ///< the camera's position
+    float  relaxedShare;    ///< a merge past the guards passes only this far under the threshold
+    uint   pad0, pad1, pad2;
 };
 
 StructuredBuffer<uint>    storeOrder;   // store splat -> file gaussian
@@ -28,6 +30,7 @@ StructuredBuffer<float4>  positions;    // the store's
 StructuredBuffer<uint>    shape;        // the store's, four words a splat
 StructuredBuffer<uint>    parent;       // file gaussian -> its parent's file index (itself at a root)
 StructuredBuffer<uint>    leaves;       // file gaussian -> how many leaves it stands for
+StructuredBuffer<float>   cost;         // file gaussian -> its merge's cost, negative past the guards (lod_pairs)
 RWStructuredBuffer<float> width;        // file gaussian -> its width on screen, pixels
 RWStructuredBuffer<float> score;        // store splat -> 1 in the cut, 0 not
 RWStructuredBuffer<uint>  counter;      // [in the cut]
@@ -50,8 +53,14 @@ void treeCutWidth(uint3 tid: SV_DispatchThreadID) {
     width[storeOrder[s]] = 2.0 * max(b.scale.x, max(b.scale.y, b.scale.z)) / distance * params.pixelsPerUnit;
 }
 
+/// A merge past the guards -- across a colour edge, glass with paint, a
+/// fold -- is what a far view needs and what closes a grille's holes near:
+/// it passes only `relaxedShare` as wide as the rest.
 bool passes(uint i) {
-    return leaves[i] <= 1u || width[i] <= params.threshold;
+    if (leaves[i] <= 1u) {
+        return true;
+    }
+    return width[i] <= params.threshold * (cost[i] < 0.0 ? params.relaxedShare : 1.0);
 }
 
 /// In the cut: it passes, and no ancestor does.

@@ -950,6 +950,7 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
     bool relaxed = false;
     const auto setParams = [&](rhi::ShaderCursor p, uint32_t count) {
         p["count"].setData(count);
+        p["relaxed"].setData(uint32_t{relaxed ? 1u : 0u});
         p["keyed"].setData(uint32_t{carried.keys != nullptr ? 1u : 0u});
         p["materialled"].setData(uint32_t{carried.material != nullptr ? 1u : 0u});
         p["normals"].setData(uint32_t{normals ? 1u : 0u});
