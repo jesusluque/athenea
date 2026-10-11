@@ -137,8 +137,8 @@ void occlusionUp(uint3 tid: SV_DispatchThreadID) {
     }
 }
 
-// WHAT A NODE'S CULLING IS WORTH: the leaves it would take out of a frame
-// times the cells it is closed in. A hood's nodes, closed toward the ground
+// WHAT A NODE'S CULLING IS WORTH: the cells an eye looks from it is closed
+// in. A hood's nodes, closed toward the ground
 // an eye never stands in, are many and worth little; a grille's are few and
 // worth half the culling -- an entry spent on each node alike gave the
 // grille 64 % of what its own masks cull (research). Entry 0 is all open:
@@ -172,7 +172,10 @@ uint closedCells(uint g) {
 }
 
 uint worthBin(uint g) {
-    const float worth = float(max(leaves[g], 1u)) * float(closedCells(g));
+    // A node in a cut is one gaussian drawn however many leaves it stands
+    // for: the leaves weighed a fender's large merges over a grille's many
+    // small bars (research: the grille at 69 % of its culling).
+    const float worth = float(closedCells(g));
     return worth >= 1.0 ? min(uint(log2(worth)) + 1u, 63u) : 0u;
 }
 
