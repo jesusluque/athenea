@@ -5,6 +5,8 @@
 #include "athenea/usd/Export.h"
 
 #include <limits>
+#include "athenea/core/Hash.h"
+#include <map>
 
 #include <algorithm>
 #include <cmath>
@@ -53,6 +55,49 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         auto read = readGaussianArrays(input, where, raw->count);
         if (!read) return std::move(read).error();
         arrays = std::move(*read);
+        if (o.treeReport) {
+            // WHERE A TREE STOPPED MERGING: its roots counted a part
+            // (cryptoObject), the parts named from the field's manifest --
+            // bookkeeping over the tree's own arrays.
+            const auto tail = [](const std::string& name, const std::string& end) {
+                return name.size() >= end.size() && name.compare(name.size() - end.size(), end.size(), end) == 0;
+            };
+            const GaussianArray* up = nullptr;
+            const GaussianArray* ids = nullptr;
+            const GaussianArray* size = nullptr;
+            for (const GaussianArray& a : arrays) {
+                if (tail(a.name, "athenea:splat:lodParent")) up = &a;
+                if (tail(a.name, "athenea:splat:lodSize")) size = &a;
+                if (tail(a.name, "athenea:splat:cryptoObject")) ids = &a;
+            }
+            if (up == nullptr || ids == nullptr || size == nullptr) {
+                return Error(ErrorCode::InvalidArgument, "decimate: --tree-report needs a tree with cryptoObject");
+            }
+            std::map<uint32_t, std::string> names;
+            if (const pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(input.string())) {
+                const pxr::UsdAttribute manifest =
+                    stage->GetPrimAtPath(pxr::SdfPath(where)).GetAttribute(pxr::TfToken("primvars:athenea:splat:cryptoManifest"));
+                std::string json;
+                if (manifest && manifest.Get(&json)) {
+                    for (const auto& [name, id] : core::parseCryptomatteManifest(json)) names[id] = name;
+                }
+            }
+            std::map<uint32_t, std::pair<uint32_t, uint32_t>> perPart;   // roots, leaves
+            for (uint32_t g = 0; g < raw->count; ++g) {
+                auto& entry = perPart[ids->values[0][g]];
+                if (up->values[0][g] == g || up->values[0][g] >= raw->count) ++entry.first;
+                if (size->values[0][g] <= 1) ++entry.second;
+            }
+            std::vector<std::pair<uint32_t, uint32_t>> order;
+            for (const auto& [id, counts] : perPart) order.emplace_back(counts.first, id);
+            std::sort(order.rbegin(), order.rend());
+            for (size_t k = 0; k < std::min<size_t>(order.size(), 15); ++k) {
+                const uint32_t id = order[k].second;
+                std::printf("decimate: %8u roots of %8u leaves  %s\n", perPart[id].first, perPart[id].second,
+                            names.count(id) ? names[id].c_str() : std::to_string(id).c_str());
+            }
+            return lod::DecimateStats{};
+        }
         if (o.objectGroups > 1) {
             // ONE GROUP OF AN ASSET'S PARTS (a whole car will not merge in one
             // pass: its tree's attributes outgrow the device): the gaussians

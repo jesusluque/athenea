@@ -380,6 +380,8 @@ struct DecimateStageOptions {
     /// Only the gaussians of one group of the asset's parts: those whose
     /// cryptoObject modulo `objectGroups` is `objectGroup` (an asset too large
     /// for one pass, decimated a group at a time). 0 or 1: all.
+    /// The input is a merge tree: print its roots a part and stop.
+    bool                  treeReport = false;
     uint32_t              objectGroups = 0;
     uint32_t              objectGroup = 0;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
