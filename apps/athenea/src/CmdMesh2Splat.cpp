@@ -697,20 +697,23 @@ public:
                 }
                 ATHENEA_TRY(batch.submit(true));
             }
-            // A COUNTER BACK: whether the mesh is a closed shell -- under 2 %
-            // of its edges (about one and a half a triangle, welded by where
-            // their points stand) open or shared by more than two. Its back
-            // faces are then hidden by its front, which is what lets a cut
-            // drop a node facing away (`primvars:athenea:splat:closed`). Not
-            // exactly none: a car's panels are two skins with a seam left
-            // open here and there (the hood 1.8 %), and their inner skin,
-            // drawn, sorted in front of the outer in patches -- a net of dark
-            // cracks over a door at the phone's size (research).
+            // A COUNTER BACK: whether the mesh is a closed shell -- its open
+            // edges (or shared by more than two) fewer than twice the square
+            // root of all of them (about one and a half a triangle, welded by
+            // where their points stand). Its back faces are then hidden by
+            // its front, which is what lets a cut drop a node facing away
+            // (`primvars:athenea:splat:closed`): a car's doors are two skins
+            // whose inner one, drawn, sorted in front of the outer in patches
+            // -- a net of dark cracks at the phone's size (research). Not a
+            // share of the edges: an open sheet's border grows as the root of
+            // its area, so a fine enough tube passed under 2 % -- a rim's
+            // barrel (1 %) culled, light between the spokes (sparkwebgpu-ce);
+            // against the root the rims stand at 4, the logos at 1.4.
             uint32_t open = 0xFFFFFFFFu;
             ATHENEA_TRY(openEdges->read(device, 0, sizeof(uint32_t), &open));
             const double meshEdges = 1.5 * double(triangles);
             for (const Held& h : held) {
-                closed_[h.piece] = double(open) < 0.02 * meshEdges ? 1 : 0;
+                closed_[h.piece] = double(open) < 2.0 * std::sqrt(meshEdges) ? 1 : 0;
             }
             first = last;
         }
