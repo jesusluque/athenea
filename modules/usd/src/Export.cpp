@@ -1183,6 +1183,9 @@ Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::
     }
     // Everything else a gaussian carries, merged.
     for (const GaussianArray& array : arrays) {
+        if (!array.renamedFrom.empty()) {
+            field.GetPrim().RemoveProperty(TfToken(array.renamedFrom));
+        }
         UsdAttribute to = field.GetPrim().GetAttribute(TfToken(array.name));
         if (!to && array.times.empty() && !array.values.empty() &&
             (array.typeName == "float[]" || array.typeName == "int[]")) {

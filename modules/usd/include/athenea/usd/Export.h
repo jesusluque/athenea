@@ -235,6 +235,9 @@ struct GaussianArray {
     std::vector<double> times;
     /// The default's words (or the earliest sample's), then a sample's each.
     std::vector<std::vector<uint32_t>> values;
+    /// The name the source held it under, where the decimation renamed it:
+    /// that attribute is removed from the copy, so no stale array is left.
+    std::string renamedFrom;
 };
 
 /// Every array a gaussian long on the field at `prim` (the first

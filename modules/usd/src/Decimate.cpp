@@ -729,6 +729,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             // reader uncaps the opacity from it.
             for (GaussianArray& a : arrays) {
                 if (ends(a.name, "athenea:splat:coverage")) {
+                    a.renamedFrom = a.name;
                     a.name = "primvars:athenea:splat:coverageMass";
                 }
             }
@@ -955,7 +956,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
     // would be the capped opacity, and a reader that draws coverage past one
     // (sparkwebGPU) found the cut's merges too thin.
     const bool carriesCoverage = std::any_of(arrays.begin(), arrays.end(), [&](const GaussianArray& a) {
-        return ends(a.name, "athenea:splat:coverage");
+        return ends(a.name, "athenea:splat:coverage") || ends(a.name, "athenea:splat:coverageMass");
     });
     if (o.pairs && decimated->coverage.valid() && !carriesCoverage) {
         // What each merge covers, beside the opacity held at 0.99.
