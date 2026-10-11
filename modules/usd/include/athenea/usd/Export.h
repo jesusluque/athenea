@@ -372,7 +372,8 @@ struct DecimateStageOptions {
     uint32_t              cutPages = 0;
     /// The input is a merge tree: write its pages by error (lod_pages.slang)
     /// of this many gaussians -- `primvars:athenea:splat:lodPage` a node, and
-    /// a page's band, nodes and first in page order (`lodPageInfo`, 3 ints)
+    /// a page's band, nodes and first node in page order -- coarsest first --
+    /// (`lodPageInfo`, 3 ints)
     /// and the box holding its nodes' spheres with its parents' largest and
     /// smallest error (`lodPageBounds`, 8 floats) -- and the whole tree. 0: none.
     uint32_t              treePages = 0;

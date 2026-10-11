@@ -870,16 +870,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     ATHENEA_TRY(sorter->sort(batch, sorting, n, 38));
                     ATHENEA_TRY(batch.submit(true));
                 }
-                uint32_t counts[64] = {};
-                ATHENEA_TRY(bandCount->read(device, 0, sizeof(counts), counts));
-                std::vector<uint32_t> starts(64, 0u), firstPage(64, 0u);
-                uint32_t pages = 0;
-                for (uint32_t b = 0, at = 0; b < 64; ++b) {
-                    starts[b] = at;
-                    firstPage[b] = pages;
-                    at += counts[b];
-                    pages += (counts[b] + limit - 1) / limit;
-                }
+                const uint32_t pages = (n + limit - 1) / limit;
+                std::vector<uint32_t> starts(64, 0u), firstPage(64, 0u);   // unused: the pages cross the bands
                 auto bandStarts = upload(starts, "decimate.bandStart");
                 auto bandPages = upload(firstPage, "decimate.bandPage");
                 auto keySize = upload(std::vector<uint32_t>(std::max(pages, 1u), 0u), "decimate.errorPageSize");
@@ -910,7 +902,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 }
                 uint32_t e[4] = {0, 0, 0, 0};
                 ATHENEA_TRY(byError->read(device, 0, 16, e));
-                std::printf("decimate: paged by error (a band an octave, %u a page): %u pages, %u at most; the cut "
+                std::printf("decimate: paged by error (coarsest first, %u a page): %u pages, %u at most; the cut "
                             "needs %u holding %u (%.2fx)\n",
                             limit, e[2], e[3], e[0], e[1], kept > 0 ? double(e[1]) / kept : 0.0);
             }
@@ -1057,23 +1049,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 ATHENEA_TRY(sorter->sort(batch, sorting, n, 38));
                 ATHENEA_TRY(batch.submit(true));
             }
-            uint32_t counts[64] = {};
-            ATHENEA_TRY(bandCount->read(device, 0, sizeof(counts), counts));
-            std::vector<uint32_t> startsOfBands(64, 0u), firstPage(64, 0u);
-            for (uint32_t b = 0, at = 0; b < 64; ++b) {
-                startsOfBands[b] = at;
-                firstPage[b] = pages;
-                at += counts[b];
-                pages += (counts[b] + limit - 1) / limit;
-            }
-            // Pages by band, coarsest first: a band's octave counts up from
-            // the finest, so the order is reversed into the page numbers a
-            // player streams from the top down.
-            std::vector<uint32_t> reversed(64, 0u);
-            for (uint32_t b = 0; b < 64; ++b) {
-                const uint32_t own = (counts[b] + limit - 1) / limit;
-                reversed[b] = pages - firstPage[b] - own;
-            }
+            pages = (n + limit - 1) / limit;
+            std::vector<uint32_t> startsOfBands(64, 0u), reversed(64, 0u);   // unused by the table
             const uint32_t one = std::max(pages, 1u);
             const uint32_t big = 0xFFFFFFFFu;
             bandStarts = take(upload(startsOfBands, "decimate.bandStart"));
@@ -1108,6 +1085,12 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             if (!pageOf || !infoBack || !boundsBack) return Error(ErrorCode::IoFailure, "decimate: the page table back");
             pageOf->resize(fileCount);
             infoBack->resize(size_t{pages} * 3);
+            // A page's first node in page order (coarsest first): what a packer
+            // writing the pages one after another starts it at.
+            for (uint32_t p = 0, at = 0; p < pages; ++p) {
+                (*infoBack)[size_t{p} * 3 + 2] = at;
+                at += (*infoBack)[size_t{p} * 3 + 1];
+            }
             boundsBack->resize(size_t{pages} * 8);
             const auto array = [](const char* name, const char* type, const char* interpolation,
                                   std::vector<uint32_t> words) {

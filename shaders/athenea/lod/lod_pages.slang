@@ -126,8 +126,7 @@ void treeBandPages(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint i = sortValues[at];
-    const uint band = sortHi[at];
-    const uint page = bandPage[band] + (at - bandStart[band]) / max(params.maxRun, 1u);
+    const uint page = (params.count - 1u - at) / max(params.maxRun, 1u);   // as treeBandTable lays them
     if (page >= params.pageCount) {
         return;
     }
@@ -185,12 +184,16 @@ void treeBandTable(uint3 tid: SV_DispatchThreadID) {
     }
     const uint i = sortValues[at];
     const uint band = sortHi[at];
-    const uint page = bandPage[band] + (at - bandStart[band]) / max(params.maxRun, 1u);
+    // The whole order, coarsest band first, cut into pages of `maxRun`: a
+    // view needs the bands over its threshold, a prefix of this order where
+    // it looks, so only the page at the edge is part needed -- and no coarse
+    // band of a few nodes is a page of its own.
+    const uint page = (params.count - 1u - at) / max(params.maxRun, 1u);
     if (page >= params.pageCount) {
         return;
     }
     filePage[i] = page;
-    pageInfo[page * 3] = band;
+    InterlockedMax(pageInfo[page * 3], band);
     InterlockedAdd(pageInfo[page * 3 + 1], 1u);
     InterlockedMin(pageInfo[page * 3 + 2], at);
     const float3 c = centre[i].xyz;
