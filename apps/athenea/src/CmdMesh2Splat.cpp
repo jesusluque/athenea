@@ -571,6 +571,7 @@ public:
     /// crosses back.
     [[nodiscard]] Result<void> markEdges() {
         edges_.assign(pieces_.size(), gpu::Buffer{});
+        closed_.assign(pieces_.size(), 0);
         if (!(options_->edgeReach > 0.0)) {
             return ok();
         }
@@ -618,7 +619,14 @@ public:
             auto flags = words(triangles, 4, "mesh2splat.edgeFlags");
             auto lineCount = words(triangles, 4, "mesh2splat.edgeLineCount");
             auto lines = words(uint64_t{triangles} * kEdgeLines, 16, "mesh2splat.edgeLines");
-            if (!lo || !hi || !values || !scratchLo || !scratchHi || !scratchValues || !cornerKeys ||
+            gpu::BufferDesc openDesc;
+            openDesc.bytes = 4;
+            openDesc.elementBytes = 4;
+            openDesc.label = "mesh2splat.openEdges";
+            const uint32_t none = 0;
+            auto openEdges = gpu::Buffer::create(device, openDesc, &none);
+            if (!openEdges ||
+                !lo || !hi || !values || !scratchLo || !scratchHi || !scratchValues || !cornerKeys ||
                 !cornerValues || !cornerScratch || !cornerScratchValues || !points || !flags || !lineCount ||
                 !lines) {
                 return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot mark a mesh's edges");
@@ -665,6 +673,7 @@ public:
                 cursor["flags"].setBinding(flags->rhi());
                 cursor["lineCount"].setBinding(lineCount->rhi());
                 cursor["lines"].setBinding(lines->rhi());
+                cursor["openEdges"].setBinding(openEdges->rhi());
                 cursor["edge"]["triangles"].setData(pieces_[h.piece].triangles);
                 cursor["edge"]["first"].setData(h.first);
                 cursor["edge"]["count"].setData(edges);
@@ -687,6 +696,15 @@ public:
                                         [&](rhi::ShaderCursor cursor) { bind(cursor, h); });
                 }
                 ATHENEA_TRY(batch.submit(true));
+            }
+            // A COUNTER BACK: whether the mesh is closed, every edge shared
+            // by two of its triangles. Its back faces are then hidden by its
+            // front, which is what lets a player cull a coarse node facing
+            // away (`primvars:athenea:splat:closed`).
+            uint32_t open = 1;
+            ATHENEA_TRY(openEdges->read(device, 0, sizeof(uint32_t), &open));
+            for (const Held& h : held) {
+                closed_[h.piece] = open == 0 ? 1 : 0;
             }
             first = last;
         }
@@ -1414,6 +1432,10 @@ public:
                 // than a conductor: what a frame reflects a metal with.
                 schlickMetal_.insert(schlickMetal_.end(), out->written,
                                      material.schlickMetal ? int32_t{1} : int32_t{0});
+                // And whether its mesh is closed (markEdges): where its back
+                // is hidden by its own front.
+                closedOf_.insert(closedOf_.end(), out->written,
+                                 k < closed_.size() && closed_[k] != 0 ? int32_t{1} : int32_t{0});
                 // AND WHAT ITS GLASS BENDS BY. A transmitting gaussian
                 // refracts only with an index (rt_shade: `ior > 1`), and a
                 // cloud keeps one: without it the pawn's glass head was a
@@ -2032,6 +2054,8 @@ private:
     std::vector<uint32_t>                    cryptoIds_;
     /// 1 where the splat came from a thin-walled glass, in the same order.
     std::vector<int32_t>                     thinWalled_;
+    std::vector<int32_t>                     closedOf_;   // a gaussian's: its mesh has no open edge
+    std::vector<uint8_t>                     closed_;     // a piece's (markEdges)
     /// One a gaussian, 1 where its metal is a Schlick (StageMaterial::schlickMetal).
     std::vector<int32_t>                     schlickMetal_;
     /// The index the cloud's transmitting gaussians bend by: the first glass
@@ -2063,6 +2087,7 @@ public:
     [[nodiscard]] const std::vector<uint32_t>& cryptoIds() const noexcept { return cryptoIds_; }
     [[nodiscard]] double modelCell() const noexcept { return modelCell_; }
     [[nodiscard]] const std::vector<int32_t>& thinWalled() const noexcept { return thinWalled_; }
+    [[nodiscard]] const std::vector<int32_t>& closed() const noexcept { return closedOf_; }
     [[nodiscard]] const std::vector<int32_t>& schlickMetal() const noexcept { return schlickMetal_; }
     /// Each gaussian's shape operator (uu, uv, vv), read back for the file;
     /// empty where the conversion did not write it.
@@ -3368,6 +3393,7 @@ void addMesh2Splat(CLI::App& app) {
                 options.cryptoObject = converter.cryptoIds();
                 options.cryptoManifest = converter.cryptoManifest();
                 options.thinWalled = converter.thinWalled();
+                options.closed = converter.closed();
                 options.schlickMetal = converter.schlickMetal();
                 auto curvature = converter.curvature();
                 if (!curvature) return std::move(curvature).error();

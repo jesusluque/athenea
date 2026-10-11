@@ -325,6 +325,16 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(thin));
     }
 
+    // WHICH GAUSSIANS' MESHES ARE CLOSED. Written only where there is one.
+    if (options.closed.size() >= count && count > 0 &&
+        std::any_of(options.closed.begin(), options.closed.begin() + count, [](int32_t v) { return v != 0; })) {
+        VtIntArray closed(options.closed.begin(), options.closed.begin() + count);
+        UsdGeomPrimvarsAPI(splats.GetPrim())
+            .CreatePrimvar(TfToken("primvars:athenea:splat:closed"), SdfValueTypeNames->IntArray,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(closed));
+    }
+
     // WHICH GAUSSIANS' METAL IS A SCHLICK (OpenPBR, glTF) rather than a
     // conductor of an artistic index. Written only where there is one.
     if (options.schlickMetal.size() >= count && count > 0 &&

@@ -58,6 +58,7 @@ RWStructuredBuffer<uint>    flags;         // a mesh triangle each: its own hard
 RWStructuredBuffer<uint>    lineCount;     // a mesh triangle each: the lines told to it (may pass kLines)
 RWStructuredBuffer<float4>  lines;         // kLines a mesh triangle: (n, c)
 RWStructuredBuffer<float4>  edgeData;      // the piece's six entries a triangle, packed (m2sEdgeWrite)
+RWStructuredBuffer<uint>    openEdges;     // one: the mesh's edges not shared by exactly two triangles
 RWStructuredBuffer<float4>  edgePicture;   // the piece's Edges clip, a picture's rows (m2sEdgeCopy)
 ConstantBuffer<EdgeParams>  edge;
 
@@ -184,6 +185,9 @@ void m2sEdgeRuns(uint3 tid: SV_DispatchThreadID) {
         ++length;
     }
     bool hard = length != 2u;
+    if (hard) {
+        InterlockedAdd(openEdges[0], 1u);   // not a closed surface: its back may show (m2s's `closed`)
+    }
     if (length == 2u) {
         const float3 a = faceOf(values[p] / 4);
         const float3 b = faceOf(values[p + 1] / 4);
