@@ -150,6 +150,11 @@ struct ExportOptions {
     uint32_t                        shadowWords = 2;
     /// One int a record, 1 where the gaussian came from a thin-walled glass.
     std::span<const int32_t>        thinWalled;
+    /// One int a record, 1 where the gaussian's mesh is closed -- every edge
+    /// shared by two triangles -- so its back is hidden by its own front
+    /// (`primvars:athenea:splat:closed`, what lets a player cull a coarse
+    /// node facing away).
+    std::span<const int32_t>        closed;
     /// One int a record, 1 where the gaussian's metal is a Schlick (OpenPBR,
     /// glTF) rather than a conductor (`primvars:athenea:splat:schlickMetal`).
     std::span<const int32_t>        schlickMetal;
@@ -298,6 +303,10 @@ struct DecimateStageOptions {
     /// composited on its plane as the raster does, really cover -- not mass
     /// over its moment ellipse, which counts overlapping tails twice.
     bool                  cutCoverage = false;
+    /// The input is a merge tree: every merge's opacity becomes what its leaves
+    /// really cover (as `cutCoverage`, for every node, runs up to 4096), and the
+    /// whole tree is written -- so a player cutting it reads the coverage.
+    bool                  treeCoverage = false;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
     /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
     /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to

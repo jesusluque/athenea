@@ -597,7 +597,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
         }
     }
-    if (o.cutBudget > 0 || o.cutPixels > 0.0F || o.cutError > 0.0F) {
+    if (o.cutBudget > 0 || o.cutPixels > 0.0F || o.cutError > 0.0F || o.treeCoverage) {
         // A CUT THROUGH THE MERGE TREE the input is (lod_tree_cut.slang):
         // each gaussian's width on the camera's screen, then the threshold
         // searched whose cut holds the budget, and the store pruned to it.
@@ -698,7 +698,41 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             widthKernel->dispatch(batch, {n, 1, 1}, bind);
             ATHENEA_TRY(batch.submit(true));
         }
-        if (o.cutError > 0.0F) {
+        if (o.treeCoverage) {
+            // EVERY MERGE'S REAL COVERAGE, the whole tree kept.
+            if (startArray == nullptr) {
+                return Error(ErrorCode::InvalidArgument, "decimate: --tree-coverage needs the tree's lodStart");
+            }
+            const float one = 1.0F;
+            uint32_t oneBits;
+            std::memcpy(&oneBits, &one, 4);
+            ATHENEA_TRY(score->write(device, 0, uint64_t{n} * 4, std::vector<uint32_t>(n, oneBits).data()));
+            auto storeOfKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeStoreOf");
+            auto coverage = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCoverage");
+            if (!storeOfKernel || !coverage) return Error(ErrorCode::InternalError, "decimate: the coverage kernels");
+            {
+                gpu::CommandBatch batch(device);
+                storeOfKernel->dispatch(batch, {n, 1, 1}, bind);
+                batch.markDirty();
+                coverage->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    bind(cursor);
+                    cursor["params"]["maxRun"].setData(uint32_t{4096});
+                });
+                ATHENEA_TRY(batch.submit(true));
+            }
+            auto all = decimator->prune(from, *score, 0.5F);
+            if (!all) return std::move(all).error();
+            std::printf("decimate: every merge's opacity is what its leaves cover (%u gaussians)\n", all->count);
+            pruned = std::move(*all);
+            // The opacity is now the coverage: the mass-over-area array is
+            // renamed (the plans index the arrays, so none is removed), so no
+            // reader uncaps the opacity from it.
+            for (GaussianArray& a : arrays) {
+                if (ends(a.name, "athenea:splat:coverage")) {
+                    a.name = "primvars:athenea:splat:coverageMass";
+                }
+            }
+        } else if (o.cutError > 0.0F) {
             // THE CUT BY ERROR (lod_tree_cut.slang, research 100): each node's
             // own error and sphere, climbed until every parent covers its
             // children, then the one cut at the threshold.

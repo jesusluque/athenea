@@ -52,6 +52,7 @@ void addDecimate(CLI::App& app) {
         bool cutBounds = false;
         bool cutCullBack = false;
         bool cutCoverage = false;
+        bool treeCoverage = false;
         std::string transferBasis;
         uint32_t transferClusters = 256;
         uint32_t transferComponents = 8;
@@ -140,6 +141,9 @@ void addDecimate(CLI::App& app) {
                   "one-sided part: not glass, sheets or two-sided parts)");
     cmd->add_flag("--cut-coverage", o->cutCoverage,
                   "--cut-error: a kept merge's opacity is what its leaves really cover, composited on its plane");
+    cmd->add_flag("--tree-coverage", o->treeCoverage,
+                  "the input is a merge tree: every merge's opacity becomes what its leaves really cover, and the "
+                  "whole tree is written (with --ratio 1)");
     cmd->add_option("--cut-pixels", o->cutPixels,
                     "the input is a merge tree: keep the cut whose merges are no wider than this on --camera's "
                     "screen (in place of --cut-budget)");
@@ -227,6 +231,7 @@ void addDecimate(CLI::App& app) {
         options.cutBounds = o->cutBounds;
         options.cutCullBack = o->cutCullBack;
         options.cutCoverage = o->cutCoverage;
+        options.treeCoverage = o->treeCoverage;
         options.transferBasis = o->transferBasis;
         options.transferClusters = o->transferClusters;
         options.transferComponents = o->transferComponents;
