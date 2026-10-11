@@ -867,7 +867,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     gpu::CommandBatch batch(device);
                     keysKernel->dispatch(batch, {n, 1, 1}, bindSort);
                     batch.markDirty();
-                    ATHENEA_TRY(sorter->sort(batch, sorting, n, 38));
+                    ATHENEA_TRY(sorter->sort(batch, sorting, n, 57));
                     ATHENEA_TRY(batch.submit(true));
                 }
                 const uint32_t pages = (n + limit - 1) / limit;
@@ -1046,7 +1046,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 gpu::CommandBatch batch(device);
                 keysKernel->dispatch(batch, {n, 1, 1}, bindTable);
                 batch.markDirty();
-                ATHENEA_TRY(sorter->sort(batch, sorting, n, 38));
+                ATHENEA_TRY(sorter->sort(batch, sorting, n, 57));
                 ATHENEA_TRY(batch.submit(true));
             }
             pages = (n + limit - 1) / limit;

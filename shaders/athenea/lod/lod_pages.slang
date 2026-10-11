@@ -112,8 +112,15 @@ void treeBandKeys(uint3 tid: SV_DispatchThreadID) {
     }
     const uint i = storeOrder[s];
     const uint band = bandOf(i);
-    sortHi[s] = band;
-    sortLo[s] = runStart[i];
+    // The key, in the pages' own order: the coarsest band first, then the
+    // first leaf (where it stands), then the larger first. A parent's band is
+    // never finer than its child's (the errors are climbed), its first leaf
+    // never later, and where both tie it is the larger -- so a parent never
+    // lands after its child (sparkwebgpu-ce found 92 on the hood when a band
+    // ran its leaves backwards).
+    const uint start = min(runStart[i], 0x1FFFFFFu);
+    sortHi[s] = ((63u - band) << 19) | (start >> 6);
+    sortLo[s] = ((start & 63u) << 26) | (0x3FFFFFFu - min(leaves[i], 0x3FFFFFFu));
     sortValues[s] = i;
     InterlockedAdd(bandCount[band], 1u);
 }
@@ -126,7 +133,7 @@ void treeBandPages(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint i = sortValues[at];
-    const uint page = (params.count - 1u - at) / max(params.maxRun, 1u);   // as treeBandTable lays them
+    const uint page = at / max(params.maxRun, 1u);   // as treeBandTable lays them
     if (page >= params.pageCount) {
         return;
     }
@@ -183,12 +190,12 @@ void treeBandTable(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint i = sortValues[at];
-    const uint band = sortHi[at];
+    const uint band = 63u - (sortHi[at] >> 19);
     // The whole order, coarsest band first, cut into pages of `maxRun`: a
     // view needs the bands over its threshold, a prefix of this order where
     // it looks, so only the page at the edge is part needed -- and no coarse
     // band of a few nodes is a page of its own.
-    const uint page = (params.count - 1u - at) / max(params.maxRun, 1u);
+    const uint page = at / max(params.maxRun, 1u);
     if (page >= params.pageCount) {
         return;
     }
@@ -196,14 +203,18 @@ void treeBandTable(uint3 tid: SV_DispatchThreadID) {
     InterlockedMax(pageInfo[page * 3], band);
     InterlockedAdd(pageInfo[page * 3 + 1], 1u);
     InterlockedMin(pageInfo[page * 3 + 2], at);
-    const float3 c = centre[i].xyz;
-    const float r = asfloat(radiusBits[i]);
+    // The box holds the PARENTS' spheres: a node is needed when its parent's
+    // error, projected from the parent's sphere, passes the threshold
+    // (sparkwebgpu-ce); a root's own.
+    const uint up = parent[i];
+    const bool root = up == i || up == kRoot || up >= params.fileCount;
+    const uint from = root ? i : up;
+    const float3 c = centre[from].xyz;
+    const float r = asfloat(radiusBits[from]);
     [unroll] for (uint k = 0; k < 3; ++k) {
         InterlockedMin(pageBox[page * 6 + k], ordered(c[k] - r));
         InterlockedMax(pageBox[page * 6 + 3 + k], ordered(c[k] + r));
     }
-    const uint up = parent[i];
-    const bool root = up == i || up == kRoot || up >= params.fileCount;
     const uint e = root ? asuint(3.0e38) : errorBits[up];
     InterlockedMax(pageError[page * 2], e);
     InterlockedMin(pageError[page * 2 + 1], e);
