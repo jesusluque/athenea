@@ -785,6 +785,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
             occlusionBookWords.assign(book.begin(), book.end());
         }
+        auto culledMarks = upload(std::vector<uint32_t>(fileCount, 0u), "decimate.cutCulled");
         auto occlusionIndexBuf = upload(occlusionWords, "decimate.cutOcclusionIndex");
         auto occlusionBookBuf = upload(occlusionBookWords, "decimate.cutOcclusionBook");
         if (!spreadBits || !coneBits || !looks || !facings || !roughs) {
@@ -817,6 +818,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["roughness"].setBinding(roughs->rhi());
             cursor["cullable"].setBinding(cullables->rhi());
             cursor["occlusionIndex"].setBinding(occlusionIndexBuf->rhi());
+            cursor["culledMark"].setBinding(culledMarks->rhi());
             cursor["occlusionBook"].setBinding(occlusionBookBuf->rhi());
             cursor["params"]["occlusion"].setData(uint32_t{o.cutOcclusion ? 1u : 0u});
             cursor["storeOf"].setBinding(storeOfs->rhi());
@@ -942,6 +944,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 cursor["radiusBits"].setBinding(radiusBits->rhi());
                 cursor["centre"].setBinding(centres->rhi());
                 cursor["runStart"].setBinding(starts->rhi());
+                cursor["facing"].setBinding(facings->rhi());
+                cursor["params"]["facingBuckets"].setData(uint32_t{o.pagesByFacing ? 1u : 0u});
                 cursor["params"]["count"].setData(n);
                 cursor["params"]["fileCount"].setData(fileCount);
                 cursor["params"]["threshold"].setData(threshold);
@@ -1001,7 +1005,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     gpu::CommandBatch batch(device);
                     keysKernel->dispatch(batch, {n, 1, 1}, bindSort);
                     batch.markDirty();
-                    ATHENEA_TRY(sorter->sort(batch, sorting, n, 57));
+                    ATHENEA_TRY(sorter->sort(batch, sorting, n, 60));
                     ATHENEA_TRY(batch.submit(true));
                 }
                 const uint32_t pages = (n + limit - 1) / limit;
@@ -1010,7 +1014,15 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 auto bandPages = upload(firstPage, "decimate.bandPage");
                 auto keySize = upload(std::vector<uint32_t>(std::max(pages, 1u), 0u), "decimate.errorPageSize");
                 auto keyNeeded = upload(std::vector<uint32_t>(std::max(pages, 1u), 0u), "decimate.errorPageNeeded");
-                auto byError = upload(std::vector<uint32_t>(4, 0u), "decimate.errorPageCounts");
+                auto byError = upload(std::vector<uint32_t>(5, 0u), "decimate.errorPageCounts");
+                // What the culls leave out, so a walk stops there.
+                {
+                    auto mark = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCulledMark");
+                    if (!mark) return std::move(mark).error();
+                    gpu::CommandBatch batch(device);
+                    mark->dispatch(batch, {n, 1, 1}, bind);
+                    ATHENEA_TRY(batch.submit(true));
+                }
                 if (!bandStarts || !bandPages || !keySize || !keyNeeded || !byError) {
                     return Error(ErrorCode::OutOfMemory, "decimate: the pages by error");
                 }
@@ -1024,6 +1036,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     cursor["errorPageSize"].setBinding(keySize->rhi());
                     cursor["errorPageNeeded"].setBinding(keyNeeded->rhi());
                     cursor["pageCounts"].setBinding(byError->rhi());
+                    cursor["culledMark"].setBinding(culledMarks->rhi());
                     cursor["params"]["pageCount"].setData(pages);
                     cursor["params"]["maxRun"].setData(limit);
                 };
@@ -1034,11 +1047,13 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     pagesCount->dispatch(batch, {pages, 1, 1}, bindKeys);
                     ATHENEA_TRY(batch.submit(true));
                 }
-                uint32_t e[4] = {0, 0, 0, 0};
-                ATHENEA_TRY(byError->read(device, 0, 16, e));
+                uint32_t e[5] = {0, 0, 0, 0, 0};
+                ATHENEA_TRY(byError->read(device, 0, 20, e));
                 std::printf("decimate: paged by error (coarsest first, %u a page): %u pages, %u at most; the cut "
-                            "needs %u holding %u (%.2fx)\n",
-                            limit, e[2], e[3], e[0], e[1], kept > 0 ? double(e[1]) / kept : 0.0);
+                            "needs %u holding %u (%.2fx); %u nodes needed, a walk stopping at what the culls leave out "
+                            "(%.2fx)\n",
+                            limit, e[2], e[3], e[0], e[1], kept > 0 ? double(e[1]) / kept : 0.0, e[4],
+                            kept > 0 ? double(e[4]) / kept : 0.0);
             }
             uint32_t bins[32] = {};
             ATHENEA_TRY(keptSizes->read(device, 0, sizeof(bins), bins));
@@ -1158,6 +1173,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 cursor["radiusBits"].setBinding(radiusBits->rhi());
                 cursor["centre"].setBinding(centres->rhi());
                 cursor["runStart"].setBinding(starts->rhi());
+                cursor["facing"].setBinding(facings->rhi());
+                cursor["params"]["facingBuckets"].setData(uint32_t{o.pagesByFacing ? 1u : 0u});
                 cursor["sortHi"].setBinding(sorting.keysHi.rhi());
                 cursor["sortLo"].setBinding(sorting.keysLo.rhi());
                 cursor["sortValues"].setBinding(sorting.values.rhi());
@@ -1180,7 +1197,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 gpu::CommandBatch batch(device);
                 keysKernel->dispatch(batch, {n, 1, 1}, bindTable);
                 batch.markDirty();
-                ATHENEA_TRY(sorter->sort(batch, sorting, n, 57));
+                ATHENEA_TRY(sorter->sort(batch, sorting, n, 60));
                 ATHENEA_TRY(batch.submit(true));
             }
             pages = (n + limit - 1) / limit;

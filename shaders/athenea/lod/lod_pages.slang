@@ -23,6 +23,7 @@ struct CutParams {
     uint   fileCount;       ///< the file's gaussians, which the tree's indices count: past `count` where the
                             ///< loader dropped some (under 1/255)
     uint   pageCount;       ///< treePagesCount: the tree's pages
+    uint   facingBuckets;   ///< 1: a band's nodes grouped by the way they face (6 buckets) before where they stand
 };
 
 static const uint kRoot = 0xFFFFFFFFu;
@@ -34,6 +35,7 @@ RWStructuredBuffer<float> score;        // store splat -> 1 in the cut, 0 not
 RWStructuredBuffer<uint>  errorBits;    // file gaussian -> eps, climbed
 RWStructuredBuffer<uint>  radiusBits;   // file gaussian -> rho
 RWStructuredBuffer<float4> centre;      // file gaussian -> its position
+StructuredBuffer<float4>   facing;      // file gaussian -> its normal (the cut's)
 StructuredBuffer<uint>    runStart;     // file gaussian -> its first leaf (lodStart)
 ConstantBuffer<CutParams> params;
 
@@ -96,6 +98,24 @@ uint bandOf(uint i) {
 
 // Within a band, the nodes in leaf order (where they stand) are cut into
 // pages of `maxRun` -- every page that size, near ones together.
+StructuredBuffer<uint>   culledMark;   // file gaussian -> 1 where a cull leaves it and its subtree out (lod_tree_cut)
+
+/// Whether a walk reaches `i`'s children: no node from `i` up is culled.
+bool reachable(uint i) {
+    uint at = i;
+    for (uint step = 0; step < 4096u; ++step) {
+        if (culledMark[at] != 0u) {
+            return false;
+        }
+        const uint up = parent[at];
+        if (up == at || up == kRoot || up >= params.fileCount) {
+            return true;
+        }
+        at = up;
+    }
+    return true;
+}
+
 RWStructuredBuffer<uint> sortHi;       // store splat -> its band (then sorted)
 RWStructuredBuffer<uint> sortLo;       // its first leaf
 RWStructuredBuffer<uint> sortValues;   // its file gaussian
@@ -119,7 +139,17 @@ void treeBandKeys(uint3 tid: SV_DispatchThreadID) {
     // lands after its child (sparkwebgpu-ce found 92 on the hood when a band
     // ran its leaves backwards).
     const uint start = min(runStart[i], 0x1FFFFFFu);
-    sortHi[s] = ((63u - band) << 19) | (start >> 6);
+    // With `facingBuckets`, the way it faces between the band and where it
+    // stands (the dominant axis of its normal and its sign): a view's back
+    // culling then leaves whole pages out rather than a share of each.
+    uint bucket = 0u;
+    if (params.facingBuckets != 0) {
+        const float3 n = facing[i].xyz;
+        const float3 m = abs(n);
+        const uint axis = m.x >= m.y && m.x >= m.z ? 0u : (m.y >= m.z ? 1u : 2u);
+        bucket = axis * 2u + (n[axis] < 0.0 ? 1u : 0u);
+    }
+    sortHi[s] = ((63u - band) << 22) | (bucket << 19) | (start >> 6);
     sortLo[s] = ((start & 63u) << 26) | (0x3FFFFFFu - min(leaves[i], 0x3FFFFFFu));
     sortValues[s] = i;
     InterlockedAdd(bandCount[band], 1u);
@@ -140,8 +170,9 @@ void treeBandPages(uint3 tid: SV_DispatchThreadID) {
     InterlockedAdd(errorPageSize[page], 1u);
     const uint up = parent[i];
     const bool root = up == i || up == kRoot || up >= params.fileCount;
-    if (root || projectedError(up) > params.threshold) {
+    if (root || (projectedError(up) > params.threshold && reachable(up))) {
         errorPageNeeded[page] = 1u;
+        InterlockedAdd(pageCounts[4], 1u);   // the nodes needed
     }
 }
 
@@ -190,7 +221,7 @@ void treeBandTable(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint i = sortValues[at];
-    const uint band = 63u - (sortHi[at] >> 19);
+    const uint band = 63u - (sortHi[at] >> 22);
     // The whole order, coarsest band first, cut into pages of `maxRun`: a
     // view needs the bands over its threshold, a prefix of this order where
     // it looks, so only the page at the edge is part needed -- and no coarse

@@ -59,6 +59,7 @@ void addDecimate(CLI::App& app) {
         uint32_t cutPages = 0;
         float cutGuard = 4.0F;
         bool cutOcclusion = false;
+        bool pagesByFacing = false;
         std::string markClosed;
         uint32_t treePages = 0;
         uint32_t objectGroups = 0;
@@ -168,6 +169,8 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--mark-closed", o->markClosed,
                     "the input is a merge tree: mark the nodes of these parts closed shells (a file of prim paths, "
                     "one a line), for --cut-cull-back");
+    cmd->add_flag("--pages-by-facing", o->pagesByFacing,
+                  "--cut-pages / --tree-pages: group each band's nodes by the way they face before where they stand");
     cmd->add_flag("--cut-occlusion", o->cutOcclusion,
                   "--cut-error: leave out the nodes whose occlusion mask is closed toward --camera (outside the asset)");
     cmd->add_option("--cut-guard", o->cutGuard,
@@ -293,6 +296,7 @@ void addDecimate(CLI::App& app) {
         options.cutPages = o->cutPages;
         options.cutGuard = o->cutGuard;
         options.cutOcclusion = o->cutOcclusion;
+        options.pagesByFacing = o->pagesByFacing;
         options.markClosed = o->markClosed;
         options.treePages = o->treePages;
         options.objectGroups = o->objectGroups;

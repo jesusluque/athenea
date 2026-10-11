@@ -119,6 +119,7 @@ StructuredBuffer<float>    roughness;      // file gaussian -> its roughness
 StructuredBuffer<uint>     cullable;       // file gaussian -> 1 where its back may go: a closed shell's, not glass
 StructuredBuffer<uint>     occlusionIndex; // file gaussian -> its entry in the occlusion codebook
 StructuredBuffer<uint>     occlusionBook;  // 8 words an entry, 16 x 16 cells, open = 1 (occlusion_mask)
+RWStructuredBuffer<uint>   culledMark;     // file gaussian -> 1 where a cull leaves it out (and its subtree with it)
 
 /// CLOSED TOWARD THE EYE, as a player reads it (occlusion_mask.slang): the
 /// four cells the direction from the node to the eye falls between (clamped,
@@ -440,4 +441,28 @@ void treeCoverageFloor(uint3 tid: SV_DispatchThreadID) {
     if (i < params.fileCount && leaves[i] > 1u && isnan(fileOpacity[i])) {
         fileOpacity[i] = kTreeFloor;
     }
+}
+
+/// WHICH NODES THE CULLS LEAVE OUT, whatever the threshold: a node facing
+/// away on a closed shell, or closed toward the eye in its occlusion mask.
+/// Both hold for its whole subtree (the cone and the mask bound its leaves),
+/// so a walk stops there and needs nothing under it (lod_pages counts so).
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeCulledMark(uint3 tid: SV_DispatchThreadID) {
+    const uint s = tid.x;
+    if (s >= params.count) {
+        return;
+    }
+    const uint i = storeOrder[s];
+    bool culled = false;
+    if (params.cullBack != 0 && cullable[i] != 0u) {
+        const float3 v = normalize(params.eye.xyz - centre[i].xyz);
+        const float theta = asfloat(coneBits[i]);
+        culled = theta < 1.5707963 && dot(facing[i].xyz, v) < -sin(theta);
+    }
+    if (!culled && params.occlusion != 0) {
+        culled = occludedFrom(i, centre[i].xyz);
+    }
+    culledMark[i] = culled ? 1u : 0u;
 }

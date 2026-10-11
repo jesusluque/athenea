@@ -383,6 +383,9 @@ struct DecimateStageOptions {
     /// With `cutError`: leave out a node whose occlusion mask is closed toward
     /// the camera (the eye must stand outside the asset's box).
     bool                  cutOcclusion = false;
+    /// Pages by error with each band's nodes grouped by the way they face (6
+    /// buckets) before where they stand.
+    bool                  pagesByFacing = false;
     /// The input is a merge tree: write `primvars:athenea:splat:closed` a node
     /// from this list of closed parts' prim paths (one a line), by its
     /// cryptoObject, and the whole tree.
