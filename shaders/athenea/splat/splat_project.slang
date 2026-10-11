@@ -630,7 +630,12 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             // path traced frame does not have (research t64: 0.69 of it). The
             // widening is held to the fold roughness; where the bake's spread
             // is small the coat is the one it stored.
-            if (surface.lobes.coatWeight > 0.0) {
+            // Only on a lacquer whose material is as rough as a paint's
+            // (kPolishFieldRoughness, its own roughness, not the stored): on
+            // chrome, glass and a rim's spokes, already at or past the path
+            // traced frame, it lit what the frame shows dark (sparkwebgpu-ce,
+            // by region: chrome -1.4 dB, spokes -0.5).
+            if (surface.lobes.coatWeight > 0.0 && surface.materialRoughness >= kPolishFieldRoughness) {
                 const float coat = surface.lobes.coatRoughness;
                 surface.lobes.coatRoughness =
                     max(unwidened(coat, slope.bakeSpread), min(coat, kCoatFoldRoughness));
@@ -646,7 +651,15 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 // A pixel right, (1, 0), and down, (0, 1), on the splat's plane.
                 const float2 stepX = float2(toPixels[1][1], -toPixels[1][0]) / det;
                 const float2 stepY = float2(-toPixels[0][1], toPixels[0][0]) / det;
-                const float3 shapeUV = float3(curvature[i * 3], curvature[i * 3 + 1], curvature[i * 3 + 2]);
+                // HELD TO WHAT ITS TRIANGLE KNOWS (research, hoodnormal): the
+                // shape operator is its centre triangle's, and over a footprint
+                // that crosses an edge -- 64 % of a hood's gaussians -- its
+                // turn is extrapolated past where it holds: on a fold or a
+                // grille 46 degrees at p90, a highlight thrown out of place.
+                // Its turn across +-2 sigma is held to kMaxFootprintTurn.
+                const float held = min(1.0, 0.5 * kMaxFootprintTurn / max(slope.bakeSpread, 1.0e-9));
+                const float3 shapeUV =
+                    held * float3(curvature[i * 3], curvature[i * 3 + 1], curvature[i * 3 + 2]);
                 const float2x2 shapeOf = float2x2(shapeUV.x, shapeUV.y, shapeUV.y, shapeUV.z);
                 // The shape operator was measured on the mesh's normal; the
                 // eye may be on the other side of the disc.

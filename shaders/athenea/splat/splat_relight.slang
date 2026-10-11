@@ -1184,6 +1184,12 @@ public float unwidened(float roughness, float spread) {
 /// sky and drew the joint as a dark streak.
 public static const float kCoatFoldRoughness = 0.3;
 
+/// THE MOST A GAUSSIAN'S NORMAL TURNS ACROSS ITS FOOTPRINT, +-2 sigma, in
+/// radians, where a pixel's normal is extrapolated from its shape operator
+/// (splat_project): that operator is its centre triangle's, and past an edge
+/// it no longer holds.
+public static const float kMaxFootprintTurn = 0.2;
+
 public struct SplatSlope {
     public bool   on;
     public float3 normalX;
