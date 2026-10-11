@@ -297,11 +297,14 @@ void treeStoreOf(uint3 tid: SV_DispatchThreadID) {
 }
 
 float3x3 covarianceOf(const Blob b) {
-    // axes: its columns are the gaussian's axes
+    // A Blob's axes are the ROWS of `axes` (lod_blob); read as columns they
+    // were the inverse rotation's, and every leaf and merge of a coverage
+    // fit stood turned the wrong way -- a fender's merges at 0.59 of their
+    // mass where research's fit of the same leaves gave 1.00.
     const float3 s2 = b.scale * b.scale;
     float3x3 c = float3x3(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     [unroll] for (uint k = 0; k < 3; ++k) {
-        const float3 a = float3(b.axes[0][k], b.axes[1][k], b.axes[2][k]);
+        const float3 a = b.axes[k];
         c += s2[k] * float3x3(a.x * a, a.y * a, a.z * a);
     }
     return c;
@@ -324,8 +327,8 @@ void treeCoverage(uint3 tid: SV_DispatchThreadID) {
     uint k0 = 0, k1 = 1, k2 = 2;
     if (n.scale.x <= n.scale.y && n.scale.x <= n.scale.z) { k0 = 1; k1 = 2; k2 = 0; }
     else if (n.scale.y <= n.scale.z) { k0 = 0; k1 = 2; k2 = 1; }
-    const float3 u = float3(n.axes[0][k0], n.axes[1][k0], n.axes[2][k0]);
-    const float3 v = float3(n.axes[0][k1], n.axes[1][k1], n.axes[2][k1]);
+    const float3 u = n.axes[k0];
+    const float3 v = n.axes[k1];
     const float su = max(n.scale[k0], 1.0e-9), sv = max(n.scale[k1], 1.0e-9);
     static const uint kGrid = 8;
     // Over its core, +-1.25 sigma: past it the node's fringe is where its
