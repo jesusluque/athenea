@@ -277,7 +277,12 @@ struct OcclusionInput {
     std::vector<uint32_t> leaves;
     std::vector<uint32_t> bits;
     std::vector<uint32_t> glass;
+    /// The stage's up axis: the codebook is fitted on the cells an eye above
+    /// the ground looks from (`occlusionUpOf`).
+    float                 up[3] = {0.0F, 0.0F, 1.0F};
 };
+/// The up axis of the stage at `path` (Z unless it says Y).
+[[nodiscard]] OcclusionInput occlusionUpOf(const std::filesystem::path& path, OcclusionInput in);
 /// Each node's entry in a codebook of masks (eight words an entry, a cell
 /// open = 1) that never closes what a node has open; `closed` cells over the
 /// nodes and how many of them the codebook `reopened`.
@@ -287,6 +292,7 @@ struct OcclusionBook {
     uint32_t              closed = 0;
     uint32_t              reopened = 0;
     uint32_t              levels = 0;
+    uint32_t              spared = 0;   ///< nodes worth least, given the all-open entry 0
 };
 [[nodiscard]] Result<OcclusionBook> occlusionBook(gpu::ShaderLibrary& library, const OcclusionInput& in,
                                                   uint32_t clusters);

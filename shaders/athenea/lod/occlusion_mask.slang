@@ -27,6 +27,7 @@
 // Hamming distance) a node takes only an entry that holds its own open set,
 // the one with the fewest bits open -- the codebook only gets tighter.
 module occlusion_mask;
+import athenea.common.octahedral;
 
 struct OcclusionParams {
     uint count;      ///< the file's gaussians (a tree's indices are the file's)
@@ -36,7 +37,8 @@ struct OcclusionParams {
     uint hasBits;    ///< 0: no shadow bits at all -- every mask open
     uint hasGlass;   ///< 1: `transmission` is bound
     uint subset;     ///< 1: an assignment must hold the node's open set (after round one)
-    uint pad;
+    uint minBin;     ///< a node whose worth falls in a lower bin (log2) takes entry 0, all open, and is not fitted
+    float4 up;       ///< the stage's up axis (the bits' world sphere); w the lowest dot an eye is looked for at
 };
 
 StructuredBuffer<uint>   bits;           // file gaussian -> its shadow bits, `words` each
@@ -50,6 +52,7 @@ RWStructuredBuffer<uint> next;           // the entries being gathered: the OR o
 RWStructuredBuffer<uint> members;        // an entry's
 RWStructuredBuffer<uint> assigned;       // file gaussian -> its entry
 RWStructuredBuffer<uint> lost;           // [cells closed in a node's mask but open in its entry, summed; nodes]
+RWStructuredBuffer<uint> worthBins;      // 64 bins of log2(worth): how many nodes fall in each
 ConstantBuffer<OcclusionParams> params;
 
 static const uint kWords = 8;
@@ -134,7 +137,60 @@ void occlusionUp(uint3 tid: SV_DispatchThreadID) {
     }
 }
 
-/// The codebook's start: masks spread through the file.
+// WHAT A NODE'S CULLING IS WORTH: the leaves it would take out of a frame
+// times the cells it is closed in. A hood's nodes, closed toward the ground
+// an eye never stands in, are many and worth little; a grille's are few and
+// worth half the culling -- an entry spent on each node alike gave the
+// grille 64 % of what its own masks cull (research). Entry 0 is all open:
+// the nodes in the bins worth least, together under a small share of the
+// whole, take it and leave the rest of the codebook to the others.
+// WHERE AN EYE STANDS: above the ground, so a cell well below the horizon
+// (a hood closed toward the engine under it) is one no camera looks from.
+// Such cells are still kept conservatively -- an entry holds a node's open
+// set over every cell -- but they buy nothing, so the worth, the first
+// round's distance and the choice of the tightest entry count only the
+// cells an eye may look from.
+uint relevantWord(uint w) {
+    uint word = 0u;
+    for (uint b = 0; b < 32u; ++b) {
+        const uint index = w * 32u + b;
+        const uint x = index % params.side, y = index / params.side;
+        const float3 d = octDecode((float2(float(x), float(y)) + 0.5) / float(params.side));
+        if (dot(d, params.up.xyz) > params.up.w) {
+            word |= 1u << b;
+        }
+    }
+    return word;
+}
+
+uint closedCells(uint g) {
+    uint closed = 0u;
+    for (uint w = 0; w < kWords; ++w) {
+        closed += countbits(~mask[g * kWords + w] & relevantWord(w));
+    }
+    return closed;
+}
+
+uint worthBin(uint g) {
+    const float worth = float(max(leaves[g], 1u)) * float(closedCells(g));
+    return worth >= 1.0 ? min(uint(log2(worth)) + 1u, 63u) : 0u;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void occlusionWorth(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g < params.count) {
+        InterlockedAdd(worthBins[worthBin(g)], 1u);
+    }
+}
+
+bool fitted(uint g) {
+    return worthBin(g) >= params.minBin;
+}
+
+/// The codebook's start: entry 0 all open, the rest masks of fitted nodes
+/// spread through the file.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void occlusionSeed(uint3 tid: SV_DispatchThreadID) {
@@ -142,9 +198,12 @@ void occlusionSeed(uint3 tid: SV_DispatchThreadID) {
     if (c >= params.clusters) {
         return;
     }
-    const uint g = uint((uint64_t(c) * params.count) / max(params.clusters, 1u));
+    uint g = uint((uint64_t(c) * params.count) / max(params.clusters, 1u));
+    for (uint step = 0; step < 4096u && g + 1u < params.count && !fitted(g); ++step) {
+        ++g;
+    }
     for (uint w = 0; w < kWords; ++w) {
-        centroids[c * kWords + w] = mask[g * kWords + w];
+        centroids[c * kWords + w] = c == 0u ? 0xFFFFFFFFu : mask[g * kWords + w];
         next[c * kWords + w] = 0u;
     }
     members[c] = 0u;
@@ -160,21 +219,27 @@ void occlusionAssign(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     uint own[kWords];
+    uint seen[kWords];
     for (uint w = 0; w < kWords; ++w) {
         own[w] = mask[g * kWords + w];
+        seen[w] = relevantWord(w);
+    }
+    if (!fitted(g)) {
+        assigned[g] = 0u;
+        return;
     }
     uint best = 0xFFFFFFFFu;
     uint chosen = params.subset != 0 ? assigned[g] : 0u;
-    for (uint c = 0; c < params.clusters; ++c) {
+    for (uint c = 1; c < params.clusters; ++c) {
         uint d = 0u;
         bool holds = true;
         for (uint w = 0; w < kWords; ++w) {
             const uint e = centroids[c * kWords + w];
             if (params.subset != 0) {
                 holds = holds && (own[w] & ~e) == 0u;
-                d += countbits(e);
+                d += countbits(e & seen[w]);
             } else {
-                d += countbits(own[w] ^ e);
+                d += countbits((own[w] ^ e) & seen[w]);
             }
         }
         if (holds && d < best) {
@@ -198,7 +263,7 @@ void occlusionUpdate(uint3 tid: SV_DispatchThreadID) {
     if (c >= params.clusters) {
         return;
     }
-    if (members[c] > 0u) {
+    if (members[c] > 0u && c != 0u) {
         for (uint w = 0; w < kWords; ++w) {
             centroids[c * kWords + w] = next[c * kWords + w];
         }

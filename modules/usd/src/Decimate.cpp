@@ -770,11 +770,11 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         const auto occlusionMasks = [&](uint32_t records, std::vector<GaussianArray>& added) -> Result<void> {
             auto in = occlusionInputOf(arrays, records);
             if (!in) return std::move(in).error();
-            auto book = occlusionBook(library, *in, o.occlusionClusters);
+            auto book = occlusionBook(library, occlusionUpOf(input, std::move(*in)), o.occlusionClusters);
             if (!book) return std::move(book).error();
-            std::printf("decimate: occlusion masks climbed in %u levels; %u closed cells over the nodes, a codebook of "
-                        "%u opens %u of them (%.1f%%)\n",
-                        book->levels, book->closed, o.occlusionClusters, book->reopened,
+            std::printf("decimate: occlusion masks climbed in %u levels; %u nodes worth least left open; %u closed "
+                        "cells over the nodes, a codebook of %u opens %u of them (%.1f%%)\n",
+                        book->levels, book->spared, book->closed, o.occlusionClusters, book->reopened,
                         book->closed > 0 ? 100.0 * book->reopened / book->closed : 0.0);
             for (GaussianArray& a : occlusionArrays(*book)) {
                 added.push_back(std::move(a));
