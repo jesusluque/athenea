@@ -31,6 +31,7 @@ struct CutParams {
     uint   maxRun;          ///< treeCoverage: the longest run of leaves composited
     uint   fileCount;       ///< the file's gaussians, which the tree's indices count: past `count` where the
                             ///< loader dropped some (under 1/255)
+    uint   pageCount;       ///< treePagesCount: the tree's pages
 };
 
 StructuredBuffer<uint>    storeOrder;   // store splat -> file gaussian

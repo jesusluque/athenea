@@ -55,6 +55,7 @@ void addDecimate(CLI::App& app) {
         bool treeCoverage = false;
         uint32_t occlusionClusters = 0;
         std::vector<std::string> occlusionGroup;
+        uint32_t cutPages = 0;
         std::string transferBasis;
         uint32_t transferClusters = 256;
         uint32_t transferComponents = 8;
@@ -153,6 +154,8 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--occlusion-group", o->occlusionGroup,
                     "with --occlusion-mask: more trees sharing one codebook with the input (an asset's pieces); each "
                     "is written beside the output, under its own name, with the masks alone");
+    cmd->add_option("--cut-pages", o->cutPages,
+                    "--cut-error: page the tree at this many gaussians a page and say how many the cut's pages hold");
     cmd->add_option("--cut-pixels", o->cutPixels,
                     "the input is a merge tree: keep the cut whose merges are no wider than this on --camera's "
                     "screen (in place of --cut-budget)");
@@ -257,6 +260,7 @@ void addDecimate(CLI::App& app) {
         options.cutCoverage = o->cutCoverage;
         options.treeCoverage = o->treeCoverage;
         options.occlusionClusters = o->occlusionClusters;
+        options.cutPages = o->cutPages;
         options.transferBasis = o->transferBasis;
         options.transferClusters = o->transferClusters;
         options.transferComponents = o->transferComponents;

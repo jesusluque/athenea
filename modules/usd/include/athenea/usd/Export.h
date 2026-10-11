@@ -365,6 +365,10 @@ struct DecimateStageOptions {
     /// (`primvars:athenea:splat:occlusionIndex`, `occlusionCodebook`), and the
     /// whole tree is written. 0: none.
     uint32_t              occlusionClusters = 0;
+    /// With `cutError`: the tree paged at this many gaussians a page (its
+    /// piece's root page every node whose subtree is larger, the rest whole
+    /// subtrees packed in leaf order), and how many the cut's pages hold. 0: none.
+    uint32_t              cutPages = 0;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
     /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
     /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to

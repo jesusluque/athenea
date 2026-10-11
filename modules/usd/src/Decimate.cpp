@@ -22,6 +22,7 @@
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
+#include "athenea/gpu/algo/RadixSort.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/TileRasterizer.h"
@@ -702,6 +703,229 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             const float eye[4] = {pairSettings.eye[0], pairSettings.eye[1], pairSettings.eye[2], 1.0F};
             cursor["params"]["eye"].setData(eye, 16);
         };
+        // WHAT THE CUT KEEPS RESIDENT, paged: the pages are bookkeeping over
+        // the tree's shape (its parents, leaf counts and runs), a page of at
+        // most `cutPages` gaussians; the GPU counts the ones the cut touches.
+        const auto measurePages = [&](uint32_t kept) -> Result<void> {
+            if (startArray == nullptr) {
+                return Error(ErrorCode::InvalidArgument, "decimate: --cut-pages needs the tree's lodStart");
+            }
+            const std::vector<uint32_t>& up = parentArray->values[0];
+            const std::vector<uint32_t>& size = leavesArray->values[0];
+            const std::vector<uint32_t>& first = startArray->values[0];
+            const uint32_t limit = o.cutPages;
+            const auto nodes = [&](uint32_t i) { return 2u * std::max(size[i], 1u) - 1u; };
+            const auto isRoot = [&](uint32_t i) { return up[i] == i || up[i] >= fileCount; };
+            const auto byLeaf = [&](uint32_t a, uint32_t b) { return first[a] < first[b]; };
+            // Each node's children, in leaf order.
+            std::vector<uint32_t> childStart(fileCount + 1, 0u);
+            for (uint32_t i = 0; i < fileCount; ++i) {
+                if (!isRoot(i)) ++childStart[up[i] + 1];
+            }
+            for (uint32_t i = 0; i < fileCount; ++i) childStart[i + 1] += childStart[i];
+            std::vector<uint32_t> children(childStart[fileCount]);
+            {
+                std::vector<uint32_t> at(childStart.begin(), childStart.end() - 1);
+                for (uint32_t i = 0; i < fileCount; ++i) {
+                    if (!isRoot(i)) children[at[up[i]]++] = i;
+                }
+            }
+            // PAGES BY LEVEL (Nanite's way, research's side thinking): a page
+            // is the top of a group of sibling subtrees, taken breadth first
+            // up to `limit` nodes; its frontier, in leaf order, is packed into
+            // groups -- a subtree as large as a page alone, small ones together
+            // -- each the roots of a child page. The piece's roots are the
+            // first group. A coarse cut stays in the coarse pages.
+            std::vector<uint32_t> pageOfNode(fileCount, 0u);
+            std::vector<uint32_t> pageSizes;
+            std::vector<uint32_t> pageParent;
+            std::vector<std::pair<std::vector<uint32_t>, uint32_t>> groups;   // roots, parent page
+            {
+                std::vector<uint32_t> roots;
+                for (uint32_t i = 0; i < fileCount; ++i) {
+                    if (isRoot(i)) roots.push_back(i);
+                }
+                std::sort(roots.begin(), roots.end(), byLeaf);
+                groups.push_back({roots, 0u});
+            }
+            for (size_t g = 0; g < groups.size(); ++g) {
+                const uint32_t page = static_cast<uint32_t>(pageSizes.size());
+                pageSizes.push_back(0u);
+                pageParent.push_back(groups[g].second == 0u && g == 0 ? 0u : groups[g].second);
+                std::vector<uint32_t> level = groups[g].first;
+                std::vector<uint32_t> frontier;
+                while (!level.empty()) {
+                    std::vector<uint32_t> below;
+                    for (uint32_t i : level) {
+                        if (pageSizes[page] < limit) {
+                            pageOfNode[i] = page;
+                            ++pageSizes[page];
+                            below.insert(below.end(), children.begin() + childStart[i],
+                                         children.begin() + childStart[i + 1]);
+                        } else {
+                            frontier.push_back(i);
+                        }
+                    }
+                    level = std::move(below);
+                }
+                std::sort(frontier.begin(), frontier.end(), byLeaf);
+                std::vector<uint32_t> group;
+                uint32_t held = 0;
+                for (uint32_t i : frontier) {
+                    const uint32_t weight = std::min(nodes(i), limit);
+                    if (!group.empty() && held + weight > limit) {
+                        groups.push_back({group, page});
+                        group.clear();
+                        held = 0;
+                    }
+                    group.push_back(i);
+                    held += weight;
+                }
+                if (!group.empty()) {
+                    groups.push_back({group, page});
+                }
+            }
+            const uint32_t pages = static_cast<uint32_t>(pageSizes.size());
+            auto pageOf = upload(pageOfNode, "decimate.pageOf");
+            auto parentPages = upload(pageParent, "decimate.pageParent");
+            auto sizes = upload(pageSizes, "decimate.pageSize");
+            auto touched = upload(std::vector<uint32_t>(pages, 0u), "decimate.pageTouched");
+            auto counts = upload(std::vector<uint32_t>(2, 0u), "decimate.pageCounts");
+            auto keptSizes = upload(std::vector<uint32_t>(32, 0u), "decimate.keptSizes");
+            auto touchKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_pages", "treePagesTouched");
+            auto countKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_pages", "treePagesCount");
+            if (!pageOf || !parentPages || !sizes || !touched || !counts || !touchKernel || !countKernel) {
+                return Error(ErrorCode::InternalError, "decimate: the pages");
+            }
+            const auto bindPages = [&](rhi::ShaderCursor cursor) {
+                // lod_pages' own names only (its module is apart from the cut's).
+                cursor["storeOrder"].setBinding(from.order.rhi());
+                cursor["parent"].setBinding(parents->rhi());
+                cursor["leaves"].setBinding(leaves->rhi());
+                cursor["score"].setBinding(score->rhi());
+                cursor["errorBits"].setBinding(errorBits->rhi());
+                cursor["radiusBits"].setBinding(radiusBits->rhi());
+                cursor["centre"].setBinding(centres->rhi());
+                cursor["runStart"].setBinding(starts->rhi());
+                cursor["params"]["count"].setData(n);
+                cursor["params"]["fileCount"].setData(fileCount);
+                cursor["params"]["threshold"].setData(threshold);
+                cursor["params"]["pixelsPerUnit"].setData(pairSettings.pixelsPerUnit);
+                const float eye[4] = {pairSettings.eye[0], pairSettings.eye[1], pairSettings.eye[2], 1.0F};
+                cursor["params"]["eye"].setData(eye, 16);
+                cursor["pageOf"].setBinding(pageOf->rhi());
+                cursor["pageParent"].setBinding(parentPages->rhi());
+                cursor["pageSize"].setBinding(sizes->rhi());
+                cursor["touched"].setBinding(touched->rhi());
+                cursor["pageCounts"].setBinding(counts->rhi());
+                cursor["keptSizes"].setBinding(keptSizes->rhi());
+                cursor["params"]["pageCount"].setData(pages);
+            };
+            {
+                gpu::CommandBatch batch(device);
+                touchKernel->dispatch(batch, {n, 1, 1}, bindPages);
+                batch.markDirty();
+                countKernel->dispatch(batch, {pages, 1, 1}, bindPages);
+                ATHENEA_TRY(batch.submit(true));
+            }
+            uint32_t resident[2] = {0, 0};
+            ATHENEA_TRY(counts->read(device, 0, 8, resident));
+            // And by error: a band an octave of the parent's error, each band's
+            // nodes in leaf order cut into pages of `limit`.
+            {
+                auto hi = upload(std::vector<uint32_t>(n, 0u), "decimate.bandHi");
+                auto lo = upload(std::vector<uint32_t>(n, 0u), "decimate.bandLo");
+                auto values = upload(std::vector<uint32_t>(n, 0u), "decimate.bandValues");
+                auto scratchHi = upload(std::vector<uint32_t>(n, 0u), "decimate.bandScratchHi");
+                auto scratchLo = upload(std::vector<uint32_t>(n, 0u), "decimate.bandScratchLo");
+                auto scratchValues = upload(std::vector<uint32_t>(n, 0u), "decimate.bandScratchValues");
+                auto bandCount = upload(std::vector<uint32_t>(64, 0u), "decimate.bandCount");
+                auto keysKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_pages", "treeBandKeys");
+                auto pagesKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_pages", "treeBandPages");
+                auto pagesCount = gpu::ComputeKernel::create(library, "athenea/lod/lod_pages", "treeErrorPagesCount");
+                auto sorter = gpu::RadixSort::create(library);
+                if (!hi || !lo || !values || !scratchHi || !scratchLo || !scratchValues || !bandCount || !keysKernel ||
+                    !pagesKernel || !pagesCount || !sorter) {
+                    return Error(ErrorCode::InternalError, "decimate: the pages by error");
+                }
+                gpu::SortBuffers sorting;
+                sorting.keysLo = *lo;
+                sorting.keysHi = *hi;
+                sorting.values = *values;
+                sorting.scratchKeysLo = *scratchLo;
+                sorting.scratchKeysHi = *scratchHi;
+                sorting.scratchValues = *scratchValues;
+                const auto bindSort = [&](rhi::ShaderCursor cursor) {
+                    bindPages(cursor);
+                    cursor["sortHi"].setBinding(hi->rhi());
+                    cursor["sortLo"].setBinding(lo->rhi());
+                    cursor["sortValues"].setBinding(values->rhi());
+                    cursor["bandCount"].setBinding(bandCount->rhi());
+                };
+                {
+                    gpu::CommandBatch batch(device);
+                    keysKernel->dispatch(batch, {n, 1, 1}, bindSort);
+                    batch.markDirty();
+                    ATHENEA_TRY(sorter->sort(batch, sorting, n, 38));
+                    ATHENEA_TRY(batch.submit(true));
+                }
+                uint32_t counts[64] = {};
+                ATHENEA_TRY(bandCount->read(device, 0, sizeof(counts), counts));
+                std::vector<uint32_t> starts(64, 0u), firstPage(64, 0u);
+                uint32_t pages = 0;
+                for (uint32_t b = 0, at = 0; b < 64; ++b) {
+                    starts[b] = at;
+                    firstPage[b] = pages;
+                    at += counts[b];
+                    pages += (counts[b] + limit - 1) / limit;
+                }
+                auto bandStarts = upload(starts, "decimate.bandStart");
+                auto bandPages = upload(firstPage, "decimate.bandPage");
+                auto keySize = upload(std::vector<uint32_t>(std::max(pages, 1u), 0u), "decimate.errorPageSize");
+                auto keyNeeded = upload(std::vector<uint32_t>(std::max(pages, 1u), 0u), "decimate.errorPageNeeded");
+                auto byError = upload(std::vector<uint32_t>(4, 0u), "decimate.errorPageCounts");
+                if (!bandStarts || !bandPages || !keySize || !keyNeeded || !byError) {
+                    return Error(ErrorCode::OutOfMemory, "decimate: the pages by error");
+                }
+                const auto bindKeys = [&](rhi::ShaderCursor cursor) {
+                    bindSort(cursor);
+                    cursor["sortHi"].setBinding(sorting.keysHi.rhi());
+                    cursor["sortLo"].setBinding(sorting.keysLo.rhi());
+                    cursor["sortValues"].setBinding(sorting.values.rhi());
+                    cursor["bandStart"].setBinding(bandStarts->rhi());
+                    cursor["bandPage"].setBinding(bandPages->rhi());
+                    cursor["errorPageSize"].setBinding(keySize->rhi());
+                    cursor["errorPageNeeded"].setBinding(keyNeeded->rhi());
+                    cursor["pageCounts"].setBinding(byError->rhi());
+                    cursor["params"]["pageCount"].setData(pages);
+                    cursor["params"]["maxRun"].setData(limit);
+                };
+                {
+                    gpu::CommandBatch batch(device);
+                    pagesKernel->dispatch(batch, {n, 1, 1}, bindKeys);
+                    batch.markDirty();
+                    pagesCount->dispatch(batch, {pages, 1, 1}, bindKeys);
+                    ATHENEA_TRY(batch.submit(true));
+                }
+                uint32_t e[4] = {0, 0, 0, 0};
+                ATHENEA_TRY(byError->read(device, 0, 16, e));
+                std::printf("decimate: paged by error (a band an octave, %u a page): %u pages, %u at most; the cut "
+                            "needs %u holding %u (%.2fx)\n",
+                            limit, e[2], e[3], e[0], e[1], kept > 0 ? double(e[1]) / kept : 0.0);
+            }
+            uint32_t bins[32] = {};
+            ATHENEA_TRY(keptSizes->read(device, 0, sizeof(bins), bins));
+            std::printf("decimate: the cut's nodes by log2(leaves):");
+            for (uint32_t b = 0; b < 32; ++b) {
+                if (bins[b] > 0) std::printf(" %u:%u", b, bins[b]);
+            }
+            std::printf("\n");
+            std::printf("decimate: paged by level at %u gaussians: %u pages, the root page %u; the cut's %u gaussians "
+                        "need %u pages holding %u (%.2fx)\n",
+                        limit, pages, pageSizes[0], kept, resident[0], resident[1],
+                        kept > 0 ? double(resident[1]) / kept : 0.0);
+            return ok();
+        };
         {
             gpu::CommandBatch batch(device);
             widthKernel->dispatch(batch, {n, 1, 1}, bind);
@@ -900,6 +1124,9 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
             std::printf("decimate: the cut by error from the camera at %.3g pixels holds %u of the tree's %u "
                         "gaussians (%u rounds up the tree)\n", at, kept, n, rounds);
+            if (o.cutPages > 0) {
+                ATHENEA_TRY(measurePages(kept));
+            }
             auto cut = decimator->prune(from, *score, 0.5F);
             if (!cut) return std::move(cut).error();
             pruned = std::move(*cut);
