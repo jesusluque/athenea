@@ -617,6 +617,11 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             const float3 axisN = float3(r[0][2], r[1][2], r[2][2]);
             const float faces = dot(cloudNormal, axisN) >= 0.0 ? 1.0 : -1.0;
             slope.curvature = faces * 0.5 * (curvature[i * 3] + curvature[i * 3 + 2]);
+            // The bake's spread (m2sSpread at --specular-filter 1, a transfer
+            // bake's): the largest principal curvature times the wider size.
+            const float a = curvature[i * 3], b = curvature[i * 3 + 1], c = curvature[i * 3 + 2];
+            const float kMax = abs(0.5 * (a + c)) + sqrt(0.25 * (a - c) * (a - c) + b * b);
+            slope.bakeSpread = kMax * max(scale.x, scale.y);
         }
         float pixelTurn2 = 0.0;
         if (kTransfer >= 2 && params.hasCurvature != 0 && surface.cellWords >= 8u) {

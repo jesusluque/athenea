@@ -1154,6 +1154,16 @@ public static const float kSharpRoughness = 0.2;
 /// curved panel faster than a gaussian is wide.
 public static const float kSharpPolishRoughness = 0.5;
 
+/// A roughness as it was before the bake widened it by `spread`
+/// (m2sWidened: alpha'^2 = alpha^2 + 2 spread^2), never under 0.
+public float unwidened(float roughness, float spread) {
+    if (!(spread > 0.0)) {
+        return roughness;
+    }
+    const float alpha = roughness * roughness;
+    return sqrt(sqrt(max(alpha * alpha - 2.0 * spread * spread, 0.0)));
+}
+
 public struct SplatSlope {
     public bool   on;
     public float3 normalX;
@@ -1166,6 +1176,15 @@ public struct SplatSlope {
     /// half trace, on the face the eye sees), where the cloud keeps it: what
     /// a solid glass's far face is guessed from (`lensExit`). 0: unknown.
     public float  curvature;
+    /// HOW FAR THE BAKE WIDENED THIS GAUSSIAN'S ROUGHNESS (mesh2splat's
+    /// m2sSpread, Toksvig): the surface's turn across it -- its shape
+    /// operator's largest principal curvature times its wider size. The sharp
+    /// lobes are drawn per pixel along a mirror that already turns with the
+    /// surface, so they read the sky at the roughness before that widening
+    /// (`unwidened`): read at the widened one the turn counted twice, and a
+    /// door's lacquer -- a mirror -- came out a matte 0.11 (research, the
+    /// whole Corvette against the path trace). 0: not widened, or unknown.
+    public float  bakeSpread;
     public bool   cached;
     public uint   cachedDome;
     public float3 cachedFront;
@@ -1212,6 +1231,7 @@ public SplatSlope noSlope() {
     g.slopeX = float3(0.0);
     g.slopeY = float3(0.0);
     g.curvature = 0.0;
+    g.bakeSpread = 0.0;
     g.cached = false;
     g.cachedDome = 0xFFFFFFFFu;
     g.cachedFront = float3(0.0);
@@ -1395,7 +1415,7 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             if (kTransfer >= 2 && slope.on && !s.hasReflection && dome == 0u &&
                 s.lobes.coatRoughness < kSharpRoughness) {
                 slope.sharpWeight = dot(layers.coat, float3(0.2126, 0.7152, 0.0722)) * coatNarrowed;
-                slope.sharpRoughness = s.lobes.coatRoughness;
+                slope.sharpRoughness = unwidened(s.lobes.coatRoughness, slope.bakeSpread);
                 slope.sharpSeen = coatSeen;
                 slope.sharpMirror = mirror;
                 slope.sharpMirrorX = reflect(-wo, slope.normalX);
@@ -1424,7 +1444,7 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
                 // The polish goes to the blend per pixel (SplatSlope's sharp
                 // polish), along the same mirror and turn as the coat's.
                 slope.sharpPolish = polishWeight;
-                slope.sharpPolishRoughness = s.roughness;
+                slope.sharpPolishRoughness = unwidened(s.roughness, slope.bakeSpread);
                 slope.sharpPolishSeen = seen;
                 slope.sharpSunPolish = layers.under * thinWallGain(s) * splatPolish(s, nDotV) * sunShare;
                 slope.sharpSunCentre += layers.under * thinWallGain(s) * sunPolish;
