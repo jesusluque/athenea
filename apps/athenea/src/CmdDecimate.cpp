@@ -62,6 +62,8 @@ void addDecimate(CLI::App& app) {
         bool pagesByFacing = false;
         std::string markClosed;
         std::string markMaterialRoughness;
+        float cutSpill = 0.0F;
+        float cutSpillFloor = 0.0F;
         uint32_t treePages = 0;
         uint32_t objectGroups = 0;
         uint32_t passes = 0;
@@ -173,6 +175,11 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--mark-material-roughness", o->markMaterialRoughness,
                     "the input is a merge tree: write each node's material roughness by its part (a file of "
                     "\"prim-path roughness\" lines), for the polish's reflected field");
+    cmd->add_option("--cut-spill", o->cutSpill,
+                    "--cut-error: the weight of a merge's spill (lodSpill, from --tree-coverage: the share of what "
+                    "it paints that its leaves do not) in its error; 0 leaves it out");
+    cmd->add_option("--cut-spill-floor", o->cutSpillFloor,
+                    "--cut-spill: only the spill past this share counts (every merge spills some)");
     cmd->add_flag("--pages-by-facing", o->pagesByFacing,
                   "--cut-pages / --tree-pages: group each band's nodes by the way they face before where they stand");
     cmd->add_flag("--cut-occlusion", o->cutOcclusion,
@@ -303,6 +310,8 @@ void addDecimate(CLI::App& app) {
         options.pagesByFacing = o->pagesByFacing;
         options.markClosed = o->markClosed;
         options.markMaterialRoughness = o->markMaterialRoughness;
+        options.cutSpillWeight = o->cutSpill;
+        options.cutSpillFloor = o->cutSpillFloor;
         options.treePages = o->treePages;
         options.objectGroups = o->objectGroups;
         options.treeReport = o->treeReport;

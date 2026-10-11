@@ -701,11 +701,13 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         const GaussianArray* costArray = nullptr;
         const GaussianArray* startArray = nullptr;
         const GaussianArray* roughArray = nullptr;
+        const GaussianArray* spillArray = nullptr;
         for (const GaussianArray& a : arrays) {
             if (ends(a.name, "athenea:splat:lodParent")) parentArray = &a;
             if (ends(a.name, "athenea:splat:lodSize")) leavesArray = &a;
             if (ends(a.name, "athenea:splat:lodCost")) costArray = &a;
             if (ends(a.name, "athenea:splat:lodStart")) startArray = &a;
+            if (ends(a.name, "athenea:splat:lodSpill") && !a.integer) spillArray = &a;
             if (ends(a.name, "athenea:splat:roughness") && a.width == 1 && !a.integer) roughArray = &a;
         }
         if (parentArray == nullptr || leavesArray == nullptr || !(pairSettings.pixelsPerUnit > 0.0F)) {
@@ -728,6 +730,12 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         auto leaves = upload(leavesArray->values[0], "decimate.cutLeaves");
         auto costs = upload(costArray != nullptr ? costArray->values[0] : std::vector<uint32_t>(fileCount, 0u),
                             "decimate.cutCost");
+        // A merge's spill (treeCoverage), as the file has it, or 0 until a
+        // --tree-coverage measures it.
+        auto spills = upload(spillArray != nullptr && spillArray->values[0].size() >= fileCount
+                                 ? spillArray->values[0]
+                                 : std::vector<uint32_t>(fileCount, 0u),
+                             "decimate.cutSpill");
         auto widths = upload(std::vector<uint32_t>(fileCount, 0u), "decimate.cutWidth");
         auto score = upload(std::vector<uint32_t>(n, 0u), "decimate.cutScore");
         auto counter = upload(std::vector<uint32_t>(1, 0u), "decimate.cutCount");
@@ -793,7 +801,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             return Error(ErrorCode::OutOfMemory, "decimate: the cut's bounds");
         }
         if (!errorBits || !radiusBits || !centres || !changed) return Error(ErrorCode::OutOfMemory, "decimate: the cut");
-        if (!parents || !leaves || !costs || !widths || !score || !counter) {
+        if (!parents || !leaves || !costs || !spills || !widths || !score || !counter) {
             return Error(ErrorCode::OutOfMemory, "decimate: the cut");
         }
         float threshold = 1.0F;
@@ -804,6 +812,9 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["parent"].setBinding(parents->rhi());
             cursor["leaves"].setBinding(leaves->rhi());
             cursor["cost"].setBinding(costs->rhi());
+            cursor["spill"].setBinding(spills->rhi());
+            cursor["params"]["spillWeight"].setData(o.cutSpillWeight);
+            cursor["params"]["spillFloor"].setData(o.cutSpillFloor);
             cursor["params"]["relaxedShare"].setData(0.25F);
             cursor["width"].setBinding(widths->rhi());
             cursor["score"].setBinding(score->rhi());
@@ -1343,6 +1354,17 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             std::vector<GaussianArray> added;
             if (o.treeCoverage) {
                 ATHENEA_TRY(treeCoverageOf(opacities));
+                // And each merge's spill, beside its coverage, for a cut to
+                // weigh (--cut-spill).
+                auto spilled = spills->readAll<uint32_t>(device);
+                if (!spilled) return std::move(spilled).error();
+                spilled->resize(records);
+                GaussianArray lodSpill;
+                lodSpill.name = "primvars:athenea:splat:lodSpill";
+                lodSpill.typeName = "float[]";
+                lodSpill.interpolation = "vertex";
+                lodSpill.values.push_back(std::move(*spilled));
+                added.push_back(std::move(lodSpill));
             }
             if (o.occlusionClusters > 0) {
                 ATHENEA_TRY(occlusionMasks(records, added));

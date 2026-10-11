@@ -398,6 +398,13 @@ struct DecimateStageOptions {
     /// a node from this list of "prim-path roughness" lines (a part's
     /// material's own roughness), by its cryptoObject, and the whole tree.
     std::filesystem::path markMaterialRoughness;
+    /// w_s: a merge's spill (`lodSpill`, written by --tree-coverage: the share
+    /// of what it paints that its leaves do not) in the cut's error, beside its
+    /// cost, colour spread and normal cone; 0 leaves it out.
+    float                 cutSpillWeight = 0.0F;
+    /// E0: only the spill past it counts (a Gaussian never fits its leaves'
+    /// union: a panel's merges spill ~0.16, a grille's holes ~0.75).
+    float                 cutSpillFloor = 0.0F;
     /// The input is a merge tree: write its pages by error (lod_pages.slang)
     /// of this many gaussians -- `primvars:athenea:splat:lodPage` a node, and
     /// a page's band, nodes and first node in page order -- coarsest first --

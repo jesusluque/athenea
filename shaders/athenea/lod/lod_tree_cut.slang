@@ -34,6 +34,8 @@ struct CutParams {
                             ///< loader dropped some (under 1/255)
     uint   pageCount;       ///< treePagesCount: the tree's pages
     uint   occlusion;       ///< 1: a node whose occlusion mask is closed toward the eye is not drawn
+    float  spillWeight;     ///< w_s: the spill's weight in the error (treeCoverage's `spill`; 0: none) ...
+    float  spillFloor;      ///< ... past this much of it, E0: every merge spills some (a panel's p90 ~0.27)
 };
 
 StructuredBuffer<uint>    storeOrder;   // store splat -> file gaussian
@@ -216,7 +218,7 @@ void treeErrorBounded(uint3 tid: SV_DispatchThreadID) {
     const float alpha = max(look[i].w, 0.02) * max(look[i].w, 0.02);
     const float theta = asfloat(coneBits[i]);
     float e = size * (abs(cost[i]) + params.colourWeight * asfloat(spreadBits[i]) +
-                      params.normalWeight * theta * theta / alpha);
+                      params.normalWeight * theta * theta / alpha + params.spillWeight * max(spill[i] - params.spillFloor, 0.0));
     if (cost[i] < 0.0) {
         e = max(params.guard * e, params.floorSize * size);
     }
@@ -319,6 +321,9 @@ void treeErrorKeep(uint3 tid: SV_DispatchThreadID) {
 // keep mass over area (far views, where it shows least).
 RWStructuredBuffer<uint>   storeOf;     // file gaussian -> its store splat
 StructuredBuffer<uint>     runStart;    // file gaussian -> its first leaf's file index (lodStart)
+// file gaussian -> E, the share of what a merge paints that its leaves do
+// not (treeCoverage; `primvars:athenea:splat:lodSpill`, 0 at a leaf)
+RWStructuredBuffer<float>  spill;
 RWStructuredBuffer<float4> outPositions;   // the store's positions, w the opacity, rewritten
 
 [shader("compute")]
@@ -408,6 +413,22 @@ void treeCoverage(uint3 tid: SV_DispatchThreadID) {
     // wide as one opaque leaf at 0.5). Leaves edge on to its plane -- a
     // grille's wires seen square on -- cover nothing, and the merge goes.
     const float covered = sum / max(weight, 1.0e-12);
+    // WHAT IT SPILLS (research, t66): the share of what the merge paints,
+    // a G, that falls where its leaves do not, E = sum max(a G - C, 0) /
+    // sum a G -- a grille's merges paint over its holes, which the error's
+    // cost does not see; a panel's spill nothing. In [0, 1], 0 at a leaf.
+    const float a = isfinite(covered) ? clamp(covered, 0.0, 0.99) : 0.0;
+    float over = 0.0, painted = 0.0;
+    for (uint y = 0; y < kGrid; ++y) {
+        for (uint x = 0; x < kGrid; ++x) {
+            const float2 p = float2((float(x) + 0.5) / kGrid * 2.0 * kCore - kCore,
+                                    (float(y) + 0.5) / kGrid * 2.0 * kCore - kCore);
+            const float g = a * exp(-0.5 * dot(p, p));
+            over += max(g - (1.0 - through[y * kGrid + x]), 0.0);
+            painted += g;
+        }
+    }
+    spill[i] = painted > 0.0 ? over / painted : 0.0;
     float4 out = positions[s];
     out.w = isfinite(covered) ? clamp(covered, 0.0, 0.99) : out.w;
     outPositions[s] = out;
