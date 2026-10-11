@@ -114,6 +114,7 @@ RWStructuredBuffer<float4> look;        // file gaussian -> colour (rgb) and rou
 RWStructuredBuffer<float4> facing;      // file gaussian -> normal
 StructuredBuffer<uint>     storeNormals;   // the store's, packed (packing's unpackNormal)
 StructuredBuffer<float>    roughness;      // file gaussian -> its roughness
+StructuredBuffer<uint>     cullable;       // file gaussian -> 1 where its back may go: a closed shell's, not glass
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -263,7 +264,13 @@ void treeErrorKeep(uint3 tid: SV_DispatchThreadID) {
     // pixel or less the front does not cover and the back adds black. A node
     // whose whole cone of normals faces away -- n.v < -sin(theta) -- goes;
     // every leaf under it faces away too.
-    if (keep && params.cullBack != 0) {
+    // Only on a closed shell (its part under 2 % open edges: what is behind a
+    // face that looks away is its own inside) and never on glass, which is
+    // seen through: a car's doors and panels are two skins, and their inner
+    // skin's merges, a few pixels wide and lit by the dark interior, sorted
+    // in front of the outer one in patches -- a net of dark cracks over a
+    // door at the phone's size (research, the whole Corvette at 393).
+    if (keep && params.cullBack != 0 && cullable[i] != 0u) {
         const float3 v = normalize(params.eye.xyz - centre[i].xyz);
         const float theta = asfloat(coneBits[i]);
         if (theta < 1.5707963 && dot(facing[i].xyz, v) < -sin(theta)) {

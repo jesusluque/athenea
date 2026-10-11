@@ -57,6 +57,8 @@ void addDecimate(CLI::App& app) {
         std::vector<std::string> occlusionGroup;
         bool occlusionByPart = false;
         uint32_t cutPages = 0;
+        float cutGuard = 4.0F;
+        std::string markClosed;
         uint32_t treePages = 0;
         uint32_t objectGroups = 0;
         uint32_t passes = 0;
@@ -162,6 +164,12 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--occlusion-group", o->occlusionGroup,
                     "with --occlusion-mask: more trees sharing one codebook with the input (an asset's pieces); each "
                     "is written beside the output, under its own name, with the masks alone");
+    cmd->add_option("--mark-closed", o->markClosed,
+                    "the input is a merge tree: mark the nodes of these parts closed shells (a file of prim paths, "
+                    "one a line), for --cut-cull-back");
+    cmd->add_option("--cut-guard", o->cutGuard,
+                    "--cut-bounds: how many times its error a merge past the guards (across a fold, a colour edge) "
+                    "counts (default 4)");
     cmd->add_option("--cut-pages", o->cutPages,
                     "--cut-error: page the tree at this many gaussians a page and say how many the cut's pages hold");
     cmd->add_option("--tree-pages", o->treePages,
@@ -280,6 +288,8 @@ void addDecimate(CLI::App& app) {
         options.treeCoverage = o->treeCoverage;
         options.occlusionClusters = o->occlusionClusters;
         options.cutPages = o->cutPages;
+        options.cutGuard = o->cutGuard;
+        options.markClosed = o->markClosed;
         options.treePages = o->treePages;
         options.objectGroups = o->objectGroups;
         options.treeReport = o->treeReport;

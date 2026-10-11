@@ -5,6 +5,7 @@
 #include "athenea/usd/Export.h"
 
 #include <limits>
+#include <set>
 #include "athenea/core/Hash.h"
 #include <map>
 
@@ -690,7 +691,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         }
     }
     if (o.cutBudget > 0 || o.cutPixels > 0.0F || o.cutError > 0.0F || o.treeCoverage || o.occlusionClusters > 0 ||
-        o.treePages > 0) {
+        o.treePages > 0 || !o.markClosed.empty()) {
         // A CUT THROUGH THE MERGE TREE the input is (lod_tree_cut.slang):
         // each gaussian's width on the camera's screen, then the threshold
         // searched whose cut holds the budget, and the store pruned to it.
@@ -746,6 +747,25 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         std::memcpy(&halfBits, &half, 4);
         auto roughs = upload(roughArray != nullptr ? roughArray->values[0] : std::vector<uint32_t>(fileCount, halfBits),
                              "decimate.cutRoughness");
+        // WHICH NODES' BACKS MAY GO (--cut-cull-back): a closed shell's
+        // (primvars:athenea:splat:closed), not glass (transmission over a
+        // half). Without the closed mark, every node, as before.
+        std::vector<uint32_t> cullableWords(fileCount, 1u);
+        {
+            const GaussianArray* closedArray = nullptr;
+            const GaussianArray* glassArray = nullptr;
+            for (const GaussianArray& a : arrays) {
+                if (ends(a.name, "athenea:splat:closed") && a.integer && a.width == 1) closedArray = &a;
+                if (ends(a.name, "athenea:splat:transmission") && !a.integer && a.width == 1) glassArray = &a;
+            }
+            for (uint32_t g = 0; g < fileCount; ++g) {
+                const bool closedHere = closedArray == nullptr || closedArray->values[0][g] != 0u;
+                float t = 0.0F;
+                if (glassArray != nullptr) std::memcpy(&t, &glassArray->values[0][g], 4);
+                cullableWords[g] = closedHere && !(t > 0.5F) ? 1u : 0u;
+            }
+        }
+        auto cullables = upload(cullableWords, "decimate.cutCullable");
         if (!spreadBits || !coneBits || !looks || !facings || !roughs) {
             return Error(ErrorCode::OutOfMemory, "decimate: the cut's bounds");
         }
@@ -774,6 +794,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["look"].setBinding(looks->rhi());
             cursor["facing"].setBinding(facings->rhi());
             cursor["roughness"].setBinding(roughs->rhi());
+            cursor["cullable"].setBinding(cullables->rhi());
             cursor["storeOf"].setBinding(storeOfs->rhi());
             cursor["runStart"].setBinding(starts->rhi());
             cursor["outPositions"].setBinding(from.splats.positions.rhi());
@@ -782,7 +803,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["params"]["hasNormals"].setData(uint32_t{from.splats.hasNormals() ? 1u : 0u});
             cursor["params"]["colourWeight"].setData(10.0F);
             cursor["params"]["normalWeight"].setData(1.0F);
-            cursor["params"]["guard"].setData(4.0F);
+            cursor["params"]["guard"].setData(o.cutGuard);
             cursor["params"]["floorSize"].setData(2.0F);
             cursor["params"]["cullBack"].setData(uint32_t{o.cutCullBack && o.cutBounds ? 1u : 0u});
             cursor["params"]["count"].setData(n);
@@ -1271,7 +1292,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
             return ok();
         };
-        if (o.treeCoverage || o.occlusionClusters > 0 || o.treePages > 0) {
+        if (o.treeCoverage || o.occlusionClusters > 0 || o.treePages > 0 || !o.markClosed.empty()) {
             // THE WHOLE TREE WRITTEN AGAIN, in the file's order (its own
             // arrays are file indices), with what a player cuts it by.
             const uint32_t records = raw->count;
@@ -1285,6 +1306,36 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
             if (o.treePages > 0) {
                 ATHENEA_TRY(pageTable(added));
+            }
+            if (!o.markClosed.empty()) {
+                // WHICH PARTS ARE CLOSED SHELLS, from a list of their prim
+                // paths (one a line): primvars:athenea:splat:closed a node, by
+                // its part (cryptoObject) -- bookkeeping.
+                std::ifstream list(o.markClosed);
+                if (!list) return Error(ErrorCode::IoFailure, "decimate: cannot read " + o.markClosed.string());
+                std::set<uint32_t> closedIds;
+                for (std::string line; std::getline(list, line);) {
+                    if (!line.empty()) closedIds.insert(core::cryptomatteId(line));
+                }
+                const GaussianArray* ids = nullptr;
+                for (const GaussianArray& a : arrays) {
+                    if (ends(a.name, "athenea:splat:cryptoObject") && a.integer && a.width == 1) ids = &a;
+                }
+                if (ids == nullptr) return Error(ErrorCode::InvalidArgument, "decimate: --mark-closed needs cryptoObject");
+                GaussianArray closed;
+                closed.name = "primvars:athenea:splat:closed";
+                closed.typeName = "int[]";
+                closed.integer = true;
+                closed.interpolation = "vertex";
+                std::vector<uint32_t> marks(records, 0u);
+                uint32_t marked = 0;
+                for (uint32_t g = 0; g < records; ++g) {
+                    marks[g] = closedIds.count(ids->values[0][g]) ? 1u : 0u;
+                    marked += marks[g];
+                }
+                closed.values.push_back(std::move(marks));
+                added.push_back(std::move(closed));
+                std::printf("decimate: %u of %u gaussians in the %zu closed parts listed\n", marked, records, closedIds.size());
             }
             if (!usd) {
                 return Error(ErrorCode::InvalidArgument, "decimate: --tree-coverage and --occlusion-mask write a USD tree");

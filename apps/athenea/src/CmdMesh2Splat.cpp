@@ -697,14 +697,20 @@ public:
                 }
                 ATHENEA_TRY(batch.submit(true));
             }
-            // A COUNTER BACK: whether the mesh is closed, every edge shared
-            // by two of its triangles. Its back faces are then hidden by its
-            // front, which is what lets a player cull a coarse node facing
-            // away (`primvars:athenea:splat:closed`).
-            uint32_t open = 1;
+            // A COUNTER BACK: whether the mesh is a closed shell -- under 2 %
+            // of its edges (about one and a half a triangle, welded by where
+            // their points stand) open or shared by more than two. Its back
+            // faces are then hidden by its front, which is what lets a cut
+            // drop a node facing away (`primvars:athenea:splat:closed`). Not
+            // exactly none: a car's panels are two skins with a seam left
+            // open here and there (the hood 1.8 %), and their inner skin,
+            // drawn, sorted in front of the outer in patches -- a net of dark
+            // cracks over a door at the phone's size (research).
+            uint32_t open = 0xFFFFFFFFu;
             ATHENEA_TRY(openEdges->read(device, 0, sizeof(uint32_t), &open));
+            const double meshEdges = 1.5 * double(triangles);
             for (const Held& h : held) {
-                closed_[h.piece] = open == 0 ? 1 : 0;
+                closed_[h.piece] = double(open) < 0.02 * meshEdges ? 1 : 0;
             }
             first = last;
         }

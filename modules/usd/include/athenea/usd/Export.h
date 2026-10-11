@@ -376,6 +376,14 @@ struct DecimateStageOptions {
     /// piece's root page every node whose subtree is larger, the rest whole
     /// subtrees packed in leaf order), and how many the cut's pages hold. 0: none.
     uint32_t              cutPages = 0;
+    /// With `cutBounds`: a merge past the guards (cost negative: across a
+    /// fold, a colour edge, glass with paint) counts this many times its own
+    /// error, and at least twice its size.
+    float                 cutGuard = 4.0F;
+    /// The input is a merge tree: write `primvars:athenea:splat:closed` a node
+    /// from this list of closed parts' prim paths (one a line), by its
+    /// cryptoObject, and the whole tree.
+    std::filesystem::path markClosed;
     /// The input is a merge tree: write its pages by error (lod_pages.slang)
     /// of this many gaussians -- `primvars:athenea:splat:lodPage` a node, and
     /// a page's band, nodes and first node in page order -- coarsest first --
