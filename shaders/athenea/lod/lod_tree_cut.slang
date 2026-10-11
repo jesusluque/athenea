@@ -29,6 +29,8 @@ struct CutParams {
     float  floorSize;       ///< ... and at least this many times its size
     uint   cullBack;        ///< 1: a node whose whole normal cone faces away is not drawn (a closed one-sided part)
     uint   maxRun;          ///< treeCoverage: the longest run of leaves composited
+    uint   fileCount;       ///< the file's gaussians, which the tree's indices count: past `count` where the
+                            ///< loader dropped some (under 1/255)
 };
 
 StructuredBuffer<uint>    storeOrder;   // store splat -> file gaussian
@@ -82,7 +84,7 @@ void treeCutKeep(uint3 tid: SV_DispatchThreadID) {
     uint at = i;
     uint up = parent[i];
     // A root is its own parent (lod_pairs_final's treeOut); -1 is one too.
-    for (uint depth = 0; keep && up != at && up != kRoot && up < params.count && depth < params.maxDepth; ++depth) {
+    for (uint depth = 0; keep && up != at && up != kRoot && up < params.fileCount && depth < params.maxDepth; ++depth) {
         keep = !passes(up);
         at = up;
         up = parent[up];
@@ -142,11 +144,11 @@ void treeErrorOwn(uint3 tid: SV_DispatchThreadID) {
 [numthreads(256, 1, 1)]
 void treeBoundsUp(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
-    if (i >= params.count) {
+    if (i >= params.fileCount) {
         return;
     }
     const uint up = parent[i];
-    if (up == i || up == kRoot || up >= params.count) {
+    if (up == i || up == kRoot || up >= params.fileCount) {
         return;
     }
     uint was;
@@ -200,11 +202,11 @@ void treeErrorBounded(uint3 tid: SV_DispatchThreadID) {
 [numthreads(256, 1, 1)]
 void treeErrorClimb(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
-    if (i >= params.count) {
+    if (i >= params.fileCount) {
         return;
     }
     const uint up = parent[i];
-    if (up == i || up == kRoot || up >= params.count) {
+    if (up == i || up == kRoot || up >= params.fileCount) {
         return;
     }
     uint was;
@@ -220,11 +222,11 @@ void treeErrorClimb(uint3 tid: SV_DispatchThreadID) {
 [numthreads(256, 1, 1)]
 void treeErrorUp(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
-    if (i >= params.count) {
+    if (i >= params.fileCount) {
         return;
     }
     const uint up = parent[i];
-    if (up == i || up == kRoot || up >= params.count) {
+    if (up == i || up == kRoot || up >= params.fileCount) {
         return;
     }
     uint was;
@@ -253,7 +255,7 @@ void treeErrorKeep(uint3 tid: SV_DispatchThreadID) {
     }
     const uint i = storeOrder[s];
     const uint up = parent[i];
-    const bool root = up == i || up == kRoot || up >= params.count;
+    const bool root = up == i || up == kRoot || up >= params.fileCount;
     bool keep = projectedError(i) <= params.threshold && (root || projectedError(up) > params.threshold);
     // ITS BACK, NOT DRAWN (research, on the grille at 393 px): the faces of a
     // closed one-sided part that look away are hidden by its front, but at a
@@ -398,7 +400,7 @@ void treeCoverageToFile(uint3 tid: SV_DispatchThreadID) {
 [numthreads(256, 1, 1)]
 void treeCoverageFloor(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
-    if (i < params.count && leaves[i] > 1u && isnan(fileOpacity[i])) {
+    if (i < params.fileCount && leaves[i] > 1u && isnan(fileOpacity[i])) {
         fileOpacity[i] = kTreeFloor;
     }
 }

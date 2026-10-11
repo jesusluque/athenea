@@ -621,33 +621,39 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         }
         const lod::LodCloud& from = pruned ? *pruned : *lod;
         const uint32_t n = from.count;
+        // The tree's indices count the file's gaussians, which is more than
+        // the store's where the loader dropped some (under 1/255): what is
+        // kept a file gaussian is sized by them. A dropped merge has no centre
+        // of its own, so a tree is best cut after --tree-coverage, which
+        // floors every merge where the loader keeps it.
+        const uint32_t fileCount = raw->count;
         auto widthKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCutWidth");
         if (!widthKernel) return std::move(widthKernel).error();
         auto keepKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCutKeep");
         if (!keepKernel) return std::move(keepKernel).error();
         auto parents = upload(parentArray->values[0], "decimate.cutParent");
         auto leaves = upload(leavesArray->values[0], "decimate.cutLeaves");
-        auto costs = upload(costArray != nullptr ? costArray->values[0] : std::vector<uint32_t>(n, 0u),
+        auto costs = upload(costArray != nullptr ? costArray->values[0] : std::vector<uint32_t>(fileCount, 0u),
                             "decimate.cutCost");
-        auto widths = upload(std::vector<uint32_t>(n, 0u), "decimate.cutWidth");
+        auto widths = upload(std::vector<uint32_t>(fileCount, 0u), "decimate.cutWidth");
         auto score = upload(std::vector<uint32_t>(n, 0u), "decimate.cutScore");
         auto counter = upload(std::vector<uint32_t>(1, 0u), "decimate.cutCount");
-        auto errorBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutErrors");
-        auto radiusBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutRadii");
-        auto centres = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutCentres");
+        auto errorBits = upload(std::vector<uint32_t>(fileCount, 0u), "decimate.cutErrors");
+        auto radiusBits = upload(std::vector<uint32_t>(fileCount, 0u), "decimate.cutRadii");
+        auto centres = upload(std::vector<uint32_t>(uint64_t{fileCount} * 4, 0u), "decimate.cutCentres");
         auto changed = upload(std::vector<uint32_t>(1, 0u), "decimate.cutChanged");
-        auto spreadBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutSpread");
-        auto storeOfs = upload(std::vector<uint32_t>(n, 0u), "decimate.cutStoreOf");
-        auto starts = upload(startArray != nullptr ? startArray->values[0] : std::vector<uint32_t>(n, 0u),
+        auto spreadBits = upload(std::vector<uint32_t>(fileCount, 0u), "decimate.cutSpread");
+        auto storeOfs = upload(std::vector<uint32_t>(fileCount, 0u), "decimate.cutStoreOf");
+        auto starts = upload(startArray != nullptr ? startArray->values[0] : std::vector<uint32_t>(fileCount, 0u),
                              "decimate.cutRunStart");
         if (!storeOfs || !starts) return Error(ErrorCode::OutOfMemory, "decimate: the cut's coverage");
-        auto coneBits = upload(std::vector<uint32_t>(n, 0u), "decimate.cutCone");
-        auto looks = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutLook");
-        auto facings = upload(std::vector<uint32_t>(uint64_t{n} * 4, 0u), "decimate.cutFacing");
+        auto coneBits = upload(std::vector<uint32_t>(fileCount, 0u), "decimate.cutCone");
+        auto looks = upload(std::vector<uint32_t>(uint64_t{fileCount} * 4, 0u), "decimate.cutLook");
+        auto facings = upload(std::vector<uint32_t>(uint64_t{fileCount} * 4, 0u), "decimate.cutFacing");
         const float half = 0.5F;
         uint32_t halfBits;
         std::memcpy(&halfBits, &half, 4);
-        auto roughs = upload(roughArray != nullptr ? roughArray->values[0] : std::vector<uint32_t>(n, halfBits),
+        auto roughs = upload(roughArray != nullptr ? roughArray->values[0] : std::vector<uint32_t>(fileCount, halfBits),
                              "decimate.cutRoughness");
         if (!spreadBits || !coneBits || !looks || !facings || !roughs) {
             return Error(ErrorCode::OutOfMemory, "decimate: the cut's bounds");
@@ -689,6 +695,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["params"]["floorSize"].setData(2.0F);
             cursor["params"]["cullBack"].setData(uint32_t{o.cutCullBack && o.cutBounds ? 1u : 0u});
             cursor["params"]["count"].setData(n);
+            cursor["params"]["fileCount"].setData(fileCount);
             cursor["params"]["threshold"].setData(threshold);
             cursor["params"]["pixelsPerUnit"].setData(pairSettings.pixelsPerUnit);
             cursor["params"]["maxDepth"].setData(uint32_t{256});
@@ -918,7 +925,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     const uint32_t zero = 0;
                     ATHENEA_TRY(changed->write(device, 0, 4, &zero));
                     gpu::CommandBatch batch(device);
-                    kernel.dispatch(batch, {n, 1, 1}, bind);
+                    kernel.dispatch(batch, {fileCount, 1, 1}, bind);
                     ATHENEA_TRY(batch.submit(true));
                     uint32_t raised = 0;
                     ATHENEA_TRY(changed->read(device, 0, 4, &raised));
