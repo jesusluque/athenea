@@ -54,6 +54,7 @@ void addDecimate(CLI::App& app) {
         bool cutCoverage = false;
         bool treeCoverage = false;
         uint32_t occlusionClusters = 0;
+        std::vector<std::string> occlusionGroup;
         std::string transferBasis;
         uint32_t transferClusters = 256;
         uint32_t transferComponents = 8;
@@ -149,6 +150,9 @@ void addDecimate(CLI::App& app) {
                     "the input is a merge tree with 16 x 16 shadow bits: write each node's occlusion mask (where any "
                     "leaf under it is seen from, a cell of margin, open on glass) as an index into a codebook of this "
                     "many entries, and the whole tree (with --ratio 1)");
+    cmd->add_option("--occlusion-group", o->occlusionGroup,
+                    "with --occlusion-mask: more trees sharing one codebook with the input (an asset's pieces); each "
+                    "is written beside the output, under its own name, with the masks alone");
     cmd->add_option("--cut-pixels", o->cutPixels,
                     "the input is a merge tree: keep the cut whose merges are no wider than this on --camera's "
                     "screen (in place of --cut-budget)");
@@ -207,6 +211,21 @@ void addDecimate(CLI::App& app) {
         auto device = gpu::Device::create();
         if (!device) fail(device.error());
         gpu::ShaderLibrary library(*device);
+        if (!o->occlusionGroup.empty()) {
+            // ONE CODEBOOK OVER SEVERAL TREES: the input to the output, the
+            // rest beside it under their own names.
+            if (o->occlusionClusters == 0) fail(Error(ErrorCode::InvalidArgument, "--occlusion-group needs --occlusion-mask"));
+            std::vector<std::filesystem::path> inputs{o->input};
+            std::vector<std::filesystem::path> outputs{o->output};
+            const std::filesystem::path dir = std::filesystem::path(o->output).parent_path();
+            for (const std::string& tree : o->occlusionGroup) {
+                inputs.emplace_back(tree);
+                outputs.push_back(dir / std::filesystem::path(tree).filename());
+            }
+            auto shared = usd::occlusionMasksShared(library, inputs, outputs, o->occlusionClusters);
+            if (!shared) fail(shared.error());
+            return;
+        }
         usd::DecimateStageOptions options;
         options.prim = o->prim;
         options.degree = o->degree;

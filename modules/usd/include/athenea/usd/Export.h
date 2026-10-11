@@ -268,6 +268,39 @@ struct GaussianArray {
                                               const std::string& renameFrom, const std::string& renameTo,
                                               const std::vector<GaussianArray>& added = {});
 
+/// WHERE A TREE'S NODES CANNOT BE SEEN FROM (occlusion_mask.slang). The
+/// tree's own arrays in the file's order: its parents and leaf counts, its
+/// TX shadow bits (eight words a gaussian; empty: every mask open) and its
+/// transmission (float bits; empty: no glass).
+struct OcclusionInput {
+    std::vector<uint32_t> parent;
+    std::vector<uint32_t> leaves;
+    std::vector<uint32_t> bits;
+    std::vector<uint32_t> glass;
+};
+/// Each node's entry in a codebook of masks (eight words an entry, a cell
+/// open = 1) that never closes what a node has open; `closed` cells over the
+/// nodes and how many of them the codebook `reopened`.
+struct OcclusionBook {
+    std::vector<uint32_t> index;
+    std::vector<uint32_t> book;
+    uint32_t              closed = 0;
+    uint32_t              reopened = 0;
+    uint32_t              levels = 0;
+};
+[[nodiscard]] Result<OcclusionBook> occlusionBook(gpu::ShaderLibrary& library, const OcclusionInput& in,
+                                                  uint32_t clusters);
+/// A tree's input out of the arrays `readGaussianArrays` read.
+[[nodiscard]] Result<OcclusionInput> occlusionInputOf(const std::vector<GaussianArray>& arrays, uint32_t records);
+/// `primvars:athenea:splat:occlusionIndex` (vertex) and
+/// `occlusionCodebook` (constant), to write beside a tree.
+[[nodiscard]] std::vector<GaussianArray> occlusionArrays(const OcclusionBook& book);
+/// SEVERAL TREES, ONE CODEBOOK (an asset's pieces: their occluders are the
+/// same): each written to its output with its own indices and the codebook.
+[[nodiscard]] Result<void> occlusionMasksShared(gpu::ShaderLibrary& library,
+                                                const std::vector<std::filesystem::path>& inputs,
+                                                const std::vector<std::filesystem::path>& outputs, uint32_t clusters);
+
 /// What `decimateStage` is asked.
 struct DecimateStageOptions {
     std::string           prim;          ///< the ParticleField to read; empty for the first
