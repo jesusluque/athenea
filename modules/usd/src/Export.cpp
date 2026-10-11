@@ -1108,6 +1108,61 @@ Result<std::vector<GaussianArray>> readGaussianArrays(const std::filesystem::pat
     return out;
 }
 
+Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::filesystem::path& output,
+                                const std::string& prim, const std::vector<float>& opacities,
+                                const std::string& renameFrom, const std::string& renameTo) {
+    SdfLayerRefPtr source = SdfLayer::FindOrOpen(input.string());
+    if (!source) {
+        return Error::make(ErrorCode::IoFailure, "cannot open '{}'", input.string());
+    }
+    if (!source->Export(output.string())) {
+        return Error::make(ErrorCode::IoFailure, "cannot write '{}'", output.string());
+    }
+    SdfLayerRefPtr copy = SdfLayer::FindOrOpen(output.string());
+    if (!copy) {
+        return Error::make(ErrorCode::IoFailure, "cannot reopen '{}'", output.string());
+    }
+    copy->Reload(true);
+    if (std::filesystem::absolute(input).parent_path() != std::filesystem::absolute(output).parent_path()) {
+        UsdUtilsModifyAssetPaths(copy, [&](const std::string& asset) {
+            if (asset.empty() || !std::filesystem::path(asset).is_relative()) {
+                return asset;
+            }
+            return SdfComputeAssetPathRelativeToLayer(source, asset);
+        });
+    }
+    UsdStageRefPtr stage = UsdStage::Open(copy);
+    UsdVolParticleField3DGaussianSplat field = stage ? fieldOn(stage, prim) : UsdVolParticleField3DGaussianSplat();
+    if (!field) {
+        return Error::make(ErrorCode::NotFound, "'{}': no gaussian ParticleField to write into", output.string());
+    }
+    stage->SetEditTarget(stage->GetRootLayer());
+    VtFloatArray values;
+    if (!field.GetOpacitiesAttr().Get(&values) || values.size() != opacities.size()) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': {} opacities, the tree has {} gaussians", input.string(),
+                           values.size(), opacities.size());
+    }
+    for (size_t k = 0; k < values.size(); ++k) {
+        if (!std::isnan(opacities[k])) {
+            values[k] = opacities[k];
+        }
+    }
+    field.GetOpacitiesAttr().Set(values);
+    const UsdAttribute from = field.GetPrim().GetAttribute(TfToken(renameFrom));
+    VtValue moved;
+    if (!renameFrom.empty() && from && from.Get(&moved)) {
+        UsdGeomPrimvarsAPI(field.GetPrim())
+            .CreatePrimvar(TfToken(renameTo.substr(std::string("primvars:").size())), from.GetTypeName(),
+                           UsdGeomTokens->vertex)
+            .Set(moved);
+        field.GetPrim().RemoveProperty(TfToken(renameFrom));
+    }
+    if (!copy->Save()) {
+        return Error::make(ErrorCode::IoFailure, "cannot save '{}'", output.string());
+    }
+    return ok();
+}
+
 Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::filesystem::path& output,
                                  const std::string& prim, const std::filesystem::path& gaussians,
                                  const std::vector<GaussianArray>& arrays) {
@@ -1183,9 +1238,6 @@ Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::
     }
     // Everything else a gaussian carries, merged.
     for (const GaussianArray& array : arrays) {
-        if (!array.renamedFrom.empty()) {
-            field.GetPrim().RemoveProperty(TfToken(array.renamedFrom));
-        }
         UsdAttribute to = field.GetPrim().GetAttribute(TfToken(array.name));
         if (!to && array.times.empty() && !array.values.empty() &&
             (array.typeName == "float[]" || array.typeName == "int[]")) {

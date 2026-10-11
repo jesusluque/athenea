@@ -720,19 +720,47 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 });
                 ATHENEA_TRY(batch.submit(true));
             }
-            auto all = decimator->prune(from, *score, 0.5F);
-            if (!all) return std::move(all).error();
-            std::printf("decimate: every merge's opacity is what its leaves cover (%u gaussians)\n", all->count);
-            pruned = std::move(*all);
-            // The opacity is now the coverage: the mass-over-area array is
-            // renamed (the plans index the arrays, so none is removed), so no
-            // reader uncaps the opacity from it.
-            for (GaussianArray& a : arrays) {
-                if (ends(a.name, "athenea:splat:coverage")) {
-                    a.renamedFrom = a.name;
-                    a.name = "primvars:athenea:splat:coverageMass";
-                }
+            // Back in the file's order: the tree's own arrays are file
+            // indices, so it is written as it came, only its merges'
+            // opacities changed -- and the mass-over-area array renamed, so
+            // no reader uncaps the opacity from it.
+            auto toFile = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCoverageToFile");
+            auto floorKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeCoverageFloor");
+            // A record per file gaussian, not per store splat: the loader
+            // drops what draws nothing (a merge of opacity 0), and those
+            // keep what the file says (NaN: not written).
+            const uint32_t records = raw->count;
+            gpu::BufferDesc fileDesc;
+            fileDesc.bytes = uint64_t{records} * 4;
+            fileDesc.elementBytes = 4;
+            fileDesc.label = "decimate.fileOpacity";
+            auto fileOpacity = gpu::Buffer::create(device, fileDesc, std::vector<uint32_t>(records, 0x7FC00000u).data());
+            if (!toFile || !floorKernel || !fileOpacity) return Error(ErrorCode::InternalError, "decimate: the coverage's write");
+            {
+                gpu::CommandBatch batch(device);
+                toFile->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    bind(cursor);
+                    cursor["fileOpacity"].setBinding(fileOpacity->rhi());
+                });
+                batch.markDirty();
+                floorKernel->dispatch(batch, {records, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    bind(cursor);
+                    cursor["fileOpacity"].setBinding(fileOpacity->rhi());
+                    cursor["params"]["count"].setData(records);
+                });
+                ATHENEA_TRY(batch.submit(true));
             }
+            auto opacities = fileOpacity->readAll<float>(device);
+            if (!opacities) return std::move(opacities).error();
+            opacities->resize(records);
+            if (!usd) {
+                return Error(ErrorCode::InvalidArgument, "decimate: --tree-coverage writes a USD tree");
+            }
+            ATHENEA_TRY(writeTreeOpacities(input, output, where, *opacities, "primvars:athenea:splat:coverage",
+                                           "primvars:athenea:splat:coverageMass"));
+            std::printf("decimate: every merge's opacity is what its leaves cover (%u gaussians, in the file's "
+                        "order); wrote %s\n", records, output.string().c_str());
+            return stats;
         } else if (o.cutError > 0.0F) {
             // THE CUT BY ERROR (lod_tree_cut.slang, research 100): each node's
             // own error and sphere, climbed until every parent covers its

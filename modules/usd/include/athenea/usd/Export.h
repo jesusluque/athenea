@@ -235,9 +235,6 @@ struct GaussianArray {
     std::vector<double> times;
     /// The default's words (or the earliest sample's), then a sample's each.
     std::vector<std::vector<uint32_t>> values;
-    /// The name the source held it under, where the decimation renamed it:
-    /// that attribute is removed from the copy, so no stale array is left.
-    std::string renamedFrom;
 };
 
 /// Every array a gaussian long on the field at `prim` (the first
@@ -258,6 +255,16 @@ struct GaussianArray {
 [[nodiscard]] Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::filesystem::path& output,
                                                const std::string& prim, const std::filesystem::path& gaussians,
                                                const std::vector<GaussianArray>& arrays);
+
+/// A MERGE TREE WITH ITS OPACITIES REPLACED (`decimate --tree-coverage`):
+/// the root layer of `input` copied to `output` as `writeDecimatedStage`
+/// does, and on the field at `prim` each opacity where `opacities` (file
+/// order, one a gaussian) holds a number rather than NaN; nothing reordered,
+/// since the tree's arrays are file indices. `renameFrom`, where the source
+/// has it, is moved to `renameTo`.
+[[nodiscard]] Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::filesystem::path& output,
+                                              const std::string& prim, const std::vector<float>& opacities,
+                                              const std::string& renameFrom, const std::string& renameTo);
 
 /// What `decimateStage` is asked.
 struct DecimateStageOptions {

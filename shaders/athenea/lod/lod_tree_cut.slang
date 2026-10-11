@@ -276,9 +276,9 @@ void treeErrorKeep(uint3 tid: SV_DispatchThreadID) {
 // WHAT A KEPT MERGE REALLY COVERS (research, the grille at 393 px): mass over
 // the moment ellipse counts the leaves' overlapping tails twice and paints the
 // merge darker than its leaves drew. For each node the cut keeps, its leaves
-// are projected on its plane and composited on an 8 x 8 grid over its +-2
+// are projected on its plane and composited on an 8 x 8 grid over its +-1.25
 // sigma as the raster would, 1 - prod(1 - alpha G); the node's opacity becomes
-// that coverage weighted by its own footprint. Runs longer than `maxRun`
+// that coverage fitted under its own footprint (least squares). Runs longer than `maxRun`
 // keep mass over area (far views, where it shows least).
 RWStructuredBuffer<uint>   storeOf;     // file gaussian -> its store splat
 StructuredBuffer<uint>     runStart;    // file gaussian -> its first leaf's file index (lodStart)
@@ -325,6 +325,10 @@ void treeCoverage(uint3 tid: SV_DispatchThreadID) {
     const float3 v = float3(n.axes[0][k1], n.axes[1][k1], n.axes[2][k1]);
     const float su = max(n.scale[k0], 1.0e-9), sv = max(n.scale[k1], 1.0e-9);
     static const uint kGrid = 8;
+    // Over its core, +-1.25 sigma: past it the node's fringe is where its
+    // neighbours carry a surface on, and a fit there left a panel's merges at
+    // 0.84 -- the background through each one's middle, a fender mottled.
+    static const float kCore = 1.25;
     float through[64];
     for (uint c = 0; c < 64; ++c) {
         through[c] = 1.0;
@@ -342,8 +346,8 @@ void treeCoverage(uint3 tid: SV_DispatchThreadID) {
         const float alpha = min(f.opacity, 0.99);
         for (uint y = 0; y < kGrid; ++y) {
             for (uint x = 0; x < kGrid; ++x) {
-                const float2 p = float2((float(x) + 0.5) / kGrid * 4.0 - 2.0, (float(y) + 0.5) / kGrid * 4.0 - 2.0) *
-                                 float2(su, sv) - m;
+                const float2 p = float2((float(x) + 0.5) / kGrid * 2.0 * kCore - kCore,
+                                        (float(y) + 0.5) / kGrid * 2.0 * kCore - kCore) * float2(su, sv) - m;
                 const float q = (d * p.x * p.x - 2.0 * bb * p.x * p.y + a * p.y * p.y) / det;
                 through[y * kGrid + x] *= 1.0 - alpha * exp(-0.5 * q);
             }
@@ -352,13 +356,49 @@ void treeCoverage(uint3 tid: SV_DispatchThreadID) {
     float sum = 0.0, weight = 0.0;
     for (uint y = 0; y < kGrid; ++y) {
         for (uint x = 0; x < kGrid; ++x) {
-            const float2 p = float2((float(x) + 0.5) / kGrid * 4.0 - 2.0, (float(y) + 0.5) / kGrid * 4.0 - 2.0);
+            const float2 p = float2((float(x) + 0.5) / kGrid * 2.0 * kCore - kCore,
+                                    (float(y) + 0.5) / kGrid * 2.0 * kCore - kCore);
             const float g = exp(-0.5 * dot(p, p));
             sum += g * (1.0 - through[y * kGrid + x]);
-            weight += g;
+            weight += g * g;
         }
     }
+    // The opacity a whose a G is nearest the leaves' composite C in the least
+    // squares: sum G C / sum G^2 (over sum G it came out half: a merge as
+    // wide as one opaque leaf at 0.5). Leaves edge on to its plane -- a
+    // grille's wires seen square on -- cover nothing, and the merge goes.
+    const float covered = sum / max(weight, 1.0e-12);
     float4 out = positions[s];
-    out.w = clamp(sum / max(weight, 1.0e-12), 0.0, 0.99);
+    out.w = isfinite(covered) ? clamp(covered, 0.0, 0.99) : out.w;
     outPositions[s] = out;
+}
+
+// THE COVERAGE BACK IN THE FILE'S ORDER (`decimate --tree-coverage`): a
+// tree's lodParent, lodStart and lodSize are file indices, so the tree is
+// written as it came and only its merges' opacities change; a leaf's stays
+// what the file says (NaN here: not written).
+RWStructuredBuffer<float> fileOpacity;   // file gaussian -> its merge's coverage
+static const float kTreeFloor = 2.0 / 255.0;   // a loader keeps 1/255 and over (splat_validate)
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeCoverageToFile(uint3 tid: SV_DispatchThreadID) {
+    const uint s = tid.x;
+    if (s >= params.count) {
+        return;
+    }
+    const uint i = storeOrder[s];
+    fileOpacity[i] = leaves[i] > 1u ? max(outPositions[s].w, kTreeFloor) : asfloat(0x7FC00000u);
+}
+
+/// Over the file's gaussians (`count` is theirs here): a merge the loader
+/// dropped -- under 1/255, a mass tree's empty merge -- written at the floor,
+/// so it is loaded next time and the tree under it stays one tree.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeCoverageFloor(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i < params.count && leaves[i] > 1u && isnan(fileOpacity[i])) {
+        fileOpacity[i] = kTreeFloor;
+    }
 }
