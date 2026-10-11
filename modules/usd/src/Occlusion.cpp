@@ -74,7 +74,7 @@ Result<OcclusionBook> occlusionBook(gpu::ShaderLibrary& library, const Occlusion
     auto gathered = zeros(size_t{clusters} * kWords, "occlusion.next");
     auto memberCount = zeros(clusters, "occlusion.members");
     auto assigned = zeros(records, "occlusion.assigned");
-    auto lostCells = zeros(2, "occlusion.lost");
+    auto lostCells = zeros(3, "occlusion.lost");
     auto worthBins = zeros(64, "occlusion.worth");
     if (!bits || !glass || !parents || !leaves || !mask || !moved || !centroids || !gathered || !memberCount ||
         !assigned || !lostCells || !worthBins) {
@@ -173,10 +173,11 @@ Result<OcclusionBook> occlusionBook(gpu::ShaderLibrary& library, const Occlusion
         k[5].dispatch(batch, {records, 1, 1}, bind);
         ATHENEA_TRY(batch.submit(true));
     }
-    uint32_t lost[2] = {0, 0};
-    ATHENEA_TRY(lostCells->read(device, 0, 8, lost));
+    uint32_t lost[3] = {0, 0, 0};
+    ATHENEA_TRY(lostCells->read(device, 0, 12, lost));
     out.reopened = lost[0];
     out.closed = lost[1];
+    out.seenClosed = lost[2];
     auto index = assigned->readAll<uint32_t>(device);
     auto book = centroids->readAll<uint32_t>(device);
     if (!index || !book) return Error(ErrorCode::IoFailure, "occlusion: the masks back");
@@ -241,6 +242,7 @@ Result<void> occlusionMasksShared(gpu::ShaderLibrary& library, const std::vector
     std::vector<OcclusionInput> trees(inputs.size());
     std::vector<std::string> where(inputs.size());
     std::vector<uint32_t> used(inputs.size(), 0u);
+    std::vector<double> needs(inputs.size(), 0.0);
     for (size_t t = 0; t < inputs.size(); ++t) {
         auto raw = readParticleFieldRecords(inputs[t], {}, &where[t]);
         if (!raw) return std::move(raw).error();
@@ -258,15 +260,20 @@ Result<void> occlusionMasksShared(gpu::ShaderLibrary& library, const std::vector
                 ++used[t];
             }
         }
+        // Its need: the entries it uses. Weighed by how closed its nodes are
+        // where an eye looks from, the door (closed, culling little) kept its
+        // share and the fender (culling 26 times more) lost half (T41): how
+        // closed is not how much is culled, which takes views to know.
+        needs[t] = double(used[t]);
     }
-    uint64_t need = 0;
-    for (uint32_t u : used) need += u;
+    double need = 0.0;
+    for (double u : needs) need += u;
     constexpr uint32_t kLeast = 16;   // entry 0 and a few: a piece that culls nothing still has a place
     std::vector<uint32_t> share(inputs.size(), kLeast);
     {
         const uint32_t spare = clusters > kLeast * inputs.size() ? clusters - kLeast * uint32_t(inputs.size()) : 0u;
         for (size_t t = 0; t < inputs.size(); ++t) {
-            share[t] += need > 0 ? uint32_t(uint64_t{spare} * used[t] / need) : spare / uint32_t(inputs.size());
+            share[t] += need > 0.0 ? uint32_t(double(spare) * needs[t] / need) : spare / uint32_t(inputs.size());
         }
     }
     OcclusionBook book;

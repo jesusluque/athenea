@@ -293,6 +293,7 @@ struct OcclusionBook {
     uint32_t              reopened = 0;
     uint32_t              levels = 0;
     uint32_t              spared = 0;   ///< nodes worth least, given the all-open entry 0
+    uint32_t              seenClosed = 0;   ///< cells closed over the nodes where an eye looks from
 };
 [[nodiscard]] Result<OcclusionBook> occlusionBook(gpu::ShaderLibrary& library, const OcclusionInput& in,
                                                   uint32_t clusters);
@@ -369,6 +370,12 @@ struct DecimateStageOptions {
     /// piece's root page every node whose subtree is larger, the rest whole
     /// subtrees packed in leaf order), and how many the cut's pages hold. 0: none.
     uint32_t              cutPages = 0;
+    /// The input is a merge tree: write its pages by error (lod_pages.slang)
+    /// of this many gaussians -- `primvars:athenea:splat:lodPage` a node, and
+    /// a page's band, nodes and first in page order (`lodPageInfo`, 3 ints)
+    /// and the box holding its nodes' spheres with its parents' largest and
+    /// smallest error (`lodPageBounds`, 8 floats) -- and the whole tree. 0: none.
+    uint32_t              treePages = 0;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
     /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
     /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to

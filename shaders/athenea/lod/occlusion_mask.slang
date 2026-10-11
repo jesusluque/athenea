@@ -51,7 +51,7 @@ RWStructuredBuffer<uint> centroids;      // the codebook, 8 words an entry
 RWStructuredBuffer<uint> next;           // the entries being gathered: the OR of their members
 RWStructuredBuffer<uint> members;        // an entry's
 RWStructuredBuffer<uint> assigned;       // file gaussian -> its entry
-RWStructuredBuffer<uint> lost;           // [cells closed in a node's mask but open in its entry, summed; nodes]
+RWStructuredBuffer<uint> lost;           // [cells reopened by the entries; closed; closed where an eye looks from]
 RWStructuredBuffer<uint> worthBins;      // 64 bins of log2(worth): how many nodes fall in each
 ConstantBuffer<OcclusionParams> params;
 
@@ -287,14 +287,16 @@ void occlusionLost(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint c = assigned[g];
-    uint gone = 0u, closed = 0u;
+    uint gone = 0u, closed = 0u, seen = 0u;
     for (uint w = 0; w < kWords; ++w) {
         const uint own = mask[g * kWords + w];
         gone += countbits(centroids[c * kWords + w] & ~own);
         closed += countbits(~own);
+        seen += countbits(~own & relevantWord(w));
     }
     if (closed > 0u) {
         InterlockedAdd(lost[0], gone);
         InterlockedAdd(lost[1], closed);
     }
+    InterlockedAdd(lost[2], seen);
 }

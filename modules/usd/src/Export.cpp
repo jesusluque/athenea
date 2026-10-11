@@ -1162,14 +1162,21 @@ Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::f
         if (a.values.empty()) {
             continue;
         }
+        const TfToken name(a.name.substr(std::string("primvars:").size()));
+        const TfToken interpolation(a.interpolation.empty() ? "vertex" : a.interpolation);
+        if (a.typeName == "float[]") {
+            VtFloatArray v(a.values[0].size());
+            std::memcpy(v.data(), a.values[0].data(), v.size() * sizeof(float));
+            UsdGeomPrimvarsAPI(field.GetPrim())
+                .CreatePrimvar(name, SdfValueTypeNames->FloatArray, interpolation)
+                .Set(VtValue(v));
+            continue;
+        }
         VtIntArray v(a.values[0].size());
         for (size_t k = 0; k < v.size(); ++k) {
             v[k] = static_cast<int>(a.values[0][k]);
         }
-        UsdGeomPrimvarsAPI(field.GetPrim())
-            .CreatePrimvar(TfToken(a.name.substr(std::string("primvars:").size())), SdfValueTypeNames->IntArray,
-                           TfToken(a.interpolation.empty() ? "vertex" : a.interpolation))
-            .Set(VtValue(v));
+        UsdGeomPrimvarsAPI(field.GetPrim()).CreatePrimvar(name, SdfValueTypeNames->IntArray, interpolation).Set(VtValue(v));
     }
     if (!copy->Save()) {
         return Error::make(ErrorCode::IoFailure, "cannot save '{}'", output.string());

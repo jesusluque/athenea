@@ -600,7 +600,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
         }
     }
-    if (o.cutBudget > 0 || o.cutPixels > 0.0F || o.cutError > 0.0F || o.treeCoverage || o.occlusionClusters > 0) {
+    if (o.cutBudget > 0 || o.cutPixels > 0.0F || o.cutError > 0.0F || o.treeCoverage || o.occlusionClusters > 0 ||
+        o.treePages > 0) {
         // A CUT THROUGH THE MERGE TREE the input is (lod_tree_cut.slang):
         // each gaussian's width on the camera's screen, then the threshold
         // searched whose cut holds the budget, and the store pruned to it.
@@ -987,6 +988,143 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 }
             return rounds;
         };
+        // THE TREE'S PAGES BY ERROR, written beside it (lod_pages.slang): the
+        // errors climbed with the bounds, each node's band of its parent's
+        // error, the bands' nodes in leaf order cut into pages, and each
+        // page's table row.
+        const auto pageTable = [&](std::vector<GaussianArray>& added) -> Result<void> {
+            if (startArray == nullptr) {
+                return Error(ErrorCode::InvalidArgument, "decimate: --tree-pages needs the tree's lodStart");
+            }
+            auto climbed = errorsUp(true);
+            if (!climbed) return std::move(climbed).error();
+            const uint32_t limit = o.treePages;
+            auto hi = upload(std::vector<uint32_t>(n, 0u), "decimate.bandHi");
+            auto lo = upload(std::vector<uint32_t>(n, 0u), "decimate.bandLo");
+            auto values = upload(std::vector<uint32_t>(n, 0u), "decimate.bandValues");
+            auto scratchHi = upload(std::vector<uint32_t>(n, 0u), "decimate.bandScratchHi");
+            auto scratchLo = upload(std::vector<uint32_t>(n, 0u), "decimate.bandScratchLo");
+            auto scratchValues = upload(std::vector<uint32_t>(n, 0u), "decimate.bandScratchValues");
+            auto bandCount = upload(std::vector<uint32_t>(64, 0u), "decimate.bandCount");
+            auto keysKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_pages", "treeBandKeys");
+            auto tableKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_pages", "treeBandTable");
+            auto outKernel = gpu::ComputeKernel::create(library, "athenea/lod/lod_pages", "treeBandTableOut");
+            auto sorter = gpu::RadixSort::create(library);
+            if (!hi || !lo || !values || !scratchHi || !scratchLo || !scratchValues || !bandCount || !keysKernel ||
+                !tableKernel || !outKernel || !sorter) {
+                return Error(ErrorCode::InternalError, "decimate: the page table");
+            }
+            gpu::SortBuffers sorting;
+            sorting.keysLo = *lo;
+            sorting.keysHi = *hi;
+            sorting.values = *values;
+            sorting.scratchKeysLo = *scratchLo;
+            sorting.scratchKeysHi = *scratchHi;
+            sorting.scratchValues = *scratchValues;
+            uint32_t pages = 0;
+            const auto take = [](Result<gpu::Buffer> made) { return made ? std::move(*made) : gpu::Buffer{}; };
+            std::optional<gpu::Buffer> bandStarts, bandPages, filePage, info, box, error, bounds;
+            const auto bindTable = [&](rhi::ShaderCursor cursor) {
+                cursor["storeOrder"].setBinding(from.order.rhi());
+                cursor["parent"].setBinding(parents->rhi());
+                cursor["leaves"].setBinding(leaves->rhi());
+                cursor["errorBits"].setBinding(errorBits->rhi());
+                cursor["radiusBits"].setBinding(radiusBits->rhi());
+                cursor["centre"].setBinding(centres->rhi());
+                cursor["runStart"].setBinding(starts->rhi());
+                cursor["sortHi"].setBinding(sorting.keysHi.rhi());
+                cursor["sortLo"].setBinding(sorting.keysLo.rhi());
+                cursor["sortValues"].setBinding(sorting.values.rhi());
+                cursor["bandCount"].setBinding(bandCount->rhi());
+                if (bandStarts) {
+                    cursor["bandStart"].setBinding(bandStarts->rhi());
+                    cursor["bandPage"].setBinding(bandPages->rhi());
+                    cursor["filePage"].setBinding(filePage->rhi());
+                    cursor["pageInfo"].setBinding(info->rhi());
+                    cursor["pageBox"].setBinding(box->rhi());
+                    cursor["pageError"].setBinding(error->rhi());
+                    cursor["pageBounds"].setBinding(bounds->rhi());
+                }
+                cursor["params"]["count"].setData(n);
+                cursor["params"]["fileCount"].setData(fileCount);
+                cursor["params"]["maxRun"].setData(limit);
+                cursor["params"]["pageCount"].setData(pages);
+            };
+            {
+                gpu::CommandBatch batch(device);
+                keysKernel->dispatch(batch, {n, 1, 1}, bindTable);
+                batch.markDirty();
+                ATHENEA_TRY(sorter->sort(batch, sorting, n, 38));
+                ATHENEA_TRY(batch.submit(true));
+            }
+            uint32_t counts[64] = {};
+            ATHENEA_TRY(bandCount->read(device, 0, sizeof(counts), counts));
+            std::vector<uint32_t> startsOfBands(64, 0u), firstPage(64, 0u);
+            for (uint32_t b = 0, at = 0; b < 64; ++b) {
+                startsOfBands[b] = at;
+                firstPage[b] = pages;
+                at += counts[b];
+                pages += (counts[b] + limit - 1) / limit;
+            }
+            // Pages by band, coarsest first: a band's octave counts up from
+            // the finest, so the order is reversed into the page numbers a
+            // player streams from the top down.
+            std::vector<uint32_t> reversed(64, 0u);
+            for (uint32_t b = 0; b < 64; ++b) {
+                const uint32_t own = (counts[b] + limit - 1) / limit;
+                reversed[b] = pages - firstPage[b] - own;
+            }
+            const uint32_t one = std::max(pages, 1u);
+            const uint32_t big = 0xFFFFFFFFu;
+            bandStarts = take(upload(startsOfBands, "decimate.bandStart"));
+            bandPages = take(upload(reversed, "decimate.bandPage"));
+            filePage = take(upload(std::vector<uint32_t>(fileCount, big), "decimate.filePage"));
+            std::vector<uint32_t> infoInit(size_t{one} * 3, 0u);
+            for (uint32_t p = 0; p < one; ++p) infoInit[p * 3 + 2] = big;
+            info = take(upload(infoInit, "decimate.pageInfo"));
+            std::vector<uint32_t> boxInit(size_t{one} * 6, 0u);
+            for (uint32_t p = 0; p < one; ++p) {
+                for (int k = 0; k < 3; ++k) boxInit[p * 6 + k] = big;
+            }
+            box = take(upload(boxInit, "decimate.pageBox"));
+            std::vector<uint32_t> errorInit(size_t{one} * 2, 0u);
+            for (uint32_t p = 0; p < one; ++p) errorInit[p * 2 + 1] = big;
+            error = take(upload(errorInit, "decimate.pageError"));
+            bounds = take(upload(std::vector<uint32_t>(size_t{one} * 8, 0u), "decimate.pageBounds"));
+            if (!bandStarts->valid() || !bandPages->valid() || !filePage->valid() || !info->valid() ||
+                !box->valid() || !error->valid() || !bounds->valid()) {
+                return Error(ErrorCode::OutOfMemory, "decimate: the page table");
+            }
+            {
+                gpu::CommandBatch batch(device);
+                tableKernel->dispatch(batch, {n, 1, 1}, bindTable);
+                batch.markDirty();
+                outKernel->dispatch(batch, {one, 1, 1}, bindTable);
+                ATHENEA_TRY(batch.submit(true));
+            }
+            auto pageOf = filePage->readAll<uint32_t>(device);
+            auto infoBack = info->readAll<uint32_t>(device);
+            auto boundsBack = bounds->readAll<uint32_t>(device);
+            if (!pageOf || !infoBack || !boundsBack) return Error(ErrorCode::IoFailure, "decimate: the page table back");
+            pageOf->resize(fileCount);
+            infoBack->resize(size_t{pages} * 3);
+            boundsBack->resize(size_t{pages} * 8);
+            const auto array = [](const char* name, const char* type, const char* interpolation,
+                                  std::vector<uint32_t> words) {
+                GaussianArray a;
+                a.name = name;
+                a.typeName = type;
+                a.integer = std::string(type) == "int[]";
+                a.interpolation = interpolation;
+                a.values.push_back(std::move(words));
+                return a;
+            };
+            added.push_back(array("primvars:athenea:splat:lodPage", "int[]", "vertex", std::move(*pageOf)));
+            added.push_back(array("primvars:athenea:splat:lodPageInfo", "int[]", "constant", std::move(*infoBack)));
+            added.push_back(array("primvars:athenea:splat:lodPageBounds", "float[]", "constant", std::move(*boundsBack)));
+            std::printf("decimate: %u pages by error of %u gaussians (coarsest first)\n", pages, limit);
+            return ok();
+        };
         // EVERY MERGE'S REAL COVERAGE (treeCoverage): its opacity, the rest NaN.
         const auto treeCoverageOf = [&](std::vector<float>& opacities) -> Result<void> {
             if (startArray == nullptr) {
@@ -1061,7 +1199,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
             return ok();
         };
-        if (o.treeCoverage || o.occlusionClusters > 0) {
+        if (o.treeCoverage || o.occlusionClusters > 0 || o.treePages > 0) {
             // THE WHOLE TREE WRITTEN AGAIN, in the file's order (its own
             // arrays are file indices), with what a player cuts it by.
             const uint32_t records = raw->count;
@@ -1072,6 +1210,9 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
             if (o.occlusionClusters > 0) {
                 ATHENEA_TRY(occlusionMasks(records, added));
+            }
+            if (o.treePages > 0) {
+                ATHENEA_TRY(pageTable(added));
             }
             if (!usd) {
                 return Error(ErrorCode::InvalidArgument, "decimate: --tree-coverage and --occlusion-mask write a USD tree");
