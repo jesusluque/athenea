@@ -61,6 +61,7 @@ void addDecimate(CLI::App& app) {
         bool cutOcclusion = false;
         bool pagesByFacing = false;
         std::string markClosed;
+        std::string markMaterialRoughness;
         uint32_t treePages = 0;
         uint32_t objectGroups = 0;
         uint32_t passes = 0;
@@ -169,6 +170,9 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--mark-closed", o->markClosed,
                     "the input is a merge tree: mark the nodes of these parts closed shells (a file of prim paths, "
                     "one a line), for --cut-cull-back");
+    cmd->add_option("--mark-material-roughness", o->markMaterialRoughness,
+                    "the input is a merge tree: write each node's material roughness by its part (a file of "
+                    "\"prim-path roughness\" lines), for the polish's reflected field");
     cmd->add_flag("--pages-by-facing", o->pagesByFacing,
                   "--cut-pages / --tree-pages: group each band's nodes by the way they face before where they stand");
     cmd->add_flag("--cut-occlusion", o->cutOcclusion,
@@ -298,6 +302,7 @@ void addDecimate(CLI::App& app) {
         options.cutOcclusion = o->cutOcclusion;
         options.pagesByFacing = o->pagesByFacing;
         options.markClosed = o->markClosed;
+        options.markMaterialRoughness = o->markMaterialRoughness;
         options.treePages = o->treePages;
         options.objectGroups = o->objectGroups;
         options.treeReport = o->treeReport;

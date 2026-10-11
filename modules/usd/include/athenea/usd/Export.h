@@ -158,6 +158,10 @@ struct ExportOptions {
     /// One int a record, 1 where the gaussian's metal is a Schlick (OpenPBR,
     /// glTF) rather than a conductor (`primvars:athenea:splat:schlickMetal`).
     std::span<const int32_t>        schlickMetal;
+    /// One float a record, the material's own roughness before the conversion
+    /// widened it by the spread of normals (`primvars:athenea:splat:materialRoughness`):
+    /// what says whether a frame's reflected field answers the polish.
+    std::span<const float>          materialRoughness;
     /// Three floats a record, the surface's shape operator in the gaussian's
     /// own two axes (uu, uv, vv): `primvars:athenea:splat:curvature`, what a
     /// frame turns a TX transfer's reflection across the gaussian by.
@@ -390,6 +394,10 @@ struct DecimateStageOptions {
     /// from this list of closed parts' prim paths (one a line), by its
     /// cryptoObject, and the whole tree.
     std::filesystem::path markClosed;
+    /// The input is a merge tree: write `primvars:athenea:splat:materialRoughness`
+    /// a node from this list of "prim-path roughness" lines (a part's
+    /// material's own roughness), by its cryptoObject, and the whole tree.
+    std::filesystem::path markMaterialRoughness;
     /// The input is a merge tree: write its pages by error (lod_pages.slang)
     /// of this many gaussians -- `primvars:athenea:splat:lodPage` a node, and
     /// a page's band, nodes and first node in page order -- coarsest first --

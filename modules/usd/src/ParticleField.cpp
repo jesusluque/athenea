@@ -277,6 +277,8 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.thinWalled = held(kThinWalled);
         static const TfToken kSchlickMetal("athenea:splat:schlickMetal");
         arrays.schlickMetal = held(kSchlickMetal);
+        static const TfToken kMaterialRoughness("athenea:splat:materialRoughness");
+        arrays.materialRoughness = held(kMaterialRoughness);
         static const TfToken kCurvature("athenea:splat:curvature");
         arrays.curvature = held(kCurvature);
         static const TfToken kShadowBits("athenea:splat:shadowBits");

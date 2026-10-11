@@ -99,6 +99,7 @@ Result<CloudLoader> CloudLoader::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(loader.splatStreams_, "athenea/scene/streams", "splatStreams"));
     ATHENEA_TRY(make(loader.pointStreams_, "athenea/scene/streams", "pointStreams"));
     ATHENEA_TRY(make(loader.splatHardness_, "athenea/scene/splat_hardness", "splatHardness"));
+    ATHENEA_TRY(make(loader.splatMaterialRoughness_, "athenea/scene/splat_hardness", "splatMaterialRoughness"));
     ATHENEA_TRY(make(loader.boundsChunks_, "athenea/scene/bounds_chunks", "boundsChunks"));
     ATHENEA_TRY(make(loader.boundsReduce_, "athenea/scene/bounds_reduce", "boundsReduce"));
     ATHENEA_TRY(make(loader.lightLayerPack_, "athenea/scene/light_layers", "lightLayerPack"));
@@ -900,6 +901,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (haveSchlick) {
         note(in.schlickMetal, kSchlickMetal);
     }
+    const bool haveOwnRoughness = havePbr && !in.materialRoughness.empty() && in.materialRoughness.values() >= n;
     note(in.radianceBase, kBase);
     if (haveSh) {
         note(planes ? in.shPlanes.front() : in.sh, kSh);
@@ -964,6 +966,9 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!thinWalled) return std::move(thinWalled).error();
     auto schlickMetal = streamBuffer(haveSchlick ? in.schlickMetal : FloatStream{}, "splats.stream.schlickMetal");
     if (!schlickMetal) return std::move(schlickMetal).error();
+    auto materialRoughness = streamBuffer(haveOwnRoughness ? in.materialRoughness : FloatStream{},
+                                          "splats.stream.materialRoughness");
+    if (!materialRoughness) return std::move(materialRoughness).error();
     auto normals = streamBuffer(haveNormals ? in.normals : FloatStream{}, "splats.stream.normals");
     if (!normals) return std::move(normals).error();
     auto emission = streamBuffer(haveEmission ? in.emission : FloatStream{}, "splats.stream.emission");
@@ -1067,6 +1072,18 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                     p["first"].setData(first);
                     p["stride"].setData(e.floatsPerRecord);
                     p["half"].setData(uint32_t{in.hardness.half ? 1u : 0u});
+                });
+            }
+            if (haveOwnRoughness) {
+                splatMaterialRoughness_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["records"].setBinding(records->rhi());
+                    cursor["materialRoughness"].setBinding(materialRoughness->rhi());
+                    rhi::ShaderCursor p = cursor["params"];
+                    p["count"].setData(count);
+                    p["first"].setData(first);
+                    p["stride"].setData(e.floatsPerRecord);
+                    p["half"].setData(uint32_t{in.materialRoughness.half ? 1u : 0u});
+                    p["pbrBase"].setData(e.metallic);
                 });
             }
             ATHENEA_TRY(batch.submit(true));

@@ -256,6 +256,10 @@ struct SplatStreams {
     /// One int a splat, nonzero where its metal is a Schlick rather than a
     /// conductor (`primvars:athenea:splat:schlickMetal`); beside the PBR arrays.
     FloatStream schlickMetal;
+    /// One float a splat, the material's own roughness before the conversion
+    /// widened it (`primvars:athenea:splat:materialRoughness`); beside the PBR
+    /// arrays.
+    FloatStream materialRoughness;
     /// Three floats a splat, the shape operator (`primvars:athenea:splat:curvature`).
     FloatStream curvature;
     /// Three floats a splat, the shading normal (`primvars:athenea:splat:normal`).
@@ -395,6 +399,7 @@ private:
     gpu::ComputeKernel splatStreams_;
     gpu::ComputeKernel pointStreams_;
     gpu::ComputeKernel splatHardness_;
+    gpu::ComputeKernel splatMaterialRoughness_;
     gpu::ComputeKernel boundsChunks_;
     gpu::ComputeKernel boundsReduce_;
     gpu::ComputeKernel lightLayerPack_;

@@ -5,9 +5,10 @@
 #include "athenea/usd/Export.h"
 
 #include <limits>
-#include <set>
-#include "athenea/core/Hash.h"
 #include <map>
+#include <set>
+#include <sstream>
+#include "athenea/core/Hash.h"
 
 #include <algorithm>
 #include <cmath>
@@ -691,7 +692,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         }
     }
     if (o.cutBudget > 0 || o.cutPixels > 0.0F || o.cutError > 0.0F || o.treeCoverage || o.occlusionClusters > 0 ||
-        o.treePages > 0 || !o.markClosed.empty()) {
+        o.treePages > 0 || !o.markClosed.empty() || !o.markMaterialRoughness.empty()) {
         // A CUT THROUGH THE MERGE TREE the input is (lod_tree_cut.slang):
         // each gaussian's width on the camera's screen, then the threshold
         // searched whose cut holds the budget, and the store pruned to it.
@@ -1333,7 +1334,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
             return ok();
         };
-        if (o.treeCoverage || o.occlusionClusters > 0 || o.treePages > 0 || !o.markClosed.empty()) {
+        if (o.treeCoverage || o.occlusionClusters > 0 || o.treePages > 0 || !o.markClosed.empty() ||
+            !o.markMaterialRoughness.empty()) {
             // THE WHOLE TREE WRITTEN AGAIN, in the file's order (its own
             // arrays are file indices), with what a player cuts it by.
             const uint32_t records = raw->count;
@@ -1377,6 +1379,47 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 closed.values.push_back(std::move(marks));
                 added.push_back(std::move(closed));
                 std::printf("decimate: %u of %u gaussians in the %zu closed parts listed\n", marked, records, closedIds.size());
+            }
+            if (!o.markMaterialRoughness.empty()) {
+                // EACH PART'S MATERIAL ROUGHNESS, before the conversion widened
+                // it, from a list of "prim-path roughness" lines:
+                // primvars:athenea:splat:materialRoughness a node, by its part
+                // (cryptoObject); -1 for a part the list does not name (read
+                // as sharp) -- bookkeeping.
+                std::ifstream list(o.markMaterialRoughness);
+                if (!list) {
+                    return Error(ErrorCode::IoFailure, "decimate: cannot read " + o.markMaterialRoughness.string());
+                }
+                std::map<uint32_t, float> byId;
+                for (std::string line; std::getline(list, line);) {
+                    std::istringstream fields(line);
+                    std::string path;
+                    float roughness = -1.0F;
+                    if (fields >> path >> roughness) byId.emplace(core::cryptomatteId(path), roughness);
+                }
+                const GaussianArray* ids = nullptr;
+                for (const GaussianArray& a : arrays) {
+                    if (ends(a.name, "athenea:splat:cryptoObject") && a.integer && a.width == 1) ids = &a;
+                }
+                if (ids == nullptr) {
+                    return Error(ErrorCode::InvalidArgument, "decimate: --mark-material-roughness needs cryptoObject");
+                }
+                GaussianArray own;
+                own.name = "primvars:athenea:splat:materialRoughness";
+                own.typeName = "float[]";
+                own.interpolation = "vertex";
+                std::vector<uint32_t> words(records);
+                uint32_t named = 0;
+                for (uint32_t g = 0; g < records; ++g) {
+                    const auto found = byId.find(ids->values[0][g]);
+                    const float value = found != byId.end() ? found->second : -1.0F;
+                    named += found != byId.end() ? 1u : 0u;
+                    std::memcpy(&words[g], &value, 4);
+                }
+                own.values.push_back(std::move(words));
+                added.push_back(std::move(own));
+                std::printf("decimate: %u of %u gaussians in the %zu parts whose material roughness is listed\n",
+                            named, records, byId.size());
             }
             if (!usd) {
                 return Error(ErrorCode::InvalidArgument, "decimate: --tree-coverage and --occlusion-mask write a USD tree");

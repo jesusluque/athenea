@@ -1304,6 +1304,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:curvature` | float[] ‹3 por gaussiana› | — |
 | `primvars:athenea:splat:schlickMetal` | int[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:materialRoughness` | float[] ‹1 por gaussiana, de 0 a 1, o -1› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:specularWeight` | float[] ‹1 por gaussiana, 0 a 1› | `1` |
@@ -1403,6 +1404,13 @@ especular rasante -- y no el conductor de índice artístico que son el de
 standard_surface y el de UsdPreviewSurface; `athenea mesh2splat` lo escribe
 según el vocabulario del material. Para un metal oscuro los dos se separan al
 doble a sesenta grados.
+`materialRoughness` es la rugosidad del propio material de la gaussiana, antes
+de que `--specular-filter` ensanchara la `roughness` guardada por la
+dispersión de normales bajo la gaussiana; -1 donde el material la lee de un
+mapa. `athenea mesh2splat` la escribe. Donde vale al menos 0.3, el campo
+reflejado de una transferencia TX responde de lo que el propio lóbulo del
+pulido encuentra cerrado -- una bola muestra su suelo --, y por debajo, o en
+una nube sin él, esa parte queda oscura.
 `thinWalled` es distinto de cero donde la gaussiana vino de un vidrio de pared
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077

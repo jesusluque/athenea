@@ -555,6 +555,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
         surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
         surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[i]);
+        surface.materialRoughness = params.hasPbr != 0 ? pbrMaterialRoughness(pbr[i]) : -1.0;
         // WHAT A PICK MAY HAVE SAID ABOUT THIS PRIM. The id a gaussian carries
         // is the one the matte writes, so a table keyed on it is a material
         // override addressed by clicking (athenea/common/splat_override.slang).
@@ -564,6 +565,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             if (said.found) {
                 surface.metallic = splatOverrideOf(surface.metallic, said.metallic);
                 surface.roughness = splatOverrideOf(surface.roughness, said.roughness);
+                surface.materialRoughness = splatOverrideOf(surface.materialRoughness, said.roughness);
                 surface.transmission = splatOverrideOf(surface.transmission, said.transmission);
                 surface.albedo = splatOverrideColour(surface.albedo, said);
             }
@@ -622,6 +624,17 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             const float a = curvature[i * 3], b = curvature[i * 3 + 1], c = curvature[i * 3 + 2];
             const float kMax = abs(0.5 * (a + c)) + sqrt(0.25 * (a - c) * (a - c) + b * b);
             slope.bakeSpread = kMax * max(scale.x, scale.y);
+            // A FOLD'S COAT (kCoatFoldRoughness): where the surface turns
+            // faster than a gaussian is wide the bake widened the lacquer to
+            // near 1, and a joint between two panels drew a dark streak the
+            // path traced frame does not have (research t64: 0.69 of it). The
+            // widening is held to the fold roughness; where the bake's spread
+            // is small the coat is the one it stored.
+            if (surface.lobes.coatWeight > 0.0) {
+                const float coat = surface.lobes.coatRoughness;
+                surface.lobes.coatRoughness =
+                    max(unwidened(coat, slope.bakeSpread), min(coat, kCoatFoldRoughness));
+            }
         }
         float pixelTurn2 = 0.0;
         if (kTransfer >= 2 && params.hasCurvature != 0 && surface.cellWords >= 8u) {

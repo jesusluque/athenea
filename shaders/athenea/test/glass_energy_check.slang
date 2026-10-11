@@ -39,6 +39,7 @@ void glassEnergyCheck(uint3 tid: SV_DispatchThreadID) {
         for (uint j = 0; j < params.steps; ++j) {
             const float nDotV = (float(j) + 0.5) / float(params.steps);
             SplatSurface s;
+            s.materialRoughness = -1.0;
             s.lobes = plainLobes();
             s.thinWalled = false;
             s.schlickMetal = false;

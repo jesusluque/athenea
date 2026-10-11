@@ -12100,6 +12100,28 @@ disc's, cone^2 / 2); a scatter stays in the sky, the map and the harmonics
 gone: with the sun out of the map the sharp levels read each sample at its
 own footprint again; the energy and read-back tests hold on what is left.
 
+### The polish sees its ground where its material is rough enough
+
+s81's green and white balls (a lacquer's polish, roughness 0.3421, no coat)
+on a grey ground read their lower half as the sky where the path traced balls
+show the ground: the polish's closed part was 0, because the field read the
+Corvette's metals a third bright (chrome 0.261 where the frame reads 0.197).
+Asking the polish's own lobe which cells are open and letting the field answer
+the rest (`lobefield`, s85) brought the balls up and the metals with them; a
+gate on the stored roughness (s88, gate30) did not hold chrome back, since
+`--specular-filter` widens a thin chrome tube's per-triangle roughness past
+0.3. So the gate reads the material's own roughness, which the cloud now
+carries: `primvars:athenea:splat:materialRoughness`, written by mesh2splat
+from the material's constant (-1 under a roughness map, whose texels only the
+kernel sees, widened), and carried to the pbr word as a mark on the
+transmission beside the thin wall's and the Schlick's (bits 26 to 31, a 5-bit
+step). Where it is at least 0.3 (`kPolishFieldRoughness`: the paint and rims,
+0.3421, the balls) the polish is narrowed by its lobe's cells and its closed
+part is the field coupled to the sky; below (chrome 0, Metal_rough 0.22) or in
+a cloud without it, as before. A cloud converted before this carries none and
+draws as it did. Test: the primvar survives USD beside the other two marks,
+with the base bytes unchanged.
+
 ### A TX frame computes what the eye changes (playback)
 
 The whole TX Corvette (14.7 million gaussians, no ground, 1920 x 1080) drew
