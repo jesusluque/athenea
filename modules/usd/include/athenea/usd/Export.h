@@ -377,6 +377,11 @@ struct DecimateStageOptions {
     /// and the box holding its nodes' spheres with its parents' largest and
     /// smallest error (`lodPageBounds`, 8 floats) -- and the whole tree. 0: none.
     uint32_t              treePages = 0;
+    /// Only the gaussians of one group of the asset's parts: those whose
+    /// cryptoObject modulo `objectGroups` is `objectGroup` (an asset too large
+    /// for one pass, decimated a group at a time). 0 or 1: all.
+    uint32_t              objectGroups = 0;
+    uint32_t              objectGroup = 0;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
     /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
     /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to

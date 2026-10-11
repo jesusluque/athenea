@@ -53,6 +53,50 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         auto read = readGaussianArrays(input, where, raw->count);
         if (!read) return std::move(read).error();
         arrays = std::move(*read);
+        if (o.objectGroups > 1) {
+            // ONE GROUP OF AN ASSET'S PARTS (a whole car will not merge in one
+            // pass: its tree's attributes outgrow the device): the gaussians
+            // whose part (cryptoObject) falls in group `objectGroup` of
+            // `objectGroups`, by its id. Bookkeeping -- which records stay --
+            // before anything is uploaded; a part's merges never cross parts,
+            // so its tree is what the whole asset's would hold for it.
+            const GaussianArray* ids = nullptr;
+            for (const GaussianArray& a : arrays) {
+                if (a.integer && a.width == 1 && a.name.size() >= 12 &&
+                    a.name.compare(a.name.size() - 12, 12, "cryptoObject") == 0) {
+                    ids = &a;
+                }
+            }
+            if (ids == nullptr || ids->values.empty()) {
+                return Error(ErrorCode::InvalidArgument, "decimate: --object-groups needs primvars:athenea:splat:cryptoObject");
+            }
+            std::vector<uint32_t> keep;
+            for (uint32_t g = 0; g < raw->count; ++g) {
+                if (ids->values[0][g] % o.objectGroups == o.objectGroup) keep.push_back(g);
+            }
+            const uint32_t stride = raw->encoding.floatsPerRecord;
+            std::vector<float> records;
+            records.reserve(size_t{keep.size()} * stride);
+            for (uint32_t g : keep) {
+                records.insert(records.end(), raw->records.begin() + size_t{g} * stride,
+                               raw->records.begin() + size_t{g + 1} * stride);
+            }
+            raw->records = std::move(records);
+            for (GaussianArray& a : arrays) {
+                for (std::vector<uint32_t>& values : a.values) {
+                    std::vector<uint32_t> kept;
+                    kept.reserve(size_t{keep.size()} * a.width);
+                    for (uint32_t g : keep) {
+                        kept.insert(kept.end(), values.begin() + size_t{g} * a.width,
+                                    values.begin() + size_t{g + 1} * a.width);
+                    }
+                    values = std::move(kept);
+                }
+            }
+            std::printf("decimate: group %u of %u by part: %zu of %u gaussians\n", o.objectGroup, o.objectGroups,
+                        keep.size(), raw->count);
+            raw->count = static_cast<uint32_t>(keep.size());
+        }
         for (const GaussianArray& array : arrays) {
             std::printf("decimate: carries %s (%u a gaussian%s)\n", array.name.c_str(), array.width,
                         array.times.empty() ? "" : ", sampled in time");
