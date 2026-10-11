@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -213,6 +214,7 @@ Result<OcclusionInput> occlusionInputOf(const std::vector<GaussianArray>& arrays
         if (ends(a.name, "athenea:splat:lodParent")) in.parent = a.values[0];
         if (ends(a.name, "athenea:splat:lodSize")) in.leaves = a.values[0];
         if (ends(a.name, "athenea:splat:transmission") && a.width == 1 && !a.integer) in.glass = a.values[0];
+        if (ends(a.name, "athenea:splat:cryptoObject") && a.width == 1 && a.integer) in.part = a.values[0];
         if (ends(a.name, "athenea:splat:shadowBits")) {
             if (a.width != kWords) {
                 return Error(ErrorCode::InvalidArgument,
@@ -228,21 +230,30 @@ Result<OcclusionInput> occlusionInputOf(const std::vector<GaussianArray>& arrays
 }
 
 Result<void> occlusionMasksShared(gpu::ShaderLibrary& library, const std::vector<std::filesystem::path>& inputs,
-                                  const std::vector<std::filesystem::path>& outputs, uint32_t clusters) {
+                                  const std::vector<std::filesystem::path>& outputs, uint32_t clusters, bool byPart) {
     if (inputs.empty() || inputs.size() != outputs.size()) {
         return Error(ErrorCode::InvalidArgument, "occlusion: as many outputs as trees");
     }
-    // EACH PIECE ITS SHARE BY NEED (research): fitted alone at the whole
-    // size, a piece uses as many entries as its masks are varied -- a
+    // EACH UNIT ITS SHARE BY NEED (research): fitted alone at the whole
+    // size, a unit uses as many entries as its masks are varied -- a
     // grille's 2773 on a third of a fender's nodes -- while one fit over all
-    // the pieces handed entries out by how many nodes each brought (the
-    // grille got 363). So each piece is fitted once alone, the codebook
-    // shared out in proportion to the entries each used, and each fitted
-    // again within its share; its indices then point past the shares before.
-    std::vector<OcclusionInput> trees(inputs.size());
+    // handed entries out by how many nodes each brought (the grille got 363).
+    // So each unit is fitted once alone, the codebook shared out in
+    // proportion to the entries each used, and each fitted again within its
+    // share; its indices then point past the shares before. A unit is a tree
+    // or, `byPart`, one part of a tree: a part's merges never leave it, so its
+    // nodes are a tree of their own once renumbered (the whole Corvette's
+    // groups of parts gave a hidden panel 90 entries for 47k culled nodes).
+    struct Unit {
+        size_t                t = 0;
+        std::vector<uint32_t> nodes;   // its nodes in the tree's order
+        OcclusionInput        in;
+        uint32_t              used = 0;
+        uint32_t              share = 0;
+    };
     std::vector<std::string> where(inputs.size());
-    std::vector<uint32_t> used(inputs.size(), 0u);
-    std::vector<double> needs(inputs.size(), 0.0);
+    std::vector<uint32_t> counts(inputs.size(), 0u);
+    std::vector<Unit> units;
     for (size_t t = 0; t < inputs.size(); ++t) {
         auto raw = readParticleFieldRecords(inputs[t], {}, &where[t]);
         if (!raw) return std::move(raw).error();
@@ -250,49 +261,82 @@ Result<void> occlusionMasksShared(gpu::ShaderLibrary& library, const std::vector
         if (!arrays) return std::move(arrays).error();
         auto in = occlusionInputOf(*arrays, raw->count);
         if (!in) return std::move(in).error();
-        trees[t] = occlusionUpOf(inputs[t], std::move(*in));
-        auto alone = occlusionBook(library, trees[t], clusters);
+        OcclusionInput tree = occlusionUpOf(inputs[t], std::move(*in));
+        counts[t] = raw->count;
+        if (!byPart || tree.part.size() != raw->count) {
+            Unit u;
+            u.t = t;
+            u.nodes.resize(raw->count);
+            for (uint32_t g = 0; g < raw->count; ++g) u.nodes[g] = g;
+            u.in = std::move(tree);
+            units.push_back(std::move(u));
+            continue;
+        }
+        // Its parts, each renumbered: bookkeeping over the tree's indices.
+        std::map<uint32_t, std::vector<uint32_t>> byId;
+        for (uint32_t g = 0; g < raw->count; ++g) byId[tree.part[g]].push_back(g);
+        std::vector<uint32_t> local(raw->count, 0u);
+        for (auto& [id, nodes] : byId) {
+            Unit u;
+            u.t = t;
+            for (uint32_t k = 0; k < nodes.size(); ++k) local[nodes[k]] = k;
+            const bool bits = tree.bits.size() == size_t{raw->count} * kWords;
+            const bool glass = tree.glass.size() == raw->count;
+            for (uint32_t g : nodes) {
+                const uint32_t up = tree.parent[g];
+                u.in.parent.push_back(up < raw->count && tree.part[up] == id ? local[up] : local[g]);
+                u.in.leaves.push_back(tree.leaves[g]);
+                if (bits) u.in.bits.insert(u.in.bits.end(), tree.bits.begin() + size_t{g} * kWords,
+                                           tree.bits.begin() + size_t{g + 1} * kWords);
+                if (glass) u.in.glass.push_back(tree.glass[g]);
+            }
+            std::copy(std::begin(tree.up), std::end(tree.up), std::begin(u.in.up));
+            u.nodes = std::move(nodes);
+            units.push_back(std::move(u));
+        }
+    }
+    for (Unit& u : units) {
+        auto alone = occlusionBook(library, u.in, clusters);
         if (!alone) return std::move(alone).error();
         std::vector<uint8_t> seen(clusters, 0u);
         for (uint32_t e : alone->index) {
             if (e < clusters && !seen[e]) {
                 seen[e] = 1u;
-                ++used[t];
+                ++u.used;
             }
         }
-        // Its need: the entries it uses. Weighed by how closed its nodes are
-        // where an eye looks from, the door (closed, culling little) kept its
-        // share and the fender (culling 26 times more) lost half (T41): how
-        // closed is not how much is culled, which takes views to know.
-        needs[t] = double(used[t]);
     }
+    // Its need: the entries it uses. Weighed by how closed its nodes are
+    // where an eye looks from, the door (closed, culling little) kept its
+    // share and the fender (culling 26 times more) lost half (T41): how
+    // closed is not how much is culled, which takes views to know.
     double need = 0.0;
-    for (double u : needs) need += u;
-    constexpr uint32_t kLeast = 16;   // entry 0 and a few: a piece that culls nothing still has a place
-    std::vector<uint32_t> share(inputs.size(), kLeast);
-    {
-        const uint32_t spare = clusters > kLeast * inputs.size() ? clusters - kLeast * uint32_t(inputs.size()) : 0u;
-        for (size_t t = 0; t < inputs.size(); ++t) {
-            share[t] += need > 0.0 ? uint32_t(double(spare) * needs[t] / need) : spare / uint32_t(inputs.size());
-        }
+    for (const Unit& u : units) need += u.used;
+    const uint32_t least = byPart ? 2u : 16u;   // entry 0 and one: a unit that culls nothing still has a place
+    const uint64_t floor = uint64_t{least} * units.size();
+    const uint32_t spare = clusters > floor ? clusters - uint32_t(floor) : 0u;
+    for (Unit& u : units) {
+        u.share = least + (need > 0.0 ? uint32_t(double(spare) * u.used / need) : spare / uint32_t(units.size()));
     }
     OcclusionBook book;
     std::vector<std::vector<uint32_t>> indices(inputs.size());
-    for (size_t t = 0; t < inputs.size(); ++t) {
-        auto one = occlusionBook(library, trees[t], share[t]);
+    for (size_t t = 0; t < inputs.size(); ++t) indices[t].assign(counts[t], 0u);
+    for (const Unit& u : units) {
+        auto one = occlusionBook(library, u.in, u.share);
         if (!one) return std::move(one).error();
         const uint32_t base = static_cast<uint32_t>(book.book.size() / kWords);
-        indices[t] = std::move(one->index);
-        for (uint32_t& e : indices[t]) e += base;
+        for (size_t k = 0; k < u.nodes.size(); ++k) indices[u.t][u.nodes[k]] = one->index[k] + base;
         book.book.insert(book.book.end(), one->book.begin(), one->book.end());
         book.closed += one->closed;
         book.reopened += one->reopened;
-        std::printf("occlusion: %s uses %u entries alone, %u in the shared codebook; reopens %.1f%% of its closed cells\n",
-                    inputs[t].filename().string().c_str(), used[t], share[t],
-                    one->closed > 0 ? 100.0 * one->reopened / one->closed : 0.0);
+        if (!byPart) {
+            std::printf("occlusion: %s uses %u entries alone, %u in the shared codebook; reopens %.1f%% of its closed "
+                        "cells\n", inputs[u.t].filename().string().c_str(), u.used, u.share,
+                        one->closed > 0 ? 100.0 * one->reopened / one->closed : 0.0);
+        }
     }
-    std::printf("occlusion: %zu trees, a codebook of %zu shared by need; it reopens %u of their %u closed cells (%.1f%%)\n",
-                inputs.size(), book.book.size() / kWords, book.reopened, book.closed,
+    std::printf("occlusion: %zu trees, %zu units, a codebook of %zu shared by need; it reopens %u of their %u closed "
+                "cells (%.1f%%)\n", inputs.size(), units.size(), book.book.size() / kWords, book.reopened, book.closed,
                 book.closed > 0 ? 100.0 * book.reopened / book.closed : 0.0);
     for (size_t t = 0; t < inputs.size(); ++t) {
         OcclusionBook one;

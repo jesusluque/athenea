@@ -55,6 +55,7 @@ void addDecimate(CLI::App& app) {
         bool treeCoverage = false;
         uint32_t occlusionClusters = 0;
         std::vector<std::string> occlusionGroup;
+        bool occlusionByPart = false;
         uint32_t cutPages = 0;
         uint32_t treePages = 0;
         uint32_t objectGroups = 0;
@@ -156,6 +157,8 @@ void addDecimate(CLI::App& app) {
                     "the input is a merge tree with 16 x 16 shadow bits: write each node's occlusion mask (where any "
                     "leaf under it is seen from, a cell of margin, open on glass) as an index into a codebook of this "
                     "many entries, and the whole tree (with --ratio 1)");
+    cmd->add_flag("--occlusion-by-part", o->occlusionByPart,
+                  "with --occlusion-group: share the codebook out by part (cryptoObject), not by tree");
     cmd->add_option("--occlusion-group", o->occlusionGroup,
                     "with --occlusion-mask: more trees sharing one codebook with the input (an asset's pieces); each "
                     "is written beside the output, under its own name, with the masks alone");
@@ -241,7 +244,7 @@ void addDecimate(CLI::App& app) {
                 inputs.emplace_back(tree);
                 outputs.push_back(dir / std::filesystem::path(tree).filename());
             }
-            auto shared = usd::occlusionMasksShared(library, inputs, outputs, o->occlusionClusters);
+            auto shared = usd::occlusionMasksShared(library, inputs, outputs, o->occlusionClusters, o->occlusionByPart);
             if (!shared) fail(shared.error());
             return;
         }

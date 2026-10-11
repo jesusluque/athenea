@@ -277,6 +277,8 @@ struct OcclusionInput {
     std::vector<uint32_t> leaves;
     std::vector<uint32_t> bits;
     std::vector<uint32_t> glass;
+    /// A node's part (cryptoObject); empty where the field has none.
+    std::vector<uint32_t> part;
     /// The stage's up axis: the codebook is fitted on the cells an eye above
     /// the ground looks from (`occlusionUpOf`).
     float                 up[3] = {0.0F, 0.0F, 1.0F};
@@ -304,9 +306,13 @@ struct OcclusionBook {
 [[nodiscard]] std::vector<GaussianArray> occlusionArrays(const OcclusionBook& book);
 /// SEVERAL TREES, ONE CODEBOOK (an asset's pieces: their occluders are the
 /// same): each written to its output with its own indices and the codebook.
+/// With `byPart` the codebook is shared out a part (cryptoObject) of each
+/// tree rather than a tree: a group of many parts handed its entries to
+/// whichever brought the most nodes.
 [[nodiscard]] Result<void> occlusionMasksShared(gpu::ShaderLibrary& library,
                                                 const std::vector<std::filesystem::path>& inputs,
-                                                const std::vector<std::filesystem::path>& outputs, uint32_t clusters);
+                                                const std::vector<std::filesystem::path>& outputs, uint32_t clusters,
+                                                bool byPart = false);
 
 /// What `decimateStage` is asked.
 struct DecimateStageOptions {
