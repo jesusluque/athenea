@@ -449,12 +449,31 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // at the floor, nothing of it is cut, and at 0.0018 of coverage that
     // 1/255 had tripled it -- the windshield read 3.9 times the path traced
     // one under the shop's lamps (s65).
-    // A surfel pays nothing back: no mip filter widened it (its screen filter
-    // is a max, not a convolution), so its opacity is its own, as Spark draws it.
+    // A surfel's screen filter is a max, not a convolution: the larger of its
+    // disc and a gaussian of half a pixel squared. Over a pixel the disc wins
+    // and the opacity is its own, as Spark draws it; under one the filter's
+    // blob is drawn at the disc's opacity, and a far cut's merges -- 42 % of
+    // them surfels under half a pixel, a door's trim among them -- came out
+    // dark dashes a pixel and a half wide where the trim is a faint line
+    // (research, T34). So a surfel pays back its opacity by area: its disc's
+    // over the area drawn. The filter is a max, not a convolution, so the
+    // drawn shape is the disc where it is wider than half a pixel squared and
+    // the filter where not -- axis by axis on the disc's projected ellipse;
+    // a sum (disc + filter) cut a pixel-wide surfel by a third, and the near
+    // frame lost 1.8 dB (T43).
+    float surfelPaid = 1.0;
+    if (params.antialias != 0) {
+        const float a0 = a - 0.3, c0 = c - 0.3;
+        const float half = 0.5 * (a0 + c0);
+        const float split = sqrt(max(0.25 * (a0 - c0) * (a0 - c0) + b * b, 0.0));
+        const float l1 = max(half + split, 0.0), l2 = max(half - split, 0.0);
+        surfelPaid = min(sqrt(l1 * l2 / (max(l1, 0.5) * max(l2, 0.5))), 1.0);
+    }
     // An opacity over 1 is Spark's harder kernel (frame's falloffAlpha), drawn
     // as it is: no mip filter pays it back.
     const float alphaOwn = sheet   ? paid * max(posOpacity.w - 1.0 / 255.0, 0.0)
-                           : (surfel || posOpacity.w > 1.0) ? posOpacity.w
+                           : posOpacity.w > 1.0 ? posOpacity.w
+                           : surfel ? posOpacity.w * surfelPaid
                                     : paidOpacity(posOpacity.w, paid);
     const float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
     if (!(alpha >= 1.0 / 255.0)) {
