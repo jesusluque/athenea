@@ -231,11 +231,16 @@ Result<void> occlusionMasksShared(gpu::ShaderLibrary& library, const std::vector
     if (inputs.empty() || inputs.size() != outputs.size()) {
         return Error(ErrorCode::InvalidArgument, "occlusion: as many outputs as trees");
     }
-    // The trees one after another: each one's indices moved past those
-    // before it, a tree without bits all open, without glass none.
-    OcclusionInput all;
-    std::vector<uint32_t> first;
+    // EACH PIECE ITS SHARE BY NEED (research): fitted alone at the whole
+    // size, a piece uses as many entries as its masks are varied -- a
+    // grille's 2773 on a third of a fender's nodes -- while one fit over all
+    // the pieces handed entries out by how many nodes each brought (the
+    // grille got 363). So each piece is fitted once alone, the codebook
+    // shared out in proportion to the entries each used, and each fitted
+    // again within its share; its indices then point past the shares before.
+    std::vector<OcclusionInput> trees(inputs.size());
     std::vector<std::string> where(inputs.size());
+    std::vector<uint32_t> used(inputs.size(), 0u);
     for (size_t t = 0; t < inputs.size(); ++t) {
         auto raw = readParticleFieldRecords(inputs[t], {}, &where[t]);
         if (!raw) return std::move(raw).error();
@@ -243,38 +248,49 @@ Result<void> occlusionMasksShared(gpu::ShaderLibrary& library, const std::vector
         if (!arrays) return std::move(arrays).error();
         auto in = occlusionInputOf(*arrays, raw->count);
         if (!in) return std::move(in).error();
-        if (t == 0) {
-            const OcclusionInput upped = occlusionUpOf(inputs[t], {});
-            std::copy(std::begin(upped.up), std::end(upped.up), std::begin(all.up));
-        }
-        const uint32_t offset = static_cast<uint32_t>(all.parent.size());
-        first.push_back(offset);
-        for (uint32_t up : in->parent) {
-            all.parent.push_back(up + offset);
-        }
-        all.leaves.insert(all.leaves.end(), in->leaves.begin(), in->leaves.end());
-        if (in->bits.empty()) {
-            all.bits.insert(all.bits.end(), size_t{raw->count} * kWords, 0xFFFFFFFFu);
-        } else {
-            all.bits.insert(all.bits.end(), in->bits.begin(), in->bits.end());
-        }
-        if (in->glass.empty()) {
-            all.glass.insert(all.glass.end(), raw->count, 0u);
-        } else {
-            all.glass.insert(all.glass.end(), in->glass.begin(), in->glass.end());
+        trees[t] = occlusionUpOf(inputs[t], std::move(*in));
+        auto alone = occlusionBook(library, trees[t], clusters);
+        if (!alone) return std::move(alone).error();
+        std::vector<uint8_t> seen(clusters, 0u);
+        for (uint32_t e : alone->index) {
+            if (e < clusters && !seen[e]) {
+                seen[e] = 1u;
+                ++used[t];
+            }
         }
     }
-    first.push_back(static_cast<uint32_t>(all.parent.size()));
-    auto book = occlusionBook(library, all, clusters);
-    if (!book) return std::move(book).error();
-    std::printf("occlusion: %zu trees, %zu gaussians; masks climbed in %u levels; %u nodes worth least left open; a "
-                "codebook of %u shared opens %u of their %u closed cells (%.1f%%)\n",
-                inputs.size(), all.parent.size(), book->levels, book->spared, clusters, book->reopened, book->closed,
-                book->closed > 0 ? 100.0 * book->reopened / book->closed : 0.0);
+    uint64_t need = 0;
+    for (uint32_t u : used) need += u;
+    constexpr uint32_t kLeast = 16;   // entry 0 and a few: a piece that culls nothing still has a place
+    std::vector<uint32_t> share(inputs.size(), kLeast);
+    {
+        const uint32_t spare = clusters > kLeast * inputs.size() ? clusters - kLeast * uint32_t(inputs.size()) : 0u;
+        for (size_t t = 0; t < inputs.size(); ++t) {
+            share[t] += need > 0 ? uint32_t(uint64_t{spare} * used[t] / need) : spare / uint32_t(inputs.size());
+        }
+    }
+    OcclusionBook book;
+    std::vector<std::vector<uint32_t>> indices(inputs.size());
+    for (size_t t = 0; t < inputs.size(); ++t) {
+        auto one = occlusionBook(library, trees[t], share[t]);
+        if (!one) return std::move(one).error();
+        const uint32_t base = static_cast<uint32_t>(book.book.size() / kWords);
+        indices[t] = std::move(one->index);
+        for (uint32_t& e : indices[t]) e += base;
+        book.book.insert(book.book.end(), one->book.begin(), one->book.end());
+        book.closed += one->closed;
+        book.reopened += one->reopened;
+        std::printf("occlusion: %s uses %u entries alone, %u in the shared codebook; reopens %.1f%% of its closed cells\n",
+                    inputs[t].filename().string().c_str(), used[t], share[t],
+                    one->closed > 0 ? 100.0 * one->reopened / one->closed : 0.0);
+    }
+    std::printf("occlusion: %zu trees, a codebook of %zu shared by need; it reopens %u of their %u closed cells (%.1f%%)\n",
+                inputs.size(), book.book.size() / kWords, book.reopened, book.closed,
+                book.closed > 0 ? 100.0 * book.reopened / book.closed : 0.0);
     for (size_t t = 0; t < inputs.size(); ++t) {
         OcclusionBook one;
-        one.index.assign(book->index.begin() + first[t], book->index.begin() + first[t + 1]);
-        one.book = book->book;
+        one.index = std::move(indices[t]);
+        one.book = book.book;
         const std::vector<float> keep(one.index.size(), std::numeric_limits<float>::quiet_NaN());
         ATHENEA_TRY(writeTreeOpacities(inputs[t], outputs[t], where[t], keep, "", "", occlusionArrays(one)));
         std::printf("occlusion: wrote %s\n", outputs[t].string().c_str());

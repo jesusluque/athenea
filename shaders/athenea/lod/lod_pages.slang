@@ -152,3 +152,70 @@ void treeErrorPagesCount(uint3 tid: SV_DispatchThreadID) {
         }
     }
 }
+
+// THE PAGE TABLE A TREE CARRIES (`decimate --tree-pages`): each node's page,
+// and for each page what a player tests it by without reading its nodes --
+// its band, its nodes and the first of them in page order, the box that
+// holds every node's sphere (so the distance to it is the nearest any node
+// stands), and the largest and smallest error among its nodes' parents (it is
+// needed where the largest, projected from the box, passes the threshold).
+// A node reads only its ancestors, in coarser bands: a page depends on none
+// finer than itself.
+RWStructuredBuffer<uint>  filePage;     // file gaussian -> its page
+RWStructuredBuffer<uint>  pageInfo;     // page -> band, nodes, first (3 words)
+RWStructuredBuffer<uint>  pageBox;      // page -> lo xyz, hi xyz, ordered as uints (6 words)
+RWStructuredBuffer<uint>  pageError;    // page -> largest, smallest parent error (2 words)
+RWStructuredBuffer<float> pageBounds;   // page -> lo xyz, hi xyz, largest, smallest (8 floats)
+
+uint ordered(float f) {
+    const uint b = asuint(f);
+    return (b & 0x80000000u) != 0u ? ~b : b | 0x80000000u;
+}
+
+float unordered(uint u) {
+    return asfloat((u & 0x80000000u) != 0u ? u & 0x7FFFFFFFu : ~u);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeBandTable(uint3 tid: SV_DispatchThreadID) {
+    const uint at = tid.x;
+    if (at >= params.count) {
+        return;
+    }
+    const uint i = sortValues[at];
+    const uint band = sortHi[at];
+    const uint page = bandPage[band] + (at - bandStart[band]) / max(params.maxRun, 1u);
+    if (page >= params.pageCount) {
+        return;
+    }
+    filePage[i] = page;
+    pageInfo[page * 3] = band;
+    InterlockedAdd(pageInfo[page * 3 + 1], 1u);
+    InterlockedMin(pageInfo[page * 3 + 2], at);
+    const float3 c = centre[i].xyz;
+    const float r = asfloat(radiusBits[i]);
+    [unroll] for (uint k = 0; k < 3; ++k) {
+        InterlockedMin(pageBox[page * 6 + k], ordered(c[k] - r));
+        InterlockedMax(pageBox[page * 6 + 3 + k], ordered(c[k] + r));
+    }
+    const uint up = parent[i];
+    const bool root = up == i || up == kRoot || up >= params.fileCount;
+    const uint e = root ? asuint(3.0e38) : errorBits[up];
+    InterlockedMax(pageError[page * 2], e);
+    InterlockedMin(pageError[page * 2 + 1], e);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void treeBandTableOut(uint3 tid: SV_DispatchThreadID) {
+    const uint p = tid.x;
+    if (p >= params.pageCount) {
+        return;
+    }
+    [unroll] for (uint k = 0; k < 6; ++k) {
+        pageBounds[p * 8 + k] = unordered(pageBox[p * 6 + k]);
+    }
+    pageBounds[p * 8 + 6] = asfloat(pageError[p * 2]);
+    pageBounds[p * 8 + 7] = asfloat(pageError[p * 2 + 1]);
+}

@@ -931,6 +931,62 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             widthKernel->dispatch(batch, {n, 1, 1}, bind);
             ATHENEA_TRY(batch.submit(true));
         }
+        // EACH NODE'S ERROR AND SPHERE, climbed until every parent covers its
+        // children (lod_tree_cut.slang, research 100): with `bounds` the colour
+        // spread and normal cone in it. In world units, no view.
+        const auto errorsUp = [&](bool bounds) -> Result<uint32_t> {
+                auto own = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorOwn");
+                auto up = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorUp");
+                if (!own || !up) return Error(ErrorCode::InternalError, "decimate: the error cut's kernels");
+                {
+                    gpu::CommandBatch batch(device);
+                    own->dispatch(batch, {n, 1, 1}, bind);
+                    ATHENEA_TRY(batch.submit(true));
+                }
+                // Climb a kernel up the tree until no parent is raised.
+                const auto climb = [&](gpu::ComputeKernel& kernel) -> Result<uint32_t> {
+                    uint32_t rounds = 0;
+                    for (; rounds < 512; ++rounds) {
+                        const uint32_t zero = 0;
+                        ATHENEA_TRY(changed->write(device, 0, 4, &zero));
+                        gpu::CommandBatch batch(device);
+                        kernel.dispatch(batch, {fileCount, 1, 1}, bind);
+                        ATHENEA_TRY(batch.submit(true));
+                        uint32_t raised = 0;
+                        ATHENEA_TRY(changed->read(device, 0, 4, &raised));
+                        if (raised == 0) {
+                            break;
+                        }
+                    }
+                    return rounds;
+                };
+                uint32_t rounds = 0;
+                if (bounds) {
+                    // The bounds and the sphere first, then each node's own error
+                    // with them, then the error's climb.
+                    auto boundsUp = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeBoundsUp");
+                    auto bounded = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorBounded");
+                    auto errorClimb = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorClimb");
+                    if (!boundsUp || !bounded || !errorClimb) {
+                        return Error(ErrorCode::InternalError, "decimate: the bounds' kernels");
+                    }
+                    auto first = climb(*boundsUp);
+                    if (!first) return std::move(first).error();
+                    {
+                        gpu::CommandBatch batch(device);
+                        bounded->dispatch(batch, {n, 1, 1}, bind);
+                        ATHENEA_TRY(batch.submit(true));
+                    }
+                    auto second = climb(*errorClimb);
+                    if (!second) return std::move(second).error();
+                    rounds = *first + *second;
+                } else {
+                    auto both = climb(*up);
+                    if (!both) return std::move(both).error();
+                    rounds = *both;
+                }
+            return rounds;
+        };
         // EVERY MERGE'S REAL COVERAGE (treeCoverage): its opacity, the rest NaN.
         const auto treeCoverageOf = [&](std::vector<float>& opacities) -> Result<void> {
             if (startArray == nullptr) {
@@ -1030,57 +1086,11 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             // THE CUT BY ERROR (lod_tree_cut.slang, research 100): each node's
             // own error and sphere, climbed until every parent covers its
             // children, then the one cut at the threshold.
-            auto own = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorOwn");
-            auto up = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorUp");
             auto keepByError = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorKeep");
-            if (!own || !up || !keepByError) return Error(ErrorCode::InternalError, "decimate: the error cut's kernels");
-            {
-                gpu::CommandBatch batch(device);
-                own->dispatch(batch, {n, 1, 1}, bind);
-                ATHENEA_TRY(batch.submit(true));
-            }
-            // Climb a kernel up the tree until no parent is raised.
-            const auto climb = [&](gpu::ComputeKernel& kernel) -> Result<uint32_t> {
-                uint32_t rounds = 0;
-                for (; rounds < 512; ++rounds) {
-                    const uint32_t zero = 0;
-                    ATHENEA_TRY(changed->write(device, 0, 4, &zero));
-                    gpu::CommandBatch batch(device);
-                    kernel.dispatch(batch, {fileCount, 1, 1}, bind);
-                    ATHENEA_TRY(batch.submit(true));
-                    uint32_t raised = 0;
-                    ATHENEA_TRY(changed->read(device, 0, 4, &raised));
-                    if (raised == 0) {
-                        break;
-                    }
-                }
-                return rounds;
-            };
-            uint32_t rounds = 0;
-            if (o.cutBounds) {
-                // The bounds and the sphere first, then each node's own error
-                // with them, then the error's climb.
-                auto boundsUp = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeBoundsUp");
-                auto bounded = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorBounded");
-                auto errorClimb = gpu::ComputeKernel::create(library, "athenea/lod/lod_tree_cut", "treeErrorClimb");
-                if (!boundsUp || !bounded || !errorClimb) {
-                    return Error(ErrorCode::InternalError, "decimate: the bounds' kernels");
-                }
-                auto first = climb(*boundsUp);
-                if (!first) return std::move(first).error();
-                {
-                    gpu::CommandBatch batch(device);
-                    bounded->dispatch(batch, {n, 1, 1}, bind);
-                    ATHENEA_TRY(batch.submit(true));
-                }
-                auto second = climb(*errorClimb);
-                if (!second) return std::move(second).error();
-                rounds = *first + *second;
-            } else {
-                auto both = climb(*up);
-                if (!both) return std::move(both).error();
-                rounds = *both;
-            }
+            if (!keepByError) return Error(ErrorCode::InternalError, "decimate: the error cut's kernels");
+            auto climbed = errorsUp(o.cutBounds);
+            if (!climbed) return std::move(climbed).error();
+            const uint32_t rounds = *climbed;
             const auto keepAt = [&](float t) -> Result<uint32_t> {
                 threshold = t;
                 const uint32_t zero = 0;
