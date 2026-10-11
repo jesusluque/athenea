@@ -58,6 +58,7 @@ void addDecimate(CLI::App& app) {
         bool occlusionByPart = false;
         uint32_t cutPages = 0;
         float cutGuard = 4.0F;
+        bool cutOcclusion = false;
         std::string markClosed;
         uint32_t treePages = 0;
         uint32_t objectGroups = 0;
@@ -167,6 +168,8 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--mark-closed", o->markClosed,
                     "the input is a merge tree: mark the nodes of these parts closed shells (a file of prim paths, "
                     "one a line), for --cut-cull-back");
+    cmd->add_flag("--cut-occlusion", o->cutOcclusion,
+                  "--cut-error: leave out the nodes whose occlusion mask is closed toward --camera (outside the asset)");
     cmd->add_option("--cut-guard", o->cutGuard,
                     "--cut-bounds: how many times its error a merge past the guards (across a fold, a colour edge) "
                     "counts (default 4)");
@@ -289,6 +292,7 @@ void addDecimate(CLI::App& app) {
         options.occlusionClusters = o->occlusionClusters;
         options.cutPages = o->cutPages;
         options.cutGuard = o->cutGuard;
+        options.cutOcclusion = o->cutOcclusion;
         options.markClosed = o->markClosed;
         options.treePages = o->treePages;
         options.objectGroups = o->objectGroups;

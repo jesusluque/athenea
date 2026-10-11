@@ -380,6 +380,9 @@ struct DecimateStageOptions {
     /// fold, a colour edge, glass with paint) counts this many times its own
     /// error, and at least twice its size.
     float                 cutGuard = 4.0F;
+    /// With `cutError`: leave out a node whose occlusion mask is closed toward
+    /// the camera (the eye must stand outside the asset's box).
+    bool                  cutOcclusion = false;
     /// The input is a merge tree: write `primvars:athenea:splat:closed` a node
     /// from this list of closed parts' prim paths (one a line), by its
     /// cryptoObject, and the whole tree.

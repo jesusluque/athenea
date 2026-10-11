@@ -13,6 +13,7 @@
 // names the file gaussian each store splat is.
 module lod_tree_cut;
 import athenea.common.packing;
+import athenea.common.octahedral;
 import lod_blob;
 
 struct CutParams {
@@ -32,6 +33,7 @@ struct CutParams {
     uint   fileCount;       ///< the file's gaussians, which the tree's indices count: past `count` where the
                             ///< loader dropped some (under 1/255)
     uint   pageCount;       ///< treePagesCount: the tree's pages
+    uint   occlusion;       ///< 1: a node whose occlusion mask is closed toward the eye is not drawn
 };
 
 StructuredBuffer<uint>    storeOrder;   // store splat -> file gaussian
@@ -115,6 +117,27 @@ RWStructuredBuffer<float4> facing;      // file gaussian -> normal
 StructuredBuffer<uint>     storeNormals;   // the store's, packed (packing's unpackNormal)
 StructuredBuffer<float>    roughness;      // file gaussian -> its roughness
 StructuredBuffer<uint>     cullable;       // file gaussian -> 1 where its back may go: a closed shell's, not glass
+StructuredBuffer<uint>     occlusionIndex; // file gaussian -> its entry in the occlusion codebook
+StructuredBuffer<uint>     occlusionBook;  // 8 words an entry, 16 x 16 cells, open = 1 (occlusion_mask)
+
+/// CLOSED TOWARD THE EYE, as a player reads it (occlusion_mask.slang): the
+/// four cells the direction from the node to the eye falls between (clamped,
+/// as splatCellsOpen reads a TX transfer's), all closed in the node's entry.
+/// Only for an eye outside the asset's box -- the caller's to see to.
+bool occludedFrom(uint i, float3 from) {
+    const float3 d = normalize(params.eye.xyz - from);
+    const float2 at = octEncode(d) * 16.0 - 0.5;
+    const int2 lo = int2(floor(at));
+    const uint e = occlusionIndex[i];
+    [unroll] for (uint k = 0; k < 4; ++k) {
+        const int2 cell = clamp(lo + int2(k & 1, k >> 1), int2(0), int2(15));
+        const uint index = uint(cell.y) * 16u + uint(cell.x);
+        if (((occlusionBook[e * 8u + (index >> 5u)] >> (index & 31u)) & 1u) != 0u) {
+            return false;
+        }
+    }
+    return true;
+}
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -276,6 +299,9 @@ void treeErrorKeep(uint3 tid: SV_DispatchThreadID) {
         if (theta < 1.5707963 && dot(facing[i].xyz, v) < -sin(theta)) {
             keep = false;
         }
+    }
+    if (keep && params.occlusion != 0 && occludedFrom(i, centre[i].xyz)) {
+        keep = false;
     }
     score[s] = keep ? 1.0 : 0.0;
     if (keep) {

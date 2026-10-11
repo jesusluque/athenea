@@ -766,6 +766,27 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
         }
         auto cullables = upload(cullableWords, "decimate.cutCullable");
+        // THE OCCLUSION MASKS (--cut-occlusion): each node's entry and the
+        // codebook, a constant of the field.
+        std::vector<uint32_t> occlusionWords(1, 0u), occlusionBookWords(8, 0xFFFFFFFFu);
+        if (o.cutOcclusion) {
+            for (const GaussianArray& a : arrays) {
+                if (ends(a.name, "athenea:splat:occlusionIndex") && a.integer && a.width == 1) {
+                    occlusionWords = a.values[0];
+                }
+            }
+            const pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(input.string());
+            pxr::VtIntArray book;
+            if (!stage || occlusionWords.size() != fileCount ||
+                !stage->GetPrimAtPath(pxr::SdfPath(where))
+                     .GetAttribute(pxr::TfToken("primvars:athenea:splat:occlusionCodebook"))
+                     .Get(&book)) {
+                return Error(ErrorCode::InvalidArgument, "decimate: --cut-occlusion needs the tree's occlusion masks");
+            }
+            occlusionBookWords.assign(book.begin(), book.end());
+        }
+        auto occlusionIndexBuf = upload(occlusionWords, "decimate.cutOcclusionIndex");
+        auto occlusionBookBuf = upload(occlusionBookWords, "decimate.cutOcclusionBook");
         if (!spreadBits || !coneBits || !looks || !facings || !roughs) {
             return Error(ErrorCode::OutOfMemory, "decimate: the cut's bounds");
         }
@@ -795,6 +816,9 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             cursor["facing"].setBinding(facings->rhi());
             cursor["roughness"].setBinding(roughs->rhi());
             cursor["cullable"].setBinding(cullables->rhi());
+            cursor["occlusionIndex"].setBinding(occlusionIndexBuf->rhi());
+            cursor["occlusionBook"].setBinding(occlusionBookBuf->rhi());
+            cursor["params"]["occlusion"].setData(uint32_t{o.cutOcclusion ? 1u : 0u});
             cursor["storeOf"].setBinding(storeOfs->rhi());
             cursor["runStart"].setBinding(starts->rhi());
             cursor["outPositions"].setBinding(from.splats.positions.rhi());
