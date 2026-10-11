@@ -456,18 +456,24 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // them surfels under half a pixel, a door's trim among them -- came out
     // dark dashes a pixel and a half wide where the trim is a faint line
     // (research, T34). So a surfel pays back its opacity by area: its disc's
-    // over the area drawn. The filter is a max, not a convolution, so the
-    // drawn shape is the disc where it is wider than half a pixel squared and
-    // the filter where not -- axis by axis on the disc's projected ellipse;
-    // a sum (disc + filter) cut a pixel-wide surfel by a third, and the near
-    // frame lost 1.8 dB (T43).
+    // over the area drawn. What splat_blend draws is the union of the disc and
+    // a ROUND gaussian of half a pixel squared at its centre (surfelPower's
+    // min of powers), so the area drawn is the disc's plus the filter's less
+    // their overlap -- in the disc's own axes, sqrt(l1 l2) + 1/2 -
+    // sqrt(min(l1, 1/2) min(l2, 1/2)) against sqrt(l1 l2). One wherever the
+    // disc is wider than the filter both ways. Stretching the disc to the
+    // filter axis by axis (T43) overcounted a long thin trim's area and drew
+    // it at half its mass (sparkwebgpu-ce: 0.44 for 2 x 0.15 px); adding the
+    // two (disc + filter) cut a pixel-wide surfel by a third.
     float surfelPaid = 1.0;
     if (params.antialias != 0) {
         const float a0 = a - 0.3, c0 = c - 0.3;
         const float half = 0.5 * (a0 + c0);
         const float split = sqrt(max(0.25 * (a0 - c0) * (a0 - c0) + b * b, 0.0));
         const float l1 = max(half + split, 0.0), l2 = max(half - split, 0.0);
-        surfelPaid = min(sqrt(l1 * l2 / (max(l1, 0.5) * max(l2, 0.5))), 1.0);
+        const float disc = sqrt(l1 * l2);
+        const float drawn = disc + 0.5 - sqrt(min(l1, 0.5) * min(l2, 0.5));
+        surfelPaid = drawn > 1.0e-12 ? min(disc / drawn, 1.0) : 1.0;
     }
     // An opacity over 1 is Spark's harder kernel (frame's falloffAlpha), drawn
     // as it is: no mip filter pays it back.
