@@ -4,6 +4,8 @@
 // `athenea decimate`, here so that a test can run what the command runs.
 #include "athenea/usd/Export.h"
 
+#include <limits>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -597,7 +599,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
         }
     }
-    if (o.cutBudget > 0 || o.cutPixels > 0.0F || o.cutError > 0.0F || o.treeCoverage) {
+    if (o.cutBudget > 0 || o.cutPixels > 0.0F || o.cutError > 0.0F || o.treeCoverage || o.occlusionClusters > 0) {
         // A CUT THROUGH THE MERGE TREE the input is (lod_tree_cut.slang):
         // each gaussian's width on the camera's screen, then the threshold
         // searched whose cut holds the budget, and the store pruned to it.
@@ -698,8 +700,8 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             widthKernel->dispatch(batch, {n, 1, 1}, bind);
             ATHENEA_TRY(batch.submit(true));
         }
-        if (o.treeCoverage) {
-            // EVERY MERGE'S REAL COVERAGE, the whole tree kept.
+        // EVERY MERGE'S REAL COVERAGE (treeCoverage): its opacity, the rest NaN.
+        const auto treeCoverageOf = [&](std::vector<float>& opacities) -> Result<void> {
             if (startArray == nullptr) {
                 return Error(ErrorCode::InvalidArgument, "decimate: --tree-coverage needs the tree's lodStart");
             }
@@ -729,7 +731,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             // A record per file gaussian, not per store splat: the loader
             // drops what draws nothing (a merge of opacity 0), and those
             // keep what the file says (NaN: not written).
-            const uint32_t records = raw->count;
+            const uint32_t records = static_cast<uint32_t>(opacities.size());
             gpu::BufferDesc fileDesc;
             fileDesc.bytes = uint64_t{records} * 4;
             fileDesc.elementBytes = 4;
@@ -750,16 +752,151 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                 });
                 ATHENEA_TRY(batch.submit(true));
             }
-            auto opacities = fileOpacity->readAll<float>(device);
-            if (!opacities) return std::move(opacities).error();
-            opacities->resize(records);
-            if (!usd) {
-                return Error(ErrorCode::InvalidArgument, "decimate: --tree-coverage writes a USD tree");
+            auto read = fileOpacity->readAll<float>(device);
+            if (!read) return std::move(read).error();
+            read->resize(records);
+            opacities = std::move(*read);
+            std::printf("decimate: every merge's opacity is what its leaves cover\n");
+            return ok();
+        };
+        // EACH NODE'S OCCLUSION MASK (occlusion_mask.slang): the cells any
+        // leaf under it is seen from, grown by one, open on glass; then a
+        // codebook that never closes what a node has open.
+        const auto occlusionMasks = [&](uint32_t records, std::vector<GaussianArray>& added) -> Result<void> {
+            const GaussianArray* bitsArray = nullptr;
+            const GaussianArray* glassArray = nullptr;
+            for (const GaussianArray& a : arrays) {
+                if (ends(a.name, "athenea:splat:shadowBits")) bitsArray = &a;
+                if (ends(a.name, "athenea:splat:transmission") && a.width == 1 && !a.integer) glassArray = &a;
             }
-            ATHENEA_TRY(writeTreeOpacities(input, output, where, *opacities, "primvars:athenea:splat:coverage",
-                                           "primvars:athenea:splat:coverageMass"));
-            std::printf("decimate: every merge's opacity is what its leaves cover (%u gaussians, in the file's "
-                        "order); wrote %s\n", records, output.string().c_str());
+            if (bitsArray != nullptr && bitsArray->width != 8) {
+                return Error(ErrorCode::InvalidArgument,
+                             "decimate: --occlusion-mask reads 16 x 16 shadow bits (eight ints a gaussian)");
+            }
+            constexpr uint32_t kWords = 8;
+            const uint32_t clusters = o.occlusionClusters;
+            auto bitsBuf = upload(bitsArray != nullptr ? bitsArray->values[0] : std::vector<uint32_t>(kWords, 0u),
+                                  "decimate.occlusionBits");
+            auto glassBuf = upload(glassArray != nullptr ? glassArray->values[0] : std::vector<uint32_t>(1, 0u),
+                                   "decimate.occlusionGlass");
+            auto mask = upload(std::vector<uint32_t>(uint64_t{records} * kWords, 0u), "decimate.occlusionMask");
+            auto moved = upload(std::vector<uint32_t>(1, 0u), "decimate.occlusionChanged");
+            auto centroids = upload(std::vector<uint32_t>(uint64_t{clusters} * kWords, 0u), "decimate.occlusionBook");
+            auto gathered = upload(std::vector<uint32_t>(uint64_t{clusters} * kWords, 0u), "decimate.occlusionNext");
+            auto memberCount = upload(std::vector<uint32_t>(clusters, 0u), "decimate.occlusionMembers");
+            auto assigned = upload(std::vector<uint32_t>(records, 0u), "decimate.occlusionAssigned");
+            auto lostCells = upload(std::vector<uint32_t>(2, 0u), "decimate.occlusionLost");
+            if (!bitsBuf || !glassBuf || !mask || !moved || !centroids || !gathered || !memberCount || !assigned ||
+                !lostCells) {
+                return Error(ErrorCode::OutOfMemory, "decimate: the occlusion masks");
+            }
+            const char* names[] = {"occlusionLeaf", "occlusionUp", "occlusionSeed", "occlusionAssign",
+                                   "occlusionUpdate", "occlusionLost"};
+            std::vector<gpu::ComputeKernel> k;
+            for (const char* name : names) {
+                auto made = gpu::ComputeKernel::create(library, "athenea/lod/occlusion_mask", name);
+                if (!made) return std::move(made).error();
+                k.push_back(std::move(*made));
+            }
+            uint32_t subset = 0;
+            const auto bindMask = [&](rhi::ShaderCursor cursor) {
+                cursor["bits"].setBinding(bitsBuf->rhi());
+                cursor["transmission"].setBinding(glassBuf->rhi());
+                cursor["parent"].setBinding(parents->rhi());
+                cursor["leaves"].setBinding(leaves->rhi());
+                cursor["mask"].setBinding(mask->rhi());
+                cursor["changed"].setBinding(moved->rhi());
+                cursor["centroids"].setBinding(centroids->rhi());
+                cursor["next"].setBinding(gathered->rhi());
+                cursor["members"].setBinding(memberCount->rhi());
+                cursor["assigned"].setBinding(assigned->rhi());
+                cursor["lost"].setBinding(lostCells->rhi());
+                cursor["params"]["count"].setData(records);
+                cursor["params"]["words"].setData(kWords);
+                cursor["params"]["side"].setData(uint32_t{16});
+                cursor["params"]["clusters"].setData(clusters);
+                cursor["params"]["hasBits"].setData(uint32_t{bitsArray != nullptr ? 1u : 0u});
+                cursor["params"]["hasGlass"].setData(uint32_t{glassArray != nullptr ? 1u : 0u});
+                cursor["params"]["subset"].setData(subset);
+            };
+            {
+                gpu::CommandBatch batch(device);
+                k[0].dispatch(batch, {records, 1, 1}, bindMask);
+                ATHENEA_TRY(batch.submit(true));
+            }
+            // The climb, eight levels a submit, until no mask opens.
+            uint32_t rounds = 0;
+            for (uint32_t open = 1; open != 0 && rounds < 512; rounds += 8) {
+                const uint32_t zero = 0;
+                ATHENEA_TRY(moved->write(device, 0, 4, &zero));
+                gpu::CommandBatch batch(device);
+                for (int r = 0; r < 8; ++r) {
+                    k[1].dispatch(batch, {records, 1, 1}, bindMask);
+                    batch.markDirty();
+                }
+                ATHENEA_TRY(batch.submit(true));
+                ATHENEA_TRY(moved->read(device, 0, 4, &open));
+            }
+            {
+                gpu::CommandBatch batch(device);
+                k[2].dispatch(batch, {clusters, 1, 1}, bindMask);
+                batch.markDirty();
+                for (uint32_t round = 0; round < 8; ++round) {
+                    subset = round == 0 ? 0u : 1u;
+                    k[3].dispatch(batch, {records, 1, 1}, bindMask);
+                    batch.markDirty();
+                    k[4].dispatch(batch, {clusters, 1, 1}, bindMask);
+                    batch.markDirty();
+                }
+                k[5].dispatch(batch, {records, 1, 1}, bindMask);
+                ATHENEA_TRY(batch.submit(true));
+            }
+            uint32_t lost[2] = {0, 0};
+            ATHENEA_TRY(lostCells->read(device, 0, 8, lost));
+            auto index = assigned->readAll<uint32_t>(device);
+            auto book = centroids->readAll<uint32_t>(device);
+            if (!index || !book) return Error(ErrorCode::IoFailure, "decimate: the occlusion masks back");
+            index->resize(records);
+            book->resize(size_t{clusters} * kWords);
+            std::printf("decimate: occlusion masks climbed in %u levels; %u closed cells over the nodes, a codebook of "
+                        "%u opens %u of them (%.1f%%)\n",
+                        rounds, lost[1], clusters, lost[0], lost[1] > 0 ? 100.0 * lost[0] / lost[1] : 0.0);
+            GaussianArray idx;
+            idx.name = "primvars:athenea:splat:occlusionIndex";
+            idx.typeName = "int[]";
+            idx.integer = true;
+            idx.interpolation = "vertex";
+            idx.values.push_back(std::move(*index));
+            GaussianArray cb;
+            cb.name = "primvars:athenea:splat:occlusionCodebook";
+            cb.typeName = "int[]";
+            cb.integer = true;
+            cb.interpolation = "constant";
+            cb.values.push_back(std::move(*book));
+            added.push_back(std::move(idx));
+            added.push_back(std::move(cb));
+            return ok();
+        };
+        if (o.treeCoverage || o.occlusionClusters > 0) {
+            // THE WHOLE TREE WRITTEN AGAIN, in the file's order (its own
+            // arrays are file indices), with what a player cuts it by.
+            const uint32_t records = raw->count;
+            std::vector<float> opacities(records, std::numeric_limits<float>::quiet_NaN());
+            std::vector<GaussianArray> added;
+            if (o.treeCoverage) {
+                ATHENEA_TRY(treeCoverageOf(opacities));
+            }
+            if (o.occlusionClusters > 0) {
+                ATHENEA_TRY(occlusionMasks(records, added));
+            }
+            if (!usd) {
+                return Error(ErrorCode::InvalidArgument, "decimate: --tree-coverage and --occlusion-mask write a USD tree");
+            }
+            ATHENEA_TRY(writeTreeOpacities(input, output, where, opacities,
+                                           o.treeCoverage ? "primvars:athenea:splat:coverage" : "",
+                                           "primvars:athenea:splat:coverageMass", added));
+            std::printf("decimate: wrote the tree %s (%u gaussians, in the file's order)\n", output.string().c_str(),
+                        records);
             return stats;
         } else if (o.cutError > 0.0F) {
             // THE CUT BY ERROR (lod_tree_cut.slang, research 100): each node's

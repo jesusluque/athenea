@@ -261,10 +261,12 @@ struct GaussianArray {
 /// does, and on the field at `prim` each opacity where `opacities` (file
 /// order, one a gaussian) holds a number rather than NaN; nothing reordered,
 /// since the tree's arrays are file indices. `renameFrom`, where the source
-/// has it, is moved to `renameTo`.
+/// has it, is moved to `renameTo`. Each of `added` (int[], one word an
+/// element) becomes a primvar of its interpolation.
 [[nodiscard]] Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::filesystem::path& output,
                                               const std::string& prim, const std::vector<float>& opacities,
-                                              const std::string& renameFrom, const std::string& renameTo);
+                                              const std::string& renameFrom, const std::string& renameTo,
+                                              const std::vector<GaussianArray>& added = {});
 
 /// What `decimateStage` is asked.
 struct DecimateStageOptions {
@@ -317,6 +319,13 @@ struct DecimateStageOptions {
     /// really cover (as `cutCoverage`, for every node, runs up to 4096), and the
     /// whole tree is written -- so a player cutting it reads the coverage.
     bool                  treeCoverage = false;
+    /// The input is a merge tree with a TX transfer's shadow bits: each node
+    /// gets an occlusion mask (occlusion_mask.slang) -- the cells any leaf
+    /// under it is seen from, one cell of margin, all open on glass -- kept as
+    /// an index a gaussian into a codebook of this many entries
+    /// (`primvars:athenea:splat:occlusionIndex`, `occlusionCodebook`), and the
+    /// whole tree is written. 0: none.
+    uint32_t              occlusionClusters = 0;
     /// THE TRANSFER THROUGH A CODEC AND BACK (transfer_codec.slang): a
     /// clustered PCA basis -- `transferClusters` centroids, `transferComponents`
     /// axes a block, f32 -- and weights of `transferBits` (8 or 4), applied to

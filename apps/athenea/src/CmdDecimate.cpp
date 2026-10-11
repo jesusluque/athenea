@@ -53,6 +53,7 @@ void addDecimate(CLI::App& app) {
         bool cutCullBack = false;
         bool cutCoverage = false;
         bool treeCoverage = false;
+        uint32_t occlusionClusters = 0;
         std::string transferBasis;
         uint32_t transferClusters = 256;
         uint32_t transferComponents = 8;
@@ -144,6 +145,10 @@ void addDecimate(CLI::App& app) {
     cmd->add_flag("--tree-coverage", o->treeCoverage,
                   "the input is a merge tree: every merge's opacity becomes what its leaves really cover, and the "
                   "whole tree is written (with --ratio 1)");
+    cmd->add_option("--occlusion-mask", o->occlusionClusters,
+                    "the input is a merge tree with 16 x 16 shadow bits: write each node's occlusion mask (where any "
+                    "leaf under it is seen from, a cell of margin, open on glass) as an index into a codebook of this "
+                    "many entries, and the whole tree (with --ratio 1)");
     cmd->add_option("--cut-pixels", o->cutPixels,
                     "the input is a merge tree: keep the cut whose merges are no wider than this on --camera's "
                     "screen (in place of --cut-budget)");
@@ -232,6 +237,7 @@ void addDecimate(CLI::App& app) {
         options.cutCullBack = o->cutCullBack;
         options.cutCoverage = o->cutCoverage;
         options.treeCoverage = o->treeCoverage;
+        options.occlusionClusters = o->occlusionClusters;
         options.transferBasis = o->transferBasis;
         options.transferClusters = o->transferClusters;
         options.transferComponents = o->transferComponents;

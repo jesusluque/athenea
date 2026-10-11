@@ -1110,7 +1110,8 @@ Result<std::vector<GaussianArray>> readGaussianArrays(const std::filesystem::pat
 
 Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::filesystem::path& output,
                                 const std::string& prim, const std::vector<float>& opacities,
-                                const std::string& renameFrom, const std::string& renameTo) {
+                                const std::string& renameFrom, const std::string& renameTo,
+                                const std::vector<GaussianArray>& added) {
     SdfLayerRefPtr source = SdfLayer::FindOrOpen(input.string());
     if (!source) {
         return Error::make(ErrorCode::IoFailure, "cannot open '{}'", input.string());
@@ -1148,7 +1149,7 @@ Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::f
         }
     }
     field.GetOpacitiesAttr().Set(values);
-    const UsdAttribute from = field.GetPrim().GetAttribute(TfToken(renameFrom));
+    const UsdAttribute from = renameFrom.empty() ? UsdAttribute() : field.GetPrim().GetAttribute(TfToken(renameFrom));
     VtValue moved;
     if (!renameFrom.empty() && from && from.Get(&moved)) {
         UsdGeomPrimvarsAPI(field.GetPrim())
@@ -1156,6 +1157,19 @@ Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::f
                            UsdGeomTokens->vertex)
             .Set(moved);
         field.GetPrim().RemoveProperty(TfToken(renameFrom));
+    }
+    for (const GaussianArray& a : added) {
+        if (a.values.empty()) {
+            continue;
+        }
+        VtIntArray v(a.values[0].size());
+        for (size_t k = 0; k < v.size(); ++k) {
+            v[k] = static_cast<int>(a.values[0][k]);
+        }
+        UsdGeomPrimvarsAPI(field.GetPrim())
+            .CreatePrimvar(TfToken(a.name.substr(std::string("primvars:").size())), SdfValueTypeNames->IntArray,
+                           TfToken(a.interpolation.empty() ? "vertex" : a.interpolation))
+            .Set(VtValue(v));
     }
     if (!copy->Save()) {
         return Error::make(ErrorCode::IoFailure, "cannot save '{}'", output.string());
