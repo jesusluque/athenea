@@ -58,6 +58,7 @@ void addDecimate(CLI::App& app) {
         uint32_t cutPages = 0;
         uint32_t treePages = 0;
         uint32_t objectGroups = 0;
+        uint32_t passes = 0;
         uint32_t objectGroup = 0;
         std::string transferBasis;
         uint32_t transferClusters = 256;
@@ -162,6 +163,9 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--tree-pages", o->treePages,
                     "the input is a merge tree: write its pages by error of this many gaussians (lodPage, "
                     "lodPageInfo, lodPageBounds), and the whole tree (with --ratio 1)");
+    cmd->add_option("--passes", o->passes,
+                    "--ratio: at most this many passes by pairs (default 60; a tree of many small parts may need more "
+                    "to reach its roots)");
     cmd->add_option("--object-groups", o->objectGroups,
                     "decimate only one group of the asset's parts: those whose cryptoObject modulo this is "
                     "--object-group (an asset too large for one pass)");
@@ -273,6 +277,9 @@ void addDecimate(CLI::App& app) {
         options.cutPages = o->cutPages;
         options.treePages = o->treePages;
         options.objectGroups = o->objectGroups;
+        if (o->passes > 0) {
+            options.pairSettings.passes = o->passes;
+        }
         options.objectGroup = o->objectGroup;
         options.transferBasis = o->transferBasis;
         options.transferClusters = o->transferClusters;
