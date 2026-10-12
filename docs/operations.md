@@ -240,6 +240,18 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--hidden-below` | degrees, -90..89 | `-90` (all round) | `--drop-hidden`: the lowest elevation a view is taken from, over the stage's horizon; `-10` for a car on a road, never seen from under it |
 | `--prune-error` | > 1 | off | first this many times fewer by removing, in `--prune-rounds` rounds, what leaves the least squared error in an orbit of `--prune-views` directions at `--prune-size` pixels (GaussianPOP's score). Measured on the Corvette's pieces: holes on every opaque surface, worse than merging everywhere but on a badge; kept for clouds that are not surfaces |
 | `--prune-rounds`, `--prune-views`, `--prune-size` | 1.., 1.., 16.. | `8`, `64`, `512` | `--prune-error`'s rounds, directions and pixels |
+| `--passes` | 1.. | `60` | `--ratio`: at most this many passes by pairs; a tree of many small parts needs more to reach its roots (the whole Corvette: 4000) |
+| `--tree-coverage` | flag | off | the input is a merge tree: every merge's opacity becomes what its leaves really cover, composited on its plane (`primvars:athenea:splat:coverage`), and its spill, the share of what it paints that its leaves do not (`primvars:athenea:splat:lodSpill`, 0 at a leaf); the whole tree is written (with `--ratio 1`) |
+| `--tree-pages` | gaussians | off | the input is a merge tree: its pages by error of this many gaussians (`lodPage`, `lodPageInfo`, `lodPageBounds`); the whole tree is written |
+| `--cut-error` | pixels | off | the input is a merge tree: keep the cut whose error, projected on `--camera`'s screen, is no more than this while its parent's is more |
+| `--cut-bounds`, `--cut-guard` | flag, > 0 | off, `4` | `--cut-error`: a node's error also bounds its leaves' colour spread and normal cone; a merge past the guards (a fold, a colour edge) counts this many times its error |
+| `--cut-cull-back` | flag | off | `--cut-bounds`: leave out the nodes whose whole cone of normals faces away from `--camera` on a closed part (`primvars:athenea:splat:closed`; never glass) |
+| `--cut-spill`, `--cut-spill-floor` | >= 0, 0..1 | `0`, `0` | `--cut-error`: a merge's spill past the floor, times this weight, added to its error. On the Corvette's grille a weight of 2 filled its holes no more than the leaves but held 82-99 % more nodes, and no floor separates the merges that fill holes from a panel's: off |
+| `--occlusion-mask` | entries | off | the input is a merge tree with 16 x 16 shadow bits: each node's occlusion mask as an index into a codebook of this many entries; the whole tree is written |
+| `--occlusion-group` | paths | -- | `--occlusion-mask`: more trees sharing one codebook with the input, each written beside the output under its own name; a tree whose output is its own path is written beside it and renamed over it |
+| `--cut-occlusion` | flag | off | `--cut-error`: leave out the nodes whose occlusion mask is closed toward `--camera` |
+| `--mark-closed` | path | -- | the input is a merge tree: a file of prim paths, one a line, whose nodes are closed shells (`primvars:athenea:splat:closed`, by `cryptoObject`) |
+| `--mark-material-roughness` | path | -- | the input is a merge tree: a file of `prim-path roughness` lines; each node gets its part's material roughness (`primvars:athenea:splat:materialRoughness`, by `cryptoObject`; -1 for a part not named) |
 
 **By pairs** (`--ratio`). Each pass, every gaussian -- or merge so far -- weighs
 a merge with its 16 neighbours along two Morton orders of the centres, and

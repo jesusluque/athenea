@@ -14046,3 +14046,28 @@ Not done: a pixel limit that applies at edges alone (the cost knows no
 edge), a closed-form refit of the merges' colours against the full cloud's
 frames (POTR, Only What Was Seen), and the hard kernel for merges that are
 not flat enough to be surfels (two thirds of them at 5.4x).
+
+## The Corvette on an iPhone: what was applied (11-12 Oct)
+
+The full write-up, with every measurement, is `docs/pieces.md` (Spanish: `docs/pieces.es.md`); the running log is
+`PIECES-PLAN.md`. In short:
+
+- **Shading.** The sharp lobes read the sky at the roughness before the bake widened it (`unwidened`); the polish
+  answers its closed part from the reflected field where the material's own roughness is a paint's
+  (`materialRoughness` on the pbr word, `kPolishFieldRoughness` 0.3); a fold's coat is held to 0.3 on paint only; the
+  per-pixel turn is split by how far it goes across the footprint -- a tube turns in full under 0.7 rad, a fold past
+  1.5 rad widens the sharp lobes instead (`foldWidened`). Tried and left out: a 0.2 rad cap on the turn, and gating
+  the sharp polish on the unwidened roughness.
+- **The merge tree.** `--mark-material-roughness`; `--tree-coverage` writes each merge's spill (`lodSpill`), and
+  `--cut-spill` weighs it -- off by default, since no per-node measure separates a grille's hole-filling merges from
+  a panel's; trees of millions of leaves are written without three copies of their arrays; the shared occlusion
+  writes a tree over itself.
+- **Bakes.** The whole car at 1280 px (8.70M leaves, 8 groups each converted with the rest hidden and the whole stage
+  traced): car crop 16.55 -> 17.88 dB, frame 22.18 -> 23.90 against the path trace. A close-up level at 5120 px: the
+  66 parts already a gaussian a triangle at 1280 px, and the panels capped at 4.5-5M leaves a part (69.5M leaves
+  done, one part and the occlusion pending).
+- **The phone** (sparkwebGPU): a contact shadow from the shadow catcher, the per-pixel sharp lobe with the pixel's
+  spread, 512 transfer clusters, synthetic roots, a draw target by frame time and a still frame of finer detail.
+
+Not done: the lamps in the bake, the chrome strip 38 % bright, the rim's near ground at 0.72, the door's open
+reflections at 1.13 (16 x 16 cells), the front bumper's lower lip.

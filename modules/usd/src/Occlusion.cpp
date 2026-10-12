@@ -10,9 +10,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <limits>
 #include <map>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "athenea/gpu/Buffer.h"
@@ -343,7 +345,19 @@ Result<void> occlusionMasksShared(gpu::ShaderLibrary& library, const std::vector
         one.index = std::move(indices[t]);
         one.book = book.book;
         const std::vector<float> keep(one.index.size(), std::numeric_limits<float>::quiet_NaN());
-        ATHENEA_TRY(writeTreeOpacities(inputs[t], outputs[t], where[t], keep, "", "", occlusionArrays(one)));
+        // A tree written over itself (the output is the input): to a file
+        // beside it, then renamed over it -- a close-up level's trees are
+        // tens of GB together, and a copy of each would not fit beside them.
+        std::error_code same;
+        const bool inPlace = std::filesystem::equivalent(inputs[t], outputs[t], same);
+        const std::filesystem::path to =
+            inPlace ? std::filesystem::path(outputs[t]).concat(".occlusion.usdc") : outputs[t];
+        ATHENEA_TRY(writeTreeOpacities(inputs[t], to, where[t], keep, "", "", occlusionArrays(one)));
+        if (inPlace) {
+            std::error_code moved;
+            std::filesystem::rename(to, outputs[t], moved);
+            if (moved) return Error(ErrorCode::IoFailure, "occlusion: cannot replace " + outputs[t].string());
+        }
         std::printf("occlusion: wrote %s\n", outputs[t].string().c_str());
     }
     return ok();
