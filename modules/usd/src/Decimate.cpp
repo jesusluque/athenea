@@ -1547,13 +1547,31 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                                                         tree ? &treeResult : nullptr)
                              : decimator->decimate(store, cloud->origin, settings, carried, &stats);
     if (!decimated) return std::move(decimated).error();
-    const std::vector<GaussianArray> source = arrays;
+    // The arrays as read (a merge tree's last write releases each once it is on
+    // the device: a 4.4M-leaf part at 5120 px held them three times over in
+    // the memory the GPU shares, and ran out writing its tree).
+    std::vector<GaussianArray>& source = arrays;
 
     // ONE RESULT WRITTEN: every array, and every sample of it, merged over
     // what each of its gaussians stands for, beside what the merge adds.
     const auto write = [&](lod::DecimateResult& result, const std::filesystem::path& to,
                            std::vector<GaussianArray> added, bool surfel, bool lodTree) -> Result<void> {
-        std::vector<GaussianArray> merged = source;
+        // Every array's values are replaced by its merge (a rig's weights by
+        // its joints'): the metadata alone is copied.
+        std::vector<GaussianArray> merged;
+        merged.reserve(source.size());
+        for (const GaussianArray& from : source) {
+            GaussianArray a;
+            a.name = from.name;
+            a.typeName = from.typeName;
+            a.integer = from.integer;
+            a.width = from.width;
+            a.elementSize = from.elementSize;
+            a.interpolation = from.interpolation;
+            a.times = from.times;
+            a.values.resize(from.values.size());
+            merged.push_back(std::move(a));
+        }
         auto kept = loader->records(result.cloud);
         if (!kept) return std::move(kept).error();
         const uint32_t count = result.cloud.count;
@@ -1573,6 +1591,11 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     auto made = upload(sw.values[std::min(v, sw.values.size() - 1)], "decimate.weights");
                     if (!made) return std::move(made).error();
                     weights = std::move(*made);
+                }
+                if (lodTree) {
+                    // The tree is the last write: what is on the device is not
+                    // needed on the host again.
+                    std::vector<uint32_t>().swap(source[plan.array].values[v]);
                 }
                 auto m = decimator->mergeAttribute(store, result, values, a.width, plan.how,
                                                    weights ? &*weights : nullptr);

@@ -1675,7 +1675,11 @@ Result<std::pair<gpu::Buffer, gpu::Buffer>> Decimator::mergeAttribute(const LodC
     gpu::Device& device = *device_;
     const uint32_t count = kept.cloud.count;
     auto merged = buffer(device, uint64_t{std::max(count, 1u)} * std::max(width, 1u), 4, "decimate.attribute");
-    auto mergedWeights = buffer(device, uint64_t{std::max(count, 1u)} * std::max(width, 1u), 4, "decimate.weights");
+    // Only a rig's joints (mode 3) write weights beside them: elsewhere one
+    // word, not a second attribute's worth (1.7 GB for a transfer's 48 floats
+    // over a 4.4M-leaf tree, which ran a 5120 px part out of device memory).
+    auto mergedWeights = buffer(device, weights != nullptr ? uint64_t{std::max(count, 1u)} * std::max(width, 1u) : 1u,
+                                4, "decimate.weights");
     if (!merged || !mergedWeights) return Error(ErrorCode::OutOfMemory, "decimate: cannot allocate an attribute");
     if (count > 0 && width > 0) {
         gpu::CommandBatch batch(device);
