@@ -1707,11 +1707,16 @@ private:
         number("materialOpacity", static_cast<double>(material.opacity));
         // A THIN WALL IS ITS OWN TRANSPARENCY: it covers what the sheet
         // reflects head on at its index, which the effect works out
-        // (`m2sGlassCovers`). A solid covers `--glass-opacity`, 0.6 in every
-        // mode: a TX transfer's lens answers what is behind it from the
-        // domes alone, so at 1 a glass ball under a lamp lost the lit ground
-        // it shows (0.217 against the first transfer's 0.092; 0.0965 at 0.6).
-        number("glassOpacity", options_->minOpacity >= 0.0 ? options_->minOpacity : 0.6);
+        // (`m2sGlassCovers`). A SOLID's near face covers fully where the
+        // stage is lit by domes alone: a TX transfer's lens answers what is
+        // behind it from them, and at 0.6 the light let past the near face
+        // met the far face's gaussians, which face away and send nothing --
+        // a clear ball read 23 % dark against the path traced one, at any
+        // resolution (research, proto/pawn). Under a lamp the lens does not
+        // see the lamp's light, and at 1 a glass ball lost the lit ground it
+        // shows (0.217 against 0.092 at 0.6): there it stays 0.6.
+        // `--glass-opacity` overrides both.
+        number("glassOpacity", options_->minOpacity >= 0.0 ? options_->minOpacity : (stageHasLamps() ? 0.6 : 1.0));
         number("thinWall", thinGlassOf(at) ? 1.0 : 0.0);
         number("ior", static_cast<double>(material.ior));
         number("maxCells", static_cast<double>(options_->maxCells));
@@ -2060,6 +2065,19 @@ private:
     /// Whether the effect writes each gaussian's shape operator, gathered
     /// into `curvatures_` (three floats a gaussian).
     bool                                     curved_ = false;
+    /// Whether the stage holds a light other than a dome (stageHasLamps),
+    /// read once.
+    std::optional<bool>                      lamps_;
+
+    /// WHETHER ANY LIGHT ON THE STAGE IS NOT A DOME: a lamp or a sun, which a
+    /// TX transfer's lens does not answer for (the glass coverage above).
+    bool stageHasLamps() {
+        if (!lamps_) {
+            auto lights = usd::stageLights(options_->stage);
+            lamps_ = lights && std::any_of(lights->begin(), lights->end(), [](const auto& l) { return !l.second; });
+        }
+        return *lamps_;
+    }
     /// A material of the stage has a field the bake reads back (StageMaterial::sampled).
     bool                                     sampling_ = false;
     /// Four words a gaussian: what its material's bake reads back, and what
@@ -2905,7 +2923,8 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_option("--glass-opacity", o->minOpacity,
                     "how much of what stands behind it a fully transmitting solid still covers. Low is "
                     "a window -- you see what stands behind it -- and translucency is not that: the "
-                    "light comes through scattered, so the body stays mostly there");
+                    "light comes through scattered, so the body stays mostly there (default: 1 on a stage "
+                    "lit by domes alone, 0.6 where a lamp or a sun stands)");
     cmd->add_option("--opacity-cut", o->opacityCut,
                     "a material whose opacity is a map with no threshold of its own: below this the "
                     "surface is not there and no gaussian is written, so the budget goes where the "

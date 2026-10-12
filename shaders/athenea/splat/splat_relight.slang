@@ -1407,7 +1407,17 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
             // 0.58 against the mesh path traced, where the first transfer
             // drew it sharp.
             const float3 white = splatFieldAlong(s, transfer, -wo, s.roughness);
-            const float open = smoothstep(0.5, 0.85, dot(white, float3(0.2126, 0.7152, 0.0722)));
+            // How open the way through reads, against what the two faces'
+            // Fresnel and the tint let through at all: at grazing the field
+            // along the way (`white`) falls with the Fresnel though nothing
+            // blocks it, and the lens filled with the degree-3 field drew the
+            // rim of a clear ball a quarter over the path traced one
+            // (research, proto/pawn: rim relMSE 0.083 -> 0.062).
+            const float3 lumW = float3(0.2126, 0.7152, 0.0722);
+            const float fresnelIn = fresnelDielectric(saturate(nDotV), max(s.ior, 1.0));
+            const float3 tintIn = lerp(float3(1.0), saturate(s.albedo), s.transmission);
+            const float expected = max(dot((1.0 - fresnelIn) * (1.0 - fresnelIn) * tintIn * tintIn, lumW), 1.0e-3);
+            const float open = smoothstep(0.5, 0.85, saturate(dot(white, lumW) / expected));
             // Through both faces where the cloud keeps its curvature (a ball
             // shows the room inverted, a pawn's head did not), one bend
             // otherwise.
