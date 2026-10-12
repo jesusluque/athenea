@@ -105,19 +105,15 @@ work without its full bibliographic details, it is listed as cited and marked so
 48. O'Neill, M. E. (2014). PCG: A Family of Simple Fast Space-Efficient Statistically Good Algorithms for Random Number
     Generation; Halton, J. H. (1960). On the efficiency of certain quasi-random sequences of points.
 
-# Appendix A. Repositories, commands and figures
+# Appendix A. Repositories and commands
 
 ## A.1 Repositories
 
 | repository | where | what it holds |
 |---|---|---|
 | athenea | github.com/jesusluque/athenea | the engine and renderer of §2: modules, shaders, the `hdAthenea` delegate, the `athenea` CLI, the manuals `docs/operations.md` and `docs/development.md` with their Spanish translations, and `docs/decisions.md` |
-| athenea-pieces | github.com/jesusluque/athenea-pieces, branch `pieces` (private) | a fork of athenea holding the pieces work: per-part merge trees, the error cut, closed shells, the shared occlusion, the 1280 and 5120 px bakes (§3.11, §6); `docs/pieces.md` and this paper under `docs/paper/` |
-| sparkwebGPU | `~/luc/sparkwebGPU`, branch `webgpu` | the WebGPU fork of Spark of §7: the `.athc` v3 reader, the compact path, the streamer, the player pages; its `CLAUDE.md` log and `research/` notes |
-
-Commit hashes quoted in Sections 3–6 are athenea-pieces commits; §2.15's 2e6e183 is a commit of lucabRTrender,
-athenea's predecessor before it was renamed with a fresh history. Those in §7
-are sparkwebGPU commits unless the text names athenea.
+| athenea-pieces | github.com/jesusluque/athenea-pieces, branch `pieces` (private) | a fork of athenea holding the per-part merge trees, the error cut, closed shells, the shared occlusion, the 1280 and 5120 px bakes (§3.11, §6); `docs/pieces.md` and this paper under `docs/paper/` |
+| sparkwebGPU | `~/luc/sparkwebGPU`, branch `webgpu` | the WebGPU fork of Spark of §7: the `.athc` v3 reader, the compact path, the streamer, the player pages |
 
 ## A.2 Commands and options
 
@@ -135,25 +131,4 @@ option's default, unit and constraint. The commands this paper relies on:
 | `athc-convert` (`--gzip --planes`, `--shadow-vq`), `fit-compact-basis`, `floor_shadow --merge 2`, `usd-athc` | the player's formats (sparkwebGPU) | — | 7 |
 
 Environment variables (`ATHENEA_GPU_BUDGET`, `ATHENEA_STAGES`) are listed in `docs/operations.md` §8.1, the formats
-(`.athc`, the codeless schemas) in §8.2 and §4.3. GPU jobs ran one at a time through `~/luc/athenea-gpu/shared.sh`,
-under `guard.sh` and `memguard.sh` (`docs/pieces.md` §5).
-
-## A.3 Figures
-
-The figures referred to in Sections 2–7 are kept outside the paper's directory:
-
-| figure | file | § |
-|---|---|---|
-| the sparrow, mesh path traced and converted | `athenea-pieces/docs/images/sparrow-mesh-cloud.png`, `sparrow-cloud.png`, `sparrow-film.png` | 2, 5.10 |
-| edges held vs control (640 px car) | `athenea-renders/simplify3/edges/edges_cmp.png`, `day_new_Camera.png`, `day_ctl_Camera.png` | 3.5 |
-| the 1280 px bake test A / B / C | `athenea-renders/pieces/car1280/test/A.png`, `B.png`, `C.png` | 3.11 |
-| stored coat roughness, path trace vs leaves vs cut | `athenea-renders/pieces/car/t63b/research_coat_roughness.png`, `t63b/mos.png` | 4.10 |
-| cut_a / cut_b; the door's open class | `athenea-renders/pieces/car/t65/mos.png`, `t66/research_open_split.png` | 4.10.4 |
-| the 1280 px bake vs path trace; sill fold dashes | `athenea-renders/pieces/car/t71/mos.png`, `t71/research_sill.png` | 4.10, 6.10 |
-| gated sharp polish; tube/fold split | `athenea-renders/pieces/car/t73/bump_mos.png`, `t74/sill_mos.png` | 4.10.6 |
-| the sparrow on the web, path trace vs raster; the corrected wing | `athenea-renders/sparrow-web/ref_pt_raster.png`, `sparrow/fixed_wing_athenea.png` | 5.10 |
-| the white pawn and its ring | `athenea-renders/pawn-hq/pawn_gt_gs.png`, `ring_gt_gs.png` | 5.11 |
-| the crack net and back culling (T50) | `athenea-renders/pieces/car/t50/cut_Camera.png`, `cull_Camera.png` | 6.6, 6.10 |
-| logo and grille at 1280 vs 5120 px | `athenea-renders/pieces/close/r_1280.png`, `r_5120.png`, `close_mos.png` | 3.11, 6.9, 7.12 |
-
-All render paths are under `~/luc/athenea-renders/`; every render of the work is saved there by task.
+(`.athc`, the codeless schemas) in §8.2 and §4.3.

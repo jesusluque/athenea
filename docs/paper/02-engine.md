@@ -9,23 +9,20 @@ techniques, an interactive raster and a path tracer that serves as ground truth.
 correctness is established without a CPU oracle, and what has been measured. Unless stated otherwise, every number is
 quoted from `docs/decisions.md`, with its unit and conditions, and was measured on an Apple M5 Pro under Metal.
 
-<!-- Figure 2.1: /Users/muriel/luc/athenea-pieces/docs/images/sparrow-mesh-cloud.png
-     Left: the sparrow's geometry, path traced. Right: the same asset converted to gaussians, rasterised. -->
-
 ## 2.1 Design rules
 
-The codebase holds to a small number of rules. Each one is enforced by review and, where possible, by a test.
+The codebase holds to a small number of rules. Where possible, each one is enforced by a test.
 
 1. **No CPU arithmetic on data.** athenea has no CPU reference renderer, no CPU fallback and no CPU test oracle. The
    host reads files, parses headers, decompresses, and keeps the books: counts, slots and queues. Decoding, sorting,
-   merging, culling, mip generation, light power prefixes and image comparison are all compute kernels. Where a step
-   that broke this rule turned up, it was moved to the device and the move was recorded. Examples are per-element
+   merging, culling, mip generation, light power prefixes and image comparison are all compute kernels. Steps that
+   had run on the host were moved to the device; examples are per-element
    interleaving of `ParticleField` arrays, half-to-float conversion, per-pixel conversion of Hydra render buffers, and
    each light's cumulative share of the frame's power (`light_prefix.slang`). The one documented exception is Dear
    ImGui's tessellation, which processes viewer chrome and no scene data.
 2. **Binding by name.** Every shader parameter is bound through reflection (`cursor["name"].setBinding(...)`,
-   `ComputeKernel::dispatch`) and never by slot. The rule comes from slot-counting bugs met in the compositor that
-   preceded this engine.
+   `ComputeKernel::dispatch`) and never by slot, which removes the class of errors in which a slot count
+   drifts from the shader's declaration.
 3. **Errors as values.** Errors are reported as `Result<T>` with `ATHENEA_TRY`, and nothing throws. OS calls
    live only in `modules/core/Platform`, which is also where a Windows port would start.
 4. **One Slang, one slang-rhi, one TBB per process.** OpenUSD, OIDN and the engine share one TBB, and the
@@ -40,7 +37,7 @@ written in Slang.
 ## 2.2 Module architecture
 
 Each module under `modules/<name>` is a static library, `athenea::<name>`. Modules are listed in dependency order and
-each links only the ones above it (`modules/CMakeLists.txt`).
+each links only the ones above it (`modules/CMakeLists.txt`) (Figure 2).
 
 | Module | Contents |
 |---|---|
@@ -64,6 +61,8 @@ each links only the ones above it (`modules/CMakeLists.txt`).
 | mcp | the engine as an MCP server (JSON-RPC 2.0) |
 | aofx | this engine's side of the AOFX host (aopenfx `host/`), `renderEffect`, the bundles |
 | view | `athenea view`: GLFW window, Dear ImGui on the engine's device |
+
+![Figure 2. Engine modules in dependency order, with their main classes. Each static library links only the modules below it.](figures/fig-modules.svg)
 
 The shader tree `shaders/athenea/` mirrors the modules (common, algo, scene, splat, rt, points, reference, lod, geom,
 world, material, light, technique, usd, volume, view). Shaders are copied into the build tree and compiled at run
@@ -101,9 +100,8 @@ Metal's completion thread, which ended the process. A patch now records the erro
 (`SLANG_E_OUT_OF_MEMORY`) and returns it from the next `submit()` or `waitOnHost()`. `Device::admit` refuses any
 allocation that would exceed the budget: `ATHENEA_GPU_BUDGET`, or else Metal's `recommendedMaxWorkingSetSize`, which
 is 18 186 MiB on the M5 Pro. An allocation must also fit the free physical memory less 1.5 GiB. On unified memory,
-four jobs that were each under Metal's figure together swapped the machine until the window server missed its
-watchdog. When a frame runs out of memory, `Engine::relieveMemory` steps down: it drops splat shadows first, then
-moves up to four LOD levels coarser, and finally reopens streams at half their budget.
+several processes each within Metal's figure can together exhaust physical memory and force the system to swap.
+When a frame runs out of memory, `Engine::relieveMemory` steps down: it drops splat shadows first, then moves up to four LOD levels coarser, and finally reopens streams at half their budget.
 
 ## 2.4 The Gaussian representation
 
@@ -123,7 +121,7 @@ harmonics**, defined in `common/packing.slang`:
 `CloudLoader` reads PLY, SPZ, SOG, `.splat` and USD `ParticleField` prims. It uploads the raw records and decodes
 them on the GPU. For SOG, the host's only work is to unzip the archive and decode the WebP images.
 
-**Linear light.** Every gaussian is blended in linear Rec.709, and sRGB appears only where an image is displayed. A
+**Linear light.** Every Gaussian is blended in linear Rec.709, and sRGB appears only where an image is displayed. A
 capture keeps the sRGB harmonics it was trained with: each projection evaluates them, clamps at zero and converts to
 linear (`cloudLight`) before blending. A cloud written by athenea declares that it holds light
 (`primvars:athenea:splat:linear`) and is used as stored. On two half-opaque overlapping discs, the rasteriser, the
@@ -133,7 +131,7 @@ three read p99 26.
 ## 2.5 The tile rasteriser
 
 `render::TileRasterizer` is the interactive route for splats. It is a sort-based, deterministic tile rasteriser in
-the 3DGS family. Seven stages run on the device:
+the 3DGS family. Seven stages run on the device (Figure 3):
 
 | Stage | Work |
 |---|---|
@@ -149,6 +147,8 @@ The engine sorts splats by depth once (N 32-bit keys) and then sorts pairs stabl
 This gives every tile its splats in depth order, with ties broken by splat index, exactly as a single 64-bit
 (tile, depth) sort would. The construction is deterministic. Tiles are 16 × 16 pixels.
 
+![Figure 3. The tile rasterizer: seven compute stages, three per splat and four per (tile, splat) pair.](figures/fig-raster.svg)
+
 ### 2.5.1 Projection
 
 A splat with rotation $R$ and scales $S=\mathrm{diag}(s)$ has the 3D covariance $\Sigma = R S S^\top R^\top$, built
@@ -162,8 +162,8 @@ Before $J$ is built, $t_x/t_z$ and $t_y/t_z$ are clamped to the frustum widened 
 splat far off screen would otherwise smear across the whole frame, and 3DGS clamps in the same way. Orthographic
 cameras use $J=\mathrm{diag}(f_x,f_y)$.
 
-**Shutter and lens, as convolutions.** A gaussian smeared along a straight screen path $d$ under a uniform shutter
-is that gaussian convolved with a segment. Matching second moments turns this into a rank-one update. A thin lens
+**Shutter and lens, as convolutions.** A Gaussian smeared along a straight screen path $d$ under a uniform shutter
+is that Gaussian convolved with a segment. Matching second moments turns this into a rank-one update. A thin lens
 convolves with the disc of the circle of confusion:
 
 $$\Sigma' = \Sigma + \tfrac{1}{12} d\,d^\top,\qquad
@@ -218,16 +218,16 @@ six-rank Cryptomatte, by id coverage, and for pruning the per-splat contribution
 splat's removal would leave (the GaussianPOP score). Specialised entry points compile the composite and matte
 branches out, because leaving them live in a frame that has neither cost the blend half again.
 
-**Surfels and harder kernels** (fork `athenea-pieces`). A gaussian with one scale exactly 0 is a *surfel*. The
+**Surfels and harder kernels** (athenea-pieces branch). A Gaussian with one scale exactly 0 is a *surfel*. The
 rasteriser draws it by intersecting each pixel's ray with the disc's plane (Huang et al. 2024): the disc's axes are
 stored in homogeneous screen coordinates and pulled back through the pixel's two planes. The screen filter is a max,
-not a convolution: the larger of the disc and a round gaussian of variance ½ px². Its opacity is paid back by area,
+not a convolution: the larger of the disc and a round Gaussian of variance ½ px². Its opacity is paid back by area,
 
 $$\alpha' = \alpha\cdot\min\!\Big(1,\ \frac{\sqrt{\lambda_1\lambda_2}}{\sqrt{\lambda_1\lambda_2}+\tfrac12-\sqrt{\min(\lambda_1,\tfrac12)\min(\lambda_2,\tfrac12)}}\Big),$$
 
-where $\lambda_{1,2}$ are the eigenvalues of the undilated screen covariance. A merged gaussian may carry an opacity
+where $\lambda_{1,2}$ are the eigenvalues of the undilated screen covariance. A merged Gaussian may carry an opacity
 $D>1$. That value selects Spark's harder kernel, $1-(1-g)^A$ with $A=\exp((D^2-1)/e)$ and $D$ capped at 5. This is the
-composite of $A$ coincident gaussians, and its cut is widened by $0.7(D-1)\sigma$. A *hard surfel* uses
+composite of $A$ coincident Gaussians, and its cut is widened by $0.7(D-1)\sigma$. A *hard surfel* uses
 $\exp(-(|u|^p+|v|^p)/2)$, with $p$ fitted to its members' kurtosis. Section 6 covers both, together with the merges
 that produce them.
 
@@ -258,7 +258,7 @@ averaged on the device):
 | f/11, 2.3 px confusion | p99 9 (not blurring: p99 33) |
 | at the focus distance | max 0, bit for bit |
 
-**Frame cost by stage** (`ATHENEA_STAGES=1`, every stage waited for; the sparrow's clips, 5 887 323 gaussians at
+**Frame cost by stage** (`ATHENEA_STAGES=1`, every stage waited for; the sparrow's clips, 5 887 323 Gaussians at
 1600 × 1000, playing):
 
 | Stage | Before | After | Change |
@@ -269,7 +269,7 @@ averaged on the device):
 | project, emit, counts, commit | 13.6 ms | 13.4 ms | – |
 | frame, playing | 102 ms | 49 ms | cloud no longer re-uploaded each step |
 
-A frame of six million gaussians spends its time on the gaussians rather than on pixels: changing the render scale
+A frame of six million Gaussians spends its time on the Gaussians rather than on pixels: changing the render scale
 from 800 × 500 to 3200 × 2000 leaves the time unchanged.
 
 ## 2.6 The Gaussian ray tracer
@@ -389,8 +389,8 @@ baked into the code: each input is read from a float blob, and the module is nam
 materials that differ only in values share one compiled module. Generated sizes include UsdPreviewSurface at 580
 lines and 23 blob words, standard_surface at 821 and 59, and OpenPBR at 945 and 55.
 `technique::MaterialPrograms` generates one module that imports every compiled material and dispatches on a material
-row. A kernel that evaluates materials walks its pixels in quad order (`atheneaQuadPixel`), because on this device
-the lanes run along rows and every vertical derivative had been wrong (15 939 of 15 939 threads).
+row. A kernel that evaluates materials walks its pixels in quad order (`atheneaQuadPixel`), because on Metal
+the lanes run along rows, and in row order every vertical derivative is wrong (15 939 of 15 939 threads).
 
 **The lobe library.** It contains Oren–Nayar and energy-compensated EON, Burley, translucent, dielectric (reflection,
 transmission, both), conductor, generalised Schlick with an F82 tint, and sheen in both its Imageworks and Zeltner
@@ -453,7 +453,9 @@ The path tracer is the engine's ground truth. Its paths start from the same visi
 reads, so the two techniques differ by exactly one thing: the bounces. With a lens, the tracer additionally casts its
 own primary rays. A hit is rebuilt by `material_surface.slang`, its material is evaluated into the same lobe stack,
 and direct light is gathered by next-event estimation (NEE). The bounce samples the stack, and the path throughput is
-multiplied by `LobeSample.weight` $= f|\cos\theta|/p$.
+multiplied by `LobeSample.weight` $= f|\cos\theta|/p$ (Figure 4).
+
+![Figure 4. One vertex of the path tracer: the hit is rebuilt from the visibility buffer, direct light is gathered by next-event estimation, the lobe stack is sampled for the next bounce, and both estimates are combined by multiple importance sampling.](figures/fig-pathtracer.svg)
 
 **MIS.** At each vertex that continues the path by sampling its material, NEE's sample of light $k$ and the material
 sample's hits on lights (`lightHit`, including escaping rays meeting domes and suns) are weighed by the power
@@ -496,7 +498,6 @@ distortion** come from `UsdGeomCamera`: the lens radius is $f/(2N)$, and rays ar
 The furnace exposed a one-sided MIS weight. On a dome against a Lambert lobe the two densities are the same function,
 so the weight was exactly ½, and the furnace read 0.5453 instead of 1. The shell exposed a double division,
 $\rho\pi/\cos$ instead of $\rho$, whose infinite second moment had held the convergence exponent at −0.43 to −0.45.
-Fourteen other hypotheses were eliminated by measurement first.
 
 **Denoiser.** `technique::Denoiser` runs OIDN 2.5.1's `RT` filter on the engine's own queue, guided by the first hit's
 albedo and normal. On Metal, OIDN shares only hazard-tracked buffers, which slang-rhi forbids. The engine therefore
@@ -569,7 +570,7 @@ where the two definitions agree: p99 2 for orthographic sparse scenes, where EWA
 scenes with particles a few pixels across. Dense scenes differ by tens of codes, which reflects ordering rather than
 error.
 
-**Three devices** (commit 2e6e183; each machine computes the same GPU metric itself, and no pixels travel between
+**Three devices** (each machine computes the same GPU metric itself, and no pixels travel between
 machines):
 
 | | Metal (M5 Pro) | Vulkan (L4) | CUDA (L4, OptiX 9, no inline rays) |
@@ -584,9 +585,9 @@ machines):
 - Splats are not yet inside the path tracer's secondary rays. A splats-only stage is traced whole by
   `GaussianRayTracer`. With meshes, splats are composited over the path-traced surfaces by depth; they cast shadows
   onto meshes, but a bounce ray does not see them.
-- The rasteriser's motion and lens blur are moment-matched gaussians, not plateaus or bokeh discs: up to 38 % too
+- The rasteriser's motion and lens blur are moment-matched Gaussians, not plateaus or bokeh discs: up to 38 % too
   peaked for long streaks.
-- Clouds whose gaussians are a few hundredths of a pixel across vanish from the raster (5·10⁻⁶ of the frame against
+- Clouds whose Gaussians are a few hundredths of a pixel across vanish from the raster (5·10⁻⁶ of the frame against
   3·10⁻⁴ for the mesh and the tracer); levels of detail are the remedy (Section 6).
 - Raster mesh visibility pays about 8 ms of host time per 1800 draws.
 - Material compilation is synchronous.

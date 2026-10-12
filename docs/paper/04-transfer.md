@@ -5,8 +5,8 @@
 A cloud converted from a mesh can carry its light in two ways. A *radiance bake* stores, per Gaussian, the light that
 arrived under the stage's own illumination; it is exact for that illumination and wrong under any other. A *transfer*
 stores instead how each Gaussian's surroundings would carry an arbitrary environment to it, and a frame combines that
-geometry with whatever sky and lights it has. This section describes the transfer as athenea bakes and evaluates it in
-its TX form ("task TX": a transfer right under any sky and any light), the reflection model built on top of it, the
+geometry with whatever sky and lights it has. This section describes the core of the work, the baker: the transfer that the scene's
+path tracer bakes into every Gaussian, and the relighting that evaluates it at draw time, in its TX form (a transfer that holds under any sky and any light), the reflection model built on top of it, the
 per-pixel treatment of sharp lobes, and what each piece was measured to buy against a path trace of the source mesh.
 Everything described runs on the GPU: the bake is the scene's own path tracer in a transfer mode, and the evaluation is
 the splat projection and blend kernels (`shaders/athenea/splat/splat_relight.slang`, `splat_project.slang`,
@@ -25,7 +25,7 @@ irradiance $E_\odot$ extracted from it, and a prefiltered map $\tilde L(\boldsym
 ## 4.2 What a Gaussian stores
 
 The transfer is one run of values per Gaussian, f16 on the device. There is no mode token: the count is the layout
-(`common/transfer_layout.slang`).
+(`common/transfer_layout.slang`) (Figure 10).
 
 | values | layout | origin |
 |---|---|---|
@@ -36,6 +36,8 @@ The transfer is one run of values per Gaussian, f16 on the device. There is no m
 | 64 | degree 3, direct + indirect (48) | |
 | 112 | degree 3, both + reflected field (48) | **TX default** |
 | 10 | two zonal lobes in the Gaussian's frame | skinned clouds |
+
+![Figure 10. What the bake stores per Gaussian and how the draw combines it with the environment: the body from the direct and indirect SH, polish and clear coat from the reflected field and the open-direction cells, and the sharp lobe evaluated per pixel.](figures/fig-transfer.svg)
 
 Beside it:
 
@@ -61,8 +63,8 @@ off; the reflected field is rgb. The TX layout costs, per Gaussian:
 | device, bytes | 80 | 256 |
 
 For the whole Corvette (about 10 M Gaussians at the time) that is 4.8 GB of file and 2.6 GB of device for the transfer
-alone; the codecs that bring it to a phone (a clustered PCA of the transfer, a Hamming k-means codebook of the shadow
-bits) are described in Section 7.
+alone; the codecs that reduce its storage and bandwidth (a clustered PCA of the transfer, a Hamming k-means codebook of the shadow
+bits) are described in Section 7, where they serve one application, a WebGPU player.
 
 ## 4.3 The environment at draw time
 
@@ -286,7 +288,7 @@ the polish-field gate:
 
   It integrates to one, so weight times $E_\odot$ times $p_\odot$ is the sun's whole reflection. The split sum read a
   compact sun a quarter short at every map level (0.57-0.74 of the path trace on a floating metal ball; part of that gap
-  was later traced to the path tracer's own dome density, since corrected).
+  came from the path tracer's own dome sampling density, since corrected).
 
 ### 4.6.4 Layers, Fresnel, metals, sheen
 
@@ -346,8 +348,8 @@ $t$ faces away, and what stands behind is seen through the Gaussian's opacity.
 
 ## 4.8 Reflection across the footprint
 
-Research measured the paint's error as sharpness, not energy: against the path trace blurred by one pixel its relMSE
-fell from 0.80 to 0.28. A Gaussian showed its centre's reflection flat over its footprint.
+The paint's error is one of sharpness, not energy: against the path trace blurred by one pixel its relMSE falls from
+0.80 to 0.28. A Gaussian showed its centre's reflection flat over its footprint.
 
 ### 4.8.1 The per-pixel normal turn
 
@@ -392,10 +394,9 @@ the pixel: a box of slopes whose variance, doubled for the mirror, widens the lo
 $$\alpha'^2 = \alpha^2 + 2\cdot\frac{\lVert\mathbf{h}_x\rVert^2 + \lVert\mathbf{h}_y\rVert^2}{12},$$
 
 held at $\alpha' \le 1$, applied after the unwidening and the fold widening of section 4.9. A
-panel's rolled lip no longer sparkles. The phone's port of the sharp lobe lacked this term and drew bright specks on
-the door's and the sill's folds: with it, 27/25 specks became 2/1 (on the 1280 px car the phone then read the door at
-35.53 dB and the sill at 32.36 against the path trace, from 33.77 and 31.87 for the previous version, which also had
-the 640 px bake).
+panel's rolled lip no longer sparkles. In the WebGPU player's sharp lobe (§7), without this term, the door's and the sill's folds show
+bright specks: with it, 27/25 specks become 2/1 (on the 1280 px car the player reads the door at 35.53 dB and the sill at
+32.36 against the path trace, against 33.77 and 31.87 without the term and with the 640 px bake).
 
 ## 4.9 Undoing the bake's widening
 
@@ -413,8 +414,8 @@ with $\lambda$ = `--specular-filter` (1 with `--transfer`) and $r' = \operatorna
 ### 4.9.2 Unwidened sharp lobes
 
 The sharp lobes already turn the mirror per pixel; read at the widened roughness, the turn is counted twice. A door's
-lacquer, a mirror ($r_c = 0$), came out matte: stored at $p_{50} = 0.112$ on the door and 0.080 on the hood (research
-t63b), saturating to 1 at folds. The projection recovers the spread from the stored curvature,
+lacquer, a mirror ($r_c = 0$), came out matte: stored at $p_{50} = 0.112$ on the door and 0.080 on the hood (640 px
+bake), saturating to 1 at folds. The projection recovers the spread from the stored curvature,
 
 $$s \approx \kappa_{\max}\, \max(\sigma_u, \sigma_v),\qquad \kappa_{\max} = \Big|\frac{S_{uu}+S_{vv}}{2}\Big| + \sqrt{\Big(\frac{S_{uu}-S_{vv}}{2}\Big)^2 + S_{uv}^2},$$
 
@@ -450,9 +451,11 @@ integrates it within a pixel. The smoothstep keeps a moving camera from seeing a
 
 ## 4.10 Measurements against the path trace
 
-All car figures are against the mesh path trace `simplify3/pt/day_pt_Camera.exr` (`/World/Camera`, 1920 x 1080,
-`autoshop_01_4k`). "Car crop" is PSNR on the 900 x 420 crop of the car, "frame" on the whole frame; class ratios are a
-region's mean over the path trace's (research `proto/door/*.py`).
+All car figures are against the mesh path trace (`/World/Camera`, 1920 x 1080, `autoshop_01_4k`). "Car crop" is PSNR
+on the 900 x 420 crop of the car, "frame" on the whole frame; class ratios are a region's mean over the path trace's.
+"Leaves" is the whole baked cloud drawn without a cut; "cut" is the error cut of §6.3 at 0.25 px; "cull" is the
+back-face culling of §6.6. The *widened* configurations read the sharp lobes at the bake's stored roughness (§4.9.1),
+the *unwidened* ones apply §4.9.2.
 
 ### 4.10.1 The TX gate, per material (relMSE)
 
@@ -467,56 +470,56 @@ region's mean over the path trace's (research `proto/door/*.py`).
 
 The whole TX Corvette (14.7 M Gaussians, no ground, 1920 x 1080) drew in 158 ms against about 83 for a relit cloud of
 its size; of the projection's 84.5 ms the field and its coupling took 24, the cells read by the lobes 16.5, the sun's
-share and bounce 12, the body's transfer 7.5. Reading the field once for both lobes and caching the eye-independent
-terms address the first and last.
+share and bounce 12, the body's transfer 7.5. Reading the field once for both lobes (§4.6.2) and caching the
+eye-independent terms (§4.5) address the first and the last.
 
-### 4.10.3 The whole car, T63-T75
+### 4.10.3 The whole car, by bake and configuration
 
-| test | what | car crop (dB) | frame (dB) |
+| bake | configuration | car crop (dB) | frame (dB) |
 |---|---|---|---|
-| T63b | 640 px leaves (5.38 M), before this section's steps | 16.37 | 21.92 |
-| T64 | leaves, sharp lobes unwidened (b26d276) | 16.58 | 22.15 |
-| T63c | cut at 0.25 px with back culling | 16.29 | -- |
-| T65 cut_a | + unwidened + coat held at folds | 16.51 | 22.15 |
-| T65 cut_b | + polish field on rough materials (35ae3cb) | 16.55 | 22.18 |
-| T66 | leaves (cut 0.01 px), no cull / cull | 16.73 / 16.75 | 22.40 / 22.43 |
-| T69 / T70 | + turn capped at 0.2 rad / + coat fold on paint only | 16.57 / 16.57 | 22.20 / 22.20 |
-| T71 | **1280 px bake**, cut 0.25 px, back culling (5.0 M) | **17.88** | **23.90** |
-| T72 | T71 without the cap | 17.88 | 23.91 |
-| T73 | T71 + sharp polish gated on unwidened roughness | 17.88 | 23.90 |
-| T74 | T73 + tube/fold split | 17.90 | 23.93 |
-| T75 | T71 + tube/fold split (committed) | 17.88 | 23.91 |
+| 640 px | leaves (5.38 M), widened | 16.37 | 21.92 |
+| 640 px | leaves, unwidened sharp lobes | 16.58 | 22.15 |
+| 640 px | cut + cull, widened | 16.29 | -- |
+| 640 px | cut, unwidened + coat held at folds (*cut A*) | 16.51 | 22.15 |
+| 640 px | *cut A* + polish field on rough materials (*cut B*) | 16.55 | 22.18 |
+| 640 px | leaves (cut at 0.01 px) with all of *cut B*'s terms, no cull / cull | 16.73 / 16.75 | 22.40 / 22.43 |
+| 640 px | *cut B* + turn capped at 0.2 rad / + coat fold on paint only | 16.57 / 16.57 | 22.20 / 22.20 |
+| 1280 px | **cut + cull, capped turn, coat fold on paint only (5.0 M)** | **17.88** | **23.90** |
+| 1280 px | the same without the cap | 17.88 | 23.91 |
+| 1280 px | capped + sharp polish gated on unwidened roughness | 17.88 | 23.90 |
+| 1280 px | capped + gate + tube/fold split | 17.90 | 23.93 |
+| 1280 px | capped + tube/fold split (retained) | 17.88 | 23.91 |
 
 PSNR over a crop moves little; the class ratios below show where the changes act.
 
-### 4.10.4 The door and the hood, by class (research t63b-t66)
+### 4.10.4 The door and the hood, by class
 
 The paint is a dark metal base (roughness 0.3421) under a coat of roughness 0 at 1.45. Each pixel is classed by where
-its mirror falls: the ground (closed; the field answers) or the HDRI (open). In t63b, 86 % of the door's deficit was in
-pixels reflecting ground. Mean over the path trace:
+its mirror falls: the ground (closed; the field answers) or the HDRI (open). With the 640 px leaves and widened lobes,
+86 % of the door's deficit was in pixels reflecting ground. Mean over the path trace (640 px bake):
 
-| door class | t63b leaves | t63c cut+cull | t65 cut_a | t65 cut_b | t66 nocull | t66 cull |
+| door class | leaves, widened | cut + cull, widened | *cut A* | *cut B* | leaves, no cull | leaves, cull |
 |---|---|---|---|---|---|---|
 | mirror to ground < 3 m | 0.78 | 0.89 | 0.92 | **1.02** | 0.90 | 1.02 |
 | mirror to ground 3-30 m | 0.69 | 0.77 | 0.76 | 0.88 | 0.79 | 0.88 |
 | mirror to HDRI (open) | 0.92 | 1.04 | 1.03 | 1.13 | 1.01 | 1.13 |
 | joints | 0.69 | 0.83 | 0.95 | **1.04** | 0.90 | 1.02 |
 
-Unwidening (t64) left the ground classes at 0.78/0.67 and the joints at 0.69; the polish field (cut_b) lifted the near
-ground to 1.02 and the coat fold the joints to 1.04, as predicted by an analytic estimate of the missing term
+Unwidening alone leaves the ground classes at 0.78/0.67 and the joints at 0.69; the polish field (*cut B*) lifts the
+near ground to 1.02 and the coat fold the joints to 1.04, as an analytic estimate of the missing term predicts
 (under-coat 0.94 x polish albedo 0.078 x reflected ground 0.11 = 0.008 against a measured deficit of 0.0056-0.0085).
-Back culling lifts the whole door about 12 % (t66). The open class's remaining 1.13 split by whether the mirror meets the
-car itself: 68 % of the excess in "car" pixels (2.04 of the path trace), where the 16 x 16 cells of about 11 degrees
+Back culling lifts the whole door by about 12 %. The open class's remaining 1.13 splits by whether the mirror meets the
+car itself: 68 % of the excess is in "car" pixels (2.04 of the path trace), where the 16 x 16 cells of about 11 degrees
 leave 25 % of sky open behind a mirror or pillar.
 
 Local contrast (std of the high-pass over the mean, $\sigma$ = 1.5 / 4 px), relative to the path trace:
 
-| | t63b | t64 | t65 cut_b | T71 (1280 px) |
+| | 640 px leaves, widened | 640 px leaves, unwidened | 640 px *cut B* | 1280 px cut + cull |
 |---|---|---|---|---|
 | door, open reflections | 0.12 / 0.26 | 0.40 / 0.61 | 0.35 / 0.53 | 0.56 / 0.74 |
 | hood, open reflections | 0.27 / 0.38 | 0.41 / 0.52 | 0.41 / 0.51 | -- |
 
-A simulation of the coat's reflection with the path trace's mirror over the prefiltered HDRI showed the stored coat
+A simulation of the coat's reflection with the path trace's mirror over the prefiltered HDRI shows that the stored coat
 roughness alone explains the blur: at $r_c$ = 0.11 the door keeps 0.24 / 0.31 of the $r_c$ = 0 contrast, at 0.08 the
 hood 0.21 / 0.28.
 
@@ -526,14 +529,14 @@ Tiles of 24 px with highlights (168), aligned by high-pass correlation within $\
 
 | render | offset $p_{50}$ | $\sigma$ to match | peak (PT 5.8) |
 |---|---|---|---|
-| t63b (widened) | 4.1 px | 2.5 | 1.9 |
-| t68 no turn | 4.1 px | 1.5 | 2.1 |
-| t68 no slope | 4.2 px | 2.5 | 1.8 |
-| t64 / t66 (leaves) | 3.2 px | 1.5 | 3.0 |
-| t65 cut_b | 3.2 px | 1.5 | 2.6 |
-| T71 (1280 px) | 2.0 px | 0.75 | 3.3 |
+| 640 px leaves, widened | 4.1 px | 2.5 | 1.9 |
+| 640 px, no per-pixel turn | 4.1 px | 1.5 | 2.1 |
+| 640 px, no slope | 4.2 px | 2.5 | 1.8 |
+| 640 px leaves, unwidened | 3.2 px | 1.5 | 3.0 |
+| 640 px *cut B* | 3.2 px | 1.5 | 2.6 |
+| 1280 px cut + cull | 2.0 px | 0.75 | 3.3 |
 
-The hood's mean went from 0.89 to 0.98 of the path trace at 1280 px. The normal's extrapolation error scales with the
+The hood's mean goes from 0.89 to 0.98 of the path trace at 1280 px. The normal's extrapolation error scales with the
 square of the cell (0.146 degrees median at 640 px, 0.060 at 960, 0.032 at 1280).
 
 ### 4.10.6 The extrapolated normal, and the tube/fold split
@@ -547,31 +550,21 @@ RMS error of the extrapolated normal on the hood (degrees):
 | + cap $\lVert S\rVert\,2\sigma \le 0.2$ rad | 0.147 | 20.2 | 32.0 |
 | least squares on mesh samples | 0.088 | 9.8 | 14.6 |
 
-The cap (T69) moved the car crop 16.55 to 16.57 dB, but worsened the front rim's joints (1.48 to 1.54); T72 showed it
-irrelevant at 1280 px. The tube/fold split replaced it:
+At 640 px the cap moves the car crop from 16.55 to 16.57 dB but worsens the front rim's joints (1.48 to 1.54); at
+1280 px removing it changes nothing (§4.10.3). The tube/fold split of §4.9.4 replaces it. On the 1280 px cut:
 
-| | T71 | T73 (gate) | T74 (gate + split) | T75 (split) |
+| | capped turn | + sharp polish gate | + gate + split | + split (retained) |
 |---|---|---|---|---|
 | bright specks on the sill's fold | 10 | 11 | 1 | 1 |
 | chrome strip, RMS | 0.0358 | 0.0535 | 0.0415 | 0.0359 |
 | chrome strip, high-pass / PT | 0.41 | 1.12 | 0.58 | 0.41 |
 
-T75 also took the door's specks from 405 to 389 and the rim's from 204 to 190, leaving frame and crop unchanged. At
-1280 px the coat was no longer widened by the bake, and Gaussians on the sill's fold reflected as mirrors with spinning
-normals, bright dashes over the path trace's dark groove; the split removes them without touching the strip. Gating
-the sharp polish on the unwidened roughness instead (T73) tripled the strip's high-pass error and was left out, as was
-`--specular-filter 0` (a dashed dark line on the sill's fold, sparkling chrome): the polish needs its widening there.
-
-<!-- Figures:
-/Users/muriel/luc/athenea-renders/pieces/car/t63b/research_coat_roughness.png  (stored coat roughness, 640 px bake)
-/Users/muriel/luc/athenea-renders/pieces/car/t63b/mos.png                      (path trace vs leaves vs cut)
-/Users/muriel/luc/athenea-renders/pieces/car/t65/mos.png                       (cut_a / cut_b vs path trace)
-/Users/muriel/luc/athenea-renders/pieces/car/t66/research_open_split.png       (door's open class: car / bits / sky)
-/Users/muriel/luc/athenea-renders/pieces/car/t71/mos.png                       (1280 px bake vs path trace)
-/Users/muriel/luc/athenea-renders/pieces/car/t71/research_sill.png             (sill fold dashes)
-/Users/muriel/luc/athenea-renders/pieces/car/t73/bump_mos.png                  (gated sharp polish on the chrome strip)
-/Users/muriel/luc/athenea-renders/pieces/car/t74/sill_mos.png                  (tube/fold split on the sill)
--->
+The retained split also takes the door's specks from 405 to 389 and the rim's from 204 to 190, leaving frame and crop
+unchanged. At 1280 px the bake no longer widens the coat, and without the split the Gaussians on the sill's fold reflect
+as mirrors with spinning normals, bright dashes over the path trace's dark groove; the split removes them without
+touching the strip. Alternatives considered: gating the sharp polish on the unwidened roughness triples the strip's
+high-pass error; `--specular-filter 0` draws a dashed dark line on the sill's fold and sparkling chrome. The polish
+needs its widening there.
 
 ## 4.11 Limitations
 

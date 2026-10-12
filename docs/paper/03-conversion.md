@@ -2,17 +2,17 @@
 
 # 3. From USD meshes to Gaussians (mesh2splat)
 
-The conversion turns a USD stage of polygonal meshes and their materials into a cloud of anisotropic 3D Gaussians
-that the rest of the system draws, bakes, decimates and streams. It is invoked as `athenea mesh2splat STAGE`, and it
-is the core of the product: everything the phone eventually plays back was a triangle of a mesh first. This section
+The conversion is the relight baker's first stage: it turns a USD stage of polygonal meshes and their materials
+into a cloud of anisotropic 3D Gaussians, and that cloud is what the transfer bake of Section 4 fills with light. It
+is invoked as `athenea mesh2splat STAGE`; every Gaussian the rest of the system draws, bakes, decimates and streams
+was a triangle of a mesh first. This section
 describes how the stage is read, how large a Gaussian's cell is, how each Gaussian is placed, shaped and coloured,
 how the conversion handles the places where a surface stops or folds, how it captures a layered physically based
 material, how it treats glass, and what was measured on the Chevrolet Corvette C7 asset that drives most of the
 project. The path-traced bake that follows emission (the *transfer*) is the subject of Section 4 and is
 touched on here only where it constrains the conversion.
 
-Numbers in this section come from `docs/decisions.md` and `docs/pieces.md` of the repository, from the conversion
-logs under `~/luc/athenea-renders/`, and from the source (`plugins/mesh2splat/mesh2splat.slang`,
+Numbers in this section come from `docs/decisions.md` and `docs/pieces.md` of the repository and from the source (`plugins/mesh2splat/mesh2splat.slang`,
 `apps/athenea/src/CmdMesh2Splat.cpp`, `shaders/athenea/usd/mesh2splat_*.slang`). All measurements were taken on an
 Apple M5 Pro (Metal) unless said otherwise.
 
@@ -36,7 +36,7 @@ packing kernel writes where the effect reads. The records the effect writes are 
 buffers (`mesh2splat_gather`), the cloud's bounds are folded on the device (`mesh2splat_span`), and the bake reads
 them in place. Only counters and the final USD arrays cross to the processor.
 
-The command is therefore a pipeline of device passes orchestrated by the host:
+The command is therefore a pipeline of device passes orchestrated by the host (Figure 5):
 
 1. read the stage (`usd::MeshStage`) and split meshes into *pieces*;
 2. pack each piece into a mesh picture, fold boxes, choose each piece's cell (`mesh2splat_cells`);
@@ -45,25 +45,28 @@ The command is therefore a pipeline of device passes orchestrated by the host:
 5. optionally bake (radiance, or a transfer) at every Gaussian with the path tracer;
 6. write a `ParticleField3DGaussianSplat` stage (or a `.athc`) atomically.
 
+![Figure 5. The conversion as a sequence of device passes. Steps 2–7 are kernels or the Mesh2Splat AOFX effect; step 8 is the transfer bake of Section 4.](figures/fig-mesh2splat.svg)
+
 ## 3.2 Reading the stage
 
 `usd::MeshStage` walks the stage with `UsdShade` directly rather than through Hydra: the conversion wants no render
 index, and the material side is built on the stage's own bindings.
 
-**Selection.** `--prim P` restricts conversion to meshes at or under `P`; `--hide P` (repeatable) authors session
-invisibility on `P` and everything below it before the read. A mesh that computes invisible at the read's time code
+**Selection.** `--prim P` restricts conversion to meshes at or under `P`; `--hide P` (repeatable) authors
+invisibility on `P` and everything below it, in a non-persistent layer over the stage, before the read. A mesh that computes invisible at the read's time code
 is skipped, so the conversion converts what the renderer draws. `--hide` affects the conversion only: the bake
 traces the whole stage, so a part converted with every other part hidden still receives the others' shadows and
 inter-reflections. This is what allows the Corvette to be converted in groups (Section 3.11).
 
 **Instancing.** A `PointInstancer` prototype's mesh is emitted once per instance of the innermost instancer that
 holds it, at (mesh relative to its prototype root) × (instance transform, prototype root included) × (instancer to
-world); the built mesh buffers are shared between copies. Before this, the chess set's sixteen pawns became two.
+world); the built mesh buffers are shared between copies. Without this expansion the chess set's sixteen pawns
+convert to two.
 Nested instancers are expanded at the innermost level only.
 
 **Time and pose.** `--time T` sets the time code at which positions, transforms and primvars (including their
 indices) are read and at which the bake traces. A skinned mesh's `points` do not animate in USD, so the stage is
-first posed with `UsdSkelBakeSkinning` into the session layer over $[T, T]$, which costs one pose and leaves the file
+first posed with `UsdSkelBakeSkinning` into a non-persistent layer over $[T, T]$, which costs one pose and leaves the file
 untouched; a stage without a `SkelRoot` is unchanged and converts byte-identically. With `--skinned` the Gaussians
 are built in the bind pose and each keeps four joints and their weight gradients; that path is described in
 Section 5.
@@ -72,7 +75,7 @@ Section 5.
 subset's triangles, and those no subset claims. A piece's triangles are listed on the device in the mesh's order
 (flag, prefix sum, scatter) and packed as if they were a mesh, so the effect is untouched. A test mesh with two faces
 bound red and blue by subsets and the mesh bound green converts to 272 red and 272 blue Gaussians and none green;
-before the change it was all green.
+reading the mesh's own binding alone makes it all green.
 
 **Materials in their own words.** The bound surface — MaterialX `standard_surface`, OpenPBR `open_pbr_surface`,
 `gltf_pbr` or `UsdPreviewSurface` — is read with its own input names and its own defaults (standard_surface 0.8 grey
@@ -114,7 +117,7 @@ h = \frac{z\,(A/P)}{f}, \qquad z = \max\bigl(\lVert \operatorname{clamp}(\mathbf
 $$
 
 with $A$ the camera's horizontal aperture, $f$ its focal length, $\mathbf e$ the eye, and the result bounded only by
-the user's `--cell-min`/`--cell-max`. Mesh2GS takes $z_{\min}$ over the box inside the frustum and over the camera's
+explicit `--cell-min`/`--cell-max`. Mesh2GS takes $z_{\min}$ over the box inside the frustum and over the camera's
 time samples; the Euclidean distance at `--time` is the same for a box in view and finer, never coarser, for one
 beside the frustum. On two equal cards three and seven units from a 64-pixel camera, the near card received 930
 Gaussians and the far one 169: a ratio of 5.5 against $(7/3)^2 = 5.4$ expected. This is the mode used for every
@@ -154,8 +157,8 @@ s_v = \min\!\left(\lVert \mathbf j_v \rVert\,\sigma\,\tfrac{1}{N},\; \ell_{\max}
 s_n = \varphi\,\min(s_u, s_v),
 $$
 
-where $\sigma$ is `--sigma`, $\ell_{\max}$ the triangle's longest edge and $\varphi$ `--flatness`. Three details were
-read from the original source rather than guessed: the Jacobian is over the triplanar coordinates, not over texture
+where $\sigma$ is `--sigma`, $\ell_{\max}$ the triangle's longest edge and $\varphi$ `--flatness`. Three details follow
+the original source: the Jacobian is over the triplanar coordinates, not over texture
 coordinates; the $1/N$ factor is applied by the original's exporter, not by a shader (without it every Gaussian is
 the size of the model); and the frame is not the Jacobian's columns but the triangle's longest edge
 $\hat{\mathbf t}$, the interpolated shading normal $\hat{\mathbf n} = \operatorname{normalize}(\sum_k \lambda_k
@@ -166,9 +169,9 @@ $$
 R_{\text{frame}} = [\hat{\mathbf t}_\perp,\; \hat{\mathbf n}\times\hat{\mathbf t}_\perp,\; \hat{\mathbf n}],
 $$
 
-with $\hat{\mathbf t}_\perp$ the edge made orthogonal to $\hat{\mathbf n}$. The bound $\ell_{\max}$ was added after
-1 859 slivers of a BMW, seen almost edge-on by their own projection, produced Jacobian columns twenty orders of
-magnitude too long and drew white spikes metres long.
+with $\hat{\mathbf t}_\perp$ the edge made orthogonal to $\hat{\mathbf n}$. Without the bound $\ell_{\max}$,
+1 859 slivers of a BMW, seen almost edge-on by their own projection, produce Jacobian columns twenty orders of
+magnitude too long and draw white spikes metres long.
 
 **Width.** The original's $\sigma = 0.65$ leaves a converted surface about 30 % transparent to a ray tracer. Measured
 on a unit quad lit head-on (mesh pixel 0.5032):
@@ -207,12 +210,12 @@ tracer the same at full size, against 0.253 / 0.510 / 0.770 with the first-order
 `--opacity-cut` (0.5) writes no Gaussian at all, so the budget goes where the surface is.
 
 **A triangle that catches no cell.** A triangle smaller than a cell need contain no cell centre; rasterised, it
-vanishes. Converted, that removed the Buick's grille and window rubbers (80 137 triangles became 34 011 Gaussians).
-Such a triangle now gets one Gaussian at its centroid, sized by its own second moments (`m2sOwnSize`): the uniform
+vanishes. Without a fallback, that removes the Buick's grille and window rubbers (80 137 triangles become 34 011 Gaussians).
+Such a triangle therefore gets one Gaussian at its centroid, sized by its own second moments (`m2sOwnSize`): the uniform
 triangle's covariance $\Sigma_\triangle = \tfrac{1}{12}\sum_k \mathbf d_k \mathbf d_k^\top$ (corners about the
 centroid, in the tangent plane), widened as a cell is, $\Sigma = 12\sigma^2 \Sigma_\triangle$, with the wide axis
-clamped to $[0.05\,s_{\max}, s_{\max}]$ of the cell's size and the narrow axis to at least 0.02 of the wide. Before
-this, a panel's rolled lip — a strip of sub-cell triangles — drew a band of cell-wide beads three pixels thick along
+clamped to $[0.05\,s_{\max}, s_{\max}]$ of the cell's size and the narrow axis to at least 0.02 of the wide. Without
+it, a panel's rolled lip — a strip of sub-cell triangles — draws a band of cell-wide beads three pixels thick along
 every Corvette edge where the path tracer draws a hairline. In the Corvette bakes, glass and tyres come out at about
 one Gaussian per triangle at both 640 and 1280 px.
 
@@ -264,27 +267,23 @@ $$
 
 $T$ its triangles ($1.5T$ approximates its welded edges), and its Gaussians carry
 `primvars:athenea:splat:closed = 1`, which allows a player or a cut to drop nodes facing away. A fixed share of edges
-was tried first (2 %) and failed: an open sheet's border grows as the square root of its area, so a fine enough tube
-passed as closed — the rims' barrels (1 %) were culled and light showed between the spokes on the phone. Against the
+(2 %) is not sufficient: an open sheet's border grows as the square root of its area, so a fine enough tube
+passes as closed — with that rule the rims' barrels (1 %) are culled and light shows between the spokes. Against the
 square root, the doors (no open edge), logos (1.4) and calipers (1.5) stay closed and rims (4.0), tyres (3.1), hood
 (3.1) and bumper (4.4) do not: 102 of the Corvette's 192 meshes. A car's door is two skins; drawn without culling,
-the inner skin sorted in front of the outer in patches, a net of dark cracks at phone size.
+the inner skin sorts in front of the outer in patches, a net of dark cracks at small screen sizes.
 
 **Measured.** The Corvette's TX base at 640 px of `/World/Camera`, rebaked with edges held (default 1.5) and as a
 control with `--edge-reach 0`, both 5 380 804 Gaussians; day frame at 1920 × 1080 against the mesh path trace:
 
 | bake | relMSE (HDR) | PSNR (display) | SSIM |
 |---|---|---|---|
-| previous base (old build) | 0.0900 | 21.83 dB | 0.8555 |
+| previous base (earlier build) | 0.0900 | 21.83 dB | 0.8555 |
 | control, edges not held | 0.0902 | 21.86 dB | 0.8554 |
 | edges held, $\rho = 1.5$ | 0.0887 | 21.93 dB | 0.8567 |
 
 The global gain is small because the edges are a small fraction of the frame; the visible effect is on the panel
 gaps.
-
-<!-- /Users/muriel/luc/athenea-renders/simplify3/edges/edges_cmp.png -->
-<!-- /Users/muriel/luc/athenea-renders/simplify3/edges/day_new_Camera.png -->
-<!-- /Users/muriel/luc/athenea-renders/simplify3/edges/day_ctl_Camera.png -->
 
 ## 3.6 Material capture
 
@@ -296,33 +295,33 @@ entries; and the shape operator.
 **Base.** The colour is the material's base colour times its base weight, times the albedo map where there is one
 (decoded to linear). Metallic and roughness are the material's constants, multiplied by the packed map's channels
 where there is one (blue metallic, green roughness), as glTF multiplies its factors; a missing channel is a factor
-of one. The original defaulted to $(0.1, 0.5)$ from the map alone, so every material without a map became the same
+of one. The original defaults to $(0.1, 0.5)$ from the map alone, so every material without a map becomes the same
 plastic; with the material's own values passed, a converted quad under a head-on light reads 0.5009 against the
 mesh's 0.5032.
 
 **Shading normal.** A normal map is read in the frame its UVs give — $\partial\mathbf p/\partial u$ from the
 triangle's positions and UVs, orthonormalised against the normal, as the mesh shader does — and the result is kept as
-the Gaussian's shading normal (`primvars:athenea:splat:normal`) beside its geometric frame. Previously the map was
-read against the longest edge, and every facet of the pawn's marble turned its veins by its own angle. The disc
+the Gaussian's shading normal (`primvars:athenea:splat:normal`) beside its geometric frame. Read against the longest
+edge instead, every facet of the pawn's marble turns its veins by its own angle. The disc
 itself is not turned unless `--normal-map-turns` is given, which would open the surface where the relief is steep.
 
-**Layers** (proposal 026). A Gaussian carries the specular weight, colour and index; the coat's weight, roughness and
+**Layers.** A Gaussian carries the specular weight, colour and index; the coat's weight, roughness and
 index; the sheen's colour times its weight and its roughness; and the coat darkening switch — OpenPBR's units, three
-words per splat on the device. Up to three maps on these inputs are sampled per Gaussian (`m2sLayersAt`). This was
-needed because the Corvette's paint (`Car_Paint_Main`) is OpenPBR metalness 1 over a base of about 0.05 under a
-clear coat of weight 1: everything the eye sees of it is the lacquer, and without the coat a converted car came out
+words per splat on the device. Up to three maps on these inputs are sampled per Gaussian (`m2sLayersAt`). This is
+required because the Corvette's paint (`Car_Paint_Main`) is OpenPBR metalness 1 over a base of about 0.05 under a
+clear coat of weight 1: everything the eye sees of it is the lacquer, and without the coat a converted car comes out
 nearly black.
 
 **Schlick metals.** OpenPBR and glTF metals are MaterialX `generalized_schlick_bsdf` (colour head-on, specular colour
 at $82^\circ$), not a conductor of the artistic index; for a dark metal the two differ by a factor of two at grazing
 angles (at $60^\circ$: 0.172 for the conductor, 0.077 for the Schlick from $F_0 = 0.047$). The material's kind is
 written per Gaussian (`primvars:athenea:splat:schlickMetal`) and the renderer reflects it with the DFG fit of its two
-ends. An earlier variant of the same confusion made the bake drop every OpenPBR metal as dielectric polish: a
-Mustang's front bumper stored the constant that decodes to black in all 27 016 Gaussians; with Schlick lobes of
-$F_0 > 0.2$ kept as body, the bumper's mean colour became (0.45, 0.51, 0.61).
+ends. Treating every OpenPBR metal as dielectric polish in the bake has a measured cost: a Mustang's front bumper
+stores the constant that decodes to black in all 27 016 Gaussians; with Schlick lobes of $F_0 > 0.2$ kept as body,
+the bumper's mean colour is (0.45, 0.51, 0.61).
 
 **Emission and transmission.** Emission is the material's colour times its map, linear and unbounded, in an entry of
-its own. Transmission $T$ and transmission colour $\mathbf c_T$ are a channel the original did not have (glass came
+its own. Transmission $T$ and transmission colour $\mathbf c_T$ are a channel the original did not have (glass comes
 out opaque white). The colour is taken towards the transmission colour,
 
 $$
@@ -343,8 +342,8 @@ the baked reflected field (material roughness at least 0.3: paint, 0.34) or keep
 
 A Gaussian has one normal. Where a strip of chrome curves under it, the path-traced pixel averages a highlight that
 moves across the footprint and shows a thin line; the Gaussian shows the light its single normal meets, at full
-brightness, over its whole footprint. On the Corvette the grille trim — four pixels high — came back as a row of
-white beads, and the chrome read 1.6 times the path trace while a chrome ball validated within 1 %.
+brightness, over its whole footprint. On the Corvette, without filtering, the grille trim — four pixels high — comes out as a row of
+white beads, and the chrome reads 1.6 times the path trace while a chrome ball validates within 1 %.
 
 The conversion therefore widens the roughness by the spread of normals under the Gaussian (`m2sSpread`,
 `m2sWidened`). The turn rate is the largest angle between corner normals per unit corner distance, over the
@@ -393,8 +392,8 @@ runs counted; the signed volume $V$ (tetrahedra to the origin) and the area $A$ 
   ($2V/A$ is a slab's gap and two thirds of a ball's radius).
 
 An open or slab piece is read thin-walled — unless it is *tinted* (transmission colour luminance below 0.9), which
-stays solid for now, since a thin wall lets the background through grey. The Corvette's glass turned out to be
-closed slabs 3–4 mm thick (research proposal 055), which the edge rule alone called solid; the thickness rule reads
+stays solid for now, since a thin wall lets the background through grey. The Corvette's glass consists of
+closed slabs 3–4 mm thick, which the edge rule alone calls solid; the thickness rule reads
 them. Each decision is printed, e.g. for the rear light lens: "tinted, kept solid glass: 200 of its 17284 edges open,
 0 shared by more than two; 1.199 thick (2V/A) against a cell of 0.007921". `--thin-glass MAT` and `--solid-glass MAT`
 override per material.
@@ -420,7 +419,7 @@ Gaussians only.
 **Shadow catcher** (`--shadow-catcher --prim OBJECT`). The ground is found automatically (the largest flat mesh
 outside the object whose top is at the object's bottom; `--catcher-ground` names one). A patch of quads — the
 object's footprint widened by `--catcher-margin` heights (1.5), split into a grid so that no triangle exceeds
-`--max-cells` — is added to a session copy of the stage and converted alone at a cell of a hundredth of the object's
+`--max-cells` — is added to an in-memory copy of the stage and converted alone at a cell of a hundredth of the object's
 height, as a TX transfer whose rays meet the object and the ground. At draw time the gaussian's opacity is
 $-\ln(\text{ratio})/2\pi$, where the ratio is light reaching it with the object against without, since a lattice of
 $\sigma = 1$-cell Gaussians sums to $2\pi$ and a layer of opacity $a$ leaves $e^{-2\pi a}$. The Corvette's: a
@@ -445,9 +444,9 @@ traced once (`--validate-paths` 512, `--validate-bounces` 6) and kept; the stage
 its Cryptomatte, and each group's mask is the coverage of every rank whose id hashes one of its meshes. Within the
 mask's box the Measure effect gives relMSE, p99 and the means of the cloud and of the mesh raster beside it, written
 to `validate.json`. `--validate-sky white` (or an image) draws everything under another sky with the stage's other
-lights off, so a transfer's error is its occlusion's and reflection's alone. It is what found, among others, that a
-solid glass ball traced at half the path-traced brightness (0.096 against 0.195) before rays were bent into it, and
-that the paint ball under a white dome read 13 % under because of the coat's Fresnel.
+lights off, so a transfer's error is its occlusion's and reflection's alone. Among the defects it measures: a solid glass ball
+traced at half the path-traced brightness (0.096 against 0.195) when rays are not bent into it, and a paint ball
+under a white dome reading 13 % under because of the coat's Fresnel.
 
 ## 3.11 Measured results on the Corvette
 
@@ -457,7 +456,7 @@ extra paths, with the specular filter and edge reach at their defaults (1 and 1.
 tree is cut at 0.25 px with back culling.
 
 **640 → 1280 px.** The 640 px bake's leaves were 3–4 mm on the hood, and the door's stripes and the sill's hairs —
-absent from the path trace — were in the cloud. The car was re-baked at 1280 px in 8 groups of top-level parts
+absent from the path trace — were in the cloud. The car is re-baked at 1280 px in 8 groups of top-level parts
 balanced by count, each converted with all other parts hidden (part names taken from the Cryptomatte manifest). The
 eight bakes wrote 891 387, 896 496, 809 073, 790 403, 1 631 765, 1 073 954, 1 302 878 and 1 307 473 Gaussians
 (8 703 429 in total) in 212–304 s of transfer each, about 34 min altogether.
@@ -469,39 +468,43 @@ eight bakes wrote 891 387, 896 496, 809 073, 790 403, 1 631 765, 1 073 954, 1 30
 | glass, tyres | about one per triangle | about one per triangle |
 | car crop / frame (PSNR) | 16.55 / 22.18 dB | 17.88 / 23.90 dB |
 
+![Figure 6. Car crop (900 × 420 of the 1920 × 1080 frame from `/World/Camera`): path trace of the mesh (top), the 640 px bake (middle) and the 1280 px bake (bottom), both drawn as the 0.25 px cut with back-face culling. Car-crop PSNR 16.55 dB and 17.88 dB.](figures/img-car-640-1280.jpg)
+
+![Figure 7. The full 1920 × 1080 frame of the 1280 px bake, 0.25 px cut with back-face culling (frame PSNR 23.90 dB against the path trace).](figures/img-car-1280-frame.jpg)
+
 Analysis of the 1280 px cloud against the 640 px one: hood highlights 3.2 → 2.0 px off their path-traced position,
 the door's open-reflection contrast 0.35/0.53 → 0.56/0.74 of the path trace's, the grille's holes in the coarse cut
-2.24 → 1.04, the sill's hairs 987 → 459 px from the resolution alone.
+2.24 → 1.04, the sill's hairs 987 → 459 px from the resolution alone (Figures 6 and 7).
 
-**The A/B/C test.** Before committing the 1280 px settings, eight parts (both doors, both sill panels, front fender,
+**Settings for 1280 px (variants A/B/C).** To select the 1280 px settings, eight parts (both doors, both sill panels, front fender,
 chrome grille, grille rim, hood) were baked with the whole car casting, 931 017 Gaussians in each variant:
 
 | variant | settings | result |
 |---|---|---|
-| **A** | as the 640 px bake ($k = 1$, $\rho = 1.5$) | chosen: no hairs, the door smooth |
+| **A** | as the 640 px bake ($k = 1$, $\rho = 1.5$) | selected: no hairs, the door smooth |
 | B | `--specular-filter 0` | dashed dark line on the sill's fold; the chrome strip sparkles |
 | C | B + `--edge-reach 1.0` | elongation and hairs identical to B |
 
-The hypothesis under test was that the door's streaks were the coat's Toksvig widening saturating on folds and the
-sill's hairs the edge pass's elongated Gaussians. Neither held at 1280 px: the widening is needed on folds and the
-tighter edge reach changed nothing, so A was kept.
+![Figure 8. The 1280 px settings on the sill panel: the side of the car for context (top left), variant A (top right), variant B (bottom left) and variant C (bottom right). B and C show the dashed dark line on the fold.](figures/img-sill-variants.jpg)
 
-<!-- /Users/muriel/luc/athenea-renders/pieces/car1280/test/A.png -->
-<!-- /Users/muriel/luc/athenea-renders/pieces/car1280/test/B.png -->
-<!-- /Users/muriel/luc/athenea-renders/pieces/car1280/test/C.png -->
+The variants test whether the door's streaks are the coat's Toksvig widening saturating on folds and the sill's
+hairs the edge pass's elongated Gaussians. Neither holds at 1280 px: the widening is needed on folds and the
+tighter edge reach changes nothing, so the settings of A are used (Figure 8).
 
-**The 5120 px close-up level.** Close up on the phone the camera stands far nearer than `/World/Camera`, about
-0.5 mm per phone pixel against 3–4 mm leaves. A logo-and-grille test from a close camera grew from 108 527 to
-404 594 Gaussians between 1280 and 5120 px and showed the checkered flag, the bowtie and the grille's mesh crisp. The
+**The 5120 px close-up level.** A close view stands far nearer than `/World/Camera`, about 0.5 mm per screen
+pixel against 3–4 mm leaves. A logo-and-grille conversion from a close camera grows from 108 527 to
+404 594 Gaussians between 1280 and 5120 px and shows the checkered flag, the bowtie and the grille's mesh crisp. The
 66 parts the 1280 px bake had already given at most 1.5 Gaussians per triangle (badges, grilles, lamps, calipers,
-mirrors, wheels, wipers, trims) were re-baked at 5120 px in seven groups; the panels at 5120 px or as fine as kept a
+mirrors, wheels, wipers, trims) are re-baked at 5120 px in seven groups; the panels at 5120 px or as fine as kept a
 part under a cap of leaves (5 M, lowered to 4.5 M after a 5.01 M tree did not fit in device memory), with
-`--max-cells 1048576`:
+`--max-cells 1048576` (Figure 9):
+
+![Figure 9. The logo from a close camera: leaves of the 1280 px bake (left) and of the 5120 px close-up level (right).](figures/img-logo-1280-5120.jpg)
 
 | groups | leaves | resolution (px) |
 |---|---|---|
 | fine0–6 (66 detailed parts) | 18 610 627 | 5120 |
-| door (pilot) | 4 084 170 | 5120 |
+| door | 4 084 170 | 5120 |
 | Bottom | 4 897 428 | 3392 |
 | Part_3 | 4 370 459 | 4480 |
 | Infinite_Black | 4 481 738 | 4736 |
@@ -510,11 +513,9 @@ part under a cap of leaves (5 M, lowered to 4.5 M after a 5.01 M tree did not fi
 | Front_Bumper_001 | 5 008 986 | 4480 |
 | **24 trees** | **74 536 126** | |
 
-Each large panel's transfer took 2–25 min (e.g. the hood, 2 264 198 Gaussians in 120 s; Front_Bumper_001,
-5 009 059 in 1 487 s) on a machine shared with other GPU jobs, so these are not benchmarks. All 24 merge trees were
-written (74 328 031 merges, 208 095 roots, 148 864 157 nodes in 49 634 pages, 87.4 GB) and share one occlusion
-codebook of 8 182 entries; Section 6.9 gives the details. (The baked count of Front_Bumper_001, 5 009 059, is the
-conversion log's; the tree holds 5 008 986 leaves, the figure used in the table.)
+The 24 merge trees hold 74 328 031 merges, 208 095 roots and 148 864 157 nodes in 49 634 pages (87.4 GB) and
+share one occlusion codebook of 8 182 entries; Section 6.9 gives the details. (The conversion of Front_Bumper_001
+emits 5 009 059 Gaussians; its tree holds 5 008 986 leaves, the figure used in the table.)
 
 ## 3.12 Limitations
 

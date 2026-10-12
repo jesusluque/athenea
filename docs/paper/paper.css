@@ -115,6 +115,25 @@ math { font-size: 1.02em; }
 ol, ul { margin: 0 0 2.5mm 0; padding-left: 1.6em; }
 li { margin: 0.6mm 0; }
 
+figure {
+  margin: 4mm auto 5mm auto;
+  text-align: center;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+figure img {
+  max-width: 100%;
+  max-height: 125mm;
+  height: auto;
+}
+figcaption {
+  font-size: 9pt;
+  line-height: 1.35;
+  color: var(--muted);
+  text-align: justify;
+  margin: 2mm 4mm 0 4mm;
+}
+
 .line-block { margin: 2mm 0; }
 
 @media print {

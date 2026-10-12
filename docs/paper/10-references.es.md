@@ -5,7 +5,7 @@
 Las referencias se dan por autores, título y año tal como se citan en el texto. Cuando las fuentes en las que se basa
 este artículo nombran una obra sin sus datos bibliográficos completos, se enumera tal como se cita y se marca así.
 
-## 10.1 Splatting de gaussianas y render basado en puntos
+## 10.1 Gaussian splatting y render basado en puntos
 
 1. Kerbl, B., Kopanas, G., Leimkühler, T., Drettakis, G. (2023). 3D Gaussian Splatting for Real-Time Radiance Field
    Rendering. ACM Transactions on Graphics (SIGGRAPH).
@@ -22,18 +22,18 @@ este artículo nombran una obra sin sus datos bibliográficos completos, se enum
 7. Moënne-Loccoz, N., et al. (2024). 3D Gaussian Ray Tracing: Fast Tracing of Particle Scenes (3DGRT). ACM
    Transactions on Graphics (SIGGRAPH Asia).
 8. Ren, K., et al. (2024). Octree-GS: Towards Consistent Real-time Rendering with LOD-Structured 3D Gaussians.
-9. Xiong, et al. (2026). NanoGS: fusión por pares de vecinos más cercanos mutuos de gaussianas. Tal como se cita en
+9. Xiong, et al. (2026). NanoGS: merge por pares de vecinos más cercanos mutuos de Gaussians. Tal como se cita en
    la §6.2.
-10. GaussianPOP: una puntuación de poda por gaussiana según el error que deja su eliminación. Tal como se cita en la
+10. GaussianPOP: una puntuación de poda por Gaussian según el error que deja su eliminación. Tal como se cita en la
     §2.5.2.
-11. Spark: un renderizador de splatting de gaussianas 3D para la web (World Labs). El reproductor de la §7 es un fork
+11. Spark: un renderer de Gaussian splatting 3D para la web (World Labs). El player de la §7 es un fork
     con backend WebGPU.
 
-## 10.2 De mallas a gaussianas
+## 10.2 De meshes a Gaussians
 
-12. Electronic Arts (SEED). mesh2splat: conversión de mallas en splats de gaussianas 3D por rasterización (código
+12. Electronic Arts (SEED). mesh2splat: conversión de meshes en splats de Gaussians 3D por rasterización (código
     abierto, BSD-3). El origen de la conversión de la §3.
-13. Mesh2GS. arXiv 2606.21898 (2026). El tamaño de celda derivado de una cámara de la §3.3.
+13. Mesh2GS. arXiv 2606.21898 (2026). El tamaño de cell derivado de una cámara de la §3.3.
 
 ## 10.3 Transporte de luz, transfer precalculado y compresión
 
@@ -73,7 +73,7 @@ este artículo nombran una obra sin sus datos bibliográficos completos, se enum
 31. MaterialX: un estándar abierto para contenido de materiales y de look development (versión 1.39). Academy
     Software Foundation.
 
-## 10.5 Geometría, estructuras de aceleración y niveles de detalle
+## 10.5 Geometría, estructuras de aceleración y LOD
 
 32. Karras, T. (2012). Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees. High Performance
     Graphics.
@@ -96,7 +96,7 @@ este artículo nombran una obra sin sus datos bibliográficos completos, se enum
 
 41. Lin, et al. MLP de visibilidad direccional por parte del cuerpo para avatares articulados. Tal como se cita en la
     §5.8.
-42. DNF-Avatar: una rejilla escalar de oclusión ambiental por hueso. Tal como se cita en la §5.8.
+42. DNF-Avatar: un grid escalar de oclusión ambiental por hueso. Tal como se cita en la §5.8.
 
 ## 10.8 Sistemas y estándares
 
@@ -111,19 +111,15 @@ este artículo nombran una obra sin sus datos bibliográficos completos, se enum
 48. O'Neill, M. E. (2014). PCG: A Family of Simple Fast Space-Efficient Statistically Good Algorithms for Random Number
     Generation; Halton, J. H. (1960). On the efficiency of certain quasi-random sequences of points.
 
-# Apéndice A. Repositorios, comandos y figuras
+# Apéndice A. Repositorios y comandos
 
 ## A.1 Repositorios
 
 | repositorio | dónde | qué contiene |
 |---|---|---|
-| athenea | github.com/jesusluque/athenea | el motor y renderizador de la §2: módulos, shaders, el delegado `hdAthenea`, la CLI `athenea`, los manuales `docs/operations.md` y `docs/development.md` con sus traducciones al español, y `docs/decisions.md` |
-| athenea-pieces | github.com/jesusluque/athenea-pieces, rama `pieces` (privado) | un fork de athenea con el trabajo de pieces: árboles de fusión por pieza, el corte por error, las cáscaras cerradas, la oclusión compartida, los horneados de 1280 y 5120 px (§3.11, §6); `docs/pieces.md` y este artículo en `docs/paper/` |
-| sparkwebGPU | `~/luc/sparkwebGPU`, rama `webgpu` | el fork WebGPU de Spark de la §7: el lector de `.athc` v3, el camino compacto, el streamer, las páginas del reproductor; su registro `CLAUDE.md` y sus notas `research/` |
-
-Los hashes de commit citados en las secciones 3–6 son commits de athenea-pieces; el 2e6e183 de la §2.15 es un commit de
-lucabRTrender, el predecesor de athenea antes de que se renombrara con una historia nueva. Los de la §7
-son commits de sparkwebGPU salvo que el texto nombre athenea.
+| athenea | github.com/jesusluque/athenea | el motor y renderer de la §2: módulos, shaders, el delegado `hdAthenea`, la CLI `athenea`, los manuales `docs/operations.md` y `docs/development.md` con sus traducciones al español, y `docs/decisions.md` |
+| athenea-pieces | github.com/jesusluque/athenea-pieces, rama `pieces` (privado) | un fork de athenea con los merge trees por pieza, el cut por error, las cáscaras cerradas, la oclusión compartida, los bakes de 1280 y 5120 px (§3.11, §6); `docs/pieces.md` y este artículo en `docs/paper/` |
+| sparkwebGPU | `~/luc/sparkwebGPU`, rama `webgpu` | el fork WebGPU de Spark de la §7: el lector de `.athc` v3, el camino compacto, el streamer, las páginas del player |
 
 ## A.2 Comandos y opciones
 
@@ -132,34 +128,13 @@ por defecto, la unidad y la restricción de cada opción. Los comandos en los qu
 
 | comando | se usa para | sección del manual | § |
 |---|---|---|---|
-| `athenea mesh2splat STAGE` (`--cell-from-camera`, `--camera-pixels`, `--transfer`, `--hide`, `--max-cells`, `--specular-filter`, `--edge-reach`, `--shadow-catcher`, `--light-catcher`, `--validate`, `--skinned`, `--lod-levels`) | conversión y horneado | 2.8, 3.1 | 3, 4, 5 |
-| `athenea decimate` (`--tree`, `--passes`, `--merge-glass`, `--object-groups`, `--tree-coverage`, `--tree-pages`, `--occlusion-mask`, `--occlusion-group`, `--cut-budget`, `--cut-cull-back`) | árboles de fusión, cortes, páginas, oclusión | 2.4.1, 3.3 | 5.9, 6 |
+| `athenea mesh2splat STAGE` (`--cell-from-camera`, `--camera-pixels`, `--transfer`, `--hide`, `--max-cells`, `--specular-filter`, `--edge-reach`, `--shadow-catcher`, `--light-catcher`, `--validate`, `--skinned`, `--lod-levels`) | conversión y bake | 2.8, 3.1 | 3, 4, 5 |
+| `athenea decimate` (`--tree`, `--passes`, `--merge-glass`, `--object-groups`, `--tree-coverage`, `--tree-pages`, `--occlusion-mask`, `--occlusion-group`, `--cut-budget`, `--cut-cull-back`) | merge trees, cuts, pages, oclusión | 2.4.1, 3.3 | 5.9, 6 |
 | `athenea visibility` | campos de visibilidad por parte | 2.9 | 5.8 |
-| `athenea stage`, `athenea view` | tiempos (`--frames`) y el visor | 2.5, 2.6 | 2 |
+| `athenea stage`, `athenea view` | tiempos (`--frames`) y el viewer | 2.5, 2.6 | 2 |
 | `athenea compare` | comparación de imágenes en la GPU | 2.11 | 2.15 |
 | `athenea aofx` | los efectos AOFX (mesh2splat, Measure) | 2.10, 7 | 2.14, 3.1 |
-| `athc-convert` (`--gzip --planes`, `--shadow-vq`), `fit-compact-basis`, `floor_shadow --merge 2`, `usd-athc` | los formatos del reproductor (sparkwebGPU) | — | 7 |
+| `athc-convert` (`--gzip --planes`, `--shadow-vq`), `fit-compact-basis`, `floor_shadow --merge 2`, `usd-athc` | los formatos del player (sparkwebGPU) | — | 7 |
 
 Las variables de entorno (`ATHENEA_GPU_BUDGET`, `ATHENEA_STAGES`) se enumeran en la §8.1 de `docs/operations.md`, los
-formatos (`.athc`, los esquemas sin código) en la §8.2 y la §4.3. Los trabajos de GPU se ejecutaron de uno en uno
-mediante `~/luc/athenea-gpu/shared.sh`, bajo `guard.sh` y `memguard.sh` (§5 de `docs/pieces.md`).
-
-## A.3 Figuras
-
-Las figuras a las que se refieren las secciones 2–7 se guardan fuera del directorio del artículo:
-
-| figura | fichero | § |
-|---|---|---|
-| el gorrión, malla trazada y convertida | `athenea-pieces/docs/images/sparrow-mesh-cloud.png`, `sparrow-cloud.png`, `sparrow-film.png` | 2, 5.10 |
-| bordes sujetos frente al control (coche de 640 px) | `athenea-renders/simplify3/edges/edges_cmp.png`, `day_new_Camera.png`, `day_ctl_Camera.png` | 3.5 |
-| la prueba de horneado A / B / C a 1280 px | `athenea-renders/pieces/car1280/test/A.png`, `B.png`, `C.png` | 3.11 |
-| rugosidad del coat guardada, path trace frente a hojas frente a corte | `athenea-renders/pieces/car/t63b/research_coat_roughness.png`, `t63b/mos.png` | 4.10 |
-| cut_a / cut_b; la clase abierta de la puerta | `athenea-renders/pieces/car/t65/mos.png`, `t66/research_open_split.png` | 4.10.4 |
-| el horneado de 1280 px frente al path trace; los trazos del pliegue del umbral | `athenea-renders/pieces/car/t71/mos.png`, `t71/research_sill.png` | 4.10, 6.10 |
-| polish nítido condicionado; separación tubo/pliegue | `athenea-renders/pieces/car/t73/bump_mos.png`, `t74/sill_mos.png` | 4.10.6 |
-| el gorrión en la web, path trace frente a raster; el ala corregida | `athenea-renders/sparrow-web/ref_pt_raster.png`, `sparrow/fixed_wing_athenea.png` | 5.10 |
-| el peón blanco y su anillo | `athenea-renders/pawn-hq/pawn_gt_gs.png`, `ring_gt_gs.png` | 5.11 |
-| la red de grietas y el cull de caras traseras (T50) | `athenea-renders/pieces/car/t50/cut_Camera.png`, `cull_Camera.png` | 6.6, 6.10 |
-| logo y rejilla a 1280 frente a 5120 px | `athenea-renders/pieces/close/r_1280.png`, `r_5120.png`, `close_mos.png` | 3.11, 6.9, 7.12 |
-
-Todas las rutas de render están bajo `~/luc/athenea-renders/`; cada render del trabajo se guarda allí por tarea.
+formatos (`.athc`, los esquemas sin código) en la §8.2 y la §4.3.

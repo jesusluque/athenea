@@ -6,7 +6,7 @@ This section describes how athenea turns a rigged USD asset (UsdSkel) into a
 cloud of 3D Gaussians that a skeleton still drives. It covers how the cloud is
 converted, how it is posed on the GPU every frame, how its light and
 self-shadowing are kept valid under deformation, how levels of detail treat it,
-and how it is played back in a browser and on a phone. Two assets run through
+and, as an application, how it is played back in a browser and on a phone. Two assets run through
 the section. The Eurasian tree sparrow (`SparrowBird.usda`, 609 joints, 71
 animation clips) is the animated test case. The chess pawn of The Open Chess
 Set is the rigid control. Every number below is taken from
@@ -47,8 +47,8 @@ meshes through its own `MeshStage`, which leaves two ways to handle a skinned
 mesh:
 
 - **Posed.** Without `--skinned`, the stage is posed before it is read.
-  `UsdSkelBakeSkinning` writes the posed points as time samples into the
-  *session layer*, over `GfInterval(t, t)`. This costs one pose, leaves the
+  `UsdSkelBakeSkinning` writes the posed points as time samples into an
+  in-memory override layer above the root layer, over `GfInterval(t, t)`. This costs one pose, leaves the
   file on disk unchanged, and leaves a stage with no `SkelRoot` untouched.
   Test: a square carried by one joint that slides (1.2, 0.4, 0) between t = 0
   and t = 1 converts to bounds, folded on the device, that differ by exactly
@@ -130,7 +130,9 @@ thread per gaussian. Its inputs are the rest cloud, the (joint, weight)
 pairs, the joints' skinning transforms at the current instant, and three
 matrices: the bind transform $G$, `skelToWorld` and `worldToPrim`. USD
 matrices are row-major and act on row vectors, so the host transposes them as
-`geom::Skinner` does for meshes.
+`geom::Skinner` does for meshes (Figure 11).
+
+![Figure 11. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
 
 ### 5.4.1 The mean
 
@@ -267,7 +269,7 @@ over one shared cloud: 377 MB for all 71, against 22 GB for 71 converted
 clouds. `SparrowClips.usda` offers them as a USD **variant set**. The cloud
 comes in as a payload, because a sublayer's local opinion would beat the
 variant, and each clip comes in as a reference inside its variant. The engine
-stays generic: it lists variant sets, selects one in the session layer, and
+stays generic: it lists variant sets, selects one in an in-memory override layer, and
 reports `animationRange()`, the span of authored samples (for example 1..25
 for `land_hop_1`, 1..33 for `air_fly_A0`). Choosing a clip reads about 3 MB,
 not 213 MB.
@@ -447,10 +449,9 @@ on both the M5 Pro (Metal) and an L4 through Vulkan (a 1.17 GB BLAS for about
 **Limits.** A part's own local shadowing (feather on feather) is left out.
 The ambient term is a mean over the sphere rather than a cosine lobe. Parts
 are assumed rigid and to occlude independently. The floor under the bird is
-shadowed by a separate light-space map, which was stabilised against the
+shadowed by a separate light-space map, which is stabilised against the
 "breathing" of a posed bounding box (sized from the rest sphere, snapped to
-the world texel grid). A density-grid alternative (proposal 018) is recorded
-but not implemented.
+the world texel grid). A density-grid alternative is not implemented.
 
 ## 5.9 Levels of detail and decimation for skinned clouds
 
@@ -488,7 +489,7 @@ an image RMS of 0.002.
 ## 5.10 The sparrow
 
 The sparrow and a BMW were the first two assets converted that were not
-authored for this renderer, and most of what it uncovered was outside the skinning maths.
+authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 12).
 
 - **Animation export.** Blender's exporter wrote no joint samples for this
   FBX-imported rig, so `scripts/sparrow-anim.py` samples the evaluated pose.
@@ -516,6 +517,8 @@ relMSE with it), after coverage was made to follow opacity:
 | sparrow wing, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | sparrow wing, traced | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
+![Figure 12. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
+
 For the web, the bird was converted with `--skinned --transfer
 --resolution 512`, with zonal lobes baked at 256 paths and 3 bounces in the
 bind pose and the 12-part visibility added (`sparrow_tx_vis.usdc`: 1 504 160
@@ -523,12 +526,6 @@ gaussians, 1 504 096 with content). Against the mesh path traced at 1024
 paths (1024², `air_fly_A0`, frame 16), the cloud's raster render reads
 relMSE 0.0025. The cloud's body comes out slightly darker and browner,
 because the zonal transfer keeps only direct light.
-
-<!-- Figure: /Users/muriel/luc/athenea-pieces/docs/images/sparrow-mesh-cloud.png -->
-<!-- Figure: /Users/muriel/luc/athenea-pieces/docs/images/sparrow-cloud.png -->
-<!-- Figure: /Users/muriel/luc/athenea-pieces/docs/images/sparrow-film.png -->
-<!-- Figure: /Users/muriel/luc/athenea-renders/sparrow-web/ref_pt_raster.png -->
-<!-- Figure: /Users/muriel/luc/athenea-renders/sparrow/fixed_wing_athenea.png -->
 
 ## 5.11 The pawn: the rigid control
 
@@ -548,23 +545,22 @@ unchanged:
 
 Its first end-to-end conversion produced 729 073 gaussians at resolution 512.
 Its material and transfer results belong to Sections 3 and 4. The
-high-quality white-pawn validation (`athenea-renders/pawn-hq`,
-`pawn_mesh.usda`, 2048², 2048 reference paths) records, per material:
+high-quality white-pawn validation (`pawn_mesh.usda`, 2048², 2048 reference
+paths) gives, per material:
 
 | material | gaussians | relMSE | p99 | mean (cloud) | mean (path-traced mesh) |
 |---|---|---|---|---|---|
 | `M_Pawn_Body_W` | 1 568 499 | 0.0218 | 0.273 | 0.167 / 0.165 / 0.133 | 0.164 / 0.162 / 0.132 |
 | `M_Pawn_Top_W` (glass) | 307 296 | 0.1418 | 0.354 | 0.236 / 0.260 / 0.221 | 0.365 / 0.397 / 0.279 |
 
-Three later runs at 1024² in the same folder (`s49`, `s54`, `s59`) read
-glass relMSE 0.149, 0.081 and 0.043, with the body unchanged at 0.025. What
-changed between them is not recorded next to them. The body is within a few
-percent of the path-traced mesh. The error is concentrated in the glass head.
+Three later conversions of the same pawn, measured at 1024², give glass
+relMSE 0.149, 0.081 and 0.043, with the body unchanged at 0.025. The body is
+within a few percent of the path-traced mesh. The error is concentrated in the
+glass head (Figure 13).
 
-<!-- Figure: /Users/muriel/luc/athenea-renders/pawn-hq/pawn_gt_gs.png -->
-<!-- Figure: /Users/muriel/luc/athenea-renders/pawn-hq/ring_gt_gs.png -->
+![Figure 13. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
 
-## 5.12 Playback on the web and on a phone
+## 5.12 Application: playback on the web and on a phone
 
 The web player (`sparkwebGPU`, a WebGPU fork of Spark) reuses athenea's
 kernels compiled to WGSL. athenea's `.athc` writer refuses `--skinned`, so the
@@ -584,7 +580,7 @@ splats and compares the two. Against athenea's raster the result is relMSE
 
 | page | content | measured |
 |---|---|---|
-| `/pawn` (published 2026-10-06) | body 727 061 + head 673 711 splats, transfer, 6 CC0 HDRIs | 60 fps in Chrome; v8 data set: download 281.3 → 82.7 MB, not uploaded; desktop GPU memory 1127 → 800 MB |
+| `/pawn` (published 2026-10-06) | body 727 061 + head 673 711 splats, transfer, 6 CC0 HDRIs | 60 fps in Chrome; v8 data set: download 281.3 → 82.7 MB; desktop GPU memory 1127 → 800 MB |
 | `/sparrow` (published 2026-10-07) | 1 504 096 splats, 125.7 MB, 12 clips (6.4 MB gzip), zonal transfer, HDRI | desktop GPU memory 1084 → 684 MB |
 | `/sparrow` on phones | `sparrow-mobile`: 488 656 splats, 31.7 MB, cut from the LoD tree (`--keep-splats 600000`) | 60 fps headless in mobile mode, animated |
 | sparrow-v2 (candidate) | 1 100 334 splats (−26.8 %), 75.9 MB; mobile 371 138, 26.1 MB | same error as published (4.46e-3) |
@@ -600,7 +596,7 @@ has only 2.7 % hidden.
 
 ## 5.13 What is not done
 
-- More than four influences per gaussian (P014C). This limits accuracy at
+- More than four influences per gaussian. This limits accuracy at
   the sparrow's wing tips, both in the animation and in the bake's agreement
   with the mesh.
 - Dual-quaternion skinning for clouds. Retargeting and clip blending, which a
