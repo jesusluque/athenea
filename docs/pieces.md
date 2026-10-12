@@ -121,13 +121,17 @@ A 5120 px wheel (4.45M leaves, 8.88M nodes) built its tree and ran out of device
   merged arrays started as another copy. They now start from the metadata alone, and the tree's write, the last,
   releases each array once it is on the device.
 
-Measured after: a 4.08M-leaf door, 10.5 GB peak resident; 4.90M passed, 5.01M did not (section 3.4).
+Measured after: a 4.08M-leaf door, 10.5 GB peak resident; 4.90M passed, 5.01M did not at first (section 3.4);
+a later run wrote it, with 2.23 GB as the lowest free memory.
 
-### 2.4 Occlusion written over each tree (pending)
+### 2.4 Occlusion written over each tree
 
 `occlusionMasksShared` writes a tree whose output is its input beside it (`<tree>.occlusion.usdc`) and renames it
-over it: the close-up level's trees are about 86 GB together, and a copy of each would not fit beside them. The
-source change is committed; it is built and run after the close-up level's last group (section 6).
+over it: the close-up level's trees are 87.4 GB together, and a copy of each would not fit beside them. Run over the
+24 trees of car5120: one shared codebook of 8,182 entries in 645 s, 10.2 GB peak resident; per tree 0-23.6 % of the
+closed cells reopened (Windshield 0.0 %, pan2 23.6 %). The first total read "132.4 %": the closed-cell total over
+~150M nodes wrapped a 32-bit counter; the per-tree figures and the codebook were right, and the totals are now summed
+in 64 bits (4a8f8c2).
 
 ## 3. Bakes
 
@@ -183,11 +187,13 @@ On the iPhone close up, the logo and grille stayed soft: the camera was far near
 | Infinite_Black | 4,481,738 | 4736 |
 | Panel_under_Door_001, Windshield, Front_Fender, Hood, Front_Bumper, Part_2, Part_23 | 15,994,566 | 5120 |
 | pan0-4 (small panels) | 17,088,152 | 5120 |
-| Front_Bumper_001 | 5,008,986 baked; tree pending | 4480 |
-| **done** | **69,527,140** | |
+| Front_Bumper_001 | 5,008,986 | 4480 |
+| **24 trees** | **74,536,126** | |
 
 The groups' merge trees are per part, so the close-up level is the same format as car1280: the coarse roots stay,
-and the deeper levels are only paged in close up. Each group takes the shared GPU lock on its own.
+and the deeper levels are only paged in close up. Each group takes the shared GPU lock on its own. The 24 trees hold
+74,536,126 leaves, 74,328,031 merges and 208,095 roots: 148,864,157 nodes in 49,634 pages, 87.4 GB on disk, with the
+shared occlusion written in place (2.4).
 
 ### 3.4 Limits met, and how
 
@@ -212,7 +218,7 @@ and the deeper levels are only paged in close up. Each group takes the shared GP
 | draw target by frame time; quality over frame rate (user: "aunque empeore el rendimiento quiero calidad") | the real iPhone settled at 106k drawn, tau 8, 53 fps; close up 160k, tau 8, 32 fps |
 | a still frame: after 300 ms still, one frame at tau ~0.5-1.2 with no time limit, nothing more until a touch | close up 531k at tau 1.22 in 118 ms (emulated at 190 ms a million); the first frame after a touch 39-47 ms |
 | car data ~100 MB at rest, ~55 MB moving (user) | the still frame's finer pages |
-| v8 = car5120 (the close-up level) | pending the last group and the shared occlusion |
+| v8 = car5120 (the close-up level) | its 24 trees and shared occlusion are written; the player's conversion was in progress |
 
 Figures from the emulated phone are about twice the real iPhone's; draw counts are judged on the device.
 
@@ -228,8 +234,8 @@ queued job uses is not rebuilt.
 
 ## 6. Not done
 
-- Front_Bumper_001's tree at 5120 (4480 px) after the memory fix, or re-baked under 4.5M; then the occlusion
-  codebook shared over every car5120 tree, written in place; then v8.
+- v8 (car5120) in the player: its conversion, then its quality against the path trace and its behaviour on the real
+  iPhone.
 - Lamps: the bake has no lamp emission (the headlights are dark against the path trace).
 - The chrome strip on the front bumper: 38 % brighter than the path trace, its peak lower (a tube a few pixels
   across, each gaussian reading its mirror).

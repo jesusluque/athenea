@@ -127,13 +127,17 @@ escribirlo.
   los arrays fusionados empezaban como otra copia. Ahora empiezan solo con los metadatos, y la escritura del árbol, la
   última, libera cada array en cuanto está en el dispositivo.
 
-Medido después: una puerta de 4.08M hojas, 10.5 GB de memoria residente máxima; 4.90M pasó y 5.01M no (sección 3.4).
+Medido después: una puerta de 4.08M hojas, 10.5 GB de memoria residente máxima; 4.90M pasó y 5.01M no al principio (sección 3.4);
+una ejecución posterior lo escribió, con 2.23 GB como la memoria libre más baja.
 
-### 2.4 La occlusion escrita sobre cada árbol (pendiente)
+### 2.4 La occlusion escrita sobre cada árbol
 
 `occlusionMasksShared` escribe un árbol cuya salida es su entrada junto a él (`<árbol>.occlusion.usdc`) y lo renombra
-encima: los árboles del nivel de cerca ocupan unos 86 GB juntos, y una copia de cada uno no cabría a su lado. El
-cambio en el código está commiteado; se compila y se ejecuta tras el último grupo del nivel de cerca (sección 6).
+encima: los árboles del nivel de cerca ocupan 87.4 GB juntos, y una copia de cada uno no cabría a su lado. Ejecutada
+sobre los 24 árboles de car5120: un codebook compartido de 8,182 entradas en 645 s, 10.2 GB de memoria residente
+máxima; por árbol se reabre del 0 al 23.6 % de las celdas cerradas (Windshield 0.0 %, pan2 23.6 %). El primer total
+marcó «132.4 %»: el total de celdas cerradas sobre ~150M nodos desbordó un contador de 32 bits; las cifras por árbol y
+el codebook eran correctos, y los totales se suman ahora en 64 bits (4a8f8c2).
 
 ## 3. Cocciones
 
@@ -193,12 +197,14 @@ una cámara cercana mostró nítidas las hojas de 5120 px (la bandera de cuadros
 | Infinite_Black | 4,481,738 | 4736 |
 | Panel_under_Door_001, Windshield, Front_Fender, Hood, Front_Bumper, Part_2, Part_23 | 15,994,566 | 5120 |
 | pan0-4 (paneles pequeños) | 17,088,152 | 5120 |
-| Front_Bumper_001 | 5,008,986 cocidas; árbol pendiente | 4480 |
-| **hecho** | **69,527,140** | |
+| Front_Bumper_001 | 5,008,986 | 4480 |
+| **24 árboles** | **74,536,126** | |
 
 Los árboles de merges de los grupos son por pieza, así que el nivel de cerca tiene el mismo formato que car1280: las
 raíces gruesas se quedan, y los niveles más profundos solo se paginan de cerca. Cada grupo toma el lock de GPU
-compartido por su cuenta.
+compartido por su cuenta. Los 24 árboles
+tienen 74,536,126 hojas, 74,328,031 merges y 208,095 raíces: 148,864,157 nodos en 49,634 páginas, 87.4 GB en disco,
+con la occlusion compartida escrita en el sitio (2.4).
 
 ### 3.4 Límites encontrados, y cómo se resolvieron
 
@@ -223,7 +229,7 @@ compartido por su cuenta.
 | objetivo de dibujo por tiempo de frame; calidad antes que frame rate (usuario: «aunque empeore el rendimiento quiero calidad») | el iPhone real se asentó en 106k dibujadas, tau 8, 53 fps; de cerca 160k, tau 8, 32 fps |
 | un fotograma quieto: tras 300 ms quieta, un fotograma a tau ~0.5-1.2 sin límite de tiempo, y nada más hasta un toque | de cerca 531k a tau 1.22 en 118 ms (emulado a 190 ms por millón); el primer fotograma tras un toque 39-47 ms |
 | datos del coche ~100 MB en reposo, ~55 MB en movimiento (usuario) | las páginas más finas del fotograma quieto |
-| v8 = car5120 (el nivel de cerca) | pendiente del último grupo y de la occlusion compartida |
+| v8 = car5120 (el nivel de cerca) | sus 24 árboles y la occlusion compartida están escritos; la conversión del reproductor estaba en curso |
 
 Las cifras del móvil emulado son aproximadamente el doble de las del iPhone real; el número de gaussianas dibujadas se
 juzga en el dispositivo.
@@ -240,8 +246,8 @@ a su `memguard.sh`, SIGCONT después). Un directorio de build que usa un trabajo
 
 ## 6. Pendiente
 
-- El árbol de Front_Bumper_001 a 5120 (4480 px) tras el arreglo de memoria, o re-cocida bajo 4.5M; después el codebook
-  de occlusion compartido sobre todos los árboles de car5120, escrito en el sitio; después v8.
+- v8 (car5120) en el reproductor: su conversión, y después su calidad frente al path trace y su comportamiento en el
+  iPhone real.
 - Lámparas: la cocción no tiene la emisión de las lámparas (los faros salen oscuros frente al path trace).
 - La tira cromada del parachoques delantero: un 38 % más clara que el path trace, con el pico más bajo (un tubo de
   unos pocos píxeles de ancho, cada gaussiana leyendo su espejo).
