@@ -295,8 +295,8 @@ struct OcclusionInput {
 struct OcclusionBook {
     std::vector<uint32_t> index;
     std::vector<uint32_t> book;
-    uint32_t              closed = 0;
-    uint32_t              reopened = 0;
+    uint64_t              closed = 0;     ///< summed over trees: past 2^32 at a close-up level's size
+    uint64_t              reopened = 0;
     uint32_t              levels = 0;
     uint32_t              spared = 0;   ///< nodes worth least, given the all-open entry 0
     uint32_t              seenClosed = 0;   ///< cells closed over the nodes where an eye looks from

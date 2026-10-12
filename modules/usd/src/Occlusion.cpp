@@ -337,9 +337,10 @@ Result<void> occlusionMasksShared(gpu::ShaderLibrary& library, const std::vector
                         one->closed > 0 ? 100.0 * one->reopened / one->closed : 0.0);
         }
     }
-    std::printf("occlusion: %zu trees, %zu units, a codebook of %zu shared by need; it reopens %u of their %u closed "
-                "cells (%.1f%%)\n", inputs.size(), units.size(), book.book.size() / kWords, book.reopened, book.closed,
-                book.closed > 0 ? 100.0 * book.reopened / book.closed : 0.0);
+    std::printf("occlusion: %zu trees, %zu units, a codebook of %zu shared by need; it reopens %llu of their %llu "
+                "closed cells (%.1f%%)\n", inputs.size(), units.size(), book.book.size() / kWords,
+                static_cast<unsigned long long>(book.reopened), static_cast<unsigned long long>(book.closed),
+                book.closed > 0 ? 100.0 * double(book.reopened) / double(book.closed) : 0.0);
     for (size_t t = 0; t < inputs.size(); ++t) {
         OcclusionBook one;
         one.index = std::move(indices[t]);
