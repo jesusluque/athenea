@@ -942,6 +942,30 @@ public float3 lensExitThrough(SplatSurface s, float3 wo, float curvature) {
     return (1.0 - reflectedBack) * tint;
 }
 
+/// WHERE THE LIGHT THE FAR FACE REFLECTS LEAVES: the ray `lensExit` bends
+/// in, reflected at the far face of the same sphere, crosses again and is
+/// bent out at a third point -- the primary rainbow's path -- not along the
+/// near face's mirror. Read along the mirror, a clear ball's head looked up
+/// at the bright ceiling and came out 7 % over the path traced one, its rim
+/// 28 % (research, proto/pawn). Zero where there is no such path: no
+/// curvature, no way in, or the third point holds it by total reflection.
+public float3 lensFarReflection(SplatSurface s, float3 wo, float curvature) {
+    const float index = max(s.ior, 1.0);
+    const float3 n = s.normal;
+    const float3 inside = refract(-wo, n, 1.0 / index);
+    if (!(curvature > 1.0e-6) || !(dot(inside, inside) > 1.0e-8)) {
+        return float3(0.0);
+    }
+    const float3 t1 = normalize(inside);
+    const float radius = 1.0 / curvature;
+    const float chord = 2.0 * radius * max(dot(t1, -n), 0.0);
+    const float3 farNormal = normalize(t1 * (chord / radius) + n);
+    const float3 r1 = reflect(t1, farNormal);
+    const float3 thirdNormal = normalize(r1 * (2.0 * max(dot(r1, -farNormal), 0.0)) + farNormal);
+    const float3 out = refract(r1, -thirdNormal, index);
+    return dot(out, out) > 1.0e-8 ? normalize(out) : float3(0.0);
+}
+
 public float3 bentThrough(SplatSurface s, float3 wo) {
     const float3 bent = refract(-wo, s.normal, 1.0 / max(s.ior, 1.0));
     return dot(bent, bent) > 1.0e-8 ? normalize(bent) : -wo;
@@ -1420,9 +1444,18 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         const float3 seen = s.hasReflection
                                 ? s.reflectionColour
                                 : envRadiance(envTexels, dome, mirror, s.roughness, envBaseSide);
+        // The far face's reflection leaves through a third point of the
+        // lens (lensFarReflection), where the cloud keeps its curvature.
+        float3 farSeen = seen;
+        if (kTransfer >= 2 && slope.curvature > 0.0 && !s.hasReflection) {
+            const float3 farOut = lensFarReflection(s, wo, slope.curvature);
+            if (dot(farOut, farOut) > 0.5) {
+                farSeen = envRadiance(envTexels, dome, farOut, transmittedRoughness(s.roughness, s.ior), envBaseSide);
+            }
+        }
         const float3 body2 = layers.under * s.albedo * (1.0 - s.metallic) *
                              ((1.0 - s.transmission) * front +
-                              transmittedWeight(s) * (passes * behind + farFaceReflected(s, nDotV, seen)));
+                              transmittedWeight(s) * (passes * behind + farFaceReflected(s, nDotV, farSeen)));
         // A TX transfer asks its lobe which of its directions are open; the
         // first transfer had one number for the whole hemisphere.
         // THE BASE'S POLISH IS OPEN BY THE HARMONICS, as the first transfer
