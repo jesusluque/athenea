@@ -651,13 +651,15 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 // A pixel right, (1, 0), and down, (0, 1), on the splat's plane.
                 const float2 stepX = float2(toPixels[1][1], -toPixels[1][0]) / det;
                 const float2 stepY = float2(-toPixels[0][1], toPixels[0][0]) / det;
-                // HELD TO WHAT ITS TRIANGLE KNOWS (research, hoodnormal): the
-                // shape operator is its centre triangle's, and over a footprint
-                // that crosses an edge -- 64 % of a hood's gaussians -- its
-                // turn is extrapolated past where it holds: on a fold or a
-                // grille 46 degrees at p90, a highlight thrown out of place.
-                // Its turn across +-2 sigma is held to kMaxFootprintTurn.
-                const float held = min(1.0, 0.5 * kMaxFootprintTurn / max(slope.bakeSpread, 1.0e-9));
+                // A TUBE TURNS, A FOLD WIDENS (kFoldTurnLow, research
+                // tubecrease): t, the turn across +-2 sigma, is twice the
+                // bake's spread. On a surface's own curvature the pixels turn
+                // in full; on normals smoothed across a fold the turn goes and
+                // the sharp lobes widen by it (slope.foldWiden, splat_relight).
+                const float turn = 2.0 * slope.bakeSpread;
+                const float fold = smoothstep(kFoldTurnLow, kFoldTurnHigh, turn);
+                const float held = 1.0 - fold;
+                slope.foldWiden = fold * 0.25 * turn * turn;
                 const float3 shapeUV =
                     held * float3(curvature[i * 3], curvature[i * 3 + 1], curvature[i * 3 + 2]);
                 const float2x2 shapeOf = float2x2(shapeUV.x, shapeUV.y, shapeUV.y, shapeUV.z);
