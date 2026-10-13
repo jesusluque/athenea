@@ -8896,13 +8896,13 @@ TEST_CASE("the Gaussians panel's numbers say which level a view drew and what th
 
     (*renderer)->setGaussianStats(true);
     REQUIRE((*renderer)->draw(camera, 0.0, 400, 300, "raster"));
-    const usd::GaussianStats far = (*renderer)->gaussianStats();
-    CHECK(far.route == "raster");
-    CHECK(far.inStage == fine.count + coarse.count);
-    CHECK(far.submitted == coarse.count);
-    REQUIRE(far.clouds.size() == 2);
+    const usd::GaussianStats farStats = (*renderer)->gaussianStats();
+    CHECK(farStats.route == "raster");
+    CHECK(farStats.inStage == fine.count + coarse.count);
+    CHECK(farStats.submitted == coarse.count);
+    REQUIRE(farStats.clouds.size() == 2);
     uint32_t drawnClouds = 0;
-    for (const usd::GaussianCloudStats& c : far.clouds) {
+    for (const usd::GaussianCloudStats& c : farStats.clouds) {
         CHECK(c.lod.find("in 'test'") != std::string::npos);
         CHECK(c.bytes > 0);
         if (c.drawn) {
@@ -8911,41 +8911,41 @@ TEST_CASE("the Gaussians panel's numbers say which level a view drew and what th
             CHECK(c.submitted == coarse.count);
             CHECK(c.lod.rfind("level 1 of 2", 0) == 0);
             CHECK(c.counted);
-            CHECK(c.visible == far.visible);
+            CHECK(c.visible == farStats.visible);
         }
     }
     CHECK(drawnClouds == 1);
     // The device's counts: of the frame just drawn here, since the
     // rasteriser waits for itself; and they add up.
-    REQUIRE(far.counted);
-    CHECK(far.countedFrame == far.frame);
-    CHECK(far.countedSlots == coarse.count);
+    REQUIRE(farStats.counted);
+    CHECK(farStats.countedFrame == farStats.frame);
+    CHECK(farStats.countedSlots == coarse.count);
     uint32_t culled = 0;
-    for (uint32_t n : far.culled) {
+    for (uint32_t n : farStats.culled) {
         culled += n;
     }
-    CHECK(far.visible + culled == far.countedSlots);
-    CHECK(far.cloudBytes > 0);
-    std::printf("  far: %u visible of %u, %u pairs\n", far.visible, far.countedSlots, far.pairs);
+    CHECK(farStats.visible + culled == farStats.countedSlots);
+    CHECK(farStats.cloudBytes > 0);
+    std::printf("  far: %u visible of %u, %u pairs\n", farStats.visible, farStats.countedSlots, farStats.pairs);
 
     // Near: the fine level, and most of it kept.
     camera = render::Camera::lookingAt({0.0, 0.0, 6.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
     camera.lens.focal = 35.0;
     REQUIRE((*renderer)->draw(camera, 0.0, 400, 300, "raster"));
-    const usd::GaussianStats near = (*renderer)->gaussianStats();
-    CHECK(near.frame > far.frame);
-    CHECK(near.submitted == fine.count);
-    CHECK(near.countedSlots == fine.count);
-    CHECK(near.visible > 0);
-    CHECK(near.pairs >= near.visible);
-    for (const usd::GaussianCloudStats& c : near.clouds) {
+    const usd::GaussianStats nearStats = (*renderer)->gaussianStats();
+    CHECK(nearStats.frame > farStats.frame);
+    CHECK(nearStats.submitted == fine.count);
+    CHECK(nearStats.countedSlots == fine.count);
+    CHECK(nearStats.visible > 0);
+    CHECK(nearStats.pairs >= nearStats.visible);
+    for (const usd::GaussianCloudStats& c : nearStats.clouds) {
         if (c.drawn) {
             CHECK(c.lod.rfind("level 0 of 2", 0) == 0);
-            CHECK(c.visible == near.visible);
-            CHECK(c.pairs == near.pairs);
+            CHECK(c.visible == nearStats.visible);
+            CHECK(c.pairs == nearStats.pairs);
         }
     }
-    std::printf("  near: %u visible of %u, %u pairs\n", near.visible, near.countedSlots, near.pairs);
+    std::printf("  near: %u visible of %u, %u pairs\n", nearStats.visible, nearStats.countedSlots, nearStats.pairs);
 }
 
 TEST_CASE("a skinned cloud stepping through time is uploaded once", "[usd][gpu][skinning]") {
@@ -10508,8 +10508,8 @@ TEST_CASE("a cloud's shadow on a plane is tinted, switched off and cut short as 
         // past its end, while without the limit it is in it.
         const auto lampOff = shadowOf("lampoff", lamp + "    bool inputs:shadow:enable = 0\n}\n", technique);
         CHECK(lampOff[1] > 0.05);
-        const auto near = ratio(shadowOf("near", lamp + "}\n", technique), lampOff);
-        CHECK(near[1] < 0.15);
+        const auto nearShadow = ratio(shadowOf("near", lamp + "}\n", technique), lampOff);
+        CHECK(nearShadow[1] < 0.15);
         const auto cut = ratio(shadowOf("cut", lamp + "    float inputs:shadow:distance = 2\n}\n", technique), lampOff);
         CHECK(cut[1] > 0.9);
     }

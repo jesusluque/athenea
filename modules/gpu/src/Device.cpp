@@ -46,13 +46,16 @@ rhi::DeviceType toRhi(Backend backend) {
 std::vector<Backend> platformPreference() {
 #if defined(__APPLE__)
     return {Backend::Metal};
-#elif defined(_WIN32)
-    return {Backend::D3D12, Backend::Vulkan};
 #else
-    // CUDA first: it is the backend gpe shares, so the render device and the
-    // compute engine are one device. Vulkan is the answer for a machine
+    // CUDA first, on Windows as on Linux: it is the backend gpe shares, so the
+    // render device and the compute engine are one device, and its ray tracing
+    // is OptiX. Vulkan (and D3D12 on Windows) is the answer for a machine
     // without an NVIDIA card, where gpe has no backend at all.
+#if defined(_WIN32)
+    return {Backend::CUDA, Backend::D3D12, Backend::Vulkan};
+#else
     return {Backend::CUDA, Backend::Vulkan};
+#endif
 #endif
 }
 

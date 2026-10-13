@@ -93,10 +93,14 @@ struct ExtraHeader {
 static_assert(sizeof(ExtraHeader) == 32);
 constexpr uint64_t kExtraHeaderAt = sizeof(FileHeader);
 
+/// A member of a cloud, as a pointer: named once, since MSVC does not parse
+/// `gpu::Buffer scene::GpuSplats::*` as a template argument.
+using CloudMember = gpu::Buffer scene::GpuSplats::*;
+
 /// Each extra a block element carries, in order: the member of a cloud it
 /// fills and its words.
-std::vector<std::pair<gpu::Buffer scene::GpuSplats::*, uint32_t>> extrasOf(const ExtraHeader& x) {
-    std::vector<std::pair<gpu::Buffer scene::GpuSplats::*, uint32_t>> out;
+std::vector<std::pair<CloudMember, uint32_t>> extrasOf(const ExtraHeader& x) {
+    std::vector<std::pair<CloudMember, uint32_t>> out;
     if (x.pbrWords) out.emplace_back(&scene::GpuSplats::pbr, x.pbrWords);
     if (x.lobesWords) out.emplace_back(&scene::GpuSplats::lobes, x.lobesWords);
     if (x.transferWords) out.emplace_back(&scene::GpuSplats::transfer, x.transferWords);
@@ -431,7 +435,7 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     // The material and the transfer, where every level carries them as the
     // splats do (bits 4 and 5).
     ExtraHeader x{};
-    const auto everywhere = [&](gpu::Buffer scene::GpuSplats::* member) {
+    const auto everywhere = [&](CloudMember member) {
         return (cloud.splats.*member).valid() &&
                std::all_of(cloud.levels.begin(), cloud.levels.end(),
                            [&](const LodLevel& l) { return (l.gaussians.*member).valid(); });

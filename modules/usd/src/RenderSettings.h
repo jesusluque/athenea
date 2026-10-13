@@ -18,8 +18,9 @@ public:
     [[nodiscard]] uint32_t GetSyncCount() const { return _syncs.load(); }
 
 protected:
-    void _Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderParam, const HdDirtyBits* dirtyBits) override {
-        HdRenderSettings::_Sync(sceneDelegate, renderParam, dirtyBits);
+    // HdRenderSettings::_Sync is a no-op, and hd.dll does not export it on
+    // Windows: not called.
+    void _Sync(HdSceneDelegate*, HdRenderParam*, const HdDirtyBits*) override {
         _syncs.fetch_add(1);
     }
 

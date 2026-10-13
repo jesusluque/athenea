@@ -122,7 +122,9 @@ TEST_CASE("Measure attaches what render's comparison measures", "[aofx][measure]
     const std::vector<std::vector<uint32_t>> windows{{0, 0, 0, 0}, {9, 4, 1000, 60}};
     uint32_t seed = 1;
     for (const std::vector<uint32_t>& w : windows) {
-        REQUIRE(gpu->run([&] {
+        // Outside REQUIRE: Catch2 spells its argument out, and MSVC holds a
+        // string to 16 KB.
+        const auto ran = gpu->run([&] {
             const Measured m = inputs(library, seed++);
             const gpu::Buffer source = viewOf(*gpu, m.source);
             const gpu::Buffer reference = viewOf(*gpu, m.reference);
@@ -176,7 +178,8 @@ TEST_CASE("Measure attaches what render's comparison measures", "[aofx][measure]
             CHECK(countAt(*c, 5) == codes->pixels);
             CHECK(codes->over2 > 0);
             CHECK(codes->over2 < codes->pixels);
-        }));
+        });
+        REQUIRE(ran);
     }
 }
 

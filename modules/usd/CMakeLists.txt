@@ -31,9 +31,11 @@ athenea_add_module(usd
     SOURCES ${ATHENEA_USD_SOURCES} src/StageRenderer.cpp src/BindingPurposes.cpp src/Export.cpp src/ShadowCatcher.cpp src/LightGroups.cpp src/Decimate.cpp src/Occlusion.cpp src/MeshStage.cpp src/Migrate.cpp
     PUBLIC_LIBS athenea::ui athenea::render athenea::io athenea::scene athenea::lod athenea::geom athenea::world athenea::technique ${ATHENEA_USD_LIBS})
 # USD's headers predate the warnings this engine asks for.
-target_compile_options(athenea_usd PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-cast-align
-                       -Wno-deprecated-declarations -Wno-double-promotion)
-target_compile_definitions(athenea_usd PUBLIC PXR_STATIC=0 TBB_SUPPRESS_DEPRECATED_MESSAGES=1)
+target_compile_options(athenea_usd PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-cast-align;-Wno-deprecated-declarations;-Wno-double-promotion>")
+# PXR_STATIC=0 only where OpenUSD is not DLLs: its headers test whether the
+# name is defined, and on Windows that took away every dllimport.
+target_compile_definitions(athenea_usd PUBLIC "$<$<NOT:$<PLATFORM_ID:Windows>>:PXR_STATIC=0>"
+                           TBB_SUPPRESS_DEPRECATED_MESSAGES=1)
 # Default visibility, unlike every other engine module. USD identifies value
 # types by std::type_info (TfType), and a VtArray<GfVec3f> instantiated here
 # with hidden visibility has its own type_info the USD libraries do not
@@ -56,7 +58,7 @@ add_library(hdAthenea MODULE ${ATHENEA_USD_SOURCES} src/RendererPlugin.cpp)
 target_include_directories(hdAthenea PRIVATE include src)
 target_link_libraries(hdAthenea PRIVATE athenea::ui athenea::render athenea::io athenea::scene athenea::lod athenea::geom athenea::world athenea::technique
                       ${ATHENEA_USD_LIBS})
-target_compile_options(hdAthenea PRIVATE -Wno-deprecated-declarations)
+target_compile_options(hdAthenea PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-deprecated-declarations>")
 # The plugin's own directory first: a plugin shipped with its libraries
 # beside it (libslang, in a package another program loads) finds them
 # there, wherever the package was unpacked.

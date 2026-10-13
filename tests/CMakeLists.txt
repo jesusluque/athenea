@@ -84,8 +84,7 @@ athenea_test(athenea_geom_tests
 athenea_test(athenea_material_tests
     SOURCES material/test_texture_store.cpp material/test_lobes.cpp material/test_material_compiler.cpp
     LIBS athenea::material hio MaterialXCore MaterialXFormat)
-target_compile_options(athenea_material_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_material_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 target_compile_definitions(athenea_material_tests PRIVATE ATHENEA_MATERIALX_ROOT="${ATHENEA_USD_ROOT}")
 set_target_properties(athenea_material_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
@@ -124,8 +123,7 @@ add_test(NAME materialx_root COMMAND athenea_usd_tests "[materialx_root]")
 set_tests_properties(materialx_root PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR};ATHENEA_MATERIALX_ROOT=${CMAKE_CURRENT_BINARY_DIR}/materialx_root"
     LABELS gpu)
-target_compile_options(athenea_usd_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_usd_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_usd_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
@@ -138,16 +136,14 @@ athenea_test(athenea_storm_oracle_tests
 add_dependencies(athenea_storm_oracle_tests hdAthenea)
 target_compile_definitions(athenea_storm_oracle_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
                            ATHENEA_USD_ROOT="${ATHENEA_USD_ROOT}")
-target_compile_options(athenea_storm_oracle_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_storm_oracle_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_storm_oracle_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_mcp_tests
     SOURCES mcp/test_mcp.cpp
     LIBS athenea::mcp nlohmann_json::nlohmann_json)
-target_compile_options(athenea_mcp_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_mcp_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_mcp_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
@@ -163,8 +159,7 @@ add_dependencies(athenea_host_tests hdAthenea)
 target_compile_definitions(athenea_host_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}")
 target_include_directories(athenea_host_tests SYSTEM PRIVATE "${ATHENEA_USD_ROOT}/include")
 target_link_directories(athenea_host_tests PRIVATE "${ATHENEA_USD_ROOT}/lib")
-target_compile_options(athenea_host_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_host_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_host_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
@@ -174,7 +169,7 @@ if(ATHENEA_BUILD_VIEW)
         LIBS athenea::view
         LABELS display)
     add_dependencies(athenea_view_tests hdAthenea)
-    target_compile_options(athenea_view_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations)
+    target_compile_options(athenea_view_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations>")
     set_target_properties(athenea_view_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                           BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 endif()
@@ -552,8 +547,7 @@ target_compile_definitions(athenea_coverage_tests PRIVATE
     ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
     ATHENEA_COVERAGE_STAGE="${CMAKE_CURRENT_SOURCE_DIR}/data/coverage/planes.usda"
     ATHENEA_COVERAGE_CLOUD="${CMAKE_CURRENT_BINARY_DIR}/coverage_planes.usdc")
-target_compile_options(athenea_coverage_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion)
+target_compile_options(athenea_coverage_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion>")
 set_target_properties(athenea_coverage_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 

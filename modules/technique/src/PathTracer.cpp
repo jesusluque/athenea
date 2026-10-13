@@ -17,6 +17,8 @@ namespace {
 /// The same lights, lobes and surface the raster shading uses, plus a bounce.
 /// Written as a generated kernel for the same reason MaterialShading is: it
 /// dispatches to whatever materials the frame compiled.
+// The kernel's source is held in raw literals broken into pieces under 16 KB,
+// and none longer than 64 KB joined: MSVC's limits for a string literal.
 const char* kPrelude = R"(
 import athenea.light.lights_image;
 // What a bake reads back of the material at its first vertex (BakePoints::material).
@@ -844,7 +846,8 @@ Found foundBaked(uint at, uint sample, uint mask) {
 /// One basis function where a sample looks from.
 ///
 /// The cloud stores its colours as harmonics of the direction from the eye to
-/// the splat, so the basis is read at `-towards`: the sample looks from the
+)"
+R"(/// the splat, so the basis is read at `-towards`: the sample looks from the
 /// surface out, and the renderer looks the other way along the same line.
 float bakeBasisAt(uint at, uint sample, uint basis) {
     return shBasisValue(basis, -bakeDirection(at, sample));
@@ -1341,7 +1344,8 @@ bool stackTransmits(LobeStack stack) {
 /// Into its own glass, its far face is looked for by a hair first: the
 /// millimetre the ray otherwise leaves by stepped over a lens 1.1 mm thick,
 /// and the cells behind it read open through the lens's own body.
-float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmits) {
+)"
+R"(float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmits) {
     if (selfTransmits) {
         if (dot(n, wi) < 0.0) {
             const float scale = max(1.0, length(p));
@@ -1658,7 +1662,8 @@ LightPoint sampleEmissive(float3 from, float u, float2 v) {
     }
     lp.pdf = share * probability * distance2 / (cosine * 0.5 * twiceArea);
     // The surface there, rebuilt as a bounce's hit is: the direction it is
-    // reached along, turned to view space for which side it shows.
+)"
+R"(    // reached along, turned to view space for which side it shows.
     const float3 w = lp.wi;
     const float3 viewDirection = float3(toWorld.row0.x * w.x + toWorld.row1.x * w.y + toWorld.row2.x * w.z,
                                         toWorld.row0.y * w.x + toWorld.row1.y * w.y + toWorld.row2.y * w.z,
@@ -1940,7 +1945,8 @@ void tracePathsAt(uint2 group, uint index) {
     Shaded first;
     first.valid = false;
     first.depth = 0.0;
-    bool firstShaded = false;
+)"
+R"(    bool firstShaded = false;
     bool auxWritten = false;
     if (kAux && path.writeAux != 0) {
         writeAuxAt(at, pixels, float4(0.0), float4(0.0));
@@ -2197,7 +2203,8 @@ void tracePathsAt(uint2 group, uint index) {
                 if (kBake && transferMode && cellsMode && bounce == 1) {
                     for (uint c = 0; c < 16u; ++c) {
                         closedCoefficients[c] += firstMeasure * shBasisValue(c, firstDirection);
-                    }
+)"
+R"(                    }
                 }
             }
             // The one place materials are evaluated; the camera's hit once a pixel.
@@ -2426,7 +2433,8 @@ void tracePathsAt(uint2 group, uint index) {
                 // anything is in the way: no shading, no bounce, the first hit
                 // ends it. A direction below the surface is closed without a
                 // ray, since the body facing away from it receives nothing.
-                const float3 np = cur.inputs.normalWorld;
+)";
+const char* kBodyRest = R"(                const float3 np = cur.inputs.normalWorld;
                 const float3 pp = cur.inputs.positionWorld;
                 const bool selfTransmits = stackTransmits(cur.stack);
                 // The cells over the footprint: cell c from origin c % 4
@@ -2657,7 +2665,8 @@ void tracePathsAt(uint2 group, uint index) {
                 glassLayers = 0;
             }
             // A CROSSING IS NOT A BOUNCE. A solid glass ball is two crossings
-            // deep before the ray is out again, and at the default of one
+)"
+R"(            // deep before the ray is out again, and at the default of one
             // bounce it drew black once its far face stopped being culled:
             // the ray met the far face with no bounce left to leave by.
             // Crossings are free up to `kFreeCrossings`, as a renderer's
@@ -2959,7 +2968,7 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
                                (groups ? kGroups : kNoGroups) + (volumes ? kVolumes : kNoVolumes) +
                                (traces ? kRays : pipeline ? kRaysPipeline : kNoRays) +
                                (withSplats ? kSplats : kNoSplats) + (withAux ? kAux : kNoAux) +
-                               (bake_ ? kBake : kNoBake) + kBody +
+                               (bake_ ? kBake : kNoBake) + kBody + kBodyRest +
                                (pipeline ? kEntryRays : kEntryCompute);
     std::vector<std::string> entries{pipeline ? "tracePathsGen" : "tracePaths", "pathDecide"};
     if (pipeline) {

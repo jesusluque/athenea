@@ -426,7 +426,9 @@ TEST_CASE("a cut-out map leaves no gaussian where there is no surface",
     }
     gpu::ShaderLibrary library(gpu->deviceShared());
 
-    REQUIRE(gpu->run([&] {
+    // Outside REQUIRE: Catch2 spells its argument out, and MSVC holds a
+    // string to 16 KB.
+    const auto ran = gpu->run([&] {
         auto quad = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sQuad");
         auto quadUv2 = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sQuadUv2");
         auto checker = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sChecker");
@@ -616,7 +618,8 @@ TEST_CASE("a cut-out map leaves no gaussian where there is no surface",
         std::printf("  from where the budget cut: %u written; %u + %u == %u\n", rest[0], starved[0], rest[0],
                     full);
         CHECK(starved[0] + rest[0] == full);
-    }));
+    });
+    REQUIRE(ran);
 }
 
 // A NORMAL MAP IS READ IN THE FRAME ITS UVS GIVE, as the mesh reads it.

@@ -72,7 +72,9 @@ size_t HdAtheneaResampleUpstream(const HdSceneIndexBaseRefPtr& terminal, const H
                 pending.push_back(input);
             }
         }
-        if (HdEncapsulatingSceneIndexBase* encapsulating = HdEncapsulatingSceneIndexBase::Cast(scene)) {
+        // HdEncapsulatingSceneIndexBase::Cast is this dynamic_cast, and is not
+        // exported from hd.dll on Windows.
+        if (auto* encapsulating = dynamic_cast<HdEncapsulatingSceneIndexBase*>(get_pointer(scene))) {
             for (const HdSceneIndexBaseRefPtr& inner : encapsulating->GetEncapsulatedScenes()) {
                 pending.push_back(inner);
             }

@@ -29,10 +29,20 @@ target_sources(athenea_io PRIVATE src/Vdb.cpp)
 if(ATHENEA_HAVE_OPENVDB)
     target_link_libraries(athenea_io PRIVATE ${ATHENEA_OPENVDB_LIB})
     target_include_directories(athenea_io SYSTEM PRIVATE "${ATHENEA_USD_ROOT}/include")
+    # Boost installs its headers under a versioned folder on Windows.
+    file(GLOB _athenea_boost_dirs LIST_DIRECTORIES true "${ATHENEA_USD_ROOT}/include/boost-*")
+    if(_athenea_boost_dirs)
+        list(GET _athenea_boost_dirs 0 _athenea_boost_dir)
+        target_include_directories(athenea_io SYSTEM PRIVATE "${_athenea_boost_dir}")
+    endif()
     target_compile_definitions(athenea_io PRIVATE ATHENEA_HAVE_OPENVDB=1)
+    # NanoVDB's GridBuilder still names std::result_of, which MSVC's C++20
+    # library leaves out unless asked.
+    target_compile_definitions(athenea_io PRIVATE
+        "$<$<CXX_COMPILER_ID:MSVC>:_HAS_DEPRECATED_RESULT_OF=1;_SILENCE_CXX17_RESULT_OF_DEPRECATION_WARNING>")
     # OpenVDB's headers predate the warnings this engine asks for.
     set_source_files_properties(src/Vdb.cpp PROPERTIES COMPILE_OPTIONS
-        "-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align;-Wno-sign-conversion;-Wno-conversion;-Wno-unused-parameter;-Wno-implicit-int-conversion;-Wno-implicit-float-conversion;-Wno-float-conversion;-Wno-shorten-64-to-32")
+        "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align;-Wno-sign-conversion;-Wno-conversion;-Wno-unused-parameter;-Wno-implicit-int-conversion;-Wno-implicit-float-conversion;-Wno-float-conversion;-Wno-shorten-64-to-32>")
 endif()
 
 # SOG: zlib for the bundle, libwebp for its images. Without libwebp .sog is
