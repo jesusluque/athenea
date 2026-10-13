@@ -32,6 +32,12 @@ macOS (Metal), Linux (CUDA) and Windows (CUDA, natively with MSVC). 433 tests.
   on the OptiX pipeline and is refused where there is no ray tracing (WSL2).
 - **A release's layout**: AOFX bundles are found in `aofx/` beside the
   executable's folder; `athenea info` counts TBB on Windows.
+- **The same frame on all three** (`75f10ec`): on CUDA a material's lobe
+  stack was overwritten while it was built, so MaterialX materials shaded
+  wrong and bakes came out black there. A frame now reads the same under
+  CUDA, Vulkan and Metal (an OpenPBR ground: 0.274467 0.245033 0.215593 on
+  each). Raster glass still differs on CUDA, which has no inline ray queries
+  to refract with; the path traced frame does not.
 
 Tests: macOS 422 of 433, Linux 431 of 433, Windows 407 of 430 before the bake
 fix. Failing on every system and before this merge, so not caused by it: the
