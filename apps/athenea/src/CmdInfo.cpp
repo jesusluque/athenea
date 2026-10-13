@@ -1,4 +1,6 @@
 // Copyright (c) 2026 jesus luque.
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -65,7 +67,14 @@ void addInfo(CLI::App& app) {
         std::string tbbPaths;
         for (const std::string& library : platform::loadedLibraries()) {
             const std::string name = std::filesystem::path(library).filename().string();
-            if (name.rfind("libtbb.", 0) == 0 || name.rfind("libtbb-", 0) == 0) {
+            // libtbb.so.12 / libtbb.12.dylib, and tbb12.dll on Windows (not
+            // tbbmalloc, which is the allocator, not a scheduler).
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const bool windowsTbb = lower.rfind("tbb", 0) == 0 && lower.rfind("tbbmalloc", 0) != 0 &&
+                                    lower.size() > 4 && lower.substr(lower.size() - 4) == ".dll";
+            if (name.rfind("libtbb.", 0) == 0 || name.rfind("libtbb-", 0) == 0 || windowsTbb) {
                 ++tbb;
                 tbbPaths += " " + library;
             }
