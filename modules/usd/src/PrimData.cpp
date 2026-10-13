@@ -218,6 +218,10 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     }
     // The radiance it gives off: three floats a gaussian, or nothing.
     s.emission = streamOf(a.emission);
+    s.hardness = streamOf(a.hardness);
+    if (s.hardness.values() < s.count) {
+        s.hardness = {};
+    }
     if (s.emission.values() < uint64_t{s.count} * 3) {
         s.emission = {};
     }

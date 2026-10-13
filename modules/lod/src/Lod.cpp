@@ -750,7 +750,134 @@ Result<Decimator> Decimator::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(d.pairTreeOffsets_, "athenea/lod/lod_pairs", "pairTreeOffsets"));
     ATHENEA_TRY(make(d.pairTreeSizes_, "athenea/lod/lod_pairs", "pairTreeSizes"));
     ATHENEA_TRY(make(d.pairTreeLayout_, "athenea/lod/lod_pairs_final", "pairTreeLayout"));
+    ATHENEA_TRY(make(d.pruneFold_, "athenea/lod/lod_prune", "pruneFold"));
+    ATHENEA_TRY(make(d.pruneHistogram_, "athenea/lod/lod_prune", "pruneHistogram"));
+    ATHENEA_TRY(make(d.pruneKeep_, "athenea/lod/lod_prune", "pruneKeep"));
+    ATHENEA_TRY(make(d.pruneScatter_, "athenea/lod/lod_prune", "pruneScatter"));
     return d;
+}
+
+float Decimator::scoreOfBin(uint32_t bin) noexcept {
+    return std::pow(10.0F, -12.0F + static_cast<float>(bin) * (18.0F / static_cast<float>(kScoreBins)));
+}
+
+Result<void> Decimator::foldScore(gpu::Buffer& frameCount, gpu::Buffer& score, uint32_t count, float scale,
+                                  bool wide) {
+    gpu::CommandBatch batch(*device_);
+    pruneFold_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["frameCount"].setBinding(frameCount.rhi());
+        cursor["score"].setBinding(score.rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["scale"].setData(scale);
+        cursor["params"]["wide"].setData(uint32_t{wide ? 1u : 0u});
+    });
+    return batch.submit(true);
+}
+
+Result<std::vector<uint32_t>> Decimator::scoreHistogram(const gpu::Buffer& score, uint32_t count) {
+    gpu::Device& device = *device_;
+    auto histogram = buffer(device, kScoreBins, 4, "prune.histogram");
+    if (!histogram) return std::move(histogram).error();
+    gpu::CommandBatch batch(device);
+    batch.encoder()->clearBuffer(histogram->rhi(), 0, uint64_t{kScoreBins} * 4);
+    batch.markDirty();
+    pruneHistogram_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["score"].setBinding(score.rhi());
+        cursor["histogram"].setBinding(histogram->rhi());
+        cursor["params"]["count"].setData(count);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    std::vector<uint32_t> bins(kScoreBins, 0);
+    ATHENEA_TRY(histogram->read(device, 0, uint64_t{kScoreBins} * 4, bins.data()));
+    return bins;
+}
+
+Result<LodCloud> Decimator::prune(const LodCloud& lod, const gpu::Buffer& score, float threshold) {
+    gpu::Device& device = *device_;
+    const uint32_t n = lod.count;
+    if (n == 0 || !lod.order.valid()) {
+        return Error(ErrorCode::InvalidArgument, lod.splats.source + ": a prune needs the store's order");
+    }
+    const auto make = [&](uint64_t count, uint32_t element, const char* label) {
+        return buffer(device, std::max<uint64_t>(count, 1), element, label);
+    };
+    auto keep = make(n, 4, "prune.keep");
+    auto offsets = make(n, 4, "prune.offsets");
+    auto total = make(1, 4, "prune.total");
+    if (!keep || !offsets || !total) {
+        return Error(ErrorCode::OutOfMemory, "prune: cannot allocate its flags");
+    }
+    const bool normals = lod.splats.hasNormals();
+    const uint32_t shWords = lod.splats.shWords;
+    {
+        gpu::CommandBatch batch(device);
+        pruneKeep_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["score"].setBinding(score.rhi());
+            cursor["keep"].setBinding(keep->rhi());
+            cursor["params"]["count"].setData(n);
+            cursor["params"]["threshold"].setData(threshold);
+        });
+        batch.markDirty();
+        ATHENEA_TRY(prefix_.apply(batch, *keep, *offsets, *total, n));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    uint32_t kept = 0;
+    ATHENEA_TRY(total->read(device, 0, 4, &kept));
+    if (kept == 0) {
+        return Error(ErrorCode::InvalidArgument, lod.splats.source + ": no splat scored enough; nothing left to keep");
+    }
+    LodCloud out;
+    out.count = kept;
+    out.chunkSplats = kept;
+    out.slots = {0};
+    out.boundsLo[0] = lod.boundsLo[0];
+    out.boundsLo[1] = lod.boundsLo[1];
+    out.boundsLo[2] = lod.boundsLo[2];
+    out.extent = lod.extent;
+    out.splats.source = lod.splats.source;
+    out.splats.count = kept;
+    out.splats.declared = lod.splats.declared;
+    out.splats.restPerColour = lod.splats.restPerColour;
+    out.splats.shWords = shWords;
+    out.splats.linear = lod.splats.linear;
+    out.splats.bounds = lod.splats.bounds;
+    auto positions = make(kept, 16, "prune.positions");
+    auto shape = make(uint64_t{kept} * 4, 4, "prune.shape");
+    auto sh = make(uint64_t{kept} * std::max(shWords, 1u), 4, "prune.sh");
+    auto normalWords = make(normals ? kept : 1, 4, "prune.normals");
+    auto order = make(kept, 4, "prune.order");
+    if (!positions || !shape || !sh || !normalWords || !order) {
+        return Error(ErrorCode::OutOfMemory, "prune: cannot allocate the pruned store");
+    }
+    {
+        gpu::CommandBatch batch(device);
+        pruneScatter_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["storeOrder"].setBinding(lod.order.rhi());
+            cursor["keep"].setBinding(keep->rhi());
+            cursor["offsets"].setBinding(offsets->rhi());
+            cursor["inPositions"].setBinding(lod.splats.positions.rhi());
+            cursor["inShape"].setBinding(lod.splats.shape.rhi());
+            cursor["inSh"].setBinding(shWords > 0 ? lod.splats.sh.rhi() : keep->rhi());
+            cursor["inNormals"].setBinding(normals ? lod.splats.normals.rhi() : keep->rhi());
+            cursor["outPositions"].setBinding(positions->rhi());
+            cursor["outShape"].setBinding(shape->rhi());
+            cursor["outSh"].setBinding(sh->rhi());
+            cursor["outNormals"].setBinding(normalWords->rhi());
+            cursor["outOrder"].setBinding(order->rhi());
+            cursor["params"]["count"].setData(n);
+            cursor["params"]["shWords"].setData(shWords);
+            cursor["params"]["normals"].setData(uint32_t{normals ? 1u : 0u});
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    out.splats.positions = std::move(*positions);
+    out.splats.shape = std::move(*shape);
+    out.splats.sh = std::move(*sh);
+    if (normals) {
+        out.splats.normals = std::move(*normalWords);
+    }
+    out.order = std::move(*order);
+    return out;
 }
 
 namespace {
@@ -841,6 +968,7 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         p["highlightCone"].setData(settings.highlightCone);
         p["mergeGlass"].setData(uint32_t{settings.mergeGlass ? 1u : 0u});
         p["maxAspect"].setData(settings.maxAspect);
+        p["maxPixels"].setData(settings.maxPixels);
         p["histogramBins"].setData(kHistogramBins);
         p["histogramLo"].setData(kHistogramLo);
         p["histogramStep"].setData(kHistogramStep);
@@ -1012,6 +1140,27 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
                 }
             }
         }
+        // NO MERGE COSTS MORE THAN `maxCost` in the flat cloud: where every
+        // pair left would, the flat cloud is what stands now -- the smooth
+        // panels gone further than the ratio, the creases, edges and badges
+        // kept -- and only the tree goes on.
+        if (settings.maxCost > 0.0F && flatCount == 0) {
+            uint64_t cheap = 0;
+            for (uint32_t b = 0; b < kHistogramBins; ++b) {
+                if (kHistogramLo + static_cast<float>(b + 1) * kHistogramStep > std::log10(settings.maxCost)) {
+                    break;
+                }
+                cheap += bins[b];
+            }
+            if (cheap == 0) {
+                ATHENEA_TRY(snapshot());
+                if (!tree) {
+                    break;
+                }
+            } else {
+                threshold = std::min(threshold, settings.maxCost);
+            }
+        }
         {
             gpu::CommandBatch batch(device);
             pairMerge_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -1063,7 +1212,8 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         auto ranges = make(outputs, 8, "pairs.ranges");
         auto surfels = make(1, 4, "pairs.surfels");
         auto coverage = make(outputs, 4, "pairs.coverage");
-        if (!permPositions || !permShape || !permRecordOf || !ranges || !surfels || !coverage) {
+        auto hardness = make(outputs, 4, "pairs.hardness");
+        if (!permPositions || !permShape || !permRecordOf || !ranges || !surfels || !coverage || !hardness) {
             return Error(ErrorCode::OutOfMemory, "decimate: cannot allocate the clusters");
         }
         auto out = packed(device, outputs, lod.splats.restPerColour, lod.splats.shWords, "pairs.cloud", normals, false);
@@ -1095,6 +1245,7 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
             c["outNormals"].setBinding(normals ? out->normals.rhi() : nothing->rhi());
             c["surfelCount"].setBinding(surfels->rhi());
             c["outCoverage"].setBinding(coverage->rhi());
+            c["outHardness"].setBinding(hardness->rhi());
             rhi::ShaderCursor p = c["params"];
             p["count"].setData(count);
             p["shWords"].setData(lod.splats.shWords);
@@ -1102,6 +1253,9 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
             p["surfels"].setData(uint32_t{settings.surfels ? 1u : 0u});
             p["normals"].setData(uint32_t{normals ? 1u : 0u});
             p["flatTolerance"].setData(settings.flatTolerance);
+            p["opacityRule"].setData(settings.opacityRule);
+            p["hardness"].setData(uint32_t{settings.hardness ? 1u : 0u});
+            p["maxHardness"].setData(settings.maxHardness);
         };
         pairGather_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bindFinal(c, n); });
         pairFinalize_.dispatch(batch, {outputs, 1, 1}, [&](rhi::ShaderCursor c) { bindFinal(c, outputs); });
@@ -1113,6 +1267,7 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         into.storePositions = std::move(*permPositions);
         into.storeShape = std::move(*permShape);
         into.coverage = std::move(*coverage);
+        into.hardness = std::move(*hardness);
         return ok();
     };
 

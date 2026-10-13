@@ -13917,3 +13917,110 @@ disc's own affine footprint convolved with the AA blur at the opacity that
 keeps its mass, is the next step here; the octree's own finalize does not yet
 put the thinnest axis third (doing it broke the .athc and transfer tests, not
 yet looked into).
+
+### What no camera sees, and merges no wider than the screen holds (9 Oct)
+
+sparkwebGPU measured the Corvette merged 5x under its own relight and found it
+15-55 times worse than its own pipeline at the same count: half of it was
+interior no camera sees, and the door showed hairs. Measured here, on pieces
+of the car baked alone with `--prim` (the bake traces the whole car) and on
+the whole car, every frame against the full cloud's:
+
+- **What no camera sees** (`--drop-hidden`): the cloud drawn by raster from an
+  orbit (256 directions, three distances, 1024 px), the blend adding at each
+  splat's slot the weight it blended with (`RenderSettings::contribution`),
+  and the store compacted to what gave at least 0.02 px
+  (`lod_prune.slang`). The Corvette: 38.7% left out seen from all round
+  (61.7 / 67.8 dB, front / rear camera), 46.0% from 10 degrees under the
+  horizon up (58.3 / 58.2 dB). A closed box with a cluster inside keeps the
+  box and loses the cluster (`[hidden]`).
+- **The hairs** are the merges themselves. The car was baked a gaussian a
+  pixel of its camera (640 across, about 3 px at 1920), so past the hidden
+  ones nothing it holds is redundant at that camera: a merge is wider than
+  what the camera resolves, cannot hold an edge, and its tails stand out past
+  the door, the pillars and the mirror. Removing the hidden ones first and
+  merging 2.7x to the same 1.07M as 5x gained 0.3 dB by day and 2.2 dB at
+  night (the lamp bands), and kept the hairs. `--max-pixels 3` (no merge
+  wider than 3 px on the camera's screen) leaves 2.14M of the 2.90M seen --
+  2.5 times fewer than the full cloud -- at 46.4 / 42.4 dB by day and 49.3 dB
+  at night, and no hairs; 1.5 px, 2.61M at 55 dB.
+- **Not better**, each measured on the pieces: the merge's opacity as its
+  mass over its area (`--merge-opacity mass`) is the members' mean on an
+  opaque surface, and not widened (`mass-tight`) leaves gaps; the mass past
+  one, drawn as so many of the gaussian stacked (Spark's LoD opacity), shows
+  every disc as a scale and was taken out again; removing what leaves the
+  least error instead of merging (`--prune-error`, GaussianPOP's score,
+  rounds) opens holes on every opaque surface and wins only on a badge;
+  baking coarser instead (`--camera-pixels` 320, 213) loses 15-20 dB to
+  merging the full bake to the same count; tighter normals (`--max-angle` 30,
+  20) and the highlight cone change nothing (neighbours already agree).
+- **A lamp's light keeps its place**: a lamp group's layer folded into the
+  merge's key in bands of four times (`AttributeMerge::LightBand`, on unless
+  `--no-light-bands`): the fender at night 46.7 dB against 46.4 without.
+- **An error, not a count** (`--max-cost`): merges stop where every pair left
+  costs more; at 0.25 a door went to 6x and a grille to 2x. On a whole cloud
+  `--ratio` already takes the cheapest first, so it only says where to stop.
+
+### Harder kernels where a merge covers a patch (9 Oct, evening)
+
+A merge wider than the camera's pixel draws hairs because the gaussian with
+its members' moments throws its tails a third past the patch they covered,
+and holds the middle thinner than they did. Two kernels that span a patch
+the way its members did, both on the merges alone (the bake's own gaussians
+are untouched), measured on the whole Corvette against the full cloud's
+frames (day front, day rear, night front; everything after `--drop-hidden
+--hidden-below -10`):
+
+- **Spark's harder kernel** (`--merge-opacity falloff`): the merge's opacity
+  is its members' mass over its own area, not widened and not held at 0.99
+  but at 5, and an opacity D over 1 draws as 1 - (1 - g)^A, A = exp((D² -
+  1)/e) -- the composite of A gaussians on one spot, a flat top with the
+  gaussian's shoulder -- cut 0.7 (D - 1) sigma further out
+  (`frame.slang`'s `falloffAlpha`, sparkjs `splatFragment.glsl`, MIT). It is
+  what Spark's own LoD merges write, so a cloud carrying it draws the same in
+  sparkwebGPU; any other reader clamps the opacity to 1. The earlier test of
+  "the mass past one" on the pieces was a falloff of our own, widened, and
+  showed scales; this is Spark's formula, unwidened.
+- **A hard surfel** (`--hardness`): a flat merge written as a surfel is drawn
+  o exp(-(|u|^p + |v|^p)/2) in its own axes, exact at the ray-plane hit the
+  surfel path already takes. p is fitted without training: along each wide
+  axis the members' kurtosis m4/m2² (3 for a gaussian, 1.8 for an even strip)
+  is matched to exp(-|x|^p/2)'s, Gamma(5/p) Gamma(1/p) / Gamma(3/p)², and
+  the stored scale stays the moment-matched one, which the raster widens by
+  1/sqrt(2^(2/p) Gamma(3/p)/Gamma(1/p)) to the box it stands for. p rides in
+  the f16 logarithm of the surfel's flat axis (any value under e^-100 is a
+  zero scale to every reader), and in a file as
+  `primvars:athenea:splat:hardness`; a reader that knows no p draws the
+  gaussian of the same moments. Hard boxes abutting left a grid of cracks
+  (0.85 of a cover at each seam, the pruned interior through it): the hard
+  power is held at 0 out to where the kernel would fall to 1/2
+  (`kHardOverlap`), so neighbours overlap; 4 was worse by day.
+
+| cloud | gaussians | day front | day rear | night |
+|---|---|---|---|---|
+| gaussian merges, 5.4x | 535k | 30.0 | 30.1 | 26.7 |
+| hard surfels, 5.4x | 535k | 30.3 | 30.1 | 26.9 |
+| falloff, 5.4x | 535k | 30.7 | 31.6 | 25.2 |
+| falloff + hard, 5.4x | 535k | 31.1 | 31.4 | 30.9 |
+| gaussian merges, `--max-pixels 5` | 1.24M | 32.7 | 36.8 | 29.8 |
+| falloff, `--max-pixels 5` | 1.24M | 34.2 | 41.0 | 33.1 |
+| **falloff + hard, `--max-pixels 5`** | **1.24M** | **34.5** | **41.1** | **35.8** |
+| falloff + hard, `--max-pixels 6` | 845k | 31.9 | 37.8 | 32.1 |
+| falloff + hard, `--max-pixels 4` | 1.85M | 42.8 | 44.7 | 46.7 |
+| gaussian merges, `--max-pixels 3` | 2.14M | 46.4 | 42.4 | 49.3 |
+
+At 5 px the falloff and hard surfels together keep the mirror, the pillars
+and the door clean, but the whole frame shows what the crops did not: the
+front bumper's chrome strip and grille fray into hairs, and the lower lip is
+ragged. At 4 px (1.85M of 5.38M, 2.9 times fewer) the whole frame is as
+clean as 3 px with gaussians (2.14M), and the numbers above it by the rear
+camera. Past 5 px the hard merges
+show as shards at the wheel arch and the sill, whatever p is held to (8 and
+4 measured the same as 16: what the hard surfels bring is their overlap,
+not their exact p); at 8 and 12 px they are plates. The falloff alone, the
+compatible half, leaves a fine grid on the paint where flat tops meet.
+
+Not done: a pixel limit that applies at edges alone (the cost knows no
+edge), a closed-form refit of the merges' colours against the full cloud's
+frames (POTR, Only What Was Seen), and the hard kernel for merges that are
+not flat enough to be surfels (two thirds of them at 5.4x).

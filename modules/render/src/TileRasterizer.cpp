@@ -670,7 +670,15 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["underCrypto"].setBinding(underCrypto ? under->cryptoIds.rhi()
                                                      : placeholderCrypto_.rhi());
         cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderColour_.rhi());
+        cursor["contribution"].setBinding(settings.contribution != nullptr ? settings.contribution->rhi()
+                                                                           : visible_.rhi());
         setFrame(cursor, common);
+        cursor["finalColour"].setBinding(settings.finalColour != nullptr ? settings.finalColour->rhi()
+                                                                          : placeholderColour_.rhi());
+        cursor["params"]["contributionMode"].setData(settings.contribution == nullptr ? 0u
+                                                     : settings.contributionMode == 2u && settings.finalColour != nullptr
+                                                         ? 2u
+                                                         : 1u);
         cursor["params"]["hasUnder"].setData(uint32_t{under != nullptr ? 1u : 0u});
         cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
         cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);

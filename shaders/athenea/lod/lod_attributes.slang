@@ -96,6 +96,12 @@ void lodAttributeKey(uint3 tid: SV_DispatchThreadID) {
     uint key = keyOut[r];
     if (params.mode == 3) {
         key = fold(key, dominantJoint(r));
+    } else if (params.mode == 7) {
+        // A lamp group's light: its brightness in bands of four times, and
+        // all that is darker than a millionth as one band.
+        const float3 v = float3(asfloat(values[r * 3]), asfloat(values[r * 3 + 1]), asfloat(values[r * 3 + 2]));
+        const float lum = dot(v, float3(0.2126, 0.7152, 0.0722));
+        key = fold(key, lum > 1.0e-6 ? uint(int(floor(log2(lum) * 0.5)) + 64) : 0u);
     } else {
         for (uint k = 0; k < params.width; ++k) {
             key = fold(key, values[r * params.width + k]);

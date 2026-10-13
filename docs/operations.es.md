@@ -228,6 +228,19 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--tree` | ruta | — | `--ratio`: además, el árbol de fusiones entero aquí: las hojas en orden de profundidad y luego cada fusión, con `primvars:athenea:splat:lodParent`, `lodCost`, `lodStart` y `lodSize` (su tramo de hojas) y la constante `lodTree` |
 | `--camera` | ruta de prim | `/World/Camera` donde la hay | `--ratio`: la cámara para la que se hace la nube; una fusión de menos de medio píxel en ella no cuesta nada de su forma |
 | `--camera-pixels` | 1..65536 | `1920` | `--ratio`: píxeles de ancho de la imagen de esa cámara |
+| `--max-cost` | > 0 | `0` (apagado) | `--ratio`: ninguna fusión cuesta más que esto; `--ratio` es entonces lo más lejos que llega, y donde cada par que queda cuesta más se para antes (en las piezas del Corvette 0.25 dejó una puerta a 6x y una rejilla a 2x) |
+| `--max-pixels` | > 0 | `0` (apagado) | `--ratio`: ninguna fusión más ancha que estos píxeles en la pantalla de `--camera`: una así no sostiene un borde, y sus colas sobresalen del panel como pelillos. En el Corvette (horneado a una gaussiana por píxel de su cámara) 3 dejó 2.14M de los 2.90M vistos, a 46 dB de la nube completa y sin pelillos; sin él, los 1.07M de 5x los tenían |
+| `--merge-opacity` | `mean`, `mass`, `mass-tight`, `falloff` | `mean` | `--ratio`: la opacidad de una fusión: la de sus miembros, ponderada por área, con la fusión ensanchada tanto como se solapaban; o su masa entre esa área ensanchada; o su masa entre el área que dan sus momentos, sin ensanchar; o esa masa sin tope hasta 5 -- el kernel más duro de Spark, donde una opacidad D mayor que 1 se dibuja como 1 - (1 - g)^A, A = exp((D² - 1)/e), una meseta tan sólida como lo eran los miembros. Medido en las piezas del Corvette: `mass` es `mean` en superficies opacas, `mass-tight` deja huecos; en el coche entero, ver `--hardness` |
+| `--hardness` | flag | apagado | `--ratio`: una fusión escrita como surfel se dibuja exp(-(\|u\|^p + \|v\|^p)/2) en sus propios ejes, con p a partir de la curtosis de sus miembros (una zona uniforme, una caja; una concentrada, la gaussiana), escrito como `primvars:athenea:splat:hardness`; conserva sus momentos, sin ensanchar, así que un lector que no conoce p dibuja la gaussiana que dan. Con `--merge-opacity falloff --max-pixels 4` el Corvette quedó en 1.85M de 5.38M sin pelillos, a 42.8 / 44.7 / 46.7 dB (día frente, día detrás, noche), donde las fusiones gaussianas necesitaban 3 px y 2.14M; a 5 px (1.24M) el paragolpes delantero se deshilacha |
+| `--max-hardness` | 2 a 32 | `16` | `--hardness`: la p más alta |
+| `--no-light-bands` | flag | apagado | `--ratio`: fundir a través de un cambio de cuatro veces en la luz de un grupo de lámparas (`primvars:athenea:splat:lightLayer:<grupo>`); apagado, una gaussiana iluminada y una sin iluminar se mantienen separadas, para que un disco fundido no extienda un faro de noche |
+| `--drop-hidden` | flag | apagado | primero dejar fuera lo que ninguna cámara alrededor de la nube ve: la nube dibujada por raster desde `--hidden-views` direcciones, cada una a 2.5, 1.6 y 1.15 veces el radio de su esfera envolvente, 90 grados de ancho, y una gaussiana que dio a todas juntas menos de `--hidden-pixels` de píxel se quita. Sin `--ratio`, solo eso |
+| `--hidden-views` | 1.. | `256` | `--drop-hidden`: direcciones, una espiral de Fibonacci sobre la esfera |
+| `--hidden-size` | 16.. | `1024` | `--drop-hidden`: píxeles de ancho de cada vista, cuadrada |
+| `--hidden-pixels` | >= 0 | `0.02` | `--drop-hidden`: lo que una gaussiana tiene que dar a todas las vistas juntas para quedarse, en píxeles (transmitancia por alpha sobre sus píxeles) |
+| `--hidden-below` | grados, -90..89 | `-90` (todo alrededor) | `--drop-hidden`: la elevación más baja desde la que se toma una vista, sobre el horizonte de la escena; `-10` para un coche en una carretera, que nunca se ve desde abajo |
+| `--prune-error` | > 1 | apagado | primero estas veces menos quitando, en `--prune-rounds` rondas, lo que deja el menor error cuadrático en una órbita de `--prune-views` direcciones a `--prune-size` píxeles (la puntuación de GaussianPOP). Medido en las piezas del Corvette: huecos en toda superficie opaca, peor que fundir salvo en una insignia; se mantiene para nubes que no son superficies |
+| `--prune-rounds`, `--prune-views`, `--prune-size` | 1.., 1.., 16.. | `8`, `64`, `512` | rondas, direcciones y píxeles de `--prune-error` |
 
 **Por pares** (`--ratio`). En cada pasada, cada gaussiana -- o fusión hasta
 entonces -- pesa una fusión con sus 16 vecinas a lo largo de dos órdenes de
@@ -245,7 +258,11 @@ es, normales más allá de `--max-angle`, un color más allá de `--edge`. Una
 fusión de discos plana hasta 0.12 de su anchura se escribe como surfel (una
 escala exactamente 0, `primvars:athenea:splat:surfel`); su opacidad es su masa
 entre su área, topada en 0.99, y la masa entre el área sin tope se escribe como
-`primvars:athenea:splat:coverage`. Cada array se funde sobre los registros que
+`primvars:athenea:splat:coverage`. Con `--hardness`, la p de ese surfel se
+escribe como `primvars:athenea:splat:hardness` (2, una gaussiana), y con
+`--merge-opacity falloff` su opacidad puede pasar de 1 (hasta 5): el propio
+kernel más duro de Spark, que este raster dibuja como Spark y cualquier otro
+lector topa en 1. Cada array se funde sobre los registros que
 representa una gaussiana conservada, como abajo; `transferZonal` y
 `curvature`, que están en el marco propio de cada gaussiana, a través del marco
 de cada una al mundo y al de la conservada.
@@ -278,6 +295,7 @@ metros.
 athenea decimate car_gs.usdc car_fewer.usdc
 athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 athenea decimate car_tx.usdc car_tx_10x.usdc --ratio 10
+athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 --ratio 2.7
 ```
 
 ### 2.5 `athenea stage` — una escena USD por el delegate de Hydra
@@ -430,6 +448,7 @@ receta es §3.1.
 | `--texture-size` | entero | `1024` | un mapa se lee no mayor que esto; 0 lo lee a su tamaño |
 | `--no-textures` | flag | apagado | ignorar los mapas; los materiales se quedan con sus valores constantes |
 | `--normal-map-turns` | flag | apagado | el mapa de normales gira la gaussiana, no solo su sombreado. La normal de sombreado se escribe en ambos casos (`primvars:athenea:splat:normal`) |
+| `--edge-reach` | número, 0 a 8 | `1.5` | cuánto puede asomar una gaussiana por un borde donde su superficie termina (una arista abierta) o se pliega (dos triángulos que giran más de 40°), en sus propios tamaños: su tamaño en perpendicular a ese borde se limita a su distancia a él dividida por esto. Evita que la pestaña que un panel pliega hacia su junta asome sobre la pintura como una línea oscura, y que la pintura invada la junta. `0` no limita nada |
 | `--no-displacement` | flag | apagado | ignorar el displacement de los materiales: toda gaussiana se queda sobre la malla plana |
 | `--displace-refine` | entero, 1 a 64 | `8` | donde el relieve estira una celda, partirla en como mucho este número de gaussianas en cada uno de sus dos ejes |
 | `--simplify` | número, 0 a 1 | `0` (apagado) | un bloque de celdas cuyo color, metallic, roughness, emisión, recorte y normales varían no más que esto -- en el bloque y en un bloque más allá de cada lado, todo dentro de un triángulo -- se convierte en una gaussiana de su tamaño. Colores y recorte van de 0 a 1; la emisión se compara en sus propias unidades, así que una brillante se funde menos; las normales se comparan por la longitud de su diferencia, más o menos el ángulo en radianes |
@@ -1272,6 +1291,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:linear` | bool | `false` |
 | `primvars:athenea:splat:surfel` | bool | `false` |
 | `primvars:athenea:splat:coverage` | float[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:hardness` | float[] ‹1 por gaussiana›, 2 a 32 | — (2) |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |

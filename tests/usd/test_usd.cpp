@@ -367,6 +367,117 @@ TEST_CASE("a decimated stage keeps everything, every array a gaussian long as lo
     CHECK(UsdGeomGetStageMetersPerUnit(stage) == 0.01);
 }
 
+// WHAT NO CAMERA SEES IS LEFT OUT (`athenea decimate --drop-hidden`): a closed
+// box of opaque discs with a cluster of gaussians shut inside it. Drawn from
+// the orbit, the cluster gives nothing to any frame and goes; every disc of
+// the box is seen from somewhere and stays, and what it carried with it.
+TEST_CASE("a decimation leaves out what no camera round the cloud sees, and keeps the rest whole",
+          "[usd][gpu][decimate][hidden]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    io::RawSplats raw;
+    raw.source = "hidden box";
+    io::SplatEncoding& e = raw.encoding;
+    e.floatsPerRecord = 14;
+    e.x = 0; e.y = 1; e.z = 2; e.opacity = 3;
+    e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
+    e.rotW = 7; e.rotX = 8; e.rotY = 9; e.rotZ = 10;
+    e.dc0 = 11; e.dc1 = 12; e.dc2 = 13;
+    e.opacity_ = io::SplatEncoding::Opacity::Linear;
+    e.scale_ = io::SplatEncoding::Scale::Linear;
+    // Six faces of a box of half side 1, each a grid of discs one and a half
+    // spacings wide: overlapped enough that no ray gets through.
+    constexpr int kSide = 24;
+    const float spacing = 2.0F / kSide;
+    const float h = 0.70710678F;
+    const float turns[3][4] = {{1.0F, 0.0F, 0.0F, 0.0F}, {h, 0.0F, h, 0.0F}, {h, h, 0.0F, 0.0F}};   // thin axis to z, x, y
+    uint32_t shell = 0;
+    for (int axis = 0; axis < 3; ++axis) {
+        for (const float side : {-1.0F, 1.0F}) {
+            for (int i = 0; i < kSide; ++i) {
+                for (int j = 0; j < kSide; ++j) {
+                    const float u = -1.0F + (i + 0.5F) * spacing;
+                    const float v = -1.0F + (j + 0.5F) * spacing;
+                    float p[3];
+                    p[axis == 0 ? 2 : axis == 1 ? 0 : 1] = side;
+                    p[axis == 0 ? 0 : axis == 1 ? 1 : 2] = u;
+                    p[axis == 0 ? 1 : axis == 1 ? 2 : 0] = v;
+                    const float* q = turns[axis];
+                    const float r[14] = {p[0], p[1], p[2], 0.99F, 1.5F * spacing, 1.5F * spacing, 0.05F * spacing,
+                                         q[0], q[1], q[2], q[3], 0.3F, 0.2F, 0.1F};
+                    raw.records.insert(raw.records.end(), r, r + 14);
+                    raw.count += 1;
+                    shell += 1;
+                }
+            }
+        }
+    }
+    // Inside: a cluster nothing outside can see.
+    constexpr int kInside = 6;
+    for (int i = 0; i < kInside; ++i) {
+        for (int j = 0; j < kInside; ++j) {
+            for (int k = 0; k < kInside; ++k) {
+                const float r[14] = {-0.4F + 0.16F * i, -0.4F + 0.16F * j, -0.4F + 0.16F * k, 0.9F, 0.05F, 0.05F, 0.05F,
+                                     1.0F, 0.0F, 0.0F, 0.0F, 0.9F, 0.1F, 0.1F};
+                raw.records.insert(raw.records.end(), r, r + 14);
+                raw.count += 1;
+            }
+        }
+    }
+    const fs::path folder = scratch("hidden_in");
+    fs::create_directories(folder);
+    const fs::path input = folder / "box.usda";
+    fs::remove(input);
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, input, {.addCamera = true}));
+    {
+        // Every gaussian says which it is: 0.1 on the box, 0.9 inside it.
+        UsdStageRefPtr stage = UsdStage::Open(input.string());
+        REQUIRE(stage);
+        VtFloatArray marks;
+        for (uint32_t k = 0; k < raw.count; ++k) {
+            marks.push_back(k < shell ? 0.1F : 0.9F);
+        }
+        UsdGeomPrimvarsAPI(stage->GetPrimAtPath(SdfPath("/World/Splats")))
+            .CreatePrimvar(TfToken("athenea:splat:roughness"), SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex)
+            .Set(marks);
+        REQUIRE(stage->GetRootLayer()->Save());
+    }
+    const fs::path output = scratch("hidden_out") / "box_seen.usda";
+    fs::create_directories(output.parent_path());
+    fs::remove(output);
+    usd::DecimateStageOptions options;
+    options.dropHidden = true;
+    options.hiddenViews = 64;
+    options.hiddenSize = 512;
+    options.pairs = true;              // as the command does with no ratio: pruned, nothing merged
+    options.pairSettings.ratio = 1.0F;
+    options.pairSettings.surfels = false;
+    auto stats = usd::decimateStage(*gpu->library, input, output, options);
+    if (!stats) FAIL(stats.error().toString());
+    const uint32_t kept = stats->splats + stats->merged;
+    std::printf("  %u of %u kept (%u on the box)\n", kept, raw.count, shell);
+    // The box's discs all stay but for a few a neighbour covers wholly from
+    // every view; nothing from inside does.
+    CHECK(kept <= shell);
+    CHECK(kept * 100 >= shell * 98);
+    auto arrays = usd::readGaussianArrays(output, "/World/Splats", kept);
+    if (!arrays) FAIL(arrays.error().toString());
+    uint32_t inside = 0;
+    bool found = false;
+    for (const usd::GaussianArray& a : *arrays) {
+        if (a.name != "primvars:athenea:splat:roughness") {
+            continue;
+        }
+        found = true;
+        for (const uint32_t word : a.values[0]) {
+            float mark = 0.0F;
+            std::memcpy(&mark, &word, sizeof(mark));
+            inside += mark > 0.5F ? 1u : 0u;
+        }
+    }
+    CHECK(found);
+    CHECK(inside == 0);
+}
+
 TEST_CASE("splats and points behind a mesh leave it as it is; in front of it they show", "[usd][gpu][mesh][layers]") {
     ATHENEA_REQUIRE_GPU(gpu);
     if (!gpu->device->caps().rasterization) {

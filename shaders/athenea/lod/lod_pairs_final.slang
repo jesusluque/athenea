@@ -25,6 +25,10 @@ public struct PairFinalParams {
     public uint  normals;        // 1: the store carries shading normals
     public float flatTolerance;  // thinnest over middle axis under which a flat merge is a disc
     public uint  treeLeaves;     // pairTreeLayout: the store splats, the tree's leaves
+    public uint  opacityRule;    // 0 members' mean, widened; 1 mass over the widened area; 2 mass, not widened;
+                                 // 3 mass, not widened, up to 5 (Spark's harder kernel, frame's falloffAlpha)
+    public uint  hardness;       // 1: a flat merge's hardness from its members' kurtosis (packing's hard surfel)
+    public float maxHardness;    // the hardest p a merge is given
 };
 
 ConstantBuffer<PairFinalParams> params;
@@ -48,6 +52,7 @@ RWStructuredBuffer<uint>    outSh;
 RWStructuredBuffer<uint>    outNormals;
 RWStructuredBuffer<uint>    surfelCount;   // [0]: clusters written as surfels
 RWStructuredBuffer<float>   outCoverage;   // per cluster: W over the merged area, not held under 0.99
+RWStructuredBuffer<float>   outHardness;   // per cluster: its p (2 a gaussian; `athenea:splat:hardness`)
 
 // THE MERGE TREE AS A CLOUD: the leaves first, in depth-first order (a leaf's
 // place is its start), then every merge in the order it was made (tree node
@@ -183,6 +188,8 @@ void pairFinalize(uint3 tid: SV_DispatchThreadID) {
             outNormals[c] = storeNormals[s];
         }
         outCoverage[c] = storePositions[s].w;
+        const uint2 l = uint2(storeShape[s * 4 + 1], storeShape[s * 4 + 2]);
+        outHardness[c] = surfelHardness(min(min(lowHalf(l.x), highHalf(l.x)), lowHalf(l.y)));
         return;
     }
     float w = 0.0;
@@ -282,26 +289,66 @@ void pairFinalize(uint3 tid: SV_DispatchThreadID) {
     vv *= inv;
     cu *= inv;
     cv *= inv;
+    // A HARD SURFEL WHERE THE PATCH IS FLAT AND EVEN (packing's hard
+    // surfel): along each of its two wide axes the members' fourth moment
+    // over the square of their second -- 3 for a gaussian, 1.8 for an even
+    // strip -- is the kurtosis of the p that spans it; their mean is the
+    // merge's p. Such a merge covers its patch by its shape: it keeps its
+    // moments, unwidened.
+    float hardness = 2.0;
+    const bool flatMerge = params.surfels != 0 && discs && scale[thin] <= params.flatTolerance * middle;
+    if (params.hardness != 0u && flatMerge) {
+        float m2u = 0.0, m2v = 0.0, m4u = 0.0, m4v = 0.0;
+        for (uint p = first; p < first + n; ++p) {
+            const uint s = members[p];
+            const Blob b = blobOf(storePositions[s], storeShape[s * 4], storeShape[s * 4 + 1], storeShape[s * 4 + 2],
+                                  storeShape[s * 4 + 3]);
+            const float wi = max(b.opacity * discArea(b.scale), 1.0e-30);
+            const float3 off = b.centre - mu;
+            const float du = dot(off, au);
+            const float dv = dot(off, av);
+            float su = 0.0, sv = 0.0;
+            for (uint k = 0; k < 3; ++k) {
+                su += b.scale[k] * b.scale[k] * dot(b.axes[k], au) * dot(b.axes[k], au);
+                sv += b.scale[k] * b.scale[k] * dot(b.axes[k], av) * dot(b.axes[k], av);
+            }
+            m2u += wi * (su + du * du);
+            m2v += wi * (sv + dv * dv);
+            m4u += wi * (3.0 * su * su + 6.0 * su * du * du + du * du * du * du);
+            m4v += wi * (3.0 * sv * sv + 6.0 * sv * dv * dv + dv * dv * dv * dv);
+        }
+        const float ku = m4u * w / max(m2u * m2u, 1.0e-30);
+        const float kv = m4v * w / max(m2v * m2v, 1.0e-30);
+        hardness = hardnessOfKurtosis(0.5 * (ku + kv), params.maxHardness);
+    }
+    const bool hard = hardness > 2.05;
     const float d = sqrt(12.0 * sqrt(max(vu * vv, 0.0)) / float(max(n, 2u) - 1u));
-    if (d > 1.0e-20) {
+    if (d > 1.0e-20 && params.opacityRule < 2u && !hard) {
         const float wideU = cu / d * sqrt(12.0 * vu + d * d);
         const float wideV = cv / d * sqrt(12.0 * vv + d * d);
         scale[ua] = clamp(wideU, scale[ua], 2.0 * scale[ua]);
         scale[va] = clamp(wideV, scale[va], 2.0 * scale[va]);
     }
     const float coverage = w / max(discArea(scale), 1e-30);
-    const float opacity = min(alphaSum * inv, 0.99);
+    // The members' own opacity, or their mass spread over what the merge
+    // covers (splat-transform's and Spark's rule, held under one here):
+    // where the members overlapped, the merge stays as solid as their union.
+    const float opacity = params.opacityRule == 0u ? min(alphaSum * inv, 0.99)
+                          : params.opacityRule == 3u ? clamp(coverage, alphaSum * inv, 5.0)
+                                                     : min(coverage, 0.99);
     outCoverage[c] = coverage;
     // A disc of discs stays one.
-    const bool surfel = params.surfels != 0 && discs && scale[thin] <= params.flatTolerance * middle;
+    const bool surfel = flatMerge;
+    outHardness[c] = surfel ? hardness : 2.0;
     if (surfel) {
         scale[thin] = 0.0;
         InterlockedAdd(surfelCount[0], 1u);
     }
     const float3 base = colour / w;
     outPositions[c] = float4(mu, opacity);
-    const float3 ls = float3(scale.x > 0.0 ? log(scale.x) : -65000.0, scale.y > 0.0 ? log(scale.y) : -65000.0,
-                             scale.z > 0.0 ? log(scale.z) : -65000.0);
+    const float flatLog = surfelHardnessLog(surfel ? hardness : 2.0);
+    const float3 ls = float3(scale.x > 0.0 ? log(scale.x) : flatLog, scale.y > 0.0 ? log(scale.y) : flatLog,
+                             scale.z > 0.0 ? log(scale.z) : flatLog);
     outShape[row] = encodeQuaternion(quaternionOfAxes(axes));
     outShape[row + 1] = packHalves(halfSafe(ls.x), halfSafe(ls.y));
     outShape[row + 2] = packHalves(halfSafe(ls.z), halfSafe(base.x));

@@ -266,6 +266,9 @@ struct SplatStreams {
     /// Three floats a splat, the radiance it gives off
     /// (`primvars:athenea:splat:emission`).
     FloatStream emission;
+    /// One float a splat, a hard surfel's p (`primvars:athenea:splat:hardness`,
+    /// packing's hard surfel); 2, or none, a gaussian.
+    FloatStream hardness;
     /// The layers over the base, one array each, one value (or three, for a
     /// colour) a splat: `primvars:athenea:splat:specularWeight`,
     /// `:specularColor`, `:specularIor`, `:coatWeight`, `:coatRoughness`,
@@ -391,6 +394,7 @@ private:
     gpu::ComputeKernel pointsDecode_;
     gpu::ComputeKernel splatStreams_;
     gpu::ComputeKernel pointStreams_;
+    gpu::ComputeKernel splatHardness_;
     gpu::ComputeKernel boundsChunks_;
     gpu::ComputeKernel boundsReduce_;
     gpu::ComputeKernel lightLayerPack_;

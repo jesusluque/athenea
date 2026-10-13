@@ -73,6 +73,10 @@ static const uint kTransferZonal = 1u << 28;
 // back off (splat_encoding's kSchlickMetalMark).
 static const uint kSchlickMetal = 1u << 29;
 static const float kSchlickMetalMark = 4.0;
+// A hard surfel's p (`athenea:splat:hardness`): splat_hardness.slang's, after
+// this kernel -- a module of its own, this one binding every buffer Metal
+// gives a kernel.
+static const uint kHardness = 1u << 30;
 // What a thin wall adds to the transmission a record carries: splat_encoding's
 // kThinWalledMark, which the decode takes back off.
 static const float kThinWalledMark = 2.0;

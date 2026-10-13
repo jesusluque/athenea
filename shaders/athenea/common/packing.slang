@@ -333,6 +333,71 @@ public bool isSurfel(float3 s) {
     return min(min(s.x, s.y), s.z) == 0.0;
 }
 
+/// A HARD SURFEL (docs/decisions.md, kernel hardness): a disc drawn as
+/// o exp(-(|u|^p + |v|^p) / 2) in its own axes, p = 2 the gaussian. A merge
+/// of a flat patch spans it as a box would, where a gaussian with the same
+/// moments throws its tails a third past the patch -- the hairs a merge wider
+/// than the camera's pixel leaves at a panel's edge. p travels in the f16
+/// logarithm of the disc's flat axis, which every reader takes for a zero
+/// scale whatever it holds below e^-100: -infinity (or the -65000 a merge
+/// writes) is p = 2, -(1024 + 64 (p - 2)) is p, to a thirtieth up to 32.
+/// What it stores as its scale is the moment-matched one (`hardnessVariance`
+/// turns it into the box's), so a reader that knows nothing of p draws the
+/// gaussian with the same moments. `athenea:splat:hardness` in a file.
+public static const float kHardnessMax = 32.0;
+
+public float surfelHardnessLog(float p) {
+    return p <= 2.001 ? -65000.0 : -(1024.0 + 64.0 * (min(p, kHardnessMax) - 2.0));
+}
+
+public float surfelHardness(float flatLog) {
+    return (flatLog > -60000.0 && flatLog <= -1024.0) ? 2.0 + (-flatLog - 1024.0) / 64.0 : 2.0;
+}
+
+/// ln Gamma(x) for x in (0, 3]: Stirling's series at x + 3, brought back by
+/// the recurrence (1e-6 here).
+public float lnGamma(float x) {
+    const float z = x + 3.0;
+    const float iz = 1.0 / z;
+    const float iz2 = iz * iz;
+    const float s = (z - 0.5) * log(z) - z + 0.91893853 + iz * (1.0 / 12.0 - iz2 * (1.0 / 360.0 - iz2 / 1260.0));
+    return s - log(x * (x + 1.0) * (x + 2.0));
+}
+
+/// The variance of exp(-|x|^p / 2) along one axis, a unit gaussian's being 1:
+/// 2^(2/p) Gamma(3/p) / Gamma(1/p). 1/3 for the unit box.
+public float hardnessVariance(float p) {
+    return exp(2.0 / p * 0.69314718 + lnGamma(3.0 / p) - lnGamma(1.0 / p));
+}
+
+/// Its kurtosis, m4 / m2^2: Gamma(5/p) Gamma(1/p) / Gamma(3/p)^2. 3 for the
+/// gaussian, 1.8 for the box.
+public float hardnessKurtosis(float p) {
+    return exp(lnGamma(5.0 / p) + lnGamma(1.0 / p) - 2.0 * lnGamma(3.0 / p));
+}
+
+/// The p whose kurtosis is `k`, by bisection on 1/p (the kurtosis grows with
+/// it), at most `most`; a cluster as peaked as a gaussian or more is one.
+public float hardnessOfKurtosis(float k, float most) {
+    if (!(k < 2.999)) {
+        return 2.0;
+    }
+    if (hardnessKurtosis(most) >= k) {
+        return most;
+    }
+    float lo = 1.0 / most;   // the hardest
+    float hi = 0.5;          // the gaussian
+    for (uint it = 0; it < 24; ++it) {
+        const float mid = 0.5 * (lo + hi);
+        if (hardnessKurtosis(1.0 / mid) > k) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    return 2.0 / (lo + hi);
+}
+
 public static const float kSH0 = 0.28209479177387814;
 
 /// WHAT A LAMP'S LAYER IS PACKED AT (GpuSplats::lightLayers): its light per

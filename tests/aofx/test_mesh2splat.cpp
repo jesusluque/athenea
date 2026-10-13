@@ -1321,3 +1321,115 @@ TEST_CASE("a surface that is the same across a block becomes one gaussian, and d
         CHECK((*violations)[3] > 0);
     }));
 }
+
+// NO FURTHER THAN THE SURFACE GOES (m2sHoldEdges). The quad with its four
+// outer edges marked hard in an Edges clip, its diagonal not: no gaussian
+// reaches past an outer edge by more than `edgeReach` of its size, one away
+// from them keeps its cell's size whatever the diagonal, and one near a
+// single edge keeps its size along it. Without the clip, the cells along the
+// border do reach past it -- what the check is there to catch.
+TEST_CASE("a gaussian reaches no further than its surface goes", "[aofx][mesh2splat]") {
+    gpu_host::Context* gpu = gpu_host::installProcessContext();
+    if (gpu == nullptr || gpu->compute() == nullptr) {
+        SKIP("no gpe device");
+    }
+    aofx_host::EffectRegistry registry;
+    aofx::Effect* effect = conversion(registry, gpu);
+    if (effect == nullptr) {
+        SKIP("the Mesh2Splat bundle is not built here");
+    }
+    gpu::ShaderLibrary library(gpu->deviceShared());
+    constexpr double kReach = 1.5;
+
+    REQUIRE(gpu->run([&] {
+        auto quad = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_check", "m2sQuad");
+        auto mark = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_edges_check", "m2sQuadEdges");
+        auto check = gpu::ComputeKernel::create(library, "athenea/test/mesh2splat_edges_check", "m2sCheckEdges");
+        REQUIRE(quad);
+        REQUIRE(mark);
+        REQUIRE(check);
+
+        constexpr uint32_t kMeshWidth = 64;
+        const image::ImagePtr mesh = pictureOf(kMeshWidth, 1);
+        const image::ImagePtr hard = pictureOf(kMeshWidth, 1);
+        const gpu::Buffer meshView = viewOf(*gpu, mesh);
+        const gpu::Buffer hardView = viewOf(*gpu, hard);
+        const auto meshStride = static_cast<uint32_t>(mesh->stride());
+        const uint32_t budget = kResolution * kResolution * 2;
+        const image::ImagePtr records = pictureOf(static_cast<int32_t>(budget * 4), 1);
+
+        gpu::CommandBatch batch(library.device());
+        quad->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["mesh"].setBinding(meshView.rhi());
+            cursor["albedo"].setBinding(meshView.rhi());
+            cursor["records"].setBinding(meshView.rhi());
+            cursor["counts"].setBinding(meshView.rhi());
+            cursor["params"]["meshWidth"].setData(kMeshWidth);
+            cursor["params"]["meshStride"].setData(meshStride);
+        });
+        mark->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["edges"].setBinding(hardView.rhi());
+            cursor["records"].setBinding(hardView.rhi());
+            cursor["counts"].setBinding(hardView.rhi());
+            cursor["params"]["meshWidth"].setData(kMeshWidth);
+            cursor["params"]["meshStride"].setData(static_cast<uint32_t>(hard->stride()));
+        });
+        REQUIRE(batch.submit(true));
+        mesh->deviceWrote();
+        hard->deviceWrote();
+        mesh->attach("bounds", {0.0F, 0.0F, 0.0F, 1.0F, 1.0F, 0.0F});
+
+        const auto convert = [&](bool held) {
+            aofx_host::EffectJob job;
+            job.bounds = records->bounds();
+            job.inputs.push_back({"Mesh", mesh});
+            if (held) {
+                job.inputs.push_back({"Edges", hard});
+            }
+            number(job, "triangles", 2);
+            number(job, "resolution", kResolution);
+            number(job, "maxSplats", budget);
+            number(job, "flatness", kFlatness);
+            number(job, "opacity", 1.0);
+            number(job, "writePbr", 0.0);
+            number(job, "edgeReach", kReach);
+            job.params.push_back(aofx::ParamValue{"sigma", {kSigma, kSigma}, {}});
+            auto rendered = aofx_host::renderEffect(*gpu, *effect, job);
+            REQUIRE(rendered);
+            const std::vector<float>* counted = (*rendered)->attached("splats");
+            REQUIRE(counted != nullptr);
+            const auto written = static_cast<uint32_t>((*counted)[0]);
+            REQUIRE(written >= kResolution * kResolution);
+
+            const gpu::Buffer recordView = viewOf(*gpu, *rendered);
+            const std::vector<uint32_t> zeros(4, 0);
+            auto counts = gpu::Buffer::fromSpan<uint32_t>(library.device(), zeros, "test.edgeCounts");
+            REQUIRE(counts);
+            gpu::CommandBatch second(library.device());
+            check->dispatch(second, {written, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["edges"].setBinding(hardView.rhi());
+                cursor["records"].setBinding(recordView.rhi());
+                cursor["counts"].setBinding(counts->rhi());
+                cursor["params"]["recordPixels"].setData(uint32_t{4});
+                cursor["params"]["splats"].setData(written);
+                cursor["params"]["dstWidth"].setData(static_cast<uint32_t>((*rendered)->bounds().width()));
+                cursor["params"]["dstStride"].setData(static_cast<uint32_t>((*rendered)->stride()));
+                cursor["params"]["sigma"].setData(kSigma / static_cast<float>(kResolution));
+                cursor["params"]["reach"].setData(static_cast<float>(kReach));
+                cursor["params"]["tolerance"].setData(1.0e-3F);
+            });
+            REQUIRE(second.submit(true));
+            auto violations = counts->readAll<uint32_t>(library.device());
+            REQUIRE(violations);
+            return *violations;
+        };
+
+        const std::vector<uint32_t> held = convert(true);
+        CHECK(held[0] == 0);   // none past an outer edge
+        CHECK(held[1] == 0);   // none held away from them: the diagonal is no edge
+        CHECK(held[2] == 0);   // none shortened along the edge it is near
+        CHECK(held[3] > 0);    // and there were gaussians near the edges
+        const std::vector<uint32_t> loose = convert(false);
+        CHECK(loose[0] > 0);   // without the clip, the border's reach past it
+    }));
+}

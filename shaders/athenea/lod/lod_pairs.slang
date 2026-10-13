@@ -75,6 +75,7 @@ public struct PairParams {
     public float flatWeight;
     public float highlightCone;
     public uint  mergeGlass;
+    public float maxPixels;      // a merge wider than this many pixels on the camera's screen is refused (0: off)
     public float maxAspect;      // a merge's plane longer than this against its width is refused     // 1: transmitting gaussians merge among themselves  // glossy normals further apart than this times sqrt(alpha) radians never merge
     public uint  tree;           // 1: record the merges as a tree
     public uint  leaves;         // the store's splats: the tree's first node after them
@@ -302,6 +303,12 @@ float mergeCost(Node a, Node b) {
         const float distance = max(length(mu - float3(params.eyeX, params.eyeY, params.eyeZ)), 1.0e-6);
         const float pixels = sqrt(max(trace, 0.0)) * params.pixelsPerUnit / distance;
         seen = smoothstep(0.5, 2.0, pixels);
+        // NO MERGE THE CAMERA SEES AS A STROKE: a merge wider than
+        // `maxPixels` on its screen cannot hold the edge its members drew,
+        // and its tails stand out past the panel as hairs.
+        if (params.maxPixels > 0.0 && pixels > params.maxPixels) {
+            return kNoMerge;
+        }
     }
     const float alpha = 0.5 * (a.alpha + b.alpha);
     const float specular = 0.5 * (a.specular + b.specular);

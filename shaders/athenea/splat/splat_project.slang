@@ -451,8 +451,10 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // one under the shop's lamps (s65).
     // A surfel pays nothing back: no mip filter widened it (its screen filter
     // is a max, not a convolution), so its opacity is its own, as Spark draws it.
+    // An opacity over 1 is Spark's harder kernel (frame's falloffAlpha), drawn
+    // as it is: no mip filter pays it back.
     const float alphaOwn = sheet   ? paid * max(posOpacity.w - 1.0 / 255.0, 0.0)
-                           : surfel ? posOpacity.w
+                           : (surfel || posOpacity.w > 1.0) ? posOpacity.w
                                     : paidOpacity(posOpacity.w, paid);
     const float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
     if (!(alpha >= 1.0 / 255.0)) {
@@ -462,7 +464,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     const float3 bound = surfel ? float3(a * 2.25 + 0.5, b * 2.25, c * 2.25 + 0.5) : float3(a, b, c);
     const float boundDet = bound.x * bound.z - bound.y * bound.y;
     const float3 conic = float3(bound.z / boundDet, -bound.y / boundDet, bound.x / boundDet);
-    const float cutoff = cutoffPower(alpha);
+    const float cutoff = alpha > 1.0 ? falloffCutoff(alpha) : cutoffPower(alpha);
     const float2 extent = footprintExtent(conic, cutoff);
     uint4 rect;
     tileRect(params, centre, extent, rect);
@@ -724,8 +726,13 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         const uint flat = scale.x == 0.0 ? 0u : scale.y == 0.0 ? 1u : 2u;
         const uint ua = flat == 0u ? 1u : 0u;
         const uint va = flat == 2u ? 1u : 2u;
-        const float3 axisU = mul(wv, float3(m[0][ua], m[1][ua], m[2][ua]));
-        const float3 axisV = mul(wv, float3(m[0][va], m[1][va], m[2][va]));
+        // A hard surfel (packing's) spans the box its moments stand for: its
+        // axes widened from the stored sigma by 1 / sqrt(hardnessVariance).
+        const float3 flatLogs = float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2]));
+        const float hardness = surfelHardness(flatLogs[flat]);
+        const float widen = hardness > 2.0 ? rsqrt(hardnessVariance(hardness)) : 1.0;
+        const float3 axisU = mul(wv, float3(m[0][ua], m[1][ua], m[2][ua])) * widen;
+        const float3 axisV = mul(wv, float3(m[0][va], m[1][va], m[2][va])) * widen;
         // Homogeneous screen coordinates of a direction: (fx x + cx z,
         // fy y + cy z, z) through a pinhole, (fx x, fy y, 0) orthographic.
         const float3 hu = ortho ? float3(params.focalX * axisU.x, params.focalY * axisU.y, 0.0)
@@ -734,7 +741,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         const float3 hv = ortho ? float3(params.focalX * axisV.x, params.focalY * axisV.y, 0.0)
                                 : float3(params.focalX * axisV.x + params.centreX * axisV.z,
                                          params.focalY * axisV.y + params.centreY * axisV.z, axisV.z);
-        record.surfel = uint4(packHalves(hu.x, hu.y), packHalves(hu.z, hv.x), packHalves(hv.y, hv.z), 0u);
+        record.surfel = uint4(packHalves(hu.x, hu.y), packHalves(hu.z, hv.x), packHalves(hv.y, hv.z), asuint(hardness));
     }
     record.colour = float4(colour, sharp                                ? kSharpMark
                                    : sloped                             ? kSlopeMark

@@ -269,6 +269,31 @@ struct DecimateStageOptions {
     /// With `pairs`: the whole merge tree written here as well -- the leaves
     /// in depth-first order, then every merge, each with its parent and cost.
     std::filesystem::path treeOutput;
+    /// WHAT NO CAMERA SEES, LEFT OUT FIRST (lod::Decimator::prune): the cloud
+    /// drawn from `hiddenViews` directions round its bounds, at three
+    /// distances (2.5, 1.6 and 1.15 times the bounding sphere's radius,
+    /// 90 degrees across, `hiddenSize` pixels square), and a gaussian that
+    /// gave less than `hiddenPixels` of a pixel to all of them together
+    /// dropped before anything merges. `hiddenBelow`: the lowest elevation a
+    /// view is taken from, in degrees over the stage's horizon (-90: all
+    /// round; a car on a road is never seen from under it).
+    bool                  dropHidden = false;
+    uint32_t              hiddenViews = 256;
+    uint32_t              hiddenSize = 1024;
+    float                 hiddenPixels = 0.02F;
+    float                 hiddenBelow = -90.0F;
+    /// FEWER BY THE ERROR THEY LEAVE (after `dropHidden`, before merging):
+    /// over `pruneRounds` rounds the store is drawn from `pruneViews`
+    /// directions (three distances each, `pruneSize` pixels square), each
+    /// gaussian scored by the squared error taking it away would leave, and
+    /// the cheapest dropped, until `pruneError` times fewer are left. 0: off.
+    /// A cloud with lamp groups' light layers: no merge across a fourfold
+    /// change of any group's light (lod::AttributeMerge::LightBand).
+    bool                  lightBands = true;
+    float                 pruneError = 0.0F;
+    uint32_t              pruneRounds = 8;
+    uint32_t              pruneViews = 64;
+    uint32_t              pruneSize = 512;
 };
 
 /// FEWER GAUSSIANS, AND EVERYTHING THEY CARRIED. A stage's ParticleField --

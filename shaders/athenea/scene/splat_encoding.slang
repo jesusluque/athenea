@@ -83,13 +83,16 @@ public static const float kSurfelLogScale = -1.0 / 0.0;
 public float decodeLogScale(float v, uint mode) {
     if (mode == 2) return v / 16.0 - 10.0;         // SPZ byte
     if (mode == 0) return v < -30.0 ? kSurfelLogScale : v;
+    // A negative linear scale is a hard surfel's flat axis, -p (streams').
+    if (v < 0.0) return surfelHardnessLog(-v);
     return v == 0.0 ? kSurfelLogScale : log(max(v, 1e-30));
 }
 
 /// Whether a record's three log scales are a gaussian's (all finite) or a
 /// surfel's (one, and only one, flat axis); the rest within e^+-60.
 public bool scalesValid(float3 ls) {
-    const bool3 flat = ls == float3(kSurfelLogScale);
+    // -infinity, or the logarithm a hard surfel's p rides in (packing's).
+    const bool3 flat = bool3(ls.x <= -1024.0, ls.y <= -1024.0, ls.z <= -1024.0);
     const uint flats = uint(flat.x) + uint(flat.y) + uint(flat.z);
     const float3 kept = select(flat, float3(0.0), ls);
     return flats <= 1u && all(isfinite(kept)) && all(abs(kept) < 60.0);

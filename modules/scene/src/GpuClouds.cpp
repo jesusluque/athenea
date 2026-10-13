@@ -98,6 +98,7 @@ Result<CloudLoader> CloudLoader::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(loader.pointsDecode_, "athenea/scene/points_decode", "pointsDecode"));
     ATHENEA_TRY(make(loader.splatStreams_, "athenea/scene/streams", "splatStreams"));
     ATHENEA_TRY(make(loader.pointStreams_, "athenea/scene/streams", "pointStreams"));
+    ATHENEA_TRY(make(loader.splatHardness_, "athenea/scene/splat_hardness", "splatHardness"));
     ATHENEA_TRY(make(loader.boundsChunks_, "athenea/scene/bounds_chunks", "boundsChunks"));
     ATHENEA_TRY(make(loader.boundsReduce_, "athenea/scene/bounds_reduce", "boundsReduce"));
     ATHENEA_TRY(make(loader.lightLayerPack_, "athenea/scene/light_layers", "lightLayerPack"));
@@ -737,7 +738,7 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kCoatRoughness = 1u << 22, kCoatIor = 1u << 23, kSheenColour = 1u << 24,
                    kSheenRoughness = 1u << 25, kCoatDarkening = 1u << 26, kTransferReflected = 1u << 27,
                    kTransferZonal = 1u << 28,
-                   kSchlickMetal = 1u << 29;
+                   kSchlickMetal = 1u << 29, kHardness = 1u << 30;
 
 }   // namespace
 
@@ -910,6 +911,10 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (haveEmission) {
         note(in.emission, kEmission);
     }
+    const bool haveHardness = !in.hardness.empty() && in.hardness.values() >= n;
+    if (haveHardness) {
+        note(in.hardness, kHardness);
+    }
     for (const LobeArray& a : lobeArrays) {
         if (whole(*a.stream, a.per)) {
             note(*a.stream, a.bit);
@@ -963,6 +968,8 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!normals) return std::move(normals).error();
     auto emission = streamBuffer(haveEmission ? in.emission : FloatStream{}, "splats.stream.emission");
     if (!emission) return std::move(emission).error();
+    auto hardness = streamBuffer(haveHardness ? in.hardness : FloatStream{}, "splats.stream.hardness");
+    if (!hardness) return std::move(hardness).error();
     std::vector<gpu::Buffer> lobeBuffers;
     for (const LobeArray& a : lobeArrays) {
         auto made = streamBuffer(whole(*a.stream, a.per) ? *a.stream : FloatStream{}, a.label);
@@ -1051,6 +1058,17 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 p["lobesBase"].setData(haveLobes ? e.lobes : io::SplatEncoding::kNoField);
                 p["transferFirst"].setData(first);
             });
+            if (haveHardness) {
+                splatHardness_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["records"].setBinding(records->rhi());
+                    cursor["hardness"].setBinding(hardness->rhi());
+                    rhi::ShaderCursor p = cursor["params"];
+                    p["count"].setData(count);
+                    p["first"].setData(first);
+                    p["stride"].setData(e.floatsPerRecord);
+                    p["half"].setData(uint32_t{in.hardness.half ? 1u : 0u});
+                });
+            }
             ATHENEA_TRY(batch.submit(true));
         }
         auto kept = decodeSlice(*records, e, count, written, keep, *splats, first);

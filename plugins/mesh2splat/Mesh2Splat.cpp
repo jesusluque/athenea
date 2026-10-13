@@ -195,8 +195,15 @@ struct Mesh2SplatUniforms {
     /// then its colour alone.
     float    sheenWeight = 0.0F;
     float    sheenColourAlone[3] = {0.0F, 0.0F, 0.0F};
+
+    /// WHERE THE SURFACE STOPS OR FOLDS (m2sHoldEdges): the Edges clip is
+    /// there, and how many of its sizes a gaussian may reach across a hard
+    /// edge of its triangle.
+    uint32_t hasEdges = 0;
+    float    edgeReach = 1.5F;
+    uint32_t edgePad[2] = {0, 0};
 };
-static_assert(sizeof(Mesh2SplatUniforms) == 544, "must match M2sParams exactly");
+static_assert(sizeof(Mesh2SplatUniforms) == 560, "must match M2sParams exactly");
 
 class Mesh2Splat final : public aofx::Effect {
 public:
@@ -244,6 +251,11 @@ public:
         clip("Layer0", "Layer map 0", true);
         clip("Layer1", "Layer map 1", true);
         clip("Layer2", "Layer map 2", true);
+        // Which edges of each triangle are hard -- open, folded, or shared by
+        // more than two -- laid out exactly as the Mesh clip is, the three
+        // bits as a number in each triangle's first entry. A gaussian reaches
+        // across a hard edge no further than `edgeReach` of its size.
+        clip("Edges", "Hard edges", true);
 
         aofx::ParamDesc opacityChannel;
         opacityChannel.name = "opacityChannel";
@@ -434,6 +446,19 @@ public:
         spread.hardMin = {0.0};
         spread.hardMax = {4.0};
         into.params.push_back(spread);
+
+        aofx::ParamDesc reach;
+        reach.name = "edgeReach";
+        reach.label = "Edge reach";
+        reach.hint =
+            "With the Edges clip: a gaussian's size square to a hard edge of its triangle is held to "
+            "its distance from that edge over this, so a part narrower than a cell -- a flange folded "
+            "into a panel gap -- does not stand out over the surface beside it. 0 holds nothing.";
+        reach.type = aofx::ParamType::Double;
+        reach.defaults = {1.5};
+        reach.hardMin = {0.0};
+        reach.hardMax = {8.0};
+        into.params.push_back(reach);
 
         aofx::ParamDesc curved;
         curved.name = "writeCurvature";
@@ -958,6 +983,10 @@ public:
         const auto byUv2 = [&](const char* name) {
             return withUv2 && request.number(name, 0.0) >= 0.5 ? 1U : 0U;
         };
+        const aofx::InputPlane* hardEdges = request.input("Edges");
+        const bool withEdges = hardEdges != nullptr && hardEdges->buffer.isValid();
+        uniforms.hasEdges = withEdges ? 1U : 0U;
+        uniforms.edgeReach = static_cast<float>(std::clamp(request.number("edgeReach", 1.5), 0.0, 8.0));
         uniforms.albedoUv2 = byUv2("albedoUv2");
         uniforms.normalUv2 = byUv2("normalUv2");
         uniforms.mrUv2 = byUv2("mrUv2");
@@ -1018,7 +1047,8 @@ public:
             withUv2 ? uv2->buffer : meshPlane->buffer,
             withHeights ? heights->buffer : meshPlane->buffer,
             uniforms.hasEmission != 0 ? emitted->buffer : meshPlane->buffer,
-            layerBuffer(0), layerBuffer(1), layerBuffer(2)};
+            layerBuffer(0), layerBuffer(1), layerBuffer(2),
+            withEdges ? hardEdges->buffer : meshPlane->buffer};
         // Count, then settle where each triangle's gaussians start, then
         // write. The order of the output is the mesh's own, which is what
         // lets a gaussian be followed from one frame to the next.

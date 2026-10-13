@@ -5,6 +5,7 @@
 #include "athenea/usd/Export.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
@@ -13,14 +14,18 @@
 #include <vector>
 
 #include "athenea/gpu/Buffer.h"
+#include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/lod/Lod.h"
+#include "athenea/render/Camera.h"
+#include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
 
 #include <pxr/base/gf/camera.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/metrics.h>
 
 namespace athenea::usd {
 
@@ -142,6 +147,16 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             }
             keyed = true;
         }
+        // A LAMP'S LIGHT KEEPS ITS PLACE: no merge between what a lamp group
+        // lights and what it lights four times less, so that a merged disc
+        // does not spread one member's headlight over the rest at night.
+        if (o.lightBands && a.name.find("athenea:splat:lightLayer:") != std::string::npos && a.width == 3 &&
+            !a.integer) {
+            if (auto added = decimator->addKey(keys, records, values, 3, lod::AttributeMerge::LightBand); !added) {
+                return std::move(added).error();
+            }
+            keyed = true;
+        }
         for (const auto& [tail, component] : {std::pair{"athenea:splat:metallic", 0u},
                                               std::pair{"athenea:splat:roughness", 1u},
                                               std::pair{"athenea:splat:transmission", 2u}}) {
@@ -182,11 +197,153 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
             return Error(ErrorCode::InvalidArgument, "decimate: no camera at " + o.camera);
         }
     }
+    // A CLOUD PRUNED BY WHAT THE FRAMES SAY, before anything merges: the
+    // store drawn from an orbit round its bounds, the rasteriser counting
+    // what each gaussian gave every frame (lod_prune.slang says the rest).
+    std::optional<lod::LodCloud> pruned;
+    if (o.dropHidden || o.pruneError > 1.0F) {
+        auto rasterizer = render::TileRasterizer::create(library);
+        if (!rasterizer) return std::move(rasterizer).error();
+        bool zUp = false;
+        if (usd) {
+            const pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(input.string());
+            zUp = stage && pxr::UsdGeomGetStageUpAxis(stage) == pxr::UsdGeomTokens->z;
+        }
+        const auto& b = cloud->bounds;
+        const render::Vec3 centre{0.5 * (b.min[0] + b.max[0]), 0.5 * (b.min[1] + b.max[1]),
+                                  0.5 * (b.min[2] + b.max[2])};
+        const double radius = 0.5 * std::sqrt(double(b.max[0] - b.min[0]) * (b.max[0] - b.min[0]) +
+                                               double(b.max[1] - b.min[1]) * (b.max[1] - b.min[1]) +
+                                               double(b.max[2] - b.min[2]) * (b.max[2] - b.min[2]));
+        // Directions over the sphere (a Fibonacci spiral), the elevation over
+        // the horizon of the stage's up axis held at or above `hiddenBelow`,
+        // each seen from three distances, 90 degrees across.
+        const auto cameras = [&](uint32_t views) {
+            std::vector<render::Camera> made;
+            const double lowest = std::sin(std::clamp(double(o.hiddenBelow), -90.0, 89.0) * M_PI / 180.0);
+            const double golden = M_PI * (3.0 - std::sqrt(5.0));
+            for (uint32_t k = 0; k < views; ++k) {
+                const double up = lowest + (1.0 - lowest) * (k + 0.5) / views;   // sin(elevation)
+                const double ring = std::sqrt(std::max(0.0, 1.0 - up * up));
+                const double az = golden * k;
+                const render::Vec3 dir = zUp ? render::Vec3{ring * std::cos(az), ring * std::sin(az), up}
+                                             : render::Vec3{ring * std::cos(az), up, ring * std::sin(az)};
+                const render::Vec3 upVec = std::abs(up) > 0.99 ? render::Vec3{1.0, 0.0, 0.0}
+                                           : zUp               ? render::Vec3{0.0, 0.0, 1.0}
+                                                               : render::Vec3{0.0, 1.0, 0.0};
+                for (const double shell : {2.5, 1.6, 1.15}) {
+                    render::Camera camera = render::Camera::lookingAt(centre + dir * (radius * shell), centre, upVec);
+                    camera.lens.focal = 12.0;
+                    camera.lens.haperture = 24.0;
+                    camera.lens.vaperture = 24.0;
+                    camera.lens.nearZ = std::max(1e-4, radius * 1e-3);
+                    camera.lens.farZ = radius * 10.0;
+                    made.push_back(camera);
+                }
+            }
+            return made;
+        };
+        const auto made = [&](uint64_t count, const char* label) {
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<uint64_t>(count, 1) * 4;
+            desc.elementBytes = 4;
+            desc.label = label;
+            return gpu::Buffer::create(device, desc, nullptr);
+        };
+        // Every store splat's score over the orbit: mode 1 the weight it
+        // blended with, in pixels; mode 2 the squared error its removal would
+        // leave, each frame first drawn whole to know what is behind it.
+        const auto scored = [&](const lod::LodCloud& from, uint32_t mode, uint32_t views,
+                                uint32_t size) -> Result<gpu::Buffer> {
+            const uint32_t n = from.count;
+            auto frameCount = made(uint64_t{n} * 2, "decimate.frameCount");
+            auto score = made(n, "decimate.score");
+            auto whole = made(uint64_t{size} * size * 4, "decimate.whole");
+            if (!frameCount || !score || !whole) return Error(ErrorCode::OutOfMemory, "decimate: the score");
+            {
+                gpu::CommandBatch clear(device);
+                clear.encoder()->clearBuffer(frameCount->rhi(), 0, uint64_t{std::max(n, 1u)} * 8);
+                clear.encoder()->clearBuffer(score->rhi(), 0, uint64_t{std::max(n, 1u)} * 4);
+                clear.markDirty();
+                ATHENEA_TRY(clear.submit(true));
+            }
+            const render::SplatInstance instance{&from.splats, render::Mat4::identity(), {}};
+            render::RenderSettings draw;
+            draw.width = size;
+            draw.height = size;
+            render::RenderTargets targets;
+            for (const render::Camera& camera : cameras(views)) {
+                if (mode == 2u) {
+                    draw.contribution = nullptr;
+                    auto frame = rasterizer->render(camera, std::span(&instance, 1), draw, targets);
+                    if (!frame) return std::move(frame).error();
+                    gpu::CommandBatch copy(device);
+                    copy.encoder()->copyBuffer(whole->rhi(), 0, targets.colour.rhi(), 0, uint64_t{size} * size * 16);
+                    copy.markDirty();
+                    ATHENEA_TRY(copy.submit(true));
+                }
+                draw.contribution = &*frameCount;
+                draw.contributionMode = mode;
+                draw.finalColour = mode == 2u ? &*whole : nullptr;
+                auto frame = rasterizer->render(camera, std::span(&instance, 1), draw, targets);
+                if (!frame) return std::move(frame).error();
+                ATHENEA_TRY(decimator->foldScore(*frameCount, *score, n,
+                                                 mode == 2u ? 1.0F / 16777216.0F : 1.0F / 4096.0F, mode == 2u));
+            }
+            return std::move(*score);
+        };
+        const lod::LodCloud* current = &*lod;
+        if (o.dropHidden) {
+            auto score = scored(*current, 1u, o.hiddenViews, o.hiddenSize);
+            if (!score) return std::move(score).error();
+            auto kept = decimator->prune(*current, *score, o.hiddenPixels);
+            if (!kept) return std::move(kept).error();
+            std::printf("decimate: %u gaussians seen from %u views of %u (%.1f%% left out as hidden)\n", kept->count,
+                        o.hiddenViews * 3, current->count,
+                        100.0 * (1.0 - double(kept->count) / std::max(current->count, 1u)));
+            pruned = std::move(*kept);
+            current = &*pruned;
+        }
+        if (o.pruneError > 1.0F) {
+            // REMOVED BY THE ERROR IT LEAVES, in rounds: each round scores
+            // what is left and drops the cheapest, so the count falls
+            // geometrically to the target -- one round's removals change
+            // what the next one's cost (GaussianPOP re-scores for that).
+            const uint32_t start = current->count;
+            const uint32_t target = std::max(1u, static_cast<uint32_t>(std::ceil(start / o.pruneError)));
+            const uint32_t rounds = std::max(o.pruneRounds, 1u);
+            for (uint32_t r = 1; r <= rounds && current->count > target; ++r) {
+                const uint32_t goal = std::max(
+                    target, static_cast<uint32_t>(std::lround(start * std::pow(double(target) / start, double(r) / rounds))));
+                auto score = scored(*current, 2u, o.pruneViews, o.pruneSize);
+                if (!score) return std::move(score).error();
+                auto bins = decimator->scoreHistogram(*score, current->count);
+                if (!bins) return std::move(bins).error();
+                const uint64_t drop = current->count - goal;
+                uint64_t sum = 0;
+                float threshold = 0.0F;
+                for (uint32_t k = 0; k < lod::Decimator::kScoreBins; ++k) {
+                    sum += (*bins)[k];
+                    if (sum >= drop) {
+                        threshold = lod::Decimator::scoreOfBin(k + 1);
+                        break;
+                    }
+                }
+                auto kept = decimator->prune(*current, *score, threshold);
+                if (!kept) return std::move(kept).error();
+                std::printf("decimate: error round %u: %u gaussians of %u (threshold %.3g)\n", r, kept->count,
+                            current->count, threshold);
+                pruned = std::move(*kept);
+                current = &*pruned;
+            }
+        }
+    }
+    const lod::LodCloud& store = pruned ? *pruned : *lod;
     lod::DecimateResult treeResult;
     const bool tree = o.pairs && !o.treeOutput.empty();
-    auto decimated = o.pairs ? decimator->decimatePairs(*lod, cloud->origin, pairSettings, carried, &stats,
+    auto decimated = o.pairs ? decimator->decimatePairs(store, cloud->origin, pairSettings, carried, &stats,
                                                         tree ? &treeResult : nullptr)
-                             : decimator->decimate(*lod, cloud->origin, settings, carried, &stats);
+                             : decimator->decimate(store, cloud->origin, settings, carried, &stats);
     if (!decimated) return std::move(decimated).error();
     const std::vector<GaussianArray> source = arrays;
 
@@ -215,7 +372,7 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
                     if (!made) return std::move(made).error();
                     weights = std::move(*made);
                 }
-                auto m = decimator->mergeAttribute(*lod, result, values, a.width, plan.how,
+                auto m = decimator->mergeAttribute(store, result, values, a.width, plan.how,
                                                    weights ? &*weights : nullptr);
                 if (!m) return std::move(m).error();
                 auto back = m->first.readAll<uint32_t>(device);
@@ -270,6 +427,12 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
     if (o.pairs && decimated->coverage.valid()) {
         // What each merge covers, beside the opacity held at 0.99.
         auto a = floats(decimated->coverage, decimated->cloud.count, "primvars:athenea:splat:coverage", "float[]");
+        if (!a) return std::move(a).error();
+        added.push_back(std::move(*a));
+    }
+    if (o.pairs && o.pairSettings.hardness && decimated->hardness.valid()) {
+        // How hard each merge's edge is (packing's hard surfel; 2 a gaussian).
+        auto a = floats(decimated->hardness, decimated->cloud.count, "primvars:athenea:splat:hardness", "float[]");
         if (!a) return std::move(a).error();
         added.push_back(std::move(*a));
     }

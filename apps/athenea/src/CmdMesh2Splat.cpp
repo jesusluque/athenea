@@ -179,6 +179,10 @@ struct Options {
     /// gaussian a cell), up to 2^simplifyLevels cells a side.
     double                   simplify = 0.0;
     uint32_t                 simplifyLevels = 3;
+    /// NO FURTHER THAN THE SURFACE GOES: a gaussian's size square to a hard
+    /// edge of its triangle (open, or folded past kCreaseDegrees) is held to
+    /// its distance from it over this (the effect's `edgeReach`; 0: not held).
+    double                   edgeReach = 1.5;
     bool                     addCamera = true;
     /// Bake the path tracer's answer into the gaussians (the default), or
     /// carry the material and be relit.
@@ -338,6 +342,10 @@ public:
         ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetEdges", sheetEdges_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetRuns", sheetRuns_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetSum", sheetSum_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeKeys", edgeKeys_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeRuns", edgeRuns_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeWrite", edgeWrite_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeCopy", edgeCopy_));
         auto sort = gpu::RadixSort::create(*library_);
         if (!sort) return std::move(sort).error();
         sort_ = std::move(*sort);
@@ -550,6 +558,166 @@ public:
     [[nodiscard]] bool thinGlassOf(size_t p) const {
         return thinGlass(*pieces_[p].material) ||
                (p < sheet_.size() && sheet_[p] && pieces_[p].material->transmission > 0.0F);
+    }
+
+    /// WHERE EACH SURFACE STOPS OR FOLDS (`mesh2splat_edges`): a mesh at a
+    /// time, its pieces' edges and corners keyed by where their points stand
+    /// and sorted; each hard edge -- open, folded past kCreaseDegrees, or
+    /// shared by more than two -- is a bit of its own triangle and a line
+    /// told to the triangles at its ends. Over the whole mesh, so a boundary
+    /// between two of its materials on one smooth surface is not an edge.
+    /// Each piece's are kept six entries a triangle in a buffer of its own
+    /// (`edgeClip` makes its Edges clip when it is converted). Nothing
+    /// crosses back.
+    [[nodiscard]] Result<void> markEdges() {
+        edges_.assign(pieces_.size(), gpu::Buffer{});
+        if (!(options_->edgeReach > 0.0)) {
+            return ok();
+        }
+        gpu::Device& device = library_->device();
+        static constexpr float kCreaseDegrees = 40.0F;
+        static constexpr uint32_t kEdgeLines = 5;   // mesh2splat_edges' kLines
+        const float creaseCos = std::cos(kCreaseDegrees * 3.14159265F / 180.0F);
+        size_t first = 0;
+        while (first < pieces_.size()) {
+            const size_t mesh = pieces_[first].mesh;
+            size_t last = first;
+            uint64_t total = 0;
+            while (last < pieces_.size() && pieces_[last].mesh == mesh) {
+                if (last < streams_.size() && streams_[last]) {
+                    total += pieces_[last].triangles;
+                }
+                ++last;
+            }
+            if (total == 0 || total * 3 > 0xFFFFFFF0ull / 4) {
+                first = last;
+                continue;
+            }
+            const uint32_t triangles = static_cast<uint32_t>(total);
+            const uint32_t edges = triangles * 3;
+            const auto words = [&](uint64_t n, uint32_t element, const char* label) {
+                gpu::BufferDesc desc;
+                desc.bytes = std::max<uint64_t>(n, 1) * element;
+                desc.elementBytes = element;
+                desc.label = label;
+                return gpu::Buffer::create(device, desc);
+            };
+            gpu::SortBuffers buffers;
+            auto lo = words(edges, 4, "mesh2splat.edgeKeysLo");
+            auto hi = words(edges, 4, "mesh2splat.edgeKeysHi");
+            auto values = words(edges, 4, "mesh2splat.edgeValues");
+            auto scratchLo = words(edges, 4, "mesh2splat.edgeScratchLo");
+            auto scratchHi = words(edges, 4, "mesh2splat.edgeScratchHi");
+            auto scratchValues = words(edges, 4, "mesh2splat.edgeScratchValues");
+            gpu::SortBuffers corners;
+            auto cornerKeys = words(edges, 4, "mesh2splat.cornerKeys");
+            auto cornerValues = words(edges, 4, "mesh2splat.cornerValues");
+            auto cornerScratch = words(edges, 4, "mesh2splat.cornerScratch");
+            auto cornerScratchValues = words(edges, 4, "mesh2splat.cornerScratchValues");
+            auto points = words(edges, 16, "mesh2splat.edgePoints");
+            auto flags = words(triangles, 4, "mesh2splat.edgeFlags");
+            auto lineCount = words(triangles, 4, "mesh2splat.edgeLineCount");
+            auto lines = words(uint64_t{triangles} * kEdgeLines, 16, "mesh2splat.edgeLines");
+            if (!lo || !hi || !values || !scratchLo || !scratchHi || !scratchValues || !cornerKeys ||
+                !cornerValues || !cornerScratch || !cornerScratchValues || !points || !flags || !lineCount ||
+                !lines) {
+                return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot mark a mesh's edges");
+            }
+            buffers.keysLo = *lo;
+            buffers.keysHi = *hi;
+            buffers.values = *values;
+            buffers.scratchKeysLo = *scratchLo;
+            buffers.scratchKeysHi = *scratchHi;
+            buffers.scratchValues = *scratchValues;
+            corners.keysLo = *cornerKeys;
+            corners.values = *cornerValues;
+            corners.scratchKeysLo = *cornerScratch;
+            corners.scratchValues = *cornerScratchValues;
+            struct Held {
+                size_t      piece;
+                uint32_t    first;
+                gpu::Buffer picture;
+            };
+            std::vector<Held> held;
+            uint32_t offset = 0;
+            for (size_t p = first; p < last; ++p) {
+                if (p >= streams_.size() || !streams_[p] || pieces_[p].triangles == 0) {
+                    continue;
+                }
+                auto data = words(uint64_t{pieces_[p].triangles} * 6, 16, "mesh2splat.edges");
+                if (!data) return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot keep a piece's edges");
+                edges_[p] = std::move(*data);
+                auto in = viewOf(*context_, streams_[p], "mesh2splat.edgePicture");
+                if (!in) return std::move(in).error();
+                held.push_back({p, offset, std::move(*in)});
+                offset += pieces_[p].triangles;
+            }
+            const auto bind = [&](rhi::ShaderCursor cursor, const Held& h) {
+                cursor["picture"].setBinding(h.picture.rhi());
+                cursor["edgeData"].setBinding(edges_[h.piece].rhi());
+                cursor["edgePicture"].setBinding(edges_[h.piece].rhi());
+                cursor["keysLo"].setBinding(buffers.keysLo.rhi());
+                cursor["keysHi"].setBinding(buffers.keysHi.rhi());
+                cursor["values"].setBinding(buffers.values.rhi());
+                cursor["cornerKeys"].setBinding(corners.keysLo.rhi());
+                cursor["cornerValues"].setBinding(corners.values.rhi());
+                cursor["points"].setBinding(points->rhi());
+                cursor["flags"].setBinding(flags->rhi());
+                cursor["lineCount"].setBinding(lineCount->rhi());
+                cursor["lines"].setBinding(lines->rhi());
+                cursor["edge"]["triangles"].setData(pieces_[h.piece].triangles);
+                cursor["edge"]["first"].setData(h.first);
+                cursor["edge"]["count"].setData(edges);
+                cursor["edge"]["width"].setData(static_cast<uint32_t>(streams_[h.piece]->bounds().width()));
+                cursor["edge"]["stride"].setData(static_cast<uint32_t>(streams_[h.piece]->stride()));
+                cursor["edge"]["creaseCos"].setData(creaseCos);
+            };
+            {
+                gpu::CommandBatch batch(device);
+                for (const Held& h : held) {
+                    edgeKeys_.dispatch(batch, {pieces_[h.piece].triangles, 1, 1},
+                                       [&](rhi::ShaderCursor cursor) { bind(cursor, h); });
+                }
+                ATHENEA_TRY(sort_.sort(batch, buffers, edges, 64));
+                ATHENEA_TRY(sort_.sort(batch, corners, edges, 32));
+                edgeRuns_.dispatch(batch, {edges, 1, 1},
+                                   [&](rhi::ShaderCursor cursor) { bind(cursor, held.front()); });
+                for (const Held& h : held) {
+                    edgeWrite_.dispatch(batch, {pieces_[h.piece].triangles, 1, 1},
+                                        [&](rhi::ShaderCursor cursor) { bind(cursor, h); });
+                }
+                ATHENEA_TRY(batch.submit(true));
+            }
+            first = last;
+        }
+        return ok();
+    }
+
+    /// Piece `p`'s Edges clip, made from what markEdges kept just before the
+    /// piece is converted: the pictures come from the device's image pool,
+    /// which would not hold the whole stage's at once beside its meshes (the
+    /// Corvette's 4.3 million triangles want 412 MB of them). None where no
+    /// edge is held.
+    [[nodiscard]] Result<image::ImagePtr> edgeClip(size_t p) {
+        if (p >= edges_.size() || !edges_[p].valid() || !streams_[p]) {
+            return image::ImagePtr{};
+        }
+        gpu::Device& device = library_->device();
+        auto picture = image::Image::create(pictureFor(uint64_t{pieces_[p].triangles} * 6));
+        if (!picture) return std::move(picture).error();
+        auto view = viewOf(*context_, *picture, "mesh2splat.edges");
+        if (!view) return std::move(view).error();
+        gpu::CommandBatch batch(device);
+        edgeCopy_.dispatch(batch, {pieces_[p].triangles * 6, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["edgeData"].setBinding(edges_[p].rhi());
+            cursor["edgePicture"].setBinding(view->rhi());
+            cursor["edge"]["triangles"].setData(pieces_[p].triangles);
+            cursor["edge"]["width"].setData(static_cast<uint32_t>((*picture)->bounds().width()));
+            cursor["edge"]["stride"].setData(static_cast<uint32_t>((*picture)->stride()));
+        });
+        ATHENEA_TRY(batch.submit(true));
+        (*picture)->deviceWrote();
+        return *picture;
     }
 
     /// Every piece's triangles into a picture of its own, and the model's box
@@ -1055,6 +1223,8 @@ public:
         ATHENEA_TRY(deriveCells());
         // Which glass is a sheet or a slab, now that the cell is known.
         ATHENEA_TRY(classifySheets());
+        // Where each surface stops or folds.
+        ATHENEA_TRY(markEdges());
         if (perMesh_ && !camera_) {
             std::printf("mesh2splat: density per mesh: %u cells across each mesh's longest side, the cell "
                         "held between %.4g and %.4g (the model's is %.4g)\n",
@@ -1460,6 +1630,9 @@ private:
         if (cutMap) job.inputs.push_back({"Opacity", cutMap});
         if (carried) job.inputs.push_back({"Influences", skins_[at]});
         if (uv2s_[at]) job.inputs.push_back({"Texcoord2", uv2s_[at]});
+        auto edgePicture = edgeClip(at);
+        if (!edgePicture) return std::move(edgePicture).error();
+        if (*edgePicture) job.inputs.push_back({"Edges", *edgePicture});
         if (heightMap) job.inputs.push_back({"Displacement", heightMap});
         if (emissionMap) job.inputs.push_back({"Emission", emissionMap});
         // The maps on the layers, Layer0..2, each for the input it stands for.
@@ -1510,6 +1683,7 @@ private:
         number("normalSpread", options_->specularFilter >= 0.0 ? options_->specularFilter
                                                                : (options_->transfer ? 1.0 : 0.0));
         number("simplify", options_->simplify);
+        number("edgeReach", options_->edgeReach);
         number("simplifyLevels", static_cast<double>(options_->simplifyLevels));
         if (cutMap) {
             const char channel = material.opacityMap.channel;
@@ -1937,6 +2111,9 @@ private:
     gpu::PrefixSum                           prefix_;
     gpu::RadixSort                           sort_;
     gpu::ComputeKernel                       sheetEdges_, sheetRuns_, sheetSum_;
+    gpu::ComputeKernel                       edgeKeys_, edgeRuns_, edgeWrite_, edgeCopy_;
+    /// Each piece's hard edges, six entries a triangle (markEdges, edgeClip).
+    std::vector<gpu::Buffer>                 edges_;
     /// A piece each: its glass is a sheet by its mesh (`classifySheets`).
     std::vector<bool>                        sheet_;
     std::vector<Piece>                       pieces_;
@@ -2696,6 +2873,10 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--no-textures", o->noTextures, "ignore the maps; materials keep their constant values");
     cmd->add_flag("--normal-map-turns", o->normalMapTurns,
                   "orient each gaussian by the normal map rather than the surface");
+    cmd->add_option("--edge-reach", o->edgeReach,
+                    "how far a gaussian may reach across an edge where its surface stops or folds, in its "
+                    "sizes: held to its distance from the edge over this (0: not held)")
+        ->check(CLI::Range(0.0, 8.0));
     cmd->add_flag("--no-displacement", o->noDisplacement,
                   "ignore the materials' displacement: every gaussian stands on the flat mesh");
     cmd->add_option("--displace-refine", o->displaceRefine,

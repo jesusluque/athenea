@@ -227,6 +227,19 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--tree` | path | — | `--ratio`: the whole merge tree written here as well: the leaves in depth-first order, then every merge, with `primvars:athenea:splat:lodParent`, `lodCost`, `lodStart` and `lodSize` (its run of leaves) and the constant `lodTree` |
 | `--camera` | prim path | `/World/Camera` where there is one | `--ratio`: the camera the cloud is made for; a merge under half a pixel there costs nothing of its shape |
 | `--camera-pixels` | 1..65536 | `1920` | `--ratio`: pixels across that camera's image |
+| `--max-cost` | > 0 | `0` (off) | `--ratio`: no merge costs more than this; `--ratio` is then the most it goes to, and where every pair left costs more it stops short of it (on the Corvette's pieces 0.25 left a door 6x, a grille 2x) |
+| `--max-pixels` | > 0 | `0` (off) | `--ratio`: no merge wider than this many pixels on `--camera`'s screen: one that wide cannot hold an edge, and its tails stand out past the panel as hairs. On the Corvette (baked a gaussian a pixel of its camera) 3 left 2.14M of the 2.90M seen, 46 dB from the full cloud and no hairs; with none, the 1.07M of 5x had them |
+| `--merge-opacity` | `mean`, `mass`, `mass-tight`, `falloff` | `mean` | `--ratio`: a merge's opacity: its members', area weighted, the merge widened as far as they overlapped; or its mass over that widened area; or its mass over the area its moments give, not widened; or that mass unheld up to 5 -- Spark's harder kernel, where an opacity D over 1 draws as 1 - (1 - g)^A, A = exp((D² - 1)/e), a flat top as solid as the members were. Measured on the Corvette's pieces: `mass` is `mean` on opaque surfaces, `mass-tight` leaves gaps; on the whole car, see `--hardness` |
+| `--hardness` | flag | off | `--ratio`: a merge written as a surfel is drawn exp(-(\|u\|^p + \|v\|^p)/2) in its own axes, p from its members' kurtosis (an even patch a box, a peaked one the gaussian), written as `primvars:athenea:splat:hardness`; it keeps its moments, unwidened, so a reader that knows no p draws the gaussian they give. With `--merge-opacity falloff --max-pixels 4` the Corvette came out 1.85M of 5.38M with no hairs, 42.8 / 44.7 / 46.7 dB (day front, day rear, night), where gaussian merges needed 3 px and 2.14M; at 5 px (1.24M) the front bumper frays |
+| `--max-hardness` | 2 to 32 | `16` | `--hardness`: the largest p |
+| `--no-light-bands` | flag | off | `--ratio`: merge across a lamp group's light changing fourfold (`primvars:athenea:splat:lightLayer:<group>`); off, a lit and an unlit gaussian are kept apart, so a merged disc does not spread a headlight at night |
+| `--drop-hidden` | flag | off | first leave out what no camera round the cloud sees: the cloud drawn by raster from `--hidden-views` directions, each at 2.5, 1.6 and 1.15 times its bounding sphere's radius, 90 degrees across, and a gaussian that gave all of them together less than `--hidden-pixels` of a pixel dropped. With no `--ratio`, only that |
+| `--hidden-views` | 1.. | `256` | `--drop-hidden`: directions, a Fibonacci spiral over the sphere |
+| `--hidden-size` | 16.. | `1024` | `--drop-hidden`: pixels across each view, square |
+| `--hidden-pixels` | >= 0 | `0.02` | `--drop-hidden`: what a gaussian must give all the views together to stay, in pixels (transmittance times alpha over its pixels) |
+| `--hidden-below` | degrees, -90..89 | `-90` (all round) | `--drop-hidden`: the lowest elevation a view is taken from, over the stage's horizon; `-10` for a car on a road, never seen from under it |
+| `--prune-error` | > 1 | off | first this many times fewer by removing, in `--prune-rounds` rounds, what leaves the least squared error in an orbit of `--prune-views` directions at `--prune-size` pixels (GaussianPOP's score). Measured on the Corvette's pieces: holes on every opaque surface, worse than merging everywhere but on a badge; kept for clouds that are not surfaces |
+| `--prune-rounds`, `--prune-views`, `--prune-size` | 1.., 1.., 16.. | `8`, `64`, `512` | `--prune-error`'s rounds, directions and pixels |
 
 **By pairs** (`--ratio`). Each pass, every gaussian -- or merge so far -- weighs
 a merge with its 16 neighbours along two Morton orders of the centres, and
@@ -242,7 +255,11 @@ a mirror (roughness under 0.1) with what is not, normals past `--max-angle`, a
 colour past `--edge`. A merge of discs flat to within 0.12 of its width is
 written a surfel (one scale exactly 0, `primvars:athenea:splat:surfel`); its
 opacity is its mass over its area held at 0.99, and the mass over the area
-unheld is written as `primvars:athenea:splat:coverage`. Every array merges
+unheld is written as `primvars:athenea:splat:coverage`. With `--hardness`, such
+a surfel's p is written as `primvars:athenea:splat:hardness` (2 a gaussian),
+and with `--merge-opacity falloff` its opacity may exceed 1 (up to 5): Spark's
+own harder kernel, which this raster draws as Spark does and any other reader
+clamps to 1. Every array merges
 over the records a kept gaussian stands for, as below; `transferZonal` and
 `curvature`, which are in each gaussian's own frame, through each one's frame
 to the world and into the kept one's.
@@ -273,6 +290,7 @@ file is written as a new stage, as `athenea convert` writes one, in metres.
 athenea decimate car_gs.usdc car_fewer.usdc
 athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 athenea decimate car_tx.usdc car_tx_10x.usdc --ratio 10
+athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 --ratio 2.7
 ```
 
 ### 2.5 `athenea stage` — a USD stage through the Hydra delegate
@@ -423,6 +441,7 @@ recipe is §3.1 below.
 | `--texture-size` | integer | `1024` | a map is read no larger than this; 0 reads it at its own size |
 | `--no-textures` | flag | off | ignore the maps; materials keep their constant values |
 | `--normal-map-turns` | flag | off | the normal map turns the gaussian, not only its shading. The shading normal is written either way (`primvars:athenea:splat:normal`) |
+| `--edge-reach` | number, 0 to 8 | `1.5` | how far a gaussian may reach across an edge where its surface stops (an open edge) or folds (two triangles turning by more than 40°), in its own sizes: its size square to that edge is held to its distance from it over this. Keeps a flange folded into a panel gap from standing out over the paint as a dark line, and paint from reaching over into the gap. `0` holds nothing |
 | `--no-displacement` | flag | off | ignore the materials' displacement: every gaussian stands on the flat mesh |
 | `--displace-refine` | integer, 1 to 64 | `8` | where the relief stretches a cell, split it into at most this many gaussians along each of its two axes |
 | `--simplify` | number, 0 to 1 | `0` (off) | a block of cells whose colour, metallic, roughness, emission, cut-out and normals move by no more than this -- over the block and a block past each side, all inside one triangle -- becomes one gaussian of its size. Colours and cut-out are 0 to 1; emission is compared in its own units, so a bright one merges less; normals are compared as the length of their difference, about the angle in radians |
@@ -1245,6 +1264,7 @@ showing the radiance it carries.
 | `primvars:athenea:splat:linear` | bool | `false` |
 | `primvars:athenea:splat:surfel` | bool | `false` |
 | `primvars:athenea:splat:coverage` | float[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:hardness` | float[] ‹1 a gaussian›, 2 to 32 | — (2) |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |

@@ -70,6 +70,8 @@ struct ParticleFieldArrays {
     /// (`primvars:athenea:splat:emission`), linear. Empty for a capture and
     /// for a conversion of materials that emit nothing.
     pxr::VtValue emission;         ///< VtVec3fArray or VtVec3hArray, one a gaussian
+    /// A hard surfel's p (`primvars:athenea:splat:hardness`), one a gaussian.
+    pxr::VtValue hardness;         ///< VtFloatArray or VtHalfArray
     /// What the material layered over its base (`primvars:athenea:splat:
     /// specularWeight`, `:specularColor`, `:specularIor`, `:coatWeight`,
     /// `:coatRoughness`, `:coatIor`, `:sheenColor`, `:sheenRoughness`), one

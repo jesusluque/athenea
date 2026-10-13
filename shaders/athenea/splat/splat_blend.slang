@@ -32,6 +32,17 @@ StructuredBuffer<float>     underDepth;
 // frame keeps a matte or not: a name a shader declares must be bound.
 StructuredBuffer<uint>      cryptoIds;
 StructuredBuffer<uint>      underCrypto;
+// WHAT EACH SPLAT GAVE THE FRAME, where params.contributionMode asks for it,
+// summed over its pixels at its slot: the weight it blended with
+// (transmittance times alpha) in 1/4096 of a pixel, or the squared error
+// taking it away would leave, in 2^-24 as two words (low, high) a slot --
+// GaussianPOP's and POTR's score
+// (arXiv 2602.06830, 2601.14821): with C the pixel drawn whole
+// (`finalColour`) and P what the walk holds once this splat is in, what is
+// behind it is (C - P) / T', and the pixel without it changes by w (c - that).
+// Bound whether it is counted or not.
+RWStructuredBuffer<uint>    contribution;
+StructuredBuffer<float4>    finalColour;
 RWStructuredBuffer<float4>  crypto;
 RWStructuredBuffer<float4>  colour;   // width * height, premultiplied, linear
 RWStructuredBuffer<float>   depth;    // width * height
@@ -124,6 +135,8 @@ groupshared ProjRecord sRecords[kBatch];
 /// keeps a disc seen edge on from thinning into aliasing (agreed with
 /// sparkwebGPU, which draws the same files). A ray along the plane meets
 /// nothing but the filter.
+static const float kHardOverlap = 2.0;
+
 float surfelPower(ProjRecord record, float2 pixel, float2 d) {
     const uint4 w = record.surfel;
     const float3 hu = float3(lowHalf(w.x), highHalf(w.x), lowHalf(w.y));
@@ -140,7 +153,15 @@ float surfelPower(ProjRecord record, float2 pixel, float2 d) {
         return filter;
     }
     const float2 at = uv.xy / uv.z;
-    return min(dot(at, at), filter);
+    // A hard surfel (packing's): |u|^p + |v|^p, the gaussian's at p = 2 --
+    // held at 0 out to where it would have fallen to 1 / kHardOverlap, so
+    // that two hard merges side by side overlap where they meet rather than
+    // leaving their seam at 0.85 of a cover (a grid of cracks on the
+    // Corvette's paint, q14).
+    const float p = asfloat(w.w);
+    const float own = p > 2.0 ? max(pow(abs(at.x), p) + pow(abs(at.y), p) - 2.0 * log(kHardOverlap), 0.0)
+                              : dot(at, at);
+    return min(own, filter);
 }
 groupshared uint       sSplats[kBatch];
 // The colour's slope across the footprint, where the record is marked so
@@ -243,11 +264,29 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 done = true;
                 break;
             }
-            const float alpha = min(0.99, abs(conic.w) * exp(-0.5 * power));
+            const float alpha = min(0.99, falloffAlpha(abs(conic.w), exp(-0.5 * power)));
             if (alpha < 1.0 / 255.0) {
                 continue;
             }
             const float weight = transmittance * alpha;
+            if (params.contributionMode == 1u) {
+                InterlockedAdd(contribution[sSplats[j]], uint(weight * 4096.0 + 0.5));
+            } else if (params.contributionMode == 2u) {
+                const float3 c = record.colour.xyz;
+                const float after = transmittance * (1.0 - alpha);
+                const float3 behind = (finalColour[at].rgb - (rgb + weight * c)) / max(after, 1.0e-4);
+                const float3 change = weight * (c - behind);
+                // In 2^-24 (a pixel capped at one), into two words: the low
+                // one's carry into the high one, so that what a splat changes
+                // by a hair in a thousand pixels still counts and what it
+                // changes a lot in a thousand does not wrap round.
+                const uint add = uint(min(dot(change, change), 1.0) * 16777216.0 + 0.5);
+                uint before;
+                InterlockedAdd(contribution[sSplats[j] * 2], add, before);
+                if (before + add < before) {
+                    InterlockedAdd(contribution[sSplats[j] * 2 + 1], 1u);
+                }
+            }
             // A LIGHT CATCHER ADDS: the lamps' light on the ground under it,
             // seen through what is in front, and nothing taken from behind --
             // no coverage, no depth, no matte.

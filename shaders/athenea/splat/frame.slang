@@ -126,6 +126,12 @@ public struct FrameParams {
     // blend leaves out of the matte.
     public uint  cryptoMode;
     public uint  hasUnderCrypto; // 1: `underCrypto` holds the under layer's id a pixel
+    // What the blend adds into `contribution` at each splat's slot, for a
+    // cloud being pruned (`athenea decimate --drop-hidden`, `--prune-error`).
+    // 0: nothing. 1: the weight it blended with (transmittance times alpha),
+    // in 1/4096 of a pixel. 2: the squared error its removal would leave
+    // (`finalColour` is the frame drawn whole), in 2^-24 as two words a slot.
+    public uint  contributionMode;
     // Relighting happens in the world, where the lights are: the cloud to
     // world rows, and the eye there. The colour from the harmonics is still
     // the cloud's own business, which is why the eye above stays as it is.
@@ -259,6 +265,27 @@ public float paidOpacity(float alpha, float paid) {
 /// touched -- which is what keeps tile edges seamless.
 public float cutoffPower(float alpha) {
     return min(2.0 * log(max(255.0 * alpha, 1.0001)), 9.0);
+}
+
+/// SPARK'S HARDER KERNEL, an opacity D over 1 (sparkjs splatFragment.glsl;
+/// docs/decisions.md, kernel hardness): the composite of A = exp((D^2 - 1)/e)
+/// coincident gaussians, 1 - (1 - g)^A -- a flat top as wide as sqrt(2 ln A)
+/// sigmas and the gaussian's shoulder past it. A merge whose members covered
+/// its area D times over draws as solid as they did. D is held to 5, and the
+/// cut widened as Spark widens it, by 0.7 (D - 1) sigma.
+public static const float kFalloffMost = 5.0;
+
+public float falloffCount(float d) {
+    return exp((d * d - 1.0) * 0.36787944);
+}
+
+public float falloffAlpha(float d, float g) {
+    return d > 1.0 ? 1.0 - pow(max(1.0 - g, 0.0), falloffCount(d)) : d * g;
+}
+
+public float falloffCutoff(float d) {
+    const float r = 3.0 + 0.7 * (min(d, kFalloffMost) - 1.0);
+    return min(2.0 * log(255.0 * falloffCount(d)), r * r);
 }
 
 /// Minimum over a box of q(d) = a dx^2 + 2 b dx dy + c dy^2, for d measured

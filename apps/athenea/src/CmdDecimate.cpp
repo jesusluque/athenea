@@ -6,6 +6,7 @@
 #include "Commands.h"
 
 #include <CLI/CLI.hpp>
+#include <algorithm>
 
 #include <cstdio>
 #include <filesystem>
@@ -43,6 +44,21 @@ void addDecimate(CLI::App& app) {
         std::string camera;
         unsigned cameraPixels = 1920;
         std::string tree;
+        bool dropHidden = false;
+        unsigned hiddenViews = 256;
+        unsigned hiddenSize = 1024;
+        float hiddenPixels = 0.02F;
+        float hiddenBelow = -90.0F;
+        std::string mergeOpacity = "mean";
+        float pruneError = 0.0F;
+        float maxCost = 0.0F;
+        float maxPixels = 0.0F;
+        bool noLightBands = false;
+        bool hardness = false;
+        float maxHardness = 16.0F;
+        unsigned pruneRounds = 8;
+        unsigned pruneViews = 64;
+        unsigned pruneSize = 512;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("decimate",
@@ -95,6 +111,36 @@ void addDecimate(CLI::App& app) {
     cmd->add_option("--tree", o->tree,
                     "--ratio: also write the whole merge tree here -- leaves in depth-first order, then every "
                     "merge with its parent and cost -- for a reader that cuts it");
+    cmd->add_flag("--drop-hidden", o->dropHidden,
+                  "first leave out what no camera round the cloud sees (an orbit drawn by raster); with no "
+                  "--ratio, only that");
+    cmd->add_option("--hidden-views", o->hiddenViews, "--drop-hidden: directions, each seen from three distances");
+    cmd->add_option("--hidden-size", o->hiddenSize, "--drop-hidden: pixels across each view (square)");
+    cmd->add_option("--hidden-pixels", o->hiddenPixels,
+                    "--drop-hidden: what a gaussian must give all the views together to stay, in pixels");
+    cmd->add_option("--hidden-below", o->hiddenBelow,
+                    "--drop-hidden: the lowest elevation a view is taken from, degrees over the horizon");
+    cmd->add_option("--max-cost", o->maxCost,
+                    "--ratio: no merge costs more than this; the ratio is then the most it goes to (0: off)");
+    cmd->add_option("--max-pixels", o->maxPixels,
+                    "--ratio: no merge wider than this many pixels on the camera's screen (0: off)");
+    cmd->add_flag("--hardness", o->hardness,
+                  "--ratio: a flat merge's edge as hard as its members' patch is even (a surfel drawn "
+                  "exp(-(|u|^p + |v|^p)/2), p in athenea:splat:hardness)");
+    cmd->add_option("--max-hardness", o->maxHardness, "--hardness: the largest p (2 is the gaussian)");
+    cmd->add_flag("--no-light-bands", o->noLightBands,
+                  "--ratio: merge across a lamp group's light changing fourfold (off: kept apart)");
+    cmd->add_option("--prune-error", o->pruneError,
+                    "first this many times fewer by removing what leaves the least error in an orbit of frames "
+                    "(after --drop-hidden, before --ratio merges)");
+    cmd->add_option("--prune-rounds", o->pruneRounds, "--prune-error: rounds, each scoring what is left");
+    cmd->add_option("--prune-views", o->pruneViews, "--prune-error: directions, each seen from three distances");
+    cmd->add_option("--prune-size", o->pruneSize, "--prune-error: pixels across each view (square)");
+    cmd->add_option("--merge-opacity", o->mergeOpacity,
+                    "--ratio: a merge's opacity: mean (its members', area weighted, widened as they overlapped), "
+                    "mass (its mass over its widened area), mass-tight (the same, not widened) or falloff (its mass over "
+                    "its own area up to 5: Spark's harder kernel where the members overlapped)")
+        ->check(CLI::IsMember({"mean", "mass", "mass-tight", "falloff"}));
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
             cli::fail(error);
@@ -124,6 +170,29 @@ void addDecimate(CLI::App& app) {
         options.camera = o->camera;
         options.cameraPixels = o->cameraPixels;
         options.treeOutput = o->tree;
+        options.dropHidden = o->dropHidden;
+        options.hiddenViews = std::max(o->hiddenViews, 1u);
+        options.hiddenSize = std::max(o->hiddenSize, 16u);
+        options.hiddenPixels = o->hiddenPixels;
+        options.hiddenBelow = o->hiddenBelow;
+        options.pairSettings.opacityRule = o->mergeOpacity == "mass"         ? 1u
+                                           : o->mergeOpacity == "mass-tight" ? 2u
+                                           : o->mergeOpacity == "falloff"    ? 3u
+                                                                             : 0u;
+        options.pruneError = o->pruneError;
+        options.lightBands = !o->noLightBands;
+        options.pairSettings.maxCost = o->maxCost;
+        options.pairSettings.maxPixels = o->maxPixels;
+        options.pairSettings.hardness = o->hardness;
+        options.pairSettings.maxHardness = std::clamp(o->maxHardness, 2.0F, 32.0F);
+        options.pruneRounds = o->pruneRounds;
+        options.pruneViews = std::max(o->pruneViews, 1u);
+        options.pruneSize = std::max(o->pruneSize, 16u);
+        if (!options.pairs && (options.dropHidden || options.pruneError > 1.0F)) {
+            options.pairs = true;   // pruned, then every splat its own cluster: nothing merges
+            options.pairSettings.ratio = 1.0F;
+            options.pairSettings.surfels = false;   // nor does a thin one turn into a disc
+        }
         auto decimated = usd::decimateStage(library, o->input, o->output, options);
         if (!decimated) fail(decimated.error());
         const lod::DecimateStats& stats = *decimated;

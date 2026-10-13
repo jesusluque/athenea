@@ -235,6 +235,18 @@ struct RenderSettings {
     /// small dispatches and a copy; off, nothing is counted.
     bool     countSplats = false;
     uint64_t countersTag = 0;
+    /// WHAT EACH SPLAT GAVE THE FRAME, added in: a uint per slot (the
+    /// instances' splats one after another), the transmittance times alpha
+    /// it blended with summed over its pixels, in 1/4096 of a pixel. Never
+    /// cleared here, so frames from many cameras sum into it -- what `athenea
+    /// decimate --drop-hidden` prunes by. Null: nothing is counted.
+    gpu::Buffer* contribution = nullptr;
+    /// What `contribution` counts: 1 the weight above; 2 the squared error
+    /// taking each splat away would leave in its pixels, in 2^-24 (a pixel
+    /// capped at one) as two uint a slot (low, high), against `finalColour` -- the frame drawn whole from
+    /// the same camera, float4 a pixel as `RenderTargets::colour` holds it.
+    uint32_t           contributionMode = 1;
+    const gpu::Buffer* finalColour = nullptr;
 };
 
 /// WHAT A FRAME OF SPLATS DID, as the device counted it
