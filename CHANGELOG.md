@@ -6,6 +6,39 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
+## 0.3.0 — 2026-10-13
+
+The relight baker over Gaussian splats, and the engine on three systems:
+macOS (Metal), Linux (CUDA) and Windows (CUDA, natively with MSVC). 433 tests.
+
+- **Pieces into main**: the transfer baked per gaussian (TX: a field in each
+  gaussian's frame, zonal lobes for skinned clouds), glass that covers fully
+  under a dome and opens against Fresnel, thin lenses, and the bake's validate
+  stage (`mesh2splat --validate`).
+- **Gaussian reduction** (`simplify`): adaptive emission, pruning by what the
+  frames show, merges kept as a tree with coverage, pages by error and a
+  shared occlusion codebook (`decimate --tree-*`, `--cut-*`,
+  `--occlusion-*`).
+- **A merge's second moment about its own centre** (`b1d6959`): float32 moments
+  about the origin lost the cross variance of thin gaussians, and a tree built
+  again from its leaves drops the old tree's bookkeeping (`3a0a6f8`).
+- **Windows, natively**: MSVC builds the engine, the tests and the plugins
+  (`windows-x64-*` presets, `scripts/*.ps1` for the dependencies); `Platform`
+  maps files, finds its module and replaces files atomically; aopenfx loads
+  bundles with `LoadLibrary`; CUDA is preferred, with OptiX.
+- **CUDA**: a buffer made without data starts at zero; a texture is read
+  through the sampler its view was made with (the sky's poles, the
+  prefilter's levels); a dome's residual is stored as its format; a bake runs
+  on the OptiX pipeline and is refused where there is no ray tracing (WSL2).
+- **A release's layout**: AOFX bundles are found in `aofx/` beside the
+  executable's folder; `athenea info` counts TBB on Windows.
+
+Tests: macOS 422 of 433, Linux 431 of 433, Windows 407 of 430 before the bake
+fix. Failing on every system and before this merge, so not caused by it: the
+zonal transfer's fit and turn (two tests), and on macOS a refit's single
+pixel, many lights as one, and a texture floor's p99. The clock tests fail
+where the machine is loaded.
+
 ## 0.2.0 — 2026-10-03
 
 The day's tasks merged. 354 tests, all passing on Metal (Apple M5 Pro); the
