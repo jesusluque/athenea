@@ -77,7 +77,10 @@ What differs between them, in practice:
 
 - **Ray tracing.** Metal has inline ray queries and acceleration structures
   but no ray-tracing pipelines, so the hardware route that needs a pipeline is
-  unavailable and `athenea info` says so. CUDA has both, given the OptiX headers.
+  unavailable and `athenea info` says so. CUDA has the pipeline (OptiX, given
+  its headers and a driver that loads it) and no ray queries. A bake needs one
+  of the two: where there is neither -- CUDA under WSL2, which does not load
+  OptiX -- `athenea mesh2splat` refuses it with "has no ray tracing".
 - **The denoiser.** On Metal, Open Image Denoise runs on the engine's own
   queue. On Vulkan it runs through CUDA with imported memory.
 - **Half precision.** Reported by `athenea info`; where it is absent the engine

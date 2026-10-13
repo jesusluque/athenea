@@ -564,7 +564,8 @@ set_tests_properties(single_tbb PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     PASS_REGULAR_EXPRESSION "tbb libraries  1 ")
 # A DEVICE WITHOUT RAY TRACING skips what bakes: a bake is paths, the path
-# tracer needs ray queries and acceleration structures, and athenea refuses
+# tracer needs ray queries or a ray tracing pipeline (OptiX) over acceleration
+# structures, and athenea refuses
 # the bake on a device without them (CUDA without OptiX, as in WSL2) saying
 # "has no ray tracing" -- which every test here reads as a skip, beside any
 # skip it already reads.
