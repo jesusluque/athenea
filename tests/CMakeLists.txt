@@ -320,6 +320,7 @@ endforeach()
 add_test(NAME emissive_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[emissive_conversion]")
 set_tests_properties(emissive_conversions_render_like_the_mesh PROPERTIES
+    SKIP_RETURN_CODE 4
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED emissive_clouds
     LABELS gpe)
@@ -364,6 +365,7 @@ set_tests_properties(a_map_on_a_layer_is_sampled_per_gaussian PROPERTIES
 add_test(NAME lobes_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[lobes_conversion]")
 set_tests_properties(lobes_conversions_render_like_the_mesh PROPERTIES
+    SKIP_RETURN_CODE 4
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED lobes_clouds
     LABELS gpe)
@@ -404,7 +406,7 @@ add_test(NAME tx_gate_pawn
 set_tests_properties(tx_gate_pawn PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
-    SKIP_REGULAR_EXPRESSION "is not on this machine"
+    SKIP_REGULAR_EXPRESSION "stage absent"
     LABELS "gpe;tx_gate")
 add_test(NAME tx_gate_corvette
     COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
@@ -415,7 +417,7 @@ add_test(NAME tx_gate_corvette
 set_tests_properties(tx_gate_corvette PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
-    SKIP_REGULAR_EXPRESSION "is not on this machine"
+    SKIP_REGULAR_EXPRESSION "stage absent"
     TIMEOUT 36000
     LABELS "gpe;tx_gate;slow")
 # THE CATCHER'S GATE: the Corvette's shadow caught by gaussians on its ground
@@ -430,7 +432,7 @@ add_test(NAME catcher_gate_corvette
 set_tests_properties(catcher_gate_corvette PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
-    SKIP_REGULAR_EXPRESSION "is not on this machine"
+    SKIP_REGULAR_EXPRESSION "stage absent"
     TIMEOUT 7200
     LABELS "gpe;tx_gate;slow")
 # THE MATERIAL GATE (bench/matx): six MaterialX materials on the shader
@@ -488,6 +490,7 @@ set_tests_properties(mesh2splat_sheet_pane_low PROPERTIES
 add_test(NAME sheet_glass_draws_whole
     COMMAND athenea_usd_tests "[sheet_draw]")
 set_tests_properties(sheet_glass_draws_whole PROPERTIES
+    SKIP_RETURN_CODE 4
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED sheet_low
     LABELS gpe)
@@ -512,6 +515,7 @@ set_tests_properties(mesh2splat_tx_sliced PROPERTIES
 add_test(NAME tx_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[tx_conversion]")
 set_tests_properties(tx_conversions_render_like_the_mesh PROPERTIES
+    SKIP_RETURN_CODE 4
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED tx_clouds
     LABELS gpe)

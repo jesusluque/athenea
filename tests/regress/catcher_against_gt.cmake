@@ -24,12 +24,13 @@
 # shadowing another from a prefiltered dome -- rather than the catcher.
 if(NOT EXISTS "${STAGE}")
     # A skip: exit 77 where cmake has cmake_language(EXIT) (3.29), and
-    # otherwise this message, which the test's SKIP_REGULAR_EXPRESSION reads.
+    # otherwise this message, whose first words the test's SKIP_REGULAR_EXPRESSION
+    # reads (cmake wraps the rest wherever the path makes it long).
     if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
         message("catcher_against_gt: ${STAGE} is not on this machine")
         cmake_language(EXIT 77)
     endif()
-    message(FATAL_ERROR "catcher_against_gt: ${STAGE} is not on this machine")
+    message(FATAL_ERROR "stage absent: catcher_against_gt: ${STAGE} is not on this machine")
 endif()
 if(NOT DEFINED WIDTH)
     set(WIDTH 960)

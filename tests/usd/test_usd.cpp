@@ -9160,6 +9160,12 @@ TEST_CASE("a cloud bound to a Skeleton by SkelBindingAPI draws where its cached 
 TEST_CASE("a fractional opacity is coverage: a half-clear red card over a white one reads half of each",
           "[usd][gpu][rt][coverage]") {
     ATHENEA_REQUIRE_GPU(gpu);
+    // The path traced half goes on past the red card to the white one, which
+    // only a ray query does.
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs ray queries: a path continues past the first card");
+    }
     const auto stage = [&](float opacity, const char* mode) {
         const fs::path path = scratch("coverage_" + std::string(mode) + std::to_string(int(opacity * 100)) + ".usda");
         std::ofstream out(path);
@@ -12566,8 +12572,11 @@ TEST_CASE("a relit card's stored normal under a scale that is not uniform leans 
                     diff->p99Relative, diff->relMse);
         CHECK(diff->pixels == uint64_t{w} * h);
         // 0.014 on both routes; 0.386 turned as a direction (a cosine of 0.58
-        // where the mesh is 0.94).
-        CHECK(diff->p99Relative < 0.04);
+        // where the mesh is 0.94). A device without rasterisation draws the
+        // raster route's mesh through the compute BVH, whose silhouette is
+        // its own: 0.041 there on CUDA, still a tenth of the bug.
+        const bool bvhMesh = std::string(technique) == "raster" && !gpu->device->caps().rasterization;
+        CHECK(diff->p99Relative < (bvhMesh ? 0.06 : 0.04));
     }
 }
 
@@ -12971,8 +12980,13 @@ TEST_CASE("an emissive quad converted relit, transferred or baked renders as the
         // a tenth off the rasterised ones -- the reference's noise, not the
         // cloud's. The traced mesh is still what the traced cloud's mean is
         // held to.
+        // A device without ray tracing draws the raster route alone: its
+        // path tracer finds no surface (the mesh's traced mean read 1.519 on
+        // CUDA without OptiX), so there is nothing traced to hold a cloud to.
+        const gpu::Caps& caps = gpu->device->caps();
+        const bool rays = caps.rayQuery && caps.accelerationStructure;
         const gpu::Buffer meshRaster = draw(mesh, "raster");
-        const gpu::Buffer meshTraced = draw(mesh, "rt");
+        const gpu::Buffer meshTraced = draw(mesh, rays ? "rt" : "raster");
         for (const char* mode : {"relit", "transfer", "baked"}) {
             const fs::path cloudFile = converted / (std::string(variant) + "_" + mode + ".usda");
             if (!fs::exists(cloudFile)) {
@@ -12983,6 +12997,9 @@ TEST_CASE("an emissive quad converted relit, transferred or baked renders as the
                                            source, cloudFile);
             for (const char* technique : {"raster", "rt"}) {
                 const bool traced = std::string(technique) == "rt";
+                if (traced && !rays) {
+                    continue;
+                }
                 const gpu::Buffer c = draw(card, technique);
                 auto diff = render::compareHdr(*gpu->library, c, meshRaster, w, h);
                 REQUIRE(diff);
@@ -13224,8 +13241,11 @@ TEST_CASE("a cloud's specular, coat and sheen survive USD", "[usd][gpu][export][
     REQUIRE(usd::writeParticleFieldStage(*gpu->library, plain, bare, options));
     UsdStageRefPtr bareStage = UsdStage::Open(bare.string());
     REQUIRE(bareStage);
+    // Not written, which is not the same as absent: the schema declares the
+    // primvar (AtheneaSplatLightingAPI), so it is there with its fallback.
     CHECK_FALSE(UsdGeomPrimvarsAPI(bareStage->GetPrimAtPath(SdfPath("/World/Splats")))
-                    .GetPrimvar(TfToken("athenea:splat:coatWeight")));
+                    .GetPrimvar(TfToken("athenea:splat:coatWeight"))
+                    .HasAuthoredValue());
     auto none = loader->upload(plain, 0);
     REQUIRE(none);
     CHECK_FALSE(none->hasLobes());
@@ -13318,9 +13338,10 @@ TEST_CASE("a cloud's own material roughness survives USD beside its thin walls a
         primvars.GetPrimvar(TfToken("athenea:splat:transmission")).Get(&arrays.transmission);
         primvars.GetPrimvar(TfToken("athenea:splat:thinWalled")).Get(&arrays.thinWalled);
         primvars.GetPrimvar(TfToken("athenea:splat:schlickMetal")).Get(&arrays.schlickMetal);
+        // Written or not -- the schema declares it, so it is always there.
         const UsdGeomPrimvar written = primvars.GetPrimvar(TfToken("athenea:splat:materialRoughness"));
-        CHECK(static_cast<bool>(written) == withOwn);
-        if (written) {
+        CHECK(written.HasAuthoredValue() == withOwn);
+        if (written.HasAuthoredValue()) {
             CHECK(written.GetTypeName() == SdfValueTypeNames->FloatArray);
             CHECK(written.GetInterpolation() == UsdGeomTokens->vertex);
             // Declared by the schema, so it is not a custom attribute.
@@ -13442,6 +13463,10 @@ TEST_CASE("a ball of each material converted relit or baked rasterises as the me
         double      p99Relit;
         double      p99Baked;
     };
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs ray queries: every cloud is held to the mesh path traced");
+    }
     const Bound bounds[] = {{"paint", 0.07, 0.6, 0.55},   {"chrome", 0.05, 0.12, 0.15},
                             {"rubber", 0.08, 1.05, 1.05},   {"plastic", 0.06, 0.8, 0.85},
                             {"glass", 0.09, 0.32, 0.65}};

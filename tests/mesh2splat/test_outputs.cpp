@@ -175,6 +175,12 @@ TEST_CASE("a skinned conversion keeps its transfer as zonal lobes and draws in e
           "[mesh2splat][gpu][skinning][transfer]") {
     ATHENEA_REQUIRE_GPU(gpu);
     const fs::path stage = output("skinned_transfer.usda");
+    // Its conversion bakes, and a device without ray tracing refuses a bake
+    // (the conversion's test skipped there): nothing to draw.
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!fs::exists(stage) && (!caps.rayQuery || !caps.accelerationStructure)) {
+        SKIP("its conversion bakes, and this device has no ray tracing");
+    }
     REQUIRE(fs::exists(stage));
     const fs::path lit = output("skinned_transfer_lit.usda");
     {
