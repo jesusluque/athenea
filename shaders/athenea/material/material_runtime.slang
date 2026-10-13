@@ -120,11 +120,24 @@ public BSDF atheneaBsdfOf(uint index, float3 weight, float3 throughput) {
 /// The final lobes: every built lobe weighted by `bsdf`, those that carry
 /// nothing dropped, the heaviest kMaxLobes kept.
 public LobeStack atheneaFinishStack(BSDF bsdf, float3 emission, float opacity) {
+    // THE WEIGHTS ARE COPIED OUT FIRST, before a lobe is written to the stack.
+    // On CUDA the BSDF arrives as a pointer to the caller's temporary, and
+    // nvcc laid this stack over that temporary's memory: each lobe kept
+    // overwrote the weights of the lobes still to be read, so lobes of zero
+    // weight survived with what a written lobe left there (1, 0, 1) -- an
+    // OpenPBR ground kept five lobes where it has two, lit pink and ten times
+    // too bright, and every bake came out black. Metal and Vulkan read the
+    // weights as they are; a copy taken before the stack is touched is the
+    // same on all three.
+    float3 weights[kBuildLobes];
+    for (uint k = 0; k < kBuildLobes; ++k) {
+        weights[k] = bsdf.weights[k];
+    }
     LobeStack stack = emptyStack();
     stack.emission = emission;
     stack.opacity = opacity;
     for (uint k = 0; k < gAtheneaLobeCount; ++k) {
-        const float3 w = max(bsdf.weights[k], float3(0.0));
+        const float3 w = max(weights[k], float3(0.0));
         const float heft = dot(w, float3(0.2126, 0.7152, 0.0722));
         if (heft <= 1e-6) {
             continue;
