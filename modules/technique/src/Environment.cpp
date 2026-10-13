@@ -239,17 +239,40 @@ Result<void> Environment::build(const light::LightTable& table, const material::
         }
         auto target = residual.view(0);
         if (!target) return std::move(target).error();
+        // Where a float4 store does not arrive as the texture's format (CUDA),
+        // the kernel packs the level into a buffer and the buffer is copied
+        // in, as the mip generator does every level after it.
+        const uint32_t packedKind =
+            device_->caps().convertingStores ? 0u : gpu::packedKindOf(residual.desc().format);
+        gpu::Buffer packed;
+        if (packedKind != 0) {
+            gpu::BufferDesc desc;
+            desc.bytes = uint64_t{w} * h * residual.texelBytes();
+            desc.elementBytes = 4;
+            desc.label = "environment.residualPacked";
+            auto made = gpu::Buffer::create(*device_, desc);
+            if (!made) return std::move(made).error();
+            packed = std::move(*made);
+        }
         residualKernel_.dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
             table.bind(cursor);
             textures.bind(cursor["gTextures"]);
             cursor["domeLights"].setBinding(sliceBuffer->rhi());
             cursor["sun"].setBinding(sun_.rhi());
             cursor["residualOut"].setBinding((*target).get());
+            cursor["packed"].setBinding(packedKind != 0 ? packed.rhi() : nullptr);
             cursor["params"]["dome"].setData(slice);
             cursor["params"]["sourceLevel"].setData(sunLevel);
             cursor["params"]["width"].setData(w);
             cursor["params"]["height"].setData(h);
+            cursor["params"]["packedKind"].setData(packedKind);
         });
+        if (packedKind != 0) {
+            const uint32_t rowPitch = w * residual.texelBytes();
+            batch.encoder()->copyBufferToTexture(residual.rhi(), 0, 0, {0, 0, 0}, packed.rhi(), 0,
+                                                 uint64_t{rowPitch} * h, rowPitch, {w, h, 1});
+            batch.markDirty();
+        }
         ATHENEA_TRY(mips_->generate(batch, residual, false, /*latLong=*/true));
         hasResidual[slice] = true;
     }

@@ -16,6 +16,7 @@
 // nothing, as the harmonics have them. Its own mips (TextureStore's lat-long
 // weighting) are then what every read of the prefilter samples.
 module env_residual;
+import athenea.common.packing;
 import athenea.light.lights_image;
 import athenea.light.environment;
 
@@ -29,6 +30,7 @@ struct EnvResidualParams {
     uint sourceLevel;   ///< the source's level this lat-long is a copy of
     uint width;
     uint height;
+    uint packedKind;    ///< 0: stored to the texture; else atheneaPackTexel's kind
 };
 
 StructuredBuffer<LightRecord>    lights;
@@ -38,7 +40,18 @@ uniform uint                     lightCount;
 StructuredBuffer<uint>           domeLights;
 StructuredBuffer<float4>         sun;        ///< env_sun's: (direction, half angle), (irradiance, threshold)
 RWTexture2D<float4>              residualOut;
+/// Where a float4 store does not arrive as the texture's format (CUDA:
+/// Caps::convertingStores), the texels packed here and copied into it.
+RWStructuredBuffer<uint>         packed;
 ConstantBuffer<EnvResidualParams> params;
+
+void residualStore(uint2 at, float4 texel) {
+    if (params.packedKind != 0) {
+        atheneaPackTexel(packed, params.packedKind, at.y * params.width + at.x, texel);
+    } else {
+        residualOut[at] = texel;
+    }
+}
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -48,7 +61,7 @@ void envResidual(uint3 tid: SV_DispatchThreadID) {
     }
     const LightRecord light = lights[domeLights[params.dome]];
     if (light.texture == 0xFFFFFFFFu) {
-        residualOut[tid.xy] = float4(1.0, 1.0, 1.0, 1.0);
+        residualStore(tid.xy, float4(1.0, 1.0, 1.0, 1.0));
         return;
     }
     const TextureRecord record = gTextures.records[light.texture];
@@ -61,5 +74,5 @@ void envResidual(uint3 tid: SV_DispatchThreadID) {
         const float3 dir = domeDirection(light, uv);
         sunlit = dot(rgb, kResidualGrey) >= sun[params.dome * 2 + 1].w && dot(dir, disc.xyz) >= cos(kResidualWidest);
     }
-    residualOut[tid.xy] = float4(sunlit ? float3(0.0) : rgb, 1.0);
+    residualStore(tid.xy, float4(sunlit ? float3(0.0) : rgb, 1.0));
 }
