@@ -38,6 +38,22 @@ prefixes, the three dependency scripts, the submodules, and the four CMake
 presets. It is not repeated here. What matters afterwards is the environment
 the binary runs in.
 
+A release on GitHub has an installer and an archive for each system. Each
+holds the programs with every library they load (OpenUSD with MaterialX,
+OpenVDB, TBB and Boost, OpenColorIO, Slang, OIDN, and on Linux and Windows
+CUDA's redistributable runtime: NVRTC, nvJitLink, cudart); the GPU driver is
+the machine's own.
+
+| System | Installer | Installs to | Needs |
+|---|---|---|---|
+| macOS (Apple silicon) | `athenea-<v>-macos-arm64.pkg` | `/usr/local/athenea`, programs linked into `/usr/local/bin` | macOS 15 or later. Not signed with a Developer ID: open it with right click, Open. |
+| Linux (x86_64) | `athenea_<v>_amd64.deb` | `/opt/athenea`, programs linked into `/usr/bin` | glibc 2.39 (Ubuntu 24.04 or later) and an NVIDIA driver with OptiX for baking (570 or later). |
+| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, `bin\` added to the machine's `PATH` | an NVIDIA driver with OptiX (570 or later). Not signed: SmartScreen asks once. |
+
+The archives (`.zip`, `.tar.gz`) hold the same folder, run from wherever it is
+unpacked: the programs find the shaders, the AOFX bundles and the Hydra plugin
+relative to themselves. Under WSL2 a bake is refused: WSL2 does not load OptiX.
+
 ### 1.2 The runtime environment
 
 | Variable | What it does |

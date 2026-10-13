@@ -321,7 +321,25 @@ fuera del proceso.
 `ATHENEA_BACKEND` corre toda la suite sobre un backend: `cuda`, `vulkan`, `metal`,
 `d3d12`.
 
-### 3.4 Otra máquina
+### 3.4 Una release
+
+Una versión es la línea `project()` y una entrada de `CHANGELOG.md`, con la
+etiqueta `vX.Y.Z` en `main` (con las reglas del propio changelog). Sus
+ficheros se compilan del commit etiquetado en cada sistema, desde el árbol de
+compilación de un preset release:
+
+| Paso | macOS | Linux | Windows |
+|---|---|---|---|
+| archivo | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, necesita `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
+| instalador | `scripts/installer-macos.sh <carpeta>` (`.pkg`) | `scripts/installer-linux.sh <carpeta>` (`.deb`) | `scripts\installer-windows.ps1 <carpeta>` (`.exe`, Inno Setup 6) |
+
+`package.*` copia las bibliotecas de los prefijos que encontró la compilación
+(`CMakeCache.txt`) y hace sus rutas relativas a cada programa: `rpath`
+`@executable_path/../lib` en macOS (y firma ad hoc), `$ORIGIN/../lib` en
+Linux, cada DLL junto a los programas en Windows. La release se publica con
+`gh release create vX.Y.Z` y los seis ficheros.
+
+### 3.5 Otra máquina
 
 `scripts/remote-test.sh [user@host] [preset] [rama]` empuja la rama, compila y
 corre la suite allí, y trae `LastTest.log` de vuelta a

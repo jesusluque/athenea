@@ -37,6 +37,23 @@ prefijos, los tres scripts de dependencias, los submódulos y los cuatro
 presets de CMake. Aquí no se repite. Lo que importa después es el entorno en
 el que corre el binario.
 
+Una release en GitHub trae un instalador y un archivo para cada sistema. Cada
+uno lleva los programas con todas las bibliotecas que cargan (OpenUSD con
+MaterialX, OpenVDB, TBB y Boost, OpenColorIO, Slang, OIDN y, en Linux y
+Windows, el runtime redistribuible de CUDA: NVRTC, nvJitLink, cudart); el
+driver de la GPU es el de la máquina.
+
+| Sistema | Instalador | Instala en | Necesita |
+|---|---|---|---|
+| macOS (Apple silicon) | `athenea-<v>-macos-arm64.pkg` | `/usr/local/athenea`, programas enlazados en `/usr/local/bin` | macOS 15 o posterior. Sin firma de Developer ID: se abre con clic derecho, Abrir. |
+| Linux (x86_64) | `athenea_<v>_amd64.deb` | `/opt/athenea`, programas enlazados en `/usr/bin` | glibc 2.39 (Ubuntu 24.04 o posterior) y un driver de NVIDIA con OptiX para hornear (570 o posterior). |
+| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, `bin\` añadido al `PATH` de la máquina | un driver de NVIDIA con OptiX (570 o posterior). Sin firma: SmartScreen pregunta una vez. |
+
+Los archivos (`.zip`, `.tar.gz`) llevan la misma carpeta y funcionan desde
+donde se descompriman: los programas encuentran los shaders, los bundles AOFX
+y el plugin de Hydra con rutas relativas a ellos. Bajo WSL2 un horneado se
+rechaza: WSL2 no carga OptiX.
+
 ### 1.2 El entorno de ejecución
 
 | Variable | Qué hace |

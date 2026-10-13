@@ -312,7 +312,24 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 `ATHENEA_BACKEND` runs the whole suite on one backend: `cuda`, `vulkan`, `metal`,
 `d3d12`.
 
-### 3.4 Another machine
+### 3.4 A release
+
+A version is the `project()` line and a `CHANGELOG.md` entry, tagged `vX.Y.Z`
+on `main` (the changelog's own rules). Its files are built from the tagged
+commit on each system, from a release preset's build tree:
+
+| Step | macOS | Linux | Windows |
+|---|---|---|---|
+| archive | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, needs `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
+| installer | `scripts/installer-macos.sh <folder>` (`.pkg`) | `scripts/installer-linux.sh <folder>` (`.deb`) | `scripts\installer-windows.ps1 <folder>` (`.exe`, Inno Setup 6) |
+
+`package.*` copies the libraries from the prefixes the build found
+(`CMakeCache.txt`) and makes their paths relative to each program: `rpath`
+`@executable_path/../lib` on macOS (then signs ad hoc), `$ORIGIN/../lib` on
+Linux, every DLL beside the programs on Windows. The release is published
+with `gh release create vX.Y.Z` and the six files.
+
+### 3.5 Another machine
 
 `scripts/remote-test.sh [user@host] [preset] [branch]` pushes the branch,
 builds and runs the suite there, and brings `LastTest.log` back into
