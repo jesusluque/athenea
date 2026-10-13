@@ -57,6 +57,30 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         auto read = readGaussianArrays(input, where, raw->count);
         if (!read) return std::move(read).error();
         arrays = std::move(*read);
+        // A TREE BUILT AGAIN FROM A TREE'S LEAVES: the old tree's bookkeeping
+        // (its links, pages, costs, coverage and occlusion) belongs to the
+        // nodes it made and is made anew. Left in, every integer array would
+        // become a merge key one to a gaussian, and nothing would merge.
+        if (o.pairs && !o.treeOutput.empty()) {
+            const auto old = [](const std::string& name) {
+                for (const char* tail : {"athenea:splat:lodParent", "athenea:splat:lodStart", "athenea:splat:lodSize",
+                                         "athenea:splat:lodPage", "athenea:splat:lodPageInfo",
+                                         "athenea:splat:lodPageBounds", "athenea:splat:lodCost",
+                                         "athenea:splat:lodSpill", "athenea:splat:coverageMass",
+                                         "athenea:splat:occlusionIndex", "athenea:splat:occlusionCodebook"}) {
+                    const std::string end(tail);
+                    if (name.size() >= end.size() && name.compare(name.size() - end.size(), end.size(), end) == 0) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            const size_t before = arrays.size();
+            std::erase_if(arrays, [&](const GaussianArray& a) { return old(a.name); });
+            if (arrays.size() != before) {
+                std::printf("decimate: %zu arrays of an earlier tree left out\n", before - arrays.size());
+            }
+        }
         if (o.treeReport) {
             // WHERE A TREE STOPPED MERGING: its roots counted a part
             // (cryptoObject), the parts named from the field's manifest --
