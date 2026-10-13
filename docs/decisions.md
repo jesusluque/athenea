@@ -3525,6 +3525,28 @@ one at a time when one look at the emitted kernel would have said why.
   reads as "this face is a hole", dropping its triangles. The mixed-face mesh
   triangulated to 4 of its 10 triangles, and to none with the handedness
   flipped. The flags are cleared on the device before the topology dispatches.
+- **A material's lobe stack was overwritten while it was built, on CUDA
+  only.** Every frame and every bake shaded through a MaterialX material came
+  out wrong on CUDA -- an OpenPBR ground lit by a sun pink and ten times too
+  bright, a UsdPreviewSurface under the headlight without its specular, every
+  bake black -- while the same kernel on the same L4 under Vulkan read
+  0.274467 0.245033 0.215593, Metal's numbers to the last digit. The suite
+  did not see it: its tests compare against a reference rendered on the same
+  device. Read back from inside the kernel, the material's BSDF was the same
+  on both; it went wrong in `atheneaFinishStack`, which keeps the built lobes
+  of non-zero weight. Its BSDF parameter arrives on CUDA as a pointer to the
+  caller's temporary, and nvcc laid the stack the function builds over that
+  temporary: each lobe kept overwrote the weights of the lobes still to be
+  read, and lobes of zero weight survived with (1, 0, 1) -- five lobes where
+  the ground has two. Neither Slang's optimisation level nor the thread's
+  stack limit (1 KB, raised to 64 KB) changed a digit. The weights are now
+  copied into a local array before the stack is written.
+- **Raster glass on CUDA shows the sky where Metal shows the ball's
+  inside.** The raster route refracts through glass with inline ray queries;
+  CUDA has the OptiX pipeline and no ray queries, so its raster glass reads
+  the environment behind the ball (0.32 at the ball's centre against Metal's
+  0.008). The path traced frame is the same on both routes; a raster frame
+  with glass is not, until the raster refraction runs on the pipeline too.
 - **A CUDA texture is read through its view's sampler, not the one bound
   beside it.** A CUDA texture object holds its addressing, filtering and mip
   range, and slang-rhi makes it from the view: a `SamplerState` bound next to
