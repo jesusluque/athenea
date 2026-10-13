@@ -13,6 +13,9 @@
 //                             2 x 16 bits (`packNormal`), apart from the frame
 //   emission   uint           optional: the radiance the surface gives off by
 //                             itself, linear RGB9E5 (`packRgb9e5`)
+//   lobes      uint * 3       optional: the layers over the base a material
+//                             names -- specular weight and colour, coat,
+//                             sheen -- a byte a value (`packLobes`)
 //
 // 32 bytes before harmonics, against openFXplayer's 64 float32. Why each
 // field is what it is:
@@ -163,6 +166,112 @@ public float3 unpackRgb9e5(uint word) {
     return float3(float(word & 511u), float((word >> 9) & 511u), float((word >> 18) & 511u)) * step;
 }
 
+/// WHAT A MATERIAL LAYERS OVER ITS BASE, PER GAUSSIAN (`GpuSplats::lobes`).
+///
+/// The base -- colour, metallic, roughness, transmission -- is `pbr`'s word.
+/// What OpenPBR, standard_surface and UsdPreviewSurface put over it is here,
+/// in the units their own inputs take, for the lobes `splat_relight` already
+/// evaluates: no lobe is new, these are the weights and parameters of the
+/// dielectric, conductor and sheen it has.
+///
+///   specularWeight  0..1   scales the dielectric reflection
+///   specularColour  0..1   tints the dielectric reflection; a metal's edge
+///   specularIor     1..3   the dielectric's index (0.04 head on at 1.5)
+///   coatWeight      0..1   a clear dielectric layer over all of it
+///   coatRoughness   0..1
+///   coatIor         1..3
+///   coatDarkening   0..1   OpenPBR's `coat_darkening`: the base under the
+///                          coat darkened by the light the coat's inside
+///                          sends back to it (on at 0.5 and above)
+///   sheenColour     0..1   the sheen's colour times its weight
+///   sheenRoughness  0..1
+public struct SplatLobes {
+    public float  specularWeight;
+    public float3 specularColour;
+    public float  specularIor;
+    public float  coatWeight;
+    public float  coatRoughness;
+    public float  coatIor;
+    public float  coatDarkening;
+    public float3 sheenColour;
+    public float  sheenRoughness;
+};
+
+/// What a gaussian with no lobes reflects with: the specular of every
+/// cloud before these existed -- weight one, white, an index of 1.5 -- and
+/// no coat and no sheen. Packed, it unpacks to exactly this (1.5 is a whole
+/// step of the index's byte), so a cloud that carries it and one that does
+/// not are the same picture.
+public SplatLobes plainLobes() {
+    SplatLobes l;
+    l.specularWeight = 1.0;
+    l.specularColour = float3(1.0);
+    l.specularIor = 1.5;
+    l.coatWeight = 0.0;
+    l.coatRoughness = 0.0;
+    l.coatIor = 1.5;
+    l.coatDarkening = 0.0;
+    l.sheenColour = float3(0.0);
+    l.sheenRoughness = 0.0;
+    return l;
+}
+
+uint lobeByte(float v) {
+    return uint(saturate(v) * 255.0 + 0.5);
+}
+
+/// An index of refraction in a byte: `1 + byte / 128`, 1 to 2.99 in steps of
+/// 0.008 -- 1.5 and 1.25 exactly, every glass and lacquer there is.
+uint iorByte(float ior) {
+    return uint(clamp((ior - 1.0) * 128.0 + 0.5, 0.0, 255.0));
+}
+
+float byteIor(uint b) {
+    return 1.0 + float(b & 0xFFu) / 128.0;
+}
+
+/// The coat's index in seven bits, `1 + bits / 64` (1 to 2.98, 1.5 and 1.25
+/// exactly), and whether the coat darkens what is under it in the eighth.
+uint coatByte(float ior, float darkening) {
+    return uint(clamp((ior - 1.0) * 64.0 + 0.5, 0.0, 127.0)) | (darkening >= 0.5 ? 128u : 0u);
+}
+
+/// Three words: (specular colour, weight), (coat weight, roughness, index,
+/// the specular's index), (sheen colour, roughness).
+public uint3 packLobes(SplatLobes l) {
+    const uint w0 = lobeByte(l.specularColour.x) | (lobeByte(l.specularColour.y) << 8) |
+                    (lobeByte(l.specularColour.z) << 16) | (lobeByte(l.specularWeight) << 24);
+    const uint w1 = lobeByte(l.coatWeight) | (lobeByte(l.coatRoughness) << 8) |
+                    (coatByte(l.coatIor, l.coatDarkening) << 16) |
+                    (iorByte(l.specularIor) << 24);
+    const uint w2 = lobeByte(l.sheenColour.x) | (lobeByte(l.sheenColour.y) << 8) |
+                    (lobeByte(l.sheenColour.z) << 16) | (lobeByte(l.sheenRoughness) << 24);
+    return uint3(w0, w1, w2);
+}
+
+float byteOf(uint word, uint at) {
+    return float((word >> (at * 8)) & 0xFFu) / 255.0;
+}
+
+public SplatLobes unpackLobes(uint3 w) {
+    SplatLobes l;
+    l.specularColour = float3(byteOf(w.x, 0), byteOf(w.x, 1), byteOf(w.x, 2));
+    l.specularWeight = byteOf(w.x, 3);
+    l.coatWeight = byteOf(w.y, 0);
+    l.coatRoughness = byteOf(w.y, 1);
+    l.coatIor = 1.0 + float((w.y >> 16) & 0x7Fu) / 64.0;
+    l.coatDarkening = ((w.y >> 23) & 1u) != 0u ? 1.0 : 0.0;
+    l.specularIor = byteIor(w.y >> 24);
+    l.sheenColour = float3(byteOf(w.z, 0), byteOf(w.z, 1), byteOf(w.z, 2));
+    l.sheenRoughness = byteOf(w.z, 3);
+    return l;
+}
+
+/// The thirteen floats a record keeps them in (`io::SplatEncoding::lobes`),
+/// in this order: specular weight, colour (3), index; coat weight, roughness,
+/// index; sheen colour (3), roughness; coat darkening.
+public static const uint kLobeFields = 13;
+
 public uint packHalves(float a, float b) {
     return (f32tof16(a) & 0xFFFFu) | ((f32tof16(b) & 0xFFFFu) << 16);
 }
@@ -174,7 +283,65 @@ public float highHalf(uint word) { return f16tof32(word >> 16); }
 /// covariance turns into NaN. Clamped, not trusted.
 public float halfSafe(float v) { return clamp(v, -65000.0, 65000.0); }
 
+/// A SURFEL TO A RAY (docs/decisions.md, surfels): its flat axis -- a scale of
+/// exactly 0, stored as the f16 floor of its logarithm -- held to a ten
+/// thousandth of its widest, so a ray tracer that takes a particle to the
+/// unit sphere (rt_frames) can: its peak along a ray is then where the ray
+/// crosses the disc's plane, and the response there the disc's own, which is
+/// a 2D gaussian's ray-splat intersection. A gaussian with no flat axis is as
+/// it was.
+public static const float kSurfelThin = 1.0e-4;
+
+public float3 surfelSafeScale(float3 s) {
+    return max(s, float3(kSurfelThin * max(max(s.x, s.y), s.z)));
+}
+
+/// The area of a gaussian's two widest axes: what the levels of detail and a
+/// decimation weigh a splat by (opacity times this). Not the product of all
+/// three over the smallest, which a surfel's zero takes to nothing.
+public float discArea(float3 s) {
+    return max(max(s.x * s.y, s.y * s.z), s.x * s.z);
+}
+
+/// A FRAME WITH ITS THINNEST AXIS THIRD. A conversion writes a disc's
+/// thickness as its third scale, and every reader takes the third axis for
+/// the normal and the first two for its plane -- the relight, the curvature
+/// and the zonal transfer read in them, sparkwebGPU likewise. Eigenvectors
+/// come in whatever order the solver left them: the matx car paint merged
+/// 10x had its normal first or second in 48910 of 55477 merges, its
+/// curvature then projected on a plane holding the normal. So the columns
+/// (the axes) and their scales are turned cyclically -- which keeps the
+/// frame's handedness -- until the thinnest is third.
+public void thinAxisThird(inout float3x3 axes, inout float3 scales) {
+    const uint thin = scales.x <= scales.y ? (scales.x <= scales.z ? 0u : 2u) : (scales.y <= scales.z ? 1u : 2u);
+    if (thin == 2u) {
+        return;
+    }
+    const float3 c0 = float3(axes[0][0], axes[1][0], axes[2][0]);
+    const float3 c1 = float3(axes[0][1], axes[1][1], axes[2][1]);
+    const float3 c2 = float3(axes[0][2], axes[1][2], axes[2][2]);
+    // thin 0: (1, 2, 0); thin 1: (2, 0, 1).
+    const float3 n0 = thin == 0u ? c1 : c2;
+    const float3 n1 = thin == 0u ? c2 : c0;
+    const float3 n2 = thin == 0u ? c0 : c1;
+    axes = float3x3(n0.x, n1.x, n2.x, n0.y, n1.y, n2.y, n0.z, n1.z, n2.z);
+    scales = thin == 0u ? float3(scales.y, scales.z, scales.x) : float3(scales.z, scales.x, scales.y);
+}
+
+/// Whether a shape's scales hold a surfel's flat axis.
+public bool isSurfel(float3 s) {
+    return min(min(s.x, s.y), s.z) == 0.0;
+}
+
 public static const float kSH0 = 0.28209479177387814;
+
+/// WHAT A LAMP'S LAYER IS PACKED AT (GpuSplats::lightLayers): its light per
+/// unit of the group's radiance times this, in RGB9E5. The light a lamp
+/// leaves on a body a few metres away is 1e-5 of its radiance and less, where
+/// RGB9E5's smallest exponent leaves a few steps; scaled, full precision
+/// reaches down to 1e-9 and the top is 4 -- an emitter seen through clear
+/// glass is 1.
+public static const float kLightLayerScale = 16384.0;
 
 /// Harmonic words per splat for `restPerColour` basis functions (3, 8, 15).
 public uint shWordsFor(uint restPerColour) { return (restPerColour * 3 + 1) / 2; }

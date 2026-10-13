@@ -105,12 +105,16 @@ Result<std::unique_ptr<TextureStore>> TextureStore::create(gpu::ShaderLibrary& l
 
 bool TextureStore::isExternal(const std::string& path) { return path.rfind("aofx://", 0) == 0; }
 
-uint32_t TextureStore::request(const std::string& path, const std::string& given) {
+uint32_t TextureStore::request(const std::string& path, const std::string& given, bool latLong) {
     // One entry for an external texture, whatever a material says of it: the
     // host's working space arrives as it is.
     const std::string space = isExternal(path) ? std::string("raw") : given;
     const auto key = std::make_pair(path, space);
     if (const auto found = ids_.find(key); found != ids_.end()) {
+        if (latLong && !entries_[found->second].info.latLong) {
+            entries_[found->second].info.latLong = true;
+            entries_[found->second].pending = true;   // its mips again, as a lat-long's
+        }
         return found->second;
     }
     const uint32_t id = static_cast<uint32_t>(entries_.size());
@@ -118,6 +122,7 @@ uint32_t TextureStore::request(const std::string& path, const std::string& given
     entry.info.path = path;
     entry.info.space = space;
     entry.info.udim = UsdShadeUdimUtils::IsUdimIdentifier(path);
+    entry.info.latLong = latLong;
     entries_.push_back(std::move(entry));
     ids_.emplace(key, id);
     return id;
@@ -383,7 +388,7 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, const std::stri
                                              uint64_t{rowPitch} * h, rowPitch, {w, h, 1});
         batch.markDirty();
     }
-    ATHENEA_TRY(mips_->generate(batch, *texture, srgbView));
+    ATHENEA_TRY(mips_->generate(batch, *texture, srgbView, info.latLong));
     ATHENEA_TRY(batch.submit(true));
     info.decode = srgbView                                ? "srgb view"
                   : decoder != nullptr                    ? decoder->function.description()

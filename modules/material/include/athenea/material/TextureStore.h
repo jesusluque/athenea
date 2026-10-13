@@ -52,6 +52,7 @@ struct TextureInfo {
     std::string decode;
     bool        loaded = false;
     bool        udim = false;
+    bool        latLong = false;   ///< a dome's lat-long: its mips keep the solid-angle mean
     uint32_t    width = 0;    ///< the first tile's, for a UDIM set
     uint32_t    height = 0;
     std::string error;        ///< why it did not load, or a colour space nothing knew (read as the file says)
@@ -66,7 +67,9 @@ public:
     /// colour space `space` names (TextureInfo::space). Loaded at the next
     /// commit; until then, and if it cannot be, samples report it missing
     /// and materials use their defaults.
-    uint32_t request(const std::string& path, const std::string& space = {});
+    /// `latLong`: the image is a dome's lat-long, whose mips keep its
+    /// solid-angle mean (gpu::MipGenerator); asked once, it stays so.
+    uint32_t request(const std::string& path, const std::string& space = {}, bool latLong = false);
 
     /// Whether 8-bit sRGB files stay 8-bit behind an sRGB view (the default)
     /// or go through the compiled sRGB function like any other space: the

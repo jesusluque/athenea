@@ -18,7 +18,7 @@ struct MipParams {
     uint srgb;   // 1: texels hold sRGB-encoded colour; averaged as light, stored encoded
     uint levels; // 255 for an 8-bit target: stored as its nearest code; 0 for a float target
     uint packedKind;   // 0: written to the texture; else atheneaPackTexel's kind
-    uint pad2;
+    uint latLong;      // 1: a lat-long image, each row weighed by the solid angle it stands for
 };
 
 float decodeSrgb(float x) {
@@ -70,13 +70,32 @@ void mipDownsample(uint3 tid: SV_DispatchThreadID) {
     const Taps tx = tapsAlong(tid.x, params.sourceWidth, params.width);
     const Taps ty = tapsAlong(tid.y, params.sourceHeight, params.height);
     float4 sum = float4(0.0);
+    // A LAT-LONG'S ROWS ARE NOT THE SAME SIZE. A row near a pole stands for
+    // far less solid angle than a row at the equator -- cos(theta0) -
+    // cos(theta1) of its band -- and a plain mean gave it as much: the coarse
+    // levels a rough lobe reads over-weighed the poles, where a ceiling's
+    // lamps hang. Weighed by each source row's band and normalised, a level
+    // keeps the sky's solid-angle mean.
+    float rowWeights[3] = { ty.weights[0], ty.weights[1], ty.weights[2] };
+    if (params.latLong != 0) {
+        float total = 0.0;
+        for (uint j = 0; j < ty.count; ++j) {
+            const float step = 3.14159265358979 / float(params.sourceHeight);
+            const float row = float(ty.first + j);
+            rowWeights[j] *= cos(row * step) - cos((row + 1.0) * step);
+            total += rowWeights[j];
+        }
+        for (uint j = 0; j < ty.count; ++j) {
+            rowWeights[j] = total > 0.0 ? rowWeights[j] / total : ty.weights[j];
+        }
+    }
     for (uint j = 0; j < ty.count; ++j) {
         for (uint i = 0; i < tx.count; ++i) {
             float4 texel = source.Load(int3(int(tx.first + i), int(ty.first + j), 0));
             if (params.srgb != 0) {
                 texel.rgb = float3(decodeSrgb(texel.r), decodeSrgb(texel.g), decodeSrgb(texel.b));
             }
-            sum += tx.weights[i] * ty.weights[j] * texel;
+            sum += tx.weights[i] * rowWeights[j] * texel;
         }
     }
     if (params.srgb != 0) {

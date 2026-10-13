@@ -38,7 +38,7 @@ struct MaterialRecord {
     uint32_t function = 0;
     uint32_t blob = 0;      ///< its first word in the blob
     uint32_t flags = 0;
-    uint32_t pad = 0;
+    uint32_t pad = 0;       ///< a transmitting row's tint (rgb) and index, unorm 8 each (material_lookup.slang)
 };
 
 /// MaterialRecord::flags: the material's opacity cuts samples out instead of
@@ -48,6 +48,20 @@ inline constexpr uint32_t kMaterialCutout = 1u;
 /// The path tracer keeps its specular and emission at full weight and lets
 /// (1 - opacity) of the light straight through; the raster still cuts by lot.
 inline constexpr uint32_t kMaterialTransparent = 2u;
+/// MaterialRecord::flags: the material is the same everywhere on a surface --
+/// no texture, no primvar, no pattern of position -- so what its lobes
+/// return depends on the angle to the eye alone. Under prefiltered domes and
+/// nothing else, such a material is shaded from a table made once a frame
+/// rather than evaluated at every pixel (MaterialShading, task PLAY-G).
+inline constexpr uint32_t kMaterialUniform = 4u;
+/// It lets light through: the bake's open-or-not rays look at it (material_lookup.slang).
+inline constexpr uint32_t kMaterialTransmits = 8u;
+/// Its transmission is a delta -- a thin wall, or a smooth solid -- so the
+/// path tracer's shadow rays pass it, tinted, rather than stop
+/// (`athenea:glassShadows`; material::Transmission::clear).
+inline constexpr uint32_t kMaterialGlassShadow = 16u;
+/// And it is a thin wall: one face is the whole glass (2R / (1 + R) reflected).
+inline constexpr uint32_t kMaterialThinGlass = 32u;
 
 class MaterialPrograms {
 public:
@@ -101,6 +115,10 @@ struct MaterialFrame {
     /// Whether any material of the frame cuts samples away: a shadow ray then
     /// asks each surface it meets whether it is there.
     bool                          cutouts = false;
+    /// Whether any material of the frame is glass a shadow ray passes, tinted
+    /// (kMaterialGlassShadow): the path tracer's shadow rays then walk past
+    /// it where `PathSettings::glassShadows` says so.
+    bool                          glass = false;
     /// The frame's lights. None: the headlight, as meshes were lit before
     /// there were any.
     const light::LightTable*      lights = nullptr;
@@ -120,6 +138,23 @@ struct MaterialFrame {
     /// Null and nothing is dimmed, which is what a frame without clouds does.
     /// A texture because the shading kernel has no buffer slot left.
     rhi::ITextureView*            cloudShadow = nullptr;
+    /// And its transmittance chain (SplatShadowMap::chainView): what a floor
+    /// far from the map reads at the level of its pixel's footprint. Bound
+    /// with `cloudShadow`, which says whether either is.
+    rhi::ITextureView*            cloudShadowChain = nullptr;
+    /// THE DOMES, PREFILTERED (Environment::meshView): where it is bound the
+    /// raster route lights a surface whose lobes all reflect by the domes in
+    /// closed form -- the harmonics' irradiance, the sun taken out of them
+    /// and the sky's mip chain along the mirror, shadowed by the cloud map's
+    /// dome directions -- instead of sampling them. Null: sampled, rays and
+    /// all, as every frame was before (`athenea:domePrefiltered`).
+    rhi::ITextureView*            domeLighting = nullptr;
+    /// With `domeLighting`: every light of the frame is one of those domes.
+    /// Then no shadow ray is traced and no lobe direction drawn at all -- two
+    /// passes that evaluate every pixel's material again -- and a surface the
+    /// prefiltered read cannot answer (glass) samples its domes shadowed by
+    /// the clouds' map alone, not by other meshes.
+    bool                          domesOnly = false;
     /// Samples per light. One is the interactive choice; a test that wants
     /// an area light's irradiance without noise asks for more.
     uint32_t                      samples = 1;

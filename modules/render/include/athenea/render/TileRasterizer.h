@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include "athenea/core/Result.h"
@@ -125,6 +126,22 @@ struct SplatInstance {
     /// Object to view, the difference over the shutter: the camera's motion
     /// and this prim's, together. Zero: neither moves.
     std::array<float, 12>   viewStep{};
+    /// `primvars:athenea:splat:catcher`: a shadow catcher (athenea mesh2splat
+    /// --shadow-catcher), projected by a kernel of its own: black, as opaque
+    /// as what its object took of the light reaching it.
+    bool                    catcher = false;
+    /// `primvars:athenea:splat:lightCatcher`: a light catcher (athenea
+    /// mesh2splat --light-catcher), projected by a kernel of its own: its
+    /// colour the lamps' layers alone, added over what is drawn behind it.
+    bool                    lightCatcher = false;
+    /// THE LAMPS' WEIGHTS, a float4 a light layer of the cloud
+    /// (`scene::GpuSplats::lightLayers`), `GpuSplats::kMaxLightGroups` of
+    /// them: linear rgb, the group's level times its radiance and colour.
+    /// Null: the layers are not added. Per frame and per instance, which is
+    /// why it is here and not on the cloud; handed to the projection in its
+    /// constants (FrameParams::lightWeights), not as a buffer, since the TX
+    /// projection binds as many buffers as Metal allows.
+    const float*            lightWeights = nullptr;
 };
 
 /// The frame's lights, as a renderer that must not depend on the light module
@@ -170,6 +187,10 @@ struct SplatLights {
     /// solid angle then irradiance. Null, or a solid angle of 0, and the
     /// harmonics hold the whole sky as they did before.
     const gpu::Buffer*           envSun = nullptr;
+    /// WHAT THESE LIGHTS AND THIS SKY ARE, as a number that changes whenever
+    /// they do (light::LightTable::revision). 0 says nothing is known, and no
+    /// cloud keeps what depends on them from one frame to the next.
+    uint64_t                     revision = 0;
 
     [[nodiscard]] bool environment() const noexcept {
         return envLights > 0 && envBaseSide > 0 && envTexels != nullptr && envSh != nullptr &&
@@ -187,6 +208,11 @@ struct RenderSettings {
     uint32_t width = 1920;
     uint32_t height = 1080;
     bool     antialias = true;
+    /// SURFELS: a gaussian with a flat axis (a scale of exactly 0) drawn as
+    /// the disc it is, by the ray through each pixel, with the 2DGS screen
+    /// filter (docs/decisions.md, surfels). Off, it is the thin gaussian it
+    /// projects to. A cloud with no flat axis draws the same either way.
+    bool     surfels = true;
     uint32_t maxShDegree = 3;
     /// Premultiplied, linear. Transparent by default.
     std::array<float, 4> background{0, 0, 0, 0};
@@ -312,6 +338,27 @@ private:
     gpu::PrefixSum     prefix_;
     gpu::RadixSort     sort_;
     gpu::ComputeKernel project_;
+    /// The same with the transfer's shading compiled out, for a cloud that
+    /// carries none (splat_project.slang's projectSplat says why).
+    gpu::ComputeKernel projectPlain_;
+    /// And for a cloud with the first transfer (no cells): the TX transfer's
+    /// shading compiled out of it too.
+    gpu::ComputeKernel projectFirst_;
+    /// A shadow catcher's (splatProjectCatcher): black, as opaque as what
+    /// its object took, no relighting.
+    gpu::ComputeKernel projectCatcher_;
+    /// A light catcher's (splatProjectLightCatcher): the lamps' layers, added.
+    gpu::ComputeKernel projectLightCatcher_;
+    /// A transfer cloud's view-independent terms, a splat each, kept while
+    /// the lights, the sky, the cloud and its place stand (`txCaches_`).
+    gpu::ComputeKernel viewless_;
+    struct TxCache {
+        gpu::Buffer buffer;
+        uint64_t    key = 0;
+        uint64_t    seen = 0;   ///< the last frame that drew the cloud
+    };
+    uint64_t                                             frameOfCaches_ = 0;
+    std::unordered_map<const scene::GpuSplats*, TxCache> txCaches_;
     gpu::ComputeKernel compact_;
     gpu::ComputeKernel pointsProject_;
     gpu::ComputeKernel gather_;
@@ -328,6 +375,12 @@ private:
     uint32_t pairCapacity_ = 0;
     uint32_t tileCapacity_ = 0;
     gpu::Buffer proj_, tileRects_, tilesTouched_, visible_, depthKeys_;
+    /// A slot each beside `proj_`: a TX transfer's reflection's slope across
+    /// the footprint, read where the record is marked (frame.slang's kSlopeMark);
+    /// then, from slot `splatCapacity_` on (`polishPlane`), a sharp record's
+    /// base polish and its sun weights (kSharpMark). One buffer, so the TX
+    /// projection stays within Metal's thirty-one.
+    gpu::Buffer slopes_;
     gpu::Buffer visibleOffsets_, visibleTotal_, touchedOffsets_, touchedTotal_;
     gpu::SortBuffers depthSort_;   // keysLo = visible depth keys, values = splat index
     gpu::Buffer sortedCounts_, offsets_, totalPairs_;

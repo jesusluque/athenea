@@ -11,18 +11,46 @@ public struct MaterialRecord {
     public uint function;   // 0: the fallback (displayColor); k: the k-th compiled module
     public uint blob;       // its first word in the blob
     public uint flags;
+    /// A transmitting row's (kMaterialTransmits) constants, for a ray that
+    /// does not evaluate it: the transmission's weight and colour, red,
+    /// green and blue in the low three bytes, and its index over 1 to 4 in
+    /// the high one, unorm (transmissionTint, transmissionIndex).
     public uint pad0;
 };
+
+/// What a transmitting row lets through a crossing, before Fresnel: its
+/// weight times its colour, linear rgb.
+public float3 transmissionTint(MaterialRecord m) {
+    return float3(float(m.pad0 & 0xffu), float((m.pad0 >> 8) & 0xffu), float((m.pad0 >> 16) & 0xffu)) / 255.0;
+}
+
+/// Its dielectric's index.
+public float transmissionIndex(MaterialRecord m) {
+    return 1.0 + 3.0 * float(m.pad0 >> 24) / 255.0;
+}
 
 /// MaterialRecord.flags
 public static const uint kMaterialCutout = 1u;   // its opacity says whether a sample is there: cut, never blended
 /// A UsdPreviewSurface in transparent opacity mode: the path tracer keeps the
 /// specular whole and lets (1 - opacity) straight through (MaterialPrograms.h).
 public static const uint kMaterialTransparent = 2u;
+/// It lets light through (a transmission, or a transparent opacity): a ray
+/// that asks only whether the way is open looks at it rather than stopping
+/// (the bake's cells, the path tracer's `pathThrough`).
+public static const uint kMaterialTransmits = 8u;
+/// Its transmission is a delta -- a thin wall, or a smooth solid -- so a
+/// path tracer's shadow ray passes it tinted rather than stopping
+/// (PathTracer's glassPasses, `athenea:glassShadows`).
+public static const uint kMaterialGlassShadow = 16u;
+/// And a thin wall: one face is the whole glass.
+public static const uint kMaterialThinGlass = 32u;
 /// The least probability a transparent surface is kept with, by a raster
 /// pixel's lot or a path's: held off zero so a window at opacity 0 still
 /// reflects, one sample in twenty at twenty times the weight.
 public static const float kTransparentKeep = 0.05;
+/// The same everywhere on a surface: no texture, no primvar, no pattern of
+/// position (technique::kMaterialUniform).
+public static const uint kMaterialUniform = 4u;
 
 public struct MaterialLookupParams {
     public float time;

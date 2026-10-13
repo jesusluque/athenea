@@ -1,0 +1,82 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Y"
+    startTimeCode = 0
+    endTimeCode = 2
+)
+# A corner -- a floor and a wall at a right angle -- carried rigidly by one
+# joint that turns a quarter turn about y over two time codes, under a sky
+# (tests/mesh2splat). Converted with `--skinned --transfer`, the transfer is
+# kept as zonal lobes in each gaussian's frame and baked at the pose `--time`
+# asks for; the wall is what takes sky away from the floor beside it.
+def SkelRoot "Root"
+{
+    def Skeleton "Skel" (
+        prepend apiSchemas = ["SkelBindingAPI"]
+    )
+    {
+        uniform token[] joints = ["root"]
+        uniform matrix4d[] bindTransforms = [( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )]
+        uniform matrix4d[] restTransforms = [( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )]
+        rel skel:animationSource = </Root/Anim>
+    }
+    def SkelAnimation "Anim"
+    {
+        uniform token[] joints = ["root"]
+        float3[] translations = [(0, 0, 0)]
+        quatf[] rotations.timeSamples = {
+            0: [(1, 0, 0, 0)],
+            1: [(0.9238795, 0, 0.3826834, 0)],
+            2: [(0.7071068, 0, 0.7071068, 0)],
+        }
+        half3[] scales = [(1, 1, 1)]
+    }
+    def Mesh "Floor" (
+        prepend apiSchemas = ["SkelBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, 0, 1), (1, 0, 1), (1, 0, -1), (-1, 0, -1)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)] (interpolation = "vertex")
+        color3f[] primvars:displayColor = [(0.7, 0.7, 0.7)] (interpolation = "constant")
+        uniform token subdivisionScheme = "none"
+        rel skel:skeleton = </Root/Skel>
+        int[] primvars:skel:jointIndices = [0, 0, 0, 0] (
+            elementSize = 1
+            interpolation = "vertex"
+        )
+        float[] primvars:skel:jointWeights = [1, 1, 1, 1] (
+            elementSize = 1
+            interpolation = "vertex"
+        )
+        matrix4d primvars:skel:geomBindTransform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+    }
+    def Mesh "Wall" (
+        prepend apiSchemas = ["SkelBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, 0, -1), (1, 0, -1), (1, 2, -1), (-1, 2, -1)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (interpolation = "vertex")
+        color3f[] primvars:displayColor = [(0.7, 0.7, 0.7)] (interpolation = "constant")
+        uniform token subdivisionScheme = "none"
+        rel skel:skeleton = </Root/Skel>
+        int[] primvars:skel:jointIndices = [0, 0, 0, 0] (
+            elementSize = 1
+            interpolation = "vertex"
+        )
+        float[] primvars:skel:jointWeights = [1, 1, 1, 1] (
+            elementSize = 1
+            interpolation = "vertex"
+        )
+        matrix4d primvars:skel:geomBindTransform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) )
+    }
+}
+def DomeLight "Sky"
+{
+    float inputs:intensity = 1
+}

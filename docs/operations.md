@@ -47,7 +47,7 @@ the binary runs in.
 | `ATHENEA_MATERIALX_ROOT` | a directory holding MaterialX's `libraries/`, read by hdAthenea's material compiler in place of the libraries the host's USD loaded. Unset by default: the host's are used. For a host whose MaterialX predates the Slang generator (Blender 5.3 ships 1.39.4: no `genslang` implementations, older node definitions), pointed at 1.39.5's. Read once, when the first material compiles; the host's own renderers keep theirs. |
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
-| `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine, whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
+| `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
 | `ATHENEA_SHADER_CACHE` | where compiled shaders are cached between runs. The default is a directory under the platform's cache directory. Deleting it costs one slow first frame. |
 
 A binary built without `ATHENEA_BUILD_VIEW` has no `athenea view` subcommand; that is
@@ -216,6 +216,36 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--reach` | 0.1..10 | `1.5` | how many of its standard deviations a gaussian may stand from the merge that replaces it |
 | `--degree` | 0..3 | `3` | harmonics kept |
 | `--no-camera` | flag | off | do not add `/World/Camera` |
+| `--ratio` | 1..10000 | off | merge by pairs instead of cutting the octree, until this many times fewer gaussians; the four tolerances above are not read then |
+| `--edge` | 0..2 | `0.15` | `--ratio`: a colour difference, sRGB-encoded, never merged across |
+| `--max-angle` | degrees, 0..180 | `60` | `--ratio`: normals further apart are never merged |
+| `--max-aspect` | 1..1000 | `1000` (off) | `--ratio`: a merge whose plane comes out longer than this against its width (or than 1.25 times its members' already were) is refused -- a chain of discs along a trim would merge into a needle that smears |
+| `--merge-glass` | flag | off | `--ratio`: transmitting gaussians (glass) merge among themselves too; off, glass is kept as it is |
+| `--no-surfels` | flag | off | `--ratio`: a flat merge stays a thin gaussian rather than a surfel |
+| `--surfel-flatness` | 0..1 | `0.12` | `--ratio`: a merge of discs whose thinnest axis is under this fraction of its middle one is written a surfel |
+| `--highlight-cone` | 0..1000 | `1` | `--ratio`: on a glossy surface (GGX alpha under 0.1), normals further apart than this times sqrt(alpha) radians never merge -- the merge would move the highlight; large lets the ratio decide alone |
+| `--tree` | path | — | `--ratio`: the whole merge tree written here as well: the leaves in depth-first order, then every merge, with `primvars:athenea:splat:lodParent`, `lodCost`, `lodStart` and `lodSize` (its run of leaves) and the constant `lodTree` |
+| `--camera` | prim path | `/World/Camera` where there is one | `--ratio`: the camera the cloud is made for; a merge under half a pixel there costs nothing of its shape |
+| `--camera-pixels` | 1..65536 | `1920` | `--ratio`: pixels across that camera's image |
+
+**By pairs** (`--ratio`). Each pass, every gaussian -- or merge so far -- weighs
+a merge with its 16 neighbours along two Morton orders of the centres, and
+pairs that chose each other merge, the cheapest first, at most half of what is
+left a pass, until the count is reached or nothing more may merge (the log
+says which, and how many passes). The cost: how much wider the merge is than
+what it replaces, free of scale and weighed by how wide it is on the camera's
+screen (nothing under half a pixel, all of it from two); how much thicker than
+its discs; the normals' turn, more for a mirror (it moves the highlight); the
+colour, sRGB-encoded; metallic, roughness and transmission. Never merged: a
+key (ids, joints, sheets, thin walls, Schlick metals), glass with what is not,
+a mirror (roughness under 0.1) with what is not, normals past `--max-angle`, a
+colour past `--edge`. A merge of discs flat to within 0.12 of its width is
+written a surfel (one scale exactly 0, `primvars:athenea:splat:surfel`); its
+opacity is its mass over its area held at 0.99, and the mass over the area
+unheld is written as `primvars:athenea:splat:coverage`. Every array merges
+over the records a kept gaussian stands for, as below; `transferZonal` and
+`curvature`, which are in each gaussian's own frame, through each one's frame
+to the world and into the kept one's.
 
 A stage comes out as it went in, with fewer gaussians: its root layer is
 copied -- the rig and its animation, the lights, the camera, the Cryptomatte
@@ -242,6 +272,7 @@ file is written as a new stage, as `athenea convert` writes one, in metres.
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
 athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
+athenea decimate car_tx.usdc car_tx_10x.usdc --ratio 10
 ```
 
 ### 2.5 `athenea stage` — a USD stage through the Hydra delegate
@@ -263,6 +294,8 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--variant` | `/World{set=value}` ‹repeatable› | none | a variant selection before the first frame |
 | `--motion-buckets` | 1..8 | `4` | rt: shutter slices |
 | `--splat-override` | `PRIM=M,R,T[,R,G,B[,REPLACE]]` ‹repeatable› | none | metallic, roughness, transmission and a tint for the gaussians that came from `PRIM` (a path in the cloud's Cryptomatte manifest, `*` for every one); `-1` keeps the gaussian's own; `REPLACE` 1 makes R,G,B the colour rather than a factor on it. Only a cloud converted with ids has a manifest. Fails on a prim none names |
+| `--light-state` | name | none | the stage's light state whose levels its lamp groups take (`athenea:lightState`, §4.2); none leaves each group at its `initialOn` |
+| `--light-level` | `GROUP=LEVEL` ‹repeatable› | none | a lamp group's level over the state's (`athenea:lightLevel:GROUP`): 0 off, 1 its radiance, more for a lamp two functions share (a brake lamp at 4 its tail lamp). Fails on a group the stage does not carry |
 | `--refine` | integer | `0` | subdivision levels; 0 draws the control mesh |
 | `--light-samples` | integer | `1` | samples per light per pixel |
 | `--no-transfer-indirect` | flag | the half is added | draw a transferred cloud without its bounced half |
@@ -270,6 +303,7 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--splat-shadows` | flag | off | rt: a relit cloud shadows itself, one ray a splat |
 | `--no-antialias` | flag | antialias on | |
 | `--no-cloud-shadows` | flag | cloud shadows on | |
+| `--no-dome-prefilter` | flag | prefiltered | raster: a dome lights a mesh by one sample a pixel and a shadow ray |
 | `--cloud-shadow-texels` | integer | `1024` | a side, per light |
 | `--cloud-shadow-density` | number | `1.0` | multiplier on the cloud's optical depth |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 is the total alone, the rest add Fourier pairs; 0 lets what receives decide |
@@ -370,6 +404,8 @@ recipe is §3.1 below.
 | `-o`, `--output` | path | `splats.usda` | `.usda`, `.usdc`, `.usd`, or `.athc` with levels of detail: the gaussians and their shading normals only (no metallic/roughness/transmission, Cryptomatte ids, glass index, up axis or unit); `--skinned`, `--transfer` and `--lod-levels` are refused with it |
 | `--prim` | prim path | every mesh | only meshes at or under this path |
 | `--hide` | prim path, repeatable | none | left out with all beneath it, as if invisible (a session opinion; the file is untouched) |
+| `--thin-glass` | material path or name, repeatable | none | an override: a transmitting material read as thin-walled though neither it nor its mesh says so. A glass is already read thin-walled where its material says so or where its mesh is a sheet or a slab -- over a two-hundredth of its edges open, or any shared by more than two, or twice its volume over its area under four cells or a fiftieth of its size, which the conversion measures on the device and prints per mesh; this names one the mesh does not show. A solid glass covers `--glass-opacity` of what stands behind it; a thin wall covers what it reflects head on (under a tenth), so the cabin shows through |
+| `--solid-glass` | material path or name, repeatable | none | the override the other way: a transmitting material kept solid whatever its mesh measures |
 | `--resolution` | integer | `512` | cells across the longest side of the box the density is measured over |
 | `--lod-levels` | integer | `1` | levels of detail: the conversion again at half the resolution each time; `-o` becomes the stage that draws them as one cloud, each level a `<name>_lod<n>.usdc` beside it |
 | `--density` | `per-model` \| `per-mesh` | `per-model` | which box that is |
@@ -379,9 +415,9 @@ recipe is §3.1 below.
 | `--cell-from-camera` | camera prim path | none | each mesh's cell is what one pixel of that camera covers where the mesh's box is nearest to it (held to the near plane), at `--time`; replaces `--density`. `--cell-min`/`--cell-max` bound it, given; nothing is derived |
 | `--camera-pixels` | integer, 1 to 65536 | `1920` | with `--cell-from-camera`: pixels across the camera's horizontal aperture |
 | `--sigma` | number | `1.0` | gaussian width in cells; mesh2splat's own is 0.65 |
-| `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two |
+| `--flatness` | number | `0.1` | the third size as a fraction of the smaller of the other two; `0` makes every gaussian a surfel -- the disc of the other two, one scale exactly 0, drawn by the ray through each pixel (2D gaussian splatting) -- and marks the cloud `primvars:athenea:splat:surfel` |
 | `--opacity` | number, 0 to 1 | `1.0` | coverage: how much of what stands behind it the converted surface covers, multiplied into the material's own opacity. Every opacity is coverage -- this, the material's constant, a map's value, what a glass keeps -- and each gaussian takes what one of the several over a point needs for it, so 0.5 covers half at any size |
-| `--glass-opacity` | number, 0 to 1 | `0.6` | coverage a fully transmitting solid keeps. A thin-walled glass (and a UsdPreviewSurface opacity under one in its default `transparent` mode) covers what the sheet reflects at its index instead |
+| `--glass-opacity` | number, 0 to 1 | `0.6` | coverage a fully transmitting solid keeps. A TX transfer's frame draws the lens's own image -- the sky bent through both faces, the far one guessed from the curvature, and the field where the way through is closed -- but that image comes from the domes alone, so what the rest lets through straight is the scene's other light: at 1 a glass ball under a lamp lost the lit ground behind it. A thin-walled glass (and a UsdPreviewSurface opacity under one in its default `transparent` mode) covers what the sheet reflects at its index instead |
 | `--opacity-cut` | number, 0 to 1 | `0.5` | where a material's opacity is a map with no threshold of its own (UsdPreviewSurface's `opacity`, standard_surface's `opacity`, OpenPBR's `geometry_opacity`, glTF's `alpha` in BLEND): below this no gaussian is written; above it the surface covers what the map reads. A material's own threshold (`opacityThreshold`, glTF's `alpha_cutoff` in MASK) is used instead, and what it keeps is whole |
 | `--max-cells` | integer | `262144` | most cells one triangle may walk |
 | `--texture-size` | integer | `1024` | a map is read no larger than this; 0 reads it at its own size |
@@ -396,14 +432,32 @@ recipe is §3.1 below.
 | `--bake-samples` | integer | `128` | paths every gaussian takes first; a transfer takes this plus `--bake-extra` |
 | `--bake-extra` | integer | `128` | paths a gaussian on average added after the first pass, shared out by sqrt(relative variance / cost) of what the first pass saw; 0 traces none |
 | `--bake-pass-samples` | integer, 1 to 4096 | `64` | paths each added pass gives the gaussians it is for; a gaussian gets at most 16 such passes |
-| `--bake-filter` | integer, 0 to 8 | `3` | a-trous iterations of the splat bake filter (the `SplatBakeFilter` bundle) over the baked light; 0 filters nothing. The first reaches a cell of 1.5 gaussians, each doubles it |
+| `--bake-filter` | integer, 0 to 8 | `3` | a-trous iterations of the splat bake filter (the `SplatBakeFilter` bundle) over the baked light, and over a TX transfer's bounced halves (its indirect half and reflected field); 0 filters nothing. The first reaches a cell of 1.5 gaussians, each doubles it |
 | `--bake-filter-luminance` | number | `4` | the filter's edge: a neighbour whose light differs by this many standard deviations of the gaussian's own noise counts e^-1 as much. Larger smooths more and keeps less of a faint edge |
 | `--bake-filter-indirect-only` | flag | off | filter the indirect light alone and leave the direct as traced |
 | `--bake-bounces` | integer | `3` | after the first hit |
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |
-| `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well |
-| `--skinned` | flag | off | carry the skeleton; forces `--no-bake` |
+| `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well; a zonal transfer keeps the direct half alone |
+| `--transfer-degree` | 2 or 3 | 3 | with `--transfer`: the harmonics' degree, 16 coefficients direct and 48 indirect at 3, the first transfer's 9 and 27 at 2 |
+| `--transfer-cells` | 0, 16 or 32 | 16 | with `--transfer`: cells a side of the grid of open directions over the whole sphere (256 or 1024 bits a gaussian); 0 writes the first transfer's 8 x 8 over the half a gaussian faces |
+| `--transfer-slice` | integer | `0` | with `--transfer`: gaussians baked at a time. 0 takes as many as an answer of 1.5 GB holds, and at most a million where the bounced halves are filtered; the bake's own batch (524288) is the least a slice takes unless this asks for fewer. The filter sees the neighbours within a slice |
+| `--specular-filter` | 0 to 4 | 1 with `--transfer`, else 0 | how much the turn of the surface under a gaussian widens its roughness and its coat's: the corners' normals apart, over the gaussian's width, added to the slopes' variance (Toksvig). 0 keeps the material's roughness; relit and baked conversions keep 0 unless asked |
+| `--validate` | directory | — | measure the conversion material by material against the stage path traced, into this directory (below) |
+| `--validate-camera` | prim path | `--cell-from-camera`, else the stage's first camera | the frames' camera |
+| `--validate-size` | W H | `960 540` | the frames, in pixels |
+| `--validate-paths` | integer | `512` | paths a pixel the GT holds |
+| `--validate-bounces` | integer | `6` | bounces of the GT's paths |
+| `--validate-material` | prim path or name | every material | only this one (repeatable) |
+| `--validate-sky` | `white` or an image file | the stage's lights | every frame under another sky -- a constant of radiance one, or that image on the stage's domes -- with its other lights off; the GT is kept as `gt_<sky>.exr` |
+| `--shadow-catcher` | flag | off | convert the shadow `--prim` casts on its ground instead of `--prim`: a patch of gaussians on the ground under and around it, baked as a TX transfer (the object and the ground are what its rays meet), written with `primvars:athenea:splat:catcher` and drawn black, covering what the object takes of the light. Implies `--transfer` and one cell everywhere |
+| `--catcher-ground` | prim path | found | with `--shadow-catcher` or `--light-catcher`: the ground; found as the largest flat mesh outside `--prim` whose top is at its bottom and which reaches under it |
+| `--catcher-margin` | number | `1.5` | with `--shadow-catcher` or `--light-catcher`: how far past the object's footprint the patch reaches, in heights of the object |
+| `--catcher-cell` | world units | `0` | with `--shadow-catcher` or `--light-catcher`: the patch's cell; 0 is a hundredth of the object's height, a thirtieth for a light catcher |
+| `--light-catcher` | flag | off | convert the light the stage's lamps throw on `--prim`'s ground instead of `--prim`: the shadow catcher's patch (under `/AtheneaLightCatcher`), reaching `--light-reach` ahead and behind, baked as the radiance it sends out under the stage's lights, written with `primvars:athenea:splat:lightCatcher` and drawn added over whatever is behind it, its lamps' layers alone (§3.6). Implies the radiance bake and one cell everywhere; refused with `--transfer` and with `--shadow-catcher` |
+| `--light-reach` | number | `3` | with `--light-catcher`: how far past the object's ends, along its longer horizontal axis, the patch reaches, in lengths of the object; never less than `--catcher-margin` heights |
+| `--transfer-lobes` | 0 to 2 | `0` | with `--transfer`: keep it as this many zonal lobes in each gaussian's own frame (the `SplatTransferZonal` bundle); 0 is two lobes with `--skinned` and nine harmonics in the world otherwise |
+| `--skinned` | flag | off | carry the skeleton; forces `--no-bake`, keeps a `--transfer` as zonal lobes, traced at the bind pose (the stage's skeletons held there in the session layer) whatever `--time` says |
 | `--range` | `START:END[:STEP]` | the stage's own range | time codes a skinned cloud keeps |
 | `--default-lights` | flag | off | a dome and a sun for the bake, on a stage with none |
 | `--time` | number | `0` | the instant the stage is posed and the bake traces at |
@@ -411,11 +465,30 @@ recipe is §3.1 below.
 
 `--skinned` and a bake are refused together: a cloud that moves cannot carry
 light baked in one pose, so the conversion says so and keeps the material.
+`--skinned` and `--transfer` go together: the transfer is kept as zonal lobes
+in each gaussian's frame, which turn with the gaussian (below).
 
 A mesh whose GeomSubsets (`materialBind` family) bind materials of their own
 is converted a subset at a time, each with its material, and the faces no
 subset claims with the mesh's; the log names each subset's prim. Their
 gaussians keep the mesh's Cryptomatte id.
+
+A material input that a constant or a plain map cannot carry -- one a graph
+computes (a mix, a noise, a hexagonal tiling), a `tiledimage` tiled or
+offset, a surface shader other than `standard_surface`, OpenPBR, glTF's or
+UsdPreviewSurface, or a coat colour -- is named in the log, once a material
+and input:
+
+```
+mesh2splat: '/World/Looks/Materials/M_BrickPattern': 'base_color' is computed by a graph (ND_clamp_color3); a TX bake (--transfer) reads what it can of it back from the material on the device; otherwise the value read here stands
+```
+
+With `--transfer` the bake reads those fields back from the material at each
+gaussian -- the base colour (times the coat colour over it), the roughness of
+the specular and of the coat, the metalness and the emission -- and says into
+how many gaussians: `mesh2splat: the material read back on the device into N
+gaussians`. Without it they keep the constant the stage gave. A material that
+transmits keeps its base colour as read.
 
 The output is written whole or not at all: under `.<name>.partial-<pid>.<ext>`
 in the same directory, and renamed to `-o` once it is complete. A conversion
@@ -438,6 +511,42 @@ the stage that draws them are written so.
 | `--octave` | integer | `16` | directions along each side of the octahedral map |
 | `--cut` | number | `0.001` | transmittance under which a bake ray stops |
 | `--time` | number | `0` | the instant the stage is committed at |
+
+### 2.9.1 `athenea lights merge` — a cloud with its lamps
+
+The base cloud (every lamp off) and one cloud a group of lamps into the base
+with a light layer a group, which a frame adds times each group's weight
+(§3.6). Each layer cloud must be the same conversion of the same geometry as
+the base, with that group alone lit at radiance one.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `base` | path, required | — | `.usd`, `.usda`, `.usdc`: the cloud with every lamp off |
+| `--layer` | `GROUP=CLOUD` ‹repeatable›, required | — | a group's cloud; `GROUP` becomes `primvars:athenea:splat:lightLayer:GROUP` and must be a valid identifier. Its constant term is taken (`0.5 + SH0 dc`, linear where the cloud says `primvars:athenea:splat:linear`, else through the sRGB curve); its other harmonics are not |
+| `--lights` | path | none | a `.lights.usda` sidecar whose `LightGroups`, `LightStates` and `LightRules` Scopes are copied under the cloud's prim, wherever in the sidecar they stand |
+| `--prim` | prim path | the first ParticleField | the base's field; a layer's is its first |
+| `--tolerance` | number | `1e-4` | how far a layer's gaussian may stand from the base's, per coordinate, relative to the coordinate (absolute below 1) |
+| `--drop-below` | number | `0` | a layer none of whose gaussians sends out more than this per unit of radiance (in any channel) is dropped and said so |
+| `-o`, `--output` | path, required | — | the base's root layer, its layers authored on its field |
+
+It prints a line a group (`lights merge: cruce: 412093 of 3061200 gaussians
+lit`, `, dropped` for one dropped), a line a Scope copied, and `lights merge:
+wrote PATH`. It refuses, and writes nothing, when a layer holds another
+number of gaussians:
+
+```
+lights merge: 'layer_drl.usdc' (drl): 3061199 gaussians where the base 'base_tx.usdc' has 3061200; a layer must be the same conversion of the same geometry
+```
+
+or when any of its gaussians stands elsewhere:
+
+```
+lights merge: 'layer_drl.usdc' (drl): 12 of its 3061200 gaussians are not where the base's are (tolerance 0.0001); a layer must be the same conversion of the same geometry
+```
+
+A layer that does not say its colours are linear is read as sRGB and warned
+about. The comparison and the conversion are a kernel each layer; two
+counters and the layer's floats cross back.
 
 ### 2.10 `athenea aofx` — the effect plugins
 
@@ -471,8 +580,9 @@ athenea aofx run tv.mediapro.aofx.invert shot.exr -o inverted.exr
 One image prints the mean and the largest value of each channel. Two print that
 for both, then how far the first is from the second, the second taken as the
 reference: the relative HDR error (`relMSE`, p99 and largest relative
-difference) and the 8-bit sRGB code-value distribution (p99, largest, pixels
-over 2). The CPU only reads the files; every number is a kernel's. The kernels
+difference), the 8-bit sRGB code-value distribution (p99, largest, pixels
+over 2), and as it is seen: PSNR of the sRGB-encoded colour and the mean SSIM
+of its luminance over a 7 x 7 box (`display`). The CPU only reads the files; every number is a kernel's. The kernels
 are the Measure effect's (§7.1), run through the AOFX host as a compositor runs
 them, so the bundle must be on the search path: one built in this tree always
 is.
@@ -672,6 +782,42 @@ does not do is light anything: the mesh's emissive triangles are a light for
 the path tracer, the cloud's gaussians are not. An OpenPBR coat over the
 emission, which tints and dims it on the mesh, is not carried.
 
+**What it layers over its base.** What a material puts over its colour,
+metalness and roughness is carried as constants of the material: the
+dielectric reflection's weight and tint (OpenPBR `specular_weight` and
+`specular_color`, standard_surface `specular` and `specular_color`, glTF
+`specular` and `specular_color`; the tint is also a metal's edge colour) at
+the specular's index (`specular_ior`, `specular_IOR`, `ior`); a clear coat
+(`coat_weight`, `coat`, UsdPreviewSurface `clearcoat`, glTF `clearcoat`, with
+its roughness and index; UsdPreviewSurface's coat is at its own `ior`), with
+OpenPBR's `coat_darkening` (1 by default there, none in the other
+vocabularies); and a sheen, its colour times its weight (OpenPBR's fuzz,
+`fuzz_weight` x `fuzz_color`; standard_surface `sheen` x `sheen_color`; glTF
+`sheen_color`) with its roughness. A UsdPreviewSurface in
+its specular workflow (`useSpecularWorkflow` 1) is carried as the index whose
+reflectivity head on is its `specularColor`'s brightest channel, tinted by the
+colour over it, and no metal. A map on the specular's weight or colour, the
+coat's weight or roughness, or the sheen's colour, weight or roughness is
+sampled at every gaussian, as the base's maps are, in place of the input's
+constant -- the first three maps a material has; past those, and on an index
+or `coat_darkening`, the constant stands and the log says so. Each surface's own defaults are what is
+assumed where nothing is authored (an OpenPBR coat at 1.6, a standard_surface
+one 0.1 rough at 1.5). The log line of a mesh whose material layers anything
+says what:
+
+```
+mesh2splat: /World/Ball layers specular 1.00 x (1.00 1.00 1.00) at 1.500, coat 1.00 rough 0.00 at 1.450, sheen (0.00 0.00 0.00) rough 0.30
+```
+
+They are written (the nine primvars of §4.3 from `specularWeight` on) only
+where some material of the stage differs from the plain specular -- weight
+one, white, an index of 1.5, no coat, no sheen -- and then for every
+gaussian. Relit, transferred and baked clouds alike reflect with them when
+they are drawn: a bake keeps the body and leaves the reflections to the frame.
+The bake tells a metal from a polish by the material's metalness, so a dark
+metal under a lacquer (a car's paint, a 0.05 base) bakes as the metal it is
+rather than as nothing.
+
 **Fewer gaussians where the surface is the same.** A gaussian a cell is what
 the surface costs wherever it is, and most of a surface -- a painted panel, a
 wall, a floor -- is the same from one cell to the next. `--simplify` walks each
@@ -748,6 +894,25 @@ leaves out. The rays are the same rays, so the second half is free to bake and
 A transfer and a light bake are exclusive: one is what the light did, the
 other is what any light would do.
 
+**A transfer that turns with the gaussian.** Nine harmonics are in the world
+and stay there when a skeleton turns the gaussian. `--transfer-lobes 1` or `2`
+-- and `--skinned`, where two is the default -- keeps the direct half instead
+as one or two zonal lobes a gaussian, each an axis written in the gaussian's
+own frame and three coefficients: ten floats a gaussian against nine, with no
+indirect half, and the shadow bits laid out over the gaussian's frame. Every
+frame turns the axes with whatever frame the gaussian has, so the transfer
+follows the wing. A skinned cloud is posed at `--time` before the bake traces
+it, since the stage it traces is posed there; what the lobes hold is what that
+pose let through around each gaussian, so occlusion by another limb in another
+pose is not in them. The fit is the `SplatTransferZonal` bundle, which must be
+on the AOFX search path, and the log says its relative error against the nine
+harmonics it replaces, `|f - g| / |f|` over the sphere, as a median, a 90th and
+a 99th percentile (each the upper edge of a quarter octave):
+
+```
+mesh2splat: transfer kept as 2 zonal lobes in each gaussian's frame for <n> gaussians in <t> ms; relative error against the nine harmonics: median <a>, p90 <b>, p99 <c>
+```
+
 **A cloud that moves.** `--skinned` builds the gaussians in the bind pose and
 gives each one the joints that carry it, so the cloud is deformed at render
 time by the Skeleton it is bound to. A bake is refused with it, because light
@@ -767,6 +932,31 @@ athenea visibility bird_gs.usdc --skeleton-stage bird.usda --skeleton-prim /Worl
 The last line is the third bake: what the cloud casts on itself, by part, so a
 wing shadows the body at every pose without a ray. It edits the cloud's file
 in place unless `-o` names another.
+
+**A conversion measured by the engine.** `--validate DIR` converts the stage
+once a material, with every other mesh left a mesh, and measures each against
+the stage path traced, over that material's own pixels -- the mask is the
+mesh frame's Cryptomatte, so a mesh of two materials (GeomSubsets) counts in
+both. The GT is traced once into `DIR/gt.exr` and read back by the next run of
+the same size; delete it to trace it again. Every other option is the
+conversion's, so `--transfer`, `--no-bake` and the rest are what is measured.
+`--hide` leaves its prims out of everything -- the GT, every frame and the
+bake -- through `DIR/hidden.usda`, a layer that switches them off; a GT
+traced before with other prims hidden is read back all the same, so give
+each `--hide` its own directory. What it writes:
+
+| file | what |
+|---|---|
+| `validate.json` | per material: meshes, gaussians, the share of the frame, relMSE, p99, mean and GT mean over its pixels, and the mesh rasterised's relMSE and mean |
+| `<material>.png`, `.exr` | GT, the mesh rasterised and the cloud, side by side, over the material's box |
+| `<material>_gs.exr` | the cloud's whole frame |
+| `gt.exr`, `mesh.exr` | the stage path traced, and rasterised as meshes |
+| `clouds/<material>.usdc`, `.usda` | the cloud, and the stage it was drawn in |
+
+```sh
+athenea mesh2splat car.usda --transfer --cell-from-camera /World/Camera \
+    --validate car_validate --validate-size 1920 1080 --validate-paths 512
+```
 
 ### 3.2 Rendering a stage
 
@@ -810,7 +1000,19 @@ lights with. The default sun is normalized. A `DomeLight` ignores
 **Shadows.** Meshes shadow by ray on the traced route. A cloud casts through a
 transmittance map at each light, with no ray at all:
 `--cloud-shadow-texels`, `--cloud-shadow-density` and `--cloud-shadow-terms`
-control it, and `--no-cloud-shadows` turns it off. `--splat-shadows` is the
+control it, and `--no-cloud-shadows` turns it off. A `DomeLight` casts too:
+in the map's slots the lights leave (eight in all), six maps along its zenith
+and a ring forty degrees up, and a mesh's sample of the dome reads the one
+nearest its direction. On the raster route a dome lights a mesh
+**prefiltered** by default: no sample and no ray, so no grain -- the
+diffuse lobes take the irradiance of the sky's harmonics plus the sun taken
+out of them, the glossy ones the dome's image blurred to their roughness,
+and the cloud's shadow is those six maps softened by the width of sky each
+stands for. What it cannot see is a mesh shadowing a mesh from the dome, and
+a surface that transmits (glass) keeps the dome sampled. Where the frame's
+lights are all such domes, no shadow ray is traced at all: glass samples its
+domes shadowed by the clouds alone. `--no-dome-prefilter` samples the domes
+everywhere, as it used to. `--splat-shadows` is the
 other direction on the traced route: a relit cloud shadowing itself, one ray a
 splat.
 
@@ -873,8 +1075,15 @@ the merged levels' the weighted mean of what they stand for; it is bit 2 of
 the header's `flags` (bit 0 is the normals), so a file without it reads as
 before. A cloud without normals, without emission and in sRGB is still written as
 version 1, so a reader of version 1 alone opens it: version 2 is written only
-where the `flags` are not zero. A `flags` bit this build does not know (any
-past bit 2) is refused, file named: a later bit may add a block, and a reader
+where the `flags` are not zero. A cloud with a material (`pbr`, and its
+layers where it has them) keeps it under bit 4, a word an element and three
+more for the layers; one with a transfer keeps it under bit 5, its values as
+f16 pairs and its open directions after them -- the counts in a header of
+thirty-two bytes after the first, and the merged levels' a group's transfer
+averaged by opacity (a zonal one, whose axes do not average, a gaussian's),
+its bits set where half the weight has them, its material a gaussian's. Bit
+3 is kept for proposal 009. A `flags` bit this build does not know (bit 3,
+or past bit 5) is refused, file named: a later bit may add a block, and a reader
 that skipped it would read every block after it from the wrong place.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
@@ -932,6 +1141,36 @@ Each EXR carries its timecode, its rate as a rational, the TAI instant, the
 frame index, the USD time and how late the wake was, so a frame can be placed
 on a timeline by what is inside it.
 
+### 3.6 A car's lamps
+
+A car whose lamps switch at run time is the base cloud and a light layer a
+group of lamps (docs/decisions.md, light groups). Each comes out of the same
+conversion of the same geometry: the base with every lamp off, and one a group
+with that group alone lit at radiance one and the dome black. Then the layers
+are merged onto the base, with the groups and states of the `.lights.usda`:
+
+```sh
+athenea mesh2splat base.usda --prim /World/Corvette --transfer ... -o base_tx.usdc
+athenea mesh2splat group_cruce.usda --prim /World/Corvette ... -o layer_cruce.usdc   # and each group
+athenea lights merge base_tx.usdc --layer cruce=layer_cruce.usdc --layer drl=layer_drl.usdc \
+    --lights corvette.lights.usda -o corvette_lights.usdc
+athenea stage night.usda --light-state noche_ciudad -o night.exr
+athenea stage night.usda --light-state aparcado --light-level drl=0.5 -o drl.exr
+```
+
+The light the lamps throw on the ground is a light catcher (`mesh2splat
+--light-catcher`), converted the same way -- a base and one a group, on the
+same stages -- and merged the same way; the same weights light the car and its
+pool. A frame draws, for each group, its level times its
+`emissionLuminance` times its `emissionColor` times its layer, added to what
+the cloud shows; a group's level is `athenea:lightLevel:<group>` where set,
+else the state's target (`athenea:lightState:target:<group>`, 0 where the
+state does not name it), else 1 for `initialOn` and 0 otherwise. A layer is
+light per unit of the group's radiance: the group's material at
+`emission_luminance` 1 when it was baked. Switching a lamp uploads nothing.
+Rules and time curves are not evaluated (a state and levels are what a frame
+takes), and only the rasteriser adds the layers.
+
 ## 4. Authoring for this engine in USD
 
 ### 4.1 Pointing an application at the plugin
@@ -964,6 +1203,7 @@ found and does not.
 | `athenea:pathAdaptive` | bool | `false` | stop a pixel once its error is low enough |
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |
 | `athenea:pathMis` | bool | `true` | multiple importance sampling |
+| `athenea:glassShadows` | bool | `true` | rt and its bakes: a light's shadow ray goes on through up to 4 faces of glass whose transmission is a delta (a thin wall; a solid of constant specular roughness under 0.03), tinted by each; off, glass stops it |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
 | `athenea:motionBuckets` | int | `4` | rt: shutter slices, 1 to 8 |
 | `athenea:antialias` | bool | `true` | a sub-pixel offset per pass |
@@ -971,6 +1211,7 @@ found and does not.
 | `athenea:splatReflections` | bool | `false` | rt: a gaussian reflects the cloud it belongs to, one ray each |
 | `athenea:splatShadows` | bool | `false` | rt: a relit cloud shadows itself |
 | `athenea:cloudShadows` | bool | `true` | a cloud's transmittance map at each light |
+| `athenea:domePrefiltered` | bool | `true` | raster: a dome lights a mesh prefiltered, no sample and no ray |
 | `athenea:cloudShadowResolution` | int | `1024` | texels a side, per light |
 | `athenea:cloudShadowTerms` | int | `0` | 1 is the total; 3, 5, 7 add Fourier pairs; 0 lets what receives decide |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplier on the cloud's optical depth |
@@ -985,6 +1226,8 @@ Read but not declared:
 | `athenea:disableMotionBlur` | bool | settings or product | for this product |
 | `athenea:disableDepthOfField` | bool | settings or product | for this product |
 | `athenea:lightGroup` | string | a light prim | the group a light's contribution is gathered under |
+| `athenea:lightState` | string | settings prim, or a host | the light state whose targets a stage's lamp groups take; empty: each at its `initialOn` (§3.6). Read by `StageRenderer`, not by hdAthenea under another host |
+| `athenea:lightLevel:<group>` | float | settings prim, or a host | that lamp group's level over the state's: 0 off, 1 its radiance |
 
 ### 4.3 The API schemas
 
@@ -998,17 +1241,33 @@ showing the radiance it carries.
 |---|---|---|
 | `primvars:athenea:splat:relight` | bool | `false` |
 | `primvars:athenea:splat:litBody` | bool | `false` |
+| `primvars:athenea:splat:catcher` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
+| `primvars:athenea:splat:surfel` | bool | `false` |
+| `primvars:athenea:splat:coverage` | float[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
 | `primvars:athenea:splat:ior` | float | `0` |
-| `primvars:athenea:splat:transferDirect` | float[] ‹9 a gaussian› | — |
-| `primvars:athenea:splat:transferIndirect` | float[] ‹27 a gaussian› | — |
-| `primvars:athenea:splat:shadowBits` | int[] ‹2 a gaussian› | — |
+| `primvars:athenea:splat:transferDirect` | float[] ‹9 or 16 a gaussian› | — |
+| `primvars:athenea:splat:transferIndirect` | float[] ‹27 or 48 a gaussian› | — |
+| `primvars:athenea:splat:transferReflected` | float[] ‹48 a gaussian› | — |
+| `primvars:athenea:splat:transferZonal` | float[] ‹10 a gaussian› | — |
+| `primvars:athenea:splat:shadowBits` | int[] ‹2, 8 or 32 a gaussian› | — |
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:curvature` | float[] ‹3 a gaussian› | — |
+| `primvars:athenea:splat:schlickMetal` | int[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 a gaussian› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 a gaussian› | — |
+| `primvars:athenea:splat:specularWeight` | float[] ‹1 a gaussian, 0 to 1› | `1` |
+| `primvars:athenea:splat:specularColor` | color3f[] ‹1 a gaussian, 0 to 1› | `(1, 1, 1)` |
+| `primvars:athenea:splat:specularIor` | float[] ‹1 a gaussian, 1 to 2.99› | `1.5` |
+| `primvars:athenea:splat:coatWeight` | float[] ‹1 a gaussian, 0 to 1› | `0` |
+| `primvars:athenea:splat:coatRoughness` | float[] ‹1 a gaussian, 0 to 1› | `0` |
+| `primvars:athenea:splat:coatIor` | float[] ‹1 a gaussian, 1 to 2.98› | `1.5` |
+| `primvars:athenea:splat:sheenColor` | color3f[] ‹1 a gaussian, 0 to 1› | `(0, 0, 0)` |
+| `primvars:athenea:splat:sheenRoughness` | float[] ‹1 a gaussian, 0 to 1› | `0` |
+| `primvars:athenea:splat:coatDarkening` | float[] ‹1 a gaussian, 0 to 1, on at 0.5› | `0` |
 
 `relight` says the colours are an albedo the scene's lights must light.
 `litBody` says they are already the light on the material's body, so what a
@@ -1025,12 +1284,70 @@ sky. Neither shows a **mesh** through the glass.
 The two transfer arrays are what `--transfer` writes instead: how much of any
 sky reaches the gaussian, direct and after a bounce, which the frame combines
 with the sky that is there. A cloud that has them needs no `litBody`, and
-there is no attribute saying so — carrying them is what says it.
+there is no attribute saying so — carrying them is what says it. Sixteen and
+forty-eight a gaussian are degree 3 (`--transfer-degree 3`, the default),
+dotted with sixteen harmonics of the sky; nine and twenty-seven are the first
+transfer's, read as they always were.
+`transferZonal` is the direct half as two zonal lobes in each gaussian's own
+frame, written in place of `transferDirect` (`--transfer-lobes`, `--skinned`):
+for each lobe the octahedral square's (u, v) of its axis in the frame the
+gaussian's orientation gives, then its zonal coefficients for bands 0, 1 and 2
+(a one-lobe fit writes the second as zeros). Where both are there it is the one
+read. A reader that does not know it draws the cloud relit with no transfer,
+which is the whole of its versioning: it is a new primvar, not a new meaning of
+an old one; a `.athc` carries either kind under its bit 5.
 `shadowBits` is written beside them: sixty-four bits a gaussian, one a cell of
-an 8 x 8 octahedral grid over the sphere in the cloud's own space, set where
-the bake's ray in that direction left the scene. It is what shadows the sun a
-frame takes out of the sky; it is read only on a cloud that also carries
-`transferDirect`, and without it the sun is shadowed softly by the transfer.
+an 8 x 8 octahedral grid over the sphere in the cloud's own space -- over the
+gaussian's own frame beside `transferZonal` -- set where the bake's ray in that
+direction left the scene. It is what shadows the sun a frame takes out of the
+sky; it is read only on a cloud that also carries `transferDirect` or
+`transferZonal`, and without it the sun is shadowed softly by the transfer.
+Eight or thirty-two ints a gaussian are the TX transfer's (`--transfer-cells`
+16 or 32): a 16 x 16 or 32 x 32 grid over the whole sphere, the half behind
+the surface traced as well. The count is what says which; nothing else does.
+With them a frame shadows the sun and any light that is a direction, and
+narrows every reflection -- the base's and the coat's -- by the share of its
+own lobe that the bits leave open, rather than by one number for the whole
+hemisphere.
+`transferReflected` is what the closed directions show: the light arriving at
+the gaussian by direction after it met the scene, under a white sky of
+radiance one, as sixteen rgb harmonics (degree 3). A frame scales it to the
+sky it has -- by how much more the indirect half gathers under that sky than
+under the white one, the sun's bounce included -- and a reflection shows it
+where the bits say the sky does not reach: the body in the chrome, the
+ground in the paint. It is written with the cells and the indirect half, and
+read only beside them; `athenea:splatTransferIndirect` turns it off with the
+indirect half. A conversion fills it over the closed directions: along each
+it holds the mean of what the closed directions about it show, and along an
+open one the closed directions' mean, so a closed direction beside an open
+one is not read diluted. A cloud converted before that holds the projection
+as the bake made it, and is read the same way.
+A light that is not the sky -- distant, sphere, disk, rect -- lights a cloud
+with the cells through the same lobes, shadowed by the bits over the cone
+the light subtends from each gaussian (its penumbra), and its bounce reaches
+the body and the reflections as the sun's does. Where a frame also measured
+a shadow for it (`--splat-shadows`, or the cloud's shadow map), the darker of
+the two stands. The bits
+say which ways leave the scene, not which reach a lamp: an object beyond a
+lamp that stands among things still shadows it.
+A transmitting gaussian of a TX transfer keeps the far half too: its field is
+baked over the whole sphere, so the rasteriser shows, through a windscreen,
+the sky where the bits behind are open and what the field holds -- the
+cabin -- where they are not, along the way straight through, as a slab sends
+it. Where a cloud carries the layers, a transmitting gaussian bends by its
+own index (`specularIor`) wherever the cloud's `ior` says it bends at all;
+the cloud's single `ior` is whichever glass the conversion met first.
+`curvature` is how the surface turns under the gaussian: its shape operator
+in the gaussian's own first two axes (uu, uv, vv), from the mesh's corner
+normals. `athenea mesh2splat --transfer` writes it (not with levels of detail
+or `--skinned`), and a frame then turns the reflection across each
+gaussian's footprint -- the highlight a car's lacquer shows moves across a
+gaussian rather than standing flat on it.
+`schlickMetal` is nonzero where the gaussian's metal is a Schlick -- OpenPBR's
+and glTF's, from its colour head on to its specular colour at grazing --
+rather than the conductor of an artistic index that standard_surface's and
+UsdPreviewSurface's are; `athenea mesh2splat` writes it from the material's
+vocabulary. For a dark metal the two part by twice at sixty degrees.
 `thinWalled` is nonzero where the gaussian came from a thin-walled glass
 (OpenPBR `geometry_thin_walled`): the conversion made it as transparent as
 the sheet (a card of them stops `2R/(1+R)`, 0.077 at index 1.5) and the frame
@@ -1067,7 +1384,25 @@ gaussian in the file, four on the device as RGB9E5: three 9-bit mantissas
 under a shared exponent, up to 65408, each channel to 1/512 of the
 brightest); a capture has none.
 
-**`AtheneaSplatSkinningAPI`** — the joints that carry a cloud.
+The nine from `specularWeight` to `coatDarkening` are what the material
+layered over its base, in OpenPBR's units: the dielectric reflection's weight,
+tint and index (the tint is also a metal's edge colour), a clear coat over
+everything -- a GGX dielectric of its own roughness and index -- and a sheen
+(its colour times its weight, Imageworks' lobe). Each layer takes from what
+lies under it the share it reflects at the eye, as MaterialX's `layer` does, so
+a coat makes the body under it darker at grazing and gives that light back as
+its own reflection; with `coatDarkening` the base under the coat is darker
+still, by what the coat's inside reflects back into it (OpenPBR's
+`(1 - K) / (1 - E K)`). A cloud carries them where any is authored and reads a
+missing one at the default in the table; one with none of them reflects with
+the plain specular, exactly as before they existed. They are clamped into
+their ranges, and on the device they are three words a gaussian, a byte a
+value (an index in steps of 1/128, the coat's in steps of 1/64 beside its
+darkening's bit). `athenea mesh2splat` writes all nine where some material of
+the stage layers anything (52 bytes a gaussian in the file, twelve on the
+device). The levels of detail and a `.athc` carry them with the material
+(bit 4), a merged group taking one gaussian's.
+ — the joints that carry a cloud.
 
 | Attribute | Type | Note |
 |---|---|---|
@@ -1168,6 +1503,24 @@ bound to say it.
 A Material with a `volume` terminal is the standard way to say the same
 thing, and where one is bound it wins.
 
+**Light groups**, which no schema declares yet. A cloud's lamps are a primvar
+a group on its field, and its groups and states are attributes on Scope prims
+-- children of a `LightGroups` and of a `LightStates` Scope anywhere on the
+stage, the first of a name winning (§3.6):
+
+| Attribute | On | Type | Default |
+|---|---|---|---|
+| `primvars:athenea:splat:lightLayer:<group>` | the field | color3f[] ‹1 a gaussian, linear, per unit of radiance› | — |
+| `primvars:athenea:splat:lightCatcher` | the field | bool | `false` |
+| `athenea:lightGroup:emissionLuminance` | a group | float | `1` (`:radiance` where this is missing) |
+| `athenea:lightGroup:emissionColor` | a group | color3f | `(1, 1, 1)` (`:color` where this is missing) |
+| `athenea:lightGroup:initialOn` | a group | bool | `false` |
+| `athenea:lightState:target:<group>` | a state | double | a group not named is at `0` |
+
+A cloud carries at most 16 layers; a layer not three floats a gaussian is
+left out with a warning. A light catcher draws its layers alone, added over
+whatever is behind it, and casts nothing.
+
 ### 4.4 What the engine ignores, and what it refuses
 
 It **ignores** what it has no meaning for: a primvar it does not read, a
@@ -1210,7 +1563,8 @@ display encoding; exposure; the shutter; the render scale, which draws at a
 fraction of the window and costs proportionally; the timeline with play,
 pause, step and *every frame*; the variant sets the stage carries, with a
 filter when one has more than a dozen variants; the **Lights** block; the
-**Sky** block; and, at the
+**Lamps** block, where the stage carries light groups; the **Sky** block;
+and, at the
 bottom, the device, the frame's timings, what the last frame held, and what
 was picked.
 
@@ -1260,6 +1614,14 @@ is never edited. It is how a sky is judged alone: a stage's own
 and leaves a highlight no sky explains. A dome switched off takes its sky,
 background included, and leaves the **Sky** block until it is switched back
 on; switching a dome back costs the rebuild a new sky costs.
+
+**Lamps** is the stage's light groups (§3.6): a *State* combo -- *(as each
+starts)* and every state the stage carries; choosing one clears the levels set
+over the last -- and for each group a switch and a *Level* slider, 0 to 4.
+Each is a render setting (`athenea:lightState`, `athenea:lightLevel:<group>`),
+which the next frame turns into the groups' weights: nothing is reloaded or
+baked again. Hovering a group says its prim, its `emissionLuminance` and its
+`emissionColor`.
 
 **Stage** is the prim tree, and what is picked is selected in it.
 
@@ -1438,6 +1800,7 @@ exact (high is 0 below 16 777 216):
 | `reference` | the same for Reference; only when it is wired |
 | `hdr` | relMSE, p99 relative difference, largest relative difference, the relative squared error's sum, pixels (high, low) |
 | `codes` | 8-bit p99, 8-bit largest, pixels over `threshold` (high, low), `threshold`, pixels (high, low) |
+| `display` | PSNR of the sRGB-encoded colour (dB, 999 when equal), mean SSIM of the encoded luminance over a 7 × 7 box, the encoded colour's mean squared error |
 
 The relative difference is binned in eighths of an octave from 2^-16, so its
 p99 and largest are a bin's upper bound (about 9 %). The sums are there for a
@@ -1528,8 +1891,8 @@ A script's own header says what it needs and where it puts things.
 | a cloud's reflections look flatter than the mesh's | it carries no shading normal (`primvars:athenea:splat:normal`): converted before conversions wrote one | convert it again; `--normal-map-turns` also turns the discs themselves |
 | `cells of relief wanted more than N gaussians`, and the relief shows gaps on its steepest slopes | the relief stretched those cells past the split allowed | raise `--displace-refine`; a pole of the texture coordinates stretches without bound and keeps a few whatever the value |
 | a cloud's reflections look softer than the mesh's | the conversion's cell is the blur kernel: a cloud reads as the mesh at `r + 9c/R`, where `c` is the cell and `R` the radius of curvature | convert at a finer `--resolution`: a mirror at roughness `r` wants a cell under `r/9` of that radius. It costs the file, not the frame -- fifteen times the gaussians was 36 % more time a frame and sixteen times the disk |
-| a glass ball shows the room but does not bend it | the cloud has no index | `athenea mesh2splat` writes the glass material's IOR; for a cloud from elsewhere author `primvars:athenea:splat:ior` (1.5 is glass). A cloud keeps one index: with two glasses of different IOR the first is kept and the conversion says so |
-| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear) and 2 (emission))` | the `.athc` was written by a newer engine, with something in its blocks this build does not know where to find | read it with that engine, or update this one |
+| a glass ball shows the room but does not bend it | the cloud has no index | `athenea mesh2splat` writes the glass material's IOR; for a cloud from elsewhere author `primvars:athenea:splat:ior` (1.5 is glass). A cloud keeps one index: with two glasses of different IOR the first is kept and the conversion says so; a cloud that carries the layers bends each gaussian by its own specular index instead |
+| `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material) and 5 (transfer))` | the `.athc` was written by a newer engine, with something in its blocks this build does not know where to find | read it with that engine, or update this one |
 | a cloud renders blunt and then sharpens | chunks are still arriving | raise `--stream-budget`, or wait; a still settles first |
 | `OutOfMemory: ... does not fit in the GPU's memory budget`, exit code 3 | the frame needed more than the device's budget, even after the engine gave back what it could and stepped down | close what else holds the GPU, render smaller, give a streamed asset a smaller budget; `ATHENEA_GPU_BUDGET` raises or lowers the budget |
 | `OutOfMemory: ... does not fit in the memory the system has free` | on Apple silicon, the machine's free memory less its 1.5 GiB reserve would not hold the allocation: other processes hold the rest | close what else runs, or run smaller; the reserve is not configurable |

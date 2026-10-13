@@ -24,12 +24,16 @@
 // colour, which is what every dome did before this existed.
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/Texture.h"
+#include "athenea/gpu/algo/Mips.h"
 
 namespace athenea::light {
 class LightTable;
@@ -54,7 +58,9 @@ inline constexpr uint32_t kEnvironmentFloorSide = 16;
 /// How wide level 0 is allowed to be: where a 4k sky lands, and what holds a
 /// slice to 45 MB.
 inline constexpr uint32_t kEnvironmentWidestSide = 2048;
-inline constexpr uint32_t kEnvironmentCoefficients = 9;
+inline constexpr uint32_t kEnvironmentCoefficients = 16;   // degree 3 (environment.slang)
+/// Texels a row of `Environment::meshView` (env_mesh.slang's kEnvMeshTexels).
+inline constexpr uint32_t kEnvironmentMeshTexels = 12;
 /// The light a slice was prepared for, when it was not prepared at all.
 inline constexpr uint32_t kEnvironmentNone = 0xFFFFFFFFU;
 
@@ -75,9 +81,11 @@ public:
                                      std::span<const uint32_t> domeTextures, uint32_t lightCount);
 
     /// THE SUN, TAKEN OUT OF EACH DOME: two float4 a slice, the first
-    /// (direction, solid angle) and the second (irradiance, the sky's mean
-    /// luminance). A solid angle of 0 says that dome has no sun and its
-    /// harmonics hold the whole sky, as they did before this existed.
+    /// (direction, the half angle of the cone its texels fill) and the second
+    /// (irradiance, the luminance its texels were cut at). A half angle of 0
+    /// says that dome has no sun and its harmonics hold the whole sky. The
+    /// texels are env_sun's `sunRegionOf`, which env_project skips: what
+    /// leaves the harmonics is what arrives as the light.
     ///
     /// The prefiltered map keeps its sun. A reflection of a disc is a
     /// highlight and the map at 2048 a side resolves it; what could not hold
@@ -95,6 +103,12 @@ public:
     /// Lights `domeOfLight` describes, which is the frame's whole light list.
     [[nodiscard]] uint32_t lightCount() const noexcept { return lights_; }
     [[nodiscard]] bool ready() const noexcept { return domes_ > 0 && texels_.valid() && sh_.valid(); }
+    /// THE SAME SKY FOR A MESH'S SHADING KERNEL, which has no buffer slot
+    /// left: a texture of `kEnvironmentMeshTexels` a row and a row a slice
+    /// (env_mesh.slang has the layout): the harmonics, the sun, and the light
+    /// the row is for. What the raster route lights a mesh with when it reads
+    /// a dome prefiltered rather than sampling it. Null before a build.
+    [[nodiscard]] rhi::ITextureView* meshView() const noexcept { return meshView_.get(); }
     /// The octahedral side of level 0 these slices were written at, which the
     /// frame must hand to whoever reads them.
     [[nodiscard]] uint32_t baseSide() const noexcept { return baseSide_; }
@@ -118,6 +132,17 @@ private:
     gpu::ComputeKernel project_;
     gpu::ComputeKernel prefilter_;
     gpu::ComputeKernel sunKernel_;
+    gpu::ComputeKernel meshPack_;
+    /// THE SKY WITHOUT ITS SUN, a lat-long a dome with its own mips
+    /// (env_residual): what the prefilter reads, the sun's texels cut as the
+    /// harmonics cut them, since the reflections take the sun analytically.
+    gpu::ComputeKernel residualKernel_;
+    std::array<gpu::Texture, kEnvironmentDomes> residual_;
+    gpu::Texture       residualNone_;   ///< 1 x 1, bound where a dome has no image
+    gpu::Sampler       residualSampler_;
+    std::shared_ptr<gpu::MipGenerator> mips_;
+    gpu::Texture       mesh_;
+    rhi::ComPtr<rhi::ITextureView> meshView_;
     gpu::Buffer        texels_;
     gpu::Buffer        sh_;
     gpu::Buffer        sun_;

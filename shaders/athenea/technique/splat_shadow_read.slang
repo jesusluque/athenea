@@ -5,16 +5,37 @@
 // A shading kernel is at Metal's limit of thirty-one buffers before it hears
 // about clouds at all, and importing a module brings that module's global
 // parameters with it -- so everything the pass declares lives next door in
-// splat_shadow_map.slang, and what a receiver needs is here: functions that
-// take the map they are to read as an argument, and the layout both agree on.
+// splat_shadow_map.slang, and what a receiver needs is here: the layout both
+// agree on, and the read itself, written once over whatever holds the map
+// (`IShadowMapSource`). The pass's own buffer is one source (the gaussian
+// receivers, the probe), the shading kernel's texture is the other; both read
+// the header and the texels through the same function, so a probe answers
+// what a floor reads.
+//
+// EVERY READ IS FILTERED BY HAND. Four integer loads and bilinear weights
+// computed here, never a sampler: CUDA's hardware filter carries its weights
+// in nine bits and Metal's in more, and a shadow that differs between the two
+// machines by the filter is a shadow nobody can measure. And the filter is
+// over transmittances, not over what the texels hold: each tap is tested
+// against its own nearest caster and turned into exp(-tau) before the four
+// are blended -- percentage-closer filtering, since depths and Fourier terms
+// do not average into anything meaningful.
 module splat_shadow_read;
 
 public static const float kShadowFixedScale = 4096.0;
-public static const uint kShadowFrameWords = 20;
+/// Words a light slot's frame takes in the header (`ShadowMapFrame`).
+public static const uint kShadowFrameWords = 21;
 public static const uint kShadowSlots = 8;
 public static const uint kShadowBoxAt = kShadowFrameWords * kShadowSlots;
+/// After the frames: the casters' posed box (three minima, three maxima) and
+/// the widest of their rest spheres, each reduced with an atomic.
+public static const uint kShadowBoxWords = 7;
+/// How many header words a row of the texture's layer zero holds: sixteen,
+/// which the smallest map there is (16 texels a side) has room for. The
+/// header used to be one row, which a map narrower than its 160 words cut.
+public static const uint kShadowHeaderRow = 16;
 
-public uint shadowHeaderWords() { return kShadowBoxAt + 6; }
+public uint shadowHeaderWords() { return kShadowBoxAt + kShadowBoxWords; }
 
 /// A texel keeps its coefficients and then one word more: the depth of the
 /// nearest thing that cast into it, as an ordered key.
@@ -26,11 +47,23 @@ public uint shadowHeaderWords() { return kShadowBoxAt + 6; }
 /// depth of the first caster is what says "this is the lit side": nearer than
 /// it, by a bias, nothing is in the way, and the reconstruction is left to do
 /// what it is good at, which is everything behind that.
-public uint shadowStrideOf(uint coefficients) { return coefficients + 1; }
+///
+/// AND THE DEPTH OF THE FARTHEST, one word after it, reduced with an atomic
+/// maximum: what a receiver behind the cloud is shadowed by last -- a car's
+/// underside rather than its roof, for the floor under it -- and so what a
+/// soft shadow's penumbra is measured from (shadowMapReadSoft). Measured from
+/// the nearest, every point under the Corvette was a metre from its blocker
+/// and the contact shadow went as soft as the rest.
+public uint shadowStrideOf(uint coefficients) { return coefficients + 2; }
 
-/// How much of the slab a receiver may be inside the first surface and still
-/// count as standing on it.
-public static const float kShadowSelfBias = 0.02;
+/// The texture layer of light `light`'s value `which` (0 the total, 1.. the
+/// Fourier terms, `coefficients` the nearest depth). Layer zero is the
+/// header's. The transmittance chain is a texture of its own, a layer a
+/// light: mips of every layer here would have cost a third more of the whole
+/// map, where only the total wants them.
+public uint shadowLayerOf(uint light, uint coefficients, uint which) {
+    return 1 + light * shadowStrideOf(coefficients) + which;
+}
 
 public static const float kShadowPi = 3.14159265358979;
 
@@ -44,8 +77,14 @@ public struct ShadowMapFrame {
     public float  texelsPerUnit;   ///< how many texels a world unit is
     public uint   resolution;
     public uint   coefficients;
-    public uint   offset;      ///< first word of this light's texels
+    public uint   offset;      ///< first word of this light's texels, in the buffer
     public uint   valid;       ///< 0: this light has no map, and nothing shadows
+    /// How far behind the nearest caster a receiver still stands on it, in
+    /// the slab's units: a length in the world (`ShadowMapJob::selfBias`)
+    /// over a slab that does not change with the pose, so the same length
+    /// every frame. It was two per cent of a slab that breathed with the
+    /// wings.
+    public float  bias;
 };
 
 /// A float as a uint that sorts the way the float does: the sign bit flipped
@@ -80,51 +119,290 @@ public float shadowOpticalOf(float total, float a, float b, uint k, float z) {
     return (a * sin(angle) + b * (1.0 - cos(angle))) / (kShadowPi * float(k));
 }
 
-/// THE READ a shading kernel does, from the texture the pass resolved into:
-/// one array layer a coefficient a light, the frames in layer zero's first
-/// row. Nothing is sampled -- these are integer loads.
-public float shadowMapTransmittanceTex(Texture2DArray<float> tex, uint light, float3 p) {
-    if (light >= kShadowSlots) {
-        return 1.0;
+/// HOW MUCH OF A RECEIVER STANDS ON THE LIT SIDE of the first caster in a
+/// texel: all of it up to `bias` behind that caster, none from twice that,
+/// and a smoothstep in between. It was a step, and a gaussian crossing it
+/// jumped from 1 to exp(-tau) between two frames; a ramp of a fixed length in
+/// the world darkens it over a distance instead. Applied in every tap of the
+/// filter, before the taps are blended.
+public float shadowLitOf(float nearest, float bias, float z) {
+    if (z <= nearest + bias) {
+        return 1.0;   // also an untouched texel, whose nearest is 1e30
     }
+    if (!(bias > 0.0)) {
+        return 0.0;
+    }
+    const float t = saturate((z - nearest - bias) / bias);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+
+/// Which header words are numbers rather than counts: what the texture's
+/// header rows store as the float itself rather than as a count converted.
+public bool shadowHeaderIsReal(uint word) {
+    const uint at = word % kShadowFrameWords;
+    return at < 16 || at == 20;
+}
+
+/// Header word `word`'s place in the texture: layer zero, sixteen a row.
+public int4 shadowHeaderTexel(uint word) {
+    return int4(int(word % kShadowHeaderRow), int(word / kShadowHeaderRow), 0, 0);
+}
+
+/// What holds a map: the pass's buffer, or the texture a shading kernel
+/// reads. Static, since a source is a global of the kernel that imports this
+/// module and not something a struct carries.
+public interface IShadowMapSource {
+    /// Header word `word`, as a number (the rows, the axis, the scale, the
+    /// bias) and as a count (the resolution, the terms, the offset, valid).
+    static float headerReal(uint word);
+    static uint headerCount(uint word);
+    /// Level zero of light `light`'s texel (x, y), decoded: `which` 0 is the
+    /// total optical depth, 1.. the Fourier terms, `f.coefficients` the depth
+    /// of the nearest caster and `f.coefficients + 1` of the farthest. In
+    /// range: the caller has checked.
+    static float texel(ShadowMapFrame f, uint light, int x, int y, uint which);
+    /// How many levels the transmittance chain has: 1 where there is none.
+    static uint levels(ShadowMapFrame f);
+    /// exp(-total) at texel (x, y) of the chain's `level`, which is at least
+    /// 1, in range: the mean of the transmittances under it.
+    static float transmittanceAt(ShadowMapFrame f, uint light, uint level, int x, int y);
+};
+
+/// The levels a full chain over a map `resolution` texels a side has, as
+/// gpu::mipChain counts them.
+public uint shadowChainLevels(uint resolution) {
+    return resolution == 0 ? 1u : uint(firstbithigh(resolution)) + 1u;
+}
+
+/// The header, read in one place for every source.
+public ShadowMapFrame shadowFrameOf<S : IShadowMapSource>(uint light) {
     const uint at = light * kShadowFrameWords;
-    const float4 rowU = float4(tex[uint3(at + 0, 0, 0)], tex[uint3(at + 1, 0, 0)],
-                               tex[uint3(at + 2, 0, 0)], tex[uint3(at + 3, 0, 0)]);
-    const float4 rowV = float4(tex[uint3(at + 4, 0, 0)], tex[uint3(at + 5, 0, 0)],
-                               tex[uint3(at + 6, 0, 0)], tex[uint3(at + 7, 0, 0)]);
-    const float4 rowZ = float4(tex[uint3(at + 8, 0, 0)], tex[uint3(at + 9, 0, 0)],
-                               tex[uint3(at + 10, 0, 0)], tex[uint3(at + 11, 0, 0)]);
-    const uint resolution = uint(tex[uint3(at + 16, 0, 0)]);
-    const uint coefficients = uint(tex[uint3(at + 17, 0, 0)]);
-    const uint valid = uint(tex[uint3(at + 19, 0, 0)]);
-    if (valid == 0 || resolution == 0) {
+    ShadowMapFrame f;
+    f.rowU = float4(S.headerReal(at + 0), S.headerReal(at + 1), S.headerReal(at + 2), S.headerReal(at + 3));
+    f.rowV = float4(S.headerReal(at + 4), S.headerReal(at + 5), S.headerReal(at + 6), S.headerReal(at + 7));
+    f.rowZ = float4(S.headerReal(at + 8), S.headerReal(at + 9), S.headerReal(at + 10), S.headerReal(at + 11));
+    f.axisZ = float3(S.headerReal(at + 12), S.headerReal(at + 13), S.headerReal(at + 14));
+    f.texelsPerUnit = S.headerReal(at + 15);
+    f.resolution = S.headerCount(at + 16);
+    f.coefficients = S.headerCount(at + 17);
+    f.offset = S.headerCount(at + 18);
+    f.valid = S.headerCount(at + 19);
+    f.bias = S.headerReal(at + 20);
+    return f;
+}
+
+/// One tap: the transmittance a receiver at depth `z` reads through texel
+/// (x, y). Outside the map nothing of the cloud is in the way.
+public float shadowTap<S : IShadowMapSource>(ShadowMapFrame f, uint light, int x, int y, float z) {
+    if (x < 0 || y < 0 || x >= int(f.resolution) || y >= int(f.resolution)) {
         return 1.0;
     }
-    const float u = dot(rowU.xyz, p) + rowU.w;
-    const float v = dot(rowV.xyz, p) + rowV.w;
-    if (u < 0.0 || v < 0.0 || u >= float(resolution) || v >= float(resolution)) {
-        return 1.0;   // beside the cloud: nothing of it is in the way
-    }
-    const float z = dot(rowZ.xyz, p) + rowZ.w;
-    if (z <= 0.0) {
-        return 1.0;   // nearer the light than anything that casts
-    }
-    const uint stride = shadowStrideOf(coefficients);
-    const uint3 texel = uint3(uint(u), uint(v), light * stride + 1);
-    // Nearer than the first thing that cast into this texel: lit.
-    if (z <= tex[uint3(texel.xy, light * stride + coefficients + 1)] + kShadowSelfBias) {
+    const float lit = shadowLitOf(S.texel(f, light, x, y, f.coefficients), f.bias, z);
+    if (lit >= 1.0) {
         return 1.0;
     }
-    const float total = tex[texel];
+    const float total = S.texel(f, light, x, y, 0);
     float optical = total;
-    if (coefficients > 1 && z < 1.0) {
-        float sum = total * z;
-        const uint pairs = (coefficients - 1) / 2;
+    if (f.coefficients > 1 && z < 1.0) {
+        float sum = total * max(z, 0.0);
+        const uint pairs = (f.coefficients - 1) / 2;
         for (uint k = 1; k <= pairs; ++k) {
-            sum += shadowOpticalOf(total, tex[uint3(texel.xy, texel.z + k * 2 - 1)],
-                                   tex[uint3(texel.xy, texel.z + k * 2)], k, z);
+            sum += shadowOpticalOf(total, S.texel(f, light, x, y, k * 2 - 1), S.texel(f, light, x, y, k * 2), k,
+                                   max(z, 0.0));
         }
         optical = clamp(sum, 0.0, max(total, 0.0));
     }
-    return exp(-max(optical, 0.0));
+    return lerp(exp(-max(optical, 0.0)), 1.0, lit);
+}
+
+/// Bilinear weights over the four texels about (u, v), whose centres are at
+/// half-integers.
+public void shadowBilinear(float u, float v, out int2 origin, out float2 weight) {
+    const float x = u - 0.5;
+    const float y = v - 0.5;
+    const float x0 = floor(x);
+    const float y0 = floor(y);
+    origin = int2(int(x0), int(y0));
+    weight = float2(x - x0, y - y0);
+}
+
+/// Level zero, percentage-closer: four taps, each tested and turned into a
+/// transmittance, blended bilinearly.
+public float shadowPcf<S : IShadowMapSource>(ShadowMapFrame f, uint light, float u, float v, float z) {
+    int2 o;
+    float2 w;
+    shadowBilinear(u, v, o, w);
+    const float t00 = shadowTap<S>(f, light, o.x, o.y, z);
+    const float t10 = shadowTap<S>(f, light, o.x + 1, o.y, z);
+    const float t01 = shadowTap<S>(f, light, o.x, o.y + 1, z);
+    const float t11 = shadowTap<S>(f, light, o.x + 1, o.y + 1, z);
+    return lerp(lerp(t00, t10, w.x), lerp(t01, t11, w.x), w.y);
+}
+
+/// A level of the transmittance chain, bilinear, at the same (u, v) level
+/// zero is addressed in. Outside the level nothing is in the way.
+public float shadowChainAt<S : IShadowMapSource>(ShadowMapFrame f, uint light, uint level, float u, float v) {
+    const uint size = max(f.resolution >> level, 1u);
+    const float scale = float(size) / float(f.resolution);
+    int2 o;
+    float2 w;
+    shadowBilinear(u * scale, v * scale, o, w);
+    float t[4];
+    for (uint k = 0; k < 4; ++k) {
+        const int x = o.x + int(k & 1u);
+        const int y = o.y + int(k >> 1u);
+        t[k] = (x < 0 || y < 0 || x >= int(size) || y >= int(size)) ? 1.0 : S.transmittanceAt(f, light, level, x, y);
+    }
+    return lerp(lerp(t[0], t[1], w.x), lerp(t[2], t[3], w.x), w.y);
+}
+
+/// THE READ, for every receiver. `dpdx` and `dpdy` are how far the receiver's
+/// footprint spans in the world: a pixel's, for a floor; zero for a gaussian
+/// or a probe, which read level zero.
+///
+/// A receiver behind the whole slab (a floor under a bird, z >= 1) whose
+/// footprint covers more than a texel reads the transmittance chain at the
+/// level of its footprint -- the mean of the transmittances under it, which is
+/// what a pixel sees, where level zero alone is a sample of it that aliases.
+/// Inside the slab, and under a texel, it is level zero with PCF; the two
+/// blend over the first octave, so nothing switches.
+public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p, float3 dpdx, float3 dpdy) {
+    if (f.valid == 0 || f.resolution == 0) {
+        return 1.0;
+    }
+    const float u = dot(f.rowU.xyz, p) + f.rowU.w;
+    const float v = dot(f.rowV.xyz, p) + f.rowV.w;
+    const float r = float(f.resolution);
+    // Within a texel of the border a tap or two still lands inside.
+    if (!(u > -1.0 && v > -1.0 && u < r + 1.0 && v < r + 1.0)) {
+        return 1.0;   // beside the cloud: nothing of it is in the way
+    }
+    const float z = dot(f.rowZ.xyz, p) + f.rowZ.w;
+    if (z <= 0.0) {
+        return 1.0;   // nearer the light than anything that casts
+    }
+    const float pcf = shadowPcf<S>(f, light, u, v, z);
+    const uint levels = S.levels(f);
+    if (z < 1.0 || levels <= 1) {
+        return pcf;
+    }
+    // The footprint in texels: the longer of the pixel's two axes, carried
+    // into the map -- linear, so the rows' own vectors do it.
+    const float2 ax = float2(dot(f.rowU.xyz, dpdx), dot(f.rowV.xyz, dpdx));
+    const float2 ay = float2(dot(f.rowU.xyz, dpdy), dot(f.rowV.xyz, dpdy));
+    const float footprint = max(length(ax), length(ay));
+    if (!(footprint > 1.0)) {
+        return pcf;   // under a texel, no footprint at all, or a NaN
+    }
+    const float level = min(log2(footprint), float(levels - 1));
+    const uint lo = uint(floor(level));
+    const float t = level - float(lo);
+    const float below = lo == 0 ? pcf : shadowChainAt<S>(f, light, lo, u, v);
+    if (lo + 1 >= levels) {
+        return below;
+    }
+    return lerp(below, shadowChainAt<S>(f, light, lo + 1, u, v), t);
+}
+
+/// A SHADOW CAST BY A WIDE SOURCE: the read above, with its footprint widened
+/// to the penumbra a source `spread` wide (the tangent of its half angle)
+/// throws at this receiver -- percentage-closer soft shadows, with the
+/// transmittance chain as the filter, so the cost is a blocker search and
+/// two bilinear reads whatever the width.
+///
+/// The blocker search reads the nearest-caster depth of nine texels on a
+/// square as wide as the widest penumbra could be (the receiver's distance
+/// to the slab's light side, times the spread), and the penumbra is the
+/// mean distance to the last caster in front of the receiver (the farthest
+/// depth of the texel, held below the receiver's own) times the spread. A
+/// dome's direction stands for a whole region of its sky (task PLAY-G: the
+/// car's shadow on the ground under a dome, read with no ray and no noise),
+/// and this is how that region's width reaches the shadow.
+///
+/// The chain is read whatever terms the map keeps: a receiver softened this
+/// way is one behind the casters it found (a floor under a car), and what
+/// reaches it is the total's exp(-total), which is what the chain averages.
+/// With the Fourier terms' own condition (behind the whole slab) a floor
+/// standing inside the slab of a relit car read level zero, and the six dome
+/// directions showed as six hard outlines on the Corvette's ground.
+public float shadowMapReadSoft<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p, float3 dpdx,
+                                                     float3 dpdy, float spread) {
+    if (f.valid == 0 || f.resolution == 0) {
+        return 1.0;
+    }
+    const float u = dot(f.rowU.xyz, p) + f.rowU.w;
+    const float v = dot(f.rowV.xyz, p) + f.rowV.w;
+    const float r = float(f.resolution);
+    const float z = dot(f.rowZ.xyz, p) + f.rowZ.w;
+    if (z <= 0.0) {
+        return 1.0;
+    }
+    // Texels a unit of the slab's depth spans across, at this spread.
+    const float slabWorld = 1.0 / max(length(f.rowZ.xyz), 1.0e-12);
+    const float perDepth = spread * slabWorld * f.texelsPerUnit;
+    const float widest = z * perDepth;
+    if (!(u > -1.0 - widest && v > -1.0 - widest && u < r + 1.0 + widest && v < r + 1.0 + widest)) {
+        return 1.0;
+    }
+    float blockers = 0.0;
+    float found = 0.0;
+    [unroll] for (int j = -1; j <= 1; ++j) {
+        [unroll] for (int i = -1; i <= 1; ++i) {
+            const int x = int(floor(u + float(i) * 0.5 * widest));
+            const int y = int(floor(v + float(j) * 0.5 * widest));
+            if (x < 0 || y < 0 || x >= int(f.resolution) || y >= int(f.resolution)) {
+                continue;
+            }
+            const float nearest = S.texel(f, light, x, y, f.coefficients);
+            if (nearest + f.bias < z) {
+                blockers += min(S.texel(f, light, x, y, f.coefficients + 1), z);
+                found += 1.0;
+            }
+        }
+    }
+    if (!(found > 0.0)) {
+        return shadowMapRead<S>(f, light, p, dpdx, dpdy);
+    }
+    const float penumbra = (z - blockers / found) * perDepth;
+    const float2 ax = float2(dot(f.rowU.xyz, dpdx), dot(f.rowV.xyz, dpdx));
+    const float2 ay = float2(dot(f.rowU.xyz, dpdy), dot(f.rowV.xyz, dpdy));
+    const float footprint = max(max(length(ax), length(ay)), penumbra);
+    const uint levels = S.levels(f);
+    if (!(footprint > 1.0) || levels <= 1) {
+        return shadowPcf<S>(f, light, u, v, z);
+    }
+    const float level = min(log2(footprint), float(levels - 1));
+    const uint lo = uint(floor(level));
+    const float t = level - float(lo);
+    const float below = lo == 0 ? shadowPcf<S>(f, light, u, v, z) : shadowChainAt<S>(f, light, lo, u, v);
+    if (lo + 1 >= levels) {
+        return below;
+    }
+    return lerp(below, shadowChainAt<S>(f, light, lo + 1, u, v), t);
+}
+
+/// The same read with no footprint: a point, at level zero.
+public float shadowMapRead<S : IShadowMapSource>(ShadowMapFrame f, uint light, float3 p) {
+    return shadowMapRead<S>(f, light, p, float3(0.0), float3(0.0));
+}
+
+/// A DOME'S SAMPLE DIRECTION, shadowed by the cloud (task TX): the slot among
+/// the dome's directions (frames marked 2) that looks most nearly along `wi`.
+/// kShadowSlots where the frame holds no direction of a dome.
+public uint shadowDomeSlotOf<S : IShadowMapSource>(float3 wi) {
+    float best = -2.0;
+    uint chosen = kShadowSlots;
+    for (uint k = 0; k < kShadowSlots; ++k) {
+        const uint at = k * kShadowFrameWords;
+        if (S.headerCount(at + 19) != 2u) {
+            continue;
+        }
+        const float3 towards = -float3(S.headerReal(at + 12), S.headerReal(at + 13), S.headerReal(at + 14));
+        const float alike = dot(towards, wi);
+        if (alike > best) {
+            best = alike;
+            chosen = k;
+        }
+    }
+    return chosen;
 }

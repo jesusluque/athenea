@@ -17,17 +17,27 @@
 //               `athenea mesh2splat` declares it (the canonical fourteen, then
 //               metallic, roughness, transmission, the shading normal and
 //               the emission -- zeros where the stage emits nothing; the
-//               harmonics after it are zeros until the bake writes them)
+//               harmonics after it are zeros until the bake writes them;
+//               and last, where a material of the stage layers anything
+//               over its base, the thirteen floats of its specular, coat and
+//               sheen)
 //   rays        three float4 a gaussian, the bake's own layout
 //               (`technique::BakePoints`): the point of the surface under it,
 //               w left for the ray's offset (mesh2splat_span), that
-//               surface's normal with the gaussian's footprint in w where
-//               `overArea`, and the way the relief turned it (w 1) or zeros
+//               surface's normal with the gaussian's footprint in w
+//               (negative unless `overArea`: the cells alone take it), and the way the relief turned it (w 1) or zeros;
+//               that w plus a quarter of the material's metalness, which the
+//               bake reads to tell a dark metal from a polish (`bakeBody`)
 //   influences  two float4 a gaussian, (joint, weight) four times, where a
 //               skeleton carries it
 //   gradients   three words a gaussian, the record's ninth entry's bits: two
 //               halves each, how the first three joints' weights change along
 //               its two axes (`jointWeightGradients`)
+//   samplings   four words a gaussian: what of its material the TX bake reads
+//               back (StageMaterial::sampled's bits), the base weight a
+//               sampled colour is multiplied by, and the roughness and coat
+//               roughness the conversion was handed, as float bits
+//               (m2sTransferInto)
 //
 // It used to be done a splat at a time on the processor, out of a picture
 // read back for the purpose; nothing here computes, it only moves.
@@ -44,8 +54,19 @@ struct GatherParams {
     uint displaced;       ///< the picture carries the flat surface and the relief
     uint carried;         ///< and the joints
     uint overArea;        ///< the footprint goes to the bake (a simplified block)
-    uint emits;           ///< the picture's last entry a gaussian is the light it gives off
-    uint pad1;
+    uint emits;           ///< the picture's last entry a gaussian (before the layers') is the light it gives off
+    /// The picture's last four entries a gaussian are what the material
+    /// layers over its base, and the record's last thirteen floats take them.
+    uint lobes;
+    /// The picture's very last entry a gaussian is the surface's shape
+    /// operator (Mesh2Splat's `writeCurvature`), which goes to `curvatures`.
+    uint curved;
+    /// The run's material: what the bake reads back of it, and what was read
+    /// here (`samplings`).
+    uint  sampled;
+    float baseWeight;
+    float roughness;
+    float coatRoughness;
 };
 
 StructuredBuffer<float4>     picture;
@@ -53,6 +74,8 @@ RWStructuredBuffer<float>    records;
 RWStructuredBuffer<float4>   rays;
 RWStructuredBuffer<float4>   influences;
 RWStructuredBuffer<uint>     gradients;
+RWStructuredBuffer<float>    curvatures;   // three a gaussian, where `curved`
+RWStructuredBuffer<uint4>    samplings;    // one a gaussian
 ConstantBuffer<GatherParams> gather;
 
 float4 entryOf(uint splat, uint component) {
@@ -76,6 +99,8 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
 
     const uint out = gather.destFirst + splat;
     const uint at = out * gather.perRecord;
+    samplings[out] = uint4(gather.sampled, asuint(gather.baseWeight), asuint(gather.roughness),
+                           asuint(gather.coatRoughness));
     records[at + 0] = position.x;
     records[at + 1] = position.y;
     records[at + 2] = position.z;
@@ -97,7 +122,10 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     records[at + 18] = shading.y;
     records[at + 19] = shading.z;
     // What it gives off: the record's last entry, where the stage emits.
-    const float4 emitted = gather.emits != 0 ? entryOf(splat, gather.recordEntries - 1) : float4(0.0);
+    const uint curveEntries = gather.curved != 0 ? 1u : 0u;
+    const uint layerEntries = gather.lobes != 0 ? 4u : 0u;
+    const float4 emitted =
+        gather.emits != 0 ? entryOf(splat, gather.recordEntries - 1 - layerEntries - curveEntries) : float4(0.0);
     records[at + 20] = emitted.x;
     records[at + 21] = emitted.y;
     records[at + 22] = emitted.z;
@@ -106,22 +134,54 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     for (uint k = 23; k < gather.perRecord; ++k) {
         records[at + k] = 0.0;
     }
+    // WHAT THE MATERIAL LAYERS OVER ITS BASE: the record's last thirteen
+    // floats, after the harmonics, in packing.slang's record order.
+    if (gather.lobes != 0) {
+        const uint last = gather.recordEntries - curveEntries;
+        const float4 specular = entryOf(splat, last - 4);   // colour, weight
+        const float4 coat = entryOf(splat, last - 3);       // weight, roughness, index, specular's index
+        const float4 sheen = entryOf(splat, last - 2);      // colour, roughness
+        const float4 darkening = entryOf(splat, last - 1);  // the coat's darkening
+        const uint l = at + gather.perRecord - 13;
+        records[l + 0] = specular.w;
+        records[l + 1] = specular.x;
+        records[l + 2] = specular.y;
+        records[l + 3] = specular.z;
+        records[l + 4] = coat.w;
+        records[l + 5] = coat.x;
+        records[l + 6] = coat.y;
+        records[l + 7] = coat.z;
+        records[l + 8] = sheen.x;
+        records[l + 9] = sheen.y;
+        records[l + 10] = sheen.z;
+        records[l + 11] = sheen.w;
+        records[l + 12] = darkening.x;
+    }
+    if (gather.curved != 0) {
+        const float4 shape = entryOf(splat, gather.recordEntries - 1);
+        curvatures[out * 3 + 0] = shape.x;
+        curvatures[out * 3 + 1] = shape.y;
+        curvatures[out * 3 + 2] = shape.z;
+    }
 
     // WHERE THE BAKE STANDS AND WHICH WAY IT LOOKS. A displaced gaussian is
     // baked from the flat surface under it -- the only one the tracer holds
     // -- and faces as the relief does.
-    const float footprint = gather.overArea != 0 ? sizes.x : 0.0;
+    // Positive: the paths spread over it too (a simplified block). Negative:
+    // only a transfer's cells are traced over it (PathTracer's
+    // bakeCellOrigin), the paths stay at the centre.
+    const float footprint = gather.overArea != 0 ? sizes.x : -sizes.x;
     if (gather.displaced != 0) {
         const float4 flat = entryOf(splat, gather.ownEntries);
         const float4 flatNormal = entryOf(splat, gather.ownEntries + 1);
         const float4 relief = entryOf(splat, gather.ownEntries + 2);
         rays[out * 3 + 0] = float4(flat.xyz, 0.0);
         rays[out * 3 + 1] = float4(flatNormal.xyz, footprint);
-        rays[out * 3 + 2] = float4(relief.xyz, 1.0);
+        rays[out * 3 + 2] = float4(relief.xyz, 1.0 + 0.25 * saturate(shading.w));
     } else {
         rays[out * 3 + 0] = float4(position.xyz, 0.0);
         rays[out * 3 + 1] = float4(shading.xyz, footprint);
-        rays[out * 3 + 2] = float4(0.0);
+        rays[out * 3 + 2] = float4(0.0, 0.0, 0.0, 0.25 * saturate(shading.w));
     }
 
     if (gather.carried != 0) {

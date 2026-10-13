@@ -174,6 +174,10 @@ void addCompare(CLI::App& app) {
             std::printf("8-bit     p99 %u   max %u   over 2: %llu of %llu pixels\n",
                         static_cast<unsigned>((*codes)[0]), static_cast<unsigned>((*codes)[1]), countAt(*codes, 2),
                         countAt(*codes, 5));
+            if (const std::vector<float>* display = out.attached("display"); display != nullptr && display->size() >= 2) {
+                std::printf("display   PSNR %.2f dB   SSIM %.4f\n", static_cast<double>((*display)[0]),
+                            static_cast<double>((*display)[1]));
+            }
         }
 
         if (!o->heatmap.empty()) {

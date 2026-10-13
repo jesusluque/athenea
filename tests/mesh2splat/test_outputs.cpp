@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "athenea/gpu/Buffer.h"
@@ -25,6 +26,7 @@
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/usd/Export.h"
+#include "athenea/usd/StageRenderer.h"
 
 using namespace athenea;
 
@@ -161,4 +163,56 @@ TEST_CASE("a cloud written as a .athc draws as the one written as a stage", "[me
                 static_cast<unsigned long long>(diff->over2), static_cast<unsigned long long>(diff->pixels));
     CHECK(diff->p99 <= 1);
     CHECK(diff->over2 * 100 <= diff->pixels);
+}
+
+// A SKINNED CLOUD KEEPS ITS TRANSFER (proposal 014 B). tests/data/skinned_corner.usda
+// converted with `--skinned --transfer --time 1`: the cloud is carried by its
+// joint and its transfer is kept as ten values a gaussian -- two zonal lobes in
+// the gaussian's frame -- where `--skinned` used to drop the transfer. Under a
+// sky, the corner draws at every instant of its range, the wall taking light
+// off the floor whichever way the joint has turned them.
+TEST_CASE("a skinned conversion keeps its transfer as zonal lobes and draws in every pose",
+          "[mesh2splat][gpu][skinning][transfer]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path stage = output("skinned_transfer.usda");
+    REQUIRE(fs::exists(stage));
+    const fs::path lit = output("skinned_transfer_lit.usda");
+    {
+        std::ofstream out(lit);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n    subLayers = [@" << stage.string() << "@]\n)\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 1, 6)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n"
+               "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n";
+    }
+    auto renderer = usd::StageRenderer::open(lit);
+    if (!renderer) FAIL(renderer.error().toString());
+    (*renderer)->setGaussianStats(true);
+    const uint32_t w = 96, h = 72;
+    for (const double time : {0.0, 1.0, 2.0}) {
+        auto image = (*renderer)->render("/Camera", time, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        auto stats = render::imageStats(*gpu->library, *made, w, h);
+        REQUIRE(stats);
+        std::printf("  skinned corner at %.0f: mean %.4f, max %.3f\n", time, stats->mean[0],
+                    static_cast<double>(stats->max[0]));
+        CHECK(stats->mean[0] > 0.0);
+        CHECK(stats->max[0] <= 2.0F);
+    }
+    // What the frames were handed: one cloud, carried and transferred.
+    const usd::GaussianStats report = (*renderer)->gaussianStats();
+    uint32_t zonal = 0;
+    for (const ui::GaussianCloud& cloud : report.clouds) {
+        zonal += cloud.transfer == scene::GpuSplats::kTransferZonalCount && cloud.skinned ? 1u : 0u;
+    }
+    std::printf("  %zu cloud%s, %u skinned with a zonal transfer\n", report.clouds.size(),
+                report.clouds.size() == 1 ? "" : "s", zonal);
+    CHECK(zonal == 1);
 }

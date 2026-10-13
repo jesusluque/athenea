@@ -24,15 +24,37 @@ public struct DecodeParams {
     // How much of an environment reaches a gaussian: where its values start
     // in a record and how many there are (0, 9 or 36).
     public uint transferBase; public uint transferCount; public uint transferWords;
-    // Where the two words of which ways out are open start, or kNoField.
+    // Where the words of which ways out are open start, or kNoField, and
+    // how many there are: two, or eight for a TX transfer's 256 cells.
     public uint shadowBits;
+    public uint shadowWords;
     // The first record of this slice in the whole cloud, for `origin`.
     public uint recordBase;
     // Where the three fields of a shading normal start, or kNoField.
     public uint normal;
     // Where the three fields of an emitted radiance start, or kNoField.
     public uint emission;
+    // Where the thirteen fields of the layers over the base start
+    // (packing's `SplatLobes`, in its record order), or kNoField.
+    public uint lobes;
 };
+
+/// The thirteen fields of a record's layers, in packing's record order.
+public SplatLobes lobesOfRecord(StructuredBuffer<float> raw, uint record, uint stride, uint field) {
+    SplatLobes l;
+    l.specularWeight = fieldOf(raw, record, stride, field);
+    l.specularColour = float3(fieldOf(raw, record, stride, field + 1), fieldOf(raw, record, stride, field + 2),
+                              fieldOf(raw, record, stride, field + 3));
+    l.specularIor = fieldOf(raw, record, stride, field + 4);
+    l.coatWeight = fieldOf(raw, record, stride, field + 5);
+    l.coatRoughness = fieldOf(raw, record, stride, field + 6);
+    l.coatIor = fieldOf(raw, record, stride, field + 7);
+    l.sheenColour = float3(fieldOf(raw, record, stride, field + 8), fieldOf(raw, record, stride, field + 9),
+                           fieldOf(raw, record, stride, field + 10));
+    l.sheenRoughness = fieldOf(raw, record, stride, field + 11);
+    l.coatDarkening = fieldOf(raw, record, stride, field + 12);
+    return l;
+}
 
 public float fieldOf(StructuredBuffer<float> raw, uint record, uint stride, uint field) {
     return raw[record * stride + field];
@@ -52,9 +74,25 @@ public float3 decodePosition(StructuredBuffer<float> raw, uint record, DecodePar
     return p.flipYZ != 0 ? float3(v.x, -v.y, -v.z) : v;
 }
 
+/// A SURFEL'S FLAT AXIS (docs/decisions.md, surfels): a scale of exactly 0
+/// -- or, stored as a logarithm, under e^-30, Spark's own reading of a PLY --
+/// is -infinity here, and stays a zero through the f16 the shape holds it in.
+/// Every other scale is the logarithm it was.
+public static const float kSurfelLogScale = -1.0 / 0.0;
+
 public float decodeLogScale(float v, uint mode) {
     if (mode == 2) return v / 16.0 - 10.0;         // SPZ byte
-    return mode == 0 ? v : log(max(v, 1e-30));
+    if (mode == 0) return v < -30.0 ? kSurfelLogScale : v;
+    return v == 0.0 ? kSurfelLogScale : log(max(v, 1e-30));
+}
+
+/// Whether a record's three log scales are a gaussian's (all finite) or a
+/// surfel's (one, and only one, flat axis); the rest within e^+-60.
+public bool scalesValid(float3 ls) {
+    const bool3 flat = ls == float3(kSurfelLogScale);
+    const uint flats = uint(flat.x) + uint(flat.y) + uint(flat.z);
+    const float3 kept = select(flat, float3(0.0), ls);
+    return flats <= 1u && all(isfinite(kept)) && all(abs(kept) < 60.0);
 }
 
 public float decodeColour(float v, uint mode) {
@@ -130,13 +168,22 @@ public static const uint kNoField = 0xFFFFFFFFu;
 /// its own on the way here.
 public static const float kThinWalledMark = 2.0;
 
+/// What a Schlick metal (OpenPBR's, glTF's) adds to the transmission a record
+/// carries, over a thin wall's mark: bit 25 of the pbr word.
+public static const float kSchlickMetalMark = 4.0;
+
 public uint packPbr(float metallic, float roughness, float transmission) {
-    const bool thin = transmission >= kThinWalledMark - 0.5;
+    const bool schlick = transmission >= kSchlickMetalMark - 0.5;
+    const float rest = schlick ? transmission - kSchlickMetalMark : transmission;
+    const bool thin = rest >= kThinWalledMark - 0.5;
     const uint m = uint(saturate(metallic) * 255.0 + 0.5);
     const uint r = uint(saturate(roughness) * 255.0 + 0.5);
-    const uint t = uint(saturate(thin ? transmission - kThinWalledMark : transmission) * 255.0 + 0.5);
-    return m | (r << 8) | (t << 16) | (thin ? (1u << 24) : 0u);
+    const uint t = uint(saturate(thin ? rest - kThinWalledMark : rest) * 255.0 + 0.5);
+    return m | (r << 8) | (t << 16) | (thin ? (1u << 24) : 0u) | (schlick ? (1u << 25) : 0u);
 }
+
+/// Whether the gaussian's metal is a Schlick rather than a conductor.
+public bool pbrSchlickMetal(uint word) { return ((word >> 25) & 1u) != 0u; }
 
 public float pbrMetallic(uint word) { return float(word & 0xFFu) / 255.0; }
 public float pbrRoughness(uint word) { return float((word >> 8) & 0xFFu) / 255.0; }

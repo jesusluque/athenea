@@ -75,11 +75,24 @@ struct StageMaterial {
     /// comes through it, and the colour it takes doing so.
     float                  transmission = 0.0F;
     std::array<float, 3>   transmissionColour{1.0F, 1.0F, 1.0F};
+    /// The transmission's colour is its own, not the base colour's: OpenPBR
+    /// and standard_surface tint what they transmit by `transmission_color`
+    /// alone (their base colour is the opaque base's, which a transmission
+    /// of one leaves out). glTF tints it by the base colour, and a
+    /// UsdPreviewSurface's transmission is coverage of its diffuse.
+    bool                   ownTransmissionColour = false;
     /// The dielectric's index (`specular_ior`, `specular_IOR`, `ior`).
     float                  ior = 1.5F;
     /// A sheet, not a solid (OpenPBR's `geometry_thin_walled`): what it
     /// transmits leaves along the direction it came in.
     bool                   thinWalled = false;
+    /// ITS METAL IS A SCHLICK, not a conductor: OpenPBR's (MaterialX's
+    /// `generalized_schlick_bsdf`, the base colour head on and the specular
+    /// colour at 82 degrees) and glTF's. standard_surface's and
+    /// UsdPreviewSurface's metals are conductors of an artistic index. The two
+    /// part most for a dark metal at an angle: a car's paint (base 0.05)
+    /// reflects 0.17 at 60 degrees as a conductor and 0.08 as a Schlick.
+    bool                   schlickMetal = false;
     StageTexture           albedo;
     StageTexture           normal;
     StageTexture           metallicMap;
@@ -131,6 +144,76 @@ struct StageMaterial {
     [[nodiscard]] bool emits() const noexcept {
         return emission[0] > 0.0F || emission[1] > 0.0F || emission[2] > 0.0F;
     }
+    /// WHAT IT LAYERS OVER ITS BASE (proposal 026), as constants: the
+    /// dielectric reflection's weight and tint (OpenPBR `specular_weight`
+    /// and `specular_color`, standard_surface `specular` and
+    /// `specular_color`, glTF `specular` and `specular_color`; the tint is
+    /// also a metal's edge colour); a clear coat (`coat_weight` /`coat` /
+    /// `clearcoat`, its roughness and index); and a sheen, its colour times
+    /// its weight. The specular's index is `ior`. A map on any of these is
+    /// not read -- the constant the input would have stands, and the log
+    /// says so. Each surface's own defaults, which is what the mesh is
+    /// rendered with.
+    float                  specularWeight = 1.0F;
+    std::array<float, 3>   specularColour{1.0F, 1.0F, 1.0F};
+    float                  coatWeight = 0.0F;
+    float                  coatRoughness = 0.0F;
+    float                  coatIor = 1.5F;
+    /// OpenPBR's `coat_darkening` (1 by default there): the base under the
+    /// coat darkened by what the coat's inside reflects back into it. 0 for
+    /// every other vocabulary, whose coat has none.
+    float                  coatDarkening = 0.0F;
+    std::array<float, 3>   sheenColour{0.0F, 0.0F, 0.0F};
+    float                  sheenRoughness = 0.3F;
+    /// The sheen's weight alone (`sheenColour` is it times the colour), for
+    /// a map on the colour or on the weight.
+    float                  sheenWeight = 0.0F;
+    /// MAPS ON THE LAYERS (task TX): which input a map stands for, and the
+    /// map. Sampled per gaussian by the conversion, as the base's are, in
+    /// place of the input's constant; the first three a material has.
+    enum class LayerTarget : uint32_t {
+        SpecularWeight = 1, SpecularColour = 2, CoatWeight = 3, CoatRoughness = 4,
+        SheenColour = 5, SheenWeight = 6, SheenRoughness = 7
+    };
+    struct LayerMap {
+        LayerTarget  target = LayerTarget::SpecularWeight;
+        StageTexture texture;
+    };
+    std::vector<LayerMap>  layerMaps;
+    /// Whether any of it differs from the plain specular every gaussian has
+    /// without them (weight one, white, an index of 1.5, no coat, no sheen):
+    /// the conversion then writes them (`io::SplatEncoding::lobes`).
+    [[nodiscard]] bool layered() const noexcept {
+        const auto white = [](const std::array<float, 3>& c) {
+            return c[0] == 1.0F && c[1] == 1.0F && c[2] == 1.0F;
+        };
+        return !layerMaps.empty() || specularWeight != 1.0F || !white(specularColour) || ior != 1.5F || coatWeight > 0.0F ||
+               sheenColour[0] > 0.0F || sheenColour[1] > 0.0F || sheenColour[2] > 0.0F;
+    }
+
+    /// WHAT THE CONVERSION READS BACK FROM THE MATERIAL ITSELF, on the device:
+    /// the fields a constant or a plain map cannot carry -- an input a graph
+    /// computes (a procedural brick, a marble's noise, a hexagonal tiling, a
+    /// map tiled or offset), a vocabulary these readers do not know, and the
+    /// coat's colour, which tints everything under the coat and has no number
+    /// of its own on a gaussian. A TX transfer's bake evaluates the compiled
+    /// material at each gaussian and the conversion writes these fields from
+    /// what it found there (technique::BakePoints::material); everywhere
+    /// else the constant stands, and the log says which input it stood for.
+    /// Bits of `kSample*`; zero for a material of constants and plain maps,
+    /// which stays exactly as read here.
+    enum SampleBits : uint32_t {
+        kSampleBaseColour = 1,
+        kSampleRoughness = 2,
+        kSampleCoatRoughness = 4,
+        kSampleMetallic = 8,
+        kSampleEmission = 16,
+    };
+    uint32_t               sampled = 0;
+    /// The base layer's weight (`base`, OpenPBR's `base_weight`), which a
+    /// diffuse lobe's colour does not carry -- its weight does -- and which a
+    /// sampled base colour is multiplied by, as `baseColour` was.
+    float                  baseWeight = 1.0F;
 };
 
 /// WHAT CARRIES A MESH WHEN ITS SKELETON MOVES.
@@ -166,6 +249,26 @@ struct StageSubset {
     std::string   path;       ///< the GeomSubset prim, for messages
     StageMaterial material;   ///< what it binds (the mesh's, where it binds none)
 };
+
+/// THE MESHES A MATERIAL IS ON, as a stage binds them (`athenea mesh2splat
+/// --validate`): every visible mesh at or under `prim` whose own binding, or
+/// a GeomSubset's of its `materialBind` family, names the material. A mesh of
+/// several materials is in each of their groups. "" names the meshes bound to
+/// nothing. Read on the processor: it is the file's bindings, no geometry.
+struct MaterialGroup {
+    std::string              material;   ///< its prim path, or "" for none
+    std::vector<std::string> meshes;     ///< the meshes, sorted
+};
+[[nodiscard]] Result<std::vector<MaterialGroup>> stageMaterialGroups(const std::filesystem::path& path,
+                                                                     const std::string& prim,
+                                                                     const std::vector<std::string>& hidden,
+                                                                     double time);
+
+/// Every UsdLux light of a stage, and whether it is a dome.
+[[nodiscard]] Result<std::vector<std::pair<std::string, bool>>> stageLights(const std::filesystem::path& path);
+
+/// The first camera of a stage, in traversal order, or "" where it has none.
+[[nodiscard]] Result<std::string> stageFirstCamera(const std::filesystem::path& path);
 
 /// One mesh of the stage, already on the device.
 struct StageMesh {
@@ -226,6 +329,10 @@ struct MeshStageOptions {
     /// hidden prims, so a conversion holds what that host draws. Nothing on
     /// disk changes.
     std::vector<std::string> hidden;
+    /// Materials (prim paths, or their names) whose glass is a sheet, though
+    /// the material does not say so: a windscreen modelled as one surface
+    /// with a solid glass bound to it. Read as thin-walled.
+    std::vector<std::string> thinGlass;
 };
 
 /// Opens `path` and reads its meshes. The stage stays open for as long as this

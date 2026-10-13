@@ -4,7 +4,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <format>
 #include <map>
+#include <mutex>
+#include <set>
 #include <optional>
 
 #include <pxr/base/gf/matrix4d.h>
@@ -55,6 +58,13 @@ struct Resolved {
     bool         hasValue = false;
     VtValue      value;
     StageTexture texture;
+    /// Connected to something computed -- a mix, a noise, a hexagonal
+    /// tiling -- which a constant or a map cannot hold: `node` says what.
+    bool         computed = false;
+    /// A map read through a placement the conversion's sampler does not
+    /// apply: a tiledimage tiled or offset.
+    bool         inexact = false;
+    std::string  node;
 };
 
 [[nodiscard]] bool isImageNode(const TfToken& id) {
@@ -171,6 +181,22 @@ struct Resolved {
             shader.GetShaderId(&id);
             if (isImageNode(id)) {
                 out.texture = fileOf(shader);
+                // A TILED MAP IS A PLACEMENT AS WELL AS A FILE, and the
+                // conversion samples the file at the mesh's own coordinates.
+                if (id.GetString().rfind("ND_tiledimage_", 0) == 0) {
+                    GfVec2f tiling(1.0F, 1.0F);
+                    GfVec2f offset(0.0F, 0.0F);
+                    if (const UsdShadeInput in = shader.GetInput(TfToken("uvtiling"))) {
+                        in.Get(&tiling);
+                    }
+                    if (const UsdShadeInput in = shader.GetInput(TfToken("uvoffset"))) {
+                        in.Get(&offset);
+                    }
+                    if (tiling != GfVec2f(1.0F, 1.0F) || offset != GfVec2f(0.0F, 0.0F)) {
+                        out.inexact = true;
+                        out.node = id.GetString();
+                    }
+                }
                 // `outputs:a` is not `outputs:rgb`. A cut-out mask is read off
                 // one channel of a map that holds something else, and which
                 // channel is part of the connection, not of the file.
@@ -188,7 +214,11 @@ struct Resolved {
             }
             // Something computed: a mix, a multiply, a noise. There is no
             // answer here without shading the point, so the caller's default
-            // stands and the material says so in the log.
+            // stands here, the material says so in the log, and a TX bake
+            // reads the field back from the material itself
+            // (StageMaterial::sampled).
+            out.computed = true;
+            out.node = id.GetString();
             continue;
         }
         const UsdShadeInput held(attribute);
@@ -266,6 +296,22 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
 
 /// What a material says, as far as a gaussian can carry it.
 ///
+/// A warning said once a material and topic, whichever of its meshes reads
+/// it first: a ball of two meshes wearing one material said each thing once.
+template <typename... Args>
+void warnOnce(const std::string& material, const std::string& topic, std::format_string<Args...> format,
+              Args&&... args) {
+    static std::mutex said;
+    static std::set<std::string> already;
+    {
+        const std::lock_guard<std::mutex> lock(said);
+        if (!already.insert(material + "\n" + topic).second) {
+            return;
+        }
+    }
+    athenea::log::warn(format, std::forward<Args>(args)...);
+}
+
 /// Two vocabularies are read: MaterialX's `standard_surface`, which is what
 /// every asset built from a .mtlx arrives as, and `UsdPreviewSurface`, which is
 /// what a file written for the viewport uses. They name the same things
@@ -317,7 +363,14 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
     out.metallic = gltf ? 1.0F : 0.0F;
     out.roughness = preview ? 0.5F : gltf ? 1.0F : openPbr ? 0.3F : 0.2F;
 
-    const auto read = [&surface](const char* name) { return resolve(surface.GetInput(TfToken(name))); };
+    // Every input read, by name, for what the end of this decides the device
+    // reads back (StageMaterial::sampled).
+    std::map<std::string, Resolved> seen;
+    const auto read = [&surface, &seen](const char* name) {
+        Resolved r = resolve(surface.GetInput(TfToken(name)));
+        seen[name] = r;
+        return r;
+    };
     const Resolved colour = read(preview ? "diffuseColor" : "base_color");
     takeColour(colour, out.baseColour);
     out.albedo = colour.texture;
@@ -334,6 +387,7 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         for (float& c : out.baseColour) {
             c *= weight;
         }
+        out.baseWeight = weight;
     }
 
     // A MAP IS THE VALUE, NOT A FACTOR ON THE DEFAULT. The conversion
@@ -405,6 +459,7 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         takeFloat(read("ior"), out.ior);
     } else {
         takeFloat(read(gltf ? "ior" : openPbr ? "specular_ior" : "specular_IOR"), out.ior);
+        out.schlickMetal = openPbr || gltf;
         if (openPbr) {
             const Resolved thin = read("geometry_thin_walled");
             if (thin.hasValue && thin.value.IsHolding<bool>()) {
@@ -418,6 +473,7 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
             // glTF's transmission takes the base colour as its tint and has
             // no input of its own for it.
             takeColour(read("transmission_color"), out.transmissionColour);
+            out.ownTransmissionColour = true;
         }
         // THE SAME COVERAGE, IN MATERIALX. `opacity` (`geometry_opacity` in
         // OpenPBR, `alpha` in glTF) is coverage there too -- where it reads
@@ -500,6 +556,234 @@ void takeColour(const Resolved& resolved, std::array<float, 3>& into) {
         out.emission = {colour[0] * weight, colour[1] * weight, colour[2] * weight};
         if (out.emissionMap.empty() || !out.emits()) {
             out.emissionMap = {};   // a map on nothing gives off nothing
+        }
+    }
+
+    // WHAT IT LAYERS OVER ITS BASE: the dielectric reflection's weight and
+    // tint, a clear coat, a sheen (proposal 026). A map on one of them is
+    // kept beside the constant (`layerMaps`, task TX) and sampled per
+    // gaussian by the conversion; past three a material has, the constant
+    // stands and the log says which.
+    {
+        using Target = StageMaterial::LayerTarget;
+        const auto mapped = [&](const Resolved& in, Target target, const char* name, bool grey) {
+            if (in.texture.empty() || target == Target{0}) {
+                return;
+            }
+            if (out.layerMaps.size() >= 3) {
+                athenea::log::info("mesh2splat: '{}' maps '{}' past the three layer maps a conversion samples; a "
+                                   "gaussian carries its constant", out.path, name);
+                return;
+            }
+            StageMaterial::LayerMap map{target, in.texture};
+            if (grey && map.texture.channel == 0) {
+                map.texture.channel = 'r';   // a grey map read on its first channel
+            }
+            out.layerMaps.push_back(map);
+        };
+        Target scalarTarget = Target::SpecularWeight;
+        Target colourTarget = Target::SpecularColour;
+        const auto constant = [&](const char* name, float& into) {
+            const Resolved in = read(name);
+            takeFloat(in, into);
+            mapped(in, scalarTarget, name, true);
+        };
+        const auto colourOf = [&](const char* name, std::array<float, 3>& into) {
+            const Resolved in = read(name);
+            takeColour(in, into);
+            mapped(in, colourTarget, name, false);
+        };
+        if (preview) {
+            // UsdPreviewSurface's coat is a Schlick of the surface's own
+            // index (`coat_F0` is `R_sq`), and its default roughness 0.01.
+            out.coatRoughness = 0.01F;
+            scalarTarget = Target::CoatWeight;
+            constant("clearcoat", out.coatWeight);
+            scalarTarget = Target::CoatRoughness;
+            constant("clearcoatRoughness", out.coatRoughness);
+            out.coatIor = out.ior;
+            // THE SPECULAR WORKFLOW: `specularColor` is the reflectivity head
+            // on, and the metalness is not read. Carried as an index whose
+            // reflectivity is the colour's brightest channel, tinted by the
+            // colour over it -- the head-on reflection exactly, a white edge.
+            if (takeInt(read("useSpecularWorkflow"), 0) == 1) {
+                std::array<float, 3> f0{0.0F, 0.0F, 0.0F};
+                colourTarget = Target{0};   // an index, not a tint: its map is not sampled
+                colourOf("specularColor", f0);
+                const float top = std::max({f0[0], f0[1], f0[2]});
+                out.metallic = 0.0F;
+                out.metallicMap = {};
+                if (top > 0.0F) {
+                    const float s = std::sqrt(std::clamp(top, 0.0F, 0.99F));
+                    out.ior = (1.0F + s) / (1.0F - s);
+                    out.specularColour = {f0[0] / top, f0[1] / top, f0[2] / top};
+                } else {
+                    out.specularWeight = 0.0F;
+                }
+            }
+        } else {
+            scalarTarget = Target::SpecularWeight;
+            constant(openPbr ? "specular_weight" : gltf ? "specular" : "specular", out.specularWeight);
+            colourTarget = Target::SpecularColour;
+            colourOf("specular_color", out.specularColour);
+            if (gltf) {
+                scalarTarget = Target::CoatWeight;
+                constant("clearcoat", out.coatWeight);
+                out.coatRoughness = 0.0F;
+                scalarTarget = Target::CoatRoughness;
+                constant("clearcoat_roughness", out.coatRoughness);
+            } else {
+                // OpenPBR's coat sits at 1.6 and standard_surface's at 1.5,
+                // the roughness of either at 0 and 0.1.
+                out.coatIor = openPbr ? 1.6F : 1.5F;
+                out.coatRoughness = openPbr ? 0.0F : 0.1F;
+                scalarTarget = Target::CoatWeight;
+                constant(openPbr ? "coat_weight" : "coat", out.coatWeight);
+                scalarTarget = Target::CoatRoughness;
+                constant("coat_roughness", out.coatRoughness);
+                scalarTarget = Target{0};   // an index and a switch: their maps are not sampled
+                constant(openPbr ? "coat_ior" : "coat_IOR", out.coatIor);
+                if (openPbr) {
+                    out.coatDarkening = 1.0F;
+                    constant("coat_darkening", out.coatDarkening);
+                }
+            }
+            // The sheen: a colour and a weight (glTF's has the colour alone).
+            // OpenPBR calls it FUZZ (`fuzz_weight`, `fuzz_color`,
+            // `fuzz_roughness`, 0.5 by default); read as `sheen_*` its inputs
+            // were not there, and a test ball whose authored sheen the mesh
+            // never had was given one.
+            float sheenWeight = gltf ? 1.0F : 0.0F;
+            std::array<float, 3> sheenColour = gltf ? std::array<float, 3>{0.0F, 0.0F, 0.0F}
+                                                    : std::array<float, 3>{1.0F, 1.0F, 1.0F};
+            if (openPbr) {
+                out.sheenRoughness = 0.5F;
+            }
+            if (!gltf) {
+                scalarTarget = Target::SheenWeight;
+                constant(openPbr ? "fuzz_weight" : "sheen", sheenWeight);
+            }
+            colourTarget = Target::SheenColour;
+            colourOf(openPbr ? "fuzz_color" : "sheen_color", sheenColour);
+            scalarTarget = Target::SheenRoughness;
+            constant(openPbr ? "fuzz_roughness" : "sheen_roughness", out.sheenRoughness);
+            out.sheenWeight = std::clamp(sheenWeight, 0.0F, 1.0F);
+            out.sheenColour = {sheenColour[0] * sheenWeight, sheenColour[1] * sheenWeight,
+                               sheenColour[2] * sheenWeight};
+        }
+        // Inside what a gaussian keeps: weights and colours 0 to 1, an index
+        // 1 to 3 (packing.slang's byte).
+        const auto unit = [](float v) { return std::clamp(v, 0.0F, 1.0F); };
+        out.specularWeight = unit(out.specularWeight);
+        out.coatWeight = unit(out.coatWeight);
+        out.coatRoughness = unit(out.coatRoughness);
+        out.sheenRoughness = unit(out.sheenRoughness);
+        for (int k = 0; k < 3; ++k) {
+            out.specularColour[k] = unit(out.specularColour[k]);
+            out.sheenColour[k] = unit(out.sheenColour[k]);
+        }
+        out.coatIor = std::clamp(out.coatIor, 1.0F, 2.98F);
+        out.coatDarkening = unit(out.coatDarkening);
+    }
+
+    // WHAT THE DEVICE READS BACK (StageMaterial::sampled): every field whose
+    // input a constant or a plain map cannot carry, decided here once a
+    // material. A material of constants and plain maps samples nothing and
+    // converts exactly as it did.
+    {
+        using M = StageMaterial;
+        const bool standardSurface = id.GetString().rfind("ND_standard_surface", 0) == 0 ||
+                                     id == TfToken("standard_surface");
+        const bool known = preview || openPbr || gltf || standardSurface;
+        const auto graph = [&](const char* name) {
+            const auto it = seen.find(name);
+            if (it == seen.end()) {
+                seen[name] = resolve(surface.GetInput(TfToken(name)));
+            }
+            const Resolved& r = seen[name];
+            return r.computed || r.inexact;
+        };
+        const auto connected = [&](const char* name) {
+            graph(name);
+            const Resolved& r = seen[name];
+            return r.computed || r.inexact || !r.texture.empty();
+        };
+        if (!known) {
+            // A VOCABULARY NOT READ HERE (Disney's principled, a studio's
+            // own): its inputs are not where these readers look, and every
+            // field would stand at its default. The device reads them back.
+            out.sampled = M::kSampleBaseColour | M::kSampleRoughness | M::kSampleMetallic | M::kSampleEmission;
+        } else {
+            const bool tinted = !preview && !gltf;
+            if (graph(preview ? "diffuseColor" : "base_color") ||
+                (tinted && (graph(openPbr ? "base_weight" : "base") || graph("subsurface_color")))) {
+                out.sampled |= M::kSampleBaseColour;
+            }
+            // THE COAT'S COLOUR tints the base under it (standard_surface's
+            // `mix(1, coat_color, coat)` over the base, OpenPBR's coat
+            // absorption): folded into the base colour by the device, which
+            // sees it on the lobes it tints.
+            if (tinted && out.coatWeight > 0.0F) {
+                std::array<float, 3> coatColour{1.0F, 1.0F, 1.0F};
+                takeColour(seen.count("coat_color") ? seen["coat_color"] : read("coat_color"), coatColour);
+                const bool white = coatColour[0] == 1.0F && coatColour[1] == 1.0F && coatColour[2] == 1.0F;
+                if (!white || connected("coat_color")) {
+                    out.sampled |= M::kSampleBaseColour;
+                    // AND ITS METAL A SCHLICK. The coat's colour multiplies
+                    // the metal's whole reflection, grazing included, and the
+                    // conversion folds it into the metal's two ends. A
+                    // conductor's Fresnel goes white at grazing whatever its
+                    // ends say, so folded into one the rim whitened: the
+                    // brass ball's mean came back a fifth too blue. A
+                    // Schlick's F0 and F90 are linear in the tint, so the
+                    // fold is exact there (decisions.md, matx).
+                    if (out.metallic > 0.0F || !out.metallicMap.empty()) {
+                        out.schlickMetal = true;
+                    }
+                }
+            }
+            if (graph(preview || gltf ? "roughness" : "specular_roughness")) {
+                out.sampled |= M::kSampleRoughness;
+            }
+            if (graph(preview ? "clearcoatRoughness" : gltf ? "clearcoat_roughness" : "coat_roughness")) {
+                out.sampled |= M::kSampleCoatRoughness;
+            }
+            if (graph(preview || gltf ? "metallic" : openPbr ? "base_metalness" : "metalness")) {
+                out.sampled |= M::kSampleMetallic;
+            }
+            if (graph(preview ? "emissiveColor" : gltf ? "emissive" : "emission_color") ||
+                (!preview && graph(gltf ? "emissive_strength" : openPbr ? "emission_luminance" : "emission"))) {
+                out.sampled |= M::kSampleEmission;
+            }
+        }
+        // A colour the material lets light through keeps what is read here:
+        // the conversion tints it towards the transmission colour, which a
+        // colour read back from the lobes has no room for.
+        if (out.transmission > 0.0F && (out.sampled & M::kSampleBaseColour) != 0) {
+            out.sampled &= ~uint32_t{M::kSampleBaseColour};
+            warnOnce(out.path, "transmits", "mesh2splat: '{}' transmits; its base colour is read as a constant, "
+                                            "not from the material on the device", out.path);
+        }
+        // SAID, NOT LEFT TO BE NOTICED: every input a graph computes, and
+        // what becomes of it. Once a material and input, whatever meshes
+        // wear it.
+        if (!known) {
+            warnOnce(out.path, id.GetString(),
+                     "mesh2splat: '{}' is a {} these readers do not know: a TX bake (--transfer) reads its base "
+                     "colour, roughness, metalness and emission back from the material on the device; without "
+                     "one they stand at their defaults", out.path, id.GetString());
+        }
+        for (const auto& [name, r] : seen) {
+            if (!r.computed && !r.inexact) {
+                continue;
+            }
+            warnOnce(out.path, name,
+                     "mesh2splat: '{}': '{}' is {} ({}); {}", out.path, name,
+                     r.computed ? "computed by a graph" : "a map through a placement the conversion does not apply",
+                     r.node,
+                     out.sampled != 0 ? "a TX bake (--transfer) reads what it can of it back from the material "
+                                        "on the device; otherwise the value read here stands"
+                                      : "the value read here stands");
         }
     }
 
@@ -986,7 +1270,17 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         // A SECOND SET, where a map of the material reads by a primvar that is
         // not the first: carried as `st2`, and the conversion samples that map
         // by it. One second set; a third map's would have to be a third.
-        StageMaterial material = materialOf(prim);
+        // A GLASS THE CALLER SAYS IS A SHEET (MeshStageOptions::thinGlass).
+        const auto sheet = [&options](StageMaterial m) {
+            const std::string name = m.path.substr(m.path.find_last_of('/') + 1);
+            if (m.transmission > 0.0F &&
+                std::any_of(options.thinGlass.begin(), options.thinGlass.end(),
+                            [&](const std::string& want) { return want == m.path || want == name; })) {
+                m.thinWalled = true;
+            }
+            return m;
+        };
+        StageMaterial material = sheet(materialOf(prim));
         // A MESH OF SEVERAL MATERIALS: the GeomSubsets of its `materialBind`
         // family, each binding its own. Read as Hydra reads them -- face
         // indices, handed to the builder, which says on the device which
@@ -1004,7 +1298,7 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
             if (!subset.GetIndicesAttr().Get(&faces, at) || faces.empty()) {
                 continue;
             }
-            subsets.push_back({subset.GetPath().GetString(), materialOf(subset.GetPrim())});
+            subsets.push_back({subset.GetPath().GetString(), sheet(materialOf(subset.GetPrim()))});
             subsetFaces.push_back(std::move(faces));
         }
         std::string second;
@@ -1130,6 +1424,73 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         return Error::make(ErrorCode::InvalidArgument, "'{}': no meshes to convert", impl_->source);
     }
     return meshes;
+}
+
+
+Result<std::vector<MaterialGroup>> stageMaterialGroups(const std::filesystem::path& path, const std::string& prim,
+                                                       const std::vector<std::string>& hidden, double time) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::NotFound, "'{}': not a stage USD opens", path.string());
+    }
+    const SdfPath under = prim.empty() ? SdfPath::AbsoluteRootPath() : SdfPath(prim);
+    const UsdTimeCode at(time);
+    std::vector<SdfPath> leftOut;
+    for (const std::string& h : hidden) {
+        leftOut.emplace_back(h);
+    }
+    std::map<std::string, std::set<std::string>> groups;
+    for (const UsdPrim& p : stage->Traverse()) {
+        if (!p.IsA<UsdGeomMesh>() || !p.GetPath().HasPrefix(under)) {
+            continue;
+        }
+        if (UsdGeomImageable(p).ComputeVisibility(at) == UsdGeomTokens->invisible ||
+            std::any_of(leftOut.begin(), leftOut.end(), [&](const SdfPath& h) { return p.GetPath().HasPrefix(h); })) {
+            continue;
+        }
+        const std::string mesh = p.GetPath().GetString();
+        const UsdShadeMaterial own = UsdShadeMaterialBindingAPI(p).ComputeBoundMaterial();
+        groups[own ? own.GetPath().GetString() : std::string()].insert(mesh);
+        for (const UsdGeomSubset& subset : UsdShadeMaterialBindingAPI(p).GetMaterialBindSubsets()) {
+            const UsdShadeMaterial bound = UsdShadeMaterialBindingAPI(subset.GetPrim()).ComputeBoundMaterial();
+            if (bound) {
+                groups[bound.GetPath().GetString()].insert(mesh);
+            }
+        }
+    }
+    std::vector<MaterialGroup> out;
+    for (auto& [material, meshes] : groups) {
+        out.push_back({material, std::vector<std::string>(meshes.begin(), meshes.end())});
+    }
+    return out;
+}
+
+Result<std::string> stageFirstCamera(const std::filesystem::path& path) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::NotFound, "'{}': not a stage USD opens", path.string());
+    }
+    for (const UsdPrim& p : stage->Traverse()) {
+        if (p.IsA<UsdGeomCamera>()) {
+            return p.GetPath().GetString();
+        }
+    }
+    return std::string();
+}
+
+Result<std::vector<std::pair<std::string, bool>>> stageLights(const std::filesystem::path& path) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::NotFound, "'{}': not a stage USD opens", path.string());
+    }
+    std::vector<std::pair<std::string, bool>> out;
+    for (const UsdPrim& p : stage->Traverse()) {
+        const std::string type = p.GetTypeName().GetString();
+        if (type.size() > 5 && type.compare(type.size() - 5, 5, "Light") == 0) {
+            out.emplace_back(p.GetPath().GetString(), type == "DomeLight" || type == "DomeLight_1");
+        }
+    }
+    return out;
 }
 
 }   // namespace athenea::usd

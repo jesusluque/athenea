@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <vector>
 
 #include "athenea/ui/GaussianPanel.h"
 #include "athenea/ui/ViewerPanels.h"
@@ -170,4 +171,37 @@ TEST_CASE("the viewer's panels gain a Gaussians panel where a front end has the 
     CHECK(panels[1].id == "gaussians");
     find(panels[1], "gaussians.timeStages")->setFlag(true);
     CHECK(settings.timeSplatStages);
+}
+
+TEST_CASE("the viewer's panels gain a Lamps section that sets states and levels, not weights", "[ui][lights]") {
+    ui::ViewerSettings settings;
+    CHECK(section(ui::viewerPanels(settings, {}, {}).front(), "lamps") == nullptr);
+    std::vector<ui::LampGroup> groups{{"cruce", 0.0F}, {"pilotos", 1.0F}};
+    std::string state;
+    ui::ViewerFacts facts;
+    facts.lampGroups = [&] { return groups; };
+    facts.lampStates = [] { return std::vector<std::string>{"aparcado", "noche_ciudad"}; };
+    facts.lampState = [&] { return state; };
+    ui::ViewerActions actions;
+    actions.setLampState = [&](const std::string& s) { state = s; };
+    actions.setLampLevel = [&](const std::string& group, float level) {
+        for (ui::LampGroup& g : groups) {
+            if (g.name == group) {
+                g.level = level;
+            }
+        }
+    };
+    const std::vector<ui::Panel> panels = ui::viewerPanels(settings, facts, actions);
+    REQUIRE(section(panels.front(), "lamps") != nullptr);
+    const ui::Control* states = find(panels.front(), "lampState");
+    REQUIRE(states != nullptr);
+    CHECK(states->choices.size() == 3);
+    states->choose("noche_ciudad");
+    CHECK(states->chosen() == "noche_ciudad");
+    CHECK_FALSE(find(panels.front(), "lampOn:cruce")->flag());
+    find(panels.front(), "lampOn:cruce")->setFlag(true);
+    CHECK(groups[0].level == 1.0F);
+    find(panels.front(), "lampLevel:pilotos")->setNumber(4.0);
+    CHECK(groups[1].level == 4.0F);
+    CHECK(find(panels.front(), "lampLevel:pilotos")->number() == 4.0);
 }

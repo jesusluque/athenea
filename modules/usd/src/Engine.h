@@ -110,6 +110,19 @@ struct SplatEntry {
     /// `primvars:athenea:splat:litBody`: its colours are light already, so what
     /// relighting adds is the polish alone (`athenea mesh2splat --bake`).
     bool                                litBody = false;
+    /// `primvars:athenea:splat:catcher`: a shadow catcher, drawn black as
+    /// opaque as what its object took (`athenea mesh2splat --shadow-catcher`).
+    bool                                catcher = false;
+    /// `primvars:athenea:splat:lightCatcher`: a light catcher, the lamps'
+    /// light on a ground, added over whatever is drawn (`athenea mesh2splat
+    /// --light-catcher`). Only its layers are drawn.
+    bool                                lightCatcher = false;
+    /// This frame's weight of each of its lamps' layers, a float4 a layer,
+    /// `GpuSplats::kMaxLightGroups` of them (`Engine::setLightWeights`), and
+    /// which weights it was written from. The projection takes them in its
+    /// constants (render::SplatInstance::lightWeights).
+    std::vector<float>                  lightWeights;
+    uint64_t                            lightWeightsVersion = 0;
     /// `primvars:athenea:splat:ior`: the index its transmitting gaussians bend
     /// the sky by. 0 bends nothing, which is every cloud that does not say.
     float                               ior = 0.0F;
@@ -195,6 +208,7 @@ struct MaterialEntry {
     bool                                    pending = true;
     bool                                    cutout = false;        ///< its opacity cuts samples away: visibility evaluates it
     bool                                    transparent = false;   ///< opacityMode transparent: the tracer keeps the specular
+    std::optional<material::Transmission>   transmission;        ///< lets light through, and how much: the bake's open-or-not rays look
     std::optional<material::CompiledMaterial> compiled;
     /// Where it cuts: its opacity alone, what a shadow ray asks at a candidate.
     std::optional<material::CompiledMaterial> opacity;
@@ -257,8 +271,13 @@ struct BakeRequest {
     /// reaches each point from an environment, with its own albedo taken as
     /// one, so the answer does not depend on the light it was baked under.
     bool               transfer = false;
+    /// And its open directions on a finer grid over the whole sphere, 16 or
+    /// 32 cells a side (technique::BakePoints::cellSide); 0 the first 8 x 8.
+    uint32_t           cellSide = 0;
     /// KEEP THE SUMS, DIRECT APART FROM INDIRECT (technique::BakePoints::split).
     bool               split = false;
+    /// AND READ THE MATERIAL BACK at each point (technique::BakePoints::material).
+    bool               material = false;
     /// Which paths these are: a pass that adds to an earlier one draws
     /// others. The same seed draws the same paths.
     uint32_t           seed = 0;
@@ -334,7 +353,9 @@ public:
                    std::optional<std::vector<pxr::TfToken>> categories = std::nullopt,
                    std::optional<bool> litBody = std::nullopt,
                    std::optional<float> ior = std::nullopt,
-                   std::optional<render::Mat4> transformStep = std::nullopt);
+                   std::optional<render::Mat4> transformStep = std::nullopt,
+                   std::optional<bool> catcher = std::nullopt,
+                   std::optional<bool> lightCatcher = std::nullopt);
     void setPoints(const pxr::SdfPath& id, std::optional<PointsArrays> raw,
                    const render::Mat4* transform, std::optional<bool> visible,
                    std::optional<render::PointStyle> style);
@@ -375,6 +396,13 @@ public:
     void setSplatTransferIndirect(bool indirect);
     /// Whether a gaussian reflects the cloud it belongs to, at a ray each.
     void setSplatReflections(bool reflect);
+    /// THE LAMPS' WEIGHTS, by group name: linear rgb, a group's level times
+    /// its radiance and colour, what each of a cloud's light layers is added
+    /// times (docs/decisions.md, light groups). A group not named is off.
+    /// Changing them changes four floats a layer on the device and nothing
+    /// else: no upload, no bake.
+    void setLightWeights(std::map<std::string, std::array<float, 3>> weights);
+    [[nodiscard]] std::map<std::string, std::array<float, 3>> lightWeights() const;
 
     /// WHAT A FRAME SAYS A PRIM IS MADE OF, keyed on the Cryptomatte id its
     /// gaussians carry: what a host edits after picking one.
@@ -396,6 +424,12 @@ public:
     /// cloud is lit as if the cloud were not there, which is what every
     /// raster frame did before.
     void setCloudShadows(bool shadows);
+    /// Whether the raster route reads a dome prefiltered on a mesh
+    /// (`athenea:domePrefiltered`): the harmonics' irradiance and the sky's
+    /// mip chain, shadowed by the cloud map's dome directions, with no sample
+    /// and no ray. On by default; off, a dome is sampled and traced as it
+    /// was, one sample a pixel and its grain.
+    void setDomePrefiltered(bool prefiltered);
     /// Texels a side of that map, per light (`athenea:cloudShadowResolution`).
     void setCloudShadowResolution(uint32_t texels);
     /// How many terms of the map each texel keeps (`athenea:cloudShadowTerms`):
@@ -442,6 +476,9 @@ public:
     /// has stopped or `pathTotal` is reached, whichever first.
     void setPathAdaptive(bool adaptive);
     void setPathMis(bool mis);
+    /// Let the path tracer's shadow rays through glass whose transmission
+    /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
+    void setGlassShadows(bool glass);
     void setPathError(float error);
 
     /// How many paths a pixel the path traced frame on screen has gathered,
@@ -716,6 +753,7 @@ private:
     std::atomic<bool>                         chooseLights_{false};
     std::atomic<bool>                         splatShadows_{false};
     std::atomic<bool>                         cloudShadows_{true};
+    std::atomic<bool>                         domePrefiltered_{true};
     std::atomic<uint32_t>                     cloudShadowTexels_{1024};
     std::atomic<uint32_t>                     cloudShadowTerms_{0};
     std::atomic<float>                        cloudShadowDensity_{1.0F};
@@ -737,12 +775,20 @@ private:
     std::atomic<uint32_t>                     pathTotal_{1};
     std::atomic<bool>                         pathAdaptive_{false};
     std::atomic<bool>                         pathMis_{true};
+    std::atomic<bool>                         glassShadows_{true};
     std::atomic<bool>                         transferIndirect_{true};
     /// How many times a cloud's arrays were uploaded: once a cloud, unless
     /// what it holds changed (tests hold a time step to it).
     double                                    lastCommitMs_ = 0.0;   ///< ATHENEA_STAGES: the last commit's time
+    double                                    meshShadowMapMs_ = 0.0;   ///< ATHENEA_STAGES: the cloud map's build
+    /// What the cloud shadow map was last built from (Engine::render): a
+    /// frame with the same key reads it again.
+    std::vector<uint64_t>                     cloudShadowKey_;
     std::atomic<uint64_t>                     cloudUploads_{0};
     std::atomic<bool>                         splatReflections_{false};
+    /// `setLightWeights`'s, under `guard_`, and how many times they changed.
+    std::map<std::string, std::array<float, 3>> lightWeights_;
+    uint64_t                                  lightWeightsVersion_ = 1;
     /// The per-prim material table and the buffer it is uploaded into. The
     /// rows are the host's; `splatOverrideRows_` is what the frame bound.
     std::vector<render::SplatOverride>        splatOverrides_;
@@ -777,6 +823,7 @@ private:
         uint32_t     bounces = 0;
         bool         adaptive = false;
         bool         mis = true;
+        bool         glassShadows = true;
         bool         cameraMoves = false;
         render::Mat4 cameraStart = render::Mat4::identity();
         render::Mat4 cameraEnd = render::Mat4::identity();
@@ -803,6 +850,7 @@ private:
                    lensRadius == o.lensRadius && focusDistance == o.focusDistance &&
                    distortionK1 == o.distortionK1 && distortionK2 == o.distortionK2 && width == o.width &&
                    height == o.height && samples == o.samples && bounces == o.bounces && adaptive == o.adaptive && mis == o.mis &&
+                   glassShadows == o.glassShadows &&
                    error == o.error && revision == o.revision && tags == o.tags && traced == o.traced;
         }
     };
@@ -823,6 +871,7 @@ private:
     [[nodiscard]] uint64_t categoryMask(const std::vector<pxr::TfToken>& names);
     bool                                      materialsChanged_ = true;
     bool                                      materialCutouts_ = false;   ///< a material in the frame cuts samples away
+    bool                                      materialGlass_ = false;     ///< a material in the frame lets a shadow ray through, tinted (kMaterialGlassShadow)
     std::unique_ptr<material::MaterialCompiler> compiler_;
     bool                                      compilerFailed_ = false;
     std::unique_ptr<material::TextureStore>   textures_;

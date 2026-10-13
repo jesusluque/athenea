@@ -32,6 +32,17 @@ void addDecimate(CLI::App& app) {
         float flatTolerance = 0.08F;
         float reach = 1.5F;
         bool noCamera = false;
+        float ratio = 0.0F;
+        float edge = 0.15F;
+        float maxAspect = 1000.0F;
+        float maxAngle = 60.0F;
+        float highlightCone = 1.0F;
+        float surfelFlatness = -1.0F;
+        bool noSurfels = false;
+        bool mergeGlass = false;
+        std::string camera;
+        unsigned cameraPixels = 1920;
+        std::string tree;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("decimate",
@@ -55,6 +66,35 @@ void addDecimate(CLI::App& app) {
         ->check(CLI::Range(0.1F, 10.0F));
     cmd->add_option("--degree", o->degree, "harmonic degree cap 0..3");
     cmd->add_flag("--no-camera", o->noCamera, "do not add /World/Camera");
+    cmd->add_option("--ratio", o->ratio,
+                    "merge by pairs (NanoGS) until this many times fewer gaussians, the cheapest merges first, "
+                    "instead of cutting the octree")
+        ->check(CLI::Range(1.0F, 10000.0F));
+    cmd->add_option("--edge", o->edge, "--ratio: a colour difference (sRGB, 0..1) never merged across")
+        ->check(CLI::Range(0.0F, 2.0F));
+    cmd->add_option("--max-angle", o->maxAngle, "--ratio: normals further apart than this are never merged, degrees")
+        ->check(CLI::Range(0.0F, 180.0F));
+    cmd->add_option("--highlight-cone", o->highlightCone,
+                    "--ratio: on a glossy surface, normals further apart than this times sqrt(alpha) radians "
+                    "never merge (the highlight would move); large lets the ratio decide alone")
+        ->check(CLI::Range(0.0F, 1000.0F));
+    cmd->add_option("--surfel-flatness", o->surfelFlatness,
+                    "--ratio: a merge of discs whose thinnest axis is under this fraction of its middle one is "
+                    "written a surfel (default 0.12)")
+        ->check(CLI::Range(0.0F, 1.0F));
+    cmd->add_option("--max-aspect", o->maxAspect,
+                    "--ratio: a merge longer than this against its width (or 1.25 times its members) is refused")
+        ->check(CLI::Range(1.0F, 1000.0F));
+    cmd->add_flag("--merge-glass", o->mergeGlass,
+                  "--ratio: merge transmitting gaussians (glass) among themselves too; off, they are kept");
+    cmd->add_flag("--no-surfels", o->noSurfels, "--ratio: keep a flat merge a thin gaussian, not a surfel");
+    cmd->add_option("--camera", o->camera,
+                    "--ratio: the camera the cloud is made for (default /World/Camera where there is one)");
+    cmd->add_option("--camera-pixels", o->cameraPixels, "--ratio: pixels across that camera's image")
+        ->check(CLI::Range(1u, 65536u));
+    cmd->add_option("--tree", o->tree,
+                    "--ratio: also write the whole merge tree here -- leaves in depth-first order, then every "
+                    "merge with its parent and cost -- for a reader that cuts it");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
             cli::fail(error);
@@ -70,9 +110,31 @@ void addDecimate(CLI::App& app) {
         options.settings.outliers = o->outliers;
         options.settings.flatTolerance = o->flatTolerance;
         options.settings.reach = o->reach;
+        options.pairs = o->ratio > 0.0F;
+        options.pairSettings.ratio = o->ratio;
+        options.pairSettings.edge = o->edge;
+        options.pairSettings.maxAngle = o->maxAngle;
+        options.pairSettings.highlightCone = o->highlightCone;
+        if (o->surfelFlatness >= 0.0F) {
+            options.pairSettings.flatTolerance = o->surfelFlatness;
+        }
+        options.pairSettings.surfels = !o->noSurfels;
+        options.pairSettings.mergeGlass = o->mergeGlass;
+        options.pairSettings.maxAspect = o->maxAspect;
+        options.camera = o->camera;
+        options.cameraPixels = o->cameraPixels;
+        options.treeOutput = o->tree;
         auto decimated = usd::decimateStage(library, o->input, o->output, options);
         if (!decimated) fail(decimated.error());
         const lod::DecimateStats& stats = *decimated;
+        if (options.pairs) {
+            std::printf("decimate: %u gaussians of %u (%.1f%%, %.2fx) in %u passes by pairs, %u of them surfels; "
+                        "wrote %s\n",
+                        stats.merged, stats.before, 100.0 * stats.merged / std::max(stats.before, 1u),
+                        static_cast<double>(stats.before) / std::max(stats.merged, 1u), stats.passes, stats.surfels,
+                        o->output.c_str());
+            return;
+        }
         std::printf("decimate: %u gaussians of %u (%.1f%%): %u kept as they were, %u merged; wrote %s\n",
                     stats.splats + stats.merged, stats.before,
                     100.0 * (stats.splats + stats.merged) / std::max(stats.before, 1u), stats.splats, stats.merged,

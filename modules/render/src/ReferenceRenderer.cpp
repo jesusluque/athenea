@@ -408,6 +408,35 @@ Result<HdrDifference> compareHdr(gpu::ShaderLibrary& library, const gpu::Buffer&
     return diff;
 }
 
+Result<FlickerDifference> compareFlicker(gpu::ShaderLibrary& library, const gpu::Buffer& previous,
+                                        const gpu::Buffer& current, const gpu::Buffer& next, uint32_t width,
+                                        uint32_t height) {
+    gpu::Device& device = library.device();
+    auto midpoint = gpu::ComputeKernel::create(library, "athenea/reference/image_midpoint", "imageMidpoint");
+    if (!midpoint) return std::move(midpoint).error();
+    const uint32_t pixels = width * height;
+    auto between = buffer(device, pixels, 16, "flicker.midpoint");
+    if (!between) return std::move(between).error();
+    {
+        gpu::CommandBatch batch(device);
+        midpoint->dispatch(batch, {pixels, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["before"].setBinding(previous.rhi());
+            cursor["after"].setBinding(next.rhi());
+            cursor["midpoint"].setBinding(between->rhi());
+            cursor["midpointParams"]["pixels"].setData(pixels);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    FlickerDifference out;
+    auto hdr = compareHdr(library, current, *between, width, height);
+    if (!hdr) return std::move(hdr).error();
+    out.hdr = *hdr;
+    auto codes = compareImages(library, current, *between, width, height);
+    if (!codes) return std::move(codes).error();
+    out.codes = *codes;
+    return out;
+}
+
 Result<uint64_t> countDifferent(gpu::ShaderLibrary& library, const gpu::Buffer& a, const gpu::Buffer& b,
                                 uint32_t count) {
     gpu::Device& device = library.device();

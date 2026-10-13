@@ -87,6 +87,7 @@ public struct FrameParams {
     public uint  hasPbr;         // 1: `pbr` holds this cloud's metallic and roughness
     public uint  hasNormals;     // 1: `normals` holds this cloud's shading normals
     public uint  hasEmission;    // 1: `emission` holds the radiance this cloud's gaussians give off
+    public uint  hasLobes;       // 1: `lobes` holds what this cloud's materials layered over the base
     public uint  litBody;        // 1: the colours are light already, and only the polish is added
     /// Lights an environment was prepared for: `envOfLight[k]` is the slice
     /// of light k, or `kEnvNone`. Zero: no sky prepared, and a dome is its
@@ -106,7 +107,8 @@ public struct FrameParams {
     public uint  transferWords;
     public uint  transferCount;
     public uint  transferIndirect;
-    /// 1 where the cloud carries which ways out are open (`shadowBits`).
+    /// The words a gaussian of which ways out are open (`shadowBits`), 0 where
+    /// the cloud carries none: 2 for 8 x 8 cells, 8 or 32 for a TX transfer.
     public uint  shadowBits;
     /// THE INDEX A TRANSMITTING GAUSSIAN BENDS BY, 0 where it bends nothing.
     ///
@@ -153,15 +155,64 @@ public struct FrameParams {
     public float s00; public float s01; public float s02; public float s03;
     public float s10; public float s11; public float s12; public float s13;
     public float s20; public float s21; public float s22; public float s23;
+    /// 1: `curvature` holds this cloud's shape operators, and a TX transfer's
+    /// reflection gets its slope across the footprint (splat_project).
+    public uint  hasCurvature;
+    /// 1: `txCache` holds this cloud's view-independent transfer terms
+    /// (splatTransferViewless), each with the dome slice it is for.
+    public uint  txCache;
+    /// THE LAMPS' LAYERS (GpuSplats::lightLayers): how many groups this
+    /// cloud carries, a word each a splat in `lightLayers`, each added
+    /// times its weight in `lightWeights` below (splat_project's lampLight).
+    /// 0: none, and nothing is read.
+    public uint  lightLayers;
+    /// WHERE A SHARP RECORD'S POLISH STARTS IN `slopes`, in uint4 entries:
+    /// the slot's slope at [slot], its base polish and sun weights at
+    /// [polishPlane + slot]. One buffer, not two: the TX projection binds
+    /// as many as Metal's thirty-one allow (splat_project).
+    public uint  polishPlane;
+    /// SURFELS (docs/decisions.md, surfels): 1 draws a gaussian with a flat
+    /// axis -- a scale of exactly 0 -- as the disc it is, by the ray through
+    /// each pixel (ProjRecord::surfel), 0 as the thin gaussian it projects to.
+    public uint  surfels;
+    /// The lamps' weights this frame, a float4 a layer (linear rgb: the
+    /// group's level times its radiance and colour), GpuSplats::
+    /// kMaxLightGroups of them. Here and not a buffer, for the same count.
+    public float4 lightWeights[16];
     public EditParams edit;      // this cloud instance's SplatEdit (common/edit.slang)
 };
 
 /// What the projection leaves for the blend, one record per splat, so a pair
 /// costs the blend one memory access and not three.
+/// What a record's colour.w says when the splat's colour has a slope across
+/// its footprint in `slopes` (splat_project, splat_blend): neither 0, a plain
+/// splat, nor above a half, an opaque point of the layer under the splats.
+public static const float kSlopeMark = 0.25;
+/// A ProjRecord's colour.w for a shadow catcher's gaussian (splat_project's
+/// splatProjectCatcher): black, and drawn over an opaque layer under it
+/// even where its centre's depth reads behind that layer -- it lies on it.
+public static const float kCatcherMark = 0.125;
+/// A ProjRecord's colour.w for a LIGHT CATCHER's gaussian (splat_project's
+/// splatProjectLightCatcher): the lamps' light on the ground, drawn over the
+/// layer under it as a catcher is, and added -- it takes nothing from what
+/// is behind it, so it can only brighten.
+public static const float kLightCatcherMark = 0.0625;
+/// A record whose sharp lobe the blend draws per pixel (splat_project's
+/// SplatSlope sharp lobe): `slopes` holds its mirror and the mirror's turn.
+public static const float kSharpMark = 0.375;
+
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power
     public float4 conic;    // a, b, c, alpha
     public float4 colour;   // rgb (linear), 0
+    /// A SURFEL'S DISC ON SCREEN, where conic.w < 0 marks one: its two axes
+    /// (scale times direction) in homogeneous screen coordinates -- (x w, y w,
+    /// w) of the disc's u and v -- as halves, u.xy, u.w v.x, v.y v.w, 0. With
+    /// the centre's own (screen.xy times its depth, and the depth) they are
+    /// the 3x3 map from the disc's plane to the screen that the blend inverts
+    /// at every pixel (Huang et al. 2024, ray-splat intersection). 0 for a
+    /// gaussian.
+    public uint4  surfel;
 };
 
 public float3 toView(FrameParams f, float3 p) {

@@ -47,7 +47,7 @@ struct GaussianCloud {
     bool     linear = false;      ///< its colours are linear light, not a capture's sRGB
     bool     relit = false;       ///< AtheneaSplatLightingAPI
     bool     litBody = false;
-    uint32_t transfer = 0;        ///< transfer values a gaussian (0, 9, 36)
+    uint32_t transfer = 0;        ///< transfer values a gaussian (0, 9, 10 zonal, 36)
     bool     skinned = false;
     bool     normals = false;
     bool     emission = false;

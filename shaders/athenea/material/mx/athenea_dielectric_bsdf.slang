@@ -14,8 +14,13 @@ void athenea_dielectric_bsdf(ClosureData closureData, float weight, float3 tint,
     const float NdotV = clamp(dot(n, V), M_FLOAT_EPS, 1.0);
     const float2 safeAlpha = clamp(roughness, M_FLOAT_EPS, 1.0);
     const float avgAlpha = averageAlpha(safeAlpha);
-    const float F0 = iorToF0(ior);
-    const float3 F = float3(fresnelDielectric(NdotV, ior));
+    // A THIN WALL reflects both its faces' Fresnel with the light between
+    // them summed, 2R / (1 + R) (lobes.slang's dielectricF), so what it lets
+    // the layers under it have is the rest of that, not of one face's.
+    const float R0 = iorToF0(ior);
+    const float R = fresnelDielectric(NdotV, ior);
+    const float F0 = gAtheneaThinWalled ? 2.0 * R0 / (1.0 + R0) : R0;
+    const float3 F = float3(gAtheneaThinWalled ? 2.0 * R / (1.0 + R) : R);
     const float3 comp = ggxEnergyCompensation(NdotV, avgAlpha, F);
     const float3 dirAlbedo = ggxDirectionalAlbedo(NdotV, avgAlpha, float3(F0), float3(1.0)) * comp;
     Lobe lobe = atheneaLobe(kLobeDielectric);

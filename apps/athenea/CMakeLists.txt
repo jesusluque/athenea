@@ -8,7 +8,9 @@ add_executable(athenea
     src/CmdMigrate.cpp
     src/CmdAofx.cpp
     src/CmdMesh2Splat.cpp
+    src/Mesh2SplatValidate.cpp
     src/CmdVisibility.cpp
+    src/CmdLights.cpp
     src/CmdLive.cpp)
 target_link_libraries(athenea PRIVATE athenea::usd athenea::lod athenea::sched athenea::technique athenea::aofx_host CLI11::CLI11)
 if(ATHENEA_BUILD_VIEW)

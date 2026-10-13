@@ -283,6 +283,74 @@ std::vector<Panel> viewerPanels(ViewerSettings& settings, ViewerFacts facts, Vie
         }
     }
 
+    // THE LAMPS: a state to start from, and each group's switch and level
+    // over it -- weights the next frame takes, nothing reloaded.
+    if (facts.lampGroups) {
+        Section lamps;
+        lamps.id = "lamps";
+        lamps.title = "Lamps";
+        auto groups = facts.lampGroups;
+        const auto levelOf = [groups](const std::string& name) {
+            for (const LampGroup& g : groups()) {
+                if (g.name == name) {
+                    return double(g.level);
+                }
+            }
+            return 0.0;
+        };
+        if (facts.lampStates) {
+            Control state;
+            state.kind = Control::Kind::Choice;
+            state.id = "lampState";
+            state.label = "State";
+            state.choices.push_back({"", "As each starts"});
+            for (const std::string& name : facts.lampStates()) {
+                state.choices.push_back({name, name});
+            }
+            auto chosen = facts.lampState;
+            state.chosen = [chosen] { return chosen ? chosen() : std::string(); };
+            auto set = actions.setLampState;
+            state.choose = [set](const std::string& name) {
+                if (set) {
+                    set(name);
+                }
+            };
+            lamps.controls.push_back(std::move(state));
+        }
+        auto setLevel = actions.setLampLevel;
+        for (const LampGroup& group : groups()) {
+            const std::string name = group.name;
+            Control on;
+            on.kind = Control::Kind::Toggle;
+            on.id = "lampOn:" + name;
+            on.label = name;
+            on.flag = [levelOf, name] { return levelOf(name) > 0.0; };
+            on.setFlag = [setLevel, name](bool lit) {
+                if (setLevel) {
+                    setLevel(name, lit ? 1.0F : 0.0F);
+                }
+            };
+            lamps.controls.push_back(std::move(on));
+            Control level;
+            level.kind = Control::Kind::Slider;
+            level.id = "lampLevel:" + name;
+            level.label = "Level";
+            level.minimum = 0.0;
+            level.maximum = 4.0;
+            level.decimals = 2;
+            level.number = [levelOf, name] { return levelOf(name); };
+            level.setNumber = [setLevel, name](double value) {
+                if (setLevel) {
+                    setLevel(name, float(value));
+                }
+            };
+            lamps.controls.push_back(std::move(level));
+        }
+        if (!lamps.controls.empty()) {
+            view.sections.push_back(std::move(lamps));
+        }
+    }
+
     Section time;
     time.id = "time";
     time.title = "Time";

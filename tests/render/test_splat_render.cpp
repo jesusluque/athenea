@@ -952,6 +952,276 @@ TEST_CASE("an open sky reflects whole, a closed one not at all", "[render][gpu][
     CHECK(counts[3] == 0);
 }
 
+// A REFLECTION'S OCCLUSION HAS A DIRECTION (task TX).
+//
+// The Lagarde fit above narrows a reflection by one number for the whole
+// hemisphere, so a door reflected the open sky where the ground stands in
+// its mirror. A TX transfer's bits say which directions are open, and
+// `splatLobeOpen` reads them over the lobe: under a sky of bits all open it
+// is one, all closed zero, and over a ground a lobe pointing up sees it all,
+// one pointing down none, and tilting it down never opens it again.
+TEST_CASE("a reflection's lobe sees what a TX transfer's bits leave open", "[render][gpu][cells]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    for (const uint32_t side : {16u, 32u}) {
+        const uint32_t words = side * side / 32;
+        gpu::Buffer bits = test::uintBuffer(*gpu->device, words * 3, "lobe.bits");
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "lobe.stats");
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        desc.label = "lobe.worst";
+        const std::array<float, 8> zeros{};
+        auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+        REQUIRE(worst);
+        auto fill = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobe_open_check", "lobeOpenFill");
+        if (!fill) FAIL(fill.error().toString());
+        gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/lobe_open_check");
+        constexpr uint32_t kSteps = 8;
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["fill"].setBinding(bits.rhi());
+            cursor["bits"].setBinding(bits.rhi());
+            cursor["stats"].setBinding(stats.rhi());
+            cursor["worst"].setBinding(worst->rhi());
+            cursor["params"]["side"].setData(side);
+            cursor["params"]["steps"].setData(kSteps);
+            cursor["params"]["tolerance"].setData(1.0e-4F);
+        };
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            fill->dispatch(batch, {words * 3, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            check.dispatch(batch, {1, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 8> counts{};
+        std::array<float, 8> readings{};
+        REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+        REQUIRE(worst->read(*gpu->device, 0, sizeof(readings), readings.data()));
+        std::printf("  %u x %u cells: %u readings; %u not one under an open sky, %u not zero under a closed one, "
+                    "%u wrong at the poles over a ground, %u opening again (largest rise %.4f), %u out of range\n",
+                    side, side, counts[5], counts[0], counts[1], counts[2], counts[3], double(readings[0]),
+                    counts[4]);
+        INFO(side << " cells a side");
+        CHECK(counts[5] == kSteps * (kSteps * 4 + 1));
+        CHECK(counts[0] == 0);
+        CHECK(counts[1] == 0);
+        CHECK(counts[2] == 0);
+        CHECK(counts[3] == 0);
+        CHECK(counts[4] == 0);
+        // A light's shadow out of the same bits, over the cone it subtends
+        // (step 4).
+        auto light = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobe_open_check", "lightOpenCheck");
+        if (!light) FAIL(light.error().toString());
+        gpu::Buffer lightStats = test::uintBuffer(*gpu->device, 8, "lobe.lightStats");
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            light->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                bind(cursor);
+                cursor["stats"].setBinding(lightStats.rhi());
+            });
+            REQUIRE(batch.submit(true));
+        }
+        REQUIRE(lightStats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+        std::printf("  %u x %u cells, a light: %u readings; %u above not open, %u below not closed, %u at the "
+                    "horizon not between, %u angles off\n",
+                    side, side, counts[4], counts[0], counts[1], counts[2], counts[3]);
+        CHECK(counts[4] == kSteps);
+        CHECK(counts[0] == 0);
+        CHECK(counts[1] == 0);
+        CHECK(counts[2] == 0);
+        CHECK(counts[3] == 0);
+    }
+}
+
+// WHAT THE CLOSED DIRECTIONS SHOW IS LINEAR IN THE SKY (task TX, step 2).
+//
+// A TX transfer keeps what arrives by direction after meeting the scene,
+// under a white sky of radiance one, and scales it to the sky a frame has by
+// the ratio of what its indirect half gathers under each. On values written
+// on the device: a field that is a constant reads that constant along every
+// direction at every roughness, and the coupling to the white sky is one, to
+// a sky twice as bright two.
+TEST_CASE("a TX transfer's reflected field reads back, and couples to a sky linearly", "[render][gpu][field]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Buffer halves = test::uintBuffer(*gpu->device, 42, "field.transfer");
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "field.stats");
+    gpu::BufferDesc desc;
+    desc.bytes = 64 * 16;
+    desc.elementBytes = 16;
+    desc.label = "field.skies";
+    auto skies = gpu::Buffer::create(*gpu->device, desc);
+    REQUIRE(skies);
+    desc.bytes = 8 * sizeof(float);
+    desc.elementBytes = sizeof(float);
+    desc.label = "field.worst";
+    const std::array<float, 8> zeros{};
+    auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+    REQUIRE(worst);
+    auto fill = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "fieldFill");
+    if (!fill) FAIL(fill.error().toString());
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "fieldCouplingCheck");
+    if (!check) FAIL(check.error().toString());
+    constexpr uint32_t kSteps = 12;
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        cursor["halves"].setBinding(halves.rhi());
+        cursor["transfer"].setBinding(halves.rhi());
+        cursor["baked"].setBinding(skies->rhi());
+        cursor["skies"].setBinding(skies->rhi());
+        cursor["envSh"].setBinding(skies->rhi());
+        cursor["stats"].setBinding(stats.rhi());
+        cursor["worst"].setBinding(worst->rhi());
+        cursor["params"]["steps"].setData(kSteps);
+    };
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        fill->dispatch(batch, {1, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {1, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> counts{};
+    std::array<float, 8> readings{};
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    REQUIRE(worst->read(*gpu->device, 0, sizeof(readings), readings.data()));
+    std::printf("  the field: %u readings, %u off the constant (worst %.5f); coupling off one %u, off two %u "
+                "(worst %.5f)\n",
+                counts[3], counts[0], double(readings[0]), counts[1], counts[2], double(readings[1]));
+    CHECK(counts[3] == kSteps * kSteps);
+    CHECK(counts[0] == 0);
+    CHECK(counts[1] == 0);
+    CHECK(counts[2] == 0);
+    // And the sky's basis is the bake's to degree 3 (step 3), which nothing
+    // held before: the two were kept equal to degree 2 by hand.
+    auto basis = gpu::ComputeKernel::create(*gpu->library, "athenea/test/field_check", "basisCheck");
+    if (!basis) FAIL(basis.error().toString());
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        basis->dispatch(batch, {64, 1, 1}, bind);
+        REQUIRE(batch.submit(true));
+    }
+    REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    std::printf("  the basis: %u readings, %u where the sky's and the bake's differ\n", counts[7], counts[6]);
+    CHECK(counts[7] == 64 * 16);
+    CHECK(counts[6] == 0);
+}
+
+// A TX TRANSFER'S BOUNCED HALVES GO TO THE FILTER AND COME BACK WHOLE.
+//
+// The splat bake filter reads pictures; `transfer_filter_io` lays a
+// transfer's indirect half and reflected field into one and back. Out of a
+// picture that nothing changed, the answer must come back as it was -- the
+// direct half in the indirect coefficients' w untouched, the coverage and
+// the cells untouched -- or the filter would be changing what it was never
+// asked to.
+TEST_CASE("a TX transfer's bounced halves go into the filter's picture and back unchanged",
+          "[render][gpu][field][filter]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const uint32_t count = 50, coefficients = 16, entries = 16 + 1 + 2 + 16, fieldFirst = entries - 16;
+    std::vector<float> answer(size_t{count} * entries * 4);
+    for (size_t i = 0; i < answer.size(); ++i) {
+        answer[i] = 0.001F * static_cast<float>(i % 997) + 0.25F;
+    }
+    gpu::BufferDesc desc;
+    desc.bytes = answer.size() * 4;
+    desc.elementBytes = 16;
+    auto values = gpu::Buffer::create(*gpu->device, desc, answer.data());
+    REQUIRE(values);
+    auto before = gpu::Buffer::create(*gpu->device, desc, answer.data());
+    REQUIRE(before);
+    const uint32_t width = 64;
+    const uint32_t pictureEntries = count * 4;
+    desc.bytes = uint64_t{pictureEntries + width} * 16;
+    auto picture = gpu::Buffer::create(*gpu->device, desc);
+    REQUIRE(picture);
+    gpu::Buffer words = test::uintBuffer(*gpu->device, count * 12 + 16, "filterio.words");
+    uint32_t part = 0;
+    uint32_t first = 0;
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        cursor["rays"].setBinding(words.rhi());
+        cursor["records"].setBinding(words.rhi());
+        cursor["ids"].setBinding(words.rhi());
+        cursor["answer"].setBinding(values->rhi());
+        cursor["picture"].setBinding(picture->rhi());
+        cursor["io"]["count"].setData(count);
+        cursor["io"]["coefficients"].setData(coefficients);
+        cursor["io"]["entries"].setData(entries);
+        cursor["io"]["fieldFirst"].setData(fieldFirst);
+        cursor["io"]["width"].setData(width);
+        cursor["io"]["stride"].setData(width);
+        cursor["io"]["perRecord"].setData(uint32_t{1});
+        cursor["io"]["size"].setData(uint32_t{0});
+        cursor["io"]["part"].setData(part);
+        cursor["io"]["first"].setData(first);
+        cursor["io"]["chunk"].setData(uint32_t{4});
+    };
+    auto in = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/transfer_filter_io", "transferFilterIn");
+    if (!in) FAIL(in.error().toString());
+    auto out = gpu::ComputeKernel::create(*gpu->library, "athenea/usd/transfer_filter_io", "transferFilterOut");
+    if (!out) FAIL(out.error().toString());
+    // The two halves apart, as the conversion hands them (the filter takes
+    // at most sixteen entries a gaussian).
+    for (part = 0; part < 2; ++part) {
+        for (first = 0; first < 16; first += 4) {
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            in->dispatch(batch, {pictureEntries, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            out->dispatch(batch, {pictureEntries, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        }
+    }
+    // Compared on the device: an image of `count * entries` texels, the two
+    // answers, which must not differ at all.
+    auto diff = render::compareHdr(*gpu->library, *values, *before, count * entries, 1);
+    REQUIRE(diff);
+    std::printf("  the filter's round trip: max relative %.3g over %u entries\n", diff->maxRelative,
+                count * entries);
+    CHECK(diff->maxRelative == 0.0);
+}
+
+// A SCHLICK METAL IS NOT A CONDUCTOR (task TX). OpenPBR's metal and glTF's
+// go from the colour head on to the specular colour at grazing as a Schlick;
+// standard_surface's is a conductor of an artistic index, which for a car
+// paint's 0.05 base reflects twice as much at sixty degrees. A gaussian told
+// which it is (`schlickMetal`) reflects its own.
+TEST_CASE("a Schlick metal reflects a sky as a Schlick, below a conductor of the same colour",
+          "[render][gpu][lobes][schlick]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 8, "schlick.counts");
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobes_check", "lobesSchlickCheck");
+    if (!check) FAIL(check.error().toString());
+    constexpr uint32_t kSteps = 16;
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {kSteps * kSteps, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["steps"].setData(kSteps);
+            cursor["params"]["count"].setData(0u);
+            cursor["params"]["tolerance"].setData(1.0e-4F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> seen{};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(seen), seen.data()));
+    std::printf("  schlick metal: %u points; %u above the conductor, %u not its colour head on, %u white not white, "
+                "%u out of range\n", seen[0], seen[1], seen[2], seen[3], seen[4]);
+    CHECK(seen[0] == kSteps * kSteps);
+    CHECK(seen[1] == 0);
+    CHECK(seen[2] == 0);
+    CHECK(seen[3] == 0);
+    CHECK(seen[4] == 0);
+}
+
 // GLASS SENDS ON WHAT IT DID NOT REFLECT, AND NOT MORE.
 //
 // A transmitting gaussian's body is the light that came through it, and the
@@ -993,6 +1263,67 @@ TEST_CASE("what glass passes and what it reflects never add to more than arrived
     CHECK(counts[1] == kSteps * kSteps);
     CHECK(counts[0] == 0);
     CHECK(counts[2] == 0);
+}
+
+// WHAT A MATERIAL LAYERS OVER ITS BASE CHANGES NOTHING WHERE IT LAYERS NOTHING.
+//
+// A gaussian carries its specular's weight, colour and index, a coat and a
+// sheen where its conversion read them (`GpuSplats::lobes`), and the plain
+// lobes where it did not: every cloud written before them. Those must be
+// reflected exactly as before -- the environment's reflection bit for bit,
+// a light's lobe to rounding, nothing taken by a coat and nothing given by a
+// sheen -- and a coat over anything gives back no more than it takes. The
+// twelve values go into three words and come back within a byte's step.
+TEST_CASE("the plain lobes reflect as before, and the layers pack into three words",
+          "[render][gpu][lobes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 8, "lobes.counts");
+    constexpr uint32_t kSteps = 16;
+    constexpr uint32_t kPacked = 100000;
+    {
+        auto plain = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobes_check", "lobesPlainCheck");
+        if (!plain) FAIL(plain.error().toString());
+        gpu::CommandBatch batch(*gpu->device);
+        plain->dispatch(batch, {kSteps * kSteps * kSteps, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(counts.rhi());
+            cursor["params"]["steps"].setData(kSteps);
+            cursor["params"]["count"].setData(0u);
+            cursor["params"]["tolerance"].setData(1.0e-5F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::array<uint32_t, 8> seen{};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(seen), seen.data()));
+    std::printf("  plain lobes: %u points; %u reflections of a sky changed, %u layers not nothing, %u lobes off "
+                "the old one, %u plain lobes not themselves packed, %u coats that gave back more than they took\n",
+                seen[0], seen[1], seen[2], seen[3], seen[4], seen[5]);
+    CHECK(seen[0] == kSteps * kSteps * kSteps);
+    CHECK(seen[1] == 0);
+    CHECK(seen[2] == 0);
+    CHECK(seen[3] == 0);
+    CHECK(seen[4] == 0);
+    CHECK(seen[5] == 0);
+
+    gpu::Buffer packed = test::uintBuffer(*gpu->device, 8, "lobes.packed");
+    {
+        auto trip = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lobes_check", "lobesRoundTrip");
+        if (!trip) FAIL(trip.error().toString());
+        gpu::CommandBatch batch(*gpu->device);
+        trip->dispatch(batch, {kPacked, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(packed.rhi());
+            cursor["params"]["steps"].setData(0u);
+            cursor["params"]["count"].setData(kPacked);
+            cursor["params"]["tolerance"].setData(0.0F);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    REQUIRE(packed.read(*gpu->device, 0, sizeof(seen), seen.data()));
+    std::printf("  packed: %u sets of twelve; %u with a weight, colour or roughness off by more than half a "
+                "byte, %u with an index off by more than half its step\n",
+                seen[0], seen[1], seen[2]);
+    CHECK(seen[0] == kPacked);
+    CHECK(seen[1] == 0);
+    CHECK(seen[2] == 0);
 }
 
 // A RAY THAT STARTS ON A SURFACE MUST NOT MEET THAT SURFACE.

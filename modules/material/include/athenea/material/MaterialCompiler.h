@@ -70,6 +70,28 @@ struct CompiledMaterial {
     uint32_t                  words = 0;
 };
 
+/// How much a transmitting material lets through, as constants: the
+/// transmission weight times its colour (one where a graph drives either),
+/// and the dielectric's index. MaterialCompiler::transmission.
+struct Transmission {
+    std::array<float, 3> tint{1.0F, 1.0F, 1.0F};   ///< linear rgb, each in [0, 1]
+    float                ior = 1.5F;
+    /// ITS DIELECTRIC LETS LIGHT THROUGH ALONG A DELTA, which is what a
+    /// shadow ray may pass tinted (technique::kMaterialGlassShadow): a thin
+    /// wall at any roughness (the lobe library sends a thin wall's
+    /// transmission straight on, a delta), or a solid whose specular
+    /// roughness is a constant under `kGlassShadowRoughness`, where the
+    /// lobe is a smooth one. Not a transparent opacity, which is coverage.
+    bool                 clear = false;
+    /// `thin_walled` (standard_surface) or `geometry_thin_walled` (OpenPBR).
+    bool                 thinWalled = false;
+};
+
+/// The specular roughness under which a solid dielectric is smooth: lobes.slang
+/// takes a lobe of alpha = roughness^2 under 1e-3 as a delta, and 0.03^2 is
+/// 9e-4.
+inline constexpr float kGlassShadowRoughness = 0.03F;
+
 class MaterialCompiler {
 public:
     /// `searchPaths`: where MaterialX's libraries are (a folder holding
@@ -113,6 +135,13 @@ public:
     /// the diffuse goes down in favour of what is behind. The path tracer
     /// draws it that way; the raster, which can only cut by lot, does not.
     [[nodiscard]] static bool transparentOpacity(const std::shared_ptr<void>& document);
+    /// Whether the material lets light through at all (a transmission, or a
+    /// transparent opacity): what a ray that only asks whether the way is
+    /// open must look at instead of stopping (technique::kMaterialTransmits).
+    [[nodiscard]] static bool transmits(const std::shared_ptr<void>& document);
+    /// What it lets through, where it does (`transmits`): constants a ray
+    /// reads without evaluating the material (technique's `pathThrough`).
+    [[nodiscard]] static std::optional<Transmission> transmission(const std::shared_ptr<void>& document);
     /// What a Material's `volume` terminal says of the medium: MaterialX's
     /// `volume(vdf, edf)` with `anisotropic_vdf(absorption, scattering,
     /// anisotropy)` or `absorption_vdf(absorption)` for the vdf and

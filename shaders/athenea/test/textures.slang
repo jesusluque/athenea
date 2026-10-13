@@ -78,6 +78,27 @@ void textureMean(uint3 tid: SV_DispatchThreadID) {
     mean[0] = (sum + carry) / float(params.width * params.height * 4);
 }
 
+/// The solid-angle mean of a lat-long: each row weighed by its band,
+/// cos(theta0) - cos(theta1), over the 2 of the whole sphere's.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void textureMeanLatLong(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    float sum = 0.0;
+    const float step = 3.14159265358979 / float(params.height);
+    for (uint y = 0; y < params.height; ++y) {
+        float row = 0.0;
+        for (uint x = 0; x < params.width; ++x) {
+            const float4 v = texture.Load(int3(int(x), int(y), 0));
+            row += v.r + v.g + v.b + v.a;
+        }
+        sum += row * (cos(float(y) * step) - cos(float(y + 1) * step));
+    }
+    mean[0] = sum / (2.0 * float(params.width) * 4.0);
+}
+
 /// Texels holding exactly the colour in params.
 [shader("compute")]
 [numthreads(1, 1, 1)]

@@ -73,6 +73,13 @@ struct Dome {
     float       rotation = 0.0F;   ///< degrees about the up axis
 };
 
+/// A group of lamps of the stage (usd/LightGroups.h): switched and dimmed at
+/// run time, its level 0 off and 1 its radiance.
+struct LampGroup {
+    std::string name;
+    float       level = 0.0F;   ///< as the next frame takes it
+};
+
 /// What the panels show but do not edit: what the frame and the stage know.
 /// Each is a function because a panel is built once and read every frame.
 struct ViewerFacts {
@@ -84,6 +91,12 @@ struct ViewerFacts {
     std::function<std::pair<double, double>()> timeRange;
     std::function<std::vector<VariantSet>()>   variantSets;
     std::function<std::vector<Dome>()>         domes;
+    /// The stage's lamp groups, their levels now, and its light states and
+    /// the one chosen (empty: each group as it starts). Set, the panels gain
+    /// a Lamps section.
+    std::function<std::vector<LampGroup>()>    lampGroups;
+    std::function<std::vector<std::string>()>  lampStates;
+    std::function<std::string()>               lampState;
     /// The images a dome may be given (.hdr, .exr): read once, when the panels
     /// are built -- a panel that lists a folder every frame stutters.
     std::function<std::vector<std::string>()>  skies;
@@ -110,6 +123,10 @@ struct ViewerActions {
     /// An empty texture puts the stage's own opinion back.
     std::function<void(const std::string& prim, const std::string& texture)> setDomeTexture;
     std::function<void(const std::string& prim, float degrees)>              setDomeRotation;
+    /// A light state for the lamps (empty: each as it starts), and a group's
+    /// level over it. Weights only: nothing is reloaded or baked.
+    std::function<void(const std::string& state)>                            setLampState;
+    std::function<void(const std::string& group, float level)>               setLampLevel;
     /// Where more skies are: `athenea view --hdri`, as a front end asks for it.
     std::function<void()>                                                     chooseSkyFolder;
 };

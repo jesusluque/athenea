@@ -1,0 +1,29 @@
+#usda 1.0
+# Copyright (c) 2026 jesus luque.
+(
+    defaultPrim = "World"
+    subLayers = [@./sphere.usda@]
+    upAxis = "Y"
+)
+# Glass: clear, at 1.45, as the Corvette's Glass_Clear. OpenPBR.
+over "World"
+{
+    def Scope "Looks"
+    {
+        def Material "Surface"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Surface/OpenPBR.outputs:out>
+
+            def Shader "OpenPBR"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                color3f inputs:base_color = (0.787, 0.787, 0.787)
+                float inputs:specular_roughness = 0
+                float inputs:specular_ior = 1.45
+                float inputs:transmission_weight = 1
+                color3f inputs:transmission_color = (0.8871, 0.8871, 0.8871)
+                token outputs:out
+            }
+        }
+    }
+}

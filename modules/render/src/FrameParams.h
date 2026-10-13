@@ -43,6 +43,7 @@ inline void setFrame(rhi::ShaderCursor cursor, const FrameCommon& f) {
     p["farZ"].setData(static_cast<float>(f.projection->farZ));
     p["orthographic"].setData(uint32_t{f.projection->orthographic ? 1u : 0u});
     p["antialias"].setData(uint32_t{f.settings->antialias ? 1u : 0u});
+    p["surfels"].setData(uint32_t{f.settings->surfels ? 1u : 0u});
     // The lens, where the camera authored one: the projection carries it for
     // the path tracer, and the raster spreads the covariance by it instead of
     // sampling a disk.
