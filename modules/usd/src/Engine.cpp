@@ -2095,6 +2095,18 @@ Result<void> Engine::bakePoints(const BakeRequest& bake, const render::Projectio
     if (bake.rays == nullptr || !bake.rays->valid() || bake.count == 0 || bake.out == nullptr) {
         return Error(ErrorCode::InvalidArgument, "nothing to bake");
     }
+    // A BAKE IS PATHS, and the path tracer finds a surface only through the
+    // device's ray queries and acceleration structures. Without them it traced
+    // against nothing and baked every gaussian as seeing no surface at all --
+    // CUDA without OptiX (WSL2) converted whole stages so -- so a device that
+    // has neither says so instead.
+    const gpu::Caps& caps = device_->caps();
+    if (!caps.rayQuery || !caps.accelerationStructure) {
+        return Error::make(ErrorCode::Unsupported,
+                           "a bake traces paths, and this device has no ray tracing (ray queries and acceleration "
+                           "structures) on {}",
+                           gpu::toString(device_->backend()));
+    }
     render::RenderSettings frame = settings;
     frame.width = 1;
     frame.height = 1;
