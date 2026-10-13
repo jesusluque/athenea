@@ -33,7 +33,7 @@ escribe `!--no-x`, el comportamiento está activo y el flag lo apaga.
 ### 1.1 Un binario
 
 La sección *Building* del README tiene los requisitos con sus versiones y
-prefijos, los tres scripts de dependencias, los submódulos y los cuatro
+prefijos, los tres scripts de dependencias, los submódulos y los
 presets de CMake. Aquí no se repite. Lo que importa después es el entorno en
 el que corre el binario.
 

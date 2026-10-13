@@ -34,7 +34,7 @@ is on and the flag turns it off.
 ### 1.1 A binary
 
 The README's *Building* section has the prerequisites with their versions and
-prefixes, the three dependency scripts, the submodules, and the four CMake
+prefixes, the three dependency scripts, the submodules, and the CMake
 presets. It is not repeated here. What matters afterwards is the environment
 the binary runs in.
 

@@ -102,6 +102,13 @@ stays soft.
 
 `scripts/readme-images.sh` makes these three again from the assets.
 
+## Installing
+
+Each [release](https://github.com/jesusluque/athenea/releases) has an
+installer and an archive for macOS (Apple silicon), Linux (x86_64) and Windows
+(x64), with every library athenea loads; the GPU driver is the machine's.
+`docs/operations.md` §1.1 says where each installs and what it needs.
+
 ## Building
 
 Needs CMake ≥ 3.24, Ninja and a C++20 compiler, plus:
@@ -118,10 +125,15 @@ Needs CMake ≥ 3.24, Ninja and a C++20 compiler, plus:
   genlock).
 
 ```sh
-cmake --preset macos-arm64-release          # or macos-arm64-debug, linux-x86_64-*
+cmake --preset macos-arm64-release          # or macos-arm64-debug, linux-x86_64-*, windows-x64-*
 cmake --build --preset macos-arm64-release
 ctest --preset macos-arm64-debug            # GPU tests skip on a machine without a device
 ```
+
+On Windows (MSVC from Visual Studio 2022 or its Build Tools, and the CUDA
+toolkit) the dependencies are built by `scripts\build-usd.ps1`,
+`build-oidn.ps1` and `build-ocio.ps1` into `D:\tools`, where the `windows-x64-*`
+presets look, and Slang's release is unpacked into `D:\tools\slang`.
 
 slang-rhi, tinyexr, CLI11, nlohmann_json, Catch2 and SPZ come through
 FetchContent or `third_party/`. slang-rhi is patched at fetch time
