@@ -589,6 +589,12 @@ conversion samples a map once a cell, and at `--resolution 512` the model is
 512 cells across, so most of a 4k map is thrown away before it is read:
 `--texture-size` caps them at 1024 by default, and `0` reads them as they are.
 
+A texture read through a sampler other than slot 0's (repeat, linear) is
+paired with it by `TextureStore::sampleWith(id, sampler)` where the sampler is
+chosen. On CUDA the texture is read through the sampler its view was made
+with, and the table makes each view with the one named there; without the
+pairing it wraps and reads level 0 only (`docs/decisions.md`, the CUDA port).
+
 A material's displacement is read as a height: UsdPreviewSurface's
 `displacement` through UsdUVTexture's `scale` and `bias` on the connected
 channel (`StageTexture::scale`, `bias`), or a MaterialX `ND_displacement_float`

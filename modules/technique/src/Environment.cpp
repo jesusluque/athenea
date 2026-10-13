@@ -278,7 +278,7 @@ Result<void> Environment::build(const light::LightTable& table, const material::
     }
     for (uint32_t slice = 0; slice < domes; ++slice) {
         const gpu::Texture& residual = hasResidual[slice] ? residual_[slice] : residualNone_;
-        auto source = residual.view(0, residual.mipCount());
+        auto source = residual.view(0, residual.mipCount(), residualSampler_.rhi());
         if (!source) return std::move(source).error();
         for (uint32_t level = 0; level < kEnvironmentLevels; ++level) {
             const uint32_t side = sideOf(level, baseSide);

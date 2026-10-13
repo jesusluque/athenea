@@ -316,6 +316,7 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
     caps.unifiedMemory = device->backend_ == Backend::Metal;
     caps.drawIdsIncludeStart = device->backend_ == Backend::Metal;   // tests/gpu/test_textures.cpp measures it
     caps.convertingStores = device->backend_ != Backend::CUDA;       // and this
+    caps.samplersInViews = device->backend_ == Backend::CUDA;         // and this (test_environment)
 
     log::info("GPU: {} on {}", caps.apiName, caps.adapterName);
 

@@ -530,6 +530,7 @@ TEST_CASE("a dome with a sun in it samples what its density describes",
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
     auto table = light::LightTable::create(*gpu->library);

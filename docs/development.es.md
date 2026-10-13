@@ -609,6 +609,13 @@ modelo tiene 512 celdas de lado, así que casi todo un mapa de 4k se tira antes
 de mirarlo: `--texture-size` los limita a 1024 por defecto, y `0` los lee tal
 cual.
 
+Una textura que se lee con un sampler distinto del de la ranura 0 (repeat,
+lineal) se empareja con él mediante `TextureStore::sampleWith(id, sampler)`
+allí donde se elige el sampler. En CUDA la textura se lee con el sampler con
+el que se hizo su vista, y la tabla hace cada vista con el que se nombra ahí;
+sin el emparejamiento repite en ambos sentidos y solo lee el nivel 0
+(`docs/decisions.md`, el port a CUDA).
+
 El displacement de un material se lee como una altura: el `displacement` de
 UsdPreviewSurface a través del `scale` y el `bias` de UsdUVTexture en el canal
 conectado (`StageTexture::scale`, `bias`), o un `ND_displacement_float` de

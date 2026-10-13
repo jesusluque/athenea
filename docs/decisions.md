@@ -3525,6 +3525,21 @@ one at a time when one look at the emitted kernel would have said why.
   reads as "this face is a hole", dropping its triangles. The mixed-face mesh
   triangulated to 4 of its 10 triangles, and to none with the handedness
   flipped. The flags are cleared on the device before the topology dispatches.
+- **A CUDA texture is read through its view's sampler, not the one bound
+  beside it.** A CUDA texture object holds its addressing, filtering and mip
+  range, and slang-rhi makes it from the view: a `SamplerState` bound next to
+  a `Texture2D` is not read. A view made without a sampler wraps both ways
+  and has a mip range of level 0. Two things were wrong because of it. A
+  lat-long sky clamps at the poles, and wrapping there mixed its top row with
+  its bottom: a sky white above and black below read 0.54 and 0.46 at its
+  poles instead of 1 and 0. The prefilter's rough levels read the source at
+  level 0 instead of the level they ask for, and a compact source came out
+  as seven peaks at level 5 instead of one. `DeviceCaps::samplersInViews`
+  says when a view carries its sampler. `Texture::view` takes the sampler to
+  make it with, and the texture table binds each texture through a view made
+  with the sampler `TextureStore::sampleWith` names for it (the dome's, and
+  each material slot's). A texture read through two samplers keeps the last
+  one named; nothing reads one so yet.
 - **Two failures that look like load, and are not.** The test presets already
   set `execution: { jobs: 1 }`, so the suite is serial as it stands. Run
   entirely alone on an idle box, the free-running clock test (#93) still fails

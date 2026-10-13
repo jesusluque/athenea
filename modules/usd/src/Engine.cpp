@@ -1960,6 +1960,7 @@ Result<void> Engine::prepareLightImages(std::vector<light::Light>& lamps) {
         lamp.textureId = textures_->request(lamp.texture, lamp.textureColourSpace);
         // Lat-long: around in u, clamped at the poles.
         lamp.sampler = textures_->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+        textures_->sampleWith(lamp.textureId, lamp.sampler);
         domeTextures = true;
     }
     if (domeTextures) {

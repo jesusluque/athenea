@@ -1182,9 +1182,16 @@ std::vector<float> MaterialCompiler::parameters(const CompiledMaterial& material
             }
             break;
         case MaterialSlot::Kind::Texture:
-            words[slot.offset] = slot.name.empty() ? 4294967295.0F
-                                                   : static_cast<float>(textures.request(slot.name, slot.space));
-            words[slot.offset + 1] = static_cast<float>(textures.sampler(slot.wrapS, slot.wrapT, slot.filter));
+            if (slot.name.empty()) {
+                words[slot.offset] = 4294967295.0F;
+                words[slot.offset + 1] = static_cast<float>(textures.sampler(slot.wrapS, slot.wrapT, slot.filter));
+            } else {
+                const uint32_t id = textures.request(slot.name, slot.space);
+                const uint32_t sampler = textures.sampler(slot.wrapS, slot.wrapT, slot.filter);
+                textures.sampleWith(id, sampler);
+                words[slot.offset] = static_cast<float>(id);
+                words[slot.offset + 1] = static_cast<float>(sampler);
+            }
             break;
         case MaterialSlot::Kind::Primvar:
             words[slot.offset] = static_cast<float>(slotOf(slot.name));

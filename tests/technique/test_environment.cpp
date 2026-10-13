@@ -140,6 +140,7 @@ TEST_CASE("a sky of one colour prepares to the closed form a dome always had",
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
     auto table = light::LightTable::create(*gpu->library);
@@ -180,6 +181,7 @@ TEST_CASE("a sky that varies arrives with its variation, which a cloud could not
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
     auto table = light::LightTable::create(*gpu->library);
@@ -256,6 +258,7 @@ TEST_CASE("a sun is found in a sky, taken out of its harmonics and handed over a
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.intensity = kSunValue;   // so the disc is 20 and the sky 0.4
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
@@ -332,6 +335,7 @@ TEST_CASE("an even sky has no sun taken out of it", "[technique][environment][su
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
     auto table = light::LightTable::create(*gpu->library);
@@ -376,6 +380,7 @@ TEST_CASE("a compact bright source prefilters to a single lobe", "[technique][en
     lamp.texture = exr.string();
     lamp.textureId = (*textures)->request(exr.string(), "raw", /*latLong=*/true);
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.intensity = 1.0F;
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
@@ -532,6 +537,7 @@ TEST_CASE("a sun is taken out of the prefiltered sky", "[technique][environment]
     lamp.texture = exr.string();
     lamp.textureId = (*textures)->request(exr.string(), "raw", /*latLong=*/true);
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.intensity = 1.0F;
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
@@ -623,6 +629,7 @@ TEST_CASE("a scatter of lamps is not taken out as a sun", "[technique][environme
     lamp.texture = exr.string();
     lamp.textureId = (*textures)->request(exr.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.intensity = 1.0F;
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
