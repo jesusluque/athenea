@@ -1,6 +1,6 @@
-# Preparar una escena USD para athenea
+# Preparar un stage USD para athenea
 
-Esta página cubre lo que una escena USD le dice a athenea y cómo una
+Esta página cubre lo que un stage USD le dice a athenea y cómo una
 aplicación host encuentra el motor: el entorno con el que corre un host como
 usdview o Blender, los materiales que leen la conversión y el renderer, las
 luces y sus unidades, los render settings `athenea:*` con sus productos y sus
@@ -131,7 +131,7 @@ superficie que lo mira. Una `DomeLight` ignora `normalize`, como dice el
 esquema. Una nube que pidió ser relit toma el cuerpo de la irradiancia de la
 imagen del dome y el reflejo del cielo convolucionado a su roughness; se
 preparan cuatro domes, y un quinto se dibuja como su color. `--default-lights`
-en `athenea stage` pone un dome y un sol en la capa de sesión para una escena
+en `athenea stage` pone un dome y un sol en la capa de sesión para un stage
 que no declara ninguna; el sol por defecto está normalizado.
 
 `athenea:lightGroup` (un string en un prim de luz) nombra el grupo bajo el que
@@ -225,7 +225,7 @@ Todos los atributos son primvars, así que heredan hacia abajo.
 
 | Schema | Qué dice | Lo escribe |
 |---|---|---|
-| `AtheneaSplatLightingAPI` | si a la nube la ilumina la escena (`relight`), si ya lleva la luz sobre su cuerpo (`litBody`), si está en luz lineal (`linear`); su metallic, roughness, transmission, `ior`, los arrays de transfer (`transferDirect`, `transferIndirect`, `shadowBits`), `thinWalled`, la `normal` de sombreado y la `emission` | `athenea mesh2splat`; `ior` a mano en una nube de otro origen |
+| `AtheneaSplatLightingAPI` | si a la nube la ilumina el stage (`relight`), si ya lleva la luz sobre su cuerpo (`litBody`), si está en luz lineal (`linear`); su metallic, roughness, transmission, `ior`, los arrays de transfer (`transferDirect`, `transferIndirect`, `shadowBits`), `thinWalled`, la `normal` de sombreado y la `emission` | `athenea mesh2splat`; `ior` a mano en una nube de otro origen |
 | `AtheneaSplatSkinningAPI` | los joints que llevan una nube | `athenea mesh2splat --skinned` |
 | `AtheneaSplatVisibilityAPI` | lo que proyecta una nube con esqueleto, horneado por partes | `athenea visibility` |
 | `AtheneaSplatCryptomatteAPI` | de qué prim vino cada gaussiana (`cryptoObject`, `cryptoManifest`) | la conversión |
@@ -234,7 +234,7 @@ Todos los atributos son primvars, así que heredan hacia abajo.
 | `AtheneaPointStyleAPI` | cómo se dibuja un `UsdGeomPoints` | a mano |
 | `AtheneaVolumeAPI` | cómo dispersa un Volume cuando no hay Material atado | a mano |
 
-`relight` dice que los colores son un albedo que las luces de la escena tienen
+`relight` dice que los colores son un albedo que las luces del stage tienen
 que iluminar; `litBody` dice que ya son la luz sobre el cuerpo del material,
 que es lo que escribe una conversión horneada; una nube que lleva los dos
 arrays de transfer no necesita `litBody`. `linear` dice que los colores son
@@ -267,7 +267,7 @@ caja, o el radio de la esfera en x. Un grade (`tint`, `saturation`,
 
 El motor **ignora** aquello para lo que no tiene significado: un primvar que
 no lee, un render setting fuera del namespace `athenea:`, un schema que no
-conoce. No avisa de nada, porque una escena lleva lo que necesitan otros
+conoce. No avisa de nada, porque un stage lleva lo que necesitan otros
 renderers.
 
 **Rechaza**, con un mensaje, lo que se le pide y no puede hacer:
@@ -280,7 +280,7 @@ renderers.
 | un `.athc` dibujado sin `--lod` | `a .athc is drawn through its levels of detail: give --lod` |
 | un producto de render sin resolución o sin vars | `render product '<path>' has no resolution` / `no vars` |
 
-## Comprobar una escena en el viewer
+## Comprobar un stage en el viewer
 
 `athenea view` dibuja por el mismo delegate. `--aov cryptomatte` arranca la
 ventana en la Cryptomatte, y `--isolate <prim>` enseña solo la matte de ese
@@ -293,7 +293,7 @@ athenea view car_gs.usdc --isolate /root/Kapoot/Object_57 --frames 10 --snapshot
 
 **Referencia:**
 [§1.2 El entorno de ejecución](https://github.com/jesusluque/athenea/blob/main/docs/operations.es.md#12-el-entorno-de-ejecución) ·
-[§3.2 Renderizar una escena](https://github.com/jesusluque/athenea/blob/main/docs/operations.es.md#32-renderizar-una-escena) ·
+[§3.2](https://github.com/jesusluque/athenea/blob/main/docs/operations.es.md) ·
 [§3.4 Color](https://github.com/jesusluque/athenea/blob/main/docs/operations.es.md#34-color) ·
 [§4.1 Apuntar una aplicación al plugin](https://github.com/jesusluque/athenea/blob/main/docs/operations.es.md#41-apuntar-una-aplicación-al-plugin) ·
 [§4.2 Render settings](https://github.com/jesusluque/athenea/blob/main/docs/operations.es.md#42-render-settings) ·

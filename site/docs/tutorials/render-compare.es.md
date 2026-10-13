@@ -1,6 +1,6 @@
 # Render y comparación con el path trace
 
-La nube del [tutorial anterior](usd-to-cloud.md) se dibuja bajo el domo y el sol de la escena, y las mallas originales se renderizan con path trace desde la misma cámara y con la misma luz. Después `athenea compare` mide la primera imagen frente a la segunda en la GPU. Las cifras de esta página salen de una ejecución en un Apple M5 Pro (Metal) con la rama pública `main`.
+La nube del [tutorial anterior](usd-to-cloud.md) se dibuja bajo el domo y el sol del stage, y las mallas originales se renderizan con path trace desde la misma cámara y con la misma luz. Después `athenea compare` mide la primera imagen frente a la segunda en la GPU. Las cifras de esta página salen de una ejecución en un Apple M5 Pro (Metal) con la rama pública `main`.
 
 ## La nube con relight
 
@@ -52,7 +52,7 @@ athenea compare gs.exr pt.exr --heatmap rel.exr --show relative --gain 4
 
 ## Lectura de la comparación
 
-El cuerpo de mármol, sus vetas, el anillo dorado y los brillos están donde los tiene el path trace. La cabeza de vidrio es la diferencia visible: dibujada como Gaussians se ve más clara y menos saturada que el vidrio sólido con path trace. Un sólido que transmite por completo se convierte con la cobertura que le da `--glass-opacity` (0,6 por defecto), y en `main` sus Gaussians no refractan la escena de detrás como lo hace el vidrio trazado.
+El cuerpo de mármol, sus vetas, el anillo dorado y los brillos están donde los tiene el path trace. La cabeza de vidrio es la diferencia visible. Dibujada como Gaussians, la cabeza de vidrio se ve más clara y menos saturada que el vidrio sólido con path trace. Un sólido que transmite por completo conserva la cobertura que le da `--glass-opacity` (0,6 por defecto); sus Gaussians leen el entorno en la dirección refractada, pero la escena de detrás se ve en línea recta a través de esa cobertura, sin desviarse como a través del vidrio trazado.
 
 Los mismos cuatro pasos sirven para cualquier asset: una capa con la cámara y las luces, las mallas y la nube referenciadas cada una bajo ella, una conversión con la celda de la cámara, y los dos frames medidos uno frente al otro región a región.
 

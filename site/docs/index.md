@@ -16,8 +16,8 @@ These pages describe the desktop version on the public `main` branch: how it is 
 | 4. Judgement | `athenea compare` | the relative HDR error and the 8-bit code-value distribution between the two images, measured on the GPU |
 
 <figure markdown>
-  ![The sparrow: mesh and Gaussian cloud](assets/sparrow-mesh-cloud.png)
-  <figcaption>The sparrow from the repository: the source mesh and its Gaussian cloud.</figcaption>
+  ![The Open Chess Set pawn as relit Gaussians and path traced as meshes](assets/pawn-gs-pt.png)
+  <figcaption>The pawn of the ASWF Open Chess Set (CC BY 4.0): left, its Gaussian cloud relit at draw time; right, the meshes path traced. Same camera and light. See the <a href="tutorials/usd-to-cloud/">tutorials</a> and the <a href="credits/">credits</a>.</figcaption>
 </figure>
 
 ## Where to start

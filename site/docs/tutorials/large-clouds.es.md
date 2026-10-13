@@ -74,7 +74,7 @@ punto. Sin `--lod` el fichero se rechaza con
 athenea render --splats capture.athc --lod 1 --stream-budget 4000000 -o shot.exr
 ```
 
-En una escena esos dos son primvars en el prim que nombra el asset, con
+En un stage esos dos son primvars en el prim que nombra el asset, con
 `AtheneaStreamedAssetAPI`:
 
 | Atributo | Tipo | Por defecto |
@@ -104,9 +104,9 @@ una imagen fija lo pone.
 ## Niveles de detalle por conversión
 
 `athenea mesh2splat --lod-levels N` repite la conversión a la mitad de
-resolución cada vez. `-o` pasa a ser la escena que dibuja los niveles como una
+resolución cada vez. `-o` pasa a ser el stage que dibuja los niveles como una
 nube, y cada nivel se escribe como un `<nombre>_lod<n>.usdc` a su lado. Cada
-nivel y la escena que los dibuja se escriben enteros o no se escriben.
+nivel y el stage que los dibuja se escriben enteros o no se escriben.
 
 ```sh
 athenea mesh2splat bird.usda --skinned --resolution 1100 --lod-levels 3 -o bird_gs.usdc
@@ -138,9 +138,9 @@ de una fusión no puede caer sobre nada de otro color.
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `input` | ruta, obligatoria | — | una escena (su primer ParticleField gaussiano), o `.ply`, `.splat`, `.spz`, `.sog` |
+| `input` | ruta, obligatoria | — | un stage (su primer ParticleField gaussiano), o `.ply`, `.splat`, `.spz`, `.sog` |
 | `output` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd` |
-| `--prim` | ruta | el primero | el ParticleField que leer, donde la escena tiene más de uno |
+| `--prim` | ruta | el primero | el ParticleField que leer, donde el stage tiene más de uno |
 | `--colour-tolerance` | 0..1 | `0.05` | cuánto puede alejarse el color o la opacidad de una gaussiana de la que la sustituye, en el espacio propio de la nube |
 | `--outliers` | 0..1 | `0.05` | la fracción de las gaussianas que representa una fusión que puede ser distinta |
 | `--flat-tolerance` | 0..1 | `0.08` | donde las gaussianas son discos, cuánto más gruesa que ellos puede ser una fusión, frente a su anchura |
@@ -152,11 +152,11 @@ athenea decimate car_gs.usdc car_fewer.usdc
 athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 ```
 
-Una escena sale como entró, con menos gaussianas: se copia su capa raíz — el
+Un stage sale como entró, con menos gaussianas: se copia su capa raíz — el
 rig y su animación, las luces, la cámara, el manifiesto Cryptomatte, las
 variantes — y cada array de una gaussiana de largo se funde sobre lo que
-representa cada gaussiana conservada. Un fichero de splats se escribe como una
-escena nueva, en metros.
+representa cada gaussiana conservada. Un fichero de splats se escribe como un
+stage nuevo, en metros.
 
 Medido en los adoquines convertidos a `--resolution 768` y horneados a 64
 caminos, dibujados en raster a 1200 x 800 frente a la nube sin diezmar:
@@ -219,9 +219,9 @@ Un render más pequeño, un presupuesto menor para un asset en streaming, o un
 `ATHENEA_GPU_BUDGET` más bajo devuelven una ejecución a lo que cabe en el
 dispositivo.
 
-## En una escena y en el viewer
+## En un stage y en el viewer
 
-`athenea stage` y `athenea view` leen de la escena los primvars de nivel de
+`athenea stage` y `athenea view` leen del stage los primvars de nivel de
 detalle y de streaming; ninguno de los dos tiene un `--lod` propio. Las
 opciones que afectan a una nube grande son el tamaño de imagen (`--size`,
 `1920x1080` en `stage` y `1600x900` puntos en `view`), `--splat-shadows` en

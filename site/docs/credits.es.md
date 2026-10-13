@@ -5,4 +5,3 @@ athenea es © 2026 jesus luque, con licencia Apache 2.0. Lo que debe a otros pro
 ## Assets usados en estas páginas
 
 - **The Open Chess Set** (el peón de los tutoriales), con licencia [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) de la Academy Software Foundation. Creado por Moeen y Mujtaba Sayed para el tutorial de Houdini de SideFX *Karma | A Beautiful Game*; aportado al proyecto MaterialX por SideFX, con una conversión a glTF de Chris Rydalch y Mark Elendt y mejoras de Jonathan Stone; la versión USD es de Pablo Delgado, rehecha para el repositorio [usd-wg/assets](https://github.com/usd-wg/assets/tree/main/full_assets/OpenChessSet); los normal maps con el desplazamiento horneado son de Ed Mackey. El asset no se redistribuye aquí: los tutoriales lo descargan de su repositorio. Las imágenes del peón de estas páginas son renders suyos hechos con athenea.
-- Las imágenes del **gorrión** vienen del repositorio de athenea (`docs/images`).

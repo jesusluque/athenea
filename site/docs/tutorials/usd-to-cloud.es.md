@@ -11,7 +11,7 @@ git clone --depth 1 --filter=blob:none --sparse https://github.com/usd-wg/assets
 git -C aswf-assets sparse-checkout set full_assets/OpenChessSet
 ```
 
-El peón es `full_assets/OpenChessSet/assets/Pawn/Pawn.usd`: un `Xform` con dos mallas, `Geom_Body/Render` (mármol) y `Geom_Top/Render` (una cabeza de vidrio sobre un anillo dorado). La escena está en metros con Y hacia arriba; el peón mide unos 4,2 cm de ancho y 8,1 cm de alto.
+El peón es `full_assets/OpenChessSet/assets/Pawn/Pawn.usd`: un `Xform` con dos mallas, `Geom_Body/Render` (mármol) y `Geom_Top/Render` (una cabeza de vidrio sobre un anillo dorado). El stage está en metros con Y hacia arriba; el peón mide unos 4,2 cm de ancho y 8,1 cm de alto.
 
 ## Tres capas
 

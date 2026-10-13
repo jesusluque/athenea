@@ -52,7 +52,7 @@ athenea compare gs.exr pt.exr --heatmap rel.exr --show relative --gain 4
 
 ## Reading the comparison
 
-The marble body, its veins, the gold ring and the highlights stand where the path trace has them. The glass head is the visible difference: drawn as Gaussians it reads lighter and less saturated than the path-traced solid glass. A fully transmitting solid is converted with the coverage `--glass-opacity` gives it (0.6 by default), and in `main` its Gaussians do not refract the scene behind them as the traced glass does.
+The marble body, its veins, the gold ring and the highlights stand where the path trace has them. The glass head is the visible difference. Drawn as Gaussians the glass head reads lighter and less saturated than the path-traced solid glass. A fully transmitting solid keeps the coverage `--glass-opacity` gives it (0.6 by default); its Gaussians look up the environment along the refracted direction, but the scene behind them is seen straight through that coverage, not bent as through the traced glass.
 
 The same four steps apply to any asset: a layer with the camera and the lights, the meshes and the cloud each referenced under it, a conversion with the camera's cell, and the two frames measured against each other region by region.
 

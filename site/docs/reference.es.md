@@ -5,7 +5,7 @@ La documentación del motor está en el repositorio y se mantiene en inglés y c
 | Documento | Responde |
 |---|---|
 | [`README.md`](https://github.com/jesusluque/athenea/blob/main/README.md) | por qué existe el motor, cómo se compila y una invocación de cada cosa |
-| [`docs/operations.es.md`](https://github.com/jesusluque/athenea/blob/main/docs/operations.es.md) | cómo se ejecuta: cada subcomando y opción, las tareas, cómo se prepara una escena USD, el visor, el servidor MCP y los efectos AOFX |
+| [`docs/operations.es.md`](https://github.com/jesusluque/athenea/blob/main/docs/operations.es.md) | cómo se ejecuta: cada subcomando y opción, las tareas, cómo se prepara un stage USD, el visor, el servidor MCP y los efectos AOFX |
 | [`docs/development.es.md`](https://github.com/jesusluque/athenea/blob/main/docs/development.es.md) | cómo está hecho y cómo se cambia |
 | [`docs/decisions.md`](https://github.com/jesusluque/athenea/blob/main/docs/decisions.md) | por qué es así, frente a qué, y qué se midió |
 
