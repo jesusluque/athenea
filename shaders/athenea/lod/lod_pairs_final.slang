@@ -198,6 +198,14 @@ void pairFinalize(uint3 tid: SV_DispatchThreadID) {
     float3 colour = float3(0.0);
     float3 normal = float3(0.0);
     bool discs = true;
+    // THE MOMENTS ABOUT THE FIRST MEMBER'S CENTRE, not the origin's: a
+    // second moment about the origin is the difference of two numbers the
+    // size of mu mu^T, held by a float to about 5e-7 m^2 two metres out --
+    // the whole variance of a 5120 px bake's needles (0.9 x 0.04 mm), whose
+    // merges came out as thin as the rounding left them and drew holes in a
+    // cut (docs/decisions.md). The offsets within a merge are small, and so
+    // is what they lose.
+    const float3 reference = storePositions[members[first]].xyz;
     for (uint p = first; p < first + n; ++p) {
         const uint s = members[p];
         const Blob b = blobOf(storePositions[s], storeShape[s * 4], storeShape[s * 4 + 1], storeShape[s * 4 + 2],
@@ -209,9 +217,10 @@ void pairFinalize(uint3 tid: SV_DispatchThreadID) {
             const float3 a = b.axes[k];   // lod_blob: its rows are the axes
             sigma += sq[k] * float3x3(a.x * a, a.y * a, a.z * a);
         }
+        const float3 offset = b.centre - reference;
         w += wi;
-        s1 += wi * b.centre;
-        s2 += wi * (sigma + float3x3(b.centre.x * b.centre, b.centre.y * b.centre, b.centre.z * b.centre));
+        s1 += wi * offset;
+        s2 += wi * (sigma + float3x3(offset.x * offset, offset.y * offset, offset.z * offset));
         colour += wi * b.colour;
         if (params.normals != 0) {
             normal += wi * unpackNormal(storeNormals[s]);
@@ -221,8 +230,9 @@ void pairFinalize(uint3 tid: SV_DispatchThreadID) {
         const float middle = b.scale.x + b.scale.y + b.scale.z - thinnest - widest;
         discs = discs && thinnest <= params.flatTolerance * middle;
     }
-    const float3 mu = s1 / w;
-    float3x3 cov = s2 / w - float3x3(mu.x * mu, mu.y * mu, mu.z * mu);
+    const float3 shift = s1 / w;
+    const float3 mu = reference + shift;
+    float3x3 cov = s2 / w - float3x3(shift.x * shift, shift.y * shift, shift.z * shift);
     float3x3 axes;
     jacobi(cov, axes);
     if (determinant(axes) < 0.0) {

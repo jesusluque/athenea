@@ -32,6 +32,20 @@ void lodLeafMoments(uint3 tid: SV_DispatchThreadID) {
     for (uint k = 0; k < params.stride; ++k) {
         moments[at + k] = 0.0;
     }
+    // THE GROUP'S MEAN FIRST: the second moment is taken about it (lod_common),
+    // from each splat's offset, which is small and exact where its square
+    // about the origin was not.
+    float total = 0.0;
+    float3 sum = float3(0.0);
+    for (uint i = first; i < end; ++i) {
+        const float4 p = positions[i];
+        const uint row = i * 4;
+        const float3 s = exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2])));
+        const float weight = p.w * discArea(s);
+        total += weight;
+        sum += weight * p.xyz;
+    }
+    const float3 mean = total > 0.0 ? sum / total : (first < end ? positions[first].xyz : float3(0.0));
     for (uint i = first; i < end; ++i) {
         const float4 p = positions[i];
         const uint row = i * 4;
@@ -50,12 +64,13 @@ void lodLeafMoments(uint3 tid: SV_DispatchThreadID) {
         moments[at + 1] += weight * p.x;
         moments[at + 2] += weight * p.y;
         moments[at + 3] += weight * p.z;
-        moments[at + 4] += weight * (cov[0][0] + p.x * p.x);
-        moments[at + 5] += weight * (cov[0][1] + p.x * p.y);
-        moments[at + 6] += weight * (cov[0][2] + p.x * p.z);
-        moments[at + 7] += weight * (cov[1][1] + p.y * p.y);
-        moments[at + 8] += weight * (cov[1][2] + p.y * p.z);
-        moments[at + 9] += weight * (cov[2][2] + p.z * p.z);
+        const float3 d = p.xyz - mean;
+        moments[at + 4] += weight * (cov[0][0] + d.x * d.x);
+        moments[at + 5] += weight * (cov[0][1] + d.x * d.y);
+        moments[at + 6] += weight * (cov[0][2] + d.x * d.z);
+        moments[at + 7] += weight * (cov[1][1] + d.y * d.y);
+        moments[at + 8] += weight * (cov[1][2] + d.y * d.z);
+        moments[at + 9] += weight * (cov[2][2] + d.z * d.z);
         // The colour is averaged in the space the cloud keeps it in -- a
         // capture's sRGB, a conversion's linear light (GpuSplats::linear) --
         // and the merged Gaussian is in that space too.

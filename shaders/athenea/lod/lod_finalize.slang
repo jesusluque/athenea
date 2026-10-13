@@ -53,8 +53,7 @@ void lodFinalize(uint3 tid: SV_DispatchThreadID) {
     const float3 mu = float3(moments[at + 1], moments[at + 2], moments[at + 3]) / weight;
     float3x3 cov = float3x3(moments[at + 4], moments[at + 5], moments[at + 6],
                             moments[at + 5], moments[at + 7], moments[at + 8],
-                            moments[at + 6], moments[at + 8], moments[at + 9]) / weight;
-    cov = cov - float3x3(mu.x * mu, mu.y * mu, mu.z * mu);
+                            moments[at + 6], moments[at + 8], moments[at + 9]) / weight;   // about mu (lod_common)
     float3x3 axes;
     jacobi(cov, axes);
     if (determinant(axes) < 0.0) {

@@ -12,8 +12,11 @@
 //
 // A node is moments, not a gaussian: its mass W (opacity times the area of
 // its two widest axes, the levels of detail's own weight), W times its centre
-// and W times its second moment, and W times what the cost compares. The
-// moments of a merge are the sums of its children's, so the gaussian a node
+// and W times its second moment about that centre (lod_common: about the
+// origin a float lost a 5120 px needle's width), and W times what the cost
+// compares. The moments of a merge are the sums of its children's -- the
+// second with the children's offsets from the merge's centre, the parallel
+// axis theorem (pairMerge) -- so the gaussian a node
 // stands for is the moment matched one of everything under it, whatever the
 // order of the merges -- and so is every attribute the cloud carries: each
 // is merged once at the end from the records a node stands for
@@ -49,7 +52,7 @@ import athenea.common.morton;
 import lod_blob;
 
 public static const uint kNodeFloats = 24;
-// 0 W | 1..3 W mu | 4..9 W (Sigma + mu mu^T): xx xy xz yy yz zz | 10..12 W srgb |
+// 0 W | 1..3 W mu | 4..9 W Sigma, about mu: xx xy xz yy yz zz | 10..12 W srgb |
 // 13..15 W normal | 16 W alpha^2 | 17 W metallic | 18 W transmission | 19 W specular |
 // 20 key (bits) | 21 records | 22 W thickness ratio | 23 its node of the merge tree (bits)
 public static const uint kWindow = 8;   // neighbours each side along a Morton order
@@ -154,12 +157,12 @@ void pairInit(uint3 tid: SV_DispatchThreadID) {
     nodes[at + 1] = w * mu.x;
     nodes[at + 2] = w * mu.y;
     nodes[at + 3] = w * mu.z;
-    nodes[at + 4] = w * (sigma[0][0] + mu.x * mu.x);
-    nodes[at + 5] = w * (sigma[0][1] + mu.x * mu.y);
-    nodes[at + 6] = w * (sigma[0][2] + mu.x * mu.z);
-    nodes[at + 7] = w * (sigma[1][1] + mu.y * mu.y);
-    nodes[at + 8] = w * (sigma[1][2] + mu.y * mu.z);
-    nodes[at + 9] = w * (sigma[2][2] + mu.z * mu.z);
+    nodes[at + 4] = w * sigma[0][0];
+    nodes[at + 5] = w * sigma[0][1];
+    nodes[at + 6] = w * sigma[0][2];
+    nodes[at + 7] = w * sigma[1][1];
+    nodes[at + 8] = w * sigma[1][2];
+    nodes[at + 9] = w * sigma[2][2];
     nodes[at + 10] = w * srgbOf(b.colour.x);
     nodes[at + 11] = w * srgbOf(b.colour.y);
     nodes[at + 12] = w * srgbOf(b.colour.z);
@@ -201,8 +204,7 @@ Node nodeOf(uint i) {
     n.w = max(n.raw[0], 1.0e-30);
     const float inv = 1.0 / n.w;
     n.mu = float3(n.raw[1], n.raw[2], n.raw[3]) * inv;
-    n.sigma = float3x3(n.raw[4], n.raw[5], n.raw[6], n.raw[5], n.raw[7], n.raw[8], n.raw[6], n.raw[8], n.raw[9]) * inv -
-              float3x3(n.mu.x * n.mu, n.mu.y * n.mu, n.mu.z * n.mu);
+    n.sigma = float3x3(n.raw[4], n.raw[5], n.raw[6], n.raw[5], n.raw[7], n.raw[8], n.raw[6], n.raw[8], n.raw[9]) * inv;
     n.colour = float3(n.raw[10], n.raw[11], n.raw[12]) * inv;
     n.normalSum = float3(n.raw[13], n.raw[14], n.raw[15]) * inv;
     n.alpha = n.raw[16] * inv;
@@ -419,11 +421,19 @@ void pairMerge(uint3 tid: SV_DispatchThreadID) {
     }
     const uint a = i * kNodeFloats;
     const uint b = j * kNodeFloats;
+    // The second moments about the merge's centre: each one's own, and
+    // between the two W_a W_b / W times their centres' offset, squared.
+    const float wa = max(nodes[a], 1.0e-30);
+    const float wb = max(nodes[b], 1.0e-30);
+    const float3 d = float3(nodes[a + 1], nodes[a + 2], nodes[a + 3]) / wa -
+                     float3(nodes[b + 1], nodes[b + 2], nodes[b + 3]) / wb;
+    const float between = wa * wb / (wa + wb);
+    const float spread[6] = { d.x * d.x, d.x * d.y, d.x * d.z, d.y * d.y, d.y * d.z, d.z * d.z };
     for (uint k = 0; k < kNodeFloats; ++k) {
         if (k == 20 || k == 23) {
             continue;   // the key (the same, or they were never a pair) and the tree's node
         }
-        nodes[a + k] = nodes[a + k] + nodes[b + k];
+        nodes[a + k] = nodes[a + k] + nodes[b + k] + (k >= 4 && k <= 9 ? between * spread[k - 4] : 0.0);
     }
     if (params.tree != 0) {
         uint made;

@@ -13821,8 +13821,10 @@ at 10x is 20.4 dB against the full cloud on chrome (LPIPS 0.197).
 **Merge by pairs** (`--ratio`, lod_pairs.slang; NanoGS, Xiong et al. 2026,
 arXiv 2603.16103, on the device and for a cloud that carries more than a
 colour). A node is moments -- mass W (opacity times the area of the two widest
-axes, the levels of detail's weight), W mu, W (Sigma + mu mu^T), and W times
-what the cost compares -- so a merge is a sum and a node stands for the moment
+axes, the levels of detail's weight), W mu, W Sigma about mu (the parallel axis
+theorem at each merge; see "A merge's second moment about its own centre"
+below), and W times what the cost compares -- so a merge is a sum and a node
+stands for the moment
 matched gaussian of every record under it, whatever order the merges came
 in. Candidates are 8 neighbours each side along two Morton orders (the second
 shifted half a cell); pairs that chose each other merge, at most half the
@@ -14071,3 +14073,34 @@ The full write-up, with every measurement, is `docs/pieces.md` (Spanish: `docs/p
 
 Not done: the lamps in the bake, the chrome strip 38 % bright, the rim's near ground at 0.72, the door's open
 reflections at 1.13 (16 x 16 cells), the front bumper's lower lip.
+
+## A merge's second moment about its own centre (13 Oct)
+
+The levels of detail (`lod_leaf_moments`, `lod_merge_moments`, `lod_finalize`) and the merge by pairs (`lod_pairs`,
+`lod_pairs_final`) kept a group's second moment about the world's origin, `S2 = sum w (Sigma + mu mu^T)`, and took
+`Sigma = S2 / W - mu mu^T`. That is the difference of two numbers the size of `mu mu^T`, which a float holds to about
+5e-7 m^2 two metres from the origin: the whole variance of a gaussian a millimetre wide. The close-up level's bakes
+at 4480-5120 px lay needles on long thin triangles (0.93 x 0.043 x 0.004 mm on the front bumper), whose variances
+across (2e-9 m^2) are a hundredth of that rounding. Their merges came out as thin as the rounding left them, and the
+merge cost, read from the same moments, called them nearly free, so a cut chose them even at 0.01 px and drew the
+holes they left as bright grain wherever the scene behind was lighter (the Corvette's front bumper, `car5120`).
+
+Every second moment is now about the group's own centre: a leaf group's from each splat's offset to the group's
+mean, a coarser group's from its children's with each child's mean offset (the parallel axis theorem), a pair's
+merge the same way, and a cluster's final gaussian from its members' offsets to its first member. The offsets
+within a merge are millimetres, and so is what a float loses on them.
+
+Measured on the bumper's front-left corner (Front_Bumper's faces a close camera sees, baked alone at 5120 px from
+/World/Camera, 301k gaussians), drawn matte against the bake itself:
+
+| | gaussians drawn | relMSE | pixels over 2 | max |
+|---|---|---|---|---|
+| close camera, cut 0.01 px, before | 288,563 | 8.8e-4 | 37,715 | 104 |
+| close camera, cut 0.01 px, after | 297,242 (every leaf) | 1.3e-5 | 4,512 | 38 |
+| /World/Camera 1920, cut 0.25 px, before | 94,351 | 3.9e-4 | 8,341 | 150 |
+| /World/Camera 1920, cut 0.25 px, after | 42,719 | 3.7e-4 | 6,632 | 116 |
+
+At the far view the corrected tree draws half the gaussians with less error: the old costs had kept wide merges
+apart and let degenerate ones through. The grain is gone from both frames. The 1280 px level is unaffected in
+practice (its gaussians' variances, about 1e-5 m^2, stand well above the rounding), and the 5120 px trees are to be
+rebuilt from their bakes.
