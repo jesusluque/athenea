@@ -13,8 +13,13 @@
 #         [-DPATHS=512]
 #         [-DSLACK=1.05] -P tx_against_first.cmake
 if(NOT EXISTS "${STAGE}")
-    message("tx_against_first: ${STAGE} is not on this machine")
-    cmake_language(EXIT 77)
+    # A skip: exit 77 where cmake has cmake_language(EXIT) (3.29), and
+    # otherwise this message, which the test's SKIP_REGULAR_EXPRESSION reads.
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+        message("tx_against_first: ${STAGE} is not on this machine")
+        cmake_language(EXIT 77)
+    endif()
+    message(FATAL_ERROR "tx_against_first: ${STAGE} is not on this machine")
 endif()
 if(NOT DEFINED SIZE)
     set(SIZE 512)

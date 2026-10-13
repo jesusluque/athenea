@@ -404,6 +404,7 @@ add_test(NAME tx_gate_pawn
 set_tests_properties(tx_gate_pawn PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "is not on this machine"
     LABELS "gpe;tx_gate")
 add_test(NAME tx_gate_corvette
     COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
@@ -414,6 +415,7 @@ add_test(NAME tx_gate_corvette
 set_tests_properties(tx_gate_corvette PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "is not on this machine"
     TIMEOUT 36000
     LABELS "gpe;tx_gate;slow")
 # THE CATCHER'S GATE: the Corvette's shadow caught by gaussians on its ground
@@ -428,6 +430,7 @@ add_test(NAME catcher_gate_corvette
 set_tests_properties(catcher_gate_corvette PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "is not on this machine"
     TIMEOUT 7200
     LABELS "gpe;tx_gate;slow")
 # THE MATERIAL GATE (bench/matx): six MaterialX materials on the shader
