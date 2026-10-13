@@ -15,6 +15,7 @@
 #include "aofx_host/Capabilities.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
+#include "athenea/core/Platform.h"
 #include "athenea/gpu_host/Context.h"
 #include "athenea/io/Exr.h"
 
@@ -50,6 +51,8 @@ void scan(aofx_host::EffectRegistry& registry, const Common& common, gpu_host::C
     for (const std::string& path : common.paths) {
         registry.addSearchPath(path);
     }
+    // Beside the executable, as a release lays it out, before the build tree's.
+    registry.addSearchPath(athenea::platform::executableDir() / ".." / "aofx");
 #ifdef ATHENEA_AOFX_BUNDLE_DIR
     registry.addSearchPath(ATHENEA_AOFX_BUNDLE_DIR);
 #endif

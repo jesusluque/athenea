@@ -18,6 +18,7 @@
 #include "aofx/Effect.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
+#include "athenea/core/Platform.h"
 #include "athenea/gpu_host/Context.h"
 #include "athenea/image/Image.h"
 #include "athenea/io/Exr.h"
@@ -106,6 +107,8 @@ void addCompare(CLI::App& app) {
         for (const std::string& path : o->paths) {
             registry.addSearchPath(path);
         }
+        // Beside the executable, as a release lays it out, before the build tree's.
+        registry.addSearchPath(athenea::platform::executableDir() / ".." / "aofx");
 #ifdef ATHENEA_AOFX_BUNDLE_DIR
         registry.addSearchPath(ATHENEA_AOFX_BUNDLE_DIR);
 #endif
