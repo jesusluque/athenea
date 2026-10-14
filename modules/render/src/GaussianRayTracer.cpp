@@ -131,9 +131,14 @@ Result<GaussianRayTracer> GaussianRayTracer::create(gpu::ShaderLibrary& library,
     if (settings.route == RayTracingRoute::Auto) {
         // Metal, measured (M5 Pro, train_7k, 1080p): compute 343 ms a frame
         // and 168 ms to build, hardware 435 ms and 731 ms -- every non-opaque
-        // candidate is a trip out of Metal's traversal. Vulkan: hardware,
-        // not measured here. CUDA: compute (no RayQuery).
-        const bool preferHardware = hardware && library.device().backend() != gpu::Backend::Metal;
+        // candidate is a trip out of Metal's traversal. CUDA: compute (no
+        // RayQuery). Vulkan: compute as well. Its hardware route let a glass
+        // cloud's far face through untinted -- a ball of tint (1, 1, 0.5)
+        // read 0.53 in blue where the mesh reads 0.28 and the compute route
+        // agrees (RTX 3070) -- and the compute route is the one the other two
+        // trace with, so a cloud draws alike on all three.
+        const gpu::Backend backend = library.device().backend();
+        const bool preferHardware = hardware && backend != gpu::Backend::Metal && backend != gpu::Backend::Vulkan;
         r.settings_.route = preferHardware ? RayTracingRoute::Hardware : RayTracingRoute::ComputeBvh;
     }
     r.settings_.maxSegments = std::max<uint32_t>(settings.maxSegments, 1);

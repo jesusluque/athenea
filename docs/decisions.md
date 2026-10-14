@@ -3547,6 +3547,24 @@ one at a time when one look at the emitted kernel would have said why.
   the environment behind the ball (0.32 at the ball's centre against Metal's
   0.008). The path traced frame is the same on both routes; a raster frame
   with glass is not, until the raster refraction runs on the pipeline too.
+- **A bake on Windows, three ways to trace, measured (14 Oct).** The OptiX
+  pipeline of a radiance bake did not compile with Slang 2026.14.1 ("Module
+  compilation failed"); with 2026.19 it does, in about 20 minutes the first
+  time (an NVIDIA L4), then from OptiX's own disk cache in seconds. Slang to
+  PTX is 37 s of it; the rest is OptiX making one 66k-instruction raygen with
+  19 trace sites. `[noinline]` on the two trace functions (honoured on CUDA
+  from 2026.19) took it to 19.5 minutes; OptiX's optimisation level 0 failed
+  as 3 does. D3D12 compiled the same bake in 30 s but is not ported: its root
+  signature leaves out constant buffers past `b0`, and a zero-length
+  structured buffer bound as a view removes the device. Vulkan (RTX 3070,
+  native Windows) compiled it in 94 s, passed every `technique` test and the
+  bakes. It cannot run `mesh2splat`, though: gpe, which runs its AOFX kernels,
+  has no Vulkan backend.
+- **A cloud is traced by the compute BVH on Vulkan too.** The hardware route
+  let a glass cloud's far face through untinted (a ball of tint (1, 1, 0.5):
+  0.53 in blue against the mesh's 0.28); the compute route agrees with the
+  mesh, and it is the route Metal and CUDA trace with. The hardware route's
+  glass is not fixed.
 - **A CUDA texture is read through its view's sampler, not the one bound
   beside it.** A CUDA texture object holds its addressing, filtering and mip
   range, and slang-rhi makes it from the view: a `SamplerState` bound next to
