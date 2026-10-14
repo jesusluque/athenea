@@ -44,7 +44,16 @@ rhi::DeviceType toRhi(Backend backend) {
 }
 
 std::vector<Backend> platformPreference() {
+#if defined(ATHENEA_GPE_VULKAN)
+    // gpe built for Vulkan: the render device has to be the one gpe can
+    // share, and on Vulkan a bake traces with compute and ray queries instead
+    // of an OptiX pipeline. Metal stays a Mac's first answer.
 #if defined(__APPLE__)
+    return {Backend::Metal, Backend::Vulkan};
+#else
+    return {Backend::Vulkan, Backend::CUDA};
+#endif
+#elif defined(__APPLE__)
     return {Backend::Metal};
 #else
     // CUDA first, on Windows as on Linux: it is the backend gpe shares, so the
@@ -475,7 +484,11 @@ NativeHandles Device::native() const {
                 }
             }
             break;
-        case Backend::Vulkan: handles.device = deviceHandles.handles[2]; break;
+        case Backend::Vulkan:
+            handles.instance = deviceHandles.handles[0];
+            handles.physical = deviceHandles.handles[1];
+            handles.device = deviceHandles.handles[2];
+            break;
         default: handles.device = deviceHandles.handles[0]; break;
         }
     }

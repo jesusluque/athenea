@@ -70,8 +70,10 @@ CPU-side records. The render pass thread then commits them — uploads, opens
 exactly one caller, and everything about ordering follows from that.
 
 `gpu_host::Context` is where the other runtime fits: gpe adopts the device
-slang-rhi opened, so one `MTLDevice` or one CUDA context serves both and
-buffers are shared without copies. The crossing itself -- adopting, a
+slang-rhi opened, so one `MTLDevice`, one CUDA context or one `VkDevice`
+and queue serves both and buffers are shared without copies. gpe has one
+backend per build (Metal, CUDA or Vulkan); a render device it has no backend
+for leaves the context without gpe, and aofx with it. The crossing itself -- adopting, a
 slang-rhi view of a gpe buffer, a gpe handle on a slang-rhi buffer -- is
 three free functions in `gpu_host/Views.h`, on the bare device and pool; the
 context's methods call them, and so does a program that has a GPU thread and
@@ -1307,6 +1309,14 @@ command on a tree that may already carry them:
 | CUDA driver symbol shadowing | a driver symbol shadowed by the runtime's |
 | Metal acceleration structures | acceleration structure handling on Metal |
 | Metal command buffer errors | a command buffer that failed on the device (out of memory) asserted and aborted the process; now the next `submit` or `waitOnHost` returns `SLANG_E_OUT_OF_MEMORY`, which `gpu::CommandBatch::submit` turns into `OutOfMemory` |
+
+**gpe's backend.** Metal on a Mac and CUDA where nvcc is found, by default;
+`-DGPE_BACKEND_WANTED=Vulkan` builds gpe for Vulkan instead, with its kernels
+and every AOFX bundle's compiled to SPIR-V, and the render device then tries
+Vulkan first (Metal stays first on a Mac). It needs Vulkan's headers only,
+which slang-rhi has fetched; the driver's loader is opened at run time. On a
+Mac it runs on MoltenVK (`brew install molten-vk vulkan-loader`), which tests
+the backend and nothing about speed.
 
 **Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
 tracks `main`. A change to gpe is committed in the submodule, not here.

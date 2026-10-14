@@ -87,8 +87,11 @@ lo que ve.
 ### 1.4 Metal y CUDA
 
 El motor abre un dispositivo y lo conserva. En macOS es Metal; en Linux es
-CUDA donde hay un dispositivo CUDA, y Vulkan si no. `ATHENEA_BACKEND` manda sobre
-ese orden.
+CUDA donde hay un dispositivo CUDA, y Vulkan si no (y en Windows CUDA, luego
+D3D12, luego Vulkan). Un build cuyo gpe es el de Vulkan
+(`GPE_BACKEND_WANTED=Vulkan`) prueba Vulkan primero, porque los efectos AOFX
+-- `mesh2splat` entre ellos -- sólo corren en el dispositivo que gpe comparte.
+`ATHENEA_BACKEND` manda sobre ese orden.
 
 Lo que cambia entre ellos, en la práctica:
 

@@ -498,14 +498,16 @@ set_tests_properties(mesh2splat_sheet_ball PROPERTIES
     LABELS gpe)
 
 # A transfer baked in slices (--transfer-slice) finds the surface under every
-# gaussian as one slice does: four slices of the paint ball, filtered.
+# gaussian as one slice does: four slices of the paint ball, filtered. The
+# count emitted moves with the device's arithmetic (96130 on Metal, 96078 on
+# Vulkan), so the check is the baked share of it, not one total.
 add_test(NAME mesh2splat_tx_sliced
     COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/paint.usda --prim /World/Ball --transfer
             --bake-samples 16 --bake-extra 0 --transfer-slice 25000 --no-camera --resolution 192
             -o ${ATHENEA_TX_DIR}/paint_sliced.usdc)
 set_tests_properties(mesh2splat_tx_sliced PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
-    PASS_REGULAR_EXPRESSION "transfer baked for 9[0-9][0-9][0-9][0-9] of 96130"
+    PASS_REGULAR_EXPRESSION "transfer baked for 96[01][0-9][0-9] of 96[01][0-9][0-9] "
     LABELS gpe)
 add_test(NAME tx_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[tx_conversion]")

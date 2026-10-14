@@ -151,6 +151,12 @@ elseif(NOT TARGET gpe)
     # slang-rhi already defines metal-cpp's selector tables; one definition per
     # program. A parent that adds gpe itself decides this before it does.
     set(GPE_METAL_CPP_IMPLEMENTATION OFF CACHE BOOL "" FORCE)
+    # gpe's Vulkan backend builds against Vulkan's headers only, and
+    # slang-rhi has fetched them already: one copy for the program.
+    if(TARGET slang-rhi-vulkan-headers AND NOT GPE_VULKAN_INCLUDE_DIR)
+        get_target_property(GPE_VULKAN_INCLUDE_DIR slang-rhi-vulkan-headers
+                            INTERFACE_INCLUDE_DIRECTORIES)
+    endif()
     set(_athenea_testing ${BUILD_TESTING})
     set(BUILD_TESTING ${ATHENEA_BUILD_GPE_TESTS})
     add_subdirectory(${ATHENEA_GPE_DIR} ${ATHENEA_BUILD}/gpe)

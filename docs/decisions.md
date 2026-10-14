@@ -3565,6 +3565,31 @@ one at a time when one look at the emitted kernel would have said why.
   0.53 in blue against the mesh's 0.28); the compute route agrees with the
   mesh, and it is the route Metal and CUDA trace with. The hardware route's
   glass is not fixed.
+- **gpe has a Vulkan backend (14 Oct)**, so a bake runs on Vulkan with its
+  AOFX effects (`-DGPE_BACKEND_WANTED=Vulkan`). gpe adopts slang-rhi's
+  `VkDevice` and queue, as it adopts a Metal device or a CUDA context; a
+  buffer is a `VkBuffer` both ways. Its kernels are SPIR-V (slangc
+  `-fvk-use-entrypoint-name -fvk-use-scalar-layout`: one module holds every
+  entry under its own name, and C's layout matches what the CUDA backend's
+  callers write). The bindings are read from the module: one set, in
+  declaration order, the uniform block a uniform buffer in the same sequence.
+  Uploads, fills and dispatches go into one command buffer, a full memory
+  barrier between commands and at both ends, submitted when something must
+  follow (download, sync, slang-rhi's next submission through
+  `setBeforeSubmit`); barriers reach across command buffers in submission
+  order, which is what orders gpe against slang-rhi on one queue. Coarse, and
+  the work here is a few long dispatches. Measured on an RTX 3070 Laptop GPU,
+  native Windows: `mesh2splat --transfer` of `two_balls.usda` baked 283667 of
+  283669 gaussians (256 paths, 3 bounces) in 159 s, and the gpe-labelled
+  tests (gpu_host, aofx, mesh2splat; 41) pass. A Vulkan build of gpe emits a
+  few gaussians fewer than Metal from the same mesh (96078 against 96130 for
+  the sliced paint ball): the cell counts move with the arithmetic, so that
+  test checks the baked share and not Metal's total. On a Mac the backend runs
+  on MoltenVK, which is how it was written: gpe's own tests pass there but
+  for the two that time 60 fps playback, and `mesh2splat`'s kernels hang
+  MoltenVK (a fence that never signals) where NVIDIA's driver runs them. Not
+  done: page-locked host memory (gpe's `HostStaging`), the driver's memory
+  budget (`memory()` answers from gpe's own allocations), and timing.
 - **A CUDA texture is read through its view's sampler, not the one bound
   beside it.** A CUDA texture object holds its addressing, filtering and mip
   range, and slang-rhi makes it from the view: a `SamplerState` bound next to

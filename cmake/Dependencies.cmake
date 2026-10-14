@@ -71,9 +71,10 @@ set(SLANG_RHI_INSTALL OFF CACHE BOOL "" FORCE)
 set(SLANG_RHI_ENABLE_CPU OFF CACHE BOOL "" FORCE)
 set(SLANG_RHI_ENABLE_WGPU OFF CACHE BOOL "" FORCE)
 set(SLANG_RHI_ENABLE_D3D11 OFF CACHE BOOL "" FORCE)
-if(APPLE)
+if(APPLE AND NOT GPE_BACKEND_WANTED STREQUAL "Vulkan")
     # Metal only. Vulkan on macOS is MoltenVK over Metal, which is the device
-    # we already have minus a translation layer.
+    # we already have minus a translation layer -- wanted only to test gpe's
+    # Vulkan backend on a Mac (-DGPE_BACKEND_WANTED=Vulkan).
     set(SLANG_RHI_ENABLE_VULKAN OFF CACHE BOOL "" FORCE)
 endif()
 if(ATHENEA_IOS)

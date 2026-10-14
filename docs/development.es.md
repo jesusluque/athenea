@@ -70,8 +70,10 @@ el dispositivo tiene exactamente un interlocutor, y todo lo relativo al orden
 se sigue de ahí.
 
 `gpu_host::Context` es donde encaja el otro runtime: gpe adopta el dispositivo
-que abrió slang-rhi, así que un `MTLDevice` o un contexto CUDA sirve a los dos
-y los buffers se comparten sin copias. El cruce en sí -- adoptar, una vista
+que abrió slang-rhi, así que un `MTLDevice`, un contexto CUDA o un `VkDevice`
+y su cola sirven a los dos y los buffers se comparten sin copias. gpe tiene un
+backend por build (Metal, CUDA o Vulkan); un dispositivo de render para el que
+no tiene backend deja el contexto sin gpe, y sin aofx con él. El cruce en sí -- adoptar, una vista
 slang-rhi de un buffer gpe, un handle gpe sobre un buffer slang-rhi -- son
 tres funciones libres en `gpu_host/Views.h`, sobre el dispositivo y el pool
 desnudos; los métodos del contexto las llaman, y también un programa que ya
@@ -1367,6 +1369,15 @@ vuelve a correr el comando sobre un árbol que puede llevarlos ya:
 | símbolos del driver de CUDA | un símbolo del driver tapado por el del runtime |
 | estructuras de aceleración en Metal | su manejo en Metal |
 | errores de command buffer en Metal | un command buffer que fallaba en el dispositivo (sin memoria) disparaba un assert y abortaba el proceso; ahora el siguiente `submit` o `waitOnHost` devuelve `SLANG_E_OUT_OF_MEMORY`, que `gpu::CommandBatch::submit` convierte en `OutOfMemory` |
+
+**El backend de gpe.** Metal en un Mac y CUDA donde se encuentra nvcc, por
+defecto; `-DGPE_BACKEND_WANTED=Vulkan` construye gpe para Vulkan, con sus
+kernels y los de cada bundle AOFX compilados a SPIR-V, y el dispositivo de
+render prueba entonces Vulkan primero (en un Mac Metal sigue primero). Sólo
+necesita las cabeceras de Vulkan, que slang-rhi ya ha traído; el loader del
+driver se abre en tiempo de ejecución. En un Mac corre sobre MoltenVK
+(`brew install molten-vk vulkan-loader`), que prueba el backend y nada de su
+velocidad.
 
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
 `third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el

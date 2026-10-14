@@ -94,6 +94,8 @@ struct Caps {
 struct NativeHandles {
     rhi::NativeHandle device;    ///< MTLDevice | CUcontext | VkDevice
     rhi::NativeHandle queue;     ///< MTLCommandQueue | CUstream | VkQueue
+    rhi::NativeHandle instance;  ///< VkInstance; Vulkan only
+    rhi::NativeHandle physical;  ///< VkPhysicalDevice; Vulkan only
 };
 
 class Device {

@@ -44,6 +44,11 @@ macOS (Metal), Linux (CUDA) and Windows (CUDA, natively with MSVC). 433 tests.
   for the pipeline too, and a transfer bake (TX) is right on CUDA. A radiance
   bake is not yet: OptiX does not compile its pipeline (an NVIDIA L4, driver
   596.36), and the bake says so.
+- **Bakes on Vulkan, with gpe**: gpe has a Vulkan backend
+  (`-DGPE_BACKEND_WANTED=Vulkan`) that shares slang-rhi's device, so
+  `mesh2splat` and the other AOFX effects run on Vulkan and a Windows bake
+  needs neither OptiX nor CUDA (a transfer bake of 283669 gaussians in 159 s
+  on an RTX 3070 Laptop GPU). Such a build tries Vulkan first.
 
 Tests: macOS 422 of 433, Linux 431 of 433, Windows 407 of 430 before the bake
 fix; on Windows with OptiX (an L4) the radiance bakes fail as above. Failing on every system and before this merge, so not caused by it: the

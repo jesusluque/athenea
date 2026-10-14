@@ -87,8 +87,10 @@ Everything here is found at configure time, and the effect is felt at run time.
 ### 1.4 Metal and CUDA
 
 The engine opens one device and keeps it. On macOS that is Metal; on Linux it
-is CUDA where a CUDA device is present, else Vulkan. `ATHENEA_BACKEND` overrides
-the order.
+is CUDA where a CUDA device is present, else Vulkan (and on Windows CUDA, then
+D3D12, then Vulkan). A build whose gpe is Vulkan's (`GPE_BACKEND_WANTED=Vulkan`)
+tries Vulkan first instead, since AOFX effects -- `mesh2splat` among them --
+run only on the device gpe shares. `ATHENEA_BACKEND` overrides the order.
 
 What differs between them, in practice:
 
