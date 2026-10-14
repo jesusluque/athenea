@@ -1933,6 +1933,7 @@ A script's own header says what it needs and where it puts things.
 | What is printed | What it means | What to do |
 |---|---|---|
 | `no GPU device` (tests skip) | no device could be opened | check `athenea info`; on Linux set `ATHENEA_BACKEND` |
+| `<prim> carries lucabRTrender's names (lrt:…), which athenea does not read` | a cloud written before the rename: its rig, relight and visibility field are under `primvars:lrt:*`, so it draws still and unlit | `athenea migrate <file> -o <copy>` (`--recursive` for the layers it names), §2.12 |
 | `colour: no colour space '<name>' in <config>; read as the file says` | a texture names a colour space neither the config nor the studio config knows | correct the name (`athenea info` says whether OpenColorIO is built in); the texture is read as if no colour space were given |
 | `no Measure bundle on the AOFX search path` | `athenea compare` found no `rt.sparrow.aofx.measure` | build the `athenea_aofx_measure` target, or give its directory with `--path` |
 | `measure: an empty window` | `athenea compare --window` (or the effect's `window`) holds no pixel | give X0 < X1 and Y0 < Y1 inside the image |

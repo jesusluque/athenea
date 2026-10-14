@@ -1982,6 +1982,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | Qué se imprime | Qué significa | Qué hacer |
 |---|---|---|
 | `no GPU device` (los tests se saltan) | no se pudo abrir dispositivo | mira `athenea info`; en Linux pon `ATHENEA_BACKEND` |
+| `<prim> carries lucabRTrender's names (lrt:…), which athenea does not read` | una nube escrita antes del cambio de nombre: su rig, su relight y su campo de visibilidad están en `primvars:lrt:*`, así que se dibuja quieta y sin iluminar | `athenea migrate <fichero> -o <copia>` (`--recursive` para las capas que nombra), §2.12 |
 | `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
 | `no Measure bundle on the AOFX search path` | `athenea compare` no encontró `rt.sparrow.aofx.measure` | compila el target `athenea_aofx_measure`, o da su directorio con `--path` |
 | `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |

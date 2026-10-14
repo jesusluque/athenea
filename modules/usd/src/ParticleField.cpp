@@ -11,6 +11,7 @@
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3h.h>
 #include <pxr/base/tf/staticTokens.h>
+#include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/gf/quath.h>
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/primvarsSchema.h>
@@ -232,6 +233,24 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
             VtValue value = held(full);
             return athenea::usd::streamOf(value).empty() ? held(half) : value;
         };
+        // A CLOUD WRITTEN BEFORE THE RENAME carries its rig, its relight and
+        // its visibility field under `primvars:lrt:*`, which nothing here
+        // reads: it drew still and unlit and said nothing. It says so, once.
+        if (!_oldNamesChecked) {
+            _oldNamesChecked = true;
+            if (const HdSceneIndexBaseRefPtr index = delegate->GetRenderIndex().GetTerminalSceneIndex()) {
+                for (TfToken const& name :
+                     HdPrimvarsSchema::GetFromParent(index->GetPrim(id).dataSource).GetPrimvarNames()) {
+                    if (TfStringStartsWith(name.GetString(), "lrt:")) {
+                        athenea::log::warn("hdAthenea: {} carries lucabRTrender's names ({}), which athenea does not "
+                                           "read: its rig, relight and visibility are ignored. `athenea migrate` "
+                                           "writes a copy under athenea's",
+                                           id.GetString(), name.GetString());
+                        break;
+                    }
+                }
+            }
+        }
         athenea::usd::ParticleFieldArrays arrays;
         arrays.positions = either(UsdVolTokens->positions, UsdVolTokens->positionsh);
         arrays.orientations = either(UsdVolTokens->orientations, UsdVolTokens->orientationsh);
