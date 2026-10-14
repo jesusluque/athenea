@@ -398,8 +398,9 @@ them. Each decision is printed, e.g. for the rear light lens: "tinted, kept soli
 0 shared by more than two; 1.199 thick (2V/A) against a cell of 0.007921". `--thin-glass MAT` and `--solid-glass MAT`
 override per material.
 
-**Coverage.** A solid glass covers `--glass-opacity` of what is behind it (default 0.6; a TX lens answers its
-background from the domes alone, so a glass that covered fully hid every other light shining through it). A thin
+**Coverage.** A solid glass covers `--glass-opacity` of what is behind it (by default 1 on a stage lit by domes
+alone and 0.6 where a lamp or a sun stands: a TX lens answers its background from the domes alone, so under a lamp a
+glass that covered fully hid the light shining through it). A thin
 wall covers exactly what the sheet reflects head-on, both faces with inter-reflection:
 
 $$

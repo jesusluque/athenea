@@ -427,9 +427,9 @@ del grosor las reconoce. Cada decisión se imprime, p. ej. para la lente del pil
 glass: 200 of its 17284 edges open, 0 shared by more than two; 1.199 thick (2V/A) against a cell of 0.007921».
 `--thin-glass MAT` y `--solid-glass MAT` la anulan por material.
 
-**Coverage.** Un vidrio sólido cubre `--glass-opacity` de lo que tiene detrás (0.6 por defecto; una lente TX responde
-su fondo solo a partir de las cúpulas, así que un vidrio que cubriera por completo ocultaría cualquier otra luz que lo
-atraviese). Una pared fina cubre exactamente lo que la lámina refleja de frente, ambas caras con interreflexión:
+**Coverage.** Un vidrio sólido cubre `--glass-opacity` de lo que tiene detrás (por defecto 1 en un stage iluminado
+solo por cúpulas y 0.6 donde hay una lámpara o un sol: una lente TX responde su fondo solo a partir de las cúpulas, así
+que bajo una lámpara un vidrio que cubriera por completo ocultaría la luz que lo atraviesa). Una pared fina cubre exactamente lo que la lámina refleja de frente, ambas caras con interreflexión:
 
 $$
 g_{\text{thin}} = \min\!\left(\frac{2R}{1+R},\; 0.998\right), \qquad R = \left(\frac{n-1}{n+1}\right)^2,
