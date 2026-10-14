@@ -2732,9 +2732,15 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // A path traced surface needs a structure whatever the lights do --
         // its bounce is a ray -- while shading needs one only where a light
         // casts a shadow. The same structure serves both, and a path traced
-        // frame without it would trace against nothing and never know.
+        // frame without it would trace against nothing and never know. The
+        // path tracer traces in a pipeline where rays are not inline (CUDA,
+        // through OptiX), and it wants the structure all the same: without it
+        // a bake on CUDA found no surface at all. Shading's shadow rays are
+        // inline only.
+        const bool inlineRays = caps.rayQuery && caps.accelerationStructure;
+        const bool pipelineRays = caps.rayTracing && caps.accelerationStructure;
         bool raysWanted = false;
-        if ((lightTable_->anyShadow() || pathTracing) && caps.rayQuery && caps.accelerationStructure) {
+        if ((lightTable_->anyShadow() && inlineRays) || (pathTracing && (inlineRays || pipelineRays))) {
             if (!rayTracingScene_.has_value()) {
                 auto accel = world::RayTracingScene::create(*library_);
                 if (!accel) return std::move(accel).error();

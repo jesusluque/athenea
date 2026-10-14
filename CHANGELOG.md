@@ -38,6 +38,10 @@ macOS (Metal), Linux (CUDA) and Windows (CUDA, natively with MSVC). 433 tests.
   CUDA, Vulkan and Metal (an OpenPBR ground: 0.274467 0.245033 0.215593 on
   each). Raster glass still differs on CUDA, which has no inline ray queries
   to refract with; the path traced frame does not.
+- **Bakes on CUDA through OptiX**: the engine built the ray tracing structure
+  only for a device with inline ray queries, so the path tracer's OptiX
+  pipeline traced against nothing and a bake found no surface. It is built
+  for the pipeline too.
 
 Tests: macOS 422 of 433, Linux 431 of 433, Windows 407 of 430 before the bake
 fix. Failing on every system and before this merge, so not caused by it: the
