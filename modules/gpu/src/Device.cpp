@@ -205,7 +205,11 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
         searchPaths.push_back(path.c_str());
     }
 
-    if (desc.validation) {
+    // ATHENEA_GPU_VALIDATION: the API's own validation and debug layers, where
+    // a driver says only that a pipeline failed (D3D12 creating one) and the
+    // layer says why. Slow; for finding such a failure, not for running.
+    const bool validate = desc.validation || !platform::env("ATHENEA_GPU_VALIDATION").empty();
+    if (validate) {
         rhi::getRHI()->enableDebugLayers();
     }
     if (desc.useShaderCache) {
@@ -235,7 +239,7 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
         }
         rhi::DeviceDesc rhiDesc;
         rhiDesc.deviceType = toRhi(backend);
-        rhiDesc.enableValidation = desc.validation;
+        rhiDesc.enableValidation = validate;
         rhiDesc.debugCallback = &gDebugLog;
         rhiDesc.slang.searchPaths = searchPaths.data();
         rhiDesc.slang.searchPathCount = static_cast<uint32_t>(searchPaths.size());
