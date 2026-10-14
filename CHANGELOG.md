@@ -41,10 +41,12 @@ macOS (Metal), Linux (CUDA) and Windows (CUDA, natively with MSVC). 433 tests.
 - **Bakes on CUDA through OptiX**: the engine built the ray tracing structure
   only for a device with inline ray queries, so the path tracer's OptiX
   pipeline traced against nothing and a bake found no surface. It is built
-  for the pipeline too.
+  for the pipeline too, and a transfer bake (TX) is right on CUDA. A radiance
+  bake is not yet: OptiX does not compile its pipeline (an NVIDIA L4, driver
+  596.36), and the bake says so.
 
 Tests: macOS 422 of 433, Linux 431 of 433, Windows 407 of 430 before the bake
-fix. Failing on every system and before this merge, so not caused by it: the
+fix; on Windows with OptiX (an L4) the radiance bakes fail as above. Failing on every system and before this merge, so not caused by it: the
 zonal transfer's fit and turn (two tests), and on macOS a refit's single
 pixel, many lights as one, and a texture floor's p99. The clock tests fail
 where the machine is loaded.
