@@ -476,7 +476,9 @@ class ATHENEA_OT_mesh_to_splats(bpy.types.Operator):
         return self._end(context, conversion)
 
     def invoke(self, context, event):
-        if context.window_manager is None or context.window is None:
+        # Blender without a UI (-b) runs it to the end here: a window can be set
+        # there all the same, and no timer would ever fire for a modal.
+        if bpy.app.background or context.window_manager is None or context.window is None:
             return self.execute(context)
         conversion = self._begin(context)
         if conversion is None:

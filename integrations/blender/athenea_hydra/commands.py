@@ -13,6 +13,7 @@ step may be marked optional: its failure is reported and the job goes on
 (a shadow catcher that finds no ground does not undo the object's cloud).
 """
 
+import atexit
 import ctypes
 import os
 import queue
@@ -27,6 +28,20 @@ CANCELLED = 4
 
 _SinkType = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p)
 _library = None
+# The jobs still running. Blender quitting under one crashed it: the command's
+# next line called back into an interpreter that was shutting down (tx_module,
+# 17 Oct 2026). At exit each is asked to stop and waited for.
+_running = set()
+
+
+def _stop_running():
+    for job in list(_running):
+        job.cancel()
+        if job.thread is not None:
+            job.thread.join(timeout=30.0)
+
+
+atexit.register(_stop_running)
 
 
 def plugin_library():
@@ -154,10 +169,17 @@ class Job:
                     return
             self.lines.put(("done", len(self.steps), ""))
 
+        def tracked():
+            try:
+                work()
+            finally:
+                _running.discard(self)
+
         for step in self.steps:
             self.log.append(f"athenea {step.command} " + " ".join(step.args))
         self.started = time.monotonic()
-        self.thread = threading.Thread(target=work, name="athenea-commands", daemon=True)
+        _running.add(self)
+        self.thread = threading.Thread(target=tracked, name="athenea-commands", daemon=True)
         self.thread.start()
 
     def _fraction(self):

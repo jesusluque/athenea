@@ -107,7 +107,7 @@ class ATHENEA_OT_flatten(bpy.types.Operator, ExportHelper):
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
         ATHENEA_OT_flatten.running = True
-        if context.window is None:
+        if bpy.app.background or context.window is None:   # no UI: to the end here, as convert does
             job.wait()
             return self._end(job, target)
         self._state = (job, target)

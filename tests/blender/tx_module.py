@@ -127,8 +127,6 @@ def main():
                  "compare: the scene put back")
 
     # -- export --------------------------------------------------------------
-    print("export: clouds", [(o.name, o.visible_get(), o.hide_get(), o.hide_viewport) for o in clouds],
-          "running", export.ATHENEA_OT_flatten.running, "found", [o.name for o in export.scene_clouds(scene)])
     for file_format in ('SPZ', 'PLY'):
         target = os.path.join(out, "splats", "tx_module" + export.EXTENSIONS[file_format])
         result = bpy.ops.athenea.flatten(filepath=target, file_format=file_format)
