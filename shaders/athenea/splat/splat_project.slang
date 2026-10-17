@@ -356,8 +356,8 @@ float3 relitToward<let kTransfer : int>(uint i, uint slot, float3 position, floa
     return relitSplat<kTransfer>(surface, normalize(eyeWorld - surface.position), lights,
                         params.lightCount, params.categoriesLo, params.categoriesHi,
                         shadowFactors, slot * params.shadowLights, shadowLights,
-                        envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
-                        envSun, transfer, shadowBits,
+                        environment.texels, environment.sh, environment.ofLight, params.envLights, params.envBaseSide,
+                        environment.sun, transfer, shadowBits,
                         params.transferIndirect != 0, slope);
 }
 
