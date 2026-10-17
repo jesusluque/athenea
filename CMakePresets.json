@@ -156,6 +156,7 @@
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "ATHENEA_USD_ROOT": "$env{HOME}/tools/usd-26.08-blender",
         "ATHENEA_BLENDER_LIB": "/Applications/Blender.app/Contents/Resources/lib",
+        "ATHENEA_NANOVDB_INCLUDE": "$env{HOME}/tools/usd-26.08-mx/include",
         "BUILD_TESTING": "OFF"
       }
     }

@@ -19,7 +19,7 @@ stops if one is missing.
 | [MaterialX](https://github.com/AcademySoftwareFoundation/MaterialX) | 1.39.5 | Apache-2.0 | `MaterialXGenSlang` and the hardware nodes compiled into `hdAthenea`; the `libraries/` data in `plugin/materialx` | `licenses/materialx/` (`LICENSE`, `THIRD-PARTY.md`) |
 | [zstd](https://github.com/facebook/zstd) | Homebrew's (1.5.7 at writing) | BSD 3-Clause (or GPL-2.0, at the user's choice) | `libzstd.1.dylib` beside `hdAthenea`, named `@loader_path`, signed ad hoc | `licenses/zstd/` (`LICENSE`, `COPYING`) |
 | [libwebp](https://chromium.googlesource.com/webm/libwebp) | Homebrew's | BSD 3-Clause | `libwebp.7.dylib` and its `libsharpyuv.0.dylib` beside `hdAthenea`, named `@loader_path`, signed ad hoc | `licenses/libwebp/COPYING` |
-| [OpenVDB / NanoVDB](https://github.com/AcademySoftwareFoundation/openvdb) | 10.1.0 | MPL-2.0 | `PNanoVDB.h` in `shaders/nanovdb`, only when the build had OpenVDB (the Blender build does not) | `licenses/openvdb/LICENSE` |
+| [OpenVDB / NanoVDB](https://github.com/AcademySoftwareFoundation/openvdb) | 10.1.0 | MPL-2.0 | `PNanoVDB.h` in `shaders/nanovdb` (header-only; the Blender build takes it from `ATHENEA_NANOVDB_INCLUDE`, the desktop prefix) | `licenses/openvdb/LICENSE` |
 
 ## Blender's own, not redistributed
 
