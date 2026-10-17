@@ -128,6 +128,10 @@ public:
 
     /// "athenea:pathMis": light and material sampling weighed (true, the default).
     [[nodiscard]] bool GetPathMis() const;
+    /// "athenea:domeVisible": a dome is drawn behind what the frame holds
+    /// (true, the default); false leaves those pixels transparent, alpha 0,
+    /// as a host's transparent film asks. The dome still lights the frame.
+    [[nodiscard]] bool GetDomeVisible() const;
     /// "athenea:glassShadows": the path tracer's shadow rays pass glass whose
     /// transmission is a delta, tinted (true, the default).
     [[nodiscard]] bool GetGlassShadows() const;

@@ -1479,6 +1479,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathAdaptive` | bool | `false` | parar un píxel cuando su error baja lo suficiente |
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
+| `athenea:domeVisible` | bool | `true` | toda técnica: se dibuja un dome detrás del frame; apagado, los píxeles que nada cubre quedan transparentes (alfa 0), como pide la película transparente de un host, y el dome sigue iluminando el frame |
 | `athenea:glassShadows` | bool | `true` | rt y sus bakes: el rayo de sombra de una luz sigue a través de hasta 4 caras de vidrio cuya transmisión es una delta (una pared fina; un sólido de rugosidad especular constante por debajo de 0.03), teñido por cada una; apagado, el vidrio lo detiene |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
 | `athenea:motionBuckets` | int | `4` | rt: rodajas del obturador, de 1 a 8 |

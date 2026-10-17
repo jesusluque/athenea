@@ -2474,6 +2474,23 @@ TEST_CASE("a dome light's image lights a Lambert plane, and shows where nothing 
     CHECK(c[1] == 0);
     CHECK(corner[0] == Catch::Approx(linear).margin(0.01F));
 
+    // A transparent background (athenea:domeVisible off, Blender's transparent
+    // film): the corner is empty, alpha 0, and the plane the dome lights is
+    // lit as it was.
+    {
+        (*renderer)->setDomeVisible(false);
+        auto hidden = (*renderer)->render("/Camera", 0.0, w, h);
+        if (!hidden) FAIL(hidden.error().toString());
+        const size_t middle = (size_t{h / 2} * w + w / 2) * 4;
+        std::printf("  dome hidden: background %.4f alpha %.4f; the plane %.4f (shown: %.4f)\n",
+                    double(hidden->rgba[0]), double(hidden->rgba[3]), double(hidden->rgba[middle]),
+                    double(image->rgba[middle]));
+        CHECK(hidden->rgba[0] == 0.0F);
+        CHECK(hidden->rgba[3] == 0.0F);
+        CHECK(hidden->rgba[middle] == Catch::Approx(image->rgba[middle]).epsilon(0.02F));
+        (*renderer)->setDomeVisible(true);
+    }
+
     // The same image authored raw: its colour space reaches the texture
     // store through the light's network in the scene index, and the sky
     // shows the code values as they are. Before, every dome was read as the

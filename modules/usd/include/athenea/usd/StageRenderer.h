@@ -469,6 +469,8 @@ public:
     /// (`athenea:glassShadows`, on by default): a lamp behind its lens lights
     /// what stands in front by next event estimation. Off: glass stops them.
     void setGlassShadows(bool glass);
+    /// athenea:domeVisible: false leaves the background transparent.
+    void setDomeVisible(bool visible);
     void setPathError(float error);
 
     /// How many paths a pixel the frame on the device holds, and whether it
