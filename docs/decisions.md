@@ -13622,18 +13622,50 @@ settings handed for viewport and F12, the stage and arguments a conversion
 builds, the stage an export builds: the Empty's reference, the world's
 DomeLight, no mesh).
 
+### Run on the GPU (17 Oct 2026)
+
+The branch, merged with the engine of 17 Oct (`merge-pieces`), ran
+`tests/blender/run.sh all` on the M5 Pro under Blender 5.3 alpha (4 Oct
+build), every check passing. The cube over a ground under forest.exr,
+1024 x 768:
+
+| | |
+|---|---|
+| convert, TX and its catcher (preview quality) | 26.8 s |
+| TX raster against the path traced GT (256 paths, OIDN) | relMSE 0.0491, 8-bit p99 11 |
+| the catcher's shadow | alpha 0.1542 against 0.1406 without it |
+| Athenea (cloud and catcher) against Cycles (cube, ground as Cycles' catcher) | relMSE 0.0359, p99 45 |
+| export | SPZ 1.65 MB, PLY 138 MB |
+| the viewport's colour, half against float | p99 0 at 1280 x 720 and 1920 x 1080 |
+
+Getting there took five fixes, each found by the run:
+
+- **hdAthenea did not load.** The Blender build compiles the stage
+  renderer into the plugin without `LightGroups.cpp`, which the engine's
+  `readLightRig` had since come to need; registering the plugin does not
+  load it, so `test_module` passed. It now loads the plugin as USD does.
+- **The projection kernel overflowed Metal's 31 buffers** with the flatten
+  block: the engine's sky is now one parameter block (merge-pieces).
+- **The path tracer did not compile:** PNanoVDB.h travelled only with
+  libopenvdb, which Blender's prefix lacks; it now comes from
+  `ATHENEA_NANOVDB_INCLUDE` (the desktop prefix).
+- **The world was drawn behind a transparent film**, so alpha was 1
+  everywhere and Cycles (transparent) and Athenea measured relMSE 22:
+  Film > Transparent is now `athenea:domeVisible` off.
+- **The export went modal under `-b`**, where a window is set and no timer
+  fires: the test saw an empty file and quit with the command still
+  calling back. Both operators run to the end when `bpy.app.background`,
+  and exit cancels and joins a running job.
+
 ### Not done
 
-- Nothing here ran on the GPU: `tests/blender/tx_module.py` (convert with
-  the catcher, raster against the path traced GT, against Cycles, export,
-  Blender splats, Esc) and `viewport_readback.py` are queued.
 - A procedural world (sky texture, gradients) is not a DomeLight in Blender's
   conversion and lights nothing; baking it to an EXR first is proposal 084's.
 - Light groups as passes, Cryptomatte to the compositor, and the comparison
   per material (it is per frame).
 - Blender splats come from `flatten --format usdc` (display-referred, as a
-  standard file is); whether Blender's own engines read those colours as a
-  capture's is to be seen on the queued run.
+  standard file is); the run draws them (alpha as the cloud's), and whether
+  Blender's own engines read those colours as a capture's is not measured.
 - The viewport still crosses host memory (the colour mapped and uploaded):
   Blender's change, written up in phase 2.
 
