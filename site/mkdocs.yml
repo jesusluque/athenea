@@ -59,6 +59,7 @@ plugins:
             Rendering and comparing with the path trace: Render y comparación con el path trace
             Preparing a USD stage: Preparar un stage USD
             Large clouds and levels of detail: Nubes grandes y niveles de detalle
+            Gaussian splats in Blender: Gaussian splats en Blender
             Reference: Referencia
             Presentations: Presentaciones
             Credits: Créditos
@@ -71,6 +72,7 @@ nav:
       - Rendering and comparing with the path trace: tutorials/render-compare.md
       - Preparing a USD stage: tutorials/authoring-usd.md
       - Large clouds and levels of detail: tutorials/large-clouds.md
+      - Gaussian splats in Blender: tutorials/blender.md
   - Reference: reference.md
   - Presentations: presentations.md
   - Credits: credits.md

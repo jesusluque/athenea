@@ -1355,7 +1355,7 @@ delegate:
 |---|---|
 | Viewport | `athenea:technique` `raster`, `athenea:colourHalf` (Blender copies the frame through host memory to show it; halves are half the bytes) |
 | F12 | `raster` or, with *Final render* Path traced, `rt` with `athenea:pathTotal` (*Paths*, 256), 16 a pass, 6 bounces and `athenea:denoise` (*Denoise*, on) |
-| Both | `athenea:splatTransferIndirect` (*Bounced light*, on) |
+| Both | `athenea:splatTransferIndirect` (*Bounced light*, on); `athenea:domeVisible` off under *Film > Transparent* (the world lights the frame and is not drawn behind it) |
 
 F12's passes: Combined (`color`), Depth (`depth`), Normal (`normal`) and
 DiffCol (`albedo`), each where the view layer asks for it. Volumes (`.vdb`)

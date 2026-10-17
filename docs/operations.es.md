@@ -1391,7 +1391,7 @@ como luces UsdLux. Los ajustes que el motor entrega al delegate:
 |---|---|
 | Viewport | `athenea:technique` `raster`, `athenea:colourHalf` (Blender copia el frame por memoria del host para mostrarlo; en media son la mitad de bytes) |
 | F12 | `raster` o, con *Final render* en Path traced, `rt` con `athenea:pathTotal` (*Paths*, 256), 16 por pasada, 6 rebotes y `athenea:denoise` (*Denoise*, activado) |
-| Ambos | `athenea:splatTransferIndirect` (*Bounced light*, activado) |
+| Ambos | `athenea:splatTransferIndirect` (*Bounced light*, activado); `athenea:domeVisible` apagado con *Film > Transparent* (el world ilumina el frame y no se dibuja detrás) |
 
 Los pases de F12: Combined (`color`), Depth (`depth`), Normal (`normal`) y
 DiffCol (`albedo`), cada uno donde la view layer lo pide. Los volúmenes
