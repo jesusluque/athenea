@@ -52,7 +52,7 @@ find_library(ATHENEA_OPENVDB_LIB openvdb HINTS "${ATHENEA_USD_ROOT}/lib" NO_DEFA
 # The header alone is what the shaders need: the path tracer's media import
 # athenea/volume/nanovdb.slang whether or not a .vdb can be read. A prefix
 # with no OpenVDB (Blender's header build) names one with
-# ATHENEA_NANOVDB_INCLUDE; PNanoVDB.h is header-only, Apache-2.0 as OpenVDB.
+# ATHENEA_NANOVDB_INCLUDE; PNanoVDB.h is header-only (MPL-2.0, as OpenVDB 10).
 set(ATHENEA_NANOVDB_INCLUDE "" CACHE PATH "A directory holding nanovdb/PNanoVDB.h, where the USD prefix has none")
 find_file(ATHENEA_PNANOVDB_H nanovdb/PNanoVDB.h HINTS "${ATHENEA_USD_ROOT}/include" ${ATHENEA_NANOVDB_INCLUDE}
           NO_DEFAULT_PATH)
