@@ -80,7 +80,7 @@ Everything here is found at configure time, and the effect is felt at run time.
 | OpenColorIO | the OCIO view transform. AgX and ACES 2.0 still work, and `--ocio-*` is refused. |
 | Open Image Denoise | `--denoise` and `athenea:denoise` do nothing; a path traced frame stays as it gathered. |
 | libwebp | `.sog` clouds are refused when read. |
-| OpenVDB | `.vdb` volume fields are refused when read. |
+| OpenVDB | `.vdb` volume fields are refused when read. The path tracer still needs NanoVDB's `nanovdb/PNanoVDB.h`, header-only: a USD prefix without it names a directory holding it with `-DATHENEA_NANOVDB_INCLUDE=<dir>`, or the configure warns that the path tracer's kernels will not compile. |
 | OptiX headers (CUDA) | ray tracing by pipeline on CUDA; inline ray queries still work, so most of the engine does. |
 | zstd | `.spz` clouds are refused, with `this build reads no .spz`. |
 
