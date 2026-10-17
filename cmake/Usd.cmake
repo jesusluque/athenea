@@ -49,16 +49,28 @@ endforeach()
 # read from and laid out as. PNanoVDB.h travels with the shaders, since
 # athenea/volume/nanovdb.slang includes it.
 find_library(ATHENEA_OPENVDB_LIB openvdb HINTS "${ATHENEA_USD_ROOT}/lib" NO_DEFAULT_PATH)
-if(ATHENEA_OPENVDB_LIB AND EXISTS "${ATHENEA_USD_ROOT}/include/nanovdb/PNanoVDB.h")
-    set(ATHENEA_HAVE_OPENVDB ON)
+# The header alone is what the shaders need: the path tracer's media import
+# athenea/volume/nanovdb.slang whether or not a .vdb can be read. A prefix
+# with no OpenVDB (Blender's header build) names one with
+# ATHENEA_NANOVDB_INCLUDE; PNanoVDB.h is header-only, Apache-2.0 as OpenVDB.
+set(ATHENEA_NANOVDB_INCLUDE "" CACHE PATH "A directory holding nanovdb/PNanoVDB.h, where the USD prefix has none")
+find_file(ATHENEA_PNANOVDB_H nanovdb/PNanoVDB.h HINTS "${ATHENEA_USD_ROOT}/include" ${ATHENEA_NANOVDB_INCLUDE}
+          NO_DEFAULT_PATH)
+if(ATHENEA_PNANOVDB_H)
     add_custom_command(OUTPUT "${ATHENEA_SHADER_OUTPUT_DIR}/nanovdb/PNanoVDB.h"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ATHENEA_USD_ROOT}/include/nanovdb/PNanoVDB.h"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ATHENEA_PNANOVDB_H}"
                 "${ATHENEA_SHADER_OUTPUT_DIR}/nanovdb/PNanoVDB.h"
-        DEPENDS "${ATHENEA_USD_ROOT}/include/nanovdb/PNanoVDB.h" VERBATIM)
+        DEPENDS "${ATHENEA_PNANOVDB_H}" VERBATIM)
     add_custom_target(athenea_nanovdb_header ALL DEPENDS "${ATHENEA_SHADER_OUTPUT_DIR}/nanovdb/PNanoVDB.h")
     if(TARGET athenea_shaders_copy)
         add_dependencies(athenea_shaders_copy athenea_nanovdb_header)
     endif()
+else()
+    message(WARNING "nanovdb/PNanoVDB.h not found (ATHENEA_USD_ROOT, ATHENEA_NANOVDB_INCLUDE): "
+                    "the path tracer's kernels will not compile")
+endif()
+if(ATHENEA_OPENVDB_LIB AND ATHENEA_PNANOVDB_H)
+    set(ATHENEA_HAVE_OPENVDB ON)
     message(STATUS "OpenVDB: ${ATHENEA_OPENVDB_LIB} (volumes read and laid out as NanoVDB)")
 else()
     set(ATHENEA_HAVE_OPENVDB OFF)
