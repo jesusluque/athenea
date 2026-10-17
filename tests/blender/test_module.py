@@ -2,7 +2,7 @@
 """The add-on as a module, headless and without the GPU.
 
 What is checked, none of it opening a device (hdAthenea is registered with
-USD's plugin registry, never loaded):
+USD's plugin registry and loaded, no delegate made):
 
   - registration: the render engine, the operators (convert, export, the
     comparison with Cycles), the panels, the scene
@@ -51,6 +51,12 @@ def main():
     checks.check(export.menu_export in bpy.types.TOPBAR_MT_file_export._dyn_ui_initialize(),
                  "File > Export has Gaussian Splats")
     checks.check(addon.register_plugin(), "hdAthenea is known to USD's plugin registry")
+    # Loaded as USD loads it, every symbol bound: a source the build left out
+    # of the plugin passed the registry and failed at the first delegate
+    # (readLightRig, 17 Oct 2026). Loading makes no device.
+    import pxr.Plug
+    plugin = pxr.Plug.Registry().GetPluginWithName("hdAthenea")
+    checks.check(plugin is not None and plugin.Load() and plugin.isLoaded, "hdAthenea loads")
 
     scene = common.scene_for_athenea()
     settings = scene.athenea_convert

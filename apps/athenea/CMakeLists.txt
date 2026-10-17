@@ -64,7 +64,7 @@ if(ATHENEA_HYDRA_COMMANDS AND TARGET hdAthenea)
     target_sources(hdAthenea PRIVATE
         src/Embedded.cpp src/Output.cpp src/CmdMesh2Splat.cpp src/Mesh2SplatValidate.cpp src/CmdFlatten.cpp src/CmdCompare.cpp
         ${_usd_src}/StageRenderer.cpp ${_usd_src}/BindingPurposes.cpp ${_usd_src}/Export.cpp
-        ${_usd_src}/MeshStage.cpp ${_usd_src}/ShadowCatcher.cpp)
+        ${_usd_src}/MeshStage.cpp ${_usd_src}/ShadowCatcher.cpp ${_usd_src}/LightGroups.cpp)
     target_include_directories(hdAthenea PRIVATE src)
     target_link_libraries(hdAthenea PRIVATE athenea::aofx_host CLI11::CLI11)
     target_compile_definitions(hdAthenea PRIVATE ATHENEA_AOFX_BUNDLE_DIR="${AOFX_BUNDLE_DIR}")
