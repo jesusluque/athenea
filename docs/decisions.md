@@ -1156,6 +1156,12 @@ sample, mapped around the light's own axes. It is not a layer: it has no
 depth, and giving it one would make the background read as covered, so it is
 painted where the frame drew nothing, opaque, after everything else.
 
+A host can ask for the background to stay empty: `athenea:domeVisible` off
+(Blender's transparent film) skips that painting, so the pixels nothing
+covered keep alpha 0 while the dome still lights everything else. Measured
+on the dome test: background 0 and alpha 0 with it off, the plane it lights
+0.4834 either way.
+
 A dome follows its image's own brightness. The warp descends the mip chain
 the texture store already built, choosing among a cell's children by
 luminance, and its density needs no walk at all: a lat-long texel covers

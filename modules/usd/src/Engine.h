@@ -476,6 +476,9 @@ public:
     /// has stopped or `pathTotal` is reached, whichever first.
     void setPathAdaptive(bool adaptive);
     void setPathMis(bool mis);
+    /// Whether a dome is drawn behind the frame (true) or its pixels are left
+    /// transparent (false); either way the dome lights what the frame holds.
+    void setDomeVisible(bool visible);
     /// Let the path tracer's shadow rays through glass whose transmission
     /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
     void setGlassShadows(bool glass);
@@ -776,6 +779,7 @@ private:
     std::atomic<bool>                         pathAdaptive_{false};
     std::atomic<bool>                         pathMis_{true};
     std::atomic<bool>                         glassShadows_{true};
+    std::atomic<bool>                         domeVisible_{true};
     std::atomic<bool>                         transferIndirect_{true};
     /// How many times a cloud's arrays were uploaded: once a cloud, unless
     /// what it holds changed (tests hold a time step to it).

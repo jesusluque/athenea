@@ -749,6 +749,7 @@ void Engine::setDenoise(bool denoise) { denoise_.store(denoise); }
 void Engine::setPathAdaptive(bool adaptive) { pathAdaptive_.store(adaptive); }
 void Engine::setPathMis(bool mis) { pathMis_.store(mis); }
 void Engine::setGlassShadows(bool glass) { glassShadows_.store(glass); }
+void Engine::setDomeVisible(bool visible) { domeVisible_.store(visible); }
 
 void Engine::setPathError(float error) { pathError_.store(std::max(error, 1.0e-4F)); }
 
@@ -3868,7 +3869,9 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
 
 Result<void> Engine::paintDomes(const render::Projection& projection, uint32_t width, uint32_t height,
                                 render::RenderTargets& targets) {
-    if (!lightTable_.has_value() || !lightTable_->anyDome() || !targets.colour.valid()) {
+    // A transparent background (athenea:domeVisible off): the pixels nothing
+    // covered keep alpha 0, and their light groups' planes stay empty too.
+    if (!lightTable_.has_value() || !lightTable_->anyDome() || !targets.colour.valid() || !domeVisible_.load()) {
         return ok();
     }
     if (!domeBackground_.has_value()) {
