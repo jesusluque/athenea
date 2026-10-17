@@ -145,7 +145,9 @@ class AtheneaHydraRenderEngine(bpy.types.HydraRenderEngine):
     def get_render_settings(self, engine_type):
         _warn_hidden_splats()
         settings = getattr(bpy.context.scene, "athenea", None)
-        common = {'athenea:splatTransferIndirect': bool(settings.indirect) if settings else True}
+        common = {'athenea:splatTransferIndirect': bool(settings.indirect) if settings else True,
+                  # Film > Transparent: the world lights the frame and is not drawn behind it.
+                  'athenea:domeVisible': not bpy.context.scene.render.film_transparent}
         if engine_type == 'VIEWPORT':
             # Blender draws a non-Storm delegate's viewport by mapping its
             # colour buffer and uploading it to a texture (DrawTexture::

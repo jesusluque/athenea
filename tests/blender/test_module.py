@@ -72,6 +72,13 @@ def main():
     checks.check(final.get('athenea:technique') == "raster" and final.get('aovToken:Combined') == "color"
                  and final.get('aovToken:Normal') == "normal" and final.get('aovToken:DiffCol') == "albedo",
                  "F12 draws the raster with colour, depth, normal and albedo")
+    transparent = scene.render.film_transparent
+    scene.render.film_transparent = True
+    hidden = engine.get_render_settings(None, 'FINAL').get('athenea:domeVisible')
+    scene.render.film_transparent = False
+    shown = engine.get_render_settings(None, 'FINAL').get('athenea:domeVisible')
+    scene.render.film_transparent = transparent
+    checks.check(hidden is False and shown is True, "a transparent film hides the dome (athenea:domeVisible)")
     scene.athenea.technique = 'PATH'
     scene.athenea.paths = 64
     traced = engine.get_render_settings(None, 'FINAL')
