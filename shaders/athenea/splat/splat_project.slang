@@ -79,12 +79,17 @@ ConstantBuffer<FrameParams> params;
 StructuredBuffer<float>     shadowFactors;
 // THE SKY, PREPARED FOR A KERNEL THAT CANNOT SAMPLE IT (technique::Environment,
 // athenea/light/environment.slang). Bound whether or not the frame has a dome:
-// `params.envLights` of 0 is what says there is nothing to read.
-StructuredBuffer<uint>      envTexels;
-StructuredBuffer<float4>    envSh;
-// The sun `env_sun` took out of that sky: two float4 a dome.
-StructuredBuffer<float4>     envSun;
-StructuredBuffer<uint>      envOfLight;
+// `params.envLights` of 0 is what says there is nothing to read. One
+// parameter block, not four globals: on Metal a block is one argument buffer,
+// and this module had reached the 31 buffer slots an entry point has.
+struct SkyInputs {
+    StructuredBuffer<uint>      texels;
+    StructuredBuffer<float4>    sh;
+    // The sun `env_sun` took out of that sky: two float4 a dome.
+    StructuredBuffer<float4>    sun;
+    StructuredBuffer<uint>      ofLight;
+};
+ParameterBlock<SkyInputs> environment;
 // How much of an environment reaches each gaussian, where its cloud carries
 // it; `params.transferCount` of 0 says there is nothing to read.
 StructuredBuffer<uint>      transfer;
@@ -176,8 +181,8 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     }
     uint dome = kEnvNone;
     for (uint k = 0; k < params.lightCount && k < params.envLights; ++k) {
-        if (lights[k].kind == kLightDome && envOfLight[k] != kEnvNone) {
-            dome = envOfLight[k];
+        if (lights[k].kind == kLightDome && environment.ofLight[k] != kEnvNone) {
+            dome = environment.ofLight[k];
             break;
         }
     }
@@ -196,7 +201,7 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     // The sky's luminance coefficients, once.
     float sky[16];
     [unroll] for (uint k = 0; k < coefficients; ++k) {
-        sky[k] = dot(envSh[dome * kEnvCoefficients + k].rgb, luma);
+        sky[k] = dot(environment.sh[dome * kEnvCoefficients + k].rgb, luma);
     }
     float with = 0.0;
     float without = 0.0;
@@ -218,10 +223,10 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
             with += worth;
         }
     }
-    const float4 disc = envSun[dome * 2];
+    const float4 disc = environment.sun[dome * 2];
     if (disc.w > 0.0) {
         const float facing = max(dot(n, disc.xyz), 0.0);
-        const float sun = dot(envSun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
+        const float sun = dot(environment.sun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
         // The sun's open share: its four cells about its direction, weighed
         // bilinearly, those behind the surface left out (splatCellsOpen).
         const float2 at = octEncode(disc.xyz) * float(side) - 0.5;
@@ -810,8 +815,8 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         colour = relitSplat<kTransfer>(surface, normalize(eye - surface.position), lights,
                             params.lightCount, params.categoriesLo, params.categoriesHi,
                             shadowFactors, slot * params.shadowLights, shadowLights,
-                            envTexels, envSh, envOfLight, params.envLights, params.envBaseSide,
-                            envSun, transfer, shadowBits,
+                            environment.texels, environment.sh, environment.ofLight, params.envLights, params.envBaseSide,
+                            environment.sun, transfer, shadowBits,
                             params.transferIndirect != 0, slope);
         if (kTransfer >= 2 && slope.sharpOn) {
             // THE SHARP LOBE GOES TO THE BLEND (SplatSlope): the centre's
@@ -1012,8 +1017,8 @@ void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
     // dome with, and the only one kept.
     uint dome = kEnvNone;
     for (uint k = 0; k < params.lightCount && k < params.envLights; ++k) {
-        if (lights[k].kind == kLightDome && envOfLight[k] != kEnvNone) {
-            dome = envOfLight[k];
+        if (lights[k].kind == kLightDome && environment.ofLight[k] != kEnvNone) {
+            dome = environment.ofLight[k];
             break;
         }
     }
@@ -1042,7 +1047,7 @@ void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
     float3 front;
     float3 coupling;
     float  sunShare;
-    transferViewless<2>(s, transfer, shadowBits, envSh, envSun, dome, params.transferIndirect != 0, front, coupling,
+    transferViewless<2>(s, transfer, shadowBits, environment.sh, environment.sun, dome, params.transferIndirect != 0, front, coupling,
                         sunShare);
     // The slice, one up, in the last half: zero is "not kept".
     txCache[i] = uint4(packHalves(front.x, front.y), packHalves(front.z, coupling.x),
