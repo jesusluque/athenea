@@ -448,10 +448,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // way: a name a shader declares must be bound whether it is read
             // or not, and `envLights` of 0 is what says it is not.
             const bool sky = relight && lights != nullptr && lights->environment();
-            cursor["envTexels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());
-            cursor["envSh"].setBinding(sky ? lights->envSh->rhi() : emptyEnvSh_.rhi());
-            cursor["envSun"].setBinding(sky ? lights->envSun->rhi() : emptyEnvSh_.rhi());
-            cursor["envOfLight"].setBinding(sky ? lights->envOfLight->rhi() : emptyEnvWords_.rhi());
+            rhi::ShaderCursor environment = cursor["environment"];
+            environment["texels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());
+            environment["sh"].setBinding(sky ? lights->envSh->rhi() : emptyEnvSh_.rhi());
+            environment["sun"].setBinding(sky ? lights->envSun->rhi() : emptyEnvSh_.rhi());
+            environment["ofLight"].setBinding(sky ? lights->envOfLight->rhi() : emptyEnvWords_.rhi());
             cursor["params"]["envLights"].setData(sky ? lights->envLights : 0u);
             cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
             // What of an environment reaches each gaussian, where the cloud

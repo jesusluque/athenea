@@ -13511,6 +13511,14 @@ slot capacity) -- both are per slot, written by the projection and read by
 the blend. Every projection entry point now ends at `buffer(30)` or below,
 checked with `slangc -target metal` on each.
 
+`buffer(30)` was the last slot, and the next global anyone added failed the
+same way: the Blender branch's flatten block did (17 Oct 2026). The sky's
+four buffers (`envTexels`, `envSh`, `envSun`, `envOfLight`) are now one
+parameter block, `environment`, which Metal binds as one argument buffer:
+`splatProject` ends at `buffer(27)`, the catchers at 25 and
+`splatTransferViewless` at 24. A buffer the projection needs next goes into
+a block of its kind rather than a global of its own.
+
 `athenea stage --light-state NAME --light-level GROUP=LEVEL`, the render
 settings prim's `athenea:` attributes, and `athenea view`'s **Lamps** block (a
 state combo, a switch and a level slider a group, also in the panels'
