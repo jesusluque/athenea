@@ -134,7 +134,12 @@ or in the engine:
   took `max(vertexCount, indexCount) / 3` as the triangle count. A chunk that
   indexed into a larger vertex buffer therefore read past its own indices.
   The count is fixed in the patch, and the engine now gives each chunk
-  chunk-local vertex windows as well.
+  chunk-local vertex windows as well. The Vulkan backend has the same line
+  (`vk-acceleration-structure.cpp`), so a mesh with more points than
+  triangle corners read past its indices there too; it is fixed in
+  `cmake/patches/slang-rhi-vulkan-triangle-count.patch`, a file of its own so
+  that a tree already carrying the Metal patch takes it alone. Both are in
+  upstream PR #910.
 - **Winding.** Facing is decided in object space, so a mirroring instance
   transform must not flip the front face. Metal behaves this way, and the
   Vulkan and DXR specifications say the same.
@@ -1715,12 +1720,14 @@ host. What that took, in the order it was found:
   Objective-C call in `core/Platform`, beside `matchLayerToBacking`, which is
   the precedent and the rule -- wrapped for slang-rhi with `Buffer::wrap` and
   shared with OIDN once.
-- **slang-rhi's Metal `copyBuffer` does nothing with a wrapped buffer on
-  either side.** Silently: 4095 of 4096 words untouched both ways, while a
-  kernel reads and writes the same buffer exactly (0 of 4096). Measured by a
-  test that stays in the tree (`a tracked Metal buffer is read and written by
-  kernels, and not by slang-rhi's blit`). The staging copies are therefore a
-  kernel, `buffer_copy.slang`, word by word.
+- **The staging copies are a kernel**, `buffer_copy.slang`, word by word.
+  They were made one because slang-rhi's Metal `copyBuffer` seemed to do
+  nothing with a wrapped buffer (4095 of 4096 words untouched). It was the
+  test: it recorded the copy straight into the batch's encoder without
+  `markDirty()`, so the batch submitted nothing. Marked, the blit copies a
+  wrapped buffer exactly both ways, and the test (`a tracked Metal buffer is
+  read and written by kernels and by blits`) asserts it. The kernel stays: it
+  works, and nothing has measured it against the blit.
 - **OIDN writes three of a pixel's four floats.** The alpha in a fresh private
   buffer is whatever was there, and `compareHdr` compares four channels: the
   first working run read relMSE 0.15 against a reference at 3.7e-4 for the

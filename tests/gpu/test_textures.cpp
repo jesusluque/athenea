@@ -649,12 +649,11 @@ TEST_CASE("an eight-bit texture read back through the same uint view holds what 
 // A Metal buffer the platform makes with hazard tracking -- what OIDN will
 // share and slang-rhi will not make -- wrapped for slang-rhi, written and read
 // by kernels, and blitted. The denoiser's staging, checked on its own so an
-// OIDN result can be told from a copy that never happened. What it found:
-// slang-rhi's Metal copyBuffer does nothing, silently, with a wrapped buffer
-// on either side (4095 of 4096 words untouched both ways), while kernels read
-// and write the same buffer exactly. The kernel path is what is asserted; the
-// blit numbers are printed as the record of the defect.
-TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by slang-rhi's blit",
+// OIDN result can be told from a copy that never happened. A copy recorded
+// straight into the batch's encoder is sent only with markDirty(): without
+// it the batch submitted nothing, which read as slang-rhi's blit doing
+// nothing with a wrapped buffer (4095 of 4096 words untouched).
+TEST_CASE("a tracked Metal buffer is read and written by kernels and by blits",
           "[gpu][platform][metal]") {
     ATHENEA_REQUIRE_GPU(gpu);
     if (gpu->device->backend() != gpu::Backend::Metal) {
@@ -683,6 +682,7 @@ TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by sla
     {
         gpu::CommandBatch batch(*gpu->device);
         batch.encoder()->copyBuffer(staging->rhi(), 0, source->rhi(), 0, desc.bytes);
+        batch.markDirty();
         REQUIRE(batch.submit(true));
     }
     // Which half: the wrapped buffer read straight from a kernel after the
@@ -694,6 +694,7 @@ TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by sla
     {
         gpu::CommandBatch batch(*gpu->device);
         batch.encoder()->copyBuffer(back.rhi(), 0, staging->rhi(), 0, desc.bytes);
+        batch.markDirty();
         REQUIRE(batch.submit(true));
     }
     auto differing = render::countDifferent(*gpu->library, *source, back, count);
@@ -736,13 +737,17 @@ TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by sla
     {
         gpu::CommandBatch batch(*gpu->device);
         batch.encoder()->copyBuffer(back.rhi(), 0, staging->rhi(), 0, desc.bytes);
+        batch.markDirty();
         REQUIRE(batch.submit(true));
     }
     auto blitOut = render::countDifferent(*gpu->library, *pattern, back, count);
     REQUIRE(blitOut);
     std::printf("  kernel write then blit out of the tracked buffer: %llu of %u differ\n",
                 static_cast<unsigned long long>(*blitOut), count);
+    CHECK(*afterIn == 0);
+    CHECK(*differing == 0);
     CHECK(*kernelRead == 0);
+    CHECK(*blitOut == 0);
 
     // And the copy the denoiser actually uses: buffer_copy's kernel, in and
     // out of the tracked buffer.
