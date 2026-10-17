@@ -535,12 +535,14 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // A flatten's matrix, floor and records, where this frame flattens
             // (Flatten.h); bound either way, as every name a shader declares.
             const bool flattening = settings.flatten != nullptr && flatOut != nullptr;
-            cursor["flatBasisRows"].setBinding(flattening ? settings.flatten->basis->rhi() : emptyFlat_.rhi());
-            cursor["flatFloor"].setBinding(flattening ? settings.flatten->floor->rhi() : emptyFlat_.rhi());
-            cursor["flatOut"].setBinding(flattening ? flatOut->rhi() : emptyFlat_.rhi());
+            // One parameter block (splat_project.slang says why).
+            rhi::ShaderCursor flatten = cursor["flatten"];
+            flatten["basisRows"].setBinding(flattening ? settings.flatten->basis->rhi() : emptyFlat_.rhi());
+            flatten["floorCandidate"].setBinding(flattening ? settings.flatten->floor->rhi() : emptyFlat_.rhi());
+            flatten["records"].setBinding(flattening ? flatOut->rhi() : emptyFlat_.rhi());
             if (flattening) {
                 const FlattenSettings& f = settings.flatten->settings;
-                rhi::ShaderCursor p = cursor["flat"];
+                rhi::ShaderCursor p = flatten["params"];
                 p["directions"].setData(f.directions);
                 p["first"].setData(flatFirst);
                 p["display"].setData(uint32_t{f.display ? 1u : 0u});

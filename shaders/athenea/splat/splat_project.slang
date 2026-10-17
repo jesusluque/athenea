@@ -749,7 +749,7 @@ struct FlattenParams {
     uint  directions;      // N, the Fibonacci directions a gaussian is looked at from
     uint  first;           // first gaussian of this slice
     uint  display;         // 1: fit sRGB-encoded colours (what a viewer shows); 0: linear light
-    uint  roughnessFloor;  // 1: `flatFloor[0]` holds the floor's candidate
+    uint  roughnessFloor;  // 1: `flatten.floorCandidate[0]` holds the floor's candidate
     float exposure;        // linear factor before the encoding
     float unitScale;       // the world's unit in the file's
     // World -> file, rows of a rotation (the file's axes).
@@ -757,13 +757,21 @@ struct FlattenParams {
     float o10; float o11; float o12;
     float o20; float o21; float o22;
 };
-ConstantBuffer<FlattenParams> flat;
-// M: two classes (a surface, a thin wall) of N columns of 16 (flatten_fit.slang).
-StructuredBuffer<float>     flatBasisRows;
-// The roughness floor's candidate index (flatten_fit.slang's flattenRoughnessFloor).
-StructuredBuffer<uint>      flatFloor;
-// kFlatStride floats a gaussian of this cloud (flatten_basis.slang).
-RWStructuredBuffer<float>   flatOut;
+// What a flatten reads and writes, as one parameter block: on Metal a block
+// is one argument buffer, one slot of the 31 an entry point has. As four
+// globals of their own they took the module past 31 and no projection
+// kernel could be made on Metal (Blender's run of 4 Oct 2026: "'buffer'
+// attribute parameter is out of bounds").
+struct FlattenInputs {
+    FlattenParams               params;
+    // M: two classes (a surface, a thin wall) of N columns of 16 (flatten_fit.slang).
+    StructuredBuffer<float>     basisRows;
+    // The roughness floor's candidate index (flatten_fit.slang's flattenRoughnessFloor).
+    StructuredBuffer<uint>      floorCandidate;
+    // kFlatStride floats a gaussian of this cloud (flatten_basis.slang).
+    RWStructuredBuffer<float>   records;
+};
+ParameterBlock<FlattenInputs> flatten;
 
 /// The inverse of the cloud-to-world linear part: what turns a direction of
 /// the world into the cloud's.
@@ -803,15 +811,15 @@ void flattenSplat<let kTransfer : int>(uint i) {
     const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
     const float3x3 linear = float3x3(w0.xyz, w1.xyz, w2.xyz);
     const float3x3 toCloud = inverseLinear(linear);
-    const float3x3 toFile = float3x3(flat.o00, flat.o01, flat.o02, flat.o10, flat.o11, flat.o12,
-                                     flat.o20, flat.o21, flat.o22);
+    const FlattenParams f = flatten.params;
+    const float3x3 toFile = float3x3(f.o00, f.o01, f.o02, f.o10, f.o11, f.o12, f.o20, f.o21, f.o22);
     const float3 pWorld = relightToWorld(w0, w1, w2, posOpacity.xyz);
     const float3 facing = relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i));
     float3 t, b;
     flatFrame(facing, t, b);
     const bool thin = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
     const uint cls = thin ? 1u : 0u;
-    const uint n = flat.directions;
+    const uint n = flatten.params.directions;
 
     float3 c[16];
     [ForceUnroll]
@@ -827,7 +835,7 @@ void flattenSplat<let kTransfer : int>(uint i) {
         c[0] = float3(-kShDcOffset);
         flags |= 2u;
     } else {
-        const float leastRoughness = flat.roughnessFloor != 0 ? flatFloorCandidate(flatFloor[0]) : 0.0;
+        const float leastRoughness = flatten.params.roughnessFloor != 0 ? flatFloorCandidate(flatten.floorCandidate[0]) : 0.0;
         const float3 base = float3(highHalf(shape[row + 2]), lowHalf(shape[row + 3]), highHalf(shape[row + 3]));
         const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
         for (uint k = 0; k < n; ++k) {
@@ -848,12 +856,12 @@ void flattenSplat<let kTransfer : int>(uint i) {
             if (fate.graded) {
                 colour = editGrade(params.edit, colour);
             }
-            colour = max(colour * flat.exposure, float3(0.0));
-            const float3 g = (flat.display != 0 ? linearToSrgb(colour) : colour) - 0.5;
+            colour = max(colour * flatten.params.exposure, float3(0.0));
+            const float3 g = (flatten.params.display != 0 ? linearToSrgb(colour) : colour) - 0.5;
             const uint at = (cls * n + k) * 16;
             [ForceUnroll]
             for (uint j = 0; j < 16; ++j) {
-                c[j] += flatBasisRows[at + j] * g;
+                c[j] += flatten.basisRows[at + j] * g;
             }
         }
         // POSITIVE WHERE IT IS SEEN: the constant part at or above zero,
@@ -909,41 +917,41 @@ void flattenSplat<let kTransfer : int>(uint i) {
     const float3 unitLengths = max(lengths, float3(1.0e-30));
     const float3x3 rotation = float3x3(axes[0] / unitLengths, axes[1] / unitLengths, axes[2] / unitLengths);
     const float4 quaternion = flatQuaternion(rotation);
-    const float3 position = mul(toFile, pWorld) * flat.unitScale;
-    const float3 logScale = log(max(scale * lengths * flat.unitScale, float3(1.0e-30)));
+    const float3 position = mul(toFile, pWorld) * flatten.params.unitScale;
+    const float3 logScale = log(max(scale * lengths * flatten.params.unitScale, float3(1.0e-30)));
 
     const uint out = i * kFlatStride;
-    flatOut[out + kFlatPosition] = position.x;
-    flatOut[out + kFlatPosition + 1] = position.y;
-    flatOut[out + kFlatPosition + 2] = position.z;
-    flatOut[out + kFlatOpacity] = opacity;
-    flatOut[out + kFlatLogScale] = logScale.x;
-    flatOut[out + kFlatLogScale + 1] = logScale.y;
-    flatOut[out + kFlatLogScale + 2] = logScale.z;
-    flatOut[out + kFlatRotation] = quaternion.x;
-    flatOut[out + kFlatRotation + 1] = quaternion.y;
-    flatOut[out + kFlatRotation + 2] = quaternion.z;
-    flatOut[out + kFlatRotation + 3] = quaternion.w;
+    flatten.records[out + kFlatPosition] = position.x;
+    flatten.records[out + kFlatPosition + 1] = position.y;
+    flatten.records[out + kFlatPosition + 2] = position.z;
+    flatten.records[out + kFlatOpacity] = opacity;
+    flatten.records[out + kFlatLogScale] = logScale.x;
+    flatten.records[out + kFlatLogScale + 1] = logScale.y;
+    flatten.records[out + kFlatLogScale + 2] = logScale.z;
+    flatten.records[out + kFlatRotation] = quaternion.x;
+    flatten.records[out + kFlatRotation + 1] = quaternion.y;
+    flatten.records[out + kFlatRotation + 2] = quaternion.z;
+    flatten.records[out + kFlatRotation + 3] = quaternion.w;
     [ForceUnroll]
     for (uint k = 0; k < 16; ++k) {
-        flatOut[out + kFlatSh + k * 3] = turned[k].x;
-        flatOut[out + kFlatSh + k * 3 + 1] = turned[k].y;
-        flatOut[out + kFlatSh + k * 3 + 2] = turned[k].z;
+        flatten.records[out + kFlatSh + k * 3] = turned[k].x;
+        flatten.records[out + kFlatSh + k * 3 + 1] = turned[k].y;
+        flatten.records[out + kFlatSh + k * 3 + 2] = turned[k].z;
     }
-    flatOut[out + kFlatNormal] = nFile.x;
-    flatOut[out + kFlatNormal + 1] = nFile.y;
-    flatOut[out + kFlatNormal + 2] = nFile.z;
-    flatOut[out + kFlatShrink] = shrink;
-    flatOut[out + kFlatFlags] = float(flags);
+    flatten.records[out + kFlatNormal] = nFile.x;
+    flatten.records[out + kFlatNormal + 1] = nFile.y;
+    flatten.records[out + kFlatNormal + 2] = nFile.z;
+    flatten.records[out + kFlatShrink] = shrink;
+    flatten.records[out + kFlatFlags] = float(flags);
 }
 
-/// A TX cloud's gaussians, `flat.first` on, a thread each (a slice at a time:
+/// A TX cloud's gaussians, `flatten.params.first` on, a thread each (a slice at a time:
 /// each looks N times, so a whole cloud in one dispatch would hold the device
 /// for seconds).
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void splatFlatten(uint3 tid: SV_DispatchThreadID) {
-    const uint i = flat.first + tid.x;
+    const uint i = flatten.params.first + tid.x;
     if (i >= params.count) {
         return;
     }
@@ -954,7 +962,7 @@ void splatFlatten(uint3 tid: SV_DispatchThreadID) {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void splatFlattenCatcher(uint3 tid: SV_DispatchThreadID) {
-    const uint i = flat.first + tid.x;
+    const uint i = flatten.params.first + tid.x;
     if (i >= params.count) {
         return;
     }
