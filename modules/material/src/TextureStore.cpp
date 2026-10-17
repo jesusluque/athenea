@@ -105,12 +105,16 @@ Result<std::unique_ptr<TextureStore>> TextureStore::create(gpu::ShaderLibrary& l
 
 bool TextureStore::isExternal(const std::string& path) { return path.rfind("aofx://", 0) == 0; }
 
-uint32_t TextureStore::request(const std::string& path, const std::string& given) {
+uint32_t TextureStore::request(const std::string& path, const std::string& given, bool latLong) {
     // One entry for an external texture, whatever a material says of it: the
     // host's working space arrives as it is.
     const std::string space = isExternal(path) ? std::string("raw") : given;
     const auto key = std::make_pair(path, space);
     if (const auto found = ids_.find(key); found != ids_.end()) {
+        if (latLong && !entries_[found->second].info.latLong) {
+            entries_[found->second].info.latLong = true;
+            entries_[found->second].pending = true;   // its mips again, as a lat-long's
+        }
         return found->second;
     }
     const uint32_t id = static_cast<uint32_t>(entries_.size());
@@ -118,6 +122,7 @@ uint32_t TextureStore::request(const std::string& path, const std::string& given
     entry.info.path = path;
     entry.info.space = space;
     entry.info.udim = UsdShadeUdimUtils::IsUdimIdentifier(path);
+    entry.info.latLong = latLong;
     entries_.push_back(std::move(entry));
     ids_.emplace(key, id);
     return id;
@@ -383,7 +388,7 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, const std::stri
                                              uint64_t{rowPitch} * h, rowPitch, {w, h, 1});
         batch.markDirty();
     }
-    ATHENEA_TRY(mips_->generate(batch, *texture, srgbView));
+    ATHENEA_TRY(mips_->generate(batch, *texture, srgbView, info.latLong));
     ATHENEA_TRY(batch.submit(true));
     info.decode = srgbView                                ? "srgb view"
                   : decoder != nullptr                    ? decoder->function.description()
@@ -397,6 +402,7 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, const std::stri
         if (SLANG_FAILED(device_->rhi()->createTextureView(texture->rhi(), view, slot.view.writeRef()))) {
             return Error::make(ErrorCode::DeviceFailure, "no sRGB view of '{}'", path);
         }
+        slot.viewFormat = view.format;
     } else {
         rhi::TextureViewDesc view;
         if (SLANG_FAILED(device_->rhi()->createTextureView(texture->rhi(), view, slot.view.writeRef()))) {
@@ -583,9 +589,46 @@ Result<void> TextureStore::writeRecords() {
     return ok();
 }
 
+void TextureStore::sampleWith(uint32_t id, uint32_t sampler) {
+    if (id < entries_.size()) {
+        entries_[id].sampler = sampler < samplers_.size() ? sampler : 0;
+    }
+}
+
 void TextureStore::bind(rhi::ShaderCursor table) const {
+    // Which sampler each slot is read with, where that is the view's to say:
+    // its entry's, or slot 0's (repeat, linear) where nothing asked.
+    std::vector<uint32_t> samplerOf;
+    if (device_->caps().samplersInViews) {
+        samplerOf.assign(slots_.size(), 0);
+        for (const Entry& entry : entries_) {
+            if (entry.pending || !entry.info.loaded) continue;
+            if (entry.tiles.empty()) {
+                if (entry.slot < samplerOf.size()) samplerOf[entry.slot] = entry.sampler;
+            } else {
+                for (const uint32_t tile : entry.tiles) {
+                    if (tile != 0 && tile - 1 < samplerOf.size()) samplerOf[tile - 1] = entry.sampler;
+                }
+            }
+        }
+    }
     for (size_t k = 0; k < slots_.size(); ++k) {
-        table["textures"][static_cast<uint32_t>(k)].setBinding(slots_[k].view.get());
+        const Slot& slot = slots_[k];
+        rhi::ITextureView* view = slot.view.get();
+        if (!samplerOf.empty() && slot.texture.valid()) {
+            if (!slot.sampled || slot.sampledWith != samplerOf[k]) {
+                rhi::TextureViewDesc desc;
+                desc.format = slot.viewFormat;
+                desc.sampler = samplers_[samplerOf[k]].rhi();
+                slot.sampled = nullptr;
+                if (SLANG_SUCCEEDED(device_->rhi()->createTextureView(slot.texture.rhi(), desc,
+                                                                       slot.sampled.writeRef()))) {
+                    slot.sampledWith = samplerOf[k];
+                }
+            }
+            if (slot.sampled) view = slot.sampled.get();
+        }
+        table["textures"][static_cast<uint32_t>(k)].setBinding(view);
     }
     for (size_t k = 0; k < kSamplerSlots; ++k) {
         table["samplers"][static_cast<uint32_t>(k)].setBinding(samplers_[k < samplers_.size() ? k : 0].rhi());

@@ -212,7 +212,7 @@ void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays
                        std::optional<bool> relight,
                        std::optional<std::vector<pxr::TfToken>> categories, std::optional<bool> litBody,
                        std::optional<float> ior, std::optional<render::Mat4> transformStep,
-                       std::optional<bool> catcher) {
+                       std::optional<bool> catcher, std::optional<bool> lightCatcher) {
     const std::lock_guard<std::mutex> held(guard_);
     SplatEntry& entry = splats_[id];
     if (transformStep) {
@@ -232,6 +232,9 @@ void Engine::setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays
     }
     if (catcher) {
         entry.catcher = *catcher;
+    }
+    if (lightCatcher) {
+        entry.lightCatcher = *lightCatcher;
     }
     if (ior) {
         entry.ior = *ior;
@@ -670,6 +673,21 @@ Result<render::SplatIdReading> Engine::measureSplatId(uint32_t id) {
     return total;
 }
 
+void Engine::setLightWeights(std::map<std::string, std::array<float, 3>> weights) {
+    const std::lock_guard<std::mutex> held(guard_);
+    if (weights == lightWeights_) {
+        return;
+    }
+    lightWeights_ = std::move(weights);
+    ++lightWeightsVersion_;
+    revision_.fetch_add(1);
+}
+
+std::map<std::string, std::array<float, 3>> Engine::lightWeights() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    return lightWeights_;
+}
+
 void Engine::setSplatReflections(bool reflect) {
     if (splatReflections_.exchange(reflect) != reflect) {
         revision_.fetch_add(1);
@@ -748,6 +766,7 @@ void Engine::setDenoise(bool denoise) { denoise_.store(denoise); }
 
 void Engine::setPathAdaptive(bool adaptive) { pathAdaptive_.store(adaptive); }
 void Engine::setPathMis(bool mis) { pathMis_.store(mis); }
+void Engine::setGlassShadows(bool glass) { glassShadows_.store(glass); }
 
 void Engine::setPathError(float error) { pathError_.store(std::max(error, 1.0e-4F)); }
 
@@ -1419,6 +1438,20 @@ Result<size_t> Engine::commit() {
                     entry.gpu.reset();
                 } else {
                     entry.gpu = std::make_unique<scene::GpuSplats>(std::move(*splats));
+                    // THE LAMPS' LAYERS, where the field carries them: a
+                    // column a group, beside the cloud (docs/decisions.md,
+                    // light groups). A cloud without them is drawn as ever.
+                    if (!streams.lightLayers.empty()) {
+                        if (auto layers = loader_->uploadLightLayers(*entry.gpu, streams.lightLayers); !layers) {
+                            if (layers.error().code() == ErrorCode::OutOfMemory) {
+                                return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(),
+                                                   layers.error().message());
+                            }
+                            log::warn("hdAthenea: {}: its light layers did not upload: {}", id.GetString(),
+                                      layers.error().toString());
+                        }
+                        entry.lightWeightsVersion = 0;
+                    }
                     // THE BAKED FIELDS, where the file carries them: two
                     // arrays that go up as they are, the same words the bake
                     // wrote (`athenea visibility`), and nothing computed here.
@@ -1640,6 +1673,7 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
     std::vector<float> blob;
     materialRows_.clear();
     materialCutouts_ = false;
+    materialGlass_ = false;
     for (const auto& [id, entry] : materials_) {
         if (!entry.compiled) {
             continue;
@@ -1684,20 +1718,29 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
             std::none_of(std::begin(kPlaceDependent), std::end(kPlaceDependent), [&](const char* token) {
                 return entry.compiled->source.find(token) != std::string::npos;
             });
+        // A SHADOW RAY PASSES IT, TINTED: a dielectric whose transmission is
+        // a delta (material::Transmission::clear), thin or solid.
+        const bool glass = entry.transmission && entry.transmission->clear && !entry.cutout && !entry.transparent;
         const uint32_t flags = (entry.cutout ? technique::kMaterialCutout : 0u) |
                                (entry.transparent ? technique::kMaterialTransparent : 0u) |
                                (uniform && !entry.cutout && !entry.transparent ? technique::kMaterialUniform : 0u) |
-                               (entry.transmission ? technique::kMaterialTransmits : 0u);
+                               (entry.transmission ? technique::kMaterialTransmits : 0u) |
+                               (glass ? technique::kMaterialGlassShadow : 0u) |
+                               (glass && entry.transmission->thinWalled ? technique::kMaterialThinGlass : 0u);
         materialCutouts_ = materialCutouts_ || entry.cutout;
+        materialGlass_ = materialGlass_ || glass;
         // What a transmitting row lets through, for a ray that does not
-        // evaluate it (technique::MaterialRecord::pad): the tint's and the
-        // index's unorm 16 bits, the index over 1 to 4.
+        // evaluate it (technique::MaterialRecord::pad): the tint's rgb and
+        // the index as unorm 8 bits each, the index over 1 to 4. The values
+        // as the material says them; what they come to is the device's.
         uint32_t passes = 0;
         if (entry.transmission) {
             const auto unorm = [](float v) {
-                return static_cast<uint32_t>(std::lround(std::clamp(v, 0.0F, 1.0F) * 65535.0F));
+                return static_cast<uint32_t>(std::lround(std::clamp(v, 0.0F, 1.0F) * 255.0F));
             };
-            passes = unorm(entry.transmission->tint) | (unorm((entry.transmission->ior - 1.0F) / 3.0F) << 16);
+            const auto& t = entry.transmission->tint;
+            passes = unorm(t[0]) | (unorm(t[1]) << 8) | (unorm(t[2]) << 16) |
+                     (unorm((entry.transmission->ior - 1.0F) / 3.0F) << 24);
         }
         rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, passes});
         blob.insert(blob.end(), words.begin(), words.end());
@@ -1934,9 +1977,16 @@ Result<void> Engine::prepareLightImages(std::vector<light::Light>& lamps) {
         if (lamp.texture.empty()) {
             continue;
         }
+        // Area mips, not the lat-long solid-angle mean: the path tracer draws a
+        // dome's directions down this chain and divides by its 1x1 mean as an
+        // area mean (lights_image's domeImagePdf), and a solid-angle mean
+        // there made every dome-lit path traced frame too bright by pi sin
+        // theta / 2 at its sun -- 1.27 for san_giuseppe's (s93). The
+        // prefilter's own lat-long is its residual, mipped the other way.
         lamp.textureId = textures_->request(lamp.texture, lamp.textureColourSpace);
         // Lat-long: around in u, clamped at the poles.
         lamp.sampler = textures_->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+        textures_->sampleWith(lamp.textureId, lamp.sampler);
         domeTextures = true;
     }
     if (domeTextures) {
@@ -2071,6 +2121,19 @@ Result<void> Engine::bakePoints(const BakeRequest& bake, const render::Projectio
                                 const render::RenderSettings& settings) {
     if (bake.rays == nullptr || !bake.rays->valid() || bake.count == 0 || bake.out == nullptr) {
         return Error(ErrorCode::InvalidArgument, "nothing to bake");
+    }
+    // A BAKE IS PATHS, and the path tracer finds a surface only through the
+    // device's ray tracing: ray queries, or a ray tracing pipeline (OptiX on
+    // CUDA, which has no ray queries), over acceleration structures. Without
+    // them it traced against nothing and baked every gaussian as seeing no
+    // surface at all -- CUDA without OptiX (WSL2) converted whole stages so --
+    // so a device that has neither says so instead.
+    const gpu::Caps& caps = device_->caps();
+    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
+        return Error::make(ErrorCode::Unsupported,
+                           "a bake traces paths, and this device has no ray tracing (ray queries or a pipeline, and acceleration "
+                           "structures) on {}",
+                           gpu::toString(device_->backend()));
     }
     render::RenderSettings frame = settings;
     frame.width = 1;
@@ -2271,8 +2334,13 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 if (!posed) return posed;
             }
         }
-        for (const auto& [id, entry] : splats_) {
+        for (auto& [id, entry] : splats_) {
             if (!entry.visible) {
+                continue;
+            }
+            // A light catcher draws nothing but the lamps' light, and only
+            // the rasteriser adds it (docs/decisions.md, light groups).
+            if (entry.lightCatcher && technique == Technique::RayTraced) {
                 continue;
             }
             // One level of a cloud that has several: the one this view wants.
@@ -2299,6 +2367,30 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                     splats.back().motionScale = entry.motionScale;
                 }
                 splats.back().viewStep = viewStepOf(entry.objectToWorld, entry.transformStep);
+                splats.back().lightCatcher = entry.lightCatcher;
+                // THE LAMPS: this frame's weight of each layer the cloud
+                // carries, by its group's name -- a group the frame does not
+                // name is off. Made when the weights change, a float4 a
+                // layer; the arithmetic that made them is a few numbers a
+                // frame (StageRenderer's light rig), and they reach the
+                // projection as its constants.
+                if (drawn == entry.gpu.get() && entry.gpu->hasLightLayers()) {
+                    if (entry.lightWeights.empty() || entry.lightWeightsVersion != lightWeightsVersion_) {
+                        std::vector<float> rows(size_t{scene::GpuSplats::kMaxLightGroups} * 4, 0.0F);
+                        for (size_t k = 0; k < entry.gpu->lightGroups.size() && k < scene::GpuSplats::kMaxLightGroups;
+                             ++k) {
+                            if (const auto found = lightWeights_.find(entry.gpu->lightGroups[k]);
+                                found != lightWeights_.end()) {
+                                rows[k * 4] = found->second[0];
+                                rows[k * 4 + 1] = found->second[1];
+                                rows[k * 4 + 2] = found->second[2];
+                            }
+                        }
+                        entry.lightWeights = std::move(rows);
+                        entry.lightWeightsVersion = lightWeightsVersion_;
+                    }
+                    splats.back().lightWeights = entry.lightWeights.data();
+                }
                 if (entry.relight && entry.gpu->hasVisibility()) {
                     MeasuredCloud m;
                     m.drawn = drawn;
@@ -2666,9 +2758,15 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // A path traced surface needs a structure whatever the lights do --
         // its bounce is a ray -- while shading needs one only where a light
         // casts a shadow. The same structure serves both, and a path traced
-        // frame without it would trace against nothing and never know.
+        // frame without it would trace against nothing and never know. The
+        // path tracer traces in a pipeline where rays are not inline (CUDA,
+        // through OptiX), and it wants the structure all the same: without it
+        // a bake on CUDA found no surface at all. Shading's shadow rays are
+        // inline only.
+        const bool inlineRays = caps.rayQuery && caps.accelerationStructure;
+        const bool pipelineRays = caps.rayTracing && caps.accelerationStructure;
         bool raysWanted = false;
-        if ((lightTable_->anyShadow() || pathTracing) && caps.rayQuery && caps.accelerationStructure) {
+        if ((lightTable_->anyShadow() && inlineRays) || (pathTracing && (inlineRays || pipelineRays))) {
             if (!rayTracingScene_.has_value()) {
                 auto accel = world::RayTracingScene::create(*library_);
                 if (!accel) return std::move(accel).error();
@@ -2749,7 +2847,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 // more along each of the dome's directions -- the straight-
                 // edged blocks under goegap's sun, and the mesh car's frame a
                 // third dark.
-                if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher) {
+                // A light catcher is light on the ground: it casts nothing.
+                if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher ||
+                    instance.lightCatcher) {
                     continue;
                 }
                 technique::ShadowMapCaster caster;
@@ -2818,6 +2918,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frame.programs = &*materialPrograms_;
         frame.alphaDither = technique == Technique::RayTraced ? 0u : 1u;
         frame.cutouts = materialCutouts_ || scene_->anyHidden();
+        frame.glass = materialGlass_;
         frame.scene = &*scene_;
         frame.records = &materialRecords_;
         frame.blob = &materialBlob_;
@@ -3041,6 +3142,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             paths.bounces = pathBounces_.load();
             paths.adaptive = pathAdaptive_.load();
             paths.mis = pathMis_.load();
+            paths.glassShadows = glassShadows_.load();
             paths.errorTarget = pathError_.load();
             paths.headlight = frame.lights == nullptr || frame.lights->count() == 0;
             PathState now;
@@ -3064,6 +3166,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             now.bounces = paths.bounces;
             now.adaptive = paths.adaptive;
             now.mis = paths.mis;
+            now.glassShadows = paths.glassShadows;
             now.cameraMoves = projection.cameraMoves;
             now.cameraStart = projection.viewToWorldStart;
             now.cameraEnd = projection.viewToWorldEnd;
@@ -3118,6 +3221,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 points.transfer = bake->transfer;
                 points.cellSide = bake->transfer ? technique::transferCellSide(bake->cellSide) : 0u;
                 points.split = bake->split;
+                points.material = bake->material;
                 paths.seed = bake->seed;
                 paths.accumulate = false;
                 paths.adaptive = false;

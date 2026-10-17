@@ -287,20 +287,20 @@ TEST_CASE("a material's opacity is read as coverage, as a cut-out by threshold, 
         FAIL("no mesh " << name);
         return meshes->front().material;
     };
-    const auto near = [](float a, float b) { return std::abs(a - b) < 1e-5F; };
-    CHECK(near(material("Standard").opacity, 0.3F));        // color3, its mean
-    CHECK(near(material("Open").opacity, 0.4F));
-    CHECK(near(material("GltfOpaque").opacity, 1.0F));      // OPAQUE: the alpha is not the surface's
-    CHECK(near(material("GltfMask").opacity, 1.0F));        // 0.3 at least the cutoff of 0.2: whole
-    CHECK(near(material("GltfBlend").opacity, 0.3F));
-    CHECK(near(material("Preview").opacity, 1.0F));         // transparent: a thin wall
-    CHECK(near(material("Preview").transmission, 0.7F));
+    const auto close = [](float a, float b) { return std::abs(a - b) < 1e-5F; };
+    CHECK(close(material("Standard").opacity, 0.3F));        // color3, its mean
+    CHECK(close(material("Open").opacity, 0.4F));
+    CHECK(close(material("GltfOpaque").opacity, 1.0F));      // OPAQUE: the alpha is not the surface's
+    CHECK(close(material("GltfMask").opacity, 1.0F));        // 0.3 at least the cutoff of 0.2: whole
+    CHECK(close(material("GltfBlend").opacity, 0.3F));
+    CHECK(close(material("Preview").opacity, 1.0F));         // transparent: a thin wall
+    CHECK(close(material("Preview").transmission, 0.7F));
     CHECK(material("Preview").thinWalled);
-    CHECK(near(material("PreviewPresence").opacity, 0.3F)); // presence: coverage
-    CHECK(near(material("PreviewPresence").transmission, 0.0F));
-    CHECK(near(material("PreviewKept").opacity, 1.0F));     // over its threshold: whole
-    CHECK(near(material("PreviewKept").transmission, 0.0F));
-    CHECK(near(material("PreviewGone").opacity, 0.0F));     // under it: not there
+    CHECK(close(material("PreviewPresence").opacity, 0.3F)); // presence: coverage
+    CHECK(close(material("PreviewPresence").transmission, 0.0F));
+    CHECK(close(material("PreviewKept").opacity, 1.0F));     // over its threshold: whole
+    CHECK(close(material("PreviewKept").transmission, 0.0F));
+    CHECK(close(material("PreviewGone").opacity, 0.0F));     // under it: not there
     for (const usd::StageMesh& mesh : *meshes) {
         CHECK(mesh.material.opacityThreshold == 0.0F);      // no map, so no threshold kept
     }

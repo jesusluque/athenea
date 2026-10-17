@@ -36,7 +36,7 @@ void rtProxy(uint3 tid: SV_DispatchThreadID) {
     const float4 p = positions[i];
     const uint row = i * 4;
     const float alpha = p.w;
-    const float3 scale = exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2])));
+    const float3 scale = surfelSafeScale(exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2]))));
     const float3x3 r = rotationOf(decodeQuaternion(shape[row]));
     const float k = alpha >= 1.0 / 255.0 ? sqrt(rtCutoff(alpha)) / kIcoInradius : 0.0;
     for (uint v = 0; v < kIcoVertices; ++v) {

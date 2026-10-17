@@ -18,6 +18,7 @@
 #include "aofx/Effect.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
+#include "athenea/core/Platform.h"
 #include "athenea/gpu_host/Context.h"
 #include "athenea/image/Image.h"
 #include "athenea/io/Exr.h"
@@ -106,6 +107,8 @@ void addCompare(CLI::App& app) {
         for (const std::string& path : o->paths) {
             registry.addSearchPath(path);
         }
+        // Beside the executable, as a release lays it out, before the build tree's.
+        registry.addSearchPath(athenea::platform::executableDir() / ".." / "aofx");
 #ifdef ATHENEA_AOFX_BUNDLE_DIR
         registry.addSearchPath(ATHENEA_AOFX_BUNDLE_DIR);
 #endif
@@ -174,6 +177,10 @@ void addCompare(CLI::App& app) {
             cli::out("8-bit     p99 %u   max %u   over 2: %llu of %llu pixels\n",
                         static_cast<unsigned>((*codes)[0]), static_cast<unsigned>((*codes)[1]), countAt(*codes, 2),
                         countAt(*codes, 5));
+            if (const std::vector<float>* display = out.attached("display"); display != nullptr && display->size() >= 2) {
+                cli::out("display   PSNR %.2f dB   SSIM %.4f\n", static_cast<double>((*display)[0]),
+                            static_cast<double>((*display)[1]));
+            }
         }
 
         if (!o->heatmap.empty()) {

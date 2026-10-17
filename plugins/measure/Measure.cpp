@@ -27,6 +27,7 @@
 //   "reference"  the same for Reference (only when it is wired)
 //   "hdr"        relMSE, p99 relative, max relative, the error's sum, pixels high, low
 //   "codes"      p99, max, over high, low, threshold, pixels high, low
+//   "display"    PSNR of the sRGB-encoded colour (dB), SSIM's mean (encoded luminance, 7 x 7 box), the MSE
 //
 // The sums are there for a host that divides in double, as athenea's printer
 // always has: a mean carried as a float is the same number rounded once more.
@@ -72,7 +73,7 @@ struct MeasureUniforms {
 static_assert(sizeof(MeasureUniforms) == 80, "must match MeasureParams exactly");
 
 /// Words of `results`, as measureFinish writes them.
-constexpr size_t kResultWords = 33;
+constexpr size_t kResultWords = 35;
 
 float asFloat(uint32_t bits) {
     float value = 0.0F;
@@ -297,6 +298,10 @@ public:
         codes.push_back(static_cast<float>(uniforms.threshold));
         pushCount(codes, words[31]);
         request.attach("codes", std::move(codes));
+        // As it is seen: PSNR of the sRGB-encoded colour, and SSIM's mean.
+        const float mse = asFloat(words[33]);
+        request.attach("display", std::vector<float>{mse > 0.0F ? -10.0F * std::log10(mse) : 999.0F,
+                                                     asFloat(words[34]), mse});
         static_assert(kResultWords <= 36, "results is nine float4s");
         return true;
     }

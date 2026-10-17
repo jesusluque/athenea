@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+    subLayers = [@./shot.usda@]
+)
+
+over "World"
+{
+    def "Pawn" (
+        references = @./pawn_gs.usdc@
+    )
+    {
+    }
+}

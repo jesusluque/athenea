@@ -74,9 +74,28 @@ public float3 decodePosition(StructuredBuffer<float> raw, uint record, DecodePar
     return p.flipYZ != 0 ? float3(v.x, -v.y, -v.z) : v;
 }
 
+/// A SURFEL'S FLAT AXIS (docs/decisions.md, surfels): a scale of exactly 0
+/// -- or, stored as a logarithm, under e^-30, Spark's own reading of a PLY --
+/// is -infinity here, and stays a zero through the f16 the shape holds it in.
+/// Every other scale is the logarithm it was.
+public static const float kSurfelLogScale = -1.0 / 0.0;
+
 public float decodeLogScale(float v, uint mode) {
     if (mode == 2) return v / 16.0 - 10.0;         // SPZ byte
-    return mode == 0 ? v : log(max(v, 1e-30));
+    if (mode == 0) return v < -30.0 ? kSurfelLogScale : v;
+    // A negative linear scale is a hard surfel's flat axis, -p (streams').
+    if (v < 0.0) return surfelHardnessLog(-v);
+    return v == 0.0 ? kSurfelLogScale : log(max(v, 1e-30));
+}
+
+/// Whether a record's three log scales are a gaussian's (all finite) or a
+/// surfel's (one, and only one, flat axis); the rest within e^+-60.
+public bool scalesValid(float3 ls) {
+    // -infinity, or the logarithm a hard surfel's p rides in (packing's).
+    const bool3 flat = bool3(ls.x <= -1024.0, ls.y <= -1024.0, ls.z <= -1024.0);
+    const uint flats = uint(flat.x) + uint(flat.y) + uint(flat.z);
+    const float3 kept = select(flat, float3(0.0), ls);
+    return flats <= 1u && all(isfinite(kept)) && all(abs(kept) < 60.0);
 }
 
 public float decodeColour(float v, uint mode) {
@@ -156,14 +175,34 @@ public static const float kThinWalledMark = 2.0;
 /// carries, over a thin wall's mark: bit 25 of the pbr word.
 public static const float kSchlickMetalMark = 4.0;
 
+/// THE MATERIAL'S OWN ROUGHNESS, before the conversion widened it by the
+/// spread of normals under the gaussian (`--specular-filter`): eight times one
+/// more than its 5-bit step, over the thin wall's and the Schlick's marks --
+/// bit 26 of the pbr word says it is there, bits 27 to 31 hold it. What says
+/// whether the polish's lobe is wide enough for the reflected field to answer
+/// its closed part (splat_relight's `kPolishFieldRoughness`); a chrome tube's
+/// stored roughness is widened past it, its material's is 0.
+public static const float kMaterialRoughnessMark = 8.0;
+
 public uint packPbr(float metallic, float roughness, float transmission) {
-    const bool schlick = transmission >= kSchlickMetalMark - 0.5;
-    const float rest = schlick ? transmission - kSchlickMetalMark : transmission;
+    const float owned = floor(max(transmission, 0.0) / kMaterialRoughnessMark);
+    const bool hasOwn = owned >= 1.0;
+    const uint own = hasOwn ? uint(clamp(owned - 1.0, 0.0, 31.0)) : 0u;
+    const float marked = transmission - owned * kMaterialRoughnessMark;
+    const bool schlick = marked >= kSchlickMetalMark - 0.5;
+    const float rest = schlick ? marked - kSchlickMetalMark : marked;
     const bool thin = rest >= kThinWalledMark - 0.5;
     const uint m = uint(saturate(metallic) * 255.0 + 0.5);
     const uint r = uint(saturate(roughness) * 255.0 + 0.5);
     const uint t = uint(saturate(thin ? rest - kThinWalledMark : rest) * 255.0 + 0.5);
-    return m | (r << 8) | (t << 16) | (thin ? (1u << 24) : 0u) | (schlick ? (1u << 25) : 0u);
+    return m | (r << 8) | (t << 16) | (thin ? (1u << 24) : 0u) | (schlick ? (1u << 25) : 0u) |
+           (hasOwn ? (1u << 26) | (own << 27) : 0u);
+}
+
+/// The material's own roughness (`kMaterialRoughnessMark`), or -1 where the
+/// cloud does not carry it.
+public float pbrMaterialRoughness(uint word) {
+    return ((word >> 26) & 1u) != 0u ? float(word >> 27) / 31.0 : -1.0;
 }
 
 /// Whether the gaussian's metal is a Schlick rather than a conductor.

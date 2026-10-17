@@ -188,6 +188,96 @@ struct DecimateResult {
     gpu::Buffer      ranges;
     /// uint per store splat: the record of the file it came from.
     gpu::Buffer      recordOf;
+    /// A merge by pairs puts the store in the order of what it kept, so that
+    /// each kept gaussian is a run of it: the store's positions and shape in
+    /// that order, which `mergeAttribute` weighs by in place of the cloud's.
+    /// Empty for the octree's cut, whose runs are the Morton order itself.
+    gpu::Buffer      storePositions;
+    gpu::Buffer      storeShape;
+    /// A merge by pairs: float per kept gaussian, W over its area -- what it
+    /// covers, not held at the 0.99 its opacity is (`athenea:splat:coverage`).
+    gpu::Buffer      coverage;
+    /// A merge by pairs: float per kept gaussian, its hardness p (packing's
+    /// hard surfel; 2 a gaussian) -- `athenea:splat:hardness`.
+    gpu::Buffer      hardness;
+    /// The merge tree (`decimatePairs`' `treeOut`): uint per gaussian, its
+    /// parent's index (a root its own), and float, what the merge that made it
+    /// cost (a leaf 0). The leaves come first, in depth-first order, so every
+    /// node stands for a run of them.
+    gpu::Buffer      parent;
+    gpu::Buffer      cost;
+    /// uint2 per gaussian of a merge tree: its first leaf and how many leaves
+    /// it stands for (a leaf: itself and one).
+    gpu::Buffer      run;
+};
+
+/// FEWER GAUSSIANS BY PAIRS (`Decimator::decimatePairs`, lod_pairs.slang):
+/// NanoGS's merges, the cheapest first, until the cloud is `ratio` times
+/// smaller or nothing more may merge.
+struct PairSettings {
+    /// How many times fewer gaussians: 10 keeps a tenth.
+    float ratio = 10.0F;
+    /// Where above 0, no merge of the flat cloud costs more than this: the
+    /// ratio is then the most it goes to, and where every pair left costs
+    /// more it stops short of it -- smooth surfaces merged, details kept.
+    float maxCost = 0.0F;
+    /// Where above 0 (and a camera is given): no merge wider than this many
+    /// pixels on its screen -- one that wide cannot hold an edge, and its
+    /// tails stand out past the panel as hairs.
+    float maxPixels = 0.0F;
+    /// A colour difference (sRGB, 0..1, per channel as a distance) that is an
+    /// edge: never merged across.
+    float edge = 0.15F;
+    /// Normals further apart than this are never merged, in degrees.
+    float maxAngle = 60.0F;
+    float colourWeight = 20.0F;
+    float normalWeight = 1.0F;
+    float materialWeight = 4.0F;
+    float flatWeight = 4.0F;
+    /// On a glossy surface (GGX alpha under 0.1), normals further apart than
+    /// this times sqrt(alpha) radians -- the lobe's width -- never merge: the
+    /// merge would move the highlight. Large: the ratio decides alone.
+    float highlightCone = 1.0F;
+    /// Transmitting gaussians (glass) merge among themselves; off, they stay
+    /// as they are -- a window is a sheet drawn as a layer, and merged it
+    /// shimmers.
+    bool  mergeGlass = false;
+    /// A merge whose plane comes out longer than this against its width (or
+    /// than 1.25 times its members' already were) is refused: a chain of
+    /// discs along a trim merges into a needle that smears. Off by default:
+    /// at 4 the Corvette merged 10x came out worse (26.9 dB against 27.9), the
+    /// ratio then taken from merges that cost more.
+    float maxAspect = 1000.0F;
+    /// With a tree: once nothing more may merge, the roots go on with the
+    /// colour edge, the angle, the glass, the aspect and the pixel limit
+    /// lifted, so a far view has coarse levels to cut to (the flat cloud is
+    /// what stood before).
+    bool  relaxTop = true;
+    /// A merge of discs whose thinnest axis is under this fraction of its
+    /// middle one is written as a surfel, a scale of exactly 0 (when `surfels`).
+    float flatTolerance = 0.12F;
+    bool  surfels = true;
+    /// A MERGE'S OPACITY. 0: its members', area weighted, the merge widened
+    /// as far as they overlapped; 1: its mass over that widened area (what
+    /// it covered, kept); 2: its mass over the area its moments give, not
+    /// widened. Each held under 0.99.
+    uint32_t opacityRule = 0;
+    /// A FLAT MERGE'S HARDNESS (packing's hard surfel): a merge written as a
+    /// surfel is drawn o exp(-(|u|^p + |v|^p) / 2), p from its members'
+    /// kurtosis -- an even patch a box, a peaked one the gaussian -- at most
+    /// `maxHardness`. It keeps its moments (no widening) and writes p as
+    /// `athenea:splat:hardness`, which a reader that does not know it ignores.
+    bool  hardness = false;
+    float maxHardness = 16.0F;
+    /// The camera the cloud is made for: a merge it cannot see -- under half
+    /// a pixel -- costs nothing of its shape. `pixelsPerUnit` 0: no camera.
+    float eye[3] = {0, 0, 0};
+    float pixelsPerUnit = 0.0F;
+    /// At most this many passes; each merges at most half of what is left.
+    uint32_t passes = 60;
+    /// With a tree asked for, merging goes on past `ratio` to this many times
+    /// fewer (or until nothing more may merge): the tree's roots.
+    float treeRatio = 4096.0F;
 };
 
 /// How an attribute merges (`Decimator::mergeAttribute`).
@@ -197,12 +287,21 @@ enum class AttributeMerge : uint32_t {
     Bits = 2,    ///< each bit set where half the weight has it
     Rig = 3,     ///< joints and their weights: summed, the heaviest kept, made whole
     Normal = 4,  ///< a direction: the mean, weighted as the moments weigh, made unit again
+    Zonal = 5,   ///< transferZonal: each lobe's axis through its own frame to the world, averaged, into the kept frame
+    Curvature = 6,   ///< a shape operator in the frame's first two axes, the same way
+    /// As a key only (`Decimator::addKey`): an RGB of light (a lamp group's
+    /// layer) folded in by its brightness in bands of four times, so that
+    /// what a lamp lights is not merged with what it lights four times less
+    /// -- a merge would spread one member's light over the rest at night.
+    LightBand = 7,
 };
 
 struct DecimateStats {
     uint32_t splats = 0;   ///< the cloud's own splats kept
     uint32_t merged = 0;   ///< merged Gaussians standing for the rest
     uint32_t before = 0;   ///< splats in the cloud
+    uint32_t surfels = 0;  ///< merged Gaussians written as surfels (by pairs)
+    uint32_t passes = 0;   ///< passes a merge by pairs took
 };
 
 /// FEWER GAUSSIANS, KEPT WHERE THEY MATTER: a cloud cut once by what merging
@@ -221,6 +320,31 @@ public:
                                                   const DecimateSettings& settings = {},
                                                   const DecimateCarried& carried = {},
                                                   DecimateStats* stats = nullptr);
+    /// THE SAME, BY PAIRS (lod_pairs.slang): a cloud `settings.ratio` times
+    /// smaller, merged where merging loses least and never across what
+    /// `carried` keeps apart. `lod` only for its store (the splats in Morton
+    /// order) and that order; its levels are not read.
+    [[nodiscard]] Result<DecimateResult> decimatePairs(const LodCloud& lod, const gpu::Buffer& origin,
+                                                       const PairSettings& settings = {},
+                                                       const DecimateCarried& carried = {},
+                                                       DecimateStats* stats = nullptr,
+                                                       DecimateResult* treeOut = nullptr);
+    /// A CLOUD PRUNED BY WHAT THE FRAMES SAY (lod_prune.slang). `foldScore`
+    /// adds one frame's count (`render::RenderSettings::contribution`, a uint
+    /// per store splat, or two -- low, high -- where `wide`, drawn from
+    /// `lod.splats`) times `scale` into `score`,
+    /// a float per store splat, and clears the count; `scoreHistogram` bins
+    /// the scores by log10 (kScoreBins from 1e-12 to 1e6, zero in the first)
+    /// for the host to pick a threshold; `prune` is the store of `lod`
+    /// without the splats scored under `threshold`, in the same order. Only
+    /// what `decimatePairs` and `mergeAttribute` read is carried: the store's
+    /// positions, shapes, harmonics, normals and order; its levels are not.
+    static constexpr uint32_t kScoreBins = 256;
+    [[nodiscard]] static float scoreOfBin(uint32_t bin) noexcept;
+    [[nodiscard]] Result<void> foldScore(gpu::Buffer& frameCount, gpu::Buffer& score, uint32_t count, float scale,
+                                         bool wide = false);
+    [[nodiscard]] Result<std::vector<uint32_t>> scoreHistogram(const gpu::Buffer& score, uint32_t count);
+    [[nodiscard]] Result<LodCloud> prune(const LodCloud& lod, const gpu::Buffer& score, float threshold);
     /// Folds an attribute of `records` records, `width` words each, into
     /// `keys` (uint a record, zeros to start): its words, or with
     /// `AttributeMerge::Rig` the joint that carries each record most
@@ -243,6 +367,11 @@ private:
     gpu::PrefixSum     prefix_;
     gpu::ComputeKernel errorFinest_, errorLevel_, keepGroups_, keepSplats_, keepShape_, gather_;
     gpu::ComputeKernel recordOf_, gatherRanges_, attributeKey_, attributeMaterial_, mergeAttribute_;
+    gpu::RadixSort     sort_;
+    gpu::ComputeKernel pairInit_, pairCodes_, pairBest_, pairHistogram_, pairMerge_, pairCompact_, pairRelabel_;
+    gpu::ComputeKernel pairCount_, pairScatter_, pairGather_, pairFinalize_;
+    gpu::ComputeKernel pruneFold_, pruneHistogram_, pruneKeep_, pruneScatter_;
+    gpu::ComputeKernel pairRootSizes_, pairTreeRoots_, pairTreeOffsets_, pairTreeSizes_, pairTreeLayout_;
 };
 
 }   // namespace athenea::lod

@@ -54,7 +54,8 @@ void splatDecode(uint3 tid: SV_DispatchThreadID) {
     origin[j] = params.recordBase + i;
 
     const float a = decodeOpacity(fieldOf(raw, i, s, params.opacity), params.opacityMode);
-    positions[j] = float4(decodePosition(raw, i, params), saturate(a));
+    // Over 1 is Spark's harder kernel (splat/frame's falloffAlpha), up to 5.
+    positions[j] = float4(decodePosition(raw, i, params), clamp(a, 0.0, 5.0));
 
     // Packed as (x, y, z, w). Normalised on encode: a trainer never
     // constrained it, and an unnormalised quaternion scales as well as rotates.

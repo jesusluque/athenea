@@ -6,6 +6,56 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
+## 0.3.0 — 2026-10-13
+
+The relight baker over Gaussian splats, and the engine on three systems:
+macOS (Metal), Linux (CUDA) and Windows (CUDA, natively with MSVC). 433 tests.
+
+- **Pieces into main**: the transfer baked per gaussian (TX: a field in each
+  gaussian's frame, zonal lobes for skinned clouds), glass that covers fully
+  under a dome and opens against Fresnel, thin lenses, and the bake's validate
+  stage (`mesh2splat --validate`).
+- **Gaussian reduction** (`simplify`): adaptive emission, pruning by what the
+  frames show, merges kept as a tree with coverage, pages by error and a
+  shared occlusion codebook (`decimate --tree-*`, `--cut-*`,
+  `--occlusion-*`).
+- **A merge's second moment about its own centre** (`b1d6959`): float32 moments
+  about the origin lost the cross variance of thin gaussians, and a tree built
+  again from its leaves drops the old tree's bookkeeping (`3a0a6f8`).
+- **Windows, natively**: MSVC builds the engine, the tests and the plugins
+  (`windows-x64-*` presets, `scripts/*.ps1` for the dependencies); `Platform`
+  maps files, finds its module and replaces files atomically; aopenfx loads
+  bundles with `LoadLibrary`; CUDA is preferred, with OptiX.
+- **CUDA**: a buffer made without data starts at zero; a texture is read
+  through the sampler its view was made with (the sky's poles, the
+  prefilter's levels); a dome's residual is stored as its format; a bake runs
+  on the OptiX pipeline and is refused where there is no ray tracing (WSL2).
+- **A release's layout**: AOFX bundles are found in `aofx/` beside the
+  executable's folder; `athenea info` counts TBB on Windows.
+- **The same frame on all three** (`75f10ec`): on CUDA a material's lobe
+  stack was overwritten while it was built, so MaterialX materials shaded
+  wrong and bakes came out black there. A frame now reads the same under
+  CUDA, Vulkan and Metal (an OpenPBR ground: 0.274467 0.245033 0.215593 on
+  each). Raster glass still differs on CUDA, which has no inline ray queries
+  to refract with; the path traced frame does not.
+- **Bakes on CUDA through OptiX**: the engine built the ray tracing structure
+  only for a device with inline ray queries, so the path tracer's OptiX
+  pipeline traced against nothing and a bake found no surface. It is built
+  for the pipeline too, and a transfer bake (TX) is right on CUDA. A radiance
+  bake is not yet: OptiX does not compile its pipeline (an NVIDIA L4, driver
+  596.36), and the bake says so.
+- **Bakes on Vulkan, with gpe**: gpe has a Vulkan backend
+  (`-DGPE_BACKEND_WANTED=Vulkan`) that shares slang-rhi's device, so
+  `mesh2splat` and the other AOFX effects run on Vulkan and a Windows bake
+  needs neither OptiX nor CUDA (a transfer bake of 283669 gaussians in 159 s
+  on an RTX 3070 Laptop GPU). Such a build tries Vulkan first.
+
+Tests: macOS 422 of 433, Linux 431 of 433, Windows 407 of 430 before the bake
+fix; on Windows with OptiX (an L4) the radiance bakes fail as above. Failing on every system and before this merge, so not caused by it: the
+zonal transfer's fit and turn (two tests), and on macOS a refit's single
+pixel, many lights as one, and a texture floor's p99. The clock tests fail
+where the machine is loaded.
+
 ## 0.2.0 — 2026-10-03
 
 The day's tasks merged. 354 tests, all passing on Metal (Apple M5 Pro); the

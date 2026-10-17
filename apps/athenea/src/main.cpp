@@ -48,6 +48,7 @@ int main(int argc, char** argv) {
     athenea::cli::addMesh2Splat(app);
     athenea::cli::addFlatten(app);
     athenea::cli::addVisibility(app);
+    athenea::cli::addLights(app);
     athenea::cli::addLive(app);
 #if ATHENEA_HAVE_VIEW
     athenea::cli::addView(app);

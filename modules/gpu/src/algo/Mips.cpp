@@ -17,7 +17,7 @@ Result<MipGenerator> MipGenerator::create(ShaderLibrary& library) {
     return mips;
 }
 
-Result<void> MipGenerator::generate(CommandBatch& batch, const Texture& texture, bool srgb) const {
+Result<void> MipGenerator::generate(CommandBatch& batch, const Texture& texture, bool srgb, bool latLong) const {
     if (texture.desc().type != rhi::TextureType::Texture2D || texture.desc().arrayLength != 1) {
         return Error::make(ErrorCode::Unsupported, "mips of '{}': 2D textures only", texture.desc().label);
     }
@@ -57,6 +57,7 @@ Result<void> MipGenerator::generate(CommandBatch& batch, const Texture& texture,
             cursor["params"]["width"].setData(texture.width(mip));
             cursor["params"]["height"].setData(texture.height(mip));
             cursor["params"]["srgb"].setData(uint32_t{srgb ? 1u : 0u});
+            cursor["params"]["latLong"].setData(uint32_t{latLong ? 1u : 0u});
             cursor["params"]["levels"].setData(eightBit ? uint32_t{255} : uint32_t{0});
         });
         if (packedKind != 0) {

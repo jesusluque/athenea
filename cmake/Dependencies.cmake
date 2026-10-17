@@ -71,9 +71,10 @@ set(SLANG_RHI_INSTALL OFF CACHE BOOL "" FORCE)
 set(SLANG_RHI_ENABLE_CPU OFF CACHE BOOL "" FORCE)
 set(SLANG_RHI_ENABLE_WGPU OFF CACHE BOOL "" FORCE)
 set(SLANG_RHI_ENABLE_D3D11 OFF CACHE BOOL "" FORCE)
-if(APPLE)
+if(APPLE AND NOT GPE_BACKEND_WANTED STREQUAL "Vulkan")
     # Metal only. Vulkan on macOS is MoltenVK over Metal, which is the device
-    # we already have minus a translation layer.
+    # we already have minus a translation layer -- wanted only to test gpe's
+    # Vulkan backend on a Mac (-DGPE_BACKEND_WANTED=Vulkan).
     set(SLANG_RHI_ENABLE_VULKAN OFF CACHE BOOL "" FORCE)
 endif()
 if(ATHENEA_IOS)
@@ -101,6 +102,8 @@ endif()
 #     Metal (a nil in the device's structure array) and aborted the process;
 #     and an indexed triangle build took max(vertices, indices) / 3 triangles,
 #     reading past its index window.
+#   - slang-rhi-vulkan-triangle-count.patch: the same triangle count in the
+#     Vulkan backend (upstream PR #910, with the Metal one).
 #   - slang-rhi-metal-command-buffer-errors.patch: a command buffer that
 #     failed on the device (out of memory, under another job's load) hit an
 #     assertion in its completion handler and aborted the process. The error
@@ -118,6 +121,7 @@ endif()
 set(ATHENEA_RHI_PATCHES
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-render-target-array-length.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-acceleration-structures.patch"
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-vulkan-triangle-count.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-texture-view-format.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-driver-symbols.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-command-buffer-errors.patch")

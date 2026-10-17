@@ -1,0 +1,48 @@
+#usda 1.0
+# Copyright (c) 2026 jesus luque.
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# The pane of pane.usda at the index of the Corvette's windshield, 1.16: a
+# sheet whose gaussians cover 0.0055 of what is behind them, which the faint
+# cull dropped before the sheet was drawn at a floor (splat_project's
+# kSheetAlpha; tests/usd/test_usd.cpp, "a thin sheet of glass ..."). Thin-walled in
+# its material too, so the path tracer reflects at both faces as the sheet does.
+def Xform "World"
+{
+    def Mesh "Pane" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4]
+        int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]
+        point3f[] points = [(-1, -1, 0), (0, -1, 0), (1, -1, 0), (-1, 1, 0), (0, 1, 0), (1, 1, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (0.5, 0), (1, 0), (0, 1), (0.5, 1), (1, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Glass>
+    }
+    def Scope "Looks"
+    {
+        def Material "Glass"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Glass/OpenPBR.outputs:out>
+
+            def Shader "OpenPBR"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                float inputs:specular_roughness = 0
+                float inputs:specular_ior = 1.16
+                float inputs:transmission_weight = 1
+                bool inputs:geometry_thin_walled = 1
+                token outputs:out
+            }
+        }
+    }
+}

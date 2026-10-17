@@ -81,6 +81,12 @@ struct Caps {
     /// kernel packs the texels into a buffer and the buffer is copied into
     /// the texture.
     bool convertingStores = false;
+    /// A texture is read through the sampler its view was made with, and a
+    /// SamplerState bound beside it is not read (CUDA: a texture object holds
+    /// its addressing, filtering and mip range). Where this is true, a view
+    /// that is sampled carries its sampler (Texture::view, TextureStore::
+    /// sampleWith); a view made without one wraps and reads level 0 only.
+    bool samplersInViews = false;
     uint32_t optixVersion = 0;
 };
 
@@ -88,6 +94,8 @@ struct Caps {
 struct NativeHandles {
     rhi::NativeHandle device;    ///< MTLDevice | CUcontext | VkDevice
     rhi::NativeHandle queue;     ///< MTLCommandQueue | CUstream | VkQueue
+    rhi::NativeHandle instance;  ///< VkInstance; Vulkan only
+    rhi::NativeHandle physical;  ///< VkPhysicalDevice; Vulkan only
 };
 
 class Device {

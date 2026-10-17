@@ -1,0 +1,15 @@
+diff --git a/src/vulkan/vk-acceleration-structure.cpp b/src/vulkan/vk-acceleration-structure.cpp
+index a6b037e..e39f8f4 100644
+--- a/src/vulkan/vk-acceleration-structure.cpp
++++ b/src/vulkan/vk-acceleration-structure.cpp
+@@ -285,7 +285,9 @@ Result AccelerationStructureBuildDescConverter::convert(
+                 geometry.geometry.triangles.pNext = &ommData;
+             }
+ 
+-            primitiveCounts[i] = max(triangles.vertexCount, triangles.indexCount) / 3;
++            // With an index buffer the triangles are its indices; the vertex
++            // count only bounds what they may refer to.
++            primitiveCounts[i] = (triangles.indexBuffer ? triangles.indexCount : triangles.vertexCount) / 3;
+         }
+ 
+         buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;

@@ -201,6 +201,52 @@ the polish (the reflection) and nothing else. Off, the colours are an albedo
 and relighting lights them."""
         interpolation = "constant"
     )
+    float[] primvars:athenea:splat:coverage = [] (
+        doc = """What a merged gaussian covers: its mass (the opacity times the area of the
+two widest axes, summed over what it stands for) over its own area, not held under
+one. Its opacity is the same held at 0.99; past one, the discs it merged
+overlapped, and a renderer that draws by the held opacity reopens the gaps the
+overlap closed. Written by `athenea decimate --ratio`. One a gaussian."""
+        interpolation = "vertex"
+    )
+    bool primvars:athenea:splat:lodTree = 0 (
+        doc = """The gaussians are a merge tree (`athenea decimate --tree`): the leaves
+first, in depth-first order, then every merge, each standing for a run of the
+leaves and beside them, not instead of them. To be cut -- by `lodCost` against
+the screen -- not drawn whole."""
+        interpolation = "constant"
+    )
+    int[] primvars:athenea:splat:lodParent = [] (
+        doc = """In a merge tree (`lodTree`): each gaussian's parent, the merge it went
+into, by index; a root's is its own. One a gaussian."""
+        interpolation = "vertex"
+    )
+    int[] primvars:athenea:splat:lodStart = [] (
+        doc = """In a merge tree (`lodTree`): the first leaf the gaussian stands for (the
+leaves being the first gaussians, in depth-first order); a leaf's own index. One a
+gaussian."""
+        interpolation = "vertex"
+    )
+    int[] primvars:athenea:splat:lodSize = [] (
+        doc = """In a merge tree (`lodTree`): how many leaves the gaussian stands for, from
+`lodStart` on; a leaf 1. One a gaussian."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:lodCost = [] (
+        doc = """In a merge tree (`lodTree`): what the merge that made the gaussian cost
+(`athenea decimate --ratio`'s cost: shape against what the camera sees, colour,
+normal and material), 0 for a leaf. A cut keeps a node whose cost is above what
+its distance allows. One a gaussian."""
+        interpolation = "vertex"
+    )
+    bool primvars:athenea:splat:surfel = 0 (
+        doc = """Some of the gaussians are surfels: one scale exactly 0, the disc of the
+other two, drawn by the ray through each pixel (2D gaussian splatting, with the
+screen filter of a gaussian of sigma sqrt(2)/2 pixel) rather than as the thin
+ellipse they project to. The flat axis is the normal (`athenea:splat:normal`
+holds the baked face's). Spark draws the same with enable2DGS."""
+        interpolation = "constant"
+    )
     bool primvars:athenea:splat:linear = 0 (
         doc = """The colours are linear light (linear Rec.709, the working space),
 which is what `athenea mesh2splat`, an export and a bake write. Off, they are
@@ -256,6 +302,10 @@ object through the glass wants a ray, which this is not."""
     )
     int[] primvars:athenea:splat:schlickMetal = [] (
         doc = """Nonzero where the gaussian's metal is a Schlick -- OpenPBR's generalized_schlick_bsdf, glTF's -- from its colour head on to its specular colour at grazing, rather than a conductor of the artistic index standard_surface's and UsdPreviewSurface's are. One int a gaussian; only read beside the PBR arrays."""
+        interpolation = "vertex"
+    )
+    float[] primvars:athenea:splat:materialRoughness = [] (
+        doc = """The roughness the gaussian's material itself has, 0 to 1, before the conversion widened the stored `roughness` by the spread of normals under the gaussian (mesh2splat's --specular-filter); -1 where the material reads it from a map. One float a gaussian; only read beside the PBR arrays. Where it is at least 0.3 a TX transfer's reflected field answers what the polish's own lobe finds closed -- a ball shows its ground -- and below that, or without it, the closed part stays dark."""
         interpolation = "vertex"
     )
     float[] primvars:athenea:splat:curvature = [] (

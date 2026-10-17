@@ -1,0 +1,2 @@
+# Las capas del tutorial se publican como descarga (el .gitignore raíz excluye *.usda).
+!*.usda

@@ -113,6 +113,16 @@ struct SplatEntry {
     /// `primvars:athenea:splat:catcher`: a shadow catcher, drawn black as
     /// opaque as what its object took (`athenea mesh2splat --shadow-catcher`).
     bool                                catcher = false;
+    /// `primvars:athenea:splat:lightCatcher`: a light catcher, the lamps'
+    /// light on a ground, added over whatever is drawn (`athenea mesh2splat
+    /// --light-catcher`). Only its layers are drawn.
+    bool                                lightCatcher = false;
+    /// This frame's weight of each of its lamps' layers, a float4 a layer,
+    /// `GpuSplats::kMaxLightGroups` of them (`Engine::setLightWeights`), and
+    /// which weights it was written from. The projection takes them in its
+    /// constants (render::SplatInstance::lightWeights).
+    std::vector<float>                  lightWeights;
+    uint64_t                            lightWeightsVersion = 0;
     /// `primvars:athenea:splat:ior`: the index its transmitting gaussians bend
     /// the sky by. 0 bends nothing, which is every cloud that does not say.
     float                               ior = 0.0F;
@@ -266,6 +276,8 @@ struct BakeRequest {
     uint32_t           cellSide = 0;
     /// KEEP THE SUMS, DIRECT APART FROM INDIRECT (technique::BakePoints::split).
     bool               split = false;
+    /// AND READ THE MATERIAL BACK at each point (technique::BakePoints::material).
+    bool               material = false;
     /// Which paths these are: a pass that adds to an earlier one draws
     /// others. The same seed draws the same paths.
     uint32_t           seed = 0;
@@ -342,7 +354,8 @@ public:
                    std::optional<bool> litBody = std::nullopt,
                    std::optional<float> ior = std::nullopt,
                    std::optional<render::Mat4> transformStep = std::nullopt,
-                   std::optional<bool> catcher = std::nullopt);
+                   std::optional<bool> catcher = std::nullopt,
+                   std::optional<bool> lightCatcher = std::nullopt);
     void setPoints(const pxr::SdfPath& id, std::optional<PointsArrays> raw,
                    const render::Mat4* transform, std::optional<bool> visible,
                    std::optional<render::PointStyle> style);
@@ -393,6 +406,13 @@ public:
     /// Null: frames draw again.
     void setFlatten(render::SplatFlatten* request);
     [[nodiscard]] std::vector<std::string> flattenedPrims() const;
+    /// THE LAMPS' WEIGHTS, by group name: linear rgb, a group's level times
+    /// its radiance and colour, what each of a cloud's light layers is added
+    /// times (docs/decisions.md, light groups). A group not named is off.
+    /// Changing them changes four floats a layer on the device and nothing
+    /// else: no upload, no bake.
+    void setLightWeights(std::map<std::string, std::array<float, 3>> weights);
+    [[nodiscard]] std::map<std::string, std::array<float, 3>> lightWeights() const;
 
     /// WHAT A FRAME SAYS A PRIM IS MADE OF, keyed on the Cryptomatte id its
     /// gaussians carry: what a host edits after picking one.
@@ -466,6 +486,9 @@ public:
     /// has stopped or `pathTotal` is reached, whichever first.
     void setPathAdaptive(bool adaptive);
     void setPathMis(bool mis);
+    /// Let the path tracer's shadow rays through glass whose transmission
+    /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
+    void setGlassShadows(bool glass);
     void setPathError(float error);
 
     /// How many paths a pixel the path traced frame on screen has gathered,
@@ -766,6 +789,7 @@ private:
     std::atomic<uint32_t>                     pathTotal_{1};
     std::atomic<bool>                         pathAdaptive_{false};
     std::atomic<bool>                         pathMis_{true};
+    std::atomic<bool>                         glassShadows_{true};
     std::atomic<bool>                         transferIndirect_{true};
     std::atomic<bool>                         displayBlend_{false};
     render::SplatFlatten*                     flattenRequest_ = nullptr;
@@ -779,6 +803,9 @@ private:
     std::vector<uint64_t>                     cloudShadowKey_;
     std::atomic<uint64_t>                     cloudUploads_{0};
     std::atomic<bool>                         splatReflections_{false};
+    /// `setLightWeights`'s, under `guard_`, and how many times they changed.
+    std::map<std::string, std::array<float, 3>> lightWeights_;
+    uint64_t                                  lightWeightsVersion_ = 1;
     /// The per-prim material table and the buffer it is uploaded into. The
     /// rows are the host's; `splatOverrideRows_` is what the frame bound.
     std::vector<render::SplatOverride>        splatOverrides_;
@@ -813,6 +840,7 @@ private:
         uint32_t     bounces = 0;
         bool         adaptive = false;
         bool         mis = true;
+        bool         glassShadows = true;
         bool         cameraMoves = false;
         render::Mat4 cameraStart = render::Mat4::identity();
         render::Mat4 cameraEnd = render::Mat4::identity();
@@ -839,6 +867,7 @@ private:
                    lensRadius == o.lensRadius && focusDistance == o.focusDistance &&
                    distortionK1 == o.distortionK1 && distortionK2 == o.distortionK2 && width == o.width &&
                    height == o.height && samples == o.samples && bounces == o.bounces && adaptive == o.adaptive && mis == o.mis &&
+                   glassShadows == o.glassShadows &&
                    error == o.error && revision == o.revision && tags == o.tags && traced == o.traced;
         }
     };
@@ -859,6 +888,7 @@ private:
     [[nodiscard]] uint64_t categoryMask(const std::vector<pxr::TfToken>& names);
     bool                                      materialsChanged_ = true;
     bool                                      materialCutouts_ = false;   ///< a material in the frame cuts samples away
+    bool                                      materialGlass_ = false;     ///< a material in the frame lets a shadow ray through, tinted (kMaterialGlassShadow)
     std::unique_ptr<material::MaterialCompiler> compiler_;
     bool                                      compilerFailed_ = false;
     std::unique_ptr<material::TextureStore>   textures_;

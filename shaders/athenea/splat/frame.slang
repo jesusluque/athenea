@@ -126,6 +126,12 @@ public struct FrameParams {
     // blend leaves out of the matte.
     public uint  cryptoMode;
     public uint  hasUnderCrypto; // 1: `underCrypto` holds the under layer's id a pixel
+    // What the blend adds into `contribution` at each splat's slot, for a
+    // cloud being pruned (`athenea decimate --drop-hidden`, `--prune-error`).
+    // 0: nothing. 1: the weight it blended with (transmittance times alpha),
+    // in 1/4096 of a pixel. 2: the squared error its removal would leave
+    // (`finalColour` is the frame drawn whole), in 2^-24 as two words a slot.
+    public uint  contributionMode;
     // Relighting happens in the world, where the lights are: the cloud to
     // world rows, and the eye there. The colour from the harmonics is still
     // the cloud's own business, which is why the eye above stays as it is.
@@ -161,6 +167,24 @@ public struct FrameParams {
     /// 1: `txCache` holds this cloud's view-independent transfer terms
     /// (splatTransferViewless), each with the dome slice it is for.
     public uint  txCache;
+    /// THE LAMPS' LAYERS (GpuSplats::lightLayers): how many groups this
+    /// cloud carries, a word each a splat in `lightLayers`, each added
+    /// times its weight in `lightWeights` below (splat_project's lampLight).
+    /// 0: none, and nothing is read.
+    public uint  lightLayers;
+    /// WHERE A SHARP RECORD'S POLISH STARTS IN `slopes`, in uint4 entries:
+    /// the slot's slope at [slot], its base polish and sun weights at
+    /// [polishPlane + slot]. One buffer, not two: the TX projection binds
+    /// as many as Metal's thirty-one allow (splat_project).
+    public uint  polishPlane;
+    /// SURFELS (docs/decisions.md, surfels): 1 draws a gaussian with a flat
+    /// axis -- a scale of exactly 0 -- as the disc it is, by the ray through
+    /// each pixel (ProjRecord::surfel), 0 as the thin gaussian it projects to.
+    public uint  surfels;
+    /// The lamps' weights this frame, a float4 a layer (linear rgb: the
+    /// group's level times its radiance and colour), GpuSplats::
+    /// kMaxLightGroups of them. Here and not a buffer, for the same count.
+    public float4 lightWeights[16];
     /// 1: BLENDED AS A STANDARD VIEWER BLENDS. Each splat's colour is
     /// sRGB-encoded at its projection, the blend sums encoded values over the
     /// encoded layer under it, and the pixel is decoded to linear once at the
@@ -181,11 +205,27 @@ public static const float kSlopeMark = 0.25;
 /// splatProjectCatcher): black, and drawn over an opaque layer under it
 /// even where its centre's depth reads behind that layer -- it lies on it.
 public static const float kCatcherMark = 0.125;
+/// A ProjRecord's colour.w for a LIGHT CATCHER's gaussian (splat_project's
+/// splatProjectLightCatcher): the lamps' light on the ground, drawn over the
+/// layer under it as a catcher is, and added -- it takes nothing from what
+/// is behind it, so it can only brighten.
+public static const float kLightCatcherMark = 0.0625;
+/// A record whose sharp lobe the blend draws per pixel (splat_project's
+/// SplatSlope sharp lobe): `slopes` holds its mirror and the mirror's turn.
+public static const float kSharpMark = 0.375;
 
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power
     public float4 conic;    // a, b, c, alpha
     public float4 colour;   // rgb (linear), 0
+    /// A SURFEL'S DISC ON SCREEN, where conic.w < 0 marks one: its two axes
+    /// (scale times direction) in homogeneous screen coordinates -- (x w, y w,
+    /// w) of the disc's u and v -- as halves, u.xy, u.w v.x, v.y v.w, 0. With
+    /// the centre's own (screen.xy times its depth, and the depth) they are
+    /// the 3x3 map from the disc's plane to the screen that the blend inverts
+    /// at every pixel (Huang et al. 2024, ray-splat intersection). 0 for a
+    /// gaussian.
+    public uint4  surfel;
 };
 
 public float3 toView(FrameParams f, float3 p) {
@@ -232,6 +272,27 @@ public float paidOpacity(float alpha, float paid) {
 /// touched -- which is what keeps tile edges seamless.
 public float cutoffPower(float alpha) {
     return min(2.0 * log(max(255.0 * alpha, 1.0001)), 9.0);
+}
+
+/// SPARK'S HARDER KERNEL, an opacity D over 1 (sparkjs splatFragment.glsl;
+/// docs/decisions.md, kernel hardness): the composite of A = exp((D^2 - 1)/e)
+/// coincident gaussians, 1 - (1 - g)^A -- a flat top as wide as sqrt(2 ln A)
+/// sigmas and the gaussian's shoulder past it. A merge whose members covered
+/// its area D times over draws as solid as they did. D is held to 5, and the
+/// cut widened as Spark widens it, by 0.7 (D - 1) sigma.
+public static const float kFalloffMost = 5.0;
+
+public float falloffCount(float d) {
+    return exp((d * d - 1.0) * 0.36787944);
+}
+
+public float falloffAlpha(float d, float g) {
+    return d > 1.0 ? 1.0 - pow(max(1.0 - g, 0.0), falloffCount(d)) : d * g;
+}
+
+public float falloffCutoff(float d) {
+    const float r = 3.0 + 0.7 * (min(d, kFalloffMost) - 1.0);
+    return min(2.0 * log(255.0 * falloffCount(d)), r * r);
 }
 
 /// Minimum over a box of q(d) = a dx^2 + 2 b dx dy + c dy^2, for d measured

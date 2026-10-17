@@ -325,6 +325,16 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(thin));
     }
 
+    // WHICH GAUSSIANS' MESHES ARE CLOSED. Written only where there is one.
+    if (options.closed.size() >= count && count > 0 &&
+        std::any_of(options.closed.begin(), options.closed.begin() + count, [](int32_t v) { return v != 0; })) {
+        VtIntArray closed(options.closed.begin(), options.closed.begin() + count);
+        UsdGeomPrimvarsAPI(splats.GetPrim())
+            .CreatePrimvar(TfToken("primvars:athenea:splat:closed"), SdfValueTypeNames->IntArray,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(closed));
+    }
+
     // WHICH GAUSSIANS' METAL IS A SCHLICK (OpenPBR, glTF) rather than a
     // conductor of an artistic index. Written only where there is one.
     if (options.schlickMetal.size() >= count && count > 0 &&
@@ -335,6 +345,16 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .CreatePrimvar(TfToken("primvars:athenea:splat:schlickMetal"), SdfValueTypeNames->IntArray,
                            UsdGeomTokens->vertex)
             .Set(VtValue(schlick));
+    }
+
+    // THE MATERIAL'S OWN ROUGHNESS, before `--specular-filter` widened the
+    // stored one by the spread of normals under each gaussian.
+    if (options.materialRoughness.size() >= count && count > 0) {
+        VtFloatArray own(options.materialRoughness.begin(), options.materialRoughness.begin() + count);
+        UsdGeomPrimvarsAPI(splats.GetPrim())
+            .CreatePrimvar(TfToken("primvars:athenea:splat:materialRoughness"), SdfValueTypeNames->FloatArray,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(own));
     }
 
     // HOW THE SURFACE TURNS UNDER EACH GAUSSIAN: three floats a record, its
@@ -439,10 +459,24 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
         static const TfToken kLit("primvars:athenea:splat:litBody");
         splats.GetPrim().CreateAttribute(kLit, SdfValueTypeNames->Bool, true).Set(true);
     }
+    if (options.lodTree) {
+        static const TfToken kTree("primvars:athenea:splat:lodTree");
+        splats.GetPrim().CreateAttribute(kTree, SdfValueTypeNames->Bool, true).Set(true);
+    }
+    if (options.surfel) {
+        // Surfels among the gaussians: a scale of exactly 0, drawn as discs.
+        static const TfToken kSurfel("primvars:athenea:splat:surfel");
+        splats.GetPrim().CreateAttribute(kSurfel, SdfValueTypeNames->Bool, true).Set(true);
+    }
     if (options.catcher) {
         // A shadow catcher: drawn black, covering what the object took.
         static const TfToken kCatcher("primvars:athenea:splat:catcher");
         splats.GetPrim().CreateAttribute(kCatcher, SdfValueTypeNames->Bool, true).Set(true);
+    }
+    if (options.lightCatcher) {
+        // A light catcher: its lamps' layers drawn, added, and nothing else.
+        static const TfToken kLightCatcher("primvars:athenea:splat:lightCatcher");
+        splats.GetPrim().CreateAttribute(kLightCatcher, SdfValueTypeNames->Bool, true).Set(true);
     }
 
     // AND THE SCHEMA THOSE PRIMVARS ARE DECLARED BY. They were written and
@@ -452,6 +486,7 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
     {
         static const TfToken kLighting[] = {
             TfToken("primvars:athenea:splat:relight"),      TfToken("primvars:athenea:splat:litBody"),
+            TfToken("primvars:athenea:splat:surfel"),
             TfToken("primvars:athenea:splat:ior"),          TfToken("primvars:athenea:splat:metallic"),
             TfToken("primvars:athenea:splat:roughness"),    TfToken("primvars:athenea:splat:transmission"),
             TfToken("primvars:athenea:splat:transferDirect"), TfToken("primvars:athenea:splat:transferIndirect"),
@@ -459,7 +494,8 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             TfToken("primvars:athenea:splat:schlickMetal"), TfToken("primvars:athenea:splat:curvature"),
             TfToken("primvars:athenea:splat:normal"),       TfToken("primvars:athenea:splat:linear"),
             TfToken("primvars:athenea:splat:emission"),     TfToken("primvars:athenea:splat:coatWeight"),
-            TfToken("primvars:athenea:splat:specularWeight"), TfToken("primvars:athenea:splat:sheenColor")};
+            TfToken("primvars:athenea:splat:specularWeight"), TfToken("primvars:athenea:splat:sheenColor"),
+            TfToken("primvars:athenea:splat:materialRoughness")};
         const UsdPrim prim = splats.GetPrim();
         if (std::any_of(std::begin(kLighting), std::end(kLighting),
                         [&](const TfToken& name) { return prim.GetAttribute(name).HasAuthoredValue(); })) {
@@ -1083,6 +1119,82 @@ Result<std::vector<GaussianArray>> readGaussianArrays(const std::filesystem::pat
     return out;
 }
 
+Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::filesystem::path& output,
+                                const std::string& prim, const std::vector<float>& opacities,
+                                const std::string& renameFrom, const std::string& renameTo,
+                                const std::vector<GaussianArray>& added) {
+    SdfLayerRefPtr source = SdfLayer::FindOrOpen(input.string());
+    if (!source) {
+        return Error::make(ErrorCode::IoFailure, "cannot open '{}'", input.string());
+    }
+    if (!source->Export(output.string())) {
+        return Error::make(ErrorCode::IoFailure, "cannot write '{}'", output.string());
+    }
+    SdfLayerRefPtr copy = SdfLayer::FindOrOpen(output.string());
+    if (!copy) {
+        return Error::make(ErrorCode::IoFailure, "cannot reopen '{}'", output.string());
+    }
+    copy->Reload(true);
+    if (std::filesystem::absolute(input).parent_path() != std::filesystem::absolute(output).parent_path()) {
+        UsdUtilsModifyAssetPaths(copy, [&](const std::string& asset) {
+            if (asset.empty() || !std::filesystem::path(asset).is_relative()) {
+                return asset;
+            }
+            return SdfComputeAssetPathRelativeToLayer(source, asset);
+        });
+    }
+    UsdStageRefPtr stage = UsdStage::Open(copy);
+    UsdVolParticleField3DGaussianSplat field = stage ? fieldOn(stage, prim) : UsdVolParticleField3DGaussianSplat();
+    if (!field) {
+        return Error::make(ErrorCode::NotFound, "'{}': no gaussian ParticleField to write into", output.string());
+    }
+    stage->SetEditTarget(stage->GetRootLayer());
+    VtFloatArray values;
+    if (!field.GetOpacitiesAttr().Get(&values) || values.size() != opacities.size()) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': {} opacities, the tree has {} gaussians", input.string(),
+                           values.size(), opacities.size());
+    }
+    for (size_t k = 0; k < values.size(); ++k) {
+        if (!std::isnan(opacities[k])) {
+            values[k] = opacities[k];
+        }
+    }
+    field.GetOpacitiesAttr().Set(values);
+    const UsdAttribute from = renameFrom.empty() ? UsdAttribute() : field.GetPrim().GetAttribute(TfToken(renameFrom));
+    VtValue moved;
+    if (!renameFrom.empty() && from && from.Get(&moved)) {
+        UsdGeomPrimvarsAPI(field.GetPrim())
+            .CreatePrimvar(TfToken(renameTo.substr(std::string("primvars:").size())), from.GetTypeName(),
+                           UsdGeomTokens->vertex)
+            .Set(moved);
+        field.GetPrim().RemoveProperty(TfToken(renameFrom));
+    }
+    for (const GaussianArray& a : added) {
+        if (a.values.empty()) {
+            continue;
+        }
+        const TfToken name(a.name.substr(std::string("primvars:").size()));
+        const TfToken interpolation(a.interpolation.empty() ? "vertex" : a.interpolation);
+        if (a.typeName == "float[]") {
+            VtFloatArray v(a.values[0].size());
+            std::memcpy(v.data(), a.values[0].data(), v.size() * sizeof(float));
+            UsdGeomPrimvarsAPI(field.GetPrim())
+                .CreatePrimvar(name, SdfValueTypeNames->FloatArray, interpolation)
+                .Set(VtValue(v));
+            continue;
+        }
+        VtIntArray v(a.values[0].size());
+        for (size_t k = 0; k < v.size(); ++k) {
+            v[k] = static_cast<int>(a.values[0][k]);
+        }
+        UsdGeomPrimvarsAPI(field.GetPrim()).CreatePrimvar(name, SdfValueTypeNames->IntArray, interpolation).Set(VtValue(v));
+    }
+    if (!copy->Save()) {
+        return Error::make(ErrorCode::IoFailure, "cannot save '{}'", output.string());
+    }
+    return ok();
+}
+
 Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::filesystem::path& output,
                                  const std::string& prim, const std::filesystem::path& gaussians,
                                  const std::vector<GaussianArray>& arrays) {
@@ -1147,9 +1259,43 @@ Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::
     if (field.GetPrim().HasAttribute(TfToken("orientationsh")) && fewer.GetOrientationsAttr()) {
         field.GetPrim().RemoveProperty(TfToken("orientationsh"));
     }
+    // The constants the decimation says about what it wrote: surfels among
+    // the gaussians, a merge tree.
+    for (const char* name : {"primvars:athenea:splat:surfel", "primvars:athenea:splat:lodTree"}) {
+        const UsdAttribute from = fewer.GetPrim().GetAttribute(TfToken(name));
+        bool value = false;
+        if (from && from.Get(&value) && value) {
+            field.GetPrim().CreateAttribute(TfToken(name), SdfValueTypeNames->Bool, false).Set(true);
+        }
+    }
     // Everything else a gaussian carries, merged.
     for (const GaussianArray& array : arrays) {
         UsdAttribute to = field.GetPrim().GetAttribute(TfToken(array.name));
+        if (!to && array.times.empty() && !array.values.empty() &&
+            (array.typeName == "float[]" || array.typeName == "int[]")) {
+            // One the source did not have -- what the decimation adds (the
+            // coverage, the tree): a primvar a gaussian, as its words say.
+            const bool integer = array.typeName == "int[]";
+            UsdGeomPrimvar primvar = UsdGeomPrimvarsAPI(field.GetPrim())
+                                         .CreatePrimvar(TfToken(array.name.substr(std::string("primvars:").size())),
+                                                        integer ? SdfValueTypeNames->IntArray
+                                                                : SdfValueTypeNames->FloatArray,
+                                                        UsdGeomTokens->vertex);
+            if (integer) {
+                VtIntArray v(array.values[0].size());
+                for (size_t k = 0; k < v.size(); ++k) {
+                    v[k] = static_cast<int>(array.values[0][k]);
+                }
+                primvar.Set(v);
+            } else {
+                VtFloatArray v(array.values[0].size());
+                for (size_t k = 0; k < v.size(); ++k) {
+                    std::memcpy(&v[k], &array.values[0][k], 4);
+                }
+                primvar.Set(v);
+            }
+            continue;
+        }
         if (!to) {
             continue;
         }
@@ -1164,8 +1310,17 @@ Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::
             to.Set(valueLike(like, array.values[0]));
         }
     }
-    if (!stage->GetRootLayer()->Save()) {
-        return Error::make(ErrorCode::IoFailure, "cannot save '{}'", output.string());
+    // Written whole, not saved over: a crate saved in place appends what
+    // changed and keeps what it replaced, and a copy of a 600k cloud cut to
+    // 55k came out larger than the cloud (366 MB against 335).
+    const std::filesystem::path fresh = output.string() + ".fresh" + output.extension().string();
+    if (!stage->GetRootLayer()->Export(fresh.string())) {
+        return Error::make(ErrorCode::IoFailure, "cannot write '{}'", fresh.string());
+    }
+    std::error_code moved;
+    std::filesystem::rename(fresh, output, moved);
+    if (moved) {
+        return Error::make(ErrorCode::IoFailure, "cannot replace '{}': {}", output.string(), moved.message());
     }
     return ok();
 }

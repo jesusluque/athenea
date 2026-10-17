@@ -283,7 +283,130 @@ public float highHalf(uint word) { return f16tof32(word >> 16); }
 /// covariance turns into NaN. Clamped, not trusted.
 public float halfSafe(float v) { return clamp(v, -65000.0, 65000.0); }
 
+/// A SURFEL TO A RAY (docs/decisions.md, surfels): its flat axis -- a scale of
+/// exactly 0, stored as the f16 floor of its logarithm -- held to a ten
+/// thousandth of its widest, so a ray tracer that takes a particle to the
+/// unit sphere (rt_frames) can: its peak along a ray is then where the ray
+/// crosses the disc's plane, and the response there the disc's own, which is
+/// a 2D gaussian's ray-splat intersection. A gaussian with no flat axis is as
+/// it was.
+public static const float kSurfelThin = 1.0e-4;
+
+public float3 surfelSafeScale(float3 s) {
+    return max(s, float3(kSurfelThin * max(max(s.x, s.y), s.z)));
+}
+
+/// The area of a gaussian's two widest axes: what the levels of detail and a
+/// decimation weigh a splat by (opacity times this). Not the product of all
+/// three over the smallest, which a surfel's zero takes to nothing.
+public float discArea(float3 s) {
+    return max(max(s.x * s.y, s.y * s.z), s.x * s.z);
+}
+
+/// A FRAME WITH ITS THINNEST AXIS THIRD. A conversion writes a disc's
+/// thickness as its third scale, and every reader takes the third axis for
+/// the normal and the first two for its plane -- the relight, the curvature
+/// and the zonal transfer read in them, sparkwebGPU likewise. Eigenvectors
+/// come in whatever order the solver left them: the matx car paint merged
+/// 10x had its normal first or second in 48910 of 55477 merges, its
+/// curvature then projected on a plane holding the normal. So the columns
+/// (the axes) and their scales are turned cyclically -- which keeps the
+/// frame's handedness -- until the thinnest is third.
+public void thinAxisThird(inout float3x3 axes, inout float3 scales) {
+    const uint thin = scales.x <= scales.y ? (scales.x <= scales.z ? 0u : 2u) : (scales.y <= scales.z ? 1u : 2u);
+    if (thin == 2u) {
+        return;
+    }
+    const float3 c0 = float3(axes[0][0], axes[1][0], axes[2][0]);
+    const float3 c1 = float3(axes[0][1], axes[1][1], axes[2][1]);
+    const float3 c2 = float3(axes[0][2], axes[1][2], axes[2][2]);
+    // thin 0: (1, 2, 0); thin 1: (2, 0, 1).
+    const float3 n0 = thin == 0u ? c1 : c2;
+    const float3 n1 = thin == 0u ? c2 : c0;
+    const float3 n2 = thin == 0u ? c0 : c1;
+    axes = float3x3(n0.x, n1.x, n2.x, n0.y, n1.y, n2.y, n0.z, n1.z, n2.z);
+    scales = thin == 0u ? float3(scales.y, scales.z, scales.x) : float3(scales.z, scales.x, scales.y);
+}
+
+/// Whether a shape's scales hold a surfel's flat axis.
+public bool isSurfel(float3 s) {
+    return min(min(s.x, s.y), s.z) == 0.0;
+}
+
+/// A HARD SURFEL (docs/decisions.md, kernel hardness): a disc drawn as
+/// o exp(-(|u|^p + |v|^p) / 2) in its own axes, p = 2 the gaussian. A merge
+/// of a flat patch spans it as a box would, where a gaussian with the same
+/// moments throws its tails a third past the patch -- the hairs a merge wider
+/// than the camera's pixel leaves at a panel's edge. p travels in the f16
+/// logarithm of the disc's flat axis, which every reader takes for a zero
+/// scale whatever it holds below e^-100: -infinity (or the -65000 a merge
+/// writes) is p = 2, -(1024 + 64 (p - 2)) is p, to a thirtieth up to 32.
+/// What it stores as its scale is the moment-matched one (`hardnessVariance`
+/// turns it into the box's), so a reader that knows nothing of p draws the
+/// gaussian with the same moments. `athenea:splat:hardness` in a file.
+public static const float kHardnessMax = 32.0;
+
+public float surfelHardnessLog(float p) {
+    return p <= 2.001 ? -65000.0 : -(1024.0 + 64.0 * (min(p, kHardnessMax) - 2.0));
+}
+
+public float surfelHardness(float flatLog) {
+    return (flatLog > -60000.0 && flatLog <= -1024.0) ? 2.0 + (-flatLog - 1024.0) / 64.0 : 2.0;
+}
+
+/// ln Gamma(x) for x in (0, 3]: Stirling's series at x + 3, brought back by
+/// the recurrence (1e-6 here).
+public float lnGamma(float x) {
+    const float z = x + 3.0;
+    const float iz = 1.0 / z;
+    const float iz2 = iz * iz;
+    const float s = (z - 0.5) * log(z) - z + 0.91893853 + iz * (1.0 / 12.0 - iz2 * (1.0 / 360.0 - iz2 / 1260.0));
+    return s - log(x * (x + 1.0) * (x + 2.0));
+}
+
+/// The variance of exp(-|x|^p / 2) along one axis, a unit gaussian's being 1:
+/// 2^(2/p) Gamma(3/p) / Gamma(1/p). 1/3 for the unit box.
+public float hardnessVariance(float p) {
+    return exp(2.0 / p * 0.69314718 + lnGamma(3.0 / p) - lnGamma(1.0 / p));
+}
+
+/// Its kurtosis, m4 / m2^2: Gamma(5/p) Gamma(1/p) / Gamma(3/p)^2. 3 for the
+/// gaussian, 1.8 for the box.
+public float hardnessKurtosis(float p) {
+    return exp(lnGamma(5.0 / p) + lnGamma(1.0 / p) - 2.0 * lnGamma(3.0 / p));
+}
+
+/// The p whose kurtosis is `k`, by bisection on 1/p (the kurtosis grows with
+/// it), at most `most`; a cluster as peaked as a gaussian or more is one.
+public float hardnessOfKurtosis(float k, float most) {
+    if (!(k < 2.999)) {
+        return 2.0;
+    }
+    if (hardnessKurtosis(most) >= k) {
+        return most;
+    }
+    float lo = 1.0 / most;   // the hardest
+    float hi = 0.5;          // the gaussian
+    for (uint it = 0; it < 24; ++it) {
+        const float mid = 0.5 * (lo + hi);
+        if (hardnessKurtosis(1.0 / mid) > k) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    return 2.0 / (lo + hi);
+}
+
 public static const float kSH0 = 0.28209479177387814;
+
+/// WHAT A LAMP'S LAYER IS PACKED AT (GpuSplats::lightLayers): its light per
+/// unit of the group's radiance times this, in RGB9E5. The light a lamp
+/// leaves on a body a few metres away is 1e-5 of its radiance and less, where
+/// RGB9E5's smallest exponent leaves a few steps; scaled, full precision
+/// reaches down to 1e-9 and the top is 4 -- an emitter seen through clear
+/// glass is 1.
+public static const float kLightLayerScale = 16384.0;
 
 /// Harmonic words per splat for `restPerColour` basis functions (3, 8, 15).
 public uint shWordsFor(uint restPerColour) { return (restPerColour * 3 + 1) / 2; }

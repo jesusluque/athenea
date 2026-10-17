@@ -8,6 +8,7 @@
 
 #include <array>
 #include <optional>
+#include <utility>
 #include <vector>
 #include <string>
 
@@ -57,6 +58,7 @@ struct ParticleFieldArrays {
     /// Nonzero where the gaussian came from a thin-walled glass.
     pxr::VtValue thinWalled;       ///< VtIntArray, one a gaussian
     pxr::VtValue schlickMetal;     ///< VtIntArray, one a gaussian: its metal is a Schlick
+    pxr::VtValue materialRoughness; ///< `:materialRoughness`, VtFloatArray or VtHalfArray, one a gaussian
     pxr::VtValue curvature;        ///< VtFloatArray, three a gaussian: the shape operator (uu, uv, vv)
     /// The shading normal each gaussian keeps apart from its frame
     /// (`primvars:athenea:splat:normal`), in the field's own space. Empty for a
@@ -69,6 +71,8 @@ struct ParticleFieldArrays {
     /// (`primvars:athenea:splat:emission`), linear. Empty for a capture and
     /// for a conversion of materials that emit nothing.
     pxr::VtValue emission;         ///< VtVec3fArray or VtVec3hArray, one a gaussian
+    /// A hard surfel's p (`primvars:athenea:splat:hardness`), one a gaussian.
+    pxr::VtValue hardness;         ///< VtFloatArray or VtHalfArray
     /// What the material layered over its base (`primvars:athenea:splat:
     /// specularWeight`, `:specularColor`, `:specularIor`, `:coatWeight`,
     /// `:coatRoughness`, `:coatIor`, `:sheenColor`, `:sheenRoughness`), one
@@ -83,6 +87,11 @@ struct ParticleFieldArrays {
     pxr::VtValue sheenColour;      ///< VtVec3fArray or VtVec3hArray
     pxr::VtValue sheenRoughness;
     pxr::VtValue coatDarkening;    ///< `:coatDarkening`, VtFloatArray or VtHalfArray
+    /// THE LAMPS' LAYERS: one array a group of lamps, named by the group
+    /// (`primvars:athenea:splat:lightLayer:<group>`), the light each gaussian
+    /// sends out from that group per unit of its radiance (`athenea lights
+    /// merge` writes them). Empty for a cloud with no lamps.
+    std::vector<std::pair<std::string, pxr::VtValue>> lightLayers;   ///< VtVec3fArray or VtVec3hArray each
     std::string  cryptoManifest;   ///< {"<path>":"<hex8>"} as the primvar holds it
     /// A LEVEL OF DETAIL OF A CLOUD THAT MOVES: the same cloud converted at
     /// several cells, each its own prim with its own rig, named alike by

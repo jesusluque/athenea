@@ -52,6 +52,7 @@ struct TextureInfo {
     std::string decode;
     bool        loaded = false;
     bool        udim = false;
+    bool        latLong = false;   ///< a dome's lat-long: its mips keep the solid-angle mean
     uint32_t    width = 0;    ///< the first tile's, for a UDIM set
     uint32_t    height = 0;
     std::string error;        ///< why it did not load, or a colour space nothing knew (read as the file says)
@@ -66,7 +67,9 @@ public:
     /// colour space `space` names (TextureInfo::space). Loaded at the next
     /// commit; until then, and if it cannot be, samples report it missing
     /// and materials use their defaults.
-    uint32_t request(const std::string& path, const std::string& space = {});
+    /// `latLong`: the image is a dome's lat-long, whose mips keep its
+    /// solid-angle mean (gpu::MipGenerator); asked once, it stays so.
+    uint32_t request(const std::string& path, const std::string& space = {}, bool latLong = false);
 
     /// Whether 8-bit sRGB files stay 8-bit behind an sRGB view (the default)
     /// or go through the compiled sRGB function like any other space: the
@@ -88,6 +91,14 @@ public:
 
     /// The sampler slot for these modes, shared by every texture asking the same.
     uint32_t sampler(Wrap s, Wrap t, Filter filter = Filter::Linear);
+    /// Texture `id` is read through sampler `sampler`. A kernel names both,
+    /// and on most devices that is all it takes; where a texture is read
+    /// through the sampler its view was made with (CUDA, DeviceCaps::
+    /// samplersInViews) the table binds a view made with this one -- without
+    /// it a texture wraps both ways and reads its first level only, and a
+    /// lat-long sky blurred its white half into its black at the poles.
+    /// The last call for a texture holds.
+    void sampleWith(uint32_t id, uint32_t sampler);
 
     /// Decodes and uploads what was requested since the last commit, mips
     /// made on the device. Returns how many files loaded.
@@ -118,12 +129,18 @@ private:
     struct Slot {
         gpu::Texture                   texture;
         rhi::ComPtr<rhi::ITextureView> view;   ///< sRGB for 8-bit colour, else the texture's own
+        rhi::Format                    viewFormat = rhi::Format::Undefined;   ///< `view`'s
+        /// Where samplers live in views: `view` again, made with sampler
+        /// `sampledWith`; made by bind() when the two differ.
+        mutable rhi::ComPtr<rhi::ITextureView> sampled;
+        mutable uint32_t                       sampledWith = 0;
     };
     struct Entry {
         TextureInfo           info;
         std::vector<uint32_t> tiles;   ///< a UDIM set: slot + 1 per cell of 1001..1100, 0 where none
         uint32_t              slot = 0;
         uint32_t              udimBase = 0;
+        uint32_t              sampler = 0;   ///< sampleWith's
         bool                  pending = true;
     };
 

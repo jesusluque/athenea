@@ -20,6 +20,7 @@
 #include "../gpu/GpuTest.h"
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -29,6 +30,7 @@
 
 #include "athenea/light/LightTable.h"
 #include "athenea/material/TextureStore.h"
+#include "athenea/io/Exr.h"
 #include "athenea/technique/Environment.h"
 
 using namespace athenea;
@@ -138,6 +140,7 @@ TEST_CASE("a sky of one colour prepares to the closed form a dome always had",
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
     auto table = light::LightTable::create(*gpu->library);
@@ -178,6 +181,7 @@ TEST_CASE("a sky that varies arrives with its variation, which a cloud could not
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
     auto table = light::LightTable::create(*gpu->library);
@@ -254,6 +258,7 @@ TEST_CASE("a sun is found in a sky, taken out of its harmonics and handed over a
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.intensity = kSunValue;   // so the disc is 20 and the sky 0.4
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
@@ -330,6 +335,7 @@ TEST_CASE("an even sky has no sun taken out of it", "[technique][environment][su
     lamp.texture = png.string();
     lamp.textureId = (*textures)->request(png.string(), "raw");
     lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
     lamp.shadow = false;
     REQUIRE((*textures)->commit());
     auto table = light::LightTable::create(*gpu->library);
@@ -342,5 +348,300 @@ TEST_CASE("an even sky has no sun taken out of it", "[technique][environment][su
     REQUIRE(environment->build(*table, **textures, domes, textureIds, 1));
     const SunReading sun = readSun(*gpu, *environment);
     std::printf("  even sky: cone %.4f (want 0)\n", double(sun.axis[3]));
+    CHECK(sun.axis[3] == 0.0F);
+}
+
+// A COMPACT SOURCE IN A ROUGH LEVEL IS ONE SOFT LOBE (s81). A sky of one with a
+// source of two texels at twenty -- bright, but not the sun `env_sun` takes out
+// (it wants 32 times the median) -- prefiltered: the level a paint's polish
+// reads (roughness 0.33) and the one past it must each hold it as a single
+// peak. 128 samples a texel along one sequence, each reading the source at the
+// level its own solid angle asks for, drew a sun as a scatter of blobs, and a
+// sunny panel read one of them a gaussian.
+TEST_CASE("a compact bright source prefilters to a single lobe", "[technique][environment][prefilter]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    constexpr uint32_t kW = 512, kH = 256;
+    std::vector<float> rgba(size_t{kW} * kH * 4, 0.0F);
+    for (uint32_t y = 0; y < kH; ++y) {
+        for (uint32_t x = 0; x < kW; ++x) {
+            float* t = rgba.data() + (size_t{y} * kW + x) * 4;
+            const bool source = x >= 150 && x < 152 && y >= 160 && y < 162;
+            const float v = source ? 20.0F : 1.0F;
+            t[0] = t[1] = t[2] = v;
+            t[3] = 1.0F;
+        }
+    }
+    const fs::path exr = scratchPath("sky_bright_source.exr");
+    REQUIRE(io::writeExr(exr, kW, kH, rgba, {}, /*half=*/false));
+    auto textures = material::TextureStore::create(*gpu->library);
+    if (!textures) FAIL(textures.error().toString());
+    light::Light lamp;
+    lamp.kind = light::LightKind::Dome;
+    lamp.texture = exr.string();
+    lamp.textureId = (*textures)->request(exr.string(), "raw", /*latLong=*/true);
+    lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
+    lamp.intensity = 1.0F;
+    lamp.shadow = false;
+    REQUIRE((*textures)->commit());
+    auto table = light::LightTable::create(*gpu->library);
+    if (!table) FAIL(table.error().toString());
+    REQUIRE(table->set(std::span<const light::Light>(&lamp, 1)));
+    auto environment = technique::Environment::create(*gpu->library);
+    if (!environment) FAIL(environment.error().toString());
+    const std::array<uint32_t, 1> domes{0};
+    const std::array<uint32_t, 1> textureIds{lamp.textureId};
+    REQUIRE(environment->build(*table, **textures, domes, textureIds, 1));
+    auto made = gpu::ComputeKernel::create(*gpu->library, "athenea/test/environment_check", "environmentPeaks");
+    if (!made) FAIL(made.error().toString());
+    gpu::ComputeKernel kernel = std::move(*made);
+    for (const uint32_t level : {4u, 5u}) {
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "environment.peaks");
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        const std::array<float, 8> zeros{};
+        auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+        REQUIRE(worst);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            kernel.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["envTexels"].setBinding(environment->texels().rhi());
+                cursor["envSh"].setBinding(environment->sh().rhi());
+                cursor["stats"].setBinding(stats.rhi());
+                cursor["worst"].setBinding(worst->rhi());
+                cursor["params"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["level"].setData(level);
+                cursor["peaks"]["baseSide"].setData(environment->baseSide());
+            });
+            REQUIRE(batch.submit(true));
+        }
+        std::array<uint32_t, 8> counts{};
+        std::array<float, 8> values{};
+        REQUIRE(stats.read(*gpu->device, 0, sizeof(counts), counts.data()));
+        REQUIRE(worst->read(*gpu->device, 0, sizeof(values), values.data()));
+        std::printf("  level %u: %u peaks over a quarter of the way to the brightest (%.2f), %u texels\n", level, counts[0],
+                    double(values[0]), counts[1]);
+        CHECK(counts[0] >= 1);
+        CHECK(counts[0] <= 2);   // one, or its two halves across the octahedron's fold
+    }
+    // AND IT KEEPS THE SKY'S LIGHT. A convolution moves light about and keeps
+    // all of it: every level's integral over the sphere is the source's, to
+    // two percent (research 078 sec 9 asked whether the prefilter loses a
+    // sun's energy; it ought not to). The source's integral in closed form:
+    // each texel its band of the sphere, (2 pi / W) (cos theta0 - cos theta1).
+    double source = 0.0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        const double band = (2.0 * 3.14159265358979 / kW) *
+                            (std::cos(3.14159265358979 * y / kH) - std::cos(3.14159265358979 * (y + 1) / kH));
+        for (uint32_t x = 0; x < kW; ++x) {
+            source += double(rgba[(size_t{y} * kW + x) * 4]) * band;
+        }
+    }
+    auto energyKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/environment_check", "environmentEnergy");
+    if (!energyKernel) FAIL(energyKernel.error().toString());
+    for (const uint32_t level : {2u, 3u, 4u, 5u, 6u}) {
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "environment.energy");
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        const std::array<float, 8> zeros{};
+        auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+        REQUIRE(worst);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            energyKernel->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["envTexels"].setBinding(environment->texels().rhi());
+                cursor["envSh"].setBinding(environment->sh().rhi());
+                cursor["stats"].setBinding(stats.rhi());
+                cursor["worst"].setBinding(worst->rhi());
+                cursor["params"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["level"].setData(level);
+                cursor["peaks"]["baseSide"].setData(environment->baseSide());
+            });
+            REQUIRE(batch.submit(true));
+        }
+        float held = 0.0F;
+        REQUIRE(worst->read(*gpu->device, 0, sizeof(held), &held));
+        std::printf("  level %u holds %.4f of the source's %.4f (%.4f)\n", level, double(held), source,
+                    double(held) / source);
+        CHECK(double(held) == Catch::Approx(source).epsilon(0.02));
+    }
+    // AND THE FRAME'S OWN READ KEEPS IT: `envRadiance` -- the levels blended,
+    // the octahedral texel, bilinear -- integrated over the sphere at the
+    // roughness of each level and between them (the paint's 0.34), against
+    // the source. The floating ball lost a fifth more than the split sum
+    // explains at a forced level whose integral was whole (research 078 sec
+    // 11); a read that loses light shows here.
+    auto readKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/environment_check", "environmentReadEnergy");
+    if (!readKernel) FAIL(readKernel.error().toString());
+    for (const float roughness : {0.0816F, 0.1837F, 0.3265F, 0.3421F, 0.5102F, 0.7347F}) {
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "environment.read");
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        const std::array<float, 8> zeros{};
+        auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+        REQUIRE(worst);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            readKernel->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["envTexels"].setBinding(environment->texels().rhi());
+                cursor["envSh"].setBinding(environment->sh().rhi());
+                cursor["stats"].setBinding(stats.rhi());
+                cursor["worst"].setBinding(worst->rhi());
+                cursor["params"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["dome"].setData(uint32_t{0});
+                cursor["reads"]["dome"].setData(uint32_t{0});
+                cursor["reads"]["count"].setData(uint32_t{262144});
+                cursor["reads"]["baseSide"].setData(environment->baseSide());
+                cursor["reads"]["readRoughness"].setData(roughness);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        float read = 0.0F;
+        REQUIRE(worst->read(*gpu->device, 0, sizeof(read), &read));
+        std::printf("  read at roughness %.4f: %.4f of the source's %.4f (%.4f)\n", double(roughness), double(read),
+                    source, double(read) / source);
+        CHECK(double(read) == Catch::Approx(source).epsilon(0.02));
+    }
+}
+
+// A SUN IS TAKEN OUT OF THE PREFILTERED SKY (s90). The split sum reads a compact
+// sun a quarter short whatever the level, so the map holds the sky without it
+// and the reflections take it analytically (splat_relight's sunReflectPdf). A
+// dark sky with two texels at thirty thousand: every level 2-6 must hold the
+// sky less the sun env_sun found (to 2% of the whole), and none of them a
+// texel brighter than fifty times the sky's own.
+TEST_CASE("a sun is taken out of the prefiltered sky", "[technique][environment][prefilter]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    constexpr uint32_t kW = 512, kH = 256;
+    constexpr float kSky = 0.02F;
+    std::vector<float> rgba(size_t{kW} * kH * 4, 0.0F);
+    for (uint32_t y = 0; y < kH; ++y) {
+        for (uint32_t x = 0; x < kW; ++x) {
+            float* t = rgba.data() + (size_t{y} * kW + x) * 4;
+            const bool source = x >= 150 && x < 152 && y >= 160 && y < 162;
+            t[0] = t[1] = t[2] = source ? 30000.0F : kSky;
+            t[3] = 1.0F;
+        }
+    }
+    const fs::path exr = scratchPath("sky_sun_out.exr");
+    REQUIRE(io::writeExr(exr, kW, kH, rgba, {}, /*half=*/false));
+    auto textures = material::TextureStore::create(*gpu->library);
+    if (!textures) FAIL(textures.error().toString());
+    light::Light lamp;
+    lamp.kind = light::LightKind::Dome;
+    lamp.texture = exr.string();
+    lamp.textureId = (*textures)->request(exr.string(), "raw", /*latLong=*/true);
+    lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
+    lamp.intensity = 1.0F;
+    lamp.shadow = false;
+    REQUIRE((*textures)->commit());
+    auto table = light::LightTable::create(*gpu->library);
+    if (!table) FAIL(table.error().toString());
+    REQUIRE(table->set(std::span<const light::Light>(&lamp, 1)));
+    auto environment = technique::Environment::create(*gpu->library);
+    if (!environment) FAIL(environment.error().toString());
+    const std::array<uint32_t, 1> domes{0};
+    const std::array<uint32_t, 1> textureIds{lamp.textureId};
+    REQUIRE(environment->build(*table, **textures, domes, textureIds, 1));
+    const SunReading sun = readSun(*gpu, *environment);
+    REQUIRE(sun.axis[3] > 0.0F);
+    double source = 0.0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        const double band = (2.0 * 3.14159265358979 / kW) *
+                            (std::cos(3.14159265358979 * y / kH) - std::cos(3.14159265358979 * (y + 1) / kH));
+        for (uint32_t x = 0; x < kW; ++x) {
+            source += double(rgba[(size_t{y} * kW + x) * 4]) * band;
+        }
+    }
+    const double residual = source - double(sun.power[1]);
+    auto peaksKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/environment_check", "environmentPeaks");
+    if (!peaksKernel) FAIL(peaksKernel.error().toString());
+    auto energyKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/environment_check", "environmentEnergy");
+    if (!energyKernel) FAIL(energyKernel.error().toString());
+    const auto run = [&](gpu::ComputeKernel& kernel, uint32_t level) {
+        gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "environment.sunout");
+        gpu::BufferDesc desc;
+        desc.bytes = 8 * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        const std::array<float, 8> zeros{};
+        auto worst = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+        REQUIRE(worst);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            kernel.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["envTexels"].setBinding(environment->texels().rhi());
+                cursor["envSh"].setBinding(environment->sh().rhi());
+                cursor["stats"].setBinding(stats.rhi());
+                cursor["worst"].setBinding(worst->rhi());
+                cursor["params"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["dome"].setData(uint32_t{0});
+                cursor["peaks"]["level"].setData(level);
+                cursor["peaks"]["baseSide"].setData(environment->baseSide());
+            });
+            REQUIRE(batch.submit(true));
+        }
+        float value = 0.0F;
+        REQUIRE(worst->read(*gpu->device, 0, sizeof(value), &value));
+        return value;
+    };
+    std::printf("  source %.4f, the sun env_sun took %.4f, the sky without it %.4f\n", source, double(sun.power[1]),
+                residual);
+    for (const uint32_t level : {2u, 3u, 4u, 5u, 6u}) {
+        const float held = run(*energyKernel, level);
+        const float brightest = run(*peaksKernel, level);
+        std::printf("  level %u holds %.4f (the sky without its sun %.4f), brightest texel %.3f\n", level,
+                    double(held), residual, double(brightest));
+        CHECK(std::abs(double(held) - residual) <= 0.02 * source);
+        CHECK(brightest < 50.0F * kSky);
+    }
+}
+
+// A SCATTER OF LAMPS IS NO SUN (s94). Three small bright sources a few degrees
+// apart pass the threshold within ten degrees of each other; taken out as one
+// disc at their centroid they put one highlight where a mirror shows three.
+// env_sun keeps a region only where its light is as concentrated as a disc of
+// its solid angle; this one stays in the sky.
+TEST_CASE("a scatter of lamps is not taken out as a sun", "[technique][environment][sun]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    constexpr uint32_t kW = 512, kH = 256;
+    std::vector<float> rgba(size_t{kW} * kH * 4, 0.0F);
+    for (uint32_t y = 0; y < kH; ++y) {
+        for (uint32_t x = 0; x < kW; ++x) {
+            float* t = rgba.data() + (size_t{y} * kW + x) * 4;
+            // three 1-texel lamps, about 5 degrees apart along the row
+            const bool lamp = y == 128 && (x == 250 || x == 257 || x == 264);
+            t[0] = t[1] = t[2] = lamp ? 3000.0F : 0.05F;
+            t[3] = 1.0F;
+        }
+    }
+    const fs::path exr = scratchPath("sky_lamps.exr");
+    REQUIRE(io::writeExr(exr, kW, kH, rgba, {}, /*half=*/false));
+    auto textures = material::TextureStore::create(*gpu->library);
+    if (!textures) FAIL(textures.error().toString());
+    light::Light lamp;
+    lamp.kind = light::LightKind::Dome;
+    lamp.texture = exr.string();
+    lamp.textureId = (*textures)->request(exr.string(), "raw");
+    lamp.sampler = (*textures)->sampler(material::Wrap::Repeat, material::Wrap::Clamp);
+    (*textures)->sampleWith(lamp.textureId, lamp.sampler);
+    lamp.intensity = 1.0F;
+    lamp.shadow = false;
+    REQUIRE((*textures)->commit());
+    auto table = light::LightTable::create(*gpu->library);
+    if (!table) FAIL(table.error().toString());
+    REQUIRE(table->set(std::span<const light::Light>(&lamp, 1)));
+    auto environment = technique::Environment::create(*gpu->library);
+    if (!environment) FAIL(environment.error().toString());
+    const std::array<uint32_t, 1> domes{0};
+    const std::array<uint32_t, 1> textureIds{lamp.textureId};
+    REQUIRE(environment->build(*table, **textures, domes, textureIds, 1));
+    const SunReading sun = readSun(*gpu, *environment);
+    std::printf("  three lamps: cone %.4f (want 0: no sun)\n", double(sun.axis[3]));
     CHECK(sun.axis[3] == 0.0F);
 }

@@ -33,6 +33,11 @@
 //   gradients   three words a gaussian, the record's ninth entry's bits: two
 //               halves each, how the first three joints' weights change along
 //               its two axes (`jointWeightGradients`)
+//   samplings   four words a gaussian: what of its material the TX bake reads
+//               back (StageMaterial::sampled's bits), the base weight a
+//               sampled colour is multiplied by, and the roughness and coat
+//               roughness the conversion was handed, as float bits
+//               (m2sTransferInto)
 //
 // It used to be done a splat at a time on the processor, out of a picture
 // read back for the purpose; nothing here computes, it only moves.
@@ -56,6 +61,12 @@ struct GatherParams {
     /// The picture's very last entry a gaussian is the surface's shape
     /// operator (Mesh2Splat's `writeCurvature`), which goes to `curvatures`.
     uint curved;
+    /// The run's material: what the bake reads back of it, and what was read
+    /// here (`samplings`).
+    uint  sampled;
+    float baseWeight;
+    float roughness;
+    float coatRoughness;
 };
 
 StructuredBuffer<float4>     picture;
@@ -64,6 +75,7 @@ RWStructuredBuffer<float4>   rays;
 RWStructuredBuffer<float4>   influences;
 RWStructuredBuffer<uint>     gradients;
 RWStructuredBuffer<float>    curvatures;   // three a gaussian, where `curved`
+RWStructuredBuffer<uint4>    samplings;    // one a gaussian
 ConstantBuffer<GatherParams> gather;
 
 float4 entryOf(uint splat, uint component) {
@@ -87,6 +99,8 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
 
     const uint out = gather.destFirst + splat;
     const uint at = out * gather.perRecord;
+    samplings[out] = uint4(gather.sampled, asuint(gather.baseWeight), asuint(gather.roughness),
+                           asuint(gather.coatRoughness));
     records[at + 0] = position.x;
     records[at + 1] = position.y;
     records[at + 2] = position.z;

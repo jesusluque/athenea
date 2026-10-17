@@ -33,9 +33,26 @@ escribe `!--no-x`, el comportamiento está activo y el flag lo apaga.
 ### 1.1 Un binario
 
 La sección *Building* del README tiene los requisitos con sus versiones y
-prefijos, los tres scripts de dependencias, los submódulos y los cuatro
+prefijos, los tres scripts de dependencias, los submódulos y los
 presets de CMake. Aquí no se repite. Lo que importa después es el entorno en
 el que corre el binario.
+
+Una release en GitHub trae un instalador y un archivo para cada sistema. Cada
+uno lleva los programas con todas las bibliotecas que cargan (OpenUSD con
+MaterialX, OpenVDB, TBB y Boost, OpenColorIO, Slang, OIDN y, en Linux y
+Windows, el runtime redistribuible de CUDA: NVRTC, nvJitLink, cudart); el
+driver de la GPU es el de la máquina.
+
+| Sistema | Instalador | Instala en | Necesita |
+|---|---|---|---|
+| macOS (Apple silicon) | `athenea-<v>-macos-arm64.pkg` | `/usr/local/athenea`, programas enlazados en `/usr/local/bin` | macOS 15 o posterior. Sin firma de Developer ID: se abre con clic derecho, Abrir. |
+| Linux (x86_64) | `athenea_<v>_amd64.deb` | `/opt/athenea`, programas enlazados en `/usr/bin` | glibc 2.39 (Ubuntu 24.04 o posterior) y un driver de NVIDIA con OptiX para hornear (570 o posterior). |
+| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, `bin\` añadido al `PATH` de la máquina | un driver de NVIDIA con OptiX (570 o posterior). Sin firma: SmartScreen pregunta una vez. |
+
+Los archivos (`.zip`, `.tar.gz`) llevan la misma carpeta y funcionan desde
+donde se descompriman: los programas encuentran los shaders, los bundles AOFX
+y el plugin de Hydra con rutas relativas a ellos. Bajo WSL2 un horneado se
+rechaza: WSL2 no carga OptiX.
 
 ### 1.2 El entorno de ejecución
 
@@ -44,8 +61,9 @@ el que corre el binario.
 | `ATHENEA_SHADER_DIR` | de dónde se leen los shaders de Slang. Sin ella el motor busca un directorio `shaders` que contenga `athenea/` junto a la imagen desde la que se cargó su código, o hasta tres directorios por encima -- `<exe>/../shaders` para un programa, `<build>/shaders` para el plugin de Hydra cargado por usdview o Blender --, luego junto al ejecutable, y luego en el directorio con el que se compiló. `athenea info` imprime el que está usando. |
 | `PXR_PLUGINPATH_NAME` | apunta una aplicación USD a `<build>/plugin/usd`, donde están el delegate de Hydra y los schemas codeless. La necesita cualquier host que no sea `athenea`. `athenea` registra por su cuenta `<su binario>/../plugin/usd` al arrancar, así que los schemas que aplica una nube convertida se escriben esté o no definida. |
 | `ATHENEA_MATERIALX_ROOT` | un directorio que contiene los `libraries/` de MaterialX, que el compilador de materiales de hdAthenea lee en lugar de las bibliotecas que cargó el USD del host. Sin definir por defecto: se usan las del host. Para un host cuyo MaterialX es anterior al generador de Slang (Blender 5.3 trae 1.39.4: sin implementaciones `genslang` y con definiciones de nodo anteriores), se apunta a las de 1.39.5. Se lee una vez, cuando compila el primer material; los renderers propios del host conservan las suyas. |
-| `AOFX_PLUGIN_PATH` | directorios extra de bundles AOFX, buscados antes que la ruta del sistema y antes que `--path`. |
+| `AOFX_PLUGIN_PATH` | directorios extra de bundles AOFX, buscados antes que la ruta del sistema y antes que `--path`. Después van `aofx/` junto a la carpeta del ejecutable (la disposición de una release) y los bundles del árbol de compilación. |
 | `ATHENEA_BACKEND` | qué dispositivo abrir, como un orden separado por comas: `metal,cuda,vulkan,d3d12`. Las palabras desconocidas avisan y se saltan. |
+| `ATHENEA_GPU_VALIDATION` | cualquier valor: las capas de validación y depuración de la API gráfica (la de D3D12 necesita las Graphics Tools de Windows), para un fallo del que el driver no da motivo, como un pipeline que no puede crear. Lento. |
 | `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina -- contando como libre lo que devuelve cuando se le pide (páginas inactivas, purgables y especulativas, y la caché de ficheros) -- diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
 | `ATHENEA_SHADER_CACHE` | dónde se cachean los shaders compilados entre ejecuciones. Por defecto, un directorio bajo el de caché de la plataforma. Borrarla cuesta un primer frame lento. |
 
@@ -69,15 +87,21 @@ lo que ve.
 ### 1.4 Metal y CUDA
 
 El motor abre un dispositivo y lo conserva. En macOS es Metal; en Linux es
-CUDA donde hay un dispositivo CUDA, y Vulkan si no. `ATHENEA_BACKEND` manda sobre
-ese orden.
+CUDA donde hay un dispositivo CUDA, y Vulkan si no (y en Windows CUDA, luego
+D3D12, luego Vulkan). Un build cuyo gpe es el de Vulkan
+(`GPE_BACKEND_WANTED=Vulkan`) prueba Vulkan primero, porque los efectos AOFX
+-- `mesh2splat` entre ellos -- sólo corren en el dispositivo que gpe comparte.
+`ATHENEA_BACKEND` manda sobre ese orden.
 
 Lo que cambia entre ellos, en la práctica:
 
 - **Ray tracing.** Metal tiene ray queries en línea y estructuras de
   aceleración pero no pipelines de rayos, así que la ruta que necesita un
-  pipeline no está disponible y `athenea info` lo dice. CUDA tiene las dos, con
-  las cabeceras de OptiX.
+  pipeline no está disponible y `athenea info` lo dice. CUDA tiene el pipeline
+  (OptiX, con sus cabeceras y un driver que lo cargue) y no tiene ray queries.
+  Un horneado necesita uno de los dos: donde no hay ninguno -- CUDA bajo WSL2,
+  que no carga OptiX -- `athenea mesh2splat` lo rechaza con "has no ray
+  tracing".
 - **El denoiser.** En Metal, Open Image Denoise corre en la cola del propio
   motor. En Vulkan corre a través de CUDA con memoria importada.
 - **Media precisión.** `athenea info` dice si la hay; donde no la hay el motor se
@@ -217,6 +241,67 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--reach` | 0.1..10 | `1.5` | a cuántas de sus desviaciones típicas puede estar una gaussiana de la fusión que la sustituye |
 | `--degree` | 0..3 | `3` | armónicos que se conservan |
 | `--no-camera` | flag | apagado | no añadir `/World/Camera` |
+| `--ratio` | 1..10000 | apagado | fundir por pares en vez de cortar el octree, hasta tener estas veces menos gaussianas; entonces no se leen las cuatro tolerancias de arriba |
+| `--edge` | 0..2 | `0.15` | `--ratio`: una diferencia de color, codificada en sRGB, que nunca se funde |
+| `--max-angle` | grados, 0..180 | `60` | `--ratio`: normales más separadas no se funden nunca |
+| `--max-aspect` | 1..1000 | `1000` (apagado) | `--ratio`: se rechaza una fusión cuyo plano sale más largo que esto frente a su anchura (o que 1.25 veces lo que ya eran sus miembros) -- una cadena de discos a lo largo de un embellecedor se fundiría en una aguja que emborrona |
+| `--merge-glass` | flag | apagado | `--ratio`: las gaussianas que transmiten (vidrio) también se funden entre sí; apagado, el vidrio se conserva tal cual |
+| `--no-surfels` | flag | apagado | `--ratio`: una fusión plana sigue siendo una gaussiana fina en vez de un surfel |
+| `--surfel-flatness` | 0..1 | `0.12` | `--ratio`: una fusión de discos cuyo eje más fino está por debajo de esta fracción del mediano se escribe como surfel |
+| `--highlight-cone` | 0..1000 | `1` | `--ratio`: en una superficie brillante (alpha GGX por debajo de 0.1), normales más separadas que esto por sqrt(alpha) radianes no se funden nunca -- la fusión movería el brillo; grande deja decidir solo a la proporción |
+| `--tree` | ruta | — | `--ratio`: además, el árbol de fusiones entero aquí: las hojas en orden de profundidad y luego cada fusión, con `primvars:athenea:splat:lodParent`, `lodCost`, `lodStart` y `lodSize` (su tramo de hojas) y la constante `lodTree` |
+| `--camera` | ruta de prim | `/World/Camera` donde la hay | `--ratio`: la cámara para la que se hace la nube; una fusión de menos de medio píxel en ella no cuesta nada de su forma |
+| `--camera-pixels` | 1..65536 | `1920` | `--ratio`: píxeles de ancho de la imagen de esa cámara |
+| `--max-cost` | > 0 | `0` (apagado) | `--ratio`: ninguna fusión cuesta más que esto; `--ratio` es entonces lo más lejos que llega, y donde cada par que queda cuesta más se para antes (en las piezas del Corvette 0.25 dejó una puerta a 6x y una rejilla a 2x) |
+| `--max-pixels` | > 0 | `0` (apagado) | `--ratio`: ninguna fusión más ancha que estos píxeles en la pantalla de `--camera`: una así no sostiene un borde, y sus colas sobresalen del panel como pelillos. En el Corvette (horneado a una gaussiana por píxel de su cámara) 3 dejó 2.14M de los 2.90M vistos, a 46 dB de la nube completa y sin pelillos; sin él, los 1.07M de 5x los tenían |
+| `--merge-opacity` | `mean`, `mass`, `mass-tight`, `falloff` | `mean` | `--ratio`: la opacidad de una fusión: la de sus miembros, ponderada por área, con la fusión ensanchada tanto como se solapaban; o su masa entre esa área ensanchada; o su masa entre el área que dan sus momentos, sin ensanchar; o esa masa sin tope hasta 5 -- el kernel más duro de Spark, donde una opacidad D mayor que 1 se dibuja como 1 - (1 - g)^A, A = exp((D² - 1)/e), una meseta tan sólida como lo eran los miembros. Medido en las piezas del Corvette: `mass` es `mean` en superficies opacas, `mass-tight` deja huecos; en el coche entero, ver `--hardness` |
+| `--hardness` | flag | apagado | `--ratio`: una fusión escrita como surfel se dibuja exp(-(\|u\|^p + \|v\|^p)/2) en sus propios ejes, con p a partir de la curtosis de sus miembros (una zona uniforme, una caja; una concentrada, la gaussiana), escrito como `primvars:athenea:splat:hardness`; conserva sus momentos, sin ensanchar, así que un lector que no conoce p dibuja la gaussiana que dan. Con `--merge-opacity falloff --max-pixels 4` el Corvette quedó en 1.85M de 5.38M sin pelillos, a 42.8 / 44.7 / 46.7 dB (día frente, día detrás, noche), donde las fusiones gaussianas necesitaban 3 px y 2.14M; a 5 px (1.24M) el paragolpes delantero se deshilacha |
+| `--max-hardness` | 2 a 32 | `16` | `--hardness`: la p más alta |
+| `--no-light-bands` | flag | apagado | `--ratio`: fundir a través de un cambio de cuatro veces en la luz de un grupo de lámparas (`primvars:athenea:splat:lightLayer:<grupo>`); apagado, una gaussiana iluminada y una sin iluminar se mantienen separadas, para que un disco fundido no extienda un faro de noche |
+| `--drop-hidden` | flag | apagado | primero dejar fuera lo que ninguna cámara alrededor de la nube ve: la nube dibujada por raster desde `--hidden-views` direcciones, cada una a 2.5, 1.6 y 1.15 veces el radio de su esfera envolvente, 90 grados de ancho, y una gaussiana que dio a todas juntas menos de `--hidden-pixels` de píxel se quita. Sin `--ratio`, solo eso |
+| `--hidden-views` | 1.. | `256` | `--drop-hidden`: direcciones, una espiral de Fibonacci sobre la esfera |
+| `--hidden-size` | 16.. | `1024` | `--drop-hidden`: píxeles de ancho de cada vista, cuadrada |
+| `--hidden-pixels` | >= 0 | `0.02` | `--drop-hidden`: lo que una gaussiana tiene que dar a todas las vistas juntas para quedarse, en píxeles (transmitancia por alpha sobre sus píxeles) |
+| `--hidden-below` | grados, -90..89 | `-90` (todo alrededor) | `--drop-hidden`: la elevación más baja desde la que se toma una vista, sobre el horizonte de la escena; `-10` para un coche en una carretera, que nunca se ve desde abajo |
+| `--prune-error` | > 1 | apagado | primero estas veces menos quitando, en `--prune-rounds` rondas, lo que deja el menor error cuadrático en una órbita de `--prune-views` direcciones a `--prune-size` píxeles (la puntuación de GaussianPOP). Medido en las piezas del Corvette: huecos en toda superficie opaca, peor que fundir salvo en una insignia; se mantiene para nubes que no son superficies |
+| `--prune-rounds`, `--prune-views`, `--prune-size` | 1.., 1.., 16.. | `8`, `64`, `512` | rondas, direcciones y píxeles de `--prune-error` |
+| `--passes` | 1.. | `60` | `--ratio`: como mucho estas pasadas por pares; un árbol de muchas piezas pequeñas necesita más para llegar a sus raíces (el Corvette entero: 4000) |
+| `--tree-coverage` | flag | apagado | la entrada es un árbol de merges: la opacidad de cada merge pasa a ser lo que sus hojas cubren de verdad, compuestas en su plano (`primvars:athenea:splat:coverage`), y su derrame, la fracción de lo que pinta que sus hojas no pintan (`primvars:athenea:splat:lodSpill`, 0 en una hoja); se escribe el árbol entero (con `--ratio 1`) |
+| `--tree-pages` | gaussianas | apagado | la entrada es un árbol de merges: sus páginas por error de estas gaussianas (`lodPage`, `lodPageInfo`, `lodPageBounds`); se escribe el árbol entero |
+| `--cut-error` | píxeles | apagado | la entrada es un árbol de merges: se queda el corte cuyo error, proyectado en la pantalla de `--camera`, no pasa de esto mientras el de su padre sí |
+| `--cut-bounds`, `--cut-guard` | flag, > 0 | apagado, `4` | `--cut-error`: el error de un nodo acota también la dispersión de color y el cono de normales de sus hojas; un merge más allá de las guardas (un pliegue, un borde de color) cuenta estas veces su error |
+| `--cut-cull-back` | flag | apagado | `--cut-bounds`: deja fuera los nodos cuyo cono de normales entero mira en sentido contrario a `--camera` en una pieza cerrada (`primvars:athenea:splat:closed`; nunca el cristal) |
+| `--cut-spill`, `--cut-spill-floor` | >= 0, 0..1 | `0`, `0` | `--cut-error`: el derrame de un merge por encima del umbral, por este peso, sumado a su error. En la parrilla del Corvette un peso de 2 no tapó sus huecos más que las hojas pero guardó un 82-99 % más de nodos, y ningún umbral separa los merges que tapan huecos de los de un panel: apagado |
+| `--occlusion-mask` | entradas | apagado | la entrada es un árbol de merges con bits de sombra de 16 x 16: la máscara de occlusion de cada nodo como índice en un codebook de estas entradas; se escribe el árbol entero |
+| `--occlusion-group` | rutas | -- | `--occlusion-mask`: más árboles que comparten un codebook con la entrada, cada uno escrito junto a la salida con su propio nombre; un árbol cuya salida es su misma ruta se escribe junto a él y se renombra encima |
+| `--cut-occlusion` | flag | apagado | `--cut-error`: deja fuera los nodos cuya máscara de occlusion está cerrada hacia `--camera` |
+| `--mark-closed` | ruta | -- | la entrada es un árbol de merges: un fichero de rutas de prim, una por línea, cuyos nodos son cascos cerrados (`primvars:athenea:splat:closed`, por `cryptoObject`) |
+| `--mark-material-roughness` | ruta | -- | la entrada es un árbol de merges: un fichero de líneas `ruta-de-prim rugosidad`; cada nodo recibe la rugosidad del material de su pieza (`primvars:athenea:splat:materialRoughness`, por `cryptoObject`; -1 para una pieza no nombrada) |
+
+**Por pares** (`--ratio`). En cada pasada, cada gaussiana -- o fusión hasta
+entonces -- pesa una fusión con sus 16 vecinas a lo largo de dos órdenes de
+Morton de los centros, y los pares que se han elegido mutuamente se funden, los
+más baratos primero, como mucho la mitad de lo que queda por pasada, hasta
+llegar a la cuenta o hasta que nada más pueda fundirse (el log dice cuál, y
+cuántas pasadas). El coste: cuánto más ancha es la fusión que lo que sustituye,
+sin escala y ponderado por lo ancha que es en la pantalla de la cámara (nada
+por debajo de medio píxel, todo a partir de dos); cuánto más gruesa que sus
+discos; el giro de las normales, más en un espejo (mueve el brillo); el color,
+codificado en sRGB; metallic, roughness y transmisión. Nunca se funde: una
+clave (ids, articulaciones, láminas, paredes finas, metales Schlick), vidrio
+con lo que no lo es, un espejo (roughness por debajo de 0.1) con lo que no lo
+es, normales más allá de `--max-angle`, un color más allá de `--edge`. Una
+fusión de discos plana hasta 0.12 de su anchura se escribe como surfel (una
+escala exactamente 0, `primvars:athenea:splat:surfel`); su opacidad es su masa
+entre su área, topada en 0.99, y la masa entre el área sin tope se escribe como
+`primvars:athenea:splat:coverage`. Con `--hardness`, la p de ese surfel se
+escribe como `primvars:athenea:splat:hardness` (2, una gaussiana), y con
+`--merge-opacity falloff` su opacidad puede pasar de 1 (hasta 5): el propio
+kernel más duro de Spark, que este raster dibuja como Spark y cualquier otro
+lector topa en 1. Cada array se funde sobre los registros que
+representa una gaussiana conservada, como abajo; `transferZonal` y
+`curvature`, que están en el marco propio de cada gaussiana, a través del marco
+de cada una al mundo y al de la conservada.
 
 Una escena sale como entró, con menos gaussianas: se copia su capa raíz -- el
 rig y su animación, las luces, la cámara, el manifiesto Cryptomatte, las
@@ -245,6 +330,8 @@ metros.
 ```sh
 athenea decimate car_gs.usdc car_fewer.usdc
 athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
+athenea decimate car_tx.usdc car_tx_10x.usdc --ratio 10
+athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 --ratio 2.7
 ```
 
 ### 2.5 `athenea stage` — una escena USD por el delegate de Hydra
@@ -266,6 +353,8 @@ athenea decimate capture.ply capture_fewer.usdc --colour-tolerance 0.1
 | `--variant` | `/World{set=valor}` ‹repetible› | ninguna | una selección de variante antes del primer frame |
 | `--motion-buckets` | 1..8 | `4` | rt: rodajas del obturador |
 | `--splat-override` | `PRIM=M,R,T[,R,G,B[,REPLACE]]` ‹repetible› | ninguno | metallic, roughness, transmission y un tinte para las gaussianas que vinieron de `PRIM` (una ruta del manifest Cryptomatte de la nube, `*` para todas); `-1` deja el de la gaussiana; `REPLACE` 1 hace de R,G,B el color en vez de un factor sobre él. Sólo una nube convertida con ids tiene manifest. Falla con un prim que ninguno nombra |
+| `--light-state` | nombre | ninguno | el estado de luces de la escena cuyos niveles toman sus grupos de lámparas (`athenea:lightState`, §4.2); sin él cada grupo queda en su `initialOn` |
+| `--light-level` | `GRUPO=NIVEL` ‹repetible› | ninguno | el nivel de un grupo de lámparas sobre el del estado (`athenea:lightLevel:GRUPO`): 0 apagado, 1 su radiancia, más para una lámpara que comparten dos funciones (un freno a 4 veces su piloto). Falla con un grupo que la escena no lleva |
 | `--refine` | entero | `0` | niveles de subdivisión; 0 dibuja la malla de control |
 | `--light-samples` | entero | `1` | muestras por luz y píxel |
 | `--no-transfer-indirect` | flag | se suma | dibujar una nube con transfer sin su mitad rebotada |
@@ -388,14 +477,15 @@ receta es §3.1.
 | `--cell-from-camera` | ruta de un prim cámara | ninguna | la celda de cada malla es lo que cubre un píxel de esa cámara donde la caja de la malla le queda más cerca (como poco el plano cercano), en `--time`; sustituye a `--density`. `--cell-min`/`--cell-max` la acotan, si se dan; no se deriva nada |
 | `--camera-pixels` | entero, de 1 a 65536 | `1920` | con `--cell-from-camera`: píxeles a lo ancho de la apertura horizontal de la cámara |
 | `--sigma` | número | `1.0` | anchura de la gaussiana en celdas; la de mesh2splat es 0.65 |
-| `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos |
+| `--flatness` | número | `0.1` | el tercer tamaño como fracción del menor de los otros dos; `0` hace de cada gaussiana un surfel -- el disco de los otros dos, una escala exactamente 0, dibujado por el rayo de cada píxel (gaussian splatting 2D) -- y marca la nube con `primvars:athenea:splat:surfel` |
 | `--opacity` | número, de 0 a 1 | `1.0` | cobertura: cuánto de lo que hay detrás cubre la superficie convertida, multiplicado por la opacidad propia del material. Toda opacidad es cobertura -- esta, la constante del material, el valor de un mapa, lo que conserva un vidrio -- y cada gaussiana toma lo que necesita una de las varias que hay sobre un punto, así que 0.5 cubre la mitad a cualquier tamaño |
-| `--glass-opacity` | número, de 0 a 1 | `0.6` | cobertura que conserva un sólido que transmite del todo. El fotograma de un transfer TX dibuja la imagen propia de la lente -- el cielo doblado por las dos caras, la lejana estimada por la curvatura, y el campo donde el paso está cerrado --, pero esa imagen sale solo de las cúpulas, así que lo que el resto deja pasar recto es la otra luz de la escena: a 1 una bola de vidrio bajo una lámpara perdía el suelo iluminado que hay detrás. Un vidrio de pared fina (y una opacidad de UsdPreviewSurface menor que uno en su modo `transparent` por defecto) cubre en cambio lo que la lámina refleja con su índice |
+| `--glass-opacity` | número, de 0 a 1 | `1` en un stage iluminado solo por cúpulas, `0.6` donde hay una lámpara o un sol | cobertura que conserva un sólido que transmite del todo. El fotograma de un transfer TX dibuja la imagen propia de la lente -- el cielo doblado por las dos caras, la lejana estimada por la curvatura, y el campo donde el paso está cerrado. Iluminado solo por cúpulas, la cara cercana cubre del todo: por debajo, la luz que dejaba pasar llegaba a las gaussianas de la cara lejana, que miran hacia atrás y no devuelven nada, y una bola transparente salía un 23 % oscura. Esa imagen sale solo de las cúpulas, así que bajo una lámpara lo que el resto deja pasar recto es la otra luz de la escena: a 1 una bola de vidrio bajo una lámpara perdía el suelo iluminado que hay detrás. Un vidrio de pared fina (y una opacidad de UsdPreviewSurface menor que uno en su modo `transparent` por defecto) cubre en cambio lo que la lámina refleja con su índice |
 | `--opacity-cut` | número, de 0 a 1 | `0.5` | donde la opacidad de un material es un mapa sin umbral propio (el `opacity` de UsdPreviewSurface, el `opacity` de standard_surface, el `geometry_opacity` de OpenPBR, el `alpha` de glTF en BLEND): por debajo de esto no se escribe ninguna gaussiana; por encima, la superficie cubre lo que lee el mapa. El umbral propio del material (`opacityThreshold`, el `alpha_cutoff` de glTF en MASK) se usa en su lugar, y lo que conserva queda entero |
 | `--max-cells` | entero | `262144` | celdas como mucho que recorre un triángulo |
 | `--texture-size` | entero | `1024` | un mapa se lee no mayor que esto; 0 lo lee a su tamaño |
 | `--no-textures` | flag | apagado | ignorar los mapas; los materiales se quedan con sus valores constantes |
 | `--normal-map-turns` | flag | apagado | el mapa de normales gira la gaussiana, no solo su sombreado. La normal de sombreado se escribe en ambos casos (`primvars:athenea:splat:normal`) |
+| `--edge-reach` | número, 0 a 8 | `1.5` | cuánto puede asomar una gaussiana por un borde donde su superficie termina (una arista abierta) o se pliega (dos triángulos que giran más de 40°), en sus propios tamaños: su tamaño en perpendicular a ese borde se limita a su distancia a él dividida por esto. Evita que la pestaña que un panel pliega hacia su junta asome sobre la pintura como una línea oscura, y que la pintura invada la junta. `0` no limita nada |
 | `--no-displacement` | flag | apagado | ignorar el displacement de los materiales: toda gaussiana se queda sobre la malla plana |
 | `--displace-refine` | entero, 1 a 64 | `8` | donde el relieve estira una celda, partirla en como mucho este número de gaussianas en cada uno de sus dos ejes |
 | `--simplify` | número, 0 a 1 | `0` (apagado) | un bloque de celdas cuyo color, metallic, roughness, emisión, recorte y normales varían no más que esto -- en el bloque y en un bloque más allá de cada lado, todo dentro de un triángulo -- se convierte en una gaussiana de su tamaño. Colores y recorte van de 0 a 1; la emisión se compara en sus propias unidades, así que una brillante se funde menos; las normales se comparan por la longitud de su diferencia, más o menos el ángulo en radianes |
@@ -424,11 +514,13 @@ receta es §3.1.
 | `--validate-material` | ruta de prim o nombre | todos los materiales | sólo este (repetible) |
 | `--validate-sky` | `white` o un fichero de imagen | las luces de la escena | cada fotograma bajo otro cielo -- una constante de radiancia uno, o esa imagen en los domos de la escena -- con sus demás luces apagadas; el GT se guarda como `gt_<cielo>.exr` |
 | `--shadow-catcher` | flag | apagado | convertir la sombra que `--prim` arroja sobre su suelo en vez de `--prim`: un parche de gaussianas sobre el suelo bajo él y alrededor, horneado como transfer TX (el objeto y el suelo son lo que encuentran sus rayos), escrito con `primvars:athenea:splat:catcher` y dibujado negro, cubriendo lo que el objeto quita de la luz. Implica `--transfer` y una sola celda en todas partes |
-| `--catcher-ground` | ruta de prim | encontrado | con `--shadow-catcher`: el suelo; se encuentra como la malla plana más grande fuera de `--prim` cuya cara superior está en su base y que llega por debajo de él |
-| `--catcher-margin` | número | `1.5` | con `--shadow-catcher`: hasta dónde pasa el parche de la huella del objeto, en alturas del objeto |
-| `--catcher-cell` | unidades del mundo | `0` | con `--shadow-catcher`: la celda del parche; 0 es una centésima de la altura del objeto |
+| `--catcher-ground` | ruta de prim | encontrado | con `--shadow-catcher` o `--light-catcher`: el suelo; se encuentra como la malla plana más grande fuera de `--prim` cuya cara superior está en su base y que llega por debajo de él |
+| `--catcher-margin` | número | `1.5` | con `--shadow-catcher` o `--light-catcher`: hasta dónde pasa el parche de la huella del objeto, en alturas del objeto |
+| `--catcher-cell` | unidades del mundo | `0` | con `--shadow-catcher` o `--light-catcher`: la celda del parche; 0 es una centésima de la altura del objeto, una treintava para un light catcher |
+| `--light-catcher` | flag | apagado | convertir la luz que las lámparas de la escena arrojan sobre el suelo de `--prim` en vez de `--prim`: el parche del shadow catcher (bajo `/AtheneaLightCatcher`), que llega `--light-reach` por delante y por detrás, horneado como la radiancia que emite bajo las luces de la escena, escrito con `primvars:athenea:splat:lightCatcher` y dibujado sumado sobre lo que haya detrás, sólo las capas de sus lámparas (§3.6). Implica el bake de radiancia y una sola celda en todas partes; se rechaza con `--transfer` y con `--shadow-catcher` |
+| `--light-reach` | número | `3` | con `--light-catcher`: hasta dónde pasa el parche de los extremos del objeto, a lo largo de su eje horizontal más largo, en longitudes del objeto; nunca menos de `--catcher-margin` alturas |
 | `--transfer-lobes` | 0 a 2 | `0` | con `--transfer`: guardarlo como este número de lóbulos zonales en el marco propio de cada gaussiana (el bundle `SplatTransferZonal`); 0 es dos lóbulos con `--skinned` y nueve armónicos en el mundo en otro caso |
-| `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales |
+| `--skinned` | flag | apagado | llevar el esqueleto; obliga a `--no-bake`, guarda un `--transfer` como lóbulos zonales, trazado en la pose de bind (los esqueletos de la escena se fijan ahí en la capa de sesión) diga lo que diga `--time` |
 | `--range` | `INICIO:FIN[:PASO]` | el rango de la escena | time codes que guarda una nube con esqueleto |
 | `--default-lights` | flag | apagado | un dome y un sol para el bake, en una escena sin luces |
 | `--time` | número | `0` | el instante en que se posa la escena y traza el bake |
@@ -443,6 +535,23 @@ Una malla cuyos GeomSubsets (familia `materialBind`) enlazan materiales
 propios se convierte un subset cada vez, cada uno con su material, y las caras
 que no reclama ningún subset con el de la malla; el log nombra el prim de cada
 subset. Sus gaussianas conservan el id Cryptomatte de la malla.
+
+Una entrada del material que no cabe en una constante ni en un mapa simple --
+una que calcula un grafo (un mix, un ruido, un teselado hexagonal), un
+`tiledimage` repetido o desplazado, un shader de superficie que no sea
+`standard_surface`, OpenPBR, el de glTF o UsdPreviewSurface, o un color de
+coat -- se nombra en el log, una vez por material y entrada:
+
+```
+mesh2splat: '/World/Looks/Materials/M_BrickPattern': 'base_color' is computed by a graph (ND_clamp_color3); a TX bake (--transfer) reads what it can of it back from the material on the device; otherwise the value read here stands
+```
+
+Con `--transfer` el bake lee esos campos del propio material en cada
+gaussiana -- el color base (por el color del coat que tiene encima), la
+rugosidad del especular y la del coat, la metalicidad y la emisión -- y dice en
+cuántas gaussianas: `mesh2splat: the material read back on the device into N
+gaussians`. Sin él conservan la constante que dio el stage. Un material que
+transmite conserva su color base tal como se leyó.
 
 La salida se escribe entera o no se escribe: como `.<nombre>.partial-<pid>.<ext>`
 en el mismo directorio, y renombrada a `-o` cuando está completa. Una
@@ -534,6 +643,42 @@ ajuste, y el empaquetado y la escritura.
 | `--cut` | número | `0.001` | transmitancia bajo la cual un rayo del bake se detiene |
 | `--time` | número | `0` | el instante en que se compromete la escena |
 
+### 2.9.1 `athenea lights merge` — una nube con sus lámparas
+
+La nube base (todas las lámparas apagadas) y una nube por grupo de lámparas,
+en la base con una capa de luz por grupo, que un frame suma por el peso de cada
+grupo (§3.6). Cada nube de capa tiene que ser la misma conversión de la misma
+geometría que la base, con sólo ese grupo encendido a radiancia uno.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `base` | ruta, obligatoria | — | `.usd`, `.usda`, `.usdc`: la nube con todas las lámparas apagadas |
+| `--layer` | `GRUPO=NUBE` ‹repetible›, obligatoria | — | la nube de un grupo; `GRUPO` pasa a ser `primvars:athenea:splat:lightLayer:GRUPO` y tiene que ser un identificador válido. Se toma su término constante (`0.5 + SH0 dc`, lineal donde la nube dice `primvars:athenea:splat:linear`, si no a través de la curva sRGB); sus otros armónicos no |
+| `--lights` | ruta | ninguna | un sidecar `.lights.usda` cuyos Scopes `LightGroups`, `LightStates` y `LightRules` se copian bajo el prim de la nube, estén donde estén en el sidecar |
+| `--prim` | ruta de prim | el primer ParticleField | el field de la base; el de una capa es su primero |
+| `--tolerance` | número | `1e-4` | cuánto puede apartarse una gaussiana de una capa de la de la base, por coordenada, relativo a la coordenada (absoluto por debajo de 1) |
+| `--drop-below` | número | `0` | una capa ninguna de cuyas gaussianas emite más que esto por unidad de radiancia (en algún canal) se descarta, y se dice |
+| `-o`, `--output` | ruta, obligatoria | — | el root layer de la base, con sus capas escritas en su field |
+
+Imprime una línea por grupo (`lights merge: cruce: 412093 of 3061200
+gaussians lit`, `, dropped` para una descartada), una línea por Scope copiado,
+y `lights merge: wrote RUTA`. Se niega, y no escribe nada, cuando una capa
+tiene otro número de gaussianas:
+
+```
+lights merge: 'layer_drl.usdc' (drl): 3061199 gaussians where the base 'base_tx.usdc' has 3061200; a layer must be the same conversion of the same geometry
+```
+
+o cuando alguna de sus gaussianas está en otro sitio:
+
+```
+lights merge: 'layer_drl.usdc' (drl): 12 of its 3061200 gaussians are not where the base's are (tolerance 0.0001); a layer must be the same conversion of the same geometry
+```
+
+Una capa que no dice que sus colores son lineales se lee como sRGB, con un
+aviso. La comparación y la conversión son un kernel por capa; vuelven dos
+contadores y los floats de la capa.
+
 ### 2.10 `athenea aofx` — los plugins de efectos
 
 Dos subsubcomandos.
@@ -566,8 +711,10 @@ athenea aofx run tv.mediapro.aofx.invert shot.exr -o inverted.exr
 Con una imagen imprime la media y el valor más alto de cada canal. Con dos, eso
 mismo para ambas y después cuánto se aleja la primera de la segunda, que se
 toma como referencia: el error HDR relativo (`relMSE`, p99 y mayor diferencia
-relativa) y la distribución en valores de código sRGB de 8 bits (p99, máximo,
-píxeles por encima de 2). La CPU solo lee los ficheros; cada número es de un
+relativa), la distribución en valores de código sRGB de 8 bits (p99, máximo,
+píxeles por encima de 2) y lo que se ve: el PSNR del color codificado en sRGB y
+la SSIM media de su luminancia en una caja de 7 x 7 (`display`). La CPU solo lee
+los ficheros; cada número es de un
 kernel. Los kernels son los del efecto Measure (§7.1), corridos por el host
 AOFX como los corre un compositor, así que el bundle tiene que estar en la
 ruta de búsqueda: uno compilado en este árbol siempre lo está.
@@ -1144,6 +1291,37 @@ Cada EXR lleva su timecode, su cadencia como racional, el instante TAI, el
 índice de frame, el tiempo USD y cuánto se retrasó el despertar, así que un
 frame se coloca en una línea de tiempo por lo que lleva dentro.
 
+### 3.6 Las lámparas de un coche
+
+Un coche cuyas lámparas se encienden en tiempo de ejecución es la nube base y
+una capa de luz por grupo de lámparas (docs/decisions.md, light groups). Cada
+una sale de la misma conversión de la misma geometría: la base con todas las
+lámparas apagadas, y una por grupo con sólo ese grupo encendido a radiancia uno
+y el domo negro. Después las capas se fusionan sobre la base, con los grupos y
+estados del `.lights.usda`:
+
+```sh
+athenea mesh2splat base.usda --prim /World/Corvette --transfer ... -o base_tx.usdc
+athenea mesh2splat group_cruce.usda --prim /World/Corvette ... -o layer_cruce.usdc   # y cada grupo
+athenea lights merge base_tx.usdc --layer cruce=layer_cruce.usdc --layer drl=layer_drl.usdc \
+    --lights corvette.lights.usda -o corvette_lights.usdc
+athenea stage night.usda --light-state noche_ciudad -o night.exr
+athenea stage night.usda --light-state aparcado --light-level drl=0.5 -o drl.exr
+```
+
+La luz que las lámparas arrojan sobre el suelo es un light catcher
+(`mesh2splat --light-catcher`), convertido igual -- una base y uno por grupo,
+sobre las mismas escenas -- y fusionado igual; los mismos pesos encienden el
+coche y su charco de luz. Un frame dibuja, para cada grupo, su nivel por su
+`emissionLuminance` por su `emissionColor` por su capa, sumado a lo que
+muestra la nube; el nivel de un grupo es `athenea:lightLevel:<grupo>` donde
+esté puesto, si no el objetivo del estado (`athenea:lightState:target:<grupo>`,
+0 donde el estado no lo nombra), si no 1 con `initialOn` y 0 sin él. Una capa
+es luz por unidad de radiancia del grupo: el material del grupo a
+`emission_luminance` 1 cuando se horneó. Encender una lámpara no sube nada.
+Las reglas y las curvas en el tiempo no se evalúan (un estado y niveles es lo
+que toma un frame), y sólo el rasterizador suma las capas.
+
 ## 4. Autorizar para este motor en USD
 
 ### 4.1 Apuntar una aplicación al plugin
@@ -1301,6 +1479,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathAdaptive` | bool | `false` | parar un píxel cuando su error baja lo suficiente |
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
+| `athenea:glassShadows` | bool | `true` | rt y sus bakes: el rayo de sombra de una luz sigue a través de hasta 4 caras de vidrio cuya transmisión es una delta (una pared fina; un sólido de rugosidad especular constante por debajo de 0.03), teñido por cada una; apagado, el vidrio lo detiene |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
 | `athenea:motionBuckets` | int | `4` | rt: rodajas del obturador, de 1 a 8 |
 | `athenea:antialias` | bool | `true` | un desplazamiento subpíxel por pasada |
@@ -1325,6 +1504,8 @@ Leídos pero no declarados:
 | `athenea:disableMotionBlur` | bool | settings o producto | para ese producto |
 | `athenea:disableDepthOfField` | bool | settings o producto | para ese producto |
 | `athenea:lightGroup` | string | un prim de luz | el grupo bajo el que se reúne su aportación |
+| `athenea:lightState` | string | prim de settings, o un host | el estado de luces cuyos objetivos toman los grupos de lámparas de una escena; vacío: cada uno en su `initialOn` (§3.6). Lo lee `StageRenderer`, no hdAthenea bajo otro host |
+| `athenea:lightLevel:<grupo>` | float | prim de settings, o un host | el nivel de ese grupo de lámparas sobre el del estado: 0 apagado, 1 su radiancia |
 
 ### 4.3 Los schemas de API
 
@@ -1340,6 +1521,9 @@ la radiancia que lleva.
 | `primvars:athenea:splat:litBody` | bool | `false` |
 | `primvars:athenea:splat:catcher` | bool | `false` |
 | `primvars:athenea:splat:linear` | bool | `false` |
+| `primvars:athenea:splat:surfel` | bool | `false` |
+| `primvars:athenea:splat:coverage` | float[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:hardness` | float[] ‹1 por gaussiana›, 2 a 32 | — (2) |
 | `primvars:athenea:splat:metallic` | float[] | — |
 | `primvars:athenea:splat:roughness` | float[] | — |
 | `primvars:athenea:splat:transmission` | float[] | — |
@@ -1352,6 +1536,7 @@ la radiancia que lleva.
 | `primvars:athenea:splat:thinWalled` | int[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:curvature` | float[] ‹3 por gaussiana› | — |
 | `primvars:athenea:splat:schlickMetal` | int[] ‹1 por gaussiana› | — |
+| `primvars:athenea:splat:materialRoughness` | float[] ‹1 por gaussiana, de 0 a 1, o -1› | — |
 | `primvars:athenea:splat:normal` | normal3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:emission` | color3f[] ‹1 por gaussiana› | — |
 | `primvars:athenea:splat:specularWeight` | float[] ‹1 por gaussiana, 0 a 1› | `1` |
@@ -1451,6 +1636,13 @@ especular rasante -- y no el conductor de índice artístico que son el de
 standard_surface y el de UsdPreviewSurface; `athenea mesh2splat` lo escribe
 según el vocabulario del material. Para un metal oscuro los dos se separan al
 doble a sesenta grados.
+`materialRoughness` es la rugosidad del propio material de la gaussiana, antes
+de que `--specular-filter` ensanchara la `roughness` guardada por la
+dispersión de normales bajo la gaussiana; -1 donde el material la lee de un
+mapa. `athenea mesh2splat` la escribe. Donde vale al menos 0.3, el campo
+reflejado de una transferencia TX responde de lo que el propio lóbulo del
+pulido encuentra cerrado -- una bola muestra su suelo --, y por debajo, o en
+una nube sin él, esa parte queda oscura.
 `thinWalled` es distinto de cero donde la gaussiana vino de un vidrio de pared
 fina (`geometry_thin_walled` de OpenPBR): la conversión la hizo tan
 transparente como la lámina (una tarjeta de ellas detiene `2R/(1+R)`, 0,077
@@ -1613,6 +1805,25 @@ Material que lo diga.
 Un Material con un terminal `volume` es la manera estándar de decir lo mismo,
 y donde hay uno atado, gana.
 
+**Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
+nube son un primvar por grupo en su field, y sus grupos y estados son
+atributos en prims Scope -- hijos de un Scope `LightGroups` y de uno
+`LightStates` en cualquier lugar de la escena, ganando el primero de cada
+nombre (§3.6):
+
+| Atributo | En | Tipo | Por defecto |
+|---|---|---|---|
+| `primvars:athenea:splat:lightLayer:<grupo>` | el field | color3f[] ‹1 por gaussiana, lineal, por unidad de radiancia› | — |
+| `primvars:athenea:splat:lightCatcher` | el field | bool | `false` |
+| `athenea:lightGroup:emissionLuminance` | un grupo | float | `1` (`:radiance` donde falta este) |
+| `athenea:lightGroup:emissionColor` | un grupo | color3f | `(1, 1, 1)` (`:color` donde falta este) |
+| `athenea:lightGroup:initialOn` | un grupo | bool | `false` |
+| `athenea:lightState:target:<grupo>` | un estado | double | un grupo no nombrado está a `0` |
+
+Una nube lleva como mucho 16 capas; una capa que no es tres floats por
+gaussiana se deja fuera con un aviso. Un light catcher dibuja sólo sus capas,
+sumadas sobre lo que haya detrás, y no proyecta nada.
+
 ### 4.4 Qué ignora el motor, y qué rechaza
 
 **Ignora** aquello para lo que no tiene significado: un primvar que no lee, un
@@ -1655,7 +1866,8 @@ transform y la codificación de pantalla; la exposición; el obturador; la
 escala de render, que dibuja a una fracción de la ventana y cuesta en
 proporción; la línea de tiempo con play, pausa, paso y *every frame*; los
 conjuntos de variantes que lleva la escena, con un filtro cuando uno tiene más
-de una docena; el bloque **Lights**; el bloque **Sky**; y abajo, el
+de una docena; el bloque **Lights**; el bloque **Lamps**, donde la escena
+lleva grupos de luces; el bloque **Sky**; y abajo, el
 dispositivo, los tiempos del
 frame, lo que tenía el último frame, y qué se picó.
 
@@ -1705,6 +1917,14 @@ encendida sea cual sea la imagen que el combo **Sky** ponga en el domo, y deja
 un brillo que ningún cielo explica. Un domo apagado se lleva su cielo, fondo
 incluido, y sale del bloque **Sky** hasta que se vuelve a encender; encenderlo
 cuesta la reconstrucción que cuesta un cielo nuevo.
+
+**Lamps** son los grupos de luces de la escena (§3.6): un combo *State* --
+*(as each starts)* y cada estado que lleva la escena; elegir uno borra los
+niveles puestos sobre el anterior -- y por cada grupo un interruptor y un
+slider *Level*, de 0 a 4. Cada uno es un render setting (`athenea:lightState`,
+`athenea:lightLevel:<grupo>`), que el siguiente frame convierte en los pesos de
+los grupos: no se recarga ni se vuelve a hornear nada. Al pasar por encima de
+un grupo dice su prim, su `emissionLuminance` y su `emissionColor`.
 
 **Stage** es el árbol de prims, y lo picado queda seleccionado en él.
 
@@ -1887,6 +2107,7 @@ cada uno exacto (alto es 0 por debajo de 16 777 216):
 | `reference` | lo mismo de Reference; solo si está conectada |
 | `hdr` | relMSE, diferencia relativa p99, mayor diferencia relativa, la suma del error cuadrático relativo, píxeles (alto, bajo) |
 | `codes` | p99 de 8 bits, máximo de 8 bits, píxeles por encima de `threshold` (alto, bajo), `threshold`, píxeles (alto, bajo) |
+| `display` | PSNR del color codificado en sRGB (dB, 999 si son iguales), SSIM media de la luminancia codificada en una caja de 7 × 7, el error cuadrático medio del color codificado |
 
 La diferencia relativa va en bins de un octavo de octava desde 2^-16, así que
 su p99 y su máximo son la cota superior de un bin (en torno al 9 %). Las sumas
@@ -1968,6 +2189,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | Qué se imprime | Qué significa | Qué hacer |
 |---|---|---|
 | `no GPU device` (los tests se saltan) | no se pudo abrir dispositivo | mira `athenea info`; en Linux pon `ATHENEA_BACKEND` |
+| `<prim> carries lucabRTrender's names (lrt:…), which athenea does not read` | una nube escrita antes del cambio de nombre: su rig, su relight y su campo de visibilidad están en `primvars:lrt:*`, así que se dibuja quieta y sin iluminar | `athenea migrate <fichero> -o <copia>` (`--recursive` para las capas que nombra), §2.12 |
 | `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
 | `no Measure bundle on the AOFX search path` | `athenea compare` no encontró `rt.sparrow.aofx.measure` | compila el target `athenea_aofx_measure`, o da su directorio con `--path` |
 | `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |

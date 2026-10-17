@@ -77,6 +77,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.projectPlain_, "athenea/splat/splat_project", "splatProjectPlain"));
     ATHENEA_TRY(make(r.projectFirst_, "athenea/splat/splat_project", "splatProjectFirst"));
     ATHENEA_TRY(make(r.projectCatcher_, "athenea/splat/splat_project", "splatProjectCatcher"));
+    ATHENEA_TRY(make(r.projectLightCatcher_, "athenea/splat/splat_project", "splatProjectLightCatcher"));
     ATHENEA_TRY(make(r.viewless_, "athenea/splat/splat_project", "splatTransferViewless"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
     ATHENEA_TRY(make(r.pointsProject_, "athenea/splat/points_project", "pointsProject"));
@@ -156,8 +157,9 @@ Result<void> TileRasterizer::reserveSplats(uint32_t count) {
         into = *made;
         return ok();
     };
-    ATHENEA_TRY(assign(proj_, n, 48, "splat.proj"));
-    ATHENEA_TRY(assign(slopes_, n, 16, "splat.slopes"));
+    ATHENEA_TRY(assign(proj_, n, 64, "splat.proj"));   // ProjRecord: screen, conic, colour, surfel
+    // The slopes, then a sharp record's polish from slot n on (polishPlane).
+    ATHENEA_TRY(assign(slopes_, uint64_t{n} * 2, 16, "splat.slopes"));
     ATHENEA_TRY(assign(cryptoIds_, n, 4, "splat.cryptoIds"));
     ATHENEA_TRY(assign(tileRects_, uint64_t{n} * 4, 4, "splat.tileRects"));
     ATHENEA_TRY(assign(tilesTouched_, n, 4, "splat.tilesTouched"));
@@ -376,7 +378,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         gpu::ComputeKernel& chosen = txCells ? project_ : cloud->hasTransfer() ? projectFirst_ : projectPlain_;
         // And a shadow catcher's, beside them: black, as opaque as what its
         // object took (splatProjectCatcher).
-        gpu::ComputeKernel& project = instance.catcher ? projectCatcher_ : chosen;
+        // And a light catcher's: the lamps' light on a ground, added.
+        gpu::ComputeKernel& project = instance.catcher        ? projectCatcher_
+                                      : instance.lightCatcher ? projectLightCatcher_
+                                                              : chosen;
         // WHAT THE EYE DOES NOT CHANGE, KEPT (splat_project's
         // splatTransferViewless): a cloud with a transfer, under lights and a
         // sky that say when they changed, keeps its view-independent terms a
@@ -384,7 +389,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         // they depend on moved -- the lights, the sky, the cloud, its place.
         TxCache* kept = nullptr;
         bool keep = false;
-        if (txCells && !instance.catcher && instance.relight && lights != nullptr && lights->revision != 0 &&
+        if (txCells && !instance.catcher && !instance.lightCatcher && instance.relight && lights != nullptr && lights->revision != 0 &&
             lights->environment()) {
             uint64_t key = lights->revision * 0x9E3779B97F4A7C15ULL;
             const auto mix = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ULL; };
@@ -421,6 +426,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             const bool curved = cloud->hasCurvature() && txCells;
             cursor["curvature"].setBinding(curved ? cloud->curvature.rhi() : cloud->shape.rhi());
             cursor["slopes"].setBinding(slopes_.rhi());
+            cursor["params"]["polishPlane"].setData(splatCapacity_);
             cursor["positions"].setBinding(cloud->positions.rhi());
             cursor["shape"].setBinding(cloud->shape.rhi());
             cursor["sh"].setBinding(cloud->sh.rhi());
@@ -508,6 +514,19 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["params"]["hasCurvature"].setData(
                 uint32_t{cloud->hasCurvature() && txCells ? 1u : 0u});
             cursor["lobes"].setBinding(cloud->hasLobes() ? cloud->lobes.rhi() : cloud->shape.rhi());
+            // The lamps' layers and this frame's weight of each, where the
+            // cloud carries them and the frame weighs them. Bound either way,
+            // as every name a shader declares; `lightLayers` of 0 says not read.
+            // The weights go in the constants: a buffer of their own put the
+            // TX entry point at `buffer(32)`, past Metal's thirty-one.
+            const bool lamps = cloud->hasLightLayers() && instance.lightWeights != nullptr;
+            cursor["params"]["lightLayers"].setData(
+                lamps ? std::min(cloud->lightLayerCount, scene::GpuSplats::kMaxLightGroups) : 0u);
+            cursor["lightLayers"].setBinding(lamps ? cloud->lightLayers.rhi() : cloud->shape.rhi());
+            if (lamps) {
+                cursor["params"]["lightWeights"].setData(instance.lightWeights,
+                                                         sizeof(float) * 4 * scene::GpuSplats::kMaxLightGroups);
+            }
             // What a pick said this prim is made of. Bound either way, as
             // every name a shader declares; `overrideCount` of 0 is what says
             // the table is not read.
@@ -724,6 +743,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["pairSplats"].setBinding(tileSort_.values.rhi());
         cursor["proj"].setBinding(proj_.rhi());
         cursor["slopes"].setBinding(slopes_.rhi());
+        cursor["params"]["polishPlane"].setData(splatCapacity_);
+        // The first dome's sky, which a sharp lobe reads per pixel (kSharpMark).
+        const bool sky = lights != nullptr && lights->environment();
+        cursor["envTexels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());
+        cursor["envSun"].setBinding(sky ? lights->envSun->rhi() : emptyEnvSh_.rhi());
         cursor["underColour"].setBinding(under != nullptr ? under->colour.rhi() : placeholderColour_.rhi());
         cursor["underDepth"].setBinding(under != nullptr ? under->depth.rhi() : placeholderDepth_.rhi());
         cursor["colour"].setBinding(targets.colour.rhi());
@@ -732,9 +756,18 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["underCrypto"].setBinding(underCrypto ? under->cryptoIds.rhi()
                                                      : placeholderCrypto_.rhi());
         cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderColour_.rhi());
+        cursor["contribution"].setBinding(settings.contribution != nullptr ? settings.contribution->rhi()
+                                                                           : visible_.rhi());
         setFrame(cursor, common);
+        cursor["finalColour"].setBinding(settings.finalColour != nullptr ? settings.finalColour->rhi()
+                                                                          : placeholderColour_.rhi());
+        cursor["params"]["contributionMode"].setData(settings.contribution == nullptr ? 0u
+                                                     : settings.contributionMode == 2u && settings.finalColour != nullptr
+                                                         ? 2u
+                                                         : 1u);
         cursor["params"]["hasUnder"].setData(uint32_t{under != nullptr ? 1u : 0u});
         cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
+        cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
     });
     if (settings.countSplats) {
         // What the panel shows, counted from what the frame already wrote

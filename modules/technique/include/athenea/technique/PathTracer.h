@@ -53,6 +53,13 @@ struct PathSettings {
     /// by the power heuristic (false: next event estimation alone lights a
     /// surface, as before MIS; a comparison's other half).
     bool     mis = true;
+    /// Let next event estimation's shadow rays through glass whose
+    /// transmission is a delta -- a thin wall, a smooth solid -- tinted by
+    /// what each face lets through, and weigh the material's rays that reach
+    /// a light through the same glass against them (`athenea:glassShadows`).
+    /// False: glass stops a shadow ray, and a lamp behind its lens lights
+    /// only what the material's rays find through it.
+    bool     glassShadows = true;
 };
 
 /// How much of a frame has converged, for the adaptive gate: pixels the
@@ -111,7 +118,26 @@ struct BakePoints {
     /// the indirect half and fits once (`athenea/usd/bake_resolve`). Not
     /// with `transfer`.
     bool               split = false;
+    /// AND READ THE MATERIAL BACK, with `transfer`: what the material is at
+    /// each point's first vertex, averaged over its samples, in
+    /// `kBakeMaterialPlanes` planes after everything else -- (base colour,
+    /// the share of it a diffuse lobe gave), (roughness, metalness, the
+    /// coat's roughness, 0), (emission, the samples), (the tint over the
+    /// metal's or the specular's reflection, 0) -- with -1 where the
+    /// material had no such lobe (`athenea/material/material_sample`). What
+    /// a conversion uses where an input is computed by a graph and a
+    /// constant or a plain map cannot carry it.
+    bool               material = false;
 };
+
+/// The planes a transfer that reads the material back writes after the rest.
+inline constexpr uint32_t kBakeMaterialPlanes = 4;
+[[nodiscard]] inline uint32_t bakeMaterialPlanes(bool transfer, bool material) noexcept {
+    return transfer && material ? kBakeMaterialPlanes : 0u;
+}
+[[nodiscard]] inline uint32_t bakeMaterialPlanes(const BakePoints& bake) noexcept {
+    return bakeMaterialPlanes(bake.transfer, bake.material);
+}
 
 /// THE CELLS A SIDE A TX TRANSFER'S GRID MAY HAVE: 16 or 32, or 0 for the
 /// first transfer's 8 x 8.

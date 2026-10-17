@@ -12,10 +12,22 @@ public struct MaterialRecord {
     public uint blob;       // its first word in the blob
     public uint flags;
     /// A transmitting row's (kMaterialTransmits) constants, for a ray that
-    /// does not evaluate it: the low 16 bits the transmission's weight times
-    /// its colour's luminance, the high 16 its index over 1 to 4, unorm.
+    /// does not evaluate it: the transmission's weight and colour, red,
+    /// green and blue in the low three bytes, and its index over 1 to 4 in
+    /// the high one, unorm (transmissionTint, transmissionIndex).
     public uint pad0;
 };
+
+/// What a transmitting row lets through a crossing, before Fresnel: its
+/// weight times its colour, linear rgb.
+public float3 transmissionTint(MaterialRecord m) {
+    return float3(float(m.pad0 & 0xffu), float((m.pad0 >> 8) & 0xffu), float((m.pad0 >> 16) & 0xffu)) / 255.0;
+}
+
+/// Its dielectric's index.
+public float transmissionIndex(MaterialRecord m) {
+    return 1.0 + 3.0 * float(m.pad0 >> 24) / 255.0;
+}
 
 /// MaterialRecord.flags
 public static const uint kMaterialCutout = 1u;   // its opacity says whether a sample is there: cut, never blended
@@ -26,6 +38,12 @@ public static const uint kMaterialTransparent = 2u;
 /// that asks only whether the way is open looks at it rather than stopping
 /// (the bake's cells, the path tracer's `pathThrough`).
 public static const uint kMaterialTransmits = 8u;
+/// Its transmission is a delta -- a thin wall, or a smooth solid -- so a
+/// path tracer's shadow ray passes it tinted rather than stopping
+/// (PathTracer's glassPasses, `athenea:glassShadows`).
+public static const uint kMaterialGlassShadow = 16u;
+/// And a thin wall: one face is the whole glass.
+public static const uint kMaterialThinGlass = 32u;
 /// The least probability a transparent surface is kept with, by a raster
 /// pixel's lot or a path's: held off zero so a window at opacity 0 still
 /// reflects, one sample in twenty at twenty times the weight.

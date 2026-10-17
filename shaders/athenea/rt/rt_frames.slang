@@ -31,7 +31,7 @@ void rtFrames(uint3 tid: SV_DispatchThreadID) {
     }
     const float4 p = positions[i];
     const uint row = i * 4;
-    const float3 s = exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2])));
+    const float3 s = surfelSafeScale(exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2]))));
     // local = S^-1 R^T (x - centre)
     const float3x3 m = mul(float3x3(1.0 / s.x, 0.0, 0.0, 0.0, 1.0 / s.y, 0.0, 0.0, 0.0, 1.0 / s.z),
                            transpose(rotationOf(decodeQuaternion(shape[row]))));

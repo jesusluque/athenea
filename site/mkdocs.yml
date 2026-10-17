@@ -1,0 +1,87 @@
+# Copyright (c) 2026 jesus luque.
+site_name: athenea
+site_description: A relight baker for 3D Gaussian splatting from production USD assets
+site_url: https://jesusluque.github.io/athenea/
+repo_url: https://github.com/jesusluque/athenea
+repo_name: jesusluque/athenea
+edit_uri: ""
+copyright: "© 2026 jesus luque"
+docs_dir: docs
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle: { icon: material/brightness-4, name: Dark }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle: { icon: material/brightness-7, name: Light }
+  font:
+    text: DM Sans
+    code: DM Mono
+
+extra_css:
+  - assets/athenea.css
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: es
+          name: Español
+          build: true
+          site_description: Un baker de relight para 3D Gaussian splatting a partir de assets USD de producción
+          nav_translations:
+            Home: Inicio
+            Desktop installation: Instalación de escritorio
+            Tutorials: Tutoriales
+            From a USD asset to a baked cloud: De un asset USD a una nube con bake
+            Rendering and comparing with the path trace: Render y comparación con el path trace
+            Preparing a USD stage: Preparar un stage USD
+            Large clouds and levels of detail: Nubes grandes y niveles de detalle
+            Reference: Referencia
+            Presentations: Presentaciones
+            Credits: Créditos
+
+nav:
+  - Home: index.md
+  - Desktop installation: install.md
+  - Tutorials:
+      - From a USD asset to a baked cloud: tutorials/usd-to-cloud.md
+      - Rendering and comparing with the path trace: tutorials/render-compare.md
+      - Preparing a USD stage: tutorials/authoring-usd.md
+      - Large clouds and levels of detail: tutorials/large-clouds.md
+  - Reference: reference.md
+  - Presentations: presentations.md
+  - Credits: credits.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc: { permalink: true }
+  - pymdownx.superfences
+  - pymdownx.highlight: { anchor_linenums: true }
+  - pymdownx.inlinehilite
+  - pymdownx.details

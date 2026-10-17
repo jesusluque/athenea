@@ -17,6 +17,7 @@
 //                   two, which is what a convolution is.
 module environment_check;
 import athenea.light.environment;
+import athenea.common.octahedral;
 
 struct EnvCheckParams {
     uint  dome;
@@ -97,4 +98,127 @@ void environmentCheck(uint3 tid: SV_DispatchThreadID) {
     if (params.roughExpected >= 0.0 && abs(worst[6] - params.roughExpected) > params.tolerance) {
         InterlockedAdd(stats[4], 1u);
     }
+}
+
+
+/// A ROUGH LEVEL HOLDS A COMPACT BRIGHT SOURCE AS ONE LOBE: the texels of
+/// `level` over a quarter of the way from its darkest to its brightest and
+/// brighter than all eight neighbours. One where the prefilter converged; a scatter of them
+/// where its samples hit the source in a pattern (s81).
+/// stats[0] such peaks, stats[1] texels scanned; worst[0] the brightest.
+struct EnvPeaksParams {
+    uint dome;
+    uint level;
+    uint baseSide;
+    uint pad0;
+};
+ConstantBuffer<EnvPeaksParams> peaks;
+
+float peakLum(uint2 uv) {
+    return dot(envTexelAt(envTexels, peaks.dome, peaks.level, uv, peaks.baseSide), float3(0.2126, 0.7152, 0.0722));
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void environmentPeaks(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    const uint side = envSideOf(peaks.level, peaks.baseSide);
+    float brightest = 0.0;
+    float darkest = 3.0e38;
+    for (uint y = 0; y < side; ++y) {
+        for (uint x = 0; x < side; ++x) {
+            brightest = max(brightest, peakLum(uint2(x, y)));
+            darkest = min(darkest, peakLum(uint2(x, y)));
+        }
+    }
+    // Over a quarter of the way from the sky's floor to the brightest: a
+    // source on a grey sky as well as on a black one.
+    const float above = darkest + 0.25 * (brightest - darkest);
+    uint found = 0;
+    for (uint y = 1; y + 1 < side; ++y) {
+        for (uint x = 1; x + 1 < side; ++x) {
+            const float v = peakLum(uint2(x, y));
+            if (v < above) {
+                continue;
+            }
+            bool top = true;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if ((dx != 0 || dy != 0) && peakLum(uint2(int(x) + dx, int(y) + dy)) >= v) {
+                        top = false;
+                    }
+                }
+            }
+            found += top ? 1u : 0u;
+        }
+    }
+    stats[0] = found;
+    stats[1] = side * side;
+    worst[0] = brightest;
+}
+
+
+/// WHAT A LEVEL HOLDS IN ALL: its radiance over the sphere, each texel by the
+/// solid angle it stands for (the octahedral decode's Jacobian), luminance.
+/// A convolution moves light about and keeps all of it, so every level of a
+/// prefiltered sky must hold what the source does (research 078 sec 9).
+/// worst[0] the level's integral.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void environmentEnergy(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    const uint side = envSideOf(peaks.level, peaks.baseSide);
+    float sum = 0.0;
+    float carry = 0.0;
+    for (uint y = 0; y < side; ++y) {
+        for (uint x = 0; x < side; ++x) {
+            const float2 uv = (float2(x, y) + 0.5) / float(side);
+            const float h = 0.25 / float(side);
+            const float3 du = octDecode(uv + float2(h, 0.0)) - octDecode(uv - float2(h, 0.0));
+            const float3 dv = octDecode(uv + float2(0.0, h)) - octDecode(uv - float2(0.0, h));
+            const float omega = length(cross(du, dv)) / (4.0 * h * h) / float(side * side);
+            const float term = peakLum(uint2(x, y)) * omega;
+            const float t = sum + term;
+            carry += abs(sum) >= abs(term) ? (sum - t) + term : (term - t) + sum;
+            sum = t;
+        }
+    }
+    worst[0] = sum + carry;
+}
+
+
+/// WHAT THE FRAME'S OWN LOOKUP READS IN ALL (research 078 sec 11): the map
+/// read through `envRadiance` -- the levels it blends, the octahedral texel
+/// it lands in, bilinear -- at roughness `readRoughness`, integrated over the
+/// sphere along a Fibonacci spiral of `count` directions. A read that loses
+/// light where the level holds it loses it here. worst[0] the integral.
+struct EnvReadParams {
+    uint  dome;
+    uint  count;
+    uint  baseSide;
+    float readRoughness;
+};
+ConstantBuffer<EnvReadParams> reads;
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void environmentReadEnergy(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x != 0) {
+        return;
+    }
+    float sum = 0.0;
+    float carry = 0.0;
+    for (uint i = 0; i < reads.count; ++i) {
+        const float3 d = spiralDirection(i, reads.count);
+        const float term =
+            dot(envRadiance(envTexels, reads.dome, d, reads.readRoughness, reads.baseSide), float3(0.2126, 0.7152, 0.0722));
+        const float t = sum + term;
+        carry += abs(sum) >= abs(term) ? (sum - t) + term : (term - t) + sum;
+        sum = t;
+    }
+    worst[0] = (sum + carry) * (4.0 * 3.14159265358979 / float(reads.count));
 }

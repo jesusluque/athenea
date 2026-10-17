@@ -48,6 +48,10 @@
 #define ATHENEA_HAVE_HYDRA_RENDER_PASS_API 1
 #endif
 #include <pxr/usd/usdLux/distantLight.h>
+#include <pxr/usd/usdSkel/bindingAPI.h>
+#include <pxr/usd/usdSkel/skeleton.h>
+#include <pxr/usd/usdSkel/topology.h>
+#include <pxr/usd/usdSkel/utils.h>
 #include <pxr/usd/usdLux/domeLight.h>
 #include <pxr/usd/usdLux/lightAPI.h>
 #include <pxr/usd/usdRender/pass.h>
@@ -88,6 +92,8 @@ struct StageRenderer::Impl {
     UsdImagingSceneIndices                 sceneIndices;
     std::unique_ptr<HdxTaskController>     controller;
     HdEngine                               engine;
+    /// The stage's lamps (LightGroups.h), read again whenever it recomposes.
+    LightRig                               lightRig;
 
     ~Impl() {
         controller.reset();
@@ -115,6 +121,8 @@ Result<std::unique_ptr<StageRenderer>> StageRenderer::open(const std::filesystem
     if (!impl.stage) {
         return Error::make(ErrorCode::IoFailure, "cannot open USD stage '{}'", path.string());
     }
+    // Its lamps, where it carries any (LightGroups.h): read, not computed.
+    impl.lightRig = readLightRig(impl.stage);
     impl.delegate = std::make_unique<HdAtheneaRenderDelegate>(std::move(device));
     if (!impl.delegate->HasEngine()) {
         return Error::make(ErrorCode::DeviceFailure, "the render delegate has no GPU: {}",
@@ -349,6 +357,8 @@ Result<void> StageRenderer::setVariantSelection(const std::string& prim, const s
     // A selection recomposes the prim and everything under it; the scene index
     // turns USD's notices into resyncs when it is told to catch up.
     impl.sceneIndices.stageSceneIndex->ApplyPendingUpdates();
+    // Another variant may carry other lamps.
+    impl.lightRig = readLightRig(impl.stage);
     return ok();
 }
 
@@ -659,6 +669,54 @@ Result<void> StageRenderer::setLightOn(const std::string& prim, bool on) {
     }
     impl.sceneIndices.stageSceneIndex->ApplyPendingUpdates();
     return ok();
+}
+
+const LightRig& StageRenderer::lightRig() const {
+    return impl_->lightRig;
+}
+
+namespace {
+
+std::string settingText(const VtValue& value) {
+    if (value.IsHolding<std::string>()) return value.UncheckedGet<std::string>();
+    if (value.IsHolding<TfToken>()) return value.UncheckedGet<TfToken>().GetString();
+    return {};
+}
+
+std::optional<float> settingNumber(const VtValue& value) {
+    if (value.IsHolding<float>()) return value.UncheckedGet<float>();
+    if (value.IsHolding<double>()) return static_cast<float>(value.UncheckedGet<double>());
+    if (value.IsHolding<int>()) return static_cast<float>(value.UncheckedGet<int>());
+    return std::nullopt;
+}
+
+}   // namespace
+
+void StageRenderer::setLightState(const std::string& state) {
+    if (!state.empty() && impl_->lightRig.state(state) == nullptr) {
+        log::warn("light groups: the stage carries no state '{}'; each group as it starts", state);
+    }
+    impl_->delegate->SetRenderSetting(TfToken(kLightStateSetting), VtValue(state));
+}
+
+std::string StageRenderer::lightState() const {
+    return settingText(impl_->delegate->GetRenderSetting(TfToken(kLightStateSetting)));
+}
+
+void StageRenderer::setLightLevel(const std::string& group, std::optional<float> level) {
+    impl_->delegate->SetRenderSetting(TfToken(std::string(kLightLevelSetting) + group),
+                                      level.has_value() ? VtValue(*level) : VtValue());
+}
+
+std::map<std::string, float> StageRenderer::lightLevels() const {
+    std::map<std::string, float> set;
+    for (const LightGroup& group : impl_->lightRig.groups) {
+        const VtValue value = impl_->delegate->GetRenderSetting(TfToken(std::string(kLightLevelSetting) + group.name));
+        if (const std::optional<float> level = settingNumber(value)) {
+            set[group.name] = *level;
+        }
+    }
+    return impl_->lightRig.levelsFor(lightState(), set);
 }
 
 std::pair<double, double> StageRenderer::animationRange() const {
@@ -1094,6 +1152,33 @@ bool StageRenderer::hasLights() const {
     return false;
 }
 
+Result<void> StageRenderer::holdBindPose() {
+    Impl& impl = *impl_;
+    const UsdEditContext session(impl.stage, impl.stage->GetSessionLayer());
+    for (const UsdPrim& prim : impl.stage->Traverse()) {
+        const UsdSkelSkeleton skeleton(prim);
+        if (!skeleton) {
+            continue;
+        }
+        VtTokenArray joints;
+        VtMatrix4dArray bind;
+        skeleton.GetJointsAttr().Get(&joints);
+        skeleton.GetBindTransformsAttr().Get(&bind);
+        if (joints.empty() || bind.size() != joints.size()) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': a skeleton without a bind pose to hold",
+                               prim.GetPath().GetString());
+        }
+        VtMatrix4dArray rest;
+        if (!UsdSkelComputeJointLocalTransforms(UsdSkelTopology(joints), bind, &rest)) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': its bind transforms do not make local ones",
+                               prim.GetPath().GetString());
+        }
+        skeleton.GetRestTransformsAttr().Set(rest);
+        UsdSkelBindingAPI(prim).CreateAnimationSourceRel().SetTargets({});
+    }
+    return ok();
+}
+
 Result<void> StageRenderer::setDefaultLights(bool on) {
     Impl& impl = *impl_;
     const UsdEditContext session(impl.stage, impl.stage->GetSessionLayer());
@@ -1204,6 +1289,10 @@ void StageRenderer::setShutter(double open, double close) {
 
 void StageRenderer::setPathMis(bool mis) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathMis"), VtValue(mis));
+}
+
+void StageRenderer::setGlassShadows(bool glass) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:glassShadows"), VtValue(glass));
 }
 
 void StageRenderer::setPathAdaptive(bool adaptive) {
@@ -1484,7 +1573,7 @@ Result<std::vector<float>> StageRenderer::bakePoints(const std::vector<float>& r
 Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                       uint32_t samples, uint32_t bounces, uint32_t degree,
                                                       bool transfer, uint32_t batch, uint32_t cellSide,
-                                                      uint32_t firstPoint) {
+                                                      uint32_t firstPoint, bool material) {
     Impl& impl = *impl_;
     if (count == 0 || !rays.valid() || rays.bytes() < (uint64_t{firstPoint} + count) * 48) {
         return Error(ErrorCode::InvalidArgument, "bake: three float4 a point, and at least one point");
@@ -1511,7 +1600,9 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
     // the transfer, so the coverage travels on its own, and after it the
     // visibility bits, carried as the floats they are the bits of -- sixty-four
     // in one plane, or a plane of four words for every 128 cells of a finer grid.
-    const uint32_t entries = coefficients + technique::transferPlanes(transfer, transfer ? cellSide : 0u);
+    // And the material read back after the rest, where asked.
+    const uint32_t entries = coefficients + technique::transferPlanes(transfer, transfer ? cellSide : 0u) +
+                             technique::bakeMaterialPlanes(transfer, material);
     gpu::BufferDesc desc;
     desc.bytes = uint64_t{count} * entries * 16;
     desc.elementBytes = 16;
@@ -1555,6 +1646,7 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
         bake.coefficients = coefficients;
         bake.transfer = transfer;
         bake.cellSide = transfer ? technique::transferCellSide(cellSide) : 0u;
+        bake.material = transfer && material;
         bake.out = &out;
         ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
         if (!out.colour.valid()) {
@@ -1907,6 +1999,24 @@ Result<void> StageRenderer::drawImage(const render::Camera& camera, double time,
 
 Result<void> StageRenderer::execute(uint32_t width, uint32_t height) {
     Impl& impl = *impl_;
+    // THE LAMPS' WEIGHTS for this frame, from the state and the levels the
+    // render settings hold: a few numbers, handed over only when they change
+    // (Engine::setLightWeights).
+    if (!impl.lightRig.empty()) {
+        if (auto* param = static_cast<HdAtheneaRenderParam*>(impl.delegate->GetRenderParam()); param != nullptr) {
+            if (Engine* engine = param->GetEngine(); engine != nullptr) {
+                std::map<std::string, float> set;
+                for (const LightGroup& group : impl.lightRig.groups) {
+                    const VtValue value =
+                        impl.delegate->GetRenderSetting(TfToken(std::string(kLightLevelSetting) + group.name));
+                    if (const std::optional<float> level = settingNumber(value)) {
+                        set[group.name] = *level;
+                    }
+                }
+                engine->setLightWeights(impl.lightRig.weights(lightState(), set));
+            }
+        }
+    }
     impl.controller->SetRenderBufferSize(GfVec2i(static_cast<int>(width), static_cast<int>(height)));
     impl.controller->SetFraming(CameraUtilFraming(
         GfRect2i(GfVec2i(0), static_cast<int>(width), static_cast<int>(height))));

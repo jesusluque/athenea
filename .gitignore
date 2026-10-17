@@ -19,6 +19,7 @@ compile_commands.json
 *.usda
 !modules/usd/schemas/*.usda
 !tests/data/*.usda
+!tests/data/**/*.usda
 *.fbx
 *.blend
 *.blend[0-9]
@@ -39,3 +40,5 @@ compile_commands.json
 # Metal shader caches dropped at the root by a run with a relative cache path.
 /0/
 __pycache__/
+build/
+*.log

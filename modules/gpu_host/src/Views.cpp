@@ -12,6 +12,7 @@ rhi::NativeHandleType bufferHandleType(gpu::Backend backend) {
     switch (backend) {
     case gpu::Backend::Metal: return rhi::NativeHandleType::MTLBuffer;
     case gpu::Backend::CUDA: return rhi::NativeHandleType::CUdeviceptr;
+    case gpu::Backend::Vulkan: return rhi::NativeHandleType::VkBuffer;
     default: return rhi::NativeHandleType::Undefined;
     }
 }
@@ -27,6 +28,13 @@ std::unique_ptr<gpe::Device> adoptForCompute(gpu::Device& device) {
     case gpu::Backend::CUDA:
         return gpe::adoptCudaContext(reinterpret_cast<void*>(native.device.value),
                                      reinterpret_cast<void*>(native.queue.value));
+    case gpu::Backend::Vulkan:
+        // The queue family is the one slang-rhi took, which gpe finds the way
+        // slang-rhi did (UINT32_MAX): slang-rhi does not hand it out.
+        return gpe::adoptVulkanDevice(reinterpret_cast<void*>(native.instance.value),
+                                      reinterpret_cast<void*>(native.physical.value),
+                                      reinterpret_cast<void*>(native.device.value),
+                                      reinterpret_cast<void*>(native.queue.value), UINT32_MAX);
     default:
         return nullptr;
     }

@@ -218,6 +218,10 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     }
     // The radiance it gives off: three floats a gaussian, or nothing.
     s.emission = streamOf(a.emission);
+    s.hardness = streamOf(a.hardness);
+    if (s.hardness.values() < s.count) {
+        s.hardness = {};
+    }
     if (s.emission.values() < uint64_t{s.count} * 3) {
         s.emission = {};
     }
@@ -236,6 +240,12 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     s.sheenColour = wholeOr(a.sheenColour, 3);
     s.sheenRoughness = wholeOr(a.sheenRoughness, 1);
     s.coatDarkening = wholeOr(a.coatDarkening, 1);
+    // The lamps' layers: three floats a gaussian each, or nothing (the
+    // loader says which it left out).
+    for (const auto& [group, value] : a.lightLayers) {
+        s.lightLayers.emplace_back(group, wholeOr(value, 3));
+    }
+    s.materialRoughness = wholeOr(a.materialRoughness, 1);
     // Which ways out are open: bits, like the ids, and only beside a transfer.
     if ((!s.transferDirect.empty() || !s.transferZonal.empty()) && a.shadowBits.IsHolding<pxr::VtIntArray>()) {
         const pxr::VtIntArray& bits = a.shadowBits.UncheckedGet<pxr::VtIntArray>();

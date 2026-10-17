@@ -10,10 +10,19 @@
 // Each group carries moments of the splats under it (Kerbl et al. 2024, "A
 // Hierarchical 3D Gaussian Representation"): with w = opacity x the area of
 // the splat's two longest axes,
-//   W = sum w     S1 = sum w mu     S2 = sum w (Sigma + mu mu^T)     C = sum w colour
-// Moments add, so a level's groups are their children's sums -- built from the
-// finest merged level up -- and each group becomes one Gaussian:
-//   mu = S1 / W,  Sigma = S2 / W - mu mu^T (eigen-decomposed into rotation and
+//   W = sum w     S1 = sum w mu     S2 = sum w (Sigma + (mu - m)(mu - m)^T)     C = sum w colour
+// with m = S1 / W the group's own mean: the second moment ABOUT THE GROUP, not
+// about the world's origin. About the origin it was the difference of two
+// numbers the size of mu mu^T, which a float holds to about 5e-7 m^2 two
+// metres out -- the whole variance of a gaussian a millimetre wide, and a
+// hundred times that of the needles a 5120 px bake lays on long thin
+// triangles (0.9 x 0.04 mm): their merges came out as thin as the rounding
+// made them, and a cut drew holes where they stood (docs/decisions.md).
+// Moments add -- W, S1 and C by summing, S2 with each child's offset from the
+// parent's mean (the parallel axis theorem, lod_merge_moments) -- so a level's
+// groups are built from their children, from the finest merged level up, and
+// each group becomes one Gaussian:
+//   mu = S1 / W,  Sigma = S2 / W (eigen-decomposed into rotation and
 //   scales),  colour = C / W,  opacity = min(W / its own two-axis area, 0.99).
 //
 // A group is drawn when its cell projects to at most `threshold` pixels and
@@ -34,7 +43,8 @@ module lod_common;
 
 public static const uint kLevels = 10;   // 30-bit codes
 
-/// Moments per group: W, S1 (3), S2 (6: xx xy xz yy yz zz), C base colour
+/// Moments per group: W, S1 (3), S2 (6: xx xy xz yy yz zz, about the group's
+/// own mean), C base colour
 /// (3), C rest (3 per basis kept, rgb per basis), and where the cloud keeps
 /// shading normals N (3): the sum of w n, weighed as a colour is, whose
 /// direction is the group's normal; and where it keeps an emission E (3):

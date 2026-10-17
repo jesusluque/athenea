@@ -15,7 +15,11 @@
 #include <utility>
 
 #if defined(_WIN32)
-#error "Windows is a later port: implement MappedFile with CreateFileMapping here."
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <process.h>
+#include <psapi.h>
 #else
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -43,6 +47,40 @@
 
 namespace athenea::platform {
 
+#if defined(_WIN32)
+Result<MappedFile> MappedFile::open(const std::filesystem::path& path) {
+    const HANDLE handle = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return Error::make(ErrorCode::IoFailure, "cannot open '{}'", path.string());
+    }
+    LARGE_INTEGER size{};
+    FILETIME written{};
+    if (!::GetFileSizeEx(handle, &size) || !::GetFileTime(handle, nullptr, nullptr, &written)) {
+        ::CloseHandle(handle);
+        return Error::make(ErrorCode::IoFailure, "cannot stat '{}'", path.string());
+    }
+    MappedFile file;
+    file.size_ = static_cast<size_t>(size.QuadPart);
+    // FILETIME counts 100 ns from 1601; the Unix epoch is 11644473600 s later.
+    const uint64_t ticks = (uint64_t{written.dwHighDateTime} << 32) | written.dwLowDateTime;
+    file.mtimeNs_ = (static_cast<int64_t>(ticks) - 116444736000000000LL) * 100;
+    if (file.size_ > 0) {
+        const HANDLE mapping = ::CreateFileMappingW(handle, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        void* mapped = mapping != nullptr ? ::MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0) : nullptr;
+        if (mapping != nullptr) {
+            ::CloseHandle(mapping);   // the view keeps the mapping alive
+        }
+        if (mapped == nullptr) {
+            ::CloseHandle(handle);
+            return Error::make(ErrorCode::IoFailure, "cannot map '{}'", path.string());
+        }
+        file.data_ = mapped;
+    }
+    ::CloseHandle(handle);
+    return file;
+}
+#else
 Result<MappedFile> MappedFile::open(const std::filesystem::path& path) {
     const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
@@ -72,6 +110,20 @@ Result<MappedFile> MappedFile::open(const std::filesystem::path& path) {
     ::close(fd);   // the mapping keeps the file alive
     return file;
 }
+#endif
+
+namespace {
+
+void unmapFile(void* data, size_t size) {
+#if defined(_WIN32)
+    (void)size;
+    ::UnmapViewOfFile(data);
+#else
+    ::munmap(data, size);
+#endif
+}
+
+}   // namespace
 
 MappedFile::MappedFile(MappedFile&& other) noexcept
     : data_(std::exchange(other.data_, nullptr)),
@@ -81,7 +133,7 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
 MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
     if (this != &other) {
         if (data_ != nullptr) {
-            ::munmap(data_, size_);
+            unmapFile(data_, size_);
         }
         data_ = std::exchange(other.data_, nullptr);
         size_ = std::exchange(other.size_, 0);
@@ -92,7 +144,7 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
 
 MappedFile::~MappedFile() {
     if (data_ != nullptr) {
-        ::munmap(data_, size_);
+        unmapFile(data_, size_);
     }
 }
 
@@ -212,6 +264,18 @@ std::vector<std::string> loadedLibraries() {
             return 0;
         },
         &out);
+#elif defined(_WIN32)
+    HMODULE modules[1024];
+    DWORD needed = 0;
+    if (::EnumProcessModules(::GetCurrentProcess(), modules, sizeof(modules), &needed)) {
+        const DWORD count = std::min<DWORD>(needed / sizeof(HMODULE), 1024);
+        for (DWORD i = 0; i < count; ++i) {
+            wchar_t name[MAX_PATH];
+            if (::GetModuleFileNameW(modules[i], name, MAX_PATH) > 0) {
+                out.emplace_back(std::filesystem::path(name).string());
+            }
+        }
+    }
 #endif
     return out;
 }
@@ -238,6 +302,10 @@ std::filesystem::path executableDir() {
         return std::filesystem::weakly_canonical(buffer.c_str()).parent_path();
     }
     return {};
+#elif defined(_WIN32)
+    wchar_t name[MAX_PATH];
+    const DWORD length = ::GetModuleFileNameW(nullptr, name, MAX_PATH);
+    return length > 0 && length < MAX_PATH ? std::filesystem::path(name).parent_path() : std::filesystem::path{};
 #else
     std::error_code failed;
     auto self = std::filesystem::read_symlink("/proc/self/exe", failed);
@@ -247,7 +315,16 @@ std::filesystem::path executableDir() {
 
 std::filesystem::path moduleDir() {
 #if defined(_WIN32)
-    return {};   // GetModuleHandleEx(FROM_ADDRESS) and GetModuleFileName, in the port
+    // The address of a function in this file names the module it was linked
+    // into, as dladdr does elsewhere.
+    HMODULE module = nullptr;
+    if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCWSTR>(&moduleDir), &module)) {
+        return {};
+    }
+    wchar_t name[MAX_PATH];
+    const DWORD length = ::GetModuleFileNameW(module, name, MAX_PATH);
+    return length > 0 && length < MAX_PATH ? std::filesystem::path(name).parent_path() : std::filesystem::path{};
 #else
     // The address of a function in this file names the image it was linked
     // into: core is a static library, so that is whichever executable or
@@ -401,6 +478,10 @@ uint64_t availablePhysicalMemory() {
     }
     std::fclose(file);
     return kib * 1024;
+#elif defined(_WIN32)
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    return ::GlobalMemoryStatusEx(&status) ? uint64_t{status.ullAvailPhys} : 0;
 #else
     return 0;
 #endif
@@ -433,7 +514,13 @@ uint64_t metalAllocatedSize(void* mtlDevice) {
 }
 
 uint64_t pageSize() {
+#if defined(_WIN32)
+    SYSTEM_INFO info{};
+    ::GetSystemInfo(&info);
+    return info.dwPageSize;
+#else
     return static_cast<uint64_t>(::sysconf(_SC_PAGESIZE));
+#endif
 }
 
 void* mapPages(uint64_t bytes) {
@@ -442,16 +529,24 @@ void* mapPages(uint64_t bytes) {
     }
     const uint64_t page = pageSize();
     const uint64_t whole = (bytes + page - 1) / page * page;
+#if defined(_WIN32)
+    return ::VirtualAlloc(nullptr, static_cast<size_t>(whole), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
     void* pages = ::mmap(nullptr, static_cast<size_t>(whole), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     return pages == MAP_FAILED ? nullptr : pages;
+#endif
 }
 
 void unmapPages(void* pages, uint64_t bytes) {
     if (pages == nullptr || bytes == 0) {
         return;
     }
+#if defined(_WIN32)
+    ::VirtualFree(pages, 0, MEM_RELEASE);
+#else
     const uint64_t page = pageSize();
     ::munmap(pages, static_cast<size_t>((bytes + page - 1) / page * page));
+#endif
 }
 
 void* newMetalBufferOverPages(void* mtlDevice, const void* pages, uint64_t bytes) {
@@ -496,20 +591,40 @@ void releaseMetalBuffer(void* mtlBuffer) {
 std::filesystem::path partialPathFor(const std::filesystem::path& path) {
     // `.name.partial-<pid>.ext`: hidden where a listing hides dot files, and
     // still ending in what the writer chooses its format by.
-    const std::string name = "." + path.stem().string() + ".partial-" + std::to_string(::getpid()) +
-                             path.extension().string();
+#if defined(_WIN32)
+    const int pid = ::_getpid();
+#else
+    const int pid = static_cast<int>(::getpid());
+#endif
+    const std::string name =
+        "." + path.stem().string() + ".partial-" + std::to_string(pid) + path.extension().string();
     return path.parent_path() / name;
 }
 
 Result<void> replaceFile(const std::filesystem::path& from, const std::filesystem::path& to) {
+#if defined(_WIN32)
+    // rename refuses an existing target here; MoveFileEx replaces it.
+    if (!::MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        return Error::make(ErrorCode::IoFailure, "cannot move '{}' to '{}': error {}", from.string(), to.string(),
+                           static_cast<unsigned long>(::GetLastError()));
+    }
+    return ok();
+#else
     if (::rename(from.c_str(), to.c_str()) != 0) {
         return Error::make(ErrorCode::IoFailure, "cannot move '{}' to '{}': {}", from.string(), to.string(),
                            std::strerror(errno));
     }
     return ok();
+#endif
 }
 
-void removeFile(const std::filesystem::path& path) noexcept { ::unlink(path.c_str()); }
+void removeFile(const std::filesystem::path& path) noexcept {
+#if defined(_WIN32)
+    ::DeleteFileW(path.c_str());
+#else
+    ::unlink(path.c_str());
+#endif
+}
 
 Result<void> writeAtomically(const std::filesystem::path& path,
                              const std::function<Result<void>(const std::filesystem::path& partial)>& write) {

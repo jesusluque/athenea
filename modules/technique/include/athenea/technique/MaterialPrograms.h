@@ -38,7 +38,7 @@ struct MaterialRecord {
     uint32_t function = 0;
     uint32_t blob = 0;      ///< its first word in the blob
     uint32_t flags = 0;
-    uint32_t pad = 0;       ///< a transmitting row's tint and index, unorm 16 each (material_lookup.slang)
+    uint32_t pad = 0;       ///< a transmitting row's tint (rgb) and index, unorm 8 each (material_lookup.slang)
 };
 
 /// MaterialRecord::flags: the material's opacity cuts samples out instead of
@@ -56,6 +56,12 @@ inline constexpr uint32_t kMaterialTransparent = 2u;
 inline constexpr uint32_t kMaterialUniform = 4u;
 /// It lets light through: the bake's open-or-not rays look at it (material_lookup.slang).
 inline constexpr uint32_t kMaterialTransmits = 8u;
+/// Its transmission is a delta -- a thin wall, or a smooth solid -- so the
+/// path tracer's shadow rays pass it, tinted, rather than stop
+/// (`athenea:glassShadows`; material::Transmission::clear).
+inline constexpr uint32_t kMaterialGlassShadow = 16u;
+/// And it is a thin wall: one face is the whole glass (2R / (1 + R) reflected).
+inline constexpr uint32_t kMaterialThinGlass = 32u;
 
 class MaterialPrograms {
 public:
@@ -109,6 +115,10 @@ struct MaterialFrame {
     /// Whether any material of the frame cuts samples away: a shadow ray then
     /// asks each surface it meets whether it is there.
     bool                          cutouts = false;
+    /// Whether any material of the frame is glass a shadow ray passes, tinted
+    /// (kMaterialGlassShadow): the path tracer's shadow rays then walk past
+    /// it where `PathSettings::glassShadows` says so.
+    bool                          glass = false;
     /// The frame's lights. None: the headlight, as meshes were lit before
     /// there were any.
     const light::LightTable*      lights = nullptr;

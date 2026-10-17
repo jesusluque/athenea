@@ -44,15 +44,27 @@ rhi::DeviceType toRhi(Backend backend) {
 }
 
 std::vector<Backend> platformPreference() {
+#if defined(ATHENEA_GPE_VULKAN)
+    // gpe built for Vulkan: the render device has to be the one gpe can
+    // share, and on Vulkan a bake traces with compute and ray queries instead
+    // of an OptiX pipeline. Metal stays a Mac's first answer.
 #if defined(__APPLE__)
-    return {Backend::Metal};
-#elif defined(_WIN32)
-    return {Backend::D3D12, Backend::Vulkan};
+    return {Backend::Metal, Backend::Vulkan};
 #else
-    // CUDA first: it is the backend gpe shares, so the render device and the
-    // compute engine are one device. Vulkan is the answer for a machine
+    return {Backend::Vulkan, Backend::CUDA};
+#endif
+#elif defined(__APPLE__)
+    return {Backend::Metal};
+#else
+    // CUDA first, on Windows as on Linux: it is the backend gpe shares, so the
+    // render device and the compute engine are one device, and its ray tracing
+    // is OptiX. Vulkan (and D3D12 on Windows) is the answer for a machine
     // without an NVIDIA card, where gpe has no backend at all.
+#if defined(_WIN32)
+    return {Backend::CUDA, Backend::D3D12, Backend::Vulkan};
+#else
     return {Backend::CUDA, Backend::Vulkan};
+#endif
 #endif
 }
 
@@ -202,7 +214,11 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
         searchPaths.push_back(path.c_str());
     }
 
-    if (desc.validation) {
+    // ATHENEA_GPU_VALIDATION: the API's own validation and debug layers, where
+    // a driver says only that a pipeline failed (D3D12 creating one) and the
+    // layer says why. Slow; for finding such a failure, not for running.
+    const bool validate = desc.validation || !platform::env("ATHENEA_GPU_VALIDATION").empty();
+    if (validate) {
         rhi::getRHI()->enableDebugLayers();
     }
     if (desc.useShaderCache) {
@@ -232,7 +248,7 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
         }
         rhi::DeviceDesc rhiDesc;
         rhiDesc.deviceType = toRhi(backend);
-        rhiDesc.enableValidation = desc.validation;
+        rhiDesc.enableValidation = validate;
         rhiDesc.debugCallback = &gDebugLog;
         rhiDesc.slang.searchPaths = searchPaths.data();
         rhiDesc.slang.searchPathCount = static_cast<uint32_t>(searchPaths.size());
@@ -316,6 +332,7 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
     caps.unifiedMemory = device->backend_ == Backend::Metal;
     caps.drawIdsIncludeStart = device->backend_ == Backend::Metal;   // tests/gpu/test_textures.cpp measures it
     caps.convertingStores = device->backend_ != Backend::CUDA;       // and this
+    caps.samplersInViews = device->backend_ == Backend::CUDA;         // and this (test_environment)
 
     log::info("GPU: {} on {}", caps.apiName, caps.adapterName);
 
@@ -467,7 +484,11 @@ NativeHandles Device::native() const {
                 }
             }
             break;
-        case Backend::Vulkan: handles.device = deviceHandles.handles[2]; break;
+        case Backend::Vulkan:
+            handles.instance = deviceHandles.handles[0];
+            handles.physical = deviceHandles.handles[1];
+            handles.device = deviceHandles.handles[2];
+            break;
         default: handles.device = deviceHandles.handles[0]; break;
         }
     }

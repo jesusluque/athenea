@@ -51,6 +51,19 @@ Result<Buffer> Buffer::create(Device& device, const BufferDesc& desc, const void
     }
     buffer.bytes_ = desc.bytes;
     buffer.elementBytes_ = desc.elementBytes;
+    // A BUFFER WITHOUT DATA STARTS AT ZERO, on every backend. Metal hands out
+    // new memory cleared and the engine came to rely on it: counters and
+    // histograms are made and then added to. CUDA's and Vulkan's allocations
+    // hold whatever was there before, so a test that counted violations read
+    // 138 million of them on the first run on Linux. The clear goes on the
+    // queue, which everything that uses the buffer comes after.
+    if (initial == nullptr && device.backend() != Backend::Metal &&
+        (rhiDesc.usage & rhi::BufferUsage::CopyDestination) != rhi::BufferUsage::None) {
+        rhi::ComPtr<rhi::ICommandEncoder> encoder = device.queue()->createCommandEncoder();
+        encoder->clearBuffer(buffer.buffer_.get());
+        device.beforeSubmit();
+        ATHENEA_TRY(Device::queueResult(device.queue()->submit(encoder->finish()), "a new buffer's clear"));
+    }
     return buffer;
 }
 

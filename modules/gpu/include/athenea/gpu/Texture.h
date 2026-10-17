@@ -58,8 +58,11 @@ public:
     /// Bytes per texel of the format (uncompressed formats only).
     [[nodiscard]] uint32_t texelBytes() const noexcept;
 
-    /// A view of `count` levels from `mip`, every layer.
-    [[nodiscard]] Result<rhi::ComPtr<rhi::ITextureView>> view(uint32_t mip, uint32_t count = 1) const;
+    /// A view of `count` levels from `mip`, every layer. `sampler` is the one
+    /// it is sampled with, where the device reads samplers from views
+    /// (DeviceCaps::samplersInViews); elsewhere it is not needed.
+    [[nodiscard]] Result<rhi::ComPtr<rhi::ITextureView>> view(uint32_t mip, uint32_t count = 1,
+                                                              rhi::ISampler* sampler = nullptr) const;
 
     /// Uploads one subresource; `texels` holds its rows packed, top row first
     /// as the file had them.

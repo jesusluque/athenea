@@ -70,8 +70,9 @@ uint32_t Texture::texelBytes() const noexcept {
     return info.blockSizeInBytes / std::max<uint32_t>(info.pixelsPerBlock, 1);
 }
 
-Result<rhi::ComPtr<rhi::ITextureView>> Texture::view(uint32_t mip, uint32_t count) const {
+Result<rhi::ComPtr<rhi::ITextureView>> Texture::view(uint32_t mip, uint32_t count, rhi::ISampler* sampler) const {
     rhi::TextureViewDesc desc;
+    desc.sampler = sampler;
     desc.format = desc_.format;
     desc.subresourceRange.layer = 0;
     desc.subresourceRange.layerCount = desc_.arrayLength;

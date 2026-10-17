@@ -4,6 +4,9 @@
 function(athenea_set_target_defaults target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        # windows.h, which OpenUSD's and GLFW's headers bring in, otherwise
+        # defines min and max as macros.
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     else()
         target_compile_options(${target} PRIVATE
             -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor

@@ -11,6 +11,7 @@ add_executable(athenea
     src/Mesh2SplatValidate.cpp
     src/CmdFlatten.cpp
     src/CmdVisibility.cpp
+    src/CmdLights.cpp
     src/CmdLive.cpp
     src/Output.cpp)
 target_link_libraries(athenea PRIVATE athenea::usd athenea::lod athenea::sched athenea::technique athenea::aofx_host CLI11::CLI11)

@@ -180,6 +180,10 @@ struct Options {
     /// gaussian a cell), up to 2^simplifyLevels cells a side.
     double                   simplify = 0.0;
     uint32_t                 simplifyLevels = 3;
+    /// NO FURTHER THAN THE SURFACE GOES: a gaussian's size square to a hard
+    /// edge of its triangle (open, or folded past kCreaseDegrees) is held to
+    /// its distance from it over this (the effect's `edgeReach`; 0: not held).
+    double                   edgeReach = 1.5;
     bool                     addCamera = true;
     /// Bake the path tracer's answer into the gaussians (the default), or
     /// carry the material and be relit.
@@ -254,8 +258,16 @@ struct Options {
     bool                     shadowCatcher = false;
     std::string              catcherGround;
     double                   catcherMargin = 1.5;
-    /// The catcher's cell, world units; 0 is a hundredth of the object's height.
+    /// The catcher's cell, world units; 0 is a hundredth of the object's height
+    /// (a thirtieth for a light catcher, whose light is smooth).
     double                   catcherCell = 0.0;
+    /// THE LAMPS' LIGHT ON THE GROUND AS GAUSSIANS: the same patch, reaching
+    /// `lightReach` of the object's lengths ahead and behind, baked as the
+    /// radiance it sends out under the stage's lights and written as a light
+    /// catcher -- added over whatever is drawn (docs/decisions.md, light
+    /// groups). One per group, with the group alone lit, makes its layers.
+    bool                     lightCatcher = false;
+    double                   lightReach = 3.0;
 };
 
 /// One map the conversion reads, as a picture. Several materials name the same
@@ -331,6 +343,10 @@ public:
         ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetEdges", sheetEdges_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetRuns", sheetRuns_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_sheet", "m2sSheetSum", sheetSum_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeKeys", edgeKeys_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeRuns", edgeRuns_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeWrite", edgeWrite_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeCopy", edgeCopy_));
         auto sort = gpu::RadixSort::create(*library_);
         if (!sort) return std::move(sort).error();
         sort_ = std::move(*sort);
@@ -543,6 +559,193 @@ public:
     [[nodiscard]] bool thinGlassOf(size_t p) const {
         return thinGlass(*pieces_[p].material) ||
                (p < sheet_.size() && sheet_[p] && pieces_[p].material->transmission > 0.0F);
+    }
+
+    /// WHERE EACH SURFACE STOPS OR FOLDS (`mesh2splat_edges`): a mesh at a
+    /// time, its pieces' edges and corners keyed by where their points stand
+    /// and sorted; each hard edge -- open, folded past kCreaseDegrees, or
+    /// shared by more than two -- is a bit of its own triangle and a line
+    /// told to the triangles at its ends. Over the whole mesh, so a boundary
+    /// between two of its materials on one smooth surface is not an edge.
+    /// Each piece's are kept six entries a triangle in a buffer of its own
+    /// (`edgeClip` makes its Edges clip when it is converted). Nothing
+    /// crosses back.
+    [[nodiscard]] Result<void> markEdges() {
+        edges_.assign(pieces_.size(), gpu::Buffer{});
+        closed_.assign(pieces_.size(), 0);
+        if (!(options_->edgeReach > 0.0)) {
+            return ok();
+        }
+        gpu::Device& device = library_->device();
+        static constexpr float kCreaseDegrees = 40.0F;
+        static constexpr uint32_t kEdgeLines = 5;   // mesh2splat_edges' kLines
+        const float creaseCos = std::cos(kCreaseDegrees * 3.14159265F / 180.0F);
+        size_t first = 0;
+        while (first < pieces_.size()) {
+            const size_t mesh = pieces_[first].mesh;
+            size_t last = first;
+            uint64_t total = 0;
+            while (last < pieces_.size() && pieces_[last].mesh == mesh) {
+                if (last < streams_.size() && streams_[last]) {
+                    total += pieces_[last].triangles;
+                }
+                ++last;
+            }
+            if (total == 0 || total * 3 > 0xFFFFFFF0ull / 4) {
+                first = last;
+                continue;
+            }
+            const uint32_t triangles = static_cast<uint32_t>(total);
+            const uint32_t edges = triangles * 3;
+            const auto words = [&](uint64_t n, uint32_t element, const char* label) {
+                gpu::BufferDesc desc;
+                desc.bytes = std::max<uint64_t>(n, 1) * element;
+                desc.elementBytes = element;
+                desc.label = label;
+                return gpu::Buffer::create(device, desc);
+            };
+            gpu::SortBuffers buffers;
+            auto lo = words(edges, 4, "mesh2splat.edgeKeysLo");
+            auto hi = words(edges, 4, "mesh2splat.edgeKeysHi");
+            auto values = words(edges, 4, "mesh2splat.edgeValues");
+            auto scratchLo = words(edges, 4, "mesh2splat.edgeScratchLo");
+            auto scratchHi = words(edges, 4, "mesh2splat.edgeScratchHi");
+            auto scratchValues = words(edges, 4, "mesh2splat.edgeScratchValues");
+            gpu::SortBuffers corners;
+            auto cornerKeys = words(edges, 4, "mesh2splat.cornerKeys");
+            auto cornerValues = words(edges, 4, "mesh2splat.cornerValues");
+            auto cornerScratch = words(edges, 4, "mesh2splat.cornerScratch");
+            auto cornerScratchValues = words(edges, 4, "mesh2splat.cornerScratchValues");
+            auto points = words(edges, 16, "mesh2splat.edgePoints");
+            auto flags = words(triangles, 4, "mesh2splat.edgeFlags");
+            auto lineCount = words(triangles, 4, "mesh2splat.edgeLineCount");
+            auto lines = words(uint64_t{triangles} * kEdgeLines, 16, "mesh2splat.edgeLines");
+            gpu::BufferDesc openDesc;
+            openDesc.bytes = 4;
+            openDesc.elementBytes = 4;
+            openDesc.label = "mesh2splat.openEdges";
+            const uint32_t none = 0;
+            auto openEdges = gpu::Buffer::create(device, openDesc, &none);
+            if (!openEdges ||
+                !lo || !hi || !values || !scratchLo || !scratchHi || !scratchValues || !cornerKeys ||
+                !cornerValues || !cornerScratch || !cornerScratchValues || !points || !flags || !lineCount ||
+                !lines) {
+                return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot mark a mesh's edges");
+            }
+            buffers.keysLo = *lo;
+            buffers.keysHi = *hi;
+            buffers.values = *values;
+            buffers.scratchKeysLo = *scratchLo;
+            buffers.scratchKeysHi = *scratchHi;
+            buffers.scratchValues = *scratchValues;
+            corners.keysLo = *cornerKeys;
+            corners.values = *cornerValues;
+            corners.scratchKeysLo = *cornerScratch;
+            corners.scratchValues = *cornerScratchValues;
+            struct Held {
+                size_t      piece;
+                uint32_t    first;
+                gpu::Buffer picture;
+            };
+            std::vector<Held> held;
+            uint32_t offset = 0;
+            for (size_t p = first; p < last; ++p) {
+                if (p >= streams_.size() || !streams_[p] || pieces_[p].triangles == 0) {
+                    continue;
+                }
+                auto data = words(uint64_t{pieces_[p].triangles} * 6, 16, "mesh2splat.edges");
+                if (!data) return Error(ErrorCode::OutOfMemory, "mesh2splat: cannot keep a piece's edges");
+                edges_[p] = std::move(*data);
+                auto in = viewOf(*context_, streams_[p], "mesh2splat.edgePicture");
+                if (!in) return std::move(in).error();
+                held.push_back({p, offset, std::move(*in)});
+                offset += pieces_[p].triangles;
+            }
+            const auto bind = [&](rhi::ShaderCursor cursor, const Held& h) {
+                cursor["picture"].setBinding(h.picture.rhi());
+                cursor["edgeData"].setBinding(edges_[h.piece].rhi());
+                cursor["edgePicture"].setBinding(edges_[h.piece].rhi());
+                cursor["keysLo"].setBinding(buffers.keysLo.rhi());
+                cursor["keysHi"].setBinding(buffers.keysHi.rhi());
+                cursor["values"].setBinding(buffers.values.rhi());
+                cursor["cornerKeys"].setBinding(corners.keysLo.rhi());
+                cursor["cornerValues"].setBinding(corners.values.rhi());
+                cursor["points"].setBinding(points->rhi());
+                cursor["flags"].setBinding(flags->rhi());
+                cursor["lineCount"].setBinding(lineCount->rhi());
+                cursor["lines"].setBinding(lines->rhi());
+                cursor["openEdges"].setBinding(openEdges->rhi());
+                cursor["edge"]["triangles"].setData(pieces_[h.piece].triangles);
+                cursor["edge"]["first"].setData(h.first);
+                cursor["edge"]["count"].setData(edges);
+                cursor["edge"]["width"].setData(static_cast<uint32_t>(streams_[h.piece]->bounds().width()));
+                cursor["edge"]["stride"].setData(static_cast<uint32_t>(streams_[h.piece]->stride()));
+                cursor["edge"]["creaseCos"].setData(creaseCos);
+            };
+            {
+                gpu::CommandBatch batch(device);
+                for (const Held& h : held) {
+                    edgeKeys_.dispatch(batch, {pieces_[h.piece].triangles, 1, 1},
+                                       [&](rhi::ShaderCursor cursor) { bind(cursor, h); });
+                }
+                ATHENEA_TRY(sort_.sort(batch, buffers, edges, 64));
+                ATHENEA_TRY(sort_.sort(batch, corners, edges, 32));
+                edgeRuns_.dispatch(batch, {edges, 1, 1},
+                                   [&](rhi::ShaderCursor cursor) { bind(cursor, held.front()); });
+                for (const Held& h : held) {
+                    edgeWrite_.dispatch(batch, {pieces_[h.piece].triangles, 1, 1},
+                                        [&](rhi::ShaderCursor cursor) { bind(cursor, h); });
+                }
+                ATHENEA_TRY(batch.submit(true));
+            }
+            // A COUNTER BACK: whether the mesh is a closed shell -- its open
+            // edges (or shared by more than two) fewer than twice the square
+            // root of all of them (about one and a half a triangle, welded by
+            // where their points stand). Its back faces are then hidden by
+            // its front, which is what lets a cut drop a node facing away
+            // (`primvars:athenea:splat:closed`): a car's doors are two skins
+            // whose inner one, drawn, sorted in front of the outer in patches
+            // -- a net of dark cracks at the phone's size (research). Not a
+            // share of the edges: an open sheet's border grows as the root of
+            // its area, so a fine enough tube passed under 2 % -- a rim's
+            // barrel (1 %) culled, light between the spokes (sparkwebgpu-ce);
+            // against the root the rims stand at 4, the logos at 1.4.
+            uint32_t open = 0xFFFFFFFFu;
+            ATHENEA_TRY(openEdges->read(device, 0, sizeof(uint32_t), &open));
+            const double meshEdges = 1.5 * double(triangles);
+            for (const Held& h : held) {
+                closed_[h.piece] = double(open) < 2.0 * std::sqrt(meshEdges) ? 1 : 0;
+            }
+            first = last;
+        }
+        return ok();
+    }
+
+    /// Piece `p`'s Edges clip, made from what markEdges kept just before the
+    /// piece is converted: the pictures come from the device's image pool,
+    /// which would not hold the whole stage's at once beside its meshes (the
+    /// Corvette's 4.3 million triangles want 412 MB of them). None where no
+    /// edge is held.
+    [[nodiscard]] Result<image::ImagePtr> edgeClip(size_t p) {
+        if (p >= edges_.size() || !edges_[p].valid() || !streams_[p]) {
+            return image::ImagePtr{};
+        }
+        gpu::Device& device = library_->device();
+        auto picture = image::Image::create(pictureFor(uint64_t{pieces_[p].triangles} * 6));
+        if (!picture) return std::move(picture).error();
+        auto view = viewOf(*context_, *picture, "mesh2splat.edges");
+        if (!view) return std::move(view).error();
+        gpu::CommandBatch batch(device);
+        edgeCopy_.dispatch(batch, {pieces_[p].triangles * 6, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["edgeData"].setBinding(edges_[p].rhi());
+            cursor["edgePicture"].setBinding(view->rhi());
+            cursor["edge"]["triangles"].setData(pieces_[p].triangles);
+            cursor["edge"]["width"].setData(static_cast<uint32_t>((*picture)->bounds().width()));
+            cursor["edge"]["stride"].setData(static_cast<uint32_t>((*picture)->stride()));
+        });
+        ATHENEA_TRY(batch.submit(true));
+        (*picture)->deviceWrote();
+        return *picture;
     }
 
     /// Every piece's triangles into a picture of its own, and the model's box
@@ -999,6 +1202,10 @@ public:
         // floats more, last, after the harmonics the bake writes.
         layered_ = std::any_of(pieces_.begin(), pieces_.end(),
                                [](const Piece& piece) { return piece.material->layered(); });
+        // AND WHETHER ANY MATERIAL HAS A FIELD THE STAGE COULD NOT SAY, which a
+        // TX bake then reads back from the material itself (StageMaterial::sampled).
+        sampling_ = std::any_of(pieces_.begin(), pieces_.end(),
+                                [](const Piece& piece) { return piece.material->sampled != 0; });
         // AND HOW THE SURFACE TURNS UNDER EACH GAUSSIAN, for a TX transfer: a
         // frame turns the reflection across the gaussian by it. Apart from
         // the records, three floats a gaussian; not where the levels of
@@ -1044,6 +1251,8 @@ public:
         ATHENEA_TRY(deriveCells());
         // Which glass is a sheet or a slab, now that the cell is known.
         ATHENEA_TRY(classifySheets());
+        // Where each surface stops or folds.
+        ATHENEA_TRY(markEdges());
         if (perMesh_ && !camera_) {
             cli::out("mesh2splat: density per mesh: %u cells across each mesh's longest side, the cell "
                         "held between %.4g and %.4g (the model's is %.4g)\n",
@@ -1219,7 +1428,7 @@ public:
                 // Into the cloud's own buffers, after everything before it,
                 // on the device: the records, where the bake starts from,
                 // and the joints.
-                ATHENEA_TRY(keep(*out, written - out->written));
+                ATHENEA_TRY(keep(*out, written - out->written, material));
                 displaced_ = displaced_ || (out->written > 0 && displaces(material));
                 // WHICH PRIM THESE GAUSSIANS CAME FROM. The conversion knows
                 // it -- this run is one mesh -- so the ancestry a matte needs
@@ -1233,6 +1442,18 @@ public:
                 // than a conductor: what a frame reflects a metal with.
                 schlickMetal_.insert(schlickMetal_.end(), out->written,
                                      material.schlickMetal ? int32_t{1} : int32_t{0});
+                // And whether its mesh is closed (markEdges): where its back
+                // is hidden by its own front.
+                closedOf_.insert(closedOf_.end(), out->written,
+                                 k < closed_.size() && closed_[k] != 0 ? int32_t{1} : int32_t{0});
+                // And the material's own roughness, before --specular-filter
+                // widens the stored one: what says whether a frame's field
+                // answers the polish (splat_relight's kPolishFieldRoughness).
+                // Under a map it is the map's, which a gaussian's record holds
+                // widened; -1 then, which a frame reads as sharp.
+                materialRoughness_.insert(
+                    materialRoughness_.end(), out->written,
+                    material.roughnessMap.empty() || options_->noTextures ? material.roughness : -1.0F);
                 // AND WHAT ITS GLASS BENDS BY. A transmitting gaussian
                 // refracts only with an index (rt_shade: `ior > 1`), and a
                 // cloud keeps one: without it the pawn's glass head was a
@@ -1449,6 +1670,9 @@ private:
         if (cutMap) job.inputs.push_back({"Opacity", cutMap});
         if (carried) job.inputs.push_back({"Influences", skins_[at]});
         if (uv2s_[at]) job.inputs.push_back({"Texcoord2", uv2s_[at]});
+        auto edgePicture = edgeClip(at);
+        if (!edgePicture) return std::move(edgePicture).error();
+        if (*edgePicture) job.inputs.push_back({"Edges", *edgePicture});
         if (heightMap) job.inputs.push_back({"Displacement", heightMap});
         if (emissionMap) job.inputs.push_back({"Emission", emissionMap});
         // The maps on the layers, Layer0..2, each for the input it stands for.
@@ -1484,11 +1708,16 @@ private:
         number("materialOpacity", static_cast<double>(material.opacity));
         // A THIN WALL IS ITS OWN TRANSPARENCY: it covers what the sheet
         // reflects head on at its index, which the effect works out
-        // (`m2sGlassCovers`). A solid covers `--glass-opacity`, 0.6 in every
-        // mode: a TX transfer's lens answers what is behind it from the
-        // domes alone, so at 1 a glass ball under a lamp lost the lit ground
-        // it shows (0.217 against the first transfer's 0.092; 0.0965 at 0.6).
-        number("glassOpacity", options_->minOpacity >= 0.0 ? options_->minOpacity : 0.6);
+        // (`m2sGlassCovers`). A SOLID's near face covers fully where the
+        // stage is lit by domes alone: a TX transfer's lens answers what is
+        // behind it from them, and at 0.6 the light let past the near face
+        // met the far face's gaussians, which face away and send nothing --
+        // a clear ball read 23 % dark against the path traced one, at any
+        // resolution (research, proto/pawn). Under a lamp the lens does not
+        // see the lamp's light, and at 1 a glass ball lost the lit ground it
+        // shows (0.217 against 0.092 at 0.6): there it stays 0.6.
+        // `--glass-opacity` overrides both.
+        number("glassOpacity", options_->minOpacity >= 0.0 ? options_->minOpacity : (stageHasLamps() ? 0.6 : 1.0));
         number("thinWall", thinGlassOf(at) ? 1.0 : 0.0);
         number("ior", static_cast<double>(material.ior));
         number("maxCells", static_cast<double>(options_->maxCells));
@@ -1499,6 +1728,7 @@ private:
         number("normalSpread", options_->specularFilter >= 0.0 ? options_->specularFilter
                                                                : (options_->transfer ? 1.0 : 0.0));
         number("simplify", options_->simplify);
+        number("edgeReach", options_->edgeReach);
         number("simplifyLevels", static_cast<double>(options_->simplifyLevels));
         if (cutMap) {
             const char channel = material.opacityMap.channel;
@@ -1551,6 +1781,11 @@ private:
         };
         colour("materialColour", material.baseColour);
         colour("transmissionColour", material.transmissionColour);
+        // OpenPBR's and standard_surface's transmission is tinted by its own
+        // colour alone: their base colour times it made the lobes test's
+        // glass 0.787 x 0.8871 a crossing where the mesh's is 0.8871, and the
+        // relit ball 10% under the mesh path traced.
+        number("transmissionTintsBase", material.ownTransmissionColour ? 0.0 : 1.0);
         if (emits_) {
             number("writeEmission", 1.0);
             colour("emissionColour", material.emission);
@@ -1655,6 +1890,7 @@ private:
         };
         ATHENEA_TRY(grown(records_, uint64_t{perRecord} * 4, 4, "mesh2splat.records"));
         ATHENEA_TRY(grown(rays_, 48, 16, "mesh2splat.rays"));
+        ATHENEA_TRY(grown(samplings_, 16, 16, "mesh2splat.samplings"));
         if (curved_) {
             ATHENEA_TRY(grown(curvatures_, 12, 4, "mesh2splat.curvatures"));
         }
@@ -1668,7 +1904,7 @@ private:
 
     /// One run's gaussians into the cloud's buffers, from `destFirst` on: the
     /// records, where each one's bake starts, and the joints that carry it.
-    [[nodiscard]] Result<void> keep(const OneMesh& run, uint64_t destFirst) {
+    [[nodiscard]] Result<void> keep(const OneMesh& run, uint64_t destFirst, const usd::StageMaterial& material) {
         if (run.written == 0) {
             return ok();
         }
@@ -1699,6 +1935,13 @@ private:
             cursor["gather"]["lobes"].setData(layered_ ? 1u : 0u);
             cursor["gather"]["curved"].setData(curved_ ? 1u : 0u);
             cursor["curvatures"].setBinding(curved_ ? curvatures_.rhi() : records_.rhi());
+            cursor["samplings"].setBinding(samplings_.rhi());
+            // What a TX bake reads back of this run's material, and what the
+            // effect was handed for it: only a transfer reads it.
+            cursor["gather"]["sampled"].setData(options_->transfer ? material.sampled : 0u);
+            cursor["gather"]["baseWeight"].setData(material.baseWeight);
+            cursor["gather"]["roughness"].setData(material.roughness);
+            cursor["gather"]["coatRoughness"].setData(material.coatRoughness);
         };
         const uint32_t threads = static_cast<uint32_t>(run.written);
         gather_.dispatch(batch, {threads, 1, 1}, bind);
@@ -1823,14 +2066,36 @@ private:
     /// Whether the effect writes each gaussian's shape operator, gathered
     /// into `curvatures_` (three floats a gaussian).
     bool                                     curved_ = false;
+    /// Whether the stage holds a light other than a dome (stageHasLamps),
+    /// read once.
+    std::optional<bool>                      lamps_;
+
+    /// WHETHER ANY LIGHT ON THE STAGE IS NOT A DOME: a lamp or a sun, which a
+    /// TX transfer's lens does not answer for (the glass coverage above).
+    bool stageHasLamps() {
+        if (!lamps_) {
+            auto lights = usd::stageLights(options_->stage);
+            lamps_ = lights && std::any_of(lights->begin(), lights->end(), [](const auto& l) { return !l.second; });
+        }
+        return *lamps_;
+    }
+    /// A material of the stage has a field the bake reads back (StageMaterial::sampled).
+    bool                                     sampling_ = false;
+    /// Four words a gaussian: what its material's bake reads back, and what
+    /// the conversion was handed (mesh2splat_gather's `samplings`).
+    gpu::Buffer                              samplings_;
     gpu::Buffer                              curvatures_;
     /// The Cryptomatte id of the prim each splat came from, in the same order,
     /// and what those ids are called.
     std::vector<uint32_t>                    cryptoIds_;
     /// 1 where the splat came from a thin-walled glass, in the same order.
     std::vector<int32_t>                     thinWalled_;
+    std::vector<int32_t>                     closedOf_;   // a gaussian's: its mesh has no open edge
+    std::vector<uint8_t>                     closed_;     // a piece's (markEdges)
     /// One a gaussian, 1 where its metal is a Schlick (StageMaterial::schlickMetal).
     std::vector<int32_t>                     schlickMetal_;
+    /// One a gaussian, its material's own roughness (-1 under a map).
+    std::vector<float>                       materialRoughness_;
     /// The index the cloud's transmitting gaussians bend by: the first glass
     /// met's. 0 while there is none.
     float                                    glassIor_ = 0.0F;
@@ -1860,7 +2125,9 @@ public:
     [[nodiscard]] const std::vector<uint32_t>& cryptoIds() const noexcept { return cryptoIds_; }
     [[nodiscard]] double modelCell() const noexcept { return modelCell_; }
     [[nodiscard]] const std::vector<int32_t>& thinWalled() const noexcept { return thinWalled_; }
+    [[nodiscard]] const std::vector<int32_t>& closed() const noexcept { return closedOf_; }
     [[nodiscard]] const std::vector<int32_t>& schlickMetal() const noexcept { return schlickMetal_; }
+    [[nodiscard]] const std::vector<float>& materialRoughness() const noexcept { return materialRoughness_; }
     /// Each gaussian's shape operator (uu, uv, vv), read back for the file;
     /// empty where the conversion did not write it.
     [[nodiscard]] Result<std::vector<float>> curvature() {
@@ -1908,6 +2175,9 @@ private:
     gpu::PrefixSum                           prefix_;
     gpu::RadixSort                           sort_;
     gpu::ComputeKernel                       sheetEdges_, sheetRuns_, sheetSum_;
+    gpu::ComputeKernel                       edgeKeys_, edgeRuns_, edgeWrite_, edgeCopy_;
+    /// Each piece's hard edges, six entries a triangle (markEdges, edgeClip).
+    std::vector<gpu::Buffer>                 edges_;
     /// A piece each: its glass is a sheet by its mesh (`classifySheets`).
     std::vector<bool>                        sheet_;
     std::vector<Piece>                       pieces_;
@@ -2003,6 +2273,7 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
         cursor["bake"]["dc0"].setData(uint32_t{11});
         cursor["bake"]["restBase"].setData(uint32_t{23});
         cursor["bake"]["indirect"].setData(uint32_t{0});
+        cursor["samplings"].setBinding(samplings_.rhi());
     });
     ATHENEA_TRY(batch.submit(true));
     uint32_t found = 0;
@@ -2247,6 +2518,9 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     }
     auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
     if (!renderer) return std::move(renderer).error();
+    if (zonal != nullptr && !zonal->xforms.empty()) {
+        ATHENEA_TRY((*renderer)->holdBindPose());
+    }
     // Degree 2: nine coefficients hold the irradiance of any environment to
     // about a percent, and a transfer is exactly that shape.
     // Degree 3 for a TX transfer (--transfer-degree): sixteen and forty-eight.
@@ -2256,8 +2530,13 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     // The reflected field is kept only with the cells and the indirect half.
     const bool field = side > 0 && indirect;
     gpu::Device& device = library_->device();
-    const uint32_t entries = coefficients + technique::transferPlanes(true, side);
-    const uint32_t fieldFirst = field ? entries - technique::kTransferFieldPlanes : 0u;
+    // The material read back where a material has a field the stage could not
+    // say (StageMaterial::sampled): three entries after the rest. Not for a
+    // zonal transfer, whose bake is of the bind pose's frames.
+    const bool material = sampling_ && zonal == nullptr;
+    const uint32_t transferEntries = coefficients + technique::transferPlanes(true, side);
+    const uint32_t entries = transferEntries + technique::bakeMaterialPlanes(true, material);
+    const uint32_t fieldFirst = field ? transferEntries - technique::kTransferFieldPlanes : 0u;
     // Two words of open directions a gaussian, or eight or thirty-two with
     // the cells.
     const uint32_t words = technique::transferCellWords(side);
@@ -2306,6 +2585,7 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         out.reflected.resize(field ? size_t{count_} * 48 : 0);
     }
     uint32_t reached = 0;
+    uint32_t readBack = 0;   // gaussians the material was read back into
     double traced = 0.0;
     // The last slice's -- the whole cloud's, where a zonal fit reads them.
     std::optional<gpu::Buffer> directs;
@@ -2320,7 +2600,7 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
         // The slice's rays are copied out by the bake itself, a pass at a
         // time, as it copies a large cloud's passes.
         auto baked = (*renderer)->bakePointsOnDevice(rays_, n, time, samples, bounces, bakeDegree,
-                                                     /*transfer=*/true, /*batch=*/0, side, base);
+                                                     /*transfer=*/true, /*batch=*/0, side, base, material);
         if (!baked) return std::move(baked).error();
         // The rays are the same rays whether the indirect half is kept or
         // not, so this number is what says the second half costs no bake:
@@ -2359,11 +2639,15 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
             cursor["bake"]["restBase"].setData(uint32_t{23});
             cursor["bake"]["indirect"].setData(indirect ? 1u : 0u);
             cursor["bake"]["cells"].setData(side == 0 ? 0u : words);
+            cursor["bake"]["material"].setData(material ? 1u : 0u);
+            cursor["bake"]["layered"].setData(layered_ ? 1u : 0u);
+            cursor["samplings"].setBinding(samplings_.rhi());
         });
         ATHENEA_TRY(batch.submit(true));
-        uint32_t here = 0;
-        ATHENEA_TRY(found->read(device, 0, sizeof(here), &here));
-        reached += here;
+        uint32_t here[2] = {0, 0};
+        ATHENEA_TRY(found->read(device, 0, sizeof(here), here));
+        reached += here[0];
+        readBack += here[1];
         if (zonal == nullptr) {
             ATHENEA_TRY(sliceDirects->read(device, 0, size_t{n} * coefficients * sizeof(float),
                                            out.direct.data() + size_t{base} * coefficients));
@@ -2389,6 +2673,10 @@ Result<void> Converter::transfer(const std::string& stage, double time, uint32_t
     }
     cli::out("mesh2splat: transfer baked for %u of %u gaussians (%u paths each, %u bounces%s) in %.0f ms\n",
                 reached, count_, samples, bounces, indirect ? ", with the indirect half" : "", traced);
+    if (material) {
+        cli::out("mesh2splat: the material read back on the device into %u gaussians (fields the stage "
+                    "could not say)\n", readBack);
+    }
     if (reached * 2 < count_) {
         cli::err(
                      "mesh2splat: more than half the gaussians found no surface under them; the "
@@ -2489,8 +2777,8 @@ Result<gpu::Buffer> Converter::framesForBake(const ZonalTransfer& zonal) {
         cursor["io"]["stride"].setData(uint32_t{1});
     });
     ATHENEA_TRY(batch.submit(true));
-    cli::out("mesh2splat: the cloud posed at the bake's instant (%u gaussians, %zu joints) so the transfer is "
-                "traced on the pose the stage holds\n",
+    cli::out("mesh2splat: the cloud and the stage's skeletons held at the bind pose (%u gaussians, %zu joints) "
+                "for the transfer's bake\n",
                 rest->count, zonal.xforms.size() / 16);
     return std::move(*posedShape);
 }
@@ -2638,14 +2926,16 @@ void addMesh2Splat(CLI::App& app) {
                     "how wide a gaussian is against its cell; mesh2splat's own number is 0.65, which "
                     "leaves a traced surface 30% transparent");
     cmd->add_option("--flatness", o->flatness,
-                    "the third size, as a fraction of the smaller of the other two");
+                    "the third size, as a fraction of the smaller of the other two; 0 makes every "
+                    "gaussian a surfel, the disc of the other two (2D gaussian splatting)");
     cmd->add_option("--opacity", o->opacity,
                     "how much of what stands behind it the converted surface covers, multiplied into "
                     "the material's own opacity");
     cmd->add_option("--glass-opacity", o->minOpacity,
                     "how much of what stands behind it a fully transmitting solid still covers. Low is "
                     "a window -- you see what stands behind it -- and translucency is not that: the "
-                    "light comes through scattered, so the body stays mostly there");
+                    "light comes through scattered, so the body stays mostly there (default: 1 on a stage "
+                    "lit by domes alone, 0.6 where a lamp or a sun stands)");
     cmd->add_option("--opacity-cut", o->opacityCut,
                     "a material whose opacity is a map with no threshold of its own: below this the "
                     "surface is not there and no gaussian is written, so the budget goes where the "
@@ -2658,6 +2948,10 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--no-textures", o->noTextures, "ignore the maps; materials keep their constant values");
     cmd->add_flag("--normal-map-turns", o->normalMapTurns,
                   "orient each gaussian by the normal map rather than the surface");
+    cmd->add_option("--edge-reach", o->edgeReach,
+                    "how far a gaussian may reach across an edge where its surface stops or folds, in its "
+                    "sizes: held to its distance from the edge over this (0: not held)")
+        ->check(CLI::Range(0.0, 8.0));
     cmd->add_flag("--no-displacement", o->noDisplacement,
                   "ignore the materials' displacement: every gaussian stands on the flat mesh");
     cmd->add_option("--displace-refine", o->displaceRefine,
@@ -2684,13 +2978,21 @@ void addMesh2Splat(CLI::App& app) {
                   "convert the shadow --prim casts on its ground instead of --prim itself: a layer of gaussians "
                   "on the ground under and around it, baked as a transfer (the object and the ground are what "
                   "its rays meet) and drawn black, covering what the object takes of the light");
+    cmd->add_flag("--light-catcher", o->lightCatcher,
+                  "convert the light the stage's lamps throw on --prim's ground instead of --prim itself: the "
+                  "same patch, reaching --light-reach ahead and behind, baked as the radiance it sends out and "
+                  "drawn added over whatever is behind it");
+    cmd->add_option("--light-reach", o->lightReach,
+                    "--light-catcher: how far past the object's ends, along its longer axis, the patch reaches, in "
+                    "its lengths");
     cmd->add_option("--catcher-ground", o->catcherGround,
-                    "--shadow-catcher: the ground prim (found by itself: the largest flat mesh outside --prim "
+                    "--shadow-catcher, --light-catcher: the ground prim (found by itself: the largest flat mesh outside --prim "
                     "whose top is at its bottom)");
     cmd->add_option("--catcher-margin", o->catcherMargin,
-                    "--shadow-catcher: how far past the object's footprint the catcher reaches, in its heights");
+                    "--shadow-catcher, --light-catcher: how far past the object's footprint the catcher reaches, in its heights");
     cmd->add_option("--catcher-cell", o->catcherCell,
-                    "--shadow-catcher: the catcher's cell, world units (0: a hundredth of the object's height)");
+                    "--shadow-catcher, --light-catcher: the catcher's cell, world units (0: a hundredth of the "
+                    "object's height; a thirtieth for a light catcher)");
     cmd->add_option("--validate", o->validate,
                     "measure the conversion material by material against the stage path traced, into this "
                     "directory: a table (validate.json) and GT, mesh and cloud side by side for each");
@@ -2761,7 +3063,7 @@ void addMesh2Splat(CLI::App& app) {
                   "lights of its own (what athenea view offers)");
     cmd->add_option("--time", o->time,
                     "the USD time code the stage is read at: the pose that becomes gaussians, "
-                    "and the instant the bake traces. A skinned stage is posed for it");
+                    "and the instant the bake traces; a skinned transfer is traced at the bind pose");
     cmd->add_option("--path", o->paths, "extra AOFX bundle directories");
     cmd->callback([o] {
         if (o->density != "per-model" && o->density != "per-mesh") {
@@ -2791,9 +3093,22 @@ void addMesh2Splat(CLI::App& app) {
         // THE SHADOW CATCHER: the stage again with a patch on the ground, and
         // that patch is what is converted -- as a transfer, at a cell of its
         // own -- the object staying in the stage as what the rays meet.
-        if (o->shadowCatcher) {
+        // THE LIGHT CATCHER: the same patch, further along the object, baked
+        // as the light it sends out rather than as a transfer -- the lamps'
+        // light on the ground, which the frame adds.
+        if (o->shadowCatcher && o->lightCatcher) {
+            cli::err("--shadow-catcher and --light-catcher are two conversions: ask for one\n");
+            throw CLI::RuntimeError(1);
+        }
+        if (o->shadowCatcher || o->lightCatcher) {
             if (o->prim.empty()) {
-                cli::err("--shadow-catcher needs --prim: the object whose shadow is caught\n");
+                cli::err("%s needs --prim: the object whose %s is caught\n",
+                             o->lightCatcher ? "--light-catcher" : "--shadow-catcher",
+                             o->lightCatcher ? "lamps' light" : "shadow");
+                throw CLI::RuntimeError(1);
+            }
+            if (o->lightCatcher && o->transfer) {
+                cli::err("--light-catcher bakes the light the ground sends out: drop --transfer\n");
                 throw CLI::RuntimeError(1);
             }
             usd::ShadowCatcherOptions catcher;
@@ -2801,6 +3116,11 @@ void addMesh2Splat(CLI::App& app) {
             catcher.ground = o->catcherGround;
             catcher.margin = o->catcherMargin;
             catcher.cell = o->catcherCell;
+            if (o->lightCatcher) {
+                catcher.reachLong = o->lightReach;
+                catcher.cellsPerHeight = 30.0;
+                catcher.root = "AtheneaLightCatcher";
+            }
             const std::filesystem::path out(o->output);
             const std::filesystem::path catcherStage =
                 out.parent_path() / (out.stem().string() + "_catcher_stage.usda");
@@ -2810,14 +3130,17 @@ void addMesh2Splat(CLI::App& app) {
             }
             o->stage = made->stage.string();
             o->prim = made->prim;
-            o->transfer = true;
+            // A shadow is a transfer -- what the object takes of any sky --
+            // and the lamps' light is light, baked as it stands.
+            o->transfer = o->shadowCatcher;
+            o->bake = o->bake || o->lightCatcher;
             o->density = "per-mesh";
             o->cellFromCamera.clear();
             const double cell = made->cell;
             o->cellMin = cell;
             o->cellMax = cell;
-            cli::out("mesh2splat: the shadow catcher of %s on %s, a cell of %.4g\n", catcher.object.c_str(),
-                        made->ground.c_str(), cell);
+            cli::out("mesh2splat: the %s catcher of %s on %s, a cell of %.4g\n",
+                        o->lightCatcher ? "light" : "shadow", catcher.object.c_str(), made->ground.c_str(), cell);
         }
         gpu_host::Context* context = gpu_host::installProcessContext();
         if (context == nullptr || context->compute() == nullptr) {
@@ -2830,6 +3153,8 @@ void addMesh2Splat(CLI::App& app) {
         for (const std::string& path : o->paths) {
             registry.addSearchPath(path);
         }
+        // Beside the executable, as a release lays it out, before the build tree's.
+        registry.addSearchPath(athenea::platform::executableDir() / ".." / "aofx");
 #ifdef ATHENEA_AOFX_BUNDLE_DIR
         registry.addSearchPath(ATHENEA_AOFX_BUNDLE_DIR);
 #endif
@@ -2978,8 +3303,8 @@ void addMesh2Splat(CLI::App& app) {
                     //
                     // As zonal lobes in each gaussian's own frame where they are
                     // asked for or where a skeleton turns the gaussians; then
-                    // a skinned cloud is posed at `--time`, the instant the
-                    // bake traces, before it is.
+                    // a skinned cloud is traced at its bind pose, the stage's
+                    // skeletons held there for the bake.
                     std::optional<ZonalTransfer> zonal;
                     if (lobes > 0) {
                         zonal.emplace();
@@ -2991,9 +3316,17 @@ void addMesh2Splat(CLI::App& app) {
                                 if (!one.skinning.bound) {
                                     continue;
                                 }
-                                auto at = (*stage).skeletonTransforms(one.skinning.skeleton, {o->time});
-                                if (!at) return std::move(at).error();
-                                zonal->xforms = std::move(*at);
+                                // Traced at the bind pose (StageRenderer::holdBindPose),
+                                // where every joint's skinning transform is the
+                                // identity.
+                                auto joints = (*stage).joints(one.skinning.skeleton);
+                                if (!joints) return std::move(joints).error();
+                                zonal->xforms.assign(joints->size() * 16, 0.0F);
+                                for (size_t j = 0; j < joints->size(); ++j) {
+                                    for (size_t d = 0; d < 4; ++d) {
+                                        zonal->xforms[j * 16 + d * 5] = 1.0F;
+                                    }
+                                }
                                 zonal->geomBind = one.skinning.geomBindTransform;
                                 break;
                             }
@@ -3105,6 +3438,9 @@ void addMesh2Splat(CLI::App& app) {
                 // body and the frame adds only the polish.
                 options.litBody = o->bake && !o->transfer;
                 options.catcher = o->shadowCatcher;
+                options.lightCatcher = o->lightCatcher;
+                // A thickness of nothing: every gaussian a surfel, a disc.
+                options.surfel = o->flatness == 0.0;
                 // Light, all of it: the albedo, the transfer's and the bake's.
                 options.linear = true;
                 // The matte's ancestry, gaussian by gaussian, as the conversion
@@ -3112,7 +3448,9 @@ void addMesh2Splat(CLI::App& app) {
                 options.cryptoObject = converter.cryptoIds();
                 options.cryptoManifest = converter.cryptoManifest();
                 options.thinWalled = converter.thinWalled();
+                options.closed = converter.closed();
                 options.schlickMetal = converter.schlickMetal();
+                options.materialRoughness = converter.materialRoughness();
                 auto curvature = converter.curvature();
                 if (!curvature) return std::move(curvature).error();
                 options.curvature = *curvature;

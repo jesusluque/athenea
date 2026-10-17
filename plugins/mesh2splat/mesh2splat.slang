@@ -68,7 +68,7 @@ struct M2sParams {
     uint  useNormalMap;
 
     float4 materialColour;    // multiplied into the albedo; w unused
-    float4 transmissionColour;
+    float4 transmissionColour;   // w: how much of the material's colour the transmission keeps
 
     uint  countWidth;     // the per-triangle cell counts, one uint a triangle
     float metallic;       // the material's own, multiplied into the map where there is one
@@ -176,6 +176,13 @@ struct M2sParams {
     // The sheen's weight alone, then its colour alone: one float4, since a
     // float3 after a float is aligned to sixteen on Metal (560 bytes, not 544).
     float4 sheenAlone;
+
+    // WHERE THE SURFACE STOPS OR FOLDS (m2sHoldEdges): the Edges clip, and
+    // how many of its sizes a gaussian may reach across a hard edge.
+    uint  hasEdges;
+    float edgeReach;
+    uint  edgePad0;
+    uint  edgePad1;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -193,6 +200,7 @@ StructuredBuffer<float4>   emissionMap; // what the surface gives off, rgb or on
 StructuredBuffer<float4>   layerMap0;   // the maps on the layers, where there are any (m2sLayersAt)
 StructuredBuffer<float4>   layerMap1;
 StructuredBuffer<float4>   layerMap2;
+StructuredBuffer<float4>   edgeFlags;   // the mesh picture's shape: a triangle's hard edges, in its first entry
 ConstantBuffer<M2sParams>  params;
 
 /// The counters start a render, and a buffer the host handed over holds
@@ -250,6 +258,15 @@ float2 texcoord2Entry(uint index) {
     const uint x = index % params.meshWidth;
     const uint y = index / params.meshWidth;
     return texcoord2[y * params.meshStride + x].xy;
+}
+
+/// An entry of the Edges clip, which has the mesh picture's shape: six a
+/// triangle -- how many lines it was told and its own hard edges' bits,
+/// then up to five lines (mesh2splat_edges).
+float4 edgeEntry(uint index) {
+    const uint x = index % params.meshWidth;
+    const uint y = index / params.meshWidth;
+    return edgeFlags[y * params.meshStride + x];
 }
 
 /// THE JOINTS A GAUSSIAN IS CARRIED BY: the barycentric blend of the three
@@ -1111,6 +1128,122 @@ float m2sWidened(float roughness, float spread) {
     return saturate(sqrt(sqrt(alpha * alpha + 2.0 * spread * spread)));
 }
 
+/// NO FURTHER THAN THE SURFACE GOES. A gaussian is a cell wide, and a part
+/// narrower than a cell -- a hood's flange folded down into its gap -- still
+/// got gaussians a cell wide in its own plane: they stood out of the gap
+/// over the paint, dark, and every panel edge of the Corvette was a thick
+/// black wavy line where the path tracer draws a thin one (docs/decisions.md,
+/// "Panel edges"). The lines where the surface stops or folds near this
+/// triangle -- its own hard edges, and those the next triangles told it
+/// (mesh2splat_edges) -- each hold the gaussian's size square to the line to
+/// its distance from it over `edgeReach`; along the line it keeps what it
+/// had: its covariance in its plane loses only the variance in the
+/// direction square to the line, so a strip of them still covers the strip.
+/// A line that does not lie in the gaussian's plane (the flange's, seen from
+/// the paint it folds off) or that it stands behind says nothing to it. The
+/// lines are applied in an order of their own, so the answer does not depend
+/// on which came first. `tangent` and `scale` come back as the new frame's.
+static const uint kHeldLines = 8;
+
+void m2sHoldEdges(uint triangle, const M2sTriangle t, float3 at, float3 normal, inout float3 tangent,
+                  inout float3 scale) {
+    if (params.hasEdges == 0 || !(params.edgeReach > 0.0)) {
+        return;
+    }
+    const float4 head = edgeEntry(triangle * 6);
+    const uint told = min(uint(head.x + 0.5), 5u);
+    const uint own = uint(head.y + 0.5) & 7u;
+    if (told == 0u && own == 0u) {
+        return;
+    }
+    float4 held[kHeldLines];
+    uint count = 0;
+    const float3 corners[3] = { t.a, t.b, t.c };
+    [unroll] for (uint e = 0; e < 3; ++e) {
+        if ((own & (1u << e)) == 0u) {
+            continue;
+        }
+        const float3 from = corners[e];
+        const float3 along = corners[(e + 1) % 3] - from;
+        const float3 toOther = corners[(e + 2) % 3] - from;
+        if (!(dot(along, along) > 1.0e-30)) {
+            continue;
+        }
+        const float3 inward = toOther - along * (dot(toOther, along) / dot(along, along));
+        if (!(dot(inward, inward) > 1.0e-30)) {
+            continue;
+        }
+        const float3 n = normalize(inward);
+        held[count++] = float4(n, dot(n, from));
+    }
+    for (uint k = 0; k < told; ++k) {
+        held[count++] = edgeEntry(triangle * 6 + 1 + k);
+    }
+    // An order of their own: by the line's offset, then its direction.
+    for (uint i = 1; i < count; ++i) {
+        const float4 line = held[i];
+        uint j = i;
+        while (j > 0 && (held[j - 1].w > line.w ||
+                         (held[j - 1].w == line.w && (held[j - 1].x > line.x ||
+                                                      (held[j - 1].x == line.x && held[j - 1].y > line.y))))) {
+            held[j] = held[j - 1];
+            --j;
+        }
+        held[j] = line;
+    }
+
+    float3 u = tangent - normal * dot(normal, tangent);
+    if (!(dot(u, u) > 1.0e-20)) {
+        return;
+    }
+    u = normalize(u);
+    const float3 v = cross(normal, u);
+    // The covariance in the gaussian's plane, in (u, v).
+    float uu = scale.x * scale.x;
+    float uv = 0.0;
+    float vv = scale.y * scale.y;
+    bool changed = false;
+    for (uint k = 0; k < count; ++k) {
+        const float3 n = held[k].xyz;
+        // Square to the line, in the gaussian's plane.
+        float2 m = float2(dot(n, u), dot(n, v));
+        if (!(dot(m, m) > 0.25)) {
+            continue;   // the line stands across the gaussian's plane, not in it
+        }
+        m = normalize(m);
+        const float2 cm = float2(uu * m.x + uv * m.y, uv * m.x + vv * m.y);
+        const float reach2 = dot(m, cm);
+        const float size = sqrt(reach2);
+        const float distance = dot(n, at) - held[k].w;
+        if (distance < -0.25 * size) {
+            continue;   // behind the line: another triangle's side of it
+        }
+        // The size allowed square to the line; a centre on it keeps a
+        // twentieth, a needle along it.
+        const float allowed = max(max(distance, 0.0) / params.edgeReach, 0.05 * size);
+        if (!(reach2 > allowed * allowed)) {
+            continue;
+        }
+        // C - a (C m)(C m)^T: the variance along m becomes allowed^2, and
+        // the one along the line's direction conjugate to it is kept.
+        const float a = (1.0 - allowed * allowed / reach2) / reach2;
+        uu -= a * cm.x * cm.x;
+        uv -= a * cm.x * cm.y;
+        vv -= a * cm.y * cm.y;
+        changed = true;
+    }
+    if (!changed) {
+        return;
+    }
+    const float mean = 0.5 * (uu + vv);
+    const float spread = sqrt(max(0.25 * (uu - vv) * (uu - vv) + uv * uv, 0.0));
+    const float wide = sqrt(max(mean + spread, 0.0));
+    const float narrow = sqrt(max(mean - spread, 0.0));
+    const float angle = 0.5 * atan2(2.0 * uv, uu - vv);
+    tangent = cos(angle) * u + sin(angle) * v;
+    scale = float3(wide, narrow, min(wide, narrow) * params.flatness);
+}
+
 /// ONE GAUSSIAN, WRITTEN: what the maps say at `bary`, turned to `normal`
 /// with its first axis along `tangent`, `scale` wide. `false` where the frame
 /// collapsed and nothing was written. A displaced one carries three entries
@@ -1118,6 +1251,7 @@ float m2sWidened(float roughness, float spread) {
 /// flat surface's normal, and the relief's.
 bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3 position, float3 normal,
               float3 tangent, float3 scale, float mask, float3 flat, float3 flatNormal, float height) {
+    m2sHoldEdges(triangle, t, flat, flatNormal, tangent, scale);
     const float2 uv = m2sUvAt(t, bary);
     const float2 uv2 = m2sUv2At(t, bary);
     float3 colour = params.materialColour.xyz;
@@ -1174,7 +1308,12 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     const float covered = mask > 0.0 ? m2sMaskCoverage(mask) : 0.0;
     const float keptOpacity =
         m2sCoverageAlpha(params.opacity * params.materialOpacity * covered * lerp(1.0, m2sGlassCovers(), params.transmission));
-    colour = lerp(colour, colour * params.transmissionColour.xyz, params.transmission);
+    // What it transmits takes the transmission colour, and the material's
+    // own as far as `transmissionColour.w` says: wholly for glTF, whose
+    // transmission is tinted by the base colour; not at all for OpenPBR and
+    // standard_surface, whose base colour is the opaque base's.
+    colour = lerp(colour, lerp(float3(1.0), colour, params.transmissionColour.w) * params.transmissionColour.xyz,
+                  params.transmission);
 
     const float3 shortAxis = params.useNormalMap != 0 ? shading : normal;
     float3 alongU = tangent - shortAxis * dot(shortAxis, tangent);
@@ -1228,7 +1367,12 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         float4 coat = params.coat;
         float4 sheen = params.sheen;
         m2sLayersAt(t, bary, specular, coat, sheen);
-        if (spread > 0.0) {
+        // Not where the curvature is written: the raster then turns a
+        // smooth coat's mirror across the footprint pixel by pixel
+        // (SplatSlope's sharp lobe), and widened as well it was blurred
+        // twice -- the hood's reflections of the dome came out soft where
+        // the path tracer draws them sharp (research 095, D2; pieces T5/T6).
+        if (spread > 0.0 && params.curvatureEntry == 0) {
             coat.y = m2sWidened(coat.y, spread);
         }
         records[recordAt(slot, params.lobesEntry)] = specular;
@@ -1240,6 +1384,56 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
         records[recordAt(slot, params.curvatureEntry)] = float4(m2sShape(t, alongU, alongV), 0.0);
     }
     return true;
+}
+
+/// A TRIANGLE NO CELL CAUGHT IS AS BIG AS IT IS. It gets one gaussian at its
+/// middle (m2sCount says why), and that gaussian was a cell wide -- however
+/// small the triangle. A panel's rolled lip is a strip of triangles each a
+/// fraction of a cell, so each drew a disc a cell wide, and they piled into
+/// a dark band of beads along every edge of the Corvette, three pixels thick
+/// where the path tracer draws a hairline. The gaussian takes the triangle's
+/// own second moments in its plane instead, widened as a cell's are, and
+/// never more than the cell's size.
+void m2sOwnSize(const M2sTriangle t, float3 normal, inout float3 tangent, inout float3 scale) {
+    float3 u = tangent - normal * dot(normal, tangent);
+    if (!(dot(u, u) > 1.0e-20)) {
+        return;
+    }
+    u = normalize(u);
+    const float3 v = cross(normal, u);
+    const float3 middle = (t.a + t.b + t.c) / 3.0;
+    const float3 corners[3] = { t.a - middle, t.b - middle, t.c - middle };
+    float uu = 0.0, uv = 0.0, vv = 0.0;
+    [unroll] for (uint k = 0; k < 3; ++k) {
+        const float du = dot(corners[k], u);
+        const float dv = dot(corners[k], v);
+        uu += du * du;
+        uv += du * dv;
+        vv += dv * dv;
+    }
+    // A uniform triangle's covariance is a twelfth of its corners' about its
+    // middle. A cell is sized the same way: a uniform square's deviation is
+    // its side over sqrt(12), and its gaussian `sigma` of the side -- so the
+    // triangle's deviations are widened by sigma * sqrt(12) (2.25 at 0.65),
+    // and a strip of small triangles covers as a strip of cells does.
+    const float widen = params.sigmaX * params.sigmaY * 12.0;
+    uu *= widen / 12.0;
+    uv *= widen / 12.0;
+    vv *= widen / 12.0;
+    const float mean = 0.5 * (uu + vv);
+    const float spread = sqrt(max(0.25 * (uu - vv) * (uu - vv) + uv * uv, 0.0));
+    const float most = max(scale.x, scale.y);
+    // Never under a twentieth of the cell: a sliver of a triangle (two corners
+    // almost on each other) gave a gaussian of 1e-7 m that merged into nodes
+    // with no size at all (research, the grille's tree).
+    const float wide = clamp(sqrt(max(mean + spread, 0.0)), 0.05 * most, most);
+    const float narrow = min(max(sqrt(max(mean - spread, 0.0)), 0.02 * wide), wide);
+    if (!(wide > 0.0)) {
+        return;
+    }
+    const float angle = 0.5 * atan2(2.0 * uv, uu - vv);
+    tangent = cos(angle) * u + sin(angle) * v;
+    scale = float3(wide, narrow, narrow * params.flatness);
 }
 
 /// ONE CELL'S GAUSSIANS: one on the flat surface, or as many as the relief
@@ -1258,7 +1452,12 @@ bool m2sCellEmit(uint triangle, const M2sTriangle t, float2 centre, float3 bary,
         if (!(dot(normal, normal) > 0.5)) {
             normal = t.geometric;
         }
-        if (m2sWrite(triangle, t, slot, bary, position, normal, t.tangent, t.scale, mask, position,
+        float3 tangent = t.tangent;
+        float3 scale = t.scale;
+        if (!caught) {
+            m2sOwnSize(t, normal, tangent, scale);
+        }
+        if (m2sWrite(triangle, t, slot, bary, position, normal, tangent, scale, mask, position,
                      normal, 0.0)) {
             ++slot;
         }

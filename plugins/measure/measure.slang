@@ -162,7 +162,50 @@ void measureRows(uint3 tid: SV_DispatchThreadID) {
         errorCarry += abs(error) >= abs(term) ? (error - t) + term : (term - t) + error;
         error = t;
     }
-    rows[at + 4] = float4(error + errorCarry, 0.0, 0.0, 0.0);
+    // AS IT IS SEEN: the squared error of the sRGB-encoded colour (0..1, the
+    // mean of the three channels), for a PSNR; and SSIM on the encoded
+    // luminance over a 7 x 7 box round each pixel (Wang et al. 2004's
+    // constants), for its mean.
+    float seen = 0.0;
+    float structure = 0.0;
+    for (uint x = 0; x < params.width; ++x) {
+        const float4 pa = src[y * params.srcStride + x];
+        const float4 pb = ref[y * params.refStride + x];
+        float3 d = float3(encode(pa.x) - encode(pb.x), encode(pa.y) - encode(pb.y), encode(pa.z) - encode(pb.z));
+        seen += dot(d, d) / 3.0;
+        float ma = 0.0, mb = 0.0, aa = 0.0, bb = 0.0, ab = 0.0, n = 0.0;
+        for (int dy = -3; dy <= 3; ++dy) {
+            const int yy = int(y) + dy;
+            if (yy < 0 || yy >= int(params.height)) {
+                continue;
+            }
+            for (int dx = -3; dx <= 3; ++dx) {
+                const int xx = int(x) + dx;
+                if (xx < 0 || xx >= int(params.width)) {
+                    continue;
+                }
+                const float4 qa = src[uint(yy) * params.srcStride + uint(xx)];
+                const float4 qb = ref[uint(yy) * params.refStride + uint(xx)];
+                const float la = (encode(qa.x) + encode(qa.y) + encode(qa.z)) / 3.0;
+                const float lb = (encode(qb.x) + encode(qb.y) + encode(qb.z)) / 3.0;
+                ma += la;
+                mb += lb;
+                aa += la * la;
+                bb += lb * lb;
+                ab += la * lb;
+                n += 1.0;
+            }
+        }
+        ma /= n;
+        mb /= n;
+        const float va = max(aa / n - ma * ma, 0.0);
+        const float vb = max(bb / n - mb * mb, 0.0);
+        const float cv = ab / n - ma * mb;
+        const float c1 = 0.01 * 0.01;
+        const float c2 = 0.03 * 0.03;
+        structure += ((2.0 * ma * mb + c1) * (2.0 * cv + c2)) / ((ma * ma + mb * mb + c1) * (va + vb + c2));
+    }
+    rows[at + 4] = float4(error + errorCarry, seen, structure, 0.0);
 }
 
 [shader("compute")]
@@ -212,6 +255,14 @@ void measureReduce(uint3 tid: SV_DispatchThreadID) {
         error = t;
     }
     totals[2u * kBins + 16u] = asuint(error + carry);
+    float seen = 0.0;
+    float structure = 0.0;
+    for (uint y = 0; y < params.height; ++y) {
+        seen += rows[y * params.rowsStride + 4u].y;
+        structure += rows[y * params.rowsStride + 4u].z;
+    }
+    totals[2u * kBins + 17u] = asuint(seen);
+    totals[2u * kBins + 18u] = asuint(structure);
 }
 
 /// The top of relative bin k: bin k > 0 holds [2^((k-1)/8 - 16), 2^(k/8 - 16)).
@@ -262,11 +313,12 @@ Walked walk(uint first, uint threshold) {
     return w;
 }
 
-// results, 33 words:
+// results, 35 words:
 //    0..3  Source's mean        4..7  its max      8..11 its sum
 //   12..15 Reference's mean    16..19 its max     20..23 its sum
 //   24 relMSE  25 the relative squared error's sum  26 p99 relative  27 max relative
 //   28 8-bit p99  29 8-bit max  30 over the threshold  31 pixels compared  32 pixels in the window
+//   33 the sRGB-encoded squared error's mean  34 SSIM's mean (encoded luminance, 7 x 7 box)
 // Floats as their bits; counts and code values as uints.
 [shader("compute")]
 [numthreads(1, 1, 1)]
@@ -287,8 +339,8 @@ void measureFinish(uint3 tid: SV_DispatchThreadID) {
     }
     results[32] = windowPixels;
     if (params.hasReference == 0u) {
-        for (uint k = 24; k < 32; ++k) {
-            results[k] = 0;
+        for (uint k = 24; k < 35; ++k) {
+            results[k] = k == 32 ? results[k] : 0u;
         }
         return;
     }
@@ -303,6 +355,9 @@ void measureFinish(uint3 tid: SV_DispatchThreadID) {
     results[29] = codes.top;
     results[30] = codes.over;
     results[31] = codes.pixels;
+    const float pixels = float(max(codes.pixels, 1u));
+    results[33] = asuint(asfloat(totals[2u * kBins + 17u]) / pixels);
+    results[34] = asuint(asfloat(totals[2u * kBins + 18u]) / pixels);
 }
 
 /// Black, blue, cyan, green, yellow, red: a ramp that reads at a glance and

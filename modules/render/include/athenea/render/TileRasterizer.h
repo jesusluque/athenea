@@ -131,6 +131,18 @@ struct SplatInstance {
     /// --shadow-catcher), projected by a kernel of its own: black, as opaque
     /// as what its object took of the light reaching it.
     bool                    catcher = false;
+    /// `primvars:athenea:splat:lightCatcher`: a light catcher (athenea
+    /// mesh2splat --light-catcher), projected by a kernel of its own: its
+    /// colour the lamps' layers alone, added over what is drawn behind it.
+    bool                    lightCatcher = false;
+    /// THE LAMPS' WEIGHTS, a float4 a light layer of the cloud
+    /// (`scene::GpuSplats::lightLayers`), `GpuSplats::kMaxLightGroups` of
+    /// them: linear rgb, the group's level times its radiance and colour.
+    /// Null: the layers are not added. Per frame and per instance, which is
+    /// why it is here and not on the cloud; handed to the projection in its
+    /// constants (FrameParams::lightWeights), not as a buffer, since the TX
+    /// projection binds as many buffers as Metal allows.
+    const float*            lightWeights = nullptr;
 };
 
 /// The frame's lights, as a renderer that must not depend on the light module
@@ -197,6 +209,11 @@ struct RenderSettings {
     uint32_t width = 1920;
     uint32_t height = 1080;
     bool     antialias = true;
+    /// SURFELS: a gaussian with a flat axis (a scale of exactly 0) drawn as
+    /// the disc it is, by the ray through each pixel, with the 2DGS screen
+    /// filter (docs/decisions.md, surfels). Off, it is the thin gaussian it
+    /// projects to. A cloud with no flat axis draws the same either way.
+    bool     surfels = true;
     uint32_t maxShDegree = 3;
     /// Premultiplied, linear. Transparent by default.
     std::array<float, 4> background{0, 0, 0, 0};
@@ -230,6 +247,18 @@ struct RenderSettings {
     /// harmonics into `flatten->clouds`. Nothing is drawn: `targets` is left
     /// as it was.
     SplatFlatten* flatten = nullptr;
+    /// WHAT EACH SPLAT GAVE THE FRAME, added in: a uint per slot (the
+    /// instances' splats one after another), the transmittance times alpha
+    /// it blended with summed over its pixels, in 1/4096 of a pixel. Never
+    /// cleared here, so frames from many cameras sum into it -- what `athenea
+    /// decimate --drop-hidden` prunes by. Null: nothing is counted.
+    gpu::Buffer* contribution = nullptr;
+    /// What `contribution` counts: 1 the weight above; 2 the squared error
+    /// taking each splat away would leave in its pixels, in 2^-24 (a pixel
+    /// capped at one) as two uint a slot (low, high), against `finalColour` -- the frame drawn whole from
+    /// the same camera, float4 a pixel as `RenderTargets::colour` holds it.
+    uint32_t           contributionMode = 1;
+    const gpu::Buffer* finalColour = nullptr;
 };
 
 /// WHAT A FRAME OF SPLATS DID, as the device counted it
@@ -342,6 +371,8 @@ private:
     /// A shadow catcher's (splatProjectCatcher): black, as opaque as what
     /// its object took, no relighting.
     gpu::ComputeKernel projectCatcher_;
+    /// A light catcher's (splatProjectLightCatcher): the lamps' layers, added.
+    gpu::ComputeKernel projectLightCatcher_;
     /// A transfer cloud's view-independent terms, a splat each, kept while
     /// the lights, the sky, the cloud and its place stand (`txCaches_`).
     gpu::ComputeKernel viewless_;
@@ -373,7 +404,10 @@ private:
     uint32_t tileCapacity_ = 0;
     gpu::Buffer proj_, tileRects_, tilesTouched_, visible_, depthKeys_;
     /// A slot each beside `proj_`: a TX transfer's reflection's slope across
-    /// the footprint, read where the record is marked (frame.slang's kSlopeMark).
+    /// the footprint, read where the record is marked (frame.slang's kSlopeMark);
+    /// then, from slot `splatCapacity_` on (`polishPlane`), a sharp record's
+    /// base polish and its sun weights (kSharpMark). One buffer, so the TX
+    /// projection stays within Metal's thirty-one.
     gpu::Buffer slopes_;
     gpu::Buffer visibleOffsets_, visibleTotal_, touchedOffsets_, touchedTotal_;
     gpu::SortBuffers depthSort_;   // keysLo = visible depth keys, values = splat index

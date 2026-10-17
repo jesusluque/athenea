@@ -134,7 +134,12 @@ or in the engine:
   took `max(vertexCount, indexCount) / 3` as the triangle count. A chunk that
   indexed into a larger vertex buffer therefore read past its own indices.
   The count is fixed in the patch, and the engine now gives each chunk
-  chunk-local vertex windows as well.
+  chunk-local vertex windows as well. The Vulkan backend has the same line
+  (`vk-acceleration-structure.cpp`), so a mesh with more points than
+  triangle corners read past its indices there too; it is fixed in
+  `cmake/patches/slang-rhi-vulkan-triangle-count.patch`, a file of its own so
+  that a tree already carrying the Metal patch takes it alone. Both are in
+  upstream PR #910.
 - **Winding.** Facing is decided in object space, so a mirroring instance
   transform must not flip the front face. Metal behaves this way, and the
   Vulkan and DXR specifications say the same.
@@ -1715,12 +1720,14 @@ host. What that took, in the order it was found:
   Objective-C call in `core/Platform`, beside `matchLayerToBacking`, which is
   the precedent and the rule -- wrapped for slang-rhi with `Buffer::wrap` and
   shared with OIDN once.
-- **slang-rhi's Metal `copyBuffer` does nothing with a wrapped buffer on
-  either side.** Silently: 4095 of 4096 words untouched both ways, while a
-  kernel reads and writes the same buffer exactly (0 of 4096). Measured by a
-  test that stays in the tree (`a tracked Metal buffer is read and written by
-  kernels, and not by slang-rhi's blit`). The staging copies are therefore a
-  kernel, `buffer_copy.slang`, word by word.
+- **The staging copies are a kernel**, `buffer_copy.slang`, word by word.
+  They were made one because slang-rhi's Metal `copyBuffer` seemed to do
+  nothing with a wrapped buffer (4095 of 4096 words untouched). It was the
+  test: it recorded the copy straight into the batch's encoder without
+  `markDirty()`, so the batch submitted nothing. Marked, the blit copies a
+  wrapped buffer exactly both ways, and the test (`a tracked Metal buffer is
+  read and written by kernels and by blits`) asserts it. The kernel stays: it
+  works, and nothing has measured it against the blit.
 - **OIDN writes three of a pixel's four floats.** The alpha in a fresh private
   buffer is whatever was there, and `compareHdr` compares four channels: the
   first working run read relMSE 0.15 against a reference at 3.7e-4 for the
@@ -3525,6 +3532,86 @@ one at a time when one look at the emitted kernel would have said why.
   reads as "this face is a hole", dropping its triangles. The mixed-face mesh
   triangulated to 4 of its 10 triangles, and to none with the handedness
   flipped. The flags are cleared on the device before the topology dispatches.
+- **A material's lobe stack was overwritten while it was built, on CUDA
+  only.** Every frame and every bake shaded through a MaterialX material came
+  out wrong on CUDA -- an OpenPBR ground lit by a sun pink and ten times too
+  bright, a UsdPreviewSurface under the headlight without its specular, every
+  bake black -- while the same kernel on the same L4 under Vulkan read
+  0.274467 0.245033 0.215593, Metal's numbers to the last digit. The suite
+  did not see it: its tests compare against a reference rendered on the same
+  device. Read back from inside the kernel, the material's BSDF was the same
+  on both; it went wrong in `atheneaFinishStack`, which keeps the built lobes
+  of non-zero weight. Its BSDF parameter arrives on CUDA as a pointer to the
+  caller's temporary, and nvcc laid the stack the function builds over that
+  temporary: each lobe kept overwrote the weights of the lobes still to be
+  read, and lobes of zero weight survived with (1, 0, 1) -- five lobes where
+  the ground has two. Neither Slang's optimisation level nor the thread's
+  stack limit (1 KB, raised to 64 KB) changed a digit. The weights are now
+  copied into a local array before the stack is written.
+- **Raster glass on CUDA shows the sky where Metal shows the ball's
+  inside.** The raster route refracts through glass with inline ray queries;
+  CUDA has the OptiX pipeline and no ray queries, so its raster glass reads
+  the environment behind the ball (0.32 at the ball's centre against Metal's
+  0.008). The path traced frame is the same on both routes; a raster frame
+  with glass is not, until the raster refraction runs on the pipeline too.
+- **A bake on Windows, three ways to trace, measured (14 Oct).** The OptiX
+  pipeline of a radiance bake did not compile with Slang 2026.14.1 ("Module
+  compilation failed"); with 2026.19 it does, in about 20 minutes the first
+  time (an NVIDIA L4), then from OptiX's own disk cache in seconds. Slang to
+  PTX is 37 s of it; the rest is OptiX making one 66k-instruction raygen with
+  19 trace sites. `[noinline]` on the two trace functions (honoured on CUDA
+  from 2026.19) took it to 19.5 minutes; OptiX's optimisation level 0 failed
+  as 3 does. D3D12 compiled the same bake in 30 s but is not ported: its root
+  signature leaves out constant buffers past `b0`, and a zero-length
+  structured buffer bound as a view removes the device. Vulkan (RTX 3070,
+  native Windows) compiled it in 94 s, passed every `technique` test and the
+  bakes. It cannot run `mesh2splat`, though: gpe, which runs its AOFX kernels,
+  has no Vulkan backend.
+- **A cloud is traced by the compute BVH on Vulkan too.** The hardware route
+  let a glass cloud's far face through untinted (a ball of tint (1, 1, 0.5):
+  0.53 in blue against the mesh's 0.28); the compute route agrees with the
+  mesh, and it is the route Metal and CUDA trace with. The hardware route's
+  glass is not fixed.
+- **gpe has a Vulkan backend (14 Oct)**, so a bake runs on Vulkan with its
+  AOFX effects (`-DGPE_BACKEND_WANTED=Vulkan`). gpe adopts slang-rhi's
+  `VkDevice` and queue, as it adopts a Metal device or a CUDA context; a
+  buffer is a `VkBuffer` both ways. Its kernels are SPIR-V (slangc
+  `-fvk-use-entrypoint-name -fvk-use-scalar-layout`: one module holds every
+  entry under its own name, and C's layout matches what the CUDA backend's
+  callers write). The bindings are read from the module: one set, in
+  declaration order, the uniform block a uniform buffer in the same sequence.
+  Uploads, fills and dispatches go into one command buffer, a full memory
+  barrier between commands and at both ends, submitted when something must
+  follow (download, sync, slang-rhi's next submission through
+  `setBeforeSubmit`); barriers reach across command buffers in submission
+  order, which is what orders gpe against slang-rhi on one queue. Coarse, and
+  the work here is a few long dispatches. Measured on an RTX 3070 Laptop GPU,
+  native Windows: `mesh2splat --transfer` of `two_balls.usda` baked 283667 of
+  283669 gaussians (256 paths, 3 bounces) in 159 s, and the gpe-labelled
+  tests (gpu_host, aofx, mesh2splat; 41) pass. A Vulkan build of gpe emits a
+  few gaussians fewer than Metal from the same mesh (96078 against 96130 for
+  the sliced paint ball): the cell counts move with the arithmetic, so that
+  test checks the baked share and not Metal's total. On a Mac the backend runs
+  on MoltenVK, which is how it was written: gpe's own tests pass there but
+  for the two that time 60 fps playback, and `mesh2splat`'s kernels hang
+  MoltenVK (a fence that never signals) where NVIDIA's driver runs them. Not
+  done: page-locked host memory (gpe's `HostStaging`), the driver's memory
+  budget (`memory()` answers from gpe's own allocations), and timing.
+- **A CUDA texture is read through its view's sampler, not the one bound
+  beside it.** A CUDA texture object holds its addressing, filtering and mip
+  range, and slang-rhi makes it from the view: a `SamplerState` bound next to
+  a `Texture2D` is not read. A view made without a sampler wraps both ways
+  and has a mip range of level 0. Two things were wrong because of it. A
+  lat-long sky clamps at the poles, and wrapping there mixed its top row with
+  its bottom: a sky white above and black below read 0.54 and 0.46 at its
+  poles instead of 1 and 0. The prefilter's rough levels read the source at
+  level 0 instead of the level they ask for, and a compact source came out
+  as seven peaks at level 5 instead of one. `DeviceCaps::samplersInViews`
+  says when a view carries its sampler. `Texture::view` takes the sampler to
+  make it with, and the texture table binds each texture through a view made
+  with the sampler `TextureStore::sampleWith` names for it (the dome's, and
+  each material slot's). A texture read through two samplers keeps the last
+  one named; nothing reads one so yet.
 - **Two failures that look like load, and are not.** The test presets already
   set `execution: { jobs: 1 }`, so the suite is serial as it stands. Run
   entirely alone on an idle box, the free-running clock test (#93) still fails
@@ -11174,6 +11261,39 @@ the metric's own noise of the mesh's.
   paths. A filter that weighed each band by its own variance, rather than the
   luminance's, is the next thing to try.
 
+## Licences: Apache-2.0, and what is owed to whom
+
+athenea is Apache-2.0 (`LICENSE`, `NOTICE`). `THIRD_PARTY_NOTICES.md` lists
+every third-party component the tree holds, compiles in or links, with each
+licence text copied verbatim from the component's own file at the version
+pinned; an Apache-2.0 component's text is the root `LICENSE` (the official
+text, identical to theirs) and is not repeated.
+
+- **mesh2splat.** `plugins/mesh2splat/mesh2splat.slang` is derived from EA's
+  GLSL conversion. Its header now carries EA's `LICENSE.txt` verbatim:
+  the 2025 copyright line (the old header said 2024, which nothing upstream
+  says), the four conditions -- the fourth, on EA's and SEED's marks, was
+  missing -- and the full disclaimer, which had been summarised. Clause 2 is
+  why the notices are copied into every bundle and beside `bin/`; clause 3 is
+  why the help text and the effect's description say "based on mesh2splat
+  (Electronic Arts, BSD-3-Clause+)" rather than leading with EA's name. The
+  BSD terms sit under Apache-2.0 without conflict: the derived file keeps
+  them, and the changes made here are Apache-2.0.
+- **ACES.** `technique/aces2.slang` is ported from aces-core (Apache-2.0); its
+  header now keeps the reference's copyright line, as section 4(c) asks.
+
+### Not done
+
+- Neither `athenea`, `athenea-mcp` nor `hdAthenea` has an install rule; the
+  notices are copied beside them in the build tree, and installed to
+  `share/doc/athenea` and inside the installed bundles. A package made from
+  the build tree carries them from there.
+- The libraries linked from the toolchain installs (OpenUSD, MaterialX,
+  OpenVDB, oneTBB, OIDN, OpenColorIO, Slang) are not shipped by this build. A
+  package that ships them also ships their own licence files and third-party
+  lists; `THIRD_PARTY_NOTICES.md` names them but does not reproduce
+  OpenUSD's or OpenVDB's long texts.
+
 ## A gaussian carries what its material layers over the base (proposal 026)
 
 The Corvette converted with `athenea mesh2splat` and rasterised came out with
@@ -11939,6 +12059,241 @@ the lamp lights. At 0.6 the rest comes through straight from the frame
 behind. So 0.6 is the default in every mode again; the pawn's head, whose
 dark cast first asked for 1, now has its far face's Fresnel and tint
 (`lensExitThrough`) and is measured by the gate at 0.6.
+
+### A thin sheet of glass is drawn as a layer
+
+The user's worst artefact was the speckle on the Corvette's windshield. The
+windshield is a thin-walled slab (classifySheets) at an index of 1.16, so
+its gaussians cover what it reflects head on, 0.0055, and carry that
+reflection scaled up by 1/F0 (thinWallGain, 181 here). At that opacity the
+projection's faint cull at 1/255 (after the antialias's payment), the cut
+radius and the blend's per-pixel 1/255 dropped most of them before they
+were shaded: the gate's frames drew the interior seen through and nothing
+of the glass (TX and first bit-identical at 6.20, then 2.62), and what
+survived was a scatter of dots at 181 times their colour. Shader variants
+on the same cloud (s62b) found it: a variant that drew the sheet red only
+reached it once the sheet was told apart before the cull. A sheet's
+gaussians are now drawn at an opacity of at least `kSheetAlpha` (0.1) with
+their colour scaled down by as much, which keeps alpha x colour -- the
+reflection -- and draws every one. Windshield relMSE 2.26 to 0.89 under
+the shop, 0.31 to 0.067 under goegap; 0.25 measured 1.25 and 0.081. The
+cost: each gaussian covers a tenth of what is behind it where the glass
+lets it all through, which darkens the interior seen through a sheet
+(close to what the path traced windshield shows, dark with the sky's
+streak). A transmittance the blend carries itself (proposal 075) is what
+would let the interior through as it is. Tested by a pane at 1.16 over a
+black backdrop, drawn against the mesh path traced (`[sheet_draw]`).
+
+Then too bright (s65, the current car on the mesh ground): the windshield
+read 3.9 times the path traced one under the shop's lamps. The conversion
+writes a sheet's coverage as `m2sCoverageAlpha` solves it plus 1/255, for
+the radius at which a gaussian is cut -- and for a sheet whose solved share
+is 0.0018 that 1/255 is twice as much again, which the floor's
+alpha x colour then kept. A sheet's own share is now its stored opacity
+less that 1/255 (nothing of it is cut at the floor), and the test holds the
+pane's frame mean within a quarter of the mesh path traced.
+
+And the ramp: on the car the windshield stayed 3.8 times bright with the
+1/255 out (s69), as a sharp mirror of the shop's lamp tubes. A sheet's slope
+across its footprint was packed from its colour before the floor's scaling,
+at the 1/F0 gain -- fifty times the colour it rode on, and past what a half
+holds where a lamp is a hundred times the sky. The slope is now scaled with
+the colour. The flat pane has no slope, which is why the test did not see
+it.
+
+### Known: a transparent mesh glass dithers on the raster route
+
+In the per-material frames (one material a cloud, the rest meshes) the
+Corvette's side windows (Glass_Tinted: a UsdPreviewSurface at opacity 0.1)
+and headlight cover come out as a field of dots. The raster route cuts a
+fractional opacity by a pixel's lot (MaterialPrograms' `pixelLot`), kept at
+max(opacity, 1/20): at 0.1 a tenth of the pixels keep the glass. The lot is a
+hash of the pixel and the surface alone, so `--frames` draws the same dots
+again and averaging frames does not take them out. It is the mesh frame's,
+not the product's -- a converted car draws gaussians only, and the gate's
+metrics are taken over the converted material's own mask, against the mesh
+path traced -- so it is left as it is for now. What would take it out: a lot
+that changes with the frame, accumulated, or a transparent opacity blended
+rather than cut.
+
+### A dome's mips keep its solid-angle mean (research 087, step 1)
+
+The paint's base read 0.77 of the path traced frame under the shop and 0.95
+under a white dome (s57, s64): what is lost is in the shop's small, very
+bright lamps, which the prefiltered dome does not keep. The first and
+cheapest of the steps research 087 lists: the source chain the prefilter
+reads its samples from is a lat-long, and its mips were plain area means --
+a row by a pole, a sliver of the sphere, counted as much as a row at the
+equator, so the coarse levels a rough lobe reads over-weighed the poles,
+where a ceiling's lamps hang. A dome's texture is now requested as a
+lat-long (TextureStore::request, `latLong`) and its levels weigh each source
+row by the band of the sphere it stands for, cos(theta0) - cos(theta1), so
+every level keeps the sky's solid-angle mean (exact where a level halves,
+to half a percent on an odd edge's three taps; `[mips]`). The lamps
+themselves, taken out as lights of their own, are the next step.
+
+### A sharp coat is read per pixel
+
+The user's fender under san_giuseppe: gaussian-sized bright patches below
+the headlight, where the path traced panel is smooth with one sharp point of
+the sun (s63, s65). A coat at roughness 0.04 mirrors a facade, or a 1.5
+degree sun, that changes far faster across a curved panel than a gaussian
+is wide, and the coat was read once, at the centre's mirror, and spread over
+the footprint: a gaussian whose mirror found the sun drew it as a blob of
+its own size, its neighbour nothing. The slope (a linear ramp) softens a
+facade and cannot draw a point.
+
+So a coat smoother than `kSharpRoughness` (0.2) is handed to the blend: the
+projection takes the centre's reading of it out of the colour and writes the
+mirror at the centre and its turn a pixel right and a pixel down, in
+octahedral coordinates, with the coat's weight (albedo times openness) and
+roughness -- four words in the slot the slope used (`kSharpMark`). The blend
+reads the first dome's prefiltered sky along the mirror each pixel turns to.
+The sky's own sun is in that map, so the sun comes back as a point where
+the panel's normal mirrors it, and a facade as an image rather than patches.
+What it costs: one sky read per pixel per sharp record, and the slope's
+group memory widened from three words a record to four (17412 of WebGPU's
+17416 bytes). What it does not do: the base's polish under the coat keeps
+its centre's value (no ramp), and only the first dome is read per pixel. The
+centre's reading is taken out of the colour unclamped, so where the coat's
+share of a shadowed sun was taken back out the record keeps that negative,
+and the blend clamps after adding its per-pixel sky: clamped in the
+projection, a gaussian whose centre mirrored a shadowed sun lost its body
+and drew the sun back whole.
+
+The fender's blotches outlived it (s72), and switching one sun-dependent
+term off at a time named them (s74): the coat, the sun's share, its bounce
+and the sun taken back out changed the 4-16 px band by under 3%, the base's
+polish off took a third of it away and most of the blotches. The paint's
+metal flake at 0.34 reads the sun in the prefiltered sky as a bright spot,
+and once per gaussian. So the base's polish smoother than
+`kSharpPolishRoughness` (0.5) goes to the blend too, along the same mirror
+and turn: its weight (rgb, a metal's colour) and roughness in a buffer of
+two words a slot (`sharpPolish`), read from memory beside the group's
+records -- the group memory is full. A sharp record no longer carries the
+polish's ramp. Measured (s76): the fender's blotches did not go (they are not
+the lookup), but the gate passed whole for the first time -- the Corvette's
+chrome 0.585 to 0.545, under the first transfer's 0.551 -- with the rest
+unchanged (paint 0.281, rough metal 0.083, windshield 0.064).
+
+### The sky's rough levels hold a sun as one lobe
+
+The fender's blotches under a sunny sky were in the prefiltered sky itself.
+A paint ball at the polish's roughness (0.34) under san_giuseppe, converted
+and drawn beside the mesh path traced (s81): the path traced highlight one
+soft lobe, ours a scatter of small bright blobs across the ball, read at the
+centre or per pixel alike -- band 4-16 px 2.13 times the path traced, mean
+0.58. Every lookup was right; the map it looked up was not. Level 4 took 128
+samples of the GGX lobe a texel along one Hammersley sequence, each reading
+the source at the level its own solid angle asked for, capped at the level
+the projection reads: a sun of a degree and a half at thirty six thousand
+was a texel a few samples hit and the rest missed, in a pattern that moved
+texel by texel. Every gaussian of a curved panel, and every pixel, read one
+of those blobs; clamping the sky took them away (hdr_clamp), autoshop with
+nothing above 93 never had them, and none of the frame's terms or lookups
+could.
+
+Now filtered importance sampling (Krivanek and Colbert): each sample reads
+the source one level coarser than its own solid angle asks, as far down the
+source's chain as that goes (the lat-long mips keep the solid-angle mean,
+so a coarse level is the sky's own average); the sequence is turned by a
+hash of each texel, so what aliasing is left is noise, not a pattern; and the
+counts go up, 64 at level 1 doubling to 1024 -- the coarse levels are small.
+Tested by a dark sky with one source of two texels at thirty thousand, whose
+levels 4 and 5 must each hold a single peak (`[prefilter]`), and every level from 2 to 6 the
+source's whole light to 2%: its integral over the sphere, each octahedral
+texel by its own solid angle, against the lat-long's in closed form. It
+failed at first (s88: levels 2 and 3 held 0.85 and 0.80 of the source):
+their lobes are narrower than their own texels, so a texel read the sky at
+its centre only and a source smaller than the spacing fell between centres.
+Each sample now reads the source at least as wide as the texel it writes.
+
+### The sun goes through a reflection analytically
+
+A floating metal ball (no ground, nothing to occlude it) read 0.999 of the
+path traced under a white dome and 0.74 under a sky that is one compact sun,
+and forcing the polish to each prefiltered level from 2 to 6 never reached
+the path traced (0.57-0.74; s90) while every level held the sun's light
+(0.98-0.99). Not the map and not the level: the split sum -- the sky
+prefiltered with the eye along the normal, times the lobe's directional
+albedo -- is right for a sky that changes slowly across a lobe and wrong for
+a compact source, worst at the limb.
+
+So the prefiltered map is the sky without its sun: a lat-long copy of the
+source at the level the sun was measured on, its sun's texels cut as the
+harmonics cut them (env_residual), with its own lat-long mips, is what every
+prefilter read samples. (A model of each read's footprint against the sun's
+disc left 60% of the sun in the map, s91: a bilinear read of two box-filtered
+levels is not a cone.) And the
+sun comes back analytically through each lobe (`sunReflectPdf`: the lobe's
+distribution of reflected directions with the eye along the normal, D(h)/4
+for the half vector between the mirror and the sun, the disc folded into
+alpha; it integrates to one, so weight x irradiance x it is the sun's whole
+reflection, put where the lobe sends it), by the share of the sun the cells
+let through. That replaces the shadowed share the polish and the coat took
+back out of a map that held the sun. Per pixel where the lobe is sharp: the
+sun's weights ride with the polish's in `sharpPolish`, now four words a slot,
+and the blend evaluates the lobe at each pixel's mirror. Tested: a source too
+dim to be a sun stays one peak and every level its light; a sun is taken out
+of every level 2-6 to 2% of the sky and leaves no texel brighter than fifty
+times the sky (`[prefilter]`).
+
+### The path traced frame was too bright under an HDR's sun
+
+The floating metal ball under a sky that is one sun read 0.76 of the path
+traced frame by every route -- the map's split sum, the analytic sun, the
+exact BRDF at each gaussian (0.79) -- with the cells' share one and the
+polish's weight right. Its peak, 86 against 157, is what an exact GGX at
+alpha 0.117 gives for the sun env_sun measures (17.58, the authored texels'
+own 17.5): it was the path traced frame that was off. 2ef1ca1 had the
+dome's texture mipped by the lat-long's solid angle, and the path tracer
+divides by that chain's 1x1 mean as an AREA mean when it gives the density
+of the direction it drew (domeImagePdf: luminance / (mean 2 pi^2 sin
+theta)). A solid-angle mean of a sun at theta is pi sin theta / 2 of the
+area mean -- 1.27 for this sun -- so every dome-lit path traced frame since
+was that much too bright where the sun lit it. The dome's texture keeps area
+mips again; the prefilter, which wants the solid-angle mean, reads its own
+residual lat-long, mipped that way. GTs path traced under an image dome
+between 2ef1ca1 and this (from tx-s69) have to be traced again; white domes
+and the gate's Corvette GT, traced before, are not affected.
+
+### A sun is a disc, and the sharp levels read at their own footprint
+
+Two costs of the last steps, measured against the gate's unbiased Corvette
+frame by switching each off (s94): the analytic sun took the chrome from
+0.527 to 0.581, and the footprint floor of the sharp levels the paint from
+0.285 to 0.309 and the rims from 0.023 to 0.026. Chrome's mean was right,
+its placement not: under the shop, env_sun took a cluster of lamps within
+ten degrees of each other for a sun and gave it back as one disc at their
+centroid, one highlight where a chrome strip mirrors several. A sun is now
+a region whose light is as concentrated as a disc of its solid angle (its
+light-weighted mean square angle about its centre no more than twice a
+disc's, cone^2 / 2); a scatter stays in the sky, the map and the harmonics
+(`[sun]` test: three lamps five degrees apart are no sun). And the floor is
+gone: with the sun out of the map the sharp levels read each sample at its
+own footprint again; the energy and read-back tests hold on what is left.
+
+### The polish sees its ground where its material is rough enough
+
+s81's green and white balls (a lacquer's polish, roughness 0.3421, no coat)
+on a grey ground read their lower half as the sky where the path traced balls
+show the ground: the polish's closed part was 0, because the field read the
+Corvette's metals a third bright (chrome 0.261 where the frame reads 0.197).
+Asking the polish's own lobe which cells are open and letting the field answer
+the rest (`lobefield`, s85) brought the balls up and the metals with them; a
+gate on the stored roughness (s88, gate30) did not hold chrome back, since
+`--specular-filter` widens a thin chrome tube's per-triangle roughness past
+0.3. So the gate reads the material's own roughness, which the cloud now
+carries: `primvars:athenea:splat:materialRoughness`, written by mesh2splat
+from the material's constant (-1 under a roughness map, whose texels only the
+kernel sees, widened), and carried to the pbr word as a mark on the
+transmission beside the thin wall's and the Schlick's (bits 26 to 31, a 5-bit
+step). Where it is at least 0.3 (`kPolishFieldRoughness`: the paint and rims,
+0.3421, the balls) the polish is narrowed by its lobe's cells and its closed
+part is the field coupled to the sky; below (chrome 0, Metal_rough 0.22) or in
+a cloud without it, as before. A cloud converted before this carries none and
+draws as it did. Test: the primvar survives USD beside the other two marks,
+with the base bytes unchanged.
 
 ### A TX frame computes what the eye changes (playback)
 
@@ -13308,3 +13663,1060 @@ DomeLight, no mesh).
   capture's is to be seen on the queued run.
 - The viewport still crosses host memory (the colour mapped and uploaded):
   Blender's change, written up in phase 2.
+
+## Materials measured one by one on the shader ball (bench/matx)
+
+The TX gate measures two assets, and the materials they happen to hold.
+`bench/matx` measures materials as such: each on the same object, under the
+same two skies, against the path tracer, so a change that helps the paint
+and hurts the velvet says so by name.
+
+**The object** is MaterialX's shader ball (`resources/Geometry/shaderball.glb`,
+Apache-2.0): a sphere with a cut-out on a base with a flat ledge, the
+look-dev object every MaterialX renderer is shown with. `build_ball.py`
+reads the glb with the standard library and writes it through usdcat as it
+is: metres, +Y up, two meshes (the shell and the core), UVs as
+`primvars:st` with v turned. It carries one material and no subsets; the
+study binds one material to both meshes. `scene/base.usda.in` puts it on a
+100 m grey ground (OpenPBR, 0.18, rough), under the autoshop dome the
+Corvette uses, seen from a 50 mm camera three-quarters from the side its
+cut-out faces. goegap, with its sun in the texels, is the second sky,
+swapped in by `--validate-sky`.
+
+**The materials.** Phase 1 is every MaterialX example of the OpenPbr,
+StandardSurface and DisneyPrincipled families; the chess set (15 materials
+for an asset) and the two looks (pairs of examples already in the list) are
+left out. Phase 2 is the part of proposal 086's 52 that sits on the shader
+ball: 35 OpenPBR examples, fetched from the OpenPBR repository at a pinned
+commit and checked against `openpbr.sha256`. Khronos' test models (their
+own meshes and glTF extensions), AMD's (licence unread) and Poly Haven's
+(not chosen) are listed in `manifest.json` as deferred. usdMtlx (usdcat)
+turns each `.mtlx` into USD, which is how athenea reads MaterialX from a
+stage: `outputs:mtlx:surface` on a Shader of `ND_<node>_surfaceshader`.
+The OpenPBR examples declare `colorspace="acescg"`, which athenea reads for
+textures and not for constants, so their colours are converted to linear
+Rec.709 when the stage is written (clamped to [0, 1]; gold's red was 1.06).
+
+**The classes** are read off each document: a lobe counts where the surface
+shader's input that switches it is non-zero or connected (`base_metalness`,
+`coat_weight`, `transmission_weight`, `subsurface_weight`, `fuzz_weight`,
+`thin_film_weight`, `emission_luminance`, and their standard_surface and
+Disney names). No material is classified by hand.
+
+**What is measured** is `mesh2splat --transfer --validate` at 512 x 512:
+the ball converted (`--cell-from-camera`, 512 camera pixels, 64 bake paths)
+and rasterised with the ground left a mesh, against the path tracer's 256
+paths a pixel; relMSE, p99 and the mean of each channel over the ball's
+pixels. The mesh raster is a reference column, not the target. Bake,
+raster and wall times are logged and are not data: the sweep shares the
+Mac with whoever is at it, so the table leaves them out (summary.csv keeps
+them as `*_not_comparable`; `MATX_TIMINGS=1` shows them for a sweep on an
+idle machine) and the baseline holds quality alone.
+`report_matx.py` writes the table, the breakdown by lobe class with the
+worst offenders, and a GT | GS contact sheet a sky.
+
+**The regression check.** `baseline.csv` holds, a material and a sky, TX's
+relMSE, the mean ratio of each channel (TX over GT) and p99, written from a
+whole sweep. `compare_matx.py` fails a run whose relMSE is more than 5%
+worse or whose mean ratio moved by more than 0.05; `ctest -L matx` does it
+for six materials, one a class (OpenPBR default, standard_surface chrome,
+OpenPBR carpaint, glass, velvet and ketchup), under both skies.
+
+**The GT is kept.** At 256 paths a pixel the path tracer's own noise moves
+a glass's relMSE by about the 5% the check allows, so two runs of an
+unchanged cloud against two fresh GTs could disagree by a regression. Each
+GT is cached (`gt_cache/<key>.exr`, beside the renders; `MATX_GT_CACHE`)
+and handed back to `--validate`, which reads a GT of the frame's size
+instead of tracing one. The key is a hash of everything the GT depends on:
+the stage and each file it composes (the base scene, the ball, the
+material and its textures, the autoshop sky, the sky swapped in), the
+size, the paths, the bounces, and the path tracer. The path tracer is the
+build's copy of the shader directories it imports from (algo, common, geom,
+light, material, rt, scene, volume, world, and technique but for its
+`splat_*` kernels), so a change to the conversion (usd/, splat/, lod/)
+keeps every GT and a change to a lobe traces them again; what C++ decides
+about the kernel (PathTracer.cpp, StageRenderer.cpp) no shader shows, and
+`GT_EPOCH` in `matx_common.py` is bumped by hand in the commit that changes
+it. The measure then moves only when the cloud does. A sweep run before
+the cache hands its GTs over with `run_matx.py --adopt-gt`;
+`--fresh-gt` traces a selection again.
+
+### Not done
+
+- The baseline: written from the first whole sweep, in the commit after it.
+- Thin film is accepted by the lobes and not drawn; both sides of the
+  measure leave it out, so it compares equal and says nothing about it.
+- The deferred part of the 52 (Khronos, AMD, Poly Haven), and the path
+  tracer against Cycles or the Render Fidelity goldens.
+
+## A material's fields read back from the material itself (matx)
+
+The first matx sweep (bench/matx) found the splats losing a base colour the
+mesh kept: the procedural brick came out a white ball (relMSE 7.82 against
+the mesh raster's 0.131, the mean 3 to 12 times the GT's by channel) and the
+tiled brass an untinted silver (the mean 1.3, 2.2 and 5.6 times the GT's).
+The conversion reads a gaussian's material on the processor, off the stage
+(`MeshStage::materialOf`): a constant, or a plain map the effect samples. The
+brick's `base_color` is a `clamp` of `mix`es of maps, which that reading
+cannot follow, so the default stood without a word; the brass's gold is
+entirely its `coat_color`, over a white metal, and a gaussian has no coat
+colour. The marble (`mix` of noise), the onyx (`hextiledimage`) and the wood
+(a map tiled four times, read as if once) fall the same way, and so does
+every input of a Disney principled shader, whose names the reader does not
+know.
+
+**What changed.** The stage reader now says which fields it could not read
+(`StageMaterial::sampled`: base colour, roughness, coat roughness, metalness,
+emission) and warns once a material and input. A TX bake of such a material
+reads them back from the material: the path tracer's first vertex already
+evaluates the compiled MaterialX graph at each gaussian, so with
+`BakePoints::material` it reduces that lobe stack to the gaussian's numbers
+(`material/material_sample.slang`), averages them over the bake's samples
+(the cells' origins spread them over the footprint), and writes three planes
+after the transfer's; `m2sTransferInto` takes the fields the gaussian's
+material named. The reduction:
+
+- **the base colour** is the diffuse lobes' colour, which is the base colour
+  before the base weight (that went into the lobe's weight, and the record
+  multiplies it back in), or with no diffuse a metal's reflectivity -- a
+  conductor's from its index and extinction, which MaterialX's artistic index
+  made from exactly that colour. Times **the colours `multiply` nodes put on
+  the lobe**, which `athenea_multiply_bsdf_color3` now keeps on it
+  (`lobeTint`): standard_surface's `coat_attenuation` over the base is how
+  the brass's gold arrives;
+- **the coat and the specular** are both reflecting dielectrics, told apart
+  by how many `layer` nodes each is the base of, which `athenea_layer_bsdf`
+  now counts on it (`lobeLayersOver`): the coat lies under fewer than the
+  metal, which sits beside the specular; with no metal, the shallower of two
+  at different depths is the coat, and a lone one is the specular;
+- **roughness** is the metal's or the specular's, `sqrt` of the geometric
+  mean of its two alphas; the widening the conversion gave the roughness it
+  was handed (`m2sWidened`) is carried over to the one read back;
+- **metalness** (an unknown shader, or a computed one) is the metal lobes'
+  share of the base's weight.
+
+A material of constants and plain maps samples nothing and converts as it
+did, bit for bit: the planes are not even asked for (the first run held
+velvet, ketchup and chrome to the sweep's numbers to the fourth digit). The
+pads the two closures write are free on every lobe but hair, which neither
+touches, and they write them only in a kernel that exports
+`kAtheneaMarkLobes` true -- a link-time constant of `material_runtime`,
+false by default, which the bake and the read-back test export: every
+other kernel compiles exactly what it did. The shadowed shading kernel
+stands at what Metal will build on this machine, so this was measured
+rather than assumed: compiled offline (slangc, then `metal -emit-llvm`)
+around the brass ball and its ground, its IR is the same, instruction for
+instruction and alloca for alloca, as with tx-s82's shaders.
+
+**The first run (m1)**, autoshop, against the path traced mesh:
+
+| material | relMSE before | relMSE | mean ratio |
+|---|---|---|---|
+| brick_procedural | 7.82 | 0.033 | 1.02 / 0.99 / 0.91 |
+| wood_tiled | -- | 0.011 | 1.03 / 0.98 / 0.89 |
+| marble_solid | -- | 0.111 | 1.07 / 1.07 / 1.06 |
+| brass_tiled | 4.59 | 0.62 | 0.85 / 1.01 / 1.31 |
+| onyx_hextiled | -- | failed | -- |
+
+Two things it found, both fixed:
+
+- **The brass's rims were pale.** Its gold is the coat colour over a white
+  metal, folded into the base colour; but the frame reflects a metal's base
+  colour head on and the specular colour at grazing (`splat_relight`'s
+  Schlick to the edge), and the edge stayed white. The read-back now carries
+  the tint over the metal's or the specular's reflection too
+  (`reflectionTint`, a fourth plane) and multiplies the record's specular
+  colour by it.
+- **The onyx compiled in no kernel.** `hextiledimage` has no genslang
+  implementation, so MaterialX takes genglsl's `mx_hextile.glsl`, whose
+  `dFdx` the generator writes as `ddx` -- a fragment stage's, which a compute
+  kernel has not ("unavailable features in entry point"). A generated
+  source's `ddx(` and `ddy(` calls are now the quad's (`atheneaDdx`), as
+  bump's are. In a kernel that does not walk quads -- the bake, a shadow
+  ray -- the difference is to a neighbour that is not one, which moves the
+  map's level of detail and nothing else.
+
+The run's step under goegap failed at its first material, the carpaint, a
+material of constants: "cannot make a pipeline for ..._shade_shadowed_
+cloudshadow", after "Unable to reach MTLCompilerService ... Broken pipe".
+That is Metal's compiler service gone (the window manager hung minutes
+later, and the TX gate after it could not reach the service at all), not
+the kernel: the same kernel for the same materials had built minutes
+before under autoshop. `run_matx.py` now stops on that line as it stops on
+"Reentrancy avoided".
+
+**m2** (the five under both skies): onyx 0.099 and 0.107; brick, wood and
+marble kept their colour under goegap too. The brass did not: 0.75 / 0.83 /
+1.04 of the GT under the shop, 0.42 / 0.47 / 0.63 under goegap. Its level is
+the TX metal's under a compact light (the balls' 0.54 to 0.83), not this;
+its hue is. Split by region (the triptych, cut by window), the body and the
+interior keep the GT's hue to a few per cent (b/g 0.388 against 0.370,
+0.349 against 0.324); what is off is the mixture. Decomposing each mean
+into the metal's gold (the interior's hue) and a neutral part: the cloud's
+metal stands at 0.73 of the GT's and its neutral part at 1.9 times. One
+neutral part is the folded tint itself: a conductor's Fresnel goes white at
+grazing whatever its two ends say -- the frame's environment term for a
+standard_surface metal is MaterialX's artistic index made from them -- so
+gold folded into both ends still whitens at the rim. Over a sphere's disc,
+smooth, that is b/g 0.413 where the tint outside a white conductor gives
+0.339 (a fifth too blue, as measured); a Schlick's two ends are linear in
+the tint, and give 0.339 exactly. So a standard_surface metal whose colour
+comes through its coat is now carried as a Schlick metal
+(`StageMaterial::schlickMetal`, a per-material decision): F0 the tinted
+reflectivity, F90 the tinted edge. The coat's colour is applied once in the
+GT as here (`coat_attenuation` multiplies the base's BSDF once); the
+standard_surface copper, a constant coat colour over its metal (0.66 / 1.84 /
+2.51 in the first sweep), is the same case and joins the five.
+
+**How it is checked.** `[material][readback]`: three surface shaders
+compiled, evaluated at 4096 points of random normal and view, and their
+stacks read back against the inputs they were authored with -- a dielectric
+under a tinted coat, a pale metal under a gold one, a plain OpenPBR -- to
+2e-3. `matx_sampled` (`bench/matx/check_sampled.py`, label `matx`): brick,
+brass, wood, marble, onyx and copper converted with `--transfer` on the shader ball
+and measured against the path traced mesh, with nothing said per material:
+each channel's mean within 0.70 to 1.45 of the GT's and the three within
+1.25 of each other (the white brick was 3.8 apart, the silver brass 4.3), the
+relMSE within twice the mesh raster's plus 0.1; and the six of the matx gate
+held to `baseline.csv` as the gate holds them.
+
+**m3**: the Schlick fold gives the brass the GT's hue (0.76 / 0.81 / 0.85
+under the shop, relMSE 0.256). What is left on the two metals is level:
+copper 0.64 / 0.77 / 0.79 under the shop, and both near 0.4 to 0.6 under
+goegap -- the floating metal ball's 0.74 under a sun alone. The copper's
+red trails its green, but not by the fold: by region its body and its
+hollow keep the GT's hue to 2 or 3 per cent (r/g 2.08 against 2.05); the
+GT's mean is redder for the base ring's inside, copper seen in copper
+several bounces deep (r/g 10.5 there, the cloud's 2.5), which is TX's
+concave metal interreflection, not the read-back.
+
+**So a metal is held by its hue, its level reported** (`check_sampled.py`):
+each channel over green within 5% of the GT's in two fixed windows -- the
+body's side that reflects the dome rather than the ground, and the hollow's
+core, never the base ring's inside -- with the window means taken by the
+Measure effect (`athenea compare --window`); the mean's 1.25 rule where
+every channel is at least 0.70 of the GT's, and "pending TX's level"
+otherwise, which does not fail. Measured on m3's frames before the rule
+existed (oiiotool, for the choice of windows only): the hollow within 3% on
+both metals under both skies; the body within 5% under the shop (the
+brass's b/g 4.6% off, the closest), 8 to 11% off under goegap, where the
+metal under the sun is the level that waits on TX. So the body's window is
+pending, not failing, wherever its own level in the window is under 0.70 of
+the GT's -- generic, not by sky; a test red for a cause someone else owns
+would hide this branch's own regressions -- and the hollow's always holds.
+`METAL_LEVEL_WAITS_ON_TX` goes false with that fix, and both pendings go.
+
+### Not done
+
+- The brass's level under a compact light, and the goegap means of the
+  other four a little low in red (0.79 and 0.74 of the GT for brick and
+  wood): the TX metal's and the sun's own open questions, measured again
+  once those land.
+- The TX gate on this branch (m2's was running when this was written).
+- A transmitting material keeps its base colour as read: the conversion
+  tints it towards the transmission colour, which the colour read back has
+  no room for.
+- OpenPBR's coat darkening is a colour multiply too, so a sampled OpenPBR
+  base under a coat carries it once in the colour and once in the frame
+  (`coatDarkening`); it is sampled only where the coat colour is not white.
+- The specular colour, the sheen and the transmission colour are not read
+  back; nothing in the examples computes them.
+
+## A skinned transfer is traced at the bind pose
+
+`--skinned --transfer` posed the cloud at `--time` with its four influences a
+gaussian and traced the stage there, the mesh skinned by all of its own. The
+sparrow's feathers carry ten a vertex and its wings twenty-five, so wherever
+the four and the whole disagreed the bake's ray from a gaussian missed its
+surface, and a transfer of nothing is written transparent: 566 603 of
+1 504 160 gaussians (the feathers' edges, the wing tips, the tail) came out
+with opacity 0, and the web viewer drew the plumage as loose dots. The same
+stage converted still at frame 16 found the surface for 1 559 010 of
+1 559 047; skinned, 937 669 at frame 1 and 883 334 at frame 16.
+
+The bake now holds the stage's skeletons at their bind pose in the session
+layer (`StageRenderer::holdBindPose`: no animation, rest transforms the bind
+transforms made local) and poses the cloud with identity skinning transforms,
+which is where it was built. On the sparrow: 1 504 156 of 1 504 160 found (8
+paths each). The zonal lobes live in each gaussian's frame, so a transfer
+traced at the bind pose turns with the bone like one traced at any other; what
+changes is which pose's self-shadowing it holds, the bind pose's (the wings
+spread) instead of `--time`'s. `--time` still says the instant of everything
+else. Not done: a cloud with more than four influences a gaussian (P014C),
+which would also make its animation the mesh's to the millimetre at the wing
+tips.
+
+## A car's lamps switched at run time: light groups (proposals 062, 066)
+
+A car's lamps -- low beam, high beam, daytime running lights, tail lamps, the
+third brake light -- are switched, dimmed and tinted while the frame runs,
+with no bake and no ray. The web side reads the same model
+(sparkwebGPU `docs/athl.md`); this is the engine's half.
+
+Light is linear. Group k baked once with every other light off and the group
+at radiance one gives, per gaussian, `layer_k`: the light that gaussian sends
+out from the group, per unit of the group's radiance. Every state of the car
+is then
+
+    colour = base + sum_k w_k layer_k,   w_k = level_k x emissionLuminance_k x emissionColor_k
+
+with `base` the cloud baked with every lamp off (a TX transfer, relit by the
+frame's sky as ever). `w_k` is a few numbers a frame, worked out on the
+processor; everything per gaussian is a kernel.
+
+### The file
+
+One primvar a group on the cloud's ParticleField,
+`primvars:athenea:splat:lightLayer:<group>`: `color3f[]`, vertex, linear,
+per unit of radiance. Floats, not halves: a lamp's light on a body a few
+metres away is 1e-5 of its radiance and less, where a half has a handful of
+bits left. On the device the layers are one buffer beside the cloud
+(`GpuSplats::lightLayers`), a word a group a gaussian in RGB9E5 scaled by
+`kLightLayerScale` = 2^14 (packing.slang) -- full precision from 1e-9 to 4 per
+unit of radiance, an emitter behind clear glass reading 1. Five groups over a
+3 M-gaussian car are 60 MB on the device (half3 would be 90) and 180 MB in the
+file. At most 16 groups a cloud. A layer is dense: a group that reaches a tenth
+of the car still costs a word a gaussian (the web side's `.athl` is sparse by
+block; here that is v2).
+
+The groups, states and rules stay where the sidecar keeps them: namespaced
+attributes on Scope prims (`.lights.usda`, proposal 067), children of a
+`LightGroups` Scope (`athenea:lightGroup:emissionLuminance`, `:emissionColor`,
+`:initialOn`; `:radiance` and `:color` read where those are missing) and of a
+`LightStates` Scope (`athenea:lightState:target:<group>`, a level; a group a
+state does not name is at 0). `athenea lights merge --lights` copies the three
+Scopes under the cloud's prim, so a stage that references the cloud's prim
+brings its lamps along.
+
+### `athenea lights merge`
+
+The base and one cloud a group, each the same `athenea mesh2splat` command on
+the same geometry -- the group alone lit at radiance one, the dome black.
+For each layer, one kernel (light_layers.slang's `lightLayerFromCloud`)
+reads both clouds' positions as the files hold them (float or half), counts
+the gaussians not within `--tolerance` (1e-4, relative) of the base's, makes
+the constant term light -- `0.5 + SH0 dc`, through the sRGB curve where the
+cloud does not say it is linear -- and counts the gaussians above
+`--drop-below`. Two counters cross back; a layer with a gaussian out of place,
+or a different count, is refused, and nothing is written. A layer with nothing
+lit is dropped. The base's root layer is exported to `-o` and the layers are
+authored on its field; the light is copied into the array as the device wrote
+it, not computed.
+
+The layer keeps the constant term alone: the harmonics a bake fits, how the
+group's light changes with the eye, are not carried -- a glossy panel's
+reflection of a lamp is the web side's view-dependent field, v2 here.
+
+### The frame
+
+`StageRenderer` reads the rig when the stage opens (and when a variant
+recomposes it: `readLightRig`, the first prim of a name wins, so a car and its
+light catcher that both carry the Scopes are one rig), and before each frame
+turns two render settings into the weights:
+
+- `athenea:lightState` (string): the state whose targets are the levels;
+  empty, each group at `initialOn`.
+- `athenea:lightLevel:<group>` (float): that group's level over the state's.
+
+`Engine::setLightWeights` keeps them by name; a cloud's weights (a float4 a
+layer, by its own layer names, sixteen at most) are made only when they
+change, and reach the projection in its constants
+(`FrameParams::lightWeights`), not as a buffer. The rasteriser's projection
+adds `sum_k w_k layer_k` to the gaussian's colour after whatever relighting
+did (splat_project's `lampLight`), so a relit TX car and a plain baked cloud
+take their lamps alike.
+A lamp switched uploads nothing: the cloud's upload count is checked to stay
+put across six frames of different levels.
+
+**Metal's thirty-one buffers.** As first written the layers and the weights
+were two new buffers of the projection module, and its TX entry point
+(`splatProject`) put `iesValues` at `buffer(32)`: no pipeline could be made
+on Metal, so every frame of the tile rasteriser failed, the relit splat tests
+and the light tests with it, though `slangc` was happy. Two slots came back:
+the weights went into `FrameParams` (sixteen float4, the most layers a cloud
+carries), and a sharp record's polish (`sharpPolish`, n uint4) went into the
+`slopes` buffer after the slopes, from `params.polishPlane` (the rasteriser's
+slot capacity) -- both are per slot, written by the projection and read by
+the blend. Every projection entry point now ends at `buffer(30)` or below,
+checked with `slangc -target metal` on each.
+
+`athenea stage --light-state NAME --light-level GROUP=LEVEL`, the render
+settings prim's `athenea:` attributes, and `athenea view`'s **Lamps** block (a
+state combo, a switch and a level slider a group, also in the panels'
+description every front end draws) all set the same two settings.
+
+### The ground: a light catcher
+
+The light the lamps throw on the road -- the low beam's pool, the red glow
+behind the tail lamps -- is gaussians too, as the shadow is: `athenea
+mesh2splat --light-catcher` writes the same patch the shadow catcher does
+(`usd/ShadowCatcher.h`), reaching `--light-reach` of the object's lengths
+past either end along its longer axis (3: a low beam lights the road metres
+ahead) and `--catcher-margin` heights across, at a cell of a thirtieth of
+the object's height (the light is smooth), under `/AtheneaLightCatcher`. It
+is converted as a radiance bake -- with the dome black and one group on at
+radiance one, that is the group's light on the ground per unit of radiance --
+and written with `primvars:athenea:splat:lightCatcher`. One conversion a group
+plus a base, merged by `athenea lights merge` exactly as the car's, give the
+ground the car's layers, and the same weights light the car and its pool
+together.
+
+It is drawn by a kernel of its own (`splatProjectLightCatcher`): its colour is
+the lamps' layers alone -- its own baked colour is the ground under the base
+stage's light, which the frame already draws (the ground, its shadow
+catcher) -- marked `kLightCatcherMark`, drawn over an opaque layer under it
+as a catcher is, and ADDED in the blend: its gaussians blend among themselves
+over a transmittance of their own, so the light is the patch's coverage of it
+and not the sum of overlapping footprints, and they take nothing from what is
+behind. Off, the frame is what it was without it; it casts nothing into the
+cloud shadow map, and the ray traced route leaves it out.
+
+### How it is checked
+
+`athenea_usd_tests "[lights]"`, on frames drawn through Hydra and combined
+and compared on the device (`test/light_layers_check`, `compareImages`):
+
+- image(A) + image(B) - image(off) against image(A and B), and
+  2 image(A) - image(off) against image(A at level 2), p99 <= 1 and max <= 2
+  code values, on a synthetic cloud with two layers; a state equals its
+  levels; the layers are seen at all (max >= 10 against off), which is what
+  fails before this; and no upload between the frames.
+- merge refuses a layer one gaussian short, and one whose gaussians stand
+  elsewhere, and writes nothing.
+- a light catcher off draws the frame without it (max <= 1), on adds, and
+  2 image(1) - image(0) is image(2).
+
+The Corvette (base TX, five groups, its ground per group) is
+`~/luc/athenea-gpu/gpu_l1.sh`: the merge, and raster frames at the front and
+rear cameras for aparcado, diurno, noche_ciudad and noche_carretera under the
+sky at 0.005. Its numbers go here once run.
+
+### Not done (v2)
+
+- Rules (`athenea:lightRule:*`: the DRL off with the low beam, the high beam
+  needing the low), sequences, time curves (an LED's ramp, a xenon's
+  warm-up, a blinker): the web side evaluates them; here a state and levels
+  are all a frame takes.
+- Sparse layers, and the direct term from the emitter polygons (060, LTC),
+  the lens profile and the beam map (076).
+- The ray traced route: it draws the cloud without its layers, and a light
+  catcher not at all.
+- A cloud a skeleton poses, a level of detail or a `.athc`: the layers ride
+  the cloud as uploaded only.
+- A host that drives hdAthenea without `StageRenderer` (usdview, Blender)
+  has no rig, so the layers are off: the rig would have to reach the
+  delegate through Hydra.
+- The tail and brake glass: `tubo_trasero`'s group carries a red
+  `emissionColor` and its material is red already; if its layer was baked
+  with the OpenPBR colour in it, its weight should be the luminance alone.
+  The sidecar's convention (`emission_luminance x emission_color` is the
+  radiance) is what the weights follow.
+
+
+## A lamp behind its lens: shadow rays through glass
+
+**What was measured.** The Corvette's lamps are emitting meshes
+(`EmissiveTable`) behind lenses of clear or tinted glass. Baked one group
+at a time (`mesh2splat --bake`, the dome black), only the emitter's own
+gaussians took light -- 120 to 1150 of 3 M -- and the body and the ground
+none: next event estimation's shadow ray from a surface to the emitter
+stopped at the lens, and only the paths that refracted through it by chance
+reached the lamp. Cycles draws those as fireflies on the ground, and so did
+the path traced night frame.
+
+**What changed** (`PathTracer.cpp`, `athenea:glassShadows`, on by default):
+
+- **The shadow ray goes on through glass whose transmission is a delta**,
+  up to `kGlassLayers` (4) faces, and is weighed by what each face lets
+  through: its row's tint -- the transmission weight times its colour, rgb
+  -- times what the dielectric does not reflect where the ray meets it,
+  `1 - R` for a face of a solid (the far face pays it again) and
+  `1 - 2R / (1 + R)` for a thin wall, which is `lobes.slang`'s
+  `dielectricF`. Read from the material row (`glassPasses`), not evaluated,
+  as `pathThrough` reads it: the kernel keeps its one call of the material.
+  An opaque hit still stops it; a cut-out still passes by its lot. The
+  pipeline route (OptiX) does the same in its any hit, and sees back faces
+  where glass is let through, as the inline route does.
+- **Which glass.** `material::Transmission::clear`, read once from the
+  document: a thin wall (`geometry_thin_walled`, `thin_walled`) at any
+  roughness -- the lobe library sends a thin wall's transmission straight
+  on as a delta -- or a solid whose specular roughness is a constant under
+  `kGlassShadowRoughness` (0.03: alpha = roughness^2 under the 1e-3 at which
+  `smooth()` makes the lobe a delta). A weight or a colour a graph drives
+  passes nothing, and neither does a transparent opacity (coverage). The
+  row's flags say it (`kMaterialGlassShadow`, `kMaterialThinGlass`), and its
+  pad word now holds the tint as rgb and the index as unorm 8 bits each
+  (it held the tint's luminance, computed on the host, and the index in 16
+  each); `pathThrough` takes the luminance on the device.
+- **Every light**, not only emitting triangles: `gatherLight` and
+  `gatherLightMedium` take the colour through and tint the shadow channel by
+  channel (`lerp(full shadow, none, through)`, which is `shadowTint` with a
+  fractional `through`). The radiance bake, the split bake and a frame are
+  one kernel, so all three get it; a transfer gathers no light and its
+  cells keep `pathThrough`.
+
+**The estimator, and MIS.** A path that leaves a vertex `x` by its material
+(density `p`), then goes straight through such glass by the glass's delta
+transmission, is a draw of `x` still: the light it meets is weighed by the
+power heuristic against next event estimation from `x` (the emitting
+triangle's tabled density from `x`, or the light's `lightPdf` at `x` times
+its choice), as next event estimation from `x` through the same glass is
+weighed against `p`. The path keeps `x`, its normal, its categories and `p`
+across up to `kGlassLayers` faces (`glassCarried`); a reflection off the
+glass, a rough or a driven glass, a face past the fourth, or the setting off
+end it, and what is met after keeps a weight of one, as before -- and
+next event estimation through that glass is zero, so nothing is counted
+twice. Before, a delta vertex always gave the light it met a weight of one;
+with shadows through the glass that would have counted it twice.
+
+- **Thin glass: unbiased.** A thin wall bends nothing, so the shadow ray and
+  the material's ray through it are the same path, its transmission the
+  same `tint (1 - 2R / (1 + R))` in both, and the two weights sum to one.
+- **Solid glass: biased, by the lens's offset.** The shadow ray goes
+  straight; the material's ray is bent at both faces and meets the lamp a
+  little aside, and its weight is taken with next event estimation's density
+  for the point it met as seen straight from `x`. The two strategies then
+  estimate slightly different light -- the lamp displaced by the lens's
+  thickness times the bend -- and the weights do not sum to exactly one over
+  either. For a lamp lens a few millimetres thick at a metre that is well
+  under the noise; for a thick lens close to what it lights (a glass ball on
+  a table) it is the caustic, which next event estimation cannot draw
+  anyway. The Fresnel at each face is taken at the angle the straight ray
+  meets it, from outside, which for parallel faces is what the bent ray pays
+  by reciprocity; light reflected inside the solid is left to the material's
+  rays. A coat or any layer over the glass, and a shading normal that
+  differs from the geometric one (a ridged lens's normal map), are not seen
+  by the shadow ray.
+
+**Checked** (`athenea_usd_tests "[glass]"`, `tests/usd/test_glass_shadows.cpp`,
+a 0.5 x 0.5 emitting quad inside a closed box of thin OpenPBR glass over a
+grey floor): at 32 paths the floor's relMSE against a deep frame of the
+material's rays alone is at least 8 times lower with the shadow rays (before:
+the same, the setting did nothing), and the deep frames with and without
+agree on the floor within 3% at index 1.5; under a glass of colour
+(1, 0.5, 0.25) the floor's green and blue are a half and a quarter of its red
+and each within 5% of the bare lamp of that colour; and a grey thin glass of
+0.5 is the bare lamp at half its emission, the floor within 2% and the deep
+frames' relMSE under an eighth of 64 paths'. Numbers go here once run
+(`~/luc/athenea-gpu/gpu_g1.sh`, which also re-bakes the Corvette's `cruce`
+group and counts the gaussians it lights against the old 120 to 1150).
+
+**Not done.** The ray traced splat route (`rt_integrate.slang`) has no
+emitting meshes to reach, so nothing changes there. Rough solid glass still
+stops a shadow ray: weighing a glossy refraction against a straight one has
+no single density, and passing it would count the light twice. The OptiX
+any hit may run twice for one triangle unless the acceleration structure
+forbids it, which would tint that face twice.
+
+## A ray leaves a surface by a hair: a thin lens is two faces
+
+**What was measured.** The Corvette's tail lamps are white emitters behind
+`Rear_LIghts_Lens*`, closed solids of OpenPBR glass 0.97 to 1.78 mm thick
+(median 1.1 mm), about 2.3 m from the stage's origin, 5 to 17 mm in front of
+the emitters. The outer faces are Glass_Red, the inner ones
+Glass_Red_Blured and Glass_Red_Ridged, every one with `transmission_color` =
+sqrt(`base_color`) = (0.8319, 0, 0.1049), so that the two faces give the
+base colour between them, as Cycles' Principled tints each refraction.
+Cycles reads the lens's mean transmittance as (0.533, 0.0002, 0.0082), blue
+1.5% of red, and the lamps red. The path traced night frame read blue
+exactly 0.1261 of red in every bright pixel of the lamps -- one face's
+tint, 0.1049 / 0.8319 -- and under AgX the lamps magenta. The baked cloud
+read the same (0.13): its paths are this kernel's.
+
+**The cause.** A path that left a vertex started its next ray at
+`p + (away + wi) * 1e-3 * |p|` with a TMin of `1e-3 * |p|` again: some 7 mm
+past the entry point at a car's tail. The ray into the lens began beyond its
+far face and met the lamp with one tint. The material conversion was right
+(`dielectric_transmission`'s tint is OpenPBR's `transmission_color` at
+`transmission_depth` 0, applied at every crossing by `lobes.slang`).
+
+**What changed** (`PathTracer.cpp`):
+
+- **The path's next ray, where it crosses a surface** (`throughGlass`:
+  into a dielectric, or on inside one), leaves by `rayMargin` -- `kRayMargin`
+  (1e-5) of the larger of |p| and the distance to the camera, since a hit is
+  rebuilt in view space; about eighty float ulps, what the cut-out pass
+  already went on by -- off the triangle's own plane on the side it goes to
+  (`leaveSurface`, `Shaded::geometricNormal`, world), with TMin the same
+  margin and no step along the ray. Every other ray leaves as it did, by
+  the millimetre: those of a bake's point, of a transfer's cells, of a
+  shadow ray. A transfer's origins are a gaussian's footprint, and with the
+  hair there too one point of 32 in the transfer-against-bake test read
+  60% off ("no wall"; 0.0% with the millimetre).
+- **A shadow ray is aimed at the point it ends at**, `p + wi * distance`,
+  from the origin it actually leaves (`shadowWalk`, inline and pipeline; a
+  light at infinity keeps `wi`), so an emitting triangle's shadow ray stops
+  ten margins short of the sampled point where it stopped 3e-3 of the scale
+  short -- before a lens's far face, with the lamp 5 mm behind it. Sent
+  along `wi` from the millimetre-moved origin and ended at its distance
+  from p (d2e7aff), it ended a millimetre aside of the point, through the
+  emitter's plane at a slant: the glass box's floor read 0.0033 where it
+  reads 0.64, and the emitting quad against a rect light failed. Between
+  faces of glass it already went on by 1e-4.
+- **`pathThrough`** leaves by the millimetre and goes from face to face by
+  `rayMargin` from the face it met (it stepped 2e-3 of the scale past each).
+- No buffer: `Shaded` is thread memory, and every variant binds what it did
+  (slangc, all 32 inline combinations against f0510de, the same highest
+  index in each).
+
+**Measured** (`~/luc/athenea-gpu/gpu_t1.sh`). The Corvette at
+/World/CameraRear, 960x540, 256 paths: the tail lamps' blue over red 0.0118
+(Cycles 0.0154, before 0.1261), green 0.0027. The slab
+(`tests/usd/test_glass_tint.cpp`, a white emitter of radiance 1 behind a
+slab of OpenPBR glass, index 1.6, three metres out): B/R 0.01590 at 1 mm and
+at 10 cm, 0.12610 for a thin wall, G 0.
+
+**Found on the way: a transmission's Fresnel is taken twice.** The slab's
+red is 0.5556 at both thicknesses, where two faces of tint 0.8319 and a
+Fresnel of 0.0533 each give 0.620: 0.5556 = 0.692 x 0.9467^4, the Fresnel
+twice at each face. OpenPBR layers its specular reflection (scatter R) over
+a transmission (scatter T), so the layer's throughput already holds
+`1 - albedo`, and genglsl's T response carries no Fresnel of its own; the
+lobe library's T lobe takes `1 - F` again (`lobeSample`, `evalLocal`,
+`lobeAlbedo`). A thin wall reads 0.7066 = 0.8319 x 0.8989 x 0.9467: its own
+`1 - 2R / (1 + R)` and the layer's plain `1 - F`. The glass shadows test's
+3.45% between its deep frames is this too: the shadow ray pays the thin
+wall's Fresnel once, the material's rays twice. Fixed in the next section.
+
+**Not done.** The splat route (`rt_integrate.slang`) has its own offsets.
+
+## A transmission pays its Fresnel once
+
+**What was measured** (the section above, gpu_t1): a slab of OpenPBR glass,
+index 1.6, transmission colour (0.8319, 0, 0.1049), passed 0.5556 of a white
+emitter at 1 mm and at 10 cm, where two faces of one Fresnel each pass
+0.692 x (1 - 0.0533)^2 = 0.620: 0.5556 = 0.692 x 0.9467^4. A pure red
+(0.8, 0, 0) passed 0.5135 for 0.574, a thin wall 0.7066 = 0.8319 x 0.8989 x
+0.9467 for 0.748. The glass shadows test's thin box read 3.45% brighter with
+shadow rays than with the material's rays alone (index 1.5).
+
+**The cause.** OpenPBR (and standard_surface) layer the specular, a
+dielectric that only reflects, over the transmission, a dielectric that only
+transmits at the same index. `athenea_layer_bsdf` weighs the base by the
+top's throughput, `1 - albedo` -- one Fresnel -- and the lobe library's
+transmission lobe pays `1 - F` again in its sample, its response and its
+albedo, exactly, at the angle and side it crosses. genglsl's T response
+carries no Fresnel (the layer is its Fresnel); a path tracer's must, since
+only the lobe knows the side (from inside, the index inverts and total
+internal reflection takes it all). A shadow ray through glass pays one
+(`glassPasses`), so the two strategies disagreed by a Fresnel, and the relit
+cloud pays one (`transmittedShare` at the near face, `exitThrough` at the
+far), so the mesh it is validated against read a Fresnel a face darker.
+
+**What changed.**
+
+- **`kFlagOwnFresnel`** (`lobes.slang`): `athenea_layer_bsdf` passes a
+  dielectric transmission in its base whole when the top holds a dielectric
+  reflection at the same index (to 1e-4), and marks it, once: the
+  transmission's own `1 - F` is the layer's share, exact where the layer's
+  is a fit. A layer further out -- a coat, at its own index -- charges it as
+  it charges anything; so does a reflection at another index. The rest of
+  the base (OpenPBR's opaque base under a transmission weight under one)
+  pays the layer as before.
+- **A thin wall's layer albedo** (`athenea_dielectric_bsdf`): the thin
+  wall reflects `2R / (1 + R)` (`dielectricF`), so what its layer lets the
+  base have is the rest of that, F0 and F both, not one face's.
+- **The relit cloud** already paid one Fresnel a face (`transmittedShare`,
+  `exitThrough`, and a thin wall's opacity `2R0 / (1 + R0)`): unchanged,
+  and now the mesh agrees with it.
+
+**Expected** (`tests/usd/test_glass_tint.cpp`, the closed forms restored):
+the 1 mm slab 0.620, the pure red 0.574, the thin wall 0.748, each within
+3%; the glass shadows test's deep frames within 3% of each other again.
+Its unbiasedness check compares the floor in front of the box only (the
+camera sees the grey box itself, and the room behind it at half, which no
+lamp scaled by a transmittance is: over the whole frame its error held at
+3.3e-2 from 64 paths to 4096, at index 1.0, where no Fresnel enters).
+Numbers go here once run (`~/luc/athenea-gpu/gpu_t3.sh`, which prints the
+glass validations' relMSE rows beside their values before this change).
+
+**Measured** (gpu_t3, 0ac9260): the glass box's deep frames agree (-0.69%,
+was 3.45%), the tint test holds its closed forms, the thin-glass test passes.
+And a clear ball of tint (1, 1, 0.5) under a uniform sky, through its
+middle, read 0.9998 (was 0.9205) where its cloud reads 0.9519. That is the
+mesh right, not a Fresnel lost: through two faces 0.92, the near face's
+polish 0.04, and the light the far face reflects back out through the near
+one, 0.037 -- in a uniform sky a clear ball returns all of it (blue: 0.25 x
+0.92 + 0.04 + 0.009 = 0.2795, as read). Before, the second Fresnel a face
+took 0.07 off the first term and the mesh happened to sit near the cloud.
+The cloud leaves the far face's reflection out (`lensExitThrough` loses
+it), so `splat_relight` now gives it back (`farFaceReflected`): in at the
+near face, the tint, the far face's R, the tint, out at the near face, of
+what lies along the mirror direction -- the polish's own reading, for a ball
+the direction the light comes in from. Expected 0.989 and 0.2788 for the
+ball's cloud against the mesh's 0.9998 and 0.2795 (gpu_t5.sh).
+
+**Not done.** `generalized_schlick_bsdf` transmitting under a Schlick
+reflection keeps its double charge: no stage here layers one that way.
+The layer's own throughput from inside a solid still uses the outside fit,
+which only the opaque base under a transmission weight under one sees.
+
+
+## A bake's ray into a lens leaves by a hair too
+
+**What was measured** (the Corvette's `pilotos` layer re-baked on 1dae928):
+its 8853 lens gaussians held mean (0.274, 0.0068, 0.040), blue 0.146 of
+red; less the white their green says the reflection left (0.0068 in each
+channel), the transmitted light reads 0.124 -- one face's tint, where the
+path traced frame reads 0.0149 through the same lens.
+
+**The cause.** A path's next ray leaves by the hair only where it crosses
+(`throughGlass`), and that asks the shading normal. A bake's point is
+shaded with the gaussian's own normal where it carries one, which on a lens
+need not face the eye: the ray sampled into the lens counted as not
+crossing, left by the millimetre and stepped over the far face 1.1 mm in.
+And a glass gaussian's transfer cells (`cellThrough`, its own points) left
+by the millimetre into the lens and read past its own far face.
+
+**What changed** (`PathTracer.cpp`): `entersGlass` asks the triangle's own
+normal whether the ray leaves on the other side from the eye into a
+transmitting dielectric; such a ray crosses whatever the shading normal
+says -- it leaves by the hair and sees back faces. A glass point's cell ray
+into its own surface first looks for its far face by the hair: met beyond
+four margins and within the 3e-3 of the scale the millimetre steps over, the
+cell is closed. Rays from a gaussian that do not enter glass leave by the
+millimetre as before (what the transfer-against-bake test needs).
+Numbers go here once run (`~/luc/athenea-gpu/gpu_t4.sh`: the pilotos layer
+re-baked, its lens gaussians' B/R).
+
+**Measured** (gpu_t5, 31ac546): no change -- the pilotos layer's red lens
+gaussians read blue 0.1207 of red against 0.1245 before. **The real cause**
+is not the ray leaving the first vertex but the ray finding it. Split by
+the normal each gaussian carries, the 7371 facing the eye read 0.125 (one
+tint) and the 416 facing the lamp 0.016 (two). A bake comes down onto its
+surface from `offset` (mesh2splat_span: a ten-thousandth of the model, half
+a millimetre on the car) over the gaussian's centre, and a lens 1.1 mm thick
+under cells of 8.8 mm holds its gaussians' centres between its faces: the
+ray started inside the glass and met the far face from behind, and the
+gaussian baked the lamp as that face alone lets it through.
+`bakeSurfaceUnder` (`foundBaked`, `bakeCellOrigin`): where the ray meets a
+transmitting face from behind, it started inside that glass, so a ray up
+the normal finds the face over the centre (within 1e-2 of the scale) and the
+ray down starts past it, meeting the glass from outside. `entersGlass` stays:
+it is right, and was not what this was.
+
+## A glass gaussian's colour is its transmission's own
+
+**What was measured** (gpu_t5, after 0ac9260): the lobes test's glass
+(OpenPBR, base colour 0.787, transmission colour 0.8871, weight 1) relit
+read a mean of 0.378 against the mesh path traced 0.4217 (0.3737 against
+0.4019 before), 10% under where its bound is 9%, while its baked cloud read
+0.4225. The TX glass rows moved away too (pale 0.0441 to 0.0529, window
+0.0553 to 0.0592 relMSE).
+
+**The cause.** mesh2splat took a transmitting gaussian's colour as the
+base colour times the transmission colour (`colour * tint`), and the relit
+cloud tints a crossing by that colour (`lensExitThrough`, the body): 0.787 x
+0.8871 = 0.698 a crossing where the mesh's is 0.8871 -- the transmitted
+light 21% low, and a second Fresnel a face in the mesh hid most of it.
+OpenPBR and standard_surface tint their transmission by `transmission_color`
+alone; their base colour is the opaque base's, which a weight of one leaves
+out. glTF does tint it by its base colour, and a UsdPreviewSurface's
+transmission is coverage of its diffuse.
+
+**What changed.** `StageMaterial::ownTransmissionColour` (MeshStage: a
+MaterialX surface that reads `transmission_color`), handed to the bundle as
+`transmissionTintsBase` (0 there, 1 for glTF and UsdPreviewSurface, the
+default 1 keeping what any other caller had), in the `transmissionColour`
+w the uniform block left unused: the transmitted colour is the transmission
+colour times as much of the material's colour as that says. The baked
+cloud is unaffected (its body is the bake's). Numbers go here once run
+(`~/luc/athenea-gpu/gpu_t6.sh`).
+
+## Simplify: fewer gaussians by pairs, and surfels
+
+**Why.** A baked cloud is dense where nothing needs it: a car's panels, a
+ball's flat stretches, all at the conversion camera's pixel. The octree
+decimation (`athenea decimate`, above) stops at about 3x on the matx shader
+ball whatever its tolerance (chrome 600k to 198k at 0.4) and dirties the
+reflections inside the ball's cavity, its merges averaging normals the
+highlight turns with; a coarser conversion (a smaller `--max-splats`) cuts
+pieces short -- the ball's base lost whole parts at 5x and 10x (M2SB) -- and
+at 10x is 20.4 dB against the full cloud on chrome (LPIPS 0.197).
+
+**Merge by pairs** (`--ratio`, lod_pairs.slang; NanoGS, Xiong et al. 2026,
+arXiv 2603.16103, on the device and for a cloud that carries more than a
+colour). A node is moments -- mass W (opacity times the area of the two widest
+axes, the levels of detail's weight), W mu, W Sigma about mu (the parallel axis
+theorem at each merge; see "A merge's second moment about its own centre"
+below), and W times what the cost compares -- so a merge is a sum and a node
+stands for the moment
+matched gaussian of every record under it, whatever order the merges came
+in. Candidates are 8 neighbours each side along two Morton orders (the second
+shifted half a cell); pairs that chose each other merge, at most half the
+nodes a pass, the cheapest first: a host histogram of log10 costs (256 bins)
+sets each pass's threshold so the pass takes the count no further than the
+ratio. Every attribute is then merged once from the records each kept
+gaussian stands for (lodMergeAttribute, mass weighted), which is what merging
+pair by pair gives: the clusters are made runs of a permuted store
+(`DecimateResult::storePositions`), so the octree's machinery reads them.
+
+**The cost**, between two nodes and the gaussian their moments make:
+- shape: 1/2 [log I2(m) - pi log I2(i) - (1 - pi) log I2(j)], I2 the sum of
+  the covariance's eigenvalue products by twos (a disc's area squared, read
+  without the eigenvalues), pi = W_i / W: Runnalls' bound on the KL a merge
+  loses, per unit mass and with the area in place of the volume a surfel does
+  not have. Scale free, not mass weighted: weighted by mass the smallest
+  gaussians are the cheapest, and small details go first. Instead it is
+  weighed by what the merge changes on screen: smoothstep(0.5, 2) of the
+  merged width in pixels from the conversion camera (`--camera`).
+- flat: how much thicker than its members the merge comes out (two discs on a
+  curve make a lens).
+- normal: (1 - cos)(1 + F0 / alpha^2): a mirror's highlight moves with its
+  normal, a rough surface's barely.
+- colour, sRGB-encoded, so dark detail on light counts as it is seen;
+  metallic, sqrt(alpha), transmission.
+Never merged: a key (ids, joints, sheets, thin walls, Schlick metals), glass
+with what is not, a mirror (alpha < 0.01) with what is not, normals past 60
+degrees, a colour past 0.15 (an edge). `--max-aspect` refuses a merge whose plane
+comes out longer than that against its width (a chain along a trim merges into a
+needle that smears; the Corvette merged 10x streaked), off by default: at 4, with
+the edge at 0.10, the Corvette at 10x measured worse (26.9 dB and LPIPS 0.124
+against 27.9 and 0.110), the ratio being taken from merges that cost more.
+
+**A surfel** is a gaussian with one scale exactly 0: the disc of the other
+two. A merge whose members are discs and which comes out flat to within 0.12
+of its middle axis is written as one. The loader keeps a zero scale (a log
+under -30, Spark's own PLY rule; it was read as log(1e-30) and dropped as out
+of range); the f16 shape holds it as -65000, never -inf. The raster draws one
+by the ray through each pixel (Huang et al. 2024): the disc's two axes in
+homogeneous screen coordinates (`ProjRecord::surfel`, halves; the centre's
+column from the record's own centre and depth) pulled back through the
+pixel's two planes, the larger of the disc and a gaussian of sigma sqrt(2)/2
+pixel round the centre as the screen filter -- agreed with sparkwebGPU, which
+draws the same files (one zero axis only, normals sent, opacity as 3DGS's).
+Its opacity pays nothing back (no mip convolution widened it); under the
+shutter or a lens it is drawn as the thin gaussian it projects to. The record
+grew to 64 bytes rather than bind another buffer: splatProject binds the 31
+Metal allows. The path tracer clamps the flat axis to 1e-4 of the widest
+(`surfelSafeScale`), so a particle's peak along a ray falls where the ray
+crosses the disc's plane, which is the same intersection. The LOD and the
+decimation weighed a splat by the product of its scales over the smallest,
+which a surfel's zero takes to nothing: they weigh the two widest
+(`discArea`). `mesh2splat --flatness 0` bakes a whole cloud of them.
+
+**Coverage.** A merge's moments keep the second moment of its members, and a
+cluster of discs each as wide as their spacing merges into one narrower than
+the span they covered: merges overlapped less than their members had, and
+their seams showed -- the Corvette's paint merged 5x was a snake's skin, dark
+rims round every merge (PSNR 28.8 against the full cloud at the front
+camera). Holding the mass instead (widening until 0.99 of the area is W)
+fixed the balls (car paint 10x from 31.1 dB / LPIPS 0.160 to 36.2 / 0.040,
+chrome 5x 22.0 / 0.128 to 27.3 / 0.074, surfels then level with thin
+gaussians) and smeared the car past its edges: a sum of overlapping discs is
+not their union. So a merge is widened as the octree decimation widens one
+(lodDecimateShape): along each wide axis, the members' spacing d from their
+centres' spread and count, their mean width c, the span e = sqrt(12 v + d^2),
+the merge c / d of that, between its moments and twice them; its opacity
+their area-weighted mean. Its mass, W over its area, is written as
+`primvars:athenea:splat:coverage` -- what the test holds, and what a reader
+blending by coverage (sparkwebGPU's AK) draws by.
+
+**Glass** merges only with `--merge-glass`: a window is a sheet drawn as a
+layer of the reflection it gives head on, and the Corvette's windshield
+merged 10x shimmered in a rainbow moire.
+
+**Frames.** `transferZonal` (two lobes, their axes in each gaussian's own
+frame) and `curvature` (a shape operator in the frame's first two axes) are
+merged through each member's frame to the world and into the kept gaussian's
+(AttributeMerge::Zonal, Curvature); averaged as numbers they mixed axes of
+frames turned apart. The octree decimation reads them the same way.
+
+**Measured** (bench/simplify/validate.py, build s5: the matx shader ball, four
+cameras on an orbit, the mesh path traced at 512 paths as the reference; PSNR
+and SSIM by `athenea compare`, LPIPS AlexNet; "vs full" against the full TX
+cloud's own frames, which is what the merge alone loses):
+
+| material | full | 2x | 5x | 10x | 20x |
+|---|---|---|---|---|---|
+| car paint, vs full: PSNR / SSIM | -- | 47.0 / 0.997 | 43.0 / 0.994 | 41.0 / 0.990 | 39.3 / 0.987 |
+| car paint, vs the PT: LPIPS | 0.569 | 0.568 | 0.573 | 0.576 | 0.579 |
+| chrome (reflection), vs full | -- | 40.6 / 0.994 | 36.3 / 0.987 | 33.6 / 0.978 | 32.0 / 0.971 |
+| chrome, vs the PT: LPIPS | 0.561 | 0.562 | 0.568 | 0.570 | 0.574 |
+| glass (refraction, --merge-glass), vs full | -- | 38.0 / 0.974 | 34.9 / 0.948 | 31.4 / 0.916 | 29.1 / 0.890 |
+| glass, vs the PT: LPIPS | 0.681 | 0.679 | 0.695 | 0.712 | 0.722 |
+
+Against the PT the full cloud's own error (TX, and the reference's noise at
+512 paths) dominates at every ratio: car paint 26.9 dB full, 26.5 at 20x.
+Merging takes 23-37 s for 600k gaussians (wall time, the machine shared). The
+Corvette (5.38M, TX and five light layers), front camera by day against the
+full cloud: 5x 30.6 dB / LPIPS 0.061, 10x 27.9 / 0.110 -- its small pieces
+(badges, the grille, trims) are where 10x shows. Before the merged frames had
+their thinnest axis third, chrome at 5x glittered (22.0 dB against the full
+cloud on one camera; 33.1 after): the curvature and the zonal lobes were read
+in a plane holding the normal.
+
+**Not done.** The curvature is the members' average, not refitted from their
+normals; the roughness is not widened by the normals' spread; light layers and
+the TX reflected field are merged but not in the cost; an error target instead
+of a ratio; pairing greedily among the three cheapest rather than by mutual
+choice (sparkwebGPU: pairs that chose each other leave many unpaired); a
+surfel under a pixel draws its full opacity over the screen filter's disc and
+over-covers (a far car's glass x0.72 in sparkwebGPU) -- their remedy, the
+disc's own affine footprint convolved with the AA blur at the opacity that
+keeps its mass, is the next step here; the octree's own finalize does not yet
+put the thinnest axis third (doing it broke the .athc and transfer tests, not
+yet looked into).
+
+### What no camera sees, and merges no wider than the screen holds (9 Oct)
+
+sparkwebGPU measured the Corvette merged 5x under its own relight and found it
+15-55 times worse than its own pipeline at the same count: half of it was
+interior no camera sees, and the door showed hairs. Measured here, on pieces
+of the car baked alone with `--prim` (the bake traces the whole car) and on
+the whole car, every frame against the full cloud's:
+
+- **What no camera sees** (`--drop-hidden`): the cloud drawn by raster from an
+  orbit (256 directions, three distances, 1024 px), the blend adding at each
+  splat's slot the weight it blended with (`RenderSettings::contribution`),
+  and the store compacted to what gave at least 0.02 px
+  (`lod_prune.slang`). The Corvette: 38.7% left out seen from all round
+  (61.7 / 67.8 dB, front / rear camera), 46.0% from 10 degrees under the
+  horizon up (58.3 / 58.2 dB). A closed box with a cluster inside keeps the
+  box and loses the cluster (`[hidden]`).
+- **The hairs** are the merges themselves. The car was baked a gaussian a
+  pixel of its camera (640 across, about 3 px at 1920), so past the hidden
+  ones nothing it holds is redundant at that camera: a merge is wider than
+  what the camera resolves, cannot hold an edge, and its tails stand out past
+  the door, the pillars and the mirror. Removing the hidden ones first and
+  merging 2.7x to the same 1.07M as 5x gained 0.3 dB by day and 2.2 dB at
+  night (the lamp bands), and kept the hairs. `--max-pixels 3` (no merge
+  wider than 3 px on the camera's screen) leaves 2.14M of the 2.90M seen --
+  2.5 times fewer than the full cloud -- at 46.4 / 42.4 dB by day and 49.3 dB
+  at night, and no hairs; 1.5 px, 2.61M at 55 dB.
+- **Not better**, each measured on the pieces: the merge's opacity as its
+  mass over its area (`--merge-opacity mass`) is the members' mean on an
+  opaque surface, and not widened (`mass-tight`) leaves gaps; the mass past
+  one, drawn as so many of the gaussian stacked (Spark's LoD opacity), shows
+  every disc as a scale and was taken out again; removing what leaves the
+  least error instead of merging (`--prune-error`, GaussianPOP's score,
+  rounds) opens holes on every opaque surface and wins only on a badge;
+  baking coarser instead (`--camera-pixels` 320, 213) loses 15-20 dB to
+  merging the full bake to the same count; tighter normals (`--max-angle` 30,
+  20) and the highlight cone change nothing (neighbours already agree).
+- **A lamp's light keeps its place**: a lamp group's layer folded into the
+  merge's key in bands of four times (`AttributeMerge::LightBand`, on unless
+  `--no-light-bands`): the fender at night 46.7 dB against 46.4 without.
+- **An error, not a count** (`--max-cost`): merges stop where every pair left
+  costs more; at 0.25 a door went to 6x and a grille to 2x. On a whole cloud
+  `--ratio` already takes the cheapest first, so it only says where to stop.
+
+### Harder kernels where a merge covers a patch (9 Oct, evening)
+
+A merge wider than the camera's pixel draws hairs because the gaussian with
+its members' moments throws its tails a third past the patch they covered,
+and holds the middle thinner than they did. Two kernels that span a patch
+the way its members did, both on the merges alone (the bake's own gaussians
+are untouched), measured on the whole Corvette against the full cloud's
+frames (day front, day rear, night front; everything after `--drop-hidden
+--hidden-below -10`):
+
+- **Spark's harder kernel** (`--merge-opacity falloff`): the merge's opacity
+  is its members' mass over its own area, not widened and not held at 0.99
+  but at 5, and an opacity D over 1 draws as 1 - (1 - g)^A, A = exp((D² -
+  1)/e) -- the composite of A gaussians on one spot, a flat top with the
+  gaussian's shoulder -- cut 0.7 (D - 1) sigma further out
+  (`frame.slang`'s `falloffAlpha`, sparkjs `splatFragment.glsl`, MIT). It is
+  what Spark's own LoD merges write, so a cloud carrying it draws the same in
+  sparkwebGPU; any other reader clamps the opacity to 1. The earlier test of
+  "the mass past one" on the pieces was a falloff of our own, widened, and
+  showed scales; this is Spark's formula, unwidened.
+- **A hard surfel** (`--hardness`): a flat merge written as a surfel is drawn
+  o exp(-(|u|^p + |v|^p)/2) in its own axes, exact at the ray-plane hit the
+  surfel path already takes. p is fitted without training: along each wide
+  axis the members' kurtosis m4/m2² (3 for a gaussian, 1.8 for an even strip)
+  is matched to exp(-|x|^p/2)'s, Gamma(5/p) Gamma(1/p) / Gamma(3/p)², and
+  the stored scale stays the moment-matched one, which the raster widens by
+  1/sqrt(2^(2/p) Gamma(3/p)/Gamma(1/p)) to the box it stands for. p rides in
+  the f16 logarithm of the surfel's flat axis (any value under e^-100 is a
+  zero scale to every reader), and in a file as
+  `primvars:athenea:splat:hardness`; a reader that knows no p draws the
+  gaussian of the same moments. Hard boxes abutting left a grid of cracks
+  (0.85 of a cover at each seam, the pruned interior through it): the hard
+  power is held at 0 out to where the kernel would fall to 1/2
+  (`kHardOverlap`), so neighbours overlap; 4 was worse by day.
+
+| cloud | gaussians | day front | day rear | night |
+|---|---|---|---|---|
+| gaussian merges, 5.4x | 535k | 30.0 | 30.1 | 26.7 |
+| hard surfels, 5.4x | 535k | 30.3 | 30.1 | 26.9 |
+| falloff, 5.4x | 535k | 30.7 | 31.6 | 25.2 |
+| falloff + hard, 5.4x | 535k | 31.1 | 31.4 | 30.9 |
+| gaussian merges, `--max-pixels 5` | 1.24M | 32.7 | 36.8 | 29.8 |
+| falloff, `--max-pixels 5` | 1.24M | 34.2 | 41.0 | 33.1 |
+| **falloff + hard, `--max-pixels 5`** | **1.24M** | **34.5** | **41.1** | **35.8** |
+| falloff + hard, `--max-pixels 6` | 845k | 31.9 | 37.8 | 32.1 |
+| falloff + hard, `--max-pixels 4` | 1.85M | 42.8 | 44.7 | 46.7 |
+| gaussian merges, `--max-pixels 3` | 2.14M | 46.4 | 42.4 | 49.3 |
+
+At 5 px the falloff and hard surfels together keep the mirror, the pillars
+and the door clean, but the whole frame shows what the crops did not: the
+front bumper's chrome strip and grille fray into hairs, and the lower lip is
+ragged. At 4 px (1.85M of 5.38M, 2.9 times fewer) the whole frame is as
+clean as 3 px with gaussians (2.14M), and the numbers above it by the rear
+camera. Past 5 px the hard merges
+show as shards at the wheel arch and the sill, whatever p is held to (8 and
+4 measured the same as 16: what the hard surfels bring is their overlap,
+not their exact p); at 8 and 12 px they are plates. The falloff alone, the
+compatible half, leaves a fine grid on the paint where flat tops meet.
+
+Not done: a pixel limit that applies at edges alone (the cost knows no
+edge), a closed-form refit of the merges' colours against the full cloud's
+frames (POTR, Only What Was Seen), and the hard kernel for merges that are
+not flat enough to be surfels (two thirds of them at 5.4x).
+
+## The Corvette on an iPhone: what was applied (11-12 Oct)
+
+The full write-up, with every measurement, is `docs/pieces.md` (Spanish: `docs/pieces.es.md`); the running log is
+`PIECES-PLAN.md`. In short:
+
+- **Shading.** The sharp lobes read the sky at the roughness before the bake widened it (`unwidened`); the polish
+  answers its closed part from the reflected field where the material's own roughness is a paint's
+  (`materialRoughness` on the pbr word, `kPolishFieldRoughness` 0.3); a fold's coat is held to 0.3 on paint only; the
+  per-pixel turn is split by how far it goes across the footprint -- a tube turns in full under 0.7 rad, a fold past
+  1.5 rad widens the sharp lobes instead (`foldWidened`). Tried and left out: a 0.2 rad cap on the turn, and gating
+  the sharp polish on the unwidened roughness.
+- **The merge tree.** `--mark-material-roughness`; `--tree-coverage` writes each merge's spill (`lodSpill`), and
+  `--cut-spill` weighs it -- off by default, since no per-node measure separates a grille's hole-filling merges from
+  a panel's; trees of millions of leaves are written without three copies of their arrays; the shared occlusion
+  writes a tree over itself.
+- **Bakes.** The whole car at 1280 px (8.70M leaves, 8 groups each converted with the rest hidden and the whole stage
+  traced): car crop 16.55 -> 17.88 dB, frame 22.18 -> 23.90 against the path trace. A close-up level at 5120 px: the
+  66 parts already a gaussian a triangle at 1280 px, and the panels capped at 4.5-5M leaves a part (69.5M leaves
+  done, one part and the occlusion pending).
+- **The phone** (sparkwebGPU): a contact shadow from the shadow catcher, the per-pixel sharp lobe with the pixel's
+  spread, 512 transfer clusters, synthetic roots, a draw target by frame time and a still frame of finer detail.
+
+Not done: the lamps in the bake, the chrome strip 38 % bright, the rim's near ground at 0.72, the door's open
+reflections at 1.13 (16 x 16 cells), the front bumper's lower lip.
+
+## A merge's second moment about its own centre (13 Oct)
+
+The levels of detail (`lod_leaf_moments`, `lod_merge_moments`, `lod_finalize`) and the merge by pairs (`lod_pairs`,
+`lod_pairs_final`) kept a group's second moment about the world's origin, `S2 = sum w (Sigma + mu mu^T)`, and took
+`Sigma = S2 / W - mu mu^T`. That is the difference of two numbers the size of `mu mu^T`, which a float holds to about
+5e-7 m^2 two metres from the origin: the whole variance of a gaussian a millimetre wide. The close-up level's bakes
+at 4480-5120 px lay needles on long thin triangles (0.93 x 0.043 x 0.004 mm on the front bumper), whose variances
+across (2e-9 m^2) are a hundredth of that rounding. Their merges came out as thin as the rounding left them, and the
+merge cost, read from the same moments, called them nearly free, so a cut chose them even at 0.01 px and drew the
+holes they left as bright grain wherever the scene behind was lighter (the Corvette's front bumper, `car5120`).
+
+Every second moment is now about the group's own centre: a leaf group's from each splat's offset to the group's
+mean, a coarser group's from its children's with each child's mean offset (the parallel axis theorem), a pair's
+merge the same way, and a cluster's final gaussian from its members' offsets to its first member. The offsets
+within a merge are millimetres, and so is what a float loses on them.
+
+Measured on the bumper's front-left corner (Front_Bumper's faces a close camera sees, baked alone at 5120 px from
+/World/Camera, 301k gaussians), drawn matte against the bake itself:
+
+| | gaussians drawn | relMSE | pixels over 2 | max |
+|---|---|---|---|---|
+| close camera, cut 0.01 px, before | 288,563 | 8.8e-4 | 37,715 | 104 |
+| close camera, cut 0.01 px, after | 297,242 (every leaf) | 1.3e-5 | 4,512 | 38 |
+| /World/Camera 1920, cut 0.25 px, before | 94,351 | 3.9e-4 | 8,341 | 150 |
+| /World/Camera 1920, cut 0.25 px, after | 42,719 | 3.7e-4 | 6,632 | 116 |
+
+At the far view the corrected tree draws half the gaussians with less error: the old costs had kept wide merges
+apart and let degenerate ones through. The grain is gone from both frames. The 1280 px level is unaffected in
+practice (its gaussians' variances, about 1e-5 m^2, stand well above the rounding), and the 5120 px trees are to be
+rebuilt from their bakes.

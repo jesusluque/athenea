@@ -51,7 +51,7 @@ coinciden, la cabecera tiene razón.
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él) |
+| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
 | 20 | view | `view/Viewer.h` — las opciones de la ventana |
@@ -70,8 +70,10 @@ el dispositivo tiene exactamente un interlocutor, y todo lo relativo al orden
 se sigue de ahí.
 
 `gpu_host::Context` es donde encaja el otro runtime: gpe adopta el dispositivo
-que abrió slang-rhi, así que un `MTLDevice` o un contexto CUDA sirve a los dos
-y los buffers se comparten sin copias. El cruce en sí -- adoptar, una vista
+que abrió slang-rhi, así que un `MTLDevice`, un contexto CUDA o un `VkDevice`
+y su cola sirven a los dos y los buffers se comparten sin copias. gpe tiene un
+backend por build (Metal, CUDA o Vulkan); un dispositivo de render para el que
+no tiene backend deja el contexto sin gpe, y sin aofx con él. El cruce en sí -- adoptar, una vista
 slang-rhi de un buffer gpe, un handle gpe sobre un buffer slang-rhi -- son
 tres funciones libres en `gpu_host/Views.h`, sobre el dispositivo y el pool
 desnudos; los métodos del contexto las llaman, y también un programa que ya
@@ -133,9 +135,11 @@ comprobación.
   en cuatro palabras la opacidad, la escala, el cuaternión y el color DC de un
   splat, en una la normal de sombreado opcional (`packNormal`), en una la
   emisión opcional (`packRgb9e5`) y en tres las capas opcionales sobre la base
-  -- specular, coat, sheen -- (`packLobes`). Todo lo que escribe una nube y
-  todo lo que la lee pasa por ahí. Un buffer opcional de `GpuSplats` (`pbr`,
-  `normals`, `emission`, `lobes`) se enlaza tenga o no la nube -- la forma en
+  -- specular, coat, sheen -- (`packLobes`), y en una por grupo las capas
+  opcionales de las lámparas (`packRgb9e5` por `kLightLayerScale`). Todo lo
+  que escribe una nube y todo lo que la lee pasa por ahí. Un buffer opcional
+  de `GpuSplats` (`pbr`, `normals`, `emission`, `lobes`, `lightLayers`) se
+  enlaza tenga o no la nube -- la forma en
   su lugar -- y un flag en los parámetros dice cuál.
 - **El índice de un splat no es el de su registro.** La validación descarta
   lo que no se puede dibujar; `GpuSplats::origin` dice de qué registro vino
@@ -236,6 +240,48 @@ de un 5% peor en TX (`tests/regress/tx_against_first.cmake`); sus imágenes
 GT|malla|nube quedan en `build/<preset>/tests/tx_gate`. Una máquina sin esos
 recursos se lo salta.
 
+**La puerta de materiales.** `bench/matx` mide TX material a material sobre
+el shader ball de MaterialX: todos los ejemplos de MaterialX de las familias
+OpenPbr, StandardSurface y DisneyPrincipled (fase 1) y los ejemplos de
+OpenPBR de la propuesta 086 (fase 2, descargados de un commit fijo), cada uno
+ligado a toda la bola sobre un suelo gris, convertidos con `--transfer` y
+medidos con `--validate` bajo el cielo autoshop y goegap. Las escenas
+generadas, la bola convertida y las descargas no están en git; los scripts
+las rehacen en la CPU:
+
+```sh
+cd bench/matx
+python3 build_ball.py && bash fetch_phase2.sh && python3 build_stages.py   # CPU
+MATX_BIN=../../build/<preset>/bin/athenea python3 run_matx.py --phase 1     # GPU, reanudable
+python3 report_matx.py                                                      # tablas, hojas de contactos
+python3 compare_matx.py                                                     # frente a baseline.csv
+```
+
+`ctest -L matx` ejecuta seis, uno por clase de lóbulo, bajo los dos cielos
+(unos diez minutos) y falla donde el relMSE de TX es más de un 5% peor que
+en `baseline.csv` o la razón de medias de un canal se ha movido más de 0,05.
+`matx_sampled` (misma etiqueta) convierte los cinco cuyo color base solo
+puede decir el material -- ladrillo, latón, madera, mármol, ónice, cobre -- y exige
+que conserven su color frente a la malla trazada (`check_sampled.py`). Un
+metal entre ellos se juzga solo por su tono mientras su nivel espera la luz
+de TX bajo un sol compacto: cada canal sobre el verde a menos de un 5 % del
+GT en dos ventanas fijas de la bola (el lado del cuerpo que mira al cielo y
+el núcleo del hueco; las medias son las del efecto Measure), y la regla de
+1,25 de la media donde cada canal es al menos 0,70 del GT -- por debajo se
+lista como pendiente del nivel de TX y no falla. La ventana del cuerpo queda
+pendiente igual donde su propio nivel está por debajo de 0,70 del GT (un sol
+duro, donde el tono se mueve con el nivel); la del hueco siempre cuenta.
+`METAL_LEVEL_WAITS_ON_TX` devuelve los metales a la regla completa cuando
+llegue el arreglo de TX.
+`compare_matx.py --write-baseline` reescribe la referencia a partir de un
+barrido; cambia en el commit cuyo efecto registra. `MATX_MX_RESOURCES`,
+`MATX_AUTOSHOP`, `MATX_WORK` y `MATX_OUT` dicen dónde están las entradas y
+adónde van las salidas (`matx_common.py`). El GT trazado se guarda por
+material y cielo, con una clave de la escena, el cuadro, los caminos y los
+shaders del path tracer, así que cada ejecución se mide frente al mismo GT;
+`GT_EPOCH` en `matx_common.py` lo sube el commit que cambia el C++ del path
+tracer.
+
 ### 3.2 Un cambio de solo shader
 
 Los shaders se compilan en ejecución, no van dentro del binario, así que un
@@ -277,7 +323,25 @@ fuera del proceso.
 `ATHENEA_BACKEND` corre toda la suite sobre un backend: `cuda`, `vulkan`, `metal`,
 `d3d12`.
 
-### 3.4 Otra máquina
+### 3.4 Una release
+
+Una versión es la línea `project()` y una entrada de `CHANGELOG.md`, con la
+etiqueta `vX.Y.Z` en `main` (con las reglas del propio changelog). Sus
+ficheros se compilan del commit etiquetado en cada sistema, desde el árbol de
+compilación de un preset release:
+
+| Paso | macOS | Linux | Windows |
+|---|---|---|---|
+| archivo | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, necesita `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
+| instalador | `scripts/installer-macos.sh <carpeta>` (`.pkg`) | `scripts/installer-linux.sh <carpeta>` (`.deb`) | `scripts\installer-windows.ps1 <carpeta>` (`.exe`, Inno Setup 6) |
+
+`package.*` copia las bibliotecas de los prefijos que encontró la compilación
+(`CMakeCache.txt`) y hace sus rutas relativas a cada programa: `rpath`
+`@executable_path/../lib` en macOS (y firma ad hoc), `$ORIGIN/../lib` en
+Linux, cada DLL junto a los programas en Windows. La release se publica con
+`gh release create vX.Y.Z` y los seis ficheros.
+
+### 3.5 Otra máquina
 
 `scripts/remote-test.sh [user@host] [preset] [rama]` empuja la rama, compila y
 corre la suite allí, y trae `LastTest.log` de vuelta a
@@ -586,6 +650,13 @@ modelo tiene 512 celdas de lado, así que casi todo un mapa de 4k se tira antes
 de mirarlo: `--texture-size` los limita a 1024 por defecto, y `0` los lee tal
 cual.
 
+Una textura que se lee con un sampler distinto del de la ranura 0 (repeat,
+lineal) se empareja con él mediante `TextureStore::sampleWith(id, sampler)`
+allí donde se elige el sampler. En CUDA la textura se lee con el sampler con
+el que se hizo su vista, y la tabla hace cada vista con el que se nombra ahí;
+sin el emparejamiento repite en ambos sentidos y solo lee el nivel 0
+(`docs/decisions.md`, el port a CUDA).
+
 El displacement de un material se lee como una altura: el `displacement` de
 UsdPreviewSurface a través del `scale` y el `bias` de UsdUVTexture en el canal
 conectado (`StageTexture::scale`, `bias`), o un `ND_displacement_float` de
@@ -821,6 +892,25 @@ estira sin límite y, dimensionada por eso, una gaussiana era un pincho que
 cruzaba el frame. Tres entradas más por registro llevan lo que necesitan el
 bake y un movimiento posterior del relieve: el punto plano con la altura, la
 normal plana y la normal del relieve.
+
+**Lo que solo el material puede decir.** Los campos de material del registro
+se leen en el procesador a partir del stage (§6.3): una constante, o un mapa
+que muestrea el efecto. Una entrada que calcula un grafo, un mapa repetido, un
+shader de superficie desconocido o un color de coat no caben así, y
+`MeshStage` marca qué campos (`StageMaterial::sampled`) y avisa. Un bake TX de
+un material así los lee del propio material: el primer vértice del path tracer
+evalúa de todos modos el material compilado en la gaussiana, y con
+`BakePoints::material` reduce esa pila de lóbulos a los números de la
+gaussiana (`athenea/material/material_sample`) y los promedia sobre las
+muestras en cuatro planos tras los del transfer; `m2sTransferInto` escribe en su
+registro los campos que nombra la palabra `samplings` de la gaussiana. La
+reducción lee dos cosas que los closures dejan en cada lóbulo: los colores que
+le ponen los nodos `multiply` (`lobeTint`, por donde el color del coat llega a
+la base) y de cuántos nodos `layer` es la base (`lobeLayersOver`, por donde se
+distingue un coat del especular), en un kernel que exporta `kAtheneaMarkLobes`
+como verdadero -- una constante de enlace, falsa en todos los demás, así que
+ningún otro kernel crece por ella. Un material de constantes y mapas simples no
+muestrea nada.
 
 ### 6.6 El bake de luz
 
@@ -1179,7 +1269,9 @@ los colores de toda conversión son luz lineal -- y metallic, roughness,
 transmission, la normal de sombreado y la emisión por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
 tiene esqueleto, `AtheneaSplatCryptomatteAPI` con un id por gaussiana y el
 manifest que los nombra, y `AtheneaSplatVisibilityAPI` una vez que ha corrido `athenea
-visibility`. La referencia de atributos es
+visibility`. Un shadow catcher dice `catcher`, un light catcher
+`lightCatcher`; `athenea lights merge` añade a una copia un
+`lightLayer:<grupo>` por grupo de lámparas. La referencia de atributos es
 [`operations.es.md §4.3`](operations.es.md#43-los-schemas-de-api).
 
 Cada slot se escribe, sobreviviera o no una gaussiana en él: uno vacío lleva
@@ -1391,6 +1483,15 @@ se enlaza con las bibliotecas de Blender:
    commit; el script se para ante un fichero de licencia que no encuentra,
    nunca sale sin él. Una biblioteca que se lleva se renombra `@loader_path`
    y se firma ad hoc ahí.
+
+**El backend de gpe.** Metal en un Mac y CUDA donde se encuentra nvcc, por
+defecto; `-DGPE_BACKEND_WANTED=Vulkan` construye gpe para Vulkan, con sus
+kernels y los de cada bundle AOFX compilados a SPIR-V, y el dispositivo de
+render prueba entonces Vulkan primero (en un Mac Metal sigue primero). Sólo
+necesita las cabeceras de Vulkan, que slang-rhi ya ha traído; el loader del
+driver se abre en tiempo de ejecución. En un Mac corre sobre MoltenVK
+(`brew install molten-vk vulkan-loader`), que prueba el backend y nada de su
+velocidad.
 
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
 `third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el

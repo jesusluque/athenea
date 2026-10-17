@@ -51,7 +51,7 @@ document, the header is right.
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
-| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it) |
+| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
 | 20 | view | `view/Viewer.h` — the window's options |
@@ -70,8 +70,10 @@ CPU-side records. The render pass thread then commits them — uploads, opens
 exactly one caller, and everything about ordering follows from that.
 
 `gpu_host::Context` is where the other runtime fits: gpe adopts the device
-slang-rhi opened, so one `MTLDevice` or one CUDA context serves both and
-buffers are shared without copies. The crossing itself -- adopting, a
+slang-rhi opened, so one `MTLDevice`, one CUDA context or one `VkDevice`
+and queue serves both and buffers are shared without copies. gpe has one
+backend per build (Metal, CUDA or Vulkan); a render device it has no backend
+for leaves the context without gpe, and aofx with it. The crossing itself -- adopting, a
 slang-rhi view of a gpe buffer, a gpe handle on a slang-rhi buffer -- is
 three free functions in `gpu_host/Views.h`, on the bare device and pool; the
 context's methods call them, and so does a program that has a GPU thread and
@@ -130,9 +132,11 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   opacity, scale, quaternion and DC colour are packed into four words, the
   optional shading normal into one (`packNormal`), the optional emission
   into one (`packRgb9e5`) and the optional layers over the base -- specular,
-  coat, sheen -- into three (`packLobes`). Anything that writes a cloud and
-  anything that reads one goes through it. An optional buffer of `GpuSplats`
-  (`pbr`, `normals`, `emission`, `lobes`) is bound whether or not the cloud has it --
+  coat, sheen -- into three (`packLobes`), and the optional lamps' layers
+  into one a group (`packRgb9e5` times `kLightLayerScale`). Anything that
+  writes a cloud and anything that reads one goes through it. An optional
+  buffer of `GpuSplats` (`pbr`, `normals`, `emission`, `lobes`,
+  `lightLayers`) is bound whether or not the cloud has it --
   the shape in its place -- and a flag in the parameters says which.
 - **A splat's index is not its record's.** Validation drops what cannot be
   drawn; `GpuSplats::origin` says which record each kept splat came from.
@@ -231,6 +235,46 @@ out more than 5% worse in TX (`tests/regress/tx_against_first.cmake`); its
 GT|mesh|cloud pictures stay under `build/<preset>/tests/tx_gate`. A machine
 without those assets skips it.
 
+**The material gate.** `bench/matx` measures TX material by material on
+MaterialX's shader ball: every MaterialX example of the OpenPbr,
+StandardSurface and DisneyPrincipled families (phase 1) and the OpenPBR
+examples of proposal 086 (phase 2, fetched at a pinned commit), each bound
+to the whole ball on a grey ground, converted with `--transfer` and
+measured through `--validate` under the autoshop sky and goegap. The
+generated stages, the converted ball and the downloads are not in git;
+the scripts rebuild them on the CPU:
+
+```sh
+cd bench/matx
+python3 build_ball.py && bash fetch_phase2.sh && python3 build_stages.py   # CPU
+MATX_BIN=../../build/<preset>/bin/athenea python3 run_matx.py --phase 1     # GPU, resumable
+python3 report_matx.py                                                      # tables, contact sheets
+python3 compare_matx.py                                                     # against baseline.csv
+```
+
+`ctest -L matx` runs six of them, one a lobe class, under both skies
+(about ten minutes) and fails where TX's relMSE is more than 5% worse than
+`baseline.csv` or a channel's mean ratio moved by more than 0.05.
+`matx_sampled` (same label) converts the five whose base colour only the
+material can say -- brick, brass, wood, marble, onyx, copper -- and holds their
+colour against the path traced mesh (`check_sampled.py`). A metal among
+them is held by its hue only, while its level waits on TX's light under a
+compact sun: each channel over green within 5% of the GT's in two fixed
+windows of the ball (the body's sky-facing side, the hollow's core; the
+means are the Measure effect's), and the mean's 1.25 rule where every
+channel is at least 0.70 of the GT's -- below that it is listed as pending
+TX's level and does not fail. The body's window is pending in the same way
+where its own level is under 0.70 of the GT's (a hard sun, where the hue
+moves with the level); the hollow's always holds. `METAL_LEVEL_WAITS_ON_TX`
+returns metals to the full rule once TX's fix lands.
+`compare_matx.py --write-baseline` rewrites the baseline from a sweep; it
+changes in the commit whose effect it records. `MATX_MX_RESOURCES`,
+`MATX_AUTOSHOP`, `MATX_WORK` and `MATX_OUT` say where the inputs are and
+where the outputs go (`matx_common.py`). The path traced GT is cached a
+material and a sky, keyed by the stage, the frame, the paths and the path
+tracer's shaders, so every run measures against the same GT; `GT_EPOCH` in
+`matx_common.py` is bumped by the commit that changes the path tracer's C++.
+
 ### 3.2 A shader-only change
 
 Shaders are compiled at run time, not embedded, so a change to an existing
@@ -270,7 +314,24 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 `ATHENEA_BACKEND` runs the whole suite on one backend: `cuda`, `vulkan`, `metal`,
 `d3d12`.
 
-### 3.4 Another machine
+### 3.4 A release
+
+A version is the `project()` line and a `CHANGELOG.md` entry, tagged `vX.Y.Z`
+on `main` (the changelog's own rules). Its files are built from the tagged
+commit on each system, from a release preset's build tree:
+
+| Step | macOS | Linux | Windows |
+|---|---|---|---|
+| archive | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, needs `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
+| installer | `scripts/installer-macos.sh <folder>` (`.pkg`) | `scripts/installer-linux.sh <folder>` (`.deb`) | `scripts\installer-windows.ps1 <folder>` (`.exe`, Inno Setup 6) |
+
+`package.*` copies the libraries from the prefixes the build found
+(`CMakeCache.txt`) and makes their paths relative to each program: `rpath`
+`@executable_path/../lib` on macOS (then signs ad hoc), `$ORIGIN/../lib` on
+Linux, every DLL beside the programs on Windows. The release is published
+with `gh release create vX.Y.Z` and the six files.
+
+### 3.5 Another machine
 
 `scripts/remote-test.sh [user@host] [preset] [branch]` pushes the branch,
 builds and runs the suite there, and brings `LastTest.log` back into
@@ -568,6 +629,12 @@ conversion samples a map once a cell, and at `--resolution 512` the model is
 512 cells across, so most of a 4k map is thrown away before it is read:
 `--texture-size` caps them at 1024 by default, and `0` reads them as they are.
 
+A texture read through a sampler other than slot 0's (repeat, linear) is
+paired with it by `TextureStore::sampleWith(id, sampler)` where the sampler is
+chosen. On CUDA the texture is read through the sampler its view was made
+with, and the table makes each view with the one named there; without the
+pairing it wraps and reads level 0 only (`docs/decisions.md`, the CUDA port).
+
 A material's displacement is read as a height: UsdPreviewSurface's
 `displacement` through UsdUVTexture's `scale` and `bias` on the connected
 channel (`StageTexture::scale`, `bias`), or a MaterialX `ND_displacement_float`
@@ -790,6 +857,24 @@ the pole of a sphere's texture coordinates stretches without bound and sized
 by that a gaussian was a spike across the frame. Three entries more a record
 carry what the bake and a later move of the relief need: the flat point with
 the height, the flat normal, and the relief's normal.
+
+**What only the material can say.** The record's material fields are read on
+the processor off the stage (§6.3): a constant, or a map the effect samples.
+An input a graph computes, a tiled map, an unknown surface shader or a coat
+colour cannot be carried so, and `MeshStage` marks which fields
+(`StageMaterial::sampled`) and warns. A TX bake of such a material reads them
+back from the material itself: the path tracer's first vertex evaluates the
+compiled material at the gaussian anyway, and with `BakePoints::material` it
+reduces that lobe stack to the gaussian's numbers
+(`athenea/material/material_sample`) and averages them over the samples into
+four planes after the transfer's; `m2sTransferInto` writes the fields the
+gaussian's `samplings` word names into its record. The reduction reads two
+things the closures leave on each lobe: the colours `multiply` nodes put on
+it (`lobeTint`, how a coat colour reaches the base) and how many `layer`
+nodes it is the base of (`lobeLayersOver`, how a coat is told from the
+specular), in a kernel that exports `kAtheneaMarkLobes` true -- a link-time
+constant, false everywhere else, so no other kernel grows by it. A material
+of constants and plain maps samples nothing.
 
 ### 6.6 The light bake
 
@@ -1128,6 +1213,8 @@ every conversion's colours are linear light -- and metallic, roughness,
 transmission, the shading normal and the emission a gaussian), `AtheneaSplatSkinningAPI` where the cloud
 is skinned, `AtheneaSplatCryptomatteAPI` with an id a gaussian and the manifest
 that names them, and `AtheneaSplatVisibilityAPI` once `athenea visibility` has run.
+A shadow catcher says `catcher`, a light catcher `lightCatcher`; `athenea
+lights merge` adds a `lightLayer:<group>` a group of lamps to a copy.
 [`operations.md §4.3`](operations.md#43-the-api-schemas) is the attribute
 reference.
 
@@ -1331,6 +1418,14 @@ libraries:
    same commit; the script stops on a licence file it cannot find, never
    ships without one. A library carried is renamed `@loader_path` and
    signed ad hoc there.
+
+**gpe's backend.** Metal on a Mac and CUDA where nvcc is found, by default;
+`-DGPE_BACKEND_WANTED=Vulkan` builds gpe for Vulkan instead, with its kernels
+and every AOFX bundle's compiled to SPIR-V, and the render device then tries
+Vulkan first (Metal stays first on a Mac). It needs Vulkan's headers only,
+which slang-rhi has fetched; the driver's loader is opened at run time. On a
+Mac it runs on MoltenVK (`brew install molten-vk vulkan-loader`), which tests
+the backend and nothing about speed.
 
 **Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
 tracks `main`. A change to gpe is committed in the submodule, not here.

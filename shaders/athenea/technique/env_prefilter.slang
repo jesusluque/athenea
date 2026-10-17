@@ -30,6 +30,8 @@ struct EnvPrefilterParams {
     uint  sourceLevel; ///< the coarsest source level a sample may read
     uint  baseSide;    ///< the octahedral side of level 0, this sky's own
     float roughness;   ///< of this level
+    uint  domeFirst;     ///< the dome this dispatch writes (one a dispatch: each has its own residual)
+    uint  residualLevel; ///< the source's level the residual is a copy of
     float pad0; float pad1;
 };
 
@@ -39,6 +41,13 @@ StructuredBuffer<LightRecord>    lights;
 uniform uint                  lightCount;
 StructuredBuffer<uint>           domeLights;
 RWStructuredBuffer<uint>         texelsOut;
+/// `env_sun`'s answer, two float4 a dome: (direction, the disc's half angle) and
+/// (irradiance with the dome's emission in it, threshold). Bound for the record;
+/// the prefiltered map reads the sky without its sun (`residual`), and what
+/// reflects the sun takes it as an analytic lobe (splat_relight).
+StructuredBuffer<float4>         sun;
+Texture2D<float4>                residual;
+SamplerState                     residualSampler;
 ConstantBuffer<EnvPrefilterParams> params;
 
 static const float kPrefilterPi = 3.14159265358979;
@@ -52,6 +61,17 @@ float3 skyAt(LightRecord light, float3 dir, float level) {
     return gTextures.textures[record.slot]
         .SampleLevel(gTextures.samplers[light.sampler], domeUv(light, dir), level)
         .rgb;
+}
+
+/// THE SKY WITHOUT ITS SUN (env_residual): this dome's lat-long with the sun's
+/// texels cut, a copy of the source's level `residualLevel` with its own mips,
+/// read at `level` of the source -- the same texels, the same solid-angle
+/// mips, less the sun. A dome with no image reads as it always did.
+float3 skyResidualAt(LightRecord light, float3 dir, float level) {
+    if (light.texture == 0xFFFFFFFFu) {
+        return skyAt(light, dir, level);
+    }
+    return residual.SampleLevel(residualSampler, domeUv(light, dir), max(level - float(params.residualLevel), 0.0)).rgb;
 }
 
 /// An orthonormal frame about `z`. (Duff et al., the same construction the
@@ -81,9 +101,9 @@ void envPrefilter(uint3 tid: SV_DispatchThreadID) {
     const uint side = envSideOf(params.level, params.baseSide);
     const uint perDome = side * side;
     const uint at = tid.x;
-    const uint dome = at / perDome;
+    const uint dome = params.domeFirst + at / perDome;
     const uint texel = at % perDome;
-    if (dome >= params.domes) {
+    if (at / perDome >= params.domes) {
         return;
     }
     const LightRecord light = lights[domeLights[dome]];
@@ -93,9 +113,14 @@ void envPrefilter(uint3 tid: SV_DispatchThreadID) {
     // How wide a texel of the source is, in solid angle: every level's choice
     // of which level of the source to read is measured against it.
     float sourceTexels = 1.0;
+    float coarsest = float(params.sourceLevel);
     if (light.texture != 0xFFFFFFFFu) {
         const TextureRecord record = gTextures.records[light.texture];
         sourceTexels = float(uint(record.width) * uint(record.height));
+        // A rough level may read as far down the source's chain as a sample
+        // stands for: the chain keeps the solid-angle mean (TextureStore's
+        // lat-long mips), so a coarse level is the sky's own average there.
+        coarsest = floor(log2(max(record.width, record.height)));
     }
     const float texelSolidAngle = 4.0 * kPrefilterPi / max(sourceTexels, 1.0);
 
@@ -109,15 +134,21 @@ void envPrefilter(uint3 tid: SV_DispatchThreadID) {
         const float mapSolidAngle = 4.0 * kPrefilterPi / float(side * side);
         const float level = clamp(0.5 * log2(mapSolidAngle / texelSolidAngle), 0.0,
                                   float(params.sourceLevel));
-        sum = skyAt(light, normal, level);
+        sum = skyResidualAt(light, normal, level);
     } else {
         const float alpha = max(params.roughness * params.roughness, 1.0e-3);
         const float2 alpha2 = float2(alpha, alpha);
         float3 tangent, bitangent;
         frameAbout(normal, tangent, bitangent);
         float weight = 0.0;
+        const uint seed = (texel * 747796405u + dome * 2891336453u + params.level * 277803737u) ^ 0x9E3779B9u;
+        const uint mixed = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+        const float2 texelShift = float2(float(mixed & 0xFFFFu), float(mixed >> 16)) * (1.0 / 65536.0);
         for (uint s = 0; s < params.samples; ++s) {
-            const float2 u = hammersley(s, params.samples);
+            // The sequence turned by a hash of the texel, so the lobe's
+            // samples do not fall on a source's bright texel in the same
+            // pattern texel after texel.
+            const float2 u = frac(hammersley(s, params.samples) + texelShift);
             // The view is the normal: what every prefiltered environment
             // assumes, since a map indexed by a direction has no view to keep.
             const float3 h = ggxSampleVisibleNormal(float3(0.0, 0.0, 1.0), alpha2, u);
@@ -130,13 +161,29 @@ void envPrefilter(uint3 tid: SV_DispatchThreadID) {
             const float pdf = max(ggxVisibleNormalPdf(float3(0.0, 0.0, 1.0), h, alpha2) /
                                       (4.0 * max(h.z, 1.0e-6)),
                                   1.0e-9);
+            // AS WIDE AS ITS OWN SAMPLE, no wider. Held to at least the texel
+            // it writes (b4cf9dc) a sharp level kept a two texel sun's light
+            // at levels 2 and 3 but widened every highlight it held: the
+            // Corvette's paint 0.285 to 0.309, its rims 0.023 to 0.026 (s94).
+            // With the sun out of the map (env_residual), what is left is
+            // smooth enough to read at each sample's own footprint.
             const float sampleSolidAngle = 1.0 / (float(params.samples) * pdf);
-            const float level = clamp(0.5 * log2(sampleSolidAngle / texelSolidAngle), 0.0,
-                                      float(params.sourceLevel));
-            sum += skyAt(light, wi, level) * nDotL;
+            // FILTERED IMPORTANCE SAMPLING (Krivanek and Colbert): each
+            // sample reads the source at the level whose texel is as wide as
+            // the solid angle it stands for, one level coarser still, so a
+            // sun of a degree and a half at thirty six thousand is an area
+            // every sample of the lobe takes its share of, not a texel a few
+            // samples hit and the rest miss. Read finer, the polish's level
+            // was a scatter of blobs where the path traced ball has one soft
+            // highlight (s81: 4-16 px band 2.13 times the path traced, mean
+            // 0.58), and every gaussian and pixel read one of them -- the
+            // fender's blotches under a sunny sky.
+            const float level = clamp(0.5 * log2(sampleSolidAngle / texelSolidAngle) + 1.0, 0.0, coarsest);
+            sum += skyResidualAt(light, wi, level) * nDotL;
             weight += nDotL;
         }
-        sum = weight > 0.0 ? sum / weight : skyAt(light, normal, float(params.sourceLevel));
+        sum = weight > 0.0 ? sum / weight
+                           : skyResidualAt(light, normal, float(params.sourceLevel));
     }
     sum *= lightEmission(light);
 

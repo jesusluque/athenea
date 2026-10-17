@@ -8,6 +8,8 @@
 // a kernel and Slang numbers a module's globals together.
 module lod_attributes;
 import lod_blob;
+import athenea.common.packing;
+import athenea.common.octahedral;
 
 public struct AttributeParams {
     public uint count;      // records, store splats, or kept gaussians
@@ -61,6 +63,7 @@ RWStructuredBuffer<uint>   keyOut;
 RWStructuredBuffer<float4> materialOut;
 RWStructuredBuffer<uint>   merged;
 RWStructuredBuffer<uint>   mergedWeights;
+StructuredBuffer<uint>     keptShape;     // modes 5 and 6: the kept gaussians' shape, for their frame
 
 uint fold(uint key, uint value) {
     key ^= value + 0x9E3779B9u + (key << 6) + (key >> 2);
@@ -93,6 +96,12 @@ void lodAttributeKey(uint3 tid: SV_DispatchThreadID) {
     uint key = keyOut[r];
     if (params.mode == 3) {
         key = fold(key, dominantJoint(r));
+    } else if (params.mode == 7) {
+        // A lamp group's light: its brightness in bands of four times, and
+        // all that is darker than a millionth as one band.
+        const float3 v = float3(asfloat(values[r * 3]), asfloat(values[r * 3 + 1]), asfloat(values[r * 3 + 2]));
+        const float lum = dot(v, float3(0.2126, 0.7152, 0.0722));
+        key = fold(key, lum > 1.0e-6 ? uint(int(floor(log2(lum) * 0.5)) + 64) : 0u);
     } else {
         for (uint k = 0; k < params.width; ++k) {
             key = fold(key, values[r * params.width + k]);
@@ -119,8 +128,7 @@ void lodAttributeMaterial(uint3 tid: SV_DispatchThreadID) {
 float weightOf(uint s) {
     const uint r = s * 4;
     const Blob b = blobOf(splatPositions[s], splatShape[r], splatShape[r + 1], splatShape[r + 2], splatShape[r + 3]);
-    const float smallest = min(min(b.scale.x, b.scale.y), b.scale.z);
-    return b.opacity * b.scale.x * b.scale.y * b.scale.z / max(smallest, 1.0e-20);
+    return b.opacity * discArea(b.scale);
 }
 
 static const uint kMostJoints = 16;
@@ -158,6 +166,66 @@ void lodMergeAttribute(uint3 tid: SV_DispatchThreadID) {
                 mergedWeights[out + k] = weights[r * width + k];
             }
         }
+        return;
+    }
+    if (params.mode == 5) {
+        // ZONAL LOBES IN EACH GAUSSIAN'S OWN FRAME (transferZonal: per lobe the
+        // octahedral (u, v) of its axis in that frame, then three zonal
+        // coefficients). Averaged as numbers they mix axes of frames turned
+        // apart; so each member's axis is taken to the world by its own frame
+        // (as splat_relight's splatTransferFrame does), the axes and the
+        // coefficients averaged by weight, and the axis taken into the kept
+        // gaussian's frame.
+        const float3x3 kept = axesOfQuaternion(decodeQuaternion(keptShape[o * 4]));
+        for (uint lobe = 0; lobe < 2 && lobe * 5 + 4 < width; ++lobe) {
+            float3 axis = float3(0.0);
+            float3 z = float3(0.0);
+            float total = 0.0;
+            for (uint s = run.x; s < run.y; ++s) {
+                const float w = weightOf(s);
+                const uint r = recordOf[s] * width + lobe * 5;
+                const float3x3 frame = axesOfQuaternion(decodeQuaternion(splatShape[s * 4]));
+                const float3 local = octDecode(float2(asfloat(values[r]), asfloat(values[r + 1])));
+                axis += w * normalize(mul(frame, local));
+                z += w * float3(asfloat(values[r + 2]), asfloat(values[r + 3]), asfloat(values[r + 4]));
+                total += w;
+            }
+            const float3 world = dot(axis, axis) > 1.0e-30 ? normalize(axis) : float3(kept[0][2], kept[1][2], kept[2][2]);
+            const float2 square = octEncode(normalize(mul(transpose(kept), world)));
+            const uint at = out + lobe * 5;
+            merged[at] = asuint(square.x);
+            merged[at + 1] = asuint(square.y);
+            z /= max(total, 1.0e-30);
+            merged[at + 2] = asuint(z.x);
+            merged[at + 3] = asuint(z.y);
+            merged[at + 4] = asuint(z.z);
+        }
+        return;
+    }
+    if (params.mode == 6) {
+        // A SHAPE OPERATOR IN THE GAUSSIAN'S FIRST TWO AXES (curvature: uu, uv,
+        // vv): each member's into the world, U S U^T with U its two first
+        // axes, averaged by weight, and back into the kept gaussian's own two.
+        float3x3 sum = float3x3(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        float total = 0.0;
+        for (uint s = run.x; s < run.y; ++s) {
+            const float w = weightOf(s);
+            const uint r = recordOf[s] * width;
+            const float3x3 frame = axesOfQuaternion(decodeQuaternion(splatShape[s * 4]));
+            const float3 u = float3(frame[0][0], frame[1][0], frame[2][0]);
+            const float3 v = float3(frame[0][1], frame[1][1], frame[2][1]);
+            const float uu = asfloat(values[r]), uv = asfloat(values[r + 1]), vv = asfloat(values[r + 2]);
+            sum += w * (uu * float3x3(u.x * u, u.y * u, u.z * u) + vv * float3x3(v.x * v, v.y * v, v.z * v) +
+                        uv * (float3x3(u.x * v, u.y * v, u.z * v) + float3x3(v.x * u, v.y * u, v.z * u)));
+            total += w;
+        }
+        sum /= max(total, 1.0e-30);
+        const float3x3 kept = axesOfQuaternion(decodeQuaternion(keptShape[o * 4]));
+        const float3 u = float3(kept[0][0], kept[1][0], kept[2][0]);
+        const float3 v = float3(kept[0][1], kept[1][1], kept[2][1]);
+        merged[out] = asuint(dot(u, mul(sum, u)));
+        merged[out + 1] = asuint(dot(u, mul(sum, v)));
+        merged[out + 2] = asuint(dot(v, mul(sum, v)));
         return;
     }
     if (params.mode == 0) {

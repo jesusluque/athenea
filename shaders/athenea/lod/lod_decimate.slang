@@ -449,8 +449,7 @@ void lodDecimateShape(uint3 tid: SV_DispatchThreadID) {
                      float2(dot(a, splat.axes[k]), dot(b, splat.axes[k])) * s2;
         }
         own += width;
-        const float smallest = min(min(splat.scale.x, splat.scale.y), splat.scale.z);
-        const float area = splat.scale.x * splat.scale.y * splat.scale.z / max(smallest, 1.0e-20);
+        const float area = discArea(splat.scale);
         opacity += splat.opacity * area;
         weights += area;
     }

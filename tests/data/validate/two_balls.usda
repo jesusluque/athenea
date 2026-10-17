@@ -1,0 +1,114 @@
+#usda 1.0
+# Copyright (c) 2026 jesus luque.
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# Two balls of two materials on a ground of a third, for `athenea mesh2splat
+# --validate` (tests/CMakeLists.txt, mesh2splat_validate): the ball of
+# tests/data/lobes twice, a coated paint and a rubber, under the pale sky and
+# sun that file has, and a camera that sees all three.
+def Xform "World"
+{
+    def Mesh "Paint" (
+        prepend references = @../lobes/sphere.usda@</World/Ball>
+    )
+    {
+        double3 xformOp:translate = (-1.2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Looks/Paint>
+    }
+
+    def Mesh "Rubber" (
+        prepend references = @../lobes/sphere.usda@</World/Ball>
+    )
+    {
+        double3 xformOp:translate = (1.2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Looks/Rubber>
+    }
+
+    def Mesh "Ground" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-8, -1, 8), (8, -1, 8), (8, -1, -8), (-8, -1, -8)]
+        normal3f[] normals = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Ground>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Paint"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Paint/OpenPBR.outputs:out>
+            def Shader "OpenPBR"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                color3f inputs:base_color = (0.047, 0.06, 0.047)
+                float inputs:base_metalness = 1
+                float inputs:specular_roughness = 0.3421
+                float inputs:coat_weight = 1
+                float inputs:coat_roughness = 0
+                float inputs:coat_ior = 1.45
+                token outputs:out
+            }
+        }
+        def Material "Rubber"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Rubber/OpenPBR.outputs:out>
+            def Shader "OpenPBR"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                color3f inputs:base_color = (0.05, 0.05, 0.05)
+                float inputs:specular_roughness = 0.7
+                token outputs:out
+            }
+        }
+        def Material "Ground"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Ground/OpenPBR.outputs:out>
+            def Shader "OpenPBR"
+            {
+                uniform token info:id = "ND_open_pbr_surface_surfaceshader"
+                color3f inputs:base_color = (0.45, 0.4, 0.35)
+                float inputs:specular_roughness = 0.8
+                token outputs:out
+            }
+        }
+    }
+
+    def DomeLight "Sky"
+    {
+        color3f inputs:color = (0.6, 0.75, 1)
+        float inputs:intensity = 0.6
+    }
+
+    def DistantLight "Sun"
+    {
+        float inputs:angle = 4
+        float inputs:intensity = 3
+        float3 xformOp:rotateXYZ = (-40, 30, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+}
+
+def Camera "Camera"
+{
+    float focalLength = 35
+    float horizontalAperture = 24.576
+    float verticalAperture = 13.824
+    float2 clippingRange = (0.1, 1000)
+    double3 xformOp:translate = (0, 0.6, 6)
+    float3 xformOp:rotateXYZ = (-6, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+}

@@ -53,8 +53,7 @@ void lodFinalize(uint3 tid: SV_DispatchThreadID) {
     const float3 mu = float3(moments[at + 1], moments[at + 2], moments[at + 3]) / weight;
     float3x3 cov = float3x3(moments[at + 4], moments[at + 5], moments[at + 6],
                             moments[at + 5], moments[at + 7], moments[at + 8],
-                            moments[at + 6], moments[at + 8], moments[at + 9]) / weight;
-    cov = cov - float3x3(mu.x * mu, mu.y * mu, mu.z * mu);
+                            moments[at + 6], moments[at + 8], moments[at + 9]) / weight;   // about mu (lod_common)
     float3x3 axes;
     jacobi(cov, axes);
     if (determinant(axes) < 0.0) {
@@ -63,8 +62,7 @@ void lodFinalize(uint3 tid: SV_DispatchThreadID) {
         axes[2][2] = -axes[2][2];
     }
     const float3 s = sqrt(max(float3(cov[0][0], cov[1][1], cov[2][2]), float3(1e-14)));
-    const float smallest = min(min(s.x, s.y), s.z);
-    const float area = s.x * s.y * s.z / max(smallest, 1e-20);
+    const float area = discArea(s);
     const float opacity = min(moments[at] / max(area, 1e-30), 0.99);
     const float3 base = float3(moments[at + 10], moments[at + 11], moments[at + 12]) / weight;
 

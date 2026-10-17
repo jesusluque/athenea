@@ -11,6 +11,7 @@
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3h.h>
 #include <pxr/base/tf/staticTokens.h>
+#include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/gf/quath.h>
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/primvarsSchema.h>
@@ -138,6 +139,13 @@ bool catcherOf(HdSceneDelegate* delegate, SdfPath const& id) {
     return boolOf(delegate->Get(id, kCatcher), false);
 }
 
+/// Whether it is a light catcher (`athenea mesh2splat --light-catcher`): the
+/// lamps' light on a ground, added over whatever is drawn.
+bool lightCatcherOf(HdSceneDelegate* delegate, SdfPath const& id) {
+    static const TfToken kLightCatcher("athenea:splat:lightCatcher");
+    return boolOf(delegate->Get(id, kLightCatcher), false);
+}
+
 /// The index its transmitting gaussians bend by: 0, and nothing bends.
 float iorOf(HdSceneDelegate* delegate, SdfPath const& id) {
     static const TfToken kIor("athenea:splat:ior");
@@ -225,6 +233,24 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
             VtValue value = held(full);
             return athenea::usd::streamOf(value).empty() ? held(half) : value;
         };
+        // A CLOUD WRITTEN BEFORE THE RENAME carries its rig, its relight and
+        // its visibility field under `primvars:lrt:*`, which nothing here
+        // reads: it drew still and unlit and said nothing. It says so, once.
+        if (!_oldNamesChecked) {
+            _oldNamesChecked = true;
+            if (const HdSceneIndexBaseRefPtr index = delegate->GetRenderIndex().GetTerminalSceneIndex()) {
+                for (TfToken const& name :
+                     HdPrimvarsSchema::GetFromParent(index->GetPrim(id).dataSource).GetPrimvarNames()) {
+                    if (TfStringStartsWith(name.GetString(), "lrt:")) {
+                        athenea::log::warn("hdAthenea: {} carries lucabRTrender's names ({}), which athenea does not "
+                                           "read: its rig, relight and visibility are ignored. `athenea migrate` "
+                                           "writes a copy under athenea's",
+                                           id.GetString(), name.GetString());
+                        break;
+                    }
+                }
+            }
+        }
         athenea::usd::ParticleFieldArrays arrays;
         arrays.positions = either(UsdVolTokens->positions, UsdVolTokens->positionsh);
         arrays.orientations = either(UsdVolTokens->orientations, UsdVolTokens->orientationsh);
@@ -270,6 +296,8 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.thinWalled = held(kThinWalled);
         static const TfToken kSchlickMetal("athenea:splat:schlickMetal");
         arrays.schlickMetal = held(kSchlickMetal);
+        static const TfToken kMaterialRoughness("athenea:splat:materialRoughness");
+        arrays.materialRoughness = held(kMaterialRoughness);
         static const TfToken kCurvature("athenea:splat:curvature");
         arrays.curvature = held(kCurvature);
         static const TfToken kShadowBits("athenea:splat:shadowBits");
@@ -284,6 +312,9 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         // And the light it gives off by itself, a lamp's shade or a screen.
         static const TfToken kEmission("athenea:splat:emission");
         arrays.emission = held(kEmission);
+        // And how hard a merged disc's edge is (a hard surfel's p).
+        static const TfToken kHardness("athenea:splat:hardness");
+        arrays.hardness = held(kHardness);
         // And what its material layered over the base: specular, coat, sheen.
         static const TfToken kSpecularWeight("athenea:splat:specularWeight");
         static const TfToken kSpecularColour("athenea:splat:specularColor");
@@ -303,6 +334,19 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         arrays.sheenRoughness = held(kSheenRoughness);
         static const TfToken kCoatDarkening("athenea:splat:coatDarkening");
         arrays.coatDarkening = held(kCoatDarkening);
+        // THE LAMPS' LAYERS, one primvar a group, named after it: whatever
+        // the field carries under the prefix, in the order Hydra lists them.
+        static const std::string kLightLayer = "athenea:splat:lightLayer:";
+        for (const HdInterpolation interpolation :
+             {HdInterpolationVertex, HdInterpolationVarying, HdInterpolationUniform, HdInterpolationFaceVarying,
+              HdInterpolationConstant}) {
+            for (const HdPrimvarDescriptor& primvar : delegate->GetPrimvarDescriptors(id, interpolation)) {
+                const std::string& name = primvar.name.GetString();
+                if (name.size() > kLightLayer.size() && name.compare(0, kLightLayer.size(), kLightLayer) == 0) {
+                    arrays.lightLayers.emplace_back(name.substr(kLightLayer.size()), held(primvar.name));
+                }
+            }
+        }
         const VtValue manifest = held(kCryptoManifest);
         if (manifest.IsHolding<std::string>()) {
             arrays.cryptoManifest = manifest.UncheckedGet<std::string>();
@@ -427,7 +471,8 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
                           const VtArray<TfToken> cats = delegate->GetCategories(id);
                           return std::vector<TfToken>(cats.begin(), cats.end());
                       }(),
-                      litBodyOf(delegate, id), iorOf(delegate, id), transformStep, catcherOf(delegate, id));
+                      litBodyOf(delegate, id), iorOf(delegate, id), transformStep, catcherOf(delegate, id),
+                      lightCatcherOf(delegate, id));
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }
 

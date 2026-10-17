@@ -120,11 +120,11 @@ TEST_CASE("a floor four texels a pixel from the map reads what a frame four time
     (*renderer)->setCloudShadowResolution(1024);
 
     const uint32_t size = 128;
-    auto small = (*renderer)->render("/Camera", 0.0, size, size, "raster");
-    if (!small) FAIL(small.error().toString());
+    auto smallFrame = (*renderer)->render("/Camera", 0.0, size, size, "raster");
+    if (!smallFrame) FAIL(smallFrame.error().toString());
     auto large = (*renderer)->render("/Camera", 0.0, size * 4, size * 4, "raster");
     if (!large) FAIL(large.error().toString());
-    const gpu::Buffer frame = onDevice(*gpu->device, *small);
+    const gpu::Buffer frame = onDevice(*gpu->device, *smallFrame);
     const gpu::Buffer wide = onDevice(*gpu->device, *large);
 
     // The large frame boxed down to the small one's size, on the device.

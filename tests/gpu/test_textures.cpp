@@ -7,11 +7,13 @@
 
 #include <catch2/catch_approx.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <tuple>
 #include <vector>
 
 #include "athenea/gpu/RasterKernel.h"
@@ -145,6 +147,60 @@ TEST_CASE("every mip level keeps level 0's mean, whatever the sizes", "[gpu][tex
         CHECK(t.mipCount() == gpu::mipChain(w, h));
         for (const float m : means) {
             CHECK(std::abs(m - means.front()) <= 2e-6F);
+        }
+    }
+}
+
+// A DOME'S LAT-LONG KEEPS ITS SOLID-ANGLE MEAN DOWN THE CHAIN (research 087):
+// each source row weighed by the band of the sphere it stands for, so the
+// coarse levels a rough lobe reads do not over-weigh the poles. Halving
+// sizes keep it to rounding; an odd edge's three taps to half a percent.
+TEST_CASE("a lat-long's mip levels keep its solid-angle mean", "[gpu][texture][mips]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    static gpu::ComputeKernel kFill = kernelOf(*gpu, "textureFill");
+    static gpu::ComputeKernel kMean = kernelOf(*gpu, "textureMeanLatLong");
+    auto mips = gpu::MipGenerator::create(*gpu->library);
+    if (!mips) FAIL(mips.error().toString());
+    for (const auto [w, h, tolerance] : {std::tuple{128u, 64u, 2e-5F}, std::tuple{64u, 32u, 2e-5F},
+                                         std::tuple{74u, 37u, 5e-3F}}) {
+        gpu::Texture t = texture(*gpu, w, h, 0, "latlong");
+        auto level0 = t.view(0);
+        REQUIRE(level0);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            kFill.dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["written"].setBinding((*level0).get());
+                cursor["params"]["width"].setData(w);
+                cursor["params"]["height"].setData(h);
+            });
+            REQUIRE(mips->generate(batch, t, false, /*latLong=*/true));
+            REQUIRE(batch.submit(true));
+        }
+        std::vector<float> means;
+        for (uint32_t mip = 0; mip < t.mipCount() && t.height(mip) >= 2; ++mip) {
+            auto view = t.view(mip);
+            REQUIRE(view);
+            gpu::BufferDesc desc;
+            desc.bytes = 4;
+            desc.elementBytes = 4;
+            auto mean = gpu::Buffer::create(*gpu->device, desc);
+            REQUIRE(mean);
+            gpu::CommandBatch batch(*gpu->device);
+            kMean.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["texture"].setBinding((*view).get());
+                cursor["mean"].setBinding(mean->rhi());
+                cursor["params"]["width"].setData(t.width(mip));
+                cursor["params"]["height"].setData(t.height(mip));
+            });
+            REQUIRE(batch.submit(true));
+            float value = 0.0F;
+            REQUIRE(mean->read(*gpu->device, 0, sizeof(value), &value));
+            means.push_back(value);
+        }
+        std::printf("  %ux%u lat-long: solid-angle mean %.6f at 0, %.6f at the last level of two rows or more\n", w,
+                    h, static_cast<double>(means.front()), static_cast<double>(means.back()));
+        for (const float m : means) {
+            CHECK(std::abs(m - means.front()) <= tolerance * std::max(1.0F, std::abs(means.front())));
         }
     }
 }
@@ -593,12 +649,11 @@ TEST_CASE("an eight-bit texture read back through the same uint view holds what 
 // A Metal buffer the platform makes with hazard tracking -- what OIDN will
 // share and slang-rhi will not make -- wrapped for slang-rhi, written and read
 // by kernels, and blitted. The denoiser's staging, checked on its own so an
-// OIDN result can be told from a copy that never happened. What it found:
-// slang-rhi's Metal copyBuffer does nothing, silently, with a wrapped buffer
-// on either side (4095 of 4096 words untouched both ways), while kernels read
-// and write the same buffer exactly. The kernel path is what is asserted; the
-// blit numbers are printed as the record of the defect.
-TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by slang-rhi's blit",
+// OIDN result can be told from a copy that never happened. A copy recorded
+// straight into the batch's encoder is sent only with markDirty(): without
+// it the batch submitted nothing, which read as slang-rhi's blit doing
+// nothing with a wrapped buffer (4095 of 4096 words untouched).
+TEST_CASE("a tracked Metal buffer is read and written by kernels and by blits",
           "[gpu][platform][metal]") {
     ATHENEA_REQUIRE_GPU(gpu);
     if (gpu->device->backend() != gpu::Backend::Metal) {
@@ -627,6 +682,7 @@ TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by sla
     {
         gpu::CommandBatch batch(*gpu->device);
         batch.encoder()->copyBuffer(staging->rhi(), 0, source->rhi(), 0, desc.bytes);
+        batch.markDirty();
         REQUIRE(batch.submit(true));
     }
     // Which half: the wrapped buffer read straight from a kernel after the
@@ -638,6 +694,7 @@ TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by sla
     {
         gpu::CommandBatch batch(*gpu->device);
         batch.encoder()->copyBuffer(back.rhi(), 0, staging->rhi(), 0, desc.bytes);
+        batch.markDirty();
         REQUIRE(batch.submit(true));
     }
     auto differing = render::countDifferent(*gpu->library, *source, back, count);
@@ -680,13 +737,17 @@ TEST_CASE("a tracked Metal buffer is read and written by kernels, and not by sla
     {
         gpu::CommandBatch batch(*gpu->device);
         batch.encoder()->copyBuffer(back.rhi(), 0, staging->rhi(), 0, desc.bytes);
+        batch.markDirty();
         REQUIRE(batch.submit(true));
     }
     auto blitOut = render::countDifferent(*gpu->library, *pattern, back, count);
     REQUIRE(blitOut);
     std::printf("  kernel write then blit out of the tracked buffer: %llu of %u differ\n",
                 static_cast<unsigned long long>(*blitOut), count);
+    CHECK(*afterIn == 0);
+    CHECK(*differing == 0);
     CHECK(*kernelRead == 0);
+    CHECK(*blitOut == 0);
 
     // And the copy the denoiser actually uses: buffer_copy's kernel, in and
     // out of the tracked buffer.

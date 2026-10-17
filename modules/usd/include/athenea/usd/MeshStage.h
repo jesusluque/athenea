@@ -75,6 +75,12 @@ struct StageMaterial {
     /// comes through it, and the colour it takes doing so.
     float                  transmission = 0.0F;
     std::array<float, 3>   transmissionColour{1.0F, 1.0F, 1.0F};
+    /// The transmission's colour is its own, not the base colour's: OpenPBR
+    /// and standard_surface tint what they transmit by `transmission_color`
+    /// alone (their base colour is the opaque base's, which a transmission
+    /// of one leaves out). glTF tints it by the base colour, and a
+    /// UsdPreviewSurface's transmission is coverage of its diffuse.
+    bool                   ownTransmissionColour = false;
     /// The dielectric's index (`specular_ior`, `specular_IOR`, `ior`).
     float                  ior = 1.5F;
     /// A sheet, not a solid (OpenPBR's `geometry_thin_walled`): what it
@@ -184,6 +190,30 @@ struct StageMaterial {
         return !layerMaps.empty() || specularWeight != 1.0F || !white(specularColour) || ior != 1.5F || coatWeight > 0.0F ||
                sheenColour[0] > 0.0F || sheenColour[1] > 0.0F || sheenColour[2] > 0.0F;
     }
+
+    /// WHAT THE CONVERSION READS BACK FROM THE MATERIAL ITSELF, on the device:
+    /// the fields a constant or a plain map cannot carry -- an input a graph
+    /// computes (a procedural brick, a marble's noise, a hexagonal tiling, a
+    /// map tiled or offset), a vocabulary these readers do not know, and the
+    /// coat's colour, which tints everything under the coat and has no number
+    /// of its own on a gaussian. A TX transfer's bake evaluates the compiled
+    /// material at each gaussian and the conversion writes these fields from
+    /// what it found there (technique::BakePoints::material); everywhere
+    /// else the constant stands, and the log says which input it stood for.
+    /// Bits of `kSample*`; zero for a material of constants and plain maps,
+    /// which stays exactly as read here.
+    enum SampleBits : uint32_t {
+        kSampleBaseColour = 1,
+        kSampleRoughness = 2,
+        kSampleCoatRoughness = 4,
+        kSampleMetallic = 8,
+        kSampleEmission = 16,
+    };
+    uint32_t               sampled = 0;
+    /// The base layer's weight (`base`, OpenPBR's `base_weight`), which a
+    /// diffuse lobe's colour does not carry -- its weight does -- and which a
+    /// sampled base colour is multiplied by, as `baseColour` was.
+    float                  baseWeight = 1.0F;
 };
 
 /// WHAT CARRIES A MESH WHEN ITS SKELETON MOVES.

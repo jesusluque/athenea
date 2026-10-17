@@ -20,6 +20,7 @@
 #include "athenea/render/SplatQuery.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/usd/GaussianStats.h"
+#include "athenea/usd/LightGroups.h"
 #include "athenea/usd/PrimData.h"
 #include "athenea/usd/RenderSettings.h"
 #include "athenea/render/TileRasterizer.h"
@@ -293,6 +294,15 @@ public:
     /// the renderer through Hydra as authored ones do.
     [[nodiscard]] Result<void> setDefaultLights(bool on);
 
+    /// Every skeleton of the stage held at its bind pose, in the session
+    /// layer: no animation, and rest transforms that are the bind transforms
+    /// made local. A skinned cloud is built in the bind pose and keeps only
+    /// four influences a gaussian, so a bake that posed it to meet a mesh
+    /// skinned by all of its own (ten and twenty-five a vertex on the
+    /// sparrow's feathers) missed the surface wherever they disagree; at the
+    /// bind pose the two are the same shape. The file is not touched.
+    [[nodiscard]] Result<void> holdBindPose();
+
     /// The light this stage's meshes carry, at points somebody names.
     ///
     /// `rays` holds two `float4` a point -- where its ray starts and how near
@@ -348,11 +358,14 @@ public:
     /// is the same in distribution, not in bits, whatever the batch.
     /// `firstPoint`: the points are `count` of `rays` from that one on (a
     /// caller baking a large cloud in slices); the answer is theirs alone.
+    /// `material`, with `transfer`: the material at each point read back too,
+    /// `technique::kBakeMaterialPlanes` entries more after the rest
+    /// (technique::BakePoints::material).
     [[nodiscard]] Result<gpu::Buffer> bakePointsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
                                                          uint32_t samples = 64, uint32_t bounces = 3,
                                                          uint32_t degree = 0, bool transfer = false,
                                                          uint32_t batch = 0, uint32_t cellSide = 0,
-                                                         uint32_t firstPoint = 0);
+                                                         uint32_t firstPoint = 0, bool material = false);
     /// THE SAME BAKE, ITS DIRECT LIGHT KEPT APART FROM ITS INDIRECT, and
     /// taken adaptively where `options.extraSamples` asks: a first pass of
     /// `samples` paths at every gaussian, then passes of `passSamples` at the
@@ -452,6 +465,10 @@ public:
     /// Weigh light sampling and material sampling by the power heuristic
     /// (the default), or light a surface by light sampling alone.
     void setPathMis(bool mis);
+    /// Let the path tracer's shadow rays through clear glass, tinted
+    /// (`athenea:glassShadows`, on by default): a lamp behind its lens lights
+    /// what stands in front by next event estimation. Off: glass stops them.
+    void setGlassShadows(bool glass);
     void setPathError(float error);
 
     /// How many paths a pixel the frame on the device holds, and whether it
@@ -559,6 +576,23 @@ public:
     /// authored the light inactive. A dome switched off takes its sky with
     /// it, background included.
     [[nodiscard]] Result<void> setLightOn(const std::string& prim, bool on);
+
+    /// THE STAGE'S LAMPS (LightGroups.h): its light groups and states, read
+    /// from its Scopes when it was opened or a variant recomposed it.
+    [[nodiscard]] const LightRig& lightRig() const;
+    /// `athenea:lightState`: the state whose levels the groups take; empty
+    /// puts each group back at its `initialOn`. A name the stage does not
+    /// carry is said so and taken as empty.
+    void setLightState(const std::string& state);
+    [[nodiscard]] std::string lightState() const;
+    /// `athenea:lightLevel:<group>`: a level that stands over the state's
+    /// (0 off, 1 the group's radiance, more for a lamp shared between two
+    /// functions -- a brake lamp at four times the tail lamp). Nothing puts
+    /// the state's back.
+    void setLightLevel(const std::string& group, std::optional<float> level);
+    /// Every group's level as the next frame takes it: the state's, and the
+    /// levels set over it.
+    [[nodiscard]] std::map<std::string, float> lightLevels() const;
 
     /// The interval the stage's animation occupies: the first and last time
     /// code any authored attribute has a sample at, narrowed to the stage's

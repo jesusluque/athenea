@@ -17,8 +17,12 @@ namespace {
 /// The same lights, lobes and surface the raster shading uses, plus a bounce.
 /// Written as a generated kernel for the same reason MaterialShading is: it
 /// dispatches to whatever materials the frame compiled.
+// The kernel's source is held in raw literals broken into pieces under 16 KB,
+// and none longer than 64 KB joined: MSVC's limits for a string literal.
 const char* kPrelude = R"(
 import athenea.light.lights_image;
+// What a bake reads back of the material at its first vertex (BakePoints::material).
+import athenea.material.material_sample;
 import athenea.light.light_bvh;
 // The harmonics a bake projects onto, and the space a cloud is blended in.
 import athenea.common.sh;
@@ -87,6 +91,18 @@ struct PathParams {
     // at the end (`athenea/usd/bake_resolve`). The fit is linear, so the two
     // fitted halves sum to what the fit of the whole gives.
     uint bakeSplit;
+    // A TX TRANSFER THAT ALSO READS THE MATERIAL BACK (BakePoints::material):
+    // 1: what the material is at each point's first vertex, averaged over
+    // its samples, in four planes after everything else
+    // (material_sample.slang).
+    uint bakeMaterial;
+    // GLASS SHADOWS (`athenea:glassShadows`, and a material of the frame is
+    // glass: kMaterialGlassShadow): 1, next event estimation's shadow ray
+    // goes on through up to kGlassLayers faces of glass whose transmission
+    // is a delta, tinted by what each lets through, and the material's ray
+    // that reaches the same light through the same glass is weighed against
+    // it (glassPasses); 0: glass stops a shadow ray as anything does.
+    uint glassShadows;
 };
 
 Texture2D<uint4>               visibility;   // (instance + 1, triangle); row 0 on top
@@ -144,6 +160,35 @@ float random(uint2 pixel, uint sample, uint bounce, uint which) {
 /// internal reflection.
 static const uint kFreeCrossings = 8;
 
+/// HOW MANY FACES OF GLASS A SHADOW RAY GOES THROUGH before it is taken as
+/// stopped: a lamp's lens is a solid of two faces, often behind a thin cover
+/// of one more. The material's rays that reach a light through more than
+/// this many are weighed as they were before glass let shadows through.
+static const uint kGlassLayers = 4;
+
+/// HOW FAR A RAY LEAVES THE SURFACE IT STARTS ON: off the surface on the
+/// side it goes to, by what the position's precision needs and no more --
+/// 1e-5 of its magnitude, some eighty float ulps, what the cut-out pass
+/// already went on by. It was 1e-3 of the magnitude twice over (along the
+/// normal and along the ray) and a TMin as long again: about 7 mm at a car's
+/// tail, where the lens is a solid 1.1 mm thick. The ray into the lens
+/// started past its far face and met the lamp having crossed one interface
+/// of two -- one tint, one Fresnel -- so a red lens whose transmission colour
+/// is sqrt(base) let 13% blue through instead of 1.6%: magenta tail lamps.
+/// `scale` is the magnitude the position was computed at.
+static const float kRayMargin = 1.0e-5;
+
+float rayMargin(float scale) {
+    return kRayMargin * max(1.0, scale);
+}
+
+/// The origin of a ray leaving `p` along `wi`: `margin` off the surface whose
+/// normal is `n`, on the side `wi` goes to. The ray starts there with TMin =
+/// `margin`, so the face it left is not met again.
+float3 leaveSurface(float3 p, float3 n, float3 wi, float margin) {
+    return p + (dot(n, wi) < 0.0 ? -n : n) * margin;
+}
+
 float2 random2(uint2 pixel, uint sample, uint bounce, uint which) {
     return float2(random(pixel, sample, bounce, which), random(pixel, sample, bounce, which + 1u));
 }
@@ -191,32 +236,56 @@ PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask,
     return hit;
 }
 
-bool pathOccluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+/// WHAT A SHADOW RAY GETS THROUGH between a surface and a light: one where
+/// nothing stands, nothing where something opaque does, and -- with `glass`
+/// -- the product of what each face of glass on the way lets through
+/// (glassPasses), up to kGlassLayers of them. It leaves its surface by the
+/// millimetre (its origin is often no traced hit: a bake's point, a cell's
+/// origin), and goes from face to face by a hair, so a thin lens is two faces.
+float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask, bool glass) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
     ray.Origin = p + (away + wi) * (1.0e-3 * scale);
-    ray.Direction = wi;
     ray.TMin = 1.0e-3 * scale;
-    ray.TMax = max(distance - ray.TMin, 0.0);
-    if (ray.TMax <= ray.TMin) {
-        return false;
+    // AIMED AT THE POINT IT ENDS AT, `p + wi * distance`, from the origin it
+    // actually leaves: the origin stands a millimetre off p, across the ray
+    // as well as along it, and a ray sent along `wi` from there for
+    // `distance` ended that millimetre aside of the point -- through an
+    // emitter's plane when it came at a slant, where the lamp then shadowed
+    // itself (a glass box's floor went from 0.64 to 0.003). Before, its end
+    // rode on the origin and an emitter's ray stopped 3e-3 of the scale short,
+    // which stopped it before a lens's far face with the lamp 5 mm behind.
+    // A light at infinity (a dome, a sun) is a direction, and keeps `wi`.
+    float3 dir = wi;
+    float reach = distance;
+    if (distance < 1.0e29) {
+        const float3 to = p + wi * distance - ray.Origin;
+        reach = length(to);
+        dir = reach > 0.0 ? to / reach : wi;
     }
-    if (shadowCategory == kLightUnlinked && path.shadowCutouts == 0) {
+    ray.Direction = dir;
+    ray.TMax = max(reach, 0.0);
+    if (ray.TMax <= ray.TMin) {
+        return float3(1.0);
+    }
+    if (shadowCategory == kLightUnlinked && path.shadowCutouts == 0 && !glass) {
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
         query.TraceRayInline(scene, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, mask, ray);
         query.Proceed();
-        return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+        return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? float3(0.0) : float3(1.0);
     }
-    // Nearest first, one surface at a time: a light's link and a cut-out are
-    // both questions asked of the surface met, and the ray goes on past one
-    // that says no. A belly is dozens of feather cards deep.
+    // Nearest first, one surface at a time: a light's link, a cut-out and a
+    // glass are all questions asked of the surface met, and the ray goes on
+    // past one that says no. A belly is dozens of feather cards deep.
+    float3 through = float3(1.0);
+    uint layers = 0;
     for (uint step = 0; step < 64; ++step) {
         RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
         query.TraceRayInline(scene, RAY_FLAG_FORCE_OPAQUE, mask, ray);
         query.Proceed();
         if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
-            return false;
+            return through;
         }
         const bool linked = shadowCategory == kLightUnlinked ||
                             lightLinked(shadowCategory, instances[query.CommittedInstanceID()].categoriesLo,
@@ -226,17 +295,37 @@ bool pathOccluded(float3 p, float3 n, float3 wi, float distance, uint shadowCate
             hit.seen = uint4(query.CommittedInstanceID() + 1, query.CommittedPrimitiveIndex(), 0, 0);
             hit.t = query.CommittedRayT();
             hit.barycentrics = query.CommittedTriangleBarycentrics();
-            if (path.shadowCutouts == 0 || !shadowPassesThrough(hit, ray.Origin, wi)) {
-                return true;
+            if (path.shadowCutouts == 0 || !shadowPassesThrough(hit, ray.Origin, dir)) {
+                if (!glass || layers >= kGlassLayers) {
+                    return float3(0.0);
+                }
+                through *= glassPasses(hit, ray.Origin, dir);
+                ++layers;
+                if (!any(through > float3(1.0e-4))) {
+                    return float3(0.0);
+                }
             }
         }
         const float t = query.CommittedRayT();
         ray.TMin = t + max(1.0e-4, t * 1.0e-5);
         if (ray.TMin >= ray.TMax) {
-            return false;
+            return through;
         }
     }
-    return false;
+    return through;
+}
+
+/// Whether anything stops a ray between a surface and a light: glass as
+/// well, for the rays that ask only whether the way is open (a transfer's
+/// cells, a glass's own).
+bool pathOccluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+    return !any(shadowWalk(p, n, wi, distance, shadowCategory, mask, false) > float3(0.0));
+}
+
+/// What next event estimation's shadow ray gets through: past glass where
+/// the frame lets it (`path.glassShadows`).
+float3 pathShadow(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+    return shadowWalk(p, n, wi, distance, shadowCategory, mask, path.glassShadows != 0);
 }
 
 static const bool kTraces = true;
@@ -265,8 +354,11 @@ struct NearestPayload {
 };
 
 struct ShadowPayload {
-    uint occluded;
-    uint shadowCategory;
+    uint   occluded;
+    uint   shadowCategory;
+    uint   glass;     // 1: faces of glass let the ray on, tinted (pathShadow)
+    uint   layers;    // how many it has gone through
+    float3 through;   // and what they let through
 };
 
 [shader("miss")]
@@ -299,12 +391,22 @@ void pathShadowAnyHit(inout ShadowPayload payload, in BuiltInTriangleIntersectio
         return;
     }
     // A cut-out asked where the ray met it: not there, and the ray goes on.
-    if (path.shadowCutouts != 0) {
-        PathHit hit;
-        hit.seen = uint4(InstanceID() + 1, PrimitiveIndex(), 0, 0);
-        hit.t = RayTCurrent();
-        hit.barycentrics = attributes.barycentrics;
-        if (shadowPassesThrough(hit, WorldRayOrigin(), WorldRayDirection())) {
+    PathHit hit;
+    hit.seen = uint4(InstanceID() + 1, PrimitiveIndex(), 0, 0);
+    hit.t = RayTCurrent();
+    hit.barycentrics = attributes.barycentrics;
+    if (path.shadowCutouts != 0 && shadowPassesThrough(hit, WorldRayOrigin(), WorldRayDirection())) {
+        IgnoreHit();
+        return;
+    }
+    // A face of glass: the ray goes on, tinted. The faces come in any order,
+    // which a product does not mind. (A traversal may call an any hit twice
+    // for one triangle unless the build forbids it; such a face would tint
+    // twice.)
+    if (payload.glass != 0 && payload.layers < kGlassLayers) {
+        payload.through *= glassPasses(hit, WorldRayOrigin(), WorldRayDirection());
+        ++payload.layers;
+        if (any(payload.through > float3(1.0e-4))) {
             IgnoreHit();
             return;
         }
@@ -332,25 +434,55 @@ PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask,
     return hit;
 }
 
-bool pathOccluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask, bool glass) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
     ray.Origin = p + (away + wi) * (1.0e-3 * scale);
-    ray.Direction = wi;
     ray.TMin = 1.0e-3 * scale;
-    ray.TMax = max(distance - ray.TMin, 0.0);
+    // AIMED AT THE POINT IT ENDS AT, `p + wi * distance`, from the origin it
+    // actually leaves: the origin stands a millimetre off p, across the ray
+    // as well as along it, and a ray sent along `wi` from there for
+    // `distance` ended that millimetre aside of the point -- through an
+    // emitter's plane when it came at a slant, where the lamp then shadowed
+    // itself (a glass box's floor went from 0.64 to 0.003). Before, its end
+    // rode on the origin and an emitter's ray stopped 3e-3 of the scale short,
+    // which stopped it before a lens's far face with the lamp 5 mm behind.
+    // A light at infinity (a dome, a sun) is a direction, and keeps `wi`.
+    float3 dir = wi;
+    float reach = distance;
+    if (distance < 1.0e29) {
+        const float3 to = p + wi * distance - ray.Origin;
+        reach = length(to);
+        dir = reach > 0.0 ? to / reach : wi;
+    }
+    ray.Direction = dir;
+    ray.TMax = max(reach, 0.0);
     if (ray.TMax <= ray.TMin) {
-        return false;
+        return float3(1.0);
     }
     ShadowPayload payload;
     payload.occluded = 0;
     payload.shadowCategory = shadowCategory;
+    payload.glass = glass ? 1u : 0u;
+    payload.layers = 0;
+    payload.through = float3(1.0);
     // Not FORCE_OPAQUE: the any hit is where linking is decided.
     // Non-opaque whatever the instance says: the any hit is where a light's
-    // link and a cut-out are asked.
-    TraceRay(scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_FORCE_NON_OPAQUE, mask, 1, 2, 1, ray, payload);
-    return payload.occluded != 0;
+    // link, a cut-out and a glass are asked. Back faces too where glass is
+    // let through, as the inline route meets them: a solid's far face is
+    // one, and its second tint.
+    TraceRay(scene, glass ? RAY_FLAG_FORCE_NON_OPAQUE : (RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_FORCE_NON_OPAQUE),
+             mask, 1, 2, 1, ray, payload);
+    return payload.occluded != 0 ? float3(0.0) : payload.through;
+}
+
+bool pathOccluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+    return !any(shadowWalk(p, n, wi, distance, shadowCategory, mask, false) > float3(0.0));
+}
+
+float3 pathShadow(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+    return shadowWalk(p, n, wi, distance, shadowCategory, mask, path.glassShadows != 0);
 }
 
 static const bool kTraces = true;
@@ -373,6 +505,10 @@ PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask,
 
 bool pathOccluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
     return false;
+}
+
+float3 pathShadow(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+    return float3(1.0);
 }
 
 static const bool kTraces = false;
@@ -456,6 +592,9 @@ void writeAuxAt(uint at, uint pixels, float4 albedo, float4 normal) {
 const char* kBake = R"(
 import athenea.common.bake_fit;
 static const bool kBake = true;
+// The closures mark their lobes in this kernel alone, for the material read
+// back at the first vertex (material_runtime's kAtheneaMarkLobes).
+export static const bool kAtheneaMarkLobes = true;
 /// Points a transfer's cells are traced from over the footprint (bakeCellOrigin).
 static const uint kCellOrigins = 4u;
 // Three entries a point: where it is and how far off to start; the normal of
@@ -484,6 +623,12 @@ float3 bakeSurfaceNormal(uint at) {
 float bakeMetalness(uint at) {
     const float w = bakeRays[at * 3 + 2].w;
     return saturate((w > 0.5 ? w - 1.0 : w) * 4.0);
+}
+
+/// THE MATERIAL AT THE FIRST VERTEX, read back (BakePoints::material): one
+/// sample of it into the point's sums, before the bake keeps only its body.
+void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {
+    materialSumsAdd(sums, materialSampleOf(stack, bakeMetalness(at) > 0.0));
 }
 
 /// Which way the gaussian faces: its own where it said one, else the surface's.
@@ -607,6 +752,37 @@ bool bakeInFront(uint at, uint sample) {
     return dot(bakeDirection(at, sample), bakeFacing(at)) > 0.0;
 }
 
+/// THE SURFACE UNDER A GAUSSIAN, MET FROM OUTSIDE ITS GLASS. The ray down
+/// the normal starts `offset` over the gaussian's centre -- a ten-thousandth
+/// of the model (mesh2splat_span), half a millimetre on a car -- and a
+/// gaussian of a solid thinner than its cell stands inside it: the Corvette's
+/// tail lenses are 1.1 mm thick under cells of 8.8 mm, and a lens gaussian's
+/// ray started between the faces and met the far one from inside. Its bake
+/// then saw the lamp through that face alone: 7371 of the pilotos layer's
+/// lens gaussians facing the eye read blue 0.125 of red, one tint, and the
+/// 416 facing the lamp 0.016. So where the ray meets a transmitting face
+/// from behind, it started inside that glass: the face over the centre, a
+/// little way back along the normal, is the one to come down onto from
+/// outside -- found by a ray up the normal, and the ray down starts past it.
+PathHit bakeSurfaceUnder(float3 from, float3 n, float offset, uint mask) {
+    const PathHit hit = traceNearestFrom(from, -n, offset * 0.01, mask, true);
+    const Found f = foundHit(hit, from, -n);
+    if (!f.valid) {
+        return hit;
+    }
+    const float3 ng = normalize(applyRows(toWorld, f.s.geometricNormal, 0.0));
+    if (dot(ng, -n) <= 0.0 || (materials[materialRowOf(f.s)].flags & kMaterialTransmits) == 0u) {
+        return hit;   // met from outside, or no glass
+    }
+    const float scale = max(1.0, length(from));
+    const PathHit over = traceNearestFrom(from, n, offset * 0.01, mask, false);
+    if (over.seen.x == 0 || over.t > 1.0e-2 * scale) {
+        return hit;
+    }
+    const PathHit outside = traceNearestFrom(from + n * (over.t + offset), -n, offset * 0.01, mask, true);
+    return outside.seen.x != 0 ? outside : hit;
+}
+
 Found foundBaked(uint at, uint sample, uint mask) {
     const float4 o = bakeRays[at * 3];   // the point, and how far off the surface to start
     if (!bakeInFront(at, sample)) {
@@ -643,7 +819,7 @@ Found foundBaked(uint at, uint sample, uint mask) {
         const float3 bitangent = cross(n, tangent);
         from += (tangent * cos(phi) + bitangent * sin(phi)) * radius;
     }
-    const PathHit hit = traceNearestFrom(from, -n, o.w * 0.01, mask, true);
+    const PathHit hit = bakeSurfaceUnder(from, n, o.w, mask);
     Found f = foundHit(hit, from, -n);
     if (f.valid) {
         // A DISPLACED GAUSSIAN IS SHADED AS THE RELIEF FACES. The mesh the
@@ -670,7 +846,8 @@ Found foundBaked(uint at, uint sample, uint mask) {
 /// One basis function where a sample looks from.
 ///
 /// The cloud stores its colours as harmonics of the direction from the eye to
-/// the splat, so the basis is read at `-towards`: the sample looks from the
+)"
+R"(/// the splat, so the basis is read at `-towards`: the sample looks from the
 /// surface out, and the renderer looks the other way along the same line.
 float bakeBasisAt(uint at, uint sample, uint basis) {
     return shBasisValue(basis, -bakeDirection(at, sample));
@@ -710,7 +887,7 @@ bool bakeCellOrigin(uint at, uint k, uint mask, float3 centre, out float3 p, out
     const float3 tangent = abs(axis.z) < 0.999 ? normalize(cross(float3(0.0, 0.0, 1.0), axis)) : float3(1.0, 0.0, 0.0);
     const float3 bitangent = cross(axis, tangent);
     const float3 from = o.xyz + axis * o.w + (tangent * cos(phi) + bitangent * sin(phi)) * radius;
-    const PathHit hit = traceNearestFrom(from, -axis, o.w * 0.01, mask, true);
+    const PathHit hit = bakeSurfaceUnder(from, axis, o.w, mask);
     const Found f = foundHit(hit, from, -axis);
     if (!f.valid || length(f.positionWorld - centre) > 2.0 * wide) {
         return false;
@@ -731,6 +908,7 @@ static const bool kBake = false;
 static const uint kCellOrigins = 4u;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
 LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
+void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {}
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float3 bakeSphereDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float bakeBasisAt(uint at, uint sample, uint basis) { return 0.0; }
@@ -916,8 +1094,10 @@ struct Shaded {
     bool           valid;
     bool           coverage;       // its opacity is coverage (a cutout row): the sample is there, or it is not
     bool           transparent;    // opacityMode transparent: specular whole, (1 - opacity) straight through
+    uint           rowFlags;       // its material row's flags (kMaterialGlassShadow: a shadow ray passes it)
     float3         rayOrigin;      // where the ray that found it started, and how far it went: a medium's segment
     float          rayT;
+    float3         geometricNormal;   // world, unit: the triangle's own, which a ray leaving it leaves by (leaveSurface)
 };
 
 /// Evaluates whatever material a surface wears. `pixel` is only the uv
@@ -934,11 +1114,13 @@ Shaded shadeSurface(uint2 pixel, Surface s) {
     out.stack = gAtheneaResult;
     out.coverage = (m.flags & (kMaterialCutout | kMaterialTransparent)) != 0;
     out.transparent = (m.flags & kMaterialTransparent) != 0;
+    out.rowFlags = m.flags;
     out.toEye = normalize(out.inputs.viewPosition - out.inputs.positionWorld);
     out.depth = s.depth;
     out.valid = true;
     out.rayOrigin = out.inputs.viewPosition;
     out.rayT = length(out.inputs.positionWorld - out.inputs.viewPosition);
+    out.geometricNormal = normalize(applyRows(toWorld, s.geometricNormal, 0.0));
     return out;
 }
 
@@ -1048,6 +1230,49 @@ bool shadowPassesThrough(PathHit hit, float3 from, float3 direction) {
     return float(key >> 8) * (1.0 / 16777216.0) >= opacity;
 }
 
+/// WHAT A FACE OF GLASS LETS A SHADOW RAY THROUGH: nothing, unless its row
+/// is glass whose transmission is a delta (kMaterialGlassShadow); then its
+/// tint -- the transmission's weight times its colour -- times what the
+/// dielectric does not reflect where the ray meets it: 1 - R for a face of
+/// a solid, the ray meeting the far face as well and paying it again, and
+/// 1 - 2R / (1 + R) for a thin wall, which is the whole glass in one face
+/// (lobes.slang's dielectricF). Read from the row, not evaluated: the kernel
+/// keeps its one call of the material (pathThrough says why).
+///
+/// Straight on: the bend at a solid's faces is not followed, which for a
+/// lamp's lens moves the light it reaches by the lens's thickness; a thin
+/// wall bends nothing, and there this is the material's own transmission.
+float3 glassPasses(PathHit hit, float3 from, float3 direction) {
+    const Found f = foundHit(hit, from, direction);
+    if (!f.valid) {
+        return float3(0.0);
+    }
+    const MaterialRecord m = materials[materialRowOf(f.s)];
+    if ((m.flags & kMaterialGlassShadow) == 0u) {
+        return float3(0.0);
+    }
+    const float index = transmissionIndex(m);
+    const float cosine = abs(dot(normalize(applyRows(toWorld, f.s.geometricNormal, 0.0)), direction));
+    const float R = index > 1.001 ? fresnelDielectric(max(cosine, 1.0e-3), index) : 0.0;
+    const float reflected = (m.flags & kMaterialThinGlass) != 0u ? 2.0 * R / (1.0 + R) : R;
+    return saturate(transmissionTint(m) * (1.0 - reflected));
+}
+
+/// Whether a path that left a vertex by a delta goes on reaching the lights
+/// as next event estimation's shadow ray would from the vertex before it:
+/// straight through a face of glass a shadow ray passes (glassPasses). The
+/// material's rays that do are weighed against that shadow ray, so the two
+/// strategies count the light through the glass once between them.
+/// Through, not off it: `wi` leaves on the other side of the surface from
+/// the eye -- a reflection inside a solid stays in the glass, and no straight
+/// shadow ray follows it.
+bool glassCarriesWeight(Shaded sh, float3 wi) {
+    if (path.glassShadows == 0 || !sh.valid || (sh.rowFlags & kMaterialGlassShadow) == 0u) {
+        return false;
+    }
+    return dot(sh.inputs.normalWorld, wi) * dot(sh.inputs.normalWorld, sh.toEye) < 0.0;
+}
+
 /// HOW MUCH OF A DIRECTION GETS THROUGH, for a ray that only asks whether
 /// the way is open (a transfer's cells, its direct half): one past every
 /// surface whose material lets light through (`kMaterialTransmits`),
@@ -1061,13 +1286,18 @@ bool shadowPassesThrough(PathHit hit, float3 from, float3 direction) {
 /// here, and the lens's image is the frame's (splat_relight's lensExit).
 /// Opaque glass in these rays put a pawn's gold ring in the dark under its
 /// glass head, and a car's cabin under its windows.
+/// Off its own surface by the millimetre, since a cell's origin is a
+/// gaussian's footprint and not a traced hit; from face to face by
+/// rayMargin, since those are the ray's own hits: stepping a millimetre past
+/// each face stepped over a thin lens's far face, which then passed as one.
 float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     float3 origin = p + (away + wi) * (1.0e-3 * scale);
+    float tMin = 1.0e-3 * scale;
     float through = 1.0;
     for (uint passes = 0; passes < 8u; ++passes) {
-        const PathHit hit = traceNearestFrom(origin, wi, 1.0e-3 * scale, mask, false);
+        const PathHit hit = traceNearestFrom(origin, wi, tMin, mask, false);
         if (hit.seen.x == 0) {
             return through;
         }
@@ -1079,15 +1309,16 @@ float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
         if ((m.flags & kMaterialTransmits) == 0u) {
             return 0.0;
         }
-        const float tint = float(m.pad0 & 0xffffu) / 65535.0;
-        const float index = 1.0 + 3.0 * float(m.pad0 >> 16) / 65535.0;
+        const float tint = dot(transmissionTint(m), kPathLuminance);
+        const float index = transmissionIndex(m);
         const float cosine = abs(dot(normalize(applyRows(toWorld, f.s.geometricNormal, 0.0)), wi));
         const float reflected = index > 1.001 ? fresnelDielectric(max(cosine, 1.0e-3), index) : 0.0;
         through *= saturate(tint * (1.0 - reflected));
         if (through < 1.0e-3) {
             return 0.0;
         }
-        origin = origin + wi * (hit.t + 1.0e-3 * scale);
+        origin = origin + wi * hit.t;   // on the face met; the next ray starts past it by a hair
+        tMin = rayMargin(length(origin));
     }
     return through;
 }
@@ -1109,8 +1340,23 @@ bool stackTransmits(LobeStack stack) {
 /// -- the lens and the field answer there (splat_relight) -- and passing its
 /// own body opened them all: the gate's glass ball under the lamp went from
 /// 0.097 to 0.217.
-float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmits) {
+///
+/// Into its own glass, its far face is looked for by a hair first: the
+/// millimetre the ray otherwise leaves by stepped over a lens 1.1 mm thick,
+/// and the cells behind it read open through the lens's own body.
+)"
+R"(float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmits) {
     if (selfTransmits) {
+        if (dot(n, wi) < 0.0) {
+            const float scale = max(1.0, length(p));
+            const float margin = rayMargin(scale);
+            const PathHit far = traceNearestFrom(leaveSurface(p, n, wi, margin), wi, margin, mask, false);
+            // Past its own face (a shading normal off the triangle's can leave
+            // the origin a hair outside), within what the millimetre steps over.
+            if (far.seen.x != 0 && far.t > 4.0 * margin && far.t < 3.0e-3 * scale) {
+                return 0.0;   // its own far face
+            }
+        }
         return pathOccluded(p, n, wi, 3.0e38, kLightUnlinked, mask) ? 0.0 : 1.0;
     }
     return pathThrough(p, n, wi, mask);
@@ -1122,7 +1368,9 @@ Shaded shadeFound(uint2 pixel, Found f) {
     out.valid = false;
     out.coverage = false;
     out.transparent = false;
+    out.rowFlags = 0u;
     out.depth = 0.0;
+    out.geometricNormal = float3(0.0, 0.0, 1.0);
     if (!f.valid) {
         return out;
     }
@@ -1414,7 +1662,8 @@ LightPoint sampleEmissive(float3 from, float u, float2 v) {
     }
     lp.pdf = share * probability * distance2 / (cosine * 0.5 * twiceArea);
     // The surface there, rebuilt as a bounce's hit is: the direction it is
-    // reached along, turned to view space for which side it shows.
+)"
+R"(    // reached along, turned to view space for which side it shows.
     const float3 w = lp.wi;
     const float3 viewDirection = float3(toWorld.row0.x * w.x + toWorld.row1.x * w.y + toWorld.row2.x * w.z,
                                         toWorld.row0.y * w.x + toWorld.row1.y * w.y + toWorld.row2.y * w.z,
@@ -1491,6 +1740,27 @@ bool throughGlass(Shaded sh, float3 wi) {
     return false;
 }
 
+/// WHETHER `wi` ENTERS A GLASS BY THE TRIANGLE ITSELF: the vertex's material
+/// transmits through a dielectric, and the direction leaves the triangle on
+/// the other side from the eye. The same question as throughGlass asked of
+/// the geometric normal, not the shading one: a bake's point carries the
+/// gaussian's normal, which on a lens need not face the eye, and a ray into
+/// the lens it said did not cross left by the millimetre, past the far face
+/// 1.1 mm in -- the tail lamps' lens gaussians baked one tint, B/R 0.146
+/// where the frame reads 0.0149.
+bool entersGlass(Shaded sh, float3 wi) {
+    if (dot(sh.geometricNormal, wi) * dot(sh.geometricNormal, sh.toEye) >= 0.0) {
+        return false;
+    }
+    for (uint k = 0; k < sh.stack.count; ++k) {
+        const Lobe lobe = sh.stack.lobes[k];
+        if (lobe.kind == kLobeDielectric && lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// WHETHER A PATH GOES ON FROM A VERTEX ALONG `wi`: while bounces are left,
 /// and through a glass while free crossings are (`kFreeCrossings`).
 /// `charged` is the bounces spent, `crossed` the crossings that were not
@@ -1540,18 +1810,19 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
     }
     // What stands between this point and the light, as the light's ShadowAPI
     // has its shadow: a mesh stops all of it, a cloud what it is dense enough
-    // to, and the shadow is then tinted by `shadow:color`, gone past
-    // `shadow:distance`, or -- `shadow:enable` off -- not there at all.
+    // to, a glass what it does not let through (pathShadow), and the shadow
+    // is then tinted by `shadow:color`, gone past `shadow:distance`, or --
+    // `shadow:enable` off -- not there at all. What gets through is a colour
+    // where glass is tinted, and the shadow's own tint goes as far, a
+    // channel at a time: lerp(full shadow, none, through).
     float3 tint = float3(1.0);
     if ((light.flags & kLightShadow) != 0) {
-        float through = pathOccluded(sh.inputs.positionWorld, sh.inputs.normalWorld, ls.wi, ls.distance,
-                                     light.shadowCategory, mask)
-                            ? 0.0
-                            : 1.0;
-        if (kSplatShadows && through > 0.0) {
+        float3 through = pathShadow(sh.inputs.positionWorld, sh.inputs.normalWorld, ls.wi, ls.distance,
+                                    light.shadowCategory, mask);
+        if (kSplatShadows && any(through > float3(0.0))) {
             through *= splatVisibility(sh.inputs.positionWorld, sh.inputs.normalWorld, ls.wi, ls.distance);
         }
-        tint = shadowTint(light, through, ls.distance);
+        tint = lerp(shadowTint(light, 0.0, ls.distance), float3(1.0), saturate(through));
         if (!any(tint > float3(0.0))) {
             return float3(0.0);
         }
@@ -1627,11 +1898,11 @@ float3 gatherLightMedium(float3 p, float3 wo, float g, uint2 pixel, uint sample,
     // The shadow as the light's ShadowAPI has it, as gatherLight above.
     float3 tint = float3(1.0);
     if ((light.flags & kLightShadow) != 0) {
-        float through = pathOccluded(p, ls.wi, ls.wi, ls.distance, light.shadowCategory, mask) ? 0.0 : 1.0;
-        if (kSplatShadows && through > 0.0) {
+        float3 through = pathShadow(p, ls.wi, ls.wi, ls.distance, light.shadowCategory, mask);
+        if (kSplatShadows && any(through > float3(0.0))) {
             through *= splatVisibility(p, ls.wi, ls.wi, ls.distance);
         }
-        tint = shadowTint(light, through, ls.distance);
+        tint = lerp(shadowTint(light, 0.0, ls.distance), float3(1.0), saturate(through));
         if (!any(tint > float3(0.0))) {
             return float3(0.0);
         }
@@ -1674,7 +1945,8 @@ void tracePathsAt(uint2 group, uint index) {
     Shaded first;
     first.valid = false;
     first.depth = 0.0;
-    bool firstShaded = false;
+)"
+R"(    bool firstShaded = false;
     bool auxWritten = false;
     if (kAux && path.writeAux != 0) {
         writeAuxAt(at, pixels, float4(0.0), float4(0.0));
@@ -1717,6 +1989,10 @@ void tracePathsAt(uint2 group, uint index) {
     // coloured by what the light bounced off, so one is a float and the other
     // an rgb.
     const bool transferMode = kBake && path.transfer != 0;
+    // What the material is under the point, where the caller asked
+    // (BakePoints::material): a sample of it at each path's first vertex.
+    const bool materialMode = transferMode && path.bakeMaterial != 0;
+    MaterialSums materialSums = materialSumsZero();
     float transferDirect[16];
     // WHICH WAYS OUT ARE OPEN, one bit a direction of an 8 x 8 octahedral
     // grid over the whole sphere: what a sun needs to know to cast a shadow,
@@ -1830,6 +2106,17 @@ void tracePathsAt(uint2 group, uint index) {
         float3 lightScale = float3(0.0);
         float  previousPdf = 0.0;     // the material's density for the direction that reached `found`
         bool   previousWeighs = false;   // and whether emission met there is weighed against it
+        // Where that direction was drawn: the last vertex that sampled its
+        // material with a density, and its normal. A path that has gone on
+        // from there straight through glass a shadow ray passes is still that
+        // vertex's draw (glassCarriesWeight), and the light it meets is
+        // weighed against next event estimation from there; `glassLayers`
+        // counts the faces, as the shadow ray does.
+        float3 previousFrom = float3(0.0);
+        float3 previousNormal = float3(0.0, 0.0, 1.0);
+        uint   previousLo = 0;        // and its categories, for a light's link
+        uint   previousHi = 0;
+        uint   glassLayers = 0;
         const uint steps = 2 * (path.bounces + kFreeCrossings) + 3;
         uint stepsTaken = 0;   // what the path cost, for a bake that shares its paths out
         for (uint step = 0; step < steps; ++step) {
@@ -1916,7 +2203,8 @@ void tracePathsAt(uint2 group, uint index) {
                 if (kBake && transferMode && cellsMode && bounce == 1) {
                     for (uint c = 0; c < 16u; ++c) {
                         closedCoefficients[c] += firstMeasure * shBasisValue(c, firstDirection);
-                    }
+)"
+R"(                    }
                 }
             }
             // The one place materials are evaluated; the camera's hit once a pixel.
@@ -2030,6 +2318,11 @@ void tracePathsAt(uint2 group, uint index) {
                         }
                     }
                 }
+                if (kBake && bounce == 0 && materialMode) {
+                    // The whole material, before the body is kept: the
+                    // conversion reads its coat and its metal back as well.
+                    bakeMaterialAdd(materialSums, cur.stack, at);
+                }
                 if (kBake && bounce == 0) {
                     // The body of the material, never its polish (bakeBody
                     // says why). Baking the polish into harmonics was tried:
@@ -2057,7 +2350,7 @@ void tracePathsAt(uint2 group, uint index) {
                 // estimation where that could have chosen this point.
                 float emissionWeight = 1.0;
                 if (previousWeighs && any(cur.stack.emission > float3(0.0))) {
-                    const float other = emissivePdfAt(found.s, found.positionWorld, found.rayOrigin);
+                    const float other = emissivePdfAt(found.s, found.positionWorld, previousFrom);
                     emissionWeight = previousPdf * previousPdf / (previousPdf * previousPdf + other * other);
                 }
                 if (!transferMode) {
@@ -2078,15 +2371,22 @@ void tracePathsAt(uint2 group, uint index) {
                                                          random2(tid, sample, bounce, 3u));
                     if (lp.valid) {
                         const float3 f = stackEval(cur.stack, cur.toEye, lp.wi);
-                        // The shadow ray stops short of the emitting triangle by more
-                        // than its origin is moved off the surface (pathOccluded moves
-                        // it up to 2e-3 of the scale along the ray): at a relative
-                        // 1e-4 short it reached the triangle itself, and every sample
-                        // was its own shadow.
-                        const float shortOf = 3.0e-3 * max(1.0, length(cur.inputs.positionWorld));
-                        if (any(f > float3(0.0)) && lp.distance > 2.0 * shortOf &&
-                            !pathOccluded(cur.inputs.positionWorld, cur.inputs.normalWorld, lp.wi,
-                                          lp.distance - shortOf, kLightUnlinked, mask)) {
+                        // The shadow ray stops short of the emitting triangle, or it
+                        // meets the triangle itself and every sample is its own
+                        // shadow: by ten rayMargins, now that it is aimed at a point
+                        // on the line from here to the sampled one (shadowWalk). It
+                        // stopped 3e-3 of the scale short when its end rode on its
+                        // origin, and a lamp 5 mm behind its lens lit the ground
+                        // through one face of two.
+                        const float shortOf = 10.0 * rayMargin(length(cur.inputs.positionWorld));
+                        // Through glass where the frame lets it (pathShadow): a
+                        // lamp behind its lens lights what stands in front.
+                        const float3 glassThrough =
+                            any(f > float3(0.0)) && lp.distance > 2.0 * shortOf
+                                ? pathShadow(cur.inputs.positionWorld, cur.inputs.normalWorld, lp.wi,
+                                             lp.distance - shortOf, kLightUnlinked, mask)
+                                : float3(0.0);
+                        if (any(glassThrough > float3(0.0))) {
                             float weight = 1.0;
                             if (pathGoesOn(bounce - crossed, crossed, cur, lp.wi) && path.mis != 0) {
                                 const float other = stackPdf(cur.stack, cur.toEye, lp.wi);
@@ -2099,7 +2399,7 @@ void tracePathsAt(uint2 group, uint index) {
                             if (!(throughSplats > 0.0)) {
                                 continue;
                             }
-                            lightScale = throughput * f * weight * throughSplats / lp.pdf;
+                            lightScale = throughput * f * glassThrough * weight * throughSplats / lp.pdf;
                             lightPoint = lp.found;
                             lightStep = true;
                             continue;
@@ -2133,7 +2433,8 @@ void tracePathsAt(uint2 group, uint index) {
                 // anything is in the way: no shading, no bounce, the first hit
                 // ends it. A direction below the surface is closed without a
                 // ray, since the body facing away from it receives nothing.
-                const float3 np = cur.inputs.normalWorld;
+)";
+const char* kBodyRest = R"(                const float3 np = cur.inputs.normalWorld;
                 const float3 pp = cur.inputs.positionWorld;
                 const bool selfTransmits = stackTransmits(cur.stack);
                 // The cells over the footprint: cell c from origin c % 4
@@ -2273,9 +2574,26 @@ void tracePathsAt(uint2 group, uint index) {
             }
             const float3 p = cur.inputs.positionWorld;
             const float3 n = cur.inputs.normalWorld;
+            // A RAY THAT CROSSES LEAVES BY A HAIR: off the triangle's own
+            // plane, on the side it goes to, by rayMargin of what the position
+            // was computed at (world, and the view space it was rebuilt in).
+            // By the millimetre a ray into a lens 1.1 mm thick started past
+            // its far face (leaveSurface). Every other ray leaves by the
+            // millimetre still: a bake's point and a transfer's are a
+            // gaussian's, not a hit's, and by a hair one transfer point of 32
+            // read 60% off its bake.
+            // A ray into a glass by the triangle itself (entersGlass) crosses
+            // as well, whatever the shading normal says.
+            const bool crossing = through || entersGlass(cur, ms.wi);
             const float scale = max(1.0, length(p));
-            const float3 away = dot(n, ms.wi) < 0.0 ? -n : n;
-            o = p + (away + ms.wi) * (1.0e-3 * scale);
+            const float margin = crossing ? rayMargin(max(length(p), length(p - cur.inputs.viewPosition)))
+                                          : 1.0e-3 * scale;
+            if (crossing) {
+                o = leaveSurface(p, cur.geometricNormal, ms.wi, margin);
+            } else {
+                const float3 away = dot(n, ms.wi) < 0.0 ? -n : n;
+                o = p + (away + ms.wi) * margin;
+            }
             d = ms.wi;
             // A RAY THAT WENT THROUGH SEES BACK FACES. Back faces are culled
             // for a ray that bounced off a surface, which is what a
@@ -2284,7 +2602,15 @@ void tracePathsAt(uint2 group, uint index) {
             // face from behind, and with it culled the ray left the ball
             // without its second bend: a thick lens drawn as one interface,
             // the pawn's glass head showing the room barely turned.
-            const PathHit hit = traceNearestFrom(o, d, 1.0e-3 * scale, mask, !through);
+            const PathHit hit = traceNearestFrom(o, d, margin, mask, !crossing);
+            // STRAIGHT THROUGH GLASS A SHADOW RAY PASSES, the path is still
+            // the draw of the vertex before (glassCarriesWeight): what it
+            // meets of the lights is weighed against next event estimation
+            // from there, which reached the same light through the same
+            // glass. Past kGlassLayers faces the shadow ray stops, and the
+            // weight is one again.
+            const bool glassCarried = ms.delta && previousWeighs && glassLayers < kGlassLayers &&
+                                 glassCarriesWeight(cur, ms.wi);
             // The material's strategy for the lights: what of each light this
             // direction meets before the surface it found (or, escaping, a
             // dome's or a distant light's), weighed against the density next
@@ -2294,7 +2620,8 @@ void tracePathsAt(uint2 group, uint index) {
                 const float reached = hit.t + dot(o - p, d);
                 for (uint k = 0; k < lightCount; ++k) {
                     const LightRecord light = lightFor(k, tid, sample);
-                    if (!misWeighs(light) || !lightLinked(light.lightCategory, cur.categoriesLo, cur.categoriesHi)) {
+                    if (!misWeighs(light) || !lightLinked(light.lightCategory, glassCarried ? previousLo : cur.categoriesLo,
+                                                          glassCarried ? previousHi : cur.categoriesHi)) {
                         continue;
                     }
                     const LightHit lh = lightHitImaged(light, p, d);
@@ -2310,6 +2637,10 @@ void tracePathsAt(uint2 group, uint index) {
                     if (!ms.delta) {
                         const float other = lightChoiceProbability(k, p, n) * lightPdfImaged(light, p, n, d);
                         weight = ms.pdf * ms.pdf / (ms.pdf * ms.pdf + other * other);
+                    } else if (glassCarried) {
+                        const float other = lightChoiceProbability(k, previousFrom, previousNormal) *
+                                            lightPdfImaged(light, previousFrom, previousNormal, d);
+                        weight = previousPdf * previousPdf / (previousPdf * previousPdf + other * other);
                     }
                     const float3 reachedLight = throughput * lh.radiance * weight;
                     carried += reachedLight;
@@ -2322,10 +2653,20 @@ void tracePathsAt(uint2 group, uint index) {
             // bounce left from; shaded when the next step comes to it.
             found = foundHit(hit, p, d);
             tHit = hit.seen.x == 0 ? 1.0e30 : hit.t;
-            previousPdf = ms.pdf;
-            previousWeighs = path.mis != 0 && !ms.delta;
+            if (glassCarried) {
+                ++glassLayers;   // the draw, its density and where it was made stand
+            } else {
+                previousPdf = ms.pdf;
+                previousWeighs = path.mis != 0 && !ms.delta;
+                previousFrom = p;
+                previousNormal = n;
+                previousLo = cur.categoriesLo;
+                previousHi = cur.categoriesHi;
+                glassLayers = 0;
+            }
             // A CROSSING IS NOT A BOUNCE. A solid glass ball is two crossings
-            // deep before the ray is out again, and at the default of one
+)"
+R"(            // deep before the ray is out again, and at the default of one
             // bounce it drew black once its far face stopped being culled:
             // the ray met the far face with no bounce left to leave by.
             // Crossings are free up to `kFreeCrossings`, as a renderer's
@@ -2414,6 +2755,20 @@ void tracePathsAt(uint2 group, uint index) {
                 colour[(count + 1 + cellPlanes + c) * pixels + at] = float4(indirectCoefficients[c] * over,
                                                                              closedCoefficients[c] * over);
             }
+        }
+        // AND THE MATERIAL, four planes after everything else
+        // (technique::kBakeMaterialPlanes).
+        if (materialMode) {
+            const uint after = count + (cellsMode ? 1u + cellPlanes + 16u : 2u);
+            float4 p0;
+            float4 p1;
+            float4 p2;
+            float4 p3;
+            materialSumsPlanes(materialSums, p0, p1, p2, p3);
+            colour[after * pixels + at] = p0;
+            colour[(after + 1u) * pixels + at] = p1;
+            colour[(after + 2u) * pixels + at] = p2;
+            colour[(after + 3u) * pixels + at] = p3;
         }
         return;
     }
@@ -2613,7 +2968,7 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
                                (groups ? kGroups : kNoGroups) + (volumes ? kVolumes : kNoVolumes) +
                                (traces ? kRays : pipeline ? kRaysPipeline : kNoRays) +
                                (withSplats ? kSplats : kNoSplats) + (withAux ? kAux : kNoAux) +
-                               (bake_ ? kBake : kNoBake) + kBody +
+                               (bake_ ? kBake : kNoBake) + kBody + kBodyRest +
                                (pipeline ? kEntryRays : kEntryCompute);
     std::vector<std::string> entries{pipeline ? "tracePathsGen" : "tracePaths", "pathDecide"};
     if (pipeline) {
@@ -2706,7 +3061,8 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     const uint32_t bakeCoefficients = bake != nullptr ? std::clamp(bake->coefficients, 1u, 16u) : 1u;
     const uint64_t planesOut = bake == nullptr ? 1u
                                : bake->split && !bake->transfer ? 2u * bakeCoefficients + 3u
-                                                                : bakeCoefficients + transferPlanes(*bake);
+                                                                : bakeCoefficients + transferPlanes(*bake) +
+                                                                      bakeMaterialPlanes(*bake);
     const bool resized = out.width != width || out.height != height || !out.colour.valid() ||
                          out.colour.bytes() < pixels * 16 * planesOut;
     if (resized) {
@@ -2825,7 +3181,9 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         cursor["path"]["headlight"].setData(uint32_t{settings.headlight ? 1u : 0u});
         cursor["path"]["mis"].setData(uint32_t{settings.mis ? 1u : 0u});
         cursor["path"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});
+        cursor["path"]["glassShadows"].setData(uint32_t{settings.glassShadows && frame.glass ? 1u : 0u});
         cursor["path"]["bakeSplit"].setData(uint32_t{bake != nullptr && bake->split ? 1u : 0u});
+        cursor["path"]["bakeMaterial"].setData(uint32_t{bake != nullptr && bake->transfer && bake->material ? 1u : 0u});
         // The emitting triangles, where the kernel samples them: their table,
         // or a word to bind in its place.
         if (const rhi::ShaderCursor table = cursor["emissiveTable"]; table.isValid()) {

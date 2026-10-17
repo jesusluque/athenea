@@ -28,6 +28,16 @@ public static const uint kFlagEnergyCompensation = 1;   // Oren-Nayar: OpenPBR's
 public static const uint kFlagInside = 2;               // the surface is seen from inside: the ior inverts
 public static const uint kFlagZeltner = 4;              // sheen: Zeltner's LTC instead of Imageworks'
 public static const uint kFlagThinWalled = 8;           // dielectric: a sheet with no inside (thin_walled)
+/// A DIELECTRIC TRANSMISSION PAYS ITS OWN FRESNEL: its sample and its
+/// response carry `1 - F` at the angle and the side they cross (`1 - 2R/(1+R)`
+/// for a thin wall), exactly. So the reflection layered straight over it --
+/// OpenPBR's and standard_surface's specular, the same dielectric at the same
+/// index -- does not charge it again (athenea_layer_bsdf); a layer further
+/// out (a coat) does. Set once that reflection has been passed over. Charged
+/// twice, a red lens 1 mm thick read 0.5556 where its two faces let 0.620
+/// through, and a shadow ray (one Fresnel a face) disagreed with the
+/// material's rays through the same glass.
+public static const uint kFlagOwnFresnel = 16;
 
 public static const uint kScatterReflect = 0;
 public static const uint kScatterTransmit = 1;
@@ -66,6 +76,19 @@ public struct Lobe {
 public float3 hairAbsorption(Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
 public float2 hairRoughnessTT(Lobe lobe) { return float2(lobe.pad3, lobe.pad4); }
 public float2 hairRoughnessTRT(Lobe lobe) { return float2(lobe.exponent, asfloat(lobe.pad0)); }
+/// WHAT A LOBE'S COLOUR WAS MULTIPLIED BY, AND HOW MANY LAYERS LIE OVER IT,
+/// in the pads every lobe but hair leaves free: the colours `multiply` nodes
+/// put on it (standard_surface's coat colour over its base) and the `layer`
+/// nodes it is the base of. Nothing that shades reads them; a conversion that
+/// reads a material back into a gaussian's few numbers does
+/// (material_sample.slang), since a lobe's weight mixes the two with
+/// everything else.
+public float3 lobeTint(Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
+public void setLobeTint(inout Lobe lobe, float3 tint) {
+    lobe.pad1 = tint.x;
+    lobe.pad2 = tint.yz;
+}
+public float lobeLayersOver(Lobe lobe) { return lobe.pad3; }
 public void setHair(inout Lobe lobe, float3 absorption, float2 roughnessTT, float2 roughnessTRT) {
     lobe.pad1 = absorption.x;
     lobe.pad2 = absorption.yz;

@@ -6,25 +6,28 @@
 //
 // slang-rhi opens the device (athenea::gpu::Device). gpe does not open another: it
 // adopts that one -- the same MTLDevice and command queue on Apple, the same
-// CUDA context and stream on Linux -- through gpe::adoptMetalDevice /
-// adoptCudaContext. So:
+// CUDA context and stream, or the same VkDevice and queue -- through
+// gpe::adoptMetalDevice / adoptCudaContext / adoptVulkanDevice. So:
 //
-//   - a gpe buffer is an MTLBuffer / CUDA allocation slang-rhi can wrap
+//   - a gpe buffer is an MTLBuffer / CUDA allocation / VkBuffer slang-rhi can wrap
 //     (`renderView`), and a slang-rhi buffer is one gpe can adopt
 //     (`computeView`): no copies in either direction. The three crossings
 //     are free functions in Views.h, on the bare objects, because a program
 //     with a GPU thread and a pool of its own takes only those (the
 //     compositor does); the methods here call them;
-//   - ordering is the queue's (Metal commits in order on one queue) or the
-//     stream's (CUDA). gpe holds dispatches back in batches on Metal, so the
+//   - ordering is the queue's (Metal commits in order on one queue; on
+//     Vulkan gpe's batches open and close with a full barrier, which reaches
+//     the work submitted before and after them) or the stream's (CUDA). gpe
+//     holds dispatches back in batches on Metal and Vulkan, so the
 //     render device hands gpe's batch over before every submission of its
 //     own (gpu::Device::setBeforeSubmit): the calls run in the order they
 //     were made. gpe's uploads ride its own transfer queue/stream and are
 //     ordered against gpe's work only, so `flushCompute()` is what a pass
 //     calls before slang-rhi reads bytes gpe *uploaded*.
 //
-// On Vulkan there is no gpe backend: `compute()` is null and aofx is not
-// available. That is Linux without an NVIDIA card.
+// gpe has one backend per build. A render device it cannot share -- Vulkan
+// under a CUDA build of gpe, CUDA under a Vulkan one, D3D12 always -- leaves
+// `compute()` null, and aofx is not available.
 //
 // ONE THREAD
 //

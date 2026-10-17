@@ -13,8 +13,14 @@
 #         [-DPATHS=512]
 #         [-DSLACK=1.05] -P tx_against_first.cmake
 if(NOT EXISTS "${STAGE}")
-    message("tx_against_first: ${STAGE} is not on this machine")
-    cmake_language(EXIT 77)
+    # A skip: exit 77 where cmake has cmake_language(EXIT) (3.29), and
+    # otherwise this message, whose first words the test's SKIP_REGULAR_EXPRESSION
+    # reads (cmake wraps the rest wherever the path makes it long).
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+        message("tx_against_first: ${STAGE} is not on this machine")
+        cmake_language(EXIT 77)
+    endif()
+    message(FATAL_ERROR "stage absent: tx_against_first: ${STAGE} is not on this machine")
 endif()
 if(NOT DEFINED SIZE)
     set(SIZE 512)
@@ -51,7 +57,12 @@ foreach(mode tx first)
     math(EXPR last "${n} - 1")
     foreach(k RANGE ${last})
         string(JSON name GET "${json}" materials ${k} material)
-        string(JSON rel GET "${json}" materials ${k} relMSE)
+        # A material off the camera has no relMSE, only the reason why
+        # ("the material is not on screen"): nothing to hold it to.
+        string(JSON rel ERROR_VARIABLE absent GET "${json}" materials ${k} relMSE)
+        if(absent)
+            set(rel "")
+        endif()
         set(${mode}_${k}_name "${name}")
         set(${mode}_${k}_rel "${rel}")
     endforeach()
@@ -61,6 +72,10 @@ foreach(k RANGE ${last})
     set(name "${tx_${k}_name}")
     set(tx "${tx_${k}_rel}")
     set(first "${first_${k}_rel}")
+    if(tx STREQUAL "" OR first STREQUAL "")
+        message("  ${name}: not on screen, not compared")
+        continue()
+    endif()
     if(tx GREATER first)
         # Past the slack only: first times SLACK, which CMake's math() (whole
         # numbers) cannot multiply; two numbers compared, nothing computed on

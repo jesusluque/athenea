@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "athenea/core/Result.h"
@@ -110,6 +111,19 @@ struct GpuSplats {
     /// which reflects with the plain specular (`plainLobes`); `hasLobes` is
     /// how a kernel asks. Nothing turns it.
     gpu::Buffer lobes;
+    /// THE LAMPS' LAYERS: `lightLayerCount` uint a splat, one a group of
+    /// lamps, the light the gaussian sends out from that group alone per
+    /// unit of the group's radiance, RGB9E5 times packing.slang's
+    /// `kLightLayerScale` (`primvars:athenea:splat:lightLayer:<group>`). A
+    /// frame adds each times the group's weight (splat_project's
+    /// `lampLight`), so a lamp switched or dimmed is a number. `lightGroups`
+    /// names the layers in order. Empty for a cloud with no lamps, and on a
+    /// cloud the levels of detail or a pose made.
+    gpu::Buffer lightLayers;
+    uint32_t    lightLayerCount = 0;
+    std::vector<std::string> lightGroups;
+    /// Groups a cloud carries at most: what a frame's weights hold.
+    static constexpr uint32_t kMaxLightGroups = 16;
     /// Words a gaussian of `shadowBits`: 2 (8 x 8 cells over the sphere),
     /// or 8 (16 x 16, a TX transfer's).
     uint32_t    shadowWords = 0;
@@ -154,6 +168,7 @@ struct GpuSplats {
     [[nodiscard]] bool hasCurvature() const noexcept { return curvature.valid(); }
     [[nodiscard]] bool hasEmission() const noexcept { return emission.valid(); }
     [[nodiscard]] bool hasLobes() const noexcept { return lobes.valid(); }
+    [[nodiscard]] bool hasLightLayers() const noexcept { return lightLayers.valid() && lightLayerCount > 0; }
     [[nodiscard]] bool hasTransfer() const noexcept { return transfer.valid() && transferCount >= 9; }
     /// Whether it carries which ways out are open (`shadowBits`).
     [[nodiscard]] bool hasShadowBits() const noexcept { return shadowBits.valid(); }
@@ -241,6 +256,10 @@ struct SplatStreams {
     /// One int a splat, nonzero where its metal is a Schlick rather than a
     /// conductor (`primvars:athenea:splat:schlickMetal`); beside the PBR arrays.
     FloatStream schlickMetal;
+    /// One float a splat, the material's own roughness before the conversion
+    /// widened it (`primvars:athenea:splat:materialRoughness`); beside the PBR
+    /// arrays.
+    FloatStream materialRoughness;
     /// Three floats a splat, the shape operator (`primvars:athenea:splat:curvature`).
     FloatStream curvature;
     /// Three floats a splat, the shading normal (`primvars:athenea:splat:normal`).
@@ -251,6 +270,9 @@ struct SplatStreams {
     /// Three floats a splat, the radiance it gives off
     /// (`primvars:athenea:splat:emission`).
     FloatStream emission;
+    /// One float a splat, a hard surfel's p (`primvars:athenea:splat:hardness`,
+    /// packing's hard surfel); 2, or none, a gaussian.
+    FloatStream hardness;
     /// The layers over the base, one array each, one value (or three, for a
     /// colour) a splat: `primvars:athenea:splat:specularWeight`,
     /// `:specularColor`, `:specularIor`, `:coatWeight`, `:coatRoughness`,
@@ -266,6 +288,11 @@ struct SplatStreams {
     FloatStream sheenColour;
     FloatStream sheenRoughness;
     FloatStream coatDarkening;   ///< `:coatDarkening`, 0 where it is missing
+    /// THE LAMPS' LAYERS, one array a group, three floats a splat
+    /// (`primvars:athenea:splat:lightLayer:<group>`): uploaded apart from the
+    /// records (`CloudLoader::uploadLightLayers`), at most
+    /// `GpuSplats::kMaxLightGroups`.
+    std::vector<std::pair<std::string, FloatStream>> lightLayers;
     /// BLENDER'S LAYOUT. Four floats a splat, the DC coefficient's rgb and the
     /// opacity (a Gaussian-splat PointCloud's `radiance:base`); where present
     /// it stands for `opacities` and for the DC of `sh`.
@@ -309,6 +336,14 @@ public:
     /// Arrays uploaded as they are and interleaved into records on the device.
     [[nodiscard]] Result<GpuSplats> upload(const SplatStreams& streams, uint32_t maxDegree = 3);
     [[nodiscard]] Result<GpuPoints> upload(const PointStreams& streams, float detail = 1.0F);
+
+    /// THE LAMPS' LAYERS onto a cloud just uploaded from the same arrays:
+    /// each stream packed into its column on the device (light_layers.slang's
+    /// `lightLayerPack`), then to the splats validation kept. A stream that
+    /// is not three values a record is left out, with a warning; past
+    /// `GpuSplats::kMaxLightGroups` the rest are.
+    [[nodiscard]] Result<void> uploadLightLayers(GpuSplats& splats,
+                                                 const std::vector<std::pair<std::string, FloatStream>>& layers);
 
     /// `byRecord`, `words` 32-bit words a record of the file `splats` came
     /// from, packed to the splats validation kept (`GpuSplats::origin`).
@@ -363,8 +398,11 @@ private:
     gpu::ComputeKernel pointsDecode_;
     gpu::ComputeKernel splatStreams_;
     gpu::ComputeKernel pointStreams_;
+    gpu::ComputeKernel splatHardness_;
+    gpu::ComputeKernel splatMaterialRoughness_;
     gpu::ComputeKernel boundsChunks_;
     gpu::ComputeKernel boundsReduce_;
+    gpu::ComputeKernel lightLayerPack_;
 };
 
 /// Whether `path` names a SOG: a .sog bundle or an unbundled meta.json.

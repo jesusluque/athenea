@@ -4,6 +4,7 @@
 #include "athenea/core/Log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <cstdio>
 #include <functional>
@@ -29,6 +30,26 @@ namespace mx = MaterialX;
 namespace athenea::material {
 
 namespace {
+
+/// `ddx(` and `ddy(` as calls -- not a variable of that name, nor a member --
+/// made the quad's (material_inputs.slang's atheneaDdx, atheneaDdy).
+std::string quadDerivatives(std::string text) {
+    const auto identifier = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '.'; };
+    for (const char* call : {"ddx(", "ddy(", "ddx_coarse(", "ddy_coarse(", "ddx_fine(", "ddy_fine("}) {
+        const std::string from(call);
+        const std::string to = std::string(from[2] == 'x' ? "atheneaDdx" : "atheneaDdy") + "(";
+        for (size_t at = text.find(from); at != std::string::npos; at = text.find(from, at)) {
+            if (at > 0 && identifier(text[at - 1])) {
+                at += from.size();
+                continue;
+            }
+            text.replace(at, from.size(), to);
+            at += to.size();
+        }
+    }
+    return text;
+}
+
 
 const std::string kFunctionPlaceholder = "ATHENEA_MATERIAL_FUNCTION";
 /// MaterialX's UsdPreviewSurface nodegraph, replaced by the engine's own.
@@ -815,29 +836,49 @@ std::optional<Transmission> MaterialCompiler::transmission(const std::shared_ptr
     // a UsdPreviewSurface whose opacity is transparency. Driven by a graph
     // counts as transmitting: a bit left open where the glass is clear is
     // the smaller error. With it, the constants a ray that only asks how much
-    // gets through reads without evaluating the material: the weight times
-    // the transmission colour's luminance, and the index (the same node's
-    // `specular_ior`, `specular_IOR` or `ior`; 1.5 where none is a constant).
+    // gets through reads without evaluating the material: the weight and the
+    // transmission colour (multiplied on the device, never here), the index
+    // (the same node's `specular_ior`, `specular_IOR` or `ior`; 1.5 where
+    // none is a constant), and whether a shadow ray may pass it tinted: a
+    // thin wall, or a smooth solid (Transmission::clear).
     const auto doc = std::static_pointer_cast<mx::Document>(document);
     if (!doc) {
         return std::nullopt;
     }
-    const auto constantFloat = [](const mx::NodePtr& node, const char* name) -> std::optional<float> {
-        const mx::InputPtr input = node->getInput(name);
-        if (!input || !input->getNodeName().empty() || !input->getNodeGraphString().empty() ||
-            !input->getInterfaceName().empty() || !input->getValue() || !input->getValue()->isA<float>()) {
+    const auto driven = [](const mx::InputPtr& input) {
+        return !input->getNodeName().empty() || !input->getNodeGraphString().empty() ||
+               !input->getInterfaceName().empty();
+    };
+    // The node's own value, or its definition's default where it has none
+    // (a document Hydra builds carries only what was authored).
+    const auto constantValue = [&](const mx::NodePtr& node, const char* name) -> mx::ValuePtr {
+        if (const mx::InputPtr input = node->getInput(name)) {
+            return driven(input) ? nullptr : input->getValue();
+        }
+        const mx::NodeDefPtr def = node->getNodeDef();
+        const mx::InputPtr fallback = def ? def->getActiveInput(name) : nullptr;
+        return fallback ? fallback->getValue() : nullptr;
+    };
+    const auto constantFloat = [&](const mx::NodePtr& node, const char* name) -> std::optional<float> {
+        const mx::ValuePtr value = constantValue(node, name);
+        if (!value || !value->isA<float>()) {
             return std::nullopt;
         }
-        return input->getValue()->asA<float>();
+        return value->asA<float>();
     };
     if (transparentOpacity(document)) {
         // What a transparent opacity leaves, straight through and with no
         // index; a textured opacity lets half through.
-        Transmission out{0.5F, 1.0F};
+        Transmission out;
+        out.tint = {0.5F, 0.5F, 0.5F};
+        out.ior = 1.0F;
         for (const mx::ElementPtr& element : doc->traverseTree()) {
             if (const mx::NodePtr node = element->asA<mx::Node>()) {
-                if (const std::optional<float> opacity = constantFloat(node, "opacity")) {
-                    out.tint = std::clamp(1.0F - *opacity, 0.0F, 1.0F);
+                if (const mx::InputPtr input = node->getInput("opacity"); input && !driven(input)) {
+                    if (const std::optional<float> opacity = constantFloat(node, "opacity")) {
+                        const float left = std::clamp(1.0F - *opacity, 0.0F, 1.0F);
+                        out.tint = {left, left, left};
+                    }
                 }
             }
         }
@@ -858,12 +899,15 @@ std::optional<Transmission> MaterialCompiler::transmission(const std::shared_ptr
                 continue;
             }
             Transmission out;
-            out.tint = weight ? std::min(*weight, 1.0F) : 1.0F;
-            const mx::InputPtr colour = node->getInput("transmission_color");
-            if (colour && colour->getNodeName().empty() && colour->getNodeGraphString().empty() &&
-                colour->getInterfaceName().empty() && colour->getValue() && colour->getValue()->isA<mx::Color3>()) {
-                const mx::Color3 c = colour->getValue()->asA<mx::Color3>();
-                out.tint *= std::clamp(0.2126F * c[0] + 0.7152F * c[1] + 0.0722F * c[2], 0.0F, 1.0F);
+            const float w = weight ? std::min(*weight, 1.0F) : 1.0F;
+            out.tint = {w, w, w};
+            const mx::ValuePtr colour = constantValue(node, "transmission_color");
+            const bool colourDriven = node->getInput("transmission_color") && !colour;
+            if (colour && colour->isA<mx::Color3>()) {
+                const mx::Color3 c = colour->asA<mx::Color3>();
+                for (int k = 0; k < 3; ++k) {
+                    out.tint[k] = w * std::clamp(c[k], 0.0F, 1.0F);
+                }
             }
             for (const char* ior : {"specular_ior", "specular_IOR", "ior"}) {
                 if (const std::optional<float> index = constantFloat(node, ior); index && *index >= 1.0F) {
@@ -871,6 +915,25 @@ std::optional<Transmission> MaterialCompiler::transmission(const std::shared_ptr
                     break;
                 }
             }
+            for (const char* thin : {"geometry_thin_walled", "thin_walled"}) {
+                if (const mx::InputPtr wall = node->getInput(thin); wall && !driven(wall) && wall->getValue()) {
+                    const mx::ValuePtr v = wall->getValue();
+                    out.thinWalled = (v->isA<bool>() && v->asA<bool>()) || (v->isA<int>() && v->asA<int>() != 0);
+                    break;
+                }
+            }
+            // Smooth where the roughness is a constant under the delta's
+            // bound; a graph's roughness, or a colour a graph drives (which
+            // the tint could not carry), passes nothing.
+            std::optional<float> roughness;
+            for (const char* r : {"specular_roughness", "roughness"}) {
+                if (node->getInput(r) || (node->getNodeDef() && node->getNodeDef()->getActiveInput(r))) {
+                    roughness = constantFloat(node, r);
+                    break;
+                }
+            }
+            const bool smoothSolid = roughness && *roughness < kGlassShadowRoughness;
+            out.clear = weight.has_value() && !colourDriven && (out.thinWalled || smoothSolid);
             return out;
         }
     }
@@ -1075,7 +1138,15 @@ Result<CompiledMaterial> MaterialCompiler::compileDocument(const std::shared_ptr
         options.hwDirectionalAlbedoMethod = mx::DIRECTIONAL_ALBEDO_ANALYTIC;
         mx::ShaderPtr shader = generator->generate("athenea_material", renderable, context);
         CompiledMaterial compiled;
-        const std::string source = shader->getSourceCode(mx::Stage::PIXEL);
+        // SCREEN DERIVATIVES FROM THE QUAD. A node borrowed from genglsl
+        // (hextiledimage's mx_hextile.glsl) asks dFdx, which the generator
+        // spells `ddx` -- a fragment stage's, which no compute kernel has: the
+        // onyx example failed every kernel it was in. The engine's own
+        // derivatives take it from the thread's quad (atheneaDdx), as bump
+        // does; a kernel that does not walk quads (a bake, a shadow ray)
+        // gets the difference to a neighbour that is not one, which moves a
+        // map's level of detail and nothing else.
+        const std::string source = quadDerivatives(shader->getSourceCode(mx::Stage::PIXEL));
         const std::string hash = hexHash(source);
         const char* modulePrefix = variant == ClosureVariant::Lobes     ? "athenea_mat_"
                                    : variant == ClosureVariant::Opacity ? "athenea_opa_"
@@ -1111,9 +1182,16 @@ std::vector<float> MaterialCompiler::parameters(const CompiledMaterial& material
             }
             break;
         case MaterialSlot::Kind::Texture:
-            words[slot.offset] = slot.name.empty() ? 4294967295.0F
-                                                   : static_cast<float>(textures.request(slot.name, slot.space));
-            words[slot.offset + 1] = static_cast<float>(textures.sampler(slot.wrapS, slot.wrapT, slot.filter));
+            if (slot.name.empty()) {
+                words[slot.offset] = 4294967295.0F;
+                words[slot.offset + 1] = static_cast<float>(textures.sampler(slot.wrapS, slot.wrapT, slot.filter));
+            } else {
+                const uint32_t id = textures.request(slot.name, slot.space);
+                const uint32_t sampler = textures.sampler(slot.wrapS, slot.wrapT, slot.filter);
+                textures.sampleWith(id, sampler);
+                words[slot.offset] = static_cast<float>(id);
+                words[slot.offset + 1] = static_cast<float>(sampler);
+            }
             break;
         case MaterialSlot::Kind::Primvar:
             words[slot.offset] = static_cast<float>(slotOf(slot.name));

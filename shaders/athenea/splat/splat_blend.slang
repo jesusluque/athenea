@@ -5,11 +5,22 @@ module splat_blend;
 import athenea.common.color;
 import athenea.common.packing;
 import frame;
+import athenea.common.octahedral;
+import athenea.light.environment;
+import splat_relight;
 
 StructuredBuffer<uint>      ranges;
 StructuredBuffer<uint>      pairSplats;
 StructuredBuffer<ProjRecord> proj;
-StructuredBuffer<uint4>     slopes;   // a slot each, read where the record is marked (kSlopeMark)
+// A slot each, read where the record is marked (kSlopeMark, kSharpMark); a
+// sharp record's base polish and its sun weights after them, from
+// `params.polishPlane` (splat_project).
+StructuredBuffer<uint4>     slopes;
+// The first dome's prefiltered sky, which a sharp lobe reads per pixel
+// (kSharpMark; athenea/light/environment.slang). Bound whether or not one is.
+StructuredBuffer<uint>      envTexels;
+// The first dome's sun, as env_sun hands it over: (direction, half angle), (irradiance, threshold).
+StructuredBuffer<float4>    envSun;
 // What is under the splats: a rasterised point layer (or nothing: bound to a
 // placeholder with params.hasUnder == 0). Linear, premultiplied, bottom row first.
 StructuredBuffer<float4>    underColour;
@@ -21,6 +32,17 @@ StructuredBuffer<float>     underDepth;
 // frame keeps a matte or not: a name a shader declares must be bound.
 StructuredBuffer<uint>      cryptoIds;
 StructuredBuffer<uint>      underCrypto;
+// WHAT EACH SPLAT GAVE THE FRAME, where params.contributionMode asks for it,
+// summed over its pixels at its slot: the weight it blended with
+// (transmittance times alpha) in 1/4096 of a pixel, or the squared error
+// taking it away would leave, in 2^-24 as two words (low, high) a slot --
+// GaussianPOP's and POTR's score
+// (arXiv 2602.06830, 2601.14821): with C the pixel drawn whole
+// (`finalColour`) and P what the walk holds once this splat is in, what is
+// behind it is (C - P) / T', and the pixel without it changes by w (c - that).
+// Bound whether it is counted or not.
+RWStructuredBuffer<uint>    contribution;
+StructuredBuffer<float4>    finalColour;
 RWStructuredBuffer<float4>  crypto;
 RWStructuredBuffer<float4>  colour;   // width * height, premultiplied, linear
 RWStructuredBuffer<float>   depth;    // width * height
@@ -103,10 +125,48 @@ struct CryptoList {
 // is done still loads for the others; the group stops loading when all are.
 static const uint kBatch = kTile * kTile;
 groupshared ProjRecord sRecords[kBatch];
+
+/// WHERE A PIXEL'S RAY MEETS A SURFEL, as a power: the squared radius in the
+/// disc's own axes at the point the ray crosses its plane (Huang et al. 2024,
+/// ray-splat intersection: the pixel's two planes x = px and y = py, pulled
+/// back through the disc's 3x3 map to the screen, meet in one point of the
+/// disc's plane, their cross product). Then the screen filter: the larger of
+/// the disc and a gaussian of sigma sqrt(2)/2 pixel round the centre, which
+/// keeps a disc seen edge on from thinning into aliasing (agreed with
+/// sparkwebGPU, which draws the same files). A ray along the plane meets
+/// nothing but the filter.
+static const float kHardOverlap = 2.0;
+
+float surfelPower(ProjRecord record, float2 pixel, float2 d) {
+    const uint4 w = record.surfel;
+    const float3 hu = float3(lowHalf(w.x), highHalf(w.x), lowHalf(w.y));
+    const float3 hv = float3(highHalf(w.y), lowHalf(w.z), highHalf(w.z));
+    const float z = record.screen.z;
+    const float3 hc = params.orthographic != 0 ? float3(record.screen.xy, 1.0)
+                                               : float3(record.screen.xy * z, z);
+    const float3 rowX = float3(hu.x, hv.x, hc.x);
+    const float3 rowY = float3(hu.y, hv.y, hc.y);
+    const float3 rowW = float3(hu.z, hv.z, hc.z);
+    const float3 uv = cross(rowX - pixel.x * rowW, rowY - pixel.y * rowW);
+    const float filter = 2.0 * dot(d, d);   // |d|^2 / sigma^2, sigma^2 = 1/2
+    if (!(abs(uv.z) > 1.0e-20)) {
+        return filter;
+    }
+    const float2 at = uv.xy / uv.z;
+    // A hard surfel (packing's): |u|^p + |v|^p, the gaussian's at p = 2 --
+    // held at 0 out to where it would have fallen to 1 / kHardOverlap, so
+    // that two hard merges side by side overlap where they meet rather than
+    // leaving their seam at 0.85 of a cover (a grid of cracks on the
+    // Corvette's paint, q14).
+    const float p = asfloat(w.w);
+    const float own = p > 2.0 ? max(pow(abs(at.x), p) + pow(abs(at.y), p) - 2.0 * log(kHardOverlap), 0.0)
+                              : dot(at, at);
+    return min(own, filter);
+}
 groupshared uint       sSplats[kBatch];
 // The colour's slope across the footprint, where the record is marked so
 // (frame.slang's kSlopeMark): x then y, rgb each, as halves.
-groupshared uint3      sSlopes[kBatch];
+groupshared uint4      sSlopes[kBatch];
 groupshared uint       sDone;
 
 void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
@@ -127,6 +187,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
 
     float3 rgb = float3(0.0);
     float transmittance = 1.0;
+    // What a light catcher's own gaussians have left of each other (it never
+    // takes from `transmittance`).
+    float lampTransmittance = 1.0;
     float depthSum = 0.0;
     float depthAt = -1.0;
     // What ends the walk from behind: the raster under-layer, or the first
@@ -163,7 +226,8 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             const uint splat = pairSplats[mine];
             sSplats[lane] = splat;
             sRecords[lane] = proj[splat];
-            sSlopes[lane] = abs(sRecords[lane].colour.w - kSlopeMark) < 0.01 ? slopes[splat].xyz : uint3(0u);
+            const float mark = sRecords[lane].colour.w;
+            sSlopes[lane] = abs(mark - kSlopeMark) < 0.01 || abs(mark - kSharpMark) < 0.01 ? slopes[splat] : uint4(0u);
         }
         GroupMemoryBarrierWithGroupSync();
         const uint count = min(kBatch, end - first);
@@ -176,14 +240,17 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             // it lies on, seen at a slant -- and not where something stands
             // in front of it (a mesh car's body over its own shadow, which
             // went black when every catcher gaussian was drawn).
-            const bool lying = abs(record.colour.w - kCatcherMark) < 0.01 && screen.z <= underZ * 1.015;
+            // A light catcher lies on it the same way (kLightCatcherMark).
+            const bool adds = abs(record.colour.w - kLightCatcherMark) < 0.01;
+            const bool lying = (abs(record.colour.w - kCatcherMark) < 0.01 || adds) && screen.z <= underZ * 1.015;
             if (underHit && screen.z >= underZ && !lying) {
                 done = true;
                 break;
             }
             const float2 d = pixel - screen.xy;
             const float4 conic = record.conic;
-            const float power = conic.x * d.x * d.x + 2.0 * conic.y * d.x * d.y + conic.z * d.y * d.y;
+            const float power = conic.w < 0.0 ? surfelPower(record, pixel, d)
+                                              : conic.x * d.x * d.x + 2.0 * conic.y * d.x * d.y + conic.z * d.y * d.y;
             if (power > screen.w) {
                 continue;
             }
@@ -200,11 +267,40 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 done = true;
                 break;
             }
-            const float alpha = min(0.99, conic.w * exp(-0.5 * power));
+            const float alpha = min(0.99, falloffAlpha(abs(conic.w), exp(-0.5 * power)));
             if (alpha < 1.0 / 255.0) {
                 continue;
             }
             const float weight = transmittance * alpha;
+            if (params.contributionMode == 1u) {
+                InterlockedAdd(contribution[sSplats[j]], uint(weight * 4096.0 + 0.5));
+            } else if (params.contributionMode == 2u) {
+                const float3 c = record.colour.xyz;
+                const float after = transmittance * (1.0 - alpha);
+                const float3 behind = (finalColour[at].rgb - (rgb + weight * c)) / max(after, 1.0e-4);
+                const float3 change = weight * (c - behind);
+                // In 2^-24 (a pixel capped at one), into two words: the low
+                // one's carry into the high one, so that what a splat changes
+                // by a hair in a thousand pixels still counts and what it
+                // changes a lot in a thousand does not wrap round.
+                const uint add = uint(min(dot(change, change), 1.0) * 16777216.0 + 0.5);
+                uint before;
+                InterlockedAdd(contribution[sSplats[j] * 2], add, before);
+                if (before + add < before) {
+                    InterlockedAdd(contribution[sSplats[j] * 2 + 1], 1u);
+                }
+            }
+            // A LIGHT CATCHER ADDS: the lamps' light on the ground under it,
+            // seen through what is in front, and nothing taken from behind --
+            // no coverage, no depth, no matte.
+            // Among themselves its gaussians blend as any layer does
+            // (`lampTransmittance`), so the light is the patch's coverage of
+            // it and not the sum of overlapping footprints.
+            if (adds) {
+                rgb += weight * lampTransmittance * record.colour.xyz;
+                lampTransmittance *= 1.0 - alpha;
+                continue;
+            }
             if (matte) {
                 list.add(cryptoIds[sSplats[j]], weight);
             }
@@ -213,10 +309,43 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             // step from the centre (splat_project's SplatSlope).
             float3 shade = record.colour.xyz;
             if (abs(record.colour.w - kSlopeMark) < 0.01) {
-                const uint3 w = sSlopes[j];
+                const uint3 w = sSlopes[j].xyz;
                 const float3 slopeX = float3(lowHalf(w.x), highHalf(w.x), lowHalf(w.y));
                 const float3 slopeY = float3(highHalf(w.y), lowHalf(w.z), highHalf(w.z));
                 shade = max(shade + slopeX * d.x + slopeY * d.y, float3(0.0));
+            } else if (abs(record.colour.w - kSharpMark) < 0.01) {
+                // A SHARP LOBE, READ AT THIS PIXEL: the sky along the mirror
+                // this pixel turns to, a step from the centre's, at the
+                // lobe's own roughness (splat_project's sharp lobe). A
+                // facade or the sun mirrored in a curved coat is drawn where
+                // it falls inside the gaussian, not as the centre's reading
+                // spread over all of it.
+                const uint4 w = sSlopes[j];
+                const float2 at = float2(lowHalf(w.x), highHalf(w.x)) + float2(lowHalf(w.y), highHalf(w.y)) * d.x +
+                                  float2(lowHalf(w.z), highHalf(w.z)) * d.y;
+                const float3 mirror = octDecode(saturate(at));
+                float3 sky = float3(0.0);
+                if (lowHalf(w.w) > 0.0) {
+                    sky += lowHalf(w.w) * envRadiance(envTexels, 0u, mirror, highHalf(w.w), params.envBaseSide);
+                }
+                // The base's polish along the same mirror, its weight and
+                // roughness read from memory: one record's for every pixel
+                // of the tile, so it stays in cache.
+                const uint4 p = slopes[params.polishPlane + sSplats[j]];
+                const float3 polish = float3(lowHalf(p.x), highHalf(p.x), lowHalf(p.y));
+                if (any(polish > float3(0.0))) {
+                    sky += polish * envRadiance(envTexels, 0u, mirror, highHalf(p.y), params.envBaseSide);
+                }
+                // The sun, which the map does not hold: through each lobe at
+                // this pixel's mirror (splat_relight's sunReflectPdf).
+                const float4 disc = envSun[0];
+                if (disc.w > 0.0) {
+                    const float3 irradiance = envSun[1].rgb;
+                    const float3 polishSun = float3(lowHalf(p.z), highHalf(p.z), lowHalf(p.w));
+                    sky += irradiance * (polishSun * sunReflectPdf(mirror, disc.xyz, highHalf(p.y), disc.w) +
+                                         highHalf(p.w) * sunReflectPdf(mirror, disc.xyz, highHalf(w.w), disc.w));
+                }
+                shade = max(shade + sky, float3(0.0));
             }
             rgb += weight * shade;
             depthSum += weight * screen.z;

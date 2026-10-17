@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="400" viewBox="0 0 760 400" font-family="Helvetica, Arial, sans-serif" xml:space="preserve">
+<!-- Copyright (c) 2026 jesus luque. -->
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3e4c59"/></marker></defs>
+<rect width="760" height="400" fill="#ffffff"/>
+<rect x="10" y="20" width="200" height="100" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="110.0" y="54.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">tabla del asset .cmpa</text>
+<text x="110.0" y="71.5" text-anchor="middle" font-size="10" fill="#52606d">base CPCA (512 clusters),</text>
+<text x="110.0" y="84.7" text-anchor="middle" font-size="10" fill="#52606d">diccionario de sombras, materiales,</text>
+<text x="110.0" y="97.9" text-anchor="middle" font-size="10" fill="#52606d">occlusion codebook, caja</text>
+<rect x="10" y="140" width="200" height="120" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="110.0" y="177.3" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">fichero .athc v3</text>
+<text x="110.0" y="194.9" text-anchor="middle" font-size="10" fill="#52606d">blocks × tiers: cada par (block,</text>
+<text x="110.0" y="208.1" text-anchor="middle" font-size="10" fill="#52606d">tier) una petición HTTP Range;</text>
+<text x="110.0" y="221.3" text-anchor="middle" font-size="10" fill="#52606d">tier 4 = CMPC (compacto)</text>
+<text x="110.0" y="234.5" text-anchor="middle" font-size="10" fill="#52606d">tablas de pages al abrir</text>
+<rect x="240" y="140" width="220" height="120" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="350.0" y="177.3" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">page v4 (CMP4)</text>
+<text x="350.0" y="194.9" text-anchor="middle" font-size="10" fill="#52606d">cabecera; offset final de cada run;</text>
+<text x="350.0" y="208.1" text-anchor="middle" font-size="10" fill="#52606d">planos de traversal en gzip;</text>
+<text x="350.0" y="221.3" text-anchor="middle" font-size="10" fill="#52606d">runs de 64 nodes, raw deflate,</text>
+<text x="350.0" y="234.5" text-anchor="middle" font-size="10" fill="#52606d">plano tras plano</text>
+<rect x="490" y="20" width="260" height="100" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="620.0" y="47.3" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">traversal record</text>
+<text x="620.0" y="64.9" text-anchor="middle" font-size="10" fill="#52606d">5, 7, 9 u 11 bytes según clase</text>
+<text x="620.0" y="78.1" text-anchor="middle" font-size="10" fill="#52606d">(leaf/merge × cono/sin cono); centro</text>
+<text x="620.0" y="91.3" text-anchor="middle" font-size="10" fill="#52606d">de 9 bits; ε, ρ, θ redondeados arriba;</text>
+<text x="620.0" y="104.5" text-anchor="middle" font-size="10" fill="#52606d">índice de 9 bits a la paleta de oclusión</text>
+<rect x="490" y="140" width="260" height="120" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="620.0" y="170.8" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">payload: registro de 40 bytes</text>
+<text x="620.0" y="188.3" text-anchor="middle" font-size="10" fill="#52606d">posición 6 · albedo 3 · opacidad 1</text>
+<text x="620.0" y="201.5" text-anchor="middle" font-size="10" fill="#52606d">escala 3 · rotación 4 · normal 3</text>
+<text x="620.0" y="214.7" text-anchor="middle" font-size="10" fill="#52606d">curvatura 3 · material 2 · cluster 1</text>
+<text x="620.0" y="227.9" text-anchor="middle" font-size="10" fill="#52606d">pesos 12 (3 × 8 int4) · sombra 2</text>
+<text x="620.0" y="241.1" text-anchor="middle" font-size="10" fill="#52606d">byte planes, alineados a 64 bytes</text>
+<rect x="240" y="20" width="220" height="100" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="350.0" y="54.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">raíces sintéticas</text>
+<text x="350.0" y="71.5" text-anchor="middle" font-size="10" fill="#52606d">raíces sueltas agrupadas en orden</text>
+<text x="350.0" y="84.7" text-anchor="middle" font-size="10" fill="#52606d">Morton bajo nodes de error</text>
+<text x="350.0" y="97.9" text-anchor="middle" font-size="10" fill="#52606d">infinito hasta que caben en page 0</text>
+<polyline points="210,200 238,200" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="460,170 488,100" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="460,220 488,220" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="350,140 350,122" fill="none" stroke="#3e4c59" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#ah)"/>
+<rect x="10" y="285" width="740" height="100" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="380.0" y="318.0" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">transfer por clustered PCA (base conjunta residente en la GPU)</text>
+<text x="380.0" y="350.1" text-anchor="middle" font-size="10.5" fill="#52606d">512 clusters compartidos por los tres bloques; por Gaussian: id de cluster + 3 × 8 pesos int4;</text>
+<text x="380.0" y="363.9" text-anchor="middle" font-size="10.5" fill="#52606d">en cada relight se proyectan una vez la media y los ejes de cada cluster sobre la luz (144 palabras por cluster)</text>
+
+<polyline points="620,283 620,262" fill="none" stroke="#3e4c59" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#ah)"/>
+<text x="380" y="337" text-anchor="middle" font-size="10.5" fill="#52606d">t<tspan dy="-4.0" font-size="7.6">(b)</tspan><tspan dy="4.0">  ≈  μ</tspan><tspan dy="2.9" font-size="7.6">c</tspan><tspan dy="-6.9" font-size="7.6">(b)</tspan><tspan dy="4.0">  +  Σ</tspan><tspan dy="2.9" font-size="7.6">k=1..8</tspan><tspan dy="-2.9">  q</tspan><tspan dy="2.9" font-size="7.6">k</tspan><tspan dy="-6.9" font-size="7.6">(b)</tspan><tspan dy="4.0"> · (s</tspan><tspan dy="2.9" font-size="7.6">c,k</tspan><tspan dy="-6.9" font-size="7.6">(b)</tspan><tspan dy="4.0"> / 127) · B</tspan><tspan dy="2.9" font-size="7.6">c,k</tspan><tspan dy="-6.9" font-size="7.6">(b)</tspan><tspan dy="4.0"> ,    b ∈ {direct (16), indirect (48), reflected (48)}</tspan></text>
+</svg>

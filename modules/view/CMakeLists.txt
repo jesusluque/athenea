@@ -14,6 +14,5 @@ athenea_add_module(view
         athenea_imgui
         glfw)
 # USD's headers, through StageRenderer's, predate the warnings this engine asks for.
-target_compile_options(athenea_view PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_view PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_view PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF)

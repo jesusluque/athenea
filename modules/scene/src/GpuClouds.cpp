@@ -98,8 +98,11 @@ Result<CloudLoader> CloudLoader::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(loader.pointsDecode_, "athenea/scene/points_decode", "pointsDecode"));
     ATHENEA_TRY(make(loader.splatStreams_, "athenea/scene/streams", "splatStreams"));
     ATHENEA_TRY(make(loader.pointStreams_, "athenea/scene/streams", "pointStreams"));
+    ATHENEA_TRY(make(loader.splatHardness_, "athenea/scene/splat_hardness", "splatHardness"));
+    ATHENEA_TRY(make(loader.splatMaterialRoughness_, "athenea/scene/splat_hardness", "splatMaterialRoughness"));
     ATHENEA_TRY(make(loader.boundsChunks_, "athenea/scene/bounds_chunks", "boundsChunks"));
     ATHENEA_TRY(make(loader.boundsReduce_, "athenea/scene/bounds_reduce", "boundsReduce"));
+    ATHENEA_TRY(make(loader.lightLayerPack_, "athenea/scene/light_layers", "lightLayerPack"));
     return loader;
 }
 
@@ -320,6 +323,54 @@ Result<gpu::Buffer> CloudLoader::keptOnly(const GpuSplats& splats, const gpu::Bu
     });
     ATHENEA_TRY(batch.submit(true));
     return *packed;
+}
+
+Result<void> CloudLoader::uploadLightLayers(GpuSplats& splats,
+                                            const std::vector<std::pair<std::string, FloatStream>>& layers) {
+    splats.lightLayers = {};
+    splats.lightLayerCount = 0;
+    splats.lightGroups.clear();
+    std::vector<const std::pair<std::string, FloatStream>*> kept;
+    for (const auto& layer : layers) {
+        if (layer.second.isDouble || layer.second.values() < uint64_t{splats.declared} * 3) {
+            log::warn("{}: light layer '{}' is not three values a gaussian; left out", splats.source, layer.first);
+            continue;
+        }
+        if (kept.size() == GpuSplats::kMaxLightGroups) {
+            log::warn("{}: more than {} light layers; '{}' and the rest are left out", splats.source,
+                      GpuSplats::kMaxLightGroups, layer.first);
+            break;
+        }
+        kept.push_back(&layer);
+    }
+    if (kept.empty()) {
+        return ok();
+    }
+    const uint32_t columns = static_cast<uint32_t>(kept.size());
+    auto byRecord = deviceBuffer(*device_, uint64_t{splats.declared} * columns, 4, "splats.lightLayers.records");
+    if (!byRecord) return std::move(byRecord).error();
+    for (uint32_t k = 0; k < columns; ++k) {
+        auto stream = streamBuffer(kept[k]->second, "splats.stream.lightLayer");
+        if (!stream) return std::move(stream).error();
+        gpu::CommandBatch batch(*device_);
+        lightLayerPack_.dispatch(batch, {splats.declared, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["layerStream"].setBinding(stream->rhi());
+            cursor["packed"].setBinding(byRecord->rhi());
+            cursor["packParams"]["count"].setData(splats.declared);
+            cursor["packParams"]["layers"].setData(columns);
+            cursor["packParams"]["layer"].setData(k);
+            cursor["packParams"]["half"].setData(uint32_t{kept[k]->second.half ? 1u : 0u});
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    auto bySplat = keptOnly(splats, *byRecord, columns, "splats.lightLayers");
+    if (!bySplat) return std::move(bySplat).error();
+    splats.lightLayers = std::move(*bySplat);
+    splats.lightLayerCount = columns;
+    for (const auto* layer : kept) {
+        splats.lightGroups.push_back(layer->first);
+    }
+    return ok();
 }
 
 Result<gpu::Buffer> CloudLoader::toRecords(const GpuSplats& splats, const gpu::Buffer& bySplat, uint32_t words,
@@ -688,7 +739,7 @@ constexpr uint32_t kPositions = 1, kRotations = 2, kScales = 4, kOpacities = 8, 
                    kCoatRoughness = 1u << 22, kCoatIor = 1u << 23, kSheenColour = 1u << 24,
                    kSheenRoughness = 1u << 25, kCoatDarkening = 1u << 26, kTransferReflected = 1u << 27,
                    kTransferZonal = 1u << 28,
-                   kSchlickMetal = 1u << 29;
+                   kSchlickMetal = 1u << 29, kHardness = 1u << 30;
 
 }   // namespace
 
@@ -850,6 +901,7 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (haveSchlick) {
         note(in.schlickMetal, kSchlickMetal);
     }
+    const bool haveOwnRoughness = havePbr && !in.materialRoughness.empty() && in.materialRoughness.values() >= n;
     note(in.radianceBase, kBase);
     if (haveSh) {
         note(planes ? in.shPlanes.front() : in.sh, kSh);
@@ -860,6 +912,10 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     }
     if (haveEmission) {
         note(in.emission, kEmission);
+    }
+    const bool haveHardness = !in.hardness.empty() && in.hardness.values() >= n;
+    if (haveHardness) {
+        note(in.hardness, kHardness);
     }
     for (const LobeArray& a : lobeArrays) {
         if (whole(*a.stream, a.per)) {
@@ -910,10 +966,15 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
     if (!thinWalled) return std::move(thinWalled).error();
     auto schlickMetal = streamBuffer(haveSchlick ? in.schlickMetal : FloatStream{}, "splats.stream.schlickMetal");
     if (!schlickMetal) return std::move(schlickMetal).error();
+    auto materialRoughness = streamBuffer(haveOwnRoughness ? in.materialRoughness : FloatStream{},
+                                          "splats.stream.materialRoughness");
+    if (!materialRoughness) return std::move(materialRoughness).error();
     auto normals = streamBuffer(haveNormals ? in.normals : FloatStream{}, "splats.stream.normals");
     if (!normals) return std::move(normals).error();
     auto emission = streamBuffer(haveEmission ? in.emission : FloatStream{}, "splats.stream.emission");
     if (!emission) return std::move(emission).error();
+    auto hardness = streamBuffer(haveHardness ? in.hardness : FloatStream{}, "splats.stream.hardness");
+    if (!hardness) return std::move(hardness).error();
     std::vector<gpu::Buffer> lobeBuffers;
     for (const LobeArray& a : lobeArrays) {
         auto made = streamBuffer(whole(*a.stream, a.per) ? *a.stream : FloatStream{}, a.label);
@@ -1002,6 +1063,29 @@ Result<GpuSplats> CloudLoader::upload(const SplatStreams& in, uint32_t maxDegree
                 p["lobesBase"].setData(haveLobes ? e.lobes : io::SplatEncoding::kNoField);
                 p["transferFirst"].setData(first);
             });
+            if (haveHardness) {
+                splatHardness_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["records"].setBinding(records->rhi());
+                    cursor["hardness"].setBinding(hardness->rhi());
+                    rhi::ShaderCursor p = cursor["params"];
+                    p["count"].setData(count);
+                    p["first"].setData(first);
+                    p["stride"].setData(e.floatsPerRecord);
+                    p["half"].setData(uint32_t{in.hardness.half ? 1u : 0u});
+                });
+            }
+            if (haveOwnRoughness) {
+                splatMaterialRoughness_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["records"].setBinding(records->rhi());
+                    cursor["materialRoughness"].setBinding(materialRoughness->rhi());
+                    rhi::ShaderCursor p = cursor["params"];
+                    p["count"].setData(count);
+                    p["first"].setData(first);
+                    p["stride"].setData(e.floatsPerRecord);
+                    p["half"].setData(uint32_t{in.materialRoughness.half ? 1u : 0u});
+                    p["pbrBase"].setData(e.metallic);
+                });
+            }
             ATHENEA_TRY(batch.submit(true));
         }
         auto kept = decodeSlice(*records, e, count, written, keep, *splats, first);

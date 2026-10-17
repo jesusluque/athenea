@@ -35,6 +35,8 @@ private:
     /// one and uploaded all of it, every frame (`Engine::commit`'s identity).
     /// Kept here, it is the same buffer, and nothing is read or uploaded.
     std::unordered_map<TfToken, VtValue, TfToken::HashFunctor> _held;
+    // Whether this cloud's primvars were looked at for lucabRTrender's names.
+    bool _oldNamesChecked = false;
     HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override { return bits; }
 };
 

@@ -24,6 +24,6 @@ void splatValidate(uint3 tid: SV_DispatchThreadID) {
     const float3 ls = float3(decodeLogScale(fieldOf(raw, i, s, params.scale0), params.scaleMode),
                              decodeLogScale(fieldOf(raw, i, s, params.scale1), params.scaleMode),
                              decodeLogScale(fieldOf(raw, i, s, params.scale2), params.scaleMode));
-    const bool finite = all(isfinite(p)) && all(isfinite(ls)) && all(abs(ls) < 60.0);
+    const bool finite = all(isfinite(p)) && scalesValid(ls);   // a surfel: one scale exactly 0
     valid[i] = (finite && a >= 1.0 / 255.0) ? 1u : 0u;
 }

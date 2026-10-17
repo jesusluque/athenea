@@ -85,8 +85,7 @@ athenea_test(athenea_geom_tests
 athenea_test(athenea_material_tests
     SOURCES material/test_texture_store.cpp material/test_lobes.cpp material/test_material_compiler.cpp
     LIBS athenea::material hio MaterialXCore MaterialXFormat)
-target_compile_options(athenea_material_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_material_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 target_compile_definitions(athenea_material_tests PRIVATE ATHENEA_MATERIALX_ROOT="${ATHENEA_USD_ROOT}")
 set_target_properties(athenea_material_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
@@ -109,7 +108,7 @@ athenea_test(athenea_volume_tests
 set_target_properties(athenea_volume_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_usd_tests
-    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp
+    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_glass_shadows.cpp usd/test_glass_tint.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
@@ -125,8 +124,7 @@ add_test(NAME materialx_root COMMAND athenea_usd_tests "[materialx_root]")
 set_tests_properties(materialx_root PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR};ATHENEA_MATERIALX_ROOT=${CMAKE_CURRENT_BINARY_DIR}/materialx_root"
     LABELS gpu)
-target_compile_options(athenea_usd_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_usd_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_usd_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
@@ -139,16 +137,14 @@ athenea_test(athenea_storm_oracle_tests
 add_dependencies(athenea_storm_oracle_tests hdAthenea)
 target_compile_definitions(athenea_storm_oracle_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
                            ATHENEA_USD_ROOT="${ATHENEA_USD_ROOT}")
-target_compile_options(athenea_storm_oracle_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_storm_oracle_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_storm_oracle_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_mcp_tests
     SOURCES mcp/test_mcp.cpp
     LIBS athenea::mcp nlohmann_json::nlohmann_json)
-target_compile_options(athenea_mcp_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_mcp_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_mcp_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
@@ -164,8 +160,7 @@ add_dependencies(athenea_host_tests hdAthenea)
 target_compile_definitions(athenea_host_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}")
 target_include_directories(athenea_host_tests SYSTEM PRIVATE "${ATHENEA_USD_ROOT}/include")
 target_link_directories(athenea_host_tests PRIVATE "${ATHENEA_USD_ROOT}/lib")
-target_compile_options(athenea_host_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion -Wno-cast-align)
+target_compile_options(athenea_host_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_host_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
@@ -175,7 +170,7 @@ if(ATHENEA_BUILD_VIEW)
         LIBS athenea::view
         LABELS display)
     add_dependencies(athenea_view_tests hdAthenea)
-    target_compile_options(athenea_view_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations)
+    target_compile_options(athenea_view_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations>")
     set_target_properties(athenea_view_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                           BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 endif()
@@ -267,14 +262,15 @@ athenea_m2s_output(two_cards_athc ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usd
 athenea_m2s_output(two_cards_usd ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
     --resolution 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards.usda)
 # A corner a joint turns, its transfer kept as zonal lobes in each gaussian's
-# frame and baked at the pose of time 1 (the cloud posed there first); and the
+# frame and baked at the bind pose (the stage's skeleton held there, whatever
+# --time says, so the gaussians and the mesh are one shape); and the
 # same corner still, its transfer fitted with two lobes, which says the fit's
 # error against the nine harmonics.
 athenea_m2s_output(skinned_transfer ${CMAKE_CURRENT_SOURCE_DIR}/data/skinned_corner.usda --skinned --transfer
     --time 1 --bake-samples 64 --bake-extra 0 --bake-bounces 1 --resolution 32 --no-camera
     -o ${ATHENEA_M2S_OUTPUTS}/skinned_transfer.usda)
 set_tests_properties(mesh2splat_output_skinned_transfer PROPERTIES
-    PASS_REGULAR_EXPRESSION "posed at the bake's instant.*transfer kept as 2 zonal lobes")
+    PASS_REGULAR_EXPRESSION "held at the bind pose.*transfer kept as 2 zonal lobes")
 athenea_m2s_output(still_transfer_zonal ${CMAKE_CURRENT_SOURCE_DIR}/data/skinned_corner.usda --transfer
     --transfer-lobes 2 --bake-samples 64 --bake-extra 0 --bake-bounces 1 --resolution 32 --no-camera
     -o ${ATHENEA_M2S_OUTPUTS}/still_transfer_zonal.usda)
@@ -320,6 +316,7 @@ endforeach()
 add_test(NAME emissive_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[emissive_conversion]")
 set_tests_properties(emissive_conversions_render_like_the_mesh PROPERTIES
+    SKIP_RETURN_CODE 4
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED emissive_clouds
     LABELS gpe)
@@ -364,6 +361,7 @@ set_tests_properties(a_map_on_a_layer_is_sampled_per_gaussian PROPERTIES
 add_test(NAME lobes_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[lobes_conversion]")
 set_tests_properties(lobes_conversions_render_like_the_mesh PROPERTIES
+    SKIP_RETURN_CODE 4
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED lobes_clouds
     LABELS gpe)
@@ -404,6 +402,7 @@ add_test(NAME tx_gate_pawn
 set_tests_properties(tx_gate_pawn PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "stage absent"
     LABELS "gpe;tx_gate")
 add_test(NAME tx_gate_corvette
     COMMAND ${CMAKE_COMMAND} -DATHENEA=$<TARGET_FILE:athenea>
@@ -414,6 +413,7 @@ add_test(NAME tx_gate_corvette
 set_tests_properties(tx_gate_corvette PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "stage absent"
     TIMEOUT 36000
     LABELS "gpe;tx_gate;slow")
 # THE CATCHER'S GATE: the Corvette's shadow caught by gaussians on its ground
@@ -428,8 +428,42 @@ add_test(NAME catcher_gate_corvette
 set_tests_properties(catcher_gate_corvette PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     SKIP_RETURN_CODE 77
+    SKIP_REGULAR_EXPRESSION "stage absent"
     TIMEOUT 7200
     LABELS "gpe;tx_gate;slow")
+# THE MATERIAL GATE (bench/matx): six MaterialX materials on the shader
+# ball, one a lobe class (diffuse, metal, coat, glass, sheen, subsurface),
+# converted with --transfer and measured against the path traced frame under
+# two skies, then held to bench/matx/baseline.csv: a TX relMSE more than 5%
+# worse, or a mean ratio moved by more than 0.05, fails. The stages are built
+# on the CPU under the build directory; a machine without MaterialX's
+# resources or the autoshop sky, or a tree without a baseline, skips it.
+find_program(ATHENEA_PYTHON3 python3)
+if(ATHENEA_PYTHON3)
+    add_test(NAME matx_gate
+        COMMAND ${CMAKE_COMMAND} -E env MATX_BIN=$<TARGET_FILE:athenea>
+                MATX_WORK=${CMAKE_CURRENT_BINARY_DIR}/matx/work MATX_OUT=${CMAKE_CURRENT_BINARY_DIR}/matx
+                ${ATHENEA_PYTHON3} ${PROJECT_SOURCE_DIR}/bench/matx/compare_matx.py --gate)
+    set_tests_properties(matx_gate PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 3600
+        LABELS "gpe;matx;slow")
+    # WHAT ONLY THE MATERIAL CAN SAY (bench/matx/check_sampled.py): the
+    # shader balls whose base colour a graph computes, a tiled map carries
+    # or a coat colour tints -- brick, brass, wood, marble, onyx, copper -- keep
+    # their colour against the path traced mesh, and the six above stay
+    # where baseline.csv has them.
+    add_test(NAME matx_sampled
+        COMMAND ${CMAKE_COMMAND} -E env MATX_BIN=$<TARGET_FILE:athenea>
+                MATX_WORK=${CMAKE_CURRENT_BINARY_DIR}/matx/work MATX_OUT=${CMAKE_CURRENT_BINARY_DIR}/matx
+                ${ATHENEA_PYTHON3} ${PROJECT_SOURCE_DIR}/bench/matx/check_sampled.py)
+    set_tests_properties(matx_sampled PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        SKIP_RETURN_CODE 77
+        TIMEOUT 3600
+        LABELS "gpe;matx;slow")
+endif()
 
 # A GLASS IS A SHEET BY ITS MESH: a pane modelled as one surface with a solid
 # glass on it converts thin-walled, the closed glass ball solid
@@ -441,6 +475,21 @@ set_tests_properties(mesh2splat_sheet_pane PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     PASS_REGULAR_EXPRESSION "Pane is sheet \\(thin-walled\\) glass"
     LABELS gpe)
+add_test(NAME mesh2splat_sheet_pane_low
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/pane_low.usda --no-camera --resolution 64
+            -o ${ATHENEA_TX_DIR}/pane_low_sheet.usdc)
+set_tests_properties(mesh2splat_sheet_pane_low PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_SETUP sheet_low
+    PASS_REGULAR_EXPRESSION "wrote .*pane_low_sheet.usdc"
+    LABELS gpe)
+add_test(NAME sheet_glass_draws_whole
+    COMMAND athenea_usd_tests "[sheet_draw]")
+set_tests_properties(sheet_glass_draws_whole PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED sheet_low
+    LABELS gpe)
 add_test(NAME mesh2splat_sheet_ball
     COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/lobes/glass.usda --no-camera --resolution 64
             -o ${ATHENEA_TX_DIR}/ball_sheet.usdc)
@@ -450,18 +499,21 @@ set_tests_properties(mesh2splat_sheet_ball PROPERTIES
     LABELS gpe)
 
 # A transfer baked in slices (--transfer-slice) finds the surface under every
-# gaussian as one slice does: four slices of the paint ball, filtered.
+# gaussian as one slice does: four slices of the paint ball, filtered. The
+# count emitted moves with the device's arithmetic (96130 on Metal, 96078 on
+# Vulkan), so the check is the baked share of it, not one total.
 add_test(NAME mesh2splat_tx_sliced
     COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/paint.usda --prim /World/Ball --transfer
             --bake-samples 16 --bake-extra 0 --transfer-slice 25000 --no-camera --resolution 192
             -o ${ATHENEA_TX_DIR}/paint_sliced.usdc)
 set_tests_properties(mesh2splat_tx_sliced PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
-    PASS_REGULAR_EXPRESSION "transfer baked for 9[0-9][0-9][0-9][0-9] of 96130"
+    PASS_REGULAR_EXPRESSION "transfer baked for 96[01][0-9][0-9] of 96[01][0-9][0-9] "
     LABELS gpe)
 add_test(NAME tx_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[tx_conversion]")
 set_tests_properties(tx_conversions_render_like_the_mesh PROPERTIES
+    SKIP_RETURN_CODE 4
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED tx_clouds
     LABELS gpe)
@@ -498,8 +550,7 @@ target_compile_definitions(athenea_coverage_tests PRIVATE
     ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
     ATHENEA_COVERAGE_STAGE="${CMAKE_CURRENT_SOURCE_DIR}/data/coverage/planes.usda"
     ATHENEA_COVERAGE_CLOUD="${CMAKE_CURRENT_BINARY_DIR}/coverage_planes.usdc")
-target_compile_options(athenea_coverage_tests PRIVATE -Wno-old-style-cast -Wno-shadow -Wno-deprecated-declarations
-                       -Wno-double-promotion)
+target_compile_options(athenea_coverage_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion>")
 set_target_properties(athenea_coverage_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
@@ -509,3 +560,18 @@ add_test(NAME single_tbb COMMAND athenea info)
 set_tests_properties(single_tbb PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     PASS_REGULAR_EXPRESSION "tbb libraries  1 ")
+# A DEVICE WITHOUT RAY TRACING skips what bakes: a bake is paths, the path
+# tracer needs ray queries or a ray tracing pipeline (OptiX) over acceleration
+# structures, and athenea refuses
+# the bake on a device without them (CUDA without OptiX, as in WSL2) saying
+# "has no ray tracing" -- which every test here reads as a skip, beside any
+# skip it already reads.
+get_directory_property(athenea_script_tests TESTS)
+foreach(test IN LISTS athenea_script_tests)
+    get_test_property(${test} SKIP_REGULAR_EXPRESSION skips)
+    if(NOT skips)
+        set(skips "")
+    endif()
+    list(APPEND skips "has no ray tracing")
+    set_tests_properties(${test} PROPERTIES SKIP_REGULAR_EXPRESSION "${skips}")
+endforeach()
