@@ -1463,6 +1463,7 @@ antes de `add_subdirectory`:
 | `ATHENEA_EMBEDDED` | el padre aporta gpe, genlock, aopenfx y spz; el motor deja sus directorios de salida fuera de los del padre | `OFF` |
 | `ATHENEA_BUILD_APPS` | `athenea` y `athenea-mcp` | `ON` |
 | `ATHENEA_BUILD_PLUGINS` | los bundles de `plugins/` | `ON` |
+| `ATHENEA_BUILD_OFX` | `Athenea.ofx.bundle`, el plugin OpenFX de `integrations/ofx` (macOS y Linux; enlaza solo la biblioteca de soporte de `third_party/openfx` y maneja `athenea-mcp`) | `ON` |
 | `ATHENEA_BUILD_VIEW` | `athenea view` (GLFW, Dear ImGui) | `ON` |
 | `ATHENEA_SHADER_OUTPUT_DIR` | dónde se copian los shaders para el compilador en tiempo de ejecución | `<build>/shaders` |
 | `AOFX_BUNDLE_DIR` | dónde deja un bundle `aofx_add_bundle` | `<build>/aofx` |

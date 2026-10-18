@@ -15,6 +15,7 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <sstream>
 
 #include "athenea/core/Platform.h"
@@ -305,7 +306,23 @@ json renderTool(Session& session, const json& args) {
     Result<usd::StageImage> image = Error(ErrorCode::InternalError, "not rendered");
     // A camera of the caller's own beats anything on the stage: it is how you
     // look at something in particular rather than at everything at once.
-    if (args.contains("eye") && args.contains("target")) {
+    if (args.contains("xform")) {
+        // A compositor's camera as it holds one: where it stands and how it
+        // turns, one matrix (camera to world, row by row, looking down -z
+        // with +y up, as USD's and Nuke's do), and the lens in millimetres.
+        const std::vector<double> m = args["xform"].get<std::vector<double>>();
+        if (m.size() != 16) {
+            return textAnswer("'xform' wants sixteen numbers, the camera to world matrix row by row.", true);
+        }
+        render::Camera own;
+        std::copy(m.begin(), m.end(), own.cameraToWorld.m.begin());
+        own.lens.focal = args.value("focal", 50.0);
+        own.lens.haperture = args.value("haperture", own.lens.haperture);
+        own.lens.vaperture = args.value("vaperture", own.lens.haperture * height / std::max(width, 1u));
+        own.lens.nearZ = args.value("near", own.lens.nearZ);
+        own.lens.farZ = args.value("far", own.lens.farZ);
+        image = renderer.render(own, time, width, height, technique);
+    } else if (args.contains("eye") && args.contains("target")) {
         const std::vector<double> eye = args["eye"].get<std::vector<double>>();
         const std::vector<double> at = args["target"].get<std::vector<double>>();
         if (eye.size() != 3 || at.size() != 3) {
@@ -339,6 +356,25 @@ json renderTool(Session& session, const json& args) {
     std::ostringstream out;
     out << "Rendered " << session.stage.filename().string() << " at " << width << "x" << height << ", " << technique
         << ", time " << time << " in " << std::fixed << ms << " ms";
+    // THE FRAME FOR A PROGRAM THAT COMPOSITES IT (the OpenFX plugin): its
+    // own numbers, no picture of them. `raw` names a file the caller reads
+    // back -- the colour, four floats a pixel, then the depth, one a pixel,
+    // both bottom row first, linear and premultiplied, as an OpenFX image
+    // lies -- and the answer is text alone, since a PNG of the frame is time
+    // the caller would wait for and throw away.
+    if (args.contains("raw")) {
+        const std::string raw = args["raw"].get<std::string>();
+        std::ofstream file(raw, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(image->rgba.data()),
+                   static_cast<std::streamsize>(image->rgba.size() * sizeof(float)));
+        file.write(reinterpret_cast<const char*>(image->depth.data()),
+                   static_cast<std::streamsize>(image->depth.size() * sizeof(float)));
+        if (!file) {
+            return textAnswer("could not write the frame to " + raw, true);
+        }
+        out << "\nraw " << raw;
+        return textAnswer(out.str());
+    }
     const std::string aov = args.value("aov", std::string("color"));
     const std::string file = args.value("output", std::string{});
     const bool wantsPng = file.size() > 4 && file.compare(file.size() - 4, 4, ".png") == 0;
@@ -567,6 +603,16 @@ const std::vector<ToolEntry>& toolTable() {
                                      {"description", "where that camera looks"}}},
                      {"up", json{{"type", "array"}, {"items", {{"type", "number"}}}, {"description", "its up vector"}}},
                      {"focal", field("number", "focal length, mm, of a camera of your own or a framing one")},
+                     {"xform", json{{"type", "array"}, {"items", {{"type", "number"}}},
+                                    {"description", "a camera of your own as a matrix: camera to world, sixteen "
+                                                    "numbers row by row, looking down -z with +y up"}}},
+                     {"haperture", field("number", "that camera's horizontal aperture, mm (24.576)")},
+                     {"vaperture", field("number", "its vertical aperture, mm (the horizontal one at the image's aspect)")},
+                     {"near", field("number", "its near clipping plane, scene units")},
+                     {"far", field("number", "its far clipping plane, scene units")},
+                     {"raw", field("string", "write the frame's own numbers to this file instead of answering with "
+                                             "an image: RGBA floats then depth floats, bottom row first, linear "
+                                             "and premultiplied")},
                      {"lightSamples", field("integer", "samples per light per pixel")},
                      {"chooseLights", field("boolean", "one light a sample, chosen by power")},
                      {"splatShadows", field("boolean", "a relit splat cloud shadows itself")},

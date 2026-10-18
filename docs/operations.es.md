@@ -62,6 +62,7 @@ rechaza: WSL2 no carga OptiX.
 | `PXR_PLUGINPATH_NAME` | apunta una aplicación USD a `<build>/plugin/usd`, donde están el delegate de Hydra y los schemas codeless. La necesita cualquier host que no sea `athenea`. `athenea` registra por su cuenta `<su binario>/../plugin/usd` al arrancar, así que los schemas que aplica una nube convertida se escriben esté o no definida. |
 | `ATHENEA_MATERIALX_ROOT` | un directorio que contiene los `libraries/` de MaterialX, que el compilador de materiales de hdAthenea lee en lugar de las bibliotecas que cargó el USD del host. Sin definir por defecto: se usan las del host. Para un host cuyo MaterialX es anterior al generador de Slang (Blender 5.3 trae 1.39.4: sin implementaciones `genslang` y con definiciones de nodo anteriores), se apunta a las de 1.39.5. Se lee una vez, cuando compila el primer material; los renderers propios del host conservan las suyas. |
 | `AOFX_PLUGIN_PATH` | directorios extra de bundles AOFX, buscados antes que la ruta del sistema y antes que `--path`. Después van `aofx/` junto a la carpeta del ejecutable (la disposición de una release) y los bundles del árbol de compilación. |
+| `ATHENEA_MCP` | el servidor que arranca el plugin OpenFX (§6.1), en lugar del `athenea-mcp` que lleva su bundle en `Contents/Resources/bin` y del que haya en el `PATH`. |
 | `ATHENEA_BACKEND` | qué dispositivo abrir, como un orden separado por comas: `metal,cuda,vulkan,d3d12`. Las palabras desconocidas avisan y se saltan. |
 | `ATHENEA_GPU_VALIDATION` | cualquier valor: las capas de validación y depuración de la API gráfica (la de D3D12 necesita las Graphics Tools de Windows), para un fallo del que el driver no da motivo, como un pipeline que no puede crear. Lento. |
 | `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina -- contando como libre lo que devuelve cuando se le pide (páginas inactivas, purgables y especulativas, y la caché de ficheros) -- diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
@@ -1865,11 +1866,60 @@ color y los números del beauty no son los suyos; y es con lo que se rueda una
 secuencia de una AOV, una llamada por frame sobre una escena que se queda
 abierta.
 
+**`render` para un programa que compone el frame.** `xform` es una cámara
+propia tal como la guarda un compositor: de cámara a mundo, dieciséis números
+fila a fila, mirando hacia −z con +y arriba, con `focal`, `haperture` y
+`vaperture` en milímetros (la apertura vertical es por defecto la horizontal
+al aspecto de la imagen) y `near` y `far` en unidades de la escena. `raw`
+nombra un fichero al que van los números del frame en lugar de una imagen: el
+color como cuatro floats de 32 bits por píxel y luego la profundidad (z de
+vista, 0 donde no se dibujó nada) como uno, las dos con la fila de abajo
+primero, lineales y premultiplicadas. La respuesta es entonces solo texto. Es
+lo que pide el plugin OpenFX.
+
 Los argumentos de cada herramienta se declaran en el protocolo y los enseña el
 cliente, así que aquí no se repiten. La forma de una sesión es: `open_stage`,
 luego `stage_tree` para encontrar una cámara o un prim, luego `render`, luego
 `pick` sobre algo de la imagen. `settings` dice qué guarda la sesión en ese
 momento.
+
+### 6.1 El plugin OpenFX — Athenea 3DGS en Nuke
+
+`Athenea.ofx.bundle` es una nube de gaussianas dibujada por el rasterizador de
+athenea como generador OpenFX, para un compositor: un nodo **Athenea 3DGS**
+(grupo *Athenea*) sin entrada, que dibuja una nube a través de su cámara al
+formato del proyecto y en el tiempo del frame, como floats RGBA lineales y
+premultiplicados. Se compila con `ATHENEA_BUILD_OFX` (activado por defecto;
+macOS y Linux) en `<build>/ofx/Athenea.ofx.bundle`.
+
+El plugin no carga nada del motor. Arranca `athenea-mcp` (§6) como proceso
+hijo la primera vez que renderiza y lo conserva, con la nube abierta, para los
+frames siguientes; cada frame vuelve por un fichero del directorio temporal,
+nunca como imagen. Un servidor que muere se arranca otra vez para el frame
+siguiente. El bundle lleva el servidor en `Contents/Resources/bin`;
+`ATHENEA_MCP` nombra otro.
+
+Para instalarlo, se copia o enlaza el bundle en un directorio que el host
+busque: en macOS `/Library/OFX/Plugins`, o un directorio de `OFX_PLUGIN_PATH`.
+
+| Parámetro | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `cloud` | fichero | ninguno | un `.usdc` o `.usda` con la nube (un `ParticleField3DGaussianSplat`, como lo escriben `athenea stage convert` y los exports). Vacío no dibuja nada |
+| `translate` | 3 números | `0 0 5` | dónde está la cámara, en las unidades de la nube |
+| `rotate` | 3 números, grados | `0 0 0` | alrededor de x, y y z |
+| `rot_order` | `XYZ` … `ZYX` | `ZXY` | el orden en que se aplican las rotaciones, la primera letra primero; ZXY es el de Nuke por defecto |
+| `focal` | mm | `50` | |
+| `haperture` | mm | `24.576` | |
+| `vaperture` | mm | `0` | 0 se ajusta al aspecto del formato, contando el aspecto de píxel, como Nuke ajusta una cámara a su formato |
+| `near`, `far` | unidades de la escena | `0.1`, `10000` | los planos de recorte |
+| `time_offset` | frames | `0` | se suma al frame para dar el tiempo USD de la nube, para una nube animada (con skinning) |
+
+La cámara se construye como Nuke construye la de un nodo Camera: las
+rotaciones en el orden elegido y luego la traslación, mirando hacia −z con +y
+arriba. Los knobs de un nodo Camera se enlazan a estos por expresión
+(`translate`, `rotate`, `rot_order`, `focal`, `haperture`), así que la nube se
+mueve con la cámara de la plancha. El nodo dibuja frames enteros: no renderiza
+por tiles, y a su servidor va un render de una instancia cada vez.
 
 ## 7. Efectos AOFX
 

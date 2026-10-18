@@ -179,6 +179,11 @@ athenea_test(athenea_gpu_host_tests
     LIBS athenea::gpu_host
     LABELS gpe)
 
+# The OpenFX plugin, through a host of OpenFX's own making.
+if(TARGET athenea_ofx)
+    add_subdirectory(ofx)
+endif()
+
 add_subdirectory(aofx/bundles)
 athenea_test(athenea_aofx_tests
     SOURCES aofx/test_aofx.cpp aofx/test_mesh2splat.cpp aofx/test_bake_filter.cpp aofx/test_measure.cpp

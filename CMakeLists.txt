@@ -42,6 +42,7 @@ set(ATHENEA_BUILD "${CMAKE_CURRENT_BINARY_DIR}")
 option(ATHENEA_EMBEDDED "Built inside another project's tree" OFF)
 option(ATHENEA_BUILD_APPS "athenea and athenea-mcp" ON)
 option(ATHENEA_BUILD_PLUGINS "the aofx bundles under plugins/" ON)
+option(ATHENEA_BUILD_OFX "the OpenFX plugin under integrations/ofx (Athenea.ofx.bundle)" ON)
 
 # iOS: the phone build. What it leaves out is what a phone has no use for --
 # gpe (a video engine with a CUDA backend and a Qt viewer), genlock (PTP on a
@@ -244,6 +245,9 @@ if(ATHENEA_BUILD_PLUGINS)
 endif()
 if(ATHENEA_BUILD_APPS)
     add_subdirectory(apps)
+endif()
+if(ATHENEA_BUILD_OFX AND NOT WIN32)
+    add_subdirectory(integrations/ofx)
 endif()
 
 if(BUILD_TESTING)

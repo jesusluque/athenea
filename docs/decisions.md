@@ -14205,3 +14205,33 @@ At the far view the corrected tree draws half the gaussians with less error: the
 apart and let degenerate ones through. The grain is gone from both frames. The 1280 px level is unaffected in
 practice (its gaussians' variances, about 1e-5 m^2, stand well above the rounding), and the 5120 px trees are to be
 rebuilt from their bakes.
+
+## The OpenFX plugin: athenea's gaussians in Nuke (18 Oct)
+
+The user asked for athenea's 3DGS viewer inside Nuke, and nothing else of the engine: a node that draws a gaussian
+cloud through the comp's camera. It is `integrations/ofx`, an OpenFX generator, **Athenea 3DGS**.
+
+**The engine is not loaded into the host.** Nuke carries its own OpenUSD and TBB, and the engine brings one of each;
+two of either in one process share symbols the first time anything calls them. So `Athenea.ofx` links only
+OpenFX's support library and a JSON parser (its only dependencies are libc++ and libSystem), and starts
+`athenea-mcp` as a child the first time it renders. The server keeps the device and the cloud open between frames,
+as it does for every client, and a device lost or a kernel that faults ends the server, not the host; the next
+frame starts it again. A frame comes back as numbers in a temporary file (`render`'s `raw`: RGBA floats then depth,
+bottom row first, premultiplied, which is how an OpenFX image lies), never as a picture, so the copy into the
+host's image is rows as they are.
+
+**The camera is the comp's.** `render` takes `xform` (camera to world, sixteen numbers, looking down -z with +y up)
+and a lens in millimetres, and the node builds that matrix from a translate, a rotate in a chosen order (ZXY,
+Nuke's default) and a focal length and aperture, so a Camera node's knobs link to it by expression. The vertical
+aperture is fitted to the format's aspect unless one is set. The node renders whole frames (no tiles), one at a
+time to its server.
+
+Measured on a unit sphere of 96k gaussians (`spheres-web/tx-balls/paint_first.usdc`), 640 x 360, through
+`athenea_ofx_host` (tests/ofx: OpenFX's HostSupport with real parameters and a float RGBA output clip): the plugin's
+frame against `athenea-mcp`'s own render of the same camera (translate 0.4 0.3 6, rotate -3 4 10 in ZXY, 50 mm,
+36 mm aperture) is identical -- relMSE 0, 8-bit max 0. A warm frame costs the server 16 ms at that size.
+
+Not done: the order of Nuke's rotations is read from its documentation, not yet checked in Nuke; Nuke's own camera
+input (its OpenFX camera extension) in place of linked knobs; depth, motion vectors and Cryptomatte as Nuke layers
+(its multiplane extension); a lit environment for a transfer cloud, which draws flat without a light on its stage;
+`.ply`/`.spz` opened directly rather than converted first; Linux and Windows builds and a signed bundle.

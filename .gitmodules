@@ -9,3 +9,6 @@
 	path = third_party/aopenfx
 	url = https://github.com/jesusluque/aopenfx.git
 	branch = sparrow
+[submodule "third_party/openfx"]
+	path = third_party/openfx
+	url = https://github.com/AcademySoftwareFoundation/openfx
