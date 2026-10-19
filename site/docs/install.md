@@ -96,12 +96,14 @@ The scripts enter the MSVC x64 environment of the newest Visual Studio with the 
 | `windows-x64-debug`, `windows-x64-release` | Windows x64 (CUDA) |
 | `ios-arm64-debug`, `ios-arm64-release` | iOS arm64 (Metal): the engine and its Hydra delegate as static libraries, without the CLI, the AOFX host, the MCP server or the tests |
 | `macos-arm64-blender` | macOS arm64: hdAthenea for Blender (Metal) |
+| `linux-x86_64-blender` | Linux x86_64: hdAthenea for Blender (CUDA/Vulkan) |
+| `windows-x64-blender` | Windows x64: hdAthenea for Blender (CUDA/Vulkan) |
 
 Debug presets build `Debug`; release presets build `RelWithDebInfo`. Each desktop preset has a build preset and a test preset of the same name; the tests run one at a time, since they share the GPU.
 
 ### The Blender add-on
 
-The Blender add-on is built on macOS today, with the `macos-arm64-blender` preset, against headers that match Blender's own OpenUSD (`scripts/build-usd-blender.sh`). Other platforms are in progress. The steps are in [Gaussian splats in Blender](tutorials/blender.md) and in the development manual's *Dependencies and toolchain*.
+The Blender add-on is built against headers that match Blender's own OpenUSD: `scripts/build-usd-blender.sh` on macOS and Linux (`BLENDER_LIB` names Blender's `lib` folder on Linux), `scripts\build-usd-blender.ps1 -BlenderDir <folder>` on Windows, then the `macos-arm64-blender`, `linux-x86_64-blender` or `windows-x64-blender` preset. Under WSL a bake is refused: there is no OptiX there. The steps are in [Gaussian splats in Blender](tutorials/blender.md) and in the development manual's *Dependencies and toolchain*.
 
 ## The runtime environment
 

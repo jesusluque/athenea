@@ -1394,6 +1394,18 @@ libraries:
    `ATHENEA_HYDRA_COMMANDS`), the shaders and the Mesh2Splat,
    SplatBakeFilter, SplatTransferZonal and Measure bundles are built; no
    ctest.
+
+   On Linux the same script runs with `BLENDER_LIB=<blender>/lib` (Blender
+   ships `libusd_ms.so`), and the preset is `linux-x86_64-blender`, which
+   reads `BLENDER_LIB` too. On Windows, `scripts\build-usd-blender.ps1
+   -BlenderDir <folder with blender.exe>` builds the headers into
+   `D:\tools\usd-<version>-blender`, OpenSubdiv 3.7.0 for USD's configure
+   (Blender links it into `usd_ms.dll`), and an import library for each of
+   Blender's DLLs (`usd_ms`, `tbb12`, `MaterialX*`, `opencolorio_2_5`, OIDN)
+   from its exports, with `python313.lib` beside them; the preset is
+   `windows-x64-blender`, with `BLENDER_DIR` set. The plugin carries Slang's
+   and zlib's DLLs beside it, and the add-on puts that folder on `PATH`
+   before USD opens it, since USD loads plugins with `LoadLibrary`.
 3. The add-on is `integrations/blender/athenea_hydra`, a Blender extension
    (operations manual, 4.1.1): `__init__.py` the render engine, its settings
    and panel and the USD export hook; `commands.py` the entry points through

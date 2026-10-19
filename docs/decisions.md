@@ -15061,3 +15061,34 @@ private network; the sparrow film's scripts read `SPARROW` and `ATHENEA` instead
 a copy per machine; the Blender tests and the MaterialX bench write under the build tree and `~/athenea-renders`.
 The macOS package identifier is `uk.co.lucab.athenea`, the order the OFX bundle already used. Every first-party
 source, script and CMake file carries the copyright line.
+
+## The Blender add-on and the OpenFX node on Linux and Windows (19 Oct)
+
+Built and run on one laptop (RTX 3070 Laptop, 8 GB): Linux under WSL2 (Ubuntu 24.04, CUDA 12.9) and Windows natively
+(MSVC 14.44), against the Blender 5.3 beta of 19 Oct, whose USD is the same 26.08 in `pxrBlender_v26_08` on every
+system.
+
+- **Linux.** Blender ships `lib/libusd_ms.so` and the rest by SONAME, so `cmake/BlenderUsd.cmake` names each library
+  by its base and links the file; Python's symbols are left undefined, as a shared library on Linux may.
+  `build-usd-blender.sh` runs there with `BLENDER_LIB`. GCC 13 rejects the constructor of
+  `HdRetainedTypedSampledDataSource<bool>` written with its template arguments, which `build-usd.sh` already rewrote;
+  the Blender script now does too. `tests/blender`: `test_module` passes whole; `viewport_readback` passes (half
+  draws what float draws, p99 0) at 2.5 s a frame; `tx_module` is refused, because WSL has no OptiX and a bake
+  traces.
+- **Windows.** Blender ships DLLs without import libraries and links OpenSubdiv into `usd_ms.dll`:
+  `build-usd-blender.ps1` makes a `.lib` from each DLL's exports (`dumpbin /exports`, `lib /def`; 23 548 for
+  `usd_ms.dll`) and builds OpenSubdiv for USD's configure alone. Python is `python313.dll`, linked by its import
+  library. USD opens a plugin with `LoadLibrary`, which does not look beside it: the plugin carries Slang's and
+  zlib's DLLs and the add-on puts their folder on `PATH` before registering it. The embedded commands' attributes
+  are macros MSVC reads (`__declspec(dllexport)`). `test_module` passes whole; `viewport_readback` passes at
+  2.7-4 s a frame; `tx_module` bakes (1313 s cold, 460 s with OptiX's cache) and its catcher, comparison with
+  Cycles (relMSE 0.036), export and cancel pass, but the cloud against the path traced reference is relMSE 0.72
+  and p99 193 where macOS passes (#40), and Blender exits with 0xC0000409 after it (#41).
+- **OpenFX on Linux.** The bundle builds (`Contents/Linux-x86-64`, `athenea-mcp` in `Resources/bin`) and
+  `athenea_ofx_host` renders a frame through it. Its server finds the shaders only in the build tree (#43). The
+  server is started on Windows with `CreateProcess` on two pipes, and the bundle is built there (`Win64`).
+
+The viewport's readback costs seconds a frame on CUDA (#42) where Metal's costs milliseconds.
+
+The "Not done: Windows" of *A plugin finds its files from itself* is done: `Platform.cpp` finds its module with
+`GetModuleHandleExW` since the Windows port.
