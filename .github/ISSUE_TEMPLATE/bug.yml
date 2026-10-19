@@ -1,0 +1,27 @@
+# Copyright (c) 2026 jesus luque.
+name: Bug
+description: Something renders, converts or loads wrong, or crashes
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens, and what was expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The command or the steps, and the stage or file if it can be shared.
+    validations:
+      required: true
+  - type: input
+    id: info
+    attributes:
+      label: "`athenea info` (device, backend, version)"
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Engine, Blender add-on, OpenFX node, Web, Platforms, Docs]
