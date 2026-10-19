@@ -14,3 +14,18 @@
 .md-typeset .kicker { text-transform: uppercase; letter-spacing: .2em; font-size: .7rem; color: #e8823a; font-weight: 600; }
 .md-typeset figure img { border-radius: 6px; }
 .md-typeset table:not([class]) th { color: #c9692a; }
+/* The paper's notes (acotaciones): the explanation, references and code behind a paragraph. */
+.md-typeset .nota {
+  margin: .6em 0 1.4em; padding: .7em 1em .5em; font-size: .72rem; line-height: 1.55;
+  border-left: 4px solid #e8823a; background: rgba(232, 130, 58, .07); border-radius: 0 6px 6px 0;
+}
+.md-typeset .nota::before {
+  content: attr(data-label); display: block; margin-bottom: .3em;
+  text-transform: uppercase; letter-spacing: .14em; font-size: .6rem; font-weight: 600; color: #e8823a;
+}
+.md-typeset .nota p { margin: .35em 0; }
+.md-typeset .nota .arithmatex { overflow-x: auto; overflow-y: hidden; }
+body.notas-ocultas .md-typeset .nota { display: none; }
+.md-typeset .nota-toggle { font-size: .65rem; padding: .3em 1em; margin: 0 0 1em; color: #e8823a; border-color: #e8823a; cursor: pointer; }
+.md-typeset .nota-toggle:hover { color: #fff; background: #e8823a; }
+.md-typeset .byline { color: var(--md-default-fg-color--light); margin: 0; }

@@ -10,6 +10,11 @@ distintos:
 
 Cierra con la evaluación frente al path trace, los límites y el trabajo futuro.
 
+Es la **edición anotada**: tras cada párrafo, una acotación explica los términos y las matemáticas en que se apoya,
+cita la bibliografía y señala el código que lo implementa. Termina con un glosario de unos 200 términos. Se puede leer
+aquí, sección a sección (del [Resumen](paper/00-front.md) a [Referencias y glosario](paper/10-references.md)), con un
+botón en cada página para ocultar o mostrar las acotaciones, o descargar en PDF.
+
 | Descarga | Idioma |
 |---|---|
 | [gaussian-splat-relight-transfer-baking.en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/gaussian-splat-relight-transfer-baking.en.pdf) | inglés |

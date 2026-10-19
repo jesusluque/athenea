@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="420" viewBox="0 0 760 420" font-family="Helvetica, Arial, sans-serif" xml:space="preserve">
+<!-- Copyright (c) 2026 jesus luque. -->
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3e4c59"/></marker></defs>
+<rect width="760" height="420" fill="#ffffff"/>
+<rect x="8" y="8" width="292" height="404" rx="9" fill="none" stroke="#9a7433" stroke-width="1.2" stroke-dasharray="5 4"/>
+<text x="18" y="23" text-anchor="start" font-size="11.5" font-style="italic" font-weight="bold" fill="#9a7433">baked per Gaussian</text>
+<rect x="20" y="30" width="268" height="54" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="154.0" y="53.7" text-anchor="middle" font-size="12" font-weight="bold" fill="#1f2933">direct</text>
+<text x="154.0" y="71.7" text-anchor="middle" font-size="10.5" fill="#52606d">16 SH (degree 3), scalar</text>
+<rect x="20" y="93" width="268" height="54" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="154.0" y="116.7" text-anchor="middle" font-size="12" font-weight="bold" fill="#1f2933">indirect</text>
+<text x="154.0" y="134.7" text-anchor="middle" font-size="10.5" fill="#52606d">48 values (16 SH × RGB)</text>
+<rect x="20" y="156" width="268" height="54" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="154.0" y="179.7" text-anchor="middle" font-size="12" font-weight="bold" fill="#1f2933">reflected field</text>
+<text x="154.0" y="197.7" text-anchor="middle" font-size="10.5" fill="#52606d">48 values (16 SH × RGB)</text>
+<rect x="20" y="219" width="268" height="54" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="154.0" y="242.7" text-anchor="middle" font-size="12" font-weight="bold" fill="#1f2933">open directions</text>
+<text x="154.0" y="260.7" text-anchor="middle" font-size="10.5" fill="#52606d">16 × 16 octahedral cells, 256 bits</text>
+<rect x="20" y="282" width="268" height="54" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="154.0" y="305.7" text-anchor="middle" font-size="12" font-weight="bold" fill="#1f2933">curvature</text>
+<text x="154.0" y="323.7" text-anchor="middle" font-size="10.5" fill="#52606d">shape operator (S<tspan dy="2.9" font-size="7.6">uu</tspan><tspan dy="-2.9">, S</tspan><tspan dy="2.9" font-size="7.6">uv</tspan><tspan dy="-2.9">, S</tspan><tspan dy="2.9" font-size="7.6">vv</tspan><tspan dy="-2.9">)</tspan></text>
+<rect x="20" y="345" width="268" height="54" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="154.0" y="368.7" text-anchor="middle" font-size="12" font-weight="bold" fill="#1f2933">material marks</text>
+<text x="154.0" y="386.7" text-anchor="middle" font-size="10.5" fill="#52606d">roughness before widening; pbr bits</text>
+<rect x="340" y="12" width="410" height="56" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="545.0" y="36.8" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">environment at draw time</text>
+<text x="545.0" y="55.1" text-anchor="middle" font-size="10.5" fill="#52606d">any sky as 16 SH and prefiltered levels; sun; lights</text>
+<rect x="340.0" y="110" width="128.7" height="78" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="404.35" y="139.6" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">body</text>
+<text x="404.35" y="157.1" text-anchor="middle" font-size="10" fill="#52606d">direct and indirect</text>
+<text x="404.35" y="170.3" text-anchor="middle" font-size="10" fill="#52606d">against the sky SH</text>
+<polyline points="404.3,68 404.3,108" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<rect x="480.7" y="110" width="128.7" height="78" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="545.05" y="139.6" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">polish</text>
+<text x="545.05" y="157.1" text-anchor="middle" font-size="10" fill="#52606d">lobe cells open → sky,</text>
+<text x="545.05" y="170.3" text-anchor="middle" font-size="10" fill="#52606d">closed → reflected field</text>
+<polyline points="545.0,68 545.0,108" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<rect x="621.3" y="110" width="128.7" height="78" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="685.65" y="139.6" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">clear coat</text>
+<text x="685.65" y="157.1" text-anchor="middle" font-size="10" fill="#52606d">Fresnel-weighted mirror;</text>
+<text x="685.65" y="170.3" text-anchor="middle" font-size="10" fill="#52606d">unwidened roughness</text>
+<polyline points="685.7,68 685.7,108" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<rect x="474" y="228" width="276" height="98" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="612.0" y="254.3" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">sharp lobe per pixel</text>
+<text x="612.0" y="271.9" text-anchor="middle" font-size="10" fill="#52606d">below the sharp roughness thresholds: mirror</text>
+<text x="612.0" y="285.1" text-anchor="middle" font-size="10" fill="#52606d">at the centre plus its per-pixel steps from the</text>
+<text x="612.0" y="298.3" text-anchor="middle" font-size="10" fill="#52606d">curvature; fold rule; the pixel’s spread</text>
+<text x="612.0" y="311.5" text-anchor="middle" font-size="10" fill="#52606d">widens GGX α</text>
+<rect x="340" y="360" width="410" height="50" rx="6" fill="#f8e9e7" stroke="#9a4d42" stroke-width="1.3"/>
+<text x="545.0" y="381.8" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">pixel colour</text>
+<text x="545.0" y="400.1" text-anchor="middle" font-size="10.5" fill="#52606d">validated against the path trace of the source mesh (§4.10)</text>
+<polyline points="404.3,188 404.3,358" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="545.0,188 545.0,226" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="685.7,188 685.7,226" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="612,326 612,358" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<path d="M 300,210 L 322,210" stroke="#9a7433" stroke-width="7" fill="none"/>
+<path d="M 320,200 L 336,210 L 320,220 z" fill="#9a7433"/>
+<text x="318" y="240" text-anchor="middle" font-size="10" fill="#52606d" font-style="italic">read</text>
+</svg>

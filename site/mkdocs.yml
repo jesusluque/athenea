@@ -35,6 +35,11 @@ theme:
 extra_css:
   - assets/athenea.css
 
+extra_javascript:
+  - assets/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js
+  - assets/notes.js
+
 plugins:
   - search
   - i18n:
@@ -64,6 +69,18 @@ plugins:
             "OpenFX (Nuke, Natron)": "OpenFX (Nuke, Natron)"
             Reference: Referencia
             Paper: Paper
+            Download: Descarga
+            Abstract: Resumen
+            1. Introduction: 1. Introducción
+            2. The engine: 2. El motor
+            3. Mesh to Gaussians: 3. De meshes a Gaussians
+            4. Light transfer: 4. Transfer de luz
+            5. Animated assets: 5. Assets animados
+            6. Levels of detail: 6. Niveles de detalle
+            7. The web format: 7. El formato web
+            8. Evaluation: 8. Evaluación
+            9. Limitations: 9. Limitaciones
+            10. References and glossary: 10. Referencias y glosario
             Presentations: Presentaciones
             Credits: Créditos
 
@@ -79,7 +96,19 @@ nav:
       - Gaussian splats in Blender: tutorials/blender.md
   - "OpenFX (Nuke, Natron)": ofx.md
   - Reference: reference.md
-  - Paper: paper.md
+  - Paper:
+      - Download: paper.md
+      - Abstract: paper/00-front.md
+      - 1. Introduction: paper/01-introduction.md
+      - 2. The engine: paper/02-engine.md
+      - 3. Mesh to Gaussians: paper/03-conversion.md
+      - 4. Light transfer: paper/04-transfer.md
+      - 5. Animated assets: paper/05-animation.md
+      - 6. Levels of detail: paper/06-lod.md
+      - 7. The web format: paper/07-compression-player.md
+      - 8. Evaluation: paper/08-evaluation.md
+      - 9. Limitations: paper/09-limitations.md
+      - 10. References and glossary: paper/10-references.md
   - Presentations: presentations.md
   - Credits: credits.md
 
@@ -93,3 +122,5 @@ markdown_extensions:
   - pymdownx.highlight: { anchor_linenums: true }
   - pymdownx.inlinehilite
   - pymdownx.details
+  - def_list
+  - pymdownx.arithmatex: { generic: true }

@@ -10,6 +10,11 @@ different goals:
 
 It closes with the evaluation against the path trace, the limits and the future work.
 
+This is the **annotated edition**: after each paragraph, a note explains the terms and the mathematics it rests on,
+cites the bibliography and points to the code that implements it. It ends with a glossary of about 200 terms. Read it
+here, section by section (from [Abstract](paper/00-front.md) to [References and glossary](paper/10-references.md)),
+where a button on each page hides or shows the notes, or download it as a PDF.
+
 | Download | Language |
 |---|---|
 | [gaussian-splat-relight-transfer-baking.en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/gaussian-splat-relight-transfer-baking.en.pdf) | English |

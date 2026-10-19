@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="536" viewBox="0 0 760 536" font-family="Helvetica, Arial, sans-serif" xml:space="preserve">
+<!-- Copyright (c) 2026 jesus luque. -->
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3e4c59"/></marker></defs>
+<rect width="760" height="536" fill="#ffffff"/>
+<text x="14" y="51.0" text-anchor="start" font-size="11" fill="#52606d" font-style="italic">front ends</text>
+<rect x="112.0" y="14" width="144.0" height="66" rx="6" fill="#efeaf6" stroke="#6f5a91" stroke-width="1.3"/>
+<text x="184.0" y="37.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">usd</text>
+<text x="184.0" y="55.1" text-anchor="middle" font-size="10.3" fill="#52606d">Engine, StageRenderer, Export,</text>
+<text x="184.0" y="68.7" text-anchor="middle" font-size="10.3" fill="#52606d">hdAthenea, schemas</text>
+<rect x="264.0" y="14" width="144.0" height="66" rx="6" fill="#efeaf6" stroke="#6f5a91" stroke-width="1.3"/>
+<text x="336.0" y="37.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">aofx</text>
+<text x="336.0" y="55.1" text-anchor="middle" font-size="10.3" fill="#52606d">AOFX host side,</text>
+<text x="336.0" y="68.7" text-anchor="middle" font-size="10.3" fill="#52606d">renderEffect, bundles</text>
+<rect x="416.0" y="14" width="144.0" height="66" rx="6" fill="#efeaf6" stroke="#6f5a91" stroke-width="1.3"/>
+<text x="488.0" y="37.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">mcp</text>
+<text x="488.0" y="55.1" text-anchor="middle" font-size="10.3" fill="#52606d">MCP server</text>
+<text x="488.0" y="68.7" text-anchor="middle" font-size="10.3" fill="#52606d">(JSON-RPC 2.0)</text>
+<rect x="568.0" y="14" width="144.0" height="66" rx="6" fill="#efeaf6" stroke="#6f5a91" stroke-width="1.3"/>
+<text x="640.0" y="37.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">view</text>
+<text x="640.0" y="55.1" text-anchor="middle" font-size="10.3" fill="#52606d">athenea view:</text>
+<text x="640.0" y="68.7" text-anchor="middle" font-size="10.3" fill="#52606d">GLFW, Dear ImGui</text>
+<text x="14" y="141.0" text-anchor="start" font-size="11" fill="#52606d" font-style="italic">frame and LOD</text>
+<rect x="112.0" y="100" width="296.0" height="74" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="260.0" y="120.4" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">technique</text>
+<text x="260.0" y="138.3" text-anchor="middle" font-size="10.3" fill="#52606d">Visibility Raster/Trace/Bvh,</text>
+<text x="260.0" y="151.9" text-anchor="middle" font-size="10.3" fill="#52606d">shading, path tracer, Denoiser,</text>
+<text x="260.0" y="165.5" text-anchor="middle" font-size="10.3" fill="#52606d">DisplayTransform, SplatVisibility</text>
+<rect x="416.0" y="100" width="296.0" height="74" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="564.0" y="120.4" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">lod</text>
+<text x="564.0" y="138.3" text-anchor="middle" font-size="10.3" fill="#52606d">LodBuilder, CutSelector,</text>
+<text x="564.0" y="151.9" text-anchor="middle" font-size="10.3" fill="#52606d">.athc reader/writer,</text>
+<text x="564.0" y="165.5" text-anchor="middle" font-size="10.3" fill="#52606d">StreamingPool</text>
+<text x="14" y="231.0" text-anchor="start" font-size="11" fill="#52606d" font-style="italic">scene</text>
+<rect x="112.0" y="194" width="194.7" height="66" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="209.35" y="217.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">world</text>
+<text x="209.35" y="235.1" text-anchor="middle" font-size="10.3" fill="#52606d">GpuScene, Instancing,</text>
+<text x="209.35" y="248.7" text-anchor="middle" font-size="10.3" fill="#52606d">BLAS/TLAS, BvhScene</text>
+<rect x="314.7" y="194" width="194.7" height="66" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="412.04999999999995" y="217.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">light</text>
+<text x="412.04999999999995" y="235.1" text-anchor="middle" font-size="10.3" fill="#52606d">UsdLux records,</text>
+<text x="412.04999999999995" y="248.7" text-anchor="middle" font-size="10.3" fill="#52606d">sampling, light BVH</text>
+<rect x="517.3" y="194" width="194.7" height="66" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="614.65" y="217.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">material</text>
+<text x="614.65" y="235.1" text-anchor="middle" font-size="10.3" fill="#52606d">TextureStore, MaterialCompiler</text>
+<text x="614.65" y="248.7" text-anchor="middle" font-size="10.3" fill="#52606d">(MaterialX → Slang), lobes</text>
+<text x="14" y="317.0" text-anchor="start" font-size="11" fill="#52606d" font-style="italic">primitives</text>
+<rect x="112.0" y="280" width="194.7" height="66" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="209.35" y="303.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">scene</text>
+<text x="209.35" y="321.1" text-anchor="middle" font-size="10.3" fill="#52606d">CloudLoader:</text>
+<text x="209.35" y="334.7" text-anchor="middle" font-size="10.3" fill="#52606d">GpuSplats, GpuPoints</text>
+<rect x="314.7" y="280" width="194.7" height="66" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="412.04999999999995" y="303.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">render</text>
+<text x="412.04999999999995" y="321.1" text-anchor="middle" font-size="10.3" fill="#52606d">TileRasterizer, GaussianRayTracer,</text>
+<text x="412.04999999999995" y="334.7" text-anchor="middle" font-size="10.3" fill="#52606d">ReferenceRenderer, Camera</text>
+<rect x="517.3" y="280" width="194.7" height="66" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="614.65" y="303.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">geom</text>
+<text x="614.65" y="321.1" text-anchor="middle" font-size="10.3" fill="#52606d">MeshBuilder: triangulation,</text>
+<text x="614.65" y="334.7" text-anchor="middle" font-size="10.3" fill="#52606d">normals, primvars</text>
+<text x="14" y="407.0" text-anchor="start" font-size="11" fill="#52606d" font-style="italic">device</text>
+<rect x="112.0" y="366" width="194.7" height="74" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="209.35" y="386.4" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">gpu</text>
+<text x="209.35" y="404.3" text-anchor="middle" font-size="10.3" fill="#52606d">slang-rhi device, ShaderLibrary,</text>
+<text x="209.35" y="417.9" text-anchor="middle" font-size="10.3" fill="#52606d">ComputeKernel, CommandBatch,</text>
+<text x="209.35" y="431.5" text-anchor="middle" font-size="10.3" fill="#52606d">PrefixSum, RadixSort</text>
+<rect x="314.7" y="366" width="194.7" height="74" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="412.04999999999995" y="393.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">gpu_host</text>
+<text x="412.04999999999995" y="411.1" text-anchor="middle" font-size="10.3" fill="#52606d">gpe on the same</text>
+<text x="412.04999999999995" y="424.7" text-anchor="middle" font-size="10.3" fill="#52606d">MTLDevice / CUDA context</text>
+<rect x="517.3" y="366" width="194.7" height="74" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="614.65" y="393.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">colour</text>
+<text x="614.65" y="411.1" text-anchor="middle" font-size="10.3" fill="#52606d">ColourCompiler</text>
+<text x="614.65" y="424.7" text-anchor="middle" font-size="10.3" fill="#52606d">(OpenColorIO → Slang)</text>
+<text x="14" y="495.0" text-anchor="start" font-size="11" fill="#52606d" font-style="italic">base</text>
+<rect x="112.0" y="460" width="113.6" height="62" rx="6" fill="#f1f1f1" stroke="#6b6b6b" stroke-width="1.3"/>
+<text x="168.8" y="481.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">core</text>
+<text x="168.8" y="499.1" text-anchor="middle" font-size="10.3" fill="#52606d">Result, logging,</text>
+<text x="168.8" y="512.7" text-anchor="middle" font-size="10.3" fill="#52606d">Platform</text>
+<rect x="233.6" y="460" width="113.6" height="62" rx="6" fill="#f1f1f1" stroke="#6b6b6b" stroke-width="1.3"/>
+<text x="290.4" y="481.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">ui</text>
+<text x="290.4" y="499.1" text-anchor="middle" font-size="10.3" fill="#52606d">panels as a</text>
+<text x="290.4" y="512.7" text-anchor="middle" font-size="10.3" fill="#52606d">description</text>
+<rect x="355.2" y="460" width="113.6" height="62" rx="6" fill="#f1f1f1" stroke="#6b6b6b" stroke-width="1.3"/>
+<text x="412.0" y="481.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">sched</text>
+<text x="412.0" y="499.1" text-anchor="middle" font-size="10.3" fill="#52606d">FrameClock,</text>
+<text x="412.0" y="512.7" text-anchor="middle" font-size="10.3" fill="#52606d">genlock PTP</text>
+<rect x="476.8" y="460" width="113.6" height="62" rx="6" fill="#f1f1f1" stroke="#6b6b6b" stroke-width="1.3"/>
+<text x="533.6" y="481.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">image</text>
+<text x="533.6" y="499.1" text-anchor="middle" font-size="10.3" fill="#52606d">Image (RGBA</text>
+<text x="533.6" y="512.7" text-anchor="middle" font-size="10.3" fill="#52606d">float32)</text>
+<rect x="598.4" y="460" width="113.6" height="62" rx="6" fill="#f1f1f1" stroke="#6b6b6b" stroke-width="1.3"/>
+<text x="655.1999999999999" y="481.2" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">io</text>
+<text x="655.1999999999999" y="499.1" text-anchor="middle" font-size="10.3" fill="#52606d">PLY, SPZ, SOG,</text>
+<text x="655.1999999999999" y="512.7" text-anchor="middle" font-size="10.3" fill="#52606d">IES, EXR readers</text>
+<polyline points="734,20 734,518" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<text x="750" y="266.0" font-size="11" fill="#52606d" text-anchor="middle" transform="rotate(90 750 266.0)">each module links only the modules below it</text>
+</svg>

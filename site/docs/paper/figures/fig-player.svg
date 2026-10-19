@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="410" viewBox="0 0 760 410" font-family="Helvetica, Arial, sans-serif" xml:space="preserve">
+<!-- Copyright (c) 2026 jesus luque. -->
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3e4c59"/></marker></defs>
+<rect width="760" height="410" fill="#ffffff"/>
+<rect x="8" y="10" width="744" height="76" rx="6" fill="#f1f1f1" fill-opacity="0.45" stroke="#6b6b6b" stroke-width="0.8"/>
+<text x="20" y="52.0" font-size="11.5" font-weight="bold" fill="#1f2933">main thread</text>
+<rect x="8" y="98" width="744" height="76" rx="6" fill="#eef2f7" fill-opacity="0.45" stroke="#5b6b80" stroke-width="0.8"/>
+<text x="20" y="140.0" font-size="11.5" font-weight="bold" fill="#1f2933">traversal worker (WASM)</text>
+<rect x="8" y="186" width="744" height="76" rx="6" fill="#eef2f7" fill-opacity="0.45" stroke="#5b6b80" stroke-width="0.8"/>
+<text x="20" y="228.0" font-size="11.5" font-weight="bold" fill="#1f2933">node worker (NodeCutter)</text>
+<rect x="8" y="274" width="744" height="76" rx="6" fill="#e6f1ea" fill-opacity="0.45" stroke="#4f7a5c" stroke-width="0.8"/>
+<text x="20" y="316.0" font-size="11.5" font-weight="bold" fill="#1f2933">GPU (WebGPU)</text>
+<rect x="200" y="20" width="170" height="56" rx="6" fill="#f1f1f1" stroke="#6b6b6b" stroke-width="1.3"/>
+<text x="285.0" y="45.1" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">Range fetches</text>
+<text x="285.0" y="62.7" text-anchor="middle" font-size="10" fill="#52606d">≤ 12 in flight, merged ≤ 8 MiB</text>
+<rect x="390" y="20" width="170" height="56" rx="6" fill="#fbf1df" stroke="#9a7433" stroke-width="1.3"/>
+<text x="475.0" y="38.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">page pool</text>
+<text x="475.0" y="56.1" text-anchor="middle" font-size="10" fill="#52606d">evict the finest band first;</text>
+<text x="475.0" y="69.3" text-anchor="middle" font-size="10" fill="#52606d">page 0 is never evicted</text>
+<rect x="580" y="20" width="162" height="56" rx="6" fill="#f1f1f1" stroke="#6b6b6b" stroke-width="1.3"/>
+<text x="661.0" y="38.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">frame-time control</text>
+<text x="661.0" y="56.1" text-anchor="middle" font-size="10" fill="#52606d">τ floor from GPU time,</text>
+<text x="661.0" y="69.3" text-anchor="middle" font-size="10" fill="#52606d">T = 33 ms</text>
+<rect x="200" y="108" width="250" height="56" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="325.0" y="126.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">traversal over all trees</text>
+<text x="325.0" y="144.1" text-anchor="middle" font-size="10" fill="#52606d">error cut, back-face and occlusion culls;</text>
+<text x="325.0" y="157.3" text-anchor="middle" font-size="10" fill="#52606d">needed pages; extrapolated camera</text>
+<rect x="468" y="108" width="232" height="56" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="584.0" y="126.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">tauToFit</text>
+<text x="584.0" y="144.1" text-anchor="middle" font-size="10" fill="#52606d">lowest τ whose pages fit (bisection);</text>
+<text x="584.0" y="157.3" text-anchor="middle" font-size="10" fill="#52606d">pages ranked by error removed per byte</text>
+<rect x="200" y="196" width="500" height="56" rx="6" fill="#eef2f7" stroke="#5b6b80" stroke-width="1.3"/>
+<text x="450.0" y="214.6" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f2933">cut to slots</text>
+<text x="450.0" y="232.1" text-anchor="middle" font-size="10" fill="#52606d">inflate runs of 64 nodes, pack records, draw list with</text>
+<text x="450.0" y="245.3" text-anchor="middle" font-size="10" fill="#52606d">substitutes for missing children, prefetch</text>
+<rect x="200.0" y="288" width="98.8" height="48" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="249.4" y="315.4" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#1f2933">project</text>
+<rect x="310.8" y="288" width="98.8" height="48" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="360.2" y="315.4" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#1f2933">cull</text>
+<polyline points="298.8,312 309.3,312" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<rect x="421.6" y="288" width="98.8" height="48" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="471.0" y="315.4" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#1f2933">sort</text>
+<polyline points="409.6,312 420.1,312" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<rect x="532.4" y="288" width="98.8" height="48" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="581.8" y="315.4" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#1f2933">shade (relight)</text>
+<polyline points="520.4,312 530.9,312" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<rect x="643.2" y="288" width="98.8" height="48" rx="6" fill="#e6f1ea" stroke="#4f7a5c" stroke-width="1.3"/>
+<text x="692.6" y="315.4" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#1f2933">draw</text>
+<polyline points="631.2,312 641.7,312" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="330,108 330,78" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="370,48 388,48" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="450,136 466,136" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="400,164 400,194" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="470,252 470,286" fill="none" stroke="#3e4c59" stroke-width="1.4" marker-end="url(#ah)"/>
+<polyline points="724,288 724,78" fill="none" stroke="#3e4c59" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#ah)"/>
+<text x="738" y="224" font-size="10" font-style="italic" fill="#52606d" text-anchor="middle" transform="rotate(-90 738 224)">GPU time</text>
+<text x="380" y="382" text-anchor="middle" font-size="10.5" fill="#52606d" font-style="italic">still frame: after 300 ms without input, τ drops to 0.5 px and the still pool (28 MB of traversal) is used;</text>
+<text x="380" y="398" text-anchor="middle" font-size="10.5" fill="#52606d" font-style="italic">a touch brings back the pinned moving cut in the same frame</text>
+</svg>

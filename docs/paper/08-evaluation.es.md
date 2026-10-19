@@ -1,0 +1,452 @@
+<!-- Copyright (c) 2026 jesus luque. -->
+
+# 8. Evaluación
+
+Esta sección reúne las medidas de las secciones 2–7 en un solo relato, por proceso. Empieza la Parte I, el bake: el
+master validado haciendo el relight de las Gaussians frente al path trace del mesh de origen (§8.2, §8.3), el motor
+(§8.4), el LOD (§8.5) y los costes del bake (§8.6). La Parte II, el formato web, va al final: su compresión, su
+comportamiento en el móvil y su memoria (§8.7–§8.9), medidos como una pérdida frente al master. No introduce cifras nuevas: cada cifra se
+cita de la sección que se indica a su lado. Donde dos fuentes dan cifras distintas para la misma magnitud, la §8.10
+dice cuál es cuál.
+
+::: {.nota}
+**Dos referencias, dos preguntas** — La sección separa dos medidas que responden a preguntas distintas. La Parte I compara el *master* (la nube con bake, dibujada por el rasterizer de escritorio del motor) con el path trace del mesh de origen: mide cuánto se pierde al pasar de una superficie con material a Gaussians con un transfer precalculado. La Parte II compara el formato web con ese master: mide cuánto añade la compresión, el registro compacto y el cut del player. El error frente al path trace del producto final es, en el peor caso, la suma de los dos en norma RMS. Con $m$ el master, $r$ la referencia y $w$ el formato web, la desigualdad triangular da
+$$\lVert w-r\rVert \le \lVert m-r\rVert + \lVert w-m\rVert ,$$
+y si los dos errores no están correlacionados el cuadrado se suma: $\lVert w-r\rVert^2 \approx \lVert m-r\rVert^2+\lVert w-m\rVert^2$.
+
+**Por qué medir la pérdida del formato frente al master y no frente al path trace** — El PSNR no es aditivo: un formato a 40 dB del master, sobre un master a 18 dB del path trace, tiene un RMSE relativo $10^{-(40-18)/20}\approx 0.08$ del error del master. En el peor caso (errores alineados) eso empeora el total en $20\log_{10}(1.08)\approx 0.7$ dB; sin correlación, en $10\log_{10}(1+0.08^2)\approx 0.03$ dB. Medido directamente frente al path trace, una pérdida de formato de ese tamaño quedaría escondida bajo el error del bake; medida frente al master, aparece aislada y se puede atribuir a un paso concreto.
+
+**Trazabilidad** — La sección no añade cifras: cada número remite a la sección donde se midió, y la §8.10 reconcilia las que discrepan. Es el mismo criterio que sigue `docs/decisions.md`, donde cada subsistema registra qué se midió, con qué comando y qué no está hecho.
+
+*Referencias:* `docs/decisions.md` (secciones "The Corvette on an iPhone (11-12 Oct)" y "Measure: `athenea compare` as an AOFX effect").
+:::
+
+## 8.1 Marco
+
+Las medidas de escritorio se tomaron en un Apple M5 Pro con Metal; los resultados de Vulkan y CUDA proceden de una
+NVIDIA L4 (§2.15). La referencia del Corvette es el path trace del mesh desde `/World/Camera` a 1920 × 1080 (§1.6). El
+player se midió de tres maneras que no son intercambiables (§7): marcas de tiempo de GPU de Dawn sin ventana en el
+M5 Pro, el sitio publicado en Chrome de escritorio en su modo móvil a 393 × 852 (el *iPhone emulado*, más o menos el
+doble de rápido que el real), y un iPhone real (iOS 18.7, Safari 26.6.1, 393 × 852 @3).
+
+::: {.nota}
+**El hardware** — El Apple M5 Pro tiene memoria unificada: CPU y GPU comparten la misma DRAM, de modo que «memoria del device» y memoria del sistema son el mismo presupuesto (lo que importa para los topes de leaves de la §9.2). La NVIDIA L4 es una GPU de centro de datos de arquitectura Ada (24 GB) en una instancia Ubuntu; ahí el motor corre con dos backends de slang-rhi, Vulkan y CUDA (este último con OptiX 9 y sin rasterización), y por eso la batería de pruebas de la §8.4 se omite en parte en CUDA. Cada máquina calcula sus métricas en su propia GPU y ningún píxel viaja entre máquinas: la paridad es de métricas, no de imágenes.
+
+**La referencia del Corvette** — Es un path trace del *mesh* (no de las Gaussians) desde la cámara `/World/Camera`, a 1920 × 1080, bajo el HDRI `autoshop_01_4k` (§1.6). Usar la misma cámara, la misma resolución y la misma convención de centro de píxel en referencia y candidato es lo que permite comparar píxel a píxel: un desplazamiento de medio píxel entre las dos imágenes aparece como error en cada borde y en cada brillo especular, sin que la nube esté mal. El número de paths por píxel de esta referencia no figura en el artículo; las referencias del arnés `--validate` se trazan a 512 paths y 6 bounces (§3.10) y la del peón a 2048 paths (§5.11).
+
+**Tres formas de medir el player** — (1) Las marcas de tiempo de GPU de Dawn sin ventana son *timestamp queries* de WebGPU leídas en Dawn, la implementación de WebGPU de Chrome, ejecutada fuera del navegador y sin ventana: miden el tiempo que la GPU pasa en los pases, sin el compositor del navegador, la sincronización vertical ni el coste de CPU de JavaScript. Dentro del navegador, en cambio, estas marcas pueden estar cuantizadas por motivos de seguridad. (2) El *iPhone emulado* es el modo de dispositivo de las DevTools de Chrome: cambia el viewport (393 × 852 píxeles CSS), el device pixel ratio y el user agent, pero la GPU sigue siendo la del Mac; por eso va más o menos al doble de velocidad que el teléfono y sirve para la lógica (cuántos nodos, cuánta memoria), no para el tiempo. (3) El iPhone real a 393 × 852 puntos con factor 3 son 1179 × 2556 píxeles físicos; además, un teléfono baja su frecuencia por temperatura tras unos segundos de carga sostenida, así que una cifra de arranque y una sostenida no son la misma magnitud.
+
+*Referencias:* [46] del §10 (WebGPU, `timestamp-query`); [44] (slang-rhi); W3C, *WebGPU*, sección "Timestamp Query"; código: `scripts/remote-test.sh`; `docs/decisions.md` (secciones "The three devices, at the end of this pass (commit 2e6e183)", "Vulkan on the L4" y "A note on WebGPU").
+:::
+
+## 8.2 La conversión frente al path trace
+
+| asset o prueba | medida | resultado | § |
+|---|---|---|---|
+| cuadrilátero unidad iluminado de frente (píxel del mesh 0.5032) | píxel convertido con $\sigma$ = 1.0 / con los valores del material | 0.456 / 0.5009 | 3.4, 3.6 |
+| Corvette, 640 px, bordes sujetos frente al control | relMSE / PSNR / SSIM, frame de día | 0.0887 / 21.93 dB / 0.8567 frente a 0.0902 / 21.86 dB / 0.8554 | 3.5 |
+| shadow catcher del Corvette frente al path trace | bajo el coche / contacto del parachoques / suelo abierto | 0.192 / 0.030 / 0.220 frente a 0.182 / 0.043 / 0.217 | 3.9 |
+| Corvette, bake de 640 → 1280 px | recorte del coche / frame | 16.55 → 17.88 dB / 22.18 → 23.90 dB | 3.11 |
+| peón blanco, cuerpo / cabeza de vidrio (2048²) | relMSE | 0.0218 / 0.1418 (ejecuciones posteriores: vidrio 0.149, 0.081, 0.043) | 5.11 |
+| gorrión (conversión web) frente al path trace del mesh | relMSE, raster | 0.0025 | 5.10 |
+| ala del gorrión, raster / trazada | relMSE con la coverage siguiendo a la opacidad | 0.1635 / 0.1247 | 5.10 |
+
+::: {.nota}
+**PSNR** — *Peak signal-to-noise ratio*. En athenea se calcula sobre el color codificado para pantalla: cada canal lineal se recorta a $[0,1]$ y se codifica con la función de transferencia sRGB, $E(c)=12.92\,c$ si $c\le 0.0031308$ y $1.055\,c^{1/2.4}-0.055$ en otro caso. Con $N$ píxeles,
+$$\mathrm{MSE}_{\text{disp}}=\frac{1}{3N}\sum_{p}\sum_{c\in\{R,G,B\}}\big(E(a_{p,c})-E(b_{p,c})\big)^2,\qquad \mathrm{PSNR}=-10\log_{10}\mathrm{MSE}_{\text{disp}}\ \text{dB},$$
+con pico 1 porque la señal codificada vive en $[0,1]$. Lecturas útiles: 20 dB es un RMSE de 0.1 (un 10 % del rango de pantalla); 17.88 dB son 0.128 y 23.90 dB son 0.064. Un dB más es un 20.6 % menos de MSE (un 10.9 % menos de RMSE); 3 dB reducen el MSE a la mitad y 6 dB el RMSE a la mitad. Como la codificación recorta en 1, toda la radiancia por encima del blanco (soles, reflejos especulares saturados) se compara como 1 = 1 y su error desaparece; es una métrica *de lo que se ve*, no de la radiancia.
+
+**MSE y relMSE** — El MSE es la media del error al cuadrado. El relMSE (*relative mean squared error*) de athenea se calcula sobre valores lineales y relativiza cada término por el valor de referencia:
+$$\mathrm{relMSE}=\frac{1}{N}\sum_{p}\frac14\sum_{c\in\{R,G,B,A\}}\frac{(a_{p,c}-b_{p,c})^2}{b_{p,c}^2+10^{-2}} .$$
+Donde la referencia es brillante ($b\gg 0.1$) el término es el error relativo al cuadrado, $((a-b)/b)^2$, de modo que un 10 % de error en un reflejo de radiancia 50 cuenta como un 10 % en una pared de radiancia 0.3. Donde la referencia es oscura, el $\varepsilon=10^{-2}$ impide dividir por cero y convierte el término en $100\,(a-b)^2$, un error absoluto con peso fijo. Es la forma habitual en la literatura de denoising y de muestreo adaptativo (Rousselle, Knaus y Zwicker, 2011), y sirve exactamente donde el PSNR no ve: valores por encima de 1 y el extremo oscuro. Dos detalles de la implementación: el alfa entra como cuarto canal (en un frame opaco su término es 0, de modo que el relMSE de color queda multiplicado por 3/4), y el relMSE de `--validate` se calcula con la imagen enmascarada a cero fuera del grupo y dividido por la suma de la máscara, es decir, es el error medio *dentro* del material.
+
+**SSIM** — *Structural similarity* (Wang, Bovik, Sheikh y Simoncelli, 2004). Compara en cada ventana medias, varianzas y covarianza:
+$$\mathrm{SSIM}=\frac{(2\mu_a\mu_b+C_1)(2\sigma_{ab}+C_2)}{(\mu_a^2+\mu_b^2+C_1)(\sigma_a^2+\sigma_b^2+C_2)},\qquad C_1=(0.01)^2,\ C_2=(0.03)^2 .$$
+La versión del efecto Measure usa como luminancia la media de los tres canales codificados y una ventana de caja de 7 × 7 en lugar de la Gaussiana de 11 × 11 y $\sigma=1.5$ del artículo original, así que sus valores no son directamente comparables con los de otras implementaciones, aunque sí entre sí. 1 es identidad; 0.857 frente a 0.855 es una diferencia de estructura muy pequeña.
+
+**Lo que no se usa** — Las métricas perceptuales FLIP (Andersson et al., 2020), pensada para comparar renders alternados, y LPIPS (Zhang et al., 2018), una distancia entre activaciones de una red, no aparecen en las cifras de athenea. La literatura de 3D Gaussian Splatting [1] reporta PSNR, SSIM y LPIPS sobre fotografías; aquí la referencia es un render físicamente basado y la evaluación se apoya en métricas aritméticas reproducibles en un kernel.
+
+*Referencias:* [1] del §10; Wang et al., «Image Quality Assessment: From Error Visibility to Structural Similarity», IEEE TIP 13(4), 2004; Rousselle, Knaus, Zwicker, «Adaptive Sampling and Reconstruction using Greedy Error Minimization», SIGGRAPH Asia 2011; Andersson et al., «FLIP: A Difference Evaluator for Alternating Images», HPG 2020; Zhang et al., «The Unreasonable Effectiveness of Deep Features as a Perceptual Metric», CVPR 2018. Código: `plugins/measure/measure.slang` (`encode`, la SSIM de 7 × 7 y el error codificado), `plugins/measure/Measure.cpp` (PSNR $=-10\log_{10}$ MSE), `shaders/athenea/reference/image_compare_hdr.slang` (relMSE con $\varepsilon=10^{-2}$ y suma de Kahan por fila), `apps/athenea/src/Mesh2SplatValidate.cpp` (relMSE dividido por la suma de la máscara); `docs/decisions.md` (sección "Measure: `athenea compare` as an AOFX effect").
+:::
+
+::: {.nota}
+**Fila a fila** — *Cuadrilátero unidad*: un plano iluminado de frente cuyo píxel de mesh vale 0.5032. Convertido con $\sigma=1.0$ cell, el píxel sale a 0.456 (un 9 % bajo): la coverage de una lattice de Gaussians no es la del triángulo. Con los valores del material (la opacidad y el ancho que la conversión deriva de él, §3.4–§3.6) sale a 0.5009, un 0.5 % bajo. Es una prueba sin ruido: el resultado se compara con un número, no con otra imagen. *Bordes sujetos frente al control*: el cambio de relMSE es de un 1.7 %, de PSNR 0.07 dB y de SSIM 0.0013. Son diferencias pequeñas porque el cambio actúa solo en los bordes de las piezas, una fracción mínima del frame; el valor medio sobre todo el frame las diluye. *Shadow catcher*: las tres cifras son medias de la región (bajo el coche, contacto del parachoques, suelo abierto) en la nube y en el path trace; la del contacto, 0.030 frente a 0.043, es un 30 % más oscura, la de bajo el coche un 5 % más clara. *Bake de 640 → 1280 px*: +1.33 dB en el recorte (el MSE baja al 74 %) y +1.72 dB en el frame (al 67 %).
+
+**Por qué el vidrio del peón varía tanto entre ejecuciones** — 0.1418, 0.149, 0.081 y 0.043 son el mismo material convertido en ejecuciones distintas (con cambios de conversión entre ellas y medidas a 2048² o 1024²). El vidrio es el caso peor para el relMSE: la imagen refractada a través de una bola es una lente; un desplazamiento de un píxel de esa imagen, o una diferencia de índice, multiplica el error sin que la media cambie; y el path trace del vidrio converge despacio (caminos de varias refracciones), de modo que la propia referencia aporta ruido. Para el vidrio el proyecto juzga por cocientes de media por clase y por un relMSE *suavizado y con medias igualadas*: se escala el candidato para que su media iguale la de la referencia, $\hat a=a\,\bar b/\bar a$, se filtran ambas imágenes con una Gaussiana de $\sigma$ = 2 y 4 px y se calcula el relMSE sobre las imágenes filtradas. El escalado separa el sesgo (la media, que ya mide el cociente por clase) de la estructura; el filtrado quita la sensibilidad a desalineaciones de subpíxel y al ruido de la referencia. Medido en la cabeza del peón, el PSNR del frame y el relMSE crudo favorecían una imagen un 7 % más oscura que el path trace, que es el efecto del ruido de la referencia descrito en la nota de la §8.3. Este criterio no está recogido en `docs/decisions.md`.
+
+**El gorrión, 0.0025** — Es un relMSE muy bajo comparado con el del Corvette porque el asset es mayoritariamente difuso y porque un promedio sobre una imagen con mucho fondo idéntico en los dos renders (cero frente a cero) diluye el error; las cifras del ala (0.1635 / 0.1247) son la misma métrica restringida a una región difícil, con la coverage que sigue a la opacidad del material (la sección "A converted surface covers what its opacity says"). La ruta trazada da menos error que la raster porque ordena exactamente por pico (§2.6).
+
+*Referencias:* [12] y [13] del §10 (la conversión y el tamaño de cell); código: `apps/athenea/src/Mesh2SplatValidate.cpp`, `shaders/athenea/usd/m2s_validate.slang`; `docs/decisions.md` (secciones "A converted surface covers what its opacity says", "What a converted surface is worth, measured against the mesh it came from", "What the glass is worth, measured", "The ground's shadow as gaussians: a shadow catcher (task PLAY-G)").
+:::
+
+## 8.3 El coche entero a lo largo de la cadena
+
+El mismo frame, con relight bajo el cielo del path trace y medido a medida que se añadía cada paso del bake y del
+dibujo, en el orden en que se añadieron. Filas de la §4.10.3 y la §6.10; los nodos son Gaussians dibujadas.
+
+::: {.nota}
+**Cómo leer las columnas** — *Bake* es la resolución de cámara desde la que se deriva el tamaño de cell (`--cell-from-camera /World/Camera --camera-pixels`): a 640 px una cell mide lo que un píxel de un render de 640 px de ancho desde esa cámara, a 1280 px la mitad. *Leaves* es la nube entera sin cut; *cut por error de $x$ px* es el conjunto de nodos del merge tree cuyo error proyectado acotado no supera $x$ píxeles (§6.3); *ambos culls* son el back-face culling de closed shells (§6.6) y las occlusion masks (§6.7). *Sharp lobes sin ensanchar* deshace el ensanchamiento de Toksvig del bake para los lobes que ya giran la normal por píxel (§4.9.2); *coat sujeto en los folds* acota la roughness del coat donde el bake la saturaba (§4.9.3); *campo del polish* deja que el polish de los materiales rugosos lea el reflected field (§4.6.2–§4.6.3); *derrame $w_s$* es el peso de spill del coste de merge (§6.5); *giro limitado* acota el giro de la normal por píxel a 0.2 rad; *separación tubo/fold* distingue por el giro $t$ un tubo de un pliegue (§4.9.4). *Nodos* son Gaussians dibujadas, leaves o merges.
+
+**El recorte y el frame** — El recorte del coche son 900 × 420 = 378 000 píxeles; el frame, 2 073 600. El frame incluye cielo y suelo, que la nube reproduce casi exactamente (el suelo es un shadow catcher y el cielo es el mismo HDRI), y por eso su PSNR es unos 6 dB mayor que el del recorte: un 75 % de píxeles fáciles diluye el MSE. El recorte concentra la medida en el coche. Ninguno de los dos localiza un defecto: un fallo en los faros o en la grille pesa lo mismo que un brillo desplazado del capó. De ahí las métricas por clase de la tabla siguiente, y el criterio de juzgar siempre el frame entero además de los recortes, porque un recorte puede dejar fuera un defecto (el parachoques o la grille).
+
+*Referencias:* `docs/decisions.md` (secciones "Decimation: the levels of detail, cut once by what a merge loses", "A TX transfer's reflection turns across the gaussian (proposals 044, 046, 049)").
+:::
+
+| bake | configuración | nodos | recorte del coche (dB) | frame (dB) |
+|---|---|---|---|---|
+| 640 px | todas las leaves, antes de los pasos posteriores de la §4 | 5.38 M | 16.37 | 21.92 |
+| 640 px | el mismo bake, cut por error de 1 px, ambos culls | 675 760 | 16.28 | 21.80 |
+| 640 px | cut por error de 0.25 px, cull de caras traseras | 2 313 541 | 16.29 | 21.81 |
+| 640 px | leaves, sharp lobes sin ensanchar | 5.38 M | 16.58 | 22.15 |
+| 640 px | cut, + coat sujeto en los folds | — | 16.51 | 22.15 |
+| 640 px | cut, + campo del polish en materiales rugosos | — | 16.55 | 22.18 |
+| 640 px | leaves (0.01 px), sin cull / con cull | 4.35 M / 3.70 M | 16.73 / 16.75 | 22.40 / 22.43 |
+| 640 px | grupo 0 con derrame $w_s$ = 2 | 561 242 (grupo 0) | 16.79 | 22.38 |
+| 640 px | giro limitado / fold del coat solo en la pintura | — | 16.57 / 16.57 | 22.20 / 22.20 |
+| 1280 px | cut 0.25 px, cull de caras traseras | 4 998 976 | **17.88** | **23.90** |
+| 1280 px | sin el límite / polish nítido condicionado | — | 17.88 / 17.88 | 23.91 / 23.90 |
+| 1280 px | condición + separación tubo/fold | — | 17.90 | 23.93 |
+| 1280 px | separación tubo/fold (retenida) | — | 17.88 | 23.91 |
+
+::: {.nota}
+**El tamaño de las diferencias** — Conviene pasar los dB a cocientes de MSE: $\Delta\mathrm{PSNR}=10\log_{10}(\mathrm{MSE}_1/\mathrm{MSE}_2)$. 0.01 dB son un 0.23 % de MSE; 0.1 dB, un 2.3 %; 0.2–0.4 dB, un 5–9 %; 1.3 dB, un 26 %; 1.7 dB, un 32 %. Las filas de 1280 px que difieren en 0.01–0.03 dB (17.88 / 17.90, 23.90 / 23.93) son, a efectos prácticos, iguales en estas métricas; por eso los cambios se deciden con las métricas por clase.
+
+**Barras de error, y por qué no aparecen** — Tanto el rasterizer como la referencia son deterministas una vez fijadas (la referencia se trazó una vez y se conserva), así que repetir una medida da la misma cifra: no hay varianza de medida que promediar. La incertidumbre está en otro sitio. (1) *El ruido de la referencia*: si $b=\mu+n$ con $n$ el ruido de Monte Carlo de varianza $s^2$ por píxel e independiente del candidato, $\mathbb{E}[\mathrm{MSE}(a,b)]=\mathrm{MSE}(a,\mu)+s^2$. El ruido suma una constante al MSE de todas las filas, no al PSNR: comprime las diferencias en dB (una mejora real parece menor) pero no cambia el orden entre filas. Las comparaciones entre filas comparten la misma referencia (el equivalente de *common random numbers*), lo que las hace más fiables que las cifras absolutas. (2) *La variabilidad del contenido*: una diferencia de 0.02 dB puede venir de unos pocos cientos de píxeles; un intervalo de confianza honesto se obtendría con bootstrap por tiles (remuestrear bloques de, por ejemplo, 32 × 32 píxeles y recalcular el PSNR), que el artículo no reporta.
+
+*Referencias:* M. Pharr, W. Jakob, G. Humphreys, *Physically Based Rendering*, 4.ª ed. (2023), cap. 2 (estimadores de Monte Carlo, varianza y sesgo); B. Efron, R. Tibshirani, *An Introduction to the Bootstrap* (1993), sobre el bootstrap por bloques.
+:::
+
+De aquí salen tres conclusiones. El LOD cuesta unos 0.1 dB frente al path trace (todas las leaves de 640 px frente al
+cut de 1 px con ambos culls, 16.37 → 16.28 con un octavo de las leaves; §6.10). Los pasos de shading de la §4
+movieron el coche de 640 px unos 0.2–0.4 dB. La resolución del bake lo movió 1.3 dB en el recorte y 1.7 dB en el frame
+(el cut de 640 px con el campo del polish frente al cut de 1280 px). El PSNR sobre un recorte se mueve poco, así que
+los cocientes por clase de abajo muestran dónde actúan los cambios.
+
+::: {.nota}
+**Las tres conclusiones, en números** — *El LOD*: 16.37 → 16.28 dB es un 2 % más de MSE con 675 760 nodos en vez de 5.38 M (un 12.6 %, «un octavo»). Frente a las leaves, ese cut está a 31.91 dB (§6.10): el error que añade el LOD es pequeño comparado con el que ya separa las leaves del path trace (unos 16 dB). *El shading*: 0.2–0.4 dB son un 5–9 % de MSE. *La resolución del bake*: 1.3–1.7 dB, un 26–32 %, el mayor efecto de la tabla.
+
+**Por qué el PSNR de un recorte se mueve poco** — El MSE es una norma L2: lo dominan los píxeles con error grande. En el coche son los reflejos especulares desplazados, los bordes de las piezas y los faros, que el bake no lleva (§9.1). Un cambio que corrige la media de una clase extensa pero de error pequeño, como el suelo reflejado en la puerta, mueve poco el MSE total. Además, un brillo desplazado dos píxeles se paga dos veces: donde falta y donde sobra (*double penalty*). Por eso un cociente de medias por clase, que no penaliza el desplazamiento, y una medida del desplazamiento separada (§4.10.5) dicen más que el PSNR.
+
+*Referencias:* `docs/decisions.md` (sección "Decimation: the levels of detail, cut once by what a merge loses").
+:::
+
+| región o clase (media sobre la del path trace) | antes | después | condición | § |
+|---|---|---|---|---|
+| puerta, espejo al suelo a < 3 m | 0.78 | 1.02 | leaves de 640 px → cut de 640 px con campo del polish | 4.10.4 |
+| puerta, espejo al suelo a 3–30 m | 0.69 | 0.88 | leaves de 640 px → cut de 640 px con campo del polish | 4.10.4 |
+| puerta, espejo al HDRI (abierto) | 0.92 | 1.13 | leaves de 640 px → cut de 640 px con campo del polish | 4.10.4 |
+| juntas de la puerta | 0.69 | 1.04 | leaves de 640 px → cut de 640 px con campo del polish | 4.10.4 |
+| reflejos abiertos de la puerta, contraste local ($\sigma$ 1.5 / 4 px) | 0.35 / 0.53 | 0.56 / 0.74 | cut de 640 px con campo del polish → cut de 1280 px | 4.10.4 |
+| brillos del capó, desplazamiento $p_{50}$ | 3.2 px | 2.0 px | cut de 640 px con campo del polish → cut de 1280 px | 4.10.5 |
+| media del capó | 0.89 | 0.98 | 640 → 1280 px | 4.10.5 |
+| huecos de la grille en el cut grueso | 2.24 | 1.04 | 640 → 1280 px | 3.11, 6.5 |
+| pelos del umbral (píxeles) | 987 | 459 | 640 → 1280 px | 3.11 |
+| umbral, bajo el coche (móvil) | 1.66 | 1.08 | sin → con la contact shadow | 7.9 |
+| paso alto de la tira cromada / PT | 0.41 | 0.41 | cut de 1280 px → separación tubo/fold (polish nítido condicionado: 1.12) | 4.10.6 |
+| motas brillantes en el fold del umbral | 10 | 1 | cut de 1280 px → separación tubo/fold | 4.10.6 |
+
+::: {.nota}
+**Cociente por clase** — Es la media de la región en el render de Gaussians dividida por la media de la misma región en el path trace; 1 es exacto, menos de 1 más oscuro. Las clases de la puerta se definen por dónde cae el espejo de cada píxel en la geometría del path trace: hacia el suelo a menos de 3 m, hacia el suelo a 3–30 m (direcciones *cerradas*, que responde el reflected field) o hacia el HDRI (*abiertas*). Las cifras de la puerta, del capó, del contraste y del desplazamiento proceden de scripts de análisis aparte, con cajas de región fijas sobre la imagen, no del efecto Measure. Un cociente de medias no ve la estructura: una región puede estar a 1.00 con la mitad demasiado clara y la otra demasiado oscura.
+
+**Contraste local** — La desviación típica del paso alto dividida por la media: $c_\sigma=\operatorname{std}(I-G_\sigma*I)/\overline{I}$, con $G_\sigma$ una Gaussiana de $\sigma$ = 1.5 o 4 px, y luego el cociente $c_\sigma^{\text{GS}}/c_\sigma^{\text{PT}}$. Mide la nitidez de los reflejos: un coat demasiado rugoso emborrona y baja el cociente (0.35 → 0.56 a 1280 px, todavía lejos de 1). Dos escalas separan el detalle fino del medio.
+
+**Desplazamiento $p_{50}$ de los brillos** — Se toman tiles de 24 px con brillo (168 en el capó), se alinea el paso alto del render con el del path trace buscando el máximo de correlación cruzada dentro de $\pm 6$ px, y se toma la mediana ($p_{50}$, el percentil 50) del desplazamiento. 2.0 px a 1280 px es la posición de los reflejos, no su intensidad; su causa es la extrapolación de la normal (§4.10.6). El *$\sigma$ que iguala* de la §4.10.5 es el desenfoque que hay que aplicar al path trace para igualar el contraste del render.
+
+**Recuentos** — *Huecos de la grille*: cociente de la luz que pasa por las rejillas en el cut grueso frente al path trace (2.24 es más del doble). *Pelos del umbral*: píxeles de trazos finos sobre el faldón ausentes en la referencia. *Motas brillantes*: puntos aislados por encima de un umbral, efecto de Gaussians que reflejan como espejos con normales giradas. *Paso alto de la tira cromada*: energía del paso alto relativa al path trace; 0.41 es un cromo demasiado liso, 1.12 (con el polish nítido condicionado) uno demasiado rugoso. *Contact shadow* (§7.9): un oscurecimiento aproximado bajo el coche en el player.
+
+*Referencias:* [20] del §10 (Toksvig); `docs/decisions.md` (secciones "A sharp coat is read per pixel", "The polish sees its ground where its material is rough enough", "A TX transfer's reflection turns across the gaussian (proposals 044, 046, 049)").
+:::
+
+| material (relMSE frente al path trace) | cromo | metal rugoso | pintura | § |
+|---|---|---|---|---|
+| primer transfer | 0.536 | 0.0896 | 0.705 | 4.10.1 |
+| TX, cells y campo en todas partes | 1.64 | 0.221 | 0.393 | 4.10.1 |
+| TX con la condición del polish | 0.591 | 0.0835 | 0.341 | 4.10.1 |
+| + coat nítido y polish nítido por píxel | 0.545 | 0.083 | 0.281 | 4.10.1 |
+
+::: {.nota}
+**relMSE por material de la puerta** — Las tres columnas son grupos de material del arnés `--validate` (máscaras de Cryptomatte por material, §3.10). El cromo es un espejo: su relMSE responde a la posición exacta de lo reflejado y no a su media, y por eso el primer intento de TX, que leía todo a través de las cells y del campo, lo llevó de 0.536 a 1.64 (el cromo reflejaba la parte cerrada del campo, más clara que el coche que debía ver). Condicionar el polish a la roughness del material (el campo solo donde la roughness es al menos 0.3) devolvió el cromo a 0.591 y el metal rugoso a 0.0835. La pintura baja de 0.705 a 0.281, la mayor mejora, porque el coat refleja el suelo y el coche (direcciones cerradas) que el primer transfer no sabía mostrar. Un relMSE de 0.28 equivale a un error relativo cuadrático medio del orden de $\sqrt{0.28/0.75}\approx 0.6$ en los canales de color (corrigiendo el factor 3/4 del alfa): grande, porque la pintura es casi un espejo oscuro y el $\varepsilon=10^{-2}$ pesa mucho en esos valores.
+
+*Referencias:* [14] y [19] del §10; `docs/decisions.md` (secciones "The metals against the first transfer (the TX gate)", "The polish sees its ground where its material is rough enough", "A material's fields read back from the material itself (matx)").
+:::
+
+## 8.4 La corrección y la velocidad del motor
+
+Cada comprobación de abajo es un kernel de GPU frente a una forma cerrada, un estimador independiente, MaterialX o
+Storm.
+
+::: {.nota}
+**Verificación sin oráculo en CPU** — La regla del motor es que no hay renderer de referencia en CPU: cada comparación es un kernel de GPU y lo único que vuelve al host son contadores y métricas. Una prueba es útil si su oráculo es independiente del código probado: una forma cerrada (una integral resuelta analíticamente), otro estimador de la misma cantidad, el código del propio MaterialX o el renderer Storm de OpenUSD. Una prueba que compara el renderer consigo mismo solo detecta regresiones.
+
+*Referencias:* `CLAUDE.md` del repositorio (regla "No CPU arithmetic on data"); `modules/render/include/athenea/render/ReferenceRenderer.h`; §2.15 del artículo.
+:::
+
+| comprobación | resultado | § |
+|---|---|---|
+| dos discos semiopacos, raster / referencia / ray tracer frente al operador over analítico | p99 0 (mezcla codificada: p99 26) | 2.4 |
+| planos convertidos de coverage 0.25 / 0.5 / 0.75, raster a tamaño completo | 0.251 / 0.501 / 0.752 | 2.5.3 |
+| paso de shutter 0.03 frente a N instantes | p99 2, cociente de energía 1.0000 | 2.5.3 |
+| ray tracer frente a su referencia de orden exacto | p99 ≤ 1, como mucho el 0.05 % de los píxeles por encima de 2 | 2.15 |
+| visibilidad de meshes frente a Storm (Kitchen_set), raster / rayos / bvh | segmentación: 18 / 41 / 36 píxeles distintos de ~57 k | 2.8 |
+| grafos MaterialX frente al genglsl del propio MaterialX, 65 536 direcciones | peor 3.2·10⁻⁵ en once grafos | 2.9 |
+| luces frente a formas cerradas; χ² frente a `lightPdf` | 0 de 8281 píxeles por encima del 2 %; $\lvert z\rvert \le 1.61$ | 2.10 |
+| path tracer: shell emisora cerrada; exponente de convergencia | 0 de 3072 por encima de 10⁻⁴; −0.499 | 2.11 |
+| OIDN, 16 paths frente a una referencia de 4096 paths | relMSE 3.65·10⁻⁴ → 7.17·10⁻⁵ | 2.11 |
+| batería de pruebas en tres devices (188 casos) | Metal 188 pasan; Vulkan 180 pasan, 8 omitidas; CUDA 96 pasan, 1 falla, 91 omitidas | 2.15 |
+| una nube TX girada 60° con su cámara y su cielo frente a sin girar | peón relMSE 9·10⁻⁶ (61 dB); bolas de prueba 1–2·10⁻⁴, 1.5·10⁻²–0.13 bajo un cielo sin girar | 4.3 |
+| nodo OpenFX frente al render del propio servidor, misma cámara | relMSE 0; en Natron, color y posición en el mundo a menos de 10⁻⁶ de un host OpenFX simple | 2.14 |
+
+::: {.nota}
+**Operador over y códigos de 8 bits** — Dos discos semiopacos superpuestos tienen una solución exacta: con alfa premultiplicado, $C=C_1+(1-\alpha_1)C_2$ (Porter y Duff, 1984). p99 0 significa que el 99 % de los píxeles coinciden exactamente en códigos sRGB de 8 bits; `compareImages` toma, por píxel, la mayor diferencia de código entre canales (alfa incluido) y devuelve el percentil 99, el máximo y cuántos píxeles difieren en más de 2 códigos (*over2*). «Mezcla codificada: p99 26» es el control: mezclar en valores codificados en vez de lineales da 26 códigos de error, y prueba que la prueba distingue.
+
+**Coverage y shutter** — Planos convertidos de coverage 0.25 / 0.5 / 0.75 deben bloquear esa fracción de la luz. El paso de shutter compara el término de rango uno del motion blur (§2.5.3) con la media de $N$ instantes discretos: p99 2 códigos y la energía total conservada (cociente 1.0000), que es lo que un blur debe preservar.
+
+**Ray tracer y Storm** — `renderPeaks` ordena exactamente por pico a lo largo del rayo; el ray tracer acelerado debe reproducirlo. Frente a Storm, se cuentan los píxeles con id de prim distinto (`countDifferent`): 18 de unos 57 000 son píxeles de borde donde la regla de cobertura de la rasterización y el muestreo de un rayo por el centro del píxel deciden distinto.
+
+**MaterialX** — Los grafos compilados a Slang se evalúan en 65 536 direcciones frente al GLSL que genera el propio MaterialX (genglsl); $3.2\cdot10^{-5}$ es precisión de float32.
+
+**Luces y χ²** — Cada luz se compara con su forma cerrada (una placa lambertiana bajo una esfera, un disco, un rectángulo, un sol y una cúpula). La prueba χ² comprueba que las muestras que genera el sampler siguen la densidad que declara `lightPdf`: se reparten $10^6$ muestras en $k$ bins y se compara el recuento observado $O_i$ con el esperado $E_i=n\int_{\text{bin}}p$:
+$$\chi^2=\sum_{i=1}^{k}\frac{(O_i-E_i)^2}{E_i},\qquad z\approx\frac{\chi^2-k}{\sqrt{2k}} .$$
+Bajo la hipótesis de que el sampler es correcto, $\chi^2$ sigue una distribución con media $k$ y varianza $2k$; $|z|\le 1.61$ está dentro de dos desviaciones típicas. Es lo que exige el MIS de Veach [21]: un pdf que no describe las muestras sesga el peso de cada técnica.
+
+**Path tracer: la shell emisora cerrada** — Dentro de una esfera cerrada de emisión $E$ y albedo $\rho$, todo camino ve la misma pared, y la radiancia tras $n$ bounces es exactamente la serie geométrica $L_n=E\sum_{k=0}^{n}\rho^k$. Como el valor de cada camino no depende de las direcciones muestreadas, el estimador tiene varianza cero y la comparación puede exigir $10^{-4}$. *Exponente de convergencia*: el error de Monte Carlo de un estimador sin sesgo baja como $\sigma/\sqrt N$. Sin referencia convergida, se generan pares de estimaciones independientes $X_N, Y_N$ a $N$ = 64…1024 paths; como $\mathbb{E}[(X_N-Y_N)^2]=2\sigma^2/N$, la pendiente de $\log\mathrm{RMS}(X_N-Y_N)$ frente a $\log N$ debe ser $-0.5$. El ajuste por mínimos cuadrados da $-0.499$, con una ventana de aceptación de $-0.42$ a $-0.58$ calibrada antes. Una pendiente menor en valor absoluto delataría correlación entre muestras (un generador defectuoso) o sesgo.
+
+**OIDN** — 16 paths con y sin denoiser frente a una referencia de 4096 paths: el relMSE baja de $3.65\cdot10^{-4}$ a $7.17\cdot10^{-5}$, un factor 5. El ruido propio de la referencia es despreciable: su relMSE esperado es del orden de $3.65\cdot10^{-4}\times16/4096\approx1.4\cdot10^{-6}$. Un denoiser reduce la varianza a cambio de sesgo (emborrona detalle de alta frecuencia), por lo que una referencia *denoised* no es una referencia: sesgaría cualquier comparación hacia imágenes suaves. El artículo no dice que la referencia del Corvette pase por el denoiser.
+
+**Tres devices, la nube girada y OpenFX** — 188 casos: Metal los pasa todos; en Vulkan las 8 omisiones son del host (buffers Metal, ventana, gpe, bundles), y en CUDA 91 se omiten porque el device no rasteriza (cada omisión nombra su capacidad). La nube TX girada 60° con su cámara y su cielo debe dar la misma imagen que sin girar: 61 dB en el peón, y el control (las bolas bajo un cielo *sin* girar, $1.5\cdot10^{-2}$–0.13) prueba que la prueba vería el error. El nodo OpenFX da relMSE 0 porque ejecuta el mismo código que el servidor.
+
+*Referencias:* [21], [45], [43], [31], [47] del §10; T. Porter, T. Duff, «Compositing Digital Images», SIGGRAPH 1984; K. Pearson (1900) para el test χ²; W. Kahan (1965) para la suma compensada que usan los kernels de reducción. Código: `tests/technique/test_lights.cpp` (casos "each light's samples follow the density it reports", "a closed emissive shell reads the geometric series of its bounces", "the path traced error against a converged reference falls as one over root N", "the denoiser lowers a path traced frame's error against a deep reference"), `tests/render/test_ray_tracing.cpp`, `tests/render/test_splat_motion.cpp`, `tests/usd/test_storm_oracle.cpp`, `tests/material/test_material_compiler.cpp`, `tests/usd/test_usd.cpp` ("a TX cloud turned with its camera and sky draws what it drew unturned"), `modules/technique/src/Denoiser.cpp`. `docs/decisions.md` (secciones "How it is checked" de M5 y M6, "The denoiser, and what it took to hand OIDN a buffer", "The three devices, at the end of this pass (commit 2e6e183)", "Every gaussian is blended in linear light", "A transfer the stage turns, and the gaussians' parameters drawn (19 Oct)").
+:::
+
+| carga | cifra | § |
+|---|---|---|
+| radix sort, 10 M pares de 32 bits | 12.4 ms (39.9 ms antes) | 2.3 |
+| clips del gorrión, 5 887 323 Gaussians a 1600 × 1000, reproduciendo | 102 → 49 ms por frame | 2.5.3 |
+| train_7k (742 k), 1080p: raster por tiles / ComputeBvh / ray tracer por hardware | 13 / 343 / 435 ms | 2.6 |
+| visibilidad de Kitchen_set a 1920 × 1080: raster / rayos / bvh | 31.7 / 19.2 / 29.2 ms | 2.8 |
+| Kitchen_set iluminado a 1920 × 1080: raster / path tracer (1 camino, 1 bounce) | 96.0 / 358.9 ms | 2.11 |
+| Corvette TX entero (14.7 M Gaussians) a 1920 × 1080, rasterizer de escritorio | 158 ms (unos 83 ms para una nube con relight de su tamaño) | 4.10.2 |
+| Corvette reiluminable (3 M) por el nodo OpenFX en Natron, 1920 × 1080, todos los planos | primer frame 7.5 s (abre el stage); luego 120–170 ms, 190–220 ms con el cielo girando | 2.14 |
+| un canal de parámetros, peón a 768 × 768 | 20–60 ms | 4.11 |
+
+::: {.nota}
+**Cómo se miden los tiempos** — Son medianas de `athenea stage --frames` y `athenea view --frames` con el preset release: la mediana descarta los primeros frames (compilación de kernels, cachés) y los picos aislados. No llevan dispersión. *Radix sort*: 10 M pares clave–valor de 32 bits en 12.4 ms son unos 800 M pares por segundo. *train_7k*: la escena de Tanks and Temples entrenada 7000 iteraciones con 3DGS (742 k Gaussians); el raster por tiles (13 ms) frente a la ruta de rayos (343 ms con la BVH por compute, 435 ms con el ray tracing por hardware) muestra que trazar Gaussians es un orden de magnitud más caro que rasterizarlas, como en 3DGRT [7]. *Kitchen_set*: la escena de prueba de Pixar en USD; la visibilidad por rayos es más rápida que por raster porque la raster paga el coste de host de unos 1800 draws (§9.4). *Corvette TX*, 158 ms frente a unos 83 para una nube con relight del mismo tamaño: lo que cuesta el transfer (§4.10.2). *Natron*: el primer frame incluye abrir el stage; los siguientes, el render.
+
+**Lo que no dicen** — Son tiempos de GPU (o de pared en un proceso sin ventana) en un M5 Pro con memoria unificada; no se trasladan a una GPU discreta, y el comportamiento térmico de un portátil cambia una carga sostenida.
+
+*Referencias:* [1], [7], [32] del §10; código: `modules/gpu/src/algo/RadixSort.cpp`, `modules/render/src/TileRasterizer.cpp`, `modules/render/src/GaussianRayTracer.cpp`; `docs/decisions.md` (secciones "Measured (M5 Pro, release)" de M2 y M5, "End to end: Kitchen_set lit, and two defects only a real stage showed").
+:::
+
+## 8.5 LOD
+
+| nivel | leaves | merges | raíces | pages | codebook de oclusión | cells reabiertas | § |
+|---|---|---|---|---|---|---|---|
+| coche a 640 px | 5.38 M | — | 17 133 | 3 582 | 8192 | 11.9 % | 6.2.5, 6.7 |
+| coche a 1280 px | 8.69 M | 8.67 M | 20 723 | 5 789 | 8187 | 12.3 % | 6.7, 6.10 |
+| close-up level a 5120 px | 74 536 126 | 74 328 031 | 208 095 | 49 634 | 8 182 | 0–23.6 % por tree | 6.7, 6.9 |
+
+::: {.nota}
+**Las columnas** — *Leaves*: Gaussians con bake. *Merges*: nodos internos de los merge trees, cada uno el merge de un par por momentos (§6.2.1). *Raíces*: nodos sin padre (los merges no cruzan piezas). *Pages*: unidades de streaming de unos 3000 nodos ordenados por bandas de error (§6.8). *Codebook de oclusión*: entradas compartidas de las occlusion masks (§6.7). *Cells reabiertas*: fracción de cells que la oclusión cerró y una vista vuelve a abrir.
+
+**Comprobación de recuentos** — En un bosque de árboles binarios, $\text{merges}=\text{leaves}-\text{raíces}$: 8.69 M − 20 723 ≈ 8.67 M, y $74\,536\,126-208\,095=74\,328\,031$ exactamente. Los nodos totales son leaves más merges, $74\,536\,126+74\,328\,031=148\,864\,157$, la cifra de la nota siguiente. Que los recuentos cierren indica que ningún tree perdió nodos al escribirse.
+
+*Referencias:* [2], [8], [9], [34], [35] del §10; código: `modules/lod/include/athenea/lod/Lod.h`, `shaders/athenea/lod/lod_pairs.slang`, `shaders/athenea/lod/lod_pages.slang`, `shaders/athenea/lod/occlusion_mask.slang`, `apps/athenea/src/CmdDecimate.cpp`; `docs/decisions.md` (secciones "Decimation: the levels of detail, cut once by what a merge loses", "A merge's second moment about its own centre (13 Oct)").
+:::
+
+El close-up level son 24 trees y 148 864 157 nodos, 87.4 GB en disco, con su oclusión compartida escrita en el sitio
+(645 s, 10.2 GB de pico residente; §6.9).
+
+::: {.nota}
+**Escala** — 87.4 GB para 148.9 M nodos son unos 587 B por nodo en disco, porque cada nodo lleva su transfer completo (la compresión de la §7 viene después). 645 s y 10.2 GB de pico residente para la oclusión compartida dan una idea del coste de un bake de producción: una sola pasada que no cabe entera en memoria y se hace tree a tree.
+
+*Referencias:* `docs/decisions.md` (sección "Decimation: the levels of detail, cut once by what a merge loses"); §6.9 del artículo.
+:::
+
+| cut, a 393 px de ancho, frente a las leaves a 4× | nodos de cerca | dB de cerca | nodos de lejos | dB de lejos | § |
+|---|---|---|---|---|---|
+| error 1 px, cotas | 666 585 | 33.29 | 343 541 | 39.15 | 6.10 |
+| + cull de caras traseras de closed shells | 522 931 | 33.63 | — | — | 6.10 |
+| + oclusión | 360 333 | 33.58 | 195 049 | 39.53 | 6.10 |
+| ambos culls, regla $O<2\sqrt{E}$ | 378 028 | 33.53 | — | — | 6.10 |
+
+::: {.nota}
+**La referencia de estas filas son las leaves, no el path trace** — Medir un cut frente a todas las leaves aísla el error del LOD del error del bake. Las leaves se dibujan a 4× la resolución (393 × 4 px de ancho) y se reducen por caja, porque una nube con bake a 1920 px dibujada directamente a 393 px se transparenta: las Gaussians de menos de un píxel caen bajo el umbral del rasterizer y desaparecen (§9.4). El supermuestreo da la imagen que un filtro de reconstrucción correcto produciría. 33–39 dB son errores pequeños (un RMSE de 0.011–0.022): el cut se parece mucho a las leaves aunque las leaves estén a unos 16 dB del path trace.
+
+**Las filas** — *Error 1 px, cotas*: cut por error proyectado con cotas conservadoras. *Cull de caras traseras de closed shells*: descarta los nodos de una pieza cerrada que miran hacia atrás (seguro solo en superficies cerradas, por eso la regla del 2 %). *Oclusión*: descarta nodos que una máscara precalculada declara ocultos desde la dirección de vista. La regla $O<2\sqrt{E}$ combina el error de oclusión $O$ con el de LOD $E$ para decidir en qué piezas activarla. Que un cut con cull *suba* frente a las leaves (33.29 → 33.63) se debe a que lo descartado eran Gaussians traseras que se transparentaban.
+
+*Referencias:* [4], [35] del §10; código: `shaders/athenea/lod/lod_tree_cut.slang`, `shaders/athenea/lod/occlusion_mask.slang`; `docs/decisions.md` (sección "Simplify: fewer gaussians by pairs, and surfels" y subsecciones).
+:::
+
+Cada cull baja el número de nodos, y ningún cut con cull da menos frente a las leaves que el cut por error solo
+(§6.10). En el player, con todos los culls activos se dibujan un 51 % menos de nodos que con todos apagados, a 36.9 dB
+entre las dos imágenes, y el codebook de oclusión alcanza el 84 % del ideal (§7.5.1). La residencia es el punto débil:
+una traversal necesita unas 2.2× el cut, y las pages tienen 3.6–4.5× el cut sea cual sea su tamaño (§6.8), y por eso el
+player separa la traversal de la carga útil (§7.5.2).
+
+::: {.nota}
+**36.9 dB entre culls activos y apagados** — Es la distancia entre dos imágenes del player, no frente a una referencia externa: mide lo que cambian los culls (un RMSE de 0.014). *84 % del ideal*: el ideal es el número de nodos que descartaría una oclusión exacta para esa vista; el codebook de 8192 entradas compartidas alcanza el 84 % de ese descarte. *Residencia*: para dibujar un cut hay que tener cargados sus nodos y los de la traversal que lo encuentra (unas 2.2× el cut), y las pages, al mezclar nodos que la vista necesita con nodos que descarta, traen 3.6–4.5× el cut. La solución del player es guardar la traversal (registros pequeños, §7.5.3) aparte de la carga útil (el transfer), de modo que solo la traversal paga la ineficiencia de las pages.
+
+*Referencias:* [2], [11], [35] del §10; `docs/decisions.md` (secciones "Chunks, `.athc` and streaming", "Measured: streaming (M5 Pro)").
+:::
+
+## 8.6 Costes
+
+| paso | cifra | § |
+|---|---|---|
+| coche a 1280 px, 8 grupos, transfer de cada uno | 212–304 s, unos 34 min en total | 3.11 |
+| shadow catcher, 309 k Gaussians | 79 s | 3.9 |
+| campos de visibilidad por parte del gorrión (12 partes) | 22 s | 5.8 |
+| decimación del gorrión conservando el rig (5.89 M) | 28 s | 5.9 |
+| codebook de oclusión compartido sobre el close-up level | 645 s | 6.9 |
+| construcción del LOD original, train_7k | 47 ms | 6.1 |
+
+::: {.nota}
+**Lectura de los costes** — Son tiempos de pared de pasos únicos del bake, no por frame. El transfer del coche a 1280 px (8.70 M Gaussians en unos 34 min) va a unas 4300 Gaussians por segundo: cada una traza 64 paths de hasta 3 bounces más un rayo por cell de la rejilla octaédrica de open directions (256 a 16 × 16). El shadow catcher (309 k Gaussians en 79 s) es más lento por Gaussian porque cada una integra la luz con y sin el objeto. El LOD original del motor (47 ms en train_7k) construye un octree por código de Morton (§6.1), una estructura muy distinta de los merge trees por pares del close-up level (645 s solo para su oclusión); las dos cifras no se comparan.
+
+*Referencias:* [32] del §10 (Morton y LBVH); `docs/decisions.md` (secciones "Path traced into gaussians: the bake", "Step 1: a reflection's occlusion has a direction", "The bake's grain", "Levels of detail").
+:::
+
+## 8.7 Compresión
+
+| paso | antes | después | coste en la imagen | § |
+|---|---|---|---|---|
+| planos de bytes (sin pérdida), Corvette ligero / HD | 68.1 / 288.7 MB | 60.9 / 248.6 MB | ninguno | 7.1 |
+| codificación 3 del transfer (CPCA en el fichero), set ligero del Corvette / page del peón | 67.9 / 281 MB | 49.5 / 84 MB | relMSE por splat $4\times10^{-8}$–$3\times10^{-5}$ | 7.2.1 |
+| CPCA conjunto en la GPU, base del coche entero (256 clusters) | 112 valores | 1 id + 24 pesos int4 | relMSE del transfer 1.03·10⁻²; imagen a relMSE 10⁻³ | 7.2.2 |
+| base de 512 clusters (prueba v8), fine3_0 | 0.0181 | 0.0136 | el mismo tiempo de shade en el M5 Pro | 7.2.2 |
+| bits de open directions por VQ, 1024 centroides por pieza | 256 bits | índice u16 | 62.9–65.4 dB | 7.3 |
+| registro compacto (residente) | 308 B por Gaussian + 29 MiB | 42.4 B + 16 B por splat dibujado + ~3 MiB | 40.2–41.9 dB frente al relight completo | 7.4 |
+| registro de traversal | 24 B (Spark) | 5–11 B por clase | el mismo cut | 7.5.3 |
+
+::: {.nota}
+**Planos de bytes** — Un fichero de floats comprime mal con gzip porque los bytes de un float alternan exponente (muy redundante) y mantisa (casi aleatoria). Reordenar el array en planos (todos los primeros bytes, luego todos los segundos…) agrupa los bytes de exponente y mejora la compresión sin pérdida: 68.1 → 60.9 MB (−11 %), 288.7 → 248.6 MB (−14 %). Es la idea del *byte shuffle* de Blosc o HDF5.
+
+**CPCA** — *Clustered principal component analysis* (Sloan et al. [15]): se agrupan los vectores de transfer en clusters con k-means y en cada cluster se proyectan sobre unas pocas componentes principales; cada Gaussian guarda un id de cluster y unos pesos. La *codificación 3* lo aplica en el fichero; el *CPCA conjunto en la GPU* comparte una base de 256 clusters entre todo el coche y guarda 1 id más 24 pesos de 4 bits en lugar de 112 valores. El relMSE del transfer ($1.03\cdot10^{-2}$) es el error de reconstrucción de los coeficientes; en la imagen pesa menos ($10^{-3}$); una explicación plausible es que los coeficientes se integran contra un cielo suave, que filtra el error de los términos de alta frecuencia.
+
+**VQ de los bits de open directions** — Los 256 bits de visibilidad por Gaussian (la rejilla de 16 × 16) se sustituyen por un índice de 16 bits a un codebook de 1024 centroides por pieza, ajustado con k-means [23]. 62.9–65.4 dB frente a la imagen sin cuantizar: la pérdida es invisible.
+
+**Registro compacto** — 308 B por Gaussian más 29 MiB fijos pasan a 42.4 B más 16 B por splat dibujado y unos 3 MiB: un factor 7 por Gaussian residente. 40.2–41.9 dB frente al relight completo es un RMSE de un 0.8–1 %. Recuérdese la nota del principio: con el master a unos 18 dB del path trace, esta pérdida no cambia de forma apreciable el error final.
+
+*Referencias:* [14], [15], [23], [11] del §10; código: `shaders/athenea/lod/transfer_codec.slang`, `shaders/athenea/lod/shadow_vq.slang`, `modules/lod/src/Athc.cpp`; F. Alted, Blosc (shuffle filter); §7.1–§7.5 del artículo.
+:::
+
+## 8.8 El móvil
+
+**Frente al path trace, por versión de datos** (regiones de validate-corvette, PSNR en dB a 1920 × 1080; §7.12.3):
+
+| versión | coche | puerta | umbral | parachoques | capó |
+|---|---:|---:|---:|---:|---:|
+| v6 (trees de 640 px) | 19.33 | 33.77 | 31.87 | 20.21 | 14.16 |
+| v7 + dispersión del píxel, $\tau$ 1 (1280 px) | — | 35.53 | 32.36 | relMSE 0.199 | 14.46 |
+| v7, valores por defecto actuales | 19.03 | 35.52 | 32.36 | 22.28 | 14.68 |
+| v8 (close-up level a 5120 px) | — | — | — | — | — |
+
+v8 no se había convertido para el player en el momento de escribir esto y no se ha medido. En el recorte del coche, el
+sharp lobe por píxel del camino compacto llevó el coche de 16.49 a 17.46 dB (§7.12.3).
+
+::: {.nota}
+**Regiones de validate-corvette** — Son cajas fijas en la imagen de 1920 × 1080 (coche, puerta, umbral, parachoques, capó) con su PSNR por región, distintas del recorte de 900 × 420 de la §1.6. El PSNR de una región depende de su contenido: la puerta es una superficie extensa y suave (35 dB), el capó concentra brillos especulares desplazados (14 dB), y no se puede comparar el valor de una región con el de otra, solo la evolución de una misma región entre versiones. El parachoques aparece una vez como relMSE (0.199) porque esa ejecución se midió así.
+
+**Versiones de datos y $\tau$** — v6, v7 y v8 son conjuntos de datos del coche (trees de 640 px, el bake de 1280 px y el close-up level de 5120 px; tabla de la §7.12.3). $\tau$ es el umbral del cut en píxeles: un nodo se refina cuando el error proyectado de su padre supera $\tau$ (§7.5.1); $\tau$ 1 es el cut fino, $\tau$ 3 el de movimiento en el móvil. La dispersión del píxel (§4.8.3) quita las motas de los folds.
+
+**Una discrepancia con la §7.12.3** — Esta tabla da v8 como no medido, pero la §7.12.3 reporta v8.1 (coche 19.22, puerta 35.92 dB) y v8.2b (19.27 / 35.53 dB, y el logo desde una cámara cercana a 18.12 dB), y la §9.6 dice que v8.2b está medido frente al path trace en el player. La fila de v8 y la frase que la sigue parecen anteriores a esas medidas.
+
+**16.49 → 17.46 dB** — En el recorte del coche, el sharp lobe por píxel lleva el camino compacto al nivel del camino de escritorio (17.46 frente a 17.88; §8.10 explica por qué no se comparan directamente).
+
+*Referencias:* §7.12.3 del artículo; `docs/decisions.md` (sección "The Corvette on an iPhone (11-12 Oct)").
+:::
+
+**Velocidad** (§7.12.1, §7.12.2):
+
+| device | datos | dibujados | resultado |
+|---|---|---|---|
+| iPhone real, página de estrés | 3DGS simple | 200 k / ~1 M | 58.8 / 26.3–27 fps |
+| iPhone real, página de estrés | compacto, base real | 200 k / 400 k / ~1 M | 27 / 47 / 108 ms |
+| iPhone real, modelo | compacto | — | ~115 ms por millón + 4 ms: ~250 k a 30 fps, ~110 k a 60 fps |
+| iPhone real, primera prueba en el device | v7, vista por defecto | 106 k | 53 fps ($\tau$ 8.00) |
+| iPhone real, primera prueba en el device | v7, de cerca | 160 k | 32 fps, logo y grille blandos |
+| iPhone emulado | v5 / v7 / v7 tras un ajuste posterior del tiempo de frame | 226 k / 216 k / 234 k | 60 fps con $\tau$ 3 / 2.22 / 1.95 |
+| iPhone emulado, still frame | v7, de cerca | 529 k | un frame con $\tau$ 1.23 |
+| Dawn, M5 Pro, pasada compacta | 393 × 852 $\tau$ 3 / 1920 $\tau$ 1 | — | 4.0 / 17.2 ms |
+
+::: {.nota}
+**El modelo de coste** — Ajustado a la página de estrés en el iPhone real: $t\approx 115\ \text{ms}\cdot n/10^6+4\ \text{ms}$, con $n$ los splats dibujados. A 30 fps ($t=33.3$ ms), $n\approx(33.3-4)/115\cdot10^6\approx 255$ k; a 60 fps ($t=16.7$ ms), $n\approx 110$ k. El término fijo de 4 ms es el coste por frame independiente de los splats (ordenación de tiles, composición, cielo). Un modelo lineal así es lo que permite trasladar un cut medido en el escritorio a una predicción en el móvil.
+
+**3DGS simple frente a compacto** — La página de estrés con 3DGS sin relight dibuja 200 k a 58.8 fps (17 ms) y 1 M a 26–27 fps; el registro compacto con relight, 200 k en 27 ms: el relight cuesta más que el dibujo. *Emulado*: los 60 fps a 216–234 k dibujados no son velocidad del teléfono (nota de la §8.1), pero sirven para comparar versiones entre sí con $\tau$ como resultado del control por tiempo de frame (§7.10).
+
+*Referencias:* [11], [46] del §10; §7.10 y §7.12.1–§7.12.2 del artículo.
+:::
+
+Según el modelo, el cut de LOD de lejos con ambos culls (195 049 nodos, §8.5) cabe en las ~250 k que el móvil dibuja a
+30 fps, y el de cerca es más o menos 1.4× eso (§6.10). Una segunda prueba en el device encontró la vista de cerca
+todavía blanda. Lo blando se atribuyó a la nube de 1280 px, no al player, y eso llevó al close-up level a 5120 px
+(§7.12.1, §6.9). Para el gorrión, el cut móvil (488 656 splats, 31.7 MB) iba a 60 fps sin ventana en modo móvil,
+animado (§5.12).
+
+::: {.nota}
+**Del modelo a la predicción** — El cut lejano de 195 049 nodos cabe en las ~250 k del modelo a 30 fps; el cercano (unos 360–378 k) necesita unas 1.4–1.5× ese presupuesto, de modo que, a 30 fps, el player tiene que subir $\tau$ de cerca. La blandura que quedaba de cerca se atribuyó a la nube (leaves de 3–4 mm frente a unos 0.5 mm por píxel de pantalla en una vista cercana, §3.11) y no al cut, lo que motivó el close-up level. El gorrión a 60 fps es una medida sin ventana en modo móvil emulado, no en el teléfono.
+
+*Referencias:* §6.9, §6.10 y §7.12.1 del artículo; `docs/decisions.md` (secciones "Levels of detail for a cloud that moves", "Seventy-one animations, and not one line about sparrows").
+:::
+
+## 8.9 Memoria
+
+| magnitud | cifra | § |
+|---|---|---|
+| datos del coche, v6 tras el atlas, $\tau$ 3: Camera / de cerca / de lejos | 39.0 / 43.8 / 33.0 MB | 7.11 |
+| render state, mismas vistas | 24.1 / 26.0 / 21.7 MB | 7.11 |
+| página (heap de JS, three.js, domes) | ~39 → 25 → ~17 MB | 7.11 |
+| datos del coche, v7, $\tau$ 3 | 31–36 MB | 7.11 |
+| datos del coche, still frame de cerca (budget ~100 MB) | 95.6 MB | 7.10, 7.11 |
+| por Gaussian, relight anterior / camino compacto | 308 B + 29 MiB / 42.4 B + 16 B por splat dibujado + ~3 MiB | 7.4, 7.11 |
+| con 1 M splats, anterior / compacto | 326 / 58.6 MiB | 7.4 |
+| escritura de un tree, puerta de 4.08 M leaves (tras el arreglo) | 10.5 GB de pico residente | 6.9 |
+| oclusión compartida sobre 24 trees | 10.2 GB de pico residente | 6.9 |
+
+::: {.nota}
+**Qué se cuenta** — *Datos del coche*: buffers de GPU con la traversal, las pages residentes y el transfer. *Render state*: targets, buffers de ordenación, cúpula y atlas del entorno, independientes del asset. *Página*: heap de JavaScript y lo que carga three.js. *Por Gaussian*: el coste residente del relight anterior frente al camino compacto. Con 1 M de splats, el compacto da $42.4+16=58.4$ B por splat, unos 55.7 MiB, más ~3 MiB: los 58.6 MiB de la tabla. Para el anterior, $308\ \text{B}\times10^6\approx 293.7$ MiB más 29 MiB suman unos 323 MiB; la tabla da 326, lo que sugiere que 308 B está redondeado.
+
+**Picos del bake** — Las dos últimas filas son memoria de CPU del proceso de bake (pico residente, RSS), no del player: escribir el tree de la puerta (4.08 M leaves) o la oclusión compartida necesita unos 10 GB.
+
+*Referencias:* §7.4 y §7.11 del artículo; `docs/decisions.md` (secciones "Free memory counts what the system gives back", "Out of device memory is an error, and the engine steps down").
+:::
+
+El objetivo de 50–60 MB del player se aplica solo a los datos del coche; el render state se cuenta aparte (§7.11). En
+movimiento, los datos del coche eran 49.1–59.0 MB en v6 antes del atlas y 31–44 MB en v6 después de él y en v7, dentro
+del objetivo (§7.11).
+
+::: {.nota}
+**El presupuesto de 50–60 MB** — Es el del objetivo de producto: el proyecto del Corvette completo para iPhone en unos 60–90 MB, juzgado frente al path trace. Separar los datos del asset del render state permite comparar versiones de datos sin que cambios de la aplicación (resolución del atlas, buffers de ordenación) contaminen la cifra. El atlas del entorno (§7.8) es lo que bajó v6 de 49–59 MB a 31–44 MB.
+
+*Referencias:* §7.8 y §7.11 del artículo.
+:::
+
+## 8.10 Donde las fuentes difieren
+
+- **Leaves a 1280 px.** Los ocho bakes escribieron 8 703 429 Gaussians (§3.11, «8.70 M»); los trees tienen 8.69 M
+  leaves (§6.10). La primera cifra es el recuento de la conversión, la segunda la de los trees.
+- **Front_Bumper_001.** El bake del transfer da 5 009 059 Gaussians, el tree 5 008 986 leaves (§3.11); los totales
+  usan la cifra del tree.
+- **El tamaño en disco del close-up level.** 87.4 GB para los 24 trees; «unos 86 GB» era la estimación antes de
+  escribir el último tree (§6.9).
+- **El total de oclusión del close-up level.** Un primer recuento marcó un 132.4 % reabierto; era un desbordamiento de
+  32 bits del total de cells cerradas, ya corregido. Las cifras por tree (0–23.6 %) y el codebook eran correctos
+  (§6.7).
+- **El still frame.** Una medida da 529 k dibujados con $\tau$ 1.23 y 95.6 MB de datos del coche; otra da 531 k con
+  $\tau$ 1.22 en 118 ms (§7.10). Son dos ejecuciones de la misma política.
+- **Juntas de la puerta a 1280 px.** La §6.10 da las juntas subiendo de 0.90 a 1.02 entre el cut de 640 px con el campo
+  del polish y el cut de 1280 px, mientras que la tabla por clases de la §4.10.4 da las juntas del primero en 1.04
+  (0.90 es el de las leaves de 640 px sin cull). Las dos cifras vienen de ejecuciones de medida distintas; ambas dejan
+  las juntas a 1280 px a un 2–4 % del path trace.
+- **Recorte del coche en el móvil.** Los 17.46 dB del camino compacto (§7.12.3) y los 17.88 dB del cut de 1280 px en el
+  rasterizer de escritorio (§4.10.3) son medidas separadas sobre paths y datos distintos, y aquí no se comparan.
+- **Velocidad real frente a emulada.** Las cifras emuladas van más o menos al doble que las del iPhone real; los
+  dibujados se juzgan en el device (§7).
+
+::: {.nota}
+**Por qué dos fuentes dan cifras distintas** — Casi todas las discrepancias de la lista son de una de tres clases. (1) *Recuentos en etapas distintas*: la conversión escribe Gaussians, el tree cuenta leaves después de descartar las que no aportan (8 703 429 frente a 8.69 M; 5 009 059 frente a 5 008 986). (2) *Estimaciones frente a medidas*: «unos 86 GB» antes de escribir el último tree, 87.4 GB después. (3) *Ejecuciones distintas de la misma medida*: el still frame (529 k / 531 k, $\tau$ 1.23 / 1.22) y las juntas (0.90 / 1.04 según qué configuración se tome como «antes»). El 132.4 % reabierto es un caso aparte: un desbordamiento de entero de 32 bits en la suma de cells cerradas, que excede $2^{32}\approx4.29\cdot10^9$ en un bosque de 149 M nodos con muchas cells cada uno. Un porcentaje por encima de 100 es el síntoma típico.
+
+**Medidas que no se comparan** — 17.46 dB (camino compacto, player) y 17.88 dB (rasterizer de escritorio) son el mismo recorte con dos renderers y dos versiones de datos; la diferencia mezcla los dos efectos y no se puede atribuir a ninguno.
+
+*Referencias:* §3.11, §6.7, §6.9, §6.10, §7.10 del artículo.
+:::
