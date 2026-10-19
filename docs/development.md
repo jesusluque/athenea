@@ -1563,7 +1563,12 @@ stage's prims does not need a renderer at all: `usd::outline(path, prim)` and
 `usd::stageCameras(path)` read the stage alone -- no Hydra, no device -- for a
 tree view on whatever thread draws it. `setPrimVisible(prim, visible)` hides a
 prim with a session opinion and, to show it again, clears that opinion rather
-than forcing `inherited`. `scripts/build-usd.sh` with `ATHENEA_USD_TBB=<prefix>`
+than forcing `inherited`. `setPrimTransform(prim, localToParent)` places a prim
+by a matrix the same way (the engine's convention: translation in the last
+column): the first call leaves one `xformOp:transform` in the session layer and
+each call after it sets that op's value alone, so a host moves prims every
+frame without reopening the stage; `clearPrimTransform(prim)` gives the
+authored transform back. `scripts/build-usd.sh` with `ATHENEA_USD_TBB=<prefix>`
 links a TBB the process already has into the USD prefix instead of building
 one (the compositor's OpenImageIO brings Homebrew's); OpenVDB 10.1 is then
 built with `tbb/version.h` force-included, which oneTBB 2021.12 and later

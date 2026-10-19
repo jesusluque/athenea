@@ -15076,3 +15076,16 @@ The viewport's readback costs seconds a frame on CUDA (#42) where Metal's costs 
 
 The "Not done: Windows" of *A plugin finds its files from itself* is done: `Platform.cpp` finds its module with
 `GetModuleHandleExW` since the Windows port.
+
+## A prim placed by the host, a matrix a frame (19 Oct)
+
+A compositor that moves prims -- a manipulator dragging a dome, a transform node animated over time -- wrote a new
+layer and reopened the stage at every change, seconds a change. `setPrimTransform(prim, localToParent)` places a
+prim as `setPrimVisible` hides one: a session opinion applied through the stage scene index, the file untouched.
+The first call makes the prim's op stack one `xformOp:transform` (`MakeMatrixXform`); every call after it finds
+that single op and sets its value, so a frame changes one attribute and Hydra resyncs the transform alone.
+`clearPrimTransform` removes the session's op order and matrix, and the authored transform is back.
+
+- `athenea_usd_tests "[transform]"`: a square moved by a first matrix and then a second draws what a stage that
+  authored the same translation draws, to the last bit (maxRel 0); cleared, it draws the original frame to the last
+  bit; the file never names an `xformOp`.

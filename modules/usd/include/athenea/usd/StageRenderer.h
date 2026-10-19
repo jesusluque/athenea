@@ -192,6 +192,17 @@ public:
     /// made invisible stays so when a host stops hiding it.
     [[nodiscard]] Result<void> setPrimVisible(const std::string& prim, bool visible);
 
+    /// Place `prim` by `localToParent` (the engine's convention: column
+    /// vectors, translation in the last column) in place of the transform the
+    /// stage authored. A session opinion, as setPrimVisible's: the prim's op
+    /// stack becomes one `xformOp:transform`, written once, and every call
+    /// after that sets that op's value alone -- a matrix a frame, with no
+    /// stage reopened and nothing but the transform resynced.
+    [[nodiscard]] Result<void> setPrimTransform(const std::string& prim, const render::Mat4& localToParent);
+    /// The transform the stage authored for `prim` back: the session's op
+    /// order and matrix cleared.
+    [[nodiscard]] Result<void> clearPrimTransform(const std::string& prim);
+
     /// Point a shader's asset input -- a UsdUVTexture's or a MaterialX
     /// image's `file` -- at another texture, as a session opinion. Empty
     /// clears the opinion: the texture the stage authored comes back. The

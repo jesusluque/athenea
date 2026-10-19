@@ -9514,6 +9514,92 @@ TEST_CASE("a dome's sky is listed, swapped and turned, and the stage on disk is 
     CHECK(authored.find("rotateXYZ") == std::string::npos);
 }
 
+// A PRIM PLACED BY THE HOST: a compositor that moves a prim every frame (a
+// manipulator, an animated transform node) sets a matrix in the session layer
+// rather than writing and reopening the stage. Moved so, the square draws
+// what a stage that authored the same translation draws -- after a first
+// matrix and then a second, the second being the one-op path -- and cleared,
+// what the file asked for, with the file never told.
+TEST_CASE("a prim the host places draws as one the stage placed, and the stage on disk is not touched",
+          "[usd][gpu][mesh][transform]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const auto write = [&](const std::string& name, const std::string& op) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n)\n"
+               "def Xform \"World\"\n{\n"
+               "    def Xform \"Mover\"\n    {\n" << op <<
+               "        def Mesh \"Square\"\n        {\n"
+               "            int[] faceVertexCounts = [4]\n            int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "            point3f[] points = [(-1, -1, -5), (1, -1, -5), (1, 1, -5), (-1, 1, -5)]\n"
+               "            uniform token subdivisionScheme = \"none\"\n"
+               "            color3f[] primvars:displayColor = [(0.8, 0.6, 0.4)] ( interpolation = \"constant\" )\n"
+               "        }\n    }\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 1000)\n}\n";
+        return path;
+    };
+    const fs::path free = write("transform_free.usda", "");
+    const fs::path placed = write("transform_placed.usda",
+                                  "        double3 xformOp:translate = (0.6, 0.3, 0)\n"
+                                  "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n");
+    const uint32_t w = 96, h = 72;
+    const auto draw = [&](usd::StageRenderer& stage) {
+        auto image = stage.render("/Camera", 1.0, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    const auto translation = [](double x, double y, double z) {
+        render::Mat4 m = render::Mat4::identity();
+        m.at(0, 3) = x;
+        m.at(1, 3) = y;
+        m.at(2, 3) = z;
+        return m;
+    };
+
+    auto reference = usd::StageRenderer::open(placed);
+    if (!reference) FAIL(reference.error().toString());
+    const gpu::Buffer wanted = draw(**reference);
+
+    auto renderer = usd::StageRenderer::open(free);
+    if (!renderer) FAIL(renderer.error().toString());
+    usd::StageRenderer& stage = **renderer;
+    const gpu::Buffer original = draw(stage);
+    if (auto set = stage.setPrimTransform("/World/Mover", translation(-0.4, 0.2, 0.0)); !set) FAIL(set.error().toString());
+    const gpu::Buffer elsewhere = draw(stage);
+    if (auto set = stage.setPrimTransform("/World/Mover", translation(0.6, 0.3, 0.0)); !set) FAIL(set.error().toString());
+    const gpu::Buffer moved = draw(stage);
+    if (auto cleared = stage.clearPrimTransform("/World/Mover"); !cleared) FAIL(cleared.error().toString());
+    const gpu::Buffer back = draw(stage);
+
+    auto apart = render::compareHdr(*gpu->library, original, elsewhere, w, h);
+    auto same = render::compareHdr(*gpu->library, wanted, moved, w, h);
+    auto restored = render::compareHdr(*gpu->library, original, back, w, h);
+    REQUIRE(apart);
+    REQUIRE(same);
+    REQUIRE(restored);
+    std::printf("  transform: moved relMSE %.2e, as authored maxRel %.2e, cleared maxRel %.2e\n", apart->relMse,
+                same->maxRelative, restored->maxRelative);
+    CHECK(apart->relMse > 1e-2);
+    CHECK(same->maxRelative < 1e-6);
+    CHECK(restored->maxRelative < 1e-6);
+
+    // What a host may not do.
+    CHECK_FALSE(stage.setPrimTransform("/Nothing", translation(0, 0, 0)));
+    CHECK_FALSE(stage.clearPrimTransform("/Nothing"));
+
+    // The file itself never learns about any of it.
+    const std::string authored(std::istreambuf_iterator<char>(*std::make_unique<std::ifstream>(free)),
+                               std::istreambuf_iterator<char>());
+    CHECK(authored.find("xformOp") == std::string::npos);
+}
+
 // A STAGE BRINGS ITS OWN LIGHTS, and a host trying skies has to be able to
 // take the rest away: a sun left on under every image is a highlight no sky
 // explains. What the engine owes is to list them, the ones switched off

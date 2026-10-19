@@ -37,6 +37,8 @@
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/propertySpec.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usd/editContext.h>
 #include <pxr/usd/usdGeom/imageable.h>
@@ -2341,6 +2343,61 @@ Result<std::vector<std::string>> stageCameras(const std::filesystem::path& stage
 
 std::vector<StagePrim> StageRenderer::children(const std::string& path) const {
     return childrenOf(impl_->stage, path);
+}
+
+Result<void> StageRenderer::setPrimTransform(const std::string& prim, const render::Mat4& localToParent) {
+    Impl& impl = *impl_;
+    const UsdPrim target = impl.stage->GetPrimAtPath(SdfPath(prim));
+    if (!target) {
+        return Error(ErrorCode::NotFound, "no prim at " + prim);
+    }
+    UsdGeomXformable xform(target);
+    if (!xform) {
+        return Error(ErrorCode::InvalidArgument, prim + " has no transform to set");
+    }
+    // The engine's p' = M p is USD's p' = p * M transposed.
+    GfMatrix4d matrix;
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            matrix[c][r] = localToParent.at(r, c);
+        }
+    }
+    {
+        const UsdEditContext session(impl.stage, impl.stage->GetSessionLayer());
+        bool resets = false;
+        const std::vector<UsdGeomXformOp> ops = xform.GetOrderedXformOps(&resets);
+        // Already one matrix op (a call before this one, or the stage's own):
+        // its value is all that changes.
+        UsdGeomXformOp op;
+        if (ops.size() == 1 && !resets && ops[0].GetOpType() == UsdGeomXformOp::TypeTransform) {
+            op = ops[0];
+        } else {
+            op = xform.MakeMatrixXform();
+        }
+        if (!op || !op.Set(matrix)) {
+            return Error(ErrorCode::InternalError, "cannot place " + prim);
+        }
+    }
+    impl.sceneIndices.stageSceneIndex->ApplyPendingUpdates();
+    return ok();
+}
+
+Result<void> StageRenderer::clearPrimTransform(const std::string& prim) {
+    Impl& impl = *impl_;
+    const SdfPath path(prim);
+    if (!impl.stage->GetPrimAtPath(path)) {
+        return Error(ErrorCode::NotFound, "no prim at " + prim);
+    }
+    const SdfPrimSpecHandle spec = impl.stage->GetSessionLayer()->GetPrimAtPath(path);
+    if (spec) {
+        for (const TfToken& name : {UsdGeomTokens->xformOpOrder, TfToken("xformOp:transform")}) {
+            if (const SdfPropertySpecHandle property = spec->GetPropertyAtPath(path.AppendProperty(name))) {
+                spec->RemoveProperty(property);
+            }
+        }
+    }
+    impl.sceneIndices.stageSceneIndex->ApplyPendingUpdates();
+    return ok();
 }
 
 Result<void> StageRenderer::setPrimVisible(const std::string& prim, bool visible) {
