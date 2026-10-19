@@ -84,6 +84,11 @@ over "World"
 
 ## The conversion and the bake
 
+<figure markdown>
+  ![mesh2splat: each triangle drawn on a lattice, one Gaussian per cell, its material sampled there.](../assets/figures/fig-mesh2splat.svg)
+  <figcaption>mesh2splat: each triangle drawn on a lattice, one Gaussian per cell, its material sampled there.</figcaption>
+</figure>
+
 ```sh
 athenea mesh2splat mesh.usda --prim /World/Pawn \
     --cell-from-camera /World/Camera --camera-pixels 1024 \
@@ -119,6 +124,11 @@ mesh2splat: wrote pawn_gs.usdc (326265 splats)
 | `pawn_gs.usdc` | 70 MB |
 
 ## What the cloud holds
+
+<figure markdown>
+  ![The transfer: what the path tracer records in each Gaussian, and how a sky is applied at draw time.](../assets/figures/fig-transfer.svg)
+  <figcaption>The transfer: what the path tracer records in each Gaussian, and how a sky is applied at draw time.</figcaption>
+</figure>
 
 The output is a `UsdVolParticleField3DGaussianSplat` under `/World/Pawn/Splats`: positions, orientations, scales, opacities and colours, the material (metallic, roughness, transmission), the shading normals and the transfer. The transfer has no colour and no sky in it: it is geometry, so the same file is correct under any environment the frame provides. The direct half is nine floats a Gaussian; the indirect half, the light that arrived after bouncing off the scene, adds twenty-seven, and `--no-indirect` leaves it out.
 

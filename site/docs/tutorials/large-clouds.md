@@ -10,6 +10,11 @@ is held to; and what a frame does when the device runs out of memory.
 
 ## Two kinds of levels of detail
 
+<figure markdown>
+  ![Levels of detail: merge trees per part and a cut by screen error.](../assets/figures/fig-lod.svg)
+  <figcaption>Levels of detail: merge trees per part and a cut by screen error.</figcaption>
+</figure>
+
 | | `.athc` container | `--lod-levels` conversion |
 |---|---|---|
 | Written by | `athenea convert`, or `athenea mesh2splat -o <name>.athc` | `athenea mesh2splat --lod-levels` |

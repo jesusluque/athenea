@@ -213,6 +213,11 @@ or no vars is refused.
 
 ## The API schemas a cloud carries
 
+<figure markdown>
+  ![A cloud bound to a skeleton: skinning on the device, as a mesh is.](../assets/figures/fig-skinning.svg)
+  <figcaption>A cloud bound to a skeleton: skinning on the device, as a mesh is.</figcaption>
+</figure>
+
 Eight codeless API schemas, applied to a prim like any other. Every attribute
 is a primvar, so it inherits down the hierarchy.
 

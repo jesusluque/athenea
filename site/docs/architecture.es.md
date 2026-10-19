@@ -6,6 +6,11 @@ Esta página es una visión de conjunto. El detalle está en [`docs/development.
 
 ## Dos productos, dos procesos
 
+<figure markdown>
+  ![Los dos procesos: el bake produce el master de producción; el formato web se deriva de él.](assets/figures/fig-overview.es.svg)
+  <figcaption>Los dos procesos: el bake produce el master de producción; el formato web se deriva de él.</figcaption>
+</figure>
+
 El trabajo son dos procesos con objetivos distintos, descritos en el [paper](paper.md) como Parte I y Parte II.
 
 | | El master de producción | El formato web |
@@ -27,6 +32,11 @@ El trabajo son dos procesos con objetivos distintos, descritos en el [paper](pap
 **El formato web.** Empieza donde termina el master y no cambia nada de él. Una pestaña de móvil tiene un budget de memoria (unos 50–60 MB de datos del asset mientras la cámara se mueve, unos 100 MB en reposo), una descarga que debe empezar a dibujar en segundos, y un tiempo de frame; el formato se hace para cumplirlos. Las herramientas que escriben `.athc` versión 3 y el player WebGPU que lo lee no están en este repositorio. El módulo `lod` del motor tiene su propio lector y escritor de `.athc` (`lod/Athc.h`), que usan `athenea convert` y el streaming del motor.
 
 ## Módulos
+
+<figure markdown>
+  ![Los módulos en orden de dependencia.](assets/figures/fig-modules.es.svg)
+  <figcaption>Los módulos en orden de dependencia.</figcaption>
+</figure>
 
 `modules/<nombre>` es una librería estática `athenea::<nombre>`. Los módulos se listan en `modules/CMakeLists.txt` en orden de dependencia, y cada uno enlaza solo con los de arriba.
 
@@ -122,6 +132,11 @@ Los bundles de `plugins/` se compilan con el SDK de aopenfx (`third_party/aopenf
 | `integrations/blender` | `athenea_hydra`, una extensión de Blender que registra hdAthenea como motor de render, convierte meshes a Gaussians y los exporta; ver [Gaussian splats en Blender](tutorials/blender.md) |
 
 ## Cómo se hace un frame
+
+<figure markdown>
+  ![La ruta raster: visibilidad, shading y los splats compuestos por profundidad.](assets/figures/fig-raster.es.svg)
+  <figcaption>La ruta raster: visibilidad, shading y los splats compuestos por profundidad.</figcaption>
+</figure>
 
 **Una GPU, un hilo.** El `Sync` de Hydra corre en el hilo que le dé el host, y puede correr en varios a la vez. Nunca toca el dispositivo: toma un lock y entrega al motor registros del lado de la CPU. Después, el hilo del render pass los confirma (subidas, apertura de ficheros `.athc`, construcción de estructuras de aceleración) y dibuja. El dispositivo tiene un solo llamante.
 

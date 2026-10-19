@@ -11,6 +11,11 @@ The engine's documentation lives in the repository and is kept in English and Sp
 
 ## The subcommands
 
+<figure markdown>
+  ![The parameters a Gaussian carries, each drawn as an image (athenea:splatView): albedo, normal, roughness, sky visibility, bounce and more.](assets/figures/img-channels.jpg)
+  <figcaption>The parameters a Gaussian carries, each drawn as an image (athenea:splatView): albedo, normal, roughness, sky visibility, bounce and more.</figcaption>
+</figure>
+
 | Subcommand | Section |
 |---|---|
 | `athenea info` | [§2.1](https://github.com/jesusluque/athenea/blob/main/docs/operations.md#21-athenea-info--the-device-and-what-it-can-do) |

@@ -220,6 +220,11 @@ o sin vars se rechaza.
 
 ## Los schemas de API que lleva una nube
 
+<figure markdown>
+  ![Una nube atada a un esqueleto: skinning en el dispositivo, como una malla.](../assets/figures/fig-skinning.es.svg)
+  <figcaption>Una nube atada a un esqueleto: skinning en el dispositivo, como una malla.</figcaption>
+</figure>
+
 Ocho schemas codeless de API, que se aplican a un prim como cualquier otro.
 Todos los atributos son primvars, así que heredan hacia abajo.
 

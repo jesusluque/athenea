@@ -6,6 +6,11 @@ El código está en `integrations/ofx`. El manual de operación lo describe en l
 
 ## El motor fuera de proceso
 
+<figure markdown>
+  ![Natron con el nodo Athenea 3DGS: el grafo de nodos (Athenea3DGS hacia el Viewer), sus parámetros (nube, cámara, cielo, salida) y el peón bajo el atardecer de Venecia.](assets/natron-ui.jpg)
+  <figcaption>Natron con el nodo Athenea 3DGS: el grafo de nodos (Athenea3DGS hacia el Viewer), sus parámetros (nube, cámara, cielo, salida) y el peón bajo el atardecer de Venecia.</figcaption>
+</figure>
+
 El plugin no carga nada del motor. Un compositor lleva su propio OpenUSD y su propio TBB, y el motor trae uno de cada; dos de cualquiera de ellos en un proceso comparten símbolos. Por eso el plugin enlaza solo la librería de soporte de OpenFX y un parser de JSON, y arranca `athenea-mcp`, el servidor MCP del motor, como proceso hijo la primera vez que renderiza.
 
 - El servidor mantiene abiertos el dispositivo y la nube entre frames.
@@ -41,6 +46,11 @@ Se copia o enlaza el bundle en un directorio donde el host busque plugins OpenFX
 
 ## Parámetros
 
+<figure markdown>
+  ![El cielo en el nodo: la misma nube bajo un cielo, el mismo cielo girado 120 grados, y el interior de un taller.](assets/ofx-skies.jpg)
+  <figcaption>El cielo en el nodo: la misma nube bajo un cielo, el mismo cielo girado 120 grados, y el interior de un taller.</figcaption>
+</figure>
+
 | Parámetro | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `cloud` | fichero | ninguno | un `.usdc` o `.usda` con la nube (un `ParticleField3DGaussianSplat`). Vacío no dibuja nada |
@@ -62,6 +72,11 @@ Se copia o enlaza el bundle en un directorio donde el host busque plugins OpenFX
 **El cielo.** El cielo solo se cambia cuando cambia, porque cada cambio es una edición de sesión que Hydra sincroniza. El primer frame después de un cambio prepara el cielo nuevo (sus armónicos y su cadena prefiltrada); los frames siguientes cuestan lo que costaban.
 
 ## Capas
+
+<figure markdown>
+  ![Lo que da el nodo, de un solo render: RGBA (reiluminado, premultiplicado), profundidad, P (posición en el mundo) y Cryptomatte (un id por objeto: el cuerpo y la cabeza de vidrio).](assets/ofx-outputs.jpg)
+  <figcaption>Lo que da el nodo, de un solo render: RGBA (reiluminado, premultiplicado), profundidad, P (posición en el mundo) y Cryptomatte (un id por objeto: el cuerpo y la cabeza de vidrio).</figcaption>
+</figure>
 
 | Capa | Canales | Contenido |
 |---|---|---|

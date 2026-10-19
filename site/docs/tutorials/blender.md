@@ -8,6 +8,11 @@ screenshots are of Blender 5.3 alpha on a Mac (Metal).
 
 ## What it needs
 
+<figure markdown>
+  ![Blender 5.3 with the athenea add-on: the viewport drawn by Athenea under the Venice sunset, and its panel in the render properties.](../assets/blender-addon-venice.jpg)
+  <figcaption>Blender 5.3 with the athenea add-on: the viewport drawn by Athenea under the Venice sunset, and its panel in the render properties.</figcaption>
+</figure>
+
 - Blender's 5.3 development build. The add-on refuses a Blender whose USD
   is not the one hdAthenea was built against, and says which one it wants.
 - The add-on package, `athenea_hydra-<version>.zip`, made by

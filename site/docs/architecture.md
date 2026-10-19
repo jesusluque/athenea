@@ -6,6 +6,11 @@ This page is an overview. The depth is in [`docs/development.md`](https://github
 
 ## Two products, two processes
 
+<figure markdown>
+  ![The two processes: the bake makes the production master; the web format is derived from it.](assets/figures/fig-overview.svg)
+  <figcaption>The two processes: the bake makes the production master; the web format is derived from it.</figcaption>
+</figure>
+
 The work is two processes with different goals, described in the [paper](paper.md) as Part I and Part II.
 
 | | The production master | The web format |
@@ -27,6 +32,11 @@ The work is two processes with different goals, described in the [paper](paper.m
 **The web format.** It starts where the master ends and changes nothing in it. A phone tab has a memory budget (about 50–60 MB of asset data while the camera moves, about 100 MB at rest), a download that must start drawing within seconds, and a frame time; the format is made to meet those. The tools that write `.athc` version 3 and the WebGPU player that reads it are not in this repository. The engine's `lod` module has its own `.athc` reader and writer (`lod/Athc.h`), used by `athenea convert` and the engine's streaming.
 
 ## Modules
+
+<figure markdown>
+  ![The modules in dependency order.](assets/figures/fig-modules.svg)
+  <figcaption>The modules in dependency order.</figcaption>
+</figure>
 
 `modules/<name>` is a static library `athenea::<name>`. The modules are listed in `modules/CMakeLists.txt` in dependency order, and each links only the ones above it.
 
@@ -122,6 +132,11 @@ The bundles under `plugins/` are built with aopenfx's SDK (`third_party/aopenfx`
 | `integrations/blender` | `athenea_hydra`, a Blender extension that registers hdAthenea as a render engine, converts meshes to Gaussians and exports them; see [Gaussian splats in Blender](tutorials/blender.md) |
 
 ## How a frame is made
+
+<figure markdown>
+  ![The raster route: visibility, shading and the splats composited by view depth.](assets/figures/fig-raster.svg)
+  <figcaption>The raster route: visibility, shading and the splats composited by view depth.</figcaption>
+</figure>
 
 **One GPU, one thread.** Hydra's `Sync` runs on whatever thread the host gives it, and may run on several at once. It never touches the device: it takes a lock and hands the engine CPU-side records. The render pass thread then commits them (uploads, opens `.athc` files, builds acceleration structures) and draws. The device has one caller.
 

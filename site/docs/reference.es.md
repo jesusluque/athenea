@@ -11,6 +11,11 @@ La documentación del motor está en el repositorio y se mantiene en inglés y c
 
 ## Los subcomandos
 
+<figure markdown>
+  ![Los parámetros que lleva una Gaussian, cada uno dibujado como imagen (athenea:splatView): albedo, normal, roughness, visibilidad del cielo, rebote y más.](assets/figures/img-channels.jpg)
+  <figcaption>Los parámetros que lleva una Gaussian, cada uno dibujado como imagen (athenea:splatView): albedo, normal, roughness, visibilidad del cielo, rebote y más.</figcaption>
+</figure>
+
 | Subcomando | Sección (en inglés) |
 |---|---|
 | `athenea info` | [§2.1](https://github.com/jesusluque/athenea/blob/main/docs/operations.md#21-athenea-info--the-device-and-what-it-can-do) |

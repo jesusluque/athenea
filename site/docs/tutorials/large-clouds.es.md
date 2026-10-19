@@ -12,6 +12,11 @@ memoria.
 
 ## Dos clases de niveles de detalle
 
+<figure markdown>
+  ![Niveles de detalle: árboles de fusión por pieza y un corte por error en pantalla.](../assets/figures/fig-lod.es.svg)
+  <figcaption>Niveles de detalle: árboles de fusión por pieza y un corte por error en pantalla.</figcaption>
+</figure>
+
 | | Contenedor `.athc` | Conversión con `--lod-levels` |
 |---|---|---|
 | Lo escribe | `athenea convert`, o `athenea mesh2splat -o <nombre>.athc` | `athenea mesh2splat --lod-levels` |

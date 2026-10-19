@@ -103,6 +103,11 @@ Debug presets build `Debug`; release presets build `RelWithDebInfo`. Each deskto
 
 ### The Blender add-on
 
+<figure markdown>
+  ![The add-on's settings in Blender: Render Engine Athenea, final render by raster or path trace, and the comparison with Cycles.](assets/blender/4_render_settings.png)
+  <figcaption>The add-on's settings in Blender: Render Engine Athenea, final render by raster or path trace, and the comparison with Cycles.</figcaption>
+</figure>
+
 The Blender add-on is built against headers that match Blender's own OpenUSD: `scripts/build-usd-blender.sh` on macOS and Linux (`BLENDER_LIB` names Blender's `lib` folder on Linux), `scripts\build-usd-blender.ps1 -BlenderDir <folder>` on Windows, then the `macos-arm64-blender`, `linux-x86_64-blender` or `windows-x64-blender` preset. Under WSL a bake is refused: there is no OptiX there. The steps are in [Gaussian splats in Blender](tutorials/blender.md) and in the development manual's *Dependencies and toolchain*.
 
 ## The runtime environment

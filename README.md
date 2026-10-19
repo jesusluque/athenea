@@ -28,6 +28,21 @@ down. Render Engine: Athenea.*
 
 <p align="center"><img src="docs/media/pawn-venice.jpg" width="440" alt="F12 of the pawn under the Venice sunset, drawn by athenea in Blender"></p>
 
+## A node for Nuke and Natron
+
+![Natron with the Athenea 3DGS node: the node graph, its parameters and the pawn under the Venice sunset](docs/media/natron-ui.jpg)
+
+*Natron with the Athenea 3DGS OpenFX node: Athenea3DGS into the Viewer, its
+parameters (cloud, camera, sky and its rotation, output) and the pawn relit by
+the Venice sunset.*
+
+![What the node outputs: RGBA, depth, P and Cryptomatte](docs/media/ofx-outputs.jpg)
+
+*One render, every layer compositing needs: RGBA relit and premultiplied,
+depth, P (world position) and Cryptomatte (the body and the glass head).
+The engine runs out of process, so a GPU fault never takes the compositor
+down. [OpenFX node](https://jesusluque.github.io/athenea/ofx/).*
+
 ## Seen moving
 
 Click a clip for the full video.

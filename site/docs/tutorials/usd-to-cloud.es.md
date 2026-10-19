@@ -84,6 +84,11 @@ over "World"
 
 ## La conversión y el bake
 
+<figure markdown>
+  ![mesh2splat: cada triángulo dibujado sobre una retícula, una Gaussian por celda, con su material muestreado allí.](../assets/figures/fig-mesh2splat.es.svg)
+  <figcaption>mesh2splat: cada triángulo dibujado sobre una retícula, una Gaussian por celda, con su material muestreado allí.</figcaption>
+</figure>
+
 ```sh
 athenea mesh2splat mesh.usda --prim /World/Pawn \
     --cell-from-camera /World/Camera --camera-pixels 1024 \
@@ -119,6 +124,11 @@ mesh2splat: wrote pawn_gs.usdc (326265 splats)
 | `pawn_gs.usdc` | 70 MB |
 
 ## Qué contiene la nube
+
+<figure markdown>
+  ![El transfer: lo que el path tracer graba en cada Gaussian, y cómo se aplica un cielo al dibujar.](../assets/figures/fig-transfer.es.svg)
+  <figcaption>El transfer: lo que el path tracer graba en cada Gaussian, y cómo se aplica un cielo al dibujar.</figcaption>
+</figure>
 
 La salida es un `UsdVolParticleField3DGaussianSplat` bajo `/World/Pawn/Splats`: posiciones, orientaciones, escalas, opacidades y colores, el material (metallic, roughness, transmisión), las normales de shading y el transfer. El transfer no lleva color ni cielo: es geometría, así que el mismo fichero es correcto bajo cualquier entorno que ponga el frame. La mitad directa son nueve floats por Gaussian; la indirecta, la luz que llegó tras rebotar en la escena, añade veintisiete, y `--no-indirect` la deja fuera.
 

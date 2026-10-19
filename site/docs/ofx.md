@@ -6,6 +6,11 @@ The source is `integrations/ofx`. The operations manual describes it in section 
 
 ## The engine out of process
 
+<figure markdown>
+  ![Natron with the Athenea 3DGS node: the node graph (Athenea3DGS into the Viewer), its parameters (cloud, camera, sky, output) and the pawn under the Venice sunset.](assets/natron-ui.jpg)
+  <figcaption>Natron with the Athenea 3DGS node: the node graph (Athenea3DGS into the Viewer), its parameters (cloud, camera, sky, output) and the pawn under the Venice sunset.</figcaption>
+</figure>
+
 The plugin loads none of the engine. A compositor carries its own OpenUSD and TBB, and the engine brings one of each; two of either in one process share symbols. So the plugin links only OpenFX's support library and a JSON parser, and starts `athenea-mcp`, the engine's MCP server, as a child process the first time it renders.
 
 - The server keeps the device and the cloud open between frames.
@@ -41,6 +46,11 @@ Copy or link the bundle into a directory the host searches for OpenFX plugins: o
 
 ## Parameters
 
+<figure markdown>
+  ![The sky on the node: the same cloud under a sky, the same sky turned 120 degrees, and a workshop interior.](assets/ofx-skies.jpg)
+  <figcaption>The sky on the node: the same cloud under a sky, the same sky turned 120 degrees, and a workshop interior.</figcaption>
+</figure>
+
 | Parameter | Value | Default | Notes |
 |---|---|---|---|
 | `cloud` | file | none | a `.usdc` or `.usda` holding the cloud (a `ParticleField3DGaussianSplat`). Empty draws nothing |
@@ -62,6 +72,11 @@ Copy or link the bundle into a directory the host searches for OpenFX plugins: o
 **The sky.** The sky is set only when it changes, since each change is a session edit Hydra syncs. The first frame after a change prepares the new sky (its harmonics and prefiltered chain); the frames after it cost what they did before.
 
 ## Layers
+
+<figure markdown>
+  ![What the node outputs, from one render: RGBA (relit, premultiplied), depth, P (world position) and Cryptomatte (one id per object: the body and the glass head).](assets/ofx-outputs.jpg)
+  <figcaption>What the node outputs, from one render: RGBA (relit, premultiplied), depth, P (world position) and Cryptomatte (one id per object: the body and the glass head).</figcaption>
+</figure>
 
 | Layer | Channels | Content |
 |---|---|---|

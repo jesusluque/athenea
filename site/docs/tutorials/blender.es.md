@@ -8,6 +8,11 @@ splats estándar. Las capturas son de Blender 5.3 alpha en un Mac (Metal).
 
 ## Qué necesita
 
+<figure markdown>
+  ![Blender 5.3 con el add-on de athenea: el viewport dibujado por Athenea bajo el atardecer de Venecia, y su panel en las propiedades de render.](../assets/blender-addon-venice.jpg)
+  <figcaption>Blender 5.3 con el add-on de athenea: el viewport dibujado por Athenea bajo el atardecer de Venecia, y su panel en las propiedades de render.</figcaption>
+</figure>
+
 - La development build de Blender 5.3. El add-on rechaza un Blender cuyo USD
   no es aquel contra el que se compiló hdAthenea, y dice cuál quiere.
 - El paquete del add-on, `athenea_hydra-<versión>.zip`, que hace
