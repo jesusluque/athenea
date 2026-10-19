@@ -212,6 +212,8 @@ public:
 
     /// Fill the texture a material names `aofx://<name>` from the host's
     /// device buffer: float4 texels, `rowPixels` a row, bottom row first.
+    /// `name` is the whole asset path the material names, scheme included
+    /// (`"aofx://slot1"`), not the part after it.
     /// Point a shader at it with `setShaderTexture(shader, input,
     /// "aofx://slot1")`; call this every frame the picture changes, before
     /// drawing. The texels are the host's as they are (raw), and a copy on
