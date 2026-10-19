@@ -89,10 +89,17 @@ std::string planeOf(const Layer& layer) {
     return plane;
 }
 
-/// Which of kLayers a plane the host asks for is, or -1.
+/// Which of kLayers a plane the host asks for is, or -1. By the plane's name:
+/// a host spells the rest its own way (Natron adds a channels label).
 int layerOfPlane(const std::string& plane) {
-    for (int k = 0; k < kLayerCount; ++k) {
-        if (plane == planeOf(kLayers[k])) return k;
+    if (plane == kFnOfxImagePlaneColour) return 0;
+    std::string name;
+    std::string label;
+    std::string channelsLabel;
+    std::vector<std::string> channels;
+    if (!OFX::extractCustomPlane(plane, &name, &label, &channelsLabel, &channels)) return -1;
+    for (int k = 1; k < kLayerCount; ++k) {
+        if (name == kLayers[k].name) return k;
     }
     return -1;
 }

@@ -14270,8 +14270,15 @@ stage's sky (`sky` empty) draws a frame identical to the stage's own (relMSE 0).
 Through the plugin, the unit sphere's frame against `athenea-mcp`'s own is still identical (relMSE 0) after the move
 to Natron's OpenFX.
 
-Not done: the order of Nuke's rotations is read from its documentation, not yet checked in Nuke; the plugin run in
-Natron itself (its multi-plane path is checked only against the extension's headers so far); Nuke's own camera
+**In Natron itself** (Niik-l's 2.6 fork, built on this Mac by the natron session; NatronRenderer with openfx-io's
+WriteOIIO, every plane, 32-bit float): the node lists colour, `depth`, `P` and `CryptoObject00..02` among its
+layers, and the pawn at 1920 x 1080 under kloofendal turned 120 degrees writes one EXR of 21 channels whose colour
+and P are identical to the test host's frames of the same camera (relMSE 0; P's every pixel within 1e-6). Natron
+spells a custom plane with a channels label the node does not write (`..._ChannelsLabel_XYZA_...`), so a plane is
+matched by its name (`OFX::extractCustomPlane`), not by the whole string. Natron's writer defaults to half floats,
+which would round a Cryptomatte id into another: the matte wants `bitDepth` 32f.
+
+Not done: the order of Nuke's rotations is read from its documentation, not yet checked in Nuke; Nuke's own camera
 input (its OpenFX camera extension) in place of linked knobs; normals and motion vectors of gaussians, which the
 rasteriser does not write (the skinned wings' motion first); the sky as an image input of the node rather than a
 file; `.ply`/`.spz` opened directly rather than converted first; Linux and Windows builds and a signed bundle.
