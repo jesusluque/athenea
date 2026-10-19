@@ -24,14 +24,11 @@ route fills alike, and a reference renderer the fast paths are tested against.
 It was written anew on that shape, not built from Falcor's code, with its scene
 coming from OpenUSD through a Hydra 2.0 render delegate.
 
-It started as the render engine of **openFXplayer**, a GPU compositor, under
-the name lucabRTrender, and still shares that compositor's plugin SDK,
-[AOFX](https://github.com/jesusluque/aopenfx). From a splat renderer it has
-grown into a relight baker: the light transport path traced into every
-Gaussian, levels of detail, a compressed web format, and the Blender and
-OpenFX integrations. What a stage means it takes from the
-[OpenUSD specification](https://openusd.org/release/spec.html); the
-mesh-to-Gaussian conversion comes from Electronic Arts'
+From a splat renderer it has grown into a relight baker: the light transport
+path traced into every Gaussian, levels of detail, a compressed web format, and
+the Blender and OpenFX integrations. It takes what a stage means from the
+[OpenUSD specification](https://openusd.org/release/spec.html), and the
+mesh-to-Gaussian conversion from Electronic Arts'
 [mesh2splat](https://github.com/electronicarts/mesh2splat).
 [Background](https://github.com/jesusluque/athenea/blob/main/docs/background.md) details what it owes to each.
 
