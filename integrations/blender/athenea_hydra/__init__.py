@@ -24,6 +24,7 @@ The module, in Blender's terms:
 """
 
 import os
+import sys
 
 import bpy
 
@@ -90,6 +91,13 @@ def register_plugin():
     materialx = os.path.join(os.path.dirname(directory), "materialx")
     if os.path.isdir(os.path.join(materialx, "libraries")) and not os.environ.get("ATHENEA_MATERIALX_ROOT"):
         os.environ["ATHENEA_MATERIALX_ROOT"] = materialx
+    # Windows: USD opens the plugin with LoadLibrary, which does not look
+    # beside it for the DLLs it needs (Slang's, zlib's); the folder goes on
+    # this process's PATH first.
+    if sys.platform == "win32":
+        beside = os.path.join(directory, "hdAthenea")
+        if beside not in os.environ.get("PATH", "").split(os.pathsep):
+            os.environ["PATH"] = beside + os.pathsep + os.environ.get("PATH", "")
     from pxr import Plug
     registered = Plug.Registry().RegisterPlugins(directory)
     names = [p.name for p in registered]
