@@ -8,6 +8,9 @@ splats estándar. Las capturas son de Blender 5.3 alpha en un Mac (Metal).
 
 ## Qué necesita
 
+!!! tip "El peón de ejemplo"
+    Para probar el add-on con una nube ya horneada, usa [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip): añade un Empty, pon su propiedad `athenea_cloud` en `clouds/M_Pawn_Body_W.usdc` (un segundo Empty para `M_Pawn_Top_W.usdc`), gira los dos 90° sobre X (las nubes son Y-up) y dale al World un HDRI de su carpeta `hdri/`.
+
 <figure markdown>
   ![Blender 5.3 con el add-on de athenea: el viewport dibujado por Athenea bajo el atardecer de Venecia, y su panel en las propiedades de render.](../assets/blender-addon-venice.jpg)
   <figcaption>Blender 5.3 con el add-on de athenea: el viewport dibujado por Athenea bajo el atardecer de Venecia, y su panel en las propiedades de render.</figcaption>

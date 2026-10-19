@@ -46,6 +46,9 @@ Se copia o enlaza el bundle en un directorio donde el host busque plugins OpenFX
 
 ## Parámetros
 
+!!! tip "El peón de ejemplo"
+    El peón de [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip) en el nodo: `cloud` = `pawn_gs.usda`, translate `0 0.048 0.18`, distancia focal 50, apertura horizontal 36, near 0.01, y cualquier `sky` (su carpeta `hdri/` trae dos). Es el frame de las imágenes de esta página.
+
 <figure markdown>
   ![El cielo en el nodo: la misma nube bajo un cielo, el mismo cielo girado 120 grados, y el interior de un taller.](assets/ofx-skies.jpg)
   <figcaption>El cielo en el nodo: la misma nube bajo un cielo, el mismo cielo girado 120 grados, y el interior de un taller.</figcaption>

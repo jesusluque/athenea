@@ -1,5 +1,8 @@
 # Render y comparación con el path trace
 
+!!! tip "El peón de ejemplo"
+    Los ficheros que compara este tutorial, listos para usar: [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip). `pawn_gs.usda` es la nube y `pawn_mesh.usda` las mallas, con la misma cámara (`/World/Cam`) y el mismo cielo; a 1024 × 1024 con una referencia de 1024 caminos miden PSNR 35,7 dB.
+
 !!! example "En vivo"
     El mismo peón, reiluminado en el navegador: [sparkwebgpu.lucab.co.uk/pawn.html](https://sparkwebgpu.lucab.co.uk/pawn.html).
 

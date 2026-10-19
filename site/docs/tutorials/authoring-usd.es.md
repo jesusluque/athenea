@@ -10,6 +10,9 @@ están en el documento de operaciones enlazado al final.
 
 ## Apuntar una aplicación al plugin
 
+!!! tip "El peón de ejemplo"
+    Un stage que referencia nubes y lleva su cámara y su domo, para leer junto a esta página: `pawn_gs.usda` en [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip). Cada nube es un `ParticleField3DGaussianSplat` referenciado desde su propio `.usdc` (`</World/Splats>`), y `pawn_mesh.usda` es la misma escena con las mallas originales.
+
 `<build>/plugin/usd` tiene el delegate de Hydra `hdAthenea` y los schemas
 codeless juntos, así que una variable, `PXR_PLUGINPATH_NAME`, encuentra los
 dos. El host ofrece entonces el renderer con su nombre, y los ajustes

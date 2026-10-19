@@ -124,6 +124,15 @@ El add-on de Blender se compila contra cabeceras que coinciden con el OpenUSD pr
 
 ## Comprobar el dispositivo
 
+!!! tip "El peón de ejemplo"
+    Para comprobar una instalación de punta a punta, renderiza el peón de [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip) y compáralo con su path trace:
+
+    ```sh
+    athenea stage pawn_gs.usda --camera /World/Cam -o gs.exr
+    athenea stage pawn_mesh.usda --camera /World/Cam --technique rt --path-total 64 -o pt.exr
+    athenea compare gs.exr pt.exr
+    ```
+
 `athenea info` imprime el dispositivo, lo que puede hacer (ray tracing por pipeline o por consultas inline, media precisión), el directorio de shaders y las dependencias opcionales que encontró la compilación. En Metal hay consultas de rayos inline y estructuras de aceleración, pero no pipelines de ray tracing; CUDA tiene ambos, con las cabeceras de OptiX.
 
 ```sh

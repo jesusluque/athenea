@@ -46,6 +46,9 @@ Copy or link the bundle into a directory the host searches for OpenFX plugins: o
 
 ## Parameters
 
+!!! tip "The example pawn"
+    The pawn of [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip) in the node: `cloud` = `pawn_gs.usda`, translate `0 0.048 0.18`, focal length 50, horizontal aperture 36, near 0.01, and any `sky` (its `hdri/` folder has two). That is the frame in the images on this page.
+
 <figure markdown>
   ![The sky on the node: the same cloud under a sky, the same sky turned 120 degrees, and a workshop interior.](assets/ofx-skies.jpg)
   <figcaption>The sky on the node: the same cloud under a sky, the same sky turned 120 degrees, and a workshop interior.</figcaption>

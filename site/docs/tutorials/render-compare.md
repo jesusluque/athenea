@@ -1,5 +1,8 @@
 # Rendering and comparing with the path trace
 
+!!! tip "The example pawn"
+    The files this tutorial compares, ready to use: [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip). `pawn_gs.usda` is the cloud and `pawn_mesh.usda` the meshes, under the same camera (`/World/Cam`) and sky; at 1024 × 1024 with a 1024-path reference they measure PSNR 35.7 dB.
+
 !!! example "Live"
     The same pawn, relit in a browser: [sparkwebgpu.lucab.co.uk/pawn.html](https://sparkwebgpu.lucab.co.uk/pawn.html).
 

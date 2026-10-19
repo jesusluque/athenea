@@ -10,6 +10,9 @@ the operations document linked at the end.
 
 ## Pointing an application at the plugin
 
+!!! tip "The example pawn"
+    A stage that references clouds and carries its camera and dome, to read alongside this page: `pawn_gs.usda` in [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip). Each cloud is a `ParticleField3DGaussianSplat` referenced from its own `.usdc` (`</World/Splats>`), and `pawn_mesh.usda` is the same scene with the source meshes.
+
 `<build>/plugin/usd` holds the Hydra delegate `hdAthenea` and the codeless
 schemas together, so one variable, `PXR_PLUGINPATH_NAME`, finds both. A host
 then offers the renderer under its own name, and the declared render

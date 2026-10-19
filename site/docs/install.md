@@ -124,6 +124,15 @@ The Blender add-on is built against headers that match Blender's own OpenUSD: `s
 
 ## Checking the device
 
+!!! tip "The example pawn"
+    To check an installation end to end, render the pawn of [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip) and compare it with its path trace:
+
+    ```sh
+    athenea stage pawn_gs.usda --camera /World/Cam -o gs.exr
+    athenea stage pawn_mesh.usda --camera /World/Cam --technique rt --path-total 64 -o pt.exr
+    athenea compare gs.exr pt.exr
+    ```
+
 `athenea info` prints the device, what it can do (ray tracing by pipeline or inline queries, half precision), the shader directory and the optional dependencies the build found. On Metal there are inline ray queries and acceleration structures but no ray-tracing pipelines; CUDA has both, given the OptiX headers.
 
 ```sh

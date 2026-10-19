@@ -8,6 +8,9 @@ screenshots are of Blender 5.3 alpha on a Mac (Metal).
 
 ## What it needs
 
+!!! tip "The example pawn"
+    To try the add-on with a cloud already baked, use [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip): add an Empty, set its custom property `athenea_cloud` to `clouds/M_Pawn_Body_W.usdc` (a second Empty for `M_Pawn_Top_W.usdc`), rotate both 90° about X (the clouds are Y-up), and give the World an HDRI from its `hdri/` folder.
+
 <figure markdown>
   ![Blender 5.3 with the athenea add-on: the viewport drawn by Athenea under the Venice sunset, and its panel in the render properties.](../assets/blender-addon-venice.jpg)
   <figcaption>Blender 5.3 with the athenea add-on: the viewport drawn by Athenea under the Venice sunset, and its panel in the render properties.</figcaption>
