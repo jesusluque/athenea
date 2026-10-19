@@ -59,17 +59,28 @@ of material Gaussians under a shared budget.
 
 `athenea decimate --tree` builds a binary merge tree by mutual nearest-neighbour pair merging. It is NanoGS (Xiong et
 al. 2026) on the device (`lod_pairs.slang`, `lod_pairs_final.slang`, `Lod.cpp`), with guards that suit baked material
-clouds (Figure 14).
+clouds (Figure 17).
 
-![Figure 14. A merge tree and its cut. Nodes are sums of moments; the error ε is monotone up the tree and each node’s sphere ρ covers its children’s. Nodes are paged by their parent’s error and carry an index into a conservative occlusion codebook; the per-frame traversal tests pages, back faces and occlusion.](figures/fig-lod.svg)
+![Figure 17. A merge tree and its cut. Nodes are sums of moments; the error ε is monotone up the tree and each node’s sphere ρ covers its children’s. Nodes are paged by their parent’s error and carry an index into a conservative occlusion codebook; the per-frame traversal tests pages, back faces and occlusion.](figures/fig-lod.svg)
 
 ### 6.2.1 Nodes as moments
 
-A node is a vector of 24 floats: $W$, $W\mu$, $W(\Sigma+\mu\mu^\top)$ (6), $W\cdot\mathrm{sRGB}(c)$, $W n$, $W\alpha$,
+A node is a vector of 24 floats: $W$, $W\mu$, $W(\Sigma+(\mu-\bar\mu)(\mu-\bar\mu)^\top)$ (6), $W\cdot\mathrm{sRGB}(c)$, $W n$, $W\alpha$,
 $W\cdot$metallic, $W\cdot$transmission, $W\cdot$specular, the key, the record count, the weighted thickness ratio and
 the node's index in the tree. Here $w = o\cdot\max(s_xs_y, s_ys_z, s_xs_z)$ (`discArea`), and $\alpha$ is the GGX
 roughness squared. A merge sums the two vectors. Because sums are associative, a node's moments are those of all its
-leaves whatever the merge order. Every other attribute (transfer, shadow bits, material, joints) is merged once at the
+leaves whatever the merge order.
+
+The second moment is taken about the group's own centre $\bar\mu$, not the origin: a leaf group's from each Gaussian's
+offset to the group's mean, a coarser group's from its children's with each child's mean offset (the parallel axis
+theorem), a pair's merge the same way. About the origin, $\Sigma = S_2/W - \mu\mu^\top$ is the difference of two
+numbers the size of $\mu\mu^\top$, which a float holds to about $5\times10^{-7}$ m² two metres from the origin --
+the whole variance of a Gaussian a millimetre wide. The close-up bakes' needles on long thin triangles (0.93 × 0.043
+× 0.004 mm on the front bumper, variances across of $2\times10^{-9}$ m²) merged as thin as the rounding left them, and
+the cost read from the same moments called them nearly free, so a cut chose them and drew their holes as bright grain.
+On the bumper's front-left corner baked alone at 5120 px (301 k Gaussians), the cut at 0.01 px from a close camera went
+from relMSE $8.8\times10^{-4}$ to $1.3\times10^{-5}$ against the bake, and the cut at 0.25 px from `/World/Camera`
+draws 42 719 Gaussians instead of 94 351 at slightly less error ($3.7$ against $3.9\times10^{-4}$). Every other attribute (transfer, shadow bits, material, joints) is merged once at the
 end, mass-weighted over the node's run of leaves (`lodMergeAttribute`).
 
 The merged Gaussian (`pairFinalize`) takes the moment-matched $\mu$ and $\Sigma$, eigen-decomposed by Jacobi with the
@@ -409,7 +420,7 @@ of 64 for what is drawn; in the WebGPU player of §7, near at $\tau=3$, that com
 Close up, the logo and grille stay soft at the 1280 px bake. A close camera comes to about 0.5 mm per output
 pixel, while the 1280 px leaves are 3–4 mm. A logo-and-grille bake from a close camera at 5120 px shows the checkered
 flag, the bowtie and the grille's mesh crisp (108 527 → 404 594 Gaussians). The close-up level (car5120) re-bakes the
-car in groups (Figure 9):
+car in groups (Figure 10):
 
 - **Detailed parts.** The 66 parts that the 1280 px bake gives at most 1.5 Gaussians per triangle (badges, grilles,
   lamps, calipers, mirrors, wheels, wipers, trims), at 5120 px, in 7 groups (`fine0–6`).
@@ -433,7 +444,10 @@ deeper levels are paged in only close up.
 | Front_Bumper_001 | 5 008 986 | 4480 |
 | **24 trees** | **74 536 126 leaves, 74 328 031 merges, 208 095 roots** | |
 
-The 24 trees hold 148 864 157 nodes in 49 634 pages of 3000, and 87.4 GB on disk. Some trees keep many lone roots
+The 24 trees hold 148 864 157 nodes in 49 634 pages of 3000, and 87.4 GB on disk. Rebuilt from their leaves with the
+second moments about each group's own centre (§6.2.1), and with a shared occlusion codebook of 8181 entries (11.9 % of
+cells reopened), the car's cut at 0.25 px draws 11.7 M Gaussians instead of 16.9 M and reads 24.00 dB on the frame and
+18.31 dB on the car against the path trace (23.62 and 17.91 before). Some trees keep many lone roots
 (fine5: 29 213; Infinite_Black: 92 773), because merges never cross parts or guards, by design. The player's
 packer (§7.5.4) adds a multi-level synthetic root above them, since a file holds about 3 000 roots.
 

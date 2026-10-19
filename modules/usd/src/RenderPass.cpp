@@ -136,6 +136,7 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
     athenea::render::RenderSettings settings;
     settings.width = width;
     settings.height = height;
+    settings.splatView = _delegate->GetSplatView();
     // Every AOV binding: what each reads, and what the frame must compute.
     struct Output {
         HdAtheneaRenderBuffer*      buffer;

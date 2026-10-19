@@ -62,6 +62,8 @@ relative to themselves. Under WSL2 a bake is refused: WSL2 does not load OptiX.
 | `PXR_PLUGINPATH_NAME` | points a USD application at `<build>/plugin/usd`, which holds both the Hydra delegate and the codeless schemas. Needed by any host that is not `athenea` itself. `athenea` registers `<its binary>/../plugin/usd` on its own at start-up, so the schemas a converted cloud applies are written whether this is set or not. |
 | `ATHENEA_MATERIALX_ROOT` | a directory holding MaterialX's `libraries/`, read by hdAthenea's material compiler in place of the libraries the host's USD loaded. Unset by default: the host's are used. For a host whose MaterialX predates the Slang generator (Blender 5.3 ships 1.39.4: no `genslang` implementations, older node definitions), pointed at 1.39.5's. Read once, when the first material compiles; the host's own renderers keep theirs. |
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. After those come `aofx/` beside the executable's folder (a release's layout) and the build tree's bundles. |
+| `ATHENEA_MCP` | the server the OpenFX plugin starts (§6.1), in place of the `athenea-mcp` its bundle carries in `Contents/Resources/bin`, and of one on the `PATH`. |
+| `ATHENEA_OFX_DEBUG` | set to anything: the OpenFX plugin prints each frame's request and the server's answer (its time) on standard error. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_GPU_VALIDATION` | any value: the graphics API's validation and debug layers (D3D12's needs Windows' Graphics Tools), for a failure the driver otherwise gives no reason for, such as a pipeline it cannot make. Slow. |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
@@ -1441,6 +1443,7 @@ found and does not.
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |
 | `athenea:pathMis` | bool | `true` | multiple importance sampling |
 | `athenea:domeVisible` | bool | `true` | every technique: a dome is drawn behind the frame; off, the pixels nothing covers stay transparent (alpha 0), as a host's transparent film asks, and the dome still lights the frame |
+| `athenea:splatView` | int | `0` | the raster: a parameter of the gaussians drawn in place of their light, blended by their opacity -- 1 albedo, 2 roughness (as the specular reads it), 3 metallic, 4 transmission, 5 ior (`ior - 1`, a grey), 6 normal (world, `n / 2 + 1/2`), 7 opacity, 8 size (the largest axis, a ramp from blue at 10 µm to red at 10 cm, a decade a quarter), 9 sky visibility (the transfer's cosine-weighted sky seen, 1 unoccluded), 10 bounce (the indirect half under a white sky), 11 open cells (the share of a TX transfer's directions that leave the scene), 12 emission, 13 reflected field (its mean under a white sky), 14 the light the cloud carries, 15 the material's own roughness (0 where not carried); a cloud that is not relit shows its light, opacity and size and nothing else. 0 draws the light |
 | `athenea:glassShadows` | bool | `true` | rt and its bakes: a light's shadow ray goes on through up to 4 faces of glass whose transmission is a delta (a thin wall; a solid of constant specular roughness under 0.03), tinted by each; off, glass stops it |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
 | `athenea:motionBuckets` | int | `4` | rt: shutter slices, 1 to 8 |
@@ -2007,10 +2010,99 @@ depth's, since none of them is a colour and the beauty's numbers are not
 theirs — and it is what a sequence of an AOV is shot with, one call a frame
 over a stage that stays open.
 
+**`render` for a program that composites the frame.** `xform` is a camera of
+the caller's own as a compositor holds one: camera to world, sixteen numbers
+row by row, looking down −z with +y up, with `focal`, `haperture` and
+`vaperture` in millimetres (the vertical aperture defaults to the horizontal
+one at the image's aspect) and `near` and `far` in scene units. `raw` names a
+file the frame's own numbers go to instead of a picture: the colour as four
+32-bit floats a pixel, then the depth (view z, 0 where nothing was drawn) as
+one, both bottom row first, linear and premultiplied. The answer is then text
+alone. It is what the OpenFX plugin asks for. `layers` adds, after the depth
+and in the order given, four floats a pixel each of: `P`, where each pixel
+lies in the world (x, y, z, 1 where something was drawn, zeros elsewhere; it
+needs a camera of the tool's own, `xform` or `eye`), and `CryptoObject00` to
+`CryptoObject02`, the Cryptomatte's layers as (id, coverage, id, coverage). A
+frame with a matte answers a line `manifest {...}`: the names its ids stand
+for, as an EXR's Cryptomatte metadata holds them.
+
+**The sky.** `sky` puts an image (a lat-long `.hdr` or `.exr`) on every dome
+light of the stage, and a stage with none gets the default dome and sun first;
+empty gives back the stage's own. `skyRotation` turns every dome by that many
+degrees about the stage's up axis, and `skyVisible` false leaves the
+background transparent while the sky still lights. A relightable cloud (a
+transfer) is lit by it. The first frame after a change prepares the new sky
+(about half a second for a 4K image); the frames after it cost what they did.
+A cloud turned by its prim reads its transfer in its own frame, the sky turned
+into it once a frame, so it relights as it would unturned.
+
+**A parameter in place of the light.** `splatView` draws one of the
+gaussians' parameters instead of their light (`athenea:splatView`, by its name:
+`albedo`, `roughness`, `metallic`, `transmission`, `ior`, `normal`,
+`opacity`, `size`, `skyVisibility`, `bounce`, `openCells`, `emission`,
+`field`, `baked`, `materialRoughness`; `light` puts it back), each a frame of
+that channel seen through the camera, in an EXR as numbers or a PNG as shown.
+
 Each tool's arguments are declared in the protocol and shown by the client, so
 they are not repeated here. The shape of a session is: `open_stage`, then
 `stage_tree` to find a camera or a prim, then `render`, then `pick` on
 something in the picture. `settings` says what the session currently holds.
+
+### 6.1 The OpenFX plugin — Athenea 3DGS in Nuke and Natron
+
+`Athenea.ofx.bundle` is a gaussian cloud drawn by athenea's rasteriser as an
+OpenFX generator, for a compositor: a node **Athenea 3DGS** (group *Athenea*)
+with no input, which draws one cloud through its camera at the project's
+format and the frame's time, as linear premultiplied RGBA floats, and its
+layers. It is built on Natron's OpenFX (`third_party/openfx`), whose support
+library carries the multi-plane extension. It is built
+with `ATHENEA_BUILD_OFX` (on by default; macOS and Linux) into
+`<build>/ofx/Athenea.ofx.bundle`.
+
+The plugin loads none of the engine. It starts `athenea-mcp` (§6) as a child
+process the first time it renders and keeps it, with the cloud open, for the
+frames after; each frame comes back through a file in the temporary
+directory, never as a picture. A server that dies is started again for the
+next frame. The bundle carries the server in `Contents/Resources/bin`;
+`ATHENEA_MCP` names another. There is one server for the whole host process,
+whatever number of instances of the node the host makes (Natron makes one per
+render thread), so a cloud is loaded once.
+
+To install it, copy or link the bundle into a directory the host searches: on
+macOS `/Library/OFX/Plugins`, or a directory in `OFX_PLUGIN_PATH`.
+
+| Parameter | Value | Default | Notes |
+|---|---|---|---|
+| `cloud` | file | none | a `.usdc` or `.usda` holding the cloud (a `ParticleField3DGaussianSplat`, as `athenea stage convert` and the exports write). Empty draws nothing |
+| `translate` | 3 numbers | `0 0 5` | where the camera stands, in the cloud's units |
+| `rotate` | 3 numbers, degrees | `0 0 0` | about x, y and z |
+| `rot_order` | `XYZ` … `ZYX` | `ZXY` | the order the rotations apply in, the first letter first; ZXY is Nuke's default |
+| `focal` | mm | `50` | |
+| `haperture` | mm | `24.576` | |
+| `vaperture` | mm | `0` | 0 fits the format's aspect, pixel aspect counted, as Nuke fits a camera to its format |
+| `near`, `far` | scene units | `0.1`, `10000` | the clipping planes |
+| `time_offset` | frames | `0` | added to the frame to give the cloud's USD time, for an animated (skinned) cloud |
+| `sky` | file | none | an HDR image (lat-long `.hdr` or `.exr`) on every dome of the stage; empty keeps the stage's own |
+| `sky_rotation` | degrees | `0` | about the stage's up axis |
+| `sky_visible` | on/off | on | off leaves the background transparent, to merge over a plate; the sky still lights |
+| `output` | `rgba`, `depth`, `P`, `CryptoObject00` … `02` | `rgba` | the layer shown in RGBA by a host that takes no planes; `depth` is the view z in every channel |
+
+The camera is built as Nuke builds a Camera node's: the rotations in the
+order chosen, then the translation, looking down −z with +y up. A Camera
+node's knobs are linked to these by expression (`translate`, `rotate`,
+`rot_order`, `focal`, `haperture`), so the cloud moves with the plate's
+camera. The node draws whole frames: it does not render tiles, and a render
+of one instance at a time goes to its server.
+
+**Layers.** A host that takes planes (Natron) gets every layer as a plane of
+the node's output, whatever `output` says: the colour, `depth` (one channel,
+`Z`: the view z, 0 where nothing was drawn), `P` (`X Y Z A`: world position,
+`A` 1 where something was drawn) and `CryptoObject00` to `CryptoObject02`
+(`R G B A`: id, coverage, id, coverage). Only the planes the host asks for are
+drawn. Nuke takes no planes of its own making from an OpenFX node, so there
+`output` picks the one layer RGBA shows; one node per layer gives them all.
+The Cryptomatte's manifest does not reach the host (OpenFX carries no
+metadata), so a matte is picked by id rather than by name.
 
 ## 7. AOFX effects
 

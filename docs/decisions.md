@@ -14733,3 +14733,132 @@ At the far view the corrected tree draws half the gaussians with less error: the
 apart and let degenerate ones through. The grain is gone from both frames. The 1280 px level is unaffected in
 practice (its gaussians' variances, about 1e-5 m^2, stand well above the rounding), and the 5120 px trees are to be
 rebuilt from their bakes.
+
+## The OpenFX plugin: athenea's gaussians in Nuke (18 Oct)
+
+The user asked for athenea's 3DGS viewer inside Nuke, and nothing else of the engine: a node that draws a gaussian
+cloud through the comp's camera. It is `integrations/ofx`, an OpenFX generator, **Athenea 3DGS**.
+
+**The engine is not loaded into the host.** Nuke carries its own OpenUSD and TBB, and the engine brings one of each;
+two of either in one process share symbols the first time anything calls them. So `Athenea.ofx` links only
+OpenFX's support library and a JSON parser (its only dependencies are libc++ and libSystem), and starts
+`athenea-mcp` as a child the first time it renders. The server keeps the device and the cloud open between frames,
+as it does for every client, and a device lost or a kernel that faults ends the server, not the host; the next
+frame starts it again. A frame comes back as numbers in a temporary file (`render`'s `raw`: RGBA floats then depth,
+bottom row first, premultiplied, which is how an OpenFX image lies), never as a picture, so the copy into the
+host's image is rows as they are.
+
+**The camera is the comp's.** `render` takes `xform` (camera to world, sixteen numbers, looking down -z with +y up)
+and a lens in millimetres, and the node builds that matrix from a translate, a rotate in a chosen order (ZXY,
+Nuke's default) and a focal length and aperture, so a Camera node's knobs link to it by expression. The vertical
+aperture is fitted to the format's aspect unless one is set. The node renders whole frames (no tiles), one at a
+time to its server.
+
+Measured on a unit sphere of 96k gaussians (`spheres-web/tx-balls/paint_first.usdc`), 640 x 360, through
+`athenea_ofx_host` (tests/ofx: OpenFX's HostSupport with real parameters and a float RGBA output clip): the plugin's
+frame against `athenea-mcp`'s own render of the same camera (translate 0.4 0.3 6, rotate -3 4 10 in ZXY, 50 mm,
+36 mm aperture) is identical -- relMSE 0, 8-bit max 0. A warm frame costs the server 16 ms at that size.
+
+### Layers and the sky (19 Oct)
+
+The user asked for every layer out of the node and as much of the comp as it can reach, and for the pawn's sky to
+be changed inside Nuke or Natron.
+
+**What a gaussian frame holds.** Measured on the processed sparrow (`sparrow-web/ref_cloud.usda`, 512 x 512): the
+splats fill the colour, the depth and the Cryptomatte's three layers; `primId`, `instanceId`, `elementId`, `Neye`
+and `normal` stay at their clear value, since only meshes write them. So the layers are colour, depth, `P` and
+`CryptoObject00..02`.
+
+**P is made on the device.** `StageRenderer::worldPosition` puts each pixel's view z back through the camera that
+drew it (`athenea/usd/aov_position`: the pixel's centre unprojected as `splat_project` projects, then the rows of
+view to world). Against the depth, on the sparrow at 480 x 270 from a camera of the tool's own: P's distance along
+the view axis matches the depth to 7e-8 relative, every covered pixel reprojects onto its own centre (0.000 px),
+and P's alpha agrees with the depth's coverage at every sampled pixel. It needs the tool's own camera, `xform` or
+`eye`: a stage camera's projection is the delegate's, and a lens's window roll and distortion are not undone.
+
+**The Cryptomatte crosses as Hydra holds it**, float4 (id, coverage, id, coverage) a layer, read from the render
+buffer the delegate already converts on the device; the manifest crosses as a line of the answer. OpenFX carries no
+metadata, so it stops at the plugin: a matte in the comp is picked by id.
+
+**Planes, through Natron's OpenFX.** The official OpenFX carries no planes. Natron's fork of it -- the one
+openfx-misc and openfx-io build on, which load in Nuke and Resolve as well -- has the Foundry multi-plane extension
+in its support library and Natron's custom planes beside it, so `third_party/openfx` now points there. A host that
+takes planes gets colour, `depth` (Z), `P` (XYZA) and the three Cryptomatte layers as planes of the one output, all
+drawn in one call (`setRenderAllPlanes`) and only those it asks for. Nuke takes from an OpenFX node only its own
+planes (motion vectors, disparity), so there an `output` knob picks the layer RGBA shows. The test host stays
+without the extensions: a host that knows nothing of planes, which is the plainest case.
+
+**The sky.** `render` takes `sky` (an image for every dome; a stage without one gets the default dome first),
+`skyRotation` and `skyVisible`, and sets a dome only where it differs, since each set is a session edit Hydra syncs;
+the node has the same three knobs. On the pawn (`pieces/pawn/cut_lod2`, a transfer cloud baked under autoshop_01),
+1024 x 1024: kloofendal at 120 degrees relights the marble and puts the new sky in the glass; the first frame after
+a change costs about 0.4 s (the sky's harmonics and prefiltered chain), the frames after it 50 ms; giving back the
+stage's sky (`sky` empty) draws a frame identical to the stage's own (relMSE 0).
+
+Through the plugin, the unit sphere's frame against `athenea-mcp`'s own is still identical (relMSE 0) after the move
+to Natron's OpenFX.
+
+**In Natron itself** (Niik-l's 2.6 fork, built on this Mac by the natron session; NatronRenderer with openfx-io's
+WriteOIIO, every plane, 32-bit float): the node lists colour, `depth`, `P` and `CryptoObject00..02` among its
+layers, and the pawn at 1920 x 1080 under kloofendal turned 120 degrees writes one EXR of 21 channels whose colour
+and P are identical to the test host's frames of the same camera (relMSE 0; P's every pixel within 1e-6). Natron
+spells a custom plane with a channels label the node does not write (`..._ChannelsLabel_XYZA_...`), so a plane is
+matched by its name (`OFX::extractCustomPlane`), not by the whole string. Natron's writer defaults to half floats,
+which would round a Cryptomatte id into another: the matte wants `bitDepth` 32f.
+
+**One server for the host.** Natron renders a sequence on several threads and makes an instance of the node for
+each, and the server was an instance's: 24 frames of the Corvette's transfer cloud (`corvette-lights/clouds/base_tx`,
+3 M gaussians, 2.9 GB) started 12 servers, each loading the car, and most frames took 11-12 s. The server is now the
+plugin's, one for the process under one lock. The same 24 frames at 1920 x 1080, every plane, from the scene's
+camera, NatronRenderer to 32-bit multi-layer EXRs (server times, `ATHENEA_OFX_DEBUG`): the first frame 7.5 s (the
+stage opened and uploaded), frames 2-12 with a still sky 120-170 ms, frames 13-24 with the sky turning every frame
+190-220 ms; the 24 frames 14 s from the first render to the last write. Natron also handed the node a pixel aspect
+of NaN from some threads (`getProjectPixelAspectRatio`), which made the vertical aperture NaN; the node now takes
+the image's own aspect, and refuses a request with a number that is not finite, naming it, rather than sending it.
+The server, for its part, answers an argument of the wrong type as the call's error instead of ending on the JSON
+library's exception.
+
+Not done: the order of Nuke's rotations is read from its documentation, not yet checked in Nuke; Nuke's own camera
+input (its OpenFX camera extension) in place of linked knobs; normals and motion vectors of gaussians, which the
+rasteriser does not write (the skinned wings' motion first); the sky as an image input of the node rather than a
+file; `.ply`/`.spz` opened directly rather than converted first; Linux and Windows builds and a signed bundle.
+
+## A transfer the stage turns, and the gaussians' parameters drawn (19 Oct)
+
+**The bug.** A TX transfer -- its harmonics, its reflected field, its open cells -- is a set of directions of the
+file it was baked in. The raster read them as directions of the world, which they are only while nothing turns
+the cloud. In Blender the pawn's clouds (Y-up) were stood up into the Z-up scene by a quarter turn on their
+Empties, and the glass head drew in fragments; the same clouds under an Xform turned 90 degrees in a Z-up stage
+drew the same fragments in the engine itself. A zonal transfer was already right: its lobes turn with each
+gaussian (`splatTransferFrame`).
+
+**The fix.** `relightCloudFrame` takes the cloud's frame from the rows that put it in the world (their linear
+part's columns made unit), and `transferAlong` puts a direction of the world into it before the field, the
+indirect half, the sun's share or a cell is read; a dot product with the sky reads the sky turned into the same
+frame, which `splat/sky_turn.slang` makes once an instance and a frame, where the instance turns a non-zonal
+transfer: the world's domes first, then the turned ones (`skyCloud` entries on). The turn is a projection of
+`L(R w)` onto the sixteen harmonics by a product rule exact for their products (four Gauss-Legendre nodes in z,
+eight steps in phi). A cloud nothing turns binds the sky as before and reads nothing turned.
+
+Measured: the pawn (`pieces/pawn/cut_lod2`) turned 60 degrees about up with its camera, under the sky turned 60
+degrees, against the pawn unturned, 768 x 768: relMSE 9e-6, PSNR 61 dB, SSIM 0.9999 (the turn the other way: 11
+dB, so the comparison tells the frames apart). The suite's TX balls (`[tx_turned]`, hidden, after the
+`mesh2splat_tx_*` conversions), turned with camera and sky, the background hidden: glass relMSE 1.6e-4, paint
+1.0e-4 against unturned, where under a sky left unturned they read 0.13 and 1.5e-2; the 99th percentile is not
+held, since a percent of those pixels is the ball's rim, where the turned transform rounds a footprint a little
+differently. With the shaders from before the fix the same test fails. The `[glass]` cases pass after it; the
+`[transfer]` and `[zonal]` cases and the rasteriser's suite fail after it exactly where they failed before it: the posed cloud's refit, the
+skinned zonal transfer against a turned still cloud, the TX ball against the mesh path traced and the thin sheet
+at a low index -- none of them new. Six test kernels built a `SplatSurface` without setting every field; they
+now say the cloud is not turned.
+
+Not done: the ray traced route turns its directions but dots its harmonics with the world's sky
+(`rt_shade.slang`, `skyCloud` 0): a turned TX cloud traced still reads the wrong sky in its body.
+
+**The parameters, drawn** (`athenea:splatView`, `render`'s `splatView`). For a dataset of what a relit cloud is
+made of, each gaussian's parameter is drawn in place of its light and blended by its opacity, as the light is:
+albedo, roughness, metallic, transmission, ior, the normal, opacity, size, the transfer's sky visibility, its
+bounce, its open cells, its reflected field, emission, the light the cloud carries and the material's own
+roughness (`splatParameterColour`). On the pawn at 768 x 768 a view costs 20-60 ms. Values that are not colours
+are scaled to be seen -- a size on a logarithmic ramp, a normal as `n / 2 + 1/2` -- and a cloud that is not relit
+has only its light, opacity and size to show.

@@ -48,6 +48,8 @@ void lobeOpenFill(uint3 tid: SV_DispatchThreadID) {
 
 SplatSurface surfaceOn(uint sky) {
     SplatSurface s;
+    s.cloudTurned = false;   // not turned: the transfer read in the world
+    s.skyCloud = 0u;
     s.materialRoughness = -1.0;
     s.normal = float3(0.0, 1.0, 0.0);
     s.cellWords = params.side * params.side / 32u;

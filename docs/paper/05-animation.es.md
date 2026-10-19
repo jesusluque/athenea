@@ -53,7 +53,7 @@ propio `MeshStage`, lo que deja dos maneras de tratar un mesh con skinning:
   `GfInterval(t, t)`. Esto cuesta una pose, deja intacto el fichero en disco
   y deja sin tocar un stage sin `SkelRoot`. Prueba: un cuadrado movido por un
   joint que se desliza (1.2, 0.4, 0) entre t = 0 y t = 1 se convierte en unos
-  límites, plegados en el dispositivo, que difieren exactamente en ese
+  límites, plegados en el device, que difieren exactamente en ese
   deslizamiento.
 - **Llevado.** Con `--skinned` se lee la **bind** pose y se omite
   `UsdSkelBakeSkinning`. Posar primero aplicaría el skinning dos veces a la
@@ -75,7 +75,7 @@ influencias por Gaussian: cuatro joints de peso cero, que el skinner lee como
 uno.
 
 **`--skinned` fuerza `--no-bake`.** Un bake de radiancia guarda el entorno y
-los rebotes de la escena (el suelo bajo una pata), y llevarlo hacia arriba con
+los bounces de la escena (el suelo bajo una pata), y llevarlo hacia arriba con
 un miembro levantado equivale a girar un lightmap. Una nube con skinning lleva
 su material y se hace relight en cada frame. Su transfer de luz, cuando se
 pide, se guarda de una forma que gira con la Gaussian (§5.7).
@@ -128,16 +128,16 @@ todas partes, el gradiente guardado es menor que $10^{-3}$.
 esquinas, así que la fracción de Gaussians truncadas es al menos igual de
 grande. Esa fracción no se ha medido.
 
-## 5.4 Skinning de una Gaussian en el dispositivo
+## 5.4 Skinning de una Gaussian en el device
 
 `scene::SplatSkinner` lanza `shaders/athenea/scene/splat_skin.slang`, un hilo
 por Gaussian. Sus entradas son la nube de reposo, los pares (joint, peso), las
 transformaciones de skinning de los joints en el instante actual y tres
 matrices: la transformación de bind $G$, `skelToWorld` y `worldToPrim`. Las
 matrices de USD son row-major y actúan sobre vectores fila, así que el host
-las traspone como hace `geom::Skinner` con los meshes (figura 11).
+las traspone como hace `geom::Skinner` con los meshes (figura 14).
 
-![Figura 11. Skinning en el dispositivo: la nube en bind pose, los pesos de joint por Gaussian y sus gradientes, y los transforms de joint del instante actual dan la media y la covarianza en pose; las tablas de visibilidad por parte, con bake único en bind pose, dan la sombra de la nube en pose.](figures/fig-skinning.es.svg)
+![Figura 14. Skinning en el device: la nube en bind pose, los pesos de joint por Gaussian y sus gradientes, y los transforms de joint del instante actual dan la media y la covarianza en pose; las tablas de visibilidad por parte, con bake único en bind pose, dan la sombra de la nube en pose.](figures/fig-skinning.es.svg)
 
 ### 5.4.1 La media
 
@@ -148,7 +148,7 @@ blend skinning, con exactamente la aritmética que usa el skinner de meshes:
 
 $$\mu' = M \sum_j w_j\,X_j\,(G\,\mu).$$
 
-### 5.4.2 El marco: el Jacobiano entero
+### 5.4.2 El marco: el Jacobian entero
 
 La covarianza posada debería ser la covarianza de reposo empujada por la
 derivada del mapa de posiciones. Cuando los pesos varían en el espacio, esa
@@ -190,7 +190,7 @@ disco) queda como se convirtió. La normal de shading gira con el cofactor del
 $J$ entero, porque $(Ja)\times(Jb)=\mathrm{cof}(J)(a\times b)$.
 
 El kernel solo escribe la posición, la rotación y las dos escalas del plano.
-La opacidad, el color, los armónicos, los canales PBR y la palabra que guarda
+La opacidad, el color, los harmonics, los canales PBR y la palabra que guarda
 el tercer tamaño no se tocan. Un frame cuesta, por tanto, un kernel sobre la
 nube, y no se vuelve a decodificar nada.
 
@@ -204,7 +204,7 @@ Frobenius por encima del 3 %. La tolerancia viene del formato: un cuaternión
 smallest-three de diez bits no puede fijar un eje con más precisión que unos
 $\sqrt2/1023$.
 
-| caso | solo la mezcla, Gram–Schmidt (antes) | Jacobiano entero, marco propio (después) |
+| caso | solo la mezcla, Gram–Schmidt (antes) | Jacobian entero, marco propio (después) |
 |---|---|---|
 | doblada, ejes a 0.1 rad de la rampa | 2048 de 4096 | 0 |
 | doblada, ejes girados 30° | 2048 | 0 |
@@ -293,10 +293,10 @@ intervalo de las muestras escritas (por ejemplo 1..25 para `land_hop_1`,
 
 `Engine::carryCloud` empareja los dos arrays del fichero en la disposición
 (joint, peso), conserva la nube subida como bind pose y ejecuta el skinner
-sobre un `GpuSplats` aparte que comparte los buffers de armónicos y PBR, ya
+sobre un `GpuSplats` aparte que comparte los buffers de harmonics y PBR, ya
 que el skinner no escribe ninguno de los dos. Al medirlo aparecieron dos
 errores. Primero, la extensión de una nube posada no es la de la bind pose,
-así que ahora se vuelve a plegar en el dispositivo después del skinning.
+así que ahora se vuelve a plegar en el device después del skinning.
 Segundo, `Engine::bounds()` plegaba la nube subida en lugar de la dibujada.
 
 **Un paso de tiempo no es una nube nueva.** Al principio, cada cambio de time
@@ -316,51 +316,51 @@ buffers nuevos en cada lectura. Viewer, 400 frames a 1280×720:
 **Refit, no reconstrucción.** Una pose no cambia ni el número de partículas
 ni su orden, así que `GaussianRayTracer::sync` hace refit. En la ruta
 hardware recalcula los proxies y actualiza en sitio el BLAS de cada trozo. En
-la ruta de BVH por compute hace refit del árbol una altura cada vez, de abajo
+la ruta de BVH por compute hace refit del tree una altura cada vez, de abajo
 arriba, sin lectura de vuelta. Cada `refitsPerRebuild` = 240 refits se hace
 una reconstrucción completa. Frente a reconstruir en cada pose, las imágenes
-coinciden con p99 0, máx. 1. Un árbol sin refit da p99 255. Gorrión a
+coinciden con p99 0, máx. 1. Un tree sin refit da p99 255. Gorrión a
 resolución 256 (300 862 Gaussians, BVH por compute): 140.9 / 143.1 /
 135.6 ms por frame antes, 84.7 / 83.9 / 83.7 ms después (−40 %).
 
 **Motion blur desde el skeleton.** `ParticleField` muestrea `skinningXforms`
-a lo largo del obturador. El skinner mezcla la segunda pose en el mismo bucle
+a lo largo del shutter. El skinner mezcla la segunda pose en el mismo bucle
 (solo los puntos, cerca de un tercio de kernel) y escribe el desplazamiento de
 cada Gaussian como dos palabras de halves. El rasterizer convierte ese
 desplazamiento en un término de covarianza de rango uno. Hydra toma las
-muestras que abarcan el obturador en lugar de recortarlas, así que el
+muestras que abarcan el shutter en lugar de recortarlas, así que el
 desplazamiento se escala por $(t_c-t_o)/(t_1-t_0)$; sin ese factor las alas
 se desenfocan el doble. En el gorrión de 5.9 M a 1280×800, un frame tarda
-90.0 ms con obturador 0 y 100.5 ms con obturador 0.5 (+11 %).
+90.0 ms con shutter 0 y 100.5 ms con shutter 0.5 (+11 %).
 
-## 5.7 Luz que gira con un miembro: lóbulos zonales de transfer
+## 5.7 Luz que gira con un miembro: lobes zonales de transfer
 
 Una nube estática puede llevar un transfer precalculado de nueve spherical
-harmonics en espacio de mundo. Bajo un skeleton esos armónicos conservarían
+harmonics en espacio de mundo. Bajo un skeleton esos harmonics conservarían
 el cielo de la pose de conversión, y girarlos cuesta una matriz $9\times9$ por
-Gaussian. athenea guarda en su lugar uno o dos **lóbulos zonales** por
-Gaussian, con el eje de cada lóbulo expresado en el marco propio de la
+Gaussian. athenea guarda en su lugar uno o dos **lobes zonales** por
+Gaussian, con el eje de cada lobe expresado en el marco propio de la
 Gaussian. Una función zonal gira al girar su eje, una sola $3\times3$, así
-que cualquier marco que produzca el skinner arrastra los lóbulos consigo, y
+que cualquier marco que produzca el skinner arrastra los lobes consigo, y
 no hace falta asignar ninguna Gaussian a una parte.
 
-Un lóbulo de eje $a$ y coeficientes $z_l$ es, en armónicos,
+Un lobe de eje $a$ y coeficientes $z_l$ es, en harmonics,
 $g_{lm}=z_l\,k_l\,Y_{lm}(a)$ con $k_l=\sqrt{4\pi/(2l+1)}$. Para un eje fijo,
 los mejores coeficientes son la proyección
 $z_l = k_l\sum_m f_{lm}Y_{lm}(a)$. Por el teorema de adición, el residuo es
 
 $$\|f-g\|^2=\|f\|^2-\sum_{l=0}^{2} z_l^2,$$
 
-así que el eje se elige para maximizar $\sum_l z_l^2$. En el dispositivo, la
+así que el eje se elige para maximizar $\sum_l z_l^2$. En el device, la
 búsqueda prueba la dirección de la banda 1, la normal y 64 direcciones de
 Fibonacci sobre un hemisferio, y después refina con un paseo que divide su
-paso por dos. El segundo lóbulo se ajusta al residuo del primero, y los dos se
+paso por dos. El segundo lobe se ajusta al residuo del primero, y los dos se
 reajustan uno contra otro dos veces (el ajuste ZH de Sloan). Los datos son
 diez floats por Gaussian, `primvars:athenea:splat:transferZonal`
-(`elementSize` 10): por lóbulo, el $(u,v)$ octaédrico del eje en el marco y
-$z_0,z_1,z_2$. En el dispositivo es el buffer `transfer` de siempre con
+(`elementSize` 10): por lobe, el $(u,v)$ octaédrico del eje en el marco y
+$z_0,z_1,z_2$. En el device es el buffer `transfer` de siempre con
 `transferCount` = 10. Al leer, `splatTransferFrame` lleva cada eje al mundo con
-la rotación actual de la Gaussian y reconstruye los nueve armónicos.
+la rotación actual de la Gaussian y reconstruye los nueve harmonics.
 
 **La pose del bake.** Al principio, el bake posaba la nube en `--time` con
 cuatro influencias por Gaussian, mientras Hydra animaba el mesh con todas las
@@ -372,13 +372,13 @@ identidad: 1 504 156 de 1 504 160 encuentran su superficie. El transfer guarda
 por tanto la autosombra de la bind pose (alas extendidas). La oclusión que
 proyecta otro miembro en otra pose es cosa de §5.8.
 
-**Comprobado.** En `[zonal]`, un transfer de dos lóbulos sobrevive al ajuste y
+**Comprobado.** En `[zonal]`, un transfer de dos lobes sobrevive al ajuste y
 al almacenamiento en f16 dentro del 0.5 %. Girar el marco de una Gaussian por
 $R$ y leer a lo largo de $Rw$ da lo que la Gaussian sin girar da a lo largo de
 $w$. En una prueba USD, 512 Gaussians llevadas por un joint que gira 60°
 coinciden con la misma nube bajo un Xform de esa rotación, con relMSE por
 debajo de $10^{-4}$ en las rutas raster y trazada. El error del ajuste en el
-gorrión no se ha medido. La mitad indirecta del transfer no se guarda zonal.
+gorrión no se ha medido. La indirect half del transfer no se guarda zonal.
 
 ## 5.8 Campos de visibilidad por partes: bake una vez, un producto de lecturas de tabla por frame
 
@@ -435,8 +435,8 @@ por frame.
 **Hallado al construirlo.** Los texels sin escribir de una parte vacía se
 leían como sombra total y dejaban el pájaro negro; ahora un grid de 0 la marca
 y se salta. El bake traza rayos inline, que el destino CUDA no tiene, así que
-es un módulo aparte y los dispositivos CUDA leen campos con bake hecho en otro
-dispositivo. Una parte no se hace sombra a sí misma: su campo, leído en una
+es un módulo aparte y los devices CUDA leen campos con bake hecho en otro
+device. Una parte no se hace sombra a sí misma: su campo, leído en una
 Gaussian suya, es la multitud en la que esa Gaussian está. Un mapa de
 $8\times8$ (unos 22° por texel) no resuelve el borde de un ala; 16 y 32 son
 exactos fuera de una banda de una cell de sonda.
@@ -464,7 +464,7 @@ BLAS de 1.17 GB para unos 3.3 M Gaussians). Por eso el bake del pájaro se hace
 a resolución 1100.
 
 **Límites.** Se deja fuera la autosombra local de una parte (pluma sobre
-pluma). El término ambiente es una media sobre la esfera, no un lóbulo coseno.
+pluma). El término ambiente es una media sobre la esfera, no un lobe coseno.
 Se supone que las partes son rígidas y que ocluyen de forma independiente. El
 suelo bajo el pájaro se sombrea con un mapa aparte en el espacio de la luz,
 que se estabiliza frente a la «respiración» de una caja posada (dimensionado a
@@ -497,7 +497,9 @@ una Gaussian conservada, cada uno con peso de merge $\omega_r$,
 $$c_j=\sum_{r\in R}\omega_r\sum_k w_{rk}\,[\,j_{rk}=j\,],$$
 
 reuniendo hasta 16 joints distintos. Se conservan los `width` más pesados y
-se renormalizan, $w'_j = c_j/\sum_{\text{kept}} c$. El joint dominante de un
+se renormalizan, $w'_j = \min(c_j/\sum_{\text{kept}} c,\,1)$: una división en
+el device no está correctamente redondeada, y un merge entero sobre un
+joint salía a $1 + 10^{-7}$. El joint dominante de un
 registro se pliega además en la clave de merge, así que un merge nunca cruza
 el borde de un joint. Comprobado: un suelo cuyas mitades pertenecen a dos
 joints pasa de 4096 a 256 Gaussians, cada Gaussian conservada entera en el
@@ -510,7 +512,7 @@ el tiempo 20, se dibuja como la nube sin diezmar con un RMS de imagen de
 
 El gorrión y un BMW fueron los dos primeros assets convertidos que no se
 crearon para este renderer, y la mayor parte de lo que destapó estaba fuera
-de las matemáticas del skinning (figura 12).
+de las matemáticas del skinning (figura 15).
 
 - **Exportación de la animación.** El exportador de Blender no escribía
   muestras de joints para este rig importado de FBX, así que
@@ -525,8 +527,8 @@ de las matemáticas del skinning (figura 12).
   premultiplicar (`UV2_treesparrow_normal_fixed.png`) y el segundo juego de
   UV (`UVMap_001`) para el alfa de las plumas. Todas las medidas posteriores lo
   usan.
-- **Recortes y presupuesto.** Respetar la `opacity` conectada al alfa de las
-  plumas bajó su presupuesto de 15 378 695 a 5 898 220 Gaussians a
+- **Recortes y budget.** Respetar la `opacity` conectada al alfa de las
+  plumas bajó su budget de 15 378 695 a 5 898 220 Gaussians a
   resolución 1400. Los meshes por encima del techo de 2 M por pasada se
   convierten por trozos; con todas las tarjetas, el pájaro tiene 9.5 M
   Gaussians.
@@ -542,10 +544,10 @@ relMSE con él), después de que la coverage pasara a seguir la opacidad:
 | ala del gorrión, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | ala del gorrión, trazada | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
-![Figura 12. El gorrión: el mesh con path trace (izquierda) y las Gaussians convertidas, rasterizadas (derecha).](figures/img-sparrow.jpg)
+![Figura 15. El gorrión: el mesh con path trace (izquierda) y las Gaussians convertidas, rasterizadas (derecha).](figures/img-sparrow.jpg)
 
 Para la web, el pájaro se convirtió con `--skinned --transfer
---resolution 512`, con bake de lóbulos zonales a 256 paths y 3 rebotes en la
+--resolution 512`, con bake de lobes zonales a 256 paths y 3 bounces en la
 bind pose y la visibilidad de 12 partes añadida (`sparrow_tx_vis.usdc`:
 1 504 160 Gaussians, 1 504 096 con contenido). Frente al path trace del mesh
 a 1024 paths (1024², `air_fly_A0`, frame 16), el render raster de la nube da
@@ -582,9 +584,9 @@ secciones 3 y 4. La validación de alta calidad del peón blanco
 Tres conversiones posteriores del mismo peón, medidas a 1024², dan un relMSE
 del cristal de 0.149, 0.081 y 0.043, con el cuerpo sin cambios en 0.025. El
 cuerpo queda a unos pocos por ciento del path trace del mesh. El error se
-concentra en la cabeza de cristal (figura 13).
+concentra en la cabeza de cristal (figura 16).
 
-![Figura 13. El peón blanco a 2048²: el path trace del mesh con 2048 caminos por píxel (izquierda) y las Gaussians convertidas (derecha).](figures/img-pawn.jpg)
+![Figura 16. El peón blanco a 2048²: el path trace del mesh con 2048 paths por píxel (izquierda) y las Gaussians convertidas (derecha).](figures/img-pawn.jpg)
 
 ## 5.12 Aplicación: reproducción en la web y en un teléfono
 
@@ -605,14 +607,35 @@ línea a línea, porque el original enlaza once storage buffers y Chrome en un
 Mac permite diez por etapa. Una prueba de GPU ejecuta el kernel propio de
 athenea sobre los mismos splats y compara los dos. Frente al raster de
 athenea, el resultado es un relMSE de 0.0015–0.0053 con una razón de brillo
-de 1.01. No se escribe movimiento de obturador.
+de 1.01. No se escribe movimiento de shutter.
 
 | página | contenido | medido |
 |---|---|---|
 | `/pawn` (publicada 2026-10-06) | cuerpo 727 061 + cabeza 673 711 splats, transfer, 6 HDRI CC0 | 60 fps en Chrome; conjunto de datos v8: descarga 281.3 → 82.7 MB; memoria de GPU en escritorio 1127 → 800 MB |
 | `/sparrow` (publicada 2026-10-07) | 1 504 096 splats, 125.7 MB, 12 clips (6.4 MB gzip), transfer zonal, HDRI | memoria de GPU en escritorio 1084 → 684 MB |
-| `/sparrow` en teléfonos | `sparrow-mobile`: 488 656 splats, 31.7 MB, cortado del árbol LoD (`--keep-splats 600000`) | 60 fps headless en modo móvil, animado |
+| `/sparrow` en teléfonos | `sparrow-mobile`: 488 656 splats, 31.7 MB, cortado del tree LoD (`--keep-splats 600000`) | 60 fps headless en modo móvil, animado |
 | sparrow-v2 (candidato) | 1 100 334 splats (−26.8 %), 75.9 MB; móvil 371 138, 26.1 MB | mismo error que el publicado (4.46e-3) |
+
+**La ruta compacta.** Una nube con skinning también se reproduce por la ruta
+compacta de §7: cada nodo lleva su skin en el registro compacto, el dibujo le
+aplica el skinning, la caja de una page es la unión de sus cajas en todas las
+poses, y los culls de oclusión y de caras traseras se apagan en lo que se mueve.
+El merge tree del gorrión se parte en dos por raíces con escalas zonales
+comunes, dos ficheros de unos 162 MiB con los clips y sus propios domos, 347 MB
+en total (`sparrow-compact-tx`, publicado el 2026-10-18); en el escritorio dibuja
+795 k Gaussians a $\tau$ 1.5 y 60 fps en vuelo, y el móvil emulado 232 k.
+
+**Antialiasing temporal.** Se probó en el player una resolución temporal (el
+esquema de Karis: jitter de Halton, reprojection, clamp en YCoCg y una media
+exponencial), con vectores de movimiento por Gaussian, los de las alas a partir
+de las matrices de hueso del frame anterior. Los vectores son correctos (error de
+reprojection 0.05 → 0.015–0.028 en las alas, 0.018 → 0.003 en el coche), pero en
+movimiento el frame no mejora al frame sin ella en el coche, el gorrión ni la
+ruta compacta: muestra más error, parpadeo y estelas, porque los brillos son HDR
+y dependen de la vista y el jitter no se promedia. Las variantes (historia
+Catmull–Rom, el recorte por varianza de Salvi, un $\alpha$ según la velocidad,
+afilado adaptativo al contraste) no lo cambian. Con la cámara quieta iguala una
+acumulación de 16 frames. Cuesta 3 ms a 1080p y queda como opción.
 
 **Podar un asset que se mueve.** Las Gaussians ocultas en la bind pose no se
 pueden quitar sin más, porque otras poses las muestran. Medido sobre 12
@@ -640,4 +663,4 @@ sparrow-v2 es lo segundo. Como comparación, el peón estático solo tiene un
   visibilidad por encima de unos 3 M Gaussians por parte.
 - El error del ajuste zonal en el gorrión, y una medida geométrica de la
   coverage en una flexión vista de cerca, que es lo que mostraría la ganancia
-  del término elástico del Jacobiano.
+  del término elástico del Jacobian.

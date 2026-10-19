@@ -192,7 +192,11 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     const float4 w0 = float4(params.w00, params.w01, params.w02, params.w03);
     const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
     const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
-    const float3 n = relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i));
+    // The cells, the sky and the sun read in the frame the bake measured
+    // them in: the cloud's, where the stage turned it.
+    SplatSurface inCloud = {};
+    relightCloudFrame(inCloud, w0, w1, w2);
+    const float3 n = transferAlong(inCloud, relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i)));
     const uint words = params.shadowBits;
     const uint side = splatCellSide(words);
     const uint base = i * words;
@@ -201,7 +205,7 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     // The sky's luminance coefficients, once.
     float sky[16];
     [unroll] for (uint k = 0; k < coefficients; ++k) {
-        sky[k] = dot(environment.sh[dome * kEnvCoefficients + k].rgb, luma);
+        sky[k] = dot(environment.sh[params.skyCloud + dome * kEnvCoefficients + k].rgb, luma);
     }
     float with = 0.0;
     float without = 0.0;
@@ -223,7 +227,8 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
             with += worth;
         }
     }
-    const float4 disc = environment.sun[dome * 2];
+    float4 disc = environment.sun[dome * 2];
+    disc.xyz = transferAlong(inCloud, disc.xyz);
     if (disc.w > 0.0) {
         const float facing = max(dot(n, disc.xyz), 0.0);
         const float sun = dot(environment.sun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
@@ -636,6 +641,10 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
     const float3 dir = normalize(posOpacity.xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
     float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
+    // A parameter drawn in place of the light (athenea:splatView): what the
+    // relit branch reads off its surface, kept for after it.
+    const float3 baked = colour;
+    float3 viewed = float3(0.0);
     // Whether `slopes[slot]` holds the reflection's slope (kSlopeMark).
     bool sloped = false;
     bool sharp = false;
@@ -715,6 +724,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         // The frame the gaussian has now -- posed, for a cloud a skeleton
         // carries -- which is what a zonal transfer's lobes turn with.
         splatTransferFrame(surface, transfer, r, w0, w1, w2);
+        surface.skyCloud = params.skyCloud;
         // `params.shadowBits` is the words a gaussian: two of the first
         // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
         surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;
@@ -818,6 +828,9 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                             environment.texels, environment.sh, environment.ofLight, params.envLights, params.envBaseSide,
                             environment.sun, transfer, shadowBits,
                             params.transferIndirect != 0, slope);
+        if (params.splatView != kSplatViewNone) {
+            viewed = splatParameterColour(params.splatView, surface, transfer, shadowBits, baked, posOpacity.w, scale);
+        }
         if (kTransfer >= 2 && slope.sharpOn) {
             // THE SHARP LOBE GOES TO THE BLEND (SplatSlope): the centre's
             // reading of it out of the colour, and the mirror's turn across
@@ -895,6 +908,18 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     }
     if (fate.graded) {
         colour = editGrade(params.edit, colour);
+    }
+    // A PARAMETER IN PLACE OF THE LIGHT: what the relit branch read, or, for
+    // a cloud that is not relit, what the cloud itself carries (its light,
+    // its opacity, its size; the rest reads as nothing). Flat: no slope, no
+    // sharp lobe.
+    if (params.splatView != kSplatViewNone) {
+        SplatSurface none = {};
+        colour = params.relight != 0 ? viewed
+                                     : splatParameterColour(params.splatView, none, transfer, shadowBits, baked,
+                                                            posOpacity.w, scale);
+        sharp = false;
+        sloped = false;
     }
     // DRAWN AS A STANDARD VIEWER DRAWS IT (`params.displayBlend`): every
     // splat's colour sRGB-encoded before the blend, which then sums encoded
@@ -1034,6 +1059,8 @@ void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
     const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
     SplatSurface s = {};
     s.normal = relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i));
+    relightCloudFrame(s, w0, w1, w2);
+    s.skyCloud = params.skyCloud;
     s.transferCount = params.transferCount;
     s.transferBase = i * params.transferWords * 2;
     s.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u;

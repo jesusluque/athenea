@@ -180,6 +180,11 @@ athenea_test(athenea_gpu_host_tests
     LIBS athenea::gpu_host
     LABELS gpe)
 
+# The OpenFX plugin, through a host of OpenFX's own making.
+if(TARGET athenea_ofx)
+    add_subdirectory(ofx)
+endif()
+
 add_subdirectory(aofx/bundles)
 athenea_test(athenea_aofx_tests
     SOURCES aofx/test_aofx.cpp aofx/test_mesh2splat.cpp aofx/test_bake_filter.cpp aofx/test_measure.cpp
@@ -509,6 +514,13 @@ add_test(NAME mesh2splat_tx_sliced
 set_tests_properties(mesh2splat_tx_sliced PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     PASS_REGULAR_EXPRESSION "transfer baked for 96[01][0-9][0-9] of 96[01][0-9][0-9] "
+    LABELS gpe)
+add_test(NAME tx_turned_transfer
+    COMMAND athenea_usd_tests "[tx_turned]")
+set_tests_properties(tx_turned_transfer PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED tx_clouds
     LABELS gpe)
 add_test(NAME tx_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[tx_conversion]")

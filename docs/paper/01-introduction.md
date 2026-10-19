@@ -70,21 +70,30 @@ The contributions described in this paper are the following.
    pages ordered by the parent's error.
 6. **A measured account** (Section 8) of what each step of the bake buys against the path trace, on one production
    asset, through the relit leaves, the cuts and the 640, 1280 and 5120 px bakes.
-7. **An application to mobile playback** (Section 7): a `.athc` v3 container with byte-plane encodings, clustered PCA
+7. **A web format derived from the master** (Part II, Section 7): a `.athc` v3 container with byte-plane encodings, clustered PCA
    of the transfer kept compressed on the GPU, vector-quantised open-direction bits, a 40-byte compact record,
    quantised traversal records of 5–11 bytes, and a frame-time and still-frame policy for a WebGPU player on an
    iPhone.
+8. **The baked cloud as image channels and in production hosts** (Sections 4.11 and 2.14): every parameter a Gaussian
+   carries drawn through a camera as a channel of its own, the material and geometry beside the precomputed light
+   transport, as the inputs and targets of a learned relighting; an OpenFX node that renders the relit cloud inside a
+   compositor (Nuke, Natron) out of process, with depth, world position and Cryptomatte as planes and a sky the artist
+   swaps; and a Blender add-on that draws it as a render engine.
 
 ## 1.4 Organisation
 
-Section 2 describes the engine and renderer on which the baker runs. Section 3 describes the conversion from USD meshes
-to Gaussians, and Section 4 the light transport baked into them and how they are relit. Section 5 covers animated
-assets: skinning, the sparrow and the pawn. Section 6 covers levels of detail. Section 7 describes the application to
-mobile: compression and a WebGPU player. Section 8 consolidates the evaluation from Sections 2–7, Section 9 gathers
+The work is two processes with different goals. **Part I** is the bake: it turns a production USD asset into a
+relightable Gaussian cloud written as a USD file, the master, and is judged by fidelity to the path trace. **Part II**
+derives from that master a web format for a phone, and is judged by size, memory and frame time, with its loss against
+the master measured. Part I opens with what the master holds; Section 2 describes the engine and renderer on which the
+baker runs, and the hosts that drive it. Section 3 describes the conversion from USD meshes to Gaussians, and Section 4
+the light transport baked into them and how they are relit. Section 5 covers animated assets: skinning, the sparrow and
+the pawn. Section 6 covers levels of detail. Part II opens with the derivation, parameter by parameter; Section 7
+describes the web format and its WebGPU player. Section 8 consolidates the evaluation from Sections 2–7, Section 9 gathers
 the limitations and the work left, and Section 10 lists the references, followed by an appendix on the repositories
 and commands (Figure 1).
 
-![Figure 1. The pipeline. The relight baker converts a USD stage into Gaussians (§3) and bakes light transport into each one with the path tracer (§4); the relit cloud is compared with a path trace of the source mesh. Merge trees (§6) and animated assets (§5) build on the baked cloud; the WebGPU player (§7) is an application.](figures/fig-overview.svg)
+![Figure 1. The two processes. Part I, the bake: a USD stage is converted into Gaussians (§3), light transport is baked into each one by the path tracer (§4), animated assets keep their rig (§5) and merge trees give levels of detail (§6); the output is the master USDC, compared with a path trace of the source mesh. Part II, the web format: the master is read and encoded into a compact, streamed format for a WebGPU player on a phone (§7), measured as a loss against the master.](figures/fig-overview.svg)
 
 ## 1.5 Related work
 

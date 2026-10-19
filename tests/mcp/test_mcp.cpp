@@ -175,3 +175,43 @@ TEST_CASE("the server opens a stage, renders it and answers with the image", "[m
     const json device = call(server, "device_info", json::object());
     CHECK(textOf(device).find("backend") != std::string::npos);
 }
+
+TEST_CASE("a raw frame carries the layers a compositor asks for, and their manifest", "[mcp][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    const fs::path path = scratch("square_layers.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Square\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-1, -1, -4), (1, -1, -4), (1, 1, -4), (-1, 1, -4)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n"
+               "def Camera \"Camera\"\n{\n    float focalLength = 35\n}\n";
+    }
+    mcp::Server server;
+    const fs::path raw = scratch("layers.raw");
+    const json identity = json::array({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1});
+    const json drawn = call(server, "render", json{{"stage", path.string()}, {"width", 64}, {"height", 48},
+                                                   {"xform", identity}, {"raw", raw.string()},
+                                                   {"layers", json::array({"P", "CryptoObject00"})}});
+    REQUIRE_FALSE(drawn["result"].value("isError", false));
+    const std::string text = textOf(drawn);
+    std::printf("  %s\n", text.c_str());
+    // Colour, depth, then a float4 a pixel for each layer, in the order asked.
+    CHECK(fs::file_size(raw) == uint64_t{64} * 48 * (16 + 4 + 16 + 16));
+    // A matte asked for brings the names its ids stand for.
+    CHECK(text.find("manifest {") != std::string::npos);
+    CHECK(text.find("/Square") != std::string::npos);
+
+    // P is made through the tool's own camera; a stage camera's is not its to know.
+    const json staged = call(server, "render", json{{"camera", "/Camera"}, {"raw", raw.string()},
+                                                    {"layers", json::array({"P"})}});
+    CHECK(staged["result"]["isError"] == true);
+    // And a layer it does not make is refused by name.
+    const json unknown = call(server, "render", json{{"raw", raw.string()}, {"layers", json::array({"N"})}});
+    CHECK(unknown["result"]["isError"] == true);
+    CHECK(textOf(unknown).find("'N'") != std::string::npos);
+}

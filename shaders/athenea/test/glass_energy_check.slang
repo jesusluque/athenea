@@ -39,6 +39,8 @@ void glassEnergyCheck(uint3 tid: SV_DispatchThreadID) {
         for (uint j = 0; j < params.steps; ++j) {
             const float nDotV = (float(j) + 0.5) / float(params.steps);
             SplatSurface s;
+            s.cloudTurned = false;   // not turned: the transfer read in the world
+            s.skyCloud = 0u;
             s.materialRoughness = -1.0;
             s.lobes = plainLobes();
             s.thinWalled = false;

@@ -6,7 +6,7 @@
 
 <p class="byline">jesus luque</p>
 
-<p class="date">12 October 2026</p>
+<p class="date">19 October 2026</p>
 
 ## Abstract {.unnumbered .unlisted}
 
@@ -24,11 +24,19 @@ close-up level of 74.5 million leaves in 24 trees was baked for close views. The
 renderer in which every step that touches scene data runs as a GPU compute kernel. Rigged assets keep their skeleton,
 with a Jacobian that includes the weights' gradients, zonal transfer lobes that turn with a limb and per-part
 visibility fields. Per-part merge trees with a monotone, bounded screen error, back-face and occlusion culls, and pages
-ordered by error give levels of detail at a cost of about 0.1 dB. As one application, clustered PCA, vector-quantised
-visibility and a 40-byte compact record carry the relit car to a WebGPU player on an iPhone.
+ordered by error give levels of detail at a cost of about 0.1 dB. A transfer is read in its cloud's own frame, with
+the sky turned into it once per instance, so a cloud a scene rotates relights as it does unrotated (relMSE
+$9\times10^{-6}$). Every parameter a Gaussian carries, from its albedo and normal to the transfer's sky visibility,
+bounce and reflected field, can be drawn through a camera as an image channel of its own. The bake's output is a
+master: a USD file holding every parameter at full precision, judged against the path trace, which the engine, an
+OpenFX node in a compositor (with depth, world position and Cryptomatte layers and a sky the artist chooses) and a
+Blender add-on read as it is. A separate process with its own goal derives from the master a web format for a phone:
+clustered PCA of the transfer, vector-quantised visibility and a 40-byte compact record carry the relit car to a WebGPU
+player on an iPhone, its loss measured against the master.
 
 **Keywords:** relight baking; 3D Gaussian splatting; precomputed radiance transfer; spherical harmonics; USD; Hydra;
-mesh to Gaussians; path tracing; level of detail; clustered PCA; GPU-only pipelines; WebGPU.
+mesh to Gaussians; path tracing; level of detail; clustered PCA; GPU-only pipelines; WebGPU; OpenFX;
+compositing; image channels.
 
 ## Contents {.unnumbered .unlisted}
 
@@ -49,7 +57,6 @@ mesh to Gaussians; path tracing; level of detail; clustered PCA; GPU-only pipeli
 :::
 
 :::
-
 
 <!-- Copyright (c) 2026 jesus luque. -->
 
@@ -123,21 +130,30 @@ The contributions described in this paper are the following.
    pages ordered by the parent's error.
 6. **A measured account** (Section 8) of what each step of the bake buys against the path trace, on one production
    asset, through the relit leaves, the cuts and the 640, 1280 and 5120 px bakes.
-7. **An application to mobile playback** (Section 7): a `.athc` v3 container with byte-plane encodings, clustered PCA
+7. **A web format derived from the master** (Part II, Section 7): a `.athc` v3 container with byte-plane encodings, clustered PCA
    of the transfer kept compressed on the GPU, vector-quantised open-direction bits, a 40-byte compact record,
    quantised traversal records of 5–11 bytes, and a frame-time and still-frame policy for a WebGPU player on an
    iPhone.
+8. **The baked cloud as image channels and in production hosts** (Sections 4.11 and 2.14): every parameter a Gaussian
+   carries drawn through a camera as a channel of its own, the material and geometry beside the precomputed light
+   transport, as the inputs and targets of a learned relighting; an OpenFX node that renders the relit cloud inside a
+   compositor (Nuke, Natron) out of process, with depth, world position and Cryptomatte as planes and a sky the artist
+   swaps; and a Blender add-on that draws it as a render engine.
 
 ## 1.4 Organisation
 
-Section 2 describes the engine and renderer on which the baker runs. Section 3 describes the conversion from USD meshes
-to Gaussians, and Section 4 the light transport baked into them and how they are relit. Section 5 covers animated
-assets: skinning, the sparrow and the pawn. Section 6 covers levels of detail. Section 7 describes the application to
-mobile: compression and a WebGPU player. Section 8 consolidates the evaluation from Sections 2–7, Section 9 gathers
+The work is two processes with different goals. **Part I** is the bake: it turns a production USD asset into a
+relightable Gaussian cloud written as a USD file, the master, and is judged by fidelity to the path trace. **Part II**
+derives from that master a web format for a phone, and is judged by size, memory and frame time, with its loss against
+the master measured. Part I opens with what the master holds; Section 2 describes the engine and renderer on which the
+baker runs, and the hosts that drive it. Section 3 describes the conversion from USD meshes to Gaussians, and Section 4
+the light transport baked into them and how they are relit. Section 5 covers animated assets: skinning, the sparrow and
+the pawn. Section 6 covers levels of detail. Part II opens with the derivation, parameter by parameter; Section 7
+describes the web format and its WebGPU player. Section 8 consolidates the evaluation from Sections 2–7, Section 9 gathers
 the limitations and the work left, and Section 10 lists the references, followed by an appendix on the repositories
 and commands (Figure 1).
 
-![Figure 1. The pipeline. The relight baker converts a USD stage into Gaussians (§3) and bakes light transport into each one with the path tracer (§4); the relit cloud is compared with a path trace of the source mesh. Merge trees (§6) and animated assets (§5) build on the baked cloud; the WebGPU player (§7) is an application.](figures/fig-overview.svg)
+![Figure 1. The two processes. Part I, the bake: a USD stage is converted into Gaussians (§3), light transport is baked into each one by the path tracer (§4), animated assets keep their rig (§5) and merge trees give levels of detail (§6); the output is the master USDC, compared with a path trace of the source mesh. Part II, the web format: the master is read and encoded into a compact, streamed format for a WebGPU player on a phone (§7), measured as a loss against the master.](figures/fig-overview.svg)
 
 ## 1.5 Related work
 
@@ -189,8 +205,54 @@ ratio** is a region's mean over the path trace's. The validate-corvette harness 
 interchangeably; a *leaf* is a baked Gaussian, a *merge* a node of a merge tree, and a *cut* the set of nodes drawn for
 one view. *Transfer* is the baked light transport (§4), *TX* its current form.
 
-
 <!-- Copyright (c) 2026 jesus luque. -->
+
+# Part I. The bake: from production USD to a relightable master USDC {.unnumbered}
+
+The first process turns a production USD asset into a Gaussian cloud that can be relit, and writes it as a USD file:
+the **master**. Its goal is fidelity. The master is judged by one criterion, its relit image against a path trace of
+the source mesh under the same sky and lights, and every choice in it -- the cell size, the bake's samples, the bits
+per direction, the merge cost -- is made by that measurement, not by its size.
+
+**Input.** A USD stage as production delivers it: meshes with their MaterialX or OpenPBR materials, UsdLux lights and
+domes, cameras, and for an animated asset its skeleton and clips.
+
+**The process**, in the order it runs, each step a set of GPU kernels on the engine of Section 2:
+
+1. **Conversion** (Section 3). Each mesh becomes anisotropic Gaussians, one per cell of a lattice sized from a camera's
+   pixel footprint, with the coverage of the surface as opacity, edges held where it stops or folds, the layered
+   material captured per Gaussian, glass classified as solid or thin wall, and roughness widened by the normals' spread.
+2. **The transfer bake** (Section 4). The engine's path tracer traces each Gaussian's hemisphere and stores how any sky
+   reaches it: degree-3 harmonics of direct and indirect light, a reflected field, 256 bits of open directions and the
+   surface's curvature. With these the cloud is relit at draw time under skies and lights it was never baked under.
+3. **The rig and visibility** of an animated asset (Section 5): influences and their gradients per Gaussian, zonal
+   transfer lobes that turn with a limb, and per-part visibility fields.
+4. **Levels of detail** (Section 6): per-part merge trees whose cut by screen error is bounded, back-face and shared
+   occlusion culls, and pages ordered by error, written beside the leaves in the same file format.
+
+**Output: the master USDC.** A `ParticleField3DGaussianSplat` per cloud (or per merge tree), whose standard attributes
+(positions, orientations, scales, opacities, radiance harmonics) are read by any USD application, and whose athenea
+primvars carry the rest at full precision:
+
+| parameter | primvar (`primvars:athenea:splat:`) | per Gaussian | § |
+|---|---|---|---|
+| material | `normal`, `metallic`, `roughness`, `materialRoughness`, `transmission`, `specularWeight`, `coatWeight`, `sheenColor`, `emission`, `schlickMetal`, `thinWalled`, `closed`; `ior` per cloud | a value per property | 3.6–3.8, 6.6 |
+| transfer (TX) | `transferDirect` (16), `transferIndirect` (48 rgb), `transferReflected` (48 rgb) | 112 values | 4.2, 4.4 |
+| open directions | `shadowBits` | 256 bits | 4.4.2 |
+| curvature | `curvature` | $(S_{uu}, S_{uv}, S_{vv})$, 3 floats | 4.8 |
+| transfer and visibility, together | | 480 B in the file, 256 B on the device | 4.2 |
+| rig | `skel:jointIndices`, `skel:jointWeights` (4 each), `jointWeightGradients` (half, 6), `transferZonal` (10), `skinningXforms` per joint | | 5.3, 5.5, 5.7 |
+| levels of detail | `lodTree`, `lodParent`, `lodStart`, `lodSize`, `lodCost`, `lodSpill`, `coverage`, `coverageMass`, `occlusionIndex`; `occlusionCodebook` per tree; the merges written after the leaves | per node | 6.2–6.8 |
+| ids | `cryptoObject`, the Cryptomatte id of the Gaussian's prim; `cryptoManifest` per cloud | 1 word | 2.5.2, 3.10 |
+
+Sizes measured on the assets of this paper: the pawn's two clouds 489 MB; the sparrow, skinned with transfer and
+visibility, 216 MB; the Corvette's relightable cloud of 3 M Gaussians 2.9 GB; the Corvette's close-up level as 24 merge
+trees of 74.5 M leaves and 148.9 M nodes, 87.4 GB.
+
+**Who reads the master.** The engine itself, through Hydra, on both its raster and its path tracer; the comparison
+against the path trace (Section 8); the OpenFX node in a compositor and the Blender add-on (§2.14); the image channels
+of §4.11. And every derived format, of which Part II describes one. The master is the source: a derived format is made
+from it and cannot be turned back into it.
 
 # 2. The athenea engine and renderer
 
@@ -747,7 +809,27 @@ denoise, antialias and lens.
   `athenea compare` are AOFX bundles.
 - **MCP server** (`athenea-mcp`): JSON-RPC 2.0 over stdio, with a warm device and stage. Tools are `open_stage`,
   `render` (returning a PNG image block), `pick`, `bounds`, `convert`, `timings` and `settings`. A protocol test suite
-  checks handshake, notifications and error codes.
+  checks handshake, notifications and error codes. For a program that composites the frame, `render` takes a camera as
+  a compositor holds one (camera to world and a lens in millimetres) and writes the frame's own numbers to a file:
+  premultiplied RGBA, view depth, and on request the world position (made on the device from the depth) and the three
+  Cryptomatte layers, with the matte's manifest in the answer. `sky`, `skyRotation` and `skyVisible` put another image
+  on every dome of the stage, turn it, and hide the background while it still lights.
+- **OpenFX node** (`Athenea.ofx.bundle`, built on Natron's OpenFX). A generator that draws a cloud through its camera
+  at the project's format and the frame's time. It loads none of the engine: it starts `athenea-mcp` as a child, one
+  for the host process, and reads each frame back from a file, so the host's own USD and TBB never meet the engine's
+  and a device fault ends the server, not the host. Its knobs are a Camera node's (translate, rotate in an order,
+  focal, apertures), the sky, its rotation and visibility, and the layer a host without planes shows in RGBA. Through a
+  minimal OpenFX host its frame is bit-identical to the server's own render of the same camera (relMSE 0). In Natron,
+  which takes custom planes, a pawn at 1920 × 1080 writes one 32-bit EXR of 21 channels (colour, `depth.Z`, `P`,
+  `CryptoObject00`–`02`, Figure 5) whose colour and position match that host's to within $10^{-6}$. The Corvette's relightable
+  cloud (3 M Gaussians, 2.9 GB) at 1920 × 1080 with every plane takes 7.5 s for the first frame, which opens and
+  uploads the stage, then 120–170 ms a frame under a still sky and 190–220 ms with the sky turning every frame. Nuke
+  takes from an OpenFX node only its own planes, so there one layer a node is shown.
+- **Blender add-on** (`athenea_hydra`). A Hydra render engine for Blender 5.3 over the engine's delegate: viewport and
+  final render by athenea, mesh-to-Gaussian conversion of selected objects, clouds referenced as Empties, the World's
+  environment as the dome.
+
+![Figure 5. The layers the OpenFX node gives Natron for one frame of the pawn, written as one 32-bit EXR of 21 channels (1920 × 1080, kloofendal turned 120 degrees): the premultiplied colour, the view depth `depth.Z`, the world position `P` (shown as $12x + 1/2$, $6y$, $12z + 1/2$) and the three Cryptomatte layers, shown here by the engine's preview of the same matte, one colour per id (the body and the head).](figures/img-ofx-layers.jpg)
 
 ## 2.15 Verification without a CPU oracle
 
@@ -785,7 +867,6 @@ machines):
 - Material compilation is synchronous.
 - The TLAS is rebuilt every frame.
 - Lens distortion beyond $k_1, k_2$ is not applied.
-
 
 <!-- Copyright (c) 2026 jesus luque. -->
 
@@ -825,7 +906,7 @@ packing kernel writes where the effect reads. The records the effect writes are 
 buffers (`mesh2splat_gather`), the cloud's bounds are folded on the device (`mesh2splat_span`), and the bake reads
 them in place. Only counters and the final USD arrays cross to the processor.
 
-The command is therefore a pipeline of device passes orchestrated by the host (Figure 5):
+The command is therefore a pipeline of device passes orchestrated by the host (Figure 6):
 
 1. read the stage (`usd::MeshStage`) and split meshes into *pieces*;
 2. pack each piece into a mesh picture, fold boxes, choose each piece's cell (`mesh2splat_cells`);
@@ -834,7 +915,7 @@ The command is therefore a pipeline of device passes orchestrated by the host (F
 5. optionally bake (radiance, or a transfer) at every Gaussian with the path tracer;
 6. write a `ParticleField3DGaussianSplat` stage (or a `.athc`) atomically.
 
-![Figure 5. The conversion as a sequence of device passes. Steps 2–7 are kernels or the Mesh2Splat AOFX effect; step 8 is the transfer bake of Section 4.](figures/fig-mesh2splat.svg)
+![Figure 6. The conversion as a sequence of device passes. Steps 2–7 are kernels or the Mesh2Splat AOFX effect; step 8 is the transfer bake of Section 4.](figures/fig-mesh2splat.svg)
 
 ## 3.2 Reading the stage
 
@@ -1187,8 +1268,9 @@ them. Each decision is printed, e.g. for the rear light lens: "tinted, kept soli
 0 shared by more than two; 1.199 thick (2V/A) against a cell of 0.007921". `--thin-glass MAT` and `--solid-glass MAT`
 override per material.
 
-**Coverage.** A solid glass covers `--glass-opacity` of what is behind it (default 0.6; a TX lens answers its
-background from the domes alone, so a glass that covered fully hid every other light shining through it). A thin
+**Coverage.** A solid glass covers `--glass-opacity` of what is behind it (by default 1 on a stage lit by domes
+alone and 0.6 where a lamp or a sun stands: a TX lens answers its background from the domes alone, so under a lamp a
+glass that covered fully hid the light shining through it). A thin
 wall covers exactly what the sheet reflects head-on, both faces with inter-reflection:
 
 $$
@@ -1257,9 +1339,9 @@ eight bakes wrote 891 387, 896 496, 809 073, 790 403, 1 631 765, 1 073 954, 1 30
 | glass, tyres | about one per triangle | about one per triangle |
 | car crop / frame (PSNR) | 16.55 / 22.18 dB | 17.88 / 23.90 dB |
 
-![Figure 6. Car crop (900 × 420 of the 1920 × 1080 frame from `/World/Camera`): path trace of the mesh (top), the 640 px bake (middle) and the 1280 px bake (bottom), both drawn as the 0.25 px cut with back-face culling. Car-crop PSNR 16.55 dB and 17.88 dB.](figures/img-car-640-1280.jpg)
+![Figure 7. Car crop (900 × 420 of the 1920 × 1080 frame from `/World/Camera`): path trace of the mesh (top), the 640 px bake (middle) and the 1280 px bake (bottom), both drawn as the 0.25 px cut with back-face culling. Car-crop PSNR 16.55 dB and 17.88 dB.](figures/img-car-640-1280.jpg)
 
-![Figure 7. The full 1920 × 1080 frame of the 1280 px bake, 0.25 px cut with back-face culling (frame PSNR 23.90 dB against the path trace).](figures/img-car-1280-frame.jpg)
+![Figure 8. The full 1920 × 1080 frame of the 1280 px bake, 0.25 px cut with back-face culling (frame PSNR 23.90 dB against the path trace).](figures/img-car-1280-frame.jpg)
 
 Analysis of the 1280 px cloud against the 640 px one: hood highlights 3.2 → 2.0 px off their path-traced position,
 the door's open-reflection contrast 0.35/0.53 → 0.56/0.74 of the path trace's, the grille's holes in the coarse cut
@@ -1274,11 +1356,11 @@ chrome grille, grille rim, hood) were baked with the whole car casting, 931 017 
 | B | `--specular-filter 0` | dashed dark line on the sill's fold; the chrome strip sparkles |
 | C | B + `--edge-reach 1.0` | elongation and hairs identical to B |
 
-![Figure 8. The 1280 px settings on the sill panel: the side of the car for context (top left), variant A (top right), variant B (bottom left) and variant C (bottom right). B and C show the dashed dark line on the fold.](figures/img-sill-variants.jpg)
+![Figure 9. The 1280 px settings on the sill panel: the side of the car for context (top left), variant A (top right), variant B (bottom left) and variant C (bottom right). B and C show the dashed dark line on the fold.](figures/img-sill-variants.jpg)
 
 The variants test whether the door's streaks are the coat's Toksvig widening saturating on folds and the sill's
 hairs the edge pass's elongated Gaussians. Neither holds at 1280 px: the widening is needed on folds and the
-tighter edge reach changes nothing, so the settings of A are used (Figure 8).
+tighter edge reach changes nothing, so the settings of A are used (Figure 9).
 
 **The 5120 px close-up level.** A close view stands far nearer than `/World/Camera`, about 0.5 mm per screen
 pixel against 3–4 mm leaves. A logo-and-grille conversion from a close camera grows from 108 527 to
@@ -1286,9 +1368,9 @@ pixel against 3–4 mm leaves. A logo-and-grille conversion from a close camera 
 66 parts the 1280 px bake had already given at most 1.5 Gaussians per triangle (badges, grilles, lamps, calipers,
 mirrors, wheels, wipers, trims) are re-baked at 5120 px in seven groups; the panels at 5120 px or as fine as kept a
 part under a cap of leaves (5 M, lowered to 4.5 M after a 5.01 M tree did not fit in device memory), with
-`--max-cells 1048576` (Figure 9):
+`--max-cells 1048576` (Figure 10):
 
-![Figure 9. The logo from a close camera: leaves of the 1280 px bake (left) and of the 5120 px close-up level (right).](figures/img-logo-1280-5120.jpg)
+![Figure 10. The logo from a close camera: leaves of the 1280 px bake (left) and of the 5120 px close-up level (right).](figures/img-logo-1280-5120.jpg)
 
 | groups | leaves | resolution (px) |
 |---|---|---|
@@ -1319,7 +1401,6 @@ emits 5 009 059 Gaussians; its tree holds 5 008 986 leaves, the figure used in t
 - Device memory bounds a part at about 5 M leaves for the merge tree that follows; larger parts are converted at a
   coarser camera resolution.
 
-
 <!-- Copyright (c) 2026 jesus luque. -->
 
 # 4. Light transport baked into Gaussians (transfer) and relighting
@@ -1347,7 +1428,7 @@ irradiance $E_\odot$ extracted from it, and a prefiltered map $\tilde L(\boldsym
 ## 4.2 What a Gaussian stores
 
 The transfer is one run of values per Gaussian, f16 on the device. There is no mode token: the count is the layout
-(`common/transfer_layout.slang`) (Figure 10).
+(`common/transfer_layout.slang`) (Figure 11).
 
 | values | layout | origin |
 |---|---|---|
@@ -1359,7 +1440,7 @@ The transfer is one run of values per Gaussian, f16 on the device. There is no m
 | 112 | degree 3, both + reflected field (48) | **TX default** |
 | 10 | two zonal lobes in the Gaussian's frame | skinned clouds |
 
-![Figure 10. What the bake stores per Gaussian and how the draw combines it with the environment: the body from the direct and indirect SH, polish and clear coat from the reflected field and the open-direction cells, and the sharp lobe evaluated per pixel.](figures/fig-transfer.svg)
+![Figure 11. What the bake stores per Gaussian and how the draw combines it with the environment: the body from the direct and indirect SH, polish and clear coat from the reflected field and the open-direction cells, and the sharp lobe evaluated per pixel.](figures/fig-transfer.svg)
 
 Beside it:
 
@@ -1417,6 +1498,25 @@ solid angle asks, never narrower than the texel it writes, with the sequence tur
 level 1 doubling to 1024. The source's lat-long mips weigh each row by $\cos\theta_0 - \cos\theta_1$, so every level
 keeps the sky's solid-angle mean. Without these, a 1.5-degree sun in a rough level was a scatter of texel-sized blobs
 (a paint ball's 4-16 px band at 2.13 times the path trace).
+
+**A cloud the scene turns.** Everything a Gaussian stores of its transfer (§4.2) -- the harmonics of both halves, the
+reflected field and the open-direction bits -- is a set of directions of the cloud, measured in the frame of the file
+it was baked in. A prim that rotates the cloud (a Y-up asset placed in a Z-up scene, a part turned into place) changes
+none of them. The draw therefore reads the transfer in the cloud's frame. Let $R$ be the rotation of the instance's
+transform, its linear part with columns made unit. Every direction of the world the draw asks along -- the mirror of
+the view, the way through a glass, the sun, a light, a lobe's cone of cells -- is turned by $R^\top$ before it is
+looked up, and the sky's sixteen coefficients are turned into the same frame once per instance and frame,
+
+$$L'_k = \int_{S^2} Y_k(\boldsymbol{\omega})\, L(R\,\boldsymbol{\omega})\, d\boldsymbol{\omega},$$
+
+by a product rule exact for the degree-6 products it integrates (four Gauss–Legendre nodes in $\cos\theta$ by eight
+even steps in $\varphi$). The body then dots the transfer with $L'_k$; what is evaluated in the world (the prefiltered
+map, the background) keeps $L_k$. A zonal transfer (§4.4.5) turns with each Gaussian already and is left as it is. With
+the pawn of §5.11 rotated 60 degrees about its up axis together with its camera and its sky, the relit frame matches
+the unrotated one at relMSE $9\times10^{-6}$ (61 dB) at 768 × 768; turned the other way, 11 dB. Read in the world's
+frame instead, the pawn stood up from Y-up into a Z-up scene drew its glass head in fragments (Figure 12).
+
+![Figure 12. The pawn's glass head in a Z-up scene, its clouds stood up by a quarter turn. Left: the transfer read in the world's frame. Centre: read in the cloud's frame with the sky turned into it. Right: the cloud unturned in its own Y-up stage, whose sky lies at another azimuth.](figures/img-turned-glass.jpg)
 
 ## 4.4 The bake
 
@@ -1888,7 +1988,53 @@ touching the strip. Alternatives considered: gating the sharp polish on the unwi
 high-pass error; `--specular-filter 0` draws a dashed dark line on the sill's fold and sparkling chrome. The polish
 needs its widening there.
 
-## 4.11 Limitations
+## 4.11 The parameters as image channels
+
+Each Gaussian carries the parameters the relight reads -- its material, its shape and its precomputed light transport
+-- and any one of them can be drawn through a camera in place of the light (`athenea:splatView`). The splat is blended
+by its opacity as the light is, so a frame of one parameter is that parameter as the camera sees the cloud: the same
+sort, the same footprints, the same coverage as the lit frame, and therefore aligned with it pixel for pixel. Values
+that are not colours are put on a scale to be seen, and kept as numbers in an EXR. Figure 13 shows the pawn of §5.11.
+
+| channel | what it is | scale |
+|---|---|---|
+| light | the relit frame under the chosen sky | linear radiance |
+| baked | the light the cloud carries, as captured or baked, not relit | linear radiance |
+| albedo | the surface's colour without light | linear |
+| roughness | the roughness the specular reads, widened by the spread of normals under the Gaussian (§3.7) | 0–1 |
+| materialRoughness | the material's own roughness before that widening; 0 where the cloud does not keep it | 0–1 |
+| metallic, transmission | the material's metal and transmission weights | 0–1 |
+| ior | the specular's index of refraction minus one | grey |
+| normal | the facing the shading uses, in the world | $\mathbf{n}/2 + 1/2$ |
+| opacity | the Gaussian's peak opacity | 0–1 |
+| size | the Gaussian's largest axis | logarithmic ramp, 10 µm (blue) to 10 cm (red) |
+| skyVisibility | the transfer's cosine-weighted sky seen, $T_0 / Y_0$: 1 where nothing occludes | 0–1 |
+| bounce | the indirect half under a white sky of radiance one: light that reached the Gaussian after a bounce, coloured by what it bounced off | linear |
+| openCells | the share of the 256 directions the bake found leaving the scene | 0–1 |
+| field | the reflected field's mean under a white sky: what the Gaussian sees around it | linear |
+| emission | light the surface gives off itself | linear |
+
+The channels fall in three groups. The material and geometry (albedo, roughness, metallic, transmission, ior, normal,
+with depth and world position from §2.14) are independent inputs. The transfer's channels (skyVisibility, bounce,
+openCells, field) are the light transport the bake precomputed in 3D: they depend on the whole scene, including what no
+camera sees, and are the expensive part of the asset. The light is a fixed function of both groups and the sky: the
+relight of §4.5–§4.7 computes it, so a frame's light is determined by its channels and the HDRI. Some channels follow
+from others. World position is depth unprojected through the camera, exactly; the normal follows approximately from
+the gradient of position on screen, losing detail and breaking at silhouettes; skyVisibility is, up to the transfer's
+band limit, the cosine-weighted mean of the open directions, which carry more than it does; and roughness is the
+material's roughness widened by the normals' spread, which a cloud keeping that spread would recompute. Others do not:
+the transfer's channels cannot be recovered from what one camera sees, since a screen-space ambient occlusion misses
+whatever is off screen and a bounce or a reflection depends on neighbours that may not be in the frame; albedo from the
+light is inverse rendering, ill-posed; and opacity and size are the Gaussians' own.
+
+Drawn this way, a relit cloud under a set of skies and cameras gives aligned frames of inputs (material, geometry),
+precomputed transport and targets (light per sky) -- the material of a dataset for learning to predict the transport,
+or the relit light, from inputs that do not carry it. On the pawn at 768 × 768 a channel costs 20–60 ms. A cloud that is
+not relit has only its light, opacity and size to show.
+
+![Figure 13. The pawn's channels through its camera, 768 × 768: the lit frame under the bake's sky and fifteen parameters drawn in place of the light. The glass head is the only transmitting part and the gold ring the only metal; the size channel shows the larger merged Gaussians of the head's level of detail; the bounce is dark because the pawn stands alone.](figures/img-channels.jpg)
+
+## 4.12 Limitations
 
 - **Rank-one field.** The coupling puts a lit ground's colour, not its shape, in a reflection under a sky lit from one
   side; at degree 3 the field resolves a horizon to about twenty degrees and blurs the car's shadow on the ground into
@@ -1902,7 +2048,9 @@ needs its widening there.
   the footprint from the mesh would roughly halve.
 - **Zonal transfers** keep the direct half only, and know only the pose that was traced; occlusion between limbs in
   other poses is not multiplied in.
-
+- **A turned cloud on the traced route.** The ray-traced route turns its directions into the cloud's frame but dots
+  the transfer's harmonics with the world's sky, so a rotated cloud's body is relit under a sky at the wrong
+  orientation there.
 
 <!-- Copyright (c) 2026 jesus luque. -->
 
@@ -2036,9 +2184,9 @@ thread per gaussian. Its inputs are the rest cloud, the (joint, weight)
 pairs, the joints' skinning transforms at the current instant, and three
 matrices: the bind transform $G$, `skelToWorld` and `worldToPrim`. USD
 matrices are row-major and act on row vectors, so the host transposes them as
-`geom::Skinner` does for meshes (Figure 11).
+`geom::Skinner` does for meshes (Figure 14).
 
-![Figure 11. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
+![Figure 14. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
 
 ### 5.4.1 The mean
 
@@ -2384,7 +2532,9 @@ each with merge weight $\omega_r$,
 $$c_j=\sum_{r\in R}\omega_r\sum_k w_{rk}\,[\,j_{rk}=j\,],$$
 
 collecting up to 16 distinct joints. The `width` heaviest are kept and
-renormalised, $w'_j = c_j/\sum_{\text{kept}} c$. A record's dominant joint is
+renormalised, $w'_j = \min(c_j/\sum_{\text{kept}} c,\,1)$: a division on the
+device is not correctly rounded, and a merge wholly on one joint came out at
+$1 + 10^{-7}$. A record's dominant joint is
 also folded into the merge key, so a merge never crosses a joint's edge.
 Checked: a floor whose halves belong to two joints goes from 4096 to 256
 gaussians, each kept gaussian wholly on its side's joint. The sparrow's finest
@@ -2395,7 +2545,7 @@ an image RMS of 0.002.
 ## 5.10 The sparrow
 
 The sparrow and a BMW were the first two assets converted that were not
-authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 12).
+authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 15).
 
 - **Animation export.** Blender's exporter wrote no joint samples for this
   FBX-imported rig, so `scripts/sparrow-anim.py` samples the evaluated pose.
@@ -2423,7 +2573,7 @@ relMSE with it), after coverage was made to follow opacity:
 | sparrow wing, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | sparrow wing, traced | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
-![Figure 12. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
+![Figure 15. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
 
 For the web, the bird was converted with `--skinned --transfer
 --resolution 512`, with zonal lobes baked at 256 paths and 3 bounces in the
@@ -2462,9 +2612,9 @@ paths) gives, per material:
 Three later conversions of the same pawn, measured at 1024², give glass
 relMSE 0.149, 0.081 and 0.043, with the body unchanged at 0.025. The body is
 within a few percent of the path-traced mesh. The error is concentrated in the
-glass head (Figure 13).
+glass head (Figure 16).
 
-![Figure 13. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
+![Figure 16. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
 
 ## 5.12 Application: playback on the web and on a phone
 
@@ -2490,6 +2640,26 @@ splats and compares the two. Against athenea's raster the result is relMSE
 | `/sparrow` (published 2026-10-07) | 1 504 096 splats, 125.7 MB, 12 clips (6.4 MB gzip), zonal transfer, HDRI | desktop GPU memory 1084 → 684 MB |
 | `/sparrow` on phones | `sparrow-mobile`: 488 656 splats, 31.7 MB, cut from the LoD tree (`--keep-splats 600000`) | 60 fps headless in mobile mode, animated |
 | sparrow-v2 (candidate) | 1 100 334 splats (−26.8 %), 75.9 MB; mobile 371 138, 26.1 MB | same error as published (4.46e-3) |
+
+**The compact route.** A skinned cloud also plays through the compact path of
+§7: each node carries its skin in the compact record, the draw skins it, a
+page's box is the union of its boxes over the poses, and the occlusion and
+back-face culls are off for what moves. The sparrow's merge tree is split in two
+by roots with common zonal scales, two files of about 162 MiB with the clips and
+its own domes, 347 MB in all (`sparrow-compact-tx`, published 2026-10-18); on the
+desktop it draws 795 k Gaussians at $\tau$ 1.5 and 60 fps while flying, and the
+emulated phone 232 k.
+
+**Temporal antialiasing.** A temporal resolve was tried in the player (Karis's
+scheme: Halton jitter, reprojection, YCoCg clamp and an exponential mean), with
+motion vectors per Gaussian, the wings' from the previous frame's bone matrices.
+The vectors are right (reprojection error 0.05 → 0.015–0.028 on the wings,
+0.018 → 0.003 on the car), but in motion the frame does not beat the frame without
+it on the car, the sparrow or the compact path: it shows more error, flicker and
+trails, because the highlights are HDR and view-dependent and the jitter is not
+averaged out. Variants (Catmull–Rom history, Salvi's variance clip, an $\alpha$
+by speed, contrast-adaptive sharpening) do not change that. With the camera still
+it matches a 16-frame accumulation. It costs 3 ms at 1080p and is left optional.
 
 **Pruning a moving asset.** Gaussians hidden in the bind pose cannot simply be
 dropped, because other poses reveal them. Measured over 12 clips × 4 samples
@@ -2517,7 +2687,6 @@ has only 2.7 % hidden.
 - The zonal fit's error on the sparrow, and a geometric measure of coverage
   at a close bend, which is what would show the gain of the elastic Jacobian
   term.
-
 
 <!-- Copyright (c) 2026 jesus luque. -->
 
@@ -2580,17 +2749,28 @@ of material Gaussians under a shared budget.
 
 `athenea decimate --tree` builds a binary merge tree by mutual nearest-neighbour pair merging. It is NanoGS (Xiong et
 al. 2026) on the device (`lod_pairs.slang`, `lod_pairs_final.slang`, `Lod.cpp`), with guards that suit baked material
-clouds (Figure 14).
+clouds (Figure 17).
 
-![Figure 14. A merge tree and its cut. Nodes are sums of moments; the error ε is monotone up the tree and each node’s sphere ρ covers its children’s. Nodes are paged by their parent’s error and carry an index into a conservative occlusion codebook; the per-frame traversal tests pages, back faces and occlusion.](figures/fig-lod.svg)
+![Figure 17. A merge tree and its cut. Nodes are sums of moments; the error ε is monotone up the tree and each node’s sphere ρ covers its children’s. Nodes are paged by their parent’s error and carry an index into a conservative occlusion codebook; the per-frame traversal tests pages, back faces and occlusion.](figures/fig-lod.svg)
 
 ### 6.2.1 Nodes as moments
 
-A node is a vector of 24 floats: $W$, $W\mu$, $W(\Sigma+\mu\mu^\top)$ (6), $W\cdot\mathrm{sRGB}(c)$, $W n$, $W\alpha$,
+A node is a vector of 24 floats: $W$, $W\mu$, $W(\Sigma+(\mu-\bar\mu)(\mu-\bar\mu)^\top)$ (6), $W\cdot\mathrm{sRGB}(c)$, $W n$, $W\alpha$,
 $W\cdot$metallic, $W\cdot$transmission, $W\cdot$specular, the key, the record count, the weighted thickness ratio and
 the node's index in the tree. Here $w = o\cdot\max(s_xs_y, s_ys_z, s_xs_z)$ (`discArea`), and $\alpha$ is the GGX
 roughness squared. A merge sums the two vectors. Because sums are associative, a node's moments are those of all its
-leaves whatever the merge order. Every other attribute (transfer, shadow bits, material, joints) is merged once at the
+leaves whatever the merge order.
+
+The second moment is taken about the group's own centre $\bar\mu$, not the origin: a leaf group's from each Gaussian's
+offset to the group's mean, a coarser group's from its children's with each child's mean offset (the parallel axis
+theorem), a pair's merge the same way. About the origin, $\Sigma = S_2/W - \mu\mu^\top$ is the difference of two
+numbers the size of $\mu\mu^\top$, which a float holds to about $5\times10^{-7}$ m² two metres from the origin --
+the whole variance of a Gaussian a millimetre wide. The close-up bakes' needles on long thin triangles (0.93 × 0.043
+× 0.004 mm on the front bumper, variances across of $2\times10^{-9}$ m²) merged as thin as the rounding left them, and
+the cost read from the same moments called them nearly free, so a cut chose them and drew their holes as bright grain.
+On the bumper's front-left corner baked alone at 5120 px (301 k Gaussians), the cut at 0.01 px from a close camera went
+from relMSE $8.8\times10^{-4}$ to $1.3\times10^{-5}$ against the bake, and the cut at 0.25 px from `/World/Camera`
+draws 42 719 Gaussians instead of 94 351 at slightly less error ($3.7$ against $3.9\times10^{-4}$). Every other attribute (transfer, shadow bits, material, joints) is merged once at the
 end, mass-weighted over the node's run of leaves (`lodMergeAttribute`).
 
 The merged Gaussian (`pairFinalize`) takes the moment-matched $\mu$ and $\Sigma$, eigen-decomposed by Jacobi with the
@@ -2930,7 +3110,7 @@ of 64 for what is drawn; in the WebGPU player of §7, near at $\tau=3$, that com
 Close up, the logo and grille stay soft at the 1280 px bake. A close camera comes to about 0.5 mm per output
 pixel, while the 1280 px leaves are 3–4 mm. A logo-and-grille bake from a close camera at 5120 px shows the checkered
 flag, the bowtie and the grille's mesh crisp (108 527 → 404 594 Gaussians). The close-up level (car5120) re-bakes the
-car in groups (Figure 9):
+car in groups (Figure 10):
 
 - **Detailed parts.** The 66 parts that the 1280 px bake gives at most 1.5 Gaussians per triangle (badges, grilles,
   lamps, calipers, mirrors, wheels, wipers, trims), at 5120 px, in 7 groups (`fine0–6`).
@@ -2954,7 +3134,10 @@ deeper levels are paged in only close up.
 | Front_Bumper_001 | 5 008 986 | 4480 |
 | **24 trees** | **74 536 126 leaves, 74 328 031 merges, 208 095 roots** | |
 
-The 24 trees hold 148 864 157 nodes in 49 634 pages of 3000, and 87.4 GB on disk. Some trees keep many lone roots
+The 24 trees hold 148 864 157 nodes in 49 634 pages of 3000, and 87.4 GB on disk. Rebuilt from their leaves with the
+second moments about each group's own centre (§6.2.1), and with a shared occlusion codebook of 8181 entries (11.9 % of
+cells reopened), the car's cut at 0.25 px draws 11.7 M Gaussians instead of 16.9 M and reads 24.00 dB on the frame and
+18.31 dB on the car against the path trace (23.62 and 17.91 before). Some trees keep many lone roots
 (fine5: 29 213; Infinite_Black: 92 773), because merges never cross parts or guards, by design. The player's
 packer (§7.5.4) adds a multi-level synthetic root above them, since a file holds about 3 000 roots.
 
@@ -3030,12 +3213,68 @@ hood highlights from 3.2 to 2.0 px off, and the joints from 0.90 to 1.02 of the 
 - **Not ported.** The closed-shell back rule and the error cut live in `athenea-pieces`. The main engine's
   `CutSelector` is unchanged.
 
-
 <!-- Copyright (c) 2026 jesus luque. -->
 
-# 7. Application: compression and a WebGPU player on mobile
+# Part II. The web format: a derived delivery format {.unnumbered}
 
-This section describes one application of the relightable clouds of §3–§6, developed as a parallel track: playback of a whole asset on a phone. Its design requirements are its own: the whole Corvette, with its full light transfer, drawn on an iPhone in a web page and judged against the mesh path trace; a budget of about 50–60 MB of car data while moving and about 100 MB at rest; small parts that look right. The player is a fork of Spark with a WebGPU backend (sparkwebGPU, branch `webgpu`); athenea writes the clouds, the merge trees, the pages and the occlusion. This section describes the formats, the streaming, the draw and the relight on the phone, and the measured results. The `.athc` v3 format is specified in the player repository (`spark/docs/docs/athc-v3.md`).
+The second process starts where the first ends. It takes the master of Part I and derives from it a format for one
+purpose: delivering the relit asset to a web browser on a phone. Its goal is different, and so is its criterion. A
+phone tab has a memory budget (about 50–60 MB of asset data while the camera moves, about 100 MB at rest), a download
+that must start drawing within seconds, and a frame time; the format is made to meet those, and its fidelity is
+measured as a loss against the master's own uncompressed relight and, through it, against the path trace. Nothing in
+this process changes the master, and nothing in it is read back by the bake.
+
+**Input.** The master's merge trees with their pages and occlusion codebook (Section 6); for the Corvette, the 24 trees
+of the close-up level.
+
+**The process**, in order, run by the player's tools rather than by the engine:
+
+1. **Reading the master** (`usd-athc`, a reader built on the `openusd` crate): the USD cloud becomes an `.athc`
+   version 3 container, laid out in sections and tiers so that one HTTP Range fetches what one tier of one block needs
+   (§7.1). A skinned cloud adds its skin and its skeleton and clips (§5.12).
+2. **Lossless packing** (§7.1): each array transposed into byte planes, or into planes of differences, whichever gzip
+   compresses better, since gzip is what a browser decompresses.
+3. **The transfer** (§7.2): either a clustered PCA of each block of the file (encoding 3), or a basis fitted over the
+   whole asset (`fit-compact-basis`) that the phone keeps resident, each Gaussian then holding a cluster id and
+   $3\times8$ int4 weights.
+4. **The open directions** (§7.3): a Hamming-space dictionary of 4096 masks shared by the asset; each Gaussian holds a
+   16-bit index.
+5. **The compact record** (§7.4): every remaining parameter quantised into byte planes, 40 bytes a Gaussian on the GPU.
+6. **Pages, tiers and traversal records** (§7.5): the tree's pages cut into error bands, traversal records of 5–11
+   bytes, and an asset table (the bases, the dictionary, the materials) fetched once.
+7. **At playback** (§7.6–§7.10): streaming by Range requests, a cut per frame within the memory budget, the draw and
+   the relight on the phone, a contact shadow, and a still-frame policy that refines when the camera stops.
+
+**What each parameter becomes.**
+
+| parameter | master USDC | web format | measured loss | § |
+|---|---|---|---|---|
+| position | 3 floats | $3\times$u16 in the page's box | under $10^{-6}$ of image error (ablation) | 7.4 |
+| scale, opacity | 3 + 1 floats | u8 logarithmic scale; u8 opacity in two ranges | under $10^{-6}$ (ablation) | 7.4 |
+| orientation | quaternion | one 32-bit word: octahedral axis 10+10 bits, angle 12 | | 7.4 |
+| albedo | float rgb | u8 sRGB | under $10^{-6}$ (ablation) | 7.4 |
+| normal | float | octahedral, 12 bits an axis | relMSE $2.7\times10^{-4}$ (8+8 bits: $5.2\times10^{-2}$) | 7.4 |
+| curvature | 3 floats | 3 × s8, signed logarithm in the page's range | under $10^{-6}$ (ablation) | 7.4 |
+| material | packed words per Gaussian | u16 index into an exact table of the asset's materials | none (exact) | 7.4 |
+| transfer | 112 f16 values | cluster id + 24 int4 weights on a shared basis | transfer relMSE 0.0054 over the car (v8.2b); image within relMSE $10^{-3}$ of the uncompressed transfer | 7.2, 7.12 |
+| open directions | 256 bits | u16 index into a 4096-entry dictionary | 62.9–65.4 dB | 7.3 |
+| rig | influences, gradients, zonal lobes | `SKIN` section: joint u16, weight unorm16, gradients in half; merged nodes without gradient | relMSE 0.0015–0.0053 against the engine's raster | 5.12 |
+| merge tree | nodes, pages, occlusion | error-band pages, traversal records of 5–11 bytes, the occlusion codebook | the same cut | 7.5 |
+
+The whole compact record is 40 bytes on the GPU (42.4 bytes resident with its tables, and 16 bytes per drawn splat),
+against 256 bytes for the master's transfer and visibility alone on the device. The compact path's image is within
+40.2–41.9 dB of the full relight of the same cloud. For the Corvette, the 87.4 GB of the close-up level's 24 trees
+become 12.77 GB of web data (v8.2b, 149.0 M nodes), streamed by page so that a view loads a fraction of it.
+
+**Why the two are kept apart.** Each step of this process discards information the bake produced: a basis fitted to
+one asset, a dictionary that replaces each mask by its nearest, quantisation chosen for what the eye sees at a phone's
+resolution. A web data set is therefore never a master: it cannot be relit beyond what its encodings keep, re-baked,
+converted to another format or compared against the path trace without the master it came from. Every improvement to
+the asset is made on the master and the web format is derived again.
+
+# 7. The web format: compression, streaming and a WebGPU player
+
+This section describes the web format of Part II and the player that draws it: the whole Corvette, with its full light transfer, drawn on an iPhone in a web page and judged against the mesh path trace, within about 50–60 MB of car data while moving and about 100 MB at rest, with small parts that look right. The player is a fork of Spark with a WebGPU backend (sparkwebGPU, branch `webgpu`); its input is the master of Part I -- the clouds, the merge trees, the pages and the occlusion that athenea writes. This section describes the formats, the streaming, the draw and the relight on the phone, and the measured results. The `.athc` v3 format is specified in the player repository (`spark/docs/docs/athc-v3.md`).
 
 **Three kinds of measurement** appear, and they are not interchangeable:
 
@@ -3165,9 +3404,9 @@ The tier-4 section `CMPC` holds the 40 GPU bytes plus the traversal's bytes, so 
 | v3 | 64 = 40 + 24 | +cone word, 13-bit occlusion index; 30 B in, 20 B WASM | back-cull and occlusion on by default; only the pages the traversal asks for are planned |
 | v4 | container `CMP4` | 12-byte quantised records | payload as **raw-deflate runs of 64 nodes**, plane after plane; node pool; tier 4 +10 % (314 → 344 MB) |
 
-The **v4 page** is a container: a header, each run's end offset, the gzipped traversal planes, then each run of 64 nodes compressed by raw deflate. Runs can be fetched, kept and evicted one by one, so the CPU keeps a page's payload compressed and the GPU keeps records only for the **drawn** cut. The node pool's census motivated this: with whole pages resident, only about 26 % of each page's nodes were drawn, and smaller pages did not help (residency/cut 4.54× at $P=3000$, 4.46× at $P=500$) (Figure 15).
+The **v4 page** is a container: a header, each run's end offset, the gzipped traversal planes, then each run of 64 nodes compressed by raw deflate. Runs can be fetched, kept and evicted one by one, so the CPU keeps a page's payload compressed and the GPU keeps records only for the **drawn** cut. The node pool's census motivated this: with whole pages resident, only about 26 % of each page's nodes were drawn, and smaller pages did not help (residency/cut 4.54× at $P=3000$, 4.46× at $P=500$) (Figure 18).
 
-![Figure 15. The compact format: an asset table, `.athc` v3 files whose tier 4 holds v4 pages of traversal records and 40-byte payload records, and the clustered-PCA transfer basis kept on the GPU.](figures/fig-compact.svg)
+![Figure 18. The compact format: an asset table, `.athc` v3 files whose tier 4 holds v4 pages of traversal records and 40-byte payload records, and the clustered-PCA transfer basis kept on the GPU.](figures/fig-compact.svg)
 
 ### 7.5.3 Traversal records
 
@@ -3197,7 +3436,7 @@ The reader (`CompactBandStreamer`) reads only the page tables at open. After eac
 
 A node whose children are absent is drawn as a leaf, or as its parent or children while a run is being decoded. With v4 runs, the cut's own runs and those of its parents and children are always kept, and the rest are dropped first under a run budget. An extrapolated camera (2.5 updates ahead) is traversed too, so its runs are prefetched. Up to 12 Range requests are in flight.
 
-The work is split across the main thread, the WASM traversal and two workers (Figure 16):
+The work is split across the main thread, the WASM traversal and two workers (Figure 19):
 
 | where | what | measured |
 |---|---|---|
@@ -3206,7 +3445,7 @@ The work is split across the main thread, the WASM traversal and two workers (Fi
 | main thread | Range fetches, writes of records and draw lists (adopted, no GC) | — |
 | GPU compute | record moves when the pool shrinks (one dispatch, a thread a word) | first frame after a still frame 88–100 → 34 ms |
 
-![Figure 16. The player’s threads: Range fetches and the page pool on the main thread, the traversal in a WASM worker, the cut packed into slots in a second worker, and five GPU passes a frame; the GPU time drives the τ floor.](figures/fig-player.svg)
+![Figure 19. The player’s threads: Range fetches and the page pool on the main thread, the traversal in a WASM worker, the cut packed into slots in a second worker, and five GPU passes a frame; the GPU time drives the τ floor.](figures/fig-player.svg)
 
 On a fast orbit of 120° at 1° a frame on the emulated phone, the share of the cut missing from a frame fell from 26 % with the first v4 streamer to 4.3–6.4 %, which is 0.24–0.30 % of the screen area. Frames stayed at 60 fps with a maximum of 17.3–19.6 ms. The cut settled 2.6–3.1 s after load.
 
@@ -3376,6 +3615,7 @@ The estimated shade cost on that iPhone is about 190 ms a million. The softness 
 | v6 | athenea's mrough trees, per-material roughness, 1.35 GB |
 | v7 | car1280, 1.81 GB |
 | v8 | car5120: 24 trees, 74.5M leaves, 148.9M nodes, shared 8182-entry occlusion (§6.9) |
+| v8.2b (final) | car5120 rebuilt (§6.2.1): 149.0M nodes, 8181-entry occlusion, a shared 512-cluster basis refitted with the 5120 data and four bases of 256 of the asset's own (Part_2, Infinite_Black, two parts of Part_3 and Front_Bumper_001), 83 files, 12.77 GB; transfer relMSE 0.0054 over the car |
 
 Unless noted, the figures below are PSNR at athenea's camera at 1920 × 1080, by the validate-corvette harness's regions.
 
@@ -3386,25 +3626,26 @@ Unless noted, the figures below are PSNR at athenea's camera at 1920 × 1080, by
 | v7 (first conversion) | +0.5 vs v6 | −2.3 | −2.7 | — | +0.9 | specks on folds |
 | v7 + pixel spread, $\tau$ 1 | — | **35.53** | **32.36** | relMSE 0.199 | 14.46 | pixel spread on |
 | v7, current defaults | 19.03 | 35.52 | 32.36 | 22.28 | 14.68 | degree-1 field |
-| v8 | — | — | — | — | — | not measured |
+| v8.1 | 19.22 | 35.92 | — | — | — | pool 3000, $\tau$ 1; draws 4.0 M |
+| v8.2b | 19.27 | 35.53 | — | — | — | pool 3000, $\tau$ 1; draws 2.26 M; logo from a close camera 18.12 dB (v8.1 17.75) |
 
 The car crop metric of §1.6 (900 × 420 crop) is a different region. On it, the per-pixel sharp lobe in the compact path took the car from 16.49 to 17.46 dB (17.41 with lobes from 4 px), which is the desktop path's level. On the phone, $\tau$ 3 against $\tau$ 1 differs by 40 dB, so the remaining defects (hairs, streaks, blotches) come from the cloud, not from the cut. Lossless steps were checked against the previous image: the sharp records in 5 words, 60–80 dB; binned shading, 84 dB (run-to-run noise 78 dB); the glass-only terms, 188 dB.
 
 ## 7.13 Limitations and open work
 
-- **v8** (car5120 with the 512-cluster basis and the shared 8182-entry occlusion codebook) has not been converted for the player at the time of writing; athenea's side (the 24 trees and their shared occlusion, §6.9) is complete. Its quality against the path trace, its download and its behaviour on the real phone are unmeasured.
+- **v8.2b**, the final data set (car5120 rebuilt, §6.2.1), is published: against the path trace it gains on the car, the grille, the chrome and the bumper and on the close logo, and loses 0.39 dB on the door against v8.1 while drawing about half as many Gaussians. Its download and frame times on the real phone are not measured.
 - Real-device timing exists only for the stress ramps and the two whole-car runs. The emulated phone's speed is not the phone's.
 - The front bumper's chrome strip is 38 % brighter than the path trace. The lamps have no emission in the bake. The door's open reflections (1.13) come from 16 × 16 cells of 11°.
 - The compact traversal does not keep a merge's LoD size, so the combined size/error cut has nothing to guard with. The error cut alone did not beat the size cut on these data in every view.
-
 
 <!-- Copyright (c) 2026 jesus luque. -->
 
 # 8. Evaluation
 
-This section gathers the measurements of Sections 2–7 into one account. It leads with the bake, validated by relighting
-the baked Gaussians against the path trace of the source mesh (§8.2, §8.3); the engine (§8.4), the levels of detail
-(§8.5) and the bake's costs (§8.6) follow, and the mobile application (§8.7–§8.9) comes last. It introduces no new
+This section gathers the measurements of Sections 2–7 into one account, by process. Part I, the bake, leads: the master
+validated by relighting the baked Gaussians against the path trace of the source mesh (§8.2, §8.3), the engine (§8.4),
+the levels of detail (§8.5) and the bake's costs (§8.6). Part II, the web format, comes last: its compression, its
+behaviour on the phone and its memory (§8.7–§8.9), measured as a loss against the master. It introduces no new
 numbers: every figure is quoted from the section named beside it. Where two sources give different figures for the
 same quantity, §8.10 says which is which.
 
@@ -3493,6 +3734,8 @@ Every check below is a GPU kernel against a closed form, an independent estimato
 | path tracer: closed emissive shell; convergence exponent | 0 of 3072 beyond 10⁻⁴; −0.499 | 2.11 |
 | OIDN, 16 paths vs 4096-path reference | relMSE 3.65·10⁻⁴ → 7.17·10⁻⁵ | 2.11 |
 | test suite on three devices (188 cases) | Metal 188 passed; Vulkan 180 passed, 8 skipped; CUDA 96 passed, 1 failed, 91 skipped | 2.15 |
+| a TX cloud rotated 60° with its camera and sky vs unrotated | pawn relMSE 9·10⁻⁶ (61 dB); test balls 1–2·10⁻⁴, 1.5·10⁻²–0.13 under a sky left unturned | 4.3 |
+| OpenFX node vs the server's own render, same camera | relMSE 0; in Natron, colour and world position within 10⁻⁶ of a plain OpenFX host | 2.14 |
 
 | workload | figure | § |
 |---|---|---|
@@ -3502,6 +3745,8 @@ Every check below is a GPU kernel against a closed form, an independent estimato
 | Kitchen_set visibility at 1920 × 1080: raster / rays / bvh | 31.7 / 19.2 / 29.2 ms | 2.8 |
 | Kitchen_set lit at 1920 × 1080: raster / path tracer (1 path, 1 bounce) | 96.0 / 358.9 ms | 2.11 |
 | whole TX Corvette (14.7 M gaussians) at 1920 × 1080, desktop rasteriser | 158 ms (about 83 ms for a relit cloud of its size) | 4.10.2 |
+| relightable Corvette (3 M) through the OpenFX node in Natron, 1920 × 1080, every plane | first frame 7.5 s (stage opened); then 120–170 ms, 190–220 ms with the sky turning | 2.14 |
+| one parameter channel, pawn at 768 × 768 | 20–60 ms | 4.11 |
 
 ## 8.5 Levels of detail
 
@@ -3619,12 +3864,11 @@ was 49.1–59.0 MB in v6 before the atlas and 31–44 MB in v6 after it and in v
 - **Real versus emulated speed.** Emulated figures run at about twice the real iPhone's; draw counts are judged on the
   device (§7).
 
-
 <!-- Copyright (c) 2026 jesus luque. -->
 
 # 9. Limitations and future work
 
-The limitations below are gathered from the sections' own lists (§2.16, §3.12, §4.11, §5.13, §6.11, §7.13) and
+The limitations below are gathered from the sections' own lists (§2.16, §3.12, §4.12, §5.13, §6.11, §7.13) and
 grouped by where they act, the relit bake first and the mobile application last. Each is stated with the figure that
 measures it, where one exists.
 
@@ -3634,11 +3878,11 @@ These are what the relit 1280 px car still shows against the path trace.
 
 | defect | measured | cause | remedy proposed | § |
 |---|---|---|---|---|
-| lamps dark | headlights dark against the path trace | the transfer bake carries no lamp emission | bake the lamps' emission and their light on the car | 3.12, 4.11 |
-| chrome strip on the front bumper | 38 % brighter than the path trace, with a lower peak | a tube a few pixels across: each Gaussian reads its own mirror with one normal | — (open) | 3.12, 4.11 |
-| rim's near-ground reflection | 0.72 of the path trace | — (not analysed further) | — (open) | 4.11 |
-| door's open reflections | 1.13 of the path trace; 68 % of the excess where the mirror meets the car | 16 × 16 cells of about 11° let sky through behind a mirror or pillar | 32 × 32 cells (+96 B a Gaussian) would roughly halve it | 4.10.4, 4.11 |
-| hood highlights | 2.0 px off their path-traced position | the per-pixel turn extrapolates the centre triangle's shape operator | a curvature fitted over the footprint from mesh samples ($p_{90}$ 9.8° against 46°) would roughly halve it | 4.10.6, 4.11 |
+| lamps dark | headlights dark against the path trace | the transfer bake carries no lamp emission | bake the lamps' emission and their light on the car | 3.12, 4.12 |
+| chrome strip on the front bumper | 38 % brighter than the path trace, with a lower peak | a tube a few pixels across: each Gaussian reads its own mirror with one normal | — (open) | 3.12, 4.12 |
+| rim's near-ground reflection | 0.72 of the path trace | — (not analysed further) | — (open) | 4.12 |
+| door's open reflections | 1.13 of the path trace; 68 % of the excess where the mirror meets the car | 16 × 16 cells of about 11° let sky through behind a mirror or pillar | 32 × 32 cells (+96 B a Gaussian) would roughly halve it | 4.10.4, 4.12 |
+| hood highlights | 2.0 px off their path-traced position | the per-pixel turn extrapolates the centre triangle's shape operator | a curvature fitted over the footprint from mesh samples ($p_{90}$ 9.8° against 46°) would roughly halve it | 4.10.6, 4.12 |
 | bumper's lower lip | ragged | one cell's footprint per Gaussian at a rolled edge | — (open) | 3.12 |
 | grille's holes in coarse cuts | 2.24 of the leaves at 640 px, 1.04 at 1280 px | merges of sub-pixel strips; the hole is a property of the projection | finer leaves (done at 1280 px); no view-free per-node measure sees it | 6.5, 6.11 |
 | far, thin trims | fat dashes in every cut | the error bounds miss this error | — (open) | 6.11 |
@@ -3647,9 +3891,9 @@ These are what the relit 1280 px car still shows against the path trace.
 
 - **Rank-one field.** The reflected field's coupling to the sky puts a lit ground's colour, not its shape, into a
   reflection under a sky lit from one side; at degree 3 it resolves a horizon to about twenty degrees (correlation
-  0.56 at degree 3, 0.63 at degree 5, 0.85 with a 32 × 32 octahedral map, in simulation) (§4.11).
+  0.56 at degree 3, 0.63 at degree 5, 0.85 with a 32 × 32 octahedral map, in simulation) (§4.12).
 - **Lights inside the scene.** One sun is extracted per dome. Lamps inside a scene are shadowed by bits that say which
-  directions leave the scene, not which reach the lamp (§4.11).
+  directions leave the scene, not which reach the lamp (§4.12).
 - **One normal, one footprint.** A Gaussian has one normal and a cell's footprint; thin curved strips and rolled
   edges are where this shows (§9.1). The coverage mapping assumes the cell lattice's overlap $2\pi\sigma^2$, which
   sub-cell triangles and edge-held Gaussians do not have (§3.12).
@@ -3672,7 +3916,7 @@ These are what the relit 1280 px car still shows against the path trace.
   (§5.13).
 - Per-part visibility leaves out a part's own self-shadowing, assumes rigid parts that occlude independently, and has
   not been baked beyond about 3 M Gaussians per part; zonal transfers keep only the direct half and the bind pose's
-  self-shadowing (§4.11, §5.8, §5.13).
+  self-shadowing (§4.12, §5.8, §5.13).
 - The zonal fit's error on the sparrow, and a geometric measure of coverage at a close bend, are unmeasured (§5.13).
 
 ## 9.4 The engine
@@ -3683,6 +3927,11 @@ These are what the relit 1280 px car still shows against the path trace.
 - Gaussians a few hundredths of a pixel across vanish from the raster; levels of detail are the remedy (§2.16).
 - Raster mesh visibility pays about 8 ms of host time per 1800 draws; material compilation is synchronous; the TLAS is
   rebuilt every frame; lens distortion beyond $k_1, k_2$ is not applied (§2.16).
+- The traced route reads a rotated cloud's transfer against a sky left in the world's frame (§4.12).
+- **Hosts.** In Nuke an OpenFX node gives one layer a node, since Nuke takes only its own planes from one; the
+  Cryptomatte manifest stops at the plugin, since OpenFX carries no metadata, so a matte is picked by id; the camera is
+  linked knobs rather than the host's own camera; gaussians carry no normals or motion vectors as layers. The Blender
+  add-on is built on an earlier engine and runs on macOS only (§2.14).
 
 ## 9.5 Levels of detail, streaming and the player
 
@@ -3704,12 +3953,11 @@ These are what the relit 1280 px car still shows against the path trace.
 - **One environment for the car.** The car-level comparisons against the path trace are under one sky
   (`autoshop_01_4k`, §1.6). Relighting fidelity under other skies and local lights has not been measured at the scale
   of the car.
-- **The 5120 px close-up level against the path trace.** Its trees and shared occlusion are written (§6.9); the
-  close-up softness it addresses (§7.12.1) has been shown resolved only on a logo-and-grille test (§3.11), not on the
-  whole car.
-- **v8 on the phone.** The close-up level's conversion for the player was not complete at the time of writing. Its
-  quality against the path trace in the player, its download and its behaviour on the real iPhone are unmeasured
-  (§7.13). The 512-cluster basis has not been measured on the real phone (§7.2.2).
+- **The 5120 px close-up level against the path trace** is measured over the whole car at one camera and cut (0.25 px:
+  24.00 dB on the frame, 18.31 dB on the car, §6.9) and on the close logo in the player (§7.12.3), not along a close
+  orbit.
+- **v8.2b on the phone.** The final data set is published and measured against the path trace in the player
+  (§7.12.3); its download and frame times on the real iPhone are not, nor the 512-cluster basis there (§7.2.2).
 - **Real-device timing** exists only for the stress ramps and two device tests (§7.13); the emulated phone's speed is
   not the phone's.
 
@@ -3725,14 +3973,15 @@ In the order the measurements suggest:
 4. Address thin chrome tubes and rolled lips (the bumper's strip and lower lip), the rim's near-ground reflection and
    far thin trims.
 5. Measure the relit car against the path trace under varied environments and local lights, and the 5120 px
-   close-up level over the whole car.
+   close-up level along a close orbit of the whole car.
 6. For animated assets: more than four influences, cross-part occlusion in poses other than the bind pose, and
    visibility bakes beyond 3 M Gaussians per part.
 7. Weight the occlusion codebook by an orbit of views, and port the error cut and the closed-shell rule into the main
    engine's `CutSelector`.
-8. In the mobile application, measure v8 against the path trace and on the real iPhone, close up and far, with the
-   512-cluster basis.
-
+8. In the mobile application, measure v8.2b on the real iPhone, close up and far, with the 512-cluster basis.
+9. Draw the channels of §4.11 for many assets, skies and cameras, aligned with the relit frames, and learn from them to
+   predict the transport channels or the relit light from inputs that do not carry them -- a learned adapter on an
+   image model that drives the light of a capture or a render as the bake would.
 
 <!-- Copyright (c) 2026 jesus luque. -->
 
@@ -3850,6 +4099,7 @@ work without its full bibliographic details, it is listed as cited and marked so
 | athenea | github.com/jesusluque/athenea | the engine and renderer of §2: modules, shaders, the `hdAthenea` delegate, the `athenea` CLI, the manuals `docs/operations.md` and `docs/development.md` with their Spanish translations, and `docs/decisions.md` |
 | athenea-pieces | github.com/jesusluque/athenea-pieces, branch `pieces` (private) | a fork of athenea holding the per-part merge trees, the error cut, closed shells, the shared occlusion, the 1280 and 5120 px bakes (§3.11, §6); `docs/pieces.md` and this paper under `docs/paper/` |
 | sparkwebGPU | `~/luc/sparkwebGPU`, branch `webgpu` | the WebGPU fork of Spark of §7: the `.athc` v3 reader, the compact path, the streamer, the player pages |
+| athenea, branch `blender` | github.com/jesusluque/athenea | the Blender add-on `athenea_hydra` of §2.14 |
 
 ## A.2 Commands and options
 
@@ -3865,8 +4115,8 @@ option's default, unit and constraint. The commands this paper relies on:
 | `athenea compare` | GPU image comparison | 2.11 | 2.15 |
 | `athenea aofx` | the AOFX effects (mesh2splat, Measure) | 2.10, 7 | 2.14, 3.1 |
 | `athc-convert` (`--gzip --planes`, `--shadow-vq`), `fit-compact-basis`, `floor_shadow --merge 2`, `usd-athc` | the player's formats (sparkwebGPU) | — | 7 |
+| `athenea-mcp`, tool `render` (`xform`, `raw`, `layers`, `sky`, `skyRotation`, `skyVisible`, `splatView`) | a frame for a compositor, the sky swapped, the parameter channels | 6 | 2.14, 4.3, 4.11 |
+| `Athenea.ofx.bundle` (`ATHENEA_BUILD_OFX`) | the OpenFX node in Nuke and Natron | 6.1 | 2.14 |
 
 Environment variables (`ATHENEA_GPU_BUDGET`, `ATHENEA_STAGES`) are listed in `docs/operations.md` §8.1, the formats
 (`.athc`, the codeless schemas) in §8.2 and §4.3.
-
-

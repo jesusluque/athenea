@@ -25,7 +25,7 @@ OpenPBR, cromo, vidrio, goma y faros), el baker produce una representación en G
 4. escala de las vistas lejanas a los primeros planos mediante LOD.
 
 Ninguna de las vías evidentes cumple esto. Entrenar una nube a partir de vistas del asset con path tracing da una
-iluminación fija y gasta horas de optimización por asset. Rasterizar el mesh con un modelo de sombreado aproximado
+iluminación fija y gasta horas de optimización por asset. Rasterizar el mesh con un shading model aproximado
 renuncia al transporte de luz del path trace. La vía que se sigue aquí convierte el mesh directamente en Gaussians y
 hace el bake del transporte de luz del asset en cada Gaussian con el propio path tracer de GPU del renderer; la
 nube con relight se compara después con el path trace del mesh. Reducir, comprimir y hacer streaming de la nube con su
@@ -39,9 +39,9 @@ diseño de abajo se mantienen en todo momento y determinan casi todas las decisi
 | requisito | enunciado | dónde actúa |
 |---|---|---|
 | Fidelidad al path trace | La referencia es el path trace del mesh de origen bajo la misma iluminación. Donde la calidad y el frame rate chocan, prevalece la calidad. | §3.10, §4.10, §8 |
-| Aritmética solo en GPU | Ninguna aritmética sobre datos de la escena se ejecuta en la CPU: ni renderer, ni alternativa, ni oráculo de pruebas en CPU. El host lee ficheros y lleva las cuentas (recuentos, slots, colas). | Todas las secciones; §2.1 enuncia la regla |
+| Aritmética solo en GPU | Ninguna aritmética sobre datos de la escena se ejecuta en la CPU: ni renderer, ni alternativa, ni CPU test oracle. El host lee ficheros y lleva las cuentas (recuentos, slots, colas). | Todas las secciones; §2.1 enuncia la regla |
 | 3DGS puro al dibujar | Lo que se dibuja son solo Gaussians. El suelo no es un mesh: su interacción con el objeto se convierte en Gaussians (un shadow catcher). Un mesh solo es una entrada del bake. | §3.9, §7.9 |
-| Automático, no manual | Las decisiones por asset se detectan a partir de los datos: el tamaño de cell a partir de una cámara, el vidrio sólido frente al fino, las cáscaras cerradas, el suelo para el shadow catcher. Las opciones solo lo sobrescriben. | §3.3, §3.5, §3.8, §3.9 |
+| Automático, no manual | Las decisiones por asset se detectan a partir de los datos: el tamaño de cell a partir de una cámara, el vidrio sólido frente al fino, las closed shells, el suelo para el shadow catcher. Las opciones solo lo sobrescriben. | §3.3, §3.5, §3.8, §3.9 |
 | Las piezas pequeñas, con el mismo criterio | Emblemas, grilles, molduras y faros se juzgan con el mismo cuidado que los paneles, tanto de cerca como de lejos. | §3.11, §6.9, §7.12 |
 
 ## 1.3 Contribuciones
@@ -49,44 +49,54 @@ diseño de abajo se mantienen en todo momento y determinan casi todas las decisi
 Las contribuciones que describe este artículo son las siguientes.
 
 1. **Un transfer con relight en el bake de cada Gaussian** (TX, sección 4), el núcleo del baker: spherical harmonics
-   de grado 3 del transfer directo e indirecto, un campo reflejado normalizado sobre las direcciones cerradas y acoplado
-   al cielo al dibujar, 256 bits de direcciones abiertas que cada lóbulo de reflexión lee como conos, y las marcas del
-   material; sharp lobes por píxel guiados por un operador de forma almacenado, con el ensanche del bake deshecho y un
+   de grado 3 del transfer directo e indirecto, un reflected field normalizado sobre las direcciones cerradas y acoplado
+   al cielo al dibujar, 256 bits de open directions que cada lobe de reflexión lee como conos, y las marcas del
+   material; sharp lobes por píxel guiados por un shape operator almacenado, con el ensanche del bake deshecho y un
    tubo distinguido de un fold.
 2. **Una conversión de mesh a Gaussians** (mesh2splat, sección 3) que prepara la entrada del baker, ejecutada como
-   efecto AOFX en el dispositivo, con cells derivadas del footprint de un píxel de una cámara, una opacidad que
-   reproduce la coverage de una superficie, bordes duros y cáscaras cerradas detectados en el dispositivo, ensanche de
+   efecto AOFX en el device, con cells derivadas del footprint de un píxel de una cámara, una opacidad que
+   reproduce la coverage de una superficie, bordes duros y closed shells detectados en el device, ensanche de
    Toksvig de la roughness por la dispersión de las normales, captura de OpenPBR por capas y clasificación automática
    del vidrio.
 3. **Un renderer USD solo en GPU** (athenea, sección 2) sobre el que corre el baker, que dibuja meshes, puntos y
    splats de Gaussians a través de Hydra, con un rasterizer por tiles y un ray tracer de Gaussians que comparten una
    única disposición de Gaussians, un compilador de materiales de MaterialX a Slang comprobado frente al propio
-   MaterialX, un path tracer con muestreo por importancia múltiple usado como verdad de referencia y como integrador
+   MaterialX, un path tracer con importance sampling múltiple usado como verdad de referencia y como integrador
    del bake, y una disciplina de verificación en la que toda comparación de imágenes es a su vez un kernel de GPU.
 4. **Nubes de Gaussians con skinning** (sección 5) que llevan el rig y no los frames: un kernel de skinning que usa el
-   jacobiano completo, incluidos los gradientes de los pesos, lóbulos zonales de transfer que giran con la Gaussian,
+   Jacobian completo, incluidos los gradientes de los pesos, lobes zonales de transfer que giran con la Gaussian,
    campos de visibilidad por parte leídos como un producto de consultas a tablas, y una decimación que conserva el rig.
 5. **Merge trees por pieza con un cut por error acotado** (sección 6): merge por pares bajo guardas que respetan piezas
    y materiales, una opacidad de coverage por mínimos cuadrados para los merges, un error hecho monótono con esferas
-   envolventes para que una sola prueba paralela seleccione el cut, cull de caras traseras de cáscaras cerradas, un
+   envolventes para que una sola prueba paralela seleccione el cut, cull de caras traseras de closed shells, un
    codebook de oclusión compartido y conservador, y pages ordenadas por el error del padre.
 6. **Un relato medido** (sección 8) de lo que aporta cada paso del bake frente al path trace, sobre un asset de
    producción, a través de las leaves con relight, los cuts y los bakes de 640, 1280 y 5120 px.
-7. **Una aplicación a la reproducción en móvil** (sección 7): un contenedor `.athc` v3 con codificaciones por planos de
-   bytes, PCA por clusters del transfer mantenido comprimido en la GPU, bits de direcciones abiertas cuantizados
-   vectorialmente, un registro compacto de 40 bytes, registros de recorrido cuantizados de 5–11 bytes, y una política
+7. **Un formato web derivado del master** (Parte II, sección 7): un contenedor `.athc` v3 con codificaciones por planos de
+   bytes, PCA por clusters del transfer mantenido comprimido en la GPU, bits de open directions cuantizados
+   vectorialmente, un registro compacto de 40 bytes, traversal records cuantizados de 5–11 bytes, y una política
    de tiempo de frame y de still frame para un player WebGPU en un iPhone.
+8. **La nube con su bake como canales de imagen y en hosts de producción** (secciones 4.11 y 2.14): cada parámetro que
+   lleva una Gaussian dibujado a través de una cámara como un canal propio, el material y la geometría junto al
+   transporte de luz precalculado, como entradas y objetivos de un relight aprendido; un nodo OpenFX que hace el render
+   de la nube con relight dentro de un compositor (Nuke, Natron) fuera de proceso, con la profundidad, la posición en el
+   mundo y el Cryptomatte como planos y un cielo que el artista cambia; y un add-on de Blender que la dibuja como motor
+   de render.
 
 ## 1.4 Organización
 
-La sección 2 describe el motor y el renderer sobre los que corre el baker. La sección 3 describe la conversión de
-meshes USD a Gaussians, y la sección 4 el transporte de luz en su bake y cómo se hace su relight. La sección 5 trata
-los assets animados: el skinning, el gorrión y el peón. La sección 6 trata el LOD. La sección 7 describe la aplicación
-a móvil: la compresión y un player WebGPU. La sección 8 consolida la evaluación de las secciones 2–7, la sección 9
+El trabajo son dos procesos con objetivos distintos. La **Parte I** es el bake: convierte un asset USD de producción en
+una nube de Gaussians reiluminable escrita como fichero USD, el master, y se juzga por su fidelidad al path trace. La
+**Parte II** deriva de ese master un formato web para un móvil, y se juzga por tamaño, memoria y tiempo de frame,
+midiendo su pérdida frente al master. La Parte I empieza por lo que contiene el master; la sección 2 describe el motor y
+el renderer sobre los que corre el baker, y los hosts que lo manejan. La sección 3 describe la conversión de meshes USD
+a Gaussians, y la sección 4 el transporte de luz en su bake y cómo se hace su relight. La sección 5 trata los assets
+animados: el skinning, el gorrión y el peón. La sección 6 trata el LOD. La Parte II empieza por la derivación, parámetro
+a parámetro; la sección 7 describe el formato web y su player WebGPU. La sección 8 consolida la evaluación de las secciones 2–7, la sección 9
 reúne las limitaciones y el trabajo pendiente, y la sección 10 enumera las referencias, seguidas de un apéndice sobre
 los repositorios y los comandos (figura 1).
 
-![Figura 1. El pipeline. El baker de relight convierte un stage USD en Gaussians (§3) y hace el bake del transporte de luz en cada una con el path tracer (§4); la nube con relight se compara con un path trace del mesh de origen. Los merge trees (§6) y los assets animados (§5) parten de la nube con bake; el player WebGPU (§7) es una aplicación.](figures/fig-overview.es.svg)
+![Figura 1. Los dos procesos. Parte I, el bake: un stage USD se convierte en Gaussians (§3), el path tracer hace el bake del transporte de luz en cada una (§4), los assets animados conservan su rig (§5) y los merge trees dan el LOD (§6); la salida es el master USDC, comparado con un path trace del mesh de origen. Parte II, el formato web: el master se lee y se codifica en un formato compacto y en streaming para un player WebGPU en un móvil (§7), medido como una pérdida frente al master.](figures/fig-overview.es.svg)
 
 ## 1.5 Trabajo relacionado
 
@@ -109,8 +119,8 @@ athenea lo sigue (§3.3).
 la proyección de la visibilidad por el coseno sobre spherical harmonics, de modo que el relight es un producto escalar
 con los coeficientes del entorno; Ramamoorthi y Hanrahan (2001) mostraron que nueve coeficientes representan bien la
 irradiancia. El PCA por clusters (Sloan et al., 2003) comprime esos transfers agrupándolos y con una base principal por
-cluster, y athenea lo usa tanto en el fichero como en la GPU del móvil (§7.2). Los armónicos zonales, que giran
-girando un eje, se ajustan según Sloan (2008) (§4.4.5, §5.7). El muestreo por importancia filtrado (Křivánek y
+cluster, y athenea lo usa tanto en el fichero como en la GPU del móvil (§7.2). Los harmonics zonales, que giran
+girando un eje, se ajustan según Sloan (2008) (§4.4.5, §5.7). El filtered importance sampling (Křivánek y
 Colbert, 2008) prefiltra el entorno (§4.3), y Lagarde y de Rousiers (2014) dan el ajuste de oclusión especular que
 usaba el primer transfer (§4.6.1).
 
@@ -122,7 +132,7 @@ que promedia; athenea aplica la misma idea en la conversión, a la dispersión d
 vista. Las Gaussians 3D jerárquicas (Kerbl et al., 2024) construyen una jerarquía de merge a partir de los momentos de
 las Gaussians y la cortan por tamaño en pantalla; el LOD original de athenea sigue sus momentos (§6.1). NanoGS (Xiong
 et al., 2026) hace merge por pares de vecinos más cercanos mutuos, y los trees por pieza de athenea lo ejecutan en el
-dispositivo (§6.2). El coste usa la cota de Runnalls (2007) para la reducción de mezclas de Gaussians, y las pages por
+device (§6.2). El coste usa la cota de Runnalls (2007) para la reducción de mezclas de Gaussians, y las pages por
 bandas de error siguen el uso que hace Nanite (Karis et al., 2021) de un error monótono para un cut paralelo (§6.3,
 §6.8).
 

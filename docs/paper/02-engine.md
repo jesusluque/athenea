@@ -1,5 +1,52 @@
 <!-- Copyright (c) 2026 jesus luque. -->
 
+# Part I. The bake: from production USD to a relightable master USDC {.unnumbered}
+
+The first process turns a production USD asset into a Gaussian cloud that can be relit, and writes it as a USD file:
+the **master**. Its goal is fidelity. The master is judged by one criterion, its relit image against a path trace of
+the source mesh under the same sky and lights, and every choice in it -- the cell size, the bake's samples, the bits
+per direction, the merge cost -- is made by that measurement, not by its size.
+
+**Input.** A USD stage as production delivers it: meshes with their MaterialX or OpenPBR materials, UsdLux lights and
+domes, cameras, and for an animated asset its skeleton and clips.
+
+**The process**, in the order it runs, each step a set of GPU kernels on the engine of Section 2:
+
+1. **Conversion** (Section 3). Each mesh becomes anisotropic Gaussians, one per cell of a lattice sized from a camera's
+   pixel footprint, with the coverage of the surface as opacity, edges held where it stops or folds, the layered
+   material captured per Gaussian, glass classified as solid or thin wall, and roughness widened by the normals' spread.
+2. **The transfer bake** (Section 4). The engine's path tracer traces each Gaussian's hemisphere and stores how any sky
+   reaches it: degree-3 harmonics of direct and indirect light, a reflected field, 256 bits of open directions and the
+   surface's curvature. With these the cloud is relit at draw time under skies and lights it was never baked under.
+3. **The rig and visibility** of an animated asset (Section 5): influences and their gradients per Gaussian, zonal
+   transfer lobes that turn with a limb, and per-part visibility fields.
+4. **Levels of detail** (Section 6): per-part merge trees whose cut by screen error is bounded, back-face and shared
+   occlusion culls, and pages ordered by error, written beside the leaves in the same file format.
+
+**Output: the master USDC.** A `ParticleField3DGaussianSplat` per cloud (or per merge tree), whose standard attributes
+(positions, orientations, scales, opacities, radiance harmonics) are read by any USD application, and whose athenea
+primvars carry the rest at full precision:
+
+| parameter | primvar (`primvars:athenea:splat:`) | per Gaussian | § |
+|---|---|---|---|
+| material | `normal`, `metallic`, `roughness`, `materialRoughness`, `transmission`, `specularWeight`, `coatWeight`, `sheenColor`, `emission`, `schlickMetal`, `thinWalled`, `closed`; `ior` per cloud | a value per property | 3.6–3.8, 6.6 |
+| transfer (TX) | `transferDirect` (16), `transferIndirect` (48 rgb), `transferReflected` (48 rgb) | 112 values | 4.2, 4.4 |
+| open directions | `shadowBits` | 256 bits | 4.4.2 |
+| curvature | `curvature` | $(S_{uu}, S_{uv}, S_{vv})$, 3 floats | 4.8 |
+| transfer and visibility, together | | 480 B in the file, 256 B on the device | 4.2 |
+| rig | `skel:jointIndices`, `skel:jointWeights` (4 each), `jointWeightGradients` (half, 6), `transferZonal` (10), `skinningXforms` per joint | | 5.3, 5.5, 5.7 |
+| levels of detail | `lodTree`, `lodParent`, `lodStart`, `lodSize`, `lodCost`, `lodSpill`, `coverage`, `coverageMass`, `occlusionIndex`; `occlusionCodebook` per tree; the merges written after the leaves | per node | 6.2–6.8 |
+| ids | `cryptoObject`, the Cryptomatte id of the Gaussian's prim; `cryptoManifest` per cloud | 1 word | 2.5.2, 3.10 |
+
+Sizes measured on the assets of this paper: the pawn's two clouds 489 MB; the sparrow, skinned with transfer and
+visibility, 216 MB; the Corvette's relightable cloud of 3 M Gaussians 2.9 GB; the Corvette's close-up level as 24 merge
+trees of 74.5 M leaves and 148.9 M nodes, 87.4 GB.
+
+**Who reads the master.** The engine itself, through Hydra, on both its raster and its path tracer; the comparison
+against the path trace (Section 8); the OpenFX node in a compositor and the Blender add-on (§2.14); the image channels
+of §4.11. And every derived format, of which Part II describes one. The master is the source: a derived format is made
+from it and cannot be turned back into it.
+
 # 2. The athenea engine and renderer
 
 athenea is a USD renderer built so that every step that touches scene data runs on the GPU. It draws three kinds of
@@ -555,7 +602,27 @@ denoise, antialias and lens.
   `athenea compare` are AOFX bundles.
 - **MCP server** (`athenea-mcp`): JSON-RPC 2.0 over stdio, with a warm device and stage. Tools are `open_stage`,
   `render` (returning a PNG image block), `pick`, `bounds`, `convert`, `timings` and `settings`. A protocol test suite
-  checks handshake, notifications and error codes.
+  checks handshake, notifications and error codes. For a program that composites the frame, `render` takes a camera as
+  a compositor holds one (camera to world and a lens in millimetres) and writes the frame's own numbers to a file:
+  premultiplied RGBA, view depth, and on request the world position (made on the device from the depth) and the three
+  Cryptomatte layers, with the matte's manifest in the answer. `sky`, `skyRotation` and `skyVisible` put another image
+  on every dome of the stage, turn it, and hide the background while it still lights.
+- **OpenFX node** (`Athenea.ofx.bundle`, built on Natron's OpenFX). A generator that draws a cloud through its camera
+  at the project's format and the frame's time. It loads none of the engine: it starts `athenea-mcp` as a child, one
+  for the host process, and reads each frame back from a file, so the host's own USD and TBB never meet the engine's
+  and a device fault ends the server, not the host. Its knobs are a Camera node's (translate, rotate in an order,
+  focal, apertures), the sky, its rotation and visibility, and the layer a host without planes shows in RGBA. Through a
+  minimal OpenFX host its frame is bit-identical to the server's own render of the same camera (relMSE 0). In Natron,
+  which takes custom planes, a pawn at 1920 × 1080 writes one 32-bit EXR of 21 channels (colour, `depth.Z`, `P`,
+  `CryptoObject00`–`02`, Figure 5) whose colour and position match that host's to within $10^{-6}$. The Corvette's relightable
+  cloud (3 M Gaussians, 2.9 GB) at 1920 × 1080 with every plane takes 7.5 s for the first frame, which opens and
+  uploads the stage, then 120–170 ms a frame under a still sky and 190–220 ms with the sky turning every frame. Nuke
+  takes from an OpenFX node only its own planes, so there one layer a node is shown.
+- **Blender add-on** (`athenea_hydra`). A Hydra render engine for Blender 5.3 over the engine's delegate: viewport and
+  final render by athenea, mesh-to-Gaussian conversion of selected objects, clouds referenced as Empties, the World's
+  environment as the dome.
+
+![Figure 5. The layers the OpenFX node gives Natron for one frame of the pawn, written as one 32-bit EXR of 21 channels (1920 × 1080, kloofendal turned 120 degrees): the premultiplied colour, the view depth `depth.Z`, the world position `P` (shown as $12x + 1/2$, $6y$, $12z + 1/2$) and the three Cryptomatte layers, shown here by the engine's preview of the same matte, one colour per id (the body and the head).](figures/img-ofx-layers.jpg)
 
 ## 2.15 Verification without a CPU oracle
 

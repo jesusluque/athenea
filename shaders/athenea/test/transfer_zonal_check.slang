@@ -173,6 +173,8 @@ void tzcPack(uint3 tid: SV_DispatchThreadID) {
 /// gaussian's own axes, columns) and the instance rows.
 SplatSurface surfaceOf(uint g, float3x3 frame, float4 row0, float4 row1, float4 row2) {
     SplatSurface s;
+    s.cloudTurned = false;   // not turned: the transfer read in the world
+    s.skyCloud = 0u;
     s.materialRoughness = -1.0;
     s.transferCount = kTransferZonalCount;
     s.transferBase = g * 10;

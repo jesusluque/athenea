@@ -340,6 +340,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     domeVisible.name = "The dome drawn behind the frame (off: a transparent background)";
     domeVisible.key = TfToken("athenea:domeVisible");
     domeVisible.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor splatView;
+    splatView.name = "A parameter of the gaussians drawn in place of their light (0: the light)";
+    splatView.key = TfToken("athenea:splatView");
+    splatView.defaultValue = VtValue(0);
     HdRenderSettingDescriptor glassShadows;
     glassShadows.name = "Shadow rays pass clear glass, tinted (rt)";
     glassShadows.key = TfToken("athenea:glassShadows");
@@ -393,7 +397,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudDensity.defaultValue = VtValue(1.0f);
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
-            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible};
+            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -522,6 +526,11 @@ bool HdAtheneaRenderDelegate::GetPathMis() const {
 bool HdAtheneaRenderDelegate::GetDomeVisible() const {
     const VtValue value = GetRenderSetting(TfToken("athenea:domeVisible"));
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+uint32_t HdAtheneaRenderDelegate::GetSplatView() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:splatView"));
+    return value.IsHolding<int>() ? static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0)) : 0u;
 }
 
 bool HdAtheneaRenderDelegate::GetGlassShadows() const {

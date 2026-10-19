@@ -1508,6 +1508,7 @@ it was written for builds it inside its own tree -- and the same
 | `ATHENEA_EMBEDDED` | the parent provides gpe, genlock, aopenfx and spz; the engine keeps its output directories out of the parent's | `OFF` |
 | `ATHENEA_BUILD_APPS` | `athenea` and `athenea-mcp` | `ON` |
 | `ATHENEA_BUILD_PLUGINS` | the bundles under `plugins/` | `ON` |
+| `ATHENEA_BUILD_OFX` | `Athenea.ofx.bundle`, the OpenFX plugin under `integrations/ofx` (macOS and Linux; it links only `third_party/openfx`'s support library and drives `athenea-mcp`) | `ON` |
 | `ATHENEA_BUILD_VIEW` | `athenea view` (GLFW, Dear ImGui) | `ON` |
 | `ATHENEA_SHADER_OUTPUT_DIR` | where the shaders are copied for the run-time compiler | `<build>/shaders` |
 | `AOFX_BUNDLE_DIR` | where `aofx_add_bundle` puts a bundle | `<build>/aofx` |

@@ -36,7 +36,7 @@ packing kernel writes where the effect reads. The records the effect writes are 
 buffers (`mesh2splat_gather`), the cloud's bounds are folded on the device (`mesh2splat_span`), and the bake reads
 them in place. Only counters and the final USD arrays cross to the processor.
 
-The command is therefore a pipeline of device passes orchestrated by the host (Figure 5):
+The command is therefore a pipeline of device passes orchestrated by the host (Figure 6):
 
 1. read the stage (`usd::MeshStage`) and split meshes into *pieces*;
 2. pack each piece into a mesh picture, fold boxes, choose each piece's cell (`mesh2splat_cells`);
@@ -45,7 +45,7 @@ The command is therefore a pipeline of device passes orchestrated by the host (F
 5. optionally bake (radiance, or a transfer) at every Gaussian with the path tracer;
 6. write a `ParticleField3DGaussianSplat` stage (or a `.athc`) atomically.
 
-![Figure 5. The conversion as a sequence of device passes. Steps 2–7 are kernels or the Mesh2Splat AOFX effect; step 8 is the transfer bake of Section 4.](figures/fig-mesh2splat.svg)
+![Figure 6. The conversion as a sequence of device passes. Steps 2–7 are kernels or the Mesh2Splat AOFX effect; step 8 is the transfer bake of Section 4.](figures/fig-mesh2splat.svg)
 
 ## 3.2 Reading the stage
 
@@ -469,9 +469,9 @@ eight bakes wrote 891 387, 896 496, 809 073, 790 403, 1 631 765, 1 073 954, 1 30
 | glass, tyres | about one per triangle | about one per triangle |
 | car crop / frame (PSNR) | 16.55 / 22.18 dB | 17.88 / 23.90 dB |
 
-![Figure 6. Car crop (900 × 420 of the 1920 × 1080 frame from `/World/Camera`): path trace of the mesh (top), the 640 px bake (middle) and the 1280 px bake (bottom), both drawn as the 0.25 px cut with back-face culling. Car-crop PSNR 16.55 dB and 17.88 dB.](figures/img-car-640-1280.jpg)
+![Figure 7. Car crop (900 × 420 of the 1920 × 1080 frame from `/World/Camera`): path trace of the mesh (top), the 640 px bake (middle) and the 1280 px bake (bottom), both drawn as the 0.25 px cut with back-face culling. Car-crop PSNR 16.55 dB and 17.88 dB.](figures/img-car-640-1280.jpg)
 
-![Figure 7. The full 1920 × 1080 frame of the 1280 px bake, 0.25 px cut with back-face culling (frame PSNR 23.90 dB against the path trace).](figures/img-car-1280-frame.jpg)
+![Figure 8. The full 1920 × 1080 frame of the 1280 px bake, 0.25 px cut with back-face culling (frame PSNR 23.90 dB against the path trace).](figures/img-car-1280-frame.jpg)
 
 Analysis of the 1280 px cloud against the 640 px one: hood highlights 3.2 → 2.0 px off their path-traced position,
 the door's open-reflection contrast 0.35/0.53 → 0.56/0.74 of the path trace's, the grille's holes in the coarse cut
@@ -486,11 +486,11 @@ chrome grille, grille rim, hood) were baked with the whole car casting, 931 017 
 | B | `--specular-filter 0` | dashed dark line on the sill's fold; the chrome strip sparkles |
 | C | B + `--edge-reach 1.0` | elongation and hairs identical to B |
 
-![Figure 8. The 1280 px settings on the sill panel: the side of the car for context (top left), variant A (top right), variant B (bottom left) and variant C (bottom right). B and C show the dashed dark line on the fold.](figures/img-sill-variants.jpg)
+![Figure 9. The 1280 px settings on the sill panel: the side of the car for context (top left), variant A (top right), variant B (bottom left) and variant C (bottom right). B and C show the dashed dark line on the fold.](figures/img-sill-variants.jpg)
 
 The variants test whether the door's streaks are the coat's Toksvig widening saturating on folds and the sill's
 hairs the edge pass's elongated Gaussians. Neither holds at 1280 px: the widening is needed on folds and the
-tighter edge reach changes nothing, so the settings of A are used (Figure 8).
+tighter edge reach changes nothing, so the settings of A are used (Figure 9).
 
 **The 5120 px close-up level.** A close view stands far nearer than `/World/Camera`, about 0.5 mm per screen
 pixel against 3–4 mm leaves. A logo-and-grille conversion from a close camera grows from 108 527 to
@@ -498,9 +498,9 @@ pixel against 3–4 mm leaves. A logo-and-grille conversion from a close camera 
 66 parts the 1280 px bake had already given at most 1.5 Gaussians per triangle (badges, grilles, lamps, calipers,
 mirrors, wheels, wipers, trims) are re-baked at 5120 px in seven groups; the panels at 5120 px or as fine as kept a
 part under a cap of leaves (5 M, lowered to 4.5 M after a 5.01 M tree did not fit in device memory), with
-`--max-cells 1048576` (Figure 9):
+`--max-cells 1048576` (Figure 10):
 
-![Figure 9. The logo from a close camera: leaves of the 1280 px bake (left) and of the 5120 px close-up level (right).](figures/img-logo-1280-5120.jpg)
+![Figure 10. The logo from a close camera: leaves of the 1280 px bake (left) and of the 5120 px close-up level (right).](figures/img-logo-1280-5120.jpg)
 
 | groups | leaves | resolution (px) |
 |---|---|---|

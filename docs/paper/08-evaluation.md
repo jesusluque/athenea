@@ -2,9 +2,10 @@
 
 # 8. Evaluation
 
-This section gathers the measurements of Sections 2–7 into one account. It leads with the bake, validated by relighting
-the baked Gaussians against the path trace of the source mesh (§8.2, §8.3); the engine (§8.4), the levels of detail
-(§8.5) and the bake's costs (§8.6) follow, and the mobile application (§8.7–§8.9) comes last. It introduces no new
+This section gathers the measurements of Sections 2–7 into one account, by process. Part I, the bake, leads: the master
+validated by relighting the baked Gaussians against the path trace of the source mesh (§8.2, §8.3), the engine (§8.4),
+the levels of detail (§8.5) and the bake's costs (§8.6). Part II, the web format, comes last: its compression, its
+behaviour on the phone and its memory (§8.7–§8.9), measured as a loss against the master. It introduces no new
 numbers: every figure is quoted from the section named beside it. Where two sources give different figures for the
 same quantity, §8.10 says which is which.
 
@@ -93,6 +94,8 @@ Every check below is a GPU kernel against a closed form, an independent estimato
 | path tracer: closed emissive shell; convergence exponent | 0 of 3072 beyond 10⁻⁴; −0.499 | 2.11 |
 | OIDN, 16 paths vs 4096-path reference | relMSE 3.65·10⁻⁴ → 7.17·10⁻⁵ | 2.11 |
 | test suite on three devices (188 cases) | Metal 188 passed; Vulkan 180 passed, 8 skipped; CUDA 96 passed, 1 failed, 91 skipped | 2.15 |
+| a TX cloud rotated 60° with its camera and sky vs unrotated | pawn relMSE 9·10⁻⁶ (61 dB); test balls 1–2·10⁻⁴, 1.5·10⁻²–0.13 under a sky left unturned | 4.3 |
+| OpenFX node vs the server's own render, same camera | relMSE 0; in Natron, colour and world position within 10⁻⁶ of a plain OpenFX host | 2.14 |
 
 | workload | figure | § |
 |---|---|---|
@@ -102,6 +105,8 @@ Every check below is a GPU kernel against a closed form, an independent estimato
 | Kitchen_set visibility at 1920 × 1080: raster / rays / bvh | 31.7 / 19.2 / 29.2 ms | 2.8 |
 | Kitchen_set lit at 1920 × 1080: raster / path tracer (1 path, 1 bounce) | 96.0 / 358.9 ms | 2.11 |
 | whole TX Corvette (14.7 M gaussians) at 1920 × 1080, desktop rasteriser | 158 ms (about 83 ms for a relit cloud of its size) | 4.10.2 |
+| relightable Corvette (3 M) through the OpenFX node in Natron, 1920 × 1080, every plane | first frame 7.5 s (stage opened); then 120–170 ms, 190–220 ms with the sky turning | 2.14 |
+| one parameter channel, pawn at 768 × 768 | 20–60 ms | 4.11 |
 
 ## 8.5 Levels of detail
 

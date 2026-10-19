@@ -53,7 +53,14 @@ struct Server::Impl {
     [[nodiscard]] json callTool(const std::string& name, const json& args) {
         for (const ToolEntry& entry : toolTable()) {
             if (entry.name == name) {
-                return entry.handler(session, args);
+                // An argument of the wrong type (a number sent as null, which
+                // is how JSON writes a NaN) is the call's failure, not the
+                // server's: the JSON library throws, and the caller is told.
+                try {
+                    return entry.handler(session, args);
+                } catch (const json::exception& error) {
+                    return textAnswer("'" + name + "': an argument is not what the tool takes: " + error.what(), true);
+                }
             }
         }
         return textAnswer("Unknown tool '" + name + "'.", true);
