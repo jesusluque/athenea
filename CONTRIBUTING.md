@@ -2,7 +2,7 @@
 
 ## Where work is tracked
 
-Issues are grouped by area in the [athenea project](https://github.com/users/jesusluque/projects):
+Issues are grouped by area in the [athenea project](https://github.com/users/jesusluque/projects/3):
 Engine, Blender, OFX/Nuke, Web, Platforms, Docs/Paper, Assets. Labels name the area (`area:*`), the platform
 (`platform:*`) and the kind (`type:bug`, `type:feature`, `type:docs`, `type:triage`).
 

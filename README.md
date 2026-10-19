@@ -99,7 +99,7 @@ The manuals are also in Spanish (`*.es.md`).
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Work is tracked in the
-[athenea project](https://github.com/users/jesusluque/projects) by area.
+[athenea project](https://github.com/users/jesusluque/projects/3) by area.
 
 ## Licence
 
