@@ -97,6 +97,16 @@ public struct SplatSurface {
     /// back as the nine harmonics everything after it reads.
     public float3x3 transferFrame;
     public float    transferSh[9];
+    /// THE CLOUD'S OWN FRAME, for a transfer kept in it -- every one but a
+    /// zonal one: its harmonics, its reflected field and its open cells are
+    /// directions of the file it was baked in. Where the stage turns the
+    /// cloud (`cloudTurned`), a direction of the world is put into that frame
+    /// before any of them is read (`transferAlong`), and the sky they are
+    /// dotted with is the sky turned the same way, `skyCloud` entries on in
+    /// the sky's buffer (splat/sky_turn.slang); 0 where nothing is turned.
+    public float3x3 cloudFromWorld;
+    public bool     cloudTurned;
+    public uint     skyCloud;
     /// WHICH WAYS OUT ARE OPEN, where the cloud carries them: sixty-four bits
     /// of an 8 x 8 octahedral grid, set where the bake's ray left the scene.
     /// What the sun is shadowed by when they are there (`splatSunOpen`). In
@@ -241,6 +251,7 @@ public float transferValue(SplatSurface s, StructuredBuffer<uint> transfer, uint
 /// A cloud whose transfer is nine harmonics gets its frame and nothing else.
 public void splatTransferFrame(inout SplatSurface s, StructuredBuffer<uint> transfer, float3x3 rotation,
                                float4 row0, float4 row1, float4 row2) {
+    relightCloudFrame(s, row0, row1, row2);
     const float3 u = relightDirectionToWorld(row0, row1, row2, float3(rotation[0][0], rotation[1][0], rotation[2][0]));
     const float3 v = relightDirectionToWorld(row0, row1, row2, float3(rotation[0][1], rotation[1][1], rotation[2][1]));
     const float3 n = relightDirectionToWorld(row0, row1, row2, float3(rotation[0][2], rotation[1][2], rotation[2][2]));
@@ -263,10 +274,30 @@ public void splatTransferFrame(inout SplatSurface s, StructuredBuffer<uint> tran
     }
 }
 
+/// THE CLOUD'S FRAME FROM THE ROWS that take it into the world: their linear
+/// part's columns made unit are the cloud's axes in the world, so its
+/// transpose takes a direction of the world back (a scale the same on every
+/// axis drops out; one that is not is taken as its rotation). Turned where
+/// those axes are not the world's own.
+public void relightCloudFrame(inout SplatSurface s, float4 row0, float4 row1, float4 row2) {
+    const float3 a = normalize(float3(row0.x, row1.x, row2.x));
+    const float3 b = normalize(float3(row0.y, row1.y, row2.y));
+    const float3 c = normalize(float3(row0.z, row1.z, row2.z));
+    s.cloudFromWorld = float3x3(a, b, c);
+    s.cloudTurned = abs(a.x - 1.0) + abs(b.y - 1.0) + abs(c.z - 1.0) > 1.0e-6;
+}
+
+/// A direction of the world in the frame the transfer was measured in: the
+/// cloud's, where the stage turned it; the world's itself otherwise, and for
+/// a zonal transfer, whose lobes `splatTransferFrame` put in the world.
+public float3 transferAlong(SplatSurface s, float3 d) {
+    return s.cloudTurned && !splatTransferZonal(s) ? normalize(mul(s.cloudFromWorld, d)) : d;
+}
+
 /// A direction of the world in the gaussian's own frame, where its transfer
-/// keeps one (a zonal transfer's shadow bits); the world's itself otherwise.
+/// keeps one (a zonal transfer's shadow bits); in the cloud's otherwise.
 float3 transferLocal(SplatSurface s, float3 d) {
-    return splatTransferZonal(s) ? normalize(mul(d, s.transferFrame)) : d;
+    return splatTransferZonal(s) ? normalize(mul(d, s.transferFrame)) : transferAlong(s, d);
 }
 
 /// A gaussian's layers, or the plain ones where its cloud carries none.
@@ -573,7 +604,9 @@ public SplatLayers splatLayers(SplatSurface s, float nDotV) {
 /// off on the way, so it is an rgb triple a coefficient.
 float3 transferredBody(SplatSurface s, StructuredBuffer<uint> transfer, StructuredBuffer<float4> envSh,
                        uint dome, bool withIndirect) {
-    const uint base = dome * kEnvCoefficients;
+    // The sky as the transfer was measured: the cloud's frame where it is
+    // turned (a zonal transfer is in the world already, and `skyCloud` 0).
+    const uint base = (splatTransferZonal(s) ? 0u : s.skyCloud) + dome * kEnvCoefficients;
     float3 sum = float3(0.0);
     // DEGREE 3 (task TX, step 3): sixteen of each half against sixteen of
     // the sky's.
@@ -615,9 +648,10 @@ float3 transferRgbAt(StructuredBuffer<uint> transfer, uint at) {
 public float3 splatIndirectAlong(SplatSurface s, StructuredBuffer<uint> transfer, float3 d) {
     const uint coefficients = transferIndirectCount(s.transferCount) / 3u;
     const uint base = s.transferBase + transferDirectCount(s.transferCount);
+    const float3 along = transferAlong(s, d);
     float3 sum = float3(0.0);
     for (uint k = 0; k < coefficients; ++k) {
-        sum += transferRgbAt(transfer, base + k * 3u) * envBasisValue(k, d);
+        sum += transferRgbAt(transfer, base + k * 3u) * envBasisValue(k, along);
     }
     return max(sum, float3(0.0));
 }
@@ -641,7 +675,7 @@ public float3 splatFieldCoupling(SplatSurface s, StructuredBuffer<uint> transfer
     const uint base = s.transferBase + transferDirectCount(s.transferCount);
     float3 gathered = float3(0.0);
     for (uint k = 0; k < coefficients; ++k) {
-        gathered += transferRgbAt(transfer, base + k * 3u) * envSh[dome * kEnvCoefficients + k].rgb;
+        gathered += transferRgbAt(transfer, base + k * 3u) * envSh[s.skyCloud + dome * kEnvCoefficients + k].rgb;
     }
     float3 mean = envSh[dome * kEnvCoefficients].rgb * 0.28209479177387814;
     if (disc.w > 0.0) {
@@ -670,9 +704,10 @@ public void splatFieldAlongPair(SplatSurface s, StructuredBuffer<uint> transfer,
     const float a2 = a * a, b2 = b * b;
     polish = float3(0.0);
     coat = float3(0.0);
+    const float3 along = transferAlong(s, d);
     [unroll] for (uint j = 0; j < 16u; ++j) {
         const float band = j < 1u ? 0.0 : (j < 4u ? 2.0 : (j < 9u ? 6.0 : 12.0));   // l (l + 1)
-        const float3 value = transferRgbAt(transfer, base + j * 3u) * envBasisValue(j, d);
+        const float3 value = transferRgbAt(transfer, base + j * 3u) * envBasisValue(j, along);
         polish += value * exp(-band * a2);
         coat += value * exp(-band * b2);
     }
@@ -685,9 +720,10 @@ public float3 splatFieldAlong(SplatSurface s, StructuredBuffer<uint> transfer, f
     const float alpha = roughness * roughness;
     const float a2 = alpha * alpha;
     float3 sum = float3(0.0);
+    const float3 along = transferAlong(s, d);
     [unroll] for (uint j = 0; j < 16u; ++j) {
         const float band = j < 1u ? 0.0 : (j < 4u ? 2.0 : (j < 9u ? 6.0 : 12.0));   // l (l + 1)
-        sum += transferRgbAt(transfer, base + j * 3u) * (exp(-band * a2) * envBasisValue(j, d));
+        sum += transferRgbAt(transfer, base + j * 3u) * (exp(-band * a2) * envBasisValue(j, along));
     }
     return max(sum, float3(0.0));
 }
@@ -728,10 +764,14 @@ public float splatSunShare(SplatSurface s, StructuredBuffer<uint> transfer, floa
     float lit = 0.0;
     float open = 0.0;
     const float3 n = s.normal;
+    // The transfer's harmonics are read along the sun in its own frame; the
+    // open hemisphere's, about the normal, in the world's -- a dot product
+    // both sides of which turn alike.
+    const float3 sunInTransfer = transferAlong(s, sunDirection);
     [unroll] for (uint k = 0; k < kEnvIrradianceCoefficients; ++k) {
         const float basis = envBasisValue(k, sunDirection);
         const float band = k == 0 ? 1.0 : (k < 4 ? (2.0 / 3.0) : 0.25);
-        lit += transferValue(s, transfer, k) * basis;
+        lit += transferValue(s, transfer, k) * envBasisValue(k, sunInTransfer);
         open += band * envBasisValue(k, n) * basis;
     }
     return open > 0.04 ? saturate(lit / open) : 1.0;
@@ -800,13 +840,16 @@ bool splatCellBit(SplatSurface s, StructuredBuffer<uint> cellBits, uint index) {
 /// a solid's own body stands -- so a direction grazing the horizon reads the
 /// cells above it rather than the body below; a zero `axis` keeps every cell.
 /// -1 where no cell was weighed at all.
-public float splatCellsOpen(SplatSurface s, StructuredBuffer<uint> cellBits, float3 d, float3 axis) {
+public float splatCellsOpen(SplatSurface s, StructuredBuffer<uint> cellBits, float3 dWorld, float3 axisWorld) {
     const uint side = splatCellSide(s.cellWords);
     const float sideF = float(side);
+    // The cells are directions of the cloud: both put into its frame.
+    const bool judged = dot(axisWorld, axisWorld) > 0.0;
+    const float3 d = transferAlong(s, dWorld);
+    const float3 axis = judged ? transferAlong(s, axisWorld) : axisWorld;
     const float2 at = octEncode(d) * sideF - 0.5;
     const float2 lo = floor(at);
     const float2 f = at - lo;
-    const bool judged = dot(axis, axis) > 0.0;
     float open = 0.0;
     float weight = 0.0;
     [unroll] for (uint k = 0; k < 4; ++k) {
@@ -1845,4 +1888,79 @@ public float3 relightNormalToWorld(float4 row0, float4 row1, float4 row2, float3
     const float side = dot(a, bc) < 0.0 ? -1.0 : 1.0;
     const float3 turned = side * (n.x * bc + n.y * cross(c, a) + n.z * cross(a, b));
     return dot(turned, turned) > 1.0e-20 ? normalize(turned) : float3(0.0, 0.0, 1.0);
+}
+
+/// WHAT A GAUSSIAN CARRIES, DRAWN AS ITS COLOUR (athenea:splatView): one of
+/// its parameters in place of its light, blended by its opacity as the light
+/// is, so a frame of it is that parameter seen through the camera -- what a
+/// dataset of a cloud's own channels is made of. Values that are not colours
+/// are put on a scale: a fraction as a grey, a normal as `n / 2 + 1/2`, a
+/// size on a ramp from blue (ten micrometres) to red (ten centimetres), a
+/// decade a quarter of it -- a pawn's tenths of a millimetre sit low, a
+/// car's panels' centimetres high.
+/// 0 is no view: the light.
+public static const uint kSplatViewNone = 0;
+public static const uint kSplatViewAlbedo = 1;            ///< the surface's colour, linear
+public static const uint kSplatViewRoughness = 2;         ///< what the specular reads, widened by the normals' spread
+public static const uint kSplatViewMetallic = 3;
+public static const uint kSplatViewTransmission = 4;
+public static const uint kSplatViewIor = 5;               ///< ior - 1, a grey
+public static const uint kSplatViewNormal = 6;            ///< in the world, n / 2 + 1/2
+public static const uint kSplatViewOpacity = 7;
+public static const uint kSplatViewSize = 8;              ///< the gaussian's largest axis, on a ramp
+public static const uint kSplatViewSkyVisibility = 9;     ///< the transfer's cosine-weighted sky seen, 1 unoccluded
+public static const uint kSplatViewBounce = 10;           ///< the indirect half under a white sky, rgb
+public static const uint kSplatViewOpenCells = 11;        ///< the share of a TX transfer's directions that leave the scene
+public static const uint kSplatViewEmission = 12;
+public static const uint kSplatViewField = 13;            ///< the reflected field's mean under a white sky, rgb
+public static const uint kSplatViewBaked = 14;            ///< the light the cloud carries, as captured or baked
+public static const uint kSplatViewMaterialRoughness = 15; ///< the material's own, before the widening; 0 where not carried
+
+float3 splatViewRamp(float t) {
+    const float x = saturate(t);
+    return float3(saturate(1.5 - abs(4.0 * x - 3.0)), saturate(1.5 - abs(4.0 * x - 2.0)), saturate(1.5 - abs(4.0 * x - 1.0)));
+}
+
+public float3 splatParameterColour(uint view, SplatSurface s, StructuredBuffer<uint> transfer,
+                                   StructuredBuffer<uint> cellBits, float3 baked, float opacity, float3 scale) {
+    switch (view) {
+    case kSplatViewAlbedo: return s.albedo;
+    case kSplatViewRoughness: return float3(s.roughness);
+    case kSplatViewMetallic: return float3(s.metallic);
+    case kSplatViewTransmission: return float3(s.transmission);
+    case kSplatViewIor: return float3(saturate(s.ior - 1.0));
+    case kSplatViewNormal: return s.normal * 0.5 + 0.5;
+    case kSplatViewOpacity: return float3(opacity);
+    case kSplatViewSize: {
+        const float largest = max(max(scale.x, scale.y), scale.z);
+        return splatViewRamp((log10(max(largest, 1.0e-7)) + 5.0) / 4.0);   // 1e-5 .. 1e-1
+    }
+    case kSplatViewSkyVisibility:
+        return s.transferCount >= 9u ? float3(saturate(transferValue(s, transfer, 0) / 0.28209479177387814))
+                                     : float3(0.0);
+    case kSplatViewBounce: {
+        if (transferIndirectCount(s.transferCount) == 0u) return float3(0.0);
+        return max(transferRgbAt(transfer, s.transferBase + transferDirectCount(s.transferCount)) * 3.5449077018110318,
+                   float3(0.0));
+    }
+    case kSplatViewOpenCells: {
+        if (s.cellWords == 0u) return float3(0.0);
+        uint open = 0u;
+        for (uint w = 0u; w < s.cellWords; ++w) {
+            open += countbits(cellBits[s.cellBase + w]);
+        }
+        return float3(float(open) / float(s.cellWords * 32u));
+    }
+    case kSplatViewEmission: return s.emission;
+    case kSplatViewField: {
+        if (s.cellWords == 0u || transferIndirectCount(s.transferCount) == 0u) return float3(0.0);
+        // The mean of a function over the sphere is its first coefficient
+        // times Y_0.
+        return max(transferRgbAt(transfer, s.transferBase + transferFieldOffset(s.transferCount)) * 0.28209479177387814,
+                   float3(0.0));
+    }
+    case kSplatViewBaked: return baked;
+    case kSplatViewMaterialRoughness: return float3(max(s.materialRoughness, 0.0));
+    default: return baked;
+    }
 }

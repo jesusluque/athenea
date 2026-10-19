@@ -255,6 +255,9 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
         // The frame the gaussian has now -- posed, for a cloud a skeleton
         // carries -- which is what a zonal transfer's lobes turn with.
         splatTransferFrame(surface, transfer, rotation, w0, w1, w2);
+        // This route has no sky turned into a turned cloud's frame yet: its
+        // directions are put there, its harmonics dotted with the world's.
+        surface.skyCloud = 0u;
         // `params.shadowBits` is the words a gaussian: two of the first
         // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
         surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;

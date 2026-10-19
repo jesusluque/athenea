@@ -465,6 +465,12 @@ public:
     void setGlassShadows(bool glass);
     /// athenea:domeVisible: false leaves the background transparent.
     void setDomeVisible(bool visible);
+    /// athenea:splatView: a parameter of the gaussians drawn in place of
+    /// their light -- 1 albedo, 2 roughness, 3 metallic, 4 transmission,
+    /// 5 ior, 6 normal, 7 opacity, 8 size, 9 sky visibility, 10 bounce,
+    /// 11 open cells, 12 emission, 13 reflected field, 14 the light the cloud
+    /// carries, 15 the material's roughness (splat_relight.slang); 0 the light.
+    void setSplatView(uint32_t view);
     void setPathError(float error);
 
     /// How many paths a pixel the frame on the device holds, and whether it

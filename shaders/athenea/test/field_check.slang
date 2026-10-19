@@ -91,6 +91,9 @@ void fieldCouplingCheck(uint3 tid: SV_DispatchThreadID) {
     SplatSurface s;
     s.materialRoughness = -1.0;
     s.normal = float3(0.0, 0.0, 1.0);
+    // A cloud the stage does not turn: its transfer is read in the world.
+    s.cloudTurned = false;
+    s.skyCloud = 0u;
     s.transferBase = 0;
     s.transferCount = 84;
     const float3 want = float3(0.3, 0.2, 0.1);

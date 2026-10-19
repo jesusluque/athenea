@@ -40,6 +40,8 @@ void refractCheck(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     SplatSurface s;
+    s.cloudTurned = false;   // not turned: the transfer read in the world
+    s.skyCloud = 0u;
     s.materialRoughness = -1.0;
     s.lobes = plainLobes();
     s.thinWalled = false;

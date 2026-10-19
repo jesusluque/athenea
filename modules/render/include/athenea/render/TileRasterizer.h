@@ -226,6 +226,10 @@ struct RenderSettings {
     /// under layer's own ids are named; a capture has no ancestry to name and
     /// is left out rather than named wrongly.
     bool     cryptomatte = false;
+    /// A PARAMETER OF THE GAUSSIANS DRAWN IN PLACE OF THEIR LIGHT (splat
+    /// projection's `splatView`, splat_relight.slang's kSplatView*: albedo,
+    /// roughness, normal, size, sky visibility, ...); 0 draws the light.
+    uint32_t splatView = 0;
     /// Wait after every stage so `FrameStats` times each one. Slower; for bench.
     bool     timeStages = false;
     /// COUNT WHAT THE FRAME DID on the device -- why each culled splat was
@@ -413,6 +417,13 @@ private:
     gpu::Buffer emptyMotion_;      ///< bound where nothing moves under the shutter
     gpu::Buffer shadowFactors_;    ///< one float a (splat, light), where a relit cloud shadows
     gpu::ComputeKernel splatShadow_;
+    /// THE SKY TURNED INTO A TURNED CLOUD'S FRAME (splat/sky_turn.slang): a
+    /// transfer is a direction of the file it was baked in, so a cloud the
+    /// stage rotates reads the sky as its own frame sees it. One buffer an
+    /// instance that needs it, kept between frames: the world's domes, then
+    /// the same turned.
+    gpu::ComputeKernel       skyTurn_;
+    std::vector<gpu::Buffer> turnedSkies_;
     bool        shadowsSupported_ = false;
     /// The panel's counters (`countSplats`), made the first time they are asked for.
     bool               countersMade_ = false;

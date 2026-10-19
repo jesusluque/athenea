@@ -1288,6 +1288,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
 | `athenea:domeVisible` | bool | `true` | toda técnica: se dibuja un dome detrás del frame; apagado, los píxeles que nada cubre quedan transparentes (alfa 0), como pide la película transparente de un host, y el dome sigue iluminando el frame |
+| `athenea:splatView` | int | `0` | el raster: un parámetro de las gaussianas dibujado en lugar de su luz, mezclado por su opacidad -- 1 albedo, 2 roughness (la que lee el especular), 3 metallic, 4 transmission, 5 ior (`ior - 1`, un gris), 6 normal (del mundo, `n / 2 + 1/2`), 7 opacidad, 8 tamaño (el eje mayor, una rampa de azul a 10 µm a rojo a 10 cm, una década cada cuarto), 9 visibilidad del cielo (el cielo visto por el transfer ponderado por el coseno, 1 sin nada delante), 10 rebote (la mitad indirecta bajo un cielo blanco), 11 celdas abiertas (la fracción de direcciones de un transfer TX que salen de la escena), 12 emisión, 13 campo reflejado (su media bajo un cielo blanco), 14 la luz que lleva la nube, 15 la roughness propia del material (0 donde no la lleva); una nube que no se reilumina muestra su luz, su opacidad y su tamaño y nada más. 0 dibuja la luz |
 | `athenea:glassShadows` | bool | `true` | rt y sus bakes: el rayo de sombra de una luz sigue a través de hasta 4 caras de vidrio cuya transmisión es una delta (una pared fina; un sólido de rugosidad especular constante por debajo de 0.03), teñido por cada una; apagado, el vidrio lo detiene |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
 | `athenea:motionBuckets` | int | `4` | rt: rodajas del obturador, de 1 a 8 |
@@ -1892,7 +1893,17 @@ todos los domos esos grados alrededor del eje vertical de la escena, y
 `skyVisible` a false deja el fondo transparente mientras el cielo sigue
 iluminando. Una nube reiluminable (un transfer) se ilumina con él. El primer
 frame tras un cambio prepara el cielo nuevo (alrededor de medio segundo para
-una imagen 4K); los frames siguientes cuestan lo mismo que antes.
+una imagen 4K); los frames siguientes cuestan lo mismo que antes. Una nube
+girada por su prim lee su transfer en su propio sistema de referencia, con el
+cielo girado a él una vez por frame, así que se reilumina como sin girar.
+
+**Un parámetro en lugar de la luz.** `splatView` dibuja uno de los parámetros
+de las gaussianas en lugar de su luz (`athenea:splatView`, por su nombre:
+`albedo`, `roughness`, `metallic`, `transmission`, `ior`, `normal`,
+`opacity`, `size`, `skyVisibility`, `bounce`, `openCells`, `emission`,
+`field`, `baked`, `materialRoughness`; `light` la devuelve), cada uno un frame
+de ese canal visto por la cámara, en un EXR como números o en un PNG como se
+ve.
 
 Los argumentos de cada herramienta se declaran en el protocolo y los enseña el
 cliente, así que aquí no se repiten. La forma de una sesión es: `open_stage`,

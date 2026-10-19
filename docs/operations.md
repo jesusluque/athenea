@@ -1259,6 +1259,7 @@ found and does not.
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |
 | `athenea:pathMis` | bool | `true` | multiple importance sampling |
 | `athenea:domeVisible` | bool | `true` | every technique: a dome is drawn behind the frame; off, the pixels nothing covers stay transparent (alpha 0), as a host's transparent film asks, and the dome still lights the frame |
+| `athenea:splatView` | int | `0` | the raster: a parameter of the gaussians drawn in place of their light, blended by their opacity -- 1 albedo, 2 roughness (as the specular reads it), 3 metallic, 4 transmission, 5 ior (`ior - 1`, a grey), 6 normal (world, `n / 2 + 1/2`), 7 opacity, 8 size (the largest axis, a ramp from blue at 10 µm to red at 10 cm, a decade a quarter), 9 sky visibility (the transfer's cosine-weighted sky seen, 1 unoccluded), 10 bounce (the indirect half under a white sky), 11 open cells (the share of a TX transfer's directions that leave the scene), 12 emission, 13 reflected field (its mean under a white sky), 14 the light the cloud carries, 15 the material's own roughness (0 where not carried); a cloud that is not relit shows its light, opacity and size and nothing else. 0 draws the light |
 | `athenea:glassShadows` | bool | `true` | rt and its bakes: a light's shadow ray goes on through up to 4 faces of glass whose transmission is a delta (a thin wall; a solid of constant specular roughness under 0.03), tinted by each; off, glass stops it |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
 | `athenea:motionBuckets` | int | `4` | rt: shutter slices, 1 to 8 |
@@ -1843,6 +1844,15 @@ degrees about the stage's up axis, and `skyVisible` false leaves the
 background transparent while the sky still lights. A relightable cloud (a
 transfer) is lit by it. The first frame after a change prepares the new sky
 (about half a second for a 4K image); the frames after it cost what they did.
+A cloud turned by its prim reads its transfer in its own frame, the sky turned
+into it once a frame, so it relights as it would unturned.
+
+**A parameter in place of the light.** `splatView` draws one of the
+gaussians' parameters instead of their light (`athenea:splatView`, by its name:
+`albedo`, `roughness`, `metallic`, `transmission`, `ior`, `normal`,
+`opacity`, `size`, `skyVisibility`, `bounce`, `openCells`, `emission`,
+`field`, `baked`, `materialRoughness`; `light` puts it back), each a frame of
+that channel seen through the camera, in an EXR as numbers or a PNG as shown.
 
 Each tool's arguments are declared in the protocol and shown by the client, so
 they are not repeated here. The shape of a session is: `open_stage`, then

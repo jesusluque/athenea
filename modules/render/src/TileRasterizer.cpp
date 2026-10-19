@@ -2,6 +2,7 @@
 #include "athenea/render/TileRasterizer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstring>
 
@@ -115,6 +116,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     if (r.shadowsSupported_) {
         ATHENEA_TRY(make(r.splatShadow_, "athenea/splat/splat_shadow", "splatShadowFactors"));
     }
+    ATHENEA_TRY(make(r.skyTurn_, "athenea/splat/sky_turn", "skyTurn"));
     ATHENEA_TRY(make(r.gather_, "athenea/splat/splat_gather_counts", "splatGatherCounts"));
     ATHENEA_TRY(make(r.emit_, "athenea/splat/splat_emit", "splatEmit"));
     ATHENEA_TRY(make(r.clear_, "athenea/splat/splat_tiles_clear", "splatTilesClear"));
@@ -339,10 +341,59 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     Stopwatch watch(batch, settings.timeStages);
     ++frameOfCaches_;
     uint32_t base = 0;
+    size_t turnedSkies = 0;
     for (const SplatInstance& instance : instances) {
         const scene::GpuSplats* cloud = instance.splats;
         if (cloud == nullptr || cloud->count == 0) {
             continue;
+        }
+        // A TRANSFER THE STAGE TURNED reads the sky in the cloud's own frame
+        // (splat/sky_turn.slang): its rotation is its rows' linear part with
+        // the columns made unit, and where that is not the identity the
+        // frame's domes are turned into it here, once an instance. A zonal
+        // transfer's lobes are put in the world by the shader itself.
+        const gpu::Buffer* skyFor = nullptr;
+        uint32_t skyCloud = 0;
+        if (instance.relight && lights != nullptr && lights->any() && lights->environment() &&
+            cloud->hasTransfer() && !cloud->isZonal()) {
+            const std::array<float, 12> rows = instance.objectToWorld.rows3x4();
+            std::array<std::array<float, 3>, 3> axes{};   // the cloud's x, y and z in the world
+            for (int c = 0; c < 3; ++c) {
+                const float x = rows[static_cast<size_t>(c)];
+                const float y = rows[static_cast<size_t>(4 + c)];
+                const float z = rows[static_cast<size_t>(8 + c)];
+                const float length = std::sqrt(x * x + y * y + z * z);
+                axes[static_cast<size_t>(c)] = length > 0.0F ? std::array<float, 3>{x / length, y / length, z / length}
+                                                             : std::array<float, 3>{0.0F, 0.0F, 0.0F};
+            }
+            // Bookkeeping, not data: whether the instance is turned at all.
+            const float off = std::abs(axes[0][0] - 1.0F) + std::abs(axes[1][1] - 1.0F) + std::abs(axes[2][2] - 1.0F);
+            if (off > 1.0e-6F) {
+                const uint32_t domes = static_cast<uint32_t>(lights->envSh->bytes() / (16 * 16));
+                if (turnedSkies_.size() <= turnedSkies) {
+                    turnedSkies_.resize(turnedSkies + 1);
+                }
+                gpu::Buffer& turned = turnedSkies_[turnedSkies++];
+                if (!turned.valid() || turned.bytes() < uint64_t{domes} * 16 * 2 * 16) {
+                    auto made = buffer(*device_, uint64_t{domes} * 16 * 2, 16, "splat.turnedSky");
+                    if (!made) return std::move(made).error();
+                    turned = *made;
+                }
+                skyTurn_.dispatch(batch, {domes * 16 * 2, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["sky"].setBinding(lights->envSh->rhi());
+                    cursor["turned"].setBinding(turned.rhi());
+                    rhi::ShaderCursor p = cursor["params"];
+                    p["domes"].setData(domes);
+                    static const char* kRotation[3] = {"rotation0", "rotation1", "rotation2"};
+                    for (int r = 0; r < 3; ++r) {
+                        const std::array<float, 4> row{axes[0][static_cast<size_t>(r)], axes[1][static_cast<size_t>(r)],
+                                                       axes[2][static_cast<size_t>(r)], 0.0F};
+                        p[kRotation[r]].setData(row);
+                    }
+                });
+                skyFor = &turned;
+                skyCloud = domes * 16;
+            }
         }
         const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
         const Vec3 eyeObject =
@@ -419,6 +470,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
             setFrame(cursor, common);
             cursor["params"]["cryptoMode"].setData(cryptoMode);
+            cursor["params"]["splatView"].setData(settings.splatView);
             setObject(cursor, objectToView, eyeObject);
             cursor["params"]["count"].setData(cloud->count);
             cursor["params"]["base"].setData(base);
@@ -450,7 +502,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             const bool sky = relight && lights != nullptr && lights->environment();
             rhi::ShaderCursor environment = cursor["environment"];
             environment["texels"].setBinding(sky ? lights->envTexels->rhi() : emptyEnvWords_.rhi());
-            environment["sh"].setBinding(sky ? lights->envSh->rhi() : emptyEnvSh_.rhi());
+            environment["sh"].setBinding(sky ? (skyFor != nullptr ? skyFor->rhi() : lights->envSh->rhi())
+                                             : emptyEnvSh_.rhi());
+            cursor["params"]["skyCloud"].setData(sky ? skyCloud : 0u);
             environment["sun"].setBinding(sky ? lights->envSun->rhi() : emptyEnvSh_.rhi());
             environment["ofLight"].setBinding(sky ? lights->envOfLight->rhi() : emptyEnvWords_.rhi());
             cursor["params"]["envLights"].setData(sky ? lights->envLights : 0u);

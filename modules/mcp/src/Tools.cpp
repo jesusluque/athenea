@@ -143,6 +143,24 @@ void applySettings(Session& session, const json& args) {
         }
     }
     if (args.contains("skyVisible")) r.setDomeVisible(args["skyVisible"].get<bool>());
+    // A parameter of the gaussians drawn in place of their light, by name or
+    // by number (StageRenderer::setSplatView); "light" or 0 puts it back.
+    if (args.contains("splatView")) {
+        static const char* kViews[] = {"light", "albedo", "roughness", "metallic", "transmission", "ior", "normal",
+                                       "opacity", "size", "skyVisibility", "bounce", "openCells", "emission", "field",
+                                       "baked", "materialRoughness"};
+        const json& asked = args["splatView"];
+        uint32_t view = 0;
+        if (asked.is_number()) {
+            view = asked.get<uint32_t>();
+        } else if (asked.is_string()) {
+            const std::string name = asked.get<std::string>();
+            for (uint32_t k = 0; k < std::size(kViews); ++k) {
+                if (name == kViews[k]) view = k;
+            }
+        }
+        r.setSplatView(view < std::size(kViews) ? view : 0u);
+    }
     if (args.contains("refine")) r.setRefineLevel(args["refine"].get<uint32_t>());
     if (args.contains("visibility")) {
         (void)r.setMeshVisibility(args["visibility"].get<std::string>());
@@ -693,6 +711,10 @@ const std::vector<ToolEntry>& toolTable() {
                                              "the stage's own")},
                      {"skyRotation", field("number", "degrees every dome turns about the stage's up axis")},
                      {"skyVisible", field("boolean", "false leaves the background transparent; the sky still lights")},
+                     {"splatView", field("string", "a parameter of the gaussians drawn in place of their light: light "
+                                                   "(the default), albedo, roughness, metallic, transmission, ior, "
+                                                   "normal, opacity, size, skyVisibility, bounce, openCells, "
+                                                   "emission, field, baked, materialRoughness")},
                      {"layers", json{{"type", "array"}, {"items", {{"type", "string"}}},
                                      {"description", "with 'raw': layers written after the depth, four floats a "
                                                      "pixel each, in this order: P (world position, from the "

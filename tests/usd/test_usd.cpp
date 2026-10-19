@@ -13781,3 +13781,114 @@ TEST_CASE("a map on a layer is sampled per gaussian", "[.][layer_maps][usd][lobe
     CHECK(none > weights.size() / 3);
     CHECK(whole > weights.size() / 3);
 }
+
+// A TRANSFER THE STAGE TURNS IS READ IN ITS CLOUD'S FRAME (19 Oct).
+//
+// A TX transfer's harmonics, reflected field and open cells are directions of
+// the file it was baked in. A cloud turned by its prim read them as the
+// world's, and the pawn's glass head, stood up from Y-up into a Z-up scene,
+// drew in fragments. Here the TX balls of the suite (mesh2splat_tx_*) are
+// drawn twice: as they are, and with the cloud, the camera and the sky all
+// turned 60 degrees about the up axis -- which is the same picture, turned
+// with everything in it. Before the fix the glass ball's turned frame was
+// several times off; a turned cloud under the unturned sky must differ, or
+// the test would not tell a frame from another.
+//
+// Hidden: it reads what those conversions wrote (tx_turned_transfer).
+TEST_CASE("a TX cloud turned with its camera and sky draws what it drew unturned",
+          "[.][tx_turned][usd][gpu][splat][transfer]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path converted(ATHENEA_TX_DIR);
+    const fs::path window = scratch("tx_turned_sky.png");
+    {
+        const uint32_t w = 64, h = 32;
+        std::vector<uint32_t> texels(size_t{w} * h);
+        for (uint32_t y = 0; y < h; ++y) {
+            for (uint32_t x = 0; x < w; ++x) {
+                // ABGR: a sky different in every direction -- red growing
+                // across, green down, a white window on one side.
+                uint32_t texel = 0xFF000000u | (40u + y * 5u) << 8 | (30u + x * 3u);
+                if (y >= 8 && y < 14 && x >= 20 && x < 30) {
+                    texel = 0xFFFFFFFFu;
+                }
+                texels[size_t{y} * w + x] = texel;
+            }
+        }
+        HioImageSharedPtr image = HioImage::OpenForWriting(window.string());
+        REQUIRE(image);
+        HioImage::StorageSpec spec;
+        spec.width = static_cast<int>(w);
+        spec.height = static_cast<int>(h);
+        spec.depth = 1;
+        spec.format = HioFormatUNorm8Vec4;
+        spec.data = texels.data();
+        REQUIRE(image->Write(spec));
+    }
+    // The camera at (0, 0.4, 4.2) looking down -z, turned about y with the
+    // rest: its place turned by the same 60 degrees.
+    const double turn = 60.0;
+    const double t = turn * 3.14159265358979 / 180.0;
+    const auto stage = [&](const std::string& name, const fs::path& cloud, bool cloudTurned, bool skyTurned) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        const double angle = cloudTurned ? turn : 0.0;
+        const double x = cloudTurned ? 4.2 * std::sin(t) : 0.0;
+        const double z = cloudTurned ? 4.2 * std::cos(t) : 4.2;
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+            << "def Xform \"Turned\"\n{\n    float3 xformOp:rotateXYZ = (0, " << angle << ", 0)\n"
+            << "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n"
+            << "    def \"Ball\" (\n        prepend references = @" << cloud.string() << "@</World/Splats>\n    )\n    {\n    }\n}\n"
+            << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+            << "    double3 xformOp:translate = (" << x << ", 0.4, " << z << ")\n"
+            << "    float3 xformOp:rotateXYZ = (0, " << angle << ", 0)\n"
+            << "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n"
+            << "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n"
+            << "    asset inputs:texture:file = @" << window.string() << "@\n"
+            << "    float3 xformOp:rotateXYZ = (0, " << (skyTurned ? turn : 0.0) << ", 0)\n"
+            << "    uniform token[] xformOpOrder = [\"xformOp:rotateXYZ\"]\n}\n";
+        return path;
+    };
+    const uint32_t w = 160, h = 160;
+    const auto draw = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        // The sky lights and is not seen: the background is a 64 x 32
+        // image whose window, turned, falls on other texels -- a picture of
+        // the image's sampling, not of the cloud.
+        (*renderer)->setDomeVisible(false);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    for (const char* material : {"glass", "paint"}) {
+        const fs::path cloud = converted / (std::string(material) + "_tx.usdc");
+        if (!fs::exists(cloud)) {
+            SKIP("no " << cloud.string() << ": mesh2splat_tx_" << material << "_tx runs first");
+        }
+        const gpu::Buffer still = draw(stage(std::string("tx_turned_") + material + "_0.usda", cloud, false, false));
+        const gpu::Buffer turned = draw(stage(std::string("tx_turned_") + material + "_60.usda", cloud, true, true));
+        const gpu::Buffer skyLeft = draw(stage(std::string("tx_turned_") + material + "_sky0.usda", cloud, true, false));
+        auto same = render::compareHdr(*gpu->library, turned, still, w, h);
+        auto other = render::compareHdr(*gpu->library, skyLeft, still, w, h);
+        REQUIRE(same);
+        REQUIRE(other);
+        std::printf("  %s ball turned 60 degrees with its camera and sky: relMSE %.2e, p99 %.2e against unturned; "
+                    "under the unturned sky relMSE %.2e\n",
+                    material, same->relMse, same->p99Relative, other->relMse);
+        // The mean, not the 99th percentile: a percent of these pixels is
+        // the ball's rim, where the turned transform rounds a splat's
+        // footprint a little differently and a faint edge differs by a
+        // third of itself (p99 0.35-0.46 here, with relMSE 1e-4). Right, the
+        // turned frame reads 1-2e-4; under a sky not turned with it, 1.5e-2
+        // (the paint) to 0.13 (the glass).
+        CHECK(same->relMse < 1.0e-3);
+        CHECK(other->relMse > 5.0e-3);
+    }
+}

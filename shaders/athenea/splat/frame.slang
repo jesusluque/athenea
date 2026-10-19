@@ -138,7 +138,14 @@ public struct FrameParams {
     public float w00; public float w01; public float w02; public float w03;
     public float w10; public float w11; public float w12; public float w13;
     public float w20; public float w21; public float w22; public float w23;
-    public float eyeWorldX; public float eyeWorldY; public float eyeWorldZ; public float pad9;
+    public float eyeWorldX; public float eyeWorldY; public float eyeWorldZ;
+    // Where the sky turned into this cloud's frame starts in `environment.sh`
+    // (splat/sky_turn.slang), for a transfer the stage turned; 0: the cloud
+    // is not turned, and the world's sky is the transfer's.
+    public uint  skyCloud;
+    // A parameter of the gaussians drawn in place of their light
+    // (splat_relight's kSplatView*, athenea:splatView); 0: the light.
+    public uint  splatView;
     // UNDER A SHUTTER: HOW FAR THIS SPLAT MOVES DURING IT.
     //
     // Bit 0 of `motion` says the per-splat displacement buffer is read (what a

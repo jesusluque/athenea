@@ -514,6 +514,13 @@ set_tests_properties(mesh2splat_tx_sliced PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     PASS_REGULAR_EXPRESSION "transfer baked for 96[01][0-9][0-9] of 96[01][0-9][0-9] "
     LABELS gpe)
+add_test(NAME tx_turned_transfer
+    COMMAND athenea_usd_tests "[tx_turned]")
+set_tests_properties(tx_turned_transfer PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED tx_clouds
+    LABELS gpe)
 add_test(NAME tx_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[tx_conversion]")
 set_tests_properties(tx_conversions_render_like_the_mesh PROPERTIES

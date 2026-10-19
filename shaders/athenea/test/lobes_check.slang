@@ -74,6 +74,8 @@ void lobesPlainCheck(uint3 tid: SV_DispatchThreadID) {
 
     const SplatLobes plain = unpackLobes(packLobes(plainLobes()));
     SplatSurface s;
+    s.cloudTurned = false;   // not turned: the transfer read in the world
+    s.skyCloud = 0u;
     s.materialRoughness = -1.0;
     s.normal = float3(0.0, 0.0, 1.0);
     s.albedo = albedo;
@@ -193,6 +195,8 @@ void lobesSchlickCheck(uint3 tid: SV_DispatchThreadID) {
     const float nDotV = (float(tid.x / n) + 0.5) / float(n);
     InterlockedAdd(counts[0], 1u);
     SplatSurface s;
+    s.cloudTurned = false;   // not turned: the transfer read in the world
+    s.skyCloud = 0u;
     s.materialRoughness = -1.0;
     s.normal = float3(0.0, 0.0, 1.0);
     s.albedo = float3(0.047, 0.06, 0.047);

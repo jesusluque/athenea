@@ -14294,3 +14294,43 @@ Not done: the order of Nuke's rotations is read from its documentation, not yet 
 input (its OpenFX camera extension) in place of linked knobs; normals and motion vectors of gaussians, which the
 rasteriser does not write (the skinned wings' motion first); the sky as an image input of the node rather than a
 file; `.ply`/`.spz` opened directly rather than converted first; Linux and Windows builds and a signed bundle.
+
+## A transfer the stage turns, and the gaussians' parameters drawn (19 Oct)
+
+**The bug.** A TX transfer -- its harmonics, its reflected field, its open cells -- is a set of directions of the
+file it was baked in. The raster read them as directions of the world, which they are only while nothing turns
+the cloud. In Blender the pawn's clouds (Y-up) were stood up into the Z-up scene by a quarter turn on their
+Empties, and the glass head drew in fragments; the same clouds under an Xform turned 90 degrees in a Z-up stage
+drew the same fragments in the engine itself. A zonal transfer was already right: its lobes turn with each
+gaussian (`splatTransferFrame`).
+
+**The fix.** `relightCloudFrame` takes the cloud's frame from the rows that put it in the world (their linear
+part's columns made unit), and `transferAlong` puts a direction of the world into it before the field, the
+indirect half, the sun's share or a cell is read; a dot product with the sky reads the sky turned into the same
+frame, which `splat/sky_turn.slang` makes once an instance and a frame, where the instance turns a non-zonal
+transfer: the world's domes first, then the turned ones (`skyCloud` entries on). The turn is a projection of
+`L(R w)` onto the sixteen harmonics by a product rule exact for their products (four Gauss-Legendre nodes in z,
+eight steps in phi). A cloud nothing turns binds the sky as before and reads nothing turned.
+
+Measured: the pawn (`pieces/pawn/cut_lod2`) turned 60 degrees about up with its camera, under the sky turned 60
+degrees, against the pawn unturned, 768 x 768: relMSE 9e-6, PSNR 61 dB, SSIM 0.9999 (the turn the other way: 11
+dB, so the comparison tells the frames apart). The suite's TX balls (`[tx_turned]`, hidden, after the
+`mesh2splat_tx_*` conversions), turned with camera and sky, the background hidden: glass relMSE 1.6e-4, paint
+1.0e-4 against unturned, where under a sky left unturned they read 0.13 and 1.5e-2; the 99th percentile is not
+held, since a percent of those pixels is the ball's rim, where the turned transform rounds a footprint a little
+differently. With the shaders from before the fix the same test fails. The `[glass]` cases pass after it; the
+`[transfer]` and `[zonal]` cases and the rasteriser's suite fail after it exactly where they failed before it: the posed cloud's refit, the
+skinned zonal transfer against a turned still cloud, the TX ball against the mesh path traced and the thin sheet
+at a low index -- none of them new. Six test kernels built a `SplatSurface` without setting every field; they
+now say the cloud is not turned.
+
+Not done: the ray traced route turns its directions but dots its harmonics with the world's sky
+(`rt_shade.slang`, `skyCloud` 0): a turned TX cloud traced still reads the wrong sky in its body.
+
+**The parameters, drawn** (`athenea:splatView`, `render`'s `splatView`). For a dataset of what a relit cloud is
+made of, each gaussian's parameter is drawn in place of its light and blended by its opacity, as the light is:
+albedo, roughness, metallic, transmission, ior, the normal, opacity, size, the transfer's sky visibility, its
+bounce, its open cells, its reflected field, emission, the light the cloud carries and the material's own
+roughness (`splatParameterColour`). On the pawn at 768 x 768 a view costs 20-60 ms. Values that are not colours
+are scaled to be seen -- a size on a logarithmic ramp, a normal as `n / 2 + 1/2` -- and a cloud that is not relit
+has only its light, opacity and size to show.
