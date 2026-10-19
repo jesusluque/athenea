@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # The TBB USD was built with, so the process has one -- unless a parent found
 # one already, in which case that is the one the process has and this module
 # takes it (the parent then owes the same TBB to any USD it links).

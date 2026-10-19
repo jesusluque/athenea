@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 import bpy, sys, os
 
 def vec(v):

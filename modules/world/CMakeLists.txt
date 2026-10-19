@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # The scene on the device: pools of mesh data and per-instance records, read
 # by every technique.
 athenea_add_module(world

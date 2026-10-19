@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # The kernel rule is aopenfx's (sdk/cmake/AofxKernel.cmake); the bundle rule is
 # ours, on top of it, until aopenfx's AofxPlugin.cmake grows OUTPUT_DIR and
 # LIBRARIES. Both are functions, global once included, so plugins/ and tests/

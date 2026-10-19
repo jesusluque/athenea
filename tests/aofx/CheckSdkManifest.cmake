@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # The aofx SDK headers, hashed against the manifest recorded beside this file.
 #
 # aofx compatibility is not negotiable: bundles openFXplayer builds must load

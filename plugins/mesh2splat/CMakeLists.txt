@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # mesh2splat's conversion (Electronic Arts, BSD-3-Clause+) as an effect: a mesh
 # in, gaussian splats out.
 # Four entries out of one blob, which is why KERNELS names all of them: the

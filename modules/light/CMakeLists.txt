@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Lights: what a scene emits, and how a shading point samples it.
 athenea_add_module(light
     SOURCES

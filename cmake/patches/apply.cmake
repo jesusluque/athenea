@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Applies the patches named in PATCHES (a ;-list of files) to the current
 # directory, in order, skipping any already applied. FetchContent runs its
 # PATCH_COMMAND again whenever the command line changes, on a tree that may

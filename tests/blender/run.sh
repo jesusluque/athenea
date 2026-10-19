@@ -18,7 +18,7 @@
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 group="${1:-cpu}"
-out="${2:-/Users/muriel/luc/athenea-renders/blender}"
+out="${2:-$repo/build/blender-tests}"
 blender="${BLENDER:-/Applications/Blender.app/Contents/MacOS/Blender}"
 export ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR:-$repo/build/macos-arm64-blender/plugin/usd}"
 case "$group" in

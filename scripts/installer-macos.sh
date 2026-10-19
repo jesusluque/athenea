@@ -25,7 +25,7 @@ done
 exit 0
 POST
 chmod +x "$work/scripts/postinstall"
-pkgbuild --root "$work/root" --scripts "$work/scripts" --identifier co.uk.lucab.athenea \
+pkgbuild --root "$work/root" --scripts "$work/scripts" --identifier uk.co.lucab.athenea \
     --version "$version" --install-location / "$work/athenea.pkg" >/dev/null
 productbuild --package "$work/athenea.pkg" "$out/$name.pkg" >/dev/null
 echo "$out/$name.pkg"

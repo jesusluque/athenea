@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 jesus luque.
 # Fetches the Khronos Fox and turns it into a USD stage with its rig, for
 # `athenea mesh2splat --skinned` to convert.
 #

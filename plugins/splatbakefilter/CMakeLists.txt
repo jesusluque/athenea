@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # The splat bake filter: a baked cloud's indirect light averaged between
 # neighbouring gaussians on its surface, a-trous, weighed by where they stand
 # on the tangent plane, which way they face, which prim they came from and

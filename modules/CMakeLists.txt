@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Order is dependency order: each module may link only the ones above it.
 
 add_subdirectory(core)

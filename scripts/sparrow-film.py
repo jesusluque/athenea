@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 jesus luque.
 """A film out of the sparrow's clips, without converting anything again.
 
 `sparrow-clips.py` wrote each clip twice: as a `SkelAnimation` over the mesh

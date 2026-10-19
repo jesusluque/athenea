@@ -4098,7 +4098,7 @@ work without its full bibliographic details, it is listed as cited and marked so
 |---|---|---|
 | athenea | github.com/jesusluque/athenea | the engine and renderer of §2: modules, shaders, the `hdAthenea` delegate, the `athenea` CLI, the manuals `docs/operations.md` and `docs/development.md` with their Spanish translations, and `docs/decisions.md` |
 | athenea-pieces | github.com/jesusluque/athenea-pieces, branch `pieces` (private) | a fork of athenea holding the per-part merge trees, the error cut, closed shells, the shared occlusion, the 1280 and 5120 px bakes (§3.11, §6); `docs/pieces.md` and this paper under `docs/paper/` |
-| sparkwebGPU | `~/luc/sparkwebGPU`, branch `webgpu` | the WebGPU fork of Spark of §7: the `.athc` v3 reader, the compact path, the streamer, the player pages |
+| sparkwebGPU | `jesusluque/spark-webgpu` (private), branch `webgpu` | the WebGPU fork of Spark of §7: the `.athc` v3 reader, the compact path, the streamer, the player pages |
 | athenea, branch `blender` | github.com/jesusluque/athenea | the Blender add-on `athenea_hydra` of §2.14 |
 
 ## A.2 Commands and options

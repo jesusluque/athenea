@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 jesus luque.
 # A Sketchfab download turned into a USD stage this engine can open.
 #
 # Sketchfab hands out a zip: usually glTF (scene.gltf + a .bin + textures),

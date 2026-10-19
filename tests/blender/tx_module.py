@@ -54,7 +54,7 @@ def world_hdri(name="forest.exr"):
 
 def main():
     args = common.arguments()
-    out = os.path.abspath(args.get("out", "/Users/muriel/luc/athenea-renders/blender"))
+    out = os.path.abspath(args.get("out", os.path.join(common.REPO, "build", "blender-tests")))
     os.makedirs(out, exist_ok=True)
     checks = common.Checks()
 

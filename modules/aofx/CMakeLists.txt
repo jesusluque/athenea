@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # aofx: this engine's side of the AOFX host. The SDK and the host themselves
 # are aopenfx's (third_party/aopenfx, added by the top-level CMakeLists as
 # aofx::aofx and aofx::host); what is here is the bundle rule the plugins and

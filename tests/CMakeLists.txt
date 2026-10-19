@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 include(Catch)
 
 # athenea_test(<name> SOURCES ... LIBS ... [LABELS ...] [FIXTURES ...])

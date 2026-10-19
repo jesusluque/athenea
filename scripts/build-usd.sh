@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 jesus luque.
 # Builds OpenUSD for athenea into ~/tools/usd-<version>-mx.
 #
 # Why a script and not FetchContent: OpenUSD takes tens of minutes and brings

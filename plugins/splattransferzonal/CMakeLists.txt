@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # The splat transfer zonal fit: a baked transfer's nine harmonics in the world
 # made into one or two zonal lobes whose axes are written in each gaussian's
 # own frame, so a cloud a skeleton carries turns its transfer with it

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 import bpy, json, re, sys, os
 from mathutils import Matrix
 

@@ -2212,9 +2212,9 @@ the README shows.
 | `fetch-fox.sh [dir]` | the Khronos Fox, through Blender, for a skinned conversion |
 | `sketchfab-to-usd.sh <zip> [name]` | a Sketchfab archive into a USD asset |
 | `readme-images.sh [outdir]` | the images in the README, from the sparrow asset |
-| `remote-test.sh [user@host] [preset]` | builds and runs the suite on another machine and brings the log back |
+| `remote-test.sh user@host [preset]` | builds and runs the suite on another machine and brings the log back |
 | `package-blender-addon.sh [build] [out]` | the Blender extension as a directory and a zip, with zstd and libwebp carried and every third party's licence files (4.1.1) |
-| `scripts/film/` | the sparrow film: its frames, its camera and its shadow |
+| `scripts/film/` | the sparrow film: its frames, its camera and its shadow (`SPARROW` the stages' folder, `ATHENEA` the binary) |
 | `bmw-to-usd.py`, `sparrow-*.py` | authoring helpers for those assets |
 
 A script's own header says what it needs and where it puts things.

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Slang sources compiled at run time by slang-rhi.
 #
 # The engine's own shaders are not embedded: they are compiled by the device

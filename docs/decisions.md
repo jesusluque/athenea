@@ -5179,7 +5179,7 @@ point goes -- is what stretches a gaussian across a bend: with two joints a
 relative turn `theta` apart and a weight transition of length `L`, its size
 against the first is about `2 tan(theta/2) d / L`, of the order of the whole at
 a right angle. On the sparrow's `Flight` (the analysis in
-`~/luc/athenea-skinning-analysis.md`: 61 frames, 1500 wing triangles, the
+a working note: 61 frames, 1500 wing triangles, the
 posed mesh as reference) the blend alone was off the mesh's own map by a
 median of 4-6 %, a 90th percentile of 14-19 % and a 99th of 37-50 %, on the
 wing hand and the feather fans; with the second term the 90th and 99th fall to
@@ -14100,7 +14100,7 @@ and compared on the device (`test/light_layers_check`, `compareImages`):
   2 image(1) - image(0) is image(2).
 
 The Corvette (base TX, five groups, its ground per group) is
-`~/luc/athenea-gpu/gpu_l1.sh`: the merge, and raster frames at the front and
+`gpu_l1.sh`: the merge, and raster frames at the front and
 rear cameras for aparcado, diurno, noche_ciudad and noche_carretera under the
 sky at 0.005. Its numbers go here once run.
 
@@ -14211,7 +14211,7 @@ agree on the floor within 3% at index 1.5; under a glass of colour
 and each within 5% of the bare lamp of that colour; and a grey thin glass of
 0.5 is the bare lamp at half its emission, the floor within 2% and the deep
 frames' relMSE under an eighth of 64 paths'. Numbers go here once run
-(`~/luc/athenea-gpu/gpu_g1.sh`, which also re-bakes the Corvette's `cruce`
+(`gpu_g1.sh`, which also re-bakes the Corvette's `cruce`
 group and counts the gaussians it lights against the old 120 to 1150).
 
 **Not done.** The ray traced splat route (`rt_integrate.slang`) has no
@@ -14272,7 +14272,7 @@ far face and met the lamp with one tint. The material conversion was right
   (slangc, all 32 inline combinations against f0510de, the same highest
   index in each).
 
-**Measured** (`~/luc/athenea-gpu/gpu_t1.sh`). The Corvette at
+**Measured** (`gpu_t1.sh`). The Corvette at
 /World/CameraRear, 960x540, 256 paths: the tail lamps' blue over red 0.0118
 (Cycles 0.0154, before 0.1261), green 0.0027. The slab
 (`tests/usd/test_glass_tint.cpp`, a white emitter of radiance 1 behind a
@@ -14340,7 +14340,7 @@ Its unbiasedness check compares the floor in front of the box only (the
 camera sees the grey box itself, and the room behind it at half, which no
 lamp scaled by a transmittance is: over the whole frame its error held at
 3.3e-2 from 64 paths to 4096, at index 1.0, where no Fresnel enters).
-Numbers go here once run (`~/luc/athenea-gpu/gpu_t3.sh`, which prints the
+Numbers go here once run (`gpu_t3.sh`, which prints the
 glass validations' relMSE rows beside their values before this change).
 
 **Measured** (gpu_t3, 0ac9260): the glass box's deep frames agree (-0.69%,
@@ -14389,7 +14389,7 @@ into its own surface first looks for its far face by the hair: met beyond
 four margins and within the 3e-3 of the scale the millimetre steps over, the
 cell is closed. Rays from a gaussian that do not enter glass leave by the
 millimetre as before (what the transfer-against-bake test needs).
-Numbers go here once run (`~/luc/athenea-gpu/gpu_t4.sh`: the pilotos layer
+Numbers go here once run (`gpu_t4.sh`: the pilotos layer
 re-baked, its lens gaussians' B/R).
 
 **Measured** (gpu_t5, 31ac546): no change -- the pilotos layer's red lens
@@ -14434,7 +14434,7 @@ default 1 keeping what any other caller had), in the `transmissionColour`
 w the uniform block left unused: the transmitted colour is the transmission
 colour times as much of the material's colour as that says. The baked
 cloud is unaffected (its body is the bake's). Numbers go here once run
-(`~/luc/athenea-gpu/gpu_t6.sh`).
+(`gpu_t6.sh`).
 
 ## Simplify: fewer gaussians by pairs, and surfels
 
@@ -14872,3 +14872,11 @@ here. genlock is optional: `ATHENEA_WITH_GENLOCK` is on when `third_party/genloc
 `.gitmodules` entry has `update = none`, so a recursive clone skips it. Only `athenea live` follows a PTP master
 and stamps ST 2059-1 timecode -- the sched module, the subcommand and their tests -- so without genlock that one
 subcommand is missing and everything else builds as before.
+
+What the public tree no longer carries, in the same pass: the paper's HTML and PDFs and the presentations' PDFs
+(31 MB, all built by `docs/paper/build.sh` or exported) are assets of the `docs-2026-10-19` release and ignored
+here; `remote-test.sh` takes its host as an argument or `ATHENEA_REMOTE` rather than defaulting to a machine on a
+private network; the sparrow film's scripts read `SPARROW` and `ATHENEA` instead of one machine's paths, which made
+a copy per machine; the Blender tests and the MaterialX bench write under the build tree and `~/athenea-renders`.
+The macOS package identifier is `uk.co.lucab.athenea`, the order the OFX bundle already used. Every first-party
+source, script and CMake file carries the copyright line.

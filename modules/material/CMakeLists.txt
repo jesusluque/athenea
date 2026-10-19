@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Materials: the textures they sample (TextureStore), their lobes, and what
 # MaterialX graphs compile to.
 athenea_add_module(material

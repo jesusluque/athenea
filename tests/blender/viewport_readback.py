@@ -33,7 +33,7 @@ import bpy  # noqa: E402
 
 def main():
     args = common.arguments()
-    out = os.path.abspath(args.get("out", "/Users/muriel/luc/athenea-renders/blender-phase2"))
+    out = os.path.abspath(args.get("out", os.path.join(common.REPO, "build", "blender-tests", "viewport")))
     frames = int(args.get("frames", "12"))
     os.makedirs(out, exist_ok=True)
     checks = common.Checks()

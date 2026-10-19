@@ -2275,9 +2275,9 @@ assets que enseña el README.
 | `fetch-fox.sh [dir]` | el zorro de Khronos, por Blender, para una conversión con esqueleto |
 | `sketchfab-to-usd.sh <zip> [nombre]` | un archivo de Sketchfab a un asset USD |
 | `readme-images.sh [salida]` | las imágenes del README, desde el asset del gorrión |
-| `remote-test.sh [user@host] [preset]` | compila y corre la suite en otra máquina y trae el log |
+| `remote-test.sh user@host [preset]` | compila y corre la suite en otra máquina y trae el log |
 | `package-blender-addon.sh [build] [salida]` | la extensión de Blender como directorio y zip, con zstd y libwebp dentro y los ficheros de licencia de cada tercero (4.1.1) |
-| `scripts/film/` | la película del gorrión: sus frames, su cámara y su sombra |
+| `scripts/film/` | la película del gorrión: sus frames, su cámara y su sombra (`SPARROW` la carpeta de las escenas, `ATHENEA` el binario) |
 | `bmw-to-usd.py`, `sparrow-*.py` | ayudas de autoría para esos assets |
 
 La cabecera de cada script dice qué necesita y dónde deja las cosas.

@@ -224,11 +224,11 @@ Figures from the emulated phone are about twice the real iPhone's; draw counts a
 
 ## 5. Operations
 
-GPU jobs run one at a time on the machine through `~/luc/athenea-gpu/shared.sh`, which takes a lock directory shared
+GPU jobs run one at a time on the machine through a lock script (`shared.sh`), which takes a lock directory shared
 with the web player's jobs (`mkdir`), then runs the job under `guard.sh` (it stops the job on thermal pressure,
 SIGSTOP and SIGCONT). Each step runs under `memguard.sh` (it kills the job when free memory falls under 1.5 GB). A
 job waits 25 s before asking for the lock, so the jobs that poll every 10 s get in between, and waits while
-`~/luc/athenea-gpu/hold` exists (a long gap given to another session). Another session's short GPU need is met by
+a `hold` file beside it exists (a long gap given to another session). Another session's short GPU need is met by
 pausing the running bake (SIGSTOP on the binary and its `memguard.sh`, SIGCONT after). A build directory a running or
 queued job uses is not rebuilt.
 

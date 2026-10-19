@@ -1,3 +1,4 @@
+// Copyright (c) 2026 jesus luque.
 // A body slab under a wing slab, one light from above. The per-part fields
 // are baked once in that pose; then the wing's joint is moved aside without
 // baking again, and the body must come out of shadow. Every input is built

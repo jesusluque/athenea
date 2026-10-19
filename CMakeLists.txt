@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 cmake_minimum_required(VERSION 3.24)
 project(athenea VERSION 0.3.0 LANGUAGES C CXX)
 if(APPLE)

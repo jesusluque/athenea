@@ -4,10 +4,10 @@ El baker presentado a dos niveles, en inglés y castellano. Los PDF están en [`
 
 | Fichero | Nivel | Idioma | Diapositivas |
 |---|---|---|---|
-| [athenea-overview-es.pdf](https://github.com/jesusluque/athenea/raw/main/docs/presentations/athenea-overview-es.pdf) | Divulgativo | Castellano | 14 |
-| [athenea-overview-en.pdf](https://github.com/jesusluque/athenea/raw/main/docs/presentations/athenea-overview-en.pdf) | Divulgativo | Inglés | 14 |
-| [athenea-tech-es.pdf](https://github.com/jesusluque/athenea/raw/main/docs/presentations/athenea-tech-es.pdf) | Técnico | Castellano | 22 |
-| [athenea-tech-en.pdf](https://github.com/jesusluque/athenea/raw/main/docs/presentations/athenea-tech-en.pdf) | Técnico | Inglés | 22 |
+| [athenea-overview-es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-overview-es.pdf) | Divulgativo | Castellano | 14 |
+| [athenea-overview-en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-overview-en.pdf) | Divulgativo | Inglés | 14 |
+| [athenea-tech-es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-tech-es.pdf) | Técnico | Castellano | 22 |
+| [athenea-tech-en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-tech-en.pdf) | Técnico | Inglés | 22 |
 
 Las presentaciones describen medidas tomadas en el Corvette C7 con herramientas que no están todas en la rama pública `main`; los comandos de estas páginas son los que lleva `main`.
 

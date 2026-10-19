@@ -343,9 +343,10 @@ Linux, cada DLL junto a los programas en Windows. La release se publica con
 
 ### 3.5 Otra máquina
 
-`scripts/remote-test.sh [user@host] [preset] [rama]` empuja la rama, compila y
+`scripts/remote-test.sh user@host [preset] [rama]` empuja la rama, compila y
 corre la suite allí, y trae `LastTest.log` de vuelta a
-`build/remote/<preset>/`. Extrae del log los mensajes de skip, porque un skip
+`build/remote/<preset>/`. El host es el primer argumento o `ATHENEA_REMOTE`, y
+el checkout allí es `ATHENEA_REMOTE_DIR` (por defecto `~/athenea`). Extrae del log los mensajes de skip, porque un skip
 no es un pass.
 
 ## 4. Cómo se añade algo

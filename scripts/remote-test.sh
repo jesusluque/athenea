@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 jesus luque.
 # Build and test the current branch on a remote machine, and bring the
 # result back as a table: what passed, what failed, and what skipped with
 # the reason it gave. A skip is not a pass, and the table says which is
 # which.
 #
-#   scripts/remote-test.sh [user@host] [preset] [branch]
+#   scripts/remote-test.sh user@host [preset] [branch]
 #
-# Defaults: ubuntu@10.47.214.94, linux-x86_64-debug, the current branch.
+# The host is required (or ATHENEA_REMOTE); defaults: linux-x86_64-debug, the
+# current branch, the checkout at ATHENEA_REMOTE_DIR (~/athenea).
 # ATHENEA_BACKEND (cuda, vulkan) is passed through when set, so one suite can
 # be run once a backend at a time. The remote's ctest log lands in
 # build/remote/<preset>/LastTest.log.
 set -euo pipefail
 
-host="${1:-ubuntu@10.47.214.94}"
+host="${1:-${ATHENEA_REMOTE:?usage: scripts/remote-test.sh user@host [preset] [branch]}}"
 preset="${2:-linux-x86_64-debug}"
 branch="${3:-$(git rev-parse --abbrev-ref HEAD)}"
-remote_dir="${ATHENEA_REMOTE_DIR:-~/inn/athenea}"
+remote_dir="${ATHENEA_REMOTE_DIR:-~/athenea}"
 backend="${ATHENEA_BACKEND:-}"
 
 echo "== ${host}: ${branch} with preset ${preset}${backend:+ on ${backend}}"

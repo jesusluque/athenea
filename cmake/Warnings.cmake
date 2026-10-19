@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Strict warnings on the engine's own targets, and only on those: third-party
 # code (slang-rhi, OpenUSD headers, gpe) keeps whatever its authors chose.
 

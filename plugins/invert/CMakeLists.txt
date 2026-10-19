@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Invert is openFXplayer's, copied unchanged: the proof that a plugin written
 # against openFXplayer's SDK builds and runs here, now with a kernel trailer.
 aofx_add_bundle(athenea_aofx_invert

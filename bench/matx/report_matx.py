@@ -5,7 +5,7 @@ every number is the one `athenea mesh2splat --validate` computed on the GPU).
 
   python3 report_matx.py
 
-Writes under MATX_OUT (default ~/luc/athenea-renders/matx/):
+Writes under MATX_OUT (default ~/athenea-renders/matx/):
   summary.md, summary.csv     one row per material x sky
   lobes.md                    the breakdown by lobe class, worst offenders flagged
   contact_<sky>_p<phase>.png  GT | GS (TX raster) per material, labelled

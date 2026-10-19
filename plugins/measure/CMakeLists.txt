@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Two pictures measured against each other: athenea's comparison as an effect,
 # so `athenea compare` and a compositor's QC node are one implementation.
 # Four entries out of one blob: a thread a row sums and bins, a thread a bin

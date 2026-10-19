@@ -6,10 +6,10 @@ athenea is a relight baker for Gaussian splatting: production USD assets are con
 
 | File | Level | Language | Slides |
 |---|---|---|---|
-| [athenea-tech-en.pdf](athenea-tech-en.pdf) | Technical | English | 22 |
-| [athenea-tech-es.pdf](athenea-tech-es.pdf) | Technical | Spanish | 22 |
-| [athenea-overview-en.pdf](athenea-overview-en.pdf) | Overview | English | 14 |
-| [athenea-overview-es.pdf](athenea-overview-es.pdf) | Overview | Spanish | 14 |
+| [athenea-tech-en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-tech-en.pdf) | Technical | English | 22 |
+| [athenea-tech-es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-tech-es.pdf) | Technical | Spanish | 22 |
+| [athenea-overview-en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-overview-en.pdf) | Overview | English | 14 |
+| [athenea-overview-es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-overview-es.pdf) | Overview | Spanish | 14 |
 
 ## WebGPU player
 
@@ -25,10 +25,10 @@ athenea es un baker de relight para Gaussian splatting: los assets USD de produc
 
 | Fichero | Nivel | Idioma | Diapositivas |
 |---|---|---|---|
-| [athenea-tech-en.pdf](athenea-tech-en.pdf) | Técnico | Inglés | 22 |
-| [athenea-tech-es.pdf](athenea-tech-es.pdf) | Técnico | Castellano | 22 |
-| [athenea-overview-en.pdf](athenea-overview-en.pdf) | Divulgativo | Inglés | 14 |
-| [athenea-overview-es.pdf](athenea-overview-es.pdf) | Divulgativo | Castellano | 14 |
+| [athenea-tech-en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-tech-en.pdf) | Técnico | Inglés | 22 |
+| [athenea-tech-es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-tech-es.pdf) | Técnico | Castellano | 22 |
+| [athenea-overview-en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-overview-en.pdf) | Divulgativo | Inglés | 14 |
+| [athenea-overview-es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/athenea-overview-es.pdf) | Divulgativo | Castellano | 14 |
 
 ## WebGPU player
 

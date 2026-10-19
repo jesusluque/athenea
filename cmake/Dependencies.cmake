@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Third-party dependencies, fetched at configure time and pinned.
 #
 # Two are not fetched, on purpose:

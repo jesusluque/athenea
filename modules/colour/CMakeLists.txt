@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Colour: OpenColorIO as a compiler -- a config's colour spaces and views
 # become generated Slang functions and the LUT textures they sample -- and the
 # names a file, a material or a stage gives a colour space, resolved to one

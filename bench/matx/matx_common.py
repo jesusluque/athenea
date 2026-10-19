@@ -27,7 +27,7 @@ WORK = os.path.expanduser(os.environ.get("MATX_WORK", SRC))
 # ctest gate writes its own under MATX_WORK, so a test never rewrites a tracked file).
 MANIFEST = os.path.expanduser(os.environ.get("MATX_MANIFEST", os.path.join(SRC, "manifest.json")))
 # THE RENDERS: what the GPU sweep writes (runs/, results/, summary, contact sheets).
-RENDERS = os.path.expanduser(os.environ.get("MATX_OUT", os.path.join(HOME, "luc/athenea-renders/matx")))
+RENDERS = os.path.expanduser(os.environ.get("MATX_OUT", os.path.join(HOME, "athenea-renders/matx")))
 ATHENEA = os.path.expanduser(os.environ.get("MATX_BIN", os.path.join(HOME, "luc/athenea-tx/build/macos-arm64-release/bin/athenea")))
 USD_BIN = _first("MATX_USD_BIN", os.path.join(HOME, "tools/usd-26.08-mx/bin"))
 USDCAT = os.path.join(USD_BIN, "usdcat")
@@ -60,7 +60,7 @@ GATE = ["mx_open_pbr_default", "mx_standard_surface_chrome", "mx_open_pbr_carpai
 # THE GT CACHE: a path-traced GT is kept per material x sky and handed back to --validate, so
 # every run of a stage measures its cloud against the same GT and the GT's own noise cannot
 # move a result. Shared by the sweep and the ctest gate (MATX_OUT does not move it).
-GT_CACHE = os.path.expanduser(os.environ.get("MATX_GT_CACHE", os.path.join(HOME, "luc/athenea-renders/matx/gt_cache")))
+GT_CACHE = os.path.expanduser(os.environ.get("MATX_GT_CACHE", os.path.join(HOME, "athenea-renders/matx/gt_cache")))
 # What re-renders a GT besides its stage, its size and its paths:
 #  - the path tracer's shaders, as the build copied them (pt_fingerprint: every directory the
 #    path tracer imports from, and technique/ but for its splat_* kernels; the conversion's

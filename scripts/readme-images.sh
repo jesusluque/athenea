@@ -1,4 +1,5 @@
 #!/bin/zsh
+# Copyright (c) 2026 jesus luque.
 # The README's pictures, made again from the assets rather than kept by hand.
 #
 # The sparrow lives in ~/tools/assets/Sparrow, outside the repo (models do not

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 """Every clip of the sparrow, as its own USD, without converting it again.
 
 Two layers a clip, and neither needs the conversion re-run:

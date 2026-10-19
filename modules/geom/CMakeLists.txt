@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Geometry on the device: meshes (triangulation, normals, primvars), and later
 # subdivision, curves, skinning and instancing.
 athenea_add_module(geom

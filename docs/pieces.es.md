@@ -236,11 +236,11 @@ juzga en el dispositivo.
 
 ## 5. Operación
 
-Los trabajos de GPU se ejecutan de uno en uno en la máquina a través de `~/luc/athenea-gpu/shared.sh`, que toma un
+Los trabajos de GPU se ejecutan de uno en uno en la máquina a través de un script de lock (`shared.sh`), que toma un
 directorio de lock compartido con los trabajos del visor web (`mkdir`) y luego ejecuta el trabajo bajo `guard.sh`
 (detiene el trabajo con presión térmica, SIGSTOP y SIGCONT). Cada paso se ejecuta bajo `memguard.sh` (mata el trabajo
 cuando la memoria libre baja de 1.5 GB). Un trabajo espera 25 s antes de pedir el lock, para que los trabajos que
-consultan cada 10 s entren entre medias, y espera mientras exista `~/luc/athenea-gpu/hold` (un hueco largo cedido a
+consultan cada 10 s entren entre medias, y espera mientras exista un fichero `hold` a su lado (un hueco largo cedido a
 otra sesión). Una necesidad corta de GPU de otra sesión se atiende pausando la cocción en curso (SIGSTOP al binario y
 a su `memguard.sh`, SIGCONT después). Un directorio de build que usa un trabajo en curso o en cola no se recompila.
 

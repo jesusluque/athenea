@@ -1,3 +1,4 @@
+// Copyright (c) 2026 jesus luque.
 #include "athenea/technique/SplatVisibility.h"
 
 #include <algorithm>

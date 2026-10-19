@@ -21,7 +21,7 @@ measure moves only when the cloud does. A GT is traced again when its key change
        MATX_CAMERA_PIXELS (512), MATX_MAX_SPLATS (600000), MATX_TIMEOUT (900 s),
        MATX_CATCHER=1 also converts the ground's shadow catcher once per sky (mx_open_pbr_default)
 
-Writes under MATX_OUT (default ~/luc/athenea-renders/matx/):
+Writes under MATX_OUT (default ~/athenea-renders/matx/):
   runs/<sky>/<id>/       what --validate writes (validate.json, gt*.exr, mesh.exr, <Mat>_gs.exr,
                          <Mat>.png GT|mesh|cloud, clouds/) and mesh2splat.log
   results/<id>__<sky>.json   one run: validate's row + bake ms, wall s, raster ms

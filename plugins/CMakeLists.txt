@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # AOFX plugins built with this engine's SDK. Each lands in build/<preset>/aofx.
 #
 # One folder per plugin with its own CMakeLists, as aopenfx's examples are

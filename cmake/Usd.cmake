@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # OpenUSD: where entities live. Built once per machine by scripts/build-usd.sh.
 # pxrConfig finds its own dependencies (OpenSubdiv, TBB) through the prefix
 # path -- first in it, so it finds the TBB it was built with and not the one a

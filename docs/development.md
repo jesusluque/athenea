@@ -333,9 +333,10 @@ with `gh release create vX.Y.Z` and the six files.
 
 ### 3.5 Another machine
 
-`scripts/remote-test.sh [user@host] [preset] [branch]` pushes the branch,
+`scripts/remote-test.sh user@host [preset] [branch]` pushes the branch,
 builds and runs the suite there, and brings `LastTest.log` back into
-`build/remote/<preset>/`. It parses the skip messages out of the log, because
+`build/remote/<preset>/`. The host is the first argument or `ATHENEA_REMOTE`,
+and the checkout there is `ATHENEA_REMOTE_DIR` (default `~/athenea`). It parses the skip messages out of the log, because
 a skip is not a pass.
 
 ## 4. How to add something

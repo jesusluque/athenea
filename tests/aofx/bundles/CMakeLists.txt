@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Bundles that exist to be loaded, and bundles that exist to be refused
 # (openFXplayer's corpus, plus one that runs a kernel with the wrong buffers).
 set(ATHENEA_AOFX_TEST_BUNDLES "${ATHENEA_BUILD}/aofx-test-plugins" CACHE INTERNAL "")

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 """The clips of a skinned cloud as one stage with a variant set.
 
 USD's own answer to "pick one of these" is a variant set, so seventy-one

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 set(ATHENEA_USD_SOURCES
     src/HydraCamera.cpp
     src/Camera.cpp

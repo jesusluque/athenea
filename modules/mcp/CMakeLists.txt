@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # MCP over the renderer: the protocol and the tools. Links the engine's USD
 # side, since a tool's subject is a stage.
 athenea_add_module(mcp

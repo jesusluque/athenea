@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # This engine's side of the AOFX host: what it declares to aofx::host (a
 # logger, nothing else -- no media stack, no inference runtime), and
 # `renderEffect`, which is what a compositor's engine does for an AOFX node

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 add_executable(athenea-mcp main.cpp)
 target_link_libraries(athenea-mcp PRIVATE athenea::mcp)
 athenea_set_target_defaults(athenea-mcp)

@@ -4307,7 +4307,7 @@ este artículo nombran una obra sin sus datos bibliográficos completos, se enum
 |---|---|---|
 | athenea | github.com/jesusluque/athenea | el motor y renderer de la §2: módulos, shaders, el delegado `hdAthenea`, la CLI `athenea`, los manuales `docs/operations.md` y `docs/development.md` con sus traducciones al español, y `docs/decisions.md` |
 | athenea-pieces | github.com/jesusluque/athenea-pieces, rama `pieces` (privado) | un fork de athenea con los merge trees por pieza, el cut por error, las closed shells, la oclusión compartida, los bakes de 1280 y 5120 px (§3.11, §6); `docs/pieces.md` y este artículo en `docs/paper/` |
-| sparkwebGPU | `~/luc/sparkwebGPU`, rama `webgpu` | el fork WebGPU de Spark de la §7: el lector de `.athc` v3, el camino compacto, el streamer, las páginas del player |
+| sparkwebGPU | `jesusluque/spark-webgpu` (privado), rama `webgpu` | el fork WebGPU de Spark de la §7: el lector de `.athc` v3, el camino compacto, el streamer, las páginas del player |
 | athenea, rama `blender` | github.com/jesusluque/athenea | el add-on de Blender `athenea_hydra` de la §2.14 |
 
 ## A.2 Comandos y opciones

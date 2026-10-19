@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 jesus luque.
 # Builds OpenColorIO for athenea into ~/tools/ocio-<version>.
 #
 # From source on both machines, so Metal and Linux run the same version

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # aofx_add_bundle(<target> NAME <Name> SOURCES ... [KERNELS <name> ENTRY ... ]
 #                 [OUTPUT_DIR <dir>] [LIBRARIES ...])
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 jesus luque.
 # Builds Intel Open Image Denoise for athenea into ~/tools/oidn-<version>.
 #
 # From source, not the release binaries: those carry their own libtbb.12,

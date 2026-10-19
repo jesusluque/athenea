@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 add_executable(athenea
     src/main.cpp
     src/CmdInfo.cpp

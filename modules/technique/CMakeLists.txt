@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # Techniques: how a frame is drawn from the scene -- visibility, shading, path
 # tracing, denoising, display.
 athenea_add_module(technique

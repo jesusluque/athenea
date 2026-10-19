@@ -1,3 +1,4 @@
+# Copyright (c) 2026 jesus luque.
 # athenea view: a window onto a stage. GLFW for the window, Dear ImGui for panels
 # drawn by the engine's own device; the frames never leave the GPU.
 athenea_add_module(view

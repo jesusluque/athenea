@@ -1,3 +1,4 @@
+// Copyright (c) 2026 jesus luque.
 // A kernel that declares two buffers, for a plugin that runs it with one.
 struct Params { uint width; uint height; };
 StructuredBuffer<float4>   src;
