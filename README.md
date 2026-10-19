@@ -11,25 +11,23 @@ any sky. Every step over scene data runs on the GPU (Metal, Vulkan, CUDA).
 
 ## Where athenea comes from
 
-athenea began on 11 September 2026 as **lucabRTrender**, a GPU renderer for
-Gaussian splats, point clouds and USD written in Slang over slang-rhi, to be the
-render engine of **openFXplayer**, a GPU compositor. It still shares that
-compositor's plugin SDK, [AOFX](https://github.com/jesusluque/aopenfx), and
-builds inside its tree.
+athenea comes from NVIDIA's [Falcor](https://github.com/NVIDIAGameWorks/Falcor).
+It follows Falcor's design: one Slang shader source compiled for whichever GPU
+the machine has, a frame drawn as techniques over a visibility buffer that every
+route fills alike, and a reference renderer the fast paths are tested against.
+It was written anew on that shape, not built from Falcor's code, with its scene
+coming from OpenUSD through a Hydra 2.0 render delegate.
 
-Its shape was read out of NVIDIA's [Falcor](https://github.com/NVIDIAGameWorks/Falcor):
-one shader source for every device, techniques over a visibility buffer, and a
-reference renderer to test against. What a stage means it takes from the
-[OpenUSD specification](https://openusd.org/release/spec.html), and the
-mesh-to-Gaussian conversion from Electronic Arts'
+It started as the render engine of **openFXplayer**, a GPU compositor, under
+the name lucabRTrender, and still shares that compositor's plugin SDK,
+[AOFX](https://github.com/jesusluque/aopenfx). From a splat renderer it has
+grown into a relight baker: the light transport path traced into every
+Gaussian, levels of detail, a compressed web format, and the Blender and
+OpenFX integrations. What a stage means it takes from the
+[OpenUSD specification](https://openusd.org/release/spec.html); the
+mesh-to-Gaussian conversion comes from Electronic Arts'
 [mesh2splat](https://github.com/electronicarts/mesh2splat).
-
-On 3 October 2026 the engine was renamed **athenea** (`lrt` → `athenea`,
-`.lrtc` → `.athc`; `athenea migrate` rewrites older files). Since then it has
-grown from a splat renderer into a relight baker: the light transport path
-traced into every Gaussian, levels of detail, a compressed web format, and the
-Blender and OpenFX integrations. [docs/background.md](docs/background.md) has
-the details of what it owes to each.
+[docs/background.md](docs/background.md) details what it owes to each.
 
 ## A render engine for Blender
 

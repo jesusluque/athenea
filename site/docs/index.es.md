@@ -8,26 +8,23 @@ Estas páginas describen la versión de escritorio de la rama pública `main`: c
 
 ## De dónde viene athenea
 
-athenea empezó el 11 de septiembre de 2026 como **lucabRTrender**, un renderer
-de GPU para Gaussian splats, nubes de puntos y USD escrito en Slang sobre
-slang-rhi, para ser el motor de render de **openFXplayer**, un compositor en
-GPU. Sigue compartiendo el SDK de plugins de ese compositor,
-[AOFX](https://github.com/jesusluque/aopenfx), y compila dentro de su árbol.
+athenea viene de [Falcor](https://github.com/NVIDIAGameWorks/Falcor), de NVIDIA.
+Sigue el diseño de Falcor: un solo código de shaders en Slang compilado para la
+GPU que tenga la máquina, un frame dibujado como techniques sobre un visibility
+buffer que todas las rutas rellenan igual, y un renderer de referencia contra el
+que se prueban las rutas rápidas. Está escrito de nuevo sobre esa forma, no
+compilado a partir del código de Falcor, y su escena llega de OpenUSD a través
+de un render delegate de Hydra 2.0.
 
-Su forma salió de leer [Falcor](https://github.com/NVIDIAGameWorks/Falcor), de
-NVIDIA: un solo código de shaders para cualquier dispositivo, techniques sobre un
-visibility buffer y un renderer de referencia contra el que probar. Lo que
-significa un stage lo toma de la
-[especificación de OpenUSD](https://openusd.org/release/spec.html), y la
-conversión de mallas en Gaussians de
-[mesh2splat](https://github.com/electronicarts/mesh2splat), de Electronic Arts.
-
-El 3 de octubre de 2026 el motor pasó a llamarse **athenea** (`lrt` → `athenea`,
-`.lrtc` → `.athc`; `athenea migrate` reescribe los ficheros anteriores). Desde
-entonces ha pasado de renderer de splats a baker de relight: el transporte de luz
-trazado por el path tracer dentro de cada Gaussian, niveles de detalle, un
-formato web comprimido y las integraciones con Blender y OpenFX.
-[Background](https://github.com/jesusluque/athenea/blob/main/docs/background.md)
+Empezó como el motor de render de **openFXplayer**, un compositor en GPU, con el
+nombre lucabRTrender, y sigue compartiendo el SDK de plugins de ese compositor,
+[AOFX](https://github.com/jesusluque/aopenfx). De renderer de splats ha pasado a
+baker de relight: el transporte de luz trazado por el path tracer dentro de cada
+Gaussian, niveles de detalle, un formato web comprimido y las integraciones con
+Blender y OpenFX. Lo que significa un stage lo toma de la
+[especificación de OpenUSD](https://openusd.org/release/spec.html); la conversión
+de mallas en Gaussians viene de [mesh2splat](https://github.com/electronicarts/mesh2splat),
+de Electronic Arts. [Background](https://github.com/jesusluque/athenea/blob/main/docs/background.md)
 detalla lo que debe a cada uno.
 
 ## Un motor de render para Blender
