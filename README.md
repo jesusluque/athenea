@@ -43,6 +43,7 @@ down. Render Engine: Athenea.*
   path traced transfer), a shadow catcher for the ground, and export to SPZ,
   PLY, glTF and USD.
 - **Compare with Cycles** from the panel, measured on the GPU.
+- **Download** for macOS (Apple silicon, Blender 5.3): [athenea-blender-addon-macos-arm64.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-blender-addon-macos-arm64.zip), installed from *Edit > Preferences > Get Extensions > Install from Disk*.
 - **macOS, Linux and Windows** (Blender 5.3): [install](https://jesusluque.github.io/athenea/install/),
   [tutorial](https://jesusluque.github.io/athenea/tutorials/blender/).
 
