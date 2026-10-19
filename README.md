@@ -1,6 +1,5 @@
 # athenea
 
-[![build](https://github.com/jesusluque/athenea/actions/workflows/build.yml/badge.svg)](https://github.com/jesusluque/athenea/actions/workflows/build.yml)
 [![docs](https://github.com/jesusluque/athenea/actions/workflows/pages.yml/badge.svg)](https://jesusluque.github.io/athenea/)
 [![licence](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 
