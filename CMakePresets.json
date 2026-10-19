@@ -187,7 +187,8 @@
         "CMAKE_PREFIX_PATH": "D:/tools/usd-26.08-blender;D:/tools/usd-26.08-mx",
         "ATHENEA_BLENDER_LIB": "$env{BLENDER_DIR}/blender.shared",
         "ATHENEA_NANOVDB_INCLUDE": "D:/tools/usd-26.08-mx/include",
-        "BUILD_TESTING": "OFF"
+        "BUILD_TESTING": "OFF",
+        "ATHENEA_MATERIALX_SLANG_SRC": "D:/tools/src/MaterialX-1.39.5"
       }
     }
   ],

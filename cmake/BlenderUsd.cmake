@@ -146,7 +146,7 @@ endforeach()
 # GenOptions::hwAiryFresnelIterations (1.39.5's default, 2).
 set(_mx_src "${ATHENEA_MATERIALX_SLANG_SRC}/source")
 if(NOT EXISTS "${_mx_src}/MaterialXGenSlang/SlangShaderGenerator.cpp")
-    message(FATAL_ERROR "MaterialX 1.39.5 sources not at ${ATHENEA_MATERIALX_SLANG_SRC} (scripts/build-usd-blender.sh)")
+    message(FATAL_ERROR "MaterialX 1.39.5 sources not at ${ATHENEA_MATERIALX_SLANG_SRC} (scripts/build-usd-blender.sh or .ps1)")
 endif()
 set(_mx_out "${CMAKE_BINARY_DIR}/materialx-slang")
 set(_mx_compat "${ATHENEA_ROOT}/integrations/blender/materialx")
