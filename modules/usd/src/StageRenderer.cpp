@@ -2078,6 +2078,60 @@ Result<technique::DisplaySource> StageRenderer::displaySource(const std::string&
     return shown;
 }
 
+Result<std::vector<float>> StageRenderer::worldPosition(const render::Camera& camera) {
+    const render::RenderTargets* targets = lastTargets();
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
+    if (targets == nullptr || engine == nullptr) {
+        return Error(ErrorCode::InvalidArgument, "nothing drawn yet");
+    }
+    const AovView depth = engine->aovView(*targets, AovSource{AovKind::Depth});
+    if (depth.buffer == nullptr || !depth.buffer->valid()) {
+        return Error(ErrorCode::InvalidArgument, "the last frame kept no depth");
+    }
+    const uint32_t width = targets->width;
+    const uint32_t height = targets->height;
+    const render::Projection projection = render::projectionFor(camera, width, height);
+    const render::Mat4 viewToWorld = aofx::xform::inverseAffine(projection.worldToView);
+    gpu::Device& device = engine->device();
+    auto kernel = gpu::ComputeKernel::create(engine->library(), "athenea/usd/aov_position", "aovPosition");
+    if (!kernel) return std::move(kernel).error();
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{width} * height * 16;
+    desc.elementBytes = 16;
+    desc.label = "stage.position";
+    auto out = gpu::Buffer::create(device, desc);
+    if (!out) return std::move(out).error();
+    gpu::CommandBatch batch(device);
+    kernel->dispatch(batch, {width * height, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["depth"].setBinding(depth.buffer->rhi());
+        cursor["position"].setBinding(out->rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        p["width"].setData(width);
+        p["height"].setData(height);
+        p["orthographic"].setData(projection.orthographic ? 1u : 0u);
+        p["stride"].setData(depth.stride);
+        p["offset"].setData(depth.offset);
+        // Camera terms, not data: what the kernel needs of the projection.
+        p["focalX"].setData(static_cast<float>(projection.focalX));
+        p["focalY"].setData(static_cast<float>(projection.focalY));
+        p["centreX"].setData(static_cast<float>(projection.centreX));
+        p["centreY"].setData(static_cast<float>(projection.centreY));
+        const char* rows[3] = {"row0", "row1", "row2"};
+        for (int r = 0; r < 3; ++r) {
+            const std::array<float, 4> row{static_cast<float>(viewToWorld.at(r, 0)),
+                                           static_cast<float>(viewToWorld.at(r, 1)),
+                                           static_cast<float>(viewToWorld.at(r, 2)),
+                                           static_cast<float>(viewToWorld.at(r, 3))};
+            p[rows[r]].setData(row);
+        }
+    });
+    ATHENEA_TRY(batch.submit(true));
+    std::vector<float> position(size_t{width} * height * 4);
+    ATHENEA_TRY(out->read(device, 0, position.size() * sizeof(float), position.data()));
+    return position;
+}
+
 Result<std::optional<scene::Bounds>> StageRenderer::bounds() {
     auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
     Engine* engine = param != nullptr ? param->GetEngine() : nullptr;

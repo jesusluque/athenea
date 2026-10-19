@@ -2,7 +2,8 @@
 #
 # athenea_ofx_host: a minimal OpenFX host that loads Athenea.ofx.bundle, renders
 # one frame and writes it as an EXR, so the plugin is exercised without Nuke.
-# It is built on OpenFX's own host support library.
+# It is built on the host support library of the OpenFX the plugin builds on
+# (Natron's), without the extensions: a host that knows nothing of planes.
 
 find_package(EXPAT REQUIRED)
 

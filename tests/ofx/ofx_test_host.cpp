@@ -13,8 +13,9 @@
 // is no animation. A value is set as `x,y,z` for a 3D parameter, an index for
 // a choice and the text itself for a string.
 //
-// It is built on OpenFX's host support library, which reports errors by
-// exceptions; they are caught in main.
+// It is built on OpenFX's host support library -- Natron's, without its
+// extensions, so a host that knows nothing of planes, as the plainest one
+// would be -- which reports errors by exceptions; they are caught in main.
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -341,7 +342,7 @@ int run(int argc, char** argv) {
     OFX::Host::PluginCache* cache = OFX::Host::PluginCache::getPluginCache();
     cache->setCacheVersion("athenea_ofx_host");
     cache->prependFileToPath(std::filesystem::absolute(bundleDir).string());
-    fx::PluginCache effects(host);
+    fx::PluginCache effects(&host);
     effects.registerInCache(*cache);
     // The cache goes before the host it was registered with, and after the
     // instance.
@@ -379,9 +380,9 @@ int run(int argc, char** argv) {
     const OfxPointD scale{1.0, 1.0};
     const OfxRectI window{0, 0, gProject.width, gProject.height};
     const double frame = gProject.frame;
-    if (failed("beginRenderAction", instance->beginRenderAction(frame, frame, 1.0, false, scale, true, false))) return 1;
+    if (failed("beginRenderAction", instance->beginRenderAction(frame, frame, 1.0, false, scale, true, false, false))) return 1;
     const OfxStatus rendered = instance->renderAction(frame, kOfxImageFieldNone, window, scale, true, false, false);
-    const OfxStatus ended = instance->endRenderAction(frame, frame, 1.0, false, scale, true, false);
+    const OfxStatus ended = instance->endRenderAction(frame, frame, 1.0, false, scale, true, false, false);
     if (failed("renderAction", rendered) || failed("endRenderAction", ended)) return 1;
 
     auto* output = dynamic_cast<Clip*>(instance->getClip(kOfxImageEffectOutputClipName));

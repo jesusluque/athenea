@@ -1827,19 +1827,35 @@ one at the image's aspect) and `near` and `far` in scene units. `raw` names a
 file the frame's own numbers go to instead of a picture: the colour as four
 32-bit floats a pixel, then the depth (view z, 0 where nothing was drawn) as
 one, both bottom row first, linear and premultiplied. The answer is then text
-alone. It is what the OpenFX plugin asks for.
+alone. It is what the OpenFX plugin asks for. `layers` adds, after the depth
+and in the order given, four floats a pixel each of: `P`, where each pixel
+lies in the world (x, y, z, 1 where something was drawn, zeros elsewhere; it
+needs a camera of the tool's own, `xform` or `eye`), and `CryptoObject00` to
+`CryptoObject02`, the Cryptomatte's layers as (id, coverage, id, coverage). A
+frame with a matte answers a line `manifest {...}`: the names its ids stand
+for, as an EXR's Cryptomatte metadata holds them.
+
+**The sky.** `sky` puts an image (a lat-long `.hdr` or `.exr`) on every dome
+light of the stage, and a stage with none gets the default dome and sun first;
+empty gives back the stage's own. `skyRotation` turns every dome by that many
+degrees about the stage's up axis, and `skyVisible` false leaves the
+background transparent while the sky still lights. A relightable cloud (a
+transfer) is lit by it. The first frame after a change prepares the new sky
+(about half a second for a 4K image); the frames after it cost what they did.
 
 Each tool's arguments are declared in the protocol and shown by the client, so
 they are not repeated here. The shape of a session is: `open_stage`, then
 `stage_tree` to find a camera or a prim, then `render`, then `pick` on
 something in the picture. `settings` says what the session currently holds.
 
-### 6.1 The OpenFX plugin — Athenea 3DGS in Nuke
+### 6.1 The OpenFX plugin — Athenea 3DGS in Nuke and Natron
 
 `Athenea.ofx.bundle` is a gaussian cloud drawn by athenea's rasteriser as an
 OpenFX generator, for a compositor: a node **Athenea 3DGS** (group *Athenea*)
 with no input, which draws one cloud through its camera at the project's
-format and the frame's time, as linear premultiplied RGBA floats. It is built
+format and the frame's time, as linear premultiplied RGBA floats, and its
+layers. It is built on Natron's OpenFX (`third_party/openfx`), whose support
+library carries the multi-plane extension. It is built
 with `ATHENEA_BUILD_OFX` (on by default; macOS and Linux) into
 `<build>/ofx/Athenea.ofx.bundle`.
 
@@ -1864,6 +1880,10 @@ macOS `/Library/OFX/Plugins`, or a directory in `OFX_PLUGIN_PATH`.
 | `vaperture` | mm | `0` | 0 fits the format's aspect, pixel aspect counted, as Nuke fits a camera to its format |
 | `near`, `far` | scene units | `0.1`, `10000` | the clipping planes |
 | `time_offset` | frames | `0` | added to the frame to give the cloud's USD time, for an animated (skinned) cloud |
+| `sky` | file | none | an HDR image (lat-long `.hdr` or `.exr`) on every dome of the stage; empty keeps the stage's own |
+| `sky_rotation` | degrees | `0` | about the stage's up axis |
+| `sky_visible` | on/off | on | off leaves the background transparent, to merge over a plate; the sky still lights |
+| `output` | `rgba`, `depth`, `P`, `CryptoObject00` … `02` | `rgba` | the layer shown in RGBA by a host that takes no planes; `depth` is the view z in every channel |
 
 The camera is built as Nuke builds a Camera node's: the rotations in the
 order chosen, then the translation, looking down −z with +y up. A Camera
@@ -1871,6 +1891,16 @@ node's knobs are linked to these by expression (`translate`, `rotate`,
 `rot_order`, `focal`, `haperture`), so the cloud moves with the plate's
 camera. The node draws whole frames: it does not render tiles, and a render
 of one instance at a time goes to its server.
+
+**Layers.** A host that takes planes (Natron) gets every layer as a plane of
+the node's output, whatever `output` says: the colour, `depth` (one channel,
+`Z`: the view z, 0 where nothing was drawn), `P` (`X Y Z A`: world position,
+`A` 1 where something was drawn) and `CryptoObject00` to `CryptoObject02`
+(`R G B A`: id, coverage, id, coverage). Only the planes the host asks for are
+drawn. Nuke takes no planes of its own making from an OpenFX node, so there
+`output` picks the one layer RGBA shows; one node per layer gives them all.
+The Cryptomatte's manifest does not reach the host (OpenFX carries no
+metadata), so a matte is picked by id rather than by name.
 
 ## 7. AOFX effects
 

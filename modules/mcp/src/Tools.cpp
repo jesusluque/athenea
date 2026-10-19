@@ -16,8 +16,10 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <optional>
 #include <sstream>
 
+#include "athenea/core/Hash.h"
 #include "athenea/core/Platform.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
@@ -116,6 +118,31 @@ void applySettings(Session& session, const json& args) {
             }
         }
     }
+    // THE SKY, a compositor's way: one image and one turn for every dome the
+    // stage has (a stage with none gets the default dome and sun first), so a
+    // relightable cloud is lit by whatever room the artist tries. A dome is
+    // set only where it differs, since each set is a session edit Hydra
+    // syncs; empty gives back the stage's own image.
+    if (args.contains("sky") || args.contains("skyRotation")) {
+        if (r.domes().empty() && args.contains("sky") && !args["sky"].get<std::string>().empty()) {
+            (void)r.setDefaultLights(true);
+        }
+        for (const usd::StageDome& dome : r.domes()) {
+            if (args.contains("sky")) {
+                const std::string sky = args["sky"].get<std::string>();
+                if (sky != dome.texture) {
+                    (void)r.setDomeTexture(dome.prim, sky);
+                }
+            }
+            if (args.contains("skyRotation")) {
+                const float degrees = args["skyRotation"].get<float>();
+                if (degrees != dome.rotation) {
+                    (void)r.setDomeRotation(dome.prim, degrees);
+                }
+            }
+        }
+    }
+    if (args.contains("skyVisible")) r.setDomeVisible(args["skyVisible"].get<bool>());
     if (args.contains("refine")) r.setRefineLevel(args["refine"].get<uint32_t>());
     if (args.contains("visibility")) {
         (void)r.setMeshVisibility(args["visibility"].get<std::string>());
@@ -295,8 +322,22 @@ json renderTool(Session& session, const json& args) {
     const double time = args.value("time", 0.0);
     const std::string technique = args.value("technique", std::string("raster"));
     const std::string camera = args.value("camera", std::string{});
-    const std::vector<std::string> outputs =
+    std::vector<std::string> outputs =
         args.contains("aovs") ? args["aovs"].get<std::vector<std::string>>() : std::vector<std::string>{};
+    // The layers a `raw` frame carries after its colour and depth: P, made
+    // from the depth, and the Cryptomatte's layers, which are outputs the
+    // frame must keep.
+    const std::vector<std::string> layers =
+        args.contains("layers") ? args["layers"].get<std::vector<std::string>>() : std::vector<std::string>{};
+    for (const std::string& layer : layers) {
+        if (layer != "P" && !(layer.size() == 14 && layer.rfind("CryptoObject0", 0) == 0 && layer[13] >= '0' &&
+                              layer[13] <= '2')) {
+            return textAnswer("layer '" + layer + "': P or CryptoObject00..02.", true);
+        }
+        if (layer != "P" && std::find(outputs.begin(), outputs.end(), layer) == outputs.end()) {
+            outputs.push_back(layer);
+        }
+    }
     if (!outputs.empty()) {
         renderer.requestOutputs(outputs);
     } else {
@@ -304,6 +345,7 @@ json renderTool(Session& session, const json& args) {
     }
     const auto start = std::chrono::steady_clock::now();
     Result<usd::StageImage> image = Error(ErrorCode::InternalError, "not rendered");
+    std::optional<render::Camera> drawnFrom;   // the camera P is made with, where it is the tool's own
     // A camera of the caller's own beats anything on the stage: it is how you
     // look at something in particular rather than at everything at once.
     if (args.contains("xform")) {
@@ -322,6 +364,7 @@ json renderTool(Session& session, const json& args) {
         own.lens.nearZ = args.value("near", own.lens.nearZ);
         own.lens.farZ = args.value("far", own.lens.farZ);
         image = renderer.render(own, time, width, height, technique);
+        drawnFrom = own;
     } else if (args.contains("eye") && args.contains("target")) {
         const std::vector<double> eye = args["eye"].get<std::vector<double>>();
         const std::vector<double> at = args["target"].get<std::vector<double>>();
@@ -339,10 +382,12 @@ json renderTool(Session& session, const json& args) {
         own.lens.fStop = args.value("fStop", 0.0);
         own.lens.focusDistance = args.value("focus", 0.0);
         image = renderer.render(own, time, width, height, technique);
+        drawnFrom = own;
     } else if (camera.empty() && renderer.cameras().empty()) {
         auto framed = renderer.framingCamera(time, args.value("focal", 35.0), technique);
         if (!framed) return textAnswer(errorText(framed.error()), true);
         image = renderer.render(*framed, time, width, height, technique);
+        drawnFrom = *framed;
     } else {
         image = renderer.render(camera, time, width, height, technique);
     }
@@ -361,7 +406,12 @@ json renderTool(Session& session, const json& args) {
     // back -- the colour, four floats a pixel, then the depth, one a pixel,
     // both bottom row first, linear and premultiplied, as an OpenFX image
     // lies -- and the answer is text alone, since a PNG of the frame is time
-    // the caller would wait for and throw away.
+    // the caller would wait for and throw away. After them come the `layers`
+    // asked for, four floats a pixel each in the order asked: P (where each
+    // pixel lies in the world, alpha 1 where something drew) and the
+    // Cryptomatte's layers as a Hydra buffer holds them, (id, coverage, id,
+    // coverage). A frame with a matte answers its manifest on a line of its
+    // own, the names and ids an EXR's metadata would carry.
     if (args.contains("raw")) {
         const std::string raw = args["raw"].get<std::string>();
         std::ofstream file(raw, std::ios::binary | std::ios::trunc);
@@ -369,10 +419,38 @@ json renderTool(Session& session, const json& args) {
                    static_cast<std::streamsize>(image->rgba.size() * sizeof(float)));
         file.write(reinterpret_cast<const char*>(image->depth.data()),
                    static_cast<std::streamsize>(image->depth.size() * sizeof(float)));
+        const size_t layerBytes = size_t{width} * height * 4 * sizeof(float);
+        bool matte = false;
+        for (const std::string& layer : layers) {
+            if (layer == "P") {
+                if (!drawnFrom) {
+                    return textAnswer("layer P needs the tool's own camera ('xform', 'eye'): a stage camera's "
+                                      "projection is the delegate's.", true);
+                }
+                auto position = renderer.worldPosition(*drawnFrom);
+                if (!position) return textAnswer(errorText(position.error()), true);
+                file.write(reinterpret_cast<const char*>(position->data()), static_cast<std::streamsize>(layerBytes));
+                continue;
+            }
+            auto bytes = renderer.mappedOutput(layer);
+            if (!bytes) return textAnswer(errorText(bytes.error()), true);
+            if (bytes->size() != layerBytes) {
+                return textAnswer("layer " + layer + " is not four floats a pixel", true);
+            }
+            file.write(reinterpret_cast<const char*>(bytes->data()), static_cast<std::streamsize>(layerBytes));
+            matte = true;
+        }
         if (!file) {
             return textAnswer("could not write the frame to " + raw, true);
         }
         out << "\nraw " << raw;
+        if (matte) {
+            json manifest = json::object();
+            for (const auto& [name, id] : renderer.cryptoManifest()) {
+                manifest[name] = core::hex8(id);
+            }
+            out << "\nmanifest " << manifest.dump();
+        }
         return textAnswer(out.str());
     }
     const std::string aov = args.value("aov", std::string("color"));
@@ -610,6 +688,15 @@ const std::vector<ToolEntry>& toolTable() {
                      {"vaperture", field("number", "its vertical aperture, mm (the horizontal one at the image's aspect)")},
                      {"near", field("number", "its near clipping plane, scene units")},
                      {"far", field("number", "its far clipping plane, scene units")},
+                     {"sky", field("string", "an image for every dome of the stage (a lat-long HDR or EXR); a "
+                                             "stage with no dome gets the default dome and sun; empty gives back "
+                                             "the stage's own")},
+                     {"skyRotation", field("number", "degrees every dome turns about the stage's up axis")},
+                     {"skyVisible", field("boolean", "false leaves the background transparent; the sky still lights")},
+                     {"layers", json{{"type", "array"}, {"items", {{"type", "string"}}},
+                                     {"description", "with 'raw': layers written after the depth, four floats a "
+                                                     "pixel each, in this order: P (world position, from the "
+                                                     "tool's own camera), CryptoObject00..02"}}},
                      {"raw", field("string", "write the frame's own numbers to this file instead of answering with "
                                              "an image: RGBA floats then depth floats, bottom row first, linear "
                                              "and premultiplied")},

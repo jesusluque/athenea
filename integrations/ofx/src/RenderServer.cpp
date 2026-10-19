@@ -211,6 +211,10 @@ bool RenderServer::render(const FrameRequest& request, Frame& frame, std::string
                   {"width", request.width},
                   {"height", request.height},
                   {"technique", "raster"},
+                  {"sky", request.sky},
+                  {"skyRotation", request.skyRotation},
+                  {"skyVisible", request.skyVisible},
+                  {"layers", request.layers},
                   {"raw", impl_->rawFile.string()}};
         if (request.camera.vaperture > 0.0) {
             args["vaperture"] = request.camera.vaperture;
@@ -238,6 +242,21 @@ bool RenderServer::render(const FrameRequest& request, Frame& frame, std::string
         std::ifstream file(impl_->rawFile, std::ios::binary);
         file.read(reinterpret_cast<char*>(frame.rgba.data()), static_cast<std::streamsize>(pixels * 16));
         file.read(reinterpret_cast<char*>(frame.depth.data()), static_cast<std::streamsize>(pixels * 4));
+        frame.layers.clear();
+        for (const std::string& layer : request.layers) {
+            std::vector<float>& values = frame.layers[layer];
+            values.resize(pixels * 4);
+            file.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(pixels * 16));
+        }
+        // The answer's text: a line "manifest {...}" where the frame kept a matte.
+        frame.manifest.clear();
+        if (reply.contains("content") && reply["content"].is_array() && !reply["content"].empty()) {
+            const std::string text = reply["content"][0].value("text", std::string{});
+            if (const size_t at = text.find("\nmanifest "); at != std::string::npos) {
+                const size_t from = at + 10;
+                frame.manifest = text.substr(from, text.find('\n', from) - from);
+            }
+        }
         if (!file) {
             error = "the render server's frame is short: " + impl_->rawFile.string();
             return false;

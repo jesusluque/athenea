@@ -13,13 +13,29 @@
 // plate. The matrix is built as Nuke builds its own: scale, then rotation in
 // the order chosen (ZXY by default, Nuke's), then translation; looking down
 // -z with +y up.
+//
+// THE LAYERS. Beside the colour a frame carries its depth (view z), P (where
+// each pixel lies in the world) and the Cryptomatte's three layers. A host
+// that takes planes (Natron, through OpenFX's multi-plane extension) gets
+// them all as layers of the one output; one that does not (Nuke takes only
+// its own planes from an OpenFX node) shows the layer the `output` knob picks
+// in RGBA. Only the layers the host asks for are drawn and read back.
+//
+// THE SKY. A relightable cloud (a transfer) is lit by the stage's domes: the
+// `sky` knob puts another image on all of them, turned by `sky_rotation`, and
+// `sky_visible` off keeps the background transparent for a comp while the sky
+// still lights.
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "RenderServer.h"
+#include "nuke/fnOfxExtensions.h"
+#include "ofxNatron.h"
 #include "ofxsImageEffect.h"
 
 namespace {
@@ -35,7 +51,51 @@ constexpr const char* kVaperture = "vaperture";
 constexpr const char* kNear = "near";
 constexpr const char* kFar = "far";
 constexpr const char* kTimeOffset = "time_offset";
+constexpr const char* kSky = "sky";
+constexpr const char* kSkyRotation = "sky_rotation";
+constexpr const char* kSkyVisible = "sky_visible";
+constexpr const char* kOutput = "output";
 constexpr const char* kOrders[] = {"XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"};
+
+/// A LAYER OF THE FRAME: its name as the server knows it ("" for the two the
+/// frame always carries), as a host shows it, and its channels.
+struct Layer {
+    const char* server;
+    const char* name;
+    const char* channels[4];
+    int         count;
+};
+constexpr Layer kLayers[] = {
+    {"", "rgba", {"R", "G", "B", "A"}, 4},
+    {"", "depth", {"Z", nullptr, nullptr, nullptr}, 1},
+    {"P", "P", {"X", "Y", "Z", "A"}, 4},
+    {"CryptoObject00", "CryptoObject00", {"R", "G", "B", "A"}, 4},
+    {"CryptoObject01", "CryptoObject01", {"R", "G", "B", "A"}, 4},
+    {"CryptoObject02", "CryptoObject02", {"R", "G", "B", "A"}, 4},
+};
+constexpr int kLayerCount = static_cast<int>(sizeof(kLayers) / sizeof(kLayers[0]));
+constexpr int kDepthLayer = 1;
+
+/// A layer as the multi-plane extension names one: the colour is Foundry's
+/// plane, the others Natron's custom planes -- the plane, its label, each
+/// channel (ofxNatron.h).
+std::string planeOf(const Layer& layer) {
+    if (std::strcmp(layer.name, "rgba") == 0) return kFnOfxImagePlaneColour;
+    std::string plane =
+        std::string(kNatronOfxImageComponentsPlaneName) + layer.name + kNatronOfxImageComponentsPlaneLabel + layer.name;
+    for (int c = 0; c < layer.count; ++c) {
+        plane += std::string(kNatronOfxImageComponentsPlaneChannel) + layer.channels[c];
+    }
+    return plane;
+}
+
+/// Which of kLayers a plane the host asks for is, or -1.
+int layerOfPlane(const std::string& plane) {
+    for (int k = 0; k < kLayerCount; ++k) {
+        if (plane == planeOf(kLayers[k])) return k;
+    }
+    return -1;
+}
 
 using Mat = std::array<double, 16>;
 
@@ -92,6 +152,19 @@ public:
         near_ = fetchDoubleParam(kNear);
         far_ = fetchDoubleParam(kFar);
         timeOffset_ = fetchDoubleParam(kTimeOffset);
+        sky_ = fetchStringParam(kSky);
+        skyRotation_ = fetchDoubleParam(kSkyRotation);
+        skyVisible_ = fetchBooleanParam(kSkyVisible);
+        outputLayer_ = fetchChoiceParam(kOutput);
+    }
+
+    /// The planes this node makes, for a host that takes planes: all of them.
+    OfxStatus getClipComponents(const OFX::ClipComponentsArguments&, OFX::ClipComponentsSetter& components) override {
+        for (const Layer& layer : kLayers) {
+            components.addClipPlane(*output_, planeOf(layer));
+        }
+        components.setPassThroughClip(nullptr, 0.0, 0);
+        return kOfxStatOK;
     }
 
     void getClipPreferences(OFX::ClipPreferencesSetter& preferences) override {
@@ -112,20 +185,44 @@ public:
     }
 
     void render(const OFX::RenderArguments& args) override {
-        std::unique_ptr<OFX::Image> dst(output_->fetchImage(args.time));
-        if (!dst) OFX::throwSuiteStatusException(kOfxStatFailed);
-        if (dst->getPixelDepth() != OFX::eBitDepthFloat || dst->getPixelComponents() != OFX::ePixelComponentRGBA) {
-            OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+        // The layers to fill and the images to fill them in: every plane the
+        // host asked for, or, from a host without planes, the one image whose
+        // RGBA shows the layer the `output` knob picks.
+        struct Target {
+            std::unique_ptr<OFX::Image> image;
+            int                         layer = 0;
+        };
+        std::vector<Target> targets;
+        if (OFX::getImageEffectHostDescription()->isMultiPlanar && !args.planes.empty()) {
+            for (const std::string& plane : args.planes) {
+                const int layer = layerOfPlane(plane);
+                if (layer < 0) continue;
+                Target target;
+                target.image.reset(output_->fetchImagePlane(args.time, args.renderView, plane.c_str()));
+                target.layer = layer;
+                if (target.image) targets.push_back(std::move(target));
+            }
+        } else {
+            Target target;
+            target.image.reset(output_->fetchImage(args.time));
+            outputLayer_->getValueAtTime(args.time, target.layer);
+            if (target.image) targets.push_back(std::move(target));
         }
-        const OfxRectI bounds = dst->getRegionOfDefinition();
+        if (targets.empty()) OFX::throwSuiteStatusException(kOfxStatFailed);
+        const OfxRectI bounds = targets.front().image->getRegionOfDefinition();
         const int width = bounds.x2 - bounds.x1;
         const int height = bounds.y2 - bounds.y1;
-        clear(*dst, args.renderWindow);
+        for (Target& target : targets) {
+            if (target.image->getPixelDepth() != OFX::eBitDepthFloat) {
+                OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+            }
+            clear(*target.image, args.renderWindow);
+        }
 
         std::string cloud;
         cloud_->getValueAtTime(args.time, cloud);
         if (cloud.empty() || width <= 0 || height <= 0) {
-            return;   // nothing chosen yet: a transparent frame
+            return;   // nothing chosen yet: transparent frames
         }
         athenea::ofx::FrameRequest request;
         request.cloud = cloud;
@@ -148,6 +245,15 @@ public:
             asked > 0.0 ? asked : request.camera.haperture * height / (width * getProjectPixelAspectRatio());
         request.camera.nearZ = near_->getValueAtTime(args.time);
         request.camera.farZ = far_->getValueAtTime(args.time);
+        sky_->getValueAtTime(args.time, request.sky);
+        request.skyRotation = skyRotation_->getValueAtTime(args.time);
+        request.skyVisible = skyVisible_->getValueAtTime(args.time);
+        for (const Target& target : targets) {
+            const std::string server = kLayers[target.layer].server;
+            if (!server.empty() && std::find(request.layers.begin(), request.layers.end(), server) == request.layers.end()) {
+                request.layers.push_back(server);
+            }
+        }
 
         athenea::ofx::Frame frame;
         std::string error;
@@ -161,22 +267,42 @@ public:
                 OFX::throwSuiteStatusException(kOfxStatFailed);
             }
         }
-        // Both bottom row first, so rows copy as they are.
         const OfxRectI& window = args.renderWindow;
-        for (int y = window.y1; y < window.y2; ++y) {
-            if (abort()) return;
-            auto* row = static_cast<float*>(dst->getPixelAddress(window.x1, y));
-            if (row == nullptr) continue;
-            const size_t from = (size_t(y - bounds.y1) * size_t(width) + size_t(window.x1 - bounds.x1)) * 4;
-            std::memcpy(row, frame.rgba.data() + from, size_t(window.x2 - window.x1) * 4 * sizeof(float));
+        for (Target& target : targets) {
+            const Layer& layer = kLayers[target.layer];
+            const float* source = layer.server[0] != '\0'     ? frame.layers[layer.server].data()
+                                  : target.layer == kDepthLayer ? frame.depth.data()
+                                                                : frame.rgba.data();
+            const size_t from_channels = target.layer == kDepthLayer ? 1 : 4;
+            const size_t channels = size_t(target.image->getPixelComponentCount());
+            const size_t count = size_t(window.x2 - window.x1);
+            for (int y = window.y1; y < window.y2; ++y) {
+                if (abort()) return;
+                auto* row = static_cast<float*>(target.image->getPixelAddress(window.x1, y));
+                if (row == nullptr) continue;
+                // Both bottom row first, so rows copy as they are.
+                const size_t from = size_t(y - bounds.y1) * size_t(width) + size_t(window.x1 - bounds.x1);
+                if (channels == from_channels) {
+                    std::memcpy(row, source + from * channels, count * channels * sizeof(float));
+                    continue;
+                }
+                // The depth shown in RGBA, by a host without planes: its one
+                // value copied into every channel.
+                for (size_t x = 0; x < count; ++x) {
+                    for (size_t c = 0; c < channels; ++c) {
+                        row[x * channels + c] = source[(from + x) * from_channels + std::min(c, from_channels - 1)];
+                    }
+                }
+            }
         }
     }
 
 private:
     static void clear(OFX::Image& image, const OfxRectI& window) {
+        const size_t channels = size_t(image.getPixelComponentCount());
         for (int y = window.y1; y < window.y2; ++y) {
             if (void* row = image.getPixelAddress(window.x1, y)) {
-                std::memset(row, 0, size_t(window.x2 - window.x1) * 4 * sizeof(float));
+                std::memset(row, 0, size_t(window.x2 - window.x1) * channels * sizeof(float));
             }
         }
     }
@@ -192,6 +318,10 @@ private:
     OFX::DoubleParam*  near_ = nullptr;
     OFX::DoubleParam*  far_ = nullptr;
     OFX::DoubleParam*  timeOffset_ = nullptr;
+    OFX::StringParam*  sky_ = nullptr;
+    OFX::DoubleParam*  skyRotation_ = nullptr;
+    OFX::BooleanParam* skyVisible_ = nullptr;
+    OFX::ChoiceParam*  outputLayer_ = nullptr;
     std::mutex         lock_;
     std::unique_ptr<athenea::ofx::RenderServer> server_;
 };
@@ -230,6 +360,12 @@ void SplatEffectFactory::describe(OFX::ImageEffectDescriptor& desc) {
     desc.setSupportsTiles(false);   // a whole frame a render: the server draws whole frames
     desc.setTemporalClipAccess(false);
     desc.setRenderThreadSafety(OFX::eRenderInstanceSafe);
+    // Every layer at once where the host takes planes: one draw makes them all.
+    if (OFX::getImageEffectHostDescription()->isMultiPlanar) {
+        desc.setIsMultiPlanar(true);
+        desc.setPassThroughForNotProcessedPlanes(OFX::ePassThroughLevelBlockAllNonRenderedPlanes);
+        desc.setRenderAllPlanes(true);
+    }
 }
 
 void SplatEffectFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context) {
@@ -289,15 +425,41 @@ void SplatEffectFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX
     number(desc, *page, kTimeOffset, "Time offset",
            "added to the frame number to give the cloud's USD time (an animated, skinned cloud)", 0.0, -1000.0,
            1000.0);
+
+    OFX::StringParamDescriptor* sky = desc.defineStringParam(kSky);
+    sky->setLabels("Sky", "Sky", "Sky");
+    sky->setScriptName(kSky);
+    sky->setHint("An HDR image (lat-long .hdr or .exr) on every dome of the stage: a relightable (transfer) cloud is "
+                 "lit by it. Empty keeps the stage's own sky; a stage with no dome gets one.");
+    sky->setStringType(OFX::eStringTypeFilePath);
+    sky->setFilePathExists(true);
+    sky->setAnimates(false);
+    page->addChild(*sky);
+    number(desc, *page, kSkyRotation, "Sky rotation", "degrees the sky turns about the stage's up axis", 0.0, -180.0,
+           180.0);
+    OFX::BooleanParamDescriptor* visible = desc.defineBooleanParam(kSkyVisible);
+    visible->setLabels("Sky visible", "Sky visible", "Sky visible");
+    visible->setScriptName(kSkyVisible);
+    visible->setHint("Off: the background is transparent, to merge over a plate; the sky still lights the cloud.");
+    visible->setDefault(true);
+    visible->setAnimates(false);
+    page->addChild(*visible);
+
+    OFX::ChoiceParamDescriptor* layerChoice = desc.defineChoiceParam(kOutput);
+    layerChoice->setLabels("Output", "Output", "Output");
+    layerChoice->setScriptName(kOutput);
+    layerChoice->setHint("The layer shown in RGBA by a host that takes no planes (Nuke): rgba, depth (view z in every "
+                         "channel), P (world position, alpha 1 where drawn) or a Cryptomatte layer. A host that takes "
+                         "planes (Natron) gets every layer as a plane of its own, whatever this says.");
+    for (const Layer& layer : kLayers) layerChoice->appendOption(layer.name);
+    layerChoice->setDefault(0);
+    layerChoice->setAnimates(false);
+    page->addChild(*layerChoice);
 }
 
 OFX::ImageEffect* SplatEffectFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum) {
     return new SplatEffect(handle);
 }
 
-namespace OFX::Plugin {
-void getPluginIDs(OFX::PluginFactoryArray& ids) {
-    static SplatEffectFactory factory(kPluginId, 0, 1);
-    ids.push_back(&factory);
-}
-}   // namespace OFX::Plugin
+static SplatEffectFactory gFactory(kPluginId, 0, 2);
+mRegisterPluginFactoryInstance(gFactory)

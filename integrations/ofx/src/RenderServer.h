@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,13 @@ struct FrameRequest {
     double                time = 0.0;   ///< USD time code
     uint32_t              width = 0;
     uint32_t              height = 0;
+    /// Layers beyond colour and depth, each four floats a pixel: "P" and
+    /// "CryptoObject00".."CryptoObject02".
+    std::vector<std::string> layers;
+    /// The sky every dome of the stage carries: empty is the stage's own.
+    std::string           sky;
+    double                skyRotation = 0.0;   ///< degrees about the stage's up axis
+    bool                  skyVisible = true;   ///< false: a transparent background, the sky still lighting
 };
 
 /// One frame as the server drew it: bottom row first, linear, premultiplied.
@@ -46,6 +54,8 @@ struct Frame {
     uint32_t           height = 0;
     std::vector<float> rgba;    ///< four floats a pixel
     std::vector<float> depth;   ///< one a pixel: view z, 0 where nothing was drawn
+    std::map<std::string, std::vector<float>> layers;   ///< as asked, four floats a pixel each
+    std::string        manifest;   ///< the Cryptomatte's names and ids (JSON), where a matte was asked for
 };
 
 class RenderServer {

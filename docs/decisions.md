@@ -14231,7 +14231,47 @@ Measured on a unit sphere of 96k gaussians (`spheres-web/tx-balls/paint_first.us
 frame against `athenea-mcp`'s own render of the same camera (translate 0.4 0.3 6, rotate -3 4 10 in ZXY, 50 mm,
 36 mm aperture) is identical -- relMSE 0, 8-bit max 0. A warm frame costs the server 16 ms at that size.
 
-Not done: the order of Nuke's rotations is read from its documentation, not yet checked in Nuke; Nuke's own camera
-input (its OpenFX camera extension) in place of linked knobs; depth, motion vectors and Cryptomatte as Nuke layers
-(its multiplane extension); a lit environment for a transfer cloud, which draws flat without a light on its stage;
-`.ply`/`.spz` opened directly rather than converted first; Linux and Windows builds and a signed bundle.
+### Layers and the sky (19 Oct)
+
+The user asked for every layer out of the node and as much of the comp as it can reach, and for the pawn's sky to
+be changed inside Nuke or Natron.
+
+**What a gaussian frame holds.** Measured on the processed sparrow (`sparrow-web/ref_cloud.usda`, 512 x 512): the
+splats fill the colour, the depth and the Cryptomatte's three layers; `primId`, `instanceId`, `elementId`, `Neye`
+and `normal` stay at their clear value, since only meshes write them. So the layers are colour, depth, `P` and
+`CryptoObject00..02`.
+
+**P is made on the device.** `StageRenderer::worldPosition` puts each pixel's view z back through the camera that
+drew it (`athenea/usd/aov_position`: the pixel's centre unprojected as `splat_project` projects, then the rows of
+view to world). Against the depth, on the sparrow at 480 x 270 from a camera of the tool's own: P's distance along
+the view axis matches the depth to 7e-8 relative, every covered pixel reprojects onto its own centre (0.000 px),
+and P's alpha agrees with the depth's coverage at every sampled pixel. It needs the tool's own camera, `xform` or
+`eye`: a stage camera's projection is the delegate's, and a lens's window roll and distortion are not undone.
+
+**The Cryptomatte crosses as Hydra holds it**, float4 (id, coverage, id, coverage) a layer, read from the render
+buffer the delegate already converts on the device; the manifest crosses as a line of the answer. OpenFX carries no
+metadata, so it stops at the plugin: a matte in the comp is picked by id.
+
+**Planes, through Natron's OpenFX.** The official OpenFX carries no planes. Natron's fork of it -- the one
+openfx-misc and openfx-io build on, which load in Nuke and Resolve as well -- has the Foundry multi-plane extension
+in its support library and Natron's custom planes beside it, so `third_party/openfx` now points there. A host that
+takes planes gets colour, `depth` (Z), `P` (XYZA) and the three Cryptomatte layers as planes of the one output, all
+drawn in one call (`setRenderAllPlanes`) and only those it asks for. Nuke takes from an OpenFX node only its own
+planes (motion vectors, disparity), so there an `output` knob picks the layer RGBA shows. The test host stays
+without the extensions: a host that knows nothing of planes, which is the plainest case.
+
+**The sky.** `render` takes `sky` (an image for every dome; a stage without one gets the default dome first),
+`skyRotation` and `skyVisible`, and sets a dome only where it differs, since each set is a session edit Hydra syncs;
+the node has the same three knobs. On the pawn (`pieces/pawn/cut_lod2`, a transfer cloud baked under autoshop_01),
+1024 x 1024: kloofendal at 120 degrees relights the marble and puts the new sky in the glass; the first frame after
+a change costs about 0.4 s (the sky's harmonics and prefiltered chain), the frames after it 50 ms; giving back the
+stage's sky (`sky` empty) draws a frame identical to the stage's own (relMSE 0).
+
+Through the plugin, the unit sphere's frame against `athenea-mcp`'s own is still identical (relMSE 0) after the move
+to Natron's OpenFX.
+
+Not done: the order of Nuke's rotations is read from its documentation, not yet checked in Nuke; the plugin run in
+Natron itself (its multi-plane path is checked only against the extension's headers so far); Nuke's own camera
+input (its OpenFX camera extension) in place of linked knobs; normals and motion vectors of gaussians, which the
+rasteriser does not write (the skinned wings' motion first); the sky as an image input of the node rather than a
+file; `.ply`/`.spz` opened directly rather than converted first; Linux and Windows builds and a signed bundle.

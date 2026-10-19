@@ -259,6 +259,14 @@ public:
     /// mesh drew, or one not requested, has no buffer: it shows as the background.
     [[nodiscard]] Result<technique::DisplaySource> displaySource(const std::string& aov);
 
+    /// Where each pixel of the last frame lies in the world (a compositor's
+    /// P pass): its view z put back through `camera`, which must be the
+    /// camera that frame was drawn from. A float4 a pixel, bottom row first,
+    /// (x, y, z, 1) where something drew and zeros where nothing did. On the
+    /// device (athenea/usd/aov_position); a lens's window roll and distortion
+    /// are not undone.
+    [[nodiscard]] Result<std::vector<float>> worldPosition(const render::Camera& camera);
+
     /// A camera of the engine's own framing what the stage draws, as athenea view
     /// opens on a stage: a small frame commits the scene (raster, whatever
     /// `technique` is), the bounds of what it drew place an orbit camera of
