@@ -6,7 +6,7 @@
 
 <p class="byline">jesus luque</p>
 
-<p class="date">12 October 2026</p>
+<p class="date">19 October 2026</p>
 
 ## Abstract {.unnumbered .unlisted}
 

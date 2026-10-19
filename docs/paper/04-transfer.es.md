@@ -20,49 +20,49 @@ parámetro GGX $\alpha = r^2$ y, opcionalmente, un clear coat (peso $w_c$, rough
 una transmisión. $\boldsymbol{\omega}_o$ es la dirección hacia el ojo y $\mathbf{m} = \operatorname{reflect}(-\boldsymbol{\omega}_o,
 \mathbf{n})$ la dirección especular. $Y_k$ son los spherical harmonics reales, con índice $k = l^2 + l + m$; el grado 2
 tiene 9 coeficientes y el grado 3 tiene 16. Un cielo tiene coeficientes de radiancia $L_k$ (rgb), un sol de dirección
-$\mathbf{s}$ e irradiancia $E_\odot$ extraído de él, y un mapa prefiltrado $\tilde L(\boldsymbol{\omega}, r)$.
+$\mathbf{s}$ e irradiancia $E_\odot$ extraído de él, y un prefiltered map $\tilde L(\boldsymbol{\omega}, r)$.
 
 ## 4.2 Qué guarda una Gaussian
 
-El transfer es una tira de valores por Gaussian, f16 en el dispositivo. No hay token de modo: la cuenta es el formato
+El transfer es una tira de valores por Gaussian, f16 en el device. No hay token de modo: la cuenta es el formato
 (`common/transfer_layout.slang`) (figura 10).
 
 | valores | formato | origen |
 |---|---|---|
 | 9 | grado 2, directa | primer transfer |
 | 36 | grado 2, directa + indirecta (27) | primer transfer |
-| 84 | grado 2, ambas + campo reflejado (48) | TX con `--transfer-degree 2` |
+| 84 | grado 2, ambas + reflected field (48) | TX con `--transfer-degree 2` |
 | 16 | grado 3, directa | |
 | 64 | grado 3, directa + indirecta (48) | |
-| 112 | grado 3, ambas + campo reflejado (48) | **TX por defecto** |
-| 10 | dos lóbulos zonales en el marco de la Gaussian | nubes con skinning |
+| 112 | grado 3, ambas + reflected field (48) | **TX por defecto** |
+| 10 | dos lobes zonales en el marco de la Gaussian | nubes con skinning |
 
-![Figura 10. Qué guarda el bake por Gaussian y cómo lo combina el dibujado con el entorno: el body a partir del SH directo e indirecto, polish y clear coat a partir del reflected field y de las cells de direcciones abiertas, y el sharp lobe evaluado por píxel.](figures/fig-transfer.es.svg)
+![Figura 10. Qué guarda el bake por Gaussian y cómo lo combina el dibujado con el entorno: el body a partir del SH directo e indirecto, polish y clear coat a partir del reflected field y de las cells de open directions, y el sharp lobe evaluado por píxel.](figures/fig-transfer.es.svg)
 
 Junto a ella:
 
-- **Direcciones abiertas** (`primvars:athenea:splat:shadowBits`): 2 palabras (64 bits, un grid octaédrico de 8 x 8;
+- **Open directions** (`primvars:athenea:splat:shadowBits`): 2 palabras (64 bits, un grid octaédrico de 8 x 8;
   primer transfer), 8 palabras (16 x 16 cells sobre la esfera entera; TX por defecto) o 32 palabras (32 x 32). Un bit se
   pone donde el rayo del bake en esa cell salió de la escena.
-- **Curvatura** (`primvars:athenea:splat:curvature`): el operador de forma en los dos ejes del plano de la Gaussian,
+- **Curvatura** (`primvars:athenea:splat:curvature`): el shape operator en los dos ejes del plano de la Gaussian,
   $(S_{uu}, S_{uv}, S_{vv})$, tres floats, escrita con `--transfer`.
 - **Roughness del material** (`primvars:athenea:splat:materialRoughness`): la roughness propia del material antes del
-  ensanche del bake (sección 4.9), -1 bajo un mapa de textura. En el dispositivo va en cinco bits (27-31) de la palabra
+  ensanche del bake (sección 4.9), -1 bajo un mapa de textura. En el device va en cinco bits (27-31) de la palabra
   pbr, marcada por el bit 26.
 
-La mitad directa es un escalar por coeficiente (solo geometría); la indirecta es rgb, coloreada por aquello en lo que
-rebotó la luz; el campo reflejado es rgb. El formato TX cuesta, por Gaussian:
+La direct half es un escalar por coeficiente (solo geometría); la indirecta es rgb, coloreada por aquello en lo que
+rebotó la luz; el reflected field es rgb. El formato TX cuesta, por Gaussian:
 
 | | primer transfer | TX |
 |---|---|---|
 | directa | 9 | 16 |
 | indirecta | 27 | 48 |
-| campo reflejado | -- | 48 |
+| reflected field | -- | 48 |
 | visibilidad | 2 ints (64 bits) | 8 ints (256 bits) |
 | fichero, bytes | 152 | 480 |
-| dispositivo, bytes | 80 | 256 |
+| device, bytes | 80 | 256 |
 
-Para el Corvette entero (unos 10 M de Gaussians entonces) son 4.8 GB de fichero y 2.6 GB de dispositivo solo para el
+Para el Corvette entero (unos 10 M de Gaussians entonces) son 4.8 GB de fichero y 2.6 GB de device solo para el
 transfer; los códecs que reducen su almacenamiento y su ancho de banda (un PCA por clusters del transfer, un codebook k-means de Hamming de los
 bits de sombra) se describen en la sección 7, donde sirven a una aplicación, un player WebGPU.
 
@@ -71,48 +71,48 @@ bits de sombra) se describen en la sección 7, donde sirven a una aplicación, u
 `technique::Environment` prepara cada domo en tres formas, todas buffers leídos a través de un único módulo
 (`light/environment.slang`) por el rasterizer y por el ray tracer.
 
-**Spherical harmonics de radiancia.** `env_project` suma los téxeles de un nivel de la cadena de mips del domo, cada uno
+**Spherical harmonics de radiancia.** `env_project` suma los texels de un nivel de la cadena de mips del domo, cada uno
 pesado por el ángulo sólido lat-long $2\pi^2 \sin\theta\,\Delta u\,\Delta v$ (la medida que usa el muestreo por
 importancia del domo):
 
-$$L_k = \sum_{\text{téxeles}} L(\boldsymbol{\omega}_t)\, Y_k(\boldsymbol{\omega}_t)\, 2\pi^2 \sin\theta_t\, \Delta u\, \Delta v .$$
+$$L_k = \sum_{\text{texels}} L(\boldsymbol{\omega}_t)\, Y_k(\boldsymbol{\omega}_t)\, 2\pi^2 \sin\theta_t\, \Delta u\, \Delta v .$$
 
 Se proyectan dieciséis coeficientes (grado 3); la irradiancia de un cuerpo sin transfer lee los nueve primeros,
 convolucionados al leer con los pesos zonales del coseno truncado $\{\pi, 2\pi/3, \pi/4\}$. Un cielo constante vuelve a
 dar $\pi L$ de irradiancia en toda normal: 6.2841 frente a 6.2832 (0.089 %) sobre 64 direcciones.
 
 **El sol, sacado.** Un disco mil veces más brillante que el cielo no es una función de grado 2; proyectado, se emborrona
-en un lóbulo de sesenta grados. `env_sun` encuentra la región más brillante cuya luz está tan concentrada como un disco
+en un lobe de sesenta grados. `env_sun` encuentra la región más brillante cuya luz está tan concentrada como un disco
 de su ángulo sólido (ángulo cuadrático medio pesado por la luz alrededor de su centro como mucho el doble que el de un
-disco, $\theta_{\text{cone}}^2/2$), saca sus téxeles tanto de los armónicos como de la fuente del prefiltrado, y devuelve
+disco, $\theta_{\text{cone}}^2/2$), saca sus texels tanto de los harmonics como de la fuente del prefiltrado, y devuelve
 una dirección $\mathbf{s}$, una irradiancia $E_\odot$ y un semiángulo. La irradiancia se suma exactamente sobre los
-téxeles que los armónicos omiten, al mismo nivel y con la misma medida, de modo que lo que sale de los coeficientes llega
+texels que los harmonics omiten, al mismo nivel y con la misma medida, de modo que lo que sale de los coeficientes llega
 como luz (forma cerrada 0.1119 frente a 0.1113).
 
-**El mapa prefiltrado.** El cielo sin su sol, convolucionado con un lóbulo GGX en una cadena de mips octaédrica de ocho
+**El prefiltered map.** El cielo sin su sol, convolucionado con un lobe GGX en una cadena de mips octaédrica de ocho
 niveles, el nivel $k$ para la roughness $(k/7)^2$ (0, 0.020, 0.082, 0.184, 0.327, 0.510, 0.735, 1). El lado de la base
-iguala el téxel del propio domo, $S = \sqrt{2WH/\pi}$, redondeado hacia abajo a una potencia de dos en $[256, 2048]$. El
-prefiltrado usa muestreo por importancia filtrado (Krivanek y Colbert): cada muestra GGX lee la fuente un nivel más
-basto de lo que pide su propio ángulo sólido, nunca más estrecho que el téxel que escribe, con la secuencia girada por
-un hash por téxel, 64 muestras en el nivel 1 que se doblan hasta 1024. Los mips lat-long de la fuente pesan cada fila
+iguala el texel del propio domo, $S = \sqrt{2WH/\pi}$, redondeado hacia abajo a una potencia de dos en $[256, 2048]$. El
+prefiltrado usa filtered importance sampling (Krivanek y Colbert): cada muestra GGX lee la fuente un nivel más
+basto de lo que pide su propio ángulo sólido, nunca más estrecho que el texel que escribe, con la secuencia girada por
+un hash por texel, 64 muestras en el nivel 1 que se doblan hasta 1024. Los mips lat-long de la fuente pesan cada fila
 por $\cos\theta_0 - \cos\theta_1$, de modo que cada nivel conserva la media por ángulo sólido del cielo. Sin esto, un sol
-de 1.5 grados en un nivel rugoso era una dispersión de manchas del tamaño de un téxel (la banda de 4-16 px de una bola
+de 1.5 grados en un nivel rugoso era una dispersión de manchas del tamaño de un texel (la banda de 4-16 px de una bola
 de pintura a 2.13 veces el path trace).
 
-**Una nube que la escena gira.** Todo lo que una Gaussian guarda de su transfer (§4.2) -- los armónicos de las dos
-mitades, el campo reflejado y los bits de direcciones abiertas -- es un conjunto de direcciones de la nube, medidas en el
+**Una nube que la escena gira.** Todo lo que una Gaussian guarda de su transfer (§4.2) -- los harmonics de las dos
+mitades, el reflected field y los bits de open directions -- es un conjunto de direcciones de la nube, medidas en el
 sistema de referencia del fichero en el que se hizo su bake. Un prim que gira la nube (un asset Y-up colocado en una
 escena Z-up, una pieza girada a su sitio) no cambia ninguna. Por eso el dibujo lee el transfer en el sistema de la nube.
 Sea $R$ la rotación de la transformación de la instancia, su parte lineal con las columnas hechas unitarias. Cada
 dirección del mundo por la que pregunta el dibujo -- el espejo de la vista, el camino a través de un vidrio, el sol, una
-luz, el cono de celdas de un lóbulo -- se gira por $R^\top$ antes de consultarla, y los dieciséis coeficientes del cielo
+luz, el cono de celdas de un lobe -- se gira por $R^\top$ antes de consultarla, y los dieciséis coeficientes del cielo
 se giran al mismo sistema una vez por instancia y frame,
 
 $$L'_k = \int_{S^2} Y_k(\boldsymbol{\omega})\, L(R\,\boldsymbol{\omega})\, d\boldsymbol{\omega},$$
 
 con una regla producto exacta para los productos de grado 6 que integra (cuatro nodos de Gauss–Legendre en $\cos\theta$
 por ocho pasos iguales en $\varphi$). El cuerpo hace entonces el producto del transfer con $L'_k$; lo que se evalúa en
-el mundo (el mapa prefiltrado, el fondo) conserva $L_k$. Un transfer zonal (§4.4.5) ya gira con cada Gaussian y se deja
+el mundo (el prefiltered map, el fondo) conserva $L_k$. Un transfer zonal (§4.4.5) ya gira con cada Gaussian y se deja
 como está. Con el peón de §5.11 girado 60 grados alrededor de su eje vertical junto con su cámara y su cielo, el frame con
 relight coincide con el del peón sin girar con relMSE $9\times10^{-6}$ (61 dB) a 768 × 768; girado al revés, 11 dB.
 Leído en cambio en el sistema del mundo, el peón levantado de Y-up a una escena Z-up dibujaba su cabeza de vidrio en
@@ -134,11 +134,11 @@ Gaussian el material se sustituye por la propia dirección muestreada: las direc
 $\sqrt{N}\times\sqrt{N}$ con jitter) y son uniformes sobre el hemisferio, densidad $1/2\pi$, frente a un estimador que
 quiere $\cos\theta/\pi$, así que una muestra que escapa vale $2\cos\theta\, Y_k(\boldsymbol{\omega})$ y una bloqueada
 nada. Uniforme en lugar de coseno, y sobre el hemisferio medido como una esfera con la mitad lejana vacía, porque los
-armónicos son ortonormales solo sobre la esfera; ajustados coeficiente a coeficiente sobre un hemisferio se pasan (el
+harmonics son ortonormales solo sobre la esfera; ajustados coeficiente a coeficiente sobre un hemisferio se pasan (el
 peón salía diez veces demasiado brillante). La acumulación *es* la proyección; no se resuelve ningún ajuste.
 
-Los mismos caminos dan dos mitades sin ningún rayo más: un camino que escapa justo después del primer vértice contribuye
-a la mitad directa (escalar); uno que escapa tras rebotar lleva el color de lo que encontró y contribuye a la mitad
+Los mismos paths dan dos mitades sin ningún rayo más: un camino que escapa justo después del primer vértice contribuye
+a la direct half (escalar); uno que escapa tras rebotar lleva el color de lo que encontró y contribuye a la mitad
 indirecta $T^{\text{ind}}_k$ (rgb). Comprobado frente a formas cerradas: un punto sin oclusión transfiere el coseno
 truncado, $(0.2820, 0.3258, 0.1581)$ frente al exacto $(0.2821, 0.3257, 0.1577)$ para las bandas 0-2, y un cielo
 constante de 0.7 lee 0.6998. Una esquina de suelo y pared, transfer recombinado frente a un bake de radiancia de los
@@ -146,11 +146,11 @@ mismos puntos:
 
 | | transfer | bake de radiancia | peor punto |
 |---|---|---|---|
-| sin pared, 1 rebote | 0.6000 | 0.6000 | 0.0 % |
-| pared negra, 1 rebote | 0.3091 | 0.3039 | 2.5 % |
-| pared blanca, 3 rebotes | 0.5095 | 0.5325 | 4.3 % |
+| sin pared, 1 bounce | 0.6000 | 0.6000 | 0.0 % |
+| pared negra, 1 bounce | 0.3091 | 0.3039 | 2.5 % |
+| pared blanca, 3 bounces | 0.5095 | 0.5325 | 4.3 % |
 
-### 4.4.2 Direcciones abiertas y la mitad directa por cuadratura
+### 4.4.2 Open directions y la direct half por cuadratura
 
 En la primera muestra de cada punto TX traza un rayo any-hit por cell de un grid octaédrico de $S_c \times S_c$
 ($S_c = 16$ o 32) sobre la esfera *entera*: también la mitad lejana, empezando desde la cara de atrás de la superficie,
@@ -162,7 +162,7 @@ $(c + \lfloor c/S_c \rfloor) \bmod 4$: el centro y tres puntos llevados a la sup
 Gaussian), de modo que una ranura más estrecha que una Gaussian ya no se lee como una línea discontinua de sombras
 enteras.
 
-Los mismos rayos dan entonces la mitad directa por cuadratura (sin grano), cada cell pesada por su ángulo sólido
+Los mismos rayos dan entonces la direct half por cuadratura (sin grano), cada cell pesada por su ángulo sólido
 octaédrico:
 
 $$T_k^{\text{dir}} = \sum_{c} \tau_c\, \frac{\max(\mathbf{n}\cdot\boldsymbol{\omega}_c,0)}{\pi}\, \Delta\Omega_c\, Y_k(\boldsymbol{\omega}_c),
@@ -171,18 +171,18 @@ $$T_k^{\text{dir}} = \sum_{c} \tau_c\, \frac{\max(\mathbf{n}\cdot\boldsymbol{\om
 con $\tau_c$ la fracción transmitida a lo largo del rayo de la cell. Las palabras se escriben de cuatro en cuatro a
 medida que se trazan cada 128 cells, de modo que el kernel no guarda ningún array del tamaño del grid.
 
-### 4.4.3 El campo reflejado
+### 4.4.3 El reflected field
 
 Una reflexión necesita la luz rebotada *por dirección*, no integrada. Para cada camino que sale de la Gaussian,
 encuentra la escena y luego escapa, el throughput pasado el primer vértice es la radiancia que llega por su primera
 dirección $\boldsymbol{\omega}_1$ bajo un cielo blanco de radiancia uno. Se proyecta sobre el grado 3 de
 $\boldsymbol{\omega}_1$, uniformemente sobre el dominio del que se sacó:
 
-$$F_j \approx \frac{1}{N} \sum_{i:\ \text{escapó tras un rebote}} \Omega_{\text{meas}}\, \frac{\beta_i}{w_i}\, Y_j(\boldsymbol{\omega}_{1,i}),$$
+$$F_j \approx \frac{1}{N} \sum_{i:\ \text{escapó tras un bounce}} \Omega_{\text{meas}}\, \frac{\beta_i}{w_i}\, Y_j(\boldsymbol{\omega}_{1,i}),$$
 
 con $\beta_i$ el throughput, $w_i$ el peso del primer vértice y $\Omega_{\text{meas}} = 2\pi$ (o $4\pi$ sobre la esfera).
 Son 16 coeficientes rgb, `primvars:athenea:splat:transferReflected`. No cuesta ningún rayo. Como $F$ es cero en las
-direcciones abiertas, dieciséis armónicos leen una dirección cerrada junto a una abierta a una fracción de lo que hay
+open directions, dieciséis harmonics leen una dirección cerrada junto a una abierta a una fracción de lo que hay
 allí (la parte cerrada de la pintura era 0.0014 de 0.115). Así que el bake proyecta también el indicador de las
 direcciones cerradas $C_j$ sobre las mismas muestras, y la conversión divide ambos, una convolución normalizada que da
 la radiancia media de las direcciones cerradas alrededor de cada dirección, cae a la media de las direcciones cerradas
@@ -201,29 +201,29 @@ vidrio validaba a la mitad del path trace (0.265 frente a 0.541 bajo un domo bla
 El Corvette TX entero pedía la respuesta de su bake de una vez: 35 float4 por Gaussian, 7.8 GB, con 5 GB libres.
 `Converter::transfer` hace por tanto el bake en rebanadas cuya respuesta es como mucho 1.5 GB (nunca por debajo del lote
 propio del bake, $2^{19}$), y como mucho $2^{20}$ Gaussians donde corre el filtro. Los rayos de cada rebanada se copian
-en el dispositivo, pasan por el bake (`StageRenderer::bakePointsOnDevice` en modo transfer), se filtran sus mitades
+en el device, pasan por el bake (`StageRenderer::bakePointsOnDevice` en modo transfer), se filtran sus mitades
 rebotadas, se escriben con `m2sTransferInto` y se leen de vuelta a los arrays del fichero antes de la siguiente. El bake
 de radiancia usa el emparentado `StageRenderer::bakeSplitOnDevice`, que guarda las mitades directa e indirecta como
 sumas separadas para que la indirecta pueda filtrarse antes de que `combineBake` ajuste ambas. El transfer sigue el
-mismo principio: su mitad indirecta y su campo (los valores más ruidosos, a 64 caminos por Gaussian en los bakes del
+mismo principio: su indirect half y su campo (los valores más ruidosos, a 64 paths por Gaussian en los bakes del
 Corvette) pasan por el filtro de bake de splats, un filtro à-trous de `--bake-filter` iteraciones (3), cuyos pesos son
-la posición en el plano tangente, la orientación y el id de prim; la mitad directa, que contiene las sombras, no se
+la posición en el plano tangente, la orientación y el id de prim; la direct half, que contiene las sombras, no se
 filtra nunca.
 
-### 4.4.5 Lóbulos zonales para nubes con skinning
+### 4.4.5 Lobes zonales para nubes con skinning
 
-Nueve armónicos están en el mundo; un esqueleto gira la Gaussian debajo de ellos. Rotarlos cuesta una 9 x 9 por
-Gaussian. Un lóbulo zonal rota rotando su eje, así que una nube con skinning guarda dos lóbulos, cada uno con el
+Nueve harmonics están en el mundo; un esqueleto gira la Gaussian debajo de ellos. Rotarlos cuesta una 9 x 9 por
+Gaussian. Un lobe zonal rota rotando su eje, así que una nube con skinning guarda dos lobes, cada uno con el
 $(u, v)$ octaédrico de su eje en el marco propio de la Gaussian y los coeficientes zonales $z_0, z_1, z_2$: diez valores
-(`primvars:athenea:splat:transferZonal`). Como armónicos, un lóbulo alrededor de $\mathbf{a}$ es
+(`primvars:athenea:splat:transferZonal`). Como harmonics, un lobe alrededor de $\mathbf{a}$ es
 $g_{lm} = z_l\, k_l\, Y_{lm}(\mathbf{a})$ con $k_l = \sqrt{4\pi/(2l+1)}$. Para un eje fijo los mejores coeficientes son la
 proyección $z_l = k_l \sum_m f_{lm} Y_{lm}(\mathbf{a})$, que deja un error $\lVert f\rVert^2 - \sum_l z_l^2$, así que el
-ajuste (un efecto AOFX, `splattransferzonal`) busca el eje en el dispositivo (la dirección de la banda 1, la normal, 64
-direcciones de Fibonacci y luego un paseo que divide el paso a la mitad), ajusta el segundo lóbulo al residuo y reajusta
+ajuste (un efecto AOFX, `splattransferzonal`) busca el eje en el device (la dirección de la banda 1, la normal, 64
+direcciones de Fibonacci y luego un paseo que divide el paso a la mitad), ajusta el segundo lobe al residuo y reajusta
 el par dos veces (Sloan 2008). Al dibujar, `splatTransferFrame` gira cada eje con el marco deformado y reconstruye nueve
-armónicos del mundo, que todo lo de después lee sin cambios. El bake posa la nube en `--time` con el propio skinner
-del motor, de modo que el marco contra el que se ajustan los lóbulos es el cuaternión empaquetado que lee un renderer.
-Los bits de sombra siguen siendo dos palabras, reagrupados en el marco de la Gaussian. La mitad indirecta no se guarda
+harmonics del mundo, que todo lo de después lee sin cambios. El bake posa la nube en `--time` con el propio skinner
+del motor, de modo que el marco contra el que se ajustan los lobes es el cuaternión empaquetado que lee un renderer.
+Los bits de sombra siguen siendo dos palabras, reagrupados en el marco de la Gaussian. La indirect half no se guarda
 zonal.
 
 ## 4.5 El cuerpo
@@ -233,7 +233,7 @@ Para una Gaussian con transfer, la parte que no depende del ojo es
 $$\mathbf{B} = \sum_{k<16} L_k\,\big(T_k^{\text{dir}} + T_k^{\text{ind}}\big) \;+\; E_\odot\,\frac{\max(\mathbf{n}\cdot\mathbf{s},0)}{\pi}\, O(\mathbf{s}) \;+\; E_\odot\, T^{\text{ind}}(\mathbf{s}),
 \qquad T^{\text{ind}}(\mathbf{s}) = \max\Big(\sum_k T_k^{\text{ind}} Y_k(\mathbf{s}), 0\Big),$$
 
-siendo el último término el rebote del sol, que el primer transfer perdió con el sol que sacó de los armónicos.
+siendo el último término el bounce del sol, que el primer transfer perdió con el sol que sacó de los harmonics.
 $O(\mathbf{s})$ es la parte del sol que llega: para TX la lectura bilineal de las cuatro cells alrededor de
 $\mathbf{s}$, dejando fuera las cells detrás de la normal; para los 64 bits lo mismo en un grid de 8 x 8; sin bits, el
 cociente de grado 2
@@ -250,14 +250,14 @@ $T_0 = A_0 Y_0 / \pi = 0.28209$, así que $o = \operatorname{sat}(T_0 / 0.28209)
 Gaussian.
 
 **Luces que no son el cielo.** Una luz distante, esférica, de disco o rectangular se evalúa con una muestra en su centro
-a través de los mismos lóbulos. Con las cells TX, su sombra son las cells leídas sobre el cono que la luz subtiende
+a través de los mismos lobes. Con las cells TX, su sombra son las cells leídas sobre el cono que la luz subtiende
 ($\tan^{-1}$ de su radio sobre la distancia, o la mitad del diámetro angular de una luz distante), la más oscura entre
-esa y cualquier sombra medida con rayos; su rebote es $T^{\text{ind}}$ leído a lo largo de ella, por el $L/p$ de la
-muestra, sobre el cuerpo y el sheen, y acopla el campo reflejado igual que el sol (`splatLightBounce`).
+esa y cualquier sombra medida con rayos; su bounce es $T^{\text{ind}}$ leído a lo largo de ella, por el $L/p$ de la
+muestra, sobre el cuerpo y el sheen, y acopla el reflected field igual que el sol (`splatLightBounce`).
 
 ## 4.6 Reflexión
 
-### 4.6.1 Qué parte de un lóbulo ve el cielo
+### 4.6.1 Qué parte de un lobe ve el cielo
 
 El primer transfer estrechaba toda reflexión con el ajuste de Lagarde y de Rousiers del término constante,
 
@@ -265,7 +265,7 @@ $$O_{\text{L}}(\mathbf{n}\cdot\boldsymbol{\omega}_o, o, r) = \operatorname{sat}\
 
 un número para todo el hemisferio: una puerta reflejaba el cielo abierto donde el suelo está en su espejo, y las llantas
 del Corvette leían 2.4 veces el path trace del mesh, `Metal_rough` 6.5 veces, los discos de freno cien. Con las cells
-TX se pregunta al propio lóbulo (`splatLobeOpen`, `splatConeOpen`): la lectura de cells $o_c(\cdot)$ (bilineal sobre
+TX se pregunta al propio lobe (`splatLobeOpen`, `splatConeOpen`): la lectura de cells $o_c(\cdot)$ (bilineal sobre
 cuatro cells, excluidas las que quedan detrás de $\mathbf{n}$) en el espejo y en un anillo de seis direcciones a su
 alrededor con ángulo
 
@@ -287,7 +287,7 @@ $$\kappa = \frac{\sum_k T_k^{\text{ind}} L_k + E_\odot\, T^{\text{ind}}(\mathbf{
 
 cayendo a la radiancia media del cielo donde la Gaussian no rebota nada. El acoplamiento es de rango uno: exacto para
 una Gaussian rodeada por una superficie iluminada por un cielo, y pone el color de un suelo iluminado, no su forma, bajo
-un cielo iluminado por un lado. Leído a lo largo de una dirección a la roughness de un lóbulo, las bandas del campo se
+un cielo iluminado por un lado. Leído a lo largo de una dirección a la roughness de un lobe, las bandas del campo se
 estrechan como un GGX reflejado tomado como una von Mises-Fisher de concentración $1/2\alpha^2$:
 
 $$F(\mathbf{d}; \alpha) = \max\Big(\sum_{j<16} F_j\, e^{-l_j(l_j+1)\alpha^2}\, Y_j(\mathbf{d}),\ 0\Big).$$
@@ -310,14 +310,14 @@ $\chi$ la puerta del campo del polish:
 - **La apertura del polish y su puerta.** $\chi = 1$ y $O = O(\mathbf{m}, \alpha)$ solo donde la roughness propia del
   material es al menos `kPolishFieldRoughness` = 0.3; en el resto $\chi = 0$ y $O = O_{\text{L}}$. En el cromo (0) y el
   metal rugoso (0.22) del Corvette, la apertura por cells leía un relMSE de 1.64 y 0.221 frente al path trace donde la
-  de los armónicos leía 1.05 y 0.128 para la misma media, y el campo leía los metales un tercio más claros (cromo 0.261
-  donde el path trace lee 0.197). Un lóbulo de 0.3 o más ancho es más ancho de lo que resuelve el grado del campo, así
+  de los harmonics leía 1.05 y 0.128 para la misma media, y el campo leía los metales un tercio más claros (cromo 0.261
+  donde el path trace lee 0.197). Un lobe de 0.3 o más ancho es más ancho de lo que resuelve el grado del campo, así
   que lo que lo cierra (el suelo de una bola) es lo que dice el campo: bolas verdes y blancas a 0.3421 sobre un suelo
   gris reflejaban el cielo en su mitad inferior sin esto. La puerta lee la roughness *del material*, no la guardada,
   porque el ensanche del bake lleva la roughness guardada de un tubo fino de cromo por encima de 0.3. El coat usa
   siempre las cells y el campo.
 - **El sol analítico.** El mapa no contiene sol, así que el sol se añade a través de la distribución de direcciones
-  reflejadas de cada lóbulo con el ojo a lo largo de la normal, $D(\mathbf{h})/4$ para el vector medio entre espejo y
+  reflejadas de cada lobe con el ojo a lo largo de la normal, $D(\mathbf{h})/4$ para el vector medio entre espejo y
   sol, con el semiángulo del disco $\theta_\odot$ incorporado a la anchura:
 
   $$p_\odot(\mathbf{m}, \mathbf{s}) = \frac{\tilde\alpha^2}{4\pi\,d^2},\qquad d = \cos^2\!\tfrac{\theta}{2}\,(\tilde\alpha^2-1)+1,\qquad \tilde\alpha^2 = \alpha^2 + \theta_\odot^2,\qquad \cos\theta = \mathbf{m}\cdot\mathbf{s}.$$
@@ -341,7 +341,7 @@ ajuste escalado por exacto sobre Schlick en el ojo, desvaneciéndose con la roug
 
 $$E_c = E_{\text{fit}}(r_c, \mathbf{n}\cdot\boldsymbol{\omega}_o, \eta_c)\cdot \operatorname{lerp}\!\Big(\frac{F(\mathbf{n}\cdot\boldsymbol{\omega}_o,\eta_c)}{F_{\text{Schlick}}},\ 1,\ \operatorname{sat}(\alpha_c)\Big),$$
 
-y exactamente $F$ por debajo de $\alpha_c = 10^{-3}$. Frente a una cuadratura del lóbulo queda dentro del 3 % con
+y exactamente $F$ por debajo de $\alpha_c = 10^{-3}$. Frente a una cuadratura del lobe queda dentro del 3 % con
 $\alpha$ 0.3 y 0.6, donde el ajuste se quedaba un 8-16 % por debajo.
 
 **Capas.** Como el nodo `layer` de MaterialX: el coat sobre el sheen sobre la base, cada capa quitando de lo que hay
@@ -352,7 +352,7 @@ $$U = \big(1 - w_c E_{\text{fit}}\big)\big(1 - w_s E_s\big)\cdot \operatorname{l
 
 siendo el último factor el oscurecimiento del coat de OpenPBR (la luz que vuelve de la base se refleja de nuevo hacia
 abajo en la cara interior del coat), con $E_b$ el albedo de la base; la bola de pintura leía 1.5 veces el mesh en su
-centro sin él. El sheen (Imageworks, Conty y Kulla) es un lóbulo tan ancho como un cuerpo, así que se responde como uno:
+centro sin él. El sheen (Imageworks, Conty y Kulla) es un lobe tan ancho como un cuerpo, así que se responde como uno:
 su albedo direccional por $\mathbf{B}$, bajo el coat.
 
 ## 4.7 Vidrio, transmisión y paredes finas
@@ -361,7 +361,7 @@ Una Gaussian no puede refractar. Lo que transmite es la luz que le llega por det
 lado del ojo, $t$ mira hacia el otro, y lo que hay detrás se ve a través de la opacidad de la Gaussian.
 
 - **Pasa lo que no se refleja**: la mitad transmitida se pesa por $1 - w_{\text{spec}} E_{\text{fit}}(r,\eta)$, con
-  $w_{\text{spec}}$ el peso especular; un Fresnel por cara, como lo paga el lóbulo de transmisión del path tracer; sin
+  $w_{\text{spec}}$ el peso especular; un Fresnel por cara, como lo paga el lobe de transmisión del path tracer; sin
   él una bola sale la mitad más brillante, con un borde 2.5 veces demasiado caliente.
 - **El vidrio TX rasterizado** ve a través a lo largo de $-\boldsymbol{\omega}_o$: el cielo donde las cells de detrás
   están abiertas (`splatConeOpen` alrededor de $-\mathbf{n}$) y $\kappa F$ donde están cerradas, de modo que un parabrisas
@@ -392,7 +392,7 @@ El error de la pintura es de nitidez, no de energía: frente al path trace embor
 
 ### 4.8.1 El giro de la normal por píxel
 
-La conversión escribe el operador de forma del triángulo del centro en los ejes $(\mathbf{u}, \mathbf{v})$ de la
+La conversión escribe el shape operator del triángulo del centro en los ejes $(\mathbf{u}, \mathbf{v})$ de la
 Gaussian, $S = \operatorname{sym}\big([\Delta\mathbf{n}_1\ \Delta\mathbf{n}_2]\,[\Delta\mathbf{p}_1\ \Delta\mathbf{p}_2]^{-1}\big)$
 proyectado sobre $(\mathbf{u},\mathbf{v})$ (`m2sShape`). La proyección invierte su propia linealización en el plano del
 splat: con $J$ la aplicación $2\times2$ de coordenadas del plano a píxeles, un píxel a la derecha y uno abajo son
@@ -416,7 +416,7 @@ Una rampa lineal no puede dibujar un punto. Un coat más liso que `kSharpRoughne
 que `kSharpPolishRoughness` (0.5) se pasan en cambio al blend (`kSharpMark`): la proyección resta del color la lectura
 del centro (cielo y sol analítico), sin recortar, y escribe la coordenada octaédrica del espejo $\mathbf{a}_0$ y sus
 pasos $\Delta\mathbf{a}_x, \Delta\mathbf{a}_y$ (puestos a cero a través del fold del octaedro), los pesos de los
-lóbulos (peso del coat por $O_c$; peso rgb del polish por $O$), su roughness y sus pesos de sol. Por píxel el blend
+lobes (peso del coat por $O_c$; peso rgb del polish por $O$), su roughness y sus pesos de sol. Por píxel el blend
 decodifica $\mathbf{m}(\mathbf{d}) = \operatorname{octDecode}(\mathbf{a}_0 + \Delta\mathbf{a}_x d_x + \Delta\mathbf{a}_y d_y)$
 y suma
 
@@ -430,7 +430,7 @@ grupo de la pendiente en 17 412 de los 17 416 bytes de WebGPU.
 
 La lectura del sharp lobe es una muestra puntual en el centro del píxel, mientras que la normal gira
 $\mathbf{h}_x, \mathbf{h}_y$ a través del píxel: una caja de pendientes cuya varianza, doblada para el espejo, ensancha
-el lóbulo:
+el lobe:
 
 $$\alpha'^2 = \alpha^2 + 2\cdot\frac{\lVert\mathbf{h}_x\rVert^2 + \lVert\mathbf{h}_y\rVert^2}{12},$$
 
@@ -478,7 +478,7 @@ este término no cambia nada.
 
 ### 4.9.4 Un tubo gira, un fold se ensancha
 
-El giro por píxel extrapola el operador de forma del triángulo del centro; pasada una arista deja de valer. La normal y
+El giro por píxel extrapola el shape operator del triángulo del centro; pasada una arista deja de valer. La normal y
 la curvatura guardadas son exactas en el centro (normal a $p_{90}$ 0.009 grados de la normal interpolada del mesh),
 pero el 64 % de los footprints $\pm2\sigma$ de un capó cruzan una arista, y el error RMS de la normal extrapolada llegaba
 a $p_{90}$ 46 y $p_{99}$ 198 grados. Sea $t = 2s$ el giro a lo largo de $\pm2\sigma$. En la nube de 1280 px el cuerpo de
@@ -506,15 +506,15 @@ sharp lobes a la roughness guardada por el bake (§4.9.1); las *sin ensanchar* a
 |---|---|---|---|
 | primer transfer | 0.536 | 0.0896 | 0.705 |
 | TX, cells y campo en todo | 1.64 | 0.221 | 0.393 |
-| polish abierto por armónicos, cono ≥ cell, campo solo en el coat | 0.591 | 0.0835 | 0.341 |
+| polish abierto por harmonics, cono ≥ cell, campo solo en el coat | 0.591 | 0.0835 | 0.341 |
 | después: + coat y polish de sharp lobe por píxel | 0.545 | 0.083 | 0.281 |
 
 ### 4.10.2 Coste de reproducción
 
 El Corvette TX entero (14.7 M de Gaussians, sin suelo, 1920 x 1080) se dibujaba en 158 ms frente a unos 83 de una nube
 con relight de su tamaño; de los 84.5 ms de la proyección, el campo y su acoplamiento se llevaban 24, las cells leídas
-por los lóbulos 16.5, la parte del sol y su rebote 12, el transfer del cuerpo 7.5. Leer el campo una sola vez para
-ambos lóbulos (§4.6.2) y guardar en caché los términos que no dependen del ojo (§4.5) atacan el primero y el último.
+por los lobes 16.5, la parte del sol y su bounce 12, el transfer del cuerpo 7.5. Leer el campo una sola vez para
+ambos lobes (§4.6.2) y guardar en caché los términos que no dependen del ojo (§4.5) atacan el primero y el último.
 
 ### 4.10.3 El coche entero, por bake y configuración
 
@@ -539,7 +539,7 @@ El PSNR sobre un recorte se mueve poco; los cocientes por clase de abajo muestra
 
 La pintura es una base de metal oscuro (roughness 0.3421) bajo un coat de roughness 0 a 1.45. Cada píxel se clasifica
 por dónde cae su espejo: el suelo (cerrado; responde el campo) o el HDRI (abierto). Con las leaves de 640 px y los
-lóbulos ensanchados, el 86 % del déficit de la puerta estaba en píxeles que reflejan suelo. Media sobre el path trace
+lobes ensanchados, el 86 % del déficit de la puerta estaba en píxeles que reflejan suelo. Media sobre el path trace
 (bake de 640 px):
 
 | clase de la puerta | leaves, ensanchadas | cut + cull, ensanchado | *cut A* | *cut B* | leaves, sin cull | leaves, con cull |
@@ -591,7 +591,7 @@ Error RMS de la normal extrapolada en el capó (grados):
 | variante | $p_{50}$ | $p_{90}$ | $p_{99}$ |
 |---|---|---|---|
 | sin giro | 0.575 | 22.7 | 35.8 |
-| operador de forma del centro | 0.146 | 46 | 198 |
+| shape operator del centro | 0.146 | 46 | 198 |
 | + límite $\lVert S\rVert\,2\sigma \le 0.2$ rad | 0.147 | 20.2 | 32.0 |
 | mínimos cuadrados con muestras del mesh | 0.088 | 9.8 | 14.6 |
 
@@ -617,7 +617,7 @@ discontinua en el fold del umbral y cromo que centellea. El polish necesita ahí
 Cada Gaussian lleva los parámetros que lee el relight -- su material, su forma y su transporte de luz precalculado -- y
 cualquiera de ellos se puede dibujar a través de una cámara en lugar de la luz (`athenea:splatView`). El splat se mezcla
 por su opacidad como la luz, así que un frame de un parámetro es ese parámetro tal como la cámara ve la nube: el mismo
-orden, las mismas huellas y la misma coverage que el frame con luz, y por tanto alineado con él píxel a píxel. Los valores
+orden, las mismas footprints y la misma coverage que el frame con luz, y por tanto alineado con él píxel a píxel. Los valores
 que no son colores se ponen en una escala para verlos, y se guardan como números en un EXR. La figura 12 muestra el peón
 de §5.11.
 
@@ -630,13 +630,13 @@ de §5.11.
 | materialRoughness | la roughness propia del material antes de ese ensanche; 0 donde la nube no la guarda | 0–1 |
 | metallic, transmission | los pesos de metal y de transmisión del material | 0–1 |
 | ior | el índice de refracción del especular menos uno | gris |
-| normal | la orientación que usa el sombreado, en el mundo | $\mathbf{n}/2 + 1/2$ |
+| normal | la orientación que usa el shading, en el mundo | $\mathbf{n}/2 + 1/2$ |
 | opacity | la opacidad máxima de la Gaussian | 0–1 |
 | size | el eje mayor de la Gaussian | rampa logarítmica, 10 µm (azul) a 10 cm (rojo) |
 | skyVisibility | el cielo visto por el transfer ponderado por el coseno, $T_0 / Y_0$: 1 donde nada ocluye | 0–1 |
-| bounce | la mitad indirecta bajo un cielo blanco de radiancia uno: la luz que llegó a la Gaussian tras un rebote, con el color de lo que la rebotó | lineal |
+| bounce | la indirect half bajo un cielo blanco de radiancia uno: la luz que llegó a la Gaussian tras un bounce, con el color de lo que la rebotó | lineal |
 | openCells | la fracción de las 256 direcciones que el bake encontró saliendo de la escena | 0–1 |
-| field | la media del campo reflejado bajo un cielo blanco: lo que la Gaussian ve a su alrededor | lineal |
+| field | la media del reflected field bajo un cielo blanco: lo que la Gaussian ve a su alrededor | lineal |
 | emission | la luz que emite la propia superficie | lineal |
 
 Los canales forman tres grupos. El material y la geometría (albedo, roughness, metallic, transmission, ior, normal, con
@@ -649,7 +649,7 @@ normal se sigue de forma aproximada del gradiente de la posición en pantalla, p
 siluetas; skyVisibility es, hasta el límite de banda del transfer, la media ponderada por el coseno de las direcciones
 abiertas, que llevan más que ella; y la roughness es la del material ensanchada por la dispersión de las normales, que
 una nube que guardase esa dispersión recalcularía. Otros no: los canales del transfer no se pueden recuperar de lo que ve
-una cámara, porque una oclusión ambiental en espacio de pantalla pierde lo que queda fuera y un rebote o un reflejo
+una cámara, porque una oclusión ambiental en espacio de pantalla pierde lo que queda fuera y un bounce o un reflejo
 dependen de vecinos que pueden no estar en el frame; el albedo a partir de la luz es inverse rendering, mal planteado; y
 la opacidad y el tamaño son propios de las Gaussians.
 
@@ -675,8 +675,8 @@ el transporte, o la luz con relight, a partir de entradas que no lo llevan. En e
 - **Defectos que quedan** en el coche de 1280 px: la tira cromada del parachoques delantero un 38 % más clara que el
   path trace y con el pico más bajo; la reflexión del suelo cercano en la llanta a 0.72; los brillos del capó desplazados
   2.0 px, que una curvatura ajustada sobre el footprint a partir del mesh reduciría más o menos a la mitad.
-- **Los transfers zonales** guardan solo la mitad directa, y conocen solo la pose que se trazó; la oclusión entre
+- **Los transfers zonales** guardan solo la direct half, y conocen solo la pose que se trazó; la oclusión entre
   miembros en otras poses no se multiplica.
-- **Una nube girada en la ruta trazada.** La ruta con trazado de rayos gira sus direcciones al sistema de la nube pero
-  hace el producto de los armónicos del transfer con el cielo del mundo, así que allí el cuerpo de una nube girada se
+- **Una nube girada en la ruta trazada.** La ruta con ray tracing gira sus direcciones al sistema de la nube pero
+  hace el producto de los harmonics del transfer con el cielo del mundo, así que allí el cuerpo de una nube girada se
   ilumina con un cielo mal orientado.

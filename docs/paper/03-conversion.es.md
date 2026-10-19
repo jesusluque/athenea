@@ -19,8 +19,8 @@ indique otra cosa.
 ## 3.1 Origen, y dónde se ejecuta la conversión
 
 El algoritmo de emisión es el de *mesh2splat* de Electronic Arts (BSD-3): cada triángulo se proyecta sobre el plano
-de ejes hacia el que más apunta su normal, la proyección se rasteriza a una resolución fija y cada téxel cubierto se
-convierte en una Gaussian tendida en el plano del triángulo, tan ancha como un téxel medido en el mundo. El
+de ejes hacia el que más apunta su normal, la proyección se rasteriza a una resolución fija y cada texel cubierto se
+convierte en una Gaussian tendida en el plano del triángulo, tan ancha como un texel medido en el mundo. El
 original es un par de shaders de geometría y de fragmentos en OpenGL; aquí es un único kernel de cómputo en el que
 cada hilo posee un triángulo y recorre las cells de su caja proyectada.
 
@@ -32,22 +32,22 @@ efecto se le entregan imágenes, de modo que un mesh viaja como una *imagen de n
 triángulo — $(\mathbf p, u)$ y $(\mathbf n, v)$ para cada vértice, en espacio de mundo (`mesh_pack.slang`) — y cada
 textura que nombra un material viaja como filas de `float4` lineales muestreadas de la tabla de texturas del motor
 (`texture_rows.slang`). Ninguna de las dos es una copia: las imágenes viven en el almacenamiento de imágenes de gpe,
-que adopta el dispositivo Metal del motor, y `Context::renderView` da una vista de los mismos bytes, así que el kernel
+que adopta el device Metal del motor, y `Context::renderView` da una vista de los mismos bytes, así que el kernel
 de empaquetado escribe donde el efecto lee. Los registros que escribe el efecto se reúnen en los buffers de
-dispositivo de la nube (`mesh2splat_gather`), los límites de la nube se pliegan en el dispositivo
+device de la nube (`mesh2splat_gather`), los límites de la nube se pliegan en el device
 (`mesh2splat_span`) y el bake los lee en su sitio. Solo los contadores y los arrays USD finales cruzan al
 procesador.
 
-El comando es, por tanto, una cadena de pasadas en el dispositivo orquestada por el host (figura 5):
+El comando es, por tanto, una cadena de pasadas en el device orquestada por el host (figura 5):
 
 1. leer el stage (`usd::MeshStage`) y dividir los meshes en *piezas*;
 2. empaquetar cada pieza en una imagen de mesh, plegar las cajas y elegir la cell de cada pieza (`mesh2splat_cells`);
-3. marcar las aristas duras y las cáscaras cerradas por mesh (`mesh2splat_edges`) y clasificar el vidrio (`mesh2splat_sheet`);
+3. marcar las aristas duras y las closed shells por mesh (`mesh2splat_edges`) y clasificar el vidrio (`mesh2splat_sheet`);
 4. ejecutar el efecto Mesh2Splat por pieza — contar, explorar, emitir — hacia registros;
 5. opcionalmente, hacer bake (radiancia, o un transfer) en cada Gaussian con el path tracer;
 6. escribir un stage `ParticleField3DGaussianSplat` (o un `.athc`) de forma atómica.
 
-![Figura 5. La conversión como secuencia de pasadas en el dispositivo. Los pasos 2–7 son kernels o el efecto AOFX Mesh2Splat; el paso 8 es el bake del transfer de la sección 4.](figures/fig-mesh2splat.es.svg)
+![Figura 5. La conversión como secuencia de pasadas en el device. Los pasos 2–7 son kernels o el efecto AOFX Mesh2Splat; el paso 8 es el bake del transfer de la sección 4.](figures/fig-mesh2splat.es.svg)
 
 ## 3.2 Lectura del stage
 
@@ -76,7 +76,7 @@ se describe en la sección 5.
 
 **Piezas.** Un mesh cuyos GeomSubsets `materialBind` enlazan materiales distintos se convierte como varias
 *piezas*: los triángulos de cada subconjunto y los que ningún subconjunto reclama. Los triángulos de una pieza se
-listan en el dispositivo en el orden del mesh (marca, suma prefija, dispersión) y se empaquetan como si fueran un
+listan en el device en el orden del mesh (marca, suma prefija, dispersión) y se empaquetan como si fueran un
 mesh, de modo que el efecto no cambia. Un mesh de prueba con dos caras enlazadas en rojo y azul por subconjuntos y
 el mesh enlazado en verde se convierte en 272 Gaussians rojas y 272 azules y ninguna verde; leyendo solo el binding
 propio del mesh sería todo verde.
@@ -87,9 +87,9 @@ por defecto (standard_surface gris 0.8 a roughness 0.2, OpenPBR roughness 0.3, g
 UsdPreviewSurface 0.18 a 0.5), siguiendo las conexiones a través de grafos de nodos y entradas de interfaz hasta el
 nodo de imagen que produce un valor. Un valor calculado por un grafo (una mezcla, un ruido) no tiene respuesta sin
 sombrear un punto, así que se mantiene el valor por defecto y se imprime un aviso; un bake TX lee después esos
-campos desde el material compilado en el dispositivo. El espacio de color de una textura se toma del metadato
+campos desde el material compilado en el device. El espacio de color de una textura se toma del metadato
 `colorSpace` de la entrada de fichero (o de `sourceColorSpace`), y los mapas se limitan a `--texture-size` (1024 por
-defecto): un mapa es una imagen `float4` en el dispositivo, así que un mapa de 4k ocuparía 268 MB.
+defecto): un mapa es una imagen `float4` en el device, así que un mapa de 4k ocuparía 268 MB.
 
 ## 3.3 El tamaño de una cell
 
@@ -132,12 +132,12 @@ píxeles, la tarjeta cercana recibió 930 Gaussians y la lejana 169: una razón 
 esperados. Este es el modo usado en todos los bakes de producción del Corvette (`--cell-from-camera
 /World/Camera --camera-pixels` 640, 1280 o hasta 5120).
 
-**El presupuesto.** `--max-splats` (2 M por defecto) se reparte sobre todo el stage. Cada pieza se cuenta primero
+**El budget.** `--max-splats` (2 M por defecto) se reparte sobre todo el stage. Cada pieza se cuenta primero
 (una ejecución del efecto con sitio para una Gaussian, cuyo recuento y exploración cubren todo lo que escribiría una
-ejecución); donde el total $W$ supera el presupuesto $B$, la pieza $i$ que quiere $w_i$ recibe
+ejecución); donde el total $W$ supera el budget $B$, la pieza $i$ que quiere $w_i$ recibe
 $s_i = \max(1, B w_i / W)$ y recorre una cell $\sqrt{w_i / s_i}$ veces más gruesa. Una cell $k$ veces más gruesa
 cubre la superficie con $k^2$ Gaussians menos, así que las cuotas proporcionales y el engrosamiento uniforme son lo
-mismo. Con dos tarjetas que quieren unas 1 300 bajo un presupuesto de 800, las cuotas salieron 356 y 361; gastado en
+mismo. Con dos tarjetas que quieren unas 1 300 bajo un budget de 800, las cuotas salieron 356 y 361; gastado en
 el orden de los meshes, la segunda tarjeta tenía unas 145.
 
 **Límites por triángulo y por ejecución.** Un triángulo recorre como mucho `--max-cells` cells de su caja proyectada
@@ -158,7 +158,7 @@ triángulo proyectado, localizada por sus coordenadas baricéntricas $\boldsymbo
 $\boldsymbol\mu = \lambda_0 \mathbf a + \lambda_1 \mathbf b + \lambda_2 \mathbf c$.
 
 **Los tamaños.** Con $E = [\mathbf b - \mathbf a,\; \mathbf c - \mathbf a]$ y $O = [\mathbf o_b - \mathbf o_a,\;
-\mathbf o_c - \mathbf o_a]$, el jacobiano de la inversa de la proyección es $J = E\,O^{-1} = [\mathbf j_u,
+\mathbf o_c - \mathbf o_a]$, el Jacobian de la inversa de la proyección es $J = E\,O^{-1} = [\mathbf j_u,
 \mathbf j_v]$ (protegido con $|\det O| > 10^{-24}$). Las dos desviaciones típicas en el plano y la tercera son
 
 $$
@@ -168,10 +168,10 @@ s_n = \varphi\,\min(s_u, s_v),
 $$
 
 donde $\sigma$ es `--sigma`, $\ell_{\max}$ la arista más larga del triángulo y $\varphi$ `--flatness`. Tres detalles
-siguen el código original: el jacobiano es sobre las coordenadas triplanares, no sobre las coordenadas de textura; el
+siguen el código original: el Jacobian es sobre las coordenadas triplanares, no sobre las coordenadas de textura; el
 factor $1/N$ lo aplica el exportador del original, no ningún shader (sin él cada Gaussian tiene el tamaño del
-modelo); y el frame local no son las columnas del jacobiano sino la arista más larga del triángulo $\hat{\mathbf t}$,
-la normal de sombreado interpolada $\hat{\mathbf n} = \operatorname{normalize}(\sum_k \lambda_k \mathbf n_k)$ y su
+modelo); y el frame local no son las columnas del Jacobian sino la arista más larga del triángulo $\hat{\mathbf t}$,
+la shading normal interpolada $\hat{\mathbf n} = \operatorname{normalize}(\sum_k \lambda_k \mathbf n_k)$ y su
 producto vectorial. La covarianza es, por tanto,
 
 $$
@@ -180,7 +180,7 @@ R_{\text{frame}} = [\hat{\mathbf t}_\perp,\; \hat{\mathbf n}\times\hat{\mathbf t
 $$
 
 con $\hat{\mathbf t}_\perp$ la arista hecha ortogonal a $\hat{\mathbf n}$. Sin la cota $\ell_{\max}$, 1 859 astillas
-de un BMW, vistas casi de canto por su propia proyección, producen columnas del jacobiano veinte órdenes de magnitud
+de un BMW, vistas casi de canto por su propia proyección, producen columnas del Jacobian veinte órdenes de magnitud
 demasiado largas y dibujan púas blancas de metros de largo.
 
 **Anchura.** El $\sigma = 0.65$ del original deja una superficie convertida transparente en torno a un 30 % para un
@@ -207,7 +207,7 @@ rayo–plano por píxel y que el path tracer acota a $10^{-4}$ del eje más anch
 una opacidad escrita directamente en cada una cubre de más: una máscara de 0.5 cubría el 96 % de lo que había detrás.
 Toda opacidad que lee la conversión (`--opacity`, la constante del material, el valor de un mapa, lo que conserva un
 vidrio) se trata como la *coverage* $F$ de la superficie y se convierte en el $\alpha$ de cada Gaussian
-desarrollando la transmitancia de la pila hasta segundo orden: sobre la retícula de cells los footprints suman
+desarrollando la transmitancia de la pila hasta segundo orden: sobre la lattice de cells los footprints suman
 $2\pi\sigma^2$ y sus cuadrados $\pi\sigma^2$, de modo que
 
 $$
@@ -219,7 +219,7 @@ $$
 donde el $1/255$ devuelve el área que pierde una Gaussian al cortarse en $1/255$; $F \ge 0.999$ se lleva a 1 y 0 a
 0. Medido en planos de coverage constante 0.25 / 0.5 / 0.75, el rasterizer da 0.251 / 0.501 / 0.752 y el ray
 tracer lo mismo a tamaño completo, frente a 0.253 / 0.510 / 0.770 con solo el término de primer orden. Un mapa de
-recorte por debajo de `--opacity-cut` (0.5) no escribe ninguna Gaussian, así que el presupuesto va donde está la
+recorte por debajo de `--opacity-cut` (0.5) no escribe ninguna Gaussian, así que el budget va donde está la
 superficie.
 
 **Un triángulo que no atrapa ninguna cell.** Un triángulo más pequeño que una cell puede no contener ningún centro
@@ -238,7 +238,7 @@ tanto a 640 como a 1280 px.
 mismas 729 073 Gaussians en órdenes distintos. La emisión son aquí tres pasadas — contar las cells cubiertas por
 cada triángulo, una exploración exclusiva en un grupo de trabajo de 256 hilos, escribir las Gaussians de cada
 triángulo en su desplazamiento — que comparten una función (`m2sTriangleOf`), de modo que contar y escribir no
-pueden discrepar. Dos conversiones son idénticas byte a byte, un presupuesto conserva las primeras Gaussians en el
+pueden discrepar. Dos conversiones son idénticas byte a byte, un budget conserva las primeras Gaussians en el
 orden del mesh y la Gaussian $i$ es la misma Gaussian de una pose a la siguiente. Un registro que se decodifica en
 nada se escribe como una ranura vacía en lugar de descartarse, de modo que los índices de los arrays siguen
 alineados.
@@ -252,7 +252,7 @@ oscuridad del bake de la junta, y cada borde de panel se convertía en una líne
 path tracer dibuja una fina.
 
 **Aristas duras** (`mesh2splat_edges.slang`). Por mesh, sobre todas sus piezas, cada arista y cada vértice se
-indexan por la posición de sus puntos y se ordenan por radix en el dispositivo; cada tramo de claves de arista
+indexan por la posición de sus puntos y se ordenan por radix en el device; cada tramo de claves de arista
 iguales es una arista. Una arista es *dura* cuando está abierta (la usa un solo triángulo: la parte termina o empieza
 otro mesh), cuando los dos triángulos que la comparten forman un fold de más de $40^\circ$ (`kCreaseDegrees`) o
 cuando la comparten más de dos triángulos (no variedad). Como las claves son posiciones sobre todo el mesh, la
@@ -278,7 +278,7 @@ queda a más de un cuarto de su tamaño; las rectas se aplican en un orden canó
 depende del orden en que se encontraron. La nueva covarianza se rediagonaliza en una tangente y dos tamaños. El
 número de Gaussians no cambia; solo su forma.
 
-**Cáscaras cerradas.** La misma pasada cuenta las aristas no compartidas exactamente por dos triángulos, un contador
+**Closed shells.** La misma pasada cuenta las aristas no compartidas exactamente por dos triángulos, un contador
 leído por mesh. Un mesh se marca como cerrado cuando
 
 $$
@@ -311,9 +311,9 @@ las juntas de los paneles.
 ## 3.6 Captura del material
 
 Cada registro de Gaussian lleva la posición, la opacidad derivada de la coverage, tres tamaños, una rotación y un
-color, seguidos — según lo que necesite la nube — de la normal de sombreado y el metálico, la roughness, la
+color, seguidos — según lo que necesite la nube — de la shading normal y el metálico, la roughness, la
 transmisión y las coordenadas de textura; cuatro joints y sus gradientes; tres entradas de relieve para el
-desplazamiento; una entrada de emisión; cuatro entradas de capas; y el operador de forma.
+desplazamiento; una entrada de emisión; cuatro entradas de capas; y el shape operator.
 
 **Base.** El color es el color base del material por su peso base, por el mapa de albedo donde lo haya (decodificado
 a lineal). El metálico y la roughness son las constantes del material, multiplicadas por los canales del mapa
@@ -322,16 +322,16 @@ factor uno. El original toma por defecto $(0.1, 0.5)$ solo del mapa, así que to
 en el mismo plástico; pasando los valores propios del material, un cuadrado convertido bajo una luz de frente da
 0.5009 frente a 0.5032 del mesh.
 
-**Normal de sombreado.** Un mapa de normales se lee en el frame local que dan sus UV — $\partial\mathbf p/\partial u$
+**Shading normal.** Un mapa de normales se lee en el frame local que dan sus UV — $\partial\mathbf p/\partial u$
 a partir de las posiciones y las UV del triángulo, ortonormalizado frente a la normal, como hace el shader del mesh
-— y el resultado se guarda como normal de sombreado de la Gaussian (`primvars:athenea:splat:normal`) junto a su
+— y el resultado se guarda como shading normal de la Gaussian (`primvars:athenea:splat:normal`) junto a su
 frame geométrico. Leído respecto a la arista más larga, cada faceta del mármol del peón gira sus vetas según su
 propio ángulo. El disco en sí no se gira salvo que se pase `--normal-map-turns`, lo que abriría la superficie donde
 el relieve es pronunciado.
 
 **Capas.** Una Gaussian lleva el peso, el color y el índice especulares; el peso, la roughness y el índice del
 clear coat; el color del sheen por su peso y su roughness; y el interruptor de oscurecimiento del coat — en las
-unidades de OpenPBR, tres palabras por splat en el dispositivo. Hasta tres mapas sobre estas entradas se muestrean
+unidades de OpenPBR, tres palabras por splat en el device. Hasta tres mapas sobre estas entradas se muestrean
 por Gaussian (`m2sLayersAt`). Es necesario porque la pintura del Corvette (`Car_Paint_Main`) es OpenPBR de
 metalicidad 1 sobre una base de aproximadamente 0.05 bajo un clear coat de peso 1: todo lo que el ojo ve de ella es
 el coat, y sin el coat un coche convertido sale casi negro.
@@ -342,7 +342,7 @@ en un factor dos a ángulos rasantes (a $60^\circ$: 0.172 el conductor, 0.077 el
 de material se escribe por Gaussian (`primvars:athenea:splat:schlickMetal`) y el renderer lo refleja con el
 ajuste DFG de sus dos extremos. Tratar en el bake todo metal OpenPBR como polish dieléctrico tiene un coste medido:
 el parachoques delantero de un Mustang guarda en sus 27 016 Gaussians la constante que se decodifica en negro;
-conservando como cuerpo los lóbulos de Schlick con $F_0 > 0.2$, el color medio del parachoques es
+conservando como cuerpo los lobes de Schlick con $F_0 > 0.2$, el color medio del parachoques es
 (0.45, 0.51, 0.61).
 
 **Emisión y transmisión.** La emisión es el color del material por su mapa, lineal y sin acotar, en una entrada
@@ -360,8 +360,8 @@ correspondencia de coverage de la sección 3.4 aplicada a $o\cdot o_{\text{mat}}
 **La marca de roughness del material.** La roughness guardada puede ensancharse por el filtro especular (sección
 3.7). La roughness propia del material antes del ensanchamiento se escribe aparte,
 `primvars:athenea:splat:materialRoughness` (−1 bajo un mapa de roughness, que se lee como nítida). El player la
-usa para decidir si el lóbulo de polish responde su parte ocluida desde el campo reflejado del bake (roughness del
-material de al menos 0.3: pintura, 0.34) o la deja oscura (cromo 0, metal rugoso 0.22); en el árbol diezmado se
+usa para decidir si el lobe de polish responde su parte ocluida desde el reflected field del bake (roughness del
+material de al menos 0.3: pintura, 0.34) o la deja oscura (cromo 0, metal rugoso 0.22); en el tree diezmado se
 empaqueta en la palabra `pbr` (bit 26 presente, bits 27–31 el valor en cinco bits).
 
 ## 3.7 El filtro especular (ensanchamiento de Toksvig)
@@ -388,10 +388,10 @@ $$
 $$
 
 Un triángulo plano, o uno cuyos vértices comparten normal, queda igual. La roughness del coat se ensancha del mismo
-modo salvo que la nube lleve el operador de forma.
+modo salvo que la nube lleve el shape operator.
 
-**El operador de forma.** Para un transfer, la conversión escribe también, en los ejes propios de la Gaussian
-$(\mathbf u, \mathbf v)$, el operador de forma simétrico $S$ con $\mathrm d\mathbf n = S\,\mathrm d\mathbf x$,
+**El shape operator.** Para un transfer, la conversión escribe también, en los ejes propios de la Gaussian
+$(\mathbf u, \mathbf v)$, el shape operator simétrico $S$ con $\mathrm d\mathbf n = S\,\mathrm d\mathbf x$,
 resuelto a partir de las diferencias de normales de los vértices frente a sus diferencias de posición (`m2sShape`,
 guardado como $(S_{uu}, S_{uv}, S_{vv})$). El renderer lo usa para girar el reflejo a través del footprint píxel a
 píxel (el «sharp lobe» por píxel). Ensanchar también el coat difuminaría dos veces, así que donde se escribe $S$
@@ -406,14 +406,14 @@ aparece una línea oscura discontinua en el fold del faldón y la tira de cromo 
 ## 3.8 Vidrio
 
 Una Gaussian no puede refractar, pero puede dejar pasar lo que tiene detrás mediante su opacidad, reflejar con su
-lóbulo especular y llevar un índice de refracción según el cual el renderer desvía
+lobe especular y llevar un índice de refracción según el cual el renderer desvía
 (`primvars:athenea:splat:ior`, uno por nube; con capas, cada Gaussian desvía según su propio índice especular). La
 tarea de la conversión es decidir, para cada pieza transmisora, si el vidrio es un *sólido* (un cuerpo: una bola, una
 lente) o una *pared fina* (una lámina o placa cuyas dos caras no desvían nada), porque ambos se dibujan de forma
 distinta.
 
 **Clasificación** (`classifySheets`, `mesh2splat_sheet.slang`), para cada pieza transmisora cuyo material no se
-declara ya de pared fina. En el dispositivo, las aristas de la pieza se indexan por posición, se ordenan y se cuentan
+declara ya de pared fina. En el device, las aristas de la pieza se indexan por posición, se ordenan y se cuentan
 sus tramos; se suman el volumen con signo $V$ (tetraedros al origen) y el área $A$. Entonces
 
 - *abierta*: más de $1/200$ de las aristas tienen un solo triángulo, o alguna arista tiene más de dos;
@@ -447,11 +447,11 @@ reproducción es solo de Gaussians.
 
 **Shadow catcher** (`--shadow-catcher --prim OBJETO`). El suelo se encuentra automáticamente (el mayor mesh plano
 fuera del objeto cuya parte superior está en la base del objeto; `--catcher-ground` nombra uno). Un parche de
-cuadriláteros — el footprint del objeto ensanchado `--catcher-margin` alturas (1.5), dividido en una retícula para que
+cuadriláteros — el footprint del objeto ensanchado `--catcher-margin` alturas (1.5), dividido en una lattice para que
 ningún triángulo supere `--max-cells` — se añade a una copia en memoria del stage y se convierte solo, con una cell de
 una centésima de la altura del objeto, como un transfer TX cuyos rayos encuentran el objeto y el suelo. Al
 dibujar, la opacidad de la Gaussian es $-\ln(\text{razón})/2\pi$, donde la razón es la luz que le llega con el objeto
-frente a sin él, ya que una retícula de Gaussians de $\sigma = 1$ cell suma $2\pi$ y una capa de opacidad $a$ deja
+frente a sin él, ya que una lattice de Gaussians de $\sigma = 1$ cell suma $2\pi$ y una capa de opacidad $a$ deja
 pasar $e^{-2\pi a}$. El del Corvette: un parche de 5.9 × 8.3 m, 11 × 11 cuadriláteros, 309 k Gaussians con una cell
 de 1.26 cm, con un bake de 79 s. Frente al path trace:
 
@@ -459,7 +459,7 @@ de 1.26 cm, con un bake de 79 s. Frente al path trace:
 |---|---|---|---|
 | mapa de sombras propio del suelo de mesh | 0.182 | 0.041 | 0.215 |
 | shadow catcher, profundidad 2.4, dos triángulos | 0.144 | 0.002 | 0.206 |
-| shadow catcher, profundidad $2\pi$, retícula | 0.192 | 0.030 | 0.220 |
+| shadow catcher, profundidad $2\pi$, lattice | 0.192 | 0.030 | 0.220 |
 
 **Light catcher** (`--light-catcher`). El mismo parche, alcanzando `--light-reach` longitudes del objeto (3) por
 delante y por detrás, con una cell de una treintava parte de la altura, convertido como un bake de radiancia por
@@ -482,8 +482,8 @@ pintura bajo una cúpula blanca que da un 13 % por debajo a causa del Fresnel de
 
 ## 3.11 Resultados medidos sobre el Corvette
 
-Todos los bakes siguientes son transfers TX, `--cell-from-camera /World/Camera`, 64 caminos por Gaussian,
-3 rebotes, sin caminos adaptativos extra, con el filtro especular y el alcance de aristas en sus valores por defecto
+Todos los bakes siguientes son transfers TX, `--cell-from-camera /World/Camera`, 64 paths por Gaussian,
+3 bounces, sin paths adaptativos extra, con el filtro especular y el alcance de aristas en sus valores por defecto
 (1 y 1.5). «Car crop» es el PSNR de pantalla sobre el recorte de 900 × 420 del coche, y «frame» sobre el
 frame completo de 1920 × 1080, ambos frente al path trace del mesh, tras el cut del merge tree a
 0.25 px con back-face culling.
@@ -534,7 +534,7 @@ cercana pasa de 108 527 a 404 594 Gaussians entre 1280 y 5120 px y muestra níti
 la malla de la grille. Las 66 partes a las que el bake de 1280 px ya había dado como mucho 1.5 Gaussians por
 triángulo (insignias, grilles, faros, pinzas, retrovisores, ruedas, limpiaparabrisas, molduras) se vuelven a
 hacer bake a 5120 px en siete grupos; los paneles, a 5120 px o tan finos como mantenga cada parte bajo un tope de
-leaves (5 M, rebajado a 4.5 M después de que un árbol de 5.01 M no cupiera en la memoria del dispositivo), con
+leaves (5 M, rebajado a 4.5 M después de que un tree de 5.01 M no cupiera en la memoria del device), con
 `--max-cells 1048576` (figura 9):
 
 ![Figura 9. El logo desde una cámara cercana: leaves del bake de 1280 px (izquierda) y del close-up level de 5120 px (derecha).](figures/img-logo-1280-5120.jpg)
@@ -549,11 +549,11 @@ leaves (5 M, rebajado a 4.5 M después de que un árbol de 5.01 M no cupiera en 
 | seis paneles grandes y el parabrisas | 15 994 566 | 5120 |
 | pan0–4 (paneles pequeños) | 17 088 152 | 5120 |
 | Front_Bumper_001 | 5 008 986 | 4480 |
-| **24 árboles** | **74 536 126** | |
+| **24 trees** | **74 536 126** | |
 
 Los 24 merge trees contienen 74 328 031 merges, 208 095 raíces y 148 864 157 nodos en 49 634 pages (87.4 GB) y
 comparten un codebook de oclusión de 8 182 entradas; la sección 6.9 da los detalles. (La conversión de
-Front_Bumper_001 emite 5 009 059 Gaussians; su árbol tiene 5 008 986 leaves, la cifra que usa la tabla.)
+Front_Bumper_001 emite 5 009 059 Gaussians; su tree tiene 5 008 986 leaves, la cifra que usa la tabla.)
 
 ## 3.12 Limitaciones
 
@@ -562,9 +562,9 @@ Front_Bumper_001 emite 5 009 059 Gaussians; su árbol tiene 5 008 986 leaves, la
   parachoques sale irregular.
 - Los faros no llevan emisión en el bake de transfer; los faros delanteros salen oscuros frente al path trace.
 - Un vidrio fino tintado se convierte como sólido, y una nube conserva un único índice salvo que lleve capas.
-- La correspondencia de coverage supone el solapamiento $2\pi\sigma^2$ de la retícula de cells; los triángulos
+- La correspondencia de coverage supone el solapamiento $2\pi\sigma^2$ de la lattice de cells; los triángulos
   menores que una cell y las cells desplazadas y divididas se solapan de otra forma y no se corrigen.
 - Los instanciadores de puntos anidados solo se expanden en el nivel más interno; el movimiento escrito como
   velocidades se lee en la muestra.
-- La memoria del dispositivo limita una parte a unos 5 M de leaves para el merge tree que sigue; las partes
+- La memoria del device limita una parte a unos 5 M de leaves para el merge tree que sigue; las partes
   mayores se convierten a una resolución de cámara más gruesa.
