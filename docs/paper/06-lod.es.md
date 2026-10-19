@@ -63,9 +63,9 @@ millones de Gaussians con material bajo un budget compartido.
 
 `athenea decimate --tree` construye un merge tree binario por merge de pares de vecinos más cercanos mutuos. Es NanoGS
 (Xiong et al. 2026) en el device (`lod_pairs.slang`, `lod_pairs_final.slang`, `Lod.cpp`), con guardas adecuadas
-a nubes de bake con material (figura 16).
+a nubes de bake con material (figura 17).
 
-![Figura 16. Un merge tree y su cut. Los nodos son sumas de momentos; el error ε es monótono hacia arriba y la esfera ρ de cada nodo cubre las de sus hijos. Los nodos se agrupan en pages según el error del padre y llevan un índice a un codebook de oclusión conservador; la traversal de cada frame prueba pages, back faces y oclusión.](figures/fig-lod.es.svg)
+![Figura 17. Un merge tree y su cut. Los nodos son sumas de momentos; el error ε es monótono hacia arriba y la esfera ρ de cada nodo cubre las de sus hijos. Los nodos se agrupan en pages según el error del padre y llevan un índice a un codebook de oclusión conservador; la traversal de cada frame prueba pages, back faces y oclusión.](figures/fig-lod.es.svg)
 
 ### 6.2.1 Los nodos como momentos
 
@@ -447,7 +447,7 @@ que se dibuja; en el player WebGPU de §7, de cerca con $\tau=3$, eso supone ~60
 De cerca, el logo y la grille siguen blandos con el bake a 1280 px. Una cámara cercana llega a unos 0.5 mm por píxel
 de salida, mientras que las leaves a 1280 px miden 3–4 mm. Un bake de logo y grille desde una cámara cercana a
 5120 px muestra nítidos la bandera a cuadros, la pajarita y la malla metálica de la grille (108 527 → 404 594
-Gaussians). El close-up level (car5120) vuelve a hacer el bake del coche por grupos (figura 9):
+Gaussians). El close-up level (car5120) vuelve a hacer el bake del coche por grupos (figura 10):
 
 - **Piezas detalladas.** Las 66 piezas a las que el bake a 1280 px da como mucho 1.5 Gaussians por triángulo
   (emblemas, grilles, faros, pinzas, retrovisores, ruedas, limpiaparabrisas, molduras), a 5120 px, en 7 grupos

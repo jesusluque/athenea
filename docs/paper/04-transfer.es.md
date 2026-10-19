@@ -25,7 +25,7 @@ $\mathbf{s}$ e irradiancia $E_\odot$ extraído de él, y un prefiltered map $\ti
 ## 4.2 Qué guarda una Gaussian
 
 El transfer es una tira de valores por Gaussian, f16 en el device. No hay token de modo: la cuenta es el formato
-(`common/transfer_layout.slang`) (figura 10).
+(`common/transfer_layout.slang`) (figura 11).
 
 | valores | formato | origen |
 |---|---|---|
@@ -37,7 +37,7 @@ El transfer es una tira de valores por Gaussian, f16 en el device. No hay token 
 | 112 | grado 3, ambas + reflected field (48) | **TX por defecto** |
 | 10 | dos lobes zonales en el marco de la Gaussian | nubes con skinning |
 
-![Figura 10. Qué guarda el bake por Gaussian y cómo lo combina el dibujado con el entorno: el body a partir del SH directo e indirecto, polish y clear coat a partir del reflected field y de las cells de open directions, y el sharp lobe evaluado por píxel.](figures/fig-transfer.es.svg)
+![Figura 11. Qué guarda el bake por Gaussian y cómo lo combina el dibujado con el entorno: el body a partir del SH directo e indirecto, polish y clear coat a partir del reflected field y de las cells de open directions, y el sharp lobe evaluado por píxel.](figures/fig-transfer.es.svg)
 
 Junto a ella:
 
@@ -116,9 +116,9 @@ el mundo (el prefiltered map, el fondo) conserva $L_k$. Un transfer zonal (§4.4
 como está. Con el peón de §5.11 girado 60 grados alrededor de su eje vertical junto con su cámara y su cielo, el frame con
 relight coincide con el del peón sin girar con relMSE $9\times10^{-6}$ (61 dB) a 768 × 768; girado al revés, 11 dB.
 Leído en cambio en el sistema del mundo, el peón levantado de Y-up a una escena Z-up dibujaba su cabeza de vidrio en
-fragmentos (figura 11).
+fragmentos (figura 12).
 
-![Figura 11. La cabeza de vidrio del peón en una escena Z-up, con sus nubes levantadas por un cuarto de vuelta. Izquierda: el transfer leído en el sistema del mundo. Centro: leído en el sistema de la nube con el cielo girado a él. Derecha: la nube sin girar en su propio stage Y-up, cuyo cielo queda en otro acimut.](figures/img-turned-glass.jpg)
+![Figura 12. La cabeza de vidrio del peón en una escena Z-up, con sus nubes levantadas por un cuarto de vuelta. Izquierda: el transfer leído en el sistema del mundo. Centro: leído en el sistema de la nube con el cielo girado a él. Derecha: la nube sin girar en su propio stage Y-up, cuyo cielo queda en otro acimut.](figures/img-turned-glass.jpg)
 
 ## 4.4 El bake
 
@@ -618,7 +618,7 @@ Cada Gaussian lleva los parámetros que lee el relight -- su material, su forma 
 cualquiera de ellos se puede dibujar a través de una cámara en lugar de la luz (`athenea:splatView`). El splat se mezcla
 por su opacidad como la luz, así que un frame de un parámetro es ese parámetro tal como la cámara ve la nube: el mismo
 orden, las mismas footprints y la misma coverage que el frame con luz, y por tanto alineado con él píxel a píxel. Los valores
-que no son colores se ponen en una escala para verlos, y se guardan como números en un EXR. La figura 12 muestra el peón
+que no son colores se ponen en una escala para verlos, y se guardan como números en un EXR. La figura 13 muestra el peón
 de §5.11.
 
 | canal | qué es | escala |
@@ -658,7 +658,7 @@ geometría), transporte precalculado y objetivos (la luz por cielo) -- el materi
 el transporte, o la luz con relight, a partir de entradas que no lo llevan. En el peón a 768 × 768 un canal cuesta
 20–60 ms. Una nube sin relight solo tiene su luz, su opacidad y su tamaño que mostrar.
 
-![Figura 12. Los canales del peón a través de su cámara, 768 × 768: el frame con luz bajo el cielo del bake y quince parámetros dibujados en lugar de la luz. La cabeza de vidrio es la única parte que transmite y el anillo dorado el único metal; el canal de tamaño muestra las Gaussians fusionadas más grandes del LOD de la cabeza; el bounce es oscuro porque el peón está solo.](figures/img-channels.jpg)
+![Figura 13. Los canales del peón a través de su cámara, 768 × 768: el frame con luz bajo el cielo del bake y quince parámetros dibujados en lugar de la luz. La cabeza de vidrio es la única parte que transmite y el anillo dorado el único metal; el canal de tamaño muestra las Gaussians fusionadas más grandes del LOD de la cabeza; el bounce es oscuro porque el peón está solo.](figures/img-channels.jpg)
 
 ## 4.12 Limitaciones
 

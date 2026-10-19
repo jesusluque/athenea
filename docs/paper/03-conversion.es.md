@@ -38,7 +38,7 @@ device de la nube (`mesh2splat_gather`), los límites de la nube se pliegan en e
 (`mesh2splat_span`) y el bake los lee en su sitio. Solo los contadores y los arrays USD finales cruzan al
 procesador.
 
-El comando es, por tanto, una cadena de pasadas en el device orquestada por el host (figura 5):
+El comando es, por tanto, una cadena de pasadas en el device orquestada por el host (figura 6):
 
 1. leer el stage (`usd::MeshStage`) y dividir los meshes en *piezas*;
 2. empaquetar cada pieza en una imagen de mesh, plegar las cajas y elegir la cell de cada pieza (`mesh2splat_cells`);
@@ -47,7 +47,7 @@ El comando es, por tanto, una cadena de pasadas en el device orquestada por el h
 5. opcionalmente, hacer bake (radiancia, o un transfer) en cada Gaussian con el path tracer;
 6. escribir un stage `ParticleField3DGaussianSplat` (o un `.athc`) de forma atómica.
 
-![Figura 5. La conversión como secuencia de pasadas en el device. Los pasos 2–7 son kernels o el efecto AOFX Mesh2Splat; el paso 8 es el bake del transfer de la sección 4.](figures/fig-mesh2splat.es.svg)
+![Figura 6. La conversión como secuencia de pasadas en el device. Los pasos 2–7 son kernels o el efecto AOFX Mesh2Splat; el paso 8 es el bake del transfer de la sección 4.](figures/fig-mesh2splat.es.svg)
 
 ## 3.2 Lectura del stage
 
@@ -502,9 +502,9 @@ unos 34 min en conjunto.
 | vidrio, neumáticos | aprox. una por triángulo | aprox. una por triángulo |
 | car crop / frame (PSNR) | 16.55 / 22.18 dB | 17.88 / 23.90 dB |
 
-![Figura 6. Car crop (900 × 420 del frame de 1920 × 1080 desde `/World/Camera`): path trace del mesh (arriba), el bake de 640 px (centro) y el bake de 1280 px (abajo), ambos dibujados como el cut de 0.25 px con back-face culling. PSNR del car crop 16.55 dB y 17.88 dB.](figures/img-car-640-1280.jpg)
+![Figura 7. Car crop (900 × 420 del frame de 1920 × 1080 desde `/World/Camera`): path trace del mesh (arriba), el bake de 640 px (centro) y el bake de 1280 px (abajo), ambos dibujados como el cut de 0.25 px con back-face culling. PSNR del car crop 16.55 dB y 17.88 dB.](figures/img-car-640-1280.jpg)
 
-![Figura 7. El frame completo de 1920 × 1080 del bake de 1280 px, cut de 0.25 px con back-face culling (PSNR del frame 23.90 dB frente al path trace).](figures/img-car-1280-frame.jpg)
+![Figura 8. El frame completo de 1920 × 1080 del bake de 1280 px, cut de 0.25 px con back-face culling (PSNR del frame 23.90 dB frente al path trace).](figures/img-car-1280-frame.jpg)
 
 Análisis de la nube de 1280 px frente a la de 640 px: los reflejos del capó pasan de 3.2 a 2.0 px de su posición en el
 path trace, el contraste de los reflejos abiertos de la puerta de 0.35/0.53 a 0.56/0.74 del path trace, los
@@ -521,12 +521,12 @@ coche proyectando sombra, 931 017 Gaussians en cada variante:
 | B | `--specular-filter 0` | línea oscura discontinua en el fold del faldón; la tira de cromo centellea |
 | C | B + `--edge-reach 1.0` | alargamiento y pelos idénticos a B |
 
-![Figura 8. Los ajustes de 1280 px en el panel del sill: el lateral del coche como contexto (arriba a la izquierda), variante A (arriba a la derecha), variante B (abajo a la izquierda) y variante C (abajo a la derecha). B y C muestran la línea oscura discontinua sobre el fold.](figures/img-sill-variants.jpg)
+![Figura 9. Los ajustes de 1280 px en el panel del sill: el lateral del coche como contexto (arriba a la izquierda), variante A (arriba a la derecha), variante B (abajo a la izquierda) y variante C (abajo a la derecha). B y C muestran la línea oscura discontinua sobre el fold.](figures/img-sill-variants.jpg)
 
 Las variantes comprueban si las rayas de la puerta son el ensanchamiento de Toksvig del coat saturándose en los
 folds y si los pelos del faldón son las Gaussians alargadas de la pasada de aristas. Ninguna de las dos hipótesis se
 sostiene a 1280 px: el ensanchamiento es necesario en los folds y un alcance de aristas más estricto no cambia nada,
-así que se usan los ajustes de A (figura 8).
+así que se usan los ajustes de A (figura 9).
 
 **El close-up level a 5120 px.** Una vista cercana está mucho más próxima que `/World/Camera`,
 unos 0.5 mm por píxel de pantalla frente a leaves de 3–4 mm. Una conversión del logotipo y la grille desde una cámara
@@ -535,9 +535,9 @@ la malla de la grille. Las 66 partes a las que el bake de 1280 px ya había dado
 triángulo (insignias, grilles, faros, pinzas, retrovisores, ruedas, limpiaparabrisas, molduras) se vuelven a
 hacer bake a 5120 px en siete grupos; los paneles, a 5120 px o tan finos como mantenga cada parte bajo un tope de
 leaves (5 M, rebajado a 4.5 M después de que un tree de 5.01 M no cupiera en la memoria del device), con
-`--max-cells 1048576` (figura 9):
+`--max-cells 1048576` (figura 10):
 
-![Figura 9. El logo desde una cámara cercana: leaves del bake de 1280 px (izquierda) y del close-up level de 5120 px (derecha).](figures/img-logo-1280-5120.jpg)
+![Figura 10. El logo desde una cámara cercana: leaves del bake de 1280 px (izquierda) y del close-up level de 5120 px (derecha).](figures/img-logo-1280-5120.jpg)
 
 | grupos | leaves | resolución (px) |
 |---|---|---|

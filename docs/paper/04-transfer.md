@@ -25,7 +25,7 @@ irradiance $E_\odot$ extracted from it, and a prefiltered map $\tilde L(\boldsym
 ## 4.2 What a Gaussian stores
 
 The transfer is one run of values per Gaussian, f16 on the device. There is no mode token: the count is the layout
-(`common/transfer_layout.slang`) (Figure 10).
+(`common/transfer_layout.slang`) (Figure 11).
 
 | values | layout | origin |
 |---|---|---|
@@ -37,7 +37,7 @@ The transfer is one run of values per Gaussian, f16 on the device. There is no m
 | 112 | degree 3, both + reflected field (48) | **TX default** |
 | 10 | two zonal lobes in the Gaussian's frame | skinned clouds |
 
-![Figure 10. What the bake stores per Gaussian and how the draw combines it with the environment: the body from the direct and indirect SH, polish and clear coat from the reflected field and the open-direction cells, and the sharp lobe evaluated per pixel.](figures/fig-transfer.svg)
+![Figure 11. What the bake stores per Gaussian and how the draw combines it with the environment: the body from the direct and indirect SH, polish and clear coat from the reflected field and the open-direction cells, and the sharp lobe evaluated per pixel.](figures/fig-transfer.svg)
 
 Beside it:
 
@@ -111,9 +111,9 @@ even steps in $\varphi$). The body then dots the transfer with $L'_k$; what is e
 map, the background) keeps $L_k$. A zonal transfer (§4.4.5) turns with each Gaussian already and is left as it is. With
 the pawn of §5.11 rotated 60 degrees about its up axis together with its camera and its sky, the relit frame matches
 the unrotated one at relMSE $9\times10^{-6}$ (61 dB) at 768 × 768; turned the other way, 11 dB. Read in the world's
-frame instead, the pawn stood up from Y-up into a Z-up scene drew its glass head in fragments (Figure 11).
+frame instead, the pawn stood up from Y-up into a Z-up scene drew its glass head in fragments (Figure 12).
 
-![Figure 11. The pawn's glass head in a Z-up scene, its clouds stood up by a quarter turn. Left: the transfer read in the world's frame. Centre: read in the cloud's frame with the sky turned into it. Right: the cloud unturned in its own Y-up stage, whose sky lies at another azimuth.](figures/img-turned-glass.jpg)
+![Figure 12. The pawn's glass head in a Z-up scene, its clouds stood up by a quarter turn. Left: the transfer read in the world's frame. Centre: read in the cloud's frame with the sky turned into it. Right: the cloud unturned in its own Y-up stage, whose sky lies at another azimuth.](figures/img-turned-glass.jpg)
 
 ## 4.4 The bake
 
@@ -591,7 +591,7 @@ Each Gaussian carries the parameters the relight reads -- its material, its shap
 -- and any one of them can be drawn through a camera in place of the light (`athenea:splatView`). The splat is blended
 by its opacity as the light is, so a frame of one parameter is that parameter as the camera sees the cloud: the same
 sort, the same footprints, the same coverage as the lit frame, and therefore aligned with it pixel for pixel. Values
-that are not colours are put on a scale to be seen, and kept as numbers in an EXR. Figure 12 shows the pawn of §5.11.
+that are not colours are put on a scale to be seen, and kept as numbers in an EXR. Figure 13 shows the pawn of §5.11.
 
 | channel | what it is | scale |
 |---|---|---|
@@ -629,7 +629,7 @@ precomputed transport and targets (light per sky) -- the material of a dataset f
 or the relit light, from inputs that do not carry it. On the pawn at 768 × 768 a channel costs 20–60 ms. A cloud that is
 not relit has only its light, opacity and size to show.
 
-![Figure 12. The pawn's channels through its camera, 768 × 768: the lit frame under the bake's sky and fifteen parameters drawn in place of the light. The glass head is the only transmitting part and the gold ring the only metal; the size channel shows the larger merged Gaussians of the head's level of detail; the bounce is dark because the pawn stands alone.](figures/img-channels.jpg)
+![Figure 13. The pawn's channels through its camera, 768 × 768: the lit frame under the bake's sky and fifteen parameters drawn in place of the light. The glass head is the only transmitting part and the gold ring the only metal; the size channel shows the larger merged Gaussians of the head's level of detail; the bounce is dark because the pawn stands alone.](figures/img-channels.jpg)
 
 ## 4.12 Limitations
 

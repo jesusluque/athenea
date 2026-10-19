@@ -614,13 +614,15 @@ denoise, antialias and lens.
   focal, apertures), the sky, its rotation and visibility, and the layer a host without planes shows in RGBA. Through a
   minimal OpenFX host its frame is bit-identical to the server's own render of the same camera (relMSE 0). In Natron,
   which takes custom planes, a pawn at 1920 × 1080 writes one 32-bit EXR of 21 channels (colour, `depth.Z`, `P`,
-  `CryptoObject00`–`02`) whose colour and position match that host's to within $10^{-6}$. The Corvette's relightable
+  `CryptoObject00`–`02`, Figure 5) whose colour and position match that host's to within $10^{-6}$. The Corvette's relightable
   cloud (3 M Gaussians, 2.9 GB) at 1920 × 1080 with every plane takes 7.5 s for the first frame, which opens and
   uploads the stage, then 120–170 ms a frame under a still sky and 190–220 ms with the sky turning every frame. Nuke
   takes from an OpenFX node only its own planes, so there one layer a node is shown.
 - **Blender add-on** (`athenea_hydra`). A Hydra render engine for Blender 5.3 over the engine's delegate: viewport and
   final render by athenea, mesh-to-Gaussian conversion of selected objects, clouds referenced as Empties, the World's
   environment as the dome.
+
+![Figure 5. The layers the OpenFX node gives Natron for one frame of the pawn, written as one 32-bit EXR of 21 channels (1920 × 1080, kloofendal turned 120 degrees): the premultiplied colour, the view depth `depth.Z`, the world position `P` (shown as $12x + 1/2$, $6y$, $12z + 1/2$) and the three Cryptomatte layers, shown here by the engine's preview of the same matte, one colour per id (the body and the head).](figures/img-ofx-layers.jpg)
 
 ## 2.15 Verification without a CPU oracle
 

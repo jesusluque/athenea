@@ -135,9 +135,9 @@ por Gaussian. Sus entradas son la nube de reposo, los pares (joint, peso), las
 transformaciones de skinning de los joints en el instante actual y tres
 matrices: la transformación de bind $G$, `skelToWorld` y `worldToPrim`. Las
 matrices de USD son row-major y actúan sobre vectores fila, así que el host
-las traspone como hace `geom::Skinner` con los meshes (figura 13).
+las traspone como hace `geom::Skinner` con los meshes (figura 14).
 
-![Figura 13. Skinning en el device: la nube en bind pose, los pesos de joint por Gaussian y sus gradientes, y los transforms de joint del instante actual dan la media y la covarianza en pose; las tablas de visibilidad por parte, con bake único en bind pose, dan la sombra de la nube en pose.](figures/fig-skinning.es.svg)
+![Figura 14. Skinning en el device: la nube en bind pose, los pesos de joint por Gaussian y sus gradientes, y los transforms de joint del instante actual dan la media y la covarianza en pose; las tablas de visibilidad por parte, con bake único en bind pose, dan la sombra de la nube en pose.](figures/fig-skinning.es.svg)
 
 ### 5.4.1 La media
 
@@ -512,7 +512,7 @@ el tiempo 20, se dibuja como la nube sin diezmar con un RMS de imagen de
 
 El gorrión y un BMW fueron los dos primeros assets convertidos que no se
 crearon para este renderer, y la mayor parte de lo que destapó estaba fuera
-de las matemáticas del skinning (figura 14).
+de las matemáticas del skinning (figura 15).
 
 - **Exportación de la animación.** El exportador de Blender no escribía
   muestras de joints para este rig importado de FBX, así que
@@ -544,7 +544,7 @@ relMSE con él), después de que la coverage pasara a seguir la opacidad:
 | ala del gorrión, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | ala del gorrión, trazada | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
-![Figura 14. El gorrión: el mesh con path trace (izquierda) y las Gaussians convertidas, rasterizadas (derecha).](figures/img-sparrow.jpg)
+![Figura 15. El gorrión: el mesh con path trace (izquierda) y las Gaussians convertidas, rasterizadas (derecha).](figures/img-sparrow.jpg)
 
 Para la web, el pájaro se convirtió con `--skinned --transfer
 --resolution 512`, con bake de lobes zonales a 256 paths y 3 bounces en la
@@ -584,9 +584,9 @@ secciones 3 y 4. La validación de alta calidad del peón blanco
 Tres conversiones posteriores del mismo peón, medidas a 1024², dan un relMSE
 del cristal de 0.149, 0.081 y 0.043, con el cuerpo sin cambios en 0.025. El
 cuerpo queda a unos pocos por ciento del path trace del mesh. El error se
-concentra en la cabeza de cristal (figura 15).
+concentra en la cabeza de cristal (figura 16).
 
-![Figura 15. El peón blanco a 2048²: el path trace del mesh con 2048 paths por píxel (izquierda) y las Gaussians convertidas (derecha).](figures/img-pawn.jpg)
+![Figura 16. El peón blanco a 2048²: el path trace del mesh con 2048 paths por píxel (izquierda) y las Gaussians convertidas (derecha).](figures/img-pawn.jpg)
 
 ## 5.12 Aplicación: reproducción en la web y en un teléfono
 

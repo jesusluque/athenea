@@ -59,9 +59,9 @@ of material Gaussians under a shared budget.
 
 `athenea decimate --tree` builds a binary merge tree by mutual nearest-neighbour pair merging. It is NanoGS (Xiong et
 al. 2026) on the device (`lod_pairs.slang`, `lod_pairs_final.slang`, `Lod.cpp`), with guards that suit baked material
-clouds (Figure 16).
+clouds (Figure 17).
 
-![Figure 16. A merge tree and its cut. Nodes are sums of moments; the error ε is monotone up the tree and each node’s sphere ρ covers its children’s. Nodes are paged by their parent’s error and carry an index into a conservative occlusion codebook; the per-frame traversal tests pages, back faces and occlusion.](figures/fig-lod.svg)
+![Figure 17. A merge tree and its cut. Nodes are sums of moments; the error ε is monotone up the tree and each node’s sphere ρ covers its children’s. Nodes are paged by their parent’s error and carry an index into a conservative occlusion codebook; the per-frame traversal tests pages, back faces and occlusion.](figures/fig-lod.svg)
 
 ### 6.2.1 Nodes as moments
 
@@ -420,7 +420,7 @@ of 64 for what is drawn; in the WebGPU player of §7, near at $\tau=3$, that com
 Close up, the logo and grille stay soft at the 1280 px bake. A close camera comes to about 0.5 mm per output
 pixel, while the 1280 px leaves are 3–4 mm. A logo-and-grille bake from a close camera at 5120 px shows the checkered
 flag, the bowtie and the grille's mesh crisp (108 527 → 404 594 Gaussians). The close-up level (car5120) re-bakes the
-car in groups (Figure 9):
+car in groups (Figure 10):
 
 - **Detailed parts.** The 66 parts that the 1280 px bake gives at most 1.5 Gaussians per triangle (badges, grilles,
   lamps, calipers, mirrors, wheels, wipers, trims), at 5120 px, in 7 groups (`fine0–6`).

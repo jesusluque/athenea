@@ -130,9 +130,9 @@ thread per gaussian. Its inputs are the rest cloud, the (joint, weight)
 pairs, the joints' skinning transforms at the current instant, and three
 matrices: the bind transform $G$, `skelToWorld` and `worldToPrim`. USD
 matrices are row-major and act on row vectors, so the host transposes them as
-`geom::Skinner` does for meshes (Figure 13).
+`geom::Skinner` does for meshes (Figure 14).
 
-![Figure 13. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
+![Figure 14. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
 
 ### 5.4.1 The mean
 
@@ -491,7 +491,7 @@ an image RMS of 0.002.
 ## 5.10 The sparrow
 
 The sparrow and a BMW were the first two assets converted that were not
-authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 14).
+authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 15).
 
 - **Animation export.** Blender's exporter wrote no joint samples for this
   FBX-imported rig, so `scripts/sparrow-anim.py` samples the evaluated pose.
@@ -519,7 +519,7 @@ relMSE with it), after coverage was made to follow opacity:
 | sparrow wing, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | sparrow wing, traced | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
-![Figure 14. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
+![Figure 15. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
 
 For the web, the bird was converted with `--skinned --transfer
 --resolution 512`, with zonal lobes baked at 256 paths and 3 bounces in the
@@ -558,9 +558,9 @@ paths) gives, per material:
 Three later conversions of the same pawn, measured at 1024², give glass
 relMSE 0.149, 0.081 and 0.043, with the body unchanged at 0.025. The body is
 within a few percent of the path-traced mesh. The error is concentrated in the
-glass head (Figure 15).
+glass head (Figure 16).
 
-![Figure 15. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
+![Figure 16. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
 
 ## 5.12 Application: playback on the web and on a phone
 

@@ -651,7 +651,7 @@ denoise, antialiasing y lente.
   Camera (translate, rotate en un orden, focal, aperturas), el cielo, su rotación y su visibilidad, y la capa que muestra
   en RGBA un host sin planos. A través de un host OpenFX mínimo, su frame es idéntico bit a bit al render del propio
   servidor con la misma cámara (relMSE 0). En Natron, que admite planos propios, un peón a 1920 × 1080 escribe un EXR de
-  32 bits con 21 canales (color, `depth.Z`, `P`, `CryptoObject00`–`02`) cuyos color y posición coinciden con los de ese
+  32 bits con 21 canales (color, `depth.Z`, `P`, `CryptoObject00`–`02`, figura 5) cuyos color y posición coinciden con los de ese
   host con un error menor de $10^{-6}$. La nube reiluminable del Corvette (3 M de Gaussians, 2.9 GB) a 1920 × 1080 con
   todos los planos tarda 7.5 s en el primer frame, que abre el stage y lo sube, y después 120–170 ms por frame con el
   cielo quieto y 190–220 ms con el cielo girando en cada frame. Nuke solo acepta de un nodo OpenFX sus propios planos,
@@ -659,6 +659,8 @@ denoise, antialiasing y lente.
 - **Add-on de Blender** (`athenea_hydra`). Un motor de render Hydra para Blender 5.3 sobre el delegado del motor: el
   viewport y el render final por athenea, la conversión de mesh a Gaussians de los objetos elegidos, las nubes
   referenciadas como Empties y el entorno del World como domo.
+
+![Figura 5. Las capas que el nodo OpenFX da a Natron en un frame del peón, escritas como un EXR de 32 bits con 21 canales (1920 × 1080, kloofendal girado 120 grados): el color premultiplicado, la profundidad de vista `depth.Z`, la posición en el mundo `P` (mostrada como $12x + 1/2$, $6y$, $12z + 1/2$) y las tres capas del Cryptomatte, mostradas aquí con la vista previa del motor del mismo matte, un color por id (el cuerpo y la cabeza).](figures/img-ofx-layers.jpg)
 
 ## 2.15 Verificación sin CPU oracle
 

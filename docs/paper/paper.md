@@ -821,13 +821,15 @@ denoise, antialias and lens.
   focal, apertures), the sky, its rotation and visibility, and the layer a host without planes shows in RGBA. Through a
   minimal OpenFX host its frame is bit-identical to the server's own render of the same camera (relMSE 0). In Natron,
   which takes custom planes, a pawn at 1920 × 1080 writes one 32-bit EXR of 21 channels (colour, `depth.Z`, `P`,
-  `CryptoObject00`–`02`) whose colour and position match that host's to within $10^{-6}$. The Corvette's relightable
+  `CryptoObject00`–`02`, Figure 5) whose colour and position match that host's to within $10^{-6}$. The Corvette's relightable
   cloud (3 M Gaussians, 2.9 GB) at 1920 × 1080 with every plane takes 7.5 s for the first frame, which opens and
   uploads the stage, then 120–170 ms a frame under a still sky and 190–220 ms with the sky turning every frame. Nuke
   takes from an OpenFX node only its own planes, so there one layer a node is shown.
 - **Blender add-on** (`athenea_hydra`). A Hydra render engine for Blender 5.3 over the engine's delegate: viewport and
   final render by athenea, mesh-to-Gaussian conversion of selected objects, clouds referenced as Empties, the World's
   environment as the dome.
+
+![Figure 5. The layers the OpenFX node gives Natron for one frame of the pawn, written as one 32-bit EXR of 21 channels (1920 × 1080, kloofendal turned 120 degrees): the premultiplied colour, the view depth `depth.Z`, the world position `P` (shown as $12x + 1/2$, $6y$, $12z + 1/2$) and the three Cryptomatte layers, shown here by the engine's preview of the same matte, one colour per id (the body and the head).](figures/img-ofx-layers.jpg)
 
 ## 2.15 Verification without a CPU oracle
 
@@ -904,7 +906,7 @@ packing kernel writes where the effect reads. The records the effect writes are 
 buffers (`mesh2splat_gather`), the cloud's bounds are folded on the device (`mesh2splat_span`), and the bake reads
 them in place. Only counters and the final USD arrays cross to the processor.
 
-The command is therefore a pipeline of device passes orchestrated by the host (Figure 5):
+The command is therefore a pipeline of device passes orchestrated by the host (Figure 6):
 
 1. read the stage (`usd::MeshStage`) and split meshes into *pieces*;
 2. pack each piece into a mesh picture, fold boxes, choose each piece's cell (`mesh2splat_cells`);
@@ -913,7 +915,7 @@ The command is therefore a pipeline of device passes orchestrated by the host (F
 5. optionally bake (radiance, or a transfer) at every Gaussian with the path tracer;
 6. write a `ParticleField3DGaussianSplat` stage (or a `.athc`) atomically.
 
-![Figure 5. The conversion as a sequence of device passes. Steps 2–7 are kernels or the Mesh2Splat AOFX effect; step 8 is the transfer bake of Section 4.](figures/fig-mesh2splat.svg)
+![Figure 6. The conversion as a sequence of device passes. Steps 2–7 are kernels or the Mesh2Splat AOFX effect; step 8 is the transfer bake of Section 4.](figures/fig-mesh2splat.svg)
 
 ## 3.2 Reading the stage
 
@@ -1337,9 +1339,9 @@ eight bakes wrote 891 387, 896 496, 809 073, 790 403, 1 631 765, 1 073 954, 1 30
 | glass, tyres | about one per triangle | about one per triangle |
 | car crop / frame (PSNR) | 16.55 / 22.18 dB | 17.88 / 23.90 dB |
 
-![Figure 6. Car crop (900 × 420 of the 1920 × 1080 frame from `/World/Camera`): path trace of the mesh (top), the 640 px bake (middle) and the 1280 px bake (bottom), both drawn as the 0.25 px cut with back-face culling. Car-crop PSNR 16.55 dB and 17.88 dB.](figures/img-car-640-1280.jpg)
+![Figure 7. Car crop (900 × 420 of the 1920 × 1080 frame from `/World/Camera`): path trace of the mesh (top), the 640 px bake (middle) and the 1280 px bake (bottom), both drawn as the 0.25 px cut with back-face culling. Car-crop PSNR 16.55 dB and 17.88 dB.](figures/img-car-640-1280.jpg)
 
-![Figure 7. The full 1920 × 1080 frame of the 1280 px bake, 0.25 px cut with back-face culling (frame PSNR 23.90 dB against the path trace).](figures/img-car-1280-frame.jpg)
+![Figure 8. The full 1920 × 1080 frame of the 1280 px bake, 0.25 px cut with back-face culling (frame PSNR 23.90 dB against the path trace).](figures/img-car-1280-frame.jpg)
 
 Analysis of the 1280 px cloud against the 640 px one: hood highlights 3.2 → 2.0 px off their path-traced position,
 the door's open-reflection contrast 0.35/0.53 → 0.56/0.74 of the path trace's, the grille's holes in the coarse cut
@@ -1354,11 +1356,11 @@ chrome grille, grille rim, hood) were baked with the whole car casting, 931 017 
 | B | `--specular-filter 0` | dashed dark line on the sill's fold; the chrome strip sparkles |
 | C | B + `--edge-reach 1.0` | elongation and hairs identical to B |
 
-![Figure 8. The 1280 px settings on the sill panel: the side of the car for context (top left), variant A (top right), variant B (bottom left) and variant C (bottom right). B and C show the dashed dark line on the fold.](figures/img-sill-variants.jpg)
+![Figure 9. The 1280 px settings on the sill panel: the side of the car for context (top left), variant A (top right), variant B (bottom left) and variant C (bottom right). B and C show the dashed dark line on the fold.](figures/img-sill-variants.jpg)
 
 The variants test whether the door's streaks are the coat's Toksvig widening saturating on folds and the sill's
 hairs the edge pass's elongated Gaussians. Neither holds at 1280 px: the widening is needed on folds and the
-tighter edge reach changes nothing, so the settings of A are used (Figure 8).
+tighter edge reach changes nothing, so the settings of A are used (Figure 9).
 
 **The 5120 px close-up level.** A close view stands far nearer than `/World/Camera`, about 0.5 mm per screen
 pixel against 3–4 mm leaves. A logo-and-grille conversion from a close camera grows from 108 527 to
@@ -1366,9 +1368,9 @@ pixel against 3–4 mm leaves. A logo-and-grille conversion from a close camera 
 66 parts the 1280 px bake had already given at most 1.5 Gaussians per triangle (badges, grilles, lamps, calipers,
 mirrors, wheels, wipers, trims) are re-baked at 5120 px in seven groups; the panels at 5120 px or as fine as kept a
 part under a cap of leaves (5 M, lowered to 4.5 M after a 5.01 M tree did not fit in device memory), with
-`--max-cells 1048576` (Figure 9):
+`--max-cells 1048576` (Figure 10):
 
-![Figure 9. The logo from a close camera: leaves of the 1280 px bake (left) and of the 5120 px close-up level (right).](figures/img-logo-1280-5120.jpg)
+![Figure 10. The logo from a close camera: leaves of the 1280 px bake (left) and of the 5120 px close-up level (right).](figures/img-logo-1280-5120.jpg)
 
 | groups | leaves | resolution (px) |
 |---|---|---|
@@ -1426,7 +1428,7 @@ irradiance $E_\odot$ extracted from it, and a prefiltered map $\tilde L(\boldsym
 ## 4.2 What a Gaussian stores
 
 The transfer is one run of values per Gaussian, f16 on the device. There is no mode token: the count is the layout
-(`common/transfer_layout.slang`) (Figure 10).
+(`common/transfer_layout.slang`) (Figure 11).
 
 | values | layout | origin |
 |---|---|---|
@@ -1438,7 +1440,7 @@ The transfer is one run of values per Gaussian, f16 on the device. There is no m
 | 112 | degree 3, both + reflected field (48) | **TX default** |
 | 10 | two zonal lobes in the Gaussian's frame | skinned clouds |
 
-![Figure 10. What the bake stores per Gaussian and how the draw combines it with the environment: the body from the direct and indirect SH, polish and clear coat from the reflected field and the open-direction cells, and the sharp lobe evaluated per pixel.](figures/fig-transfer.svg)
+![Figure 11. What the bake stores per Gaussian and how the draw combines it with the environment: the body from the direct and indirect SH, polish and clear coat from the reflected field and the open-direction cells, and the sharp lobe evaluated per pixel.](figures/fig-transfer.svg)
 
 Beside it:
 
@@ -1512,9 +1514,9 @@ even steps in $\varphi$). The body then dots the transfer with $L'_k$; what is e
 map, the background) keeps $L_k$. A zonal transfer (§4.4.5) turns with each Gaussian already and is left as it is. With
 the pawn of §5.11 rotated 60 degrees about its up axis together with its camera and its sky, the relit frame matches
 the unrotated one at relMSE $9\times10^{-6}$ (61 dB) at 768 × 768; turned the other way, 11 dB. Read in the world's
-frame instead, the pawn stood up from Y-up into a Z-up scene drew its glass head in fragments (Figure 11).
+frame instead, the pawn stood up from Y-up into a Z-up scene drew its glass head in fragments (Figure 12).
 
-![Figure 11. The pawn's glass head in a Z-up scene, its clouds stood up by a quarter turn. Left: the transfer read in the world's frame. Centre: read in the cloud's frame with the sky turned into it. Right: the cloud unturned in its own Y-up stage, whose sky lies at another azimuth.](figures/img-turned-glass.jpg)
+![Figure 12. The pawn's glass head in a Z-up scene, its clouds stood up by a quarter turn. Left: the transfer read in the world's frame. Centre: read in the cloud's frame with the sky turned into it. Right: the cloud unturned in its own Y-up stage, whose sky lies at another azimuth.](figures/img-turned-glass.jpg)
 
 ## 4.4 The bake
 
@@ -1992,7 +1994,7 @@ Each Gaussian carries the parameters the relight reads -- its material, its shap
 -- and any one of them can be drawn through a camera in place of the light (`athenea:splatView`). The splat is blended
 by its opacity as the light is, so a frame of one parameter is that parameter as the camera sees the cloud: the same
 sort, the same footprints, the same coverage as the lit frame, and therefore aligned with it pixel for pixel. Values
-that are not colours are put on a scale to be seen, and kept as numbers in an EXR. Figure 12 shows the pawn of §5.11.
+that are not colours are put on a scale to be seen, and kept as numbers in an EXR. Figure 13 shows the pawn of §5.11.
 
 | channel | what it is | scale |
 |---|---|---|
@@ -2030,7 +2032,7 @@ precomputed transport and targets (light per sky) -- the material of a dataset f
 or the relit light, from inputs that do not carry it. On the pawn at 768 × 768 a channel costs 20–60 ms. A cloud that is
 not relit has only its light, opacity and size to show.
 
-![Figure 12. The pawn's channels through its camera, 768 × 768: the lit frame under the bake's sky and fifteen parameters drawn in place of the light. The glass head is the only transmitting part and the gold ring the only metal; the size channel shows the larger merged Gaussians of the head's level of detail; the bounce is dark because the pawn stands alone.](figures/img-channels.jpg)
+![Figure 13. The pawn's channels through its camera, 768 × 768: the lit frame under the bake's sky and fifteen parameters drawn in place of the light. The glass head is the only transmitting part and the gold ring the only metal; the size channel shows the larger merged Gaussians of the head's level of detail; the bounce is dark because the pawn stands alone.](figures/img-channels.jpg)
 
 ## 4.12 Limitations
 
@@ -2182,9 +2184,9 @@ thread per gaussian. Its inputs are the rest cloud, the (joint, weight)
 pairs, the joints' skinning transforms at the current instant, and three
 matrices: the bind transform $G$, `skelToWorld` and `worldToPrim`. USD
 matrices are row-major and act on row vectors, so the host transposes them as
-`geom::Skinner` does for meshes (Figure 13).
+`geom::Skinner` does for meshes (Figure 14).
 
-![Figure 13. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
+![Figure 14. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
 
 ### 5.4.1 The mean
 
@@ -2543,7 +2545,7 @@ an image RMS of 0.002.
 ## 5.10 The sparrow
 
 The sparrow and a BMW were the first two assets converted that were not
-authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 14).
+authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 15).
 
 - **Animation export.** Blender's exporter wrote no joint samples for this
   FBX-imported rig, so `scripts/sparrow-anim.py` samples the evaluated pose.
@@ -2571,7 +2573,7 @@ relMSE with it), after coverage was made to follow opacity:
 | sparrow wing, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | sparrow wing, traced | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
-![Figure 14. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
+![Figure 15. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
 
 For the web, the bird was converted with `--skinned --transfer
 --resolution 512`, with zonal lobes baked at 256 paths and 3 bounces in the
@@ -2610,9 +2612,9 @@ paths) gives, per material:
 Three later conversions of the same pawn, measured at 1024², give glass
 relMSE 0.149, 0.081 and 0.043, with the body unchanged at 0.025. The body is
 within a few percent of the path-traced mesh. The error is concentrated in the
-glass head (Figure 15).
+glass head (Figure 16).
 
-![Figure 15. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
+![Figure 16. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
 
 ## 5.12 Application: playback on the web and on a phone
 
@@ -2747,9 +2749,9 @@ of material Gaussians under a shared budget.
 
 `athenea decimate --tree` builds a binary merge tree by mutual nearest-neighbour pair merging. It is NanoGS (Xiong et
 al. 2026) on the device (`lod_pairs.slang`, `lod_pairs_final.slang`, `Lod.cpp`), with guards that suit baked material
-clouds (Figure 16).
+clouds (Figure 17).
 
-![Figure 16. A merge tree and its cut. Nodes are sums of moments; the error ε is monotone up the tree and each node’s sphere ρ covers its children’s. Nodes are paged by their parent’s error and carry an index into a conservative occlusion codebook; the per-frame traversal tests pages, back faces and occlusion.](figures/fig-lod.svg)
+![Figure 17. A merge tree and its cut. Nodes are sums of moments; the error ε is monotone up the tree and each node’s sphere ρ covers its children’s. Nodes are paged by their parent’s error and carry an index into a conservative occlusion codebook; the per-frame traversal tests pages, back faces and occlusion.](figures/fig-lod.svg)
 
 ### 6.2.1 Nodes as moments
 
@@ -3108,7 +3110,7 @@ of 64 for what is drawn; in the WebGPU player of §7, near at $\tau=3$, that com
 Close up, the logo and grille stay soft at the 1280 px bake. A close camera comes to about 0.5 mm per output
 pixel, while the 1280 px leaves are 3–4 mm. A logo-and-grille bake from a close camera at 5120 px shows the checkered
 flag, the bowtie and the grille's mesh crisp (108 527 → 404 594 Gaussians). The close-up level (car5120) re-bakes the
-car in groups (Figure 9):
+car in groups (Figure 10):
 
 - **Detailed parts.** The 66 parts that the 1280 px bake gives at most 1.5 Gaussians per triangle (badges, grilles,
   lamps, calipers, mirrors, wheels, wipers, trims), at 5120 px, in 7 groups (`fine0–6`).
@@ -3402,9 +3404,9 @@ The tier-4 section `CMPC` holds the 40 GPU bytes plus the traversal's bytes, so 
 | v3 | 64 = 40 + 24 | +cone word, 13-bit occlusion index; 30 B in, 20 B WASM | back-cull and occlusion on by default; only the pages the traversal asks for are planned |
 | v4 | container `CMP4` | 12-byte quantised records | payload as **raw-deflate runs of 64 nodes**, plane after plane; node pool; tier 4 +10 % (314 → 344 MB) |
 
-The **v4 page** is a container: a header, each run's end offset, the gzipped traversal planes, then each run of 64 nodes compressed by raw deflate. Runs can be fetched, kept and evicted one by one, so the CPU keeps a page's payload compressed and the GPU keeps records only for the **drawn** cut. The node pool's census motivated this: with whole pages resident, only about 26 % of each page's nodes were drawn, and smaller pages did not help (residency/cut 4.54× at $P=3000$, 4.46× at $P=500$) (Figure 17).
+The **v4 page** is a container: a header, each run's end offset, the gzipped traversal planes, then each run of 64 nodes compressed by raw deflate. Runs can be fetched, kept and evicted one by one, so the CPU keeps a page's payload compressed and the GPU keeps records only for the **drawn** cut. The node pool's census motivated this: with whole pages resident, only about 26 % of each page's nodes were drawn, and smaller pages did not help (residency/cut 4.54× at $P=3000$, 4.46× at $P=500$) (Figure 18).
 
-![Figure 17. The compact format: an asset table, `.athc` v3 files whose tier 4 holds v4 pages of traversal records and 40-byte payload records, and the clustered-PCA transfer basis kept on the GPU.](figures/fig-compact.svg)
+![Figure 18. The compact format: an asset table, `.athc` v3 files whose tier 4 holds v4 pages of traversal records and 40-byte payload records, and the clustered-PCA transfer basis kept on the GPU.](figures/fig-compact.svg)
 
 ### 7.5.3 Traversal records
 
@@ -3434,7 +3436,7 @@ The reader (`CompactBandStreamer`) reads only the page tables at open. After eac
 
 A node whose children are absent is drawn as a leaf, or as its parent or children while a run is being decoded. With v4 runs, the cut's own runs and those of its parents and children are always kept, and the rest are dropped first under a run budget. An extrapolated camera (2.5 updates ahead) is traversed too, so its runs are prefetched. Up to 12 Range requests are in flight.
 
-The work is split across the main thread, the WASM traversal and two workers (Figure 18):
+The work is split across the main thread, the WASM traversal and two workers (Figure 19):
 
 | where | what | measured |
 |---|---|---|
@@ -3443,7 +3445,7 @@ The work is split across the main thread, the WASM traversal and two workers (Fi
 | main thread | Range fetches, writes of records and draw lists (adopted, no GC) | — |
 | GPU compute | record moves when the pool shrinks (one dispatch, a thread a word) | first frame after a still frame 88–100 → 34 ms |
 
-![Figure 18. The player’s threads: Range fetches and the page pool on the main thread, the traversal in a WASM worker, the cut packed into slots in a second worker, and five GPU passes a frame; the GPU time drives the τ floor.](figures/fig-player.svg)
+![Figure 19. The player’s threads: Range fetches and the page pool on the main thread, the traversal in a WASM worker, the cut packed into slots in a second worker, and five GPU passes a frame; the GPU time drives the τ floor.](figures/fig-player.svg)
 
 On a fast orbit of 120° at 1° a frame on the emulated phone, the share of the cut missing from a frame fell from 26 % with the first v4 streamer to 4.3–6.4 %, which is 0.24–0.30 % of the screen area. Frames stayed at 60 fps with a maximum of 17.3–19.6 ms. The cut settled 2.6–3.1 s after load.
 

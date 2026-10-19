@@ -868,7 +868,7 @@ denoise, antialiasing y lente.
   Camera (translate, rotate en un orden, focal, aperturas), el cielo, su rotación y su visibilidad, y la capa que muestra
   en RGBA un host sin planos. A través de un host OpenFX mínimo, su frame es idéntico bit a bit al render del propio
   servidor con la misma cámara (relMSE 0). En Natron, que admite planos propios, un peón a 1920 × 1080 escribe un EXR de
-  32 bits con 21 canales (color, `depth.Z`, `P`, `CryptoObject00`–`02`) cuyos color y posición coinciden con los de ese
+  32 bits con 21 canales (color, `depth.Z`, `P`, `CryptoObject00`–`02`, figura 5) cuyos color y posición coinciden con los de ese
   host con un error menor de $10^{-6}$. La nube reiluminable del Corvette (3 M de Gaussians, 2.9 GB) a 1920 × 1080 con
   todos los planos tarda 7.5 s en el primer frame, que abre el stage y lo sube, y después 120–170 ms por frame con el
   cielo quieto y 190–220 ms con el cielo girando en cada frame. Nuke solo acepta de un nodo OpenFX sus propios planos,
@@ -876,6 +876,8 @@ denoise, antialiasing y lente.
 - **Add-on de Blender** (`athenea_hydra`). Un motor de render Hydra para Blender 5.3 sobre el delegado del motor: el
   viewport y el render final por athenea, la conversión de mesh a Gaussians de los objetos elegidos, las nubes
   referenciadas como Empties y el entorno del World como domo.
+
+![Figura 5. Las capas que el nodo OpenFX da a Natron en un frame del peón, escritas como un EXR de 32 bits con 21 canales (1920 × 1080, kloofendal girado 120 grados): el color premultiplicado, la profundidad de vista `depth.Z`, la posición en el mundo `P` (mostrada como $12x + 1/2$, $6y$, $12z + 1/2$) y las tres capas del Cryptomatte, mostradas aquí con la vista previa del motor del mismo matte, un color por id (el cuerpo y la cabeza).](figures/img-ofx-layers.jpg)
 
 ## 2.15 Verificación sin CPU oracle
 
@@ -955,7 +957,7 @@ device de la nube (`mesh2splat_gather`), los límites de la nube se pliegan en e
 (`mesh2splat_span`) y el bake los lee en su sitio. Solo los contadores y los arrays USD finales cruzan al
 procesador.
 
-El comando es, por tanto, una cadena de pasadas en el device orquestada por el host (figura 5):
+El comando es, por tanto, una cadena de pasadas en el device orquestada por el host (figura 6):
 
 1. leer el stage (`usd::MeshStage`) y dividir los meshes en *piezas*;
 2. empaquetar cada pieza en una imagen de mesh, plegar las cajas y elegir la cell de cada pieza (`mesh2splat_cells`);
@@ -964,7 +966,7 @@ El comando es, por tanto, una cadena de pasadas en el device orquestada por el h
 5. opcionalmente, hacer bake (radiancia, o un transfer) en cada Gaussian con el path tracer;
 6. escribir un stage `ParticleField3DGaussianSplat` (o un `.athc`) de forma atómica.
 
-![Figura 5. La conversión como secuencia de pasadas en el device. Los pasos 2–7 son kernels o el efecto AOFX Mesh2Splat; el paso 8 es el bake del transfer de la sección 4.](figures/fig-mesh2splat.es.svg)
+![Figura 6. La conversión como secuencia de pasadas en el device. Los pasos 2–7 son kernels o el efecto AOFX Mesh2Splat; el paso 8 es el bake del transfer de la sección 4.](figures/fig-mesh2splat.es.svg)
 
 ## 3.2 Lectura del stage
 
@@ -1419,9 +1421,9 @@ unos 34 min en conjunto.
 | vidrio, neumáticos | aprox. una por triángulo | aprox. una por triángulo |
 | car crop / frame (PSNR) | 16.55 / 22.18 dB | 17.88 / 23.90 dB |
 
-![Figura 6. Car crop (900 × 420 del frame de 1920 × 1080 desde `/World/Camera`): path trace del mesh (arriba), el bake de 640 px (centro) y el bake de 1280 px (abajo), ambos dibujados como el cut de 0.25 px con back-face culling. PSNR del car crop 16.55 dB y 17.88 dB.](figures/img-car-640-1280.jpg)
+![Figura 7. Car crop (900 × 420 del frame de 1920 × 1080 desde `/World/Camera`): path trace del mesh (arriba), el bake de 640 px (centro) y el bake de 1280 px (abajo), ambos dibujados como el cut de 0.25 px con back-face culling. PSNR del car crop 16.55 dB y 17.88 dB.](figures/img-car-640-1280.jpg)
 
-![Figura 7. El frame completo de 1920 × 1080 del bake de 1280 px, cut de 0.25 px con back-face culling (PSNR del frame 23.90 dB frente al path trace).](figures/img-car-1280-frame.jpg)
+![Figura 8. El frame completo de 1920 × 1080 del bake de 1280 px, cut de 0.25 px con back-face culling (PSNR del frame 23.90 dB frente al path trace).](figures/img-car-1280-frame.jpg)
 
 Análisis de la nube de 1280 px frente a la de 640 px: los reflejos del capó pasan de 3.2 a 2.0 px de su posición en el
 path trace, el contraste de los reflejos abiertos de la puerta de 0.35/0.53 a 0.56/0.74 del path trace, los
@@ -1438,12 +1440,12 @@ coche proyectando sombra, 931 017 Gaussians en cada variante:
 | B | `--specular-filter 0` | línea oscura discontinua en el fold del faldón; la tira de cromo centellea |
 | C | B + `--edge-reach 1.0` | alargamiento y pelos idénticos a B |
 
-![Figura 8. Los ajustes de 1280 px en el panel del sill: el lateral del coche como contexto (arriba a la izquierda), variante A (arriba a la derecha), variante B (abajo a la izquierda) y variante C (abajo a la derecha). B y C muestran la línea oscura discontinua sobre el fold.](figures/img-sill-variants.jpg)
+![Figura 9. Los ajustes de 1280 px en el panel del sill: el lateral del coche como contexto (arriba a la izquierda), variante A (arriba a la derecha), variante B (abajo a la izquierda) y variante C (abajo a la derecha). B y C muestran la línea oscura discontinua sobre el fold.](figures/img-sill-variants.jpg)
 
 Las variantes comprueban si las rayas de la puerta son el ensanchamiento de Toksvig del coat saturándose en los
 folds y si los pelos del faldón son las Gaussians alargadas de la pasada de aristas. Ninguna de las dos hipótesis se
 sostiene a 1280 px: el ensanchamiento es necesario en los folds y un alcance de aristas más estricto no cambia nada,
-así que se usan los ajustes de A (figura 8).
+así que se usan los ajustes de A (figura 9).
 
 **El close-up level a 5120 px.** Una vista cercana está mucho más próxima que `/World/Camera`,
 unos 0.5 mm por píxel de pantalla frente a leaves de 3–4 mm. Una conversión del logotipo y la grille desde una cámara
@@ -1452,9 +1454,9 @@ la malla de la grille. Las 66 partes a las que el bake de 1280 px ya había dado
 triángulo (insignias, grilles, faros, pinzas, retrovisores, ruedas, limpiaparabrisas, molduras) se vuelven a
 hacer bake a 5120 px en siete grupos; los paneles, a 5120 px o tan finos como mantenga cada parte bajo un tope de
 leaves (5 M, rebajado a 4.5 M después de que un tree de 5.01 M no cupiera en la memoria del device), con
-`--max-cells 1048576` (figura 9):
+`--max-cells 1048576` (figura 10):
 
-![Figura 9. El logo desde una cámara cercana: leaves del bake de 1280 px (izquierda) y del close-up level de 5120 px (derecha).](figures/img-logo-1280-5120.jpg)
+![Figura 10. El logo desde una cámara cercana: leaves del bake de 1280 px (izquierda) y del close-up level de 5120 px (derecha).](figures/img-logo-1280-5120.jpg)
 
 | grupos | leaves | resolución (px) |
 |---|---|---|
@@ -1513,7 +1515,7 @@ $\mathbf{s}$ e irradiancia $E_\odot$ extraído de él, y un prefiltered map $\ti
 ## 4.2 Qué guarda una Gaussian
 
 El transfer es una tira de valores por Gaussian, f16 en el device. No hay token de modo: la cuenta es el formato
-(`common/transfer_layout.slang`) (figura 10).
+(`common/transfer_layout.slang`) (figura 11).
 
 | valores | formato | origen |
 |---|---|---|
@@ -1525,7 +1527,7 @@ El transfer es una tira de valores por Gaussian, f16 en el device. No hay token 
 | 112 | grado 3, ambas + reflected field (48) | **TX por defecto** |
 | 10 | dos lobes zonales en el marco de la Gaussian | nubes con skinning |
 
-![Figura 10. Qué guarda el bake por Gaussian y cómo lo combina el dibujado con el entorno: el body a partir del SH directo e indirecto, polish y clear coat a partir del reflected field y de las cells de open directions, y el sharp lobe evaluado por píxel.](figures/fig-transfer.es.svg)
+![Figura 11. Qué guarda el bake por Gaussian y cómo lo combina el dibujado con el entorno: el body a partir del SH directo e indirecto, polish y clear coat a partir del reflected field y de las cells de open directions, y el sharp lobe evaluado por píxel.](figures/fig-transfer.es.svg)
 
 Junto a ella:
 
@@ -1604,9 +1606,9 @@ el mundo (el prefiltered map, el fondo) conserva $L_k$. Un transfer zonal (§4.4
 como está. Con el peón de §5.11 girado 60 grados alrededor de su eje vertical junto con su cámara y su cielo, el frame con
 relight coincide con el del peón sin girar con relMSE $9\times10^{-6}$ (61 dB) a 768 × 768; girado al revés, 11 dB.
 Leído en cambio en el sistema del mundo, el peón levantado de Y-up a una escena Z-up dibujaba su cabeza de vidrio en
-fragmentos (figura 11).
+fragmentos (figura 12).
 
-![Figura 11. La cabeza de vidrio del peón en una escena Z-up, con sus nubes levantadas por un cuarto de vuelta. Izquierda: el transfer leído en el sistema del mundo. Centro: leído en el sistema de la nube con el cielo girado a él. Derecha: la nube sin girar en su propio stage Y-up, cuyo cielo queda en otro acimut.](figures/img-turned-glass.jpg)
+![Figura 12. La cabeza de vidrio del peón en una escena Z-up, con sus nubes levantadas por un cuarto de vuelta. Izquierda: el transfer leído en el sistema del mundo. Centro: leído en el sistema de la nube con el cielo girado a él. Derecha: la nube sin girar en su propio stage Y-up, cuyo cielo queda en otro acimut.](figures/img-turned-glass.jpg)
 
 ## 4.4 El bake
 
@@ -2106,7 +2108,7 @@ Cada Gaussian lleva los parámetros que lee el relight -- su material, su forma 
 cualquiera de ellos se puede dibujar a través de una cámara en lugar de la luz (`athenea:splatView`). El splat se mezcla
 por su opacidad como la luz, así que un frame de un parámetro es ese parámetro tal como la cámara ve la nube: el mismo
 orden, las mismas footprints y la misma coverage que el frame con luz, y por tanto alineado con él píxel a píxel. Los valores
-que no son colores se ponen en una escala para verlos, y se guardan como números en un EXR. La figura 12 muestra el peón
+que no son colores se ponen en una escala para verlos, y se guardan como números en un EXR. La figura 13 muestra el peón
 de §5.11.
 
 | canal | qué es | escala |
@@ -2146,7 +2148,7 @@ geometría), transporte precalculado y objetivos (la luz por cielo) -- el materi
 el transporte, o la luz con relight, a partir de entradas que no lo llevan. En el peón a 768 × 768 un canal cuesta
 20–60 ms. Una nube sin relight solo tiene su luz, su opacidad y su tamaño que mostrar.
 
-![Figura 12. Los canales del peón a través de su cámara, 768 × 768: el frame con luz bajo el cielo del bake y quince parámetros dibujados en lugar de la luz. La cabeza de vidrio es la única parte que transmite y el anillo dorado el único metal; el canal de tamaño muestra las Gaussians fusionadas más grandes del LOD de la cabeza; el bounce es oscuro porque el peón está solo.](figures/img-channels.jpg)
+![Figura 13. Los canales del peón a través de su cámara, 768 × 768: el frame con luz bajo el cielo del bake y quince parámetros dibujados en lugar de la luz. La cabeza de vidrio es la única parte que transmite y el anillo dorado el único metal; el canal de tamaño muestra las Gaussians fusionadas más grandes del LOD de la cabeza; el bounce es oscuro porque el peón está solo.](figures/img-channels.jpg)
 
 ## 4.12 Limitaciones
 
@@ -2306,9 +2308,9 @@ por Gaussian. Sus entradas son la nube de reposo, los pares (joint, peso), las
 transformaciones de skinning de los joints en el instante actual y tres
 matrices: la transformación de bind $G$, `skelToWorld` y `worldToPrim`. Las
 matrices de USD son row-major y actúan sobre vectores fila, así que el host
-las traspone como hace `geom::Skinner` con los meshes (figura 13).
+las traspone como hace `geom::Skinner` con los meshes (figura 14).
 
-![Figura 13. Skinning en el device: la nube en bind pose, los pesos de joint por Gaussian y sus gradientes, y los transforms de joint del instante actual dan la media y la covarianza en pose; las tablas de visibilidad por parte, con bake único en bind pose, dan la sombra de la nube en pose.](figures/fig-skinning.es.svg)
+![Figura 14. Skinning en el device: la nube en bind pose, los pesos de joint por Gaussian y sus gradientes, y los transforms de joint del instante actual dan la media y la covarianza en pose; las tablas de visibilidad por parte, con bake único en bind pose, dan la sombra de la nube en pose.](figures/fig-skinning.es.svg)
 
 ### 5.4.1 La media
 
@@ -2683,7 +2685,7 @@ el tiempo 20, se dibuja como la nube sin diezmar con un RMS de imagen de
 
 El gorrión y un BMW fueron los dos primeros assets convertidos que no se
 crearon para este renderer, y la mayor parte de lo que destapó estaba fuera
-de las matemáticas del skinning (figura 14).
+de las matemáticas del skinning (figura 15).
 
 - **Exportación de la animación.** El exportador de Blender no escribía
   muestras de joints para este rig importado de FBX, así que
@@ -2715,7 +2717,7 @@ relMSE con él), después de que la coverage pasara a seguir la opacidad:
 | ala del gorrión, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | ala del gorrión, trazada | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
-![Figura 14. El gorrión: el mesh con path trace (izquierda) y las Gaussians convertidas, rasterizadas (derecha).](figures/img-sparrow.jpg)
+![Figura 15. El gorrión: el mesh con path trace (izquierda) y las Gaussians convertidas, rasterizadas (derecha).](figures/img-sparrow.jpg)
 
 Para la web, el pájaro se convirtió con `--skinned --transfer
 --resolution 512`, con bake de lobes zonales a 256 paths y 3 bounces en la
@@ -2755,9 +2757,9 @@ secciones 3 y 4. La validación de alta calidad del peón blanco
 Tres conversiones posteriores del mismo peón, medidas a 1024², dan un relMSE
 del cristal de 0.149, 0.081 y 0.043, con el cuerpo sin cambios en 0.025. El
 cuerpo queda a unos pocos por ciento del path trace del mesh. El error se
-concentra en la cabeza de cristal (figura 15).
+concentra en la cabeza de cristal (figura 16).
 
-![Figura 15. El peón blanco a 2048²: el path trace del mesh con 2048 paths por píxel (izquierda) y las Gaussians convertidas (derecha).](figures/img-pawn.jpg)
+![Figura 16. El peón blanco a 2048²: el path trace del mesh con 2048 paths por píxel (izquierda) y las Gaussians convertidas (derecha).](figures/img-pawn.jpg)
 
 ## 5.12 Aplicación: reproducción en la web y en un teléfono
 
@@ -2901,9 +2903,9 @@ millones de Gaussians con material bajo un budget compartido.
 
 `athenea decimate --tree` construye un merge tree binario por merge de pares de vecinos más cercanos mutuos. Es NanoGS
 (Xiong et al. 2026) en el device (`lod_pairs.slang`, `lod_pairs_final.slang`, `Lod.cpp`), con guardas adecuadas
-a nubes de bake con material (figura 16).
+a nubes de bake con material (figura 17).
 
-![Figura 16. Un merge tree y su cut. Los nodos son sumas de momentos; el error ε es monótono hacia arriba y la esfera ρ de cada nodo cubre las de sus hijos. Los nodos se agrupan en pages según el error del padre y llevan un índice a un codebook de oclusión conservador; la traversal de cada frame prueba pages, back faces y oclusión.](figures/fig-lod.es.svg)
+![Figura 17. Un merge tree y su cut. Los nodos son sumas de momentos; el error ε es monótono hacia arriba y la esfera ρ de cada nodo cubre las de sus hijos. Los nodos se agrupan en pages según el error del padre y llevan un índice a un codebook de oclusión conservador; la traversal de cada frame prueba pages, back faces y oclusión.](figures/fig-lod.es.svg)
 
 ### 6.2.1 Los nodos como momentos
 
@@ -3285,7 +3287,7 @@ que se dibuja; en el player WebGPU de §7, de cerca con $\tau=3$, eso supone ~60
 De cerca, el logo y la grille siguen blandos con el bake a 1280 px. Una cámara cercana llega a unos 0.5 mm por píxel
 de salida, mientras que las leaves a 1280 px miden 3–4 mm. Un bake de logo y grille desde una cámara cercana a
 5120 px muestra nítidos la bandera a cuadros, la pajarita y la malla metálica de la grille (108 527 → 404 594
-Gaussians). El close-up level (car5120) vuelve a hacer el bake del coche por grupos (figura 9):
+Gaussians). El close-up level (car5120) vuelve a hacer el bake del coche por grupos (figura 10):
 
 - **Piezas detalladas.** Las 66 piezas a las que el bake a 1280 px da como mucho 1.5 Gaussians por triángulo
   (emblemas, grilles, faros, pinzas, retrovisores, ruedas, limpiaparabrisas, molduras), a 5120 px, en 7 grupos
@@ -3590,9 +3592,9 @@ La sección `CMPC` del tier 4 guarda los 40 bytes de GPU más los bytes de la tr
 | v3 | 64 = 40 + 24 | + palabra de cono, índice de oclusión de 13 bits; 30 B de entrada, 20 B en WASM | back-cull y oclusión activos por defecto; solo se planifican las pages que pide la traversal |
 | v4 | contenedor `CMP4` | registros cuantizados de 12 bytes | carga en **tramos raw-deflate de 64 nodos**, plano tras plano; pool de nodos; tier 4 +10 % (314 → 344 MB) |
 
-La **page v4** es un contenedor: una cabecera, el final de cada tramo, los planos de la traversal en gzip, y luego cada tramo de 64 nodos comprimido con raw deflate. Los tramos se pueden pedir, guardar y desalojar uno a uno, así que la CPU guarda la carga de una page comprimida y la GPU solo guarda registros del cut **dibujado**. Lo motivó el censo del pool: con pages enteras residentes, solo se dibujaba un ~26 % de los nodos de cada page, y las pages más pequeñas no ayudaban (residente/cut 4.54× con $P=3000$, 4.46× con $P=500$) (figura 17).
+La **page v4** es un contenedor: una cabecera, el final de cada tramo, los planos de la traversal en gzip, y luego cada tramo de 64 nodos comprimido con raw deflate. Los tramos se pueden pedir, guardar y desalojar uno a uno, así que la CPU guarda la carga de una page comprimida y la GPU solo guarda registros del cut **dibujado**. Lo motivó el censo del pool: con pages enteras residentes, solo se dibujaba un ~26 % de los nodos de cada page, y las pages más pequeñas no ayudaban (residente/cut 4.54× con $P=3000$, 4.46× con $P=500$) (figura 18).
 
-![Figura 17. El formato compacto: una tabla del asset, ficheros `.athc` v3 cuyo tier 4 contiene pages v4 con traversal records y registros de payload de 40 bytes, y la base de clustered PCA del transfer residente en la GPU.](figures/fig-compact.es.svg)
+![Figura 18. El formato compacto: una tabla del asset, ficheros `.athc` v3 cuyo tier 4 contiene pages v4 con traversal records y registros de payload de 40 bytes, y la base de clustered PCA del transfer residente en la GPU.](figures/fig-compact.es.svg)
 
 ### 7.5.3 Registros de la traversal
 
@@ -3622,7 +3624,7 @@ El lector (`CompactBandStreamer`) solo lee las tablas de pages al abrir. Tras ca
 
 Un nodo cuyos hijos no están se dibuja como leaf, o como su padre o sus hijos mientras se decodifica un tramo. Con los tramos de v4, los tramos del propio cut y los de sus padres e hijos se guardan siempre, y el resto se desaloja primero bajo un budget de tramos. También se recorre una cámara extrapolada (2.5 actualizaciones por delante), para precargar sus tramos. Hay hasta 12 peticiones Range en vuelo.
 
-El trabajo se reparte entre el hilo principal, la traversal en WASM y dos workers (figura 18):
+El trabajo se reparte entre el hilo principal, la traversal en WASM y dos workers (figura 19):
 
 | dónde | qué | medido |
 |---|---|---|
@@ -3631,7 +3633,7 @@ El trabajo se reparte entre el hilo principal, la traversal en WASM y dos worker
 | hilo principal | peticiones Range, escritura de registros y listas de dibujado (adoptadas, sin GC) | — |
 | compute de GPU | movimiento de registros cuando el pool encoge (un dispatch, un hilo por palabra) | primer frame tras un still frame 88–100 → 34 ms |
 
-![Figura 18. Los hilos del player: peticiones Range y el pool de pages en el hilo principal, la traversal en un worker WASM, el cut empaquetado en slots en un segundo worker y cinco pasadas de GPU por frame; el tiempo de GPU fija el suelo de τ.](figures/fig-player.es.svg)
+![Figura 19. Los hilos del player: peticiones Range y el pool de pages en el hilo principal, la traversal en un worker WASM, el cut empaquetado en slots en un segundo worker y cinco pasadas de GPU por frame; el tiempo de GPU fija el suelo de τ.](figures/fig-player.es.svg)
 
 En una órbita rápida de 120° a 1° por frame en el móvil emulado, la parte del cut que falta en un frame bajó del 26 % con el primer streamer de v4 al 4.3–6.4 %, que es el 0.24–0.30 % del área de pantalla. Los frames se mantuvieron a 60 fps con un máximo de 17.3–19.6 ms. El cut se asentó 2.6–3.1 s después de la carga.
 
