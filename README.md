@@ -7,12 +7,37 @@
 renderer with a Hydra 2.0 delegate. It converts USD assets (meshes with real
 materials) into Gaussian splats that keep how the asset responds to light: a
 path tracer records it once, and the splats are drawn in milliseconds under
-any sky.
+any sky. Every step over scene data runs on the GPU (Metal, Vulkan, CUDA).
 
-Every step over scene data runs on the GPU (Metal, Vulkan, CUDA), including
-reference renders and test oracles.
+## A render engine for Blender
 
-![A Eurasian tree sparrow as 5.9 million gaussians, rasterised](docs/images/sparrow-cloud.png)
+![The pawn in Blender 5.3, drawn by athenea under the Venice sunset HDRI](docs/media/blender-addon-venice.jpg)
+
+*Blender 5.3 with the athenea add-on: the pawn's Gaussians relit by the World's
+HDRI (Venice sunset, Poly Haven, CC0) in the viewport, the glass head carrying the city upside
+down. Render Engine: Athenea.*
+
+- **athenea as Blender's render engine**: the viewport and F12 draw the
+  Gaussians, relit by the World's sky.
+- **Meshes into relightable Gaussians** inside Blender (mesh2splat with the
+  path traced transfer), a shadow catcher for the ground, and export to SPZ,
+  PLY, glTF and USD.
+- **Compare with Cycles** from the panel, measured on the GPU.
+- **macOS, Linux and Windows** (Blender 5.3): [install](https://jesusluque.github.io/athenea/install/),
+  [tutorial](https://jesusluque.github.io/athenea/tutorials/blender/).
+
+<p align="center"><img src="docs/media/pawn-venice.jpg" width="440" alt="F12 of the pawn under the Venice sunset, drawn by athenea in Blender"></p>
+
+## Seen moving
+
+Click a clip for the full video.
+
+| | |
+|:---:|:---:|
+| [![The pawn: Gaussians against the path trace](docs/media/clip-relight.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/relight-reel.mp4) | [![The whole Corvette on an iPhone](docs/media/clip-iphone.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-iphone.mp4) |
+| **The path trace's light, in real time.** The pawn's Gaussians beside the path traced meshes. | **The whole Corvette on an iPhone**, 149 M Gaussians streamed by pages, relit. |
+| [![The Corvette as the sky turns](docs/media/clip-corvette-sky.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-sky-turns.mp4) | [![The sparrow in flight with its shadow](docs/media/clip-sparrow.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/sparrow-flight.mp4) |
+| **The sky turns, the same file follows.** The Corvette relit at draw time. | **A skinned sparrow in flight**, motion blur and a shadow caught on an invisible ground. |
 
 ## Two products from one bake
 
