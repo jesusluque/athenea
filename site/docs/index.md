@@ -51,6 +51,20 @@ The add-on makes athenea Blender's render engine: the viewport and F12 draw the 
   <figcaption>The pawn of the ASWF Open Chess Set (CC BY 4.0): left, its Gaussian cloud relit at draw time; right, the meshes path traced. Same camera and light. See the <a href="tutorials/usd-to-cloud/">tutorials</a> and the <a href="credits/">credits</a>.</figcaption>
 </figure>
 
+## Example and test material: the pawn
+
+[athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip) (411 MB) holds the pawn of the ASWF Open Chess Set
+as source meshes and as the relightable cloud athenea baked from them, with a
+camera and two skies, ready to render, compare, and open in Blender, Nuke or
+Natron:
+
+```sh
+athenea stage pawn_gs.usda   --camera /World/Cam -o gs.exr                                 # the cloud
+athenea stage pawn_mesh.usda --camera /World/Cam --technique rt --path-total 64 -o pt.exr  # the meshes, path traced
+athenea compare gs.exr pt.exr                                                              # relMSE 0.014, PSNR 30.2 dB
+athenea stage pawn_gs_venice.usda --camera /World/Cam -o venice.exr                        # relit under another sky
+```
+
 ## Seen moving
 
 Each clip opens the full video.

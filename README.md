@@ -85,6 +85,20 @@ Click a clip for the full video.
 | [![The Corvette as the sky turns](docs/media/clip-corvette-sky.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-sky-turns.mp4) | [![The sparrow in flight with its shadow](docs/media/clip-sparrow.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/sparrow-flight.mp4) |
 | **The sky turns, the same file follows.** The Corvette relit at draw time. | **A skinned sparrow in flight** (by Nestaeric, [Fab](https://www.fab.com/listings/63e05d9a-2421-4c79-98f0-bf577b55403f)), motion blur and a shadow caught on an invisible ground. |
 
+## Example and test material: the pawn
+
+[athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip) (411 MB) holds the pawn of the ASWF Open Chess Set
+as source meshes and as the relightable cloud athenea baked from them, with a
+camera and two skies, ready to render, compare, and open in Blender, Nuke or
+Natron:
+
+```sh
+athenea stage pawn_gs.usda   --camera /World/Cam -o gs.exr                                 # the cloud
+athenea stage pawn_mesh.usda --camera /World/Cam --technique rt --path-total 64 -o pt.exr  # the meshes, path traced
+athenea compare gs.exr pt.exr                                                              # relMSE 0.014, PSNR 30.2 dB
+athenea stage pawn_gs_venice.usda --camera /World/Cam -o venice.exr                        # relit under another sky
+```
+
 ## Two products from one bake
 
 | | Production master | Web format |
