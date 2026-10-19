@@ -135,7 +135,7 @@ Improvements are made in the master, and the web format is derived again. The
 |---|---|---|---|
 | Engine and CLI | Metal | CUDA, Vulkan | CUDA, Vulkan (native MSVC build) |
 | Blender add-on | yes | yes (no bake under WSL, [#42](https://github.com/jesusluque/athenea/issues/42)) | yes ([#40](https://github.com/jesusluque/athenea/issues/40), [#42](https://github.com/jesusluque/athenea/issues/42)) |
-| OpenFX node | yes | yes ([#43](https://github.com/jesusluque/athenea/issues/43)) | in progress |
+| OpenFX node | yes | yes ([#43](https://github.com/jesusluque/athenea/issues/43)) | yes ([#43](https://github.com/jesusluque/athenea/issues/43)) |
 
 The status per platform, with the test counts, is in [CHANGELOG.md](CHANGELOG.md)
 and `docs/decisions.md`.

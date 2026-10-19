@@ -15066,7 +15066,11 @@ system.
   and p99 193 where macOS passes (#40), and Blender exits with 0xC0000409 after it (#41).
 - **OpenFX on Linux.** The bundle builds (`Contents/Linux-x86-64`, `athenea-mcp` in `Resources/bin`) and
   `athenea_ofx_host` renders a frame through it. Its server finds the shaders only in the build tree (#43). The
-  server is started on Windows with `CreateProcess` on two pipes, and the bundle is built there (`Win64`).
+  server is started on Windows with `CreateProcess` on two pipes, and the bundle is built there (`Win64`): under
+  MSVC, OpenFX's support library keeps `std::auto_ptr` (`_HAS_AUTO_PTR_ETC`), leaves out the HWND interact the
+  node does not draw, and the test host's expat is fetched and built static. `athenea_ofx_host` renders the same
+  frame through the bundle on Windows as on Linux: the same means in every channel, alpha 0.652 at three units and
+  0.404 at eight.
 
 The viewport's readback costs seconds a frame on CUDA (#42) where Metal's costs milliseconds.
 

@@ -20,7 +20,7 @@ El plugin no carga nada del motor. Un compositor lleva su propio OpenUSD y su pr
 
 ## Compilación
 
-El plugin se compila con el motor cuando `ATHENEA_BUILD_OFX` está activado, que es lo predeterminado. La build de CMake lo compila en macOS y Linux, y no en Windows. Se ha ejecutado en Natron sobre macOS (ver *Medidas*). Necesita el submódulo `third_party/openfx`, que es el OpenFX de Natron: su librería de soporte lleva la extensión multiplano (los planos de Foundry y los planos propios de Natron).
+El plugin se compila con el motor cuando `ATHENEA_BUILD_OFX` está activado, que es lo predeterminado. La build de CMake lo compila en macOS, Linux y Windows (las carpetas del bundle `MacOS`, `Linux-x86-64` y `Win64`). Se ha ejecutado en Natron sobre macOS (ver *Medidas*), y a través de un host de prueba que renderiza un frame en Linux y en Windows, que dan la misma imagen. Necesita el submódulo `third_party/openfx`, que es el OpenFX de Natron: su librería de soporte lleva la extensión multiplano (los planos de Foundry y los planos propios de Natron).
 
 ```sh
 cmake --preset macos-arm64-release          # o linux-x86_64-release
@@ -115,4 +115,4 @@ De la sección *The OpenFX plugin* de `docs/decisions.md`. Los tiempos del servi
 - Normales y vectores de movimiento de las Gaussians, que el rasterizador no escribe.
 - El cielo como entrada de imagen del nodo en lugar de un fichero.
 - Abrir `.ply` y `.spz` directamente en lugar de convertirlos antes.
-- Builds de Linux y Windows, y un bundle firmado. La build de CMake compila el plugin en Linux, pero el registro da la build de Linux como pendiente; en Windows el plugin no se compila.
+- Un bundle firmado, y los shaders dentro de él, para que un bundle instalado fuera de su árbol de build renderice ([#43](https://github.com/jesusluque/athenea/issues/43)). Todavía no se ha ejecutado dentro de Nuke.
