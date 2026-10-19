@@ -14,3 +14,6 @@ Cierra con la evaluación frente al path trace, los límites y el trabajo futuro
 |---|---|
 | [paper.en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/paper.en.pdf) | inglés |
 | [paper.es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/paper.es.pdf) | español |
+
+!!! example "En vivo"
+    El formato web de la Parte II, en vivo: [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.co.uk).

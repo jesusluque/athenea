@@ -14,3 +14,6 @@ It closes with the evaluation against the path trace, the limits and the future 
 |---|---|
 | [paper.en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/paper.en.pdf) | English |
 | [paper.es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/paper.es.pdf) | Spanish |
+
+!!! example "Live"
+    Part II's web format, live: [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.co.uk).

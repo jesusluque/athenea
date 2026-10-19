@@ -213,6 +213,9 @@ or no vars is refused.
 
 ## The API schemas a cloud carries
 
+!!! example "Live"
+    A cloud carried by a skeleton, relit as it moves: [the sparrow in a browser](https://sparkwebgpu.lucab.co.uk/sparrow.html).
+
 <figure markdown>
   ![A cloud bound to a skeleton: skinning on the device, as a mesh is.](../assets/figures/fig-skinning.svg)
   <figcaption>A cloud bound to a skeleton: skinning on the device, as a mesh is.</figcaption>

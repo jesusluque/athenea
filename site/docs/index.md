@@ -6,6 +6,15 @@ athenea converts production USD assets into Gaussian splats and bakes, into ever
 
 These pages describe the desktop version on the public `main` branch: how it is built, and how a USD asset becomes a relit cloud.
 
+## Live in the browser
+
+athenea's web side runs at [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.co.uk) (WebGPU: Chrome, Edge or Safari 26+): the web format streamed by pages and relit as you watch.
+
+| | | |
+|:---:|:---:|:---:|
+| [![The whole Corvette, streamed](assets/web-corvette-5120.jpg)](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx) | [![The relightable pawn](assets/web-pawn.jpg)](https://sparkwebgpu.lucab.co.uk/pawn.html) | [![The animated sparrow](assets/web-sparrow.jpg)](https://sparkwebgpu.lucab.co.uk/sparrow.html) |
+| **[The whole Corvette, streamed](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx)**<br>149 M Gaussians in pages by level of detail; switch the HDRI and paint, chrome and glass follow. | **[The relightable pawn](https://sparkwebgpu.lucab.co.uk/pawn.html)**<br>1.4 M Gaussians with a glass head that acts as a lens. | **[The animated sparrow](https://sparkwebgpu.lucab.co.uk/sparrow.html)**<br>1.5 M skinned Gaussians, 12 animations, relit as it moves. |
+
 ## Where athenea comes from
 
 athenea comes from NVIDIA's [Falcor](https://github.com/NVIDIAGameWorks/Falcor).

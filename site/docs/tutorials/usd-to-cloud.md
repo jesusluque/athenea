@@ -4,6 +4,9 @@ This tutorial converts the pawn of the ASWF Open Chess Set into a cloud of Gauss
 
 ## The asset
 
+!!! example "Live"
+    The pawn this tutorial bakes, relit in a browser: [sparkwebgpu.lucab.co.uk/pawn.html](https://sparkwebgpu.lucab.co.uk/pawn.html). Its files are in [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip).
+
 The Open Chess Set is a production USD asset with MaterialX (Autodesk Standard Surface) materials, licensed under CC BY 4.0 by the Academy Software Foundation ([credits](../credits.md)). Only its folder is needed from the `usd-wg/assets` repository, about 37 MB:
 
 ```sh

@@ -1,5 +1,8 @@
 # Rendering and comparing with the path trace
 
+!!! example "Live"
+    The same pawn, relit in a browser: [sparkwebgpu.lucab.co.uk/pawn.html](https://sparkwebgpu.lucab.co.uk/pawn.html).
+
 The cloud from the [previous tutorial](usd-to-cloud.md) is drawn under the stage's dome and sun, and the source meshes are path traced from the same camera under the same light. `athenea compare` then measures the first image against the second on the GPU. The numbers on this page come from one run on an Apple M5 Pro (Metal) with the public `main` branch.
 
 ## The relit cloud

@@ -4,6 +4,9 @@ Este tutorial convierte el peón del Open Chess Set de la ASWF en una nube de Ga
 
 ## El asset
 
+!!! example "En vivo"
+    El peón que hornea este tutorial, reiluminado en el navegador: [sparkwebgpu.lucab.co.uk/pawn.html](https://sparkwebgpu.lucab.co.uk/pawn.html). Sus ficheros están en [athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip).
+
 El Open Chess Set es un asset USD de producción con materiales MaterialX (Autodesk Standard Surface), con licencia CC BY 4.0 de la Academy Software Foundation ([créditos](../credits.md)). Del repositorio `usd-wg/assets` solo hace falta su carpeta, unos 37 MB:
 
 ```sh

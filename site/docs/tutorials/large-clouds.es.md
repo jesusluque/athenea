@@ -12,6 +12,9 @@ memoria.
 
 ## Dos clases de niveles de detalle
 
+!!! example "En vivo"
+    Niveles de detalle en streaming por páginas, en el navegador: el [Corvette entero, 149 M de Gaussians](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx) y una [escena de 6 M de splats](https://sparkwebgpu.lucab.co.uk/lod.html).
+
 <figure markdown>
   ![Niveles de detalle: árboles de fusión por pieza y un corte por error en pantalla.](../assets/figures/fig-lod.es.svg)
   <figcaption>Niveles de detalle: árboles de fusión por pieza y un corte por error en pantalla.</figcaption>

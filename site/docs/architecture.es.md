@@ -6,6 +6,9 @@ Esta página es una visión de conjunto. El detalle está en [`docs/development.
 
 ## Dos productos, dos procesos
 
+!!! example "En vivo"
+    El formato web funciona en el navegador en [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.co.uk): el [Corvette entero en streaming](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx), el [peón](https://sparkwebgpu.lucab.co.uk/pawn.html) y el [gorrión](https://sparkwebgpu.lucab.co.uk/sparrow.html), reiluminados en vivo.
+
 <figure markdown>
   ![Los dos procesos: el bake produce el master de producción; el formato web se deriva de él.](assets/figures/fig-overview.es.svg)
   <figcaption>Los dos procesos: el bake produce el master de producción; el formato web se deriva de él.</figcaption>

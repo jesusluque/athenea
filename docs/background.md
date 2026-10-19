@@ -101,6 +101,9 @@ the repository, only the pictures above do:
   backdrop, **CC-BY** by Mike Pan. Its materials predate the Principled BSDF,
   so the Cycles node trees are reduced to Principled equivalents before the
   USD export. <https://download.blender.org/demo/test/BMW27_2.blend.zip>
+- **Corvette C7 Stingray** -- by Billy Mukhiddinov, from [BlendKit](https://www.blendkit.com/asset-gallery-detail/a16f1abf-86d5-4cec-9c89-69224c1b7a42/),
+  baked to Gaussian splats by athenea (modified): the car of the clips and of the
+  [web demos](https://sparkwebgpu.lucab.co.uk).
 - **Eurasian tree sparrow** -- by Nestaeric, from [Fab](https://www.fab.com/listings/63e05d9a-2421-4c79-98f0-bf577b55403f): a rigged and flying bird, 609 joints, 71 clips,
   whose animation arrives as FBX. It is the asset `--skinned` is shown moving
   on, the one the per-part visibility bake was written for, and the one in the

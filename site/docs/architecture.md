@@ -6,6 +6,9 @@ This page is an overview. The depth is in [`docs/development.md`](https://github
 
 ## Two products, two processes
 
+!!! example "Live"
+    The web format runs in a browser at [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.co.uk): the [whole Corvette streamed](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx), the [pawn](https://sparkwebgpu.lucab.co.uk/pawn.html) and the [sparrow](https://sparkwebgpu.lucab.co.uk/sparrow.html), relit live.
+
 <figure markdown>
   ![The two processes: the bake makes the production master; the web format is derived from it.](assets/figures/fig-overview.svg)
   <figcaption>The two processes: the bake makes the production master; the web format is derived from it.</figcaption>

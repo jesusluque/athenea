@@ -10,6 +10,9 @@ is held to; and what a frame does when the device runs out of memory.
 
 ## Two kinds of levels of detail
 
+!!! example "Live"
+    Levels of detail streamed by pages, in a browser: the [whole Corvette, 149 M Gaussians](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx) and a [6 M-splat scene](https://sparkwebgpu.lucab.co.uk/lod.html).
+
 <figure markdown>
   ![Levels of detail: merge trees per part and a cut by screen error.](../assets/figures/fig-lod.svg)
   <figcaption>Levels of detail: merge trees per part and a cut by screen error.</figcaption>

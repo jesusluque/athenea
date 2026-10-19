@@ -220,6 +220,9 @@ o sin vars se rechaza.
 
 ## Los schemas de API que lleva una nube
 
+!!! example "En vivo"
+    Una nube que lleva un esqueleto, reiluminada mientras se mueve: [el gorrión en el navegador](https://sparkwebgpu.lucab.co.uk/sparrow.html).
+
 <figure markdown>
   ![Una nube atada a un esqueleto: skinning en el dispositivo, como una malla.](../assets/figures/fig-skinning.es.svg)
   <figcaption>Una nube atada a un esqueleto: skinning en el dispositivo, como una malla.</figcaption>

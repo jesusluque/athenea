@@ -6,6 +6,15 @@ athenea convierte assets USD de producción en Gaussian splats y hace el bake, e
 
 Estas páginas describen la versión de escritorio de la rama pública `main`: cómo se compila y cómo un asset USD se convierte en una nube con relight.
 
+## En el navegador, en vivo
+
+La parte web de athenea se puede ver ya en [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.co.uk) (WebGPU: Chrome, Edge o Safari 26+), con el formato web cargado por páginas y reiluminado al momento.
+
+| | | |
+|:---:|:---:|:---:|
+| [![El Corvette entero, en streaming](assets/web-corvette-5120.jpg)](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx) | [![El peón reiluminable](assets/web-pawn.jpg)](https://sparkwebgpu.lucab.co.uk/pawn.html) | [![El gorrión animado](assets/web-sparrow.jpg)](https://sparkwebgpu.lucab.co.uk/sparrow.html) |
+| **[El Corvette entero, en streaming](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx)**<br>149 M de Gaussians por páginas de nivel de detalle; cambia el HDRI y la pintura, el cromo y el cristal lo siguen. | **[El peón reiluminable](https://sparkwebgpu.lucab.co.uk/pawn.html)**<br>1,4 M de Gaussians con una cabeza de vidrio que hace de lente. | **[El gorrión animado](https://sparkwebgpu.lucab.co.uk/sparrow.html)**<br>1,5 M de Gaussians con skinning y 12 animaciones, reiluminado mientras se mueve. |
+
 ## De dónde viene athenea
 
 athenea viene de [Falcor](https://github.com/NVIDIAGameWorks/Falcor), de NVIDIA.

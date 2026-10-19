@@ -1,5 +1,8 @@
 # Render y comparación con el path trace
 
+!!! example "En vivo"
+    El mismo peón, reiluminado en el navegador: [sparkwebgpu.lucab.co.uk/pawn.html](https://sparkwebgpu.lucab.co.uk/pawn.html).
+
 La nube del [tutorial anterior](usd-to-cloud.md) se dibuja bajo el domo y el sol del stage, y las mallas originales se renderizan con path trace desde la misma cámara y con la misma luz. Después `athenea compare` mide la primera imagen frente a la segunda en la GPU. Las cifras de esta página salen de una ejecución en un Apple M5 Pro (Metal) con la rama pública `main`.
 
 ## La nube con relight

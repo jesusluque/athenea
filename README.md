@@ -9,6 +9,15 @@ materials) into Gaussian splats that keep how the asset responds to light: a
 path tracer records it once, and the splats are drawn in milliseconds under
 any sky. Every step over scene data runs on the GPU (Metal, Vulkan, CUDA).
 
+## Live in the browser
+
+athenea's web side runs at [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.co.uk) (WebGPU: Chrome, Edge or Safari 26+): the web format streamed by pages and relit as you watch.
+
+| | | |
+|:---:|:---:|:---:|
+| [![The whole Corvette, streamed](docs/media/web-corvette-5120.jpg)](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx) | [![The relightable pawn](docs/media/web-pawn.jpg)](https://sparkwebgpu.lucab.co.uk/pawn.html) | [![The animated sparrow](docs/media/web-sparrow.jpg)](https://sparkwebgpu.lucab.co.uk/sparrow.html) |
+| **[The whole Corvette, streamed](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx)**<br>149 M Gaussians in pages by level of detail; switch the HDRI and paint, chrome and glass follow. | **[The relightable pawn](https://sparkwebgpu.lucab.co.uk/pawn.html)**<br>1.4 M Gaussians with a glass head that acts as a lens. | **[The animated sparrow](https://sparkwebgpu.lucab.co.uk/sparrow.html)**<br>1.5 M skinned Gaussians, 12 animations, relit as it moves. |
+
 ## Where athenea comes from
 
 athenea comes from NVIDIA's [Falcor](https://github.com/NVIDIAGameWorks/Falcor).
@@ -105,7 +114,7 @@ athenea stage pawn_gs_venice.usda --camera /World/Cam -o venice.exr             
 |---|---|---|
 | Goal | fidelity | size and speed |
 | File | USDC: `ParticleField3DGaussianSplat` plus `athenea:splat:*` primvars, at full precision | `.athc`: derived from the master, compressed, streamed by pages |
-| Read by | the engine, Nuke and Natron (OFX), Blender | a browser, desktop or phone |
+| Read by | the engine, Nuke and Natron (OFX), Blender | a browser, desktop or phone ([live demos](https://sparkwebgpu.lucab.co.uk)) |
 | Made by | `athenea mesh2splat --transfer` (the bake) | a separate conversion of the master |
 
 Improvements are made in the master, and the web format is derived again. The
