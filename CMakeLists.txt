@@ -261,7 +261,7 @@ endif()
 if(ATHENEA_BUILD_APPS)
     add_subdirectory(apps)
 endif()
-if(ATHENEA_BUILD_OFX AND NOT WIN32)
+if(ATHENEA_BUILD_OFX)
     add_subdirectory(integrations/ofx)
 endif()
 

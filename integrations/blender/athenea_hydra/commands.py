@@ -18,6 +18,7 @@ import ctypes
 import os
 import queue
 import re
+import sys
 import threading
 import time
 
@@ -59,7 +60,9 @@ def plugin_library():
         raise RuntimeError("USD knows no plugin named hdAthenea")
     if not plugin.isLoaded:
         plugin.Load()
-    path = plugin.path or os.path.join(plugin_dir(), "hdAthenea", "hdAthenea.so")
+    # USD names the library; failing that, the file a build writes on this system.
+    library_name = "hdAthenea.dll" if sys.platform == "win32" else "hdAthenea.so"
+    path = plugin.path or os.path.join(plugin_dir(), "hdAthenea", library_name)
     library = ctypes.CDLL(path)
     try:
         abi = library.athenea_embedded_abi

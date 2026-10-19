@@ -27,6 +27,8 @@
 # plugin are left off here without changing what a consumer compiles.
 #
 # Usage: scripts/build-usd-blender.sh [usd-tag]   (default v26.08)
+#   BLENDER_LIB  Blender's library folder: Contents/Resources/lib on macOS
+#                (the default), <blender>/lib on Linux (required there).
 set -euo pipefail
 
 VERSION="${1:-v26.08}"
@@ -39,7 +41,14 @@ NAMESPACE="pxrBlender_v${V//./_}"
 TBB_TAG=v2022.3.0
 MATERIALX_TAG=v1.39.4
 OPENSUBDIV_TAG=v3_7_0
-BLENDER_LIB="${BLENDER_LIB:-/Applications/Blender.app/Contents/Resources/lib}"
+case "$(uname -s)" in
+    Darwin) LIBSUFFIX=dylib; PRESET=macos-arm64-blender
+            BLENDER_LIB="${BLENDER_LIB:-/Applications/Blender.app/Contents/Resources/lib}" ;;
+    Linux)  LIBSUFFIX=so; PRESET=linux-x86_64-blender
+            BLENDER_LIB="${BLENDER_LIB:?set BLENDER_LIB to the lib folder of a Blender 5.3 for Linux}" ;;
+    *)      echo "scripts/build-usd-blender.ps1 builds these headers on Windows" >&2; exit 1 ;;
+esac
+[[ -f "$BLENDER_LIB/libusd_ms.$LIBSUFFIX" ]] || { echo "no libusd_ms.$LIBSUFFIX in $BLENDER_LIB" >&2; exit 1; }
 
 clone() {   # url tag dir
     [[ -d "$3/.git" ]] || git clone -q --depth 1 --branch "$2" "$1" "$3"
@@ -75,15 +84,16 @@ cmake --build "$WORK/materialx" -j "$JOBS" && cmake --install "$WORK/materialx" 
 # OpenSubdiv 3.7.0: its headers, installed beside Blender's libraries.
 mkdir -p "$PREFIX/include/opensubdiv" "$PREFIX/lib"
 ( cd "$SRC/OpenSubdiv-${OPENSUBDIV_TAG#v}/opensubdiv" && find . -name '*.h' -exec rsync -R {} "$PREFIX/include/opensubdiv/" \; )
-ln -sfn "$BLENDER_LIB/libosdCPU.dylib" "$PREFIX/lib/libosdCPU.dylib"
-ln -sfn "$BLENDER_LIB/libosdGPU.dylib" "$PREFIX/lib/libosdGPU.dylib"
+ln -sfn "$BLENDER_LIB/libosdCPU.$LIBSUFFIX" "$PREFIX/lib/libosdCPU.$LIBSUFFIX"
+ln -sfn "$BLENDER_LIB/libosdGPU.$LIBSUFFIX" "$PREFIX/lib/libosdGPU.$LIBSUFFIX"
 
 # OpenUSD, Blender's way. Blender's patch, as the rename it is, on a copy:
 # the source tree under $SRC may be another toolchain's (usd-26.08-mx).
 USD_SRC="$WORK/OpenUSD-$V-src"
 rsync -a --delete --exclude .git "$SRC/OpenUSD-$V/" "$USD_SRC/"
 for f in pxr/base/arch/attributes.h pxr/base/arch/attributes.cpp; do
-    sed -i '' -e 's/pxrctor/pxbctor/g' -e 's/pxrdtor/pxbdtor/g' "$USD_SRC/$f"
+    # sed -i takes a suffix on BSD and none on GNU: perl reads the same on both.
+    perl -pi -e 's/pxrctor/pxbctor/g; s/pxrdtor/pxbdtor/g' "$USD_SRC/$f"
 done
 cmake -S "$USD_SRC" -B "$WORK/usd" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_PREFIX_PATH="$PREFIX" \
@@ -106,4 +116,4 @@ rsync -a "$WORK/usd/include/" "$PREFIX/include/"
 grep -q "${NAMESPACE}__pxrReserved__" "$PREFIX/include/pxr/pxr.h" || { echo "pxr.h: namespace is not ${NAMESPACE}" >&2; exit 1; }
 grep -q pxbctor "$PREFIX/include/pxr/base/arch/attributes.h" || { echo "attributes.h is not Blender's" >&2; exit 1; }
 echo "${NAMESPACE} headers at ${PREFIX}/include (Python ${PY_INCLUDE})"
-echo "Configure athenea with --preset macos-arm64-blender."
+echo "Configure athenea with --preset ${PRESET}."

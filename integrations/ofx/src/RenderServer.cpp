@@ -9,19 +9,29 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+extern char** environ;
+#endif
 
 #include <nlohmann/json.hpp>
-
-extern char** environ;
 
 namespace athenea::ofx {
 
@@ -32,51 +42,84 @@ namespace {
 /// The directory of the image this code was linked into: the plugin's own
 /// binary inside its bundle, which says where the server ships beside it.
 std::filesystem::path moduleDirectory() {
+#ifdef _WIN32
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&moduleDirectory), &module)) {
+        return {};
+    }
+    wchar_t name[32768];
+    const DWORD length = GetModuleFileNameW(module, name, static_cast<DWORD>(std::size(name)));
+    if (length == 0 || length >= std::size(name)) {
+        return {};
+    }
+    return std::filesystem::path(std::wstring(name, length)).parent_path();
+#else
     Dl_info info{};
     if (dladdr(reinterpret_cast<const void*>(&moduleDirectory), &info) == 0 || info.dli_fname == nullptr) {
         return {};
     }
     return std::filesystem::path(info.dli_fname).parent_path();
+#endif
+}
+
+/// This process's id, for the name of the file a frame is written to.
+unsigned long currentProcessId() {
+#ifdef _WIN32
+    return GetCurrentProcessId();
+#else
+    return static_cast<unsigned long>(::getpid());
+#endif
 }
 
 }   // namespace
 
-struct RenderServer::Impl {
-    std::filesystem::path binary;
-    pid_t                 pid = -1;
-    int                   toServer = -1;     // its stdin
-    int                   fromServer = -1;   // its stdout
-    std::string           pending;           // read past the last line
-    int                   nextId = 1;
-    std::filesystem::path rawFile;           // where it writes each frame
+/// The server as a child process on two pipes: its stdin and its stdout.
+/// The only part of the plugin that differs between systems.
+class Child {
+public:
+    ~Child() { stop(); }
 
-    ~Impl() { stop(); }
-
-    void stop() {
-        if (toServer >= 0) ::close(toServer);
-        if (fromServer >= 0) ::close(fromServer);
-        toServer = fromServer = -1;
-        if (pid > 0) {
-            ::kill(pid, SIGTERM);
-            int status = 0;
-            ::waitpid(pid, &status, 0);
-        }
-        pid = -1;
-        pending.clear();
-        if (!rawFile.empty()) {
-            std::error_code ignored;
-            std::filesystem::remove(rawFile, ignored);
-        }
-    }
-
-    bool alive() {
-        if (pid <= 0) return false;
-        int status = 0;
-        return ::waitpid(pid, &status, WNOHANG) == 0;
-    }
-
-    bool start(std::string& error) {
+    bool start(const std::filesystem::path& binary, std::string& error) {
         stop();
+#ifdef _WIN32
+        SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        HANDLE childIn = nullptr;
+        HANDLE childOut = nullptr;
+        if (!CreatePipe(&childIn, &toServer_, &inherit, 0) || !CreatePipe(&fromServer_, &childOut, &inherit, 0)) {
+            error = "cannot make pipes for the render server";
+            closeAll(childIn, childOut);
+            return false;
+        }
+        // The ends this process keeps are not the child's to inherit.
+        SetHandleInformation(toServer_, HANDLE_FLAG_INHERIT, 0);
+        SetHandleInformation(fromServer_, HANDLE_FLAG_INHERIT, 0);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof startup;
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = childIn;
+        startup.hStdOutput = childOut;
+        startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        std::wstring commandLine = L"\"" + binary.wstring() + L"\"";
+        PROCESS_INFORMATION created{};
+        // A bare name is looked for on the PATH: no application name given.
+        const BOOL ok = CreateProcessW(binary.has_parent_path() ? binary.c_str() : nullptr, commandLine.data(),
+                                       nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                                       &created);
+        const DWORD failure = ok ? 0 : GetLastError();
+        CloseHandle(childIn);
+        CloseHandle(childOut);
+        if (!ok) {
+            closeAll(toServer_, fromServer_);
+            toServer_ = fromServer_ = nullptr;
+            error = "cannot start the render server " + binary.string() + ": error " + std::to_string(failure);
+            return false;
+        }
+        CloseHandle(created.hThread);
+        process_ = created.hProcess;
+        id_ = created.dwProcessId;
+        return true;
+#else
         int in[2] = {-1, -1};
         int out[2] = {-1, -1};
         if (::pipe(in) != 0 || ::pipe(out) != 0) {
@@ -94,22 +137,144 @@ struct RenderServer::Impl {
         const std::string path = binary.string();
         char* argv[] = {const_cast<char*>(path.c_str()), nullptr};
         const int spawned = binary.has_parent_path()
-                                ? posix_spawn(&pid, path.c_str(), &actions, nullptr, argv, environ)
-                                : posix_spawnp(&pid, path.c_str(), &actions, nullptr, argv, environ);
+                                ? posix_spawn(&pid_, path.c_str(), &actions, nullptr, argv, environ)
+                                : posix_spawnp(&pid_, path.c_str(), &actions, nullptr, argv, environ);
         posix_spawn_file_actions_destroy(&actions);
         ::close(in[0]);
         ::close(out[1]);
         if (spawned != 0) {
             ::close(in[1]);
             ::close(out[0]);
-            pid = -1;
+            pid_ = -1;
             error = "cannot start the render server " + path + ": " + std::strerror(spawned);
             return false;
         }
-        toServer = in[1];
-        fromServer = out[0];
+        toServer_ = in[1];
+        fromServer_ = out[0];
+        return true;
+#endif
+    }
+
+    void stop() {
+#ifdef _WIN32
+        closeAll(toServer_, fromServer_);
+        toServer_ = fromServer_ = nullptr;
+        if (process_ != nullptr) {
+            TerminateProcess(process_, 1);
+            WaitForSingleObject(process_, INFINITE);
+            CloseHandle(process_);
+        }
+        process_ = nullptr;
+        id_ = 0;
+#else
+        if (toServer_ >= 0) ::close(toServer_);
+        if (fromServer_ >= 0) ::close(fromServer_);
+        toServer_ = fromServer_ = -1;
+        if (pid_ > 0) {
+            ::kill(pid_, SIGTERM);
+            int status = 0;
+            ::waitpid(pid_, &status, 0);
+        }
+        pid_ = -1;
+#endif
+    }
+
+    bool alive() {
+#ifdef _WIN32
+        return process_ != nullptr && WaitForSingleObject(process_, 0) == WAIT_TIMEOUT;
+#else
+        if (pid_ <= 0) return false;
+        int status = 0;
+        return ::waitpid(pid_, &status, WNOHANG) == 0;
+#endif
+    }
+
+    /// The child's process id.
+    [[nodiscard]] unsigned long id() const {
+#ifdef _WIN32
+        return id_;
+#else
+        return static_cast<unsigned long>(pid_);
+#endif
+    }
+
+    /// Writes all of `data`; false once the child has stopped reading.
+    bool write(const char* data, size_t size) {
+        size_t done = 0;
+        while (done < size) {
+#ifdef _WIN32
+            DWORD n = 0;
+            const DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - done, 1u << 30));
+            if (!WriteFile(toServer_, data + done, chunk, &n, nullptr) || n == 0) return false;
+#else
+            const ssize_t n = ::write(toServer_, data + done, size - done);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) return false;
+#endif
+            done += static_cast<size_t>(n);
+        }
+        return true;
+    }
+
+    /// Reads what is there, up to `size`; 0 once the child has closed.
+    size_t read(char* data, size_t size) {
+        for (;;) {
+#ifdef _WIN32
+            DWORD n = 0;
+            if (!ReadFile(fromServer_, data, static_cast<DWORD>(size), &n, nullptr)) return 0;
+            return n;
+#else
+            const ssize_t n = ::read(fromServer_, data, size);
+            if (n < 0 && errno == EINTR) continue;
+            return n > 0 ? static_cast<size_t>(n) : 0;
+#endif
+        }
+    }
+
+private:
+#ifdef _WIN32
+    static void closeAll(HANDLE a, HANDLE b) {
+        if (a != nullptr) CloseHandle(a);
+        if (b != nullptr) CloseHandle(b);
+    }
+    HANDLE process_ = nullptr;
+    DWORD  id_ = 0;
+    HANDLE toServer_ = nullptr;     // its stdin
+    HANDLE fromServer_ = nullptr;   // its stdout
+#else
+    pid_t pid_ = -1;
+    int   toServer_ = -1;     // its stdin
+    int   fromServer_ = -1;   // its stdout
+#endif
+};
+
+struct RenderServer::Impl {
+    std::filesystem::path binary;
+    Child                 child;
+    std::string           pending;    // read past the last line
+    int                   nextId = 1;
+    std::filesystem::path rawFile;    // where it writes each frame
+
+    ~Impl() { stop(); }
+
+    void stop() {
+        child.stop();
+        pending.clear();
+        if (!rawFile.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(rawFile, ignored);
+        }
+    }
+
+    bool alive() { return child.alive(); }
+
+    bool start(std::string& error) {
+        stop();
+        if (!child.start(binary, error)) {
+            return false;
+        }
         rawFile = std::filesystem::temp_directory_path() /
-                  ("athenea-ofx-" + std::to_string(::getpid()) + "-" + std::to_string(pid) + ".raw");
+                  ("athenea-ofx-" + std::to_string(currentProcessId()) + "-" + std::to_string(child.id()) + ".raw");
         json hello{{"jsonrpc", "2.0"},
                    {"id", nextId++},
                    {"method", "initialize"},
@@ -124,15 +289,9 @@ struct RenderServer::Impl {
 
     bool send(const json& message, std::string& error) {
         const std::string line = message.dump() + "\n";
-        size_t done = 0;
-        while (done < line.size()) {
-            const ssize_t n = ::write(toServer, line.data() + done, line.size() - done);
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) {
-                error = "the render server stopped listening";
-                return false;
-            }
-            done += static_cast<size_t>(n);
+        if (!child.write(line.data(), line.size())) {
+            error = "the render server stopped listening";
+            return false;
         }
         return true;
     }
@@ -141,17 +300,17 @@ struct RenderServer::Impl {
         for (;;) {
             if (const size_t end = pending.find('\n'); end != std::string::npos) {
                 line = pending.substr(0, end);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
                 pending.erase(0, end + 1);
                 return true;
             }
             char block[65536];
-            const ssize_t n = ::read(fromServer, block, sizeof block);
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) {
+            const size_t n = child.read(block, sizeof block);
+            if (n == 0) {
                 error = "the render server closed (crashed?)";
                 return false;
             }
-            pending.append(block, static_cast<size_t>(n));
+            pending.append(block, n);
         }
     }
 
@@ -186,13 +345,18 @@ std::filesystem::path RenderServer::defaultBinary() {
     if (const char* given = std::getenv("ATHENEA_MCP"); given != nullptr && given[0] != '\0') {
         return given;
     }
-    // Bundle/Contents/MacOS/Athenea.ofx -> Bundle/Contents/Resources/bin
-    const std::filesystem::path beside = moduleDirectory().parent_path() / "Resources" / "bin" / "athenea-mcp";
+#ifdef _WIN32
+    const char* name = "athenea-mcp.exe";
+#else
+    const char* name = "athenea-mcp";
+#endif
+    // Bundle/Contents/<MacOS|Linux-x86-64|Win64>/Athenea.ofx -> Bundle/Contents/Resources/bin
+    const std::filesystem::path beside = moduleDirectory().parent_path() / "Resources" / "bin" / name;
     std::error_code ignored;
     if (std::filesystem::exists(beside, ignored)) {
         return beside;
     }
-    return "athenea-mcp";
+    return name;
 }
 
 bool RenderServer::render(const FrameRequest& request, Frame& frame, std::string& error) {

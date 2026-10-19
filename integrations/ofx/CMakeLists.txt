@@ -24,7 +24,7 @@ target_include_directories(athenea_ofx_support PUBLIC "${ATHENEA_OPENFX_DIR}/inc
 target_compile_definitions(athenea_ofx_support PUBLIC OFX_EXTENSIONS_NUKE OFX_EXTENSIONS_NATRON)
 set_target_properties(athenea_ofx_support PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden)
 # The support library is OpenFX's, not this project's: its warnings are not ours to fix.
-target_compile_options(athenea_ofx_support PRIVATE -w)
+target_compile_options(athenea_ofx_support PRIVATE $<IF:$<CXX_COMPILER_ID:MSVC>,/w,-w>)
 
 add_library(athenea_ofx MODULE src/AtheneaOfx.cpp src/RenderServer.cpp)
 target_link_libraries(athenea_ofx PRIVATE athenea_ofx_support nlohmann_json::nlohmann_json)
@@ -57,6 +57,6 @@ if(TARGET athenea-mcp)
     add_custom_command(TARGET athenea_ofx POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${ATHENEA_OFX_BUNDLE}/Contents/Resources/bin"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:athenea-mcp>
-                "${ATHENEA_OFX_BUNDLE}/Contents/Resources/bin/athenea-mcp"
+                "${ATHENEA_OFX_BUNDLE}/Contents/Resources/bin/$<TARGET_FILE_NAME:athenea-mcp>"
         VERBATIM)
 endif()
