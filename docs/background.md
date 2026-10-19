@@ -101,7 +101,7 @@ the repository, only the pictures above do:
   backdrop, **CC-BY** by Mike Pan. Its materials predate the Principled BSDF,
   so the Cycles node trees are reduced to Principled equivalents before the
   USD export. <https://download.blender.org/demo/test/BMW27_2.blend.zip>
-- **Eurasian tree sparrow** -- a rigged and flying bird, 609 joints, 71 clips,
+- **Eurasian tree sparrow** -- by Nestaeric, from [Fab](https://www.fab.com/listings/63e05d9a-2421-4c79-98f0-bf577b55403f): a rigged and flying bird, 609 joints, 71 clips,
   whose animation arrives as FBX. It is the asset `--skinned` is shown moving
   on, the one the per-part visibility bake was written for, and the one in the
   pictures above. What its import cost, and the four bugs it found, is in

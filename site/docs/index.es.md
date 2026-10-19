@@ -61,7 +61,7 @@ Cada clip abre el vídeo completo.
 | [![La luz del path trace, en tiempo real](assets/clip-relight.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/relight-reel.mp4) | [![El Corvette entero en un iPhone](assets/clip-iphone.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-iphone.mp4) |
 | La luz del path trace, en tiempo real | El Corvette entero en un iPhone |
 | [![El cielo gira, el mismo fichero lo sigue](assets/clip-corvette-sky.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-sky-turns.mp4) | [![Un gorrión con skinning en vuelo](assets/clip-sparrow.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/sparrow-flight.mp4) |
-| El cielo gira, el mismo fichero lo sigue | Un gorrión con skinning en vuelo |
+| El cielo gira, el mismo fichero lo sigue | Un gorrión con skinning en vuelo (de Nestaeric, [Fab](https://www.fab.com/listings/63e05d9a-2421-4c79-98f0-bf577b55403f)) |
 
 ## Por dónde empezar
 

@@ -60,7 +60,7 @@ Each clip opens the full video.
 | [![The path trace's light, in real time](assets/clip-relight.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/relight-reel.mp4) | [![The whole Corvette on an iPhone](assets/clip-iphone.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-iphone.mp4) |
 | The path trace's light, in real time | The whole Corvette on an iPhone |
 | [![The sky turns, the same file follows](assets/clip-corvette-sky.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-sky-turns.mp4) | [![A skinned sparrow in flight](assets/clip-sparrow.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/sparrow-flight.mp4) |
-| The sky turns, the same file follows | A skinned sparrow in flight |
+| The sky turns, the same file follows | A skinned sparrow in flight (by Nestaeric, [Fab](https://www.fab.com/listings/63e05d9a-2421-4c79-98f0-bf577b55403f)) |
 
 ## Where to start
 

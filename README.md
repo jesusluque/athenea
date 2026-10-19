@@ -83,7 +83,7 @@ Click a clip for the full video.
 | [![The pawn: Gaussians against the path trace](docs/media/clip-relight.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/relight-reel.mp4) | [![The whole Corvette on an iPhone](docs/media/clip-iphone.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-iphone.mp4) |
 | **The path trace's light, in real time.** The pawn's Gaussians beside the path traced meshes. | **The whole Corvette on an iPhone**, 149 M Gaussians streamed by pages, relit. |
 | [![The Corvette as the sky turns](docs/media/clip-corvette-sky.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/corvette-sky-turns.mp4) | [![The sparrow in flight with its shadow](docs/media/clip-sparrow.webp)](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/sparrow-flight.mp4) |
-| **The sky turns, the same file follows.** The Corvette relit at draw time. | **A skinned sparrow in flight**, motion blur and a shadow caught on an invisible ground. |
+| **The sky turns, the same file follows.** The Corvette relit at draw time. | **A skinned sparrow in flight** (by Nestaeric, [Fab](https://www.fab.com/listings/63e05d9a-2421-4c79-98f0-bf577b55403f)), motion blur and a shadow caught on an invisible ground. |
 
 ## Two products from one bake
 
