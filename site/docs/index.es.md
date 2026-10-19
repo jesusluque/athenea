@@ -61,15 +61,15 @@ El add-on hace de athenea el motor de render de Blender: el viewport y F12 dibuj
 
 ## Ejemplo y material de prueba: el peón
 
-[athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip) (411 MB) trae el peón del Open Chess Set de la ASWF
+[athenea-example-pawn.zip](https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip) (601 MB) trae el peón del Open Chess Set de la ASWF
 como mallas originales y como la nube reiluminable que athenea horneó a partir de
 ellas, con una cámara y dos cielos, listo para renderizar, comparar y abrir en
-Blender, Nuke o Natron:
+Blender, Nuke o Natron. La nube conserva todos sus lados, así que se puede orbitar:
 
 ```sh
 athenea stage pawn_gs.usda   --camera /World/Cam -o gs.exr                                 # la nube
 athenea stage pawn_mesh.usda --camera /World/Cam --technique rt --path-total 64 -o pt.exr  # las mallas, con path trace
-athenea compare gs.exr pt.exr                                                              # relMSE 0.014, PSNR 30.2 dB
+athenea compare gs.exr pt.exr                                                              # PSNR 30 dB here; 35.6 dB at 1024 paths
 athenea stage pawn_gs_venice.usda --camera /World/Cam -o venice.exr                        # reiluminada bajo otro cielo
 ```
 
