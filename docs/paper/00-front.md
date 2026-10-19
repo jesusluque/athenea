@@ -24,11 +24,17 @@ close-up level of 74.5 million leaves in 24 trees was baked for close views. The
 renderer in which every step that touches scene data runs as a GPU compute kernel. Rigged assets keep their skeleton,
 with a Jacobian that includes the weights' gradients, zonal transfer lobes that turn with a limb and per-part
 visibility fields. Per-part merge trees with a monotone, bounded screen error, back-face and occlusion culls, and pages
-ordered by error give levels of detail at a cost of about 0.1 dB. As one application, clustered PCA, vector-quantised
-visibility and a 40-byte compact record carry the relit car to a WebGPU player on an iPhone.
+ordered by error give levels of detail at a cost of about 0.1 dB. A transfer is read in its cloud's own frame, with
+the sky turned into it once per instance, so a cloud a scene rotates relights as it does unrotated (relMSE
+$9\times10^{-6}$). Every parameter a Gaussian carries, from its albedo and normal to the transfer's sky visibility,
+bounce and reflected field, can be drawn through a camera as an image channel of its own. As applications, clustered
+PCA, vector-quantised visibility and a 40-byte compact record carry the relit car to a WebGPU player on an iPhone, and
+an OpenFX node brings the relit cloud into a compositor with its depth, world position and Cryptomatte layers and a sky
+the artist chooses.
 
 **Keywords:** relight baking; 3D Gaussian splatting; precomputed radiance transfer; spherical harmonics; USD; Hydra;
-mesh to Gaussians; path tracing; level of detail; clustered PCA; GPU-only pipelines; WebGPU.
+mesh to Gaussians; path tracing; level of detail; clustered PCA; GPU-only pipelines; WebGPU; OpenFX;
+compositing; image channels.
 
 ## Contents {.unnumbered .unlisted}
 

@@ -63,19 +63,32 @@ millones de Gaussians con material bajo un presupuesto compartido.
 
 `athenea decimate --tree` construye un merge tree binario por merge de pares de vecinos más cercanos mutuos. Es NanoGS
 (Xiong et al. 2026) en el dispositivo (`lod_pairs.slang`, `lod_pairs_final.slang`, `Lod.cpp`), con guardas adecuadas
-a nubes de bake con material (figura 14).
+a nubes de bake con material (figura 16).
 
-![Figura 14. Un merge tree y su cut. Los nodos son sumas de momentos; el error ε es monótono hacia arriba y la esfera ρ de cada nodo cubre las de sus hijos. Los nodos se agrupan en pages según el error del padre y llevan un índice a un codebook de oclusión conservador; el recorrido de cada frame prueba pages, back faces y oclusión.](figures/fig-lod.es.svg)
+![Figura 16. Un merge tree y su cut. Los nodos son sumas de momentos; el error ε es monótono hacia arriba y la esfera ρ de cada nodo cubre las de sus hijos. Los nodos se agrupan en pages según el error del padre y llevan un índice a un codebook de oclusión conservador; el recorrido de cada frame prueba pages, back faces y oclusión.](figures/fig-lod.es.svg)
 
 ### 6.2.1 Los nodos como momentos
 
-Un nodo es un vector de 24 floats: $W$, $W\mu$, $W(\Sigma+\mu\mu^\top)$ (6), $W\cdot\mathrm{sRGB}(c)$, $W n$,
+Un nodo es un vector de 24 floats: $W$, $W\mu$, $W(\Sigma+(\mu-\bar\mu)(\mu-\bar\mu)^\top)$ (6), $W\cdot\mathrm{sRGB}(c)$, $W n$,
 $W\alpha$, $W\cdot$metálico, $W\cdot$transmisión, $W\cdot$especular, la clave, el número de registros, la razón de
 grosor ponderada y el índice del nodo en el árbol. Aquí $w = o\cdot\max(s_xs_y, s_ys_z, s_xs_z)$ (`discArea`), y
 $\alpha$ es la roughness GGX al cuadrado. Un merge suma los dos vectores. Como las sumas son asociativas, los momentos
 de un nodo son los de todas sus leaves sea cual sea el orden de los merges. Todos los demás atributos (transfer, bits
 de sombra, material, joints) se fusionan una sola vez al final, ponderados por masa sobre el tramo de leaves del nodo
 (`lodMergeAttribute`).
+
+El segundo momento se toma respecto al propio centro del grupo $\bar\mu$, no al origen: el de un grupo de leaves a partir
+del desplazamiento de cada Gaussian a la media del grupo, el de un grupo más basto a partir de los de sus hijos con el
+desplazamiento de la media de cada hijo (el teorema de los ejes paralelos), y el merge de un par igual. Respecto al
+origen, $\Sigma = S_2/W - \mu\mu^\top$ es la diferencia de dos números del tamaño de $\mu\mu^\top$, que un float guarda
+con unos $5\times10^{-7}$ m² a dos metros del origen -- toda la varianza de una Gaussian de un milímetro de ancho. Las
+agujas de los bakes del close-up level sobre triángulos largos y finos (0.93 × 0.043 × 0.004 mm en el paragolpes
+delantero, con varianzas transversales de $2\times10^{-9}$ m²) se fusionaban tan finas como las dejaba el redondeo, y el
+coste leído de esos mismos momentos las daba casi gratis, así que un corte las elegía y dibujaba sus huecos como grano
+brillante. En la esquina delantera izquierda del paragolpes con su bake aislado a 5120 px (301 k Gaussians), el corte a
+0.01 px desde una cámara cercana pasó de relMSE $8.8\times10^{-4}$ a $1.3\times10^{-5}$ frente al bake, y el corte a
+0.25 px desde `/World/Camera` dibuja 42 719 Gaussians en lugar de 94 351 con algo menos de error ($3.7$ frente a
+$3.9\times10^{-4}$).
 
 La Gaussian fusionada (`pairFinalize`) toma $\mu$ y $\Sigma$ ajustadas por momentos, descompuestas en autovectores
 por Jacobi con el eje más delgado en tercer lugar. Fusionar por momentos conserva el segundo momento. Un bloque de
@@ -460,7 +473,10 @@ car1280: las raíces gruesas se quedan, y los niveles más profundos solo se pag
 | Front_Bumper_001 | 5 008 986 | 4480 |
 | **24 árboles** | **74 536 126 leaves, 74 328 031 merges, 208 095 raíces** | |
 
-Los 24 árboles contienen 148 864 157 nodos en 49 634 pages de 3000, y 87.4 GB en disco. Algunos árboles conservan
+Los 24 árboles contienen 148 864 157 nodos en 49 634 pages de 3000, y 87.4 GB en disco. Rehechos a partir de sus
+leaves con los segundos momentos respecto al propio centro de cada grupo (§6.2.1), y con un codebook de oclusión
+compartido de 8181 entradas (el 11.9 % de las celdas reabiertas), el corte del coche a 0.25 px dibuja 11.7 M de Gaussians
+en lugar de 16.9 M y da 24.00 dB en el frame y 18.31 dB en el coche frente al path trace (antes 23.62 y 17.91). Algunos árboles conservan
 muchas raíces sueltas (fine5: 29 213; Infinite_Black: 92 773), porque los merges nunca cruzan piezas ni guardas, por
 diseño. El empaquetador del player (§7.5.4) añade encima una raíz sintética de varios niveles, ya que un fichero
 contiene unas 3 000 raíces.

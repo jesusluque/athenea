@@ -130,9 +130,9 @@ thread per gaussian. Its inputs are the rest cloud, the (joint, weight)
 pairs, the joints' skinning transforms at the current instant, and three
 matrices: the bind transform $G$, `skelToWorld` and `worldToPrim`. USD
 matrices are row-major and act on row vectors, so the host transposes them as
-`geom::Skinner` does for meshes (Figure 11).
+`geom::Skinner` does for meshes (Figure 13).
 
-![Figure 11. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
+![Figure 13. Skinning on the device: the bind-pose cloud, the per-Gaussian joint weights and their gradients, and the joint transforms of the current time give the posed mean and covariance; per-part visibility tables baked once in the bind pose shadow the posed cloud.](figures/fig-skinning.svg)
 
 ### 5.4.1 The mean
 
@@ -478,7 +478,9 @@ each with merge weight $\omega_r$,
 $$c_j=\sum_{r\in R}\omega_r\sum_k w_{rk}\,[\,j_{rk}=j\,],$$
 
 collecting up to 16 distinct joints. The `width` heaviest are kept and
-renormalised, $w'_j = c_j/\sum_{\text{kept}} c$. A record's dominant joint is
+renormalised, $w'_j = \min(c_j/\sum_{\text{kept}} c,\,1)$: a division on the
+device is not correctly rounded, and a merge wholly on one joint came out at
+$1 + 10^{-7}$. A record's dominant joint is
 also folded into the merge key, so a merge never crosses a joint's edge.
 Checked: a floor whose halves belong to two joints goes from 4096 to 256
 gaussians, each kept gaussian wholly on its side's joint. The sparrow's finest
@@ -489,7 +491,7 @@ an image RMS of 0.002.
 ## 5.10 The sparrow
 
 The sparrow and a BMW were the first two assets converted that were not
-authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 12).
+authored for this renderer, and most of what it uncovered was outside the skinning maths (Figure 14).
 
 - **Animation export.** Blender's exporter wrote no joint samples for this
   FBX-imported rig, so `scripts/sparrow-anim.py` samples the evaluated pose.
@@ -517,7 +519,7 @@ relMSE with it), after coverage was made to follow opacity:
 | sparrow wing, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | sparrow wing, traced | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
-![Figure 12. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
+![Figure 14. The sparrow: the mesh path traced (left) and the converted Gaussians rasterized (right).](figures/img-sparrow.jpg)
 
 For the web, the bird was converted with `--skinned --transfer
 --resolution 512`, with zonal lobes baked at 256 paths and 3 bounces in the
@@ -556,9 +558,9 @@ paths) gives, per material:
 Three later conversions of the same pawn, measured at 1024², give glass
 relMSE 0.149, 0.081 and 0.043, with the body unchanged at 0.025. The body is
 within a few percent of the path-traced mesh. The error is concentrated in the
-glass head (Figure 13).
+glass head (Figure 15).
 
-![Figure 13. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
+![Figure 15. The white pawn at 2048²: the path-traced mesh with 2048 paths per pixel (left) and the converted Gaussians (right).](figures/img-pawn.jpg)
 
 ## 5.12 Application: playback on the web and on a phone
 
@@ -584,6 +586,26 @@ splats and compares the two. Against athenea's raster the result is relMSE
 | `/sparrow` (published 2026-10-07) | 1 504 096 splats, 125.7 MB, 12 clips (6.4 MB gzip), zonal transfer, HDRI | desktop GPU memory 1084 → 684 MB |
 | `/sparrow` on phones | `sparrow-mobile`: 488 656 splats, 31.7 MB, cut from the LoD tree (`--keep-splats 600000`) | 60 fps headless in mobile mode, animated |
 | sparrow-v2 (candidate) | 1 100 334 splats (−26.8 %), 75.9 MB; mobile 371 138, 26.1 MB | same error as published (4.46e-3) |
+
+**The compact route.** A skinned cloud also plays through the compact path of
+§7: each node carries its skin in the compact record, the draw skins it, a
+page's box is the union of its boxes over the poses, and the occlusion and
+back-face culls are off for what moves. The sparrow's merge tree is split in two
+by roots with common zonal scales, two files of about 162 MiB with the clips and
+its own domes, 347 MB in all (`sparrow-compact-tx`, published 2026-10-18); on the
+desktop it draws 795 k Gaussians at $\tau$ 1.5 and 60 fps while flying, and the
+emulated phone 232 k.
+
+**Temporal antialiasing.** A temporal resolve was tried in the player (Karis's
+scheme: Halton jitter, reprojection, YCoCg clamp and an exponential mean), with
+motion vectors per Gaussian, the wings' from the previous frame's bone matrices.
+The vectors are right (reprojection error 0.05 → 0.015–0.028 on the wings,
+0.018 → 0.003 on the car), but in motion the frame does not beat the frame without
+it on the car, the sparrow or the compact path: it shows more error, flicker and
+trails, because the highlights are HDR and view-dependent and the jitter is not
+averaged out. Variants (Catmull–Rom history, Salvi's variance clip, an $\alpha$
+by speed, contrast-adaptive sharpening) do not change that. With the camera still
+it matches a 16-frame accumulation. It costs 3 ms at 1080p and is left optional.
 
 **Pruning a moving asset.** Gaussians hidden in the bind pose cannot simply be
 dropped, because other poses reveal them. Measured over 12 clips × 4 samples

@@ -135,9 +135,9 @@ por Gaussian. Sus entradas son la nube de reposo, los pares (joint, peso), las
 transformaciones de skinning de los joints en el instante actual y tres
 matrices: la transformación de bind $G$, `skelToWorld` y `worldToPrim`. Las
 matrices de USD son row-major y actúan sobre vectores fila, así que el host
-las traspone como hace `geom::Skinner` con los meshes (figura 11).
+las traspone como hace `geom::Skinner` con los meshes (figura 13).
 
-![Figura 11. Skinning en el dispositivo: la nube en bind pose, los pesos de joint por Gaussian y sus gradientes, y los transforms de joint del instante actual dan la media y la covarianza en pose; las tablas de visibilidad por parte, con bake único en bind pose, dan la sombra de la nube en pose.](figures/fig-skinning.es.svg)
+![Figura 13. Skinning en el dispositivo: la nube en bind pose, los pesos de joint por Gaussian y sus gradientes, y los transforms de joint del instante actual dan la media y la covarianza en pose; las tablas de visibilidad por parte, con bake único en bind pose, dan la sombra de la nube en pose.](figures/fig-skinning.es.svg)
 
 ### 5.4.1 La media
 
@@ -497,7 +497,9 @@ una Gaussian conservada, cada uno con peso de merge $\omega_r$,
 $$c_j=\sum_{r\in R}\omega_r\sum_k w_{rk}\,[\,j_{rk}=j\,],$$
 
 reuniendo hasta 16 joints distintos. Se conservan los `width` más pesados y
-se renormalizan, $w'_j = c_j/\sum_{\text{kept}} c$. El joint dominante de un
+se renormalizan, $w'_j = \min(c_j/\sum_{\text{kept}} c,\,1)$: una división en
+el dispositivo no está correctamente redondeada, y un merge entero sobre un
+joint salía a $1 + 10^{-7}$. El joint dominante de un
 registro se pliega además en la clave de merge, así que un merge nunca cruza
 el borde de un joint. Comprobado: un suelo cuyas mitades pertenecen a dos
 joints pasa de 4096 a 256 Gaussians, cada Gaussian conservada entera en el
@@ -510,7 +512,7 @@ el tiempo 20, se dibuja como la nube sin diezmar con un RMS de imagen de
 
 El gorrión y un BMW fueron los dos primeros assets convertidos que no se
 crearon para este renderer, y la mayor parte de lo que destapó estaba fuera
-de las matemáticas del skinning (figura 12).
+de las matemáticas del skinning (figura 14).
 
 - **Exportación de la animación.** El exportador de Blender no escribía
   muestras de joints para este rig importado de FBX, así que
@@ -542,7 +544,7 @@ relMSE con él), después de que la coverage pasara a seguir la opacidad:
 | ala del gorrión, raster | 0.2395 → 0.2367 (0.2253) | 0.1742 → 0.1635 |
 | ala del gorrión, trazada | 0.2385 → 0.2358 (0.2462) | 0.1331 → 0.1247 |
 
-![Figura 12. El gorrión: el mesh con path trace (izquierda) y las Gaussians convertidas, rasterizadas (derecha).](figures/img-sparrow.jpg)
+![Figura 14. El gorrión: el mesh con path trace (izquierda) y las Gaussians convertidas, rasterizadas (derecha).](figures/img-sparrow.jpg)
 
 Para la web, el pájaro se convirtió con `--skinned --transfer
 --resolution 512`, con bake de lóbulos zonales a 256 paths y 3 rebotes en la
@@ -582,9 +584,9 @@ secciones 3 y 4. La validación de alta calidad del peón blanco
 Tres conversiones posteriores del mismo peón, medidas a 1024², dan un relMSE
 del cristal de 0.149, 0.081 y 0.043, con el cuerpo sin cambios en 0.025. El
 cuerpo queda a unos pocos por ciento del path trace del mesh. El error se
-concentra en la cabeza de cristal (figura 13).
+concentra en la cabeza de cristal (figura 15).
 
-![Figura 13. El peón blanco a 2048²: el path trace del mesh con 2048 caminos por píxel (izquierda) y las Gaussians convertidas (derecha).](figures/img-pawn.jpg)
+![Figura 15. El peón blanco a 2048²: el path trace del mesh con 2048 caminos por píxel (izquierda) y las Gaussians convertidas (derecha).](figures/img-pawn.jpg)
 
 ## 5.12 Aplicación: reproducción en la web y en un teléfono
 
@@ -613,6 +615,27 @@ de 1.01. No se escribe movimiento de obturador.
 | `/sparrow` (publicada 2026-10-07) | 1 504 096 splats, 125.7 MB, 12 clips (6.4 MB gzip), transfer zonal, HDRI | memoria de GPU en escritorio 1084 → 684 MB |
 | `/sparrow` en teléfonos | `sparrow-mobile`: 488 656 splats, 31.7 MB, cortado del árbol LoD (`--keep-splats 600000`) | 60 fps headless en modo móvil, animado |
 | sparrow-v2 (candidato) | 1 100 334 splats (−26.8 %), 75.9 MB; móvil 371 138, 26.1 MB | mismo error que el publicado (4.46e-3) |
+
+**La ruta compacta.** Una nube con skinning también se reproduce por la ruta
+compacta de §7: cada nodo lleva su skin en el registro compacto, el dibujo le
+aplica el skinning, la caja de una page es la unión de sus cajas en todas las
+poses, y los culls de oclusión y de caras traseras se apagan en lo que se mueve.
+El merge tree del gorrión se parte en dos por raíces con escalas zonales
+comunes, dos ficheros de unos 162 MiB con los clips y sus propios domos, 347 MB
+en total (`sparrow-compact-tx`, publicado el 2026-10-18); en el escritorio dibuja
+795 k Gaussians a $\tau$ 1.5 y 60 fps en vuelo, y el móvil emulado 232 k.
+
+**Antialiasing temporal.** Se probó en el player una resolución temporal (el
+esquema de Karis: jitter de Halton, reproyección, clamp en YCoCg y una media
+exponencial), con vectores de movimiento por Gaussian, los de las alas a partir
+de las matrices de hueso del frame anterior. Los vectores son correctos (error de
+reproyección 0.05 → 0.015–0.028 en las alas, 0.018 → 0.003 en el coche), pero en
+movimiento el frame no mejora al frame sin ella en el coche, el gorrión ni la
+ruta compacta: muestra más error, parpadeo y estelas, porque los brillos son HDR
+y dependen de la vista y el jitter no se promedia. Las variantes (historia
+Catmull–Rom, el recorte por varianza de Salvi, un $\alpha$ según la velocidad,
+afilado adaptativo al contraste) no lo cambian. Con la cámara quieta iguala una
+acumulación de 16 frames. Cuesta 3 ms a 1080p y queda como opción.
 
 **Podar un asset que se mueve.** Las Gaussians ocultas en la bind pose no se
 pueden quitar sin más, porque otras poses las muestran. Medido sobre 12

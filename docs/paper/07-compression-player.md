@@ -132,9 +132,9 @@ The tier-4 section `CMPC` holds the 40 GPU bytes plus the traversal's bytes, so 
 | v3 | 64 = 40 + 24 | +cone word, 13-bit occlusion index; 30 B in, 20 B WASM | back-cull and occlusion on by default; only the pages the traversal asks for are planned |
 | v4 | container `CMP4` | 12-byte quantised records | payload as **raw-deflate runs of 64 nodes**, plane after plane; node pool; tier 4 +10 % (314 → 344 MB) |
 
-The **v4 page** is a container: a header, each run's end offset, the gzipped traversal planes, then each run of 64 nodes compressed by raw deflate. Runs can be fetched, kept and evicted one by one, so the CPU keeps a page's payload compressed and the GPU keeps records only for the **drawn** cut. The node pool's census motivated this: with whole pages resident, only about 26 % of each page's nodes were drawn, and smaller pages did not help (residency/cut 4.54× at $P=3000$, 4.46× at $P=500$) (Figure 15).
+The **v4 page** is a container: a header, each run's end offset, the gzipped traversal planes, then each run of 64 nodes compressed by raw deflate. Runs can be fetched, kept and evicted one by one, so the CPU keeps a page's payload compressed and the GPU keeps records only for the **drawn** cut. The node pool's census motivated this: with whole pages resident, only about 26 % of each page's nodes were drawn, and smaller pages did not help (residency/cut 4.54× at $P=3000$, 4.46× at $P=500$) (Figure 17).
 
-![Figure 15. The compact format: an asset table, `.athc` v3 files whose tier 4 holds v4 pages of traversal records and 40-byte payload records, and the clustered-PCA transfer basis kept on the GPU.](figures/fig-compact.svg)
+![Figure 17. The compact format: an asset table, `.athc` v3 files whose tier 4 holds v4 pages of traversal records and 40-byte payload records, and the clustered-PCA transfer basis kept on the GPU.](figures/fig-compact.svg)
 
 ### 7.5.3 Traversal records
 
@@ -164,7 +164,7 @@ The reader (`CompactBandStreamer`) reads only the page tables at open. After eac
 
 A node whose children are absent is drawn as a leaf, or as its parent or children while a run is being decoded. With v4 runs, the cut's own runs and those of its parents and children are always kept, and the rest are dropped first under a run budget. An extrapolated camera (2.5 updates ahead) is traversed too, so its runs are prefetched. Up to 12 Range requests are in flight.
 
-The work is split across the main thread, the WASM traversal and two workers (Figure 16):
+The work is split across the main thread, the WASM traversal and two workers (Figure 18):
 
 | where | what | measured |
 |---|---|---|
@@ -173,7 +173,7 @@ The work is split across the main thread, the WASM traversal and two workers (Fi
 | main thread | Range fetches, writes of records and draw lists (adopted, no GC) | — |
 | GPU compute | record moves when the pool shrinks (one dispatch, a thread a word) | first frame after a still frame 88–100 → 34 ms |
 
-![Figure 16. The player’s threads: Range fetches and the page pool on the main thread, the traversal in a WASM worker, the cut packed into slots in a second worker, and five GPU passes a frame; the GPU time drives the τ floor.](figures/fig-player.svg)
+![Figure 18. The player’s threads: Range fetches and the page pool on the main thread, the traversal in a WASM worker, the cut packed into slots in a second worker, and five GPU passes a frame; the GPU time drives the τ floor.](figures/fig-player.svg)
 
 On a fast orbit of 120° at 1° a frame on the emulated phone, the share of the cut missing from a frame fell from 26 % with the first v4 streamer to 4.3–6.4 %, which is 0.24–0.30 % of the screen area. Frames stayed at 60 fps with a maximum of 17.3–19.6 ms. The cut settled 2.6–3.1 s after load.
 
@@ -343,6 +343,7 @@ The estimated shade cost on that iPhone is about 190 ms a million. The softness 
 | v6 | athenea's mrough trees, per-material roughness, 1.35 GB |
 | v7 | car1280, 1.81 GB |
 | v8 | car5120: 24 trees, 74.5M leaves, 148.9M nodes, shared 8182-entry occlusion (§6.9) |
+| v8.2b (final) | car5120 rebuilt (§6.2.1): 149.0M nodes, 8181-entry occlusion, a shared 512-cluster basis refitted with the 5120 data and four bases of 256 of the asset's own (Part_2, Infinite_Black, two parts of Part_3 and Front_Bumper_001), 83 files, 12.77 GB; transfer relMSE 0.0054 over the car |
 
 Unless noted, the figures below are PSNR at athenea's camera at 1920 × 1080, by the validate-corvette harness's regions.
 
@@ -353,13 +354,14 @@ Unless noted, the figures below are PSNR at athenea's camera at 1920 × 1080, by
 | v7 (first conversion) | +0.5 vs v6 | −2.3 | −2.7 | — | +0.9 | specks on folds |
 | v7 + pixel spread, $\tau$ 1 | — | **35.53** | **32.36** | relMSE 0.199 | 14.46 | pixel spread on |
 | v7, current defaults | 19.03 | 35.52 | 32.36 | 22.28 | 14.68 | degree-1 field |
-| v8 | — | — | — | — | — | not measured |
+| v8.1 | 19.22 | 35.92 | — | — | — | pool 3000, $\tau$ 1; draws 4.0 M |
+| v8.2b | 19.27 | 35.53 | — | — | — | pool 3000, $\tau$ 1; draws 2.26 M; logo from a close camera 18.12 dB (v8.1 17.75) |
 
 The car crop metric of §1.6 (900 × 420 crop) is a different region. On it, the per-pixel sharp lobe in the compact path took the car from 16.49 to 17.46 dB (17.41 with lobes from 4 px), which is the desktop path's level. On the phone, $\tau$ 3 against $\tau$ 1 differs by 40 dB, so the remaining defects (hairs, streaks, blotches) come from the cloud, not from the cut. Lossless steps were checked against the previous image: the sharp records in 5 words, 60–80 dB; binned shading, 84 dB (run-to-run noise 78 dB); the glass-only terms, 188 dB.
 
 ## 7.13 Limitations and open work
 
-- **v8** (car5120 with the 512-cluster basis and the shared 8182-entry occlusion codebook) has not been converted for the player at the time of writing; athenea's side (the 24 trees and their shared occlusion, §6.9) is complete. Its quality against the path trace, its download and its behaviour on the real phone are unmeasured.
+- **v8.2b**, the final data set (car5120 rebuilt, §6.2.1), is published: against the path trace it gains on the car, the grille, the chrome and the bumper and on the close logo, and loses 0.39 dB on the door against v8.1 while drawing about half as many Gaussians. Its download and frame times on the real phone are not measured.
 - Real-device timing exists only for the stress ramps and the two whole-car runs. The emulated phone's speed is not the phone's.
 - The front bumper's chrome strip is 38 % brighter than the path trace. The lamps have no emission in the bake. The door's open reflections (1.13) come from 16 × 16 cells of 11°.
 - The compact traversal does not keep a merge's LoD size, so the combined size/error cut has nothing to guard with. The error cut alone did not beat the size cut on these data in every view.

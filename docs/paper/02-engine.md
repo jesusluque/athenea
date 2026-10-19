@@ -555,7 +555,25 @@ denoise, antialias and lens.
   `athenea compare` are AOFX bundles.
 - **MCP server** (`athenea-mcp`): JSON-RPC 2.0 over stdio, with a warm device and stage. Tools are `open_stage`,
   `render` (returning a PNG image block), `pick`, `bounds`, `convert`, `timings` and `settings`. A protocol test suite
-  checks handshake, notifications and error codes.
+  checks handshake, notifications and error codes. For a program that composites the frame, `render` takes a camera as
+  a compositor holds one (camera to world and a lens in millimetres) and writes the frame's own numbers to a file:
+  premultiplied RGBA, view depth, and on request the world position (made on the device from the depth) and the three
+  Cryptomatte layers, with the matte's manifest in the answer. `sky`, `skyRotation` and `skyVisible` put another image
+  on every dome of the stage, turn it, and hide the background while it still lights.
+- **OpenFX node** (`Athenea.ofx.bundle`, built on Natron's OpenFX). A generator that draws a cloud through its camera
+  at the project's format and the frame's time. It loads none of the engine: it starts `athenea-mcp` as a child, one
+  for the host process, and reads each frame back from a file, so the host's own USD and TBB never meet the engine's
+  and a device fault ends the server, not the host. Its knobs are a Camera node's (translate, rotate in an order,
+  focal, apertures), the sky, its rotation and visibility, and the layer a host without planes shows in RGBA. Through a
+  minimal OpenFX host its frame is bit-identical to the server's own render of the same camera (relMSE 0). In Natron,
+  which takes custom planes, a pawn at 1920 × 1080 writes one 32-bit EXR of 21 channels (colour, `depth.Z`, `P`,
+  `CryptoObject00`–`02`) whose colour and position match that host's to within $10^{-6}$. The Corvette's relightable
+  cloud (3 M Gaussians, 2.9 GB) at 1920 × 1080 with every plane takes 7.5 s for the first frame, which opens and
+  uploads the stage, then 120–170 ms a frame under a still sky and 190–220 ms with the sky turning every frame. Nuke
+  takes from an OpenFX node only its own planes, so there one layer a node is shown.
+- **Blender add-on** (`athenea_hydra`). A Hydra render engine for Blender 5.3 over the engine's delegate: viewport and
+  final render by athenea, mesh-to-Gaussian conversion of selected objects, clouds referenced as Empties, the World's
+  environment as the dome.
 
 ## 2.15 Verification without a CPU oracle
 

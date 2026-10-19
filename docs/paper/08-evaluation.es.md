@@ -94,6 +94,8 @@ Storm.
 | path tracer: cáscara emisora cerrada; exponente de convergencia | 0 de 3072 por encima de 10⁻⁴; −0.499 | 2.11 |
 | OIDN, 16 caminos frente a una referencia de 4096 caminos | relMSE 3.65·10⁻⁴ → 7.17·10⁻⁵ | 2.11 |
 | batería de pruebas en tres dispositivos (188 casos) | Metal 188 pasan; Vulkan 180 pasan, 8 omitidas; CUDA 96 pasan, 1 falla, 91 omitidas | 2.15 |
+| una nube TX girada 60° con su cámara y su cielo frente a sin girar | peón relMSE 9·10⁻⁶ (61 dB); bolas de prueba 1–2·10⁻⁴, 1.5·10⁻²–0.13 bajo un cielo sin girar | 4.3 |
+| nodo OpenFX frente al render del propio servidor, misma cámara | relMSE 0; en Natron, color y posición en el mundo a menos de 10⁻⁶ de un host OpenFX simple | 2.14 |
 
 | carga | cifra | § |
 |---|---|---|
@@ -103,6 +105,8 @@ Storm.
 | visibilidad de Kitchen_set a 1920 × 1080: raster / rayos / bvh | 31.7 / 19.2 / 29.2 ms | 2.8 |
 | Kitchen_set iluminado a 1920 × 1080: raster / path tracer (1 camino, 1 rebote) | 96.0 / 358.9 ms | 2.11 |
 | Corvette TX entero (14.7 M Gaussians) a 1920 × 1080, rasterizer de escritorio | 158 ms (unos 83 ms para una nube con relight de su tamaño) | 4.10.2 |
+| Corvette reiluminable (3 M) por el nodo OpenFX en Natron, 1920 × 1080, todos los planos | primer frame 7.5 s (abre el stage); luego 120–170 ms, 190–220 ms con el cielo girando | 2.14 |
+| un canal de parámetros, peón a 768 × 768 | 20–60 ms | 4.11 |
 
 ## 8.5 LOD
 

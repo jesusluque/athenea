@@ -589,7 +589,26 @@ denoise, antialiasing y lente.
 - **Servidor MCP** (`athenea-mcp`): JSON-RPC 2.0 sobre stdio, con el dispositivo y el stage calientes. Las
   herramientas son `open_stage`, `render` (que devuelve un bloque de imagen PNG), `pick`, `bounds`, `convert`,
   `timings` y `settings`. Una batería de pruebas de protocolo comprueba el saludo inicial, las notificaciones y los
-  códigos de error.
+  códigos de error. Para un programa que compone el frame, `render` acepta una cámara tal como la guarda un compositor
+  (de cámara a mundo y una lente en milímetros) y escribe los números del propio frame en un fichero: RGBA
+  premultiplicado, la profundidad de vista y, si se piden, la posición en el mundo (hecha en el dispositivo a partir de
+  la profundidad) y las tres capas del Cryptomatte, con el manifest del matte en la respuesta. `sky`, `skyRotation` y
+  `skyVisible` ponen otra imagen en todos los domos del stage, la giran y ocultan el fondo mientras sigue iluminando.
+- **Nodo OpenFX** (`Athenea.ofx.bundle`, construido sobre el OpenFX de Natron). Un generador que dibuja una nube a
+  través de su cámara al formato del proyecto y en el tiempo del frame. No carga nada del motor: arranca `athenea-mcp`
+  como proceso hijo, uno para el proceso del host, y lee cada frame de un fichero, así que el USD y el TBB del host nunca
+  se cruzan con los del motor y un fallo del dispositivo termina el servidor, no el host. Sus knobs son los de un nodo
+  Camera (translate, rotate en un orden, focal, aperturas), el cielo, su rotación y su visibilidad, y la capa que muestra
+  en RGBA un host sin planos. A través de un host OpenFX mínimo, su frame es idéntico bit a bit al render del propio
+  servidor con la misma cámara (relMSE 0). En Natron, que admite planos propios, un peón a 1920 × 1080 escribe un EXR de
+  32 bits con 21 canales (color, `depth.Z`, `P`, `CryptoObject00`–`02`) cuyos color y posición coinciden con los de ese
+  host con un error menor de $10^{-6}$. La nube reiluminable del Corvette (3 M de Gaussians, 2.9 GB) a 1920 × 1080 con
+  todos los planos tarda 7.5 s en el primer frame, que abre el stage y lo sube, y después 120–170 ms por frame con el
+  cielo quieto y 190–220 ms con el cielo girando en cada frame. Nuke solo acepta de un nodo OpenFX sus propios planos,
+  así que allí se ve una capa por nodo.
+- **Add-on de Blender** (`athenea_hydra`). Un motor de render Hydra para Blender 5.3 sobre el delegado del motor: el
+  viewport y el render final por athenea, la conversión de mesh a Gaussians de los objetos elegidos, las nubes
+  referenciadas como Empties y el entorno del World como domo.
 
 ## 2.15 Verificación sin oráculo en CPU
 

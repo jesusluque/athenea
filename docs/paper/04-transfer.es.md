@@ -99,6 +99,27 @@ por $\cos\theta_0 - \cos\theta_1$, de modo que cada nivel conserva la media por 
 de 1.5 grados en un nivel rugoso era una dispersión de manchas del tamaño de un téxel (la banda de 4-16 px de una bola
 de pintura a 2.13 veces el path trace).
 
+**Una nube que la escena gira.** Todo lo que una Gaussian guarda de su transfer (§4.2) -- los armónicos de las dos
+mitades, el campo reflejado y los bits de direcciones abiertas -- es un conjunto de direcciones de la nube, medidas en el
+sistema de referencia del fichero en el que se hizo su bake. Un prim que gira la nube (un asset Y-up colocado en una
+escena Z-up, una pieza girada a su sitio) no cambia ninguna. Por eso el dibujo lee el transfer en el sistema de la nube.
+Sea $R$ la rotación de la transformación de la instancia, su parte lineal con las columnas hechas unitarias. Cada
+dirección del mundo por la que pregunta el dibujo -- el espejo de la vista, el camino a través de un vidrio, el sol, una
+luz, el cono de celdas de un lóbulo -- se gira por $R^\top$ antes de consultarla, y los dieciséis coeficientes del cielo
+se giran al mismo sistema una vez por instancia y frame,
+
+$$L'_k = \int_{S^2} Y_k(\boldsymbol{\omega})\, L(R\,\boldsymbol{\omega})\, d\boldsymbol{\omega},$$
+
+con una regla producto exacta para los productos de grado 6 que integra (cuatro nodos de Gauss–Legendre en $\cos\theta$
+por ocho pasos iguales en $\varphi$). El cuerpo hace entonces el producto del transfer con $L'_k$; lo que se evalúa en
+el mundo (el mapa prefiltrado, el fondo) conserva $L_k$. Un transfer zonal (§4.4.5) ya gira con cada Gaussian y se deja
+como está. Con el peón de §5.11 girado 60 grados alrededor de su eje vertical junto con su cámara y su cielo, el frame con
+relight coincide con el del peón sin girar con relMSE $9\times10^{-6}$ (61 dB) a 768 × 768; girado al revés, 11 dB.
+Leído en cambio en el sistema del mundo, el peón levantado de Y-up a una escena Z-up dibujaba su cabeza de vidrio en
+fragmentos (figura 11).
+
+![Figura 11. La cabeza de vidrio del peón en una escena Z-up, con sus nubes levantadas por un cuarto de vuelta. Izquierda: el transfer leído en el sistema del mundo. Centro: leído en el sistema de la nube con el cielo girado a él. Derecha: la nube sin girar en su propio stage Y-up, cuyo cielo queda en otro acimut.](figures/img-turned-glass.jpg)
+
 ## 4.4 El bake
 
 ### 4.4.1 La integral de transfer y su estimador
@@ -591,7 +612,55 @@ separación las quita sin tocar la tira. Alternativas consideradas: poner una pu
 roughness sin ensanchar triplica el error de paso alto de la tira; `--specular-filter 0` dibuja una línea oscura
 discontinua en el fold del umbral y cromo que centellea. El polish necesita ahí su ensanche.
 
-## 4.11 Limitaciones
+## 4.11 Los parámetros como canales de imagen
+
+Cada Gaussian lleva los parámetros que lee el relight -- su material, su forma y su transporte de luz precalculado -- y
+cualquiera de ellos se puede dibujar a través de una cámara en lugar de la luz (`athenea:splatView`). El splat se mezcla
+por su opacidad como la luz, así que un frame de un parámetro es ese parámetro tal como la cámara ve la nube: el mismo
+orden, las mismas huellas y la misma coverage que el frame con luz, y por tanto alineado con él píxel a píxel. Los valores
+que no son colores se ponen en una escala para verlos, y se guardan como números en un EXR. La figura 12 muestra el peón
+de §5.11.
+
+| canal | qué es | escala |
+|---|---|---|
+| light | el frame con relight bajo el cielo elegido | radiancia lineal |
+| baked | la luz que lleva la nube, capturada o de su bake, sin relight | radiancia lineal |
+| albedo | el color de la superficie sin luz | lineal |
+| roughness | la roughness que lee el especular, ensanchada por la dispersión de normales bajo la Gaussian (§3.7) | 0–1 |
+| materialRoughness | la roughness propia del material antes de ese ensanche; 0 donde la nube no la guarda | 0–1 |
+| metallic, transmission | los pesos de metal y de transmisión del material | 0–1 |
+| ior | el índice de refracción del especular menos uno | gris |
+| normal | la orientación que usa el sombreado, en el mundo | $\mathbf{n}/2 + 1/2$ |
+| opacity | la opacidad máxima de la Gaussian | 0–1 |
+| size | el eje mayor de la Gaussian | rampa logarítmica, 10 µm (azul) a 10 cm (rojo) |
+| skyVisibility | el cielo visto por el transfer ponderado por el coseno, $T_0 / Y_0$: 1 donde nada ocluye | 0–1 |
+| bounce | la mitad indirecta bajo un cielo blanco de radiancia uno: la luz que llegó a la Gaussian tras un rebote, con el color de lo que la rebotó | lineal |
+| openCells | la fracción de las 256 direcciones que el bake encontró saliendo de la escena | 0–1 |
+| field | la media del campo reflejado bajo un cielo blanco: lo que la Gaussian ve a su alrededor | lineal |
+| emission | la luz que emite la propia superficie | lineal |
+
+Los canales forman tres grupos. El material y la geometría (albedo, roughness, metallic, transmission, ior, normal, con
+la profundidad y la posición en el mundo de §2.14) son entradas independientes. Los canales del transfer
+(skyVisibility, bounce, openCells, field) son el transporte de luz que el bake precalculó en 3D: dependen de toda la
+escena, incluido lo que ninguna cámara ve, y son la parte cara del asset. La luz es una función fija de ambos grupos y del
+cielo: el relight de §4.5–§4.7 la calcula, así que la luz de un frame está determinada por sus canales y el HDRI. Algunos
+canales se siguen de otros. La posición en el mundo es la profundidad desproyectada por la cámara, de forma exacta; la
+normal se sigue de forma aproximada del gradiente de la posición en pantalla, perdiendo detalle y rompiéndose en las
+siluetas; skyVisibility es, hasta el límite de banda del transfer, la media ponderada por el coseno de las direcciones
+abiertas, que llevan más que ella; y la roughness es la del material ensanchada por la dispersión de las normales, que
+una nube que guardase esa dispersión recalcularía. Otros no: los canales del transfer no se pueden recuperar de lo que ve
+una cámara, porque una oclusión ambiental en espacio de pantalla pierde lo que queda fuera y un rebote o un reflejo
+dependen de vecinos que pueden no estar en el frame; el albedo a partir de la luz es inverse rendering, mal planteado; y
+la opacidad y el tamaño son propios de las Gaussians.
+
+Dibujada así, una nube con relight bajo un conjunto de cielos y cámaras da frames alineados de entradas (material,
+geometría), transporte precalculado y objetivos (la luz por cielo) -- el material de un dataset para aprender a predecir
+el transporte, o la luz con relight, a partir de entradas que no lo llevan. En el peón a 768 × 768 un canal cuesta
+20–60 ms. Una nube sin relight solo tiene su luz, su opacidad y su tamaño que mostrar.
+
+![Figura 12. Los canales del peón a través de su cámara, 768 × 768: el frame con luz bajo el cielo del bake y quince parámetros dibujados en lugar de la luz. La cabeza de vidrio es la única parte que transmite y el anillo dorado el único metal; el canal de tamaño muestra las Gaussians fusionadas más grandes del LOD de la cabeza; el bounce es oscuro porque el peón está solo.](figures/img-channels.jpg)
+
+## 4.12 Limitaciones
 
 - **Campo de rango uno.** El acoplamiento pone el color de un suelo iluminado, no su forma, en una reflexión bajo un
   cielo iluminado por un lado; a grado 3 el campo resuelve un horizonte a unos veinte grados y mezcla la sombra del
@@ -608,3 +677,6 @@ discontinua en el fold del umbral y cromo que centellea. El polish necesita ahí
   2.0 px, que una curvatura ajustada sobre el footprint a partir del mesh reduciría más o menos a la mitad.
 - **Los transfers zonales** guardan solo la mitad directa, y conocen solo la pose que se trazó; la oclusión entre
   miembros en otras poses no se multiplica.
+- **Una nube girada en la ruta trazada.** La ruta con trazado de rayos gira sus direcciones al sistema de la nube pero
+  hace el producto de los armónicos del transfer con el cielo del mundo, así que allí el cuerpo de una nube girada se
+  ilumina con un cielo mal orientado.

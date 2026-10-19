@@ -76,10 +76,16 @@ Las contribuciones que describe este artículo son las siguientes.
    bytes, PCA por clusters del transfer mantenido comprimido en la GPU, bits de direcciones abiertas cuantizados
    vectorialmente, un registro compacto de 40 bytes, registros de recorrido cuantizados de 5–11 bytes, y una política
    de tiempo de frame y de still frame para un player WebGPU en un iPhone.
+8. **La nube con su bake como canales de imagen y en hosts de producción** (secciones 4.11 y 2.14): cada parámetro que
+   lleva una Gaussian dibujado a través de una cámara como un canal propio, el material y la geometría junto al
+   transporte de luz precalculado, como entradas y objetivos de un relight aprendido; un nodo OpenFX que hace el render
+   de la nube con relight dentro de un compositor (Nuke, Natron) fuera de proceso, con la profundidad, la posición en el
+   mundo y el Cryptomatte como planos y un cielo que el artista cambia; y un add-on de Blender que la dibuja como motor
+   de render.
 
 ## 1.4 Organización
 
-La sección 2 describe el motor y el renderer sobre los que corre el baker. La sección 3 describe la conversión de
+La sección 2 describe el motor y el renderer sobre los que corre el baker, y los hosts que lo manejan. La sección 3 describe la conversión de
 meshes USD a Gaussians, y la sección 4 el transporte de luz en su bake y cómo se hace su relight. La sección 5 trata
 los assets animados: el skinning, el gorrión y el peón. La sección 6 trata el LOD. La sección 7 describe la aplicación
 a móvil: la compresión y un player WebGPU. La sección 8 consolida la evaluación de las secciones 2–7, la sección 9

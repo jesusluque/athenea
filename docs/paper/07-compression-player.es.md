@@ -132,9 +132,9 @@ La sección `CMPC` del tier 4 guarda los 40 bytes de GPU más los bytes de la tr
 | v3 | 64 = 40 + 24 | + palabra de cono, índice de oclusión de 13 bits; 30 B de entrada, 20 B en WASM | back-cull y oclusión activos por defecto; solo se planifican las pages que pide la traversal |
 | v4 | contenedor `CMP4` | registros cuantizados de 12 bytes | carga en **tramos raw-deflate de 64 nodos**, plano tras plano; pool de nodos; tier 4 +10 % (314 → 344 MB) |
 
-La **page v4** es un contenedor: una cabecera, el final de cada tramo, los planos de la traversal en gzip, y luego cada tramo de 64 nodos comprimido con raw deflate. Los tramos se pueden pedir, guardar y desalojar uno a uno, así que la CPU guarda la carga de una page comprimida y la GPU solo guarda registros del cut **dibujado**. Lo motivó el censo del pool: con pages enteras residentes, solo se dibujaba un ~26 % de los nodos de cada page, y las pages más pequeñas no ayudaban (residente/cut 4.54× con $P=3000$, 4.46× con $P=500$) (figura 15).
+La **page v4** es un contenedor: una cabecera, el final de cada tramo, los planos de la traversal en gzip, y luego cada tramo de 64 nodos comprimido con raw deflate. Los tramos se pueden pedir, guardar y desalojar uno a uno, así que la CPU guarda la carga de una page comprimida y la GPU solo guarda registros del cut **dibujado**. Lo motivó el censo del pool: con pages enteras residentes, solo se dibujaba un ~26 % de los nodos de cada page, y las pages más pequeñas no ayudaban (residente/cut 4.54× con $P=3000$, 4.46× con $P=500$) (figura 17).
 
-![Figura 15. El formato compacto: una tabla del asset, ficheros `.athc` v3 cuyo tier 4 contiene pages v4 con traversal records y registros de payload de 40 bytes, y la base de clustered PCA del transfer residente en la GPU.](figures/fig-compact.es.svg)
+![Figura 17. El formato compacto: una tabla del asset, ficheros `.athc` v3 cuyo tier 4 contiene pages v4 con traversal records y registros de payload de 40 bytes, y la base de clustered PCA del transfer residente en la GPU.](figures/fig-compact.es.svg)
 
 ### 7.5.3 Registros de la traversal
 
@@ -164,7 +164,7 @@ El lector (`CompactBandStreamer`) solo lee las tablas de pages al abrir. Tras ca
 
 Un nodo cuyos hijos no están se dibuja como leaf, o como su padre o sus hijos mientras se decodifica un tramo. Con los tramos de v4, los tramos del propio cut y los de sus padres e hijos se guardan siempre, y el resto se desaloja primero bajo un presupuesto de tramos. También se recorre una cámara extrapolada (2.5 actualizaciones por delante), para precargar sus tramos. Hay hasta 12 peticiones Range en vuelo.
 
-El trabajo se reparte entre el hilo principal, la traversal en WASM y dos workers (figura 16):
+El trabajo se reparte entre el hilo principal, la traversal en WASM y dos workers (figura 18):
 
 | dónde | qué | medido |
 |---|---|---|
@@ -173,7 +173,7 @@ El trabajo se reparte entre el hilo principal, la traversal en WASM y dos worker
 | hilo principal | peticiones Range, escritura de registros y listas de dibujado (adoptadas, sin GC) | — |
 | compute de GPU | movimiento de registros cuando el pool encoge (un dispatch, un hilo por palabra) | primer frame tras un still frame 88–100 → 34 ms |
 
-![Figura 16. Los hilos del player: peticiones Range y el pool de pages en el hilo principal, la traversal en un worker WASM, el cut empaquetado en slots en un segundo worker y cinco pasadas de GPU por frame; el tiempo de GPU fija el suelo de τ.](figures/fig-player.es.svg)
+![Figura 18. Los hilos del player: peticiones Range y el pool de pages en el hilo principal, la traversal en un worker WASM, el cut empaquetado en slots en un segundo worker y cinco pasadas de GPU por frame; el tiempo de GPU fija el suelo de τ.](figures/fig-player.es.svg)
 
 En una órbita rápida de 120° a 1° por frame en el móvil emulado, la parte del cut que falta en un frame bajó del 26 % con el primer streamer de v4 al 4.3–6.4 %, que es el 0.24–0.30 % del área de pantalla. Los frames se mantuvieron a 60 fps con un máximo de 17.3–19.6 ms. El cut se asentó 2.6–3.1 s después de la carga.
 
@@ -343,6 +343,7 @@ Las versiones de datos de `car-compact-tx` son distintas de las versiones del fo
 | v6 | árboles mrough de athenea, roughness por material, 1.35 GB |
 | v7 | car1280, 1.81 GB |
 | v8 | car5120: 24 árboles, 74.5M leaves, 148.9M nodos, oclusión compartida de 8182 entradas (§6.9) |
+| v8.2b (final) | car5120 rehecho (§6.2.1): 149.0M nodos, oclusión de 8181 entradas, una base compartida de 512 clusters reajustada con los datos de 5120 y cuatro bases de 256 propias del asset (Part_2, Infinite_Black, dos partes de Part_3 y Front_Bumper_001), 83 ficheros, 12.77 GB; relMSE del transfer 0.0054 sobre el coche |
 
 Salvo que se indique, las cifras de abajo son PSNR en la cámara de athenea a 1920 × 1080, por las regiones del harness validate-corvette.
 
@@ -353,13 +354,14 @@ Salvo que se indique, las cifras de abajo son PSNR en la cámara de athenea a 19
 | v7 (primera conversión) | +0.5 frente a v6 | −2.3 | −2.7 | — | +0.9 | motas en los folds |
 | v7 + dispersión del píxel, $\tau$ 1 | — | **35.53** | **32.36** | relMSE 0.199 | 14.46 | con dispersión del píxel |
 | v7, valores por defecto actuales | 19.03 | 35.52 | 32.36 | 22.28 | 14.68 | campo de grado 1 |
-| v8 | — | — | — | — | — | sin medir |
+| v8.1 | 19.22 | 35.92 | — | — | — | pool 3000, $\tau$ 1; dibuja 4.0 M |
+| v8.2b | 19.27 | 35.53 | — | — | — | pool 3000, $\tau$ 1; dibuja 2.26 M; logo desde una cámara cercana 18.12 dB (v8.1 17.75) |
 
 La métrica car crop de §1.6 (recorte de 900 × 420) es otra región. Con ella, el sharp lobe por píxel en el camino compacto llevó el coche de 16.49 a 17.46 dB (17.41 con sharp lobes desde 4 px), que es el nivel del camino de escritorio. En el móvil, $\tau$ 3 frente a $\tau$ 1 difiere en 40 dB, así que los defectos que quedan (pelos, rayas, manchas) vienen de la nube, no del cut. Los pasos sin pérdida se comprobaron frente a la imagen anterior: los registros de sharp lobes en 5 palabras, 60–80 dB; el shade agrupado, 84 dB (ruido entre ejecuciones 78 dB); los términos solo de cristal, 188 dB.
 
 ## 7.13 Limitaciones y trabajo pendiente
 
-- **v8** (car5120 con la base de 512 clusters y el codebook de oclusión compartido de 8182 entradas) no se ha convertido para el player en el momento de escribir esto; la parte de athenea (los 24 árboles y su oclusión compartida, §6.9) está completa. Su calidad frente al path trace, su descarga y su comportamiento en el móvil real están sin medir.
+- **v8.2b**, el conjunto de datos final (car5120 rehecho, §6.2.1), está publicado: frente al path trace mejora en el coche, la parrilla, el cromo, el paragolpes y el logo de cerca, y pierde 0.39 dB en la puerta frente a v8.1 dibujando la mitad de Gaussians. Su descarga y sus tiempos de frame en el móvil real están sin medir.
 - Solo hay tiempos del dispositivo real para las rampas de estrés y las dos pasadas del coche entero. La velocidad del móvil emulado no es la del móvil.
 - La tira cromada del parachoques delantero sale un 38 % más clara que el path trace. Las lámparas no tienen emisión en el bake. Los reflejos abiertos de la puerta (1.13) vienen de cells de 16 × 16 de 11°.
 - La traversal compacta no guarda el tamaño de LoD de un merge, así que el cut combinado tamaño/error no tiene con qué protegerse. El cut por error por sí solo no ganó al cut por tamaño en todas las vistas con estos datos.

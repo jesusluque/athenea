@@ -114,6 +114,7 @@ work without its full bibliographic details, it is listed as cited and marked so
 | athenea | github.com/jesusluque/athenea | the engine and renderer of §2: modules, shaders, the `hdAthenea` delegate, the `athenea` CLI, the manuals `docs/operations.md` and `docs/development.md` with their Spanish translations, and `docs/decisions.md` |
 | athenea-pieces | github.com/jesusluque/athenea-pieces, branch `pieces` (private) | a fork of athenea holding the per-part merge trees, the error cut, closed shells, the shared occlusion, the 1280 and 5120 px bakes (§3.11, §6); `docs/pieces.md` and this paper under `docs/paper/` |
 | sparkwebGPU | `~/luc/sparkwebGPU`, branch `webgpu` | the WebGPU fork of Spark of §7: the `.athc` v3 reader, the compact path, the streamer, the player pages |
+| athenea, branch `blender` | github.com/jesusluque/athenea | the Blender add-on `athenea_hydra` of §2.14 |
 
 ## A.2 Commands and options
 
@@ -129,6 +130,8 @@ option's default, unit and constraint. The commands this paper relies on:
 | `athenea compare` | GPU image comparison | 2.11 | 2.15 |
 | `athenea aofx` | the AOFX effects (mesh2splat, Measure) | 2.10, 7 | 2.14, 3.1 |
 | `athc-convert` (`--gzip --planes`, `--shadow-vq`), `fit-compact-basis`, `floor_shadow --merge 2`, `usd-athc` | the player's formats (sparkwebGPU) | — | 7 |
+| `athenea-mcp`, tool `render` (`xform`, `raw`, `layers`, `sky`, `skyRotation`, `skyVisible`, `splatView`) | a frame for a compositor, the sky swapped, the parameter channels | 6 | 2.14, 4.3, 4.11 |
+| `Athenea.ofx.bundle` (`ATHENEA_BUILD_OFX`) | the OpenFX node in Nuke and Natron | 6.1 | 2.14 |
 
 Environment variables (`ATHENEA_GPU_BUDGET`, `ATHENEA_STAGES`) are listed in `docs/operations.md` §8.1, the formats
 (`.athc`, the codeless schemas) in §8.2 and §4.3.

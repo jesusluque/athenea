@@ -74,10 +74,15 @@ The contributions described in this paper are the following.
    of the transfer kept compressed on the GPU, vector-quantised open-direction bits, a 40-byte compact record,
    quantised traversal records of 5–11 bytes, and a frame-time and still-frame policy for a WebGPU player on an
    iPhone.
+8. **The baked cloud as image channels and in production hosts** (Sections 4.11 and 2.14): every parameter a Gaussian
+   carries drawn through a camera as a channel of its own, the material and geometry beside the precomputed light
+   transport, as the inputs and targets of a learned relighting; an OpenFX node that renders the relit cloud inside a
+   compositor (Nuke, Natron) out of process, with depth, world position and Cryptomatte as planes and a sky the artist
+   swaps; and a Blender add-on that draws it as a render engine.
 
 ## 1.4 Organisation
 
-Section 2 describes the engine and renderer on which the baker runs. Section 3 describes the conversion from USD meshes
+Section 2 describes the engine and renderer on which the baker runs, and the hosts that drive it. Section 3 describes the conversion from USD meshes
 to Gaussians, and Section 4 the light transport baked into them and how they are relit. Section 5 covers animated
 assets: skinning, the sparrow and the pawn. Section 6 covers levels of detail. Section 7 describes the application to
 mobile: compression and a WebGPU player. Section 8 consolidates the evaluation from Sections 2–7, Section 9 gathers

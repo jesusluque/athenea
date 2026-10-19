@@ -96,6 +96,25 @@ level 1 doubling to 1024. The source's lat-long mips weigh each row by $\cos\the
 keeps the sky's solid-angle mean. Without these, a 1.5-degree sun in a rough level was a scatter of texel-sized blobs
 (a paint ball's 4-16 px band at 2.13 times the path trace).
 
+**A cloud the scene turns.** Everything a Gaussian stores of its transfer (§4.2) -- the harmonics of both halves, the
+reflected field and the open-direction bits -- is a set of directions of the cloud, measured in the frame of the file
+it was baked in. A prim that rotates the cloud (a Y-up asset placed in a Z-up scene, a part turned into place) changes
+none of them. The draw therefore reads the transfer in the cloud's frame. Let $R$ be the rotation of the instance's
+transform, its linear part with columns made unit. Every direction of the world the draw asks along -- the mirror of
+the view, the way through a glass, the sun, a light, a lobe's cone of cells -- is turned by $R^\top$ before it is
+looked up, and the sky's sixteen coefficients are turned into the same frame once per instance and frame,
+
+$$L'_k = \int_{S^2} Y_k(\boldsymbol{\omega})\, L(R\,\boldsymbol{\omega})\, d\boldsymbol{\omega},$$
+
+by a product rule exact for the degree-6 products it integrates (four Gauss–Legendre nodes in $\cos\theta$ by eight
+even steps in $\varphi$). The body then dots the transfer with $L'_k$; what is evaluated in the world (the prefiltered
+map, the background) keeps $L_k$. A zonal transfer (§4.4.5) turns with each Gaussian already and is left as it is. With
+the pawn of §5.11 rotated 60 degrees about its up axis together with its camera and its sky, the relit frame matches
+the unrotated one at relMSE $9\times10^{-6}$ (61 dB) at 768 × 768; turned the other way, 11 dB. Read in the world's
+frame instead, the pawn stood up from Y-up into a Z-up scene drew its glass head in fragments (Figure 11).
+
+![Figure 11. The pawn's glass head in a Z-up scene, its clouds stood up by a quarter turn. Left: the transfer read in the world's frame. Centre: read in the cloud's frame with the sky turned into it. Right: the cloud unturned in its own Y-up stage, whose sky lies at another azimuth.](figures/img-turned-glass.jpg)
+
 ## 4.4 The bake
 
 ### 4.4.1 The transfer integral and its estimator
@@ -566,7 +585,53 @@ touching the strip. Alternatives considered: gating the sharp polish on the unwi
 high-pass error; `--specular-filter 0` draws a dashed dark line on the sill's fold and sparkling chrome. The polish
 needs its widening there.
 
-## 4.11 Limitations
+## 4.11 The parameters as image channels
+
+Each Gaussian carries the parameters the relight reads -- its material, its shape and its precomputed light transport
+-- and any one of them can be drawn through a camera in place of the light (`athenea:splatView`). The splat is blended
+by its opacity as the light is, so a frame of one parameter is that parameter as the camera sees the cloud: the same
+sort, the same footprints, the same coverage as the lit frame, and therefore aligned with it pixel for pixel. Values
+that are not colours are put on a scale to be seen, and kept as numbers in an EXR. Figure 12 shows the pawn of §5.11.
+
+| channel | what it is | scale |
+|---|---|---|
+| light | the relit frame under the chosen sky | linear radiance |
+| baked | the light the cloud carries, as captured or baked, not relit | linear radiance |
+| albedo | the surface's colour without light | linear |
+| roughness | the roughness the specular reads, widened by the spread of normals under the Gaussian (§3.7) | 0–1 |
+| materialRoughness | the material's own roughness before that widening; 0 where the cloud does not keep it | 0–1 |
+| metallic, transmission | the material's metal and transmission weights | 0–1 |
+| ior | the specular's index of refraction minus one | grey |
+| normal | the facing the shading uses, in the world | $\mathbf{n}/2 + 1/2$ |
+| opacity | the Gaussian's peak opacity | 0–1 |
+| size | the Gaussian's largest axis | logarithmic ramp, 10 µm (blue) to 10 cm (red) |
+| skyVisibility | the transfer's cosine-weighted sky seen, $T_0 / Y_0$: 1 where nothing occludes | 0–1 |
+| bounce | the indirect half under a white sky of radiance one: light that reached the Gaussian after a bounce, coloured by what it bounced off | linear |
+| openCells | the share of the 256 directions the bake found leaving the scene | 0–1 |
+| field | the reflected field's mean under a white sky: what the Gaussian sees around it | linear |
+| emission | light the surface gives off itself | linear |
+
+The channels fall in three groups. The material and geometry (albedo, roughness, metallic, transmission, ior, normal,
+with depth and world position from §2.14) are independent inputs. The transfer's channels (skyVisibility, bounce,
+openCells, field) are the light transport the bake precomputed in 3D: they depend on the whole scene, including what no
+camera sees, and are the expensive part of the asset. The light is a fixed function of both groups and the sky: the
+relight of §4.5–§4.7 computes it, so a frame's light is determined by its channels and the HDRI. Some channels follow
+from others. World position is depth unprojected through the camera, exactly; the normal follows approximately from
+the gradient of position on screen, losing detail and breaking at silhouettes; skyVisibility is, up to the transfer's
+band limit, the cosine-weighted mean of the open directions, which carry more than it does; and roughness is the
+material's roughness widened by the normals' spread, which a cloud keeping that spread would recompute. Others do not:
+the transfer's channels cannot be recovered from what one camera sees, since a screen-space ambient occlusion misses
+whatever is off screen and a bounce or a reflection depends on neighbours that may not be in the frame; albedo from the
+light is inverse rendering, ill-posed; and opacity and size are the Gaussians' own.
+
+Drawn this way, a relit cloud under a set of skies and cameras gives aligned frames of inputs (material, geometry),
+precomputed transport and targets (light per sky) -- the material of a dataset for learning to predict the transport,
+or the relit light, from inputs that do not carry it. On the pawn at 768 × 768 a channel costs 20–60 ms. A cloud that is
+not relit has only its light, opacity and size to show.
+
+![Figure 12. The pawn's channels through its camera, 768 × 768: the lit frame under the bake's sky and fifteen parameters drawn in place of the light. The glass head is the only transmitting part and the gold ring the only metal; the size channel shows the larger merged Gaussians of the head's level of detail; the bounce is dark because the pawn stands alone.](figures/img-channels.jpg)
+
+## 4.12 Limitations
 
 - **Rank-one field.** The coupling puts a lit ground's colour, not its shape, in a reflection under a sky lit from one
   side; at degree 3 the field resolves a horizon to about twenty degrees and blurs the car's shadow on the ground into
@@ -580,3 +645,6 @@ needs its widening there.
   the footprint from the mesh would roughly halve.
 - **Zonal transfers** keep the direct half only, and know only the pose that was traced; occlusion between limbs in
   other poses is not multiplied in.
+- **A turned cloud on the traced route.** The ray-traced route turns its directions into the cloud's frame but dots
+  the transfer's harmonics with the world's sky, so a rotated cloud's body is relit under a sky at the wrong
+  orientation there.
