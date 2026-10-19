@@ -75,6 +75,22 @@ set_target_properties(hdAthenea PROPERTIES
     BUILD_RPATH "${ATHENEA_PLUGIN_ORIGIN};${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib"
     INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN}")
 file(MAKE_DIRECTORY "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources")
+if(WIN32)
+    # Windows finds a plugin's DLLs beside it: Slang's, and zlib's from the
+    # toolchain prefix. A host's own libraries (Blender's USD, TBB, MaterialX)
+    # are loaded already and are not copied.
+    file(GLOB _athenea_plugin_dlls "${SLANG_ROOT}/bin/*.dll")
+    if(ZLIB_LIBRARY)
+        get_filename_component(_athenea_zlib_dir "${ZLIB_LIBRARY}" DIRECTORY)
+        file(GLOB _athenea_zlib_dlls "${_athenea_zlib_dir}/../bin/z*.dll")
+        list(APPEND _athenea_plugin_dlls ${_athenea_zlib_dlls})
+    endif()
+    if(_athenea_plugin_dlls)
+        add_custom_command(TARGET hdAthenea POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_athenea_plugin_dlls} "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea"
+            VERBATIM)
+    endif()
+endif()
 if(ATHENEA_BLENDER_LIB)
     # Inside Blender: its libraries, which it has loaded already, through
     # the executable's own path to them -- and not the header build's
