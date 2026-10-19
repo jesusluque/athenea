@@ -173,7 +173,7 @@ The sections below are in the order the work was done. By area:
 - [Decimation: the levels of detail, cut once by what a merge loses](#decimation-the-levels-of-detail-cut-once-by-what-a-merge-loses)
 - [A decimation keeps everything a cloud carries](#a-decimation-keeps-everything-a-cloud-carries)
 - [Simplify: fewer gaussians by pairs, and surfels](#simplify-fewer-gaussians-by-pairs-and-surfels)
-- [The Corvette on an iPhone: what was applied (11-12 Oct)](#the-corvette-on-an-iphone-what-was-applied-11-12-oct)
+- [The Corvette on an iPhone (11-12 Oct)](#the-corvette-on-an-iphone-11-12-oct)
 - [A merge's second moment about its own centre (13 Oct)](#a-merges-second-moment-about-its-own-centre-13-oct)
 
 **Other**
@@ -14859,30 +14859,10 @@ edge), a closed-form refit of the merges' colours against the full cloud's
 frames (POTR, Only What Was Seen), and the hard kernel for merges that are
 not flat enough to be surfels (two thirds of them at 5.4x).
 
-## The Corvette on an iPhone: what was applied (11-12 Oct)
+## The Corvette on an iPhone (11-12 Oct)
 
-The full write-up, with every measurement, is `docs/pieces.md` (Spanish: `docs/pieces.es.md`); the running log is
-`PIECES-PLAN.md`. In short:
-
-- **Shading.** The sharp lobes read the sky at the roughness before the bake widened it (`unwidened`); the polish
-  answers its closed part from the reflected field where the material's own roughness is a paint's
-  (`materialRoughness` on the pbr word, `kPolishFieldRoughness` 0.3); a fold's coat is held to 0.3 on paint only; the
-  per-pixel turn is split by how far it goes across the footprint -- a tube turns in full under 0.7 rad, a fold past
-  1.5 rad widens the sharp lobes instead (`foldWidened`). Tried and left out: a 0.2 rad cap on the turn, and gating
-  the sharp polish on the unwidened roughness.
-- **The merge tree.** `--mark-material-roughness`; `--tree-coverage` writes each merge's spill (`lodSpill`), and
-  `--cut-spill` weighs it -- off by default, since no per-node measure separates a grille's hole-filling merges from
-  a panel's; trees of millions of leaves are written without three copies of their arrays; the shared occlusion
-  writes a tree over itself.
-- **Bakes.** The whole car at 1280 px (8.70M leaves, 8 groups each converted with the rest hidden and the whole stage
-  traced): car crop 16.55 -> 17.88 dB, frame 22.18 -> 23.90 against the path trace. A close-up level at 5120 px: the
-  66 parts already a gaussian a triangle at 1280 px, and the panels capped at 4.5-5M leaves a part (69.5M leaves
-  done, one part and the occlusion pending).
-- **The phone** (sparkwebGPU): a contact shadow from the shadow catcher, the per-pixel sharp lobe with the pixel's
-  spread, 512 transfer clusters, synthetic roots, a draw target by frame time and a still frame of finer detail.
-
-Not done: the lamps in the bake, the chrome strip 38 % bright, the rim's near ground at 0.72, the door's open
-reflections at 1.13 (16 x 16 cells), the front bumper's lower lip.
+The work that put a whole car on a phone -- pages by error band, a shared occlusion codebook, the compact record
+-- is described in Part II of the paper (`docs-2026-10-19` release); its production notes are not kept here.
 
 ## A merge's second moment about its own centre (13 Oct)
 
@@ -15054,9 +15034,9 @@ here. genlock is optional: `ATHENEA_WITH_GENLOCK` is on when `third_party/genloc
 and stamps ST 2059-1 timecode -- the sched module, the subcommand and their tests -- so without genlock that one
 subcommand is missing and everything else builds as before.
 
-What the public tree no longer carries, in the same pass: the paper's HTML and PDFs and the presentations' PDFs
-(31 MB, all built by `docs/paper/build.sh` or exported) are assets of the `docs-2026-10-19` release and ignored
-here; `remote-test.sh` takes its host as an argument or `ATHENEA_REMOTE` rather than defaulting to a machine on a
+What the public tree no longer carries, in the same pass: the paper (its sources, kept privately, and its
+PDFs, assets of the `docs-2026-10-19` release) and the presentations' PDFs, ignored here; the production notes of
+the Corvette on an iPhone (`docs/pieces.md`); `remote-test.sh` takes its host as an argument or `ATHENEA_REMOTE` rather than defaulting to a machine on a
 private network; the sparrow film's scripts read `SPARROW` and `ATHENEA` instead of one machine's paths, which made
 a copy per machine; the Blender tests and the MaterialX bench write under the build tree and `~/athenea-renders`.
 The macOS package identifier is `uk.co.lucab.athenea`, the order the OFX bundle already used. Every first-party

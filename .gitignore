@@ -43,8 +43,5 @@ __pycache__/
 build/
 *.log
 
-# Generated: the paper and the presentations are built (docs/paper/build.sh) and
-# published as assets of a GitHub release, not tracked.
-docs/paper/paper*.pdf
-docs/paper/paper*.html
+# The presentations are published as assets of a GitHub release, not tracked.
 docs/presentations/*.pdf
