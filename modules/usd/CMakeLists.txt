@@ -79,9 +79,19 @@ if(ATHENEA_BLENDER_LIB)
     # Inside Blender: its libraries, which it has loaded already, through
     # the executable's own path to them -- and not the header build's
     # prefix, whose libtbb and libMaterialX* would be second copies.
+    if(APPLE)
+        set(_athenea_blender_rpath "@executable_path/../Resources/lib")
+    else()
+        # Linux: Blender has its libraries loaded by SONAME before the plugin
+        # opens; the folder is named for a load outside Blender (ldd, tests).
+        set(_athenea_blender_rpath "${ATHENEA_BLENDER_LIB}")
+    endif()
     set_target_properties(hdAthenea PROPERTIES
-        BUILD_RPATH "${ATHENEA_PLUGIN_ORIGIN};@executable_path/../Resources/lib;${SLANG_ROOT}/lib"
-        INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN};@executable_path/../Resources/lib")
+        BUILD_RPATH "${ATHENEA_PLUGIN_ORIGIN};${_athenea_blender_rpath};${SLANG_ROOT}/lib"
+        INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN}")
+    if(APPLE)
+        set_target_properties(hdAthenea PROPERTIES INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN};${_athenea_blender_rpath}")
+    endif()
 endif()
 configure_file(plugin/plugInfo.json.in "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources/plugInfo.json" @ONLY)
 # The plugin is what a package of it carries, so it carries what it owes.

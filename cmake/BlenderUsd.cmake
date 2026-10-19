@@ -9,22 +9,46 @@
 # need Blender's libraries to run).
 #
 # Included by cmake/Usd.cmake in place of find_package(pxr) when
-# ATHENEA_BLENDER_LIB is set (the macos-arm64-blender preset).
+# ATHENEA_BLENDER_LIB is set (the macos-arm64-blender and linux-x86_64-blender
+# presets).
 
-set(ATHENEA_BLENDER_LIB "${ATHENEA_BLENDER_LIB}" CACHE PATH "Blender's Contents/Resources/lib")
+set(ATHENEA_BLENDER_LIB "${ATHENEA_BLENDER_LIB}" CACHE PATH "Blender's library folder (Contents/Resources/lib, or lib on Linux)")
+
+# A Blender library's file by its base name: libX.dylib on macOS; on Linux
+# libX.so, or the versioned file where Blender ships only that (OIDN).
+function(_athenea_blender_file out base)
+    if(APPLE)
+        set(${out} "lib${base}.dylib" PARENT_SCOPE)
+        return()
+    endif()
+    if(EXISTS "${ATHENEA_BLENDER_LIB}/lib${base}.so")
+        set(${out} "lib${base}.so" PARENT_SCOPE)
+        return()
+    endif()
+    file(GLOB _found RELATIVE "${ATHENEA_BLENDER_LIB}" "${ATHENEA_BLENDER_LIB}/lib${base}.so.*")
+    list(SORT _found)
+    list(LENGTH _found _count)
+    if(_count EQUAL 0)
+        message(FATAL_ERROR "Blender's lib${base}.so is not in ${ATHENEA_BLENDER_LIB}")
+    endif()
+    list(GET _found 0 _first)
+    set(${out} "${_first}" PARENT_SCOPE)
+endfunction()
 set(ATHENEA_MATERIALX_SLANG_SRC "$ENV{HOME}/tools/src/MaterialX-1.39.5"
     CACHE PATH "MaterialX 1.39.5 sources, for MaterialXGenSlang backported onto Blender's 1.39.4")
-if(NOT EXISTS "${ATHENEA_BLENDER_LIB}/libusd_ms.dylib")
-    message(FATAL_ERROR "Blender's libusd_ms.dylib is not in ${ATHENEA_BLENDER_LIB}")
+_athenea_blender_file(_usd_file usd_ms)
+if(NOT EXISTS "${ATHENEA_BLENDER_LIB}/${_usd_file}")
+    message(FATAL_ERROR "Blender's ${_usd_file} is not in ${ATHENEA_BLENDER_LIB}")
 endif()
 if(NOT EXISTS "${ATHENEA_USD_ROOT}/include/pxr/pxr.h")
     message(FATAL_ERROR "No USD headers at ${ATHENEA_USD_ROOT}: run scripts/build-usd-blender.sh")
 endif()
 
 # A library target whose code is Blender's. The link records the file's own
-# install name (@rpath/libX.dylib), which resolves inside Blender through
-# hdAthenea's rpath to the image Blender loaded.
-function(_athenea_blender_lib target file)
+# install name (@rpath/libX.dylib) or SONAME, which resolves inside Blender
+# to the image Blender loaded. `base` is the name without lib and suffix.
+function(_athenea_blender_lib target base)
+    _athenea_blender_file(file ${base})
     if(TARGET ${target})
         set_target_properties(${target} PROPERTIES IMPORTED_LOCATION "${ATHENEA_BLENDER_LIB}/${file}")
         get_target_property(_configs ${target} IMPORTED_CONFIGURATIONS)
@@ -40,7 +64,7 @@ function(_athenea_blender_lib target file)
 endfunction()
 
 # oneTBB 2022.3: Blender's libtbb under its headers.
-_athenea_blender_lib(athenea_blender_tbb libtbb.dylib)
+_athenea_blender_lib(athenea_blender_tbb tbb)
 set_target_properties(athenea_blender_tbb PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${ATHENEA_USD_ROOT}/include")
 add_library(TBB::tbb ALIAS athenea_blender_tbb)
 
@@ -51,13 +75,16 @@ list(GET _python_include 0 _python_include)
 set(ATHENEA_BLENDER_PYTHON_INCLUDE "${_python_include}" CACHE PATH "Python 3.13 headers (uv python install 3.13)")
 
 # OpenUSD: one monolithic library, every per-library target a name for it.
-_athenea_blender_lib(athenea_blender_usd libusd_ms.dylib)
+_athenea_blender_lib(athenea_blender_usd usd_ms)
 set_target_properties(athenea_blender_usd PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${ATHENEA_USD_ROOT}/include;${ATHENEA_BLENDER_PYTHON_INCLUDE}"
-    INTERFACE_LINK_LIBRARIES "athenea_blender_tbb"
-    # Python's symbols are the Blender executable's (its Python is linked
-    # statically), so USD's headers that name them resolve at load time.
-    INTERFACE_LINK_OPTIONS "LINKER:-undefined,dynamic_lookup")
+    INTERFACE_LINK_LIBRARIES "athenea_blender_tbb")
+# Python's symbols are the Blender executable's (its Python is linked
+# statically), so USD's headers that name them resolve at load time. A
+# shared library on Linux may leave symbols undefined as it is.
+if(APPLE)
+    set_target_properties(athenea_blender_usd PROPERTIES INTERFACE_LINK_OPTIONS "LINKER:-undefined,dynamic_lookup")
+endif()
 foreach(_pxr arch tf gf pegtl js trace work plug vt ts ar kind sdf sdr pcp usd usdGeom usdVol usdMedia usdShade
         usdLod usdLux usdProc usdRender usdHydra usdRi usdSemantics usdSkel usdUI usdUtils usdPhysics usdMtlx
         garch hf hio cameraUtil pxOsd geomUtil glf hgi hgiGL hgiMetal hgiInterop hd hdar hdGp hdsi hdMtlx hdSt hdx
@@ -65,13 +92,13 @@ foreach(_pxr arch tf gf pegtl js trace work plug vt ts ar kind sdf sdr pcp usd u
     add_library(${_pxr} INTERFACE IMPORTED GLOBAL)
     set_target_properties(${_pxr} PROPERTIES INTERFACE_LINK_LIBRARIES athenea_blender_usd)
 endforeach()
-set(pxr_DIR "${ATHENEA_USD_ROOT} (headers) + ${ATHENEA_BLENDER_LIB}/libusd_ms.dylib")
+set(pxr_DIR "${ATHENEA_USD_ROOT} (headers) + ${ATHENEA_BLENDER_LIB}/${_usd_file}")
 
 # MaterialX 1.39.4: the configs from the header build, the libraries
 # Blender's.
 find_package(MaterialX 1.39.4 EXACT CONFIG REQUIRED HINTS "${ATHENEA_USD_ROOT}" NO_DEFAULT_PATH)
 foreach(_mx MaterialXCore MaterialXFormat MaterialXGenShader MaterialXGenGlsl MaterialXGenMsl MaterialXRender)
-    _athenea_blender_lib(${_mx} lib${_mx}.dylib)
+    _athenea_blender_lib(${_mx} ${_mx})
     set_target_properties(${_mx} PROPERTIES IMPORTED_GLOBAL TRUE)
 endforeach()
 
@@ -114,7 +141,7 @@ target_include_directories(athenea_materialx_slang PUBLIC "${_mx_out}/include" "
 target_compile_definitions(athenea_materialx_slang PRIVATE MATERIALX_GENSLANG_EXPORTS)
 target_link_libraries(athenea_materialx_slang PUBLIC MaterialXGenShader MaterialXFormat MaterialXCore)
 set_target_properties(athenea_materialx_slang PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET default)
-target_compile_options(athenea_materialx_slang PRIVATE -w)
+target_compile_options(athenea_materialx_slang PRIVATE $<IF:$<CXX_COMPILER_ID:MSVC>,/w,-w>)
 add_library(MaterialXGenSlang ALIAS athenea_materialx_slang)
 add_library(MaterialXGenHw INTERFACE IMPORTED GLOBAL)
 set_target_properties(MaterialXGenHw PROPERTIES INTERFACE_LINK_LIBRARIES athenea_materialx_slang)
@@ -124,13 +151,13 @@ set_target_properties(MaterialXGenHw PROPERTIES INTERFACE_LINK_LIBRARIES athenea
 set(ATHENEA_OCIO_ROOT "$ENV{HOME}/tools/ocio-2.5.2" CACHE PATH "OpenColorIO install")
 find_package(OpenColorIO 2.5 CONFIG QUIET HINTS "${ATHENEA_OCIO_ROOT}" NO_DEFAULT_PATH)
 if(TARGET OpenColorIO::OpenColorIO)
-    _athenea_blender_lib(OpenColorIO::OpenColorIO libOpenColorIO.dylib)
+    _athenea_blender_lib(OpenColorIO::OpenColorIO OpenColorIO)
     set_target_properties(OpenColorIO::OpenColorIO PROPERTIES IMPORTED_GLOBAL TRUE)
 endif()
 find_package(OpenImageDenoise 2.5 CONFIG QUIET HINTS "${ATHENEA_OIDN_ROOT}" NO_DEFAULT_PATH)
 if(TARGET OpenImageDenoise)
-    _athenea_blender_lib(OpenImageDenoise libOpenImageDenoise.dylib)
-    _athenea_blender_lib(OpenImageDenoise_core libOpenImageDenoise_core.dylib)
+    _athenea_blender_lib(OpenImageDenoise OpenImageDenoise)
+    _athenea_blender_lib(OpenImageDenoise_core OpenImageDenoise_core)
 endif()
 
 message(STATUS "OpenUSD: Blender's (${ATHENEA_BLENDER_LIB}), headers ${ATHENEA_USD_ROOT}")

@@ -159,6 +159,23 @@
         "ATHENEA_NANOVDB_INCLUDE": "$env{HOME}/tools/usd-26.08-mx/include",
         "BUILD_TESTING": "OFF"
       }
+    },
+    {
+      "name": "linux-x86_64-blender",
+      "inherits": "base",
+      "displayName": "Linux x86_64 hdAthenea for Blender (CUDA/Vulkan)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ATHENEA_USD_ROOT": "$env{HOME}/tools/usd-26.08-blender",
+        "ATHENEA_BLENDER_LIB": "$env{BLENDER_LIB}",
+        "ATHENEA_NANOVDB_INCLUDE": "$env{HOME}/tools/usd-26.08-mx/include",
+        "BUILD_TESTING": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -197,6 +214,18 @@
     {
       "name": "macos-arm64-blender",
       "configurePreset": "macos-arm64-blender",
+      "targets": [
+        "hdAthenea",
+        "athenea_shaders_copy",
+        "athenea_aofx_mesh2splat",
+        "athenea_aofx_splatbakefilter",
+        "athenea_aofx_measure",
+        "athenea_aofx_splattransferzonal"
+      ]
+    },
+    {
+      "name": "linux-x86_64-blender",
+      "configurePreset": "linux-x86_64-blender",
       "targets": [
         "hdAthenea",
         "athenea_shaders_copy",
