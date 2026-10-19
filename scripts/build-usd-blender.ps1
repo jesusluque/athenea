@@ -92,6 +92,10 @@ foreach ($f in "pxr\base\arch\attributes.h", "pxr\base\arch\attributes.cpp") {
     $path = Join-Path $usdSrc $f
     (Get-Content $path -Raw).Replace("pxrctor", "pxbctor").Replace("pxrdtor", "pxbdtor") | Set-Content -NoNewline $path
 }
+# The bool specialisation's constructor without its template arguments, as
+# build-usd.sh writes it for GCC 13: one header for every compiler.
+$retained = Join-Path $usdSrc "pxr\imaging\hd\retainedDataSource.h"
+(Get-Content $retained -Raw).Replace("HdRetainedTypedSampledDataSource<bool>(const bool& value)", "HdRetainedTypedSampledDataSource(const bool& value)") | Set-Content -NoNewline $retained
 cmake -S $usdSrc -B "$work\usd" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=$prefix" `
     "-DCMAKE_PREFIX_PATH=$prefix" "-DPXR_SET_INTERNAL_NAMESPACE=$namespace" -DPXR_BUILD_MONOLITHIC=ON `
     -DPXR_ENABLE_PYTHON_SUPPORT=ON -DPXR_USE_PYTHON_3=ON `

@@ -95,6 +95,10 @@ for f in pxr/base/arch/attributes.h pxr/base/arch/attributes.cpp; do
     # sed -i takes a suffix on BSD and none on GNU: perl reads the same on both.
     perl -pi -e 's/pxrctor/pxbctor/g; s/pxrdtor/pxbdtor/g' "$USD_SRC/$f"
 done
+# GCC 13 rejects the bool specialisation's constructor written with its
+# template arguments; clang accepts it. The same fix as build-usd.sh.
+perl -pi -e 's/HdRetainedTypedSampledDataSource<bool>\(const bool& value\)/HdRetainedTypedSampledDataSource(const bool& value)/' \
+    "$USD_SRC/pxr/imaging/hd/retainedDataSource.h"
 cmake -S "$USD_SRC" -B "$WORK/usd" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_PREFIX_PATH="$PREFIX" \
     -DPXR_SET_INTERNAL_NAMESPACE="$NAMESPACE" \
