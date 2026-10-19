@@ -9,6 +9,28 @@ materials) into Gaussian splats that keep how the asset responds to light: a
 path tracer records it once, and the splats are drawn in milliseconds under
 any sky. Every step over scene data runs on the GPU (Metal, Vulkan, CUDA).
 
+## Where athenea comes from
+
+athenea began on 11 September 2026 as **lucabRTrender**, a GPU renderer for
+Gaussian splats, point clouds and USD written in Slang over slang-rhi, to be the
+render engine of **openFXplayer**, a GPU compositor. It still shares that
+compositor's plugin SDK, [AOFX](https://github.com/jesusluque/aopenfx), and
+builds inside its tree.
+
+Its shape was read out of NVIDIA's [Falcor](https://github.com/NVIDIAGameWorks/Falcor):
+one shader source for every device, techniques over a visibility buffer, and a
+reference renderer to test against. What a stage means it takes from the
+[OpenUSD specification](https://openusd.org/release/spec.html), and the
+mesh-to-Gaussian conversion from Electronic Arts'
+[mesh2splat](https://github.com/electronicarts/mesh2splat).
+
+On 3 October 2026 the engine was renamed **athenea** (`lrt` → `athenea`,
+`.lrtc` → `.athc`; `athenea migrate` rewrites older files). Since then it has
+grown from a splat renderer into a relight baker: the light transport path
+traced into every Gaussian, levels of detail, a compressed web format, and the
+Blender and OpenFX integrations. [docs/background.md](docs/background.md) has
+the details of what it owes to each.
+
 ## A render engine for Blender
 
 ![The pawn in Blender 5.3, drawn by athenea under the Venice sunset HDRI](docs/media/blender-addon-venice.jpg)
