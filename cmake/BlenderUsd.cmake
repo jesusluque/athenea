@@ -15,8 +15,18 @@
 set(ATHENEA_BLENDER_LIB "${ATHENEA_BLENDER_LIB}" CACHE PATH "Blender's library folder (Contents/Resources/lib, or lib on Linux)")
 
 # A Blender library's file by its base name: libX.dylib on macOS; on Linux
-# libX.so, or the versioned file where Blender ships only that (OIDN).
+# libX.so, or the versioned file where Blender ships only that (OIDN); on
+# Windows X.dll in blender.shared, under the names Blender's build gives a few.
+set(_athenea_blender_dll_tbb tbb12)
+set(_athenea_blender_dll_OpenColorIO opencolorio_2_5)
 function(_athenea_blender_file out base)
+    if(WIN32)
+        if(DEFINED _athenea_blender_dll_${base})
+            set(base ${_athenea_blender_dll_${base}})
+        endif()
+        set(${out} "${base}.dll" PARENT_SCOPE)
+        return()
+    endif()
     if(APPLE)
         set(${out} "lib${base}.dylib" PARENT_SCOPE)
         return()
@@ -46,9 +56,18 @@ endif()
 
 # A library target whose code is Blender's. The link records the file's own
 # install name (@rpath/libX.dylib) or SONAME, which resolves inside Blender
-# to the image Blender loaded. `base` is the name without lib and suffix.
+# to the image Blender loaded; on Windows the DLL's import library, made from
+# its exports by scripts/build-usd-blender.ps1. `base` is the name without lib
+# and suffix.
 function(_athenea_blender_lib target base)
     _athenea_blender_file(file ${base})
+    if(WIN32)
+        get_filename_component(_stem "${file}" NAME_WE)
+        set(_implib "${ATHENEA_USD_ROOT}/lib/blender/${_stem}.lib")
+        if(NOT EXISTS "${_implib}")
+            message(FATAL_ERROR "no import library ${_implib}: run scripts/build-usd-blender.ps1")
+        endif()
+    endif()
     if(TARGET ${target})
         set_target_properties(${target} PROPERTIES IMPORTED_LOCATION "${ATHENEA_BLENDER_LIB}/${file}")
         get_target_property(_configs ${target} IMPORTED_CONFIGURATIONS)
@@ -61,6 +80,15 @@ function(_athenea_blender_lib target base)
         add_library(${target} SHARED IMPORTED GLOBAL)
         set_target_properties(${target} PROPERTIES IMPORTED_LOCATION "${ATHENEA_BLENDER_LIB}/${file}")
     endif()
+    if(WIN32)
+        set_target_properties(${target} PROPERTIES IMPORTED_IMPLIB "${_implib}")
+        get_target_property(_configs ${target} IMPORTED_CONFIGURATIONS)
+        if(_configs)
+            foreach(_config ${_configs})
+                set_target_properties(${target} PROPERTIES IMPORTED_IMPLIB_${_config} "${_implib}")
+            endforeach()
+        endif()
+    endif()
 endfunction()
 
 # oneTBB 2022.3: Blender's libtbb under its headers.
@@ -70,7 +98,11 @@ add_library(TBB::tbb ALIAS athenea_blender_tbb)
 
 # Python's headers: VtValue and TfAnyWeakPtr are laid out for a USD built
 # with Python, and the headers say so only by including Python.h.
-file(GLOB _python_include LIST_DIRECTORIES true "$ENV{HOME}/.local/share/uv/python/cpython-3.13*/include/python3.13")
+if(WIN32)
+    file(GLOB _python_include LIST_DIRECTORIES true "$ENV{APPDATA}/uv/python/cpython-3.13*/Include")
+else()
+    file(GLOB _python_include LIST_DIRECTORIES true "$ENV{HOME}/.local/share/uv/python/cpython-3.13*/include/python3.13")
+endif()
 list(GET _python_include 0 _python_include)
 set(ATHENEA_BLENDER_PYTHON_INCLUDE "${_python_include}" CACHE PATH "Python 3.13 headers (uv python install 3.13)")
 
@@ -84,6 +116,10 @@ set_target_properties(athenea_blender_usd PROPERTIES
 # shared library on Linux may leave symbols undefined as it is.
 if(APPLE)
     set_target_properties(athenea_blender_usd PROPERTIES INTERFACE_LINK_OPTIONS "LINKER:-undefined,dynamic_lookup")
+elseif(WIN32)
+    # Windows: Python is Blender's python313.dll, linked by its import library.
+    set_property(TARGET athenea_blender_usd APPEND PROPERTY
+                 INTERFACE_LINK_LIBRARIES "${ATHENEA_USD_ROOT}/lib/blender/python313.lib")
 endif()
 foreach(_pxr arch tf gf pegtl js trace work plug vt ts ar kind sdf sdr pcp usd usdGeom usdVol usdMedia usdShade
         usdLod usdLux usdProc usdRender usdHydra usdRi usdSemantics usdSkel usdUI usdUtils usdPhysics usdMtlx

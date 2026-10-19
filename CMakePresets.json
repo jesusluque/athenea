@@ -176,6 +176,19 @@
         "ATHENEA_NANOVDB_INCLUDE": "$env{HOME}/tools/usd-26.08-mx/include",
         "BUILD_TESTING": "OFF"
       }
+    },
+    {
+      "name": "windows-x64-blender",
+      "inherits": "windows-base",
+      "displayName": "Windows x64 hdAthenea for Blender (CUDA/Vulkan)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ATHENEA_USD_ROOT": "D:/tools/usd-26.08-blender",
+        "CMAKE_PREFIX_PATH": "D:/tools/usd-26.08-blender",
+        "ATHENEA_BLENDER_LIB": "$env{BLENDER_DIR}/blender.shared",
+        "ATHENEA_NANOVDB_INCLUDE": "D:/tools/usd-26.08-mx/include",
+        "BUILD_TESTING": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -226,6 +239,18 @@
     {
       "name": "linux-x86_64-blender",
       "configurePreset": "linux-x86_64-blender",
+      "targets": [
+        "hdAthenea",
+        "athenea_shaders_copy",
+        "athenea_aofx_mesh2splat",
+        "athenea_aofx_splatbakefilter",
+        "athenea_aofx_measure",
+        "athenea_aofx_splattransferzonal"
+      ]
+    },
+    {
+      "name": "windows-x64-blender",
+      "configurePreset": "windows-x64-blender",
       "targets": [
         "hdAthenea",
         "athenea_shaders_copy",
