@@ -184,7 +184,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "ATHENEA_USD_ROOT": "D:/tools/usd-26.08-blender",
-        "CMAKE_PREFIX_PATH": "D:/tools/usd-26.08-blender",
+        "CMAKE_PREFIX_PATH": "D:/tools/usd-26.08-blender;D:/tools/usd-26.08-mx",
         "ATHENEA_BLENDER_LIB": "$env{BLENDER_DIR}/blender.shared",
         "ATHENEA_NANOVDB_INCLUDE": "D:/tools/usd-26.08-mx/include",
         "BUILD_TESTING": "OFF"
