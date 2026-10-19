@@ -30,9 +30,12 @@ ordenadas por error dan el LOD con un coste de unos 0.1 dB. Un transfer se lee e
 nube, con el cielo girado a él una vez por instancia, así que una nube que la escena gira hace el relight igual que sin
 girar (relMSE $9\times10^{-6}$). Cada parámetro que lleva una Gaussian, desde su albedo y su normal hasta la visibilidad
 del cielo, el bounce y el reflected field del transfer, se puede dibujar a través de una cámara como un canal de imagen
-propio. Como aplicaciones, un PCA por clusters, la visibilidad cuantizada vectorialmente y un registro compacto de 40
-bytes llevan el coche con relight a un player WebGPU en un iPhone, y un nodo OpenFX lleva la nube con relight a un
-compositor con sus capas de profundidad, posición en el mundo y Cryptomatte y un cielo que elige el artista.
+propio. La salida del bake es un master: un fichero USD con cada parámetro a precisión completa, juzgado frente al path
+trace, que leen tal cual el motor, un nodo OpenFX en un compositor (con capas de profundidad, posición en el mundo y
+Cryptomatte y un cielo que elige el artista) y un add-on de Blender. Un proceso aparte, con su propio objetivo, deriva
+del master un formato web para un móvil: un PCA por clusters del transfer, la visibilidad cuantizada vectorialmente y un
+registro compacto de 40 bytes llevan el coche con relight a un player WebGPU en un iPhone, con su pérdida medida frente
+al master.
 
 **Palabras clave:** relight baking; Gaussian splatting 3D; precomputed radiance transfer; spherical harmonics; USD;
 Hydra; de mesh a Gaussians; path tracing; LOD; PCA por clusters; cadenas solo en GPU; WebGPU; OpenFX; composición;
@@ -132,7 +135,7 @@ Las contribuciones que describe este artículo son las siguientes.
    codebook de oclusión compartido y conservador, y pages ordenadas por el error del padre.
 6. **Un relato medido** (sección 8) de lo que aporta cada paso del bake frente al path trace, sobre un asset de
    producción, a través de las leaves con relight, los cuts y los bakes de 640, 1280 y 5120 px.
-7. **Una aplicación a la reproducción en móvil** (sección 7): un contenedor `.athc` v3 con codificaciones por planos de
+7. **Un formato web derivado del master** (Parte II, sección 7): un contenedor `.athc` v3 con codificaciones por planos de
    bytes, PCA por clusters del transfer mantenido comprimido en la GPU, bits de open directions cuantizados
    vectorialmente, un registro compacto de 40 bytes, traversal records cuantizados de 5–11 bytes, y una política
    de tiempo de frame y de still frame para un player WebGPU en un iPhone.
@@ -145,14 +148,18 @@ Las contribuciones que describe este artículo son las siguientes.
 
 ## 1.4 Organización
 
-La sección 2 describe el motor y el renderer sobre los que corre el baker, y los hosts que lo manejan. La sección 3 describe la conversión de
-meshes USD a Gaussians, y la sección 4 el transporte de luz en su bake y cómo se hace su relight. La sección 5 trata
-los assets animados: el skinning, el gorrión y el peón. La sección 6 trata el LOD. La sección 7 describe la aplicación
-a móvil: la compresión y un player WebGPU. La sección 8 consolida la evaluación de las secciones 2–7, la sección 9
+El trabajo son dos procesos con objetivos distintos. La **Parte I** es el bake: convierte un asset USD de producción en
+una nube de Gaussians reiluminable escrita como fichero USD, el master, y se juzga por su fidelidad al path trace. La
+**Parte II** deriva de ese master un formato web para un móvil, y se juzga por tamaño, memoria y tiempo de frame,
+midiendo su pérdida frente al master. La Parte I empieza por lo que contiene el master; la sección 2 describe el motor y
+el renderer sobre los que corre el baker, y los hosts que lo manejan. La sección 3 describe la conversión de meshes USD
+a Gaussians, y la sección 4 el transporte de luz en su bake y cómo se hace su relight. La sección 5 trata los assets
+animados: el skinning, el gorrión y el peón. La sección 6 trata el LOD. La Parte II empieza por la derivación, parámetro
+a parámetro; la sección 7 describe el formato web y su player WebGPU. La sección 8 consolida la evaluación de las secciones 2–7, la sección 9
 reúne las limitaciones y el trabajo pendiente, y la sección 10 enumera las referencias, seguidas de un apéndice sobre
 los repositorios y los comandos (figura 1).
 
-![Figura 1. El pipeline. El baker de relight convierte un stage USD en Gaussians (§3) y hace el bake del transporte de luz en cada una con el path tracer (§4); la nube con relight se compara con un path trace del mesh de origen. Los merge trees (§6) y los assets animados (§5) parten de la nube con bake; el player WebGPU (§7) es una aplicación.](figures/fig-overview.es.svg)
+![Figura 1. Los dos procesos. Parte I, el bake: un stage USD se convierte en Gaussians (§3), el path tracer hace el bake del transporte de luz en cada una (§4), los assets animados conservan su rig (§5) y los merge trees dan el LOD (§6); la salida es el master USDC, comparado con un path trace del mesh de origen. Parte II, el formato web: el master se lee y se codifica en un formato compacto y en streaming para un player WebGPU en un móvil (§7), medido como una pérdida frente al master.](figures/fig-overview.es.svg)
 
 ## 1.5 Trabajo relacionado
 
@@ -209,6 +216,56 @@ su bake, un *merge* un nodo de un merge tree, y un *cut* el conjunto de nodos qu
 *Transfer* es el transporte de luz del bake (§4), *TX* su forma actual.
 
 <!-- Copyright (c) 2026 jesus luque. -->
+
+# Parte I. El bake: de un USD de producción a un master USDC reiluminable {.unnumbered}
+
+El primer proceso convierte un asset USD de producción en una nube de Gaussians que admite relight, y la escribe como
+un fichero USD: el **master**. Su objetivo es la fidelidad. El master se juzga con un solo criterio, su imagen con
+relight frente a un path trace del mesh de origen bajo el mismo cielo y las mismas luces, y cada decisión que contiene
+-- el tamaño de cell, los samples del bake, los bits por dirección, el coste de merge -- la toma esa medida, no su
+tamaño.
+
+**Entrada.** Un stage USD tal como lo entrega producción: meshes con sus materiales MaterialX u OpenPBR, luces UsdLux y
+domos, cámaras y, para un asset animado, su skeleton y sus clips.
+
+**El proceso**, en el orden en que corre, cada paso un conjunto de kernels de GPU sobre el motor de la sección 2:
+
+1. **Conversión** (sección 3). Cada mesh se convierte en Gaussians anisótropas, una por cell de una lattice cuyo tamaño
+   sale del footprint de píxel de una cámara, con la coverage de la superficie como opacidad, bordes sujetos donde
+   termina o forma un fold, el material por capas capturado por Gaussian, el vidrio clasificado como sólido o pared
+   fina, y la roughness ensanchada por la dispersión de las normales.
+2. **El bake del transfer** (sección 4). El path tracer del motor traza el hemisferio de cada Gaussian y guarda cómo le
+   llega cualquier cielo: harmonics de grado 3 de la luz directa e indirecta, un reflected field, 256 bits de open
+   directions y la curvatura de la superficie. Con ellos la nube hace relight al dibujar bajo cielos y luces con los
+   que nunca se hizo su bake.
+3. **El rig y la visibilidad** de un asset animado (sección 5): influencias y sus gradientes por Gaussian, lobes
+   zonales de transfer que giran con un miembro, y campos de visibilidad por parte.
+4. **LOD** (sección 6): merge trees por pieza cuyo cut por error de pantalla está acotado, culls de caras traseras y de
+   oclusión compartida, y pages ordenadas por error, escritos junto a las leaves en el mismo formato de fichero.
+
+**Salida: el master USDC.** Un `ParticleField3DGaussianSplat` por nube (o por merge tree), cuyos atributos estándar
+(posiciones, orientaciones, escalas, opacidades, harmonics de radiancia) los lee cualquier aplicación USD, y cuyos
+primvars de athenea llevan el resto a precisión completa:
+
+| parámetro | primvar (`primvars:athenea:splat:`) | por Gaussian | § |
+|---|---|---|---|
+| material | `normal`, `metallic`, `roughness`, `materialRoughness`, `transmission`, `specularWeight`, `coatWeight`, `sheenColor`, `emission`, `schlickMetal`, `thinWalled`, `closed`; `ior` por nube | un valor por propiedad | 3.6–3.8, 6.6 |
+| transfer (TX) | `transferDirect` (16), `transferIndirect` (48 rgb), `transferReflected` (48 rgb) | 112 valores | 4.2, 4.4 |
+| open directions | `shadowBits` | 256 bits | 4.4.2 |
+| curvatura | `curvature` | $(S_{uu}, S_{uv}, S_{vv})$, 3 floats | 4.8 |
+| transfer y visibilidad, juntos | | 480 B en el fichero, 256 B en el device | 4.2 |
+| rig | `skel:jointIndices`, `skel:jointWeights` (4 cada uno), `jointWeightGradients` (half, 6), `transferZonal` (10), `skinningXforms` por joint | | 5.3, 5.5, 5.7 |
+| LOD | `lodTree`, `lodParent`, `lodStart`, `lodSize`, `lodCost`, `lodSpill`, `coverage`, `coverageMass`, `occlusionIndex`; `occlusionCodebook` por tree; los merges escritos tras las leaves | por nodo | 6.2–6.8 |
+| ids | `cryptoObject`, el id Cryptomatte del prim de la Gaussian; `cryptoManifest` por nube | 1 palabra | 2.5.2, 3.10 |
+
+Tamaños medidos en los assets de este paper: las dos nubes del peón, 489 MB; el gorrión, con skinning, transfer y
+visibilidad, 216 MB; la nube reiluminable del Corvette de 3 M de Gaussians, 2.9 GB; el close-up level del Corvette como
+24 merge trees de 74.5 M de leaves y 148.9 M de nodos, 87.4 GB.
+
+**Quién lee el master.** El propio motor, a través de Hydra, tanto en su raster como en su path tracer; la comparación
+frente al path trace (sección 8); el nodo OpenFX en un compositor y el add-on de Blender (§2.14); los canales de imagen
+de §4.11. Y cada formato derivado, de los que la Parte II describe uno. El master es la fuente: un formato derivado se
+hace a partir de él y no se puede volver a convertir en él.
 
 # 2. El motor y el renderer athenea
 
@@ -3340,9 +3397,70 @@ trace, los brillos del capó de 3.2 a 2.0 px de desvío, y las juntas de 0.90 a 
 
 <!-- Copyright (c) 2026 jesus luque. -->
 
-# 7. Aplicación: compresión y un player WebGPU en móvil
+# Parte II. El formato web: un formato de entrega derivado {.unnumbered}
 
-Esta sección describe una aplicación de las nubes con relight de §3–§6, desarrollada como una línea paralela: la reproducción de un asset entero en un móvil. Sus requisitos de diseño son propios: el Corvette entero, con su transfer de luz completo, dibujado en un iPhone dentro de una página web y juzgado frente al path trace del mesh; un budget de unos 50–60 MB de datos del coche en movimiento y unos 100 MB en reposo; piezas pequeñas que se vean bien. El player es un fork de Spark con backend WebGPU (sparkwebGPU, rama `webgpu`); athenea escribe las nubes, los merge trees, las pages y la oclusión. Esta sección describe los formatos, el streaming, el dibujado y el relight en el móvil, y los resultados medidos. El formato `.athc` v3 está especificado en el repositorio del player (`spark/docs/docs/athc-v3.md`).
+El segundo proceso empieza donde termina el primero. Toma el master de la Parte I y deriva de él un formato con un
+solo propósito: llevar el asset con relight a un navegador web en un móvil. Su objetivo es otro, y también su criterio.
+Una pestaña de móvil tiene un budget de memoria (unos 50–60 MB de datos del asset mientras la cámara se mueve, unos 100
+MB en reposo), una descarga que debe empezar a dibujar en segundos, y un tiempo de frame; el formato se hace para
+cumplirlos, y su fidelidad se mide como una pérdida frente al relight sin comprimir del propio master y, a través de él,
+frente al path trace. Nada de este proceso cambia el master, y nada de él lo vuelve a leer el bake.
+
+**Entrada.** Los merge trees del master con sus pages y su codebook de oclusión (sección 6); para el Corvette, los 24
+trees del close-up level.
+
+**El proceso**, en orden, lo ejecutan las herramientas del player, no el motor:
+
+1. **Leer el master** (`usd-athc`, un lector construido sobre el crate `openusd`): la nube USD se convierte en un
+   contenedor `.athc` versión 3, organizado en secciones y tiers para que un HTTP Range traiga lo que necesita un tier
+   de un bloque (§7.1). Una nube con skinning añade su skin, su skeleton y sus clips (§5.12).
+2. **Empaquetado sin pérdida** (§7.1): cada array transpuesto en planos de bytes, o en planos de diferencias, lo que
+   gzip comprima mejor, porque gzip es lo que descomprime un navegador.
+3. **El transfer** (§7.2): o un PCA por clusters de cada bloque del fichero (codificación 3), o una base ajustada sobre
+   todo el asset (`fit-compact-basis`) que el móvil mantiene residente, de modo que cada Gaussian guarda un id de
+   cluster y $3\times8$ pesos int4.
+4. **Las open directions** (§7.3): un diccionario en espacio de Hamming de 4096 máscaras compartido por el asset; cada
+   Gaussian guarda un índice de 16 bits.
+5. **El registro compacto** (§7.4): cada parámetro restante cuantizado en planos de bytes, 40 bytes por Gaussian en la
+   GPU.
+6. **Pages, tiers y traversal records** (§7.5): las pages del tree partidas en bandas de error, traversal records de
+   5–11 bytes, y una tabla del asset (las bases, el diccionario, los materiales) que se descarga una vez.
+7. **En la reproducción** (§7.6–§7.10): streaming por peticiones Range, un cut por frame dentro del budget de memoria,
+   el dibujo y el relight en el móvil, una contact shadow, y una política de still frame que refina cuando la cámara se
+   para.
+
+**En qué se convierte cada parámetro.**
+
+| parámetro | master USDC | formato web | pérdida medida | § |
+|---|---|---|---|---|
+| posición | 3 floats | $3\times$u16 en la caja de la page | menos de $10^{-6}$ de error de imagen (ablación) | 7.4 |
+| escala, opacidad | 3 + 1 floats | escala logarítmica u8; opacidad u8 en dos tramos | menos de $10^{-6}$ (ablación) | 7.4 |
+| orientación | cuaternión | una palabra de 32 bits: eje octaédrico de 10+10 bits, ángulo de 12 | | 7.4 |
+| albedo | rgb float | sRGB u8 | menos de $10^{-6}$ (ablación) | 7.4 |
+| normal | float | octaédrica, 12 bits por eje | relMSE $2.7\times10^{-4}$ (8+8 bits: $5.2\times10^{-2}$) | 7.4 |
+| curvatura | 3 floats | 3 × s8, logaritmo con signo en el rango de la page | menos de $10^{-6}$ (ablación) | 7.4 |
+| material | un valor por propiedad y Gaussian | índice u16 en una tabla exacta de los materiales del asset | ninguna (exacta) | 7.4 |
+| transfer | 112 valores f16 | id de cluster + 24 pesos int4 sobre una base compartida | relMSE del transfer 0.0054 sobre el coche (v8.2b); imagen a menos de relMSE $10^{-3}$ del transfer sin comprimir | 7.2, 7.12 |
+| open directions | 256 bits | índice u16 en un diccionario de 4096 entradas | 62.9–65.4 dB | 7.3 |
+| rig | influencias, gradientes, lobes zonales | sección `SKIN`: joint u16, peso unorm16, gradientes en half; nodos fusionados sin gradiente | relMSE 0.0015–0.0053 frente al raster del motor | 5.12 |
+| merge tree | nodos, pages, oclusión | pages por banda de error, traversal records de 5–11 bytes, el codebook de oclusión | el mismo cut | 7.5 |
+
+El registro compacto entero ocupa 40 bytes en la GPU (42.4 bytes residentes con sus tablas, y 16 bytes por splat
+dibujado), frente a 256 bytes solo para el transfer y la visibilidad del master en el device. La imagen de la ruta
+compacta queda a 40.2–41.9 dB del relight completo de la misma nube. Para el Corvette, los 87.4 GB de los 24 trees del
+close-up level se convierten en 12.77 GB de datos web (v8.2b, 149.0 M de nodos), servidos por page para que una vista
+cargue una fracción.
+
+**Por qué se mantienen separados.** Cada paso de este proceso descarta información que produjo el bake: una base
+ajustada a un asset, un diccionario que sustituye cada máscara por la más cercana, una cuantización elegida por lo que
+el ojo ve a la resolución de un móvil. Un conjunto de datos web, por tanto, nunca es un master: no admite relight más
+allá de lo que guardan sus codificaciones, ni un nuevo bake, ni la conversión a otro formato, ni la comparación frente al
+path trace sin el master del que salió. Toda mejora del asset se hace en el master, y el formato web se vuelve a
+derivar.
+
+# 7. El formato web: compresión, streaming y un player WebGPU
+
+Esta sección describe el formato web de la Parte II y el player que lo dibuja: el Corvette entero, con su transfer de luz completo, dibujado en un iPhone dentro de una página web y juzgado frente al path trace del mesh, dentro de unos 50–60 MB de datos del coche en movimiento y unos 100 MB en reposo, con piezas pequeñas que se vean bien. El player es un fork de Spark con backend WebGPU (sparkwebGPU, rama `webgpu`); su entrada es el master de la Parte I -- las nubes, los merge trees, las pages y la oclusión que escribe athenea. Esta sección describe los formatos, el streaming, el dibujado y el relight en el móvil, y los resultados medidos. El formato `.athc` v3 está especificado en el repositorio del player (`spark/docs/docs/athc-v3.md`).
 
 **Aparecen tres tipos de medida**, y no son intercambiables:
 
@@ -3710,9 +3828,10 @@ La métrica car crop de §1.6 (recorte de 900 × 420) es otra región. Con ella,
 
 # 8. Evaluación
 
-Esta sección reúne las medidas de las secciones 2–7 en un solo relato. Empieza por el bake, validado haciendo el
-relight de las Gaussians frente al path trace del mesh de origen (§8.2, §8.3); siguen el motor (§8.4), el LOD (§8.5) y
-los costes del bake (§8.6), y la aplicación a móvil (§8.7–§8.9) va al final. No introduce cifras nuevas: cada cifra se
+Esta sección reúne las medidas de las secciones 2–7 en un solo relato, por proceso. Empieza la Parte I, el bake: el
+master validado haciendo el relight de las Gaussians frente al path trace del mesh de origen (§8.2, §8.3), el motor
+(§8.4), el LOD (§8.5) y los costes del bake (§8.6). La Parte II, el formato web, va al final: su compresión, su
+comportamiento en el móvil y su memoria (§8.7–§8.9), medidos como una pérdida frente al master. No introduce cifras nuevas: cada cifra se
 cita de la sección que se indica a su lado. Donde dos fuentes dan cifras distintas para la misma magnitud, la §8.10
 dice cuál es cuál.
 

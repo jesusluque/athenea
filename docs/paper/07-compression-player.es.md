@@ -1,8 +1,69 @@
 <!-- Copyright (c) 2026 jesus luque. -->
 
-# 7. Aplicación: compresión y un player WebGPU en móvil
+# Parte II. El formato web: un formato de entrega derivado {.unnumbered}
 
-Esta sección describe una aplicación de las nubes con relight de §3–§6, desarrollada como una línea paralela: la reproducción de un asset entero en un móvil. Sus requisitos de diseño son propios: el Corvette entero, con su transfer de luz completo, dibujado en un iPhone dentro de una página web y juzgado frente al path trace del mesh; un budget de unos 50–60 MB de datos del coche en movimiento y unos 100 MB en reposo; piezas pequeñas que se vean bien. El player es un fork de Spark con backend WebGPU (sparkwebGPU, rama `webgpu`); athenea escribe las nubes, los merge trees, las pages y la oclusión. Esta sección describe los formatos, el streaming, el dibujado y el relight en el móvil, y los resultados medidos. El formato `.athc` v3 está especificado en el repositorio del player (`spark/docs/docs/athc-v3.md`).
+El segundo proceso empieza donde termina el primero. Toma el master de la Parte I y deriva de él un formato con un
+solo propósito: llevar el asset con relight a un navegador web en un móvil. Su objetivo es otro, y también su criterio.
+Una pestaña de móvil tiene un budget de memoria (unos 50–60 MB de datos del asset mientras la cámara se mueve, unos 100
+MB en reposo), una descarga que debe empezar a dibujar en segundos, y un tiempo de frame; el formato se hace para
+cumplirlos, y su fidelidad se mide como una pérdida frente al relight sin comprimir del propio master y, a través de él,
+frente al path trace. Nada de este proceso cambia el master, y nada de él lo vuelve a leer el bake.
+
+**Entrada.** Los merge trees del master con sus pages y su codebook de oclusión (sección 6); para el Corvette, los 24
+trees del close-up level.
+
+**El proceso**, en orden, lo ejecutan las herramientas del player, no el motor:
+
+1. **Leer el master** (`usd-athc`, un lector construido sobre el crate `openusd`): la nube USD se convierte en un
+   contenedor `.athc` versión 3, organizado en secciones y tiers para que un HTTP Range traiga lo que necesita un tier
+   de un bloque (§7.1). Una nube con skinning añade su skin, su skeleton y sus clips (§5.12).
+2. **Empaquetado sin pérdida** (§7.1): cada array transpuesto en planos de bytes, o en planos de diferencias, lo que
+   gzip comprima mejor, porque gzip es lo que descomprime un navegador.
+3. **El transfer** (§7.2): o un PCA por clusters de cada bloque del fichero (codificación 3), o una base ajustada sobre
+   todo el asset (`fit-compact-basis`) que el móvil mantiene residente, de modo que cada Gaussian guarda un id de
+   cluster y $3\times8$ pesos int4.
+4. **Las open directions** (§7.3): un diccionario en espacio de Hamming de 4096 máscaras compartido por el asset; cada
+   Gaussian guarda un índice de 16 bits.
+5. **El registro compacto** (§7.4): cada parámetro restante cuantizado en planos de bytes, 40 bytes por Gaussian en la
+   GPU.
+6. **Pages, tiers y traversal records** (§7.5): las pages del tree partidas en bandas de error, traversal records de
+   5–11 bytes, y una tabla del asset (las bases, el diccionario, los materiales) que se descarga una vez.
+7. **En la reproducción** (§7.6–§7.10): streaming por peticiones Range, un cut por frame dentro del budget de memoria,
+   el dibujo y el relight en el móvil, una contact shadow, y una política de still frame que refina cuando la cámara se
+   para.
+
+**En qué se convierte cada parámetro.**
+
+| parámetro | master USDC | formato web | pérdida medida | § |
+|---|---|---|---|---|
+| posición | 3 floats | $3\times$u16 en la caja de la page | menos de $10^{-6}$ de error de imagen (ablación) | 7.4 |
+| escala, opacidad | 3 + 1 floats | escala logarítmica u8; opacidad u8 en dos tramos | menos de $10^{-6}$ (ablación) | 7.4 |
+| orientación | cuaternión | una palabra de 32 bits: eje octaédrico de 10+10 bits, ángulo de 12 | | 7.4 |
+| albedo | rgb float | sRGB u8 | menos de $10^{-6}$ (ablación) | 7.4 |
+| normal | float | octaédrica, 12 bits por eje | relMSE $2.7\times10^{-4}$ (8+8 bits: $5.2\times10^{-2}$) | 7.4 |
+| curvatura | 3 floats | 3 × s8, logaritmo con signo en el rango de la page | menos de $10^{-6}$ (ablación) | 7.4 |
+| material | un valor por propiedad y Gaussian | índice u16 en una tabla exacta de los materiales del asset | ninguna (exacta) | 7.4 |
+| transfer | 112 valores f16 | id de cluster + 24 pesos int4 sobre una base compartida | relMSE del transfer 0.0054 sobre el coche (v8.2b); imagen a menos de relMSE $10^{-3}$ del transfer sin comprimir | 7.2, 7.12 |
+| open directions | 256 bits | índice u16 en un diccionario de 4096 entradas | 62.9–65.4 dB | 7.3 |
+| rig | influencias, gradientes, lobes zonales | sección `SKIN`: joint u16, peso unorm16, gradientes en half; nodos fusionados sin gradiente | relMSE 0.0015–0.0053 frente al raster del motor | 5.12 |
+| merge tree | nodos, pages, oclusión | pages por banda de error, traversal records de 5–11 bytes, el codebook de oclusión | el mismo cut | 7.5 |
+
+El registro compacto entero ocupa 40 bytes en la GPU (42.4 bytes residentes con sus tablas, y 16 bytes por splat
+dibujado), frente a 256 bytes solo para el transfer y la visibilidad del master en el device. La imagen de la ruta
+compacta queda a 40.2–41.9 dB del relight completo de la misma nube. Para el Corvette, los 87.4 GB de los 24 trees del
+close-up level se convierten en 12.77 GB de datos web (v8.2b, 149.0 M de nodos), servidos por page para que una vista
+cargue una fracción.
+
+**Por qué se mantienen separados.** Cada paso de este proceso descarta información que produjo el bake: una base
+ajustada a un asset, un diccionario que sustituye cada máscara por la más cercana, una cuantización elegida por lo que
+el ojo ve a la resolución de un móvil. Un conjunto de datos web, por tanto, nunca es un master: no admite relight más
+allá de lo que guardan sus codificaciones, ni un nuevo bake, ni la conversión a otro formato, ni la comparación frente al
+path trace sin el master del que salió. Toda mejora del asset se hace en el master, y el formato web se vuelve a
+derivar.
+
+# 7. El formato web: compresión, streaming y un player WebGPU
+
+Esta sección describe el formato web de la Parte II y el player que lo dibuja: el Corvette entero, con su transfer de luz completo, dibujado en un iPhone dentro de una página web y juzgado frente al path trace del mesh, dentro de unos 50–60 MB de datos del coche en movimiento y unos 100 MB en reposo, con piezas pequeñas que se vean bien. El player es un fork de Spark con backend WebGPU (sparkwebGPU, rama `webgpu`); su entrada es el master de la Parte I -- las nubes, los merge trees, las pages y la oclusión que escribe athenea. Esta sección describe los formatos, el streaming, el dibujado y el relight en el móvil, y los resultados medidos. El formato `.athc` v3 está especificado en el repositorio del player (`spark/docs/docs/athc-v3.md`).
 
 **Aparecen tres tipos de medida**, y no son intercambiables:
 

@@ -72,7 +72,7 @@ Las contribuciones que describe este artículo son las siguientes.
    codebook de oclusión compartido y conservador, y pages ordenadas por el error del padre.
 6. **Un relato medido** (sección 8) de lo que aporta cada paso del bake frente al path trace, sobre un asset de
    producción, a través de las leaves con relight, los cuts y los bakes de 640, 1280 y 5120 px.
-7. **Una aplicación a la reproducción en móvil** (sección 7): un contenedor `.athc` v3 con codificaciones por planos de
+7. **Un formato web derivado del master** (Parte II, sección 7): un contenedor `.athc` v3 con codificaciones por planos de
    bytes, PCA por clusters del transfer mantenido comprimido en la GPU, bits de open directions cuantizados
    vectorialmente, un registro compacto de 40 bytes, traversal records cuantizados de 5–11 bytes, y una política
    de tiempo de frame y de still frame para un player WebGPU en un iPhone.
@@ -85,14 +85,18 @@ Las contribuciones que describe este artículo son las siguientes.
 
 ## 1.4 Organización
 
-La sección 2 describe el motor y el renderer sobre los que corre el baker, y los hosts que lo manejan. La sección 3 describe la conversión de
-meshes USD a Gaussians, y la sección 4 el transporte de luz en su bake y cómo se hace su relight. La sección 5 trata
-los assets animados: el skinning, el gorrión y el peón. La sección 6 trata el LOD. La sección 7 describe la aplicación
-a móvil: la compresión y un player WebGPU. La sección 8 consolida la evaluación de las secciones 2–7, la sección 9
+El trabajo son dos procesos con objetivos distintos. La **Parte I** es el bake: convierte un asset USD de producción en
+una nube de Gaussians reiluminable escrita como fichero USD, el master, y se juzga por su fidelidad al path trace. La
+**Parte II** deriva de ese master un formato web para un móvil, y se juzga por tamaño, memoria y tiempo de frame,
+midiendo su pérdida frente al master. La Parte I empieza por lo que contiene el master; la sección 2 describe el motor y
+el renderer sobre los que corre el baker, y los hosts que lo manejan. La sección 3 describe la conversión de meshes USD
+a Gaussians, y la sección 4 el transporte de luz en su bake y cómo se hace su relight. La sección 5 trata los assets
+animados: el skinning, el gorrión y el peón. La sección 6 trata el LOD. La Parte II empieza por la derivación, parámetro
+a parámetro; la sección 7 describe el formato web y su player WebGPU. La sección 8 consolida la evaluación de las secciones 2–7, la sección 9
 reúne las limitaciones y el trabajo pendiente, y la sección 10 enumera las referencias, seguidas de un apéndice sobre
 los repositorios y los comandos (figura 1).
 
-![Figura 1. El pipeline. El baker de relight convierte un stage USD en Gaussians (§3) y hace el bake del transporte de luz en cada una con el path tracer (§4); la nube con relight se compara con un path trace del mesh de origen. Los merge trees (§6) y los assets animados (§5) parten de la nube con bake; el player WebGPU (§7) es una aplicación.](figures/fig-overview.es.svg)
+![Figura 1. Los dos procesos. Parte I, el bake: un stage USD se convierte en Gaussians (§3), el path tracer hace el bake del transporte de luz en cada una (§4), los assets animados conservan su rig (§5) y los merge trees dan el LOD (§6); la salida es el master USDC, comparado con un path trace del mesh de origen. Parte II, el formato web: el master se lee y se codifica en un formato compacto y en streaming para un player WebGPU en un móvil (§7), medido como una pérdida frente al master.](figures/fig-overview.es.svg)
 
 ## 1.5 Trabajo relacionado
 

@@ -198,11 +198,15 @@ rotates relights as it does unrotated (relMSE
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>9</mn><mo>×</mo><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup></mrow><annotation encoding="application/x-tex">9\times10^{-6}</annotation></semantics></math>).
 Every parameter a Gaussian carries, from its albedo and normal to the
 transfer’s sky visibility, bounce and reflected field, can be drawn
-through a camera as an image channel of its own. As applications,
-clustered PCA, vector-quantised visibility and a 40-byte compact record
-carry the relit car to a WebGPU player on an iPhone, and an OpenFX node
-brings the relit cloud into a compositor with its depth, world position
-and Cryptomatte layers and a sky the artist chooses.</p>
+through a camera as an image channel of its own. The bake’s output is a
+master: a USD file holding every parameter at full precision, judged
+against the path trace, which the engine, an OpenFX node in a compositor
+(with depth, world position and Cryptomatte layers and a sky the artist
+chooses) and a Blender add-on read as it is. A separate process with its
+own goal derives from the master a web format for a phone: clustered PCA
+of the transfer, vector-quantised visibility and a 40-byte compact
+record carry the relit car to a WebGPU player on an iPhone, its loss
+measured against the master.</p>
 <p><strong>Keywords:</strong> relight baking; 3D Gaussian splatting;
 precomputed radiance transfer; spherical harmonics; USD; Hydra; mesh to
 Gaussians; path tracing; level of detail; clustered PCA; GPU-only
@@ -223,6 +227,8 @@ Organisation</a></li>
 work</a></li>
 <li><a href="#conventions" id="toc-conventions">1.6 Conventions</a></li>
 </ul></li>
+<li><a href="#part-i.-the-bake-from-production-usd-to-a-relightable-master-usdc" id="toc-part-i.-the-bake-from-production-usd-to-a-relightable-master-usdc">Part
+I. The bake: from production USD to a relightable master USDC</a></li>
 <li><a href="#the-athenea-engine-and-renderer" id="toc-the-athenea-engine-and-renderer">2. The athenea engine and
 renderer</a>
 <ul>
@@ -432,8 +438,10 @@ results</a></li>
 <li><a href="#limits-and-open-items" id="toc-limits-and-open-items">6.11
 Limits and open items</a></li>
 </ul></li>
-<li><a href="#application-compression-and-a-webgpu-player-on-mobile" id="toc-application-compression-and-a-webgpu-player-on-mobile">7.
-Application: compression and a WebGPU player on mobile</a>
+<li><a href="#part-ii.-the-web-format-a-derived-delivery-format" id="toc-part-ii.-the-web-format-a-derived-delivery-format">Part II. The
+web format: a derived delivery format</a></li>
+<li><a href="#the-web-format-compression-streaming-and-a-webgpu-player" id="toc-the-web-format-compression-streaming-and-a-webgpu-player">7. The
+web format: compression, streaming and a WebGPU player</a>
 <ul>
 <li><a href="#the-container-.athc-version-3" id="toc-the-container-.athc-version-3">7.1 The container:
 <code>.athc</code> version 3</a></li>
@@ -675,12 +683,12 @@ pages ordered by the parent’s error.</li>
 <li><strong>A measured account</strong> (Section 8) of what each step of
 the bake buys against the path trace, on one production asset, through
 the relit leaves, the cuts and the 640, 1280 and 5120 px bakes.</li>
-<li><strong>An application to mobile playback</strong> (Section 7): a
-<code>.athc</code> v3 container with byte-plane encodings, clustered PCA
-of the transfer kept compressed on the GPU, vector-quantised
-open-direction bits, a 40-byte compact record, quantised traversal
-records of 5–11 bytes, and a frame-time and still-frame policy for a
-WebGPU player on an iPhone.</li>
+<li><strong>A web format derived from the master</strong> (Part II,
+Section 7): a <code>.athc</code> v3 container with byte-plane encodings,
+clustered PCA of the transfer kept compressed on the GPU,
+vector-quantised open-direction bits, a 40-byte compact record,
+quantised traversal records of 5–11 bytes, and a frame-time and
+still-frame policy for a WebGPU player on an iPhone.</li>
 <li><strong>The baked cloud as image channels and in production
 hosts</strong> (Sections 4.11 and 2.14): every parameter a Gaussian
 carries drawn through a camera as a channel of its own, the material and
@@ -691,24 +699,33 @@ world position and Cryptomatte as planes and a sky the artist swaps; and
 a Blender add-on that draws it as a render engine.</li>
 </ol>
 <h2 id="organisation">1.4 Organisation</h2>
-<p>Section 2 describes the engine and renderer on which the baker runs,
-and the hosts that drive it. Section 3 describes the conversion from USD
-meshes to Gaussians, and Section 4 the light transport baked into them
-and how they are relit. Section 5 covers animated assets: skinning, the
-sparrow and the pawn. Section 6 covers levels of detail. Section 7
-describes the application to mobile: compression and a WebGPU player.
+<p>The work is two processes with different goals. <strong>Part
+I</strong> is the bake: it turns a production USD asset into a
+relightable Gaussian cloud written as a USD file, the master, and is
+judged by fidelity to the path trace. <strong>Part II</strong> derives
+from that master a web format for a phone, and is judged by size, memory
+and frame time, with its loss against the master measured. Part I opens
+with what the master holds; Section 2 describes the engine and renderer
+on which the baker runs, and the hosts that drive it. Section 3
+describes the conversion from USD meshes to Gaussians, and Section 4 the
+light transport baked into them and how they are relit. Section 5 covers
+animated assets: skinning, the sparrow and the pawn. Section 6 covers
+levels of detail. Part II opens with the derivation, parameter by
+parameter; Section 7 describes the web format and its WebGPU player.
 Section 8 consolidates the evaluation from Sections 2–7, Section 9
 gathers the limitations and the work left, and Section 10 lists the
 references, followed by an appendix on the repositories and commands
 (Figure 1).</p>
 <figure>
-<img role="img" aria-label="Figure 1. The pipeline. The relight baker converts a USD stage into Gaussians (§3) and bakes light transport into each one with the path tracer (§4); the relit cloud is compared with a path trace of the source mesh. Merge trees (§6) and animated assets (§5) build on the baked cloud; the WebGPU player (§7) is an application." src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3NjAiIGhlaWdodD0iNDAwIiB2aWV3Qm94PSIwIDAgNzYwIDQwMCIgZm9udC1mYW1pbHk9IkhlbHZldGljYSwgQXJpYWwsIHNhbnMtc2VyaWYiIHhtbDpzcGFjZT0icHJlc2VydmUiPgo8IS0tIENvcHlyaWdodCAoYykgMjAyNiBqZXN1cyBsdXF1ZS4gLS0+CjxkZWZzPjxtYXJrZXIgaWQ9ImFoIiB2aWV3Qm94PSIwIDAgMTAgMTAiIHJlZlg9IjkiIHJlZlk9IjUiIG1hcmtlcldpZHRoPSI3IiBtYXJrZXJIZWlnaHQ9IjciIG9yaWVudD0iYXV0by1zdGFydC1yZXZlcnNlIj48cGF0aCBkPSJNMCwwIEwxMCw1IEwwLDEwIHoiIGZpbGw9IiMzZTRjNTkiLz48L21hcmtlcj48L2RlZnM+CjxyZWN0IHdpZHRoPSI3NjAiIGhlaWdodD0iNDAwIiBmaWxsPSIjZmZmZmZmIi8+CjxyZWN0IHg9IjEwIiB5PSI1MiIgd2lkdGg9IjE0MCIgaGVpZ2h0PSI4NCIgcng9IjYiIGZpbGw9IiNlZWYyZjciIHN0cm9rZT0iIzViNmI4MCIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iODAuMCIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+VVNEIHN0YWdlPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSI5NC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5tZXNoZXMsIE9wZW5QQlIgLzwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPk1hdGVyaWFsWCwgVXNkTHV4LDwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMTIzLjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnNrZWxldG9uLCBjYW1lcmFzPC90ZXh0Pgo8cmVjdCB4PSIxNjUiIHk9IjI2IiB3aWR0aD0iNDIwIiBoZWlnaHQ9IjEyNCIgcng9IjkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzRmN2E1YyIgc3Ryb2tlLXdpZHRoPSIxLjIiIHN0cm9rZS1kYXNoYXJyYXk9IjUgNCIvPgo8dGV4dCB4PSIxNzUiIHk9IjQxIiB0ZXh0LWFuY2hvcj0ic3RhcnQiIGZvbnQtc2l6ZT0iMTEuNSIgZm9udC1zdHlsZT0iaXRhbGljIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzRmN2E1YyI+cmVsaWdodCBiYWtlciAowqczLCDCpzQpPC90ZXh0Pgo8cmVjdCB4PSIxODAiIHk9IjUyIiB3aWR0aD0iMTg1IiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSIyNzIuNSIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+bWVzaDJzcGxhdCBjb252ZXJzaW9uPC90ZXh0Pgo8dGV4dCB4PSIyNzIuNSIgeT0iOTQuOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+Y2VsbCBmcm9tIHRoZSBjYW1lcmEsPC90ZXh0Pgo8dGV4dCB4PSIyNzIuNSIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmVkZ2VzLCBtYXRlcmlhbHMsIGdsYXNzLDwvdGV4dD4KPHRleHQgeD0iMjcyLjUiIHk9IjEyMy45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5Ub2tzdmlnPC90ZXh0Pgo8cmVjdCB4PSIzODUiIHk9IjUyIiB3aWR0aD0iMTg1IiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI0NzcuNSIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+dHJhbnNmZXIgYmFrZTwvdGV4dD4KPHRleHQgeD0iNDc3LjUiIHk9Ijk0LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPkdQVSBwYXRoIHRyYWNlciBhdCBlYWNoPC90ZXh0Pgo8dGV4dCB4PSI0NzcuNSIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPkdhdXNzaWFuOiBTSCwgcmVmbGVjdGVkPC90ZXh0Pgo8dGV4dCB4PSI0NzcuNSIgeT0iMTIzLjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmZpZWxkLCB2aXNpYmlsaXR5IGNlbGxzPC90ZXh0Pgo8cmVjdCB4PSI2MDAiIHk9IjUyIiB3aWR0aD0iMTUwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2ZiZjFkZiIgc3Ryb2tlPSIjOWE3NDMzIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI2NzUuMCIgeT0iODMuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+cmVsaWdodGFibGUgY2xvdWQ8L3RleHQ+Cjx0ZXh0IHg9IjY3NS4wIiB5PSIxMDIuMSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+R2F1c3NpYW5zICsgdHJhbnNmZXI8L3RleHQ+Cjx0ZXh0IHg9IjY3NS4wIiB5PSIxMTYuNiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+LnVzZGMgLyAuYXRoYzwvdGV4dD4KPHBvbHlsaW5lIHBvaW50cz0iMTUwLDk0IDE3OCw5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iMzY1LDk0IDM4Myw5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNTcwLDk0IDU5OCw5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHJlY3QgeD0iMTAiIHk9IjE5NiIgd2lkdGg9IjE0MCIgaGVpZ2h0PSI4NCIgcng9IjYiIGZpbGw9IiNmOGU5ZTciIHN0cm9rZT0iIzlhNGQ0MiIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iODAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPnBhdGgtdHJhY2VkPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSIyMzguOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+cmVmZXJlbmNlIG9mIHRoZTwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMjUzLjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnNvdXJjZSBtZXNoPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSIyNjcuOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+KMKnMi4xMSk8L3RleHQ+CjxyZWN0IHg9IjIwMCIgeT0iMTk2IiB3aWR0aD0iMTgwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSIyOTAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPnJlbGlnaHQgYXQgZHJhdyB0aW1lPC90ZXh0Pgo8dGV4dCB4PSIyOTAuMCIgeT0iMjM4LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmFueSBza3ksIHN1biBvciBsaWdodDs8L3RleHQ+Cjx0ZXh0IHg9IjI5MC4wIiB5PSIyNTMuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+c2hhcnAgbG9iZXMgcGVyIHBpeGVsPC90ZXh0Pgo8dGV4dCB4PSIyOTAuMCIgeT0iMjY3LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmRlc2t0b3AsIEh5ZHJhICjCpzIsIMKnNCk8L3RleHQ+CjxyZWN0IHg9IjQyMCIgeT0iMTk2IiB3aWR0aD0iMTYwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI1MDAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPm1lcmdlIHRyZWVzLCBMT0Q8L3RleHQ+Cjx0ZXh0IHg9IjUwMC4wIiB5PSIyMzguOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+Y292ZXJhZ2UsIGN1dCBieSBlcnJvciw8L3RleHQ+Cjx0ZXh0IHg9IjUwMC4wIiB5PSIyNTMuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+YmFjayBmYWNlcywgb2NjbHVzaW9uLDwvdGV4dD4KPHRleHQgeD0iNTAwLjAiIHk9IjI2Ny45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5wYWdlcyAowqc2KTwvdGV4dD4KPHJlY3QgeD0iNjEwIiB5PSIxOTYiIHdpZHRoPSIxNDAiIGhlaWdodD0iODQiIHJ4PSI2IiBmaWxsPSIjZTZmMWVhIiBzdHJva2U9IiM0ZjdhNWMiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjY4MC4wIiB5PSIyMjAuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+YW5pbWF0ZWQgYXNzZXRzPC90ZXh0Pgo8dGV4dCB4PSI2ODAuMCIgeT0iMjM4LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnNraW5uaW5nLCB6b25hbCBsb2Jlcyw8L3RleHQ+Cjx0ZXh0IHg9IjY4MC4wIiB5PSIyNTMuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+cGVyLXBhcnQgdmlzaWJpbGl0eTwvdGV4dD4KPHRleHQgeD0iNjgwLjAiIHk9IjI2Ny45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj4owqc1KTwvdGV4dD4KPHBvbHlsaW5lIHBvaW50cz0iODAsMTM2IDgwLDE5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNjQwLDEzNiA2NDAsMTcwIDUwMCwxNzAgNTAwLDE5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNzAwLDEzNiA3MDAsMTk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSI0MjAsMjM4IDM4MiwyMzgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNlNGM1OSIgc3Ryb2tlLXdpZHRoPSIxLjQiIG1hcmtlci1lbmQ9InVybCgjYWgpIi8+Cjxwb2x5bGluZSBwb2ludHM9IjIwMCwyMzggMTUyLDIzOCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgc3Ryb2tlLWRhc2hhcnJheT0iNSAzIiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8dGV4dCB4PSIxNzYiIHk9IjIzMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMCIgZmlsbD0iIzUyNjA2ZCI+UFNOUjwvdGV4dD4KPHRleHQgeD0iMTc2IiB5PSIyNTYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTAiIGZpbGw9IiM1MjYwNmQiPnJlbE1TRTwvdGV4dD4KPHJlY3QgeD0iMjAwIiB5PSIzMDAiIHdpZHRoPSI1NTAiIGhlaWdodD0iOTIiIHJ4PSI5IiBmaWxsPSJub25lIiBzdHJva2U9IiM2ZjVhOTEiIHN0cm9rZS13aWR0aD0iMS4yIiBzdHJva2UtZGFzaGFycmF5PSI1IDQiLz4KPHRleHQgeD0iNzQwIiB5PSIzODYiIHRleHQtYW5jaG9yPSJlbmQiIGZvbnQtc2l6ZT0iMTEuNSIgZm9udC1zdHlsZT0iaXRhbGljIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzZmNWE5MSI+YXBwbGljYXRpb24sIHBhcmFsbGVsIHRyYWNrICjCpzcpPC90ZXh0Pgo8cmVjdCB4PSIyMTUiIHk9IjMxMiIgd2lkdGg9IjIzMCIgaGVpZ2h0PSI2MiIgcng9IjYiIGZpbGw9IiNlZmVhZjYiIHN0cm9rZT0iIzZmNWE5MSIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iMzMwLjAiIHk9IjMzMi45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEyLjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjMWYyOTMzIj5jb21wYWN0IGNvbnZlcnNpb248L3RleHQ+Cjx0ZXh0IHg9IjMzMC4wIiB5PSIzNTEuMSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMC41IiBmaWxsPSIjNTI2MDZkIj4uYXRoYyB2MyAvIC5jbXBhOiBjbHVzdGVyZWQgUENBLDwvdGV4dD4KPHRleHQgeD0iMzMwLjAiIHk9IjM2NS4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwLjUiIGZpbGw9IiM1MjYwNmQiPlZRIHZpc2liaWxpdHksIDQwLWJ5dGUgcmVjb3JkPC90ZXh0Pgo8cmVjdCB4PSI0ODAiIHk9IjMxMiIgd2lkdGg9IjI1NSIgaGVpZ2h0PSI1NiIgcng9IjYiIGZpbGw9IiNlZmVhZjYiIHN0cm9rZT0iIzZmNWE5MSIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iNjA3LjUiIHk9IjMzNi44IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEyLjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjMWYyOTMzIj5XZWJHUFUgcGxheWVyPC90ZXh0Pgo8dGV4dCB4PSI2MDcuNSIgeT0iMzU1LjEiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTAuNSIgZmlsbD0iIzUyNjA2ZCI+c3RyZWFtaW5nLCBjdXQsIHJlbGlnaHQsIGRyYXc8L3RleHQ+Cjxwb2x5bGluZSBwb2ludHM9IjUwMCwyODAgNTAwLDI5MiAzMzAsMjkyIDMzMCwzMTAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNlNGM1OSIgc3Ryb2tlLXdpZHRoPSIxLjQiIG1hcmtlci1lbmQ9InVybCgjYWgpIi8+Cjxwb2x5bGluZSBwb2ludHM9IjQ0NSwzNDAgNDc4LDM0MCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPC9zdmc+Cg==" alt="Figure 1. The pipeline. The relight baker converts a USD stage into Gaussians (§3) and bakes light transport into each one with the path tracer (§4); the relit cloud is compared with a path trace of the source mesh. Merge trees (§6) and animated assets (§5) build on the baked cloud; the WebGPU player (§7) is an application." />
-<figcaption aria-hidden="true">Figure 1. The pipeline. The relight baker
-converts a USD stage into Gaussians (§3) and bakes light transport into
-each one with the path tracer (§4); the relit cloud is compared with a
-path trace of the source mesh. Merge trees (§6) and animated assets (§5)
-build on the baked cloud; the WebGPU player (§7) is an
-application.</figcaption>
+<img role="img" aria-label="Figure 1. The two processes. Part I, the bake: a USD stage is converted into Gaussians (§3), light transport is baked into each one by the path tracer (§4), animated assets keep their rig (§5) and merge trees give levels of detail (§6); the output is the master USDC, compared with a path trace of the source mesh. Part II, the web format: the master is read and encoded into a compact, streamed format for a WebGPU player on a phone (§7), measured as a loss against the master." src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3NjAiIGhlaWdodD0iNDAwIiB2aWV3Qm94PSIwIDAgNzYwIDQwMCIgZm9udC1mYW1pbHk9IkhlbHZldGljYSwgQXJpYWwsIHNhbnMtc2VyaWYiIHhtbDpzcGFjZT0icHJlc2VydmUiPgo8IS0tIENvcHlyaWdodCAoYykgMjAyNiBqZXN1cyBsdXF1ZS4gLS0+CjxkZWZzPjxtYXJrZXIgaWQ9ImFoIiB2aWV3Qm94PSIwIDAgMTAgMTAiIHJlZlg9IjkiIHJlZlk9IjUiIG1hcmtlcldpZHRoPSI3IiBtYXJrZXJIZWlnaHQ9IjciIG9yaWVudD0iYXV0by1zdGFydC1yZXZlcnNlIj48cGF0aCBkPSJNMCwwIEwxMCw1IEwwLDEwIHoiIGZpbGw9IiMzZTRjNTkiLz48L21hcmtlcj48L2RlZnM+CjxyZWN0IHdpZHRoPSI3NjAiIGhlaWdodD0iNDAwIiBmaWxsPSIjZmZmZmZmIi8+CjxyZWN0IHg9IjEwIiB5PSI1MiIgd2lkdGg9IjE0MCIgaGVpZ2h0PSI4NCIgcng9IjYiIGZpbGw9IiNlZWYyZjciIHN0cm9rZT0iIzViNmI4MCIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iODAuMCIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+VVNEIHN0YWdlPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSI5NC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5tZXNoZXMsIE9wZW5QQlIgLzwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPk1hdGVyaWFsWCwgVXNkTHV4LDwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMTIzLjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnNrZWxldG9uLCBjYW1lcmFzPC90ZXh0Pgo8cmVjdCB4PSIxNjUiIHk9IjI2IiB3aWR0aD0iNDIwIiBoZWlnaHQ9IjEyNCIgcng9IjkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzRmN2E1YyIgc3Ryb2tlLXdpZHRoPSIxLjIiIHN0cm9rZS1kYXNoYXJyYXk9IjUgNCIvPgo8dGV4dCB4PSIxNzUiIHk9IjQxIiB0ZXh0LWFuY2hvcj0ic3RhcnQiIGZvbnQtc2l6ZT0iMTEuNSIgZm9udC1zdHlsZT0iaXRhbGljIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzRmN2E1YyI+cmVsaWdodCBiYWtlciAowqczLCDCpzQpPC90ZXh0Pgo8cmVjdCB4PSIxODAiIHk9IjUyIiB3aWR0aD0iMTg1IiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSIyNzIuNSIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+bWVzaDJzcGxhdCBjb252ZXJzaW9uPC90ZXh0Pgo8dGV4dCB4PSIyNzIuNSIgeT0iOTQuOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+Y2VsbCBmcm9tIHRoZSBjYW1lcmEsPC90ZXh0Pgo8dGV4dCB4PSIyNzIuNSIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmVkZ2VzLCBtYXRlcmlhbHMsIGdsYXNzLDwvdGV4dD4KPHRleHQgeD0iMjcyLjUiIHk9IjEyMy45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5Ub2tzdmlnPC90ZXh0Pgo8cmVjdCB4PSIzODUiIHk9IjUyIiB3aWR0aD0iMTg1IiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI0NzcuNSIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+dHJhbnNmZXIgYmFrZTwvdGV4dD4KPHRleHQgeD0iNDc3LjUiIHk9Ijk0LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPkdQVSBwYXRoIHRyYWNlciBhdCBlYWNoPC90ZXh0Pgo8dGV4dCB4PSI0NzcuNSIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPkdhdXNzaWFuOiBTSCwgcmVmbGVjdGVkPC90ZXh0Pgo8dGV4dCB4PSI0NzcuNSIgeT0iMTIzLjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmZpZWxkLCB2aXNpYmlsaXR5IGNlbGxzPC90ZXh0Pgo8cmVjdCB4PSI2MDAiIHk9IjUyIiB3aWR0aD0iMTUwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2ZiZjFkZiIgc3Ryb2tlPSIjOWE3NDMzIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI2NzUuMCIgeT0iODMuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+cmVsaWdodGFibGUgY2xvdWQ8L3RleHQ+Cjx0ZXh0IHg9IjY3NS4wIiB5PSIxMDIuMSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+R2F1c3NpYW5zICsgdHJhbnNmZXI8L3RleHQ+Cjx0ZXh0IHg9IjY3NS4wIiB5PSIxMTYuNiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+LnVzZGMgLyAuYXRoYzwvdGV4dD4KPHBvbHlsaW5lIHBvaW50cz0iMTUwLDk0IDE3OCw5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iMzY1LDk0IDM4Myw5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNTcwLDk0IDU5OCw5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHJlY3QgeD0iMTAiIHk9IjE5NiIgd2lkdGg9IjE0MCIgaGVpZ2h0PSI4NCIgcng9IjYiIGZpbGw9IiNmOGU5ZTciIHN0cm9rZT0iIzlhNGQ0MiIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iODAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPnBhdGgtdHJhY2VkPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSIyMzguOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+cmVmZXJlbmNlIG9mIHRoZTwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMjUzLjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnNvdXJjZSBtZXNoPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSIyNjcuOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+KMKnMi4xMSk8L3RleHQ+CjxyZWN0IHg9IjIwMCIgeT0iMTk2IiB3aWR0aD0iMTgwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSIyOTAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPnJlbGlnaHQgYXQgZHJhdyB0aW1lPC90ZXh0Pgo8dGV4dCB4PSIyOTAuMCIgeT0iMjM4LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmFueSBza3ksIHN1biBvciBsaWdodDs8L3RleHQ+Cjx0ZXh0IHg9IjI5MC4wIiB5PSIyNTMuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+c2hhcnAgbG9iZXMgcGVyIHBpeGVsPC90ZXh0Pgo8dGV4dCB4PSIyOTAuMCIgeT0iMjY3LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmRlc2t0b3AsIEh5ZHJhICjCpzIsIMKnNCk8L3RleHQ+CjxyZWN0IHg9IjQyMCIgeT0iMTk2IiB3aWR0aD0iMTYwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI1MDAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPm1lcmdlIHRyZWVzLCBMT0Q8L3RleHQ+Cjx0ZXh0IHg9IjUwMC4wIiB5PSIyMzguOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+Y292ZXJhZ2UsIGN1dCBieSBlcnJvciw8L3RleHQ+Cjx0ZXh0IHg9IjUwMC4wIiB5PSIyNTMuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+YmFjayBmYWNlcywgb2NjbHVzaW9uLDwvdGV4dD4KPHRleHQgeD0iNTAwLjAiIHk9IjI2Ny45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5wYWdlcyAowqc2KTwvdGV4dD4KPHJlY3QgeD0iNjEwIiB5PSIxOTYiIHdpZHRoPSIxNDAiIGhlaWdodD0iODQiIHJ4PSI2IiBmaWxsPSIjZTZmMWVhIiBzdHJva2U9IiM0ZjdhNWMiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjY4MC4wIiB5PSIyMjAuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+YW5pbWF0ZWQgYXNzZXRzPC90ZXh0Pgo8dGV4dCB4PSI2ODAuMCIgeT0iMjM4LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnNraW5uaW5nLCB6b25hbCBsb2Jlcyw8L3RleHQ+Cjx0ZXh0IHg9IjY4MC4wIiB5PSIyNTMuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+cGVyLXBhcnQgdmlzaWJpbGl0eTwvdGV4dD4KPHRleHQgeD0iNjgwLjAiIHk9IjI2Ny45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj4owqc1KTwvdGV4dD4KPHBvbHlsaW5lIHBvaW50cz0iODAsMTM2IDgwLDE5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNjQwLDEzNiA2NDAsMTcwIDUwMCwxNzAgNTAwLDE5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNzAwLDEzNiA3MDAsMTk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSI0MjAsMjM4IDM4MiwyMzgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNlNGM1OSIgc3Ryb2tlLXdpZHRoPSIxLjQiIG1hcmtlci1lbmQ9InVybCgjYWgpIi8+Cjxwb2x5bGluZSBwb2ludHM9IjIwMCwyMzggMTUyLDIzOCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgc3Ryb2tlLWRhc2hhcnJheT0iNSAzIiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8dGV4dCB4PSIxNzYiIHk9IjIzMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMCIgZmlsbD0iIzUyNjA2ZCI+UFNOUjwvdGV4dD4KPHRleHQgeD0iMTc2IiB5PSIyNTYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTAiIGZpbGw9IiM1MjYwNmQiPnJlbE1TRTwvdGV4dD4KPHJlY3QgeD0iMjAwIiB5PSIzMDAiIHdpZHRoPSI1NTAiIGhlaWdodD0iOTIiIHJ4PSI5IiBmaWxsPSJub25lIiBzdHJva2U9IiM2ZjVhOTEiIHN0cm9rZS13aWR0aD0iMS4yIiBzdHJva2UtZGFzaGFycmF5PSI1IDQiLz4KPHRleHQgeD0iNzQwIiB5PSIzODYiIHRleHQtYW5jaG9yPSJlbmQiIGZvbnQtc2l6ZT0iMTEuNSIgZm9udC1zdHlsZT0iaXRhbGljIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzZmNWE5MSI+YXBwbGljYXRpb24sIHBhcmFsbGVsIHRyYWNrICjCpzcpPC90ZXh0Pgo8cmVjdCB4PSIyMTUiIHk9IjMxMiIgd2lkdGg9IjIzMCIgaGVpZ2h0PSI2MiIgcng9IjYiIGZpbGw9IiNlZmVhZjYiIHN0cm9rZT0iIzZmNWE5MSIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iMzMwLjAiIHk9IjMzMi45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEyLjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjMWYyOTMzIj5jb21wYWN0IGNvbnZlcnNpb248L3RleHQ+Cjx0ZXh0IHg9IjMzMC4wIiB5PSIzNTEuMSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMC41IiBmaWxsPSIjNTI2MDZkIj4uYXRoYyB2MyAvIC5jbXBhOiBjbHVzdGVyZWQgUENBLDwvdGV4dD4KPHRleHQgeD0iMzMwLjAiIHk9IjM2NS4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwLjUiIGZpbGw9IiM1MjYwNmQiPlZRIHZpc2liaWxpdHksIDQwLWJ5dGUgcmVjb3JkPC90ZXh0Pgo8cmVjdCB4PSI0ODAiIHk9IjMxMiIgd2lkdGg9IjI1NSIgaGVpZ2h0PSI1NiIgcng9IjYiIGZpbGw9IiNlZmVhZjYiIHN0cm9rZT0iIzZmNWE5MSIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iNjA3LjUiIHk9IjMzNi44IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEyLjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjMWYyOTMzIj5XZWJHUFUgcGxheWVyPC90ZXh0Pgo8dGV4dCB4PSI2MDcuNSIgeT0iMzU1LjEiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTAuNSIgZmlsbD0iIzUyNjA2ZCI+c3RyZWFtaW5nLCBjdXQsIHJlbGlnaHQsIGRyYXc8L3RleHQ+Cjxwb2x5bGluZSBwb2ludHM9IjUwMCwyODAgNTAwLDI5MiAzMzAsMjkyIDMzMCwzMTAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNlNGM1OSIgc3Ryb2tlLXdpZHRoPSIxLjQiIG1hcmtlci1lbmQ9InVybCgjYWgpIi8+Cjxwb2x5bGluZSBwb2ludHM9IjQ0NSwzNDAgNDc4LDM0MCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPC9zdmc+Cg==" alt="Figure 1. The two processes. Part I, the bake: a USD stage is converted into Gaussians (§3), light transport is baked into each one by the path tracer (§4), animated assets keep their rig (§5) and merge trees give levels of detail (§6); the output is the master USDC, compared with a path trace of the source mesh. Part II, the web format: the master is read and encoded into a compact, streamed format for a WebGPU player on a phone (§7), measured as a loss against the master." />
+<figcaption aria-hidden="true">Figure 1. The two processes. Part I, the
+bake: a USD stage is converted into Gaussians (§3), light transport is
+baked into each one by the path tracer (§4), animated assets keep their
+rig (§5) and merge trees give levels of detail (§6); the output is the
+master USDC, compared with a path trace of the source mesh. Part II, the
+web format: the master is read and encoded into a compact, streamed
+format for a WebGPU player on a phone (§7), measured as a loss against
+the master.</figcaption>
 </figure>
 <h2 id="related-work">1.5 Related work</h2>
 <p><strong>Gaussian splatting.</strong> Kerbl et al. (2023) introduced
@@ -781,6 +798,138 @@ node of a merge tree, and a <em>cut</em> the set of nodes drawn for one
 view. <em>Transfer</em> is the baked light transport (§4), <em>TX</em>
 its current form.</p>
 <!-- Copyright (c) 2026 jesus luque. -->
+<h1 class="unnumbered" id="part-i.-the-bake-from-production-usd-to-a-relightable-master-usdc">Part
+I. The bake: from production USD to a relightable master USDC</h1>
+<p>The first process turns a production USD asset into a Gaussian cloud
+that can be relit, and writes it as a USD file: the
+<strong>master</strong>. Its goal is fidelity. The master is judged by
+one criterion, its relit image against a path trace of the source mesh
+under the same sky and lights, and every choice in it – the cell size,
+the bake’s samples, the bits per direction, the merge cost – is made by
+that measurement, not by its size.</p>
+<p><strong>Input.</strong> A USD stage as production delivers it: meshes
+with their MaterialX or OpenPBR materials, UsdLux lights and domes,
+cameras, and for an animated asset its skeleton and clips.</p>
+<p><strong>The process</strong>, in the order it runs, each step a set
+of GPU kernels on the engine of Section 2:</p>
+<ol type="1">
+<li><strong>Conversion</strong> (Section 3). Each mesh becomes
+anisotropic Gaussians, one per cell of a lattice sized from a camera’s
+pixel footprint, with the coverage of the surface as opacity, edges held
+where it stops or folds, the layered material captured per Gaussian,
+glass classified as solid or thin wall, and roughness widened by the
+normals’ spread.</li>
+<li><strong>The transfer bake</strong> (Section 4). The engine’s path
+tracer traces each Gaussian’s hemisphere and stores how any sky reaches
+it: degree-3 harmonics of direct and indirect light, a reflected field,
+256 bits of open directions and the surface’s curvature. With these the
+cloud is relit at draw time under skies and lights it was never baked
+under.</li>
+<li><strong>The rig and visibility</strong> of an animated asset
+(Section 5): influences and their gradients per Gaussian, zonal transfer
+lobes that turn with a limb, and per-part visibility fields.</li>
+<li><strong>Levels of detail</strong> (Section 6): per-part merge trees
+whose cut by screen error is bounded, back-face and shared occlusion
+culls, and pages ordered by error, written beside the leaves in the same
+file format.</li>
+</ol>
+<p><strong>Output: the master USDC.</strong> A
+<code>ParticleField3DGaussianSplat</code> per cloud (or per merge tree),
+whose standard attributes (positions, orientations, scales, opacities,
+radiance harmonics) are read by any USD application, and whose athenea
+primvars carry the rest at full precision:</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>parameter</th>
+<th>primvar (<code>primvars:athenea:splat:</code>)</th>
+<th>per Gaussian</th>
+<th>§</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>material</td>
+<td><code>normal</code>, <code>metallic</code>, <code>roughness</code>,
+<code>materialRoughness</code>, <code>transmission</code>,
+<code>specularWeight</code>, <code>coatWeight</code>,
+<code>sheenColor</code>, <code>emission</code>,
+<code>schlickMetal</code>, <code>thinWalled</code>, <code>closed</code>;
+<code>ior</code> per cloud</td>
+<td>a value per property</td>
+<td>3.6–3.8, 6.6</td>
+</tr>
+<tr>
+<td>transfer (TX)</td>
+<td><code>transferDirect</code> (16), <code>transferIndirect</code> (48
+rgb), <code>transferReflected</code> (48 rgb)</td>
+<td>112 values</td>
+<td>4.2, 4.4</td>
+</tr>
+<tr>
+<td>open directions</td>
+<td><code>shadowBits</code></td>
+<td>256 bits</td>
+<td>4.4.2</td>
+</tr>
+<tr>
+<td>curvature</td>
+<td><code>curvature</code></td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>S</mi><mrow><mi>u</mi><mi>u</mi></mrow></msub><mo>,</mo><msub><mi>S</mi><mrow><mi>u</mi><mi>v</mi></mrow></msub><mo>,</mo><msub><mi>S</mi><mrow><mi>v</mi><mi>v</mi></mrow></msub><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">(S_{uu}, S_{uv}, S_{vv})</annotation></semantics></math>,
+3 floats</td>
+<td>4.8</td>
+</tr>
+<tr>
+<td>transfer and visibility, together</td>
+<td></td>
+<td>480 B in the file, 256 B on the device</td>
+<td>4.2</td>
+</tr>
+<tr>
+<td>rig</td>
+<td><code>skel:jointIndices</code>, <code>skel:jointWeights</code> (4
+each), <code>jointWeightGradients</code> (half, 6),
+<code>transferZonal</code> (10), <code>skinningXforms</code> per
+joint</td>
+<td></td>
+<td>5.3, 5.5, 5.7</td>
+</tr>
+<tr>
+<td>levels of detail</td>
+<td><code>lodTree</code>, <code>lodParent</code>, <code>lodStart</code>,
+<code>lodSize</code>, <code>lodCost</code>, <code>lodSpill</code>,
+<code>coverage</code>, <code>coverageMass</code>,
+<code>occlusionIndex</code>; <code>occlusionCodebook</code> per tree;
+the merges written after the leaves</td>
+<td>per node</td>
+<td>6.2–6.8</td>
+</tr>
+<tr>
+<td>ids</td>
+<td><code>cryptoObject</code>, the Cryptomatte id of the Gaussian’s
+prim; <code>cryptoManifest</code> per cloud</td>
+<td>1 word</td>
+<td>2.5.2, 3.10</td>
+</tr>
+</tbody>
+</table>
+<p>Sizes measured on the assets of this paper: the pawn’s two clouds 489
+MB; the sparrow, skinned with transfer and visibility, 216 MB; the
+Corvette’s relightable cloud of 3 M Gaussians 2.9 GB; the Corvette’s
+close-up level as 24 merge trees of 74.5 M leaves and 148.9 M nodes,
+87.4 GB.</p>
+<p><strong>Who reads the master.</strong> The engine itself, through
+Hydra, on both its raster and its path tracer; the comparison against
+the path trace (Section 8); the OpenFX node in a compositor and the
+Blender add-on (§2.14); the image channels of §4.11. And every derived
+format, of which Part II describes one. The master is the source: a
+derived format is made from it and cannot be turned back into it.</p>
 <h1 id="the-athenea-engine-and-renderer">2. The athenea engine and
 renderer</h1>
 <p>athenea is a USD renderer built so that every step that touches scene
@@ -6935,17 +7084,192 @@ error cut live in <code>athenea-pieces</code>. The main engine’s
 <code>CutSelector</code> is unchanged.</li>
 </ul>
 <!-- Copyright (c) 2026 jesus luque. -->
-<h1 id="application-compression-and-a-webgpu-player-on-mobile">7.
-Application: compression and a WebGPU player on mobile</h1>
-<p>This section describes one application of the relightable clouds of
-§3–§6, developed as a parallel track: playback of a whole asset on a
-phone. Its design requirements are its own: the whole Corvette, with its
-full light transfer, drawn on an iPhone in a web page and judged against
-the mesh path trace; a budget of about 50–60 MB of car data while moving
-and about 100 MB at rest; small parts that look right. The player is a
-fork of Spark with a WebGPU backend (sparkwebGPU, branch
-<code>webgpu</code>); athenea writes the clouds, the merge trees, the
-pages and the occlusion. This section describes the formats, the
+<h1 class="unnumbered" id="part-ii.-the-web-format-a-derived-delivery-format">Part II. The web
+format: a derived delivery format</h1>
+<p>The second process starts where the first ends. It takes the master
+of Part I and derives from it a format for one purpose: delivering the
+relit asset to a web browser on a phone. Its goal is different, and so
+is its criterion. A phone tab has a memory budget (about 50–60 MB of
+asset data while the camera moves, about 100 MB at rest), a download
+that must start drawing within seconds, and a frame time; the format is
+made to meet those, and its fidelity is measured as a loss against the
+master’s own uncompressed relight and, through it, against the path
+trace. Nothing in this process changes the master, and nothing in it is
+read back by the bake.</p>
+<p><strong>Input.</strong> The master’s merge trees with their pages and
+occlusion codebook (Section 6); for the Corvette, the 24 trees of the
+close-up level.</p>
+<p><strong>The process</strong>, in order, run by the player’s tools
+rather than by the engine:</p>
+<ol type="1">
+<li><strong>Reading the master</strong> (<code>usd-athc</code>, a reader
+built on the <code>openusd</code> crate): the USD cloud becomes an
+<code>.athc</code> version 3 container, laid out in sections and tiers
+so that one HTTP Range fetches what one tier of one block needs (§7.1).
+A skinned cloud adds its skin and its skeleton and clips (§5.12).</li>
+<li><strong>Lossless packing</strong> (§7.1): each array transposed into
+byte planes, or into planes of differences, whichever gzip compresses
+better, since gzip is what a browser decompresses.</li>
+<li><strong>The transfer</strong> (§7.2): either a clustered PCA of each
+block of the file (encoding 3), or a basis fitted over the whole asset
+(<code>fit-compact-basis</code>) that the phone keeps resident, each
+Gaussian then holding a cluster id and
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>3</mn><mo>×</mo><mn>8</mn></mrow><annotation encoding="application/x-tex">3\times8</annotation></semantics></math>
+int4 weights.</li>
+<li><strong>The open directions</strong> (§7.3): a Hamming-space
+dictionary of 4096 masks shared by the asset; each Gaussian holds a
+16-bit index.</li>
+<li><strong>The compact record</strong> (§7.4): every remaining
+parameter quantised into byte planes, 40 bytes a Gaussian on the
+GPU.</li>
+<li><strong>Pages, tiers and traversal records</strong> (§7.5): the
+tree’s pages cut into error bands, traversal records of 5–11 bytes, and
+an asset table (the bases, the dictionary, the materials) fetched
+once.</li>
+<li><strong>At playback</strong> (§7.6–§7.10): streaming by Range
+requests, a cut per frame within the memory budget, the draw and the
+relight on the phone, a contact shadow, and a still-frame policy that
+refines when the camera stops.</li>
+</ol>
+<p><strong>What each parameter becomes.</strong></p>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>parameter</th>
+<th>master USDC</th>
+<th>web format</th>
+<th>measured loss</th>
+<th>§</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>position</td>
+<td>3 floats</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>3</mn><mo>×</mo></mrow><annotation encoding="application/x-tex">3\times</annotation></semantics></math>u16
+in the page’s box</td>
+<td>under
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup><annotation encoding="application/x-tex">10^{-6}</annotation></semantics></math>
+of image error (ablation)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>scale, opacity</td>
+<td>3 + 1 floats</td>
+<td>u8 logarithmic scale; u8 opacity in two ranges</td>
+<td>under
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup><annotation encoding="application/x-tex">10^{-6}</annotation></semantics></math>
+(ablation)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>orientation</td>
+<td>quaternion</td>
+<td>one 32-bit word: octahedral axis 10+10 bits, angle 12</td>
+<td></td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>albedo</td>
+<td>float rgb</td>
+<td>u8 sRGB</td>
+<td>under
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup><annotation encoding="application/x-tex">10^{-6}</annotation></semantics></math>
+(ablation)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>normal</td>
+<td>float</td>
+<td>octahedral, 12 bits an axis</td>
+<td>relMSE
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>2.7</mn><mo>×</mo><msup><mn>10</mn><mrow><mi>−</mi><mn>4</mn></mrow></msup></mrow><annotation encoding="application/x-tex">2.7\times10^{-4}</annotation></semantics></math>
+(8+8 bits:
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>5.2</mn><mo>×</mo><msup><mn>10</mn><mrow><mi>−</mi><mn>2</mn></mrow></msup></mrow><annotation encoding="application/x-tex">5.2\times10^{-2}</annotation></semantics></math>)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>curvature</td>
+<td>3 floats</td>
+<td>3 × s8, signed logarithm in the page’s range</td>
+<td>under
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup><annotation encoding="application/x-tex">10^{-6}</annotation></semantics></math>
+(ablation)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>material</td>
+<td>packed words per Gaussian</td>
+<td>u16 index into an exact table of the asset’s materials</td>
+<td>none (exact)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>transfer</td>
+<td>112 f16 values</td>
+<td>cluster id + 24 int4 weights on a shared basis</td>
+<td>transfer relMSE 0.0054 over the car (v8.2b); image within relMSE
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>3</mn></mrow></msup><annotation encoding="application/x-tex">10^{-3}</annotation></semantics></math>
+of the uncompressed transfer</td>
+<td>7.2, 7.12</td>
+</tr>
+<tr>
+<td>open directions</td>
+<td>256 bits</td>
+<td>u16 index into a 4096-entry dictionary</td>
+<td>62.9–65.4 dB</td>
+<td>7.3</td>
+</tr>
+<tr>
+<td>rig</td>
+<td>influences, gradients, zonal lobes</td>
+<td><code>SKIN</code> section: joint u16, weight unorm16, gradients in
+half; merged nodes without gradient</td>
+<td>relMSE 0.0015–0.0053 against the engine’s raster</td>
+<td>5.12</td>
+</tr>
+<tr>
+<td>merge tree</td>
+<td>nodes, pages, occlusion</td>
+<td>error-band pages, traversal records of 5–11 bytes, the occlusion
+codebook</td>
+<td>the same cut</td>
+<td>7.5</td>
+</tr>
+</tbody>
+</table>
+<p>The whole compact record is 40 bytes on the GPU (42.4 bytes resident
+with its tables, and 16 bytes per drawn splat), against 256 bytes for
+the master’s transfer and visibility alone on the device. The compact
+path’s image is within 40.2–41.9 dB of the full relight of the same
+cloud. For the Corvette, the 87.4 GB of the close-up level’s 24 trees
+become 12.77 GB of web data (v8.2b, 149.0 M nodes), streamed by page so
+that a view loads a fraction of it.</p>
+<p><strong>Why the two are kept apart.</strong> Each step of this
+process discards information the bake produced: a basis fitted to one
+asset, a dictionary that replaces each mask by its nearest, quantisation
+chosen for what the eye sees at a phone’s resolution. A web data set is
+therefore never a master: it cannot be relit beyond what its encodings
+keep, re-baked, converted to another format or compared against the path
+trace without the master it came from. Every improvement to the asset is
+made on the master and the web format is derived again.</p>
+<h1 id="the-web-format-compression-streaming-and-a-webgpu-player">7. The
+web format: compression, streaming and a WebGPU player</h1>
+<p>This section describes the web format of Part II and the player that
+draws it: the whole Corvette, with its full light transfer, drawn on an
+iPhone in a web page and judged against the mesh path trace, within
+about 50–60 MB of car data while moving and about 100 MB at rest, with
+small parts that look right. The player is a fork of Spark with a WebGPU
+backend (sparkwebGPU, branch <code>webgpu</code>); its input is the
+master of Part I – the clouds, the merge trees, the pages and the
+occlusion that athenea writes. This section describes the formats, the
 streaming, the draw and the relight on the phone, and the measured
 results. The <code>.athc</code> v3 format is specified in the player
 repository (<code>spark/docs/docs/athc-v3.md</code>).</p>
@@ -8364,13 +8688,15 @@ did not beat the size cut on these data in every view.</li>
 <!-- Copyright (c) 2026 jesus luque. -->
 <h1 id="evaluation">8. Evaluation</h1>
 <p>This section gathers the measurements of Sections 2–7 into one
-account. It leads with the bake, validated by relighting the baked
-Gaussians against the path trace of the source mesh (§8.2, §8.3); the
-engine (§8.4), the levels of detail (§8.5) and the bake’s costs (§8.6)
-follow, and the mobile application (§8.7–§8.9) comes last. It introduces
-no new numbers: every figure is quoted from the section named beside it.
-Where two sources give different figures for the same quantity, §8.10
-says which is which.</p>
+account, by process. Part I, the bake, leads: the master validated by
+relighting the baked Gaussians against the path trace of the source mesh
+(§8.2, §8.3), the engine (§8.4), the levels of detail (§8.5) and the
+bake’s costs (§8.6). Part II, the web format, comes last: its
+compression, its behaviour on the phone and its memory (§8.7–§8.9),
+measured as a loss against the master. It introduces no new numbers:
+every figure is quoted from the section named beside it. Where two
+sources give different figures for the same quantity, §8.10 says which
+is which.</p>
 <h2 id="setting">8.1 Setting</h2>
 <p>Desktop measurements were taken on an Apple M5 Pro under Metal;
 Vulkan and CUDA results come from an NVIDIA L4 (§2.15). The Corvette’s

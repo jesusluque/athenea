@@ -1,5 +1,52 @@
 <!-- Copyright (c) 2026 jesus luque. -->
 
+# Part I. The bake: from production USD to a relightable master USDC {.unnumbered}
+
+The first process turns a production USD asset into a Gaussian cloud that can be relit, and writes it as a USD file:
+the **master**. Its goal is fidelity. The master is judged by one criterion, its relit image against a path trace of
+the source mesh under the same sky and lights, and every choice in it -- the cell size, the bake's samples, the bits
+per direction, the merge cost -- is made by that measurement, not by its size.
+
+**Input.** A USD stage as production delivers it: meshes with their MaterialX or OpenPBR materials, UsdLux lights and
+domes, cameras, and for an animated asset its skeleton and clips.
+
+**The process**, in the order it runs, each step a set of GPU kernels on the engine of Section 2:
+
+1. **Conversion** (Section 3). Each mesh becomes anisotropic Gaussians, one per cell of a lattice sized from a camera's
+   pixel footprint, with the coverage of the surface as opacity, edges held where it stops or folds, the layered
+   material captured per Gaussian, glass classified as solid or thin wall, and roughness widened by the normals' spread.
+2. **The transfer bake** (Section 4). The engine's path tracer traces each Gaussian's hemisphere and stores how any sky
+   reaches it: degree-3 harmonics of direct and indirect light, a reflected field, 256 bits of open directions and the
+   surface's curvature. With these the cloud is relit at draw time under skies and lights it was never baked under.
+3. **The rig and visibility** of an animated asset (Section 5): influences and their gradients per Gaussian, zonal
+   transfer lobes that turn with a limb, and per-part visibility fields.
+4. **Levels of detail** (Section 6): per-part merge trees whose cut by screen error is bounded, back-face and shared
+   occlusion culls, and pages ordered by error, written beside the leaves in the same file format.
+
+**Output: the master USDC.** A `ParticleField3DGaussianSplat` per cloud (or per merge tree), whose standard attributes
+(positions, orientations, scales, opacities, radiance harmonics) are read by any USD application, and whose athenea
+primvars carry the rest at full precision:
+
+| parameter | primvar (`primvars:athenea:splat:`) | per Gaussian | § |
+|---|---|---|---|
+| material | `normal`, `metallic`, `roughness`, `materialRoughness`, `transmission`, `specularWeight`, `coatWeight`, `sheenColor`, `emission`, `schlickMetal`, `thinWalled`, `closed`; `ior` per cloud | a value per property | 3.6–3.8, 6.6 |
+| transfer (TX) | `transferDirect` (16), `transferIndirect` (48 rgb), `transferReflected` (48 rgb) | 112 values | 4.2, 4.4 |
+| open directions | `shadowBits` | 256 bits | 4.4.2 |
+| curvature | `curvature` | $(S_{uu}, S_{uv}, S_{vv})$, 3 floats | 4.8 |
+| transfer and visibility, together | | 480 B in the file, 256 B on the device | 4.2 |
+| rig | `skel:jointIndices`, `skel:jointWeights` (4 each), `jointWeightGradients` (half, 6), `transferZonal` (10), `skinningXforms` per joint | | 5.3, 5.5, 5.7 |
+| levels of detail | `lodTree`, `lodParent`, `lodStart`, `lodSize`, `lodCost`, `lodSpill`, `coverage`, `coverageMass`, `occlusionIndex`; `occlusionCodebook` per tree; the merges written after the leaves | per node | 6.2–6.8 |
+| ids | `cryptoObject`, the Cryptomatte id of the Gaussian's prim; `cryptoManifest` per cloud | 1 word | 2.5.2, 3.10 |
+
+Sizes measured on the assets of this paper: the pawn's two clouds 489 MB; the sparrow, skinned with transfer and
+visibility, 216 MB; the Corvette's relightable cloud of 3 M Gaussians 2.9 GB; the Corvette's close-up level as 24 merge
+trees of 74.5 M leaves and 148.9 M nodes, 87.4 GB.
+
+**Who reads the master.** The engine itself, through Hydra, on both its raster and its path tracer; the comparison
+against the path trace (Section 8); the OpenFX node in a compositor and the Blender add-on (§2.14); the image channels
+of §4.11. And every derived format, of which Part II describes one. The master is the source: a derived format is made
+from it and cannot be turned back into it.
+
 # 2. The athenea engine and renderer
 
 athenea is a USD renderer built so that every step that touches scene data runs on the GPU. It draws three kinds of

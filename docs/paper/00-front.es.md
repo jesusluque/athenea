@@ -30,9 +30,12 @@ ordenadas por error dan el LOD con un coste de unos 0.1 dB. Un transfer se lee e
 nube, con el cielo girado a él una vez por instancia, así que una nube que la escena gira hace el relight igual que sin
 girar (relMSE $9\times10^{-6}$). Cada parámetro que lleva una Gaussian, desde su albedo y su normal hasta la visibilidad
 del cielo, el bounce y el reflected field del transfer, se puede dibujar a través de una cámara como un canal de imagen
-propio. Como aplicaciones, un PCA por clusters, la visibilidad cuantizada vectorialmente y un registro compacto de 40
-bytes llevan el coche con relight a un player WebGPU en un iPhone, y un nodo OpenFX lleva la nube con relight a un
-compositor con sus capas de profundidad, posición en el mundo y Cryptomatte y un cielo que elige el artista.
+propio. La salida del bake es un master: un fichero USD con cada parámetro a precisión completa, juzgado frente al path
+trace, que leen tal cual el motor, un nodo OpenFX en un compositor (con capas de profundidad, posición en el mundo y
+Cryptomatte y un cielo que elige el artista) y un add-on de Blender. Un proceso aparte, con su propio objetivo, deriva
+del master un formato web para un móvil: un PCA por clusters del transfer, la visibilidad cuantizada vectorialmente y un
+registro compacto de 40 bytes llevan el coche con relight a un player WebGPU en un iPhone, con su pérdida medida frente
+al master.
 
 **Palabras clave:** relight baking; Gaussian splatting 3D; precomputed radiance transfer; spherical harmonics; USD;
 Hydra; de mesh a Gaussians; path tracing; LOD; PCA por clusters; cadenas solo en GPU; WebGPU; OpenFX; composición;

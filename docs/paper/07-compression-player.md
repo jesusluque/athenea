@@ -1,8 +1,65 @@
 <!-- Copyright (c) 2026 jesus luque. -->
 
-# 7. Application: compression and a WebGPU player on mobile
+# Part II. The web format: a derived delivery format {.unnumbered}
 
-This section describes one application of the relightable clouds of §3–§6, developed as a parallel track: playback of a whole asset on a phone. Its design requirements are its own: the whole Corvette, with its full light transfer, drawn on an iPhone in a web page and judged against the mesh path trace; a budget of about 50–60 MB of car data while moving and about 100 MB at rest; small parts that look right. The player is a fork of Spark with a WebGPU backend (sparkwebGPU, branch `webgpu`); athenea writes the clouds, the merge trees, the pages and the occlusion. This section describes the formats, the streaming, the draw and the relight on the phone, and the measured results. The `.athc` v3 format is specified in the player repository (`spark/docs/docs/athc-v3.md`).
+The second process starts where the first ends. It takes the master of Part I and derives from it a format for one
+purpose: delivering the relit asset to a web browser on a phone. Its goal is different, and so is its criterion. A
+phone tab has a memory budget (about 50–60 MB of asset data while the camera moves, about 100 MB at rest), a download
+that must start drawing within seconds, and a frame time; the format is made to meet those, and its fidelity is
+measured as a loss against the master's own uncompressed relight and, through it, against the path trace. Nothing in
+this process changes the master, and nothing in it is read back by the bake.
+
+**Input.** The master's merge trees with their pages and occlusion codebook (Section 6); for the Corvette, the 24 trees
+of the close-up level.
+
+**The process**, in order, run by the player's tools rather than by the engine:
+
+1. **Reading the master** (`usd-athc`, a reader built on the `openusd` crate): the USD cloud becomes an `.athc`
+   version 3 container, laid out in sections and tiers so that one HTTP Range fetches what one tier of one block needs
+   (§7.1). A skinned cloud adds its skin and its skeleton and clips (§5.12).
+2. **Lossless packing** (§7.1): each array transposed into byte planes, or into planes of differences, whichever gzip
+   compresses better, since gzip is what a browser decompresses.
+3. **The transfer** (§7.2): either a clustered PCA of each block of the file (encoding 3), or a basis fitted over the
+   whole asset (`fit-compact-basis`) that the phone keeps resident, each Gaussian then holding a cluster id and
+   $3\times8$ int4 weights.
+4. **The open directions** (§7.3): a Hamming-space dictionary of 4096 masks shared by the asset; each Gaussian holds a
+   16-bit index.
+5. **The compact record** (§7.4): every remaining parameter quantised into byte planes, 40 bytes a Gaussian on the GPU.
+6. **Pages, tiers and traversal records** (§7.5): the tree's pages cut into error bands, traversal records of 5–11
+   bytes, and an asset table (the bases, the dictionary, the materials) fetched once.
+7. **At playback** (§7.6–§7.10): streaming by Range requests, a cut per frame within the memory budget, the draw and
+   the relight on the phone, a contact shadow, and a still-frame policy that refines when the camera stops.
+
+**What each parameter becomes.**
+
+| parameter | master USDC | web format | measured loss | § |
+|---|---|---|---|---|
+| position | 3 floats | $3\times$u16 in the page's box | under $10^{-6}$ of image error (ablation) | 7.4 |
+| scale, opacity | 3 + 1 floats | u8 logarithmic scale; u8 opacity in two ranges | under $10^{-6}$ (ablation) | 7.4 |
+| orientation | quaternion | one 32-bit word: octahedral axis 10+10 bits, angle 12 | | 7.4 |
+| albedo | float rgb | u8 sRGB | under $10^{-6}$ (ablation) | 7.4 |
+| normal | float | octahedral, 12 bits an axis | relMSE $2.7\times10^{-4}$ (8+8 bits: $5.2\times10^{-2}$) | 7.4 |
+| curvature | 3 floats | 3 × s8, signed logarithm in the page's range | under $10^{-6}$ (ablation) | 7.4 |
+| material | packed words per Gaussian | u16 index into an exact table of the asset's materials | none (exact) | 7.4 |
+| transfer | 112 f16 values | cluster id + 24 int4 weights on a shared basis | transfer relMSE 0.0054 over the car (v8.2b); image within relMSE $10^{-3}$ of the uncompressed transfer | 7.2, 7.12 |
+| open directions | 256 bits | u16 index into a 4096-entry dictionary | 62.9–65.4 dB | 7.3 |
+| rig | influences, gradients, zonal lobes | `SKIN` section: joint u16, weight unorm16, gradients in half; merged nodes without gradient | relMSE 0.0015–0.0053 against the engine's raster | 5.12 |
+| merge tree | nodes, pages, occlusion | error-band pages, traversal records of 5–11 bytes, the occlusion codebook | the same cut | 7.5 |
+
+The whole compact record is 40 bytes on the GPU (42.4 bytes resident with its tables, and 16 bytes per drawn splat),
+against 256 bytes for the master's transfer and visibility alone on the device. The compact path's image is within
+40.2–41.9 dB of the full relight of the same cloud. For the Corvette, the 87.4 GB of the close-up level's 24 trees
+become 12.77 GB of web data (v8.2b, 149.0 M nodes), streamed by page so that a view loads a fraction of it.
+
+**Why the two are kept apart.** Each step of this process discards information the bake produced: a basis fitted to
+one asset, a dictionary that replaces each mask by its nearest, quantisation chosen for what the eye sees at a phone's
+resolution. A web data set is therefore never a master: it cannot be relit beyond what its encodings keep, re-baked,
+converted to another format or compared against the path trace without the master it came from. Every improvement to
+the asset is made on the master and the web format is derived again.
+
+# 7. The web format: compression, streaming and a WebGPU player
+
+This section describes the web format of Part II and the player that draws it: the whole Corvette, with its full light transfer, drawn on an iPhone in a web page and judged against the mesh path trace, within about 50–60 MB of car data while moving and about 100 MB at rest, with small parts that look right. The player is a fork of Spark with a WebGPU backend (sparkwebGPU, branch `webgpu`); its input is the master of Part I -- the clouds, the merge trees, the pages and the occlusion that athenea writes. This section describes the formats, the streaming, the draw and the relight on the phone, and the measured results. The `.athc` v3 format is specified in the player repository (`spark/docs/docs/athc-v3.md`).
 
 **Three kinds of measurement** appear, and they are not interchangeable:
 

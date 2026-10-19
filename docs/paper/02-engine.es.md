@@ -1,5 +1,55 @@
 <!-- Copyright (c) 2026 jesus luque. -->
 
+# Parte I. El bake: de un USD de producción a un master USDC reiluminable {.unnumbered}
+
+El primer proceso convierte un asset USD de producción en una nube de Gaussians que admite relight, y la escribe como
+un fichero USD: el **master**. Su objetivo es la fidelidad. El master se juzga con un solo criterio, su imagen con
+relight frente a un path trace del mesh de origen bajo el mismo cielo y las mismas luces, y cada decisión que contiene
+-- el tamaño de cell, los samples del bake, los bits por dirección, el coste de merge -- la toma esa medida, no su
+tamaño.
+
+**Entrada.** Un stage USD tal como lo entrega producción: meshes con sus materiales MaterialX u OpenPBR, luces UsdLux y
+domos, cámaras y, para un asset animado, su skeleton y sus clips.
+
+**El proceso**, en el orden en que corre, cada paso un conjunto de kernels de GPU sobre el motor de la sección 2:
+
+1. **Conversión** (sección 3). Cada mesh se convierte en Gaussians anisótropas, una por cell de una lattice cuyo tamaño
+   sale del footprint de píxel de una cámara, con la coverage de la superficie como opacidad, bordes sujetos donde
+   termina o forma un fold, el material por capas capturado por Gaussian, el vidrio clasificado como sólido o pared
+   fina, y la roughness ensanchada por la dispersión de las normales.
+2. **El bake del transfer** (sección 4). El path tracer del motor traza el hemisferio de cada Gaussian y guarda cómo le
+   llega cualquier cielo: harmonics de grado 3 de la luz directa e indirecta, un reflected field, 256 bits de open
+   directions y la curvatura de la superficie. Con ellos la nube hace relight al dibujar bajo cielos y luces con los
+   que nunca se hizo su bake.
+3. **El rig y la visibilidad** de un asset animado (sección 5): influencias y sus gradientes por Gaussian, lobes
+   zonales de transfer que giran con un miembro, y campos de visibilidad por parte.
+4. **LOD** (sección 6): merge trees por pieza cuyo cut por error de pantalla está acotado, culls de caras traseras y de
+   oclusión compartida, y pages ordenadas por error, escritos junto a las leaves en el mismo formato de fichero.
+
+**Salida: el master USDC.** Un `ParticleField3DGaussianSplat` por nube (o por merge tree), cuyos atributos estándar
+(posiciones, orientaciones, escalas, opacidades, harmonics de radiancia) los lee cualquier aplicación USD, y cuyos
+primvars de athenea llevan el resto a precisión completa:
+
+| parámetro | primvar (`primvars:athenea:splat:`) | por Gaussian | § |
+|---|---|---|---|
+| material | `normal`, `metallic`, `roughness`, `materialRoughness`, `transmission`, `specularWeight`, `coatWeight`, `sheenColor`, `emission`, `schlickMetal`, `thinWalled`, `closed`; `ior` por nube | un valor por propiedad | 3.6–3.8, 6.6 |
+| transfer (TX) | `transferDirect` (16), `transferIndirect` (48 rgb), `transferReflected` (48 rgb) | 112 valores | 4.2, 4.4 |
+| open directions | `shadowBits` | 256 bits | 4.4.2 |
+| curvatura | `curvature` | $(S_{uu}, S_{uv}, S_{vv})$, 3 floats | 4.8 |
+| transfer y visibilidad, juntos | | 480 B en el fichero, 256 B en el device | 4.2 |
+| rig | `skel:jointIndices`, `skel:jointWeights` (4 cada uno), `jointWeightGradients` (half, 6), `transferZonal` (10), `skinningXforms` por joint | | 5.3, 5.5, 5.7 |
+| LOD | `lodTree`, `lodParent`, `lodStart`, `lodSize`, `lodCost`, `lodSpill`, `coverage`, `coverageMass`, `occlusionIndex`; `occlusionCodebook` por tree; los merges escritos tras las leaves | por nodo | 6.2–6.8 |
+| ids | `cryptoObject`, el id Cryptomatte del prim de la Gaussian; `cryptoManifest` por nube | 1 palabra | 2.5.2, 3.10 |
+
+Tamaños medidos en los assets de este paper: las dos nubes del peón, 489 MB; el gorrión, con skinning, transfer y
+visibilidad, 216 MB; la nube reiluminable del Corvette de 3 M de Gaussians, 2.9 GB; el close-up level del Corvette como
+24 merge trees de 74.5 M de leaves y 148.9 M de nodos, 87.4 GB.
+
+**Quién lee el master.** El propio motor, a través de Hydra, tanto en su raster como en su path tracer; la comparación
+frente al path trace (sección 8); el nodo OpenFX en un compositor y el add-on de Blender (§2.14); los canales de imagen
+de §4.11. Y cada formato derivado, de los que la Parte II describe uno. El master es la fuente: un formato derivado se
+hace a partir de él y no se puede volver a convertir en él.
+
 # 2. El motor y el renderer athenea
 
 athenea es un renderer de USD construido para que todo paso que toca datos de la escena se ejecute en la GPU.

@@ -2,9 +2,10 @@
 
 # 8. Evaluation
 
-This section gathers the measurements of Sections 2–7 into one account. It leads with the bake, validated by relighting
-the baked Gaussians against the path trace of the source mesh (§8.2, §8.3); the engine (§8.4), the levels of detail
-(§8.5) and the bake's costs (§8.6) follow, and the mobile application (§8.7–§8.9) comes last. It introduces no new
+This section gathers the measurements of Sections 2–7 into one account, by process. Part I, the bake, leads: the master
+validated by relighting the baked Gaussians against the path trace of the source mesh (§8.2, §8.3), the engine (§8.4),
+the levels of detail (§8.5) and the bake's costs (§8.6). Part II, the web format, comes last: its compression, its
+behaviour on the phone and its memory (§8.7–§8.9), measured as a loss against the master. It introduces no new
 numbers: every figure is quoted from the section named beside it. Where two sources give different figures for the
 same quantity, §8.10 says which is which.
 

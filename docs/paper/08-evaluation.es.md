@@ -2,9 +2,10 @@
 
 # 8. Evaluación
 
-Esta sección reúne las medidas de las secciones 2–7 en un solo relato. Empieza por el bake, validado haciendo el
-relight de las Gaussians frente al path trace del mesh de origen (§8.2, §8.3); siguen el motor (§8.4), el LOD (§8.5) y
-los costes del bake (§8.6), y la aplicación a móvil (§8.7–§8.9) va al final. No introduce cifras nuevas: cada cifra se
+Esta sección reúne las medidas de las secciones 2–7 en un solo relato, por proceso. Empieza la Parte I, el bake: el
+master validado haciendo el relight de las Gaussians frente al path trace del mesh de origen (§8.2, §8.3), el motor
+(§8.4), el LOD (§8.5) y los costes del bake (§8.6). La Parte II, el formato web, va al final: su compresión, su
+comportamiento en el móvil y su memoria (§8.7–§8.9), medidos como una pérdida frente al master. No introduce cifras nuevas: cada cifra se
 cita de la sección que se indica a su lado. Donde dos fuentes dan cifras distintas para la misma magnitud, la §8.10
 dice cuál es cuál.
 

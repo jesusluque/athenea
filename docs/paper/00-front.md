@@ -27,10 +27,12 @@ visibility fields. Per-part merge trees with a monotone, bounded screen error, b
 ordered by error give levels of detail at a cost of about 0.1 dB. A transfer is read in its cloud's own frame, with
 the sky turned into it once per instance, so a cloud a scene rotates relights as it does unrotated (relMSE
 $9\times10^{-6}$). Every parameter a Gaussian carries, from its albedo and normal to the transfer's sky visibility,
-bounce and reflected field, can be drawn through a camera as an image channel of its own. As applications, clustered
-PCA, vector-quantised visibility and a 40-byte compact record carry the relit car to a WebGPU player on an iPhone, and
-an OpenFX node brings the relit cloud into a compositor with its depth, world position and Cryptomatte layers and a sky
-the artist chooses.
+bounce and reflected field, can be drawn through a camera as an image channel of its own. The bake's output is a
+master: a USD file holding every parameter at full precision, judged against the path trace, which the engine, an
+OpenFX node in a compositor (with depth, world position and Cryptomatte layers and a sky the artist chooses) and a
+Blender add-on read as it is. A separate process with its own goal derives from the master a web format for a phone:
+clustered PCA of the transfer, vector-quantised visibility and a 40-byte compact record carry the relit car to a WebGPU
+player on an iPhone, its loss measured against the master.
 
 **Keywords:** relight baking; 3D Gaussian splatting; precomputed radiance transfer; spherical harmonics; USD; Hydra;
 mesh to Gaussians; path tracing; level of detail; clustered PCA; GPU-only pipelines; WebGPU; OpenFX;

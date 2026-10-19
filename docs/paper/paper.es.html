@@ -202,11 +202,15 @@ que la escena gira hace el relight igual que sin girar (relMSE
 Cada parámetro que lleva una Gaussian, desde su albedo y su normal hasta
 la visibilidad del cielo, el bounce y el reflected field del transfer,
 se puede dibujar a través de una cámara como un canal de imagen propio.
-Como aplicaciones, un PCA por clusters, la visibilidad cuantizada
-vectorialmente y un registro compacto de 40 bytes llevan el coche con
-relight a un player WebGPU en un iPhone, y un nodo OpenFX lleva la nube
-con relight a un compositor con sus capas de profundidad, posición en el
-mundo y Cryptomatte y un cielo que elige el artista.</p>
+La salida del bake es un master: un fichero USD con cada parámetro a
+precisión completa, juzgado frente al path trace, que leen tal cual el
+motor, un nodo OpenFX en un compositor (con capas de profundidad,
+posición en el mundo y Cryptomatte y un cielo que elige el artista) y un
+add-on de Blender. Un proceso aparte, con su propio objetivo, deriva del
+master un formato web para un móvil: un PCA por clusters del transfer,
+la visibilidad cuantizada vectorialmente y un registro compacto de 40
+bytes llevan el coche con relight a un player WebGPU en un iPhone, con
+su pérdida medida frente al master.</p>
 <p><strong>Palabras clave:</strong> relight baking; Gaussian splatting
 3D; precomputed radiance transfer; spherical harmonics; USD; Hydra; de
 mesh a Gaussians; path tracing; LOD; PCA por clusters; cadenas solo en
@@ -228,6 +232,9 @@ Trabajo relacionado</a></li>
 <li><a href="#convenciones" id="toc-convenciones">1.6
 Convenciones</a></li>
 </ul></li>
+<li><a href="#parte-i.-el-bake-de-un-usd-de-producción-a-un-master-usdc-reiluminable" id="toc-parte-i.-el-bake-de-un-usd-de-producción-a-un-master-usdc-reiluminable">Parte
+I. El bake: de un USD de producción a un master USDC
+reiluminable</a></li>
 <li><a href="#el-motor-y-el-renderer-athenea" id="toc-el-motor-y-el-renderer-athenea">2. El motor y el renderer
 athenea</a>
 <ul>
@@ -441,8 +448,10 @@ Resultados medidos</a></li>
 <li><a href="#límites-y-cuestiones-abiertas" id="toc-límites-y-cuestiones-abiertas">6.11 Límites y cuestiones
 abiertas</a></li>
 </ul></li>
-<li><a href="#aplicación-compresión-y-un-player-webgpu-en-móvil" id="toc-aplicación-compresión-y-un-player-webgpu-en-móvil">7.
-Aplicación: compresión y un player WebGPU en móvil</a>
+<li><a href="#parte-ii.-el-formato-web-un-formato-de-entrega-derivado" id="toc-parte-ii.-el-formato-web-un-formato-de-entrega-derivado">Parte
+II. El formato web: un formato de entrega derivado</a></li>
+<li><a href="#el-formato-web-compresión-streaming-y-un-player-webgpu" id="toc-el-formato-web-compresión-streaming-y-un-player-webgpu">7. El
+formato web: compresión, streaming y un player WebGPU</a>
 <ul>
 <li><a href="#el-contenedor-.athc-versión-3" id="toc-el-contenedor-.athc-versión-3">7.1 El contenedor:
 <code>.athc</code> versión 3</a></li>
@@ -698,12 +707,12 @@ ordenadas por el error del padre.</li>
 paso del bake frente al path trace, sobre un asset de producción, a
 través de las leaves con relight, los cuts y los bakes de 640, 1280 y
 5120 px.</li>
-<li><strong>Una aplicación a la reproducción en móvil</strong> (sección
-7): un contenedor <code>.athc</code> v3 con codificaciones por planos de
-bytes, PCA por clusters del transfer mantenido comprimido en la GPU,
-bits de open directions cuantizados vectorialmente, un registro compacto
-de 40 bytes, traversal records cuantizados de 5–11 bytes, y una política
-de tiempo de frame y de still frame para un player WebGPU en un
+<li><strong>Un formato web derivado del master</strong> (Parte II,
+sección 7): un contenedor <code>.athc</code> v3 con codificaciones por
+planos de bytes, PCA por clusters del transfer mantenido comprimido en
+la GPU, bits de open directions cuantizados vectorialmente, un registro
+compacto de 40 bytes, traversal records cuantizados de 5–11 bytes, y una
+política de tiempo de frame y de still frame para un player WebGPU en un
 iPhone.</li>
 <li><strong>La nube con su bake como canales de imagen y en hosts de
 producción</strong> (secciones 4.11 y 2.14): cada parámetro que lleva
@@ -716,24 +725,33 @@ Cryptomatte como planos y un cielo que el artista cambia; y un add-on de
 Blender que la dibuja como motor de render.</li>
 </ol>
 <h2 id="organización">1.4 Organización</h2>
-<p>La sección 2 describe el motor y el renderer sobre los que corre el
-baker, y los hosts que lo manejan. La sección 3 describe la conversión
-de meshes USD a Gaussians, y la sección 4 el transporte de luz en su
-bake y cómo se hace su relight. La sección 5 trata los assets animados:
-el skinning, el gorrión y el peón. La sección 6 trata el LOD. La sección
-7 describe la aplicación a móvil: la compresión y un player WebGPU. La
-sección 8 consolida la evaluación de las secciones 2–7, la sección 9
-reúne las limitaciones y el trabajo pendiente, y la sección 10 enumera
-las referencias, seguidas de un apéndice sobre los repositorios y los
-comandos (figura 1).</p>
+<p>El trabajo son dos procesos con objetivos distintos. La <strong>Parte
+I</strong> es el bake: convierte un asset USD de producción en una nube
+de Gaussians reiluminable escrita como fichero USD, el master, y se
+juzga por su fidelidad al path trace. La <strong>Parte II</strong>
+deriva de ese master un formato web para un móvil, y se juzga por
+tamaño, memoria y tiempo de frame, midiendo su pérdida frente al master.
+La Parte I empieza por lo que contiene el master; la sección 2 describe
+el motor y el renderer sobre los que corre el baker, y los hosts que lo
+manejan. La sección 3 describe la conversión de meshes USD a Gaussians,
+y la sección 4 el transporte de luz en su bake y cómo se hace su
+relight. La sección 5 trata los assets animados: el skinning, el gorrión
+y el peón. La sección 6 trata el LOD. La Parte II empieza por la
+derivación, parámetro a parámetro; la sección 7 describe el formato web
+y su player WebGPU. La sección 8 consolida la evaluación de las
+secciones 2–7, la sección 9 reúne las limitaciones y el trabajo
+pendiente, y la sección 10 enumera las referencias, seguidas de un
+apéndice sobre los repositorios y los comandos (figura 1).</p>
 <figure>
-<img role="img" aria-label="Figura 1. El pipeline. El baker de relight convierte un stage USD en Gaussians (§3) y hace el bake del transporte de luz en cada una con el path tracer (§4); la nube con relight se compara con un path trace del mesh de origen. Los merge trees (§6) y los assets animados (§5) parten de la nube con bake; el player WebGPU (§7) es una aplicación." src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3NjAiIGhlaWdodD0iNDAwIiB2aWV3Qm94PSIwIDAgNzYwIDQwMCIgZm9udC1mYW1pbHk9IkhlbHZldGljYSwgQXJpYWwsIHNhbnMtc2VyaWYiIHhtbDpzcGFjZT0icHJlc2VydmUiPgo8IS0tIENvcHlyaWdodCAoYykgMjAyNiBqZXN1cyBsdXF1ZS4gLS0+CjxkZWZzPjxtYXJrZXIgaWQ9ImFoIiB2aWV3Qm94PSIwIDAgMTAgMTAiIHJlZlg9IjkiIHJlZlk9IjUiIG1hcmtlcldpZHRoPSI3IiBtYXJrZXJIZWlnaHQ9IjciIG9yaWVudD0iYXV0by1zdGFydC1yZXZlcnNlIj48cGF0aCBkPSJNMCwwIEwxMCw1IEwwLDEwIHoiIGZpbGw9IiMzZTRjNTkiLz48L21hcmtlcj48L2RlZnM+CjxyZWN0IHdpZHRoPSI3NjAiIGhlaWdodD0iNDAwIiBmaWxsPSIjZmZmZmZmIi8+CjxyZWN0IHg9IjEwIiB5PSI1MiIgd2lkdGg9IjE0MCIgaGVpZ2h0PSI4NCIgcng9IjYiIGZpbGw9IiNlZWYyZjciIHN0cm9rZT0iIzViNmI4MCIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iODAuMCIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+VVNEIHN0YWdlPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSI5NC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5tZXNoZXMsIE9wZW5QQlIgLzwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPk1hdGVyaWFsWCwgVXNkTHV4LDwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMTIzLjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnNrZWxldG9uLCBjw6FtYXJhczwvdGV4dD4KPHJlY3QgeD0iMTY1IiB5PSIyNiIgd2lkdGg9IjQyMCIgaGVpZ2h0PSIxMjQiIHJ4PSI5IiBmaWxsPSJub25lIiBzdHJva2U9IiM0ZjdhNWMiIHN0cm9rZS13aWR0aD0iMS4yIiBzdHJva2UtZGFzaGFycmF5PSI1IDQiLz4KPHRleHQgeD0iMTc1IiB5PSI0MSIgdGV4dC1hbmNob3I9InN0YXJ0IiBmb250LXNpemU9IjExLjUiIGZvbnQtc3R5bGU9Iml0YWxpYyIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiM0ZjdhNWMiPmJha2VyIGRlIHJlbGlnaHQgKMKnMywgwqc0KTwvdGV4dD4KPHJlY3QgeD0iMTgwIiB5PSI1MiIgd2lkdGg9IjE4NSIgaGVpZ2h0PSI4NCIgcng9IjYiIGZpbGw9IiNlNmYxZWEiIHN0cm9rZT0iIzRmN2E1YyIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iMjcyLjUiIHk9Ijc2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPmNvbnZlcnNpw7NuIG1lc2gyc3BsYXQ8L3RleHQ+Cjx0ZXh0IHg9IjI3Mi41IiB5PSI5NC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5jZWxsIGRlc2RlIGxhIGPDoW1hcmEsPC90ZXh0Pgo8dGV4dCB4PSIyNzIuNSIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmJvcmRlcywgbWF0ZXJpYWxlcywgdmlkcmlvLDwvdGV4dD4KPHRleHQgeD0iMjcyLjUiIHk9IjEyMy45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5Ub2tzdmlnPC90ZXh0Pgo8cmVjdCB4PSIzODUiIHk9IjUyIiB3aWR0aD0iMTg1IiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI0NzcuNSIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+YmFrZSBkZWwgdHJhbnNmZXI8L3RleHQ+Cjx0ZXh0IHg9IjQ3Ny41IiB5PSI5NC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5wYXRoIHRyYWNlciBHUFUgZW4gY2FkYTwvdGV4dD4KPHRleHQgeD0iNDc3LjUiIHk9IjEwOS40IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5HYXVzc2lhbjogU0gsIHJlZmxlY3RlZDwvdGV4dD4KPHRleHQgeD0iNDc3LjUiIHk9IjEyMy45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5maWVsZCwgY2VsbHMgZGUgdmlzaWJpbGlkYWQ8L3RleHQ+CjxyZWN0IHg9IjYwMCIgeT0iNTIiIHdpZHRoPSIxNTAiIGhlaWdodD0iODQiIHJ4PSI2IiBmaWxsPSIjZmJmMWRmIiBzdHJva2U9IiM5YTc0MzMiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjY3NS4wIiB5PSI4My4yIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEyLjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjMWYyOTMzIj5jbG91ZCBjb24gcmVsaWdodDwvdGV4dD4KPHRleHQgeD0iNjc1LjAiIHk9IjEwMi4xIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5HYXVzc2lhbnMgKyB0cmFuc2ZlcjwvdGV4dD4KPHRleHQgeD0iNjc1LjAiIHk9IjExNi42IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj4udXNkYyAvIC5hdGhjPC90ZXh0Pgo8cG9seWxpbmUgcG9pbnRzPSIxNTAsOTQgMTc4LDk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSIzNjUsOTQgMzgzLDk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSI1NzAsOTQgNTk4LDk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cmVjdCB4PSIxMCIgeT0iMTk2IiB3aWR0aD0iMTQwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2Y4ZTllNyIgc3Ryb2tlPSIjOWE0ZDQyIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI4MC4wIiB5PSIyMjAuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+cGF0aCB0cmFjZSBkZTwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMjM4LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnJlZmVyZW5jaWEgZGVsPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSIyNTMuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+bWVzaCBkZSBvcmlnZW48L3RleHQ+Cjx0ZXh0IHg9IjgwLjAiIHk9IjI2Ny45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj4owqcyLjExKTwvdGV4dD4KPHJlY3QgeD0iMjAwIiB5PSIxOTYiIHdpZHRoPSIxODAiIGhlaWdodD0iODQiIHJ4PSI2IiBmaWxsPSIjZTZmMWVhIiBzdHJva2U9IiM0ZjdhNWMiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjI5MC4wIiB5PSIyMjAuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+cmVsaWdodCBhbCBkaWJ1amFyPC90ZXh0Pgo8dGV4dCB4PSIyOTAuMCIgeT0iMjM4LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmN1YWxxdWllciBjaWVsbywgc29sIG8gbHV6OzwvdGV4dD4KPHRleHQgeD0iMjkwLjAiIHk9IjI1My40IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5zaGFycCBsb2JlcyBwb3IgcMOteGVsPC90ZXh0Pgo8dGV4dCB4PSIyOTAuMCIgeT0iMjY3LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmVzY3JpdG9yaW8sIEh5ZHJhICjCpzIsIMKnNCk8L3RleHQ+CjxyZWN0IHg9IjQyMCIgeT0iMTk2IiB3aWR0aD0iMTYwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI1MDAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPm1lcmdlIHRyZWVzLCBMT0Q8L3RleHQ+Cjx0ZXh0IHg9IjUwMC4wIiB5PSIyMzguOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+Y292ZXJhZ2UsIGN1dCBwb3IgZXJyb3IsPC90ZXh0Pgo8dGV4dCB4PSI1MDAuMCIgeT0iMjUzLjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmJhY2sgZmFjZXMsIG9jY2x1c2lvbiw8L3RleHQ+Cjx0ZXh0IHg9IjUwMC4wIiB5PSIyNjcuOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+cGFnZXMgKMKnNik8L3RleHQ+CjxyZWN0IHg9IjYxMCIgeT0iMTk2IiB3aWR0aD0iMTQwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI2ODAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPmFzc2V0cyBhbmltYWRvczwvdGV4dD4KPHRleHQgeD0iNjgwLjAiIHk9IjIzOC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5za2lubmluZywgem9uYWwgbG9iZXMsPC90ZXh0Pgo8dGV4dCB4PSI2ODAuMCIgeT0iMjUzLjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnZpc2liaWxpZGFkIHBvciBwYXJ0ZTwvdGV4dD4KPHRleHQgeD0iNjgwLjAiIHk9IjI2Ny45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj4owqc1KTwvdGV4dD4KPHBvbHlsaW5lIHBvaW50cz0iODAsMTM2IDgwLDE5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNjQwLDEzNiA2NDAsMTcwIDUwMCwxNzAgNTAwLDE5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNzAwLDEzNiA3MDAsMTk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSI0MjAsMjM4IDM4MiwyMzgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNlNGM1OSIgc3Ryb2tlLXdpZHRoPSIxLjQiIG1hcmtlci1lbmQ9InVybCgjYWgpIi8+Cjxwb2x5bGluZSBwb2ludHM9IjIwMCwyMzggMTUyLDIzOCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgc3Ryb2tlLWRhc2hhcnJheT0iNSAzIiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8dGV4dCB4PSIxNzYiIHk9IjIzMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMCIgZmlsbD0iIzUyNjA2ZCI+UFNOUjwvdGV4dD4KPHRleHQgeD0iMTc2IiB5PSIyNTYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTAiIGZpbGw9IiM1MjYwNmQiPnJlbE1TRTwvdGV4dD4KPHJlY3QgeD0iMjAwIiB5PSIzMDAiIHdpZHRoPSI1NTAiIGhlaWdodD0iOTIiIHJ4PSI5IiBmaWxsPSJub25lIiBzdHJva2U9IiM2ZjVhOTEiIHN0cm9rZS13aWR0aD0iMS4yIiBzdHJva2UtZGFzaGFycmF5PSI1IDQiLz4KPHRleHQgeD0iNzQwIiB5PSIzODYiIHRleHQtYW5jaG9yPSJlbmQiIGZvbnQtc2l6ZT0iMTEuNSIgZm9udC1zdHlsZT0iaXRhbGljIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzZmNWE5MSI+YXBsaWNhY2nDs24sIGzDrW5lYSBwYXJhbGVsYSAowqc3KTwvdGV4dD4KPHJlY3QgeD0iMjE1IiB5PSIzMTIiIHdpZHRoPSIyMzAiIGhlaWdodD0iNjIiIHJ4PSI2IiBmaWxsPSIjZWZlYWY2IiBzdHJva2U9IiM2ZjVhOTEiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjMzMC4wIiB5PSIzMzIuOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+Y29udmVyc2nDs24gY29tcGFjdGE8L3RleHQ+Cjx0ZXh0IHg9IjMzMC4wIiB5PSIzNTEuMSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMC41IiBmaWxsPSIjNTI2MDZkIj4uYXRoYyB2MyAvIC5jbXBhOiBjbHVzdGVyZWQgUENBLDwvdGV4dD4KPHRleHQgeD0iMzMwLjAiIHk9IjM2NS4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwLjUiIGZpbGw9IiM1MjYwNmQiPnZpc2liaWxpZGFkIFZRLCByZWdpc3RybyBkZSA0MCBieXRlczwvdGV4dD4KPHJlY3QgeD0iNDgwIiB5PSIzMTIiIHdpZHRoPSIyNTUiIGhlaWdodD0iNTYiIHJ4PSI2IiBmaWxsPSIjZWZlYWY2IiBzdHJva2U9IiM2ZjVhOTEiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjYwNy41IiB5PSIzMzYuOCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+cGxheWVyIFdlYkdQVTwvdGV4dD4KPHRleHQgeD0iNjA3LjUiIHk9IjM1NS4xIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwLjUiIGZpbGw9IiM1MjYwNmQiPnN0cmVhbWluZywgY3V0LCByZWxpZ2h0LCBkcmF3PC90ZXh0Pgo8cG9seWxpbmUgcG9pbnRzPSI1MDAsMjgwIDUwMCwyOTIgMzMwLDI5MiAzMzAsMzEwIiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSI0NDUsMzQwIDQ3OCwzNDAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNlNGM1OSIgc3Ryb2tlLXdpZHRoPSIxLjQiIG1hcmtlci1lbmQ9InVybCgjYWgpIi8+Cjwvc3ZnPgo=" alt="Figura 1. El pipeline. El baker de relight convierte un stage USD en Gaussians (§3) y hace el bake del transporte de luz en cada una con el path tracer (§4); la nube con relight se compara con un path trace del mesh de origen. Los merge trees (§6) y los assets animados (§5) parten de la nube con bake; el player WebGPU (§7) es una aplicación." />
-<figcaption aria-hidden="true">Figura 1. El pipeline. El baker de
-relight convierte un stage USD en Gaussians (§3) y hace el bake del
-transporte de luz en cada una con el path tracer (§4); la nube con
-relight se compara con un path trace del mesh de origen. Los merge trees
-(§6) y los assets animados (§5) parten de la nube con bake; el player
-WebGPU (§7) es una aplicación.</figcaption>
+<img role="img" aria-label="Figura 1. Los dos procesos. Parte I, el bake: un stage USD se convierte en Gaussians (§3), el path tracer hace el bake del transporte de luz en cada una (§4), los assets animados conservan su rig (§5) y los merge trees dan el LOD (§6); la salida es el master USDC, comparado con un path trace del mesh de origen. Parte II, el formato web: el master se lee y se codifica en un formato compacto y en streaming para un player WebGPU en un móvil (§7), medido como una pérdida frente al master." src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3NjAiIGhlaWdodD0iNDAwIiB2aWV3Qm94PSIwIDAgNzYwIDQwMCIgZm9udC1mYW1pbHk9IkhlbHZldGljYSwgQXJpYWwsIHNhbnMtc2VyaWYiIHhtbDpzcGFjZT0icHJlc2VydmUiPgo8IS0tIENvcHlyaWdodCAoYykgMjAyNiBqZXN1cyBsdXF1ZS4gLS0+CjxkZWZzPjxtYXJrZXIgaWQ9ImFoIiB2aWV3Qm94PSIwIDAgMTAgMTAiIHJlZlg9IjkiIHJlZlk9IjUiIG1hcmtlcldpZHRoPSI3IiBtYXJrZXJIZWlnaHQ9IjciIG9yaWVudD0iYXV0by1zdGFydC1yZXZlcnNlIj48cGF0aCBkPSJNMCwwIEwxMCw1IEwwLDEwIHoiIGZpbGw9IiMzZTRjNTkiLz48L21hcmtlcj48L2RlZnM+CjxyZWN0IHdpZHRoPSI3NjAiIGhlaWdodD0iNDAwIiBmaWxsPSIjZmZmZmZmIi8+CjxyZWN0IHg9IjEwIiB5PSI1MiIgd2lkdGg9IjE0MCIgaGVpZ2h0PSI4NCIgcng9IjYiIGZpbGw9IiNlZWYyZjciIHN0cm9rZT0iIzViNmI4MCIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iODAuMCIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+VVNEIHN0YWdlPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSI5NC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5tZXNoZXMsIE9wZW5QQlIgLzwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPk1hdGVyaWFsWCwgVXNkTHV4LDwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMTIzLjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnNrZWxldG9uLCBjw6FtYXJhczwvdGV4dD4KPHJlY3QgeD0iMTY1IiB5PSIyNiIgd2lkdGg9IjQyMCIgaGVpZ2h0PSIxMjQiIHJ4PSI5IiBmaWxsPSJub25lIiBzdHJva2U9IiM0ZjdhNWMiIHN0cm9rZS13aWR0aD0iMS4yIiBzdHJva2UtZGFzaGFycmF5PSI1IDQiLz4KPHRleHQgeD0iMTc1IiB5PSI0MSIgdGV4dC1hbmNob3I9InN0YXJ0IiBmb250LXNpemU9IjExLjUiIGZvbnQtc3R5bGU9Iml0YWxpYyIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiM0ZjdhNWMiPmJha2VyIGRlIHJlbGlnaHQgKMKnMywgwqc0KTwvdGV4dD4KPHJlY3QgeD0iMTgwIiB5PSI1MiIgd2lkdGg9IjE4NSIgaGVpZ2h0PSI4NCIgcng9IjYiIGZpbGw9IiNlNmYxZWEiIHN0cm9rZT0iIzRmN2E1YyIgc3Ryb2tlLXdpZHRoPSIxLjMiLz4KPHRleHQgeD0iMjcyLjUiIHk9Ijc2LjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPmNvbnZlcnNpw7NuIG1lc2gyc3BsYXQ8L3RleHQ+Cjx0ZXh0IHg9IjI3Mi41IiB5PSI5NC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5jZWxsIGRlc2RlIGxhIGPDoW1hcmEsPC90ZXh0Pgo8dGV4dCB4PSIyNzIuNSIgeT0iMTA5LjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmJvcmRlcywgbWF0ZXJpYWxlcywgdmlkcmlvLDwvdGV4dD4KPHRleHQgeD0iMjcyLjUiIHk9IjEyMy45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5Ub2tzdmlnPC90ZXh0Pgo8cmVjdCB4PSIzODUiIHk9IjUyIiB3aWR0aD0iMTg1IiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI0NzcuNSIgeT0iNzYuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+YmFrZSBkZWwgdHJhbnNmZXI8L3RleHQ+Cjx0ZXh0IHg9IjQ3Ny41IiB5PSI5NC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5wYXRoIHRyYWNlciBHUFUgZW4gY2FkYTwvdGV4dD4KPHRleHQgeD0iNDc3LjUiIHk9IjEwOS40IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5HYXVzc2lhbjogU0gsIHJlZmxlY3RlZDwvdGV4dD4KPHRleHQgeD0iNDc3LjUiIHk9IjEyMy45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5maWVsZCwgY2VsbHMgZGUgdmlzaWJpbGlkYWQ8L3RleHQ+CjxyZWN0IHg9IjYwMCIgeT0iNTIiIHdpZHRoPSIxNTAiIGhlaWdodD0iODQiIHJ4PSI2IiBmaWxsPSIjZmJmMWRmIiBzdHJva2U9IiM5YTc0MzMiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjY3NS4wIiB5PSI4My4yIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEyLjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjMWYyOTMzIj5jbG91ZCBjb24gcmVsaWdodDwvdGV4dD4KPHRleHQgeD0iNjc1LjAiIHk9IjEwMi4xIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5HYXVzc2lhbnMgKyB0cmFuc2ZlcjwvdGV4dD4KPHRleHQgeD0iNjc1LjAiIHk9IjExNi42IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj4udXNkYyAvIC5hdGhjPC90ZXh0Pgo8cG9seWxpbmUgcG9pbnRzPSIxNTAsOTQgMTc4LDk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSIzNjUsOTQgMzgzLDk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSI1NzAsOTQgNTk4LDk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cmVjdCB4PSIxMCIgeT0iMTk2IiB3aWR0aD0iMTQwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2Y4ZTllNyIgc3Ryb2tlPSIjOWE0ZDQyIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI4MC4wIiB5PSIyMjAuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+cGF0aCB0cmFjZSBkZTwvdGV4dD4KPHRleHQgeD0iODAuMCIgeT0iMjM4LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnJlZmVyZW5jaWEgZGVsPC90ZXh0Pgo8dGV4dCB4PSI4MC4wIiB5PSIyNTMuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+bWVzaCBkZSBvcmlnZW48L3RleHQ+Cjx0ZXh0IHg9IjgwLjAiIHk9IjI2Ny45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj4owqcyLjExKTwvdGV4dD4KPHJlY3QgeD0iMjAwIiB5PSIxOTYiIHdpZHRoPSIxODAiIGhlaWdodD0iODQiIHJ4PSI2IiBmaWxsPSIjZTZmMWVhIiBzdHJva2U9IiM0ZjdhNWMiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjI5MC4wIiB5PSIyMjAuMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+cmVsaWdodCBhbCBkaWJ1amFyPC90ZXh0Pgo8dGV4dCB4PSIyOTAuMCIgeT0iMjM4LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmN1YWxxdWllciBjaWVsbywgc29sIG8gbHV6OzwvdGV4dD4KPHRleHQgeD0iMjkwLjAiIHk9IjI1My40IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5zaGFycCBsb2JlcyBwb3IgcMOteGVsPC90ZXh0Pgo8dGV4dCB4PSIyOTAuMCIgeT0iMjY3LjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmVzY3JpdG9yaW8sIEh5ZHJhICjCpzIsIMKnNCk8L3RleHQ+CjxyZWN0IHg9IjQyMCIgeT0iMTk2IiB3aWR0aD0iMTYwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI1MDAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPm1lcmdlIHRyZWVzLCBMT0Q8L3RleHQ+Cjx0ZXh0IHg9IjUwMC4wIiB5PSIyMzguOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+Y292ZXJhZ2UsIGN1dCBwb3IgZXJyb3IsPC90ZXh0Pgo8dGV4dCB4PSI1MDAuMCIgeT0iMjUzLjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPmJhY2sgZmFjZXMsIG9jY2x1c2lvbiw8L3RleHQ+Cjx0ZXh0IHg9IjUwMC4wIiB5PSIyNjcuOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZmlsbD0iIzUyNjA2ZCI+cGFnZXMgKMKnNik8L3RleHQ+CjxyZWN0IHg9IjYxMCIgeT0iMTk2IiB3aWR0aD0iMTQwIiBoZWlnaHQ9Ijg0IiByeD0iNiIgZmlsbD0iI2U2ZjFlYSIgc3Ryb2tlPSIjNGY3YTVjIiBzdHJva2Utd2lkdGg9IjEuMyIvPgo8dGV4dCB4PSI2ODAuMCIgeT0iMjIwLjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTIuNSIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiMxZjI5MzMiPmFzc2V0cyBhbmltYWRvczwvdGV4dD4KPHRleHQgeD0iNjgwLjAiIHk9IjIzOC45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj5za2lubmluZywgem9uYWwgbG9iZXMsPC90ZXh0Pgo8dGV4dCB4PSI2ODAuMCIgeT0iMjUzLjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM1MjYwNmQiPnZpc2liaWxpZGFkIHBvciBwYXJ0ZTwvdGV4dD4KPHRleHQgeD0iNjgwLjAiIHk9IjI2Ny45IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmaWxsPSIjNTI2MDZkIj4owqc1KTwvdGV4dD4KPHBvbHlsaW5lIHBvaW50cz0iODAsMTM2IDgwLDE5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNjQwLDEzNiA2NDAsMTcwIDUwMCwxNzAgNTAwLDE5NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgbWFya2VyLWVuZD0idXJsKCNhaCkiLz4KPHBvbHlsaW5lIHBvaW50cz0iNzAwLDEzNiA3MDAsMTk0IiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSI0MjAsMjM4IDM4MiwyMzgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNlNGM1OSIgc3Ryb2tlLXdpZHRoPSIxLjQiIG1hcmtlci1lbmQ9InVybCgjYWgpIi8+Cjxwb2x5bGluZSBwb2ludHM9IjIwMCwyMzggMTUyLDIzOCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2U0YzU5IiBzdHJva2Utd2lkdGg9IjEuNCIgc3Ryb2tlLWRhc2hhcnJheT0iNSAzIiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8dGV4dCB4PSIxNzYiIHk9IjIzMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMCIgZmlsbD0iIzUyNjA2ZCI+UFNOUjwvdGV4dD4KPHRleHQgeD0iMTc2IiB5PSIyNTYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTAiIGZpbGw9IiM1MjYwNmQiPnJlbE1TRTwvdGV4dD4KPHJlY3QgeD0iMjAwIiB5PSIzMDAiIHdpZHRoPSI1NTAiIGhlaWdodD0iOTIiIHJ4PSI5IiBmaWxsPSJub25lIiBzdHJva2U9IiM2ZjVhOTEiIHN0cm9rZS13aWR0aD0iMS4yIiBzdHJva2UtZGFzaGFycmF5PSI1IDQiLz4KPHRleHQgeD0iNzQwIiB5PSIzODYiIHRleHQtYW5jaG9yPSJlbmQiIGZvbnQtc2l6ZT0iMTEuNSIgZm9udC1zdHlsZT0iaXRhbGljIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzZmNWE5MSI+YXBsaWNhY2nDs24sIGzDrW5lYSBwYXJhbGVsYSAowqc3KTwvdGV4dD4KPHJlY3QgeD0iMjE1IiB5PSIzMTIiIHdpZHRoPSIyMzAiIGhlaWdodD0iNjIiIHJ4PSI2IiBmaWxsPSIjZWZlYWY2IiBzdHJva2U9IiM2ZjVhOTEiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjMzMC4wIiB5PSIzMzIuOSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+Y29udmVyc2nDs24gY29tcGFjdGE8L3RleHQ+Cjx0ZXh0IHg9IjMzMC4wIiB5PSIzNTEuMSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMC41IiBmaWxsPSIjNTI2MDZkIj4uYXRoYyB2MyAvIC5jbXBhOiBjbHVzdGVyZWQgUENBLDwvdGV4dD4KPHRleHQgeD0iMzMwLjAiIHk9IjM2NS4wIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwLjUiIGZpbGw9IiM1MjYwNmQiPnZpc2liaWxpZGFkIFZRLCByZWdpc3RybyBkZSA0MCBieXRlczwvdGV4dD4KPHJlY3QgeD0iNDgwIiB5PSIzMTIiIHdpZHRoPSIyNTUiIGhlaWdodD0iNTYiIHJ4PSI2IiBmaWxsPSIjZWZlYWY2IiBzdHJva2U9IiM2ZjVhOTEiIHN0cm9rZS13aWR0aD0iMS4zIi8+Cjx0ZXh0IHg9IjYwNy41IiB5PSIzMzYuOCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMi41IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzFmMjkzMyI+cGxheWVyIFdlYkdQVTwvdGV4dD4KPHRleHQgeD0iNjA3LjUiIHk9IjM1NS4xIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwLjUiIGZpbGw9IiM1MjYwNmQiPnN0cmVhbWluZywgY3V0LCByZWxpZ2h0LCBkcmF3PC90ZXh0Pgo8cG9seWxpbmUgcG9pbnRzPSI1MDAsMjgwIDUwMCwyOTIgMzMwLDI5MiAzMzAsMzEwIiBmaWxsPSJub25lIiBzdHJva2U9IiMzZTRjNTkiIHN0cm9rZS13aWR0aD0iMS40IiBtYXJrZXItZW5kPSJ1cmwoI2FoKSIvPgo8cG9seWxpbmUgcG9pbnRzPSI0NDUsMzQwIDQ3OCwzNDAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNlNGM1OSIgc3Ryb2tlLXdpZHRoPSIxLjQiIG1hcmtlci1lbmQ9InVybCgjYWgpIi8+Cjwvc3ZnPgo=" alt="Figura 1. Los dos procesos. Parte I, el bake: un stage USD se convierte en Gaussians (§3), el path tracer hace el bake del transporte de luz en cada una (§4), los assets animados conservan su rig (§5) y los merge trees dan el LOD (§6); la salida es el master USDC, comparado con un path trace del mesh de origen. Parte II, el formato web: el master se lee y se codifica en un formato compacto y en streaming para un player WebGPU en un móvil (§7), medido como una pérdida frente al master." />
+<figcaption aria-hidden="true">Figura 1. Los dos procesos. Parte I, el
+bake: un stage USD se convierte en Gaussians (§3), el path tracer hace
+el bake del transporte de luz en cada una (§4), los assets animados
+conservan su rig (§5) y los merge trees dan el LOD (§6); la salida es el
+master USDC, comparado con un path trace del mesh de origen. Parte II,
+el formato web: el master se lee y se codifica en un formato compacto y
+en streaming para un player WebGPU en un móvil (§7), medido como una
+pérdida frente al master.</figcaption>
 </figure>
 <h2 id="trabajo-relacionado">1.5 Trabajo relacionado</h2>
 <p><strong>Gaussian splatting.</strong> Kerbl et al. (2023) introdujeron
@@ -811,6 +829,140 @@ Gaussian con su bake, un <em>merge</em> un nodo de un merge tree, y un
 <em>Transfer</em> es el transporte de luz del bake (§4), <em>TX</em> su
 forma actual.</p>
 <!-- Copyright (c) 2026 jesus luque. -->
+<h1 class="unnumbered" id="parte-i.-el-bake-de-un-usd-de-producción-a-un-master-usdc-reiluminable">Parte
+I. El bake: de un USD de producción a un master USDC reiluminable</h1>
+<p>El primer proceso convierte un asset USD de producción en una nube de
+Gaussians que admite relight, y la escribe como un fichero USD: el
+<strong>master</strong>. Su objetivo es la fidelidad. El master se juzga
+con un solo criterio, su imagen con relight frente a un path trace del
+mesh de origen bajo el mismo cielo y las mismas luces, y cada decisión
+que contiene – el tamaño de cell, los samples del bake, los bits por
+dirección, el coste de merge – la toma esa medida, no su tamaño.</p>
+<p><strong>Entrada.</strong> Un stage USD tal como lo entrega
+producción: meshes con sus materiales MaterialX u OpenPBR, luces UsdLux
+y domos, cámaras y, para un asset animado, su skeleton y sus clips.</p>
+<p><strong>El proceso</strong>, en el orden en que corre, cada paso un
+conjunto de kernels de GPU sobre el motor de la sección 2:</p>
+<ol type="1">
+<li><strong>Conversión</strong> (sección 3). Cada mesh se convierte en
+Gaussians anisótropas, una por cell de una lattice cuyo tamaño sale del
+footprint de píxel de una cámara, con la coverage de la superficie como
+opacidad, bordes sujetos donde termina o forma un fold, el material por
+capas capturado por Gaussian, el vidrio clasificado como sólido o pared
+fina, y la roughness ensanchada por la dispersión de las normales.</li>
+<li><strong>El bake del transfer</strong> (sección 4). El path tracer
+del motor traza el hemisferio de cada Gaussian y guarda cómo le llega
+cualquier cielo: harmonics de grado 3 de la luz directa e indirecta, un
+reflected field, 256 bits de open directions y la curvatura de la
+superficie. Con ellos la nube hace relight al dibujar bajo cielos y
+luces con los que nunca se hizo su bake.</li>
+<li><strong>El rig y la visibilidad</strong> de un asset animado
+(sección 5): influencias y sus gradientes por Gaussian, lobes zonales de
+transfer que giran con un miembro, y campos de visibilidad por
+parte.</li>
+<li><strong>LOD</strong> (sección 6): merge trees por pieza cuyo cut por
+error de pantalla está acotado, culls de caras traseras y de oclusión
+compartida, y pages ordenadas por error, escritos junto a las leaves en
+el mismo formato de fichero.</li>
+</ol>
+<p><strong>Salida: el master USDC.</strong> Un
+<code>ParticleField3DGaussianSplat</code> por nube (o por merge tree),
+cuyos atributos estándar (posiciones, orientaciones, escalas,
+opacidades, harmonics de radiancia) los lee cualquier aplicación USD, y
+cuyos primvars de athenea llevan el resto a precisión completa:</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>parámetro</th>
+<th>primvar (<code>primvars:athenea:splat:</code>)</th>
+<th>por Gaussian</th>
+<th>§</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>material</td>
+<td><code>normal</code>, <code>metallic</code>, <code>roughness</code>,
+<code>materialRoughness</code>, <code>transmission</code>,
+<code>specularWeight</code>, <code>coatWeight</code>,
+<code>sheenColor</code>, <code>emission</code>,
+<code>schlickMetal</code>, <code>thinWalled</code>, <code>closed</code>;
+<code>ior</code> por nube</td>
+<td>un valor por propiedad</td>
+<td>3.6–3.8, 6.6</td>
+</tr>
+<tr>
+<td>transfer (TX)</td>
+<td><code>transferDirect</code> (16), <code>transferIndirect</code> (48
+rgb), <code>transferReflected</code> (48 rgb)</td>
+<td>112 valores</td>
+<td>4.2, 4.4</td>
+</tr>
+<tr>
+<td>open directions</td>
+<td><code>shadowBits</code></td>
+<td>256 bits</td>
+<td>4.4.2</td>
+</tr>
+<tr>
+<td>curvatura</td>
+<td><code>curvature</code></td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false" form="prefix">(</mo><msub><mi>S</mi><mrow><mi>u</mi><mi>u</mi></mrow></msub><mo>,</mo><msub><mi>S</mi><mrow><mi>u</mi><mi>v</mi></mrow></msub><mo>,</mo><msub><mi>S</mi><mrow><mi>v</mi><mi>v</mi></mrow></msub><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">(S_{uu}, S_{uv}, S_{vv})</annotation></semantics></math>,
+3 floats</td>
+<td>4.8</td>
+</tr>
+<tr>
+<td>transfer y visibilidad, juntos</td>
+<td></td>
+<td>480 B en el fichero, 256 B en el device</td>
+<td>4.2</td>
+</tr>
+<tr>
+<td>rig</td>
+<td><code>skel:jointIndices</code>, <code>skel:jointWeights</code> (4
+cada uno), <code>jointWeightGradients</code> (half, 6),
+<code>transferZonal</code> (10), <code>skinningXforms</code> por
+joint</td>
+<td></td>
+<td>5.3, 5.5, 5.7</td>
+</tr>
+<tr>
+<td>LOD</td>
+<td><code>lodTree</code>, <code>lodParent</code>, <code>lodStart</code>,
+<code>lodSize</code>, <code>lodCost</code>, <code>lodSpill</code>,
+<code>coverage</code>, <code>coverageMass</code>,
+<code>occlusionIndex</code>; <code>occlusionCodebook</code> por tree;
+los merges escritos tras las leaves</td>
+<td>por nodo</td>
+<td>6.2–6.8</td>
+</tr>
+<tr>
+<td>ids</td>
+<td><code>cryptoObject</code>, el id Cryptomatte del prim de la
+Gaussian; <code>cryptoManifest</code> por nube</td>
+<td>1 palabra</td>
+<td>2.5.2, 3.10</td>
+</tr>
+</tbody>
+</table>
+<p>Tamaños medidos en los assets de este paper: las dos nubes del peón,
+489 MB; el gorrión, con skinning, transfer y visibilidad, 216 MB; la
+nube reiluminable del Corvette de 3 M de Gaussians, 2.9 GB; el close-up
+level del Corvette como 24 merge trees de 74.5 M de leaves y 148.9 M de
+nodos, 87.4 GB.</p>
+<p><strong>Quién lee el master.</strong> El propio motor, a través de
+Hydra, tanto en su raster como en su path tracer; la comparación frente
+al path trace (sección 8); el nodo OpenFX en un compositor y el add-on
+de Blender (§2.14); los canales de imagen de §4.11. Y cada formato
+derivado, de los que la Parte II describe uno. El master es la fuente:
+un formato derivado se hace a partir de él y no se puede volver a
+convertir en él.</p>
 <h1 id="el-motor-y-el-renderer-athenea">2. El motor y el renderer
 athenea</h1>
 <p>athenea es un renderer de USD construido para que todo paso que toca
@@ -7242,20 +7394,199 @@ shells y el cut por error viven en <code>athenea-pieces</code>. El
 <code>CutSelector</code> del motor principal no ha cambiado.</li>
 </ul>
 <!-- Copyright (c) 2026 jesus luque. -->
-<h1 id="aplicación-compresión-y-un-player-webgpu-en-móvil">7.
-Aplicación: compresión y un player WebGPU en móvil</h1>
-<p>Esta sección describe una aplicación de las nubes con relight de
-§3–§6, desarrollada como una línea paralela: la reproducción de un asset
-entero en un móvil. Sus requisitos de diseño son propios: el Corvette
-entero, con su transfer de luz completo, dibujado en un iPhone dentro de
-una página web y juzgado frente al path trace del mesh; un budget de
-unos 50–60 MB de datos del coche en movimiento y unos 100 MB en reposo;
-piezas pequeñas que se vean bien. El player es un fork de Spark con
-backend WebGPU (sparkwebGPU, rama <code>webgpu</code>); athenea escribe
-las nubes, los merge trees, las pages y la oclusión. Esta sección
-describe los formatos, el streaming, el dibujado y el relight en el
-móvil, y los resultados medidos. El formato <code>.athc</code> v3 está
-especificado en el repositorio del player
+<h1 class="unnumbered" id="parte-ii.-el-formato-web-un-formato-de-entrega-derivado">Parte II.
+El formato web: un formato de entrega derivado</h1>
+<p>El segundo proceso empieza donde termina el primero. Toma el master
+de la Parte I y deriva de él un formato con un solo propósito: llevar el
+asset con relight a un navegador web en un móvil. Su objetivo es otro, y
+también su criterio. Una pestaña de móvil tiene un budget de memoria
+(unos 50–60 MB de datos del asset mientras la cámara se mueve, unos 100
+MB en reposo), una descarga que debe empezar a dibujar en segundos, y un
+tiempo de frame; el formato se hace para cumplirlos, y su fidelidad se
+mide como una pérdida frente al relight sin comprimir del propio master
+y, a través de él, frente al path trace. Nada de este proceso cambia el
+master, y nada de él lo vuelve a leer el bake.</p>
+<p><strong>Entrada.</strong> Los merge trees del master con sus pages y
+su codebook de oclusión (sección 6); para el Corvette, los 24 trees del
+close-up level.</p>
+<p><strong>El proceso</strong>, en orden, lo ejecutan las herramientas
+del player, no el motor:</p>
+<ol type="1">
+<li><strong>Leer el master</strong> (<code>usd-athc</code>, un lector
+construido sobre el crate <code>openusd</code>): la nube USD se
+convierte en un contenedor <code>.athc</code> versión 3, organizado en
+secciones y tiers para que un HTTP Range traiga lo que necesita un tier
+de un bloque (§7.1). Una nube con skinning añade su skin, su skeleton y
+sus clips (§5.12).</li>
+<li><strong>Empaquetado sin pérdida</strong> (§7.1): cada array
+transpuesto en planos de bytes, o en planos de diferencias, lo que gzip
+comprima mejor, porque gzip es lo que descomprime un navegador.</li>
+<li><strong>El transfer</strong> (§7.2): o un PCA por clusters de cada
+bloque del fichero (codificación 3), o una base ajustada sobre todo el
+asset (<code>fit-compact-basis</code>) que el móvil mantiene residente,
+de modo que cada Gaussian guarda un id de cluster y
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>3</mn><mo>×</mo><mn>8</mn></mrow><annotation encoding="application/x-tex">3\times8</annotation></semantics></math>
+pesos int4.</li>
+<li><strong>Las open directions</strong> (§7.3): un diccionario en
+espacio de Hamming de 4096 máscaras compartido por el asset; cada
+Gaussian guarda un índice de 16 bits.</li>
+<li><strong>El registro compacto</strong> (§7.4): cada parámetro
+restante cuantizado en planos de bytes, 40 bytes por Gaussian en la
+GPU.</li>
+<li><strong>Pages, tiers y traversal records</strong> (§7.5): las pages
+del tree partidas en bandas de error, traversal records de 5–11 bytes, y
+una tabla del asset (las bases, el diccionario, los materiales) que se
+descarga una vez.</li>
+<li><strong>En la reproducción</strong> (§7.6–§7.10): streaming por
+peticiones Range, un cut por frame dentro del budget de memoria, el
+dibujo y el relight en el móvil, una contact shadow, y una política de
+still frame que refina cuando la cámara se para.</li>
+</ol>
+<p><strong>En qué se convierte cada parámetro.</strong></p>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>parámetro</th>
+<th>master USDC</th>
+<th>formato web</th>
+<th>pérdida medida</th>
+<th>§</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>posición</td>
+<td>3 floats</td>
+<td><math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>3</mn><mo>×</mo></mrow><annotation encoding="application/x-tex">3\times</annotation></semantics></math>u16
+en la caja de la page</td>
+<td>menos de
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup><annotation encoding="application/x-tex">10^{-6}</annotation></semantics></math>
+de error de imagen (ablación)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>escala, opacidad</td>
+<td>3 + 1 floats</td>
+<td>escala logarítmica u8; opacidad u8 en dos tramos</td>
+<td>menos de
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup><annotation encoding="application/x-tex">10^{-6}</annotation></semantics></math>
+(ablación)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>orientación</td>
+<td>cuaternión</td>
+<td>una palabra de 32 bits: eje octaédrico de 10+10 bits, ángulo de
+12</td>
+<td></td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>albedo</td>
+<td>rgb float</td>
+<td>sRGB u8</td>
+<td>menos de
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup><annotation encoding="application/x-tex">10^{-6}</annotation></semantics></math>
+(ablación)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>normal</td>
+<td>float</td>
+<td>octaédrica, 12 bits por eje</td>
+<td>relMSE
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>2.7</mn><mo>×</mo><msup><mn>10</mn><mrow><mi>−</mi><mn>4</mn></mrow></msup></mrow><annotation encoding="application/x-tex">2.7\times10^{-4}</annotation></semantics></math>
+(8+8 bits:
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>5.2</mn><mo>×</mo><msup><mn>10</mn><mrow><mi>−</mi><mn>2</mn></mrow></msup></mrow><annotation encoding="application/x-tex">5.2\times10^{-2}</annotation></semantics></math>)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>curvatura</td>
+<td>3 floats</td>
+<td>3 × s8, logaritmo con signo en el rango de la page</td>
+<td>menos de
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>6</mn></mrow></msup><annotation encoding="application/x-tex">10^{-6}</annotation></semantics></math>
+(ablación)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>material</td>
+<td>un valor por propiedad y Gaussian</td>
+<td>índice u16 en una tabla exacta de los materiales del asset</td>
+<td>ninguna (exacta)</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>transfer</td>
+<td>112 valores f16</td>
+<td>id de cluster + 24 pesos int4 sobre una base compartida</td>
+<td>relMSE del transfer 0.0054 sobre el coche (v8.2b); imagen a menos de
+relMSE
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msup><mn>10</mn><mrow><mi>−</mi><mn>3</mn></mrow></msup><annotation encoding="application/x-tex">10^{-3}</annotation></semantics></math>
+del transfer sin comprimir</td>
+<td>7.2, 7.12</td>
+</tr>
+<tr>
+<td>open directions</td>
+<td>256 bits</td>
+<td>índice u16 en un diccionario de 4096 entradas</td>
+<td>62.9–65.4 dB</td>
+<td>7.3</td>
+</tr>
+<tr>
+<td>rig</td>
+<td>influencias, gradientes, lobes zonales</td>
+<td>sección <code>SKIN</code>: joint u16, peso unorm16, gradientes en
+half; nodos fusionados sin gradiente</td>
+<td>relMSE 0.0015–0.0053 frente al raster del motor</td>
+<td>5.12</td>
+</tr>
+<tr>
+<td>merge tree</td>
+<td>nodos, pages, oclusión</td>
+<td>pages por banda de error, traversal records de 5–11 bytes, el
+codebook de oclusión</td>
+<td>el mismo cut</td>
+<td>7.5</td>
+</tr>
+</tbody>
+</table>
+<p>El registro compacto entero ocupa 40 bytes en la GPU (42.4 bytes
+residentes con sus tablas, y 16 bytes por splat dibujado), frente a 256
+bytes solo para el transfer y la visibilidad del master en el device. La
+imagen de la ruta compacta queda a 40.2–41.9 dB del relight completo de
+la misma nube. Para el Corvette, los 87.4 GB de los 24 trees del
+close-up level se convierten en 12.77 GB de datos web (v8.2b, 149.0 M de
+nodos), servidos por page para que una vista cargue una fracción.</p>
+<p><strong>Por qué se mantienen separados.</strong> Cada paso de este
+proceso descarta información que produjo el bake: una base ajustada a un
+asset, un diccionario que sustituye cada máscara por la más cercana, una
+cuantización elegida por lo que el ojo ve a la resolución de un móvil.
+Un conjunto de datos web, por tanto, nunca es un master: no admite
+relight más allá de lo que guardan sus codificaciones, ni un nuevo bake,
+ni la conversión a otro formato, ni la comparación frente al path trace
+sin el master del que salió. Toda mejora del asset se hace en el master,
+y el formato web se vuelve a derivar.</p>
+<h1 id="el-formato-web-compresión-streaming-y-un-player-webgpu">7. El
+formato web: compresión, streaming y un player WebGPU</h1>
+<p>Esta sección describe el formato web de la Parte II y el player que
+lo dibuja: el Corvette entero, con su transfer de luz completo, dibujado
+en un iPhone dentro de una página web y juzgado frente al path trace del
+mesh, dentro de unos 50–60 MB de datos del coche en movimiento y unos
+100 MB en reposo, con piezas pequeñas que se vean bien. El player es un
+fork de Spark con backend WebGPU (sparkwebGPU, rama
+<code>webgpu</code>); su entrada es el master de la Parte I – las nubes,
+los merge trees, las pages y la oclusión que escribe athenea. Esta
+sección describe los formatos, el streaming, el dibujado y el relight en
+el móvil, y los resultados medidos. El formato <code>.athc</code> v3
+está especificado en el repositorio del player
 (<code>spark/docs/docs/athc-v3.md</code>).</p>
 <p><strong>Aparecen tres tipos de medida</strong>, y no son
 intercambiables:</p>
@@ -8720,13 +9051,14 @@ estos datos.</li>
 <!-- Copyright (c) 2026 jesus luque. -->
 <h1 id="evaluación">8. Evaluación</h1>
 <p>Esta sección reúne las medidas de las secciones 2–7 en un solo
-relato. Empieza por el bake, validado haciendo el relight de las
-Gaussians frente al path trace del mesh de origen (§8.2, §8.3); siguen
-el motor (§8.4), el LOD (§8.5) y los costes del bake (§8.6), y la
-aplicación a móvil (§8.7–§8.9) va al final. No introduce cifras nuevas:
-cada cifra se cita de la sección que se indica a su lado. Donde dos
-fuentes dan cifras distintas para la misma magnitud, la §8.10 dice cuál
-es cuál.</p>
+relato, por proceso. Empieza la Parte I, el bake: el master validado
+haciendo el relight de las Gaussians frente al path trace del mesh de
+origen (§8.2, §8.3), el motor (§8.4), el LOD (§8.5) y los costes del
+bake (§8.6). La Parte II, el formato web, va al final: su compresión, su
+comportamiento en el móvil y su memoria (§8.7–§8.9), medidos como una
+pérdida frente al master. No introduce cifras nuevas: cada cifra se cita
+de la sección que se indica a su lado. Donde dos fuentes dan cifras
+distintas para la misma magnitud, la §8.10 dice cuál es cuál.</p>
 <h2 id="marco">8.1 Marco</h2>
 <p>Las medidas de escritorio se tomaron en un Apple M5 Pro con Metal;
 los resultados de Vulkan y CUDA proceden de una NVIDIA L4 (§2.15). La
