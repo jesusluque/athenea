@@ -43,6 +43,16 @@ depth, P (world position) and Cryptomatte (the body and the glass head).
 The engine runs out of process, so a GPU fault never takes the compositor
 down. [OpenFX node](https://jesusluque.github.io/athenea/ofx/).*
 
+### Every parameter a Gaussian carries, seen from the camera
+
+![Sixteen views of the pawn, one per Gaussian parameter](docs/media/splat-channels.jpg)
+
+*`athenea:splatView` draws one parameter in place of the light, blended by
+opacity as the light is, so every view is aligned with the lit frame: the
+material (albedo, roughness, metallic, transmission, ior, normal, opacity,
+size) and the baked transfer (sky visibility, bounce, open cells, reflected
+field). The pawn has no emission, and its material roughness reads as zero.*
+
 ## Seen moving
 
 Click a clip for the full video.
