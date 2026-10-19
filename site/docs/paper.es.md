@@ -12,8 +12,8 @@ Cierra con la evaluación frente al path trace, los límites y el trabajo futuro
 
 | Descarga | Idioma |
 |---|---|
-| [paper.en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/paper.en.pdf) | inglés |
-| [paper.es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/paper.es.pdf) | español |
+| [gaussian-splat-relight-transfer-baking.en.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/gaussian-splat-relight-transfer-baking.en.pdf) | inglés |
+| [gaussian-splat-relight-transfer-baking.es.pdf](https://github.com/jesusluque/athenea/releases/download/docs-2026-10-19/gaussian-splat-relight-transfer-baking.es.pdf) | español |
 
 !!! example "En vivo"
     El formato web de la Parte II, en vivo: [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.co.uk).
