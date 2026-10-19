@@ -1474,8 +1474,10 @@ pushed to the private repository together.
 
 ## 9. Known debts
 
-- **Windows.** The port has not started. `core/Platform.h` is the file it
-  starts from, and the `#ifdef`s there name what is missing.
+- **Windows.** The engine, the tests and the plugins build natively with MSVC
+  (`windows-x64-*`, `scripts/*.ps1`). What is left: D3D12 (constant buffers
+  past `b0`, a zero-length buffer), the Blender add-on and the OpenFX bundle
+  verified there.
 - **The ABI in a comment.** The header comment of the top-level
   `CMakeLists.txt` still says aofx is at ABI 23; the code has been at 25 for
   some time. The rule cannot catch a number written in prose.

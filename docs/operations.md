@@ -2074,7 +2074,7 @@ macOS `/Library/OFX/Plugins`, or a directory in `OFX_PLUGIN_PATH`.
 
 | Parameter | Value | Default | Notes |
 |---|---|---|---|
-| `cloud` | file | none | a `.usdc` or `.usda` holding the cloud (a `ParticleField3DGaussianSplat`, as `athenea stage convert` and the exports write). Empty draws nothing |
+| `cloud` | file | none | a `.usdc` or `.usda` holding the cloud (a `ParticleField3DGaussianSplat`, as `athenea convert`, `athenea mesh2splat` and the exports write). Empty draws nothing |
 | `translate` | 3 numbers | `0 0 5` | where the camera stands, in the cloud's units |
 | `rotate` | 3 numbers, degrees | `0 0 0` | about x, y and z |
 | `rot_order` | `XYZ` … `ZYX` | `ZXY` | the order the rotations apply in, the first letter first; ZXY is Nuke's default |

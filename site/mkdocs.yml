@@ -53,6 +53,7 @@ plugins:
           site_description: Un baker de relight para 3D Gaussian splatting a partir de assets USD de producción
           nav_translations:
             Home: Inicio
+            Architecture: Arquitectura
             Desktop installation: Instalación de escritorio
             Tutorials: Tutoriales
             From a USD asset to a baked cloud: De un asset USD a una nube con bake
@@ -60,12 +61,15 @@ plugins:
             Preparing a USD stage: Preparar un stage USD
             Large clouds and levels of detail: Nubes grandes y niveles de detalle
             Gaussian splats in Blender: Gaussian splats en Blender
+            "OpenFX (Nuke, Natron)": "OpenFX (Nuke, Natron)"
             Reference: Referencia
+            Paper: Paper
             Presentations: Presentaciones
             Credits: Créditos
 
 nav:
   - Home: index.md
+  - Architecture: architecture.md
   - Desktop installation: install.md
   - Tutorials:
       - From a USD asset to a baked cloud: tutorials/usd-to-cloud.md
@@ -73,7 +77,9 @@ nav:
       - Preparing a USD stage: tutorials/authoring-usd.md
       - Large clouds and levels of detail: tutorials/large-clouds.md
       - Gaussian splats in Blender: tutorials/blender.md
+  - "OpenFX (Nuke, Natron)": ofx.md
   - Reference: reference.md
+  - Paper: paper.md
   - Presentations: presentations.md
   - Credits: credits.md
 

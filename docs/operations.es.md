@@ -2135,7 +2135,7 @@ busque: en macOS `/Library/OFX/Plugins`, o un directorio de `OFX_PLUGIN_PATH`.
 
 | Parámetro | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `cloud` | fichero | ninguno | un `.usdc` o `.usda` con la nube (un `ParticleField3DGaussianSplat`, como lo escriben `athenea stage convert` y los exports). Vacío no dibuja nada |
+| `cloud` | fichero | ninguno | un `.usdc` o `.usda` con la nube (un `ParticleField3DGaussianSplat`, como lo escriben `athenea convert`, `athenea mesh2splat` y los exports). Vacío no dibuja nada |
 | `translate` | 3 números | `0 0 5` | dónde está la cámara, en las unidades de la nube |
 | `rotate` | 3 números, grados | `0 0 0` | alrededor de x, y y z |
 | `rot_order` | `XYZ` … `ZYX` | `ZXY` | el orden en que se aplican las rotaciones, la primera letra primero; ZXY es el de Nuke por defecto |

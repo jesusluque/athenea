@@ -1541,8 +1541,10 @@ repositorio privado.
 
 ## 9. Deudas conocidas
 
-- **Windows.** El port no ha empezado. `core/Platform.h` es el fichero por el
-  que empieza, y los `#ifdef` de ahí nombran lo que falta.
+- **Windows.** El motor, los tests y los plugins compilan de forma nativa con
+  MSVC (`windows-x64-*`, `scripts/*.ps1`). Falta: D3D12 (constant buffers más
+  allá de `b0`, un buffer de longitud cero), y el add-on de Blender y el bundle
+  OpenFX verificados allí.
 - **El ABI en un comentario.** El comentario de cabecera del `CMakeLists.txt`
   raíz todavía dice que aofx está en el ABI 23; el código va por el 25 desde
   hace tiempo. La regla no puede atrapar un número escrito en prosa.

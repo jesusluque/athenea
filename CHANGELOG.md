@@ -6,6 +6,26 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
+## Unreleased
+
+- **Nuke and Natron**: an OpenFX node (`integrations/ofx`) draws a stage through
+  the shot camera with RGBA, depth, P (world position) and Cryptomatte planes,
+  and an HDRI the artist picks and rotates; the engine runs out of process
+  (`athenea-mcp`), one server per host process.
+- **Blender 5.3**: an add-on (`integrations/blender`) with athenea as a render
+  engine, mesh2splat and export operators; macOS.
+- **A transfer the stage turns**: a TX cloud under a transform reads its sky in
+  its own frame (`splat/sky_turn.slang`), so turned glass no longer fragments.
+- **The parameters, drawn**: `athenea:splatView` draws a gaussian parameter
+  (albedo, normal, roughness, sky visibility, bounce, …) in place of its light.
+- **A public clone builds**: the gpe and aopenfx pins are pushed with their
+  branches; genlock is optional (`ATHENEA_WITH_GENLOCK`), and without it only
+  `athenea live` is missing.
+- **The repository**: the paper and presentations are release assets
+  (`docs-2026-10-19`); CONTRIBUTING, SECURITY and a code of conduct; the
+  README's long sections move to `docs/background.md`; merged branches are
+  tagged `archive/*`. The macOS package identifier is `uk.co.lucab.athenea`.
+
 ## 0.3.0 — 2026-10-13
 
 The relight baker over Gaussian splats, and the engine on three systems:

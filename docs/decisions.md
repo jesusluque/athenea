@@ -3,6 +3,187 @@
 Why the engine is the way it is, with the measurements behind each choice.
 Numbers are from an Apple M5 Pro (Metal) unless a section says otherwise.
 
+
+## Contents
+
+The sections below are in the order the work was done. By area:
+
+**Repository, platforms and toolchain**
+
+- [Complete USD: toolchain (M0)](#complete-usd-toolchain-m0)
+- [Linux, on the 94 (M11's first half)](#linux-on-the-94-m11s-first-half)
+- [A note on WebGPU](#a-note-on-webgpu)
+- [A ray tracing launch on CUDA reads memory that is no longer current](#a-ray-tracing-launch-on-cuda-reads-memory-that-is-no-longer-current)
+- [aofx at ABI 25, from aopenfx](#aofx-at-abi-25-from-aopenfx)
+- [One AOFX host, from aopenfx](#one-aofx-host-from-aopenfx)
+- [Embeddable: the same CMakeLists as a subdirectory of the compositor](#embeddable-the-same-cmakelists-as-a-subdirectory-of-the-compositor)
+- [The crossing as free functions, for a context that is not this one](#the-crossing-as-free-functions-for-a-context-that-is-not-this-one)
+- [athenea::engine without athenea::usd, and the TBB an embedder already has](#atheneaengine-without-atheneausd-and-the-tbb-an-embedder-already-has)
+- [A stage on the host's device, and a stage read without one](#a-stage-on-the-hosts-device-and-a-stage-read-without-one)
+- [lucabRTrender's files, migrated](#lucabrtrenders-files-migrated)
+- [A plugin finds its files from itself, not from its host](#a-plugin-finds-its-files-from-itself-not-from-its-host)
+- [Measure: `athenea compare` as an AOFX effect](#measure-athenea-compare-as-an-aofx-effect)
+- [Out of device memory is an error, and the engine steps down](#out-of-device-memory-is-an-error-and-the-engine-steps-down)
+- [Licences: Apache-2.0, and what is owed to whom](#licences-apache-20-and-what-is-owed-to-whom)
+- [The Blender add-on's package carries every licence it owes](#the-blender-add-ons-package-carries-every-licence-it-owes)
+- [A clone of the public repository builds (19 Oct)](#a-clone-of-the-public-repository-builds-19-oct)
+
+**Integrations: Blender, OpenFX**
+
+- [Two assets out of Blender, and the two bugs they found](#two-assets-out-of-blender-and-the-two-bugs-they-found)
+- [hdAthenea inside Blender: phase 0](#hdathenea-inside-blender-phase-0)
+- [Blender's Gaussian splats, drawn as splats](#blenders-gaussian-splats-drawn-as-splats)
+- [hdAthenea inside Blender: phase 2](#hdathenea-inside-blender-phase-2)
+- [Blender as a module: TX in, gaussians out, measured against Cycles (task BL3)](#blender-as-a-module-tx-in-gaussians-out-measured-against-cycles-task-bl3)
+- [The OpenFX plugin: athenea's gaussians in Nuke (18 Oct)](#the-openfx-plugin-atheneas-gaussians-in-nuke-18-oct)
+
+**Shadows of clouds**
+
+- [Splats shadow meshes in the path tracer](#splats-shadow-meshes-in-the-path-tracer)
+- [A cloud does not shadow itself, and the offset cannot be tuned to fix it](#a-cloud-does-not-shadow-itself-and-the-offset-cannot-be-tuned-to-fix-it)
+- [A cloud shadows itself by part: baked once, read every frame, no ray](#a-cloud-shadows-itself-by-part-baked-once-read-every-frame-no-ray)
+- [The cloud's shadow on a mesh is weaker than the geometry's, and it is not the cloud](#the-clouds-shadow-on-a-mesh-is-weaker-than-the-geometrys-and-it-is-not-the-cloud)
+- [A cloud's shadow, measured from the light, with no ray and no sort](#a-clouds-shadow-measured-from-the-light-with-no-ray-and-no-sort)
+- [A cloud's shadow that does not breathe with the wings](#a-clouds-shadow-that-does-not-breathe-with-the-wings)
+- [A lamp behind its lens: shadow rays through glass](#a-lamp-behind-its-lens-shadow-rays-through-glass)
+
+**Skinning and animation**
+
+- [Complete USD: animation and movement (M7)](#complete-usd-animation-and-movement-m7)
+- [The conversion reads a pose, not a rest](#the-conversion-reads-a-pose-not-a-rest)
+- [A gaussian carries the joints its triangle carries](#a-gaussian-carries-the-joints-its-triangle-carries)
+- [A cloud carried by a skeleton, on the device](#a-cloud-carried-by-a-skeleton-on-the-device)
+- [The whole Jacobian of a skinned gaussian](#the-whole-jacobian-of-a-skinned-gaussian)
+- [The file carries the rig, not the frames](#the-file-carries-the-rig-not-the-frames)
+- [And the engine puts the cloud where the skeleton is](#and-the-engine-puts-the-cloud-where-the-skeleton-is)
+- [The fox](#the-fox)
+- [The sparrow's animation, and a skinning matrix that has to be true](#the-sparrows-animation-and-a-skinning-matrix-that-has-to-be-true)
+- [One cloud, seventy-one clips](#one-cloud-seventy-one-clips)
+- [A time change is not a new cloud](#a-time-change-is-not-a-new-cloud)
+- [Seventy-one animations, and not one line about sparrows](#seventy-one-animations-and-not-one-line-about-sparrows)
+- [The sparrow's mesh, the same bird on both routes](#the-sparrows-mesh-the-same-bird-on-both-routes)
+- [A posed cloud refits its ray tracing structure](#a-posed-cloud-refits-its-ray-tracing-structure)
+- [A skinned cloud keeps its transfer: zonal lobes in each gaussian's frame](#a-skinned-cloud-keeps-its-transfer-zonal-lobes-in-each-gaussians-frame)
+- [A skinned transfer is traced at the bind pose](#a-skinned-transfer-is-traced-at-the-bind-pose)
+
+**The bake and the transfer (TX)**
+
+- [Path traced into gaussians: the bake](#path-traced-into-gaussians-the-bake)
+- [The bake fits harmonics: what a colour could not hold](#the-bake-fits-harmonics-what-a-colour-could-not-hold)
+- [The bake's ray started a millimetre off the model](#the-bakes-ray-started-a-millimetre-off-the-model)
+- [The bake fits the harmonics, and no longer projects them](#the-bake-fits-the-harmonics-and-no-longer-projects-them)
+- [A shadow catcher by composition, and the film on two machines](#a-shadow-catcher-by-composition-and-the-film-on-two-machines)
+- [The prefiltered sky is a mip chain of the dome, not a fixed 256](#the-prefiltered-sky-is-a-mip-chain-of-the-dome-not-a-fixed-256)
+- [A gaussian that carries how much sky reaches it](#a-gaussian-that-carries-how-much-sky-reaches-it)
+- [A gaussian reflects the cloud it stands on](#a-gaussian-reflects-the-cloud-it-stands-on)
+- [A bake gives no more light than any path saw, from any side](#a-bake-gives-no-more-light-than-any-path-saw-from-any-side)
+- [The bake's grain](#the-bakes-grain)
+- [A transfer right under any sky and any light (task TX)](#a-transfer-right-under-any-sky-and-any-light-task-tx)
+- [The ground under a dome, without grain and without its 480 ms (task PLAY-G)](#the-ground-under-a-dome-without-grain-and-without-its-480-ms-task-play-g)
+- [The ground's shadow as gaussians: a shadow catcher (task PLAY-G)](#the-grounds-shadow-as-gaussians-a-shadow-catcher-task-play-g)
+- [A TX cloud as standard Gaussian Splatting files: `athenea flatten` (task TXF)](#a-tx-cloud-as-standard-gaussian-splatting-files-athenea-flatten-task-txf)
+- [A bake's ray into a lens leaves by a hair too](#a-bakes-ray-into-a-lens-leaves-by-a-hair-too)
+- [A transfer the stage turns, and the gaussians' parameters drawn (19 Oct)](#a-transfer-the-stage-turns-and-the-gaussians-parameters-drawn-19-oct)
+
+**Conversion: mesh2splat**
+
+- [mesh2splat: a mesh becomes a cloud, through the plugin interface](#mesh2splat-a-mesh-becomes-a-cloud-through-the-plugin-interface)
+- [What a converted surface is worth, measured against the mesh it came from](#what-a-converted-surface-is-worth-measured-against-the-mesh-it-came-from)
+- [The width of a converted gaussian, and what it covers](#the-width-of-a-converted-gaussian-and-what-it-covers)
+- [What one colour a gaussian cannot do, measured](#what-one-colour-a-gaussian-cannot-do-measured)
+- [The conversion's order is the mesh's, and a slot with nothing in it is kept](#the-conversions-order-is-the-meshs-and-a-slot-with-nothing-in-it-is-kept)
+- [A feather is a hole in a rectangle](#a-feather-is-a-hole-in-a-rectangle)
+- [A map is the value, not a factor on the default](#a-map-is-the-value-not-a-factor-on-the-default)
+- [Opacity is coverage, not glass](#opacity-is-coverage-not-glass)
+- [The feathers read their shape by a second set of coordinates](#the-feathers-read-their-shape-by-a-second-set-of-coordinates)
+- [A mesh past the ceiling is converted in slices, and a barb keeps its alpha](#a-mesh-past-the-ceiling-is-converted-in-slices-and-a-barb-keeps-its-alpha)
+- [The density is a mesh's own, not the stage's](#the-density-is-a-meshs-own-not-the-stages)
+- [A converted glass bends, and its cloud says which schema it carries](#a-converted-glass-bends-and-its-cloud-says-which-schema-it-carries)
+- [A converted gaussian gives off what its material gave off](#a-converted-gaussian-gives-off-what-its-material-gave-off)
+- [A converted surface covers what its opacity says](#a-converted-surface-covers-what-its-opacity-says)
+- [mesh2splat's host side: on the device, by subset, and fair to every mesh](#mesh2splats-host-side-on-the-device-by-subset-and-fair-to-every-mesh)
+- [mesh2splat inside hdAthenea, and the colour a host copies](#mesh2splat-inside-hdathenea-and-the-colour-a-host-copies)
+
+**Path tracer, raster and shading**
+
+- [Ray tracing Gaussians](#ray-tracing-gaussians)
+- [Complete USD: the path tracer (M6)](#complete-usd-the-path-tracer-m6)
+- [athenea view: the path tracer's own settings in the window](#athenea-view-the-path-tracers-own-settings-in-the-window)
+- [The raster sees lights at infinity along its lobes: glass and polished metal](#the-raster-sees-lights-at-infinity-along-its-lobes-glass-and-polished-metal)
+- [Translucency: what a gaussian can do about glass](#translucency-what-a-gaussian-can-do-about-glass)
+- [A traced frame of splats alone did not finish](#a-traced-frame-of-splats-alone-did-not-finish)
+- [A splat under a shutter: one rank-one term, not five passes](#a-splat-under-a-shutter-one-rank-one-term-not-five-passes)
+- [Depth of field in the rasteriser: the other convolution](#depth-of-field-in-the-rasteriser-the-other-convolution)
+- [Glass that is not there, and textures under another name](#glass-that-is-not-there-and-textures-under-another-name)
+- [Antialiasing: the camera moves inside the pixel between passes](#antialiasing-the-camera-moves-inside-the-pixel-between-passes)
+- [The glass knob that reached nothing](#the-glass-knob-that-reached-nothing)
+- [The index a gaussian bends by](#the-index-a-gaussian-bends-by)
+- [A ray that went into a glass meets its far face](#a-ray-that-went-into-a-glass-meets-its-far-face)
+- [Every gaussian is blended in linear light](#every-gaussian-is-blended-in-linear-light)
+- [A ray leaves a surface by a hair: a thin lens is two faces](#a-ray-leaves-a-surface-by-a-hair-a-thin-lens-is-two-faces)
+- [A transmission pays its Fresnel once](#a-transmission-pays-its-fresnel-once)
+- [A glass gaussian's colour is its transmission's own](#a-glass-gaussians-colour-is-its-transmissions-own)
+
+**Materials, lights and colour**
+
+- [Complete USD: textures and materials (M4)](#complete-usd-textures-and-materials-m4)
+- [Complete USD: lights (M5)](#complete-usd-lights-m5)
+- [A texture's colour space, which a material network drops](#a-textures-colour-space-which-a-material-network-drops)
+- [The sky was painted where nothing was drawn, not behind what was](#the-sky-was-painted-where-nothing-was-drawn-not-behind-what-was)
+- [A cloud sees the sky it stands under](#a-cloud-sees-the-sky-it-stands-under)
+- [The sun comes out of the sky and is lit as a light](#the-sun-comes-out-of-the-sky-and-is-lit-as-a-light)
+- [A stage's lights, switched in the viewer](#a-stages-lights-switched-in-the-viewer)
+- [Displacement is where a cloud is cheaper than a mesh](#displacement-is-where-a-cloud-is-cheaper-than-a-mesh)
+- [A material is read in its own words, at its own defaults](#a-material-is-read-in-its-own-words-at-its-own-defaults)
+- [A normal map is read in the frame its UVs give](#a-normal-map-is-read-in-the-frame-its-uvs-give)
+- [A gaussian keeps its shading normal apart from its frame](#a-gaussian-keeps-its-shading-normal-apart-from-its-frame)
+- [A material compiler with MaterialX libraries of its own](#a-material-compiler-with-materialx-libraries-of-its-own)
+- [Colour: OpenColorIO as a compiler, and a texture read in its own colour space](#colour-opencolorio-as-a-compiler-and-a-texture-read-in-its-own-colour-space)
+- [A gaussian carries what its material layers over the base (proposal 026)](#a-gaussian-carries-what-its-material-layers-over-the-base-proposal-026)
+- [The sun is the texels that are it](#the-sun-is-the-texels-that-are-it)
+- [Materials measured one by one on the shader ball (bench/matx)](#materials-measured-one-by-one-on-the-shader-ball-benchmatx)
+- [A material's fields read back from the material itself (matx)](#a-materials-fields-read-back-from-the-material-itself-matx)
+- [A car's lamps switched at run time: light groups (proposals 062, 066)](#a-cars-lamps-switched-at-run-time-light-groups-proposals-062-066)
+
+**USD and Hydra**
+
+- [Complete USD: GPU foundations (M1)](#complete-usd-gpu-foundations-m1)
+- [Complete USD: geometry and visibility (M2)](#complete-usd-geometry-and-visibility-m2)
+- [Complete USD: athenea view (M3)](#complete-usd-athenea-view-m3)
+- [Complete USD: the breadth of geometry (M8)](#complete-usd-the-breadth-of-geometry-m8)
+- [Complete USD: render settings and outputs (M10)](#complete-usd-render-settings-and-outputs-m10)
+- [Complete USD: volumes (M9)](#complete-usd-volumes-m9)
+- [End to end: Kitchen_set lit, and two defects only a real stage showed](#end-to-end-kitchen_set-lit-and-two-defects-only-a-real-stage-showed)
+- [End to end: usd-wg assets and OpenUSD's own test stages](#end-to-end-usd-wg-assets-and-openusds-own-test-stages)
+- [A binding nobody declared is still a binding: USDZ arrives grey](#a-binding-nobody-declared-is-still-a-binding-usdz-arrives-grey)
+- [The spec is the reference, and it is a living one](#the-spec-is-the-reference-and-it-is-a-living-one)
+- [Aligning with the specification, step by step](#aligning-with-the-specification-step-by-step)
+- [A pixel says which prims it saw: Cryptomatte](#a-pixel-says-which-prims-it-saw-cryptomatte)
+- [A matte id is a selection, and therefore a handle](#a-matte-id-is-a-selection-and-therefore-a-handle)
+- [The Gaussians panel: what is on screen, counted where it happened](#the-gaussians-panel-what-is-on-screen-counted-where-it-happened)
+
+**Levels of detail, simplification, web**
+
+- [SPZ](#spz)
+- [SOG](#sog)
+- [SplatEdit and the athenea schemas](#splatedit-and-the-athenea-schemas)
+- [Levels of detail](#levels-of-detail)
+- [A car in gaussians, and the two things it found](#a-car-in-gaussians-and-the-two-things-it-found)
+- [Fewer gaussians where the surface is the same](#fewer-gaussians-where-the-surface-is-the-same)
+- [Decimation: the levels of detail, cut once by what a merge loses](#decimation-the-levels-of-detail-cut-once-by-what-a-merge-loses)
+- [A decimation keeps everything a cloud carries](#a-decimation-keeps-everything-a-cloud-carries)
+- [Simplify: fewer gaussians by pairs, and surfels](#simplify-fewer-gaussians-by-pairs-and-surfels)
+- [The Corvette on an iPhone: what was applied (11-12 Oct)](#the-corvette-on-an-iphone-what-was-applied-11-12-oct)
+- [A merge's second moment about its own centre (13 Oct)](#a-merges-second-moment-about-its-own-centre-13-oct)
+
+**Other**
+
+- [Time: FrameClock and `athenea live`](#time-frameclock-and-athenea-live)
+- [A relit splat: both routes, and what it reflects with](#a-relit-splat-both-routes-and-what-it-reflects-with)
+- [What a rigged cloud actually costs](#what-a-rigged-cloud-actually-costs)
+- [A gaussian's footprint is the blur kernel of its reflection](#a-gaussians-footprint-is-the-blur-kernel-of-its-reflection)
+- [A transparent surface passes what it does not reflect](#a-transparent-surface-passes-what-it-does-not-reflect)
+
 ## Ray tracing Gaussians
 
 `athenea::render::GaussianRayTracer`, kernels in `shaders/athenea/rt/`.
