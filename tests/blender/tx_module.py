@@ -38,8 +38,8 @@ import bpy  # noqa: E402
 
 
 def world_hdri(name="forest.exr"):
-    path = os.path.join(os.path.dirname(bpy.app.binary_path), "..", "Resources",
-                        f"{bpy.app.version[0]}.{bpy.app.version[1]}", "datafiles", "studiolights", "world", name)
+    # Blender's own data folder, wherever this system lays it out.
+    path = os.path.join(bpy.utils.system_resource('DATAFILES'), "studiolights", "world", name)
     path = os.path.abspath(path)
     world = bpy.context.scene.world or bpy.data.worlds.new("World")
     bpy.context.scene.world = world
