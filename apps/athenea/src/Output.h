@@ -7,6 +7,13 @@
 // a terminal is not where a Blender user is.
 #pragma once
 
+// printf's arguments checked against the format where the compiler can.
+#if defined(__GNUC__) || defined(__clang__)
+#define ATHENEA_PRINTF_FORMAT(index, first) __attribute__((format(printf, index, first)))
+#else
+#define ATHENEA_PRINTF_FORMAT(index, first)
+#endif
+
 namespace athenea::cli {
 
 /// A host's sink: `error` is 1 for what the command writes to stderr. `text`
@@ -24,8 +31,8 @@ void requestCancel(bool on);
 [[nodiscard]] bool cancelRequested();
 
 /// printf to stdout, or to the sink.
-void out(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void out(const char* format, ...) ATHENEA_PRINTF_FORMAT(1, 2);
 /// printf to stderr, or to the sink.
-void err(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void err(const char* format, ...) ATHENEA_PRINTF_FORMAT(1, 2);
 
 }   // namespace athenea::cli

@@ -80,37 +80,45 @@ int runCommand(const char* name, void (*add)(CLI::App&), int argc, const char* c
 
 }   // namespace
 
+// The entry points a host opens by name: exported from the plugin's DLL on
+// Windows, default visibility elsewhere.
+#ifdef _WIN32
+#define ATHENEA_EMBEDDED_ENTRY __declspec(dllexport)
+#else
+#define ATHENEA_EMBEDDED_ENTRY __attribute__((visibility("default")))
+#endif
+
 extern "C" {
 
 /// What the entry points below take; raised when one changes. 2: flatten,
 /// compare and the cancel request.
-__attribute__((visibility("default"))) int athenea_embedded_abi() { return 2; }
+ATHENEA_EMBEDDED_ENTRY int athenea_embedded_abi() { return 2; }
 
 /// Asks the running command to stop, from any thread. mesh2splat looks
 /// between the transfer's slices and between levels of detail; it then
 /// returns 4. A command that is not looking finishes as it would have.
-__attribute__((visibility("default"))) void athenea_request_cancel() { athenea::cli::requestCancel(true); }
+ATHENEA_EMBEDDED_ENTRY void athenea_request_cancel() { athenea::cli::requestCancel(true); }
 
 /// Runs `athenea mesh2splat <argv...>` in this process. `argv` is the
 /// command's arguments, without `athenea mesh2splat`. Returns the command's
 /// exit code (0 done, 1 failure, 2 another command already running, 3 the
 /// GPU out of memory, 4 cancelled); its lines go to `sink` (stdout and stderr when null).
 /// Blocks until the conversion is written; call it off a host's UI thread.
-__attribute__((visibility("default"))) int athenea_mesh2splat(int argc, const char* const* argv,
+ATHENEA_EMBEDDED_ENTRY int athenea_mesh2splat(int argc, const char* const* argv,
                                                                athenea::cli::LineSink sink, void* user) {
     return runCommand("mesh2splat", athenea::cli::addMesh2Splat, argc, argv, sink, user);
 }
 
 /// Runs `athenea flatten <argv...>`: a stage's TX clouds under its sky and
 /// lights, written as standard Gaussian Splatting files. The same contract.
-__attribute__((visibility("default"))) int athenea_flatten(int argc, const char* const* argv,
+ATHENEA_EMBEDDED_ENTRY int athenea_flatten(int argc, const char* const* argv,
                                                             athenea::cli::LineSink sink, void* user) {
     return runCommand("flatten", athenea::cli::addFlatten, argc, argv, sink, user);
 }
 
 /// Runs `athenea compare <argv...>`: two EXRs measured against each other by
 /// the Measure effect (relMSE, p99, a heatmap). The same contract.
-__attribute__((visibility("default"))) int athenea_compare(int argc, const char* const* argv,
+ATHENEA_EMBEDDED_ENTRY int athenea_compare(int argc, const char* const* argv,
                                                             athenea::cli::LineSink sink, void* user) {
     return runCommand("compare", athenea::cli::addCompare, argc, argv, sink, user);
 }
