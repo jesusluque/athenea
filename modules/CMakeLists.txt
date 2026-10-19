@@ -4,8 +4,8 @@ add_subdirectory(core)
 # The viewer's panels, as a description rather than as drawing code: `athenea view`
 # and the iOS app both walk it (modules/ui/include/athenea/ui/Controls.h).
 add_subdirectory(ui)
-if(NOT ATHENEA_IOS)
-    # sched is genlock (PTP), gpu_host is gpe: neither is built for the phone.
+if(ATHENEA_WITH_GENLOCK)
+    # sched is genlock (PTP): not built for the phone, nor without genlock.
     add_subdirectory(sched)
 endif()
 add_subdirectory(image)

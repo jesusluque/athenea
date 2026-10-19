@@ -12,9 +12,15 @@ add_executable(athenea
     src/CmdFlatten.cpp
     src/CmdVisibility.cpp
     src/CmdLights.cpp
-    src/CmdLive.cpp
     src/Output.cpp)
-target_link_libraries(athenea PRIVATE athenea::usd athenea::lod athenea::sched athenea::technique athenea::aofx_host CLI11::CLI11)
+target_link_libraries(athenea PRIVATE athenea::usd athenea::lod athenea::technique athenea::aofx_host CLI11::CLI11)
+if(ATHENEA_WITH_GENLOCK)
+    target_sources(athenea PRIVATE src/CmdLive.cpp)
+    target_link_libraries(athenea PRIVATE athenea::sched)
+    target_compile_definitions(athenea PRIVATE ATHENEA_HAVE_LIVE=1)
+else()
+    target_compile_definitions(athenea PRIVATE ATHENEA_HAVE_LIVE=0)
+endif()
 if(ATHENEA_BUILD_VIEW)
     target_sources(athenea PRIVATE src/CmdView.cpp)
     target_link_libraries(athenea PRIVATE athenea::view)

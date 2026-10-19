@@ -5,10 +5,11 @@
 [submodule "third_party/genlock"]
 	path = third_party/genlock
 	url = https://github.com/jesusluque/genlock.git
+	update = none
 [submodule "third_party/aopenfx"]
 	path = third_party/aopenfx
 	url = https://github.com/jesusluque/aopenfx.git
-	branch = sparrow
+	branch = cuda-half
 [submodule "third_party/openfx"]
 	path = third_party/openfx
 	url = https://github.com/NatronGitHub/openfx

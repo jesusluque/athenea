@@ -168,10 +168,23 @@ else()
     message(STATUS "gpe: the parent project's (backend ${GPE_BACKEND})")
 endif()
 
-if(NOT ATHENEA_IOS AND NOT TARGET genlock::genlock)
+# genlock is optional: only `athenea live` (the sched module) follows a PTP
+# master and stamps ST 2059-1 timecode. Its repository is not public, so a
+# clone without it builds everything else; with it, the option is on.
+if(EXISTS "${ATHENEA_GENLOCK_DIR}/CMakeLists.txt" OR TARGET genlock::genlock)
+    set(_athenea_genlock_default ON)
+else()
+    set(_athenea_genlock_default OFF)
+endif()
+option(ATHENEA_WITH_GENLOCK "Build the sched module and `athenea live` against genlock"
+       ${_athenea_genlock_default})
+if(ATHENEA_IOS)
+    set(ATHENEA_WITH_GENLOCK OFF)
+endif()
+if(ATHENEA_WITH_GENLOCK AND NOT TARGET genlock::genlock)
     if(NOT EXISTS "${ATHENEA_GENLOCK_DIR}/CMakeLists.txt")
-        message(FATAL_ERROR "genlock not found at ${ATHENEA_GENLOCK_DIR}: "
-                            "git submodule update --init --recursive")
+        message(FATAL_ERROR "ATHENEA_WITH_GENLOCK is on but genlock is not at ${ATHENEA_GENLOCK_DIR}: "
+                            "git submodule update --init third_party/genlock, or -DATHENEA_WITH_GENLOCK=OFF")
     endif()
     set(GENLOCK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(GENLOCK_BUILD_TOOLS ON CACHE BOOL "" FORCE)
@@ -183,6 +196,7 @@ if(NOT ATHENEA_IOS AND NOT TARGET genlock::genlock)
         set_target_properties(genlock-cli PROPERTIES EXCLUDE_FROM_ALL FALSE)
     endif()
 endif()
+message(STATUS "genlock (athenea live): ${ATHENEA_WITH_GENLOCK}")
 
 # --- the engine -----------------------------------------------------------------
 

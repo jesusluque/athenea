@@ -49,7 +49,9 @@ int main(int argc, char** argv) {
     athenea::cli::addFlatten(app);
     athenea::cli::addVisibility(app);
     athenea::cli::addLights(app);
+#if ATHENEA_HAVE_LIVE
     athenea::cli::addLive(app);
+#endif
 #if ATHENEA_HAVE_VIEW
     athenea::cli::addView(app);
 #endif

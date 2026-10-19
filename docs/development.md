@@ -1427,8 +1427,13 @@ which slang-rhi has fetched; the driver's loader is opened at run time. On a
 Mac it runs on MoltenVK (`brew install molten-vk vulkan-loader`), which tests
 the backend and nothing about speed.
 
-**Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/genlock`
-tracks `main`. A change to gpe is committed in the submodule, not here.
+**Submodules.** `third_party/gpe` tracks branch `lrt-fixes`, `third_party/aopenfx`
+`cuda-half`, `third_party/genlock` `main`. A change to gpe or aopenfx is
+committed in the submodule and pushed before the pin moves here, so a clone
+finds the pinned commit. genlock's repository is private and its entry has
+`update = none`: a clone skips it and builds without `athenea live`
+(`ATHENEA_WITH_GENLOCK` off); `git submodule update --init --checkout
+third_party/genlock` brings it back where it is available.
 
 **Licences.** athenea is Apache-2.0: `LICENSE` and `NOTICE` at the root. Every
 third-party component the tree holds, compiles in or links is listed in
@@ -1510,6 +1515,7 @@ it was written for builds it inside its own tree -- and the same
 | `ATHENEA_BUILD_PLUGINS` | the bundles under `plugins/` | `ON` |
 | `ATHENEA_BUILD_OFX` | `Athenea.ofx.bundle`, the OpenFX plugin under `integrations/ofx` (macOS and Linux; it links only `third_party/openfx`'s support library and drives `athenea-mcp`) | `ON` |
 | `ATHENEA_BUILD_VIEW` | `athenea view` (GLFW, Dear ImGui) | `ON` |
+| `ATHENEA_WITH_GENLOCK` | the sched module, `athenea live` and their tests, against genlock | `ON` when `third_party/genlock` is checked out, `OFF` otherwise and on iOS |
 | `ATHENEA_SHADER_OUTPUT_DIR` | where the shaders are copied for the run-time compiler | `<build>/shaders` |
 | `AOFX_BUNDLE_DIR` | where `aofx_add_bundle` puts a bundle | `<build>/aofx` |
 | `AOFX_BUNDLE_ID_PREFIX` | the reverse-DNS prefix in a bundle's `Info.plist` | `rt.sparrow.aofxp.` |

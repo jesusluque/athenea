@@ -219,9 +219,11 @@ add_test(NAME aofx_sdk_manifest
             -DMANIFEST=${CMAKE_CURRENT_SOURCE_DIR}/aofx/sdk_manifest.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/aofx/CheckSdkManifest.cmake)
 
-athenea_test(athenea_sched_tests
-    SOURCES sched/test_clock.cpp
-    LIBS athenea::sched athenea::io)
+if(ATHENEA_WITH_GENLOCK)
+    athenea_test(athenea_sched_tests
+        SOURCES sched/test_clock.cpp
+        LIBS athenea::sched athenea::io)
+endif()
 
 # The density a mesh gets is the box it is measured over: two planes twenty
 # times apart in size, converted with one grid over the pair and then each

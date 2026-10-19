@@ -425,7 +425,8 @@ athenea view car_gs.usdc --isolate /root/Kapoot/Object_57 --frames 10 --snapshot
 ### 2.7 `athenea live` — a stage on a clock
 
 Each frame is drawn for its ST 2059-1 instant, free-running on this machine's
-clock or following a PTP master.
+clock or following a PTP master. The subcommand exists only in a build with
+genlock (`ATHENEA_WITH_GENLOCK`, on when `third_party/genlock` is checked out).
 
 | Option | Value | Default | Notes |
 |---|---|---|---|

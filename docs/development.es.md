@@ -1494,8 +1494,12 @@ driver se abre en tiempo de ejecución. En un Mac corre sobre MoltenVK
 velocidad.
 
 **Submódulos.** `third_party/gpe` sigue la rama `lrt-fixes`,
-`third_party/genlock` sigue `main`. Un cambio en gpe se commitea en el
-submódulo, no aquí.
+`third_party/aopenfx` `cuda-half`, `third_party/genlock` `main`. Un cambio en
+gpe o aopenfx se commitea en el submódulo y se sube antes de mover el pin aquí,
+para que un clon encuentre el commit fijado. El repositorio de genlock es
+privado y su entrada lleva `update = none`: un clon lo omite y compila sin
+`athenea live` (`ATHENEA_WITH_GENLOCK` apagado); `git submodule update --init
+--checkout third_party/genlock` lo trae donde está disponible.
 
 **Licencias.** athenea es Apache-2.0: `LICENSE` y `NOTICE` en la raíz. Cada
 componente de terceros que el árbol contiene, compila dentro o enlaza está en
@@ -1579,6 +1583,7 @@ antes de `add_subdirectory`:
 | `ATHENEA_BUILD_PLUGINS` | los bundles de `plugins/` | `ON` |
 | `ATHENEA_BUILD_OFX` | `Athenea.ofx.bundle`, el plugin OpenFX de `integrations/ofx` (macOS y Linux; enlaza solo la biblioteca de soporte de `third_party/openfx` y maneja `athenea-mcp`) | `ON` |
 | `ATHENEA_BUILD_VIEW` | `athenea view` (GLFW, Dear ImGui) | `ON` |
+| `ATHENEA_WITH_GENLOCK` | el módulo sched, `athenea live` y sus tests, contra genlock | `ON` si `third_party/genlock` está descargado; `OFF` si no y en iOS |
 | `ATHENEA_SHADER_OUTPUT_DIR` | dónde se copian los shaders para el compilador en tiempo de ejecución | `<build>/shaders` |
 | `AOFX_BUNDLE_DIR` | dónde deja un bundle `aofx_add_bundle` | `<build>/aofx` |
 | `AOFX_BUNDLE_ID_PREFIX` | el prefijo DNS inverso del `Info.plist` de un bundle | `rt.sparrow.aofxp.` |

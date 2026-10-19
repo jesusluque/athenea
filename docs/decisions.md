@@ -14862,3 +14862,13 @@ bounce, its open cells, its reflected field, emission, the light the cloud carri
 roughness (`splatParameterColour`). On the pawn at 768 x 768 a view costs 20-60 ms. Values that are not colours
 are scaled to be seen -- a size on a logarithmic ramp, a normal as `n / 2 + 1/2` -- and a cloud that is not relit
 has only its light, opacity and size to show.
+
+## A clone of the public repository builds (19 Oct)
+
+The repository is public, and a clone of the trunk did not build: the aopenfx and gpe pins were commits that
+existed only on the machine that made them, and genlock, a submodule, is a private repository. The pins are now
+pushed to their branches (gpe `lrt-fixes`, aopenfx `cuda-half`, which `.gitmodules` now names) before they move
+here. genlock is optional: `ATHENEA_WITH_GENLOCK` is on when `third_party/genlock` is checked out, and its
+`.gitmodules` entry has `update = none`, so a recursive clone skips it. Only `athenea live` follows a PTP master
+and stamps ST 2059-1 timecode -- the sched module, the subcommand and their tests -- so without genlock that one
+subcommand is missing and everything else builds as before.

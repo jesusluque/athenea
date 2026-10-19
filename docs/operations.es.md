@@ -433,7 +433,8 @@ athenea view car_gs.usdc --isolate /root/Kapoot/Object_57 --frames 10 --snapshot
 ### 2.7 `athenea live` — una escena sobre un reloj
 
 Cada frame se dibuja para su instante ST 2059-1, libre sobre el reloj de esta
-máquina o siguiendo a un maestro PTP.
+máquina o siguiendo a un maestro PTP. El subcomando existe solo en un build con
+genlock (`ATHENEA_WITH_GENLOCK`, activo cuando `third_party/genlock` está descargado).
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
