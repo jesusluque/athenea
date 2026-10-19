@@ -12,9 +12,9 @@ if(NOT EXISTS "${ATHENEA_OPENFX_DIR}/include/ofxImageEffect.h")
 endif()
 
 file(GLOB _ofx_support_sources "${ATHENEA_OPENFX_DIR}/Support/Library/*.cpp")
-if(NOT WIN32)
-    list(FILTER _ofx_support_sources EXCLUDE REGEX "ofxsHWNDInteract")
-endif()
+# The node draws no interact, so the Windows interact wrapper (which needs an
+# extension header this OpenFX does not carry) is left out everywhere.
+list(FILTER _ofx_support_sources EXCLUDE REGEX "ofxsHWNDInteract")
 add_library(athenea_ofx_support STATIC ${_ofx_support_sources})
 target_include_directories(athenea_ofx_support PUBLIC "${ATHENEA_OPENFX_DIR}/include"
                                                      "${ATHENEA_OPENFX_DIR}/Support/include")
@@ -22,6 +22,11 @@ target_include_directories(athenea_ofx_support PUBLIC "${ATHENEA_OPENFX_DIR}/inc
 # library carries the multi-plane extension -- Foundry's planes for Nuke,
 # Natron's custom ones -- which is how a node hands a compositor its layers.
 target_compile_definitions(athenea_ofx_support PUBLIC OFX_EXTENSIONS_NUKE OFX_EXTENSIONS_NATRON)
+# The support library's headers name std::auto_ptr under MSVC, which C++17
+# removed; MSVC's library keeps it behind this switch.
+if(MSVC)
+    target_compile_definitions(athenea_ofx_support PUBLIC _HAS_AUTO_PTR_ETC=1)
+endif()
 set_target_properties(athenea_ofx_support PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_VISIBILITY_PRESET hidden)
 # The support library is OpenFX's, not this project's: its warnings are not ours to fix.
 target_compile_options(athenea_ofx_support PRIVATE $<IF:$<CXX_COMPILER_ID:MSVC>,/w,-w>)
