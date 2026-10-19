@@ -14278,6 +14278,18 @@ spells a custom plane with a channels label the node does not write (`..._Channe
 matched by its name (`OFX::extractCustomPlane`), not by the whole string. Natron's writer defaults to half floats,
 which would round a Cryptomatte id into another: the matte wants `bitDepth` 32f.
 
+**One server for the host.** Natron renders a sequence on several threads and makes an instance of the node for
+each, and the server was an instance's: 24 frames of the Corvette's transfer cloud (`corvette-lights/clouds/base_tx`,
+3 M gaussians, 2.9 GB) started 12 servers, each loading the car, and most frames took 11-12 s. The server is now the
+plugin's, one for the process under one lock. The same 24 frames at 1920 x 1080, every plane, from the scene's
+camera, NatronRenderer to 32-bit multi-layer EXRs (server times, `ATHENEA_OFX_DEBUG`): the first frame 7.5 s (the
+stage opened and uploaded), frames 2-12 with a still sky 120-170 ms, frames 13-24 with the sky turning every frame
+190-220 ms; the 24 frames 14 s from the first render to the last write. Natron also handed the node a pixel aspect
+of NaN from some threads (`getProjectPixelAspectRatio`), which made the vertical aperture NaN; the node now takes
+the image's own aspect, and refuses a request with a number that is not finite, naming it, rather than sending it.
+The server, for its part, answers an argument of the wrong type as the call's error instead of ending on the JSON
+library's exception.
+
 Not done: the order of Nuke's rotations is read from its documentation, not yet checked in Nuke; Nuke's own camera
 input (its OpenFX camera extension) in place of linked knobs; normals and motion vectors of gaussians, which the
 rasteriser does not write (the skinned wings' motion first); the sky as an image input of the node rather than a

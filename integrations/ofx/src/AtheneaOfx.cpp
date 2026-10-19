@@ -246,10 +246,13 @@ public:
         request.camera.focal = focal_->getValueAtTime(args.time);
         request.camera.haperture = haperture_->getValueAtTime(args.time);
         // The vertical aperture the format's own aspect gives, pixel aspect
-        // counted, unless one is set: Nuke fits the horizontal one.
+        // counted, unless one is set: Nuke fits the horizontal one. The
+        // aspect is the image's own; Natron's project answers NaN from some
+        // render threads.
         const double asked = vaperture_->getValueAtTime(args.time);
-        request.camera.vaperture =
-            asked > 0.0 ? asked : request.camera.haperture * height / (width * getProjectPixelAspectRatio());
+        double aspect = targets.front().image->getPixelAspectRatio();
+        if (!(aspect > 0.0) || !std::isfinite(aspect)) aspect = 1.0;
+        request.camera.vaperture = asked > 0.0 ? asked : request.camera.haperture * height / (width * aspect);
         request.camera.nearZ = near_->getValueAtTime(args.time);
         request.camera.farZ = far_->getValueAtTime(args.time);
         sky_->getValueAtTime(args.time, request.sky);
@@ -265,11 +268,14 @@ public:
         athenea::ofx::Frame frame;
         std::string error;
         {
-            // One frame at a time to one server: the host may call render
-            // from several threads, and the server answers one call at once.
-            std::lock_guard<std::mutex> hold(lock_);
-            if (!server_) server_ = std::make_unique<athenea::ofx::RenderServer>();
-            if (!server_->render(request, frame, error)) {
+            // One frame at a time to one server for the whole host: a host
+            // renders frames on several threads and may make an instance for
+            // each (Natron does), and a server per instance is one more copy
+            // of the cloud loaded and on the device. The server answers one
+            // call at once, and keeps the stage open between them.
+            std::lock_guard<std::mutex> hold(serverLock());
+            if (!sharedServer()) sharedServer() = std::make_unique<athenea::ofx::RenderServer>();
+            if (!sharedServer()->render(request, frame, error)) {
                 sendMessage(OFX::Message::eMessageError, "", "Athenea 3DGS: " + error);
                 OFX::throwSuiteStatusException(kOfxStatFailed);
             }
@@ -329,8 +335,14 @@ private:
     OFX::DoubleParam*  skyRotation_ = nullptr;
     OFX::BooleanParam* skyVisible_ = nullptr;
     OFX::ChoiceParam*  outputLayer_ = nullptr;
-    std::mutex         lock_;
-    std::unique_ptr<athenea::ofx::RenderServer> server_;
+    static std::mutex& serverLock() {
+        static std::mutex lock;
+        return lock;
+    }
+    static std::unique_ptr<athenea::ofx::RenderServer>& sharedServer() {
+        static std::unique_ptr<athenea::ofx::RenderServer> server;
+        return server;
+    }
 };
 
 OFX::DoubleParamDescriptor* number(OFX::ImageEffectDescriptor& desc, OFX::PageParamDescriptor& page,

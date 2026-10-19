@@ -5,6 +5,7 @@
 #include "RenderServer.h"
 
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -219,6 +220,25 @@ bool RenderServer::render(const FrameRequest& request, Frame& frame, std::string
         if (request.camera.vaperture > 0.0) {
             args["vaperture"] = request.camera.vaperture;
         }
+        // A number that is not finite travels as null and is refused: say
+        // which before sending (a host that hands an unset knob as NaN).
+        for (const auto& [key, value] : args.items()) {
+            const auto finite = [](const json& v) { return !v.is_number_float() || std::isfinite(v.get<double>()); };
+            bool ok = finite(value);
+            if (value.is_array()) {
+                for (const json& item : value) ok = ok && finite(item);
+            }
+            if (!ok) {
+                error = "'" + key + "' is not a finite number";
+                if (std::getenv("ATHENEA_OFX_DEBUG") != nullptr) {
+                    std::fprintf(stderr, "athenea-ofx: %s: %s\n", error.c_str(), args.dump().c_str());
+                }
+                return false;
+            }
+        }
+        if (std::getenv("ATHENEA_OFX_DEBUG") != nullptr) {
+            std::fprintf(stderr, "athenea-ofx: render %s\n", args.dump().c_str());
+        }
         json call{{"jsonrpc", "2.0"},
                   {"id", impl_->nextId++},
                   {"method", "tools/call"},
@@ -227,6 +247,10 @@ bool RenderServer::render(const FrameRequest& request, Frame& frame, std::string
         if (!impl_->call(call, reply, error)) {
             impl_->stop();
             continue;
+        }
+        if (std::getenv("ATHENEA_OFX_DEBUG") != nullptr && reply.contains("content") && reply["content"].is_array() &&
+            !reply["content"].empty()) {
+            std::fprintf(stderr, "athenea-ofx: %s\n", reply["content"][0].value("text", std::string{}).c_str());
         }
         if (reply.value("isError", false)) {
             error = reply["content"].is_array() && !reply["content"].empty()

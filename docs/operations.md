@@ -63,6 +63,7 @@ relative to themselves. Under WSL2 a bake is refused: WSL2 does not load OptiX.
 | `ATHENEA_MATERIALX_ROOT` | a directory holding MaterialX's `libraries/`, read by hdAthenea's material compiler in place of the libraries the host's USD loaded. Unset by default: the host's are used. For a host whose MaterialX predates the Slang generator (Blender 5.3 ships 1.39.4: no `genslang` implementations, older node definitions), pointed at 1.39.5's. Read once, when the first material compiles; the host's own renderers keep theirs. |
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. After those come `aofx/` beside the executable's folder (a release's layout) and the build tree's bundles. |
 | `ATHENEA_MCP` | the server the OpenFX plugin starts (§6.1), in place of the `athenea-mcp` its bundle carries in `Contents/Resources/bin`, and of one on the `PATH`. |
+| `ATHENEA_OFX_DEBUG` | set to anything: the OpenFX plugin prints each frame's request and the server's answer (its time) on standard error. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_GPU_VALIDATION` | any value: the graphics API's validation and debug layers (D3D12's needs Windows' Graphics Tools), for a failure the driver otherwise gives no reason for, such as a pipeline it cannot make. Slow. |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
@@ -1864,7 +1865,9 @@ process the first time it renders and keeps it, with the cloud open, for the
 frames after; each frame comes back through a file in the temporary
 directory, never as a picture. A server that dies is started again for the
 next frame. The bundle carries the server in `Contents/Resources/bin`;
-`ATHENEA_MCP` names another.
+`ATHENEA_MCP` names another. There is one server for the whole host process,
+whatever number of instances of the node the host makes (Natron makes one per
+render thread), so a cloud is loaded once.
 
 To install it, copy or link the bundle into a directory the host searches: on
 macOS `/Library/OFX/Plugins`, or a directory in `OFX_PLUGIN_PATH`.
