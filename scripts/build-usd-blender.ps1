@@ -74,13 +74,15 @@ cmake -S "$src\MaterialX-1.39.4" -B "$work\materialx" -G Ninja -DCMAKE_BUILD_TYP
 cmake --build "$work\materialx" -j $jobs; Run "materialx build"
 cmake --install "$work\materialx" | Out-Null
 
-# OpenSubdiv 3.7.0: its headers.
-$osd = "$src\OpenSubdiv-3.7.0\opensubdiv"
-Get-ChildItem $osd -Recurse -Filter *.h | ForEach-Object {
-    $to = Join-Path "$prefix\include\opensubdiv" $_.FullName.Substring($osd.Length + 1)
-    New-Item -ItemType Directory -Force -Path (Split-Path $to) | Out-Null
-    Copy-Item $_.FullName $to -Force
-}
+# OpenSubdiv 3.7.0: Blender links it into usd_ms.dll and ships no osd*.dll, so
+# it is built here (CPU only) for USD's configure to find; the plugin uses
+# its headers alone.
+cmake -S "$src\OpenSubdiv-3.7.0" -B "$work\opensubdiv" -G Ninja -DCMAKE_BUILD_TYPE=Release `
+    "-DCMAKE_INSTALL_PREFIX=$prefix" -DNO_EXAMPLES=ON -DNO_TUTORIALS=ON -DNO_REGRESSION=ON -DNO_DOC=ON `
+    -DNO_TESTS=ON -DNO_GLTESTS=ON -DNO_OMP=ON -DNO_TBB=ON -DNO_CUDA=ON -DNO_OPENCL=ON -DNO_DX=ON `
+    -DNO_GLEW=ON -DNO_GLFW=ON -DNO_PTEX=ON -DNO_METAL=ON | Out-Null; Run "opensubdiv configure"
+cmake --build "$work\opensubdiv" -j $jobs; Run "opensubdiv build"
+cmake --install "$work\opensubdiv" | Out-Null
 
 # OpenUSD, Blender's way: its constructor sections renamed (usd_ctor.diff), on
 # a copy of the sources.
