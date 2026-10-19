@@ -55,8 +55,8 @@ El add-on hace de athenea el motor de render de Blender: el viewport y F12 dibuj
 | 4. Juicio | `athenea compare` | el error relativo HDR y la distribución de códigos de 8 bits entre las dos imágenes, medidos en la GPU |
 
 <figure markdown>
-  ![El peón del Open Chess Set como Gaussians con relight y como mallas con path trace](assets/pawn-gs-pt.png)
-  <figcaption>El peón del Open Chess Set de la ASWF (CC BY 4.0): a la izquierda, su nube de Gaussians con relight al dibujar; a la derecha, las mallas con path trace. Misma cámara y luz. Véanse los <a href="tutorials/usd-to-cloud/">tutoriales</a> y los <a href="credits/">créditos</a>.</figcaption>
+  ![El peón del Open Chess Set como Gaussians con relight y como mallas con path trace](assets/pawn-gs-pt.jpg)
+  <figcaption>El peón del Open Chess Set de la ASWF (CC BY 4.0): a la izquierda, su nube de Gaussians con relight al dibujar; a la derecha, las mallas con path trace (1024 caminos por píxel). Misma cámara y mismo cielo: PSNR 35,7 dB, SSIM 0,97. Véanse los <a href="tutorials/render-compare/">tutoriales</a> y los <a href="credits/">créditos</a>.</figcaption>
 </figure>
 
 ## Ejemplo y material de prueba: el peón

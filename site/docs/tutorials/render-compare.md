@@ -23,8 +23,8 @@ athenea stage mesh.usda --camera /World/Camera --technique rt \
 `--technique rt` path traces the meshes with their materials; `--path-total 1024` draws until every pixel holds 1024 paths, and `--denoise` runs Open Image Denoise once it does. This frame took **155 s**.
 
 <figure markdown>
-  ![The pawn as relit Gaussians (left) and path traced as meshes (right)](../assets/pawn-gs-pt.png)
-  <figcaption>Left: the cloud, relit at draw time. Right: the meshes, path traced with 1024 paths a pixel. Same camera, dome and sun.</figcaption>
+  ![The pawn as relit Gaussians (left) and path traced as meshes (right)](../assets/pawn-gs-pt.jpg)
+  <figcaption>Left: the cloud, relit at draw time. Right: the meshes, path traced with 1024 paths a pixel and denoised. Same camera and sky (the workshop), 1024 × 1024: the scene of the <a href="https://github.com/jesusluque/athenea/releases/download/v0.3.0/athenea-example-pawn.zip">example package</a>.</figcaption>
 </figure>
 
 ## The measurement
@@ -34,10 +34,11 @@ athenea compare gs.exr pt.exr
 ```
 
 ```text
-image     mean 0.736384 0.794351 0.921122 1   max 12.2266 8.60938 3.81445 1   (2073600 pixels)
-reference mean 0.732241 0.790268 0.916906 1   max 11.2812 10.9688 10.1328 1   (2073600 pixels)
-hdr       relMSE 0.043379   p99 relative 2.181   max relative 279.2
-8-bit     p99 60   max 225   over 2: 164522 of 2073600 pixels
+image     mean 0.283718 0.288465 0.266441 1   max 7.66797 8.38281 6.72266 1   (1048576 pixels)
+reference mean 0.283444 0.288235 0.266429 1   max 8.14844 11.3281 7.64453 1   (1048576 pixels)
+hdr       relMSE 0.00378711   p99 relative 0.3856   max relative 117.4
+8-bit     p99 18   max 128   over 2: 223380 of 1048576 pixels
+display   PSNR 35.73 dB   SSIM 0.9700
 ```
 
 | Line | What it says |
@@ -45,17 +46,18 @@ hdr       relMSE 0.043379   p99 relative 2.181   max relative 279.2
 | `image`, `reference` | the mean and the largest value of each channel of the cloud's frame and of the path trace |
 | `hdr` | the relative HDR error of the first against the second: `relMSE`, its 99th percentile and its largest value |
 | `8-bit` | the difference in 8-bit sRGB code values: the 99th percentile, the largest, and the pixels that differ by more than 2 |
+| `display` | the PSNR and SSIM of the two images as displayed |
 
-Most of this frame is the sky behind the pawn, so the means over the whole frame are close. `--window X0 Y0 X1 Y1` restricts the means to a region (rows counted from the bottom); the differences are always over the whole image. `--heatmap` writes the Measure effect's picture of where the two differ:
+Most of this frame is the workshop behind the pawn, so the means over the whole frame are close. `--window X0 Y0 X1 Y1` restricts the means to a region (rows counted from the bottom); the differences are always over the whole image. `--heatmap` writes the Measure effect's picture of where the two differ:
 
 ```sh
-athenea compare gs.exr pt.exr --window 700 140 1220 680        # the body
+athenea compare gs.exr pt.exr --window 230 150 470 470        # the body
 athenea compare gs.exr pt.exr --heatmap rel.exr --show relative --gain 4
 ```
 
 ## Reading the comparison
 
-The marble body, its veins, the gold ring and the highlights stand where the path trace has them. The glass head is the visible difference. Drawn as Gaussians the glass head reads lighter and less saturated than the path-traced solid glass. A fully transmitting solid keeps the coverage `--glass-opacity` gives it (0.6 by default); its Gaussians look up the environment along the refracted direction, but the scene behind them is seen straight through that coverage, not bent as through the traced glass.
+The marble body, its veins, the gold ring, the highlights and the glass head, with the workshop refracted upside down inside it, stand where the path trace has them: relMSE 0.0038, PSNR 35.7 dB and SSIM 0.97 over the whole frame. What is left is at the edges and in the smallest highlights (an 8-bit 99th percentile of 18 codes), where a Gaussian covers a region and the path trace resolves the pixel.
 
 The same four steps apply to any asset: a layer with the camera and the lights, the meshes and the cloud each referenced under it, a conversion with the camera's cell, and the two frames measured against each other region by region.
 

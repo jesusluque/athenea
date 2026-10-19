@@ -53,8 +53,8 @@ The add-on makes athenea Blender's render engine: the viewport and F12 draw the 
 | 4. Judgement | `athenea compare` | the relative HDR error and the 8-bit code-value distribution between the two images, measured on the GPU |
 
 <figure markdown>
-  ![The Open Chess Set pawn as relit Gaussians and path traced as meshes](assets/pawn-gs-pt.png)
-  <figcaption>The pawn of the ASWF Open Chess Set (CC BY 4.0): left, its Gaussian cloud relit at draw time; right, the meshes path traced. Same camera and light. See the <a href="tutorials/usd-to-cloud/">tutorials</a> and the <a href="credits/">credits</a>.</figcaption>
+  ![The Open Chess Set pawn as relit Gaussians and path traced as meshes](assets/pawn-gs-pt.jpg)
+  <figcaption>The pawn of the ASWF Open Chess Set (CC BY 4.0): left, its Gaussian cloud relit at draw time; right, the meshes path traced (1024 paths a pixel). Same camera and sky: PSNR 35.7 dB, SSIM 0.97. See the <a href="tutorials/render-compare/">tutorials</a> and the <a href="credits/">credits</a>.</figcaption>
 </figure>
 
 ## Example and test material: the pawn
