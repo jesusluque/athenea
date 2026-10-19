@@ -27,6 +27,7 @@
 // still lights.
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -119,7 +120,7 @@ Mat multiply(const Mat& a, const Mat& b) {
 }
 
 Mat rotationAbout(char axis, double degrees) {
-    const double t = degrees * M_PI / 180.0;
+    const double t = degrees * std::numbers::pi / 180.0;
     const double c = std::cos(t);
     const double s = std::sin(t);
     switch (axis) {

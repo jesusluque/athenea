@@ -28,6 +28,10 @@ add_library(athenea_ofx_host_support STATIC ${_ofx_host_support_sources})
 target_include_directories(athenea_ofx_host_support PUBLIC "${ATHENEA_OPENFX_DIR}/include"
                                                           "${ATHENEA_OPENFX_DIR}/HostSupport/include")
 target_link_libraries(athenea_ofx_host_support PUBLIC EXPAT::EXPAT ${CMAKE_DL_LIBS})
+if(MSVC)
+    # HostSupport names std::auto_ptr, which MSVC keeps behind this switch.
+    target_compile_definitions(athenea_ofx_host_support PUBLIC _HAS_AUTO_PTR_ETC=1)
+endif()
 # OpenFX's code, not this project's: its warnings are not ours to fix.
 target_compile_options(athenea_ofx_host_support PRIVATE $<IF:$<CXX_COMPILER_ID:MSVC>,/w,-w>)
 
