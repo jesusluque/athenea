@@ -653,6 +653,8 @@ textura es su atlas, leída en las mismas coordenadas.
 | `--pass-samples` | caminos | `32` | `--extra-samples`: caminos por texel en cada pasada extra |
 | `--max-passes` | entero | `16` | `--extra-samples`: pasadas extra por texel como mucho |
 | `--no-denoise` | flag | con denoise | deja el atlas tal como se trazó |
+| `--planar` | flag | apagado | un atlas sobre el rectángulo horizontal que cubren las mallas (con `--prim`, un suelo), tengan las coordenadas que tengan, y `<name>.json` al lado; no se escribe stage |
+| `--name` | texto | `lightmap_<atlas>` | el nombre de los ficheros, sin extensión |
 | `--prim` | ruta de prim | todas las mallas | |
 | `--time` | número | `0` | time code de USD |
 | `--default-lights` | flag | apagado | un dome y un sol para un stage que no tiene luces |
@@ -665,6 +667,14 @@ propio trazador de caminos (el de `mesh2splat`), de grado 0: lo que emite la
 superficie, igual en todas las direcciones -- un lightmap no guarda luz que
 dependa de la vista, y sus reflejos son de otra pasada
 (`athenea:screenSpaceReflections`).
+
+**Planar.** Con `--planar` los texels se reparten sobre el rectángulo que
+cubren las cajas de las mallas en el mundo, sobre los dos ejes horizontales
+del stage: u por +x, v por +y con Z arriba (por -z con Y arriba), uv (0, 0)
+en la esquina menor, el atlas entero para ese rectángulo -- para un suelo que
+un host dibuja como un quad. `<name>.json` dice dónde: las cuatro esquinas en
+el marco del stage y en uno con Y arriba (x, z, -y), la altura (lo más alto
+de las cajas), los ejes, y los texels por metro en u y en v.
 
 **Con denoise.** Si el build lleva OIDN, el atlas pasa por el denoiser en su
 propio espacio, guiado por el albedo que el horneado lee en cada texel y por

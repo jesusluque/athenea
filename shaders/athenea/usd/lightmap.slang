@@ -34,8 +34,11 @@ struct CoverParams {
     uint   hasNormals;      // 1 a point's, 2 a face corner's, 0 none: the triangle's own
     uint   mesh;            // this mesh's number, written into the texels it claims (plus one)
     float  offset;          // how far above the surface a bake ray starts, world units
-    uint   pad0;
+    uint   planar;          // 1: the coordinates are the world's, over `planarOrigin` along the two axes
     uint   pad1;
+    float4 planarOrigin;    // the rectangle's corner at uv (0, 0)
+    float4 planarU;         // the u axis over the rectangle's length along it
+    float4 planarV;         // the v axis, the same
 };
 
 ConstantBuffer<CoverParams>  cover;
@@ -69,12 +72,21 @@ void lightmapCover(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float size = float(cover.size);
-    const float2 u0 = uvs[elementOf(cover.uvInterpolation, t, 0)].xy * size;
-    const float2 u1 = uvs[elementOf(cover.uvInterpolation, t, 1)].xy * size;
-    const float2 u2 = uvs[elementOf(cover.uvInterpolation, t, 2)].xy * size;
     const float3 p0 = toWorldPoint(positions[indices[t * 3]].xyz);
     const float3 p1 = toWorldPoint(positions[indices[t * 3 + 1]].xyz);
     const float3 p2 = toWorldPoint(positions[indices[t * 3 + 2]].xyz);
+    float2 u0, u1, u2;
+    if (cover.planar != 0) {
+        // A PLANE'S OWN COORDINATES: where each corner stands over the
+        // rectangle, whatever coordinates the mesh carries.
+        u0 = float2(dot(p0 - cover.planarOrigin.xyz, cover.planarU.xyz), dot(p0 - cover.planarOrigin.xyz, cover.planarV.xyz)) * size;
+        u1 = float2(dot(p1 - cover.planarOrigin.xyz, cover.planarU.xyz), dot(p1 - cover.planarOrigin.xyz, cover.planarV.xyz)) * size;
+        u2 = float2(dot(p2 - cover.planarOrigin.xyz, cover.planarU.xyz), dot(p2 - cover.planarOrigin.xyz, cover.planarV.xyz)) * size;
+    } else {
+        u0 = uvs[elementOf(cover.uvInterpolation, t, 0)].xy * size;
+        u1 = uvs[elementOf(cover.uvInterpolation, t, 1)].xy * size;
+        u2 = uvs[elementOf(cover.uvInterpolation, t, 2)].xy * size;
+    }
     const float2 e1 = u1 - u0;
     const float2 e2 = u2 - u0;
     const float area = e1.x * e2.y - e1.y * e2.x;   // twice the triangle's, in texels

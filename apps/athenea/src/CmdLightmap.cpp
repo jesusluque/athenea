@@ -96,7 +96,8 @@ void addLightmap(CLI::App& app) {
         std::string stage, output = "lightmap", uv = "st_lightmap", prim;
         uint32_t size = 1024, samples = 64, bounces = 3, dilate = 8, extraSamples = 0, passSamples = 32,
                  maxPasses = 16;
-        bool noDenoise = false;
+        bool noDenoise = false, planar = false;
+        std::string name;
         double time = 0.0;
         bool defaultLights = false;
     };
@@ -116,6 +117,10 @@ void addLightmap(CLI::App& app) {
     cmd->add_option("--pass-samples", o->passSamples, "--extra-samples: paths a texel an extra pass");
     cmd->add_option("--max-passes", o->maxPasses, "--extra-samples: extra passes a texel at most");
     cmd->add_flag("--no-denoise", o->noDenoise, "leave the atlas as traced (by default OIDN denoises it)");
+    cmd->add_flag("--planar", o->planar,
+                  "one atlas over the horizontal rectangle the meshes span (--prim), whatever coordinates they carry; "
+                  "its corners written beside it (<name>.json)");
+    cmd->add_option("--name", o->name, "the files' name without extension (default lightmap_<atlas>)");
     cmd->add_option("--prim", o->prim, "only meshes at or under this prim path");
     cmd->add_option("--time", o->time, "USD time code");
     cmd->add_flag("--default-lights", o->defaultLights, "a dome and a sun, for a stage with no lights");
@@ -140,6 +145,8 @@ void addLightmap(CLI::App& app) {
             std::vector<std::string> meshes;
         };
         std::vector<Atlas> atlases;
+        char up = 'y';
+        std::array<float, 3> boxMin{0, 0, 0}, boxMax{0, 0, 0};
         Result<void> inside = ok();
         auto ran = context->run([&] {
             inside = [&]() -> Result<void> {
@@ -156,8 +163,28 @@ void addLightmap(CLI::App& app) {
                 if (!meshes) return std::move(meshes).error();
                 std::map<int32_t, std::vector<const usd::StageMesh*>> byAtlas;
                 for (const usd::StageMesh& m : *meshes) {
-                    if (m.hasExtraUv && m.path.find('[') == std::string::npos) {
-                        byAtlas[std::max(m.lightmapAtlas, 0)].push_back(&m);
+                    if ((o->planar || m.hasExtraUv) && m.path.find('[') == std::string::npos) {
+                        byAtlas[o->planar ? 0 : std::max(m.lightmapAtlas, 0)].push_back(&m);
+                    }
+                }
+                // THE PLANE'S RECTANGLE: the meshes' boxes in the world, over
+                // the two horizontal axes of the stage's up axis.
+                up = stage->upAxis();
+                if (o->planar) {
+                    bool any = false;
+                    for (const usd::StageMesh* m : byAtlas[0]) {
+                        for (int c = 0; c < 8; ++c) {
+                            const std::array<float, 3> p{(c & 1) ? m->mesh.bounds.max[0] : m->mesh.bounds.min[0],
+                                                         (c & 2) ? m->mesh.bounds.max[1] : m->mesh.bounds.min[1],
+                                                         (c & 4) ? m->mesh.bounds.max[2] : m->mesh.bounds.min[2]};
+                            for (int a = 0; a < 3; ++a) {
+                                const float w = m->toWorld[a * 4] * p[0] + m->toWorld[a * 4 + 1] * p[1] +
+                                                m->toWorld[a * 4 + 2] * p[2] + m->toWorld[a * 4 + 3];
+                                boxMin[a] = any ? std::min(boxMin[a], w) : w;
+                                boxMax[a] = any ? std::max(boxMax[a], w) : w;
+                            }
+                            any = true;
+                        }
                     }
                 }
                 if (byAtlas.empty()) {
@@ -225,7 +252,7 @@ void addLightmap(CLI::App& app) {
                             }
                             return p->interpolation == geom::Interpolation::FaceVarying ? 2u : 0u;
                         };
-                        if (interpolation(uv) == 0 || m->mesh.triangles == 0) {
+                        if ((!o->planar && interpolation(uv) == 0) || m->mesh.triangles == 0) {
                             continue;
                         }
                         made.meshes.push_back(m->path);
@@ -244,11 +271,29 @@ void addLightmap(CLI::App& app) {
                             p["hasNormals"].setData(interpolation(n));
                             p["mesh"].setData(number);
                             p["offset"].setData(1.0e-3F);
+                            // u along the first horizontal axis, v along the
+                            // second: x and y under Z up, x and -z under Y up.
+                            const int across = up == 'z' ? 1 : 2;
+                            const float spanU = std::max(boxMax[0] - boxMin[0], 1.0e-6F);
+                            const float spanV = std::max(boxMax[across] - boxMin[across], 1.0e-6F);
+                            std::array<float, 4> origin{boxMin[0], boxMin[1], boxMin[2], 0.0F};
+                            std::array<float, 4> axisU{1.0F / spanU, 0.0F, 0.0F, 0.0F};
+                            std::array<float, 4> axisV{0.0F, 0.0F, 0.0F, 0.0F};
+                            if (up == 'z') {
+                                axisV[1] = 1.0F / spanV;
+                            } else {
+                                origin[2] = boxMax[2];
+                                axisV[2] = -1.0F / spanV;
+                            }
+                            p["planar"].setData(uint32_t{o->planar ? 1u : 0u});
+                            p["planarOrigin"].setData(origin.data(), sizeof(float) * 4);
+                            p["planarU"].setData(axisU.data(), sizeof(float) * 4);
+                            p["planarV"].setData(axisV.data(), sizeof(float) * 4);
                             c["positions"].setBinding(m->mesh.positions.rhi());
                             c["indices"].setBinding(m->mesh.indices.rhi());
                             c["corners"].setBinding(m->mesh.triangleCorners.rhi());
-                            c["uvs"].setBinding(uv->values.rhi());
-                            c["normals"].setBinding(n != nullptr ? n->values.rhi() : uv->values.rhi());
+                            c["uvs"].setBinding(uv != nullptr ? uv->values.rhi() : m->mesh.positions.rhi());
+                            c["normals"].setBinding(n != nullptr ? n->values.rhi() : m->mesh.positions.rhi());
                             c["owner"].setBinding(owner->rhi());
                             c["texelPoint"].setBinding(points->rhi());
                             c["texelNormal"].setBinding(normals->rhi());
@@ -410,7 +455,8 @@ void addLightmap(CLI::App& app) {
                     gpu::Buffer* from = result;
                     auto pixels = from->readAll<float>(device);
                     if (!pixels) return std::move(pixels).error();
-                    const fs::path file = out / ("lightmap_" + std::to_string(index) + ".exr");
+                    const std::string base = o->name.empty() ? "lightmap_" + std::to_string(index) : o->name;
+                    const fs::path file = out / (base + ".exr");
                     ATHENEA_TRY(io::writeExr(file, size, size, *pixels, {}, true));
                     cli::out("lightmap: wrote %s (%u meshes)\n", file.string().c_str(),
                              static_cast<unsigned>(made.meshes.size()));
@@ -424,6 +470,52 @@ void addLightmap(CLI::App& app) {
         }
         if (!inside) {
             cli::fail(inside.error());
+        }
+        if (o->planar) {
+            // WHERE THE PLANE STANDS, for a host that draws it as a quad: its
+            // corners in the stage's frame and in a Y-up one, which texel
+            // corner is uv (0, 0) and the texels a metre along each axis.
+            const int across = up == 'z' ? 1 : 2;
+            const int vertical = up == 'z' ? 2 : 1;
+            const float height = boxMax[vertical];
+            const auto corner = [&](bool u, bool v) {
+                std::array<float, 3> p{u ? boxMax[0] : boxMin[0], 0.0F, 0.0F};
+                p[vertical] = height;
+                p[across] = up == 'z' ? (v ? boxMax[1] : boxMin[1]) : (v ? boxMin[2] : boxMax[2]);
+                return p;
+            };
+            const auto point = [](std::ostream& s, const std::array<float, 3>& p) {
+                s << "[" << p[0] << ", " << p[1] << ", " << p[2] << "]";
+            };
+            const auto yUp = [up](const std::array<float, 3>& p) {
+                return up == 'z' ? std::array<float, 3>{p[0], p[2], -p[1]} : p;
+            };
+            const std::string base = o->name.empty() ? "lightmap_0" : o->name;
+            std::ofstream json(out / (base + ".json"));
+            json << "{\n  \"image\": \"" << base << ".exr\",\n  \"encoding\": \"half, linear Rec.709, bottom row first\",\n"
+                 << "  \"size\": " << o->size << ",\n  \"up\": \"" << up << "\",\n  \"height\": " << height << ",\n";
+            const char* names[4] = {"uv00", "uv10", "uv11", "uv01"};
+            const bool us[4] = {false, true, true, false};
+            const bool vs[4] = {false, false, true, true};
+            json << "  \"corners\": {\n";
+            for (int k = 0; k < 4; ++k) {
+                json << "    \"" << names[k] << "\": ";
+                point(json, corner(us[k], vs[k]));
+                json << (k < 3 ? ",\n" : "\n");
+            }
+            json << "  },\n  \"cornersYUp\": {\n";
+            for (int k = 0; k < 4; ++k) {
+                json << "    \"" << names[k] << "\": ";
+                point(json, yUp(corner(us[k], vs[k])));
+                json << (k < 3 ? ",\n" : "\n");
+            }
+            const float spanU = boxMax[0] - boxMin[0];
+            const float spanV = up == 'z' ? boxMax[1] - boxMin[1] : boxMax[2] - boxMin[2];
+            json << "  },\n  \"u\": \"+x\",\n  \"v\": \"" << (up == 'z' ? "+y" : "-z") << "\",\n"
+                 << "  \"texelsPerMetreU\": " << (spanU > 0 ? o->size / spanU : 0.0F) << ",\n"
+                 << "  \"texelsPerMetreV\": " << (spanV > 0 ? o->size / spanV : 0.0F) << "\n}\n";
+            cli::out("lightmap: wrote %s\n", (out / (base + ".json")).string().c_str());
+            return;
         }
         // THE STAGE THAT SHOWS THEM: the source as a sublayer, every baked
         // mesh unlit and bound to its atlas, read at its own coordinates.

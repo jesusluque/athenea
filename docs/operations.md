@@ -638,6 +638,8 @@ is its atlas, read at the same coordinates.
 | `--pass-samples` | paths | `32` | `--extra-samples`: paths a texel an extra pass |
 | `--max-passes` | integer | `16` | `--extra-samples`: extra passes a texel at most |
 | `--no-denoise` | flag | denoised | leave the atlas as traced |
+| `--planar` | flag | off | one atlas over the horizontal rectangle the meshes span (with `--prim`, a floor), whatever coordinates they carry, and `<name>.json` beside it; no stage is written |
+| `--name` | text | `lightmap_<atlas>` | the files' name, without extension |
 | `--prim` | prim path | every mesh | |
 | `--time` | number | `0` | USD time code |
 | `--default-lights` | flag | off | a dome and a sun for a stage with none |
@@ -649,6 +651,14 @@ texel of a triangle's edge is that triangle's. The bake is the path tracer's
 own (`mesh2splat`'s), degree 0: what the surface sends out, the same in
 every direction -- a lightmap holds no view-dependent light, and its
 reflections are another pass's (`athenea:screenSpaceReflections`).
+
+**Planar.** With `--planar` the texels are laid over the rectangle the
+meshes' world boxes span across the stage's two horizontal axes: u along +x,
+v along +y under Z up (along -z under Y up), uv (0, 0) at the least corner,
+the whole atlas for that rectangle -- for a floor a host draws as a quad.
+`<name>.json` says where: the four corners in the stage's frame and in a Y-up
+one (x, z, -y), the height (the boxes' top), the axes, and the texels a
+metre along u and v.
 
 **Denoised.** Where the build carries OIDN, the atlas is denoised in its own
 space, guided by the albedo the bake reads at each texel and the way it
