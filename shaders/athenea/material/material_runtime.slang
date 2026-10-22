@@ -26,10 +26,16 @@ __exported import athenea.material.material_inputs;
 // thread memory. A lobe pushed past it is dropped (atheneaPushLobe), not written
 // past the end. ATHENEA_BUILD_LOBES is set lower where a GPU gives a thread less
 // stack (athenea::gpu::Device).
+//
+// A link-time constant: the module that dispatches to a frame's materials
+// (MaterialPrograms) exports as many as they can push, so a room of
+// UsdPreviewSurfaces keeps five where an OpenPBR coat over a sheen needs
+// sixteen -- thread memory is what a material evaluated at every pixel
+// spends its time on. A kernel that imports no materials keeps the default.
 #ifdef ATHENEA_BUILD_LOBES
-public static const uint kBuildLobes = ATHENEA_BUILD_LOBES;
+public extern static const uint kBuildLobes = ATHENEA_BUILD_LOBES;
 #else
-public static const uint kBuildLobes = 16;
+public extern static const uint kBuildLobes = 16;
 #endif
 
 public struct BSDF {
@@ -117,9 +123,11 @@ public BSDF atheneaBsdfOf(uint index, float3 weight, float3 throughput) {
     return b;
 }
 
-/// The final lobes: every built lobe weighted by `bsdf`, those that carry
-/// nothing dropped, the heaviest kMaxLobes kept.
-public LobeStack atheneaFinishStack(BSDF bsdf, float3 emission, float opacity) {
+/// The final lobes, into gAtheneaResult where they are read: every built lobe
+/// weighted by `bsdf`, those that carry nothing dropped, the heaviest
+/// kMaxLobes kept. Its emission stays what it was. Written in place: a stack
+/// returned and assigned was one more copy of it in thread memory.
+public void atheneaFinishStack(BSDF bsdf, float opacity) {
     // THE WEIGHTS ARE COPIED OUT FIRST, before a lobe is written to the stack.
     // On CUDA the BSDF arrives as a pointer to the caller's temporary, and
     // nvcc laid this stack over that temporary's memory: each lobe kept
@@ -133,9 +141,11 @@ public LobeStack atheneaFinishStack(BSDF bsdf, float3 emission, float opacity) {
     for (uint k = 0; k < kBuildLobes; ++k) {
         weights[k] = bsdf.weights[k];
     }
-    LobeStack stack = emptyStack();
-    stack.emission = emission;
-    stack.opacity = opacity;
+    gAtheneaResult.count = 0;
+    gAtheneaResult.opacity = opacity;
+    for (uint k = 0; k < kMaxLobes; ++k) {
+        gAtheneaResult.lobes[k].kind = kLobeNone;
+    }
     for (uint k = 0; k < gAtheneaLobeCount; ++k) {
         const float3 w = max(weights[k], float3(0.0));
         const float heft = dot(w, float3(0.2126, 0.7152, 0.0722));
@@ -144,25 +154,24 @@ public LobeStack atheneaFinishStack(BSDF bsdf, float3 emission, float opacity) {
         }
         Lobe lobe = gAtheneaLobes[k];
         lobe.weight = w;
-        if (stack.count < kMaxLobes) {
-            stack.lobes[stack.count++] = lobe;
+        if (gAtheneaResult.count < kMaxLobes) {
+            gAtheneaResult.lobes[gAtheneaResult.count++] = lobe;
             continue;
         }
         // Full: replace the lightest.
         uint lightest = 0;
         float least = 3.4e38;
         for (uint j = 0; j < kMaxLobes; ++j) {
-            const float h = dot(stack.lobes[j].weight, float3(0.2126, 0.7152, 0.0722));
+            const float h = dot(gAtheneaResult.lobes[j].weight, float3(0.2126, 0.7152, 0.0722));
             if (h < least) {
                 least = h;
                 lightest = j;
             }
         }
         if (heft > least) {
-            stack.lobes[lightest] = lobe;
+            gAtheneaResult.lobes[lightest] = lobe;
         }
     }
-    return stack;
 }
 
 // Where the material function leaves its result.
@@ -184,5 +193,5 @@ public void atheneaFallbackMaterial(MaterialInputs inputs) {
     Lobe lobe = atheneaLobe(kLobeOrenNayar);
     lobe.colour0 = colour;
     const uint index = atheneaPushLobe(lobe, inputs.normalWorld, inputs.tangentWorld);
-    gAtheneaResult = atheneaFinishStack(atheneaBsdfOf(index, float3(1.0), float3(0.0)), float3(0.0), opacity);
+    atheneaFinishStack(atheneaBsdfOf(index, float3(1.0), float3(0.0)), opacity);
 }

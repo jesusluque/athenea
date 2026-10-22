@@ -162,6 +162,11 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   (`atheneaQuadPixel`), because bump takes its screen derivatives from the
   thread's quad. A kernel that walks them in raster order gets flat bump and
   nothing says so.
+- A MaterialX node that pushes a lobe (`atheneaPushLobe`) is listed in
+  `lobesPushed` (`technique/src/MaterialPrograms.cpp`) with how many it
+  pushes: the lobe stacks are as deep as the frame's materials can push, and
+  a node the count does not know pushes nothing into it -- its lobes are
+  dropped, and nothing says so.
 
 ## 2. The rules, and what each is there to prevent
 

@@ -166,6 +166,11 @@ comprobación.
   quad (`atheneaQuadPixel`), porque el bump toma sus derivadas de pantalla del
   quad del hilo. Uno que los recorra en orden de raster saca el bump plano y
   nadie avisa.
+- Un nodo de MaterialX que empuja un lóbulo (`atheneaPushLobe`) se añade a
+  `lobesPushed` (`technique/src/MaterialPrograms.cpp`) con cuántos empuja:
+  las pilas de lóbulos tienen la profundidad que pueden empujar los
+  materiales del frame, y un nodo que la cuenta no conoce no empuja nada en
+  ellas: sus lóbulos se descartan y nadie avisa.
 
 ## 2. Las reglas, y qué evita cada una
 

@@ -792,10 +792,13 @@ public LobeSample lobeSample(Lobe lobe, float3 woWorld, float3 u) {
 // (ATHENEA_MAX_LOBES, set by athenea::gpu::Device): the stack is thread memory in
 // every kernel that shades, and at eight it is more than an iPad will make a
 // pipeline for.
+//
+// A link-time constant, as material_runtime's kBuildLobes: never more than
+// the frame's materials can push.
 #ifdef ATHENEA_MAX_LOBES
-public static const uint kMaxLobes = ATHENEA_MAX_LOBES;
+public extern static const uint kMaxLobes = ATHENEA_MAX_LOBES;
 #else
-public static const uint kMaxLobes = 8;
+public extern static const uint kMaxLobes = 8;
 #endif
 
 public struct LobeStack {

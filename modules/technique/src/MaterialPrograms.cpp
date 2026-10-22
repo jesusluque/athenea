@@ -1,8 +1,13 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/technique/MaterialPrograms.h"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
+#include <functional>
+#include <map>
+#include <set>
 
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
@@ -67,6 +72,95 @@ public bool materialCuts(CameraParams camera, uint2 pixel, uint4 seen) {
 }
 )";
 
+/// HOW MANY LOBES A MATERIAL CAN PUSH: its generated source walked from its
+/// function down, a BSDF node's call one lobe (UsdPreviewSurface's node five),
+/// a function of the graph's as many as its body's calls push. An upper
+/// bound -- both sides of a branch count -- and kBuildLobes (16) where the
+/// source is not what the generator writes (a call to itself).
+uint32_t lobesPushed(const std::string& source, const std::string& entry) {
+    static const std::map<std::string, uint32_t> kLeaves = {
+        {"athenea_oren_nayar_diffuse_bsdf", 1}, {"athenea_burley_diffuse_bsdf", 1},
+        {"athenea_translucent_bsdf", 1},        {"athenea_subsurface_bsdf", 1},
+        {"athenea_dielectric_bsdf", 1},         {"athenea_conductor_bsdf", 1},
+        {"athenea_generalized_schlick_bsdf", 1}, {"athenea_sheen_bsdf", 1},
+        {"athenea_chiang_hair_bsdf", 1},        {"athenea_preview_bsdf", 5},
+    };
+    constexpr uint32_t kMost = 16;
+    // The functions the source defines, by their bodies: a definition opens
+    // at the start of a line, and its body is the braces after its
+    // parameters (a declaration, ending in ';' first, has none).
+    std::map<std::string, std::string> bodies;
+    size_t at = 0;
+    while (at < source.size()) {
+        const size_t end = source.find('\n', at);
+        const size_t lineEnd = end == std::string::npos ? source.size() : end;
+        const std::string line = source.substr(at, lineEnd - at);
+        const size_t lineStart = at;
+        at = lineEnd + 1;
+        const size_t paren = line.find('(');
+        if (line.empty() || line[0] == ' ' || line[0] == '\t' || line[0] == '/' || line[0] == '#' ||
+            paren == std::string::npos) {
+            continue;
+        }
+        size_t nameStart = paren;
+        while (nameStart > 0 &&
+               (std::isalnum(static_cast<unsigned char>(line[nameStart - 1])) || line[nameStart - 1] == '_')) {
+            --nameStart;
+        }
+        if (nameStart == paren || nameStart == 0 || line[nameStart - 1] != ' ') {
+            continue;
+        }
+        const size_t open = source.find_first_of("{;", lineStart + paren);
+        if (open == std::string::npos || source[open] == ';') {
+            continue;
+        }
+        size_t close = open;
+        for (int depth = 0; close < source.size(); ++close) {
+            depth += source[close] == '{' ? 1 : source[close] == '}' ? -1 : 0;
+            if (depth == 0) {
+                break;
+            }
+        }
+        bodies[line.substr(nameStart, paren - nameStart)] = source.substr(open, close - open);
+        at = std::max(at, close + 1);
+    }
+    std::map<std::string, uint32_t> known(kLeaves);
+    std::set<std::string> walking;
+    std::function<uint32_t(const std::string&)> pushes = [&](const std::string& name) -> uint32_t {
+        if (const auto k = known.find(name); k != known.end()) {
+            return k->second;
+        }
+        const auto body = bodies.find(name);
+        if (body == bodies.end()) {
+            return 0;
+        }
+        if (!walking.insert(name).second) {
+            return kMost;
+        }
+        uint64_t sum = 0;
+        const std::string& text = body->second;
+        for (size_t k = 0; k < text.size(); ++k) {
+            if (!(std::isalpha(static_cast<unsigned char>(text[k])) || text[k] == '_') ||
+                (k > 0 && (std::isalnum(static_cast<unsigned char>(text[k - 1])) || text[k - 1] == '_'))) {
+                continue;
+            }
+            size_t e = k;
+            while (e < text.size() && (std::isalnum(static_cast<unsigned char>(text[e])) || text[e] == '_')) {
+                ++e;
+            }
+            if (e < text.size() && text[e] == '(') {
+                sum += pushes(text.substr(k, e - k));
+            }
+            k = e;
+        }
+        walking.erase(name);
+        const uint32_t total = static_cast<uint32_t>(std::min<uint64_t>(sum, kMost));
+        known[name] = total;
+        return total;
+    };
+    return pushes(entry);
+}
+
 }   // namespace
 
 Result<MaterialPrograms> MaterialPrograms::create(gpu::ShaderLibrary& library) {
@@ -114,6 +208,24 @@ Result<void> MaterialPrograms::setModules(std::span<const material::CompiledMate
         source += "    case " + std::to_string(k + 1) + ": " + modules[k].function + "(inputs, blob); break;\n";
     }
     source += "    default: atheneaFallbackMaterial(inputs); break;\n    }\n}\n";
+    // The lobe stacks sized to what these materials push (material_runtime's
+    // kBuildLobes, lobes' kMaxLobes): never past the device's own counts. The
+    // fallback pushes one.
+    uint32_t lobes = 1;
+    for (const material::CompiledMaterial& m : modules) {
+        lobes = std::max(lobes, lobesPushed(m.source, m.function));
+    }
+    const std::string count = std::to_string(lobes);
+    const auto atMost = [&](const char* most) {
+        return "(" + count + "u < " + most + " ? " + count + "u : " + most + ")";
+    };
+    source += "#ifdef ATHENEA_BUILD_LOBES\n"
+              "export static const uint kBuildLobes = " + atMost("uint(ATHENEA_BUILD_LOBES)") + ";\n"
+              "export static const uint kMaxLobes = " + atMost("uint(ATHENEA_MAX_LOBES)") + ";\n"
+              "#else\n"
+              "export static const uint kBuildLobes = " + atMost("16u") + ";\n"
+              "export static const uint kMaxLobes = " + atMost("8u") + ";\n"
+              "#endif\n";
     // WHAT A SHADOW RAY ASKS A CUT-OUT: its opacity alone, from the variant
     // compiled without the BSDF (ClosureVariant::Opacity), so asking costs
     // the compiler a small function a cut-out and not a second copy of every

@@ -13243,7 +13243,7 @@ registers, an occupancy of 16%, the DRAM 82% busy -- thread memory, about
 5 KB a pixel, the lobe stacks and the BSDF values the graph passes between
 its nodes.
 
-Two changes. Under prefiltered domes alone, a pixel whose lobes all reflect
+Three changes. Under prefiltered domes alone, a pixel whose lobes all reflect
 is shaded by `shadeEvaluated`, which evaluates its material and writes what
 the shading kernel would have (the emission, the coverage, the two albedos
 for `dome_shade.slang`) with none of the lights' code; it writes a mask, 1
@@ -13251,13 +13251,21 @@ where it shaded and 0 where it left the pixel (a lobe that transmits, a dome
 linked away), and the shading kernel skips the 1s. And UsdPreviewSurface's
 lobes are built by one node (`athenea_preview_bsdf`) where its graph made a
 dozen BSDF values of sixteen lobes each: the same lobes pushed in the same
-order, the same weights, the same layer marks.
+order, the same weights, the same layer marks. And the lobe stacks are as
+deep as the frame's materials need: `kBuildLobes` and `kMaxLobes` are
+link-time constants the materials' dispatch module exports, counted from the
+generated source (a BSDF node's call one lobe, the preview node five, a graph
+function's what its calls push; both sides of a branch count, and never past
+the device's 16 and 8). A room of UsdPreviewSurfaces builds and keeps five; a
+kernel that imports no materials keeps the defaults. The stack is finished in
+place (`atheneaFinishStack` writes `gAtheneaResult`), one copy of it fewer.
 
 | the room, textured, under a dome (RTX 3070, CUDA, `ATHENEA_STAGES=1`) | shading | median a frame |
 |---|---|---|
 | before | 35.0 ms | 53.1 ms |
 | `shadeEvaluated` | 29.7 | 48.5 |
 | and the preview surface as one node | 27.7 | 47.1 |
+| and the stacks five deep, finished in place | 12.1 | 30.9 |
 | the room in plain colours (the table) | 1.3 | 20.3 |
 
 **Checked**: the frame against the graph's, in the room as it is and with a
@@ -13265,13 +13273,15 @@ metal floor under a coat, a specular-workflow wall, a coated one, a metal
 one and an ior of 2.2: 8-bit max 2, none over 2, relMSE 1e-9. The kernel
 against the shading kernel's frame: identical.
 
-**Not done**: most of the 27.7 ms is still thread memory -- `shadeEvaluated`
-keeps 5.3 KB a thread (the sixteen lobes being built, the eight kept, and
-their copies). Built and kept lobes cut to four and three took the shading
-kernel to 14 ms, but the counts are the whole engine's (`kBuildLobes`,
-`kMaxLobes`), and an OpenPBR material needs them. The lobe storage sized to
-what the frame's materials push is the change that would take a textured
-surface down to the table's few milliseconds.
+The median a frame is `athenea stage`'s, which reads every frame back; the
+GPU's own time for the textured room, by Nsight Compute, went from 33.6 ms
+a frame to 15.9, `shadeEvaluated` from 28.7 to 11.0.
+
+**Not done**: `shadeEvaluated` is still thread memory -- 2 KB a thread, 128
+registers, the DRAM 91% busy: the built lobes and the kept ones are two
+copies of 128-byte lobes, and the inputs, the vertex data and the BSDF value
+around them. A lobe of fewer bytes, or a stack the material writes once,
+is what is left to take.
 
 ### Measured (M5 Pro, release, 1920 x 1080, `athenea stage --frames 20`)
 

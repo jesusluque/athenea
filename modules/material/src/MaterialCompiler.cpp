@@ -100,8 +100,7 @@ public:
                                    "occlusion)",
                                    stage);
                 shadergen.emitFunctionCall(*bsdf, context, stage);
-                shadergen.emitLine("gAtheneaResult = atheneaFinishStack(" + bsdf->getOutput()->getVariable() +
-                                       ", gAtheneaResult.emission, surfaceOpacity)",
+                shadergen.emitLine("atheneaFinishStack(" + bsdf->getOutput()->getVariable() + ", surfaceOpacity)",
                                    stage);
             }
         }
