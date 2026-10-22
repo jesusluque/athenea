@@ -1382,6 +1382,24 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
             primvar.indices = std::span<const int32_t>(uvIndices.cdata(), uvIndices.size());
             inputs.push_back(std::move(primvar));
         }
+        // The extra set (MeshStageOptions::extraUv), under its own name.
+        VtVec2fArray uvsExtra;
+        VtIntArray   uvExtraIndices;
+        bool         hasUvsExtra = false;
+        if (!options.extraUv.empty()) {
+            const UsdGeomPrimvar primvar = primvars.GetPrimvar(TfToken(options.extraUv));
+            if (primvar && primvar.Get(&uvsExtra, at) && !uvsExtra.empty()) {
+                primvar.GetIndices(&uvExtraIndices, at);
+                geom::PrimvarInput input;
+                input.name = options.extraUv;
+                input.interpolation = interpolationOf(primvar.GetInterpolation());
+                input.components = 2;
+                input.values = {std::as_bytes(std::span<const GfVec2f>(uvsExtra.cdata(), uvsExtra.size())), false};
+                input.indices = std::span<const int32_t>(uvExtraIndices.cdata(), uvExtraIndices.size());
+                inputs.push_back(std::move(input));
+                hasUvsExtra = true;
+            }
+        }
         if (hasUvs2) {
             geom::PrimvarInput primvar;
             primvar.name = "st2";
@@ -1421,6 +1439,19 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         out.displacementUnit = static_cast<float>(std::cbrt(std::abs(toWorld.GetDeterminant3())));
         out.material = std::move(material);
         out.uv2 = hasUvs2 ? second : std::string();
+        out.hasExtraUv = hasUvsExtra;
+        if (const UsdAttribute atlas = prim.GetAttribute(TfToken("userProperties:lightmap_atlas"))) {
+            VtValue value;
+            if (atlas.Get(&value, at)) {
+                if (value.IsHolding<int>()) {
+                    out.lightmapAtlas = value.UncheckedGet<int>();
+                } else if (value.IsHolding<float>()) {
+                    out.lightmapAtlas = static_cast<int32_t>(value.UncheckedGet<float>());
+                } else if (value.IsHolding<double>()) {
+                    out.lightmapAtlas = static_cast<int32_t>(value.UncheckedGet<double>());
+                }
+            }
+        }
         out.subsets = std::move(subsets);
         if (instances.instanced) {
             // One entry an instance, sharing the mesh on the device: its

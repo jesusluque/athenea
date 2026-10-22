@@ -295,6 +295,11 @@ struct StageMesh {
     /// Its GeomSubsets of the `materialBind` family, in the order the mesh
     /// was built with them (`mesh.subsets` of them). Empty: one material.
     std::vector<StageSubset> subsets;
+    /// Whether the mesh carries `MeshStageOptions::extraUv`, and the atlas a
+    /// lightmap of it goes in: `userProperties:lightmap_atlas` where
+    /// authored (an int or a float), else 0.
+    bool                  hasExtraUv = false;
+    int32_t               lightmapAtlas = 0;
 };
 
 /// A camera of the stage, as a conversion that sizes its cells by what that
@@ -333,6 +338,10 @@ struct MeshStageOptions {
     /// the material does not say so: a windscreen modelled as one surface
     /// with a solid glass bound to it. Read as thin-walled.
     std::vector<std::string> thinGlass;
+    /// A further set of texture coordinates carried as a primvar of its own
+    /// name where a mesh has it (`st_lightmap` for `athenea lightmap`).
+    /// Empty: none.
+    std::string extraUv;
 };
 
 /// Opens `path` and reads its meshes. The stage stays open for as long as this

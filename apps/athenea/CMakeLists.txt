@@ -10,7 +10,7 @@ add_executable(athenea
     src/CmdAofx.cpp
     src/CmdMesh2Splat.cpp
     src/Mesh2SplatValidate.cpp
-    src/CmdFlatten.cpp
+    src/CmdFlatten.cpp src/CmdLightmap.cpp
     src/CmdVisibility.cpp
     src/CmdLights.cpp
     src/Output.cpp)
@@ -69,7 +69,7 @@ if(ATHENEA_HYDRA_COMMANDS AND TARGET hdAthenea)
     # beside the delegate's sources and hdAthenea compiles itself.
     set(_usd_src "${ATHENEA_ROOT}/modules/usd/src")
     target_sources(hdAthenea PRIVATE
-        src/Embedded.cpp src/Output.cpp src/CmdMesh2Splat.cpp src/Mesh2SplatValidate.cpp src/CmdFlatten.cpp src/CmdCompare.cpp
+        src/Embedded.cpp src/Output.cpp src/CmdMesh2Splat.cpp src/Mesh2SplatValidate.cpp src/CmdFlatten.cpp src/CmdLightmap.cpp src/CmdCompare.cpp
         ${_usd_src}/StageRenderer.cpp ${_usd_src}/BindingPurposes.cpp ${_usd_src}/Export.cpp
         ${_usd_src}/MeshStage.cpp ${_usd_src}/ShadowCatcher.cpp ${_usd_src}/LightGroups.cpp)
     target_include_directories(hdAthenea PRIVATE src)

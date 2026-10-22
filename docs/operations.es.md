@@ -631,6 +631,41 @@ rugosidad encontrado, la caja, las pérdidas de arriba, el tamaño de cada
 fichero y los bytes por gaussiana, y lo que tardaron el sombreado y el
 ajuste, y el empaquetado y la escritura.
 
+### 2.8.2 `athenea lightmap` — la luz de un stage en texturas sobre sus propias coordenadas
+
+Cada malla que lleva las coordenadas de lightmap (`--uv`) se traza con
+caminos en cada texel que cubren sus triángulos en su atlas -- la luz que
+emite su superficie, con emisores y rebotes --, y los atlas se escriben junto
+a un stage que los muestra: el original como sublayer, cada malla horneada
+sin luz (`primvars:athenea:unlit`, §4.3) y ligada a un material cuya primera
+textura es su atlas, leída en las mismas coordenadas.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `stage` | ruta, obligatoria | — | |
+| `-o`, `--output` | directorio | `lightmap` | `lightmap_<atlas>.exr` (half, lineal) y `lightmapped.usda` |
+| `--uv` | nombre de primvar | `st_lightmap` | una malla sin él se queda como está |
+| `--size` | texels, de 16 a 16384 | `1024` | el lado de un atlas |
+| `--samples` | de 1 a 65536 | `64` | caminos por texel |
+| `--bounces` | de 0 a 16 | `3` | después del primer impacto |
+| `--dilate` | anillos | `8` | cuánto crece la luz de una isla en el margen que la rodea |
+| `--prim` | ruta de prim | todas las mallas | |
+| `--time` | número | `0` | time code de USD |
+| `--default-lights` | flag | apagado | un dome y un sol para un stage que no tiene luces |
+
+**Atlas.** Una malla va en el atlas que dice su `userProperties:lightmap_atlas`
+(un int o un float), el 0 si no dice nada; un fichero por atlas. Un texel es
+del primer triángulo que llega a él; uno cuyo centro queda a menos de medio
+texel del borde de un triángulo es de ese triángulo. El horneado es el del
+propio trazador de caminos (el de `mesh2splat`), de grado 0: lo que emite la
+superficie, igual en todas las direcciones -- un lightmap no guarda luz que
+dependa de la vista, y sus reflejos son de otra pasada
+(`athenea:screenSpaceReflections`).
+
+**Lo que no hace.** Una malla instanciada no se hornea; el binding propio de
+un GeomSubset es más fuerte que el que se escribe en su malla, así que una
+malla con subsets muestra sus materiales, no su atlas.
+
 ### 2.9 `athenea visibility` — lo que proyecta una nube con esqueleto, por partes
 
 | Opción | Valor | Por defecto | Notas |
@@ -2323,6 +2358,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
 | `athenea mesh2splat` | una escena USD con la nube |
 | `athenea flatten` | ficheros `.ply`, `.spz`, `.glb` y USD de las nubes aplanadas, la escena compuesta junto a ellos, y con `--validate` lo que escribe `mesh2splat --validate` |
+| `athenea lightmap` | `lightmap_<atlas>.exr` (half, lineal, la fila de abajo primero) y `lightmapped.usda`, que pone el original como sublayer |
 | `athenea visibility` | el fichero de la nube, editado en el sitio o copiado |
 | `athenea aofx run` | un EXR |
 | `athenea migrate` | una copia de la escena, el paquete o la nube; con `--recursive`, también de lo que nombra |

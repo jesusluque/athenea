@@ -13359,6 +13359,33 @@ unlit floor of reflectance 0.5 and roughness 0.05 and a cube on it:
 accumulation; the march's steps show as bands where it grazes a wall; splats
 and what lies off screen are not reflected.
 
+### A lightmap: the path tracer's light over a second set of coordinates
+
+`athenea lightmap` bakes a set's light where the unlit surface shows it. On
+the device: a thread a triangle walks the texels its `st_lightmap`
+coordinates cover in its atlas (`userProperties:lightmap_atlas`), claims each
+one by a compare-and-swap (half a texel of slack along the edges, so an
+island's border is its own), and leaves the point, the facing and a texel's
+width on the surface; the claimed texels are scanned into the path tracer's
+bake rays -- three float4 a point, as `mesh2splat`'s -- and baked at degree 0
+by `StageRenderer::bakePointsOnDevice`, each sample spread over the texel's
+footprint; the answer, `0.5 + Y0 c` in linear light, goes back into its
+texel, and eight rings of dilation carry each island's light into the margin
+the packer left. A stage beside the atlases sublayers the source and makes
+every baked mesh unlit, bound to a material that reads its atlas at
+`st_lightmap`.
+
+Measured on the M5 Pro (Metal), the first virtual set (37 meshes, one
+atlas): at 256 x 256, 48567 texels of 65536 claimed, 16 paths each, 3
+bounces, baked in 25.0 s; the stage then drew at 1063 x 525 in 15.8 ms a
+frame. At 16 paths a texel the light is grain.
+
+**Not done**: no adaptive sampling and no denoising of the atlas -- at the
+measured rate a 4096 x 4096 atlas at 256 paths a texel would take about a
+day; the bake is degree 0, so nothing of the light depends on the view; an
+instanced mesh and a GeomSubset's binding are left as they are; on CUDA the
+bake's pipeline is not made (an OptiX failure the other bakes share).
+
 ### Measured (M5 Pro, release, 1920 x 1080, `athenea stage --frames 20`)
 
 The whole TX Corvette on its mesh ground, the camera of the stage, against

@@ -616,6 +616,40 @@ gaussians whose bands were shrunk and of SPZ's scaled into range.
 the losses above, each file's size and bytes a gaussian, and how long the
 shading and fit and the packing and writing took.
 
+### 2.8.2 `athenea lightmap` — a stage's light in textures over its own coordinates
+
+Each mesh that carries the lightmap coordinates (`--uv`) is path traced at
+every texel its triangles cover in its atlas -- the light its surface sends
+out, emitters and bounces in it -- and the atlases are written beside a stage
+that shows them: the source as a sublayer, each baked mesh unlit
+(`primvars:athenea:unlit`, §4.3) and bound to a material whose first texture
+is its atlas, read at the same coordinates.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `stage` | path, required | — | |
+| `-o`, `--output` | directory | `lightmap` | `lightmap_<atlas>.exr` (half, linear) and `lightmapped.usda` |
+| `--uv` | primvar name | `st_lightmap` | a mesh without it is left as it is |
+| `--size` | texels, 16 to 16384 | `1024` | an atlas's side |
+| `--samples` | 1 to 65536 | `64` | paths a texel |
+| `--bounces` | 0 to 16 | `3` | after the first hit |
+| `--dilate` | rings | `8` | how far an island's light grows into the margin around it |
+| `--prim` | prim path | every mesh | |
+| `--time` | number | `0` | USD time code |
+| `--default-lights` | flag | off | a dome and a sun for a stage with none |
+
+**Atlases.** A mesh goes in the atlas its `userProperties:lightmap_atlas`
+says (an int or a float), 0 where it says nothing; one file an atlas. A texel
+the first triangle to reach it claims; one whose centre is within half a
+texel of a triangle's edge is that triangle's. The bake is the path tracer's
+own (`mesh2splat`'s), degree 0: what the surface sends out, the same in
+every direction -- a lightmap holds no view-dependent light, and its
+reflections are another pass's (`athenea:screenSpaceReflections`).
+
+**What it does not do.** An instanced mesh is not baked; a GeomSubset's own
+binding is stronger than the one written on its mesh, so a mesh with subsets
+shows its materials, not its atlas.
+
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part
 
 | Option | Value | Default | Notes |
@@ -2257,6 +2291,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
 | `athenea mesh2splat` | a USD stage holding the cloud |
 | `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
+| `athenea lightmap` | `lightmap_<atlas>.exr` (half, linear, bottom row first) and `lightmapped.usda`, which sublayers the source |
 | `athenea visibility` | the cloud's file, edited in place or copied |
 | `athenea aofx run` | one EXR |
 | `athenea migrate` | a copy of the stage, package or cloud; with `--recursive`, of what it names too |
