@@ -1675,6 +1675,7 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
     materialRows_.clear();
     materialCutouts_ = false;
     materialGlass_ = false;
+    materialRowUniform_.assign(1, false);
     for (const auto& [id, entry] : materials_) {
         if (!entry.compiled) {
             continue;
@@ -1744,6 +1745,7 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
                      (unorm((entry.transmission->ior - 1.0F) / 3.0F) << 24);
         }
         rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, passes});
+        materialRowUniform_.push_back((flags & technique::kMaterialUniform) != 0);
         blob.insert(blob.end(), words.begin(), words.end());
     }
     if (blob.empty()) {
@@ -2197,9 +2199,15 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             ATHENEA_TRY(prepareMaterials(aovRequest.primvars));
         }
     }
+    // Whether any row a mesh draws with varies over its surface: only then
+    // does the shading under domes alone evaluate a material a pixel
+    // (MaterialFrame::varying).
+    bool varyingRows = false;
     const auto rowOf = [&](const pxr::SdfPath& material) -> uint32_t {
         const auto found = materialRows_.find(material);
-        return found != materialRows_.end() ? found->second : 0u;
+        const uint32_t row = found != materialRows_.end() ? found->second : 0u;
+        varyingRows = varyingRows || row >= materialRowUniform_.size() || !materialRowUniform_[row];
+        return row;
     };
     const auto subsetRowsOf = [&](const MeshEntry& entry) {
         std::vector<uint32_t> rows;
@@ -2920,6 +2928,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frame.alphaDither = technique == Technique::RayTraced ? 0u : 1u;
         frame.cutouts = materialCutouts_ || scene_->anyHidden();
         frame.glass = materialGlass_;
+        frame.varying = varyingRows;
         frame.scene = &*scene_;
         frame.records = &materialRecords_;
         frame.blob = &materialBlob_;

@@ -13248,7 +13248,11 @@ is shaded by `shadeEvaluated`, which evaluates its material and writes what
 the shading kernel would have (the emission, the coverage, the two albedos
 for `dome_shade.slang`) with none of the lights' code; it writes a mask, 1
 where it shaded and 0 where it left the pixel (a lobe that transmits, a dome
-linked away), and the shading kernel skips the 1s. And UsdPreviewSurface's
+linked away), and the shading kernel skips the 1s. A frame whose meshes all
+draw with materials the table answers does not run it (`MaterialFrame::varying`,
+the rows the frame's meshes resolved to): over a whole frame it still reads
+every pixel's visibility and writes the mask, 0.3 ms of shading on the RTX
+3070 for a stage of plain-coloured cubes and cards. And UsdPreviewSurface's
 lobes are built by one node (`athenea_preview_bsdf`) where its graph made a
 dozen BSDF values of sixteen lobes each: the same lobes pushed in the same
 order, the same weights, the same layer marks. And the lobe stacks are as

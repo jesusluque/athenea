@@ -119,6 +119,10 @@ struct MaterialFrame {
     /// (kMaterialGlassShadow): the path tracer's shadow rays then walk past
     /// it where `PathSettings::glassShadows` says so.
     bool                          glass = false;
+    /// Whether any material the frame draws with varies over its surface (is
+    /// not kMaterialUniform): under domes alone only such a pixel is
+    /// evaluated (shadeEvaluated), and without one that kernel is not run.
+    bool                          varying = true;
     /// The frame's lights. None: the headlight, as meshes were lit before
     /// there were any.
     const light::LightTable*      lights = nullptr;

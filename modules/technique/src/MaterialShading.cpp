@@ -1455,7 +1455,9 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
         if (!view) return std::move(view).error();
         evaluatedMaskView_ = std::move(*view);
     }
-    const bool evaluating = tableRows != 0 && evaluated_.has_value();
+    // Not run where every material is the table's: over a whole frame it
+    // still reads every pixel's visibility and writes the mask.
+    const bool evaluating = tableRows != 0 && evaluated_.has_value() && frame.varying;
     if (evaluating) {
         evaluated_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
             bindMaterialFrame(cursor, frame, projection);
