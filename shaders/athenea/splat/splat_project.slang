@@ -1102,6 +1102,12 @@ struct FlattenParams {
     uint  zone;
     uint  zoneSamples;
     float zoneOutside;
+    // SEEN FROM ONE PLACE (`--facing`): 1, a gaussian whose surface faces
+    // away from the point is written transparent -- a camera that only
+    // turns there never sees it, and drawn it shows through at grazing
+    // angles as streaks.
+    uint  facingCull;
+    float facingX; float facingY; float facingZ;
     float lambda;          // the fit's regularisation (flatten_fit.slang), for a zone's own solve
     float backWeight;      // a surface's back, likewise
     float zoneMinX; float zoneMinY; float zoneMinZ;
@@ -1204,6 +1210,10 @@ void flattenSplat<let kTransfer : int>(uint i) {
     const bool thin = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
     const uint cls = thin ? 1u : 0u;
     const uint n = flatten.params.directions;
+    if (flatten.params.facingCull != 0 && !thin &&
+        dot(float3(flatten.params.facingX, flatten.params.facingY, flatten.params.facingZ) - pWorld, facing) < 0.0) {
+        opacity = 0.0;
+    }
 
     float3 c[16];
     [ForceUnroll]

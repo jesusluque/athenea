@@ -107,6 +107,7 @@ void addFlatten(CLI::App& app) {
         bool noFloor = false;
         std::vector<float> viewBox;
         bool everyCloud = false;
+        std::vector<float> facing;
         uint32_t viewBoxSamples = 256;
         float viewBoxOutside = 0.05F;
         std::string validate, validateStage, validateCamera, validateFormat = "spz";
@@ -140,6 +141,10 @@ void addFlatten(CLI::App& app) {
     cmd->add_flag("--baked", o->everyCloud,
                   "write every cloud of the stage, its light baked in (mesh2splat without --transfer) as the frame "
                   "shows it, not only the relit TX clouds");
+    cmd->add_option("--facing", o->facing,
+                    "X Y Z in the stage's world: a camera that only turns about this point; every gaussian whose "
+                    "surface faces away from it is written transparent")
+        ->expected(3);
     cmd->add_option("--view-box", o->viewBox,
                     "the camera's zone, MINX MINY MINZ MAXX MAXY MAXZ in the stage's world: each gaussian fitted to "
                     "the directions it is seen from there")
@@ -277,6 +282,10 @@ void addFlatten(CLI::App& app) {
         settings.roughnessFloor = !o->noFloor;
         settings.floorShare = o->floorShare;
         settings.everyCloud = o->everyCloud;
+        if (o->facing.size() == 3) {
+            settings.facingCull = true;
+            settings.facingPoint = {o->facing[0], o->facing[1], o->facing[2]};
+        }
         if (o->viewBox.size() == 6) {
             settings.zone = true;
             for (size_t k = 0; k < 3; ++k) {

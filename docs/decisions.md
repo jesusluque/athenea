@@ -13339,6 +13339,15 @@ gaussians -- and the logos on the back wall, six metres off, read as blurs.
 part, never more than they want, the rest shared again a few rounds, so
 their cell is FACTOR times finer than the others'.
 
+**What a turning camera never sees.** In the wide shot (about 50 degrees)
+the sets showed horizontal streaks and torn edges at the sides of the
+panels and of the reliefs: the side faces that point away from the PTZ.
+A camera that only turns about one point never sees them -- the mesh's
+own body hides them -- but a gaussian is drawn from both sides and has no
+body behind it, so at grazing angles they showed through the faces in
+front. `flatten --facing X Y Z` writes every gaussian whose surface faces
+away from the point transparent (a thin wall is kept).
+
 ### A plate: an image over the frame, mixed by its alpha
 
 A camera image keyed and put into the set, so that what stands nearer than

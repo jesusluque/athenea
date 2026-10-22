@@ -62,6 +62,10 @@ struct FlattenSettings {
     /// Every cloud, not only the relit TX ones and the catchers: a cloud
     /// with its light baked in is written as the frame shows it.
     bool                 everyCloud = false;
+    /// A camera that only turns about `facingPoint` (world units): a
+    /// gaussian facing away from it is written transparent.
+    bool                 facingCull = false;
+    std::array<float, 3> facingPoint{0.0F, 0.0F, 0.0F};
     bool                 zone = false;
     std::array<float, 3> zoneMin{0, 0, 0};
     std::array<float, 3> zoneMax{0, 0, 0};

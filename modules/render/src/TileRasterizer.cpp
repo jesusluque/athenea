@@ -628,6 +628,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                     p[kFileRow[k]].setData(f.toFile[k]);
                 }
                 p["zone"].setData(uint32_t{f.zone ? 1u : 0u});
+                p["facingCull"].setData(uint32_t{f.facingCull ? 1u : 0u});
+                p["facingX"].setData(f.facingPoint[0]);
+                p["facingY"].setData(f.facingPoint[1]);
+                p["facingZ"].setData(f.facingPoint[2]);
                 p["zoneSamples"].setData(f.zoneSamples);
                 p["zoneOutside"].setData(f.zoneOutside);
                 p["lambda"].setData(f.lambda);
