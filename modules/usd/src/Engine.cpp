@@ -1661,6 +1661,10 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
             }
         }
     }
+    // An unlit surface reads its texture at st_lightmap where it has one.
+    if (std::find(names.begin(), names.end(), "st_lightmap") == names.end()) {
+        names.push_back("st_lightmap");
+    }
     scene_->setExtraPrimvarSlots(names);
     if (!materialsChanged_ && names == materialSlotNames_ && materialRecords_.valid()) {
         return ok();
@@ -1676,6 +1680,7 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
     materialCutouts_ = false;
     materialGlass_ = false;
     materialRowUniform_.assign(1, false);
+    std::vector<uint32_t> unlitRows{~0u, ~0u};
     for (const auto& [id, entry] : materials_) {
         if (!entry.compiled) {
             continue;
@@ -1746,6 +1751,20 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
         }
         rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, passes});
         materialRowUniform_.push_back((flags & technique::kMaterialUniform) != 0);
+        // What the row shows where a mesh draws it unlit: its first texture.
+        {
+            uint32_t texture = ~0u;
+            uint32_t sampler = ~0u;
+            for (const material::MaterialSlot& slot : entry.compiled->slots) {
+                if (slot.kind == material::MaterialSlot::Kind::Texture && !slot.name.empty()) {
+                    texture = textures_->request(slot.name, slot.space);
+                    sampler = textures_->sampler(slot.wrapS, slot.wrapT, slot.filter);
+                    break;
+                }
+            }
+            unlitRows.push_back(texture);
+            unlitRows.push_back(sampler);
+        }
         blob.insert(blob.end(), words.begin(), words.end());
     }
     if (blob.empty()) {
@@ -1754,6 +1773,9 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
     if (auto loaded = textures_->commit(); !loaded) {
         return std::move(loaded).error();
     }
+    auto unlit = gpu::Buffer::fromSpan<uint32_t>(*device_, unlitRows, "materials.unlit");
+    if (!unlit) return std::move(unlit).error();
+    materialUnlit_ = std::move(*unlit);
     auto records = gpu::Buffer::fromSpan<technique::MaterialRecord>(*device_, rows, "materials.records");
     if (!records) return std::move(records).error();
     auto words = gpu::Buffer::fromSpan<float>(*device_, blob, "materials.blob");
@@ -2203,6 +2225,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     // does the shading under domes alone evaluate a material a pixel
     // (MaterialFrame::varying).
     bool varyingRows = false;
+    bool anyUnlit = false;
     const auto rowOf = [&](const pxr::SdfPath& material) -> uint32_t {
         const auto found = materialRows_.find(material);
         const uint32_t row = found != materialRows_.end() ? found->second : 0u;
@@ -2514,6 +2537,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 set.displayColor = entry.look.displayColor;
                 set.displayOpacity = entry.look.displayOpacity;
                 set.doubleSided = entry.look.doubleSided;
+                set.unlit = entry.look.unlit;
+                anyUnlit = anyUnlit || set.unlit;
                 set.material = rowOf(entry.look.material);
                 set.subsetMaterials = subsetRowsOf(entry);
                 set.categories = categoryMask(entry.look.categories);
@@ -2547,6 +2572,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             instance.displayColor = entry.look.displayColor;
             instance.displayOpacity = entry.look.displayOpacity;
             instance.doubleSided = entry.look.doubleSided;
+            instance.unlit = entry.look.unlit;
+            anyUnlit = anyUnlit || instance.unlit;
             instance.material = rowOf(entry.look.material);
             // Which material a mesh ended up with, for the days when a stage
             // arrives grey and the question is whether the material failed or
@@ -2940,6 +2967,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frame.cutouts = materialCutouts_ || scene_->anyHidden();
         frame.glass = materialGlass_;
         frame.varying = varyingRows;
+        frame.unlitRows = anyUnlit && materialUnlit_.valid() ? &materialUnlit_ : nullptr;
+        frame.unlitSlot = scene_->slotOf("st_lightmap");
+        frame.stSlot = scene_->slotOf("st");
         frame.scene = &*scene_;
         frame.records = &materialRecords_;
         frame.blob = &materialBlob_;

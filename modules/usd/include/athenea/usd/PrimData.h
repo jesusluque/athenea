@@ -312,6 +312,11 @@ struct MeshLook {
     /// laid over the finished frame where nothing nearer stands
     /// (plate_composite.slang).
     uint32_t                  plate = 0;
+    /// Unlit (`primvars:athenea:unlit`, constant, nonzero): drawn and hidden
+    /// behind as any mesh, and shown as its material's first texture -- at
+    /// `st_lightmap` where the mesh has it, else `st` -- with no light, lobe
+    /// or dome: a surface whose light is in its texture already (a lightmap).
+    bool                      unlit = false;
 };
 
 /// The bytes of a float array a VtValue holds (float or half, any tuple

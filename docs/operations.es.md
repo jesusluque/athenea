@@ -1853,6 +1853,24 @@ una nube allí donde queda delante de las mallas; no escribe ningún AOV ni
 profundidad; una placa instanciada no se dibuja, con un aviso, ni tampoco una
 cuyo material no lee ninguna textura.
 
+**Superficies sin luz**: una malla con `primvars:athenea:unlit` se dibuja y
+queda detrás de lo que tenga delante como cualquier malla -- tapa, escribe
+profundidad --, pero su sombreado es una lectura de textura: la primera de su
+material, en su primvar `st_lightmap` si la tiene y en `st` si no, sin luz,
+sin lóbulos y sin dome. Una superficie cuya luz se horneó en una textura (un
+lightmap) se muestra tal como se horneó. Un material que no lee ninguna
+textura muestra el `displayColor` de la malla.
+
+| Atributo | En | Tipo | Por defecto |
+|---|---|---|---|
+| `primvars:athenea:unlit` | una malla | int (o bool), constante ‹distinto de 0: sin luz› | `0`, sombreada |
+| `primvars:st_lightmap` | una malla | texCoord2f[] | ninguno: `st` |
+
+La textura se lee tal cual, en su nivel más fino: no se aplican la escala, el
+bias ni otros nodos del material. Los kernels de sombreado dejan esos píxeles:
+ni la lectura prefiltrada del dome ni los grupos de luz los tocan. Sólo en la
+ruta de raster.
+
 ### 4.4 Qué ignora el motor, y qué rechaza
 
 **Ignora** aquello para lo que no tiene significado: un primvar que no lee, un

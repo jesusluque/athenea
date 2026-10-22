@@ -13314,6 +13314,26 @@ ramp, and the cube in front stays in front.
 stands in front of the meshes; the path tracer's frame and the AOVs know
 nothing of plates; an instanced plate is not drawn.
 
+### An unlit surface: a lightmap shown as it was baked
+
+A set lit once by the path tracer and played back in raster keeps its light
+in textures over a second set of texture coordinates. Shown through its
+material, such a surface paid a material's evaluation a pixel (11 ms at
+1080p on the RTX 3070 for a textured wall) and was lit a second time by the
+frame's domes. A mesh with `primvars:athenea:unlit` is instead drawn as any
+mesh -- the visibility pass sees it, it occludes and is occluded -- and its
+pixels are shaded by `shadeUnlit` alone: the first texture of its material
+(`unlitRows`, a pair of words a material row) at `st_lightmap`, else `st`. The
+other shading kernels and the table step aside for its instance flag (bit 1),
+and it clears the domes' G-buffer under it so `dome_shade` adds nothing.
+
+Measured on the M5 Pro, `ATHENEA_STAGES=1`, a room under a dome behind an
+unlit wall covering the whole 1920 x 1080 frame: shading 2.2 ms with the
+shading kernel's pass over the same pixels, which returns at once.
+
+**Not done**: the texture is read at its finest level, with no footprint;
+the material's other nodes (a scale, a bias) are not applied.
+
 ### Measured (M5 Pro, release, 1920 x 1080, `athenea stage --frames 20`)
 
 The whole TX Corvette on its mesh ground, the camera of the stage, against

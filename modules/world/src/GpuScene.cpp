@@ -449,7 +449,7 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
             record.primId = instance.primId;
             record.instanceId = instance.instanceId;
             // Bit 0: double sided; above bit 8, the material row.
-            record.flags = (instance.doubleSided ? 1u : 0u) | (instance.material << 8);
+            record.flags = (instance.doubleSided ? 1u : 0u) | (instance.unlit ? 2u : 0u) | (instance.material << 8);
             record.categoriesLo = static_cast<uint32_t>(instance.categories & 0xFFFFFFFFu);
             record.categoriesHi = static_cast<uint32_t>(instance.categories >> 32);
             record.mask = 0xFFu;
@@ -630,7 +630,7 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
         record.count = set.count;
         record.mesh = mesh;
         record.primId = set.primId;
-        record.flags = (set.doubleSided ? 1u : 0u) | (set.material << 8);
+        record.flags = (set.doubleSided ? 1u : 0u) | (set.unlit ? 2u : 0u) | (set.material << 8);
         record.categoriesLo = static_cast<uint32_t>(set.categories & 0xFFFFFFFFu);
         record.categoriesHi = static_cast<uint32_t>(set.categories >> 32);
         record.time0 = static_cast<float>(set.timeStart);

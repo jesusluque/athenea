@@ -1799,6 +1799,23 @@ covers a cloud wherever it stands in front of the meshes; it writes no AOV
 and no depth; an instanced plate is not drawn, with a warning, nor is one whose
 material reads no texture.
 
+**Unlit surfaces**: a mesh with `primvars:athenea:unlit` is drawn and hidden
+behind as any mesh -- it occludes, it writes depth -- but its shading is one
+texture read: its material's first texture, at its `st_lightmap` primvar where
+it has one and at `st` otherwise, with no light, no lobe and no dome. A
+surface whose light was baked into a texture (a lightmap) is shown as it was
+baked. A material that reads no texture shows the mesh's `displayColor`.
+
+| Attribute | On | Type | Default |
+|---|---|---|---|
+| `primvars:athenea:unlit` | a mesh | int (or bool), constant ‹nonzero: unlit› | `0`, shaded |
+| `primvars:st_lightmap` | a mesh | texCoord2f[] | none: `st` |
+
+The texture is read as it is, at its finest level: the material's scale,
+bias and other nodes are not applied. The pixels are the shading kernels' no
+more: the dome's prefiltered read and the light groups leave them alone. The
+raster route only.
+
 ### 4.4 What the engine ignores, and what it refuses
 
 It **ignores** what it has no meaning for: a primvar it does not read, a

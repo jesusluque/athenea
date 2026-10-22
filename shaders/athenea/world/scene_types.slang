@@ -29,7 +29,7 @@ public struct InstanceRecord {
     public uint   mesh;
     public uint   primId;
     public uint   instanceId;
-    public uint   flags;        // bit 0: double sided; bits 8 and up: the material row (0: none)
+    public uint   flags;        // bit 0: double sided; bit 1: unlit; bits 8 and up: the material row (0: none)
     /// The categories this instance belongs to, one bit each: what a light's
     /// link is tested against. 0: none, which only an unlinked light reaches.
     public uint   categoriesLo;

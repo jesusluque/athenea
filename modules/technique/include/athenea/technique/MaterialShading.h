@@ -110,6 +110,7 @@ private:
     /// the pixels it took, which the shading kernel skips. Empty where the
     /// device would not make it: the shading kernel then shades them all.
     std::optional<gpu::ComputeKernel> evaluated_;
+    std::optional<gpu::ComputeKernel> unlit_;   ///< shadeUnlit: the unlit surfaces' pixels
     gpu::Texture                     evaluatedMask_;
     rhi::ComPtr<rhi::ITextureView>   evaluatedMaskView_;
     bool                             timeStages_ = false;

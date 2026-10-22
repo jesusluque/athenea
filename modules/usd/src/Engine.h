@@ -893,7 +893,8 @@ private:
     bool                                      materialsChanged_ = true;
     bool                                      materialCutouts_ = false;   ///< a material in the frame cuts samples away
     bool                                      materialGlass_ = false;     ///< a material in the frame lets a shadow ray through, tinted (kMaterialGlassShadow)
-    std::vector<bool>                         materialRowUniform_;        ///< by row: flagged kMaterialUniform (row 0, the fallback, is not)
+    std::vector<bool>                         materialRowUniform_;
+    gpu::Buffer                               materialUnlit_;             ///< by row: the first texture's id and sampler, for an unlit mesh        ///< by row: flagged kMaterialUniform (row 0, the fallback, is not)
     std::unique_ptr<material::MaterialCompiler> compiler_;
     bool                                      compilerFailed_ = false;
     std::unique_ptr<material::TextureStore>   textures_;

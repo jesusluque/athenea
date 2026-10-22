@@ -123,6 +123,13 @@ struct MaterialFrame {
     /// not kMaterialUniform): under domes alone only such a pixel is
     /// evaluated (shadeEvaluated), and without one that kernel is not run.
     bool                          varying = true;
+    /// The frame's unlit surfaces (shadeUnlit): two words a material row, its
+    /// first texture's id and sampler (~0: none). Null where no instance is
+    /// unlit. `unlitSlot` and `stSlot` are the scene slots of `st_lightmap`
+    /// and `st` (~0 where the scene has none).
+    const gpu::Buffer*            unlitRows = nullptr;
+    uint32_t                      unlitSlot = ~0u;
+    uint32_t                      stSlot = ~0u;
     /// The frame's lights. None: the headlight, as meshes were lit before
     /// there were any.
     const light::LightTable*      lights = nullptr;

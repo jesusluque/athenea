@@ -55,6 +55,9 @@ struct MeshInstance {
     std::array<float, 3>                 displayColor{0.18F, 0.18F, 0.18F};
     float                                displayOpacity = 1.0F;
     bool                                 doubleSided = true;
+    /// Shown as its material's first texture, unlit (primvars:athenea:unlit):
+    /// instance flag bit 1, which the shading kernels step aside for.
+    bool                                 unlit = false;
     uint32_t                             material = 0;     ///< its row in the frame's material records; 0 none
     std::vector<uint32_t>                subsetMaterials;  ///< per GeomSubset of the mesh: its row (0: the instance's)
     /// The categories it belongs to, one bit each (Hydra's, resolved by the
@@ -74,6 +77,7 @@ struct InstanceSet {
     std::array<float, 3>                 displayColor{0.18F, 0.18F, 0.18F};
     float                                displayOpacity = 1.0F;
     bool                                 doubleSided = true;
+    bool                                 unlit = false;    ///< as MeshInstance's
     uint32_t                             material = 0;
     std::vector<uint32_t>                subsetMaterials;
     uint64_t                             categories = 0;   ///< as MeshInstance's
