@@ -13331,8 +13331,33 @@ Measured on the M5 Pro, `ATHENEA_STAGES=1`, a room under a dome behind an
 unlit wall covering the whole 1920 x 1080 frame: shading 2.2 ms with the
 shading kernel's pass over the same pixels, which returns at once.
 
+Measured on the RTX 3070 (CUDA, Nsight Compute), 1920 x 1080, an unlit
+floor across half the frame: `shadeUnlit` 0.22 ms.
+
 **Not done**: the texture is read at its finest level, with no footprint;
 the material's other nodes (a scale, a bias) are not applied.
+
+### Screen-space reflections
+
+A floor that shines in a set lit by a lightmap reflects nothing of the set:
+the lightmap holds no direction, and the prefiltered dome is the sky. With
+`athenea:screenSpaceReflections`, `shadeReflections` runs after the shading
+and the domes: from a copy of the colour (no pixel reads what another is
+writing), each pixel that reflects marches its mirror direction in view
+space -- 48 steps spaced as the square of their index out to 12 units, then
+six of bisection between the last step in front and the first behind a
+surface less than 0.25 deep -- and adds the colour found there, weighed by
+Schlick's Fresnel from the unlit surface's `athenea:reflectance` (or the
+glossy albedo the domes' G-buffer holds for a shaded one), faded by
+roughness to nothing at 0.6, by the screen's last tenth and by the distance.
+
+Measured on the RTX 3070 (CUDA, Nsight Compute), 1920 x 1080, a room with an
+unlit floor of reflectance 0.5 and roughness 0.05 and a cube on it:
+`shadeReflections` 0.98 ms, the colour's copy beside it.
+
+**Not done**: no blur for roughness (it fades instead); no temporal
+accumulation; the march's steps show as bands where it grazes a wall; splats
+and what lies off screen are not reflected.
 
 ### Measured (M5 Pro, release, 1920 x 1080, `athenea stage --frames 20`)
 

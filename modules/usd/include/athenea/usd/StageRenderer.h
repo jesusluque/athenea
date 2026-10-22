@@ -492,6 +492,9 @@ public:
     void setGlassShadows(bool glass);
     /// athenea:domeVisible: false leaves the background transparent.
     void setDomeVisible(bool visible);
+    /// athenea:screenSpaceReflections: the meshes that reflect show what the
+    /// frame's meshes hold along their reflection (off by default).
+    void setScreenSpaceReflections(bool on);
     /// athenea:splatView: a parameter of the gaussians drawn in place of
     /// their light -- 1 albedo, 2 roughness, 3 metallic, 4 transmission,
     /// 5 ior, 6 normal, 7 opacity, 8 size, 9 sky visibility, 10 bounce,

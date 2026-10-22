@@ -366,6 +366,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--no-antialias` | flag | antialias encendido | |
 | `--no-cloud-shadows` | flag | sombras de nube encendidas | |
 | `--no-dome-prefilter` | flag | prefiltrado | raster: un domo ilumina una malla con una muestra por píxel y un rayo de sombra |
+| `--screen-space-reflections` | flag | apagado | raster: `athenea:screenSpaceReflections` |
 | `--cloud-shadow-texels` | entero | `1024` | por lado, por luz |
 | `--cloud-shadow-density` | número | `1.0` | multiplicador de la profundidad óptica de la nube |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 es solo el total, el resto añaden pares de Fourier; 0 deja decidir a quien recibe |
@@ -1483,6 +1484,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
 | `athenea:domeVisible` | bool | `true` | toda técnica: se dibuja un dome detrás del frame; apagado, los píxeles que nada cubre quedan transparentes (alfa 0), como pide la película transparente de un host, y el dome sigue iluminando el frame |
+| `athenea:screenSpaceReflections` | bool | `false` | raster: las mallas que reflejan muestran lo que tienen las mallas del frame a lo largo de su reflejo (§4.3, *Reflejos en espacio de pantalla*) |
 | `athenea:splatView` | int | `0` | el raster: un parámetro de las gaussianas dibujado en lugar de su luz, mezclado por su opacidad -- 1 albedo, 2 roughness (la que lee el especular), 3 metallic, 4 transmission, 5 ior (`ior - 1`, un gris), 6 normal (del mundo, `n / 2 + 1/2`), 7 opacidad, 8 tamaño (el eje mayor, una rampa de azul a 10 µm a rojo a 10 cm, una década cada cuarto), 9 visibilidad del cielo (el cielo visto por el transfer ponderado por el coseno, 1 sin nada delante), 10 rebote (la mitad indirecta bajo un cielo blanco), 11 celdas abiertas (la fracción de direcciones de un transfer TX que salen de la escena), 12 emisión, 13 campo reflejado (su media bajo un cielo blanco), 14 la luz que lleva la nube, 15 la roughness propia del material (0 donde no la lleva); una nube que no se reilumina muestra su luz, su opacidad y su tamaño y nada más. 0 dibuja la luz |
 | `athenea:glassShadows` | bool | `true` | rt y sus bakes: el rayo de sombra de una luz sigue a través de hasta 4 caras de vidrio cuya transmisión es una delta (una pared fina; un sólido de rugosidad especular constante por debajo de 0.03), teñido por cada una; apagado, el vidrio lo detiene |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
@@ -1870,6 +1872,27 @@ La textura se lee tal cual, en su nivel más fino: no se aplican la escala, el
 bias ni otros nodos del material. Los kernels de sombreado dejan esos píxeles:
 ni la lectura prefiltrada del dome ni los grupos de luz los tocan. Sólo en la
 ruta de raster.
+
+**Reflejos en espacio de pantalla** (`athenea:screenSpaceReflections`, un
+render setting, apagado por defecto; `StageRenderer::setScreenSpaceReflections`;
+`athenea stage --screen-space-reflections`): después del sombreado y de los
+domes, una superficie que refleja recorre su dirección de espejo por la
+profundidad de la capa de mallas y suma lo que la capa tiene donde el
+recorrido pasa por detrás de una superficie -- pesado por cuánto refleja y
+atenuado por su rugosidad (nada a partir de 0.6), por el borde de la pantalla
+y por la distancia (12 unidades de escena como mucho). Qué refleja: una
+superficie sin luz, por sus primvars constantes; una sombreada, por el albedo
+especular y la rugosidad que miden para ella los domes prefiltrados (un frame
+iluminado sólo por domes).
+
+| Atributo | En | Tipo | Por defecto |
+|---|---|---|---|
+| `primvars:athenea:reflectance` | una malla sin luz | float, constante ‹0..1, F0 (de Schlick)› | `0`, sin reflejo |
+| `primvars:athenea:roughness` | una malla sin luz | float, constante ‹0..1› | `0.3` |
+
+Lo que la pantalla no tiene no se refleja: lo que está detrás de la cámara o
+pasado el borde del frame se desvanece, y los splats no se reflejan. Sólo en
+la ruta de raster.
 
 ### 4.4 Qué ignora el motor, y qué rechaza
 

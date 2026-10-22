@@ -768,6 +768,7 @@ void Engine::setPathAdaptive(bool adaptive) { pathAdaptive_.store(adaptive); }
 void Engine::setPathMis(bool mis) { pathMis_.store(mis); }
 void Engine::setGlassShadows(bool glass) { glassShadows_.store(glass); }
 void Engine::setDomeVisible(bool visible) { domeVisible_.store(visible); }
+void Engine::setScreenSpaceReflections(bool on) { screenSpaceReflections_.store(on); }
 
 void Engine::setPathError(float error) { pathError_.store(std::max(error, 1.0e-4F)); }
 
@@ -1662,8 +1663,11 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
         }
     }
     // An unlit surface reads its texture at st_lightmap where it has one.
-    if (std::find(names.begin(), names.end(), "st_lightmap") == names.end()) {
-        names.push_back("st_lightmap");
+    // And what it reflects with, where screen-space reflections are on.
+    for (const char* name : {"st_lightmap", "athenea:reflectance", "athenea:roughness"}) {
+        if (std::find(names.begin(), names.end(), name) == names.end()) {
+            names.push_back(name);
+        }
     }
     scene_->setExtraPrimvarSlots(names);
     if (!materialsChanged_ && names == materialSlotNames_ && materialRecords_.valid()) {
@@ -2970,6 +2974,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frame.unlitRows = anyUnlit && materialUnlit_.valid() ? &materialUnlit_ : nullptr;
         frame.unlitSlot = scene_->slotOf("st_lightmap");
         frame.stSlot = scene_->slotOf("st");
+        frame.reflections = screenSpaceReflections_.load() && !pathTracing;
+        frame.reflectanceSlot = scene_->slotOf("athenea:reflectance");
+        frame.roughnessSlot = scene_->slotOf("athenea:roughness");
         frame.scene = &*scene_;
         frame.records = &materialRecords_;
         frame.blob = &materialBlob_;
@@ -3327,9 +3334,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         if (meshStages) {
             const technique::MaterialShading::StageTimes& t = materialShading_->stageTimes();
             log::info("stages: mesh prepare {:.1f} ms (cloud shadow map {:.1f} of it), visibility {:.1f}, lobes {:.1f}, "
-                      "shadow rays {:.1f}, shading {:.1f}, domes {:.1f}; mesh layer {:.1f} in all",
+                      "shadow rays {:.1f}, shading {:.1f}, domes {:.1f}, reflections {:.1f}; mesh layer {:.1f} in all",
                       std::chrono::duration<double, std::milli>(meshStart - meshLayerStart).count(),
-                      meshShadowMapMs_, meshVisibilityMs, t.lobes, t.shadows, t.shade, t.domes,
+                      meshShadowMapMs_, meshVisibilityMs, t.lobes, t.shadows, t.shade, t.domes, t.reflections,
                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - meshLayerStart)
                           .count());
         }

@@ -359,6 +359,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--no-antialias` | flag | antialias on | |
 | `--no-cloud-shadows` | flag | cloud shadows on | |
 | `--no-dome-prefilter` | flag | prefiltered | raster: a dome lights a mesh by one sample a pixel and a shadow ray |
+| `--screen-space-reflections` | flag | off | raster: `athenea:screenSpaceReflections` |
 | `--cloud-shadow-texels` | integer | `1024` | a side, per light |
 | `--cloud-shadow-density` | number | `1.0` | multiplier on the cloud's optical depth |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 is the total alone, the rest add Fourier pairs; 0 lets what receives decide |
@@ -1444,6 +1445,7 @@ found and does not.
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |
 | `athenea:pathMis` | bool | `true` | multiple importance sampling |
 | `athenea:domeVisible` | bool | `true` | every technique: a dome is drawn behind the frame; off, the pixels nothing covers stay transparent (alpha 0), as a host's transparent film asks, and the dome still lights the frame |
+| `athenea:screenSpaceReflections` | bool | `false` | raster: the meshes that reflect show what the frame's meshes hold along their reflection (§4.3, *Screen-space reflections*) |
 | `athenea:splatView` | int | `0` | the raster: a parameter of the gaussians drawn in place of their light, blended by their opacity -- 1 albedo, 2 roughness (as the specular reads it), 3 metallic, 4 transmission, 5 ior (`ior - 1`, a grey), 6 normal (world, `n / 2 + 1/2`), 7 opacity, 8 size (the largest axis, a ramp from blue at 10 µm to red at 10 cm, a decade a quarter), 9 sky visibility (the transfer's cosine-weighted sky seen, 1 unoccluded), 10 bounce (the indirect half under a white sky), 11 open cells (the share of a TX transfer's directions that leave the scene), 12 emission, 13 reflected field (its mean under a white sky), 14 the light the cloud carries, 15 the material's own roughness (0 where not carried); a cloud that is not relit shows its light, opacity and size and nothing else. 0 draws the light |
 | `athenea:glassShadows` | bool | `true` | rt and its bakes: a light's shadow ray goes on through up to 4 faces of glass whose transmission is a delta (a thin wall; a solid of constant specular roughness under 0.03), tinted by each; off, glass stops it |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
@@ -1815,6 +1817,26 @@ The texture is read as it is, at its finest level: the material's scale,
 bias and other nodes are not applied. The pixels are the shading kernels' no
 more: the dome's prefiltered read and the light groups leave them alone. The
 raster route only.
+
+**Screen-space reflections** (`athenea:screenSpaceReflections`, a render
+setting, off by default; `StageRenderer::setScreenSpaceReflections`;
+`athenea stage --screen-space-reflections`): after the shading and the domes,
+a surface that reflects marches its mirror direction through the mesh layer's
+depth and adds what the layer holds where the march goes behind a surface --
+weighed by how much it reflects, faded by its roughness (nothing past 0.6),
+by the screen's edge and by the distance (12 scene units at most). What
+reflects: an unlit surface by its constant primvars, a shaded one by the
+glossy albedo and roughness the prefiltered domes measure for it (a frame lit
+by domes alone).
+
+| Attribute | On | Type | Default |
+|---|---|---|---|
+| `primvars:athenea:reflectance` | an unlit mesh | float, constant ‹0..1, F0 (Schlick's)› | `0`, no reflection |
+| `primvars:athenea:roughness` | an unlit mesh | float, constant ‹0..1› | `0.3` |
+
+What the screen does not hold is not reflected: what is behind the camera or
+past the frame's edge fades out, and splats are not reflected. The raster
+route only.
 
 ### 4.4 What the engine ignores, and what it refuses
 

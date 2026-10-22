@@ -132,6 +132,9 @@ public:
     /// (true, the default); false leaves those pixels transparent, alpha 0,
     /// as a host's transparent film asks. The dome still lights the frame.
     [[nodiscard]] bool GetDomeVisible() const;
+    /// "athenea:screenSpaceReflections": the meshes that reflect show what
+    /// the frame's meshes hold along their reflection (false, the default).
+    [[nodiscard]] bool GetScreenSpaceReflections() const;
     /// "athenea:splatView": a parameter of the gaussians drawn in place of
     /// their light (render::RenderSettings::splatView); 0, the default, the light.
     [[nodiscard]] uint32_t GetSplatView() const;

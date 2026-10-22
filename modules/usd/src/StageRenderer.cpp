@@ -1301,6 +1301,10 @@ void StageRenderer::setDomeVisible(bool visible) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:domeVisible"), VtValue(visible));
 }
 
+void StageRenderer::setScreenSpaceReflections(bool on) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:screenSpaceReflections"), VtValue(on));
+}
+
 void StageRenderer::setGlassShadows(bool glass) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:glassShadows"), VtValue(glass));
 }

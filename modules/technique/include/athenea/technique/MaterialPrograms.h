@@ -130,6 +130,12 @@ struct MaterialFrame {
     const gpu::Buffer*            unlitRows = nullptr;
     uint32_t                      unlitSlot = ~0u;
     uint32_t                      stSlot = ~0u;
+    /// Screen-space reflections after the shading (shadeReflections), and
+    /// the scene slots of the constant primvars an unlit surface says it
+    /// reflects with: `athenea:reflectance` (F0) and `athenea:roughness`.
+    bool                          reflections = false;
+    uint32_t                      reflectanceSlot = ~0u;
+    uint32_t                      roughnessSlot = ~0u;
     /// The frame's lights. None: the headlight, as meshes were lit before
     /// there were any.
     const light::LightTable*      lights = nullptr;

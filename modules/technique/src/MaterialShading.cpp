@@ -604,6 +604,132 @@ void shadeUnlit(uint3 tid: SV_DispatchThreadID) {
 }
 )";
 
+/// SCREEN-SPACE REFLECTIONS (`athenea:screenSpaceReflections`), after the
+/// shading and the domes: a pixel that reflects marches its mirror direction
+/// through the mesh layer's depth, in view space, and adds what the layer
+/// holds where the march goes behind a surface, weighed by how much it
+/// reflects and faded by its roughness, by the screen's edge and by the
+/// distance. What reflects: an unlit surface by its constant primvars
+/// `athenea:reflectance` (F0, Schlick's) and `athenea:roughness`; a shaded
+/// one by the glossy albedo and alpha the prefiltered domes' G-buffer holds,
+/// where the frame has it. The march reads a copy of the colour (`source`),
+/// so no pixel reads what another is writing.
+const char* kReflectionsBody = R"(
+StructuredBuffer<float4>  source;          // the shaded colour, before the reflections
+Texture2D<float4>         domeDiffuseIn;   // coverage in w: the G-buffer is this pixel's
+Texture2D<float4>         domeGlossyIn;    // glossy albedo, alpha
+uniform uint              hasGlossy;
+uniform uint              reflectanceSlot;
+uniform uint              roughnessSlot;
+
+static const uint  kMarchSteps = 48;
+static const uint  kRefineSteps = 6;
+static const float kMaxDistance = 12.0;   // view units
+static const float kThickness = 0.25;     // how deep behind a surface a hit still counts, view units
+
+float constantPrimvar(Surface s, uint slot, float fallback) {
+    if (slot == kNoPrimvar) {
+        return fallback;
+    }
+    const uint record = primvarRecordOf(s.mesh, slot);
+    return record == kNoPrimvar ? fallback
+                                : primvarAt(record, s.mesh, s.triangle, s.points, s.weights, float4(fallback)).x;
+}
+
+/// Where view point `q` lands on the screen, in pixels (row 0 on top).
+float2 toPixel(float3 q) {
+    return float2(q.x / q.z * camera.focalX + camera.centreX, q.y / q.z * camera.focalY + camera.centreY);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void shadeReflections(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= camera.width || tid.y >= camera.height || camera.orthographic != 0) {
+        return;
+    }
+    const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
+    if (seen.x == 0) {
+        return;
+    }
+    const uint at = tid.y * camera.width + tid.x;
+    const Surface s = surfaceAt(camera, tid.x, tid.y, seen);
+    float3 tint;
+    float roughness;
+    float3 n = s.normal;
+    const float3 v = normalize(s.viewPosition);
+    if (dot(n, v) > 0.0) {
+        n = -n;
+    }
+    const float cosine = saturate(dot(-v, n));
+    if ((s.instance.flags & 2u) != 0) {
+        const float f0 = saturate(constantPrimvar(s, reflectanceSlot, 0.0));
+        roughness = saturate(constantPrimvar(s, roughnessSlot, 0.3));
+        // Schlick's; nothing where the surface says it reflects nothing.
+        tint = float3(f0 > 0.0 ? f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0) : 0.0);
+    } else if (hasGlossy != 0 && domeDiffuseIn.Load(int3(int(tid.x), int(tid.y), 0)).w > 0.0) {
+        const float4 glossy = domeGlossyIn.Load(int3(int(tid.x), int(tid.y), 0));
+        tint = glossy.rgb;
+        roughness = sqrt(max(glossy.w, 0.0));
+    } else {
+        return;
+    }
+    // Rough surfaces blur what they reflect past what a march can show.
+    const float sharpness = saturate(1.0 - roughness / 0.6);
+    if (!(max(max(tint.x, tint.y), tint.z) * sharpness > 1.0e-3)) {
+        return;
+    }
+    const float3 r = reflect(v, n);
+    const float3 origin = s.viewPosition + n * (0.002 * s.depth);
+    float previous = 0.0;
+    float hitT = -1.0;
+    for (uint i = 1; i <= kMarchSteps; ++i) {
+        const float u = float(i) / float(kMarchSteps);
+        const float t = kMaxDistance * u * u;
+        const float3 q = origin + r * t;
+        if (q.z <= camera.nearZ) {
+            break;
+        }
+        const float2 p = toPixel(q);
+        if (any(p < 0.0) || p.x >= float(camera.width) || p.y >= float(camera.height)) {
+            break;
+        }
+        const float surface = depth[uint(p.y) * camera.width + uint(p.x)];
+        if (surface > 0.0 && q.z > surface && q.z - surface < kThickness) {
+            // Between the last step in front and this one behind.
+            float lo = previous;
+            float hi = t;
+            for (uint k = 0; k < kRefineSteps; ++k) {
+                const float mid = 0.5 * (lo + hi);
+                const float3 m = origin + r * mid;
+                const float2 mp = toPixel(m);
+                const float ms = depth[uint(clamp(mp.y, 0.0, float(camera.height - 1))) * camera.width +
+                                       uint(clamp(mp.x, 0.0, float(camera.width - 1)))];
+                if (ms > 0.0 && m.z > ms) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            hitT = hi;
+            break;
+        }
+        previous = t;
+    }
+    if (hitT < 0.0) {
+        return;
+    }
+    const float2 hp = toPixel(origin + r * hitT);
+    const uint2 hit = uint2(clamp(hp, float2(0.0), float2(camera.width - 1, camera.height - 1)));
+    const float4 seenThere = source[hit.y * camera.width + hit.x];
+    // Faded where the screen ends (what lies past it is not known) and with
+    // the distance marched.
+    const float2 edge = min(hp, float2(camera.width, camera.height) - hp) / (0.1 * float2(camera.width, camera.height));
+    const float fade = saturate(min(edge.x, edge.y)) * saturate(1.0 - hitT / kMaxDistance);
+    const float4 here = source[at];
+    colour[at] = float4(here.rgb + tint * sharpness * fade * seenThere.rgb, here.a);
+}
+)";
+
 /// The table shadeTabled reads: a row a material, kTableBins angles to
 /// the eye, three texels each -- (diffuse albedo, opacity), (glossy albedo,
 /// alpha), (emission, whether the domes answer it) -- for every material
@@ -1260,6 +1386,16 @@ Result<void> MaterialShading::setPrograms(const MaterialPrograms& programs, bool
         kernel = make(shadows);
     }
     if (!kernel) return std::move(kernel).error();
+    // The reflections' kernel (kReflectionsBody).
+    {
+        const std::string name = programs.module() + "_reflections";
+        const std::string source = "import " + programs.module() + ";\n" + kKernelPrelude + kReflectionsBody;
+        auto program = library_->loadSource(name, source, {"shadeReflections"});
+        if (!program) return std::move(program).error();
+        auto made = gpu::ComputeKernel::create(*library_, name, "shadeReflections");
+        if (!made) return std::move(made).error();
+        reflections_.emplace(std::move(*made));
+    }
     // The unlit surfaces' kernel, of the same variant (kUnlitBody).
     {
         const std::string name = programs.module() + "_unlit" + (groups ? "_groups" : "") + (domes ? "_domes" : "");
@@ -1641,6 +1777,40 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             setCamera(cursor["camera"], projection, targets.width, targets.height);
         });
         ATHENEA_TRY(stage(times_.domes));
+    }
+    // THE REFLECTIONS (kReflectionsBody), from a copy of what is shaded.
+    if (frame.reflections && reflections_.has_value()) {
+        const uint64_t bytes = pixels * 16;
+        if (!reflectionSource_.valid() || reflectionSource_.bytes() < bytes) {
+            gpu::BufferDesc desc;
+            desc.bytes = bytes;
+            desc.elementBytes = 16;
+            desc.label = "materials.reflectionSource";
+            auto made = gpu::Buffer::create(*device_, desc);
+            if (!made) return std::move(made).error();
+            reflectionSource_ = std::move(*made);
+        }
+        // What the domes added is in the copy: they are done first.
+        ATHENEA_TRY(batch.submit(true));
+        batch.encoder()->copyBuffer(reflectionSource_.rhi(), 0, out.colour.rhi(), 0, bytes);
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit(true));
+        reflections_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
+            bindMaterialFrame(cursor, frame, projection);
+            bindLights(cursor);
+            cursor["visibility"].setBinding((*ids).get());
+            cursor["colour"].setBinding(out.colour.rhi());
+            cursor["depth"].setBinding(out.depth.rhi());
+            cursor["source"].setBinding(reflectionSource_.rhi());
+            const bool glossy = domes && domeDiffuseView_ && domeGlossyView_;
+            cursor["domeDiffuseIn"].setBinding(glossy ? domeDiffuseView_.get() : domeNoMapView_.get());
+            cursor["domeGlossyIn"].setBinding(glossy ? domeGlossyView_.get() : domeNoMapView_.get());
+            cursor["hasGlossy"].setData(uint32_t{glossy ? 1u : 0u});
+            cursor["reflectanceSlot"].setData(frame.reflectanceSlot);
+            cursor["roughnessSlot"].setData(frame.roughnessSlot);
+            setCamera(cursor["camera"], projection, targets.width, targets.height);
+        });
+        ATHENEA_TRY(stage(times_.reflections));
     }
     return ok();
 }

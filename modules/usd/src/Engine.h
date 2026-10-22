@@ -488,6 +488,7 @@ public:
     void setPathMis(bool mis);
     /// Whether a dome is drawn behind the frame (true) or its pixels are left
     /// transparent (false); either way the dome lights what the frame holds.
+    void setScreenSpaceReflections(bool on);
     void setDomeVisible(bool visible);
     /// Let the path tracer's shadow rays through glass whose transmission
     /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
@@ -794,6 +795,7 @@ private:
     std::atomic<bool>                         pathMis_{true};
     std::atomic<bool>                         glassShadows_{true};
     std::atomic<bool>                         domeVisible_{true};
+    std::atomic<bool>                         screenSpaceReflections_{false};
     std::atomic<bool>                         transferIndirect_{true};
     std::atomic<bool>                         displayBlend_{false};
     render::SplatFlatten*                     flattenRequest_ = nullptr;

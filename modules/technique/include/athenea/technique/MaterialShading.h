@@ -62,6 +62,7 @@ public:
         double shadows = 0.0;  ///< traceShadows
         double shade = 0.0;    ///< shadeMaterials
         double domes = 0.0;    ///< domeShade, the domes read prefiltered
+        double reflections = 0.0;   ///< shadeReflections, the screen-space reflections
     };
     void timeStages(bool on) noexcept { timeStages_ = on; }
     [[nodiscard]] const StageTimes& stageTimes() const noexcept { return times_; }
@@ -111,6 +112,8 @@ private:
     /// device would not make it: the shading kernel then shades them all.
     std::optional<gpu::ComputeKernel> evaluated_;
     std::optional<gpu::ComputeKernel> unlit_;   ///< shadeUnlit: the unlit surfaces' pixels
+    std::optional<gpu::ComputeKernel> reflections_;   ///< shadeReflections: the screen-space reflections
+    gpu::Buffer                       reflectionSource_;   ///< what was shaded, read by the reflections
     gpu::Texture                     evaluatedMask_;
     rhi::ComPtr<rhi::ITextureView>   evaluatedMaskView_;
     bool                             timeStages_ = false;

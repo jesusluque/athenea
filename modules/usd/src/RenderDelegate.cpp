@@ -336,6 +336,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     mis.name = "Weigh light sampling and material sampling (MIS) (rt)";
     mis.key = _atheneaSettings->pathMis;
     mis.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor screenSpaceReflections;
+    screenSpaceReflections.name = "Screen-space reflections on the meshes that reflect";
+    screenSpaceReflections.key = TfToken("athenea:screenSpaceReflections");
+    screenSpaceReflections.defaultValue = VtValue(false);
     HdRenderSettingDescriptor domeVisible;
     domeVisible.name = "The dome drawn behind the frame (off: a transparent background)";
     domeVisible.key = TfToken("athenea:domeVisible");
@@ -397,7 +401,8 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudDensity.defaultValue = VtValue(1.0f);
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
-            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView};
+            cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
+            screenSpaceReflections};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -526,6 +531,11 @@ bool HdAtheneaRenderDelegate::GetPathMis() const {
 bool HdAtheneaRenderDelegate::GetDomeVisible() const {
     const VtValue value = GetRenderSetting(TfToken("athenea:domeVisible"));
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+bool HdAtheneaRenderDelegate::GetScreenSpaceReflections() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:screenSpaceReflections"));
+    return value.IsHolding<bool>() && value.UncheckedGet<bool>();
 }
 
 uint32_t HdAtheneaRenderDelegate::GetSplatView() const {
