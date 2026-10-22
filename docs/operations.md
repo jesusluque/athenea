@@ -633,7 +633,11 @@ is its atlas, read at the same coordinates.
 | `--size` | texels, 16 to 16384 | `1024` | an atlas's side |
 | `--samples` | 1 to 65536 | `64` | paths a texel |
 | `--bounces` | 0 to 16 | `3` | after the first hit |
-| `--dilate` | rings | `8` | how far an island's light grows into the margin around it |
+| `--dilate` | rings | `8` | how far an island's light grows into the margin around it, before the denoiser and after it |
+| `--extra-samples` | paths | `0` | a texel's average of paths added after the first pass, where the light is noisiest for its cost |
+| `--pass-samples` | paths | `32` | `--extra-samples`: paths a texel an extra pass |
+| `--max-passes` | integer | `16` | `--extra-samples`: extra passes a texel at most |
+| `--no-denoise` | flag | denoised | leave the atlas as traced |
 | `--prim` | prim path | every mesh | |
 | `--time` | number | `0` | USD time code |
 | `--default-lights` | flag | off | a dome and a sun for a stage with none |
@@ -645,6 +649,12 @@ texel of a triangle's edge is that triangle's. The bake is the path tracer's
 own (`mesh2splat`'s), degree 0: what the surface sends out, the same in
 every direction -- a lightmap holds no view-dependent light, and its
 reflections are another pass's (`athenea:screenSpaceReflections`).
+
+**Denoised.** Where the build carries OIDN, the atlas is denoised in its own
+space, guided by the albedo the bake reads at each texel and the way it
+faces, each guide grown into the margins as the light is; the claimed
+texels are then grown again, so a margin holds its island's light and not
+what the filter spread across the border.
 
 **What it does not do.** An instanced mesh is not baked; a GeomSubset's own
 binding is stronger than the one written on its mesh, so a mesh with subsets

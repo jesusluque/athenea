@@ -13380,9 +13380,19 @@ atlas): at 256 x 256, 48567 texels of 65536 claimed, 16 paths each, 3
 bounces, baked in 25.0 s; the stage then drew at 1063 x 525 in 15.8 ms a
 frame. At 16 paths a texel the light is grain.
 
-**Not done**: no adaptive sampling and no denoising of the atlas -- at the
-measured rate a 4096 x 4096 atlas at 256 paths a texel would take about a
-day; the bake is degree 0, so nothing of the light depends on the view; an
+Then adaptive and denoised: the bake is `bakeSplitOnDevice` -- a first pass
+at every texel and passes of `--pass-samples` where the relative variance
+for the cost is highest -- and the atlas goes through the engine's OIDN in
+lightmap space, guided by the albedo the bake reads back (one path, the
+material planes) and the texel's normal, every plane grown into the margins
+first and the light grown again from the claimed texels after. At 1024 x
+1024, 761016 texels, 32 paths and 32 more on average in 10 passes: 63.4 s
+for the bake, 0.47 s for the denoiser, and the floor's grain and the panels'
+edges come out clean. At that rate -- 0.77 million paths a second -- a
+4096 x 4096 atlas of the same coverage at 64 paths a texel is about 17
+minutes.
+
+**Not done**: the bake is degree 0, so nothing of the light depends on the view; an
 instanced mesh and a GeomSubset's binding are left as they are; on CUDA the
 bake's pipeline is not made (an OptiX failure the other bakes share).
 

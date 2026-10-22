@@ -648,7 +648,11 @@ textura es su atlas, leída en las mismas coordenadas.
 | `--size` | texels, de 16 a 16384 | `1024` | el lado de un atlas |
 | `--samples` | de 1 a 65536 | `64` | caminos por texel |
 | `--bounces` | de 0 a 16 | `3` | después del primer impacto |
-| `--dilate` | anillos | `8` | cuánto crece la luz de una isla en el margen que la rodea |
+| `--dilate` | anillos | `8` | cuánto crece la luz de una isla en el margen que la rodea, antes del denoiser y después |
+| `--extra-samples` | caminos | `0` | la media de caminos por texel que se añade después de la primera pasada, donde la luz es más ruidosa para lo que cuesta |
+| `--pass-samples` | caminos | `32` | `--extra-samples`: caminos por texel en cada pasada extra |
+| `--max-passes` | entero | `16` | `--extra-samples`: pasadas extra por texel como mucho |
+| `--no-denoise` | flag | con denoise | deja el atlas tal como se trazó |
 | `--prim` | ruta de prim | todas las mallas | |
 | `--time` | número | `0` | time code de USD |
 | `--default-lights` | flag | apagado | un dome y un sol para un stage que no tiene luces |
@@ -661,6 +665,12 @@ propio trazador de caminos (el de `mesh2splat`), de grado 0: lo que emite la
 superficie, igual en todas las direcciones -- un lightmap no guarda luz que
 dependa de la vista, y sus reflejos son de otra pasada
 (`athenea:screenSpaceReflections`).
+
+**Con denoise.** Si el build lleva OIDN, el atlas pasa por el denoiser en su
+propio espacio, guiado por el albedo que el horneado lee en cada texel y por
+hacia dónde mira, cada guía crecida en los márgenes igual que la luz; después
+los texels propios crecen otra vez, para que un margen tenga la luz de su
+isla y no lo que el filtro extendió por el borde.
 
 **Lo que no hace.** Una malla instanciada no se hornea; el binding propio de
 un GeomSubset es más fuerte que el que se escribe en su malla, así que una

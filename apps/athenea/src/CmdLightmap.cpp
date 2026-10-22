@@ -26,6 +26,8 @@
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu_host/Context.h"
 #include "athenea/io/Exr.h"
+#include "athenea/technique/Denoiser.h"
+#include "athenea/technique/PathTracer.h"
 #include "athenea/usd/MeshStage.h"
 #include "athenea/usd/StageRenderer.h"
 
@@ -92,7 +94,9 @@ void writeOvers(std::ostream& out, const OverTree& node, int depth, const std::s
 void addLightmap(CLI::App& app) {
     struct Options {
         std::string stage, output = "lightmap", uv = "st_lightmap", prim;
-        uint32_t size = 1024, samples = 64, bounces = 3, dilate = 8;
+        uint32_t size = 1024, samples = 64, bounces = 3, dilate = 8, extraSamples = 0, passSamples = 32,
+                 maxPasses = 16;
+        bool noDenoise = false;
         double time = 0.0;
         bool defaultLights = false;
     };
@@ -107,6 +111,11 @@ void addLightmap(CLI::App& app) {
     cmd->add_option("--samples", o->samples, "paths a texel")->check(CLI::Range(1u, 65536u));
     cmd->add_option("--bounces", o->bounces, "bounces after the first hit")->check(CLI::Range(0u, 16u));
     cmd->add_option("--dilate", o->dilate, "rings of texels the islands are grown by into their margins");
+    cmd->add_option("--extra-samples", o->extraSamples,
+                    "paths a texel on average added after the first pass, where the light is noisiest");
+    cmd->add_option("--pass-samples", o->passSamples, "--extra-samples: paths a texel an extra pass");
+    cmd->add_option("--max-passes", o->maxPasses, "--extra-samples: extra passes a texel at most");
+    cmd->add_flag("--no-denoise", o->noDenoise, "leave the atlas as traced (by default OIDN denoises it)");
     cmd->add_option("--prim", o->prim, "only meshes at or under this prim path");
     cmd->add_option("--time", o->time, "USD time code");
     cmd->add_flag("--default-lights", o->defaultLights, "a dome and a sun, for a stage with no lights");
@@ -160,8 +169,13 @@ void addLightmap(CLI::App& app) {
                 auto raysKernel = gpu::ComputeKernel::create(library, "athenea/usd/lightmap", "lightmapRays");
                 auto scatter = gpu::ComputeKernel::create(library, "athenea/usd/lightmap", "lightmapScatter");
                 auto dilate = gpu::ComputeKernel::create(library, "athenea/usd/lightmap", "lightmapDilate");
+                auto guide = gpu::ComputeKernel::create(library, "athenea/usd/lightmap", "lightmapGuides");
+                auto clearGuides = gpu::ComputeKernel::create(library, "athenea/usd/lightmap", "lightmapClearGuides");
+                auto mask = gpu::ComputeKernel::create(library, "athenea/usd/lightmap", "lightmapMask");
+                std::unique_ptr<technique::Denoiser> denoiser;
                 auto prefix = gpu::PrefixSum::create(library);
-                if (!clear || !coverKernel || !flag || !raysKernel || !scatter || !dilate || !prefix) {
+                if (!clear || !coverKernel || !flag || !raysKernel || !scatter || !dilate || !prefix || !guide ||
+                    !clearGuides || !mask) {
                     return Error(ErrorCode::ShaderFailure, "lightmap: cannot make its kernels");
                 }
                 auto renderer = usd::StageRenderer::open(o->stage, context->deviceShared());
@@ -276,34 +290,124 @@ void addLightmap(CLI::App& app) {
                         });
                         ATHENEA_TRY(batch.submit(true));
                     }
+                    // THE BAKE, adaptive where --extra-samples asks: a first
+                    // pass at every texel, then passes where the light is
+                    // noisiest for its cost (StageRenderer::bakeSplitOnDevice).
                     const auto bakeStart = Clock::now();
-                    auto baked = (*renderer)->bakePointsOnDevice(*rays, count, o->time, o->samples, o->bounces, 0);
+                    usd::BakeOptions bake;
+                    bake.samples = o->samples;
+                    bake.bounces = o->bounces;
+                    bake.degree = 0;
+                    bake.extraSamples = o->extraSamples;
+                    bake.passSamples = o->passSamples;
+                    bake.maxPasses = o->maxPasses;
+                    auto split = (*renderer)->bakeSplitOnDevice(*rays, count, o->time, bake);
+                    if (!split) return std::move(split).error();
+                    auto baked = (*renderer)->combineBake(*split, *rays);
                     if (!baked) return std::move(baked).error();
-                    cli::out("lightmap: atlas %d, %u texels of %u baked (%u paths each, %u bounces) in %.0f ms\n",
-                             index, count, texels, o->samples, o->bounces, msSince(bakeStart));
+                    const double bakeMs = msSince(bakeStart);
+                    cli::out("lightmap: atlas %d, %u texels of %u baked (%u paths each, %.1f more on average in %u "
+                             "passes, %u bounces) in %.0f ms\n",
+                             index, count, texels, o->samples,
+                             static_cast<double>(split->extraPoints) * o->passSamples / std::max(count, 1u),
+                             split->extraPasses, o->bounces, bakeMs);
+                    // The guides: the material at each texel, read by one path.
+                    auto guides = (*renderer)->bakePointsOnDevice(*rays, count, o->time, 1, 0, 0,
+                                                                  /*transfer=*/true, 0, 0, 0, /*material=*/true);
+                    if (!guides) return std::move(guides).error();
+                    const uint32_t transferEntries = 1 + technique::transferPlanes(true, 0);
+                    const uint32_t stride = transferEntries + technique::bakeMaterialPlanes(true, true);
+                    auto albedo = deviceBuffer(device, texels, 16, "lightmap.albedo");
+                    auto normal = deviceBuffer(device, texels, 16, "lightmap.normal");
+                    auto aux = deviceBuffer(device, uint64_t{texels} * 2, 16, "lightmap.aux");
+                    auto denoised = deviceBuffer(device, texels, 16, "lightmap.denoised");
+                    if (!albedo || !normal || !aux || !denoised) {
+                        return Error(ErrorCode::OutOfMemory, "lightmap: cannot hold the denoiser's guides");
+                    }
                     {
                         gpu::CommandBatch batch(device);
+                        clearGuides->dispatch(batch, {texels, 1, 1}, [&](rhi::ShaderCursor c) {
+                            c["albedoImage"].setBinding(albedo->rhi());
+                            c["normalImage"].setBinding(normal->rhi());
+                            bindAtlas(c, count);
+                        });
                         scatter->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
                             c["baked"].setBinding(baked->rhi());
                             c["texelOf"].setBinding(texelOf->rhi());
                             c["image"].setBinding(image->rhi());
                             bindAtlas(c, count);
                         });
-                        ATHENEA_TRY(batch.submit(true));
-                    }
-                    // Grown into the margins, a ring a pass, ping-ponged.
-                    gpu::Buffer* from = &*image;
-                    gpu::Buffer* into = &*other;
-                    for (uint32_t pass = 0; pass < o->dilate; ++pass) {
-                        gpu::CommandBatch batch(device);
-                        dilate->dispatch(batch, {size, size, 1}, [&](rhi::ShaderCursor c) {
-                            c["imageIn"].setBinding(from->rhi());
-                            c["image"].setBinding(into->rhi());
+                        guide->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+                            c["material"].setBinding(guides->rhi());
+                            c["materialStride"].setData(stride);
+                            c["materialFirst"].setData(transferEntries);
+                            c["texelOf"].setBinding(texelOf->rhi());
+                            c["texelNormal"].setBinding(normals->rhi());
+                            c["albedoImage"].setBinding(albedo->rhi());
+                            c["normalImage"].setBinding(normal->rhi());
                             bindAtlas(c, count);
                         });
                         ATHENEA_TRY(batch.submit(true));
-                        std::swap(from, into);
                     }
+                    // Grown into the margins, a ring a pass, ping-ponged and
+                    // left in `target`: before the denoiser, so it sees no
+                    // black around an island, and after it.
+                    const auto grow = [&](gpu::Buffer& target, uint32_t rings) -> Result<void> {
+                        gpu::Buffer* from = &target;
+                        gpu::Buffer* into = &*other;
+                        for (uint32_t pass = 0; pass < rings; ++pass) {
+                            gpu::CommandBatch batch(device);
+                            dilate->dispatch(batch, {size, size, 1}, [&](rhi::ShaderCursor c) {
+                                c["imageIn"].setBinding(from->rhi());
+                                c["image"].setBinding(into->rhi());
+                                bindAtlas(c, count);
+                            });
+                            ATHENEA_TRY(batch.submit(true));
+                            std::swap(from, into);
+                        }
+                        if (from != &target) {
+                            gpu::CommandBatch batch(device);
+                            batch.encoder()->copyBuffer(target.rhi(), 0, from->rhi(), 0, uint64_t{texels} * 16);
+                            batch.markDirty();
+                            ATHENEA_TRY(batch.submit(true));
+                        }
+                        return ok();
+                    };
+                    ATHENEA_TRY(grow(*image, o->dilate));
+                    gpu::Buffer* result = &*image;
+                    if (!o->noDenoise && technique::denoiserBuilt()) {
+                        ATHENEA_TRY(grow(*albedo, o->dilate));
+                        ATHENEA_TRY(grow(*normal, o->dilate));
+                        {
+                            gpu::CommandBatch batch(device);
+                            batch.encoder()->copyBuffer(aux->rhi(), 0, albedo->rhi(), 0, uint64_t{texels} * 16);
+                            batch.encoder()->copyBuffer(aux->rhi(), uint64_t{texels} * 16, normal->rhi(), 0,
+                                                        uint64_t{texels} * 16);
+                            batch.markDirty();
+                            ATHENEA_TRY(batch.submit(true));
+                        }
+                        if (!denoiser) {
+                            auto made = technique::Denoiser::create(library);
+                            if (!made) return std::move(made).error();
+                            denoiser = std::make_unique<technique::Denoiser>(std::move(*made));
+                        }
+                        const auto denoiseStart = Clock::now();
+                        ATHENEA_TRY(denoiser->denoise(*image, &*aux, 0, uint64_t{texels} * 16, *denoised, size, size));
+                        cli::out("lightmap: atlas %d denoised (%s) in %.0f ms\n", index,
+                                 denoiser->description().c_str(), msSince(denoiseStart));
+                        {
+                            gpu::CommandBatch batch(device);
+                            mask->dispatch(batch, {texels, 1, 1}, [&](rhi::ShaderCursor c) {
+                                c["owner"].setBinding(owner->rhi());
+                                c["image"].setBinding(denoised->rhi());
+                                bindAtlas(c, count);
+                            });
+                            ATHENEA_TRY(batch.submit(true));
+                        }
+                        ATHENEA_TRY(grow(*denoised, o->dilate));
+                        result = &*denoised;
+                    }
+                    gpu::Buffer* from = result;
                     auto pixels = from->readAll<float>(device);
                     if (!pixels) return std::move(pixels).error();
                     const fs::path file = out / ("lightmap_" + std::to_string(index) + ".exr");

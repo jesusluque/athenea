@@ -226,3 +226,51 @@ void lightmapClear(uint3 tid: SV_DispatchThreadID) {
     owner[tid.x] = 0u;
     image[tid.x] = float4(0.0);
 }
+
+// THE GUIDES A DENOISER TAKES, in lightmap space (technique::Denoiser): the
+// surface's albedo and the way it faces, a plane each over the atlas.
+StructuredBuffer<float4>     material;     // a point: the bake's material planes (BakePoints::material)
+uniform uint                 materialStride;   // float4 a point
+uniform uint                 materialFirst;    // the base colour's plane
+RWStructuredBuffer<float4>   albedoImage;
+RWStructuredBuffer<float4>   normalImage;
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lightmapGuides(uint3 tid: SV_DispatchThreadID) {
+    const uint k = tid.x;
+    if (k >= atlas.count) {
+        return;
+    }
+    const uint texel = texelOf[k];
+    const float4 base = material[k * materialStride + materialFirst];
+    // -1: the material had no diffuse lobe there (a metal, an emitter): the
+    // light is its own, and the guide says so by being white.
+    const float3 albedo = base.x >= 0.0 ? saturate(base.xyz) : float3(1.0);
+    albedoImage[texel] = float4(albedo, 1.0);
+    normalImage[texel] = float4(normalize(texelNormal[texel].xyz), 1.0);
+}
+
+/// After the denoiser: only the claimed texels hold light again, so the
+/// dilation grows each island's own denoised light, not what the filter
+/// spread across its border.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lightmapMask(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= atlas.texels) {
+        return;
+    }
+    const float4 v = image[tid.x];
+    image[tid.x] = float4(v.rgb, owner[tid.x] != 0u ? 1.0 : 0.0);
+}
+
+/// Every texel of the guides cleared, before the scatter.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lightmapClearGuides(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= atlas.texels) {
+        return;
+    }
+    albedoImage[tid.x] = float4(0.0);
+    normalImage[tid.x] = float4(0.0);
+}
