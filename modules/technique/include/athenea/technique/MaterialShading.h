@@ -105,6 +105,13 @@ private:
     std::string                      tableModule_;
     gpu::Texture                     tableTexture_;
     rhi::ComPtr<rhi::ITextureView>   tableView_;
+    /// shadeEvaluated: the pixels whose material reflects only, under the
+    /// domes alone, evaluated without the lights' machinery; and the mask of
+    /// the pixels it took, which the shading kernel skips. Empty where the
+    /// device would not make it: the shading kernel then shades them all.
+    std::optional<gpu::ComputeKernel> evaluated_;
+    gpu::Texture                     evaluatedMask_;
+    rhi::ComPtr<rhi::ITextureView>   evaluatedMaskView_;
     bool                             timeStages_ = false;
     StageTimes                       times_;
     /// Whether the kernel in use reads the shadow rays' answers (traceShadows').

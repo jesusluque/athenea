@@ -411,10 +411,77 @@ bool tabled(Surface s) {
 }
 )";
 
+/// What the shading kernel reads of shadeEvaluated's (kEvaluatedBody): the
+/// pixels it shaded, 1 in the mask, which this kernel steps aside for.
+/// `evaluatedRan` is 0 on a frame it did not run, and the mask is not read.
+const char* kEvaluatedMask = R"(
+Texture2D<uint> evaluatedMask;
+uniform uint    evaluatedRan;
+bool evaluated(uint2 tid) {
+    return evaluatedRan != 0 && evaluatedMask.Load(int3(int(tid.x), int(tid.y), 0)) != 0;
+}
+)";
+
 const char* kNoDomePrefilter = R"(
 static const bool kDomePrefiltered = false;
 void writeDomeSurface(uint2 tid, bool closed, float3 wo, float3 p, float coverage) {}
 bool tabled(Surface s) { return false; }
+bool evaluated(uint2 tid) { return false; }
+)";
+
+/// A MATERIAL THAT ONLY REFLECTS, UNDER THE DOMES ALONE, but not the same
+/// everywhere -- a texture, a primvar -- so the table cannot stand in for
+/// it: evaluated at the pixel, and its albedos written for dome_shade.slang,
+/// with none of the lights' machinery. Under the domes alone the shading
+/// kernel does no more for such a pixel (domeClosed: no light sample, no lobe
+/// sample, its emission and coverage), but it carries every light's code in
+/// thread memory: a UsdPreviewSurface with a texture on its diffuse colour
+/// took 35 ms at 1080p there on an RTX 3070, against 1.3 for the table.
+/// Every pixel it reaches writes the mask, 1 where it shaded and 0 where it
+/// left the pixel to the shading kernel (a lobe that transmits, a dome
+/// linked away), so the mask needs no clearing.
+const char* kEvaluatedBody = R"(
+RWTexture2D<uint> evaluatedOut;
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void shadeEvaluated(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
+    // In quad order, as the shading kernel: bump's derivatives.
+    const uint2 tid = atheneaQuadPixel(group.xy, index);
+    if (tid.x >= camera.width || tid.y >= camera.height) {
+        return;
+    }
+    const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
+    if (seen.x == 0) {
+        evaluatedOut[tid] = 0;
+        return;
+    }
+    const Surface s = surfaceAt(camera, tid.x, tid.y, seen);
+    if (tabled(s)) {
+        evaluatedOut[tid] = 0;
+        return;   // shadeTabled's
+    }
+    const MaterialInputs inputs = materialInputsAt(camera, toWorld, tid.x, tid.y, s, lookup.time);
+    const MaterialRecord m = materials[materialRowOf(s)];
+    evaluateMaterial(m.function, inputs, m.blob);
+    weighTransparent(m);
+    if (!stackReflectsOnly() || !domesReach(s.instance.categoriesLo, s.instance.categoriesHi)) {
+        evaluatedOut[tid] = 0;
+        return;   // the shading kernel's
+    }
+    const uint at = tid.y * camera.width + tid.x;
+    const uint pixels = camera.width * camera.height;
+    const float3 toEye = normalize(inputs.viewPosition - inputs.positionWorld);
+    const float coverage =
+        (m.flags & (kMaterialCutout | kMaterialTransparent)) != 0 ? 1.0 : gAtheneaResult.opacity;
+    colour[at] = float4(gAtheneaResult.emission * coverage, coverage);
+    writeDomeSurface(tid, true, toEye, inputs.positionWorld, coverage);
+    depth[at] = s.depth;
+    float3 groups[8];
+    for (uint g = 0; g < 8; ++g) groups[g] = float3(0.0);
+    writeGroups(at, pixels, groups, coverage);
+    evaluatedOut[tid] = 1;
+}
 )";
 
 /// A MATERIAL THE SAME EVERYWHERE, UNDER THE DOMES ALONE: what its lobes
@@ -808,8 +875,8 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
         return;
     }
     const Surface s = surfaceAt(camera, tid.x, tid.y, seen);
-    if (tabled(s)) {
-        return;   // shadeTabled's
+    if (tabled(s) || evaluated(tid)) {
+        return;   // shadeTabled's or shadeEvaluated's
     }
     const MaterialInputs inputs = materialInputsAt(camera, toWorld, tid.x, tid.y, s, lookup.time);
     const MaterialRecord m = materials[materialRowOf(s)];
@@ -1068,7 +1135,8 @@ Result<void> MaterialShading::setPrograms(const MaterialPrograms& programs, bool
         const std::string source = "import " + programs.module() + ";\n" + kKernelPrelude +
                                    (groups ? kGroups : kNoGroups) + (shadows ? kShadowBits : kNoShadowBits) +
                                    (clouds ? kShadowMap : kNoShadowMap) +
-                                   (domes ? kDomePrefilter : kNoDomePrefilter) + kKernelBody;
+                                   (domes ? std::string(kDomePrefilter) + kEvaluatedMask : kNoDomePrefilter) +
+                                   kKernelBody;
         auto program = library_->loadSource(name, source, {"shadeMaterials"});
         if (!program) return std::move(program).error();
         return gpu::ComputeKernel::create(*library_, name, "shadeMaterials");
@@ -1140,6 +1208,26 @@ Result<void> MaterialShading::setPrograms(const MaterialPrograms& programs, bool
         kernel = make(shadows);
     }
     if (!kernel) return std::move(kernel).error();
+    // The pixels that only reflect under the domes alone, evaluated without
+    // the lights (kEvaluatedBody). A device that will not make it shades
+    // them in the shading kernel, as before; said once a set of materials.
+    evaluated_.reset();
+    if (domes) {
+        const std::string name = programs.module() + "_dome_evaluated" + (groups ? "_groups" : "");
+        const std::string source = "import " + programs.module() + ";\n" + kKernelPrelude +
+                                   (groups ? kGroups : kNoGroups) + kDomePrefilter + kEvaluatedBody;
+        auto made = [&]() -> Result<gpu::ComputeKernel> {
+            auto program = library_->loadSource(name, source, {"shadeEvaluated"});
+            if (!program) return std::move(program).error();
+            return gpu::ComputeKernel::create(*library_, name, "shadeEvaluated");
+        }();
+        if (made) {
+            evaluated_.emplace(std::move(*made));
+        } else {
+            log::warn("material shading: {}; every pixel in the shading kernel on this device",
+                      made.error().toString());
+        }
+    }
     kernel_.emplace(std::move(*kernel));
     shadowed_ = shadows;
     module_ = programs.module();
@@ -1350,6 +1438,44 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             cursor["materialTableRows"].setData(tableRows);
         });
     }
+    // Then the pixels that only reflect but are not the same everywhere
+    // (shadeEvaluated), which the shading kernel skips by the mask.
+    if (domes && (evaluatedMask_.width() != targets.width || evaluatedMask_.height() != targets.height)) {
+        gpu::TextureDesc desc;
+        desc.type = rhi::TextureType::Texture2D;
+        desc.width = targets.width;
+        desc.height = targets.height;
+        desc.format = rhi::Format::R32Uint;
+        desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+        desc.label = "materials.evaluatedMask";
+        auto made = gpu::Texture::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        evaluatedMask_ = std::move(*made);
+        auto view = evaluatedMask_.view(0);
+        if (!view) return std::move(view).error();
+        evaluatedMaskView_ = std::move(*view);
+    }
+    const bool evaluating = tableRows != 0 && evaluated_.has_value();
+    if (evaluating) {
+        evaluated_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
+            bindMaterialFrame(cursor, frame, projection);
+            bindLights(cursor);
+            cursor["visibility"].setBinding((*ids).get());
+            cursor["colour"].setBinding(out.colour.rhi());
+            cursor["depth"].setBinding(out.depth.rhi());
+            cursor["materialTable"].setBinding(tableView_.get());
+            cursor["materialTableRows"].setData(tableRows);
+            cursor["domeDiffuseOut"].setBinding(domeDiffuseView_.get());
+            cursor["domeGlossyOut"].setBinding(domeGlossyView_.get());
+            cursor["domePointOut"].setBinding(domePointView_.get());
+            cursor["evaluatedOut"].setBinding(evaluatedMaskView_.get());
+            if (groups) {
+                cursor["groupColour"].setBinding(frame.groups.colour->rhi());
+                cursor["groupCount"].setData(std::min(frame.groups.count, kMaxLightGroups));
+            }
+            setCamera(cursor["camera"], projection, targets.width, targets.height);
+        });
+    }
     kernel_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
         bindMaterialFrame(cursor, frame, projection);
         // The lights are these two kernels' alone.
@@ -1368,6 +1494,8 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             cursor["domePointOut"].setBinding(domePointView_.get());
             cursor["materialTable"].setBinding(tableView_.get());
             cursor["materialTableRows"].setData(tableRows);
+            cursor["evaluatedMask"].setBinding(evaluatedMaskView_.get());
+            cursor["evaluatedRan"].setData(uint32_t{evaluating ? 1u : 0u});
         }
         cursor["visibility"].setBinding((*ids).get());
         cursor["colour"].setBinding(out.colour.rhi());
