@@ -97,6 +97,8 @@ void addLightmap(CLI::App& app) {
         uint32_t size = 1024, samples = 64, bounces = 3, dilate = 8, extraSamples = 0, passSamples = 32,
                  maxPasses = 16;
         bool noDenoise = false, planar = false;
+        std::vector<float> bakeToward;
+        float bakeTowardRadius = 0.0F;
         std::string name;
         double time = 0.0;
         bool defaultLights = false;
@@ -121,6 +123,12 @@ void addLightmap(CLI::App& app) {
                   "one atlas over the horizontal rectangle the meshes span (--prim), whatever coordinates they carry; "
                   "its corners written beside it (<name>.json)");
     cmd->add_option("--name", o->name, "the files' name without extension (default lightmap_<atlas>)");
+    cmd->add_option("--bake-toward", o->bakeToward,
+                    "X Y Z: bake what a camera at this point sees at each texel -- the material's polish and its "
+                    "reflections too -- rather than the light the surface sends every way")
+        ->expected(3);
+    cmd->add_option("--bake-toward-radius", o->bakeTowardRadius,
+                    "--bake-toward: the ball about the point the camera may stand in, world units");
     cmd->add_option("--prim", o->prim, "only meshes at or under this prim path");
     cmd->add_option("--time", o->time, "USD time code");
     cmd->add_flag("--default-lights", o->defaultLights, "a dome and a sun, for a stage with no lights");
@@ -346,6 +354,11 @@ void addLightmap(CLI::App& app) {
                     bake.extraSamples = o->extraSamples;
                     bake.passSamples = o->passSamples;
                     bake.maxPasses = o->maxPasses;
+                    if (o->bakeToward.size() == 3) {
+                        bake.toward = true;
+                        bake.towardPoint = {o->bakeToward[0], o->bakeToward[1], o->bakeToward[2]};
+                        bake.towardRadius = std::max(o->bakeTowardRadius, 0.0F);
+                    }
                     auto split = (*renderer)->bakeSplitOnDevice(*rays, count, o->time, bake);
                     if (!split) return std::move(split).error();
                     auto baked = (*renderer)->combineBake(*split, *rays);

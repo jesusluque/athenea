@@ -649,6 +649,8 @@ is its atlas, read at the same coordinates.
 | `--no-denoise` | flag | denoised | leave the atlas as traced |
 | `--planar` | flag | off | one atlas over the horizontal rectangle the meshes span (with `--prim`, a floor), whatever coordinates they carry, and `<name>.json` beside it; no stage is written |
 | `--name` | text | `lightmap_<atlas>` | the files' name, without extension |
+| `--bake-toward` | X Y Z, world units | none | each texel baked as a camera at that point sees it: the material whole, its polish and the reflections it shows included |
+| `--bake-toward-radius` | world units | `0` | `--bake-toward`: the ball about the point the camera may stand in |
 | `--prim` | prim path | every mesh | |
 | `--time` | number | `0` | USD time code |
 | `--default-lights` | flag | off | a dome and a sun for a stage with none |
@@ -660,6 +662,13 @@ texel of a triangle's edge is that triangle's. The bake is the path tracer's
 own (`mesh2splat`'s), degree 0: what the surface sends out, the same in
 every direction -- a lightmap holds no view-dependent light, and its
 reflections are another pass's (`athenea:screenSpaceReflections`).
+
+**Seen from one place.** With `--bake-toward` a texel is not the light its
+surface sends every way but what a camera at that point -- within
+`--bake-toward-radius` of it -- sees there, by the same paths
+`mesh2splat --bake-toward` traces: a floor's sheen and what it reflects are
+in the texture, right for a camera that turns about that point and only
+for it. A texel whose surface faces away from the point bakes as usual.
 
 **Planar.** With `--planar` the texels are laid over the rectangle the
 meshes' world boxes span across the stage's two horizontal axes: u along +x,

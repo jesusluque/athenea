@@ -13453,6 +13453,14 @@ edges come out clean. At that rate -- 0.77 million paths a second -- a
 4096 x 4096 atlas of the same coverage at 64 paths a texel is about 17
 minutes.
 
+A camera that only turns about one point -- a PTZ on its head -- sees each
+texel from one direction, so a lightmap for it can hold the whole radiance
+and not the diffuse alone: `--bake-toward X Y Z` hands the bake the point
+(`BakeOptions::toward`, the path `mesh2splat --bake-toward` takes), and a
+texel facing it is baked as seen from there, the polish and what it
+reflects included. A floor so baked shows its sheen with no reflection pass
+and is wrong from anywhere else.
+
 **Not done**: the bake is degree 0, so nothing of the light depends on the view; an
 instanced mesh and a GeomSubset's binding are left as they are; on CUDA the
 bake's pipeline is not made (an OptiX failure the other bakes share).

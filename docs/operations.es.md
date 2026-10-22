@@ -664,6 +664,8 @@ textura es su atlas, leída en las mismas coordenadas.
 | `--no-denoise` | flag | con denoise | deja el atlas tal como se trazó |
 | `--planar` | flag | apagado | un atlas sobre el rectángulo horizontal que cubren las mallas (con `--prim`, un suelo), tengan las coordenadas que tengan, y `<name>.json` al lado; no se escribe stage |
 | `--name` | texto | `lightmap_<atlas>` | el nombre de los ficheros, sin extensión |
+| `--bake-toward` | X Y Z, unidades del mundo | ninguno | cada texel se hornea como lo ve una cámara en ese punto: el material entero, con su pulido y los reflejos que muestra |
+| `--bake-toward-radius` | unidades del mundo | `0` | `--bake-toward`: la bola alrededor del punto en la que puede estar la cámara |
 | `--prim` | ruta de prim | todas las mallas | |
 | `--time` | número | `0` | time code de USD |
 | `--default-lights` | flag | apagado | un dome y un sol para un stage que no tiene luces |
@@ -676,6 +678,14 @@ propio trazador de caminos (el de `mesh2splat`), de grado 0: lo que emite la
 superficie, igual en todas las direcciones -- un lightmap no guarda luz que
 dependa de la vista, y sus reflejos son de otra pasada
 (`athenea:screenSpaceReflections`).
+
+**Visto desde un sitio.** Con `--bake-toward` un texel no es la luz que su
+superficie manda hacia todos lados sino lo que ve ahí una cámara en ese
+punto -- a menos de `--bake-toward-radius` de él --, por los mismos caminos
+que traza `mesh2splat --bake-toward`: el brillo de un suelo y lo que refleja
+quedan en la textura, bien para una cámara que gira alrededor de ese punto y
+sólo para ella. Un texel cuya superficie no mira al punto se hornea como
+siempre.
 
 **Planar.** Con `--planar` los texels se reparten sobre el rectángulo que
 cubren las cajas de las mallas en el mundo, sobre los dos ejes horizontales
