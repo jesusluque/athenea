@@ -1222,7 +1222,12 @@ void flattenSplat<let kTransfer : int>(uint i) {
         const float leastRoughness = flatten.params.roughnessFloor != 0 ? flatFloorCandidate(flatten.floorCandidate[0]) : 0.0;
         const float3 base = float3(highHalf(shape[row + 2]), lowHalf(shape[row + 3]), highHalf(shape[row + 3]));
         const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
-        if (flatten.params.zone == 0) {
+        // A ZONE ONLY WHERE THE COLOUR TURNS WITH THE EYE: a cloud baked to
+        // one colour shows it from everywhere, and a zone of thirty
+        // centimetres seen from six metres is a few degrees of directions --
+        // fitted from those alone, the constant term went below black and a
+        // set's back wall came out black.
+        if (flatten.params.zone == 0 || (params.relight == 0 && degree == 0)) {
             for (uint k = 0; k < n; ++k) {
                 const float3 l = fibonacciDirection(k, n);
                 const float3 omega = t * l.x + b * l.y + facing * l.z;   // the world, towards the eye

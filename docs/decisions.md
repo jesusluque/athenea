@@ -13302,6 +13302,11 @@ sequence over the box) with the sphere's `--directions` weighing
 `--view-box-outside` of them: its normal equations summed in the kernel and
 solved by Cholesky (`flatSolveInPlace`), so degree 3 is spent where the
 camera looks. The shared matrix M stays for a cloud without a zone.
+A zone seen from far is a few degrees of directions: a set's back wall,
+six metres from a zone of thirty centimetres, was fitted from those alone,
+its constant term went below black and the wall came out black between its
+panels. A cloud whose colour does not turn with the eye -- baked, degree 0 --
+is fitted by M whatever the zone.
 
 **`mesh2splat --bake-toward X Y Z`** bakes what a camera standing within
 `--bake-toward-radius` of the point sees: every path of a gaussian that faces
