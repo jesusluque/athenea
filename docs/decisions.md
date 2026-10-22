@@ -13287,6 +13287,33 @@ copies of 128-byte lobes, and the inputs, the vertex data and the BSDF value
 around them. A lobe of fewer bytes, or a stack the material writes once,
 is what is left to take.
 
+### A plate: an image over the frame, mixed by its alpha
+
+A camera image keyed and put into the set, so that what stands nearer than
+it is in front and the set shows through where it was green, was a
+UsdPreviewSurface emitting its texture: the whole frame evaluated as a
+material (11 ms on the RTX 3070), and its alpha either a cut-out -- a hard,
+stepped edge -- or a coverage the raster resolves by a lot a pixel, which
+draws half a coverage as every other pixel. Neither is a key's edge.
+
+A mesh with `primvars:athenea:plate` (1 straight alpha, 2 premultiplied) is
+no longer drawn with the meshes. After the frame is finished -- splats,
+domes, exposure -- `plate_composite.slang` finds its pixels by a ray against
+its triangles in view space, and where the mesh layer's depth is farther or
+empty it lays the first texture of the plate's material over the frame by its
+alpha. One texture read a pixel: 0.28 ms over a whole 1920 x 1080 frame on
+the RTX 3070.
+
+**Checked**: a room under a dome, a plate in front of the camera whose
+texture is keyed out in its left third, a ramp of alpha in the middle third
+and opaque in the right, a cube behind the plate and one in front of it: the
+room and the cube behind show through the keyed third and mix along the
+ramp, and the cube in front stays in front.
+
+**Not done**: splats keep no depth, so a plate covers a cloud wherever it
+stands in front of the meshes; the path tracer's frame and the AOVs know
+nothing of plates; an instanced plate is not drawn.
+
 ### Measured (M5 Pro, release, 1920 x 1080, `athenea stage --frames 20`)
 
 The whole TX Corvette on its mesh ground, the camera of the stage, against

@@ -2220,6 +2220,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     std::vector<light::Light> lamps;
     std::vector<world::MeshInstance> meshInstances;
     std::vector<world::InstanceSet> meshSets;
+    std::vector<PlateDraw> plates;
     std::vector<render::SplatInstance> splats;
     std::vector<render::PointInstance> points;
     std::vector<lod::LodInstance> cuts;
@@ -2455,6 +2456,16 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
             if (renderTags != nullptr && !renderTags->empty() &&
                 std::find(renderTags->begin(), renderTags->end(), entry.renderTag) == renderTags->end()) {
+                continue;
+            }
+            if (entry.look.plate != 0) {
+                // Laid over the finished frame, not drawn (compositePlates).
+                // An instanced plate is not one.
+                if (entry.instancing.empty()) {
+                    plates.push_back({entry.gpu, entry.objectToWorld, entry.look.material, entry.look.plate});
+                } else {
+                    log::warn("hdAthenea: {}: an instanced plate is not drawn", id.GetString());
+                }
                 continue;
             }
             if (!entry.instancing.empty()) {
@@ -3486,6 +3497,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     ATHENEA_TRY(gatherLightGroups(pathTracing, settings.width, settings.height));
     ATHENEA_TRY(paintDomes(projection, settings.width, settings.height, targets));
     ATHENEA_TRY(applyExposure(projection.exposure, settings.width, settings.height, targets));
+    // After the exposure: a plate is an image, shown as it came.
+    ATHENEA_TRY(compositePlates(plates, projection, settings.width, settings.height, meshLayer && !pathTracing,
+                                targets));
     return ok();
 }
 
@@ -3906,6 +3920,74 @@ Result<void> Engine::carryCloud(const pxr::SdfPath& id, SplatEntry& entry, bool 
     // finds out here rather than tracing the bind pose for the rest of the
     // film, which is what it did.
     entry.posed->revision += 1;
+    return ok();
+}
+
+Result<void> Engine::compositePlates(const std::vector<PlateDraw>& plates, const render::Projection& projection,
+                                     uint32_t width, uint32_t height, bool meshDepth,
+                                     render::RenderTargets& targets) {
+    if (plates.empty() || !targets.colour.valid() || !textures_) {
+        return ok();
+    }
+    if (!plateComposite_.has_value()) {
+        auto made = gpu::ComputeKernel::create(*library_, "athenea/technique/plate_composite", "plateComposite");
+        if (!made) return std::move(made).error();
+        plateComposite_.emplace(std::move(*made));
+    }
+    const bool depth = meshDepth && meshLayer_.depth.valid() && meshLayer_.width == width &&
+                       meshLayer_.height == height;
+    gpu::CommandBatch batch(*device_);
+    for (const PlateDraw& draw : plates) {
+        // The image: the first texture its material reads, as the material
+        // asked for it (its colour space, its wrap).
+        const auto found = materials_.find(draw.material);
+        const material::MaterialSlot* image = nullptr;
+        if (found != materials_.end() && found->second.compiled) {
+            for (const material::MaterialSlot& slot : found->second.compiled->slots) {
+                if (slot.kind == material::MaterialSlot::Kind::Texture && !slot.name.empty()) {
+                    image = &slot;
+                    break;
+                }
+            }
+        }
+        if (image == nullptr) {
+            log::warn("hdAthenea: a plate whose material {} reads no texture is not drawn",
+                      draw.material.IsEmpty() ? std::string("(none)") : draw.material.GetString());
+            continue;
+        }
+        const uint32_t texture = textures_->request(image->name, image->space);
+        const uint32_t sampler = textures_->sampler(image->wrapS, image->wrapT, image->filter);
+        const geom::GpuMesh& mesh = *draw.mesh;
+        const geom::GpuPrimvar* st = mesh.primvar("st");
+        const uint32_t interpolation = st == nullptr ? 0u
+                                       : st->interpolation == geom::Interpolation::Vertex ||
+                                                 st->interpolation == geom::Interpolation::Varying
+                                           ? 1u
+                                       : st->interpolation == geom::Interpolation::FaceVarying ? 2u
+                                                                                               : 0u;
+        const std::array<float, 12> rows = (projection.worldToView * draw.objectToWorld).rows3x4();
+        plateComposite_->dispatch(batch, {width, height, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["colour"].setBinding(targets.colour.rhi());
+            cursor["meshDepth"].setBinding(depth ? meshLayer_.depth.rhi() : targets.colour.rhi());
+            cursor["positions"].setBinding(mesh.positions.rhi());
+            cursor["indices"].setBinding(mesh.indices.rhi());
+            cursor["corners"].setBinding(mesh.triangleCorners.rhi());
+            cursor["st"].setBinding(interpolation != 0 ? st->values.rhi() : mesh.positions.rhi());
+            textures_->bind(cursor["gTextures"]);
+            technique::setCamera(cursor["camera"], projection, width, height);
+            rhi::ShaderCursor p = cursor["plate"];
+            p["row0"].setData(rows.data(), sizeof(float) * 4);
+            p["row1"].setData(rows.data() + 4, sizeof(float) * 4);
+            p["row2"].setData(rows.data() + 8, sizeof(float) * 4);
+            p["triangles"].setData(mesh.triangles);
+            p["stInterpolation"].setData(interpolation);
+            p["texture"].setData(texture);
+            p["sampler"].setData(sampler);
+            p["premultiplied"].setData(uint32_t{draw.mode == 2 ? 1u : 0u});
+            p["hasDepth"].setData(uint32_t{depth ? 1u : 0u});
+        });
+    }
+    ATHENEA_TRY(batch.submit(true));
     return ok();
 }
 

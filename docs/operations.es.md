@@ -1829,6 +1829,30 @@ Una nube lleva como mucho 16 capas; una capa que no es tres floats por
 gaussiana se deja fuera con un aviso. Un light catcher dibuja sólo sus capas,
 sumadas sobre lo que haya detrás, y no proyecta nada.
 
+**Placas**, que tampoco declara ningún schema: una malla con
+`primvars:athenea:plate` es una imagen puesta sobre el frame terminado, no
+una superficie. Sus píxeles son los que cubren sus triángulos; muestra ahí la
+primera textura de su material, en su `st`, y pone su color sobre lo que tiene
+el frame según el alfa de la textura -- una mezcla, no un recorte -- donde
+ninguna superficie de la capa de mallas queda más cerca. Así una imagen de
+cámara keyeada deja ver el plató a través de su alfa y queda detrás de lo que
+tiene delante.
+
+| Atributo | En | Tipo | Por defecto |
+|---|---|---|---|
+| `primvars:athenea:plate` | una malla | int, constante ‹1 alfa directo, 2 color premultiplicado por él› | `0`, una malla normal |
+
+El material sólo dice dónde está la imagen: su primera textura (también un
+slot `aofx://`, que un host actualiza cada frame), leída en el espacio de color
+y con el wrap que dé. No se sombrea nada de él, la exposición no toca la
+placa, y cuesta una lectura de textura por píxel cubierto (0.28 ms sobre un
+frame entero de 1920 x 1080 en una RTX 3070). Sólo la dibuja la ruta de
+raster, después de todo lo demás, una placa sobre otra en el
+orden de sus rutas; no sabe nada de los splats, que no guardan profundidad, así que tapa
+una nube allí donde queda delante de las mallas; no escribe ningún AOV ni
+profundidad; una placa instanciada no se dibuja, con un aviso, ni tampoco una
+cuyo material no lee ninguna textura.
+
 ### 4.4 Qué ignora el motor, y qué rechaza
 
 **Ignora** aquello para lo que no tiene significado: un primvar que no lee, un

@@ -1776,6 +1776,29 @@ A cloud carries at most 16 layers; a layer not three floats a gaussian is
 left out with a warning. A light catcher draws its layers alone, added over
 whatever is behind it, and casts nothing.
 
+**Plates**, which no schema declares either: a mesh with
+`primvars:athenea:plate` is an image laid over the finished frame, not a
+surface. Its pixels are where its triangles are; it shows its material's
+first texture there, at its `st`, its colour over what the frame holds by the
+texture's alpha -- a mix, not a cut -- wherever no surface of the mesh layer
+stands nearer. A keyed camera image so shows the set through its alpha and
+stays behind what stands in front of it.
+
+| Attribute | On | Type | Default |
+|---|---|---|---|
+| `primvars:athenea:plate` | a mesh | int, constant ‹1 straight alpha, 2 colour premultiplied by it› | `0`, an ordinary mesh |
+
+The material is only where the image is found: its first texture (an
+`aofx://` slot included, which a host updates every frame), read in the
+colour space and with the wrap it gives. Nothing of it is shaded, the
+exposure does not touch the plate, and it costs a texture read a pixel it
+covers (0.28 ms over a whole 1920 x 1080 frame on an RTX 3070). It is
+drawn by the raster route only, after everything else, plate over plate in
+the order of their paths; it knows nothing of splats, which keep no depth, so it
+covers a cloud wherever it stands in front of the meshes; it writes no AOV
+and no depth; an instanced plate is not drawn, with a warning, nor is one whose
+material reads no texture.
+
 ### 4.4 What the engine ignores, and what it refuses
 
 It **ignores** what it has no meaning for: a primvar it does not read, a

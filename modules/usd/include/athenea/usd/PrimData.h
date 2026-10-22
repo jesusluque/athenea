@@ -306,6 +306,12 @@ struct MeshLook {
     /// unlinked light reaches it.
     std::vector<pxr::TfToken> categories;
     std::vector<CoordSysBinding> coordSys;   ///< the prim's bound coordinate systems
+    /// A plate (`primvars:athenea:plate`, constant): 0 an ordinary mesh; 1
+    /// an image whose alpha is straight, 2 one whose colour is premultiplied
+    /// by it. A plate is not shaded: it shows its material's first texture,
+    /// laid over the finished frame where nothing nearer stands
+    /// (plate_composite.slang).
+    uint32_t                  plate = 0;
 };
 
 /// The bytes of a float array a VtValue holds (float or half, any tuple

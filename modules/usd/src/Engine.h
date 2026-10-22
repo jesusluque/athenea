@@ -957,6 +957,20 @@ private:
 
     [[nodiscard]] Result<void> paintDomes(const render::Projection& projection, uint32_t width, uint32_t height,
                                           render::RenderTargets& targets);
+    /// A mesh marked `primvars:athenea:plate` this frame: not drawn with the
+    /// others, laid over the finished frame instead (compositePlates).
+    struct PlateDraw {
+        std::shared_ptr<const geom::GpuMesh> mesh;
+        render::Mat4                         objectToWorld = render::Mat4::identity();
+        pxr::SdfPath                         material;
+        uint32_t                             mode = 1;   ///< MeshLook::plate
+    };
+    /// The frame's plates over what it drew, each where nothing of the mesh
+    /// layer stands nearer (`meshDepth`: the layer was drawn this frame).
+    [[nodiscard]] Result<void> compositePlates(const std::vector<PlateDraw>& plates,
+                                               const render::Projection& projection, uint32_t width,
+                                               uint32_t height, bool meshDepth, render::RenderTargets& targets);
+    std::optional<gpu::ComputeKernel>          plateComposite_;
     technique::VisibilityTargets              visibility_;
     FrameCounters                             counters_;
     /// The Gaussians panel's numbers (`gaussianStats`), and what gathers them.

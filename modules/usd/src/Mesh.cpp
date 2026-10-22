@@ -226,6 +226,16 @@ void HdAtheneaMesh::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam, 
             l.displayOpacity = opacity;
         }
         l.doubleSided = IsDoubleSided(delegate);
+        float plate = 0.0F;
+        const VtValue plateValue = delegate->Get(id, TfToken("athenea:plate"));
+        if (plateValue.IsHolding<int>()) {
+            plate = static_cast<float>(plateValue.UncheckedGet<int>());
+        } else if (plateValue.IsHolding<bool>()) {
+            plate = plateValue.UncheckedGet<bool>() ? 1.0F : 0.0F;
+        } else {
+            firstFloat(plateValue, &plate);
+        }
+        l.plate = plate >= 1.5F ? 2u : plate >= 0.5F ? 1u : 0u;
         // What the light linking scene index resolved this prim's collections
         // into. Empty unless something links to it.
         const VtArray<TfToken> categories = delegate->GetCategories(id);
