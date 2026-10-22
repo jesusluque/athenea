@@ -627,6 +627,16 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 for (size_t k = 0; k < 9; ++k) {
                     p[kFileRow[k]].setData(f.toFile[k]);
                 }
+                p["zone"].setData(uint32_t{f.zone ? 1u : 0u});
+                p["zoneSamples"].setData(f.zoneSamples);
+                p["zoneOutside"].setData(f.zoneOutside);
+                p["lambda"].setData(f.lambda);
+                p["backWeight"].setData(f.backWeight);
+                static const char* kZone[6] = {"zoneMinX", "zoneMinY", "zoneMinZ", "zoneMaxX", "zoneMaxY", "zoneMaxZ"};
+                for (size_t k = 0; k < 3; ++k) {
+                    p[kZone[k]].setData(f.zoneMin[k]);
+                    p[kZone[k + 3]].setData(f.zoneMax[k]);
+                }
             }
         };
         if (settings.flatten != nullptr) {
@@ -640,7 +650,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 ATHENEA_TRY(batch.submit(true));
             }
             const bool lit = instance.relight && lights != nullptr && lights->any();
-            if (lit && (instance.catcher || txCells)) {
+            const bool baked = settings.flatten->settings.everyCloud && !instance.catcher && !txCells;
+            if ((lit && (instance.catcher || txCells)) || baked) {
                 auto records = buffer(*device_, uint64_t{cloud->count} * kFlatStride, 4, "splat.flatten.records");
                 if (!records) return std::move(records).error();
                 flatOut = &*records;

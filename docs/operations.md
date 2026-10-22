@@ -495,6 +495,8 @@ recipe is §3.1 below.
 | `--bake-filter-indirect-only` | flag | off | filter the indirect light alone and leave the direct as traced |
 | `--bake-bounces` | integer | `3` | after the first hit |
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
+| `--bake-toward` | 3 numbers, world units | none | bake what a camera standing there sees, reflections included, as one colour a gaussian (degree 0): for a camera that only turns about that point. A gaussian facing away bakes its body over its hemisphere |
+| `--bake-toward-radius` | world units | `0.15` | `--bake-toward`: the ball about the point the camera may stand in; each path looks from a point of it |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |
 | `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well; a zonal transfer keeps the direct half alone |
 | `--transfer-degree` | 2 or 3 | 3 | with `--transfer`: the harmonics' degree, 16 coefficients direct and 48 indirect at 3, the first transfer's 9 and 27 at 2 |
@@ -578,6 +580,10 @@ kept beside the files).
 | `--roughness-floor-share` | 0..1 | `0.05` | the share of a reflection lobe's energy the floor leaves above band 3 |
 | `--fit-lambda` | number | `1e-4` | the fit's regularisation, times l²(l+1)² |
 | `--back-weight` | number | `0.01` | what a surface's back hemisphere weighs in the fit; a thin wall weighs all round |
+| `--baked` | flag | off | every cloud of the stage, its light baked in (`mesh2splat` without `--transfer`), written as the frame shows it -- not only the relit TX clouds |
+| `--view-box` | 6 numbers, world units | none | the camera's zone, `MINX MINY MINZ MAXX MAXY MAXZ`: each gaussian fitted to the directions it is seen from there, the rest of the sphere weighing `--view-box-outside` of them |
+| `--view-box-samples` | 16..4096 | `256` | `--view-box`: points of the zone a gaussian is looked at from |
+| `--view-box-outside` | 0..1 | `0.05` | `--view-box`: what the sphere's `--directions` weigh against the zone's |
 | `--spz-version` | `3` \| `4` | `3` | 3 is gzip and what Spark reads; 4 is ZSTD and needs it in the build |
 | `--spz-sh1-bits`, `--spz-sh-rest-bits` | 1..8 | `8`, `8` | bits SPZ keeps of band 1, and of bands 2 and 3 |
 | `--time` | number | `0` | USD time code |

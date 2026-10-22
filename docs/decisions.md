@@ -13287,6 +13287,46 @@ copies of 128-byte lobes, and the inputs, the vertex data and the BSDF value
 around them. A lobe of fewer bytes, or a stack the material writes once,
 is what is left to take.
 
+### A set seen from one place, flattened for a camera's zone
+
+A virtual TV set (an interior of 8 x 4 x 10 m: LED strips, lacquered panels,
+a polished wooden floor) played in real time by a standard Gaussian Splatting
+rasteriser, with the camera a PTZ head that only turns about its optical
+centre. Two changes take its light to a standard file.
+
+**`athenea flatten --baked`** writes every cloud of the stage, its light baked
+in, as the frame shows it: the TX-only test let no baked cloud through.
+**`--view-box`** fits each gaussian on its own, to directions towards
+`--view-box-samples` points of the camera's zone (R3, a low-discrepancy
+sequence over the box) with the sphere's `--directions` weighing
+`--view-box-outside` of them: its normal equations summed in the kernel and
+solved by Cholesky (`flatSolveInPlace`), so degree 3 is spent where the
+camera looks. The shared matrix M stays for a cloud without a zone.
+
+**`mesh2splat --bake-toward X Y Z`** bakes what a camera standing within
+`--bake-toward-radius` of the point sees: every path of a gaussian that faces
+the point looks from a point drawn in that ball, and the first vertex keeps
+the whole material, polish included (`bakeTowardFaces`), where a bake keeps
+only the body. One direction a gaussian, so one colour (degree 0).
+
+**Where the light was lost.** Measured at the set's reference camera
+(532 x 263, the path tracer at 512 paths, 3 bounces), the cloud baked over
+the hemisphere read a linear mean of 0.315 against 0.416, and 28 to 30 %
+dark alike with the LED strips alone (0.164 / 0.232) and the studio's fill
+light alone (0.134 / 0.186). The bake's filter is not it: unfiltered, the
+display-referred means are the same (0.167 / 0.166). The floor is: 0.024
+against 0.081 over a patch of it -- its polish, the strips' reflection in a
+roughness 0.4 varnish, which the body drops. Baked from the camera's place,
+the patch reads 0.073 and the frame 0.337. What stays dark is detail finer
+than the cell: 150 000 gaussians over the set put the back wall at cells
+10.5 times what a pixel covers, and a strip 2 cm wide among them.
+
+**The cell a mesh takes is its nearest point's** (`--cell-from-camera`): a
+floor that runs from under the camera to the back wall is cut at the
+camera's feet, and took 75 % of the budget. The sets' long meshes are split
+in bands of a metre along the depth (`scene_bands.usdc`, made by the set's
+author), each band the cell of its own distance.
+
 ### A plate: an image over the frame, mixed by its alpha
 
 A camera image keyed and put into the set, so that what stands nearer than

@@ -504,6 +504,8 @@ receta es §3.1.
 | `--bake-filter-indirect-only` | flag | desactivado | filtra solo la luz indirecta y deja la directa como se trazó |
 | `--bake-bounces` | entero | `3` | tras el primer impacto |
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
+| `--bake-toward` | 3 números, unidades del mundo | ninguno | hornea lo que ve una cámara situada ahí, reflejos incluidos, como un color por gaussiana (grado 0): para una cámara que solo gira en torno a ese punto. Una gaussiana que mira hacia otro lado hornea su cuerpo sobre su hemisferio |
+| `--bake-toward-radius` | unidades del mundo | `0.15` | `--bake-toward`: la bola alrededor del punto en la que puede estar la cámara; cada camino mira desde un punto de ella |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
 | `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó; un transfer zonal guarda sólo la mitad directa |
 | `--transfer-degree` | 2 o 3 | 3 | con `--transfer`: el grado de los armónicos, 16 coeficientes directos y 48 indirectos con 3, los 9 y 27 del primer transfer con 2 |
@@ -587,6 +589,10 @@ apagadas (`<output>_flatten_stage.usda`, que se queda junto a los ficheros).
 | `--roughness-floor-share` | 0..1 | `0.05` | la parte de la energía de un lóbulo de reflexión que el suelo deja por encima de la banda 3 |
 | `--fit-lambda` | número | `1e-4` | la regularización del ajuste, por l²(l+1)² |
 | `--back-weight` | número | `0.01` | lo que pesa en el ajuste el hemisferio trasero de una superficie; una pared fina pesa en toda la esfera |
+| `--baked` | flag | no | todas las nubes de la stage, con la luz horneada (`mesh2splat` sin `--transfer`), escritas como las muestra el frame; no solo las nubes TX reiluminadas |
+| `--view-box` | 6 números, unidades del mundo | ninguno | la zona de la cámara, `MINX MINY MINZ MAXX MAXY MAXZ`: cada gaussiana se ajusta a las direcciones desde las que se ve allí, y el resto de la esfera pesa `--view-box-outside` de ellas |
+| `--view-box-samples` | 16..4096 | `256` | `--view-box`: puntos de la zona desde los que se mira cada gaussiana |
+| `--view-box-outside` | 0..1 | `0.05` | `--view-box`: lo que pesan las `--directions` de la esfera frente a las de la zona |
 | `--spz-version` | `3` \| `4` | `3` | 3 es gzip y lo que lee Spark; 4 es ZSTD y necesita ZSTD en la compilación |
 | `--spz-sh1-bits`, `--spz-sh-rest-bits` | 1..8 | `8`, `8` | bits que SPZ guarda de la banda 1, y de las bandas 2 y 3 |
 | `--time` | número | `0` | time code de USD |

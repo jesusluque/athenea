@@ -1096,6 +1096,16 @@ struct FlattenParams {
     float o00; float o01; float o02;
     float o10; float o11; float o12;
     float o20; float o21; float o22;
+    // THE CAMERA'S ZONE (`--view-box`): 0 none, every gaussian fitted by M;
+    // otherwise `zoneSamples` directions towards points of the box (world
+    // units) weigh the fit, and the sphere's directions weigh `zoneOutside`.
+    uint  zone;
+    uint  zoneSamples;
+    float zoneOutside;
+    float lambda;          // the fit's regularisation (flatten_fit.slang), for a zone's own solve
+    float backWeight;      // a surface's back, likewise
+    float zoneMinX; float zoneMinY; float zoneMinZ;
+    float zoneMaxX; float zoneMaxY; float zoneMaxZ;
 };
 // What a flatten reads and writes, as one parameter block: on Metal a block
 // is one argument buffer, one slot of the 31 an entry point has. As four
@@ -1127,6 +1137,40 @@ float3x3 inverseLinear(float3x3 m) {
     const float3 r1 = cross(c, a) * inv;
     const float3 r2 = cross(a, b) * inv;
     return float3x3(r0, r1, r2);
+}
+
+/// What a gaussian shows towards `omega` (the world, towards the eye), as the
+/// raster shades it for an eye there, as the fit takes it: exposed, and
+/// sRGB-encoded where the file is display-referred, less the 3DGS offset.
+float3 flatShown<let kTransfer : int>(uint i, uint slot, float4 posOpacity, float3x3 r, float3 scale,
+                                      float3x3 toCloud, float3 pWorld, float3 base, uint degree,
+                                      float leastRoughness, EditFate fate, float3 omega) {
+    const float3 omegaCloud = normalize(mul(toCloud, omega));
+    const float3 eyeCloud = posOpacity.xyz + omegaCloud;
+    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, -omegaCloud),
+                               params.linearCloud != 0);
+    if (params.relight != 0) {
+        const float3 cloudNormal = splatShadingNormal(r, scale, posOpacity.xyz, eyeCloud, params.hasNormals != 0,
+                                                      params.hasNormals != 0 ? normals[i] : 0u);
+        SplatSlope slope = noSlope();
+        colour = relitToward<kTransfer>(i, slot, posOpacity.xyz, r, scale, cloudNormal, eyeCloud, pWorld + omega,
+                                        colour, leastRoughness, slope);
+    }
+    if (fate.graded) {
+        colour = editGrade(params.edit, colour);
+    }
+    colour = max(colour * flatten.params.exposure, float3(0.0));
+    return (flatten.params.display != 0 ? linearToSrgb(colour) : colour) - 0.5;
+}
+
+/// The point `j` of `m` in the zone: R3, a low-discrepancy sequence, so any
+/// prefix covers the box evenly.
+float3 zonePoint(uint j) {
+    const FlattenParams f = flatten.params;
+    const float3 alpha = float3(0.8191725134, 0.6710436067, 0.5497004779);
+    const float3 u = frac(0.5 + alpha * float(j + 1));
+    return float3(f.zoneMinX, f.zoneMinY, f.zoneMinZ) +
+           u * float3(f.zoneMaxX - f.zoneMinX, f.zoneMaxY - f.zoneMinY, f.zoneMaxZ - f.zoneMinZ);
 }
 
 /// ONE GAUSSIAN FLATTENED: looked at from N directions of its own frame,
@@ -1178,31 +1222,69 @@ void flattenSplat<let kTransfer : int>(uint i) {
         const float leastRoughness = flatten.params.roughnessFloor != 0 ? flatFloorCandidate(flatten.floorCandidate[0]) : 0.0;
         const float3 base = float3(highHalf(shape[row + 2]), lowHalf(shape[row + 3]), highHalf(shape[row + 3]));
         const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
-        for (uint k = 0; k < n; ++k) {
-            const float3 l = fibonacciDirection(k, n);
-            const float3 omega = t * l.x + b * l.y + facing * l.z;   // the world, towards the eye
-            const float3 omegaCloud = normalize(mul(toCloud, omega));
-            const float3 eyeCloud = posOpacity.xyz + omegaCloud;
-            float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, -omegaCloud),
-                                       params.linearCloud != 0);
-            if (params.relight != 0) {
-                const float3 cloudNormal = splatShadingNormal(r, scale, posOpacity.xyz, eyeCloud,
-                                                              params.hasNormals != 0,
-                                                              params.hasNormals != 0 ? normals[i] : 0u);
-                SplatSlope slope = noSlope();
-                colour = relitToward<kTransfer>(i, slot, posOpacity.xyz, r, scale, cloudNormal, eyeCloud,
-                                                pWorld + omega, colour, leastRoughness, slope);
+        if (flatten.params.zone == 0) {
+            for (uint k = 0; k < n; ++k) {
+                const float3 l = fibonacciDirection(k, n);
+                const float3 omega = t * l.x + b * l.y + facing * l.z;   // the world, towards the eye
+                const float3 g = flatShown<kTransfer>(i, slot, posOpacity, r, scale, toCloud, pWorld, base, degree,
+                                                      leastRoughness, fate, omega);
+                const uint at = (cls * n + k) * 16;
+                [ForceUnroll]
+                for (uint j = 0; j < 16; ++j) {
+                    c[j] += flatten.basisRows[at + j] * g;
+                }
             }
-            if (fate.graded) {
-                colour = editGrade(params.edit, colour);
-            }
-            colour = max(colour * flatten.params.exposure, float3(0.0));
-            const float3 g = (flatten.params.display != 0 ? linearToSrgb(colour) : colour) - 0.5;
-            const uint at = (cls * n + k) * 16;
+        } else {
+            // FITTED FOR THE CAMERA'S ZONE: this gaussian's own normal
+            // equations, since the directions it is seen from in the zone are
+            // its own -- the box's points, a weight 4 pi / m between them --
+            // and the sphere's at `zoneOutside` of theirs, so the bands are
+            // spent where the camera will look and the rest of the sphere
+            // only keeps the fit from going wild. A surface's back weighs
+            // `backWeight` as in M (flatten_fit.slang).
+            const uint m = flatten.params.zoneSamples;
+            float a[136];
+            float3 rhs[16];
             [ForceUnroll]
-            for (uint j = 0; j < 16; ++j) {
-                c[j] += flatten.basisRows[at + j] * g;
+            for (uint e = 0; e < 136; ++e) {
+                a[e] = 0.0;
             }
+            [ForceUnroll]
+            for (uint e = 0; e < 16; ++e) {
+                rhs[e] = float3(0.0);
+            }
+            const float fourPi = 12.566370614359172;
+            for (uint k = 0; k < n + m; ++k) {
+                float3 l;
+                float w;
+                if (k < n) {
+                    l = fibonacciDirection(k, n);
+                    w = (fourPi / float(n)) * flatten.params.zoneOutside;
+                } else {
+                    const float3 toward = zonePoint(k - n) - pWorld;
+                    const float d = length(toward);
+                    if (!(d > 1.0e-6)) {
+                        continue;
+                    }
+                    const float3 omegaZone = toward / d;
+                    l = float3(dot(omegaZone, t), dot(omegaZone, b), dot(omegaZone, facing));
+                    w = fourPi / float(m);
+                }
+                w *= (thin || l.z > 0.0) ? 1.0 : flatten.params.backWeight;
+                const float3 omega = t * l.x + b * l.y + facing * l.z;
+                const float3 g = flatShown<kTransfer>(i, slot, posOpacity, r, scale, toCloud, pWorld, base, degree,
+                                                      leastRoughness, fate, omega);
+                float y[16];
+                flatBasis(-l, y);
+                uint e = 0;
+                for (uint p = 0; p < 16; ++p) {
+                    rhs[p] += (w * y[p]) * g;
+                    for (uint q = 0; q <= p; ++q) {
+                        a[e++] += w * y[p] * y[q];
+                    }
+                }
+            }
+            flatSolveInPlace(a, rhs, flatten.params.lambda, c);
         }
         // POSITIVE WHERE IT IS SEEN: the constant part at or above zero,
         // then the higher bands scaled by the largest factor that keeps every

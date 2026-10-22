@@ -128,6 +128,15 @@ struct BakePoints {
     /// a conversion uses where an input is computed by a graph and a
     /// constant or a plain map cannot carry it.
     bool               material = false;
+    /// SEEN FROM ONE PLACE (`mesh2splat --bake-toward`): every path of a
+    /// gaussian that faces it looks from a point within `towardRadius` of
+    /// `towardPoint` (world units), with the whole material -- its polish
+    /// too -- so the colour is what a camera standing there sees, reflections
+    /// and all. A gaussian facing away bakes its body over the hemisphere as
+    /// usual.
+    bool                 toward = false;
+    std::array<float, 3> towardPoint{0.0F, 0.0F, 0.0F};
+    float                towardRadius = 0.0F;
 };
 
 /// The planes a transfer that reads the material back writes after the rest.

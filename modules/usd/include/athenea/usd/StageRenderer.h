@@ -152,6 +152,15 @@ struct BakeOptions {
     /// not infinitely noisy in relative terms.
     float    meanFloor = 0.01F;
     uint32_t seed = 0;         ///< the first pass's paths; extra passes draw others
+    /// SEEN FROM ONE PLACE (`mesh2splat --bake-toward`): every path of a
+    /// gaussian that faces it looks from a point within `towardRadius` of
+    /// `towardPoint` (world units), with the whole material -- its polish
+    /// too -- so the colour is what a camera standing there sees, reflections
+    /// and all. A gaussian facing away bakes its body over the hemisphere as
+    /// usual.
+    bool                 toward = false;
+    std::array<float, 3> towardPoint{0.0F, 0.0F, 0.0F};
+    float                towardRadius = 0.0F;
 };
 
 /// A BAKE KEPT AS ITS TWO HALVES (`bakeSplitOnDevice`), on the device:

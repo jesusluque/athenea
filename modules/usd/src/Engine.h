@@ -283,6 +283,15 @@ struct BakeRequest {
     uint32_t           seed = 0;
     /// Where the answer lands: one `float4` a point, the radiance in rgb.
     render::RenderTargets* out = nullptr;
+    /// SEEN FROM ONE PLACE (`mesh2splat --bake-toward`): every path of a
+    /// gaussian that faces it looks from a point within `towardRadius` of
+    /// `towardPoint` (world units), with the whole material -- its polish
+    /// too -- so the colour is what a camera standing there sees, reflections
+    /// and all. A gaussian facing away bakes its body over the hemisphere as
+    /// usual.
+    bool                 toward = false;
+    std::array<float, 3> towardPoint{0.0F, 0.0F, 0.0F};
+    float                towardRadius = 0.0F;
 };
 
 struct AovRequest {

@@ -130,6 +130,48 @@ public void flatFrame(float3 n, out float3 t, out float3 b) {
     b = float3(c, s + n.y * n.y * a, -n.y);
 }
 
+/// ONE GAUSSIAN'S OWN FIT (a camera's zone, splat_project.slang): the normal
+/// matrix `a` -- its lower triangle, row p's columns 0..p at p(p+1)/2 + q --
+/// regularised as M is (lambda l^2 (l+1)^2 on the diagonal), factored by
+/// Cholesky in place and solved for each channel of `rhs`.
+public void flatSolveInPlace(inout float a[136], float3 rhs[16], float lambda, out float3 c[16]) {
+    [ForceUnroll]
+    for (uint p = 0; p < 16; ++p) {
+        const float band = float(flatBand(p));
+        a[p * (p + 1) / 2 + p] += lambda * band * band * (band + 1.0) * (band + 1.0);
+    }
+    for (uint j = 0; j < 16; ++j) {
+        float d = a[j * (j + 1) / 2 + j];
+        for (uint k = 0; k < j; ++k) {
+            d -= a[j * (j + 1) / 2 + k] * a[j * (j + 1) / 2 + k];
+        }
+        d = sqrt(max(d, 1.0e-20));
+        a[j * (j + 1) / 2 + j] = d;
+        for (uint i = j + 1; i < 16; ++i) {
+            float s = a[i * (i + 1) / 2 + j];
+            for (uint k = 0; k < j; ++k) {
+                s -= a[i * (i + 1) / 2 + k] * a[j * (j + 1) / 2 + k];
+            }
+            a[i * (i + 1) / 2 + j] = s / d;
+        }
+    }
+    // L L^T c = rhs: forward, then back.
+    for (uint i = 0; i < 16; ++i) {
+        float3 s = rhs[i];
+        for (uint j = 0; j < i; ++j) {
+            s -= a[i * (i + 1) / 2 + j] * c[j];
+        }
+        c[i] = s / a[i * (i + 1) / 2 + i];
+    }
+    for (int i = 15; i >= 0; --i) {
+        float3 s = c[i];
+        for (uint j = uint(i) + 1; j < 16; ++j) {
+            s -= a[j * (j + 1) / 2 + uint(i)] * c[j];
+        }
+        c[i] = s / a[uint(i) * (uint(i) + 1) / 2 + uint(i)];
+    }
+}
+
 /// THE ROUGHNESS FLOOR'S CANDIDATES: `kFloorCandidates` roughnesses, the
 /// floor the first of them whose reflection lobe leaves less than the asked
 /// share of its energy above band 3 (flatten_fit.slang's

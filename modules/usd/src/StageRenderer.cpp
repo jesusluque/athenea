@@ -1841,6 +1841,9 @@ Result<BakeSplit> StageRenderer::bakeSplitOnDevice(const gpu::Buffer& rays, uint
             bake.bounces = options.bounces;
             bake.coefficients = coefficients;
             bake.split = true;
+            bake.toward = options.toward;
+            bake.towardPoint = options.towardPoint;
+            bake.towardRadius = options.towardRadius;
             // A batch draws its own paths too: the batch's grid restarts at
             // zero, and the seed is what keeps it from repeating the first.
             bake.seed = seed + first * 31u;

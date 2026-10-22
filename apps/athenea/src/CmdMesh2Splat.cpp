@@ -232,6 +232,8 @@ struct Options {
     /// a colour, 1 to 3 are harmonics. Two is where a highlight starts to
     /// look like one.
     uint32_t                 bakeDegree = 2;
+    std::vector<float>       bakeToward;           // x y z: the one place every gaussian is seen from
+    float                    bakeTowardRadius = 0.15F;
     /// ADAPTIVE: paths a gaussian on average added after the first pass,
     /// where the relative variance per cost says they are worth most.
     uint32_t                 bakeExtra = 128;
@@ -3050,6 +3052,12 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_option("--bake-degree", o->bakeDegree,
                     "harmonics the bake fits, 0 to 3: 0 is one colour a gaussian and cannot hold a "
                     "reflection, and each degree costs a pass over the paths");
+    cmd->add_option("--bake-toward", o->bakeToward,
+                    "X Y Z in the stage's world: bake what a camera standing there sees -- reflections too -- "
+                    "as one colour a gaussian (degree 0), for a camera that only turns about that point")
+        ->expected(3);
+    cmd->add_option("--bake-toward-radius", o->bakeTowardRadius,
+                    "--bake-toward: the ball about the point the camera may stand in, world units");
     cmd->add_flag("--skinned", o->skinned,
                   "carry the skeleton: the gaussians are built in the bind pose and each keeps the "
                   "four joints that move it, so the cloud deforms with the rig instead of being one "
@@ -3248,6 +3256,12 @@ void addMesh2Splat(CLI::App& app) {
                 // bake keeps one sky's light.
                 o->bake = false;
             }
+            if (o->bakeToward.size() == 3 && o->bakeDegree != 0) {
+                // SEEN FROM ONE PLACE, ONE DIRECTION A GAUSSIAN: harmonics of
+                // a direction that never changes are a colour.
+                cli::out("mesh2splat: --bake-toward bakes one colour a gaussian (degree 0)\n");
+                o->bakeDegree = 0;
+            }
             if (o->skinned && o->transfer) {
                 // A TRANSFER IN THE WORLD DOES NOT TURN WITH A LIMB, but one
                 // kept as zonal lobes in each gaussian's own frame does: the
@@ -3342,6 +3356,11 @@ void addMesh2Splat(CLI::App& app) {
                     bake.degree = std::min(o->bakeDegree, 3u);
                     bake.extraSamples = o->bakeExtra;
                     bake.passSamples = o->bakePassSamples;
+                    if (o->bakeToward.size() == 3) {
+                        bake.toward = true;
+                        bake.towardPoint = {o->bakeToward[0], o->bakeToward[1], o->bakeToward[2]};
+                        bake.towardRadius = std::max(o->bakeTowardRadius, 0.0F);
+                    }
                     ATHENEA_TRY(converter.bake(o->stage, o->time, bake, o->defaultLights, filter));
                 }
 

@@ -55,6 +55,18 @@ struct FlattenSettings {
     float    unitScale = 1.0F;
     /// Gaussians a dispatch: each looks `directions` times.
     uint32_t slice = 1u << 16;
+    /// THE CAMERA'S ZONE, in the stage's world units: when set, each
+    /// gaussian is fitted on its own, to `zoneSamples` directions towards
+    /// points of the box, with the sphere's `directions` weighing
+    /// `zoneOutside` of them. Unset: every gaussian by the shared M.
+    /// Every cloud, not only the relit TX ones and the catchers: a cloud
+    /// with its light baked in is written as the frame shows it.
+    bool                 everyCloud = false;
+    bool                 zone = false;
+    std::array<float, 3> zoneMin{0, 0, 0};
+    std::array<float, 3> zoneMax{0, 0, 0};
+    uint32_t             zoneSamples = 256;
+    float                zoneOutside = 0.05F;
 };
 
 /// One flattened cloud: `count` records of `kFlatStride` floats.

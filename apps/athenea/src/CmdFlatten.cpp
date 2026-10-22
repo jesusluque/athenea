@@ -105,6 +105,10 @@ void addFlatten(CLI::App& app) {
         double exposure = 0.0, time = 0.0;
         float lambda = 1.0e-4F, backWeight = 1.0e-2F, floorShare = 0.05F;
         bool noFloor = false;
+        std::vector<float> viewBox;
+        bool everyCloud = false;
+        uint32_t viewBoxSamples = 256;
+        float viewBoxOutside = 0.05F;
         std::string validate, validateStage, validateCamera, validateFormat = "spz";
         std::vector<uint32_t> validateSize;
         uint32_t validatePaths = 512, validateBounces = 6;
@@ -133,6 +137,18 @@ void addFlatten(CLI::App& app) {
                     "the share of a reflection's energy the floor allows above band 3");
     cmd->add_option("--fit-lambda", o->lambda, "the fit's regularisation, times l^2 (l+1)^2");
     cmd->add_option("--back-weight", o->backWeight, "what a surface's back hemisphere weighs in the fit");
+    cmd->add_flag("--baked", o->everyCloud,
+                  "write every cloud of the stage, its light baked in (mesh2splat without --transfer) as the frame "
+                  "shows it, not only the relit TX clouds");
+    cmd->add_option("--view-box", o->viewBox,
+                    "the camera's zone, MINX MINY MINZ MAXX MAXY MAXZ in the stage's world: each gaussian fitted to "
+                    "the directions it is seen from there")
+        ->expected(6);
+    cmd->add_option("--view-box-samples", o->viewBoxSamples, "--view-box: points of the zone a gaussian looks at")
+        ->check(CLI::Range(16u, 4096u));
+    cmd->add_option("--view-box-outside", o->viewBoxOutside,
+                    "--view-box: what the rest of the sphere weighs against the zone")
+        ->check(CLI::Range(0.0F, 1.0F));
     cmd->add_option("--spz-version", o->spzVersion, "3 (gzip; Spark reads it) or 4 (ZSTD)")
         ->check(CLI::IsMember({3u, 4u}));
     cmd->add_option("--spz-sh1-bits", o->sh1Bits, "bits SPZ keeps of band 1")->check(CLI::Range(1u, 8u));
@@ -260,6 +276,21 @@ void addFlatten(CLI::App& app) {
         settings.exposure = static_cast<float>(std::exp2(o->exposure));
         settings.roughnessFloor = !o->noFloor;
         settings.floorShare = o->floorShare;
+        settings.everyCloud = o->everyCloud;
+        if (o->viewBox.size() == 6) {
+            settings.zone = true;
+            for (size_t k = 0; k < 3; ++k) {
+                settings.zoneMin[k] = std::min(o->viewBox[k], o->viewBox[k + 3]);
+                settings.zoneMax[k] = std::max(o->viewBox[k], o->viewBox[k + 3]);
+            }
+            settings.zoneSamples = o->viewBoxSamples;
+            settings.zoneOutside = o->viewBoxOutside;
+            // As long a dispatch as without the zone: each gaussian now looks
+            // `directions` plus `zoneSamples` times, and solves its own fit.
+            settings.slice = std::max<uint32_t>(
+                1024u, static_cast<uint32_t>(uint64_t{settings.slice} * settings.directions /
+                                             (uint64_t{settings.directions} + settings.zoneSamples) / 2));
+        }
         settings.unitScale = static_cast<float>(metersPerUnit);
         if (upAxis == 'z') {
             settings.toFile = {1, 0, 0, 0, 0, 1, 0, -1, 0};   // (x, y, z) -> (x, z, -y)
@@ -302,7 +333,8 @@ void addFlatten(CLI::App& app) {
                 clouds = std::move(*flattened);
                 if (clouds.empty()) {
                     return Error(ErrorCode::NotFound,
-                                 "flatten: the stage has no relit TX cloud under a sky (mesh2splat --transfer)");
+                                 "flatten: the stage has no relit TX cloud under a sky (mesh2splat --transfer); "
+                                 "--baked takes a cloud whose light is baked in");
                 }
                 for (const auto& c : clouds) {
                     total += c.cloud.count;

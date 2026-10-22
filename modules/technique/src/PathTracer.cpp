@@ -103,6 +103,13 @@ struct PathParams {
     // that reaches the same light through the same glass is weighed against
     // it (glassPasses); 0: glass stops a shadow ray as anything does.
     uint glassShadows;
+    // A BAKE SEEN FROM ONE PLACE (BakePoints::toward): 1, a gaussian facing
+    // the point looks from within `towardRadius` of it, its polish kept.
+    uint  bakeToward;
+    float towardX;
+    float towardY;
+    float towardZ;
+    float towardRadius;
 };
 
 Texture2D<uint4>               visibility;   // (instance + 1, triangle); row 0 on top
@@ -701,10 +708,42 @@ LobeStack bakeBody(LobeStack stack, uint at) {
 }
 
 
+/// WHETHER THIS GAUSSIAN IS SEEN FROM THE BAKE'S ONE PLACE (PathParams::
+/// bakeToward): it faces the point. A gaussian that does not bakes its body
+/// over its hemisphere, as every bake does.
+bool bakeTowardFaces(uint at) {
+    if (path.bakeToward == 0) {
+        return false;
+    }
+    const float3 point = float3(path.towardX, path.towardY, path.towardZ);
+    const float3 toward = point - bakeRays[at * 3].xyz;
+    const float d = length(toward);
+    return d > 1.0e-6 && dot(toward / d, bakeFacing(at)) > 0.02;
+}
+
 /// Which way this sample looks at the point, in the world.
 float3 bakeDirection(uint at, uint sample) {
     const float3 n = bakeFacing(at);
     const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
+    // SEEN FROM ONE PLACE: from a point of the ball about it, drawn a sample
+    // at a time, so the colour is the mean of what a camera standing anywhere
+    // in that ball sees. Every sample of such a gaussian looks from there, so
+    // the fit is of one direction: the bake takes a colour alone (degree 0),
+    // and its mean is that light.
+    if (bakeTowardFaces(at)) {
+        const float2 a = random2(pixel, sample, 1u, 43u);
+        const float2 b = random2(pixel, sample, 2u, 47u);
+        const float z = 2.0 * a.x - 1.0;
+        const float r = sqrt(max(1.0 - z * z, 0.0));
+        const float phi = 2.0 * 3.14159265358979 * a.y;
+        const float3 offset = float3(r * cos(phi), r * sin(phi), z) * (path.towardRadius * pow(b.x, 1.0 / 3.0));
+        const float3 eye = float3(path.towardX, path.towardY, path.towardZ) + offset;
+        const float3 d = eye - bakeRays[at * 3].xyz;
+        const float l = length(d);
+        if (l > 1.0e-6 && dot(d / l, n) > 0.0) {
+            return d / l;
+        }
+    }
     // Stratified, not drawn: the radiance leaving a glossy surface swings by
     // orders of magnitude across the hemisphere, so directions taken at
     // random leave one gaussian in the mirror of the sun and its neighbour
@@ -909,6 +948,7 @@ static const uint kCellOrigins = 4u;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
 LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
 void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {}
+bool bakeTowardFaces(uint at) { return false; }
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float3 bakeSphereDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float bakeBasisAt(uint at, uint sample, uint basis) { return 0.0; }
@@ -2332,7 +2372,11 @@ R"(                    }
                     // harmonics hold is how the body's own light changes with
                     // the direction; the reflection stays a lobe, which knows
                     // where the eye is.
-                    cur.stack = bakeBody(cur.stack, at);
+                    // Seen from one place, the whole material: the polish
+                    // is what that camera sees, and one direction holds it.
+                    if (!bakeTowardFaces(at)) {
+                        cur.stack = bakeBody(cur.stack, at);
+                    }
                 }
                 if (kAux && bounce == 0 && path.writeAux != 0 && !auxWritten) {
                     writeAuxAt(at, pixels, float4(stackAlbedo(cur.stack, cur.toEye), 1.0),
@@ -3184,6 +3228,12 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         cursor["path"]["glassShadows"].setData(uint32_t{settings.glassShadows && frame.glass ? 1u : 0u});
         cursor["path"]["bakeSplit"].setData(uint32_t{bake != nullptr && bake->split ? 1u : 0u});
         cursor["path"]["bakeMaterial"].setData(uint32_t{bake != nullptr && bake->transfer && bake->material ? 1u : 0u});
+        const bool toward = bake != nullptr && bake->toward && !bake->transfer;
+        cursor["path"]["bakeToward"].setData(uint32_t{toward ? 1u : 0u});
+        cursor["path"]["towardX"].setData(toward ? bake->towardPoint[0] : 0.0F);
+        cursor["path"]["towardY"].setData(toward ? bake->towardPoint[1] : 0.0F);
+        cursor["path"]["towardZ"].setData(toward ? bake->towardPoint[2] : 0.0F);
+        cursor["path"]["towardRadius"].setData(toward ? bake->towardRadius : 0.0F);
         // The emitting triangles, where the kernel samples them: their table,
         // or a word to bind in its place.
         if (const rhi::ShaderCursor table = cursor["emissiveTable"]; table.isValid()) {

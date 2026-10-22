@@ -3280,6 +3280,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 points.cellSide = bake->transfer ? technique::transferCellSide(bake->cellSide) : 0u;
                 points.split = bake->split;
                 points.material = bake->material;
+                points.toward = bake->toward;
+                points.towardPoint = bake->towardPoint;
+                points.towardRadius = bake->towardRadius;
                 paths.seed = bake->seed;
                 paths.accumulate = false;
                 paths.adaptive = false;
