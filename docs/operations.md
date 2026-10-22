@@ -495,6 +495,7 @@ recipe is §3.1 below.
 | `--bake-filter-indirect-only` | flag | off | filter the indirect light alone and leave the direct as traced |
 | `--bake-bounces` | integer | `3` | after the first hit |
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
+| `--detail` | `PRIM=FACTOR` ‹repeatable› | none | where the budget is shared, the meshes at or under `PRIM` take FACTOR² times their proportional part, so their cell comes out FACTOR times finer than the rest's; never more than they want, and what they cannot take goes back to the others |
 | `--bake-toward` | 3 numbers, world units | none | bake what a camera standing there sees, reflections included, as one colour a gaussian (degree 0): for a camera that only turns about that point. A gaussian facing away bakes its body over its hemisphere |
 | `--bake-toward-radius` | world units | `0.15` | `--bake-toward`: the ball about the point the camera may stand in; each path looks from a point of it |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |

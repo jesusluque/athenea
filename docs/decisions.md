@@ -13327,6 +13327,13 @@ camera's feet, and took 75 % of the budget. The sets' long meshes are split
 in bands of a metre along the depth (`scene_bands.usdc`, made by the set's
 author), each band the cell of its own distance.
 
+**Where a set's detail is.** Shared in proportion, every piece is coarsened
+alike -- 5.7 to 8.1 times what a pixel covers over the three sets at 700 000
+gaussians -- and the logos on the back wall, six metres off, read as blurs.
+`--detail PRIM=FACTOR` gives the pieces under a prim FACTOR² times their
+part, never more than they want, the rest shared again a few rounds, so
+their cell is FACTOR times finer than the others'.
+
 ### A plate: an image over the frame, mixed by its alpha
 
 A camera image keyed and put into the set, so that what stands nearer than

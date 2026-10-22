@@ -38,6 +38,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -145,6 +146,7 @@ struct Options {
     /// A CAMERA DECIDES THE CELL: one cell, one pixel of it where each mesh
     /// is nearest (Mesh2GS). Empty: the density's box does.
     std::string              cellFromCamera;
+    std::vector<std::string> detail;               // PRIM=FACTOR: that prim's cells finer than the rest's, linearly
     uint32_t                 cameraPixels = 1920;
     // Their 0.65 is the width they chose for their own renderer; traced here
     // it leaves a converted surface 30% transparent (docs/decisions.md has
@@ -1290,11 +1292,56 @@ public:
                 wanting += wantedBy_[k] > 0 ? 1 : 0;
             }
             const uint64_t spread = options_->maxSplats > wanting ? options_->maxSplats - wanting : 0;
-            for (size_t k = 0; k < pieces; ++k) {
-                if (wantedBy_[k] > 0) {
-                    const uint64_t part = spread * wantedBy_[k] / total;
-                    shareOf_[k] = static_cast<uint32_t>(std::min<uint64_t>(part + 1, wantedBy_[k]));
+            // A PIECE ASKED FOR IN MORE DETAIL (`--detail PRIM=FACTOR`) takes
+            // FACTOR^2 times its proportional part, so its cell comes out
+            // FACTOR times finer than the others' -- never more than it
+            // wants; what it cannot take goes back to the rest, a few rounds.
+            std::vector<std::pair<std::string, double>> details;
+            for (const std::string& said : options_->detail) {
+                const size_t equals = said.find('=');
+                if (equals != std::string::npos) {
+                    details.emplace_back(said.substr(0, equals), std::max(std::atof(said.c_str() + equals + 1), 0.01));
                 }
+            }
+            std::vector<double> weight(pieces, 1.0);
+            for (size_t k = 0; k < pieces; ++k) {
+                for (const auto& [prim, factor] : details) {
+                    const std::string& path = pieces_[k].path;
+                    if (path == prim || (path.size() > prim.size() && path.compare(0, prim.size(), prim) == 0 &&
+                                         path[prim.size()] == '/')) {
+                        weight[k] = factor * factor;
+                    }
+                }
+            }
+            std::vector<bool> full(pieces, false);
+            uint64_t left = spread;
+            for (int round = 0; round < 8; ++round) {
+                double sum = 0.0;
+                for (size_t k = 0; k < pieces; ++k) {
+                    sum += !full[k] && wantedBy_[k] > 0 ? weight[k] * wantedBy_[k] : 0.0;
+                }
+                if (sum <= 0.0) {
+                    break;
+                }
+                bool capped = false;
+                uint64_t given = 0;
+                for (size_t k = 0; k < pieces; ++k) {
+                    if (full[k] || wantedBy_[k] == 0) {
+                        continue;
+                    }
+                    const uint64_t part =
+                        static_cast<uint64_t>(static_cast<double>(left) * weight[k] * wantedBy_[k] / sum);
+                    shareOf_[k] = static_cast<uint32_t>(std::min<uint64_t>(part + 1, wantedBy_[k]));
+                    if (part + 1 >= wantedBy_[k]) {
+                        full[k] = true;
+                        capped = true;
+                        given += wantedBy_[k];
+                    }
+                }
+                if (!capped) {
+                    break;
+                }
+                left = left > given ? left - given : 0;
             }
             ATHENEA_TRY(deriveCells());
             cli::err(
@@ -3052,6 +3099,9 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_option("--bake-degree", o->bakeDegree,
                     "harmonics the bake fits, 0 to 3: 0 is one colour a gaussian and cannot hold a "
                     "reflection, and each degree costs a pass over the paths");
+    cmd->add_option("--detail", o->detail,
+                    "PRIM=FACTOR: the meshes at or under PRIM take a cell FACTOR times finer than the rest when "
+                    "the budget is shared (repeatable)");
     cmd->add_option("--bake-toward", o->bakeToward,
                     "X Y Z in the stage's world: bake what a camera standing there sees -- reflections too -- "
                     "as one colour a gaussian (degree 0), for a camera that only turns about that point")

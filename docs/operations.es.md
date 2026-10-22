@@ -504,6 +504,7 @@ receta es §3.1.
 | `--bake-filter-indirect-only` | flag | desactivado | filtra solo la luz indirecta y deja la directa como se trazó |
 | `--bake-bounces` | entero | `3` | tras el primer impacto |
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
+| `--detail` | `PRIM=FACTOR` ‹repetible› | ninguno | cuando se reparte el presupuesto, las mallas en `PRIM` o por debajo toman FACTOR² veces su parte proporcional, así que su celda sale FACTOR veces más fina que la del resto; nunca más de lo que piden, y lo que no pueden tomar vuelve a las demás |
 | `--bake-toward` | 3 números, unidades del mundo | ninguno | hornea lo que ve una cámara situada ahí, reflejos incluidos, como un color por gaussiana (grado 0): para una cámara que solo gira en torno a ese punto. Una gaussiana que mira hacia otro lado hornea su cuerpo sobre su hemisferio |
 | `--bake-toward-radius` | unidades del mundo | `0.15` | `--bake-toward`: la bola alrededor del punto en la que puede estar la cámara; cada camino mira desde un punto de ella |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
