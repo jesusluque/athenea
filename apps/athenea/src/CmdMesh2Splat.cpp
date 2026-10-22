@@ -147,6 +147,7 @@ struct Options {
     /// is nearest (Mesh2GS). Empty: the density's box does.
     std::string              cellFromCamera;
     std::vector<std::string> detail;               // PRIM=FACTOR: that prim's cells finer than the rest's, linearly
+    std::vector<std::string> skip;                 // prims not converted, though they stay in the stage the bake lights
     uint32_t                 cameraPixels = 1920;
     // Their 0.65 is the width they chose for their own renderer; traced here
     // it leaves a converted surface 30% transparent (docs/decisions.md has
@@ -1275,8 +1276,17 @@ public:
         // all of them: every piece walks a cell sqrt(wanted / budget) times
         // coarser, so every mesh loses density alike and none is dropped.
         uint64_t total = 0;
+        // NOT CONVERTED, STILL THERE: a skipped prim wants nothing, so it
+        // takes none of the budget and writes no gaussian, but the stage
+        // the bake traces keeps it -- its light, its shadow, its bounce.
+        const auto skipped = [&](const std::string& path) {
+            return std::any_of(options_->skip.begin(), options_->skip.end(), [&](const std::string& prim) {
+                return path == prim ||
+                       (path.size() > prim.size() && path.compare(0, prim.size(), prim) == 0 && path[prim.size()] == '/');
+            });
+        };
         for (size_t k = 0; k < pieces; ++k) {
-            if (triangles_[k] == 0 || coversNothing(*pieces_[k].material)) {
+            if (triangles_[k] == 0 || coversNothing(*pieces_[k].material) || skipped(pieces_[k].path)) {
                 continue;
             }
             auto counted = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0);
@@ -3099,6 +3109,9 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_option("--bake-degree", o->bakeDegree,
                     "harmonics the bake fits, 0 to 3: 0 is one colour a gaussian and cannot hold a "
                     "reflection, and each degree costs a pass over the paths");
+    cmd->add_option("--skip", o->skip,
+                    "a prim not converted, with all beneath it, though the bake still sees it (unlike --hide) "
+                    "(repeatable)");
     cmd->add_option("--detail", o->detail,
                     "PRIM=FACTOR: the meshes at or under PRIM take a cell FACTOR times finer than the rest when "
                     "the budget is shared (repeatable)");
