@@ -2,13 +2,13 @@
 //
 // EDGES RESOLVED FROM THE NEIGHBOURHOOD'S TRIANGLES (athenea:meshAntialias),
 // over a mesh layer already shaded at one sample a pixel. No second
-// visibility pass and no second shading: a pixel whose 3x3 neighbourhood saw
-// more than one (instance, triangle) takes those triangles as the candidates
-// for what its sub-samples see, intersects each sample's ray with every one
-// of them (the nearest it is inside wins, as a depth test would), and takes
-// for that sample the colour already shaded at the pixel that saw the
-// winner. A sample none of them covers sees what a neighbour that saw
-// nothing shows, the background, or else the pixel's own colour. The layer
+// visibility pass and no second shading: a pixel one of whose four sides saw
+// another (instance, triangle) takes the triangles its 3x3 neighbourhood saw
+// as the candidates for what its sub-samples see, intersects each sample's
+// ray with every one of them (the nearest it is inside wins, as a depth test
+// would), and takes for that sample the colour already shaded at the pixel
+// that saw the winner. A sample none of them covers sees what a neighbour
+// that saw nothing shows, the background, or else the pixel's own colour. The layer
 // is the mean of the samples.
 //
 // What the neighbours saw is all it knows: a triangle no pixel centre around
@@ -90,14 +90,26 @@ void meshAntialias(uint3 tid: SV_DispatchThreadID) {
     uint2 seen[9];
     bool inside[9];
     bool edge = false;
+    // The pixel and its sides decide whether an edge is here at all; the
+    // corners are read only then (a pixel whose sides all agree with it is
+    // left as it is).
     for (uint k = 0; k < 9; ++k) {
         const int2 q = pixel + kAround[k];
         inside[k] = q.x >= 0 && q.y >= 0 && q.x < w && q.y < h;
-        seen[k] = inside[k] ? visibility.Load(int3(q.x, h - 1 - q.y, 0)).xy : uint2(0);
-        edge = edge || (inside[k] && any(seen[k] != seen[0]));
+        seen[k] = uint2(0);
+        if (k < 5 && inside[k]) {
+            seen[k] = visibility.Load(int3(q.x, h - 1 - q.y, 0)).xy;
+            edge = edge || any(seen[k] != seen[0]);
+        }
     }
     if (!edge) {
         return;   // the colour already there is the pixel's
+    }
+    for (uint k = 5; k < 9; ++k) {
+        if (inside[k]) {
+            const int2 q = pixel + kAround[k];
+            seen[k] = visibility.Load(int3(q.x, h - 1 - q.y, 0)).xy;
+        }
     }
 
     // The distinct triangles, each with the first pixel that saw it, and the

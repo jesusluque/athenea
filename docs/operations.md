@@ -1918,9 +1918,10 @@ route only.
 **Mesh edges antialiased** (`athenea:meshAntialias`, a render setting, 0 --
 off -- by default; `StageRenderer::setMeshAntialias`;
 `athenea stage --mesh-antialias`): the mesh layer is still seen and shaded at
-one sample a pixel, and then a pixel whose 3x3 neighbourhood saw more than one
-triangle is resolved from 4, 8 or 16 sub-samples (the standard multisample
-positions): each takes the nearest of the neighbourhood's triangles its ray
+one sample a pixel, and then a pixel beside which another triangle was seen
+is resolved from 4, 8 or 16 sub-samples (the standard multisample
+positions): each takes the nearest of the triangles its 3x3 neighbourhood saw
+that its ray
 meets and the colour already shaded at the pixel that saw it, the background
 where it meets none. Every visibility route resolves alike, lit or unlit, and
 the ids, the depth and the other outputs (AOVs, Cryptomatte) stay one sample a

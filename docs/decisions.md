@@ -15374,3 +15374,70 @@ finished without a wait.
 - `TextureStore::bind` rebinds every slot and sampler at each dispatch that reads textures.
 - The ray route's TLAS (`RayTracingScene`) is still rebuilt and waited for every frame where the device traces
   inline; CUDA does not take that route.
+
+## Mesh edges antialiased from the neighbourhood's triangles (23 Oct)
+
+A stage of lightmapped meshes drawn at one sample a pixel shows its edges as stairs. Drawing it at 1.5 times the
+size and filtering it down cost 6-8 ms at 1920x1080 on an L4, for a frame whose budget is 20. What was wanted
+was the edges at 1-2 ms, and on every visibility route: on CUDA nothing rasterises, and the ids come from rays
+(OptiX) or the compute BVH, so a multisampled raster target would have done nothing there.
+
+`athenea:meshAntialias` (4, 8 or 16; 0, the default, changes nothing) runs one kernel after the mesh layer is
+shaded and before anything composites it (`technique::MeshAntialias`, `technique/mesh_antialias.slang`):
+
+- **Which pixels.** One whose four sides all saw its own (instance, triangle) is left alone, after five id reads.
+  The rest read their corners too.
+- **What a sub-sample sees.** The distinct triangles of the 3x3 neighbourhood (six at most) are the candidates.
+  Each of the sample's rays, at the standard multisample positions, is intersected with every candidate and the
+  nearest it is inside wins, as a depth test would; none, and it sees the background where a neighbour saw
+  nothing, else the pixel's own colour.
+- **What colour.** The one already shaded at the pixel that saw the winner. Nothing is seen or shaded again, so
+  the cost is the same lit or unlit, and the ids are only read: every route resolves alike, and with the setting
+  off the frame is the one it was.
+- **What it does not trust.** A candidate that covers the pixel's own centre nearer than what the centre saw
+  was removed there -- a cutout's hole, a hidden instance -- and is left out, so a hole is not filled. Two
+  triangles of one instance in one plane are one surface: the sample keeps the pixel's colour, so a flat wall
+  is not blurred along the diagonals it was split into.
+
+The colour of a neighbour's centre stands in for the colour at the sample, a pixel away at most: exact for a
+flat colour, a blur of a pixel along an edge for a texture.
+
+### Measured
+
+The test (`[antialias]`) draws two squares turned against each other and the background, and compares with the
+same frame drawn 8x8 times larger and boxed down on the device, on the rasteriser and on the compute BVH (the
+two agree to the fourth digit):
+
+| | relMSE | p99 (codes) | max (codes) |
+|---|---|---|---|
+| one sample a pixel | 6.67e-3 | 78 | 178 |
+| 4 samples | 1.45e-3 | 21 | 104 |
+| 8 samples | 7.98e-4 | 14 | 91 |
+| 16 samples | 3.56e-4 | 11 | 75 |
+
+The pixels beyond 2 codes hardly fall (483 to 429): an edge pixel off its coverage by a sixteenth is still more
+than 2 codes in sRGB near black. 1108 to 2729 words of the 76800 change; the interior none.
+
+`athenea stage --frames 200 --no-readback`, 1920x1080, M5 Pro (Metal), the first virtual set (lit: the dome's
+lobes dominate the frame), automatic visibility (rays), medians of two rounds:
+
+| | still | moving (`--drift 0.01`) | the resolve alone (`ATHENEA_STAGES`) |
+|---|---|---|---|
+| off | 15.62-15.71 ms | 15.55-15.77 ms | -- |
+| 4 | 16.59-16.65 ms | 16.68-16.69 ms | 1.3-1.5 ms |
+| 8 | 16.65-16.66 ms | 16.66-16.71 ms | 1.6 ms |
+| 16 | 16.80-16.83 ms | 16.97-17.25 ms | 2.1-2.3 ms |
+
+`ATHENEA_STAGES` waits before and after the resolve, so its figure holds a submit and a wait; the medians say
+1.0 ms for 4 samples and 1.2-1.5 for 16. The raster route measured the same within 0.5 ms. Not yet measured on
+the L4.
+
+### Not done
+
+- A triangle no pixel centre around it saw -- a wire, a slat thinner than a pixel -- is not found, as it is not
+  drawn at one sample; its stairs and its gaps stay.
+- The ids, the depth, the AOVs and Cryptomatte stay one sample a pixel; the depth the splats are composited by is
+  the centre's, so a splat behind a mesh edge is cut as before.
+- The edge of a cutout's hole is not resolved (the candidate is not trusted there).
+- Texture aliasing inside a surface is the mip selection's, not this pass's.
+- The copy of the layer the kernel reads its neighbours from is a full-frame copy each frame.

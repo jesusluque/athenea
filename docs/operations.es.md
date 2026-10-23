@@ -1977,10 +1977,10 @@ la ruta de raster.
 **Bordes de malla antialiasados** (`athenea:meshAntialias`, un render
 setting, 0 -- apagado -- por defecto; `StageRenderer::setMeshAntialias`;
 `athenea stage --mesh-antialias`): la capa de mallas se sigue viendo y
-sombreando con una muestra por píxel, y después un píxel cuya vecindad de 3x3
-vio más de un triángulo se resuelve de 4, 8 o 16 submuestras (las posiciones
-estándar de multisample): cada una toma el más cercano de los triángulos de la
-vecindad que su rayo encuentra y el color ya sombreado en el píxel que lo vio,
+sombreando con una muestra por píxel, y después un píxel junto al que se vio
+otro triángulo se resuelve de 4, 8 o 16 submuestras (las posiciones
+estándar de multisample): cada una toma el más cercano de los triángulos que
+vio su vecindad de 3x3 que su rayo encuentra y el color ya sombreado en el píxel que lo vio,
 el fondo donde no encuentra ninguno. Todas las rutas de visibilidad resuelven
 igual, con luz o sin ella, y los ids, la profundidad y las demás salidas (AOVs,
 Cryptomatte) siguen con una muestra por píxel. Lo que no puede resolver: un

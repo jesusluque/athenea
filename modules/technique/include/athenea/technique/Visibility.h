@@ -128,10 +128,10 @@ private:
 };
 
 /// EDGES ANTIALIASED AFTER SHADING (`athenea:meshAntialias`): a mesh layer
-/// shaded at one sample a pixel, resolved where an edge crosses a pixel from
-/// the triangles its 3x3 neighbourhood saw -- each of `samples` sub-sample
-/// rays takes the nearest of them it meets, and the colour already shaded at
-/// the pixel that saw it (technique/mesh_antialias.slang). No visibility pass
+/// shaded at one sample a pixel, resolved where a side of a pixel saw another
+/// triangle from the triangles its 3x3 neighbourhood saw -- each of `samples`
+/// sub-sample rays takes the nearest of them it meets, and the colour already
+/// shaded at the pixel that saw it (technique/mesh_antialias.slang). No visibility pass
 /// and no shading again; the ids are only read, so every route resolves the
 /// same.
 class MeshAntialias {
