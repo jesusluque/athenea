@@ -13429,6 +13429,17 @@ kernel as before. Checked by an unlit square seen alone and with a lit square
 behind the camera, under a dome and without, with screen-space reflections
 and without: the four pairs of frames are equal to the bit.
 
+| stage (M5 Pro, 1920x1080, `--no-readback`, median of 199) | before | after |
+|---|---|---|
+| set A, lightmapped, still | 15.99 ms | 3.84 ms |
+| set A, lightmapped, moving (`--drift 0.01`) | 16.29 ms | 5.36 ms |
+
+`ATHENEA_STAGES` on the same frame: lobes 9.3-10.1 ms, shadow rays 1.5, domes
+0.4-0.5 before and 0 after; shading 1.2 before, 0.9-1.2 after (`shadeUnlit`
+alone, the footprint included); the mesh layer 15.7-16.8 ms before and 5.2-6.3
+after. The frame differs from before by the footprint alone: a mean absolute
+difference of 0.0012 over the frame.
+
 ### Screen-space reflections
 
 A floor that shines in a set lit by a lightmap reflects nothing of the set:
