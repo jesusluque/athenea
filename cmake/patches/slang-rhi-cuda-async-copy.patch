@@ -1,0 +1,21 @@
+diff --git a/src/cuda/cuda-command.cpp b/src/cuda/cuda-command.cpp
+index 00e8669d..c0ce0d5e 100644
+--- a/src/cuda/cuda-command.cpp
++++ b/src/cuda/cuda-command.cpp
+@@ -321,10 +321,14 @@ void CommandExecutor::cmdCopyBuffer(const commands::CopyBuffer& cmd)
+ {
+     BufferImpl* dst = checked_cast<BufferImpl*>(cmd.dst);
+     BufferImpl* src = checked_cast<BufferImpl*>(cmd.src);
+-    SLANG_CUDA_ASSERT_ON_FAIL(cuMemcpy(
++    // Ordered on the queue's stream like every other command, not a
++    // synchronous cuMemcpy: that one blocked the host until the stream had
++    // run everything submitted before it, at every buffer upload and copy.
++    SLANG_CUDA_ASSERT_ON_FAIL(cuMemcpyAsync(
+         (CUdeviceptr)((uint8_t*)dst->m_cudaMemory + cmd.dstOffset),
+         (CUdeviceptr)((uint8_t*)src->m_cudaMemory + cmd.srcOffset),
+-        cmd.size
++        cmd.size,
++        m_stream
+     ));
+ }
+ 

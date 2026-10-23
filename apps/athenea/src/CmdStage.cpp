@@ -104,6 +104,7 @@ void addStage(CLI::App& app) {
         double focal = 35.0, nearZ = 0.0, farZ = 100000.0;
         double fStop = 0.0, focus = 0.0;
         uint32_t frames = 1;
+        bool noReadback = false;
         uint32_t pathSamples = 1, pathBounces = 1, pathTotal = 1, motionBuckets = 4, refine = 0;
         std::string shutter;
         std::vector<std::string> variants;
@@ -208,6 +209,9 @@ void addStage(CLI::App& app) {
                     "a UsdRenderSettings prim: render its products, each var a layer of its EXR, and stop");
     cmd->add_option("--frames", o->frames,
                     "render this many times and print the time a frame takes (Hydra sync, drawing and the readback)");
+    cmd->add_flag("--no-readback", o->noReadback,
+                  "with --frames: time the frames as a host that keeps the image on the device sees them -- "
+                  "drawn and waited for, not read back; the last frame is read for the output");
     cmd->callback([o] {
         uint32_t width = 0, height = 0;
         if (std::sscanf(o->size.c_str(), "%ux%u", &width, &height) != 2) {
@@ -368,12 +372,22 @@ void addStage(CLI::App& app) {
         std::vector<double> ms;
         for (uint32_t frame = 0; frame < std::max(o->frames, uint32_t{1}); ++frame) {
             const auto start = std::chrono::steady_clock::now();
-            if (own) {
+            const bool last = frame + 1 >= std::max(o->frames, uint32_t{1});
+            if (o->noReadback && !last) {
+                // What a host drawing into its own window pays: the frame
+                // drawn, which returns once the device has run it.
+                Result<void> drawn = own ? (*renderer)->draw(*own, o->time, width, height, o->technique)
+                                         : (*renderer)->draw(o->camera, o->time, width, height, o->technique);
+                if (!drawn) {
+                    image = std::move(drawn).error();
+                    break;
+                }
+            } else if (own) {
                 image = (*renderer)->render(*own, o->time, width, height, o->technique);
             } else {
                 image = (*renderer)->render(o->camera, o->time, width, height, o->technique);
             }
-            if (!image) {
+            if (!image && !(o->noReadback && !last)) {
                 break;
             }
             ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());

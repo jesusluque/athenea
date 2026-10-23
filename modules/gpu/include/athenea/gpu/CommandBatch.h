@@ -1,6 +1,8 @@
 // Copyright (c) 2026 jesus luque.
 #pragma once
 
+#include <source_location>
+
 #include <slang-rhi.h>
 
 #include "athenea/core/Result.h"
@@ -26,10 +28,12 @@ public:
 
     /// Submits what was recorded and starts a fresh encoder. `wait` blocks
     /// until the device has run it.
-    [[nodiscard]] Result<void> submit(bool wait = false);
+    [[nodiscard]] Result<void> submit(bool wait = false,
+                                      std::source_location where = std::source_location::current());
     /// The same, and `fence` is set to `value` once the device has run it:
     /// how a caller learns that later without waiting (gpu::AsyncReadback).
-    [[nodiscard]] Result<void> submitSignalling(rhi::IFence* fence, uint64_t value, bool wait = false);
+    [[nodiscard]] Result<void> submitSignalling(rhi::IFence* fence, uint64_t value, bool wait = false,
+                                                std::source_location where = std::source_location::current());
 
 private:
     Device&                           device_;

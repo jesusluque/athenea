@@ -14,7 +14,7 @@ CommandBatch::~CommandBatch() {
     }
 }
 
-Result<void> CommandBatch::submit(bool wait) {
+Result<void> CommandBatch::submit(bool wait, std::source_location where) {
     // A command buffer that failed before this one -- the device out of
     // memory -- is reported by the first submit or wait after it, whichever
     // batch makes it: the work it fed is garbage, and the caller is told so
@@ -30,13 +30,15 @@ Result<void> CommandBatch::submit(bool wait) {
     }
     ATHENEA_TRY(earlier);
     if (wait) {
+        device_.noteSync("batch", where);
         device_.beforeSubmit();
         ATHENEA_TRY(Device::queueResult(device_.queue()->waitOnHost(), "a command batch"));
     }
     return ok();
 }
 
-Result<void> CommandBatch::submitSignalling(rhi::IFence* fence, uint64_t value, bool wait) {
+Result<void> CommandBatch::submitSignalling(rhi::IFence* fence, uint64_t value, bool wait,
+                                                std::source_location where) {
     device_.beforeSubmit();
     // Submitted even when nothing was recorded: the fence has to reach its
     // value, and an empty command buffer is what carries it there.
@@ -57,6 +59,7 @@ Result<void> CommandBatch::submitSignalling(rhi::IFence* fence, uint64_t value, 
     ATHENEA_TRY(earlier);
     ATHENEA_TRY(Device::queueResult(submitted, "a command batch"));
     if (wait) {
+        device_.noteSync("batch", where);
         ATHENEA_TRY(Device::queueResult(device_.queue()->waitOnHost(), "a command batch"));
     }
     return ok();

@@ -375,6 +375,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `-o`, `--output` | path | `out.exr` | half RGBA plus `Z` |
 | `--render-settings` | prim path | unset | render that prim's products instead, and stop |
 | `--frames` | integer | `1` | repeat, and report first, median and fastest |
+| `--no-readback` | flag | off | with `--frames`: every frame but the last is drawn and waited for, not read back -- what a host that keeps the image on the device pays; the last is read for `-o` |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr

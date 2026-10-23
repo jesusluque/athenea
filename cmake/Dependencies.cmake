@@ -113,6 +113,13 @@ endif()
 #     -- and waitOnHost no longer waits on a tracking event a failed buffer
 #     never signals. A buffer or acceleration structure Metal will not make
 #     is SLANG_E_OUT_OF_MEMORY rather than SLANG_FAIL.
+#   - slang-rhi-cuda-async-copy.patch: a buffer copy on CUDA -- every upload
+#     goes through one, from the staging heap -- was a synchronous cuMemcpy
+#     on the queue's stream, which blocked the host until the device had run
+#     everything submitted before it: a frame waited at each instance upload.
+#     It is cuMemcpyAsync on the same stream. A CUDA fence is the host's own
+#     value, set at submit, so it never said a copy had finished: what reads a
+#     copy back waits for the queue (Buffer::read, AsyncReadback with wait).
 #   - slang-rhi-ios.patch (iOS only): two things the backend assumes a Mac
 #     for. Slang is linked statically, as everything in an app bundle is, and
 #     the imported target had no iOS branch to say so. And the Metal target
@@ -125,7 +132,8 @@ set(ATHENEA_RHI_PATCHES
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-vulkan-triangle-count.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-texture-view-format.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-driver-symbols.patch"
-    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-command-buffer-errors.patch")
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-command-buffer-errors.patch"
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-async-copy.patch")
 if(ATHENEA_IOS)
     list(APPEND ATHENEA_RHI_PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-ios.patch")
 endif()

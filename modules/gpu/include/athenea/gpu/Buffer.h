@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <source_location>
 #include <span>
 #include <string>
 #include <vector>
@@ -37,7 +38,8 @@ public:
     Buffer() = default;
 
     [[nodiscard]] static Result<Buffer> create(Device& device, const BufferDesc& desc,
-                                               const void* initial = nullptr);
+                                               const void* initial = nullptr,
+                                               std::source_location where = std::source_location::current());
 
     /// Wraps a buffer somebody else allocated on the same device -- a gpe
     /// buffer, found by its MTLBuffer* or CUDA pointer. The owner keeps it.
@@ -47,13 +49,14 @@ public:
     template <typename T>
     [[nodiscard]] static Result<Buffer> fromSpan(Device& device, std::span<const T> data,
                                                  std::string label,
-                                                 Memory memory = Memory::Device) {
+                                                 Memory memory = Memory::Device,
+                                                 std::source_location where = std::source_location::current()) {
         BufferDesc desc;
         desc.bytes = data.size_bytes();
         desc.elementBytes = sizeof(T);
         desc.memory = memory;
         desc.label = std::move(label);
-        return create(device, desc, data.data());
+        return create(device, desc, data.data(), where);
     }
 
     [[nodiscard]] bool valid() const noexcept { return buffer_ != nullptr; }
@@ -67,13 +70,14 @@ public:
 
     /// Synchronous readback, for the CLI's final image and for tests' metric
     /// counters. Never on a frame path: see gpu::AsyncReadback.
-    [[nodiscard]] Result<void> read(Device& device, uint64_t offset, uint64_t bytes,
-                                    void* into) const;
+    [[nodiscard]] Result<void> read(Device& device, uint64_t offset, uint64_t bytes, void* into,
+                                    std::source_location where = std::source_location::current()) const;
 
     template <typename T>
-    [[nodiscard]] Result<std::vector<T>> readAll(Device& device) const {
+    [[nodiscard]] Result<std::vector<T>> readAll(Device& device,
+                                                 std::source_location where = std::source_location::current()) const {
         std::vector<T> out(bytes_ / sizeof(T));
-        ATHENEA_TRY(read(device, 0, out.size() * sizeof(T), out.data()));
+        ATHENEA_TRY(read(device, 0, out.size() * sizeof(T), out.data(), where));
         return out;
     }
 

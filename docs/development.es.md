@@ -107,12 +107,22 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
    pequeños cuentan lo que hizo la proyección -- por qué se descartó cada
    splat descartado, que la proyección deja en la clave de profundidad del
    hueco descartado, y la parte de cada nube -- y `gpu::AsyncReadback` copia
-   las cuentas fuera con el propio submit del frame y un fence. Se leen
-   después, nunca se esperan: un número que muestra un panel no debe ser una
-   espera que el panel haya causado.
+   las cuentas fuera con el propio submit del frame y un fence. Un frame que
+   las pide las espera, así que son las de ese frame cuando vuelve (en CUDA un
+   fence es un valor del propio host, fijado en el submit, y nunca dice que
+   una copia haya terminado); un frame que no las pide no espera nada por
+   ellas.
 6. Los domes se pintan detrás, se aplica la exposición y el frame está. Lo que
    lo convierte en algo que mirar es `technique::DisplayTransform`, y solo lo
    llaman un viewer o una vista previa.
+7. Nada entre las pasadas espera al dispositivo. Cada pasada envía su batch y
+   la siguiente se envía detrás en la única cola, que es todo el orden que
+   necesitan; el frame espera una vez, al final de `StageRenderer::execute`,
+   donde un host toma la imagen. Lo que aún espera dentro de un frame es lo
+   que lee un número de vuelta para decidir lo siguiente -- los recuentos de
+   visibles y de pares de un frame de splats, que dimensionan sus buffers --
+   y `ATHENEA_STAGES`, que espera para medir. `ATHENEA_SYNC_TRACE=1` nombra
+   cada espera por su línea.
 
 ### 1.4 Un frame, trazado
 
@@ -321,6 +331,7 @@ fuera del proceso.
 | `ATHENEA_VIEW_SWITCH_AT` | `=N`: el viewer cambia de técnica en el frame N, como haría un clic, para ejecuciones `--frames` reproducibles |
 | `ATHENEA_VIEW_ORBIT` | `=R`: la cámara libre del viewer gira R radianes alrededor de su objetivo en cada frame, como haría un arrastre, para medir una cámara en movimiento con `--frames` |
 | `ATHENEA_STAGES` | `=1`: una línea por frame rasterizado de splats diciendo adónde fue -- commit, visibilidad por partes, proyección, recuentos, orden por profundidad, emisión, orden por tile, blend -- y, con mallas, una línea para la capa de mallas -- su preparación y dentro de ella el mapa de sombra de las nubes, visibilidad, direcciones de lóbulo, rayos de sombra, sombreado, los domos leídos prefiltrados --; esperando cada etapa, así que el frame es más lento |
+| `ATHENEA_SYNC_TRACE` | `=1`: una línea cada vez que el host espera al dispositivo -- un batch enviado y esperado, un buffer leído de vuelta, un buffer creado con datos donde esa copia espera (CUDA, más de 16 MiB) -- con el fichero y la línea que lo pidió; un frame estable de mallas espera una vez |
 | `ATHENEA_PORTABLE_SORT` | `=1`: todo radix sort toma las pasadas por trozos, como antes de la ruta por tiles; para apartar la ruta por tiles de un backend |
 | `ATHENEA_ORACLE_*` | las entradas del oráculo de Storm en paralelo; son siete, documentadas donde el test las lee |
 | `HDX_MSAA_SAMPLE_COUNT` | tiene que ser `1` para el oráculo de Storm; ctest lo pone, y el test falla explicándolo si no |

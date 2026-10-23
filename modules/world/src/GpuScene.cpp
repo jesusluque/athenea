@@ -579,8 +579,22 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
         if (!made) return std::move(made).error();
         instanceRecords_ = std::move(*made);
     }
-    if (!records.empty()) {
-        ATHENEA_TRY(instanceRecords_.write(*device_, 0, records.size() * sizeof(InstanceRecord), records.data()));
+    // WHETHER THE INSTANCES MOVED, for what is built over them each frame
+    // (BvhScene's tree of instances): the records compared as bytes, with
+    // the view in them, so a still camera over still prims uploads and builds
+    // nothing. Records the device writes -- sets, motion copies -- are new
+    // every frame.
+    const bool sameRecords = buckets_ <= 1 && sets.empty() && instanceRecords_.rhi() == recordsBuffer_ &&
+                             records.size() * sizeof(InstanceRecord) == lastRecords_.size() &&
+                             std::memcmp(records.data(), lastRecords_.data(), lastRecords_.size()) == 0;
+    if (!sameRecords) {
+        ++instancesRevision_;
+        recordsBuffer_ = instanceRecords_.rhi();
+        lastRecords_.resize(records.size() * sizeof(InstanceRecord));
+        std::memcpy(lastRecords_.data(), records.data(), lastRecords_.size());
+        if (!records.empty()) {
+            ATHENEA_TRY(instanceRecords_.write(*device_, 0, records.size() * sizeof(InstanceRecord), records.data()));
+        }
     }
     if (buckets_ > 1 && !motionInputs.empty()) {
         if (motionInputs_.count() < motionInputs.size()) {

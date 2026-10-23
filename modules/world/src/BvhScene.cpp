@@ -37,6 +37,7 @@ Result<BvhScene> BvhScene::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(bvh.instanceCodes_, "athenea/world/bvh_scene", "instanceCodes"));
     ATHENEA_TRY(make(bvh.hierarchy_, "athenea/rt/bvh_hierarchy", "bvhHierarchy"));
     ATHENEA_TRY(make(bvh.refit_, "athenea/rt/bvh_refit", "bvhRefit"));
+    ATHENEA_TRY(make(bvh.refitGroup_, "athenea/rt/bvh_refit", "bvhRefitGroup"));
     ATHENEA_TRY(make(bvh.count_, "athenea/reference/count_nonzero", "countNonzero"));
     ATHENEA_TRY(make(bvh.boundsChunks_, "athenea/scene/bounds_chunks", "boundsChunks"));
     ATHENEA_TRY(make(bvh.boundsReduce_, "athenea/scene/bounds_reduce", "boundsReduce"));
@@ -240,82 +241,99 @@ Result<void> BvhScene::build(const GpuScene& scene, bool refit) {
         }
     }
 
-    // The instances, every frame.
+    // THE INSTANCES, EVERY FRAME, and nothing waited for: the bounds the
+    // codes are measured in stay on the device for the codes' kernel, the
+    // tree settles in one group's dispatch (bvhRefitGroup), and the buffers
+    // stand from frame to frame, grown when the instances outgrow them. The
+    // frame's visibility pass is submitted after this batch and reads what it
+    // left. The host used to wait for the bounds, the hierarchy and each
+    // round of refit passes: four waits a frame, more with many instances.
     const uint32_t n = scene.instanceCount();
-    auto boxes = deviceBuffer(device, uint64_t{std::max<uint32_t>(n, 2) - 1} * 2, 16, "bvh.top.boxes");
-    if (!boxes) return std::move(boxes).error();
-    auto children = deviceBuffer(device, uint64_t{std::max<uint32_t>(n, 2) - 1} * 2, 4, "bvh.top.children");
-    if (!children) return std::move(children).error();
-    auto leaves = deviceBuffer(device, n, 4, "bvh.top.leaves");
-    if (!leaves) return std::move(leaves).error();
-    topBoxes_ = std::move(*boxes);
-    topChildren_ = std::move(*children);
-    topLeaves_ = std::move(*leaves);
     if (n == 0) {
         return ok();
     }
-    auto leafBoxes = deviceBuffer(device, uint64_t{n} * 2, 16, "bvh.top.leafBoxes");
-    if (!leafBoxes) return std::move(leafBoxes).error();
-    auto centres = deviceBuffer(device, n, 16, "bvh.top.centres");
-    if (!centres) return std::move(centres).error();
-    gpu::SortBuffers sorting;
-    ATHENEA_TRY(sortBuffers(n, sorting));
-    Build build;
-    build.count = n;
-    {
-        constexpr uint32_t kChunk = 4096;
-        const uint32_t chunks = (n + kChunk - 1) / kChunk;
-        auto extents = deviceBuffer(device, uint64_t{chunks} * 2, 16, "bvh.top.extents");
-        if (!extents) return std::move(extents).error();
-        auto result = deviceBuffer(device, 2, 16, "bvh.top.bounds");
-        if (!result) return std::move(result).error();
-        gpu::CommandBatch batch(device);
-        instanceLeaves_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["meshes"].setBinding(scene.meshRecords().rhi());
-            cursor["instances"].setBinding(scene.instanceRecords().rhi());
-            cursor["leafBoxes"].setBinding(leafBoxes->rhi());
-            cursor["centres"].setBinding(centres->rhi());
-            cursor["params"]["count"].setData(n);
-        });
-        const auto params = [&](rhi::ShaderCursor cursor) {
-            cursor["params"]["count"].setData(n);
-            cursor["params"]["chunkSize"].setData(kChunk);
-            cursor["params"]["chunkCount"].setData(chunks);
+    // The same records as the frame the tree was built for: it stands.
+    const std::tuple<uint64_t, uint64_t, uint64_t, uint32_t> topKey{scene.generation(), scene.positionsRevision(),
+                                                                    scene.instancesRevision(), n};
+    if (topBuilt_ && topKey == topKey_) {
+        return ok();
+    }
+    topKey_ = topKey;
+    topBuilt_ = true;
+    constexpr uint32_t kChunk = 4096;
+    const uint32_t chunks = (n + kChunk - 1) / kChunk;
+    if (n > topCapacity_) {
+        const uint32_t capacity = std::max<uint32_t>(n + n / 2, 2);
+        const auto grow = [&](gpu::Buffer& into, uint64_t count, uint32_t element, const char* label) -> Result<void> {
+            auto made = deviceBuffer(device, count, element, label);
+            if (!made) return std::move(made).error();
+            into = std::move(*made);
+            return ok();
         };
-        boundsChunks_.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["positions"].setBinding(centres->rhi());
-            cursor["extents"].setBinding(extents->rhi());
-            params(cursor);
-        });
-        boundsReduce_.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["extents"].setBinding(extents->rhi());
-            cursor["result"].setBinding(result->rhi());
-            params(cursor);
-        });
-        ATHENEA_TRY(batch.submit(true));
-        float extent[8];
-        ATHENEA_TRY(result->read(device, 0, sizeof(extent), extent));
-        std::copy(extent, extent + 3, build.lo);
-        std::copy(extent + 4, extent + 7, build.hi);
+        ATHENEA_TRY(grow(topBoxes_, uint64_t{capacity - 1} * 2, 16, "bvh.top.boxes"));
+        ATHENEA_TRY(grow(topChildren_, uint64_t{capacity - 1} * 2, 4, "bvh.top.children"));
+        ATHENEA_TRY(grow(topLeaves_, capacity, 4, "bvh.top.leaves"));
+        ATHENEA_TRY(grow(topLeafBoxes_, uint64_t{capacity} * 2, 16, "bvh.top.leafBoxes"));
+        ATHENEA_TRY(grow(topCentres_, capacity, 16, "bvh.top.centres"));
+        ATHENEA_TRY(grow(topExtents_, uint64_t{(capacity + kChunk - 1) / kChunk} * 2, 16, "bvh.top.extents"));
+        ATHENEA_TRY(grow(topBounds_, 2, 16, "bvh.top.bounds"));
+        ATHENEA_TRY(sortBuffers(capacity, topSorting_));
+        topCapacity_ = capacity;
     }
-    {
-        gpu::CommandBatch batch(device);
-        instanceCodes_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            cursor["centres"].setBinding(centres->rhi());
-            cursor["mortonKeys"].setBinding(sorting.keysLo.rhi());
-            cursor["mortonValues"].setBinding(sorting.values.rhi());
-            rhi::ShaderCursor p = cursor["params"];
-            p["count"].setData(n);
-            p["boundsLoX"].setData(build.lo[0]);
-            p["boundsLoY"].setData(build.lo[1]);
-            p["boundsLoZ"].setData(build.lo[2]);
-            p["boundsHiX"].setData(build.hi[0]);
-            p["boundsHiY"].setData(build.hi[1]);
-            p["boundsHiZ"].setData(build.hi[2]);
+    gpu::CommandBatch batch(device);
+    instanceLeaves_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["meshes"].setBinding(scene.meshRecords().rhi());
+        cursor["instances"].setBinding(scene.instanceRecords().rhi());
+        cursor["leafBoxes"].setBinding(topLeafBoxes_.rhi());
+        cursor["centres"].setBinding(topCentres_.rhi());
+        cursor["params"]["count"].setData(n);
+    });
+    const auto params = [&](rhi::ShaderCursor cursor) {
+        cursor["params"]["count"].setData(n);
+        cursor["params"]["chunkSize"].setData(kChunk);
+        cursor["params"]["chunkCount"].setData(chunks);
+    };
+    boundsChunks_.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(topCentres_.rhi());
+        cursor["extents"].setBinding(topExtents_.rhi());
+        params(cursor);
+    });
+    boundsReduce_.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["extents"].setBinding(topExtents_.rhi());
+        cursor["result"].setBinding(topBounds_.rhi());
+        params(cursor);
+    });
+    instanceCodes_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["centres"].setBinding(topCentres_.rhi());
+        cursor["centreBounds"].setBinding(topBounds_.rhi());
+        cursor["mortonKeys"].setBinding(topSorting_.keysLo.rhi());
+        cursor["mortonValues"].setBinding(topSorting_.values.rhi());
+        cursor["params"]["count"].setData(n);
+    });
+    ATHENEA_TRY(sort_.sort(batch, topSorting_, n, 30));
+    const auto setBvh = [&](rhi::ShaderCursor p) {
+        p["count"].setData(n);
+        p["nodeBase"].setData(uint32_t{0});
+        p["leafBase"].setData(uint32_t{0});
+    };
+    hierarchy_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["sortedKeys"].setBinding(topSorting_.keysLo.rhi());
+        cursor["sortedValues"].setBinding(topSorting_.values.rhi());
+        cursor["children"].setBinding(topChildren_.rhi());
+        cursor["leaves"].setBinding(topLeaves_.rhi());
+        setBvh(cursor["params"]);
+    });
+    if (n >= 2) {
+        refitGroup_.dispatch(batch, {256, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["leafBoxes"].setBinding(topLeafBoxes_.rhi());
+            cursor["children"].setBinding(topChildren_.rhi());
+            cursor["leaves"].setBinding(topLeaves_.rhi());
+            cursor["boxes"].setBinding(topBoxes_.rhi());
+            cursor["changed"].setBinding(topLeaves_.rhi());   // not written by the group's refit
+            setBvh(cursor["params"]);
         });
-        ATHENEA_TRY(batch.submit(true));
     }
-    return hierarchy(build, sorting, *leafBoxes, topBoxes_, topChildren_, topLeaves_);
+    return batch.submit();
 }
 
 }   // namespace athenea::world

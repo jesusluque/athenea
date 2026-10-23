@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <cstddef>
 #include <vector>
 
 #include "athenea/core/Result.h"
@@ -141,6 +142,8 @@ public:
     /// over its own. The pools' layout did not change; what is built on their
     /// positions (BLAS, LBVH) has to be refit.
     [[nodiscard]] uint64_t positionsRevision() const noexcept { return positionsRevision_; }
+    /// Counts the frames whose instance records differ from the last's.
+    [[nodiscard]] uint64_t instancesRevision() const noexcept { return instancesRevision_; }
     /// Per mesh: raised each time it was deformed in place (0 after a repack).
     [[nodiscard]] uint64_t meshRevision(uint32_t mesh) const { return meshRevisions_[mesh]; }
 
@@ -182,6 +185,9 @@ private:
     [[nodiscard]] Result<void> refresh(uint32_t k, const geom::GpuMesh& mesh);
     [[nodiscard]] static bool sameLayout(const geom::GpuMesh& a, const geom::GpuMesh& b) noexcept;
     uint64_t                                           positionsRevision_ = 0;
+    uint64_t                                           instancesRevision_ = 0;
+    std::vector<std::byte>                             lastRecords_;     ///< the last frame's records, as uploaded
+    const void*                                        recordsBuffer_ = nullptr;   ///< the buffer they went to
     std::vector<uint64_t>                              meshRevisions_;
     uint32_t                                           buckets_ = 1;
     double                                             shutterOpen_ = 0.0;

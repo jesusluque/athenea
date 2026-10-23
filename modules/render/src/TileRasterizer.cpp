@@ -724,7 +724,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const uint32_t all = std::max(splatCount, 1u);
     ATHENEA_TRY(prefix_.apply(batch, visible_, visibleOffsets_, visibleTotal_, all));
     ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
-    ATHENEA_TRY(batch.submit(true));
+    // The totals are read back below, and a read waits for the device: a
+    // frame without splats reads nothing and waits for nothing.
+    ATHENEA_TRY(batch.submit());
     uint32_t visibleCount = 0;
     uint32_t pairs = 0;
     if (splatCount > 0) {
@@ -847,9 +849,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             splatSlots += instance.splats != nullptr ? instance.splats->count : 0u;
         }
         ATHENEA_TRY(countFrame(batch, instances, splatSlots, all));
+        // Waited for, as only a frame that asks for its counts is: they are
+        // that frame's when it returns.
         ATHENEA_TRY(counterReadback_.submit(batch, counterWords_, settings.countersTag, true));
     } else {
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     ms = watch.lap();
     if (!ms) return std::move(ms).error();

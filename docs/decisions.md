@@ -15322,3 +15322,53 @@ that single op and sets its value, so a frame changes one attribute and Hydra re
 - `athenea_usd_tests "[transform]"`: a square moved by a first matrix and then a second draws what a stage that
   authored the same translation draws, to the last bit (maxRel 0); cleared, it draws the original frame to the last
   bit; the file never names an `xformOp`.
+
+## A frame waits for the device once (23 Oct)
+
+A stage of lightmapped meshes drawn unlit took 10.4 ms a frame on CUDA (RTX 3070, 1920x1080, drawn and not read
+back) for 3.5 ms of kernels; a one-quad stage took 3.8 ms for 1.6 ms. The host waited for the device ten to
+twenty-two times a frame, at three kinds of place, which `ATHENEA_SYNC_TRACE=1` now names by file and line:
+
+- **Batches submitted and waited for between passes.** The mesh layer, the points' composite, the domes, the
+  exposure, the light groups and the plates each waited for their own batch, and the splat rasteriser waited
+  twice in a frame that had no splats. They are submitted and not waited for: each pass comes after the last on
+  the one queue, which is the only order they need. The frame waits once, at the end of
+  `StageRenderer::execute`, where a host takes the image. The visibility pass is submitted as soon as it is
+  recorded, so the device runs it while the host records the shading.
+- **Work rebuilt every frame that had not changed.** `LightTable::set` uploaded the lights and rebuilt their
+  tree -- a dozen waits, two of them readbacks -- for lights the byte comparison it already made found identical;
+  it now returns there. The tree over the instances (`BvhScene`, the CUDA route's visibility) read the
+  instances' bounds back, and refitted in rounds of eight passes, each round a readback: the bounds now stay on
+  the device for the codes' kernel, the refit is one group's dispatch that passes until nothing changes
+  (`bvhRefitGroup`), the buffers stand between frames, and the tree is not rebuilt at all while the instance
+  records -- the view is in them -- are the last frame's (`GpuScene::instancesRevision`).
+- **Copies that were synchronous.** slang-rhi's CUDA backend copied a buffer with `cuMemcpy` on the queue's
+  stream, which blocks the host until the stream has run everything before it, and every upload is such a copy
+  from the staging heap: patched to `cuMemcpyAsync` (`cmake/patches/slang-rhi-cuda-async-copy.patch`). A device
+  buffer made with data up to 16 MiB is now made empty and filled by a queued upload, where slang-rhi's CUDA
+  `createBuffer` copied it with `cuMemcpy` as well.
+
+| stage (RTX 3070, 1920x1080, `--no-readback`, median of 199) | before | after |
+|---|---|---|
+| one quad, unlit (`suelo.usda`) | 3.84 ms | 3.67 ms |
+| set A, 37 lightmapped meshes, still camera | 10.38 ms | 4.14 ms |
+| set B, 40 lightmapped meshes, still camera | 10.43 ms | 3.89 ms |
+| set A, the instances' tree rebuilt every frame (a moving camera) | 10.38 ms | 5.7-6.0 ms |
+
+Waits in a steady frame: 10 on the quad and about 22 on set A before, one after (`ATHENEA_SYNC_TRACE`). nsys over 300
+frames of set A: `cuMemcpy` 1391 calls before the patch, 135 after (loading only); kernel time unchanged, 3.5 ms a
+frame. The images are identical before and after (`oiiotool --diff`, all three stages).
+
+What a frame still waits for: a frame with splats reads its visible and pair counts back to size its buffers;
+a frame that asks for its splat counts (a panel) waits for them; `ATHENEA_STAGES` waits to time. A CUDA fence in
+slang-rhi is a value the host sets at submit, not when the device gets there, so a readback is never known
+finished without a wait.
+
+### Not done
+
+- The splat rasteriser's count readback, which an indirect dispatch sized on the device would remove.
+- The host's own cost: about forty launches a frame, each with its constant buffer copied, are 2-3 ms of driver
+  calls on set A; the instances' tree takes half of them when the camera moves.
+- `TextureStore::bind` rebinds every slot and sampler at each dispatch that reads textures.
+- The ray route's TLAS (`RayTracingScene`) is still rebuilt and waited for every frame where the device traces
+  inline; CUDA does not take that route.

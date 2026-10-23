@@ -7,7 +7,8 @@
 //                    Morton code of its centre within the mesh's bounds
 //   instanceLeaves   the frame: each instance's mesh bounds as a box in view
 //                    space, and its centre for the codes
-//   instanceCodes    the codes, once the centres' bounds are known
+//   instanceCodes    the codes, within the centres' bounds as the reduction
+//                    left them on the device (`centreBounds`: lo, hi)
 module bvh_scene;
 import athenea.common.morton;
 import athenea.rt.bvh_common;
@@ -23,6 +24,7 @@ RWStructuredBuffer<uint>          mortonKeys;
 RWStructuredBuffer<uint>          mortonValues;
 ConstantBuffer<BvhParams>         params;
 ConstantBuffer<MeshRecord>        mesh;           // triangleLeaves: the mesh
+StructuredBuffer<float4>          centreBounds;   // instanceCodes: lo, hi
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -73,8 +75,8 @@ void instanceCodes(uint3 tid: SV_DispatchThreadID) {
     if (i >= params.count) {
         return;
     }
-    const float3 boundsLo = float3(params.boundsLoX, params.boundsLoY, params.boundsLoZ);
-    const float3 boundsHi = float3(params.boundsHiX, params.boundsHiY, params.boundsHiZ);
+    const float3 boundsLo = centreBounds[0].xyz;
+    const float3 boundsHi = centreBounds[1].xyz;
     mortonKeys[i] = morton30((centres[i].xyz - boundsLo) / max(boundsHi - boundsLo, float3(1e-20)));
     mortonValues[i] = i;
 }

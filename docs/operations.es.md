@@ -382,6 +382,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más `Z` |
 | `--render-settings` | ruta de prim | sin poner | renderiza los productos de ese prim y para |
 | `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido |
+| `--no-readback` | flag | apagado | con `--frames`: todos los frames salvo el último se dibujan y se esperan, sin leerlos de vuelta -- lo que paga un host que deja la imagen en el dispositivo; el último se lee para `-o` |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr

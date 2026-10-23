@@ -38,19 +38,42 @@ rhi::BufferDesc toRhi(const BufferDesc& desc) {
 
 }   // namespace
 
-Result<Buffer> Buffer::create(Device& device, const BufferDesc& desc, const void* initial) {
+Result<Buffer> Buffer::create(Device& device, const BufferDesc& desc, const void* initial,
+                              std::source_location where) {
     if (desc.bytes == 0) {
         return Error::make(ErrorCode::InvalidArgument, "buffer '{}' of zero bytes", desc.label);
     }
     ATHENEA_TRY(device.admit(desc.bytes, std::format("buffer '{}'", desc.label)));
     Buffer buffer;
     const rhi::BufferDesc rhiDesc = toRhi(desc);
-    if (SLANG_FAILED(device.rhi()->createBuffer(rhiDesc, initial, buffer.buffer_.writeRef()))) {
+    // DATA FOR A DEVICE BUFFER GOES ON THE QUEUE where the backend's own
+    // copy would wait for it: slang-rhi's CUDA device copies with a
+    // synchronous cuMemcpy, which waits for everything the queue's stream
+    // holds -- a whole frame's work, each time a frame made a buffer of a few
+    // bytes. Staged and copied in order instead, as `write` does, it waits
+    // for nothing, and whatever uses the buffer is submitted after it. Metal's
+    // memory is the host's and its copy waits for nothing either. What a
+    // load uploads -- a mesh's pools, a cloud, tens of megabytes -- keeps the
+    // direct copy rather than a staging copy as large.
+    constexpr uint64_t kQueuedBytes = uint64_t{16} << 20;
+    const bool queued = initial != nullptr && device.backend() != Backend::Metal && desc.memory == Memory::Device &&
+                        desc.bytes <= kQueuedBytes;
+    if (initial != nullptr && !queued && device.backend() != Backend::Metal) {
+        device.noteSync("buffer data", where);
+    }
+    if (SLANG_FAILED(device.rhi()->createBuffer(rhiDesc, queued ? nullptr : initial, buffer.buffer_.writeRef()))) {
         return Error::make(ErrorCode::OutOfMemory, "cannot allocate buffer '{}' ({} bytes)",
                            desc.label, desc.bytes);
     }
     buffer.bytes_ = desc.bytes;
     buffer.elementBytes_ = desc.elementBytes;
+    if (queued) {
+        rhi::ComPtr<rhi::ICommandEncoder> encoder = device.queue()->createCommandEncoder();
+        encoder->uploadBufferData(buffer.buffer_.get(), 0, desc.bytes, initial);
+        device.beforeSubmit();
+        ATHENEA_TRY(Device::queueResult(device.queue()->submit(encoder->finish()), "a new buffer's data"));
+        return buffer;
+    }
     // A BUFFER WITHOUT DATA STARTS AT ZERO, on every backend. Metal hands out
     // new memory cleared and the engine came to rely on it: counters and
     // histograms are made and then added to. CUDA's and Vulkan's allocations
@@ -89,7 +112,8 @@ rhi::NativeHandle Buffer::native() const {
     return handle;
 }
 
-Result<void> Buffer::read(Device& device, uint64_t offset, uint64_t bytes, void* into) const {
+Result<void> Buffer::read(Device& device, uint64_t offset, uint64_t bytes, void* into,
+                          std::source_location where) const {
     if (buffer_ == nullptr || offset + bytes > bytes_) {
         return Error(ErrorCode::InvalidArgument, "read outside the buffer");
     }
@@ -97,7 +121,7 @@ Result<void> Buffer::read(Device& device, uint64_t offset, uint64_t bytes, void*
     // The copy back waits for everything before it anyway (the queue's
     // fence); waiting here first is how a command buffer that failed on the
     // way -- the device out of memory -- is reported instead of read.
-    device.waitIdle();
+    device.waitIdle(where);
     ATHENEA_TRY(device.takeQueueError());
     if (const SlangResult read = device.rhi()->readBuffer(buffer_.get(), offset, bytes, into); SLANG_FAILED(read)) {
         return read == SLANG_E_OUT_OF_MEMORY ? Error(ErrorCode::OutOfMemory, "the GPU ran out of memory reading a buffer back")

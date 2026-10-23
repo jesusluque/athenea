@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <source_location>
 #include <span>
 #include <string>
 #include <string_view>
@@ -124,7 +125,15 @@ public:
     /// Blocks until everything submitted has run. A command buffer that
     /// failed meanwhile is not lost: the next CommandBatch::submit reports it
     /// (takeQueueError).
-    void waitIdle();
+    void waitIdle(std::source_location where = std::source_location::current());
+
+    /// THE HOST WAITING FOR THE DEVICE: every wait a frame makes -- a batch
+    /// submitted and waited for, a buffer read back, a buffer made from data
+    /// where that copy waits for the queue (CUDA) -- is noted here with the
+    /// line that asked for it. $ATHENEA_SYNC_TRACE logs each one, which is how
+    /// a frame's waits are found and counted; `syncs()` is the running count.
+    void noteSync(std::string_view what, const std::source_location& where);
+    [[nodiscard]] uint64_t syncs() const noexcept { return syncs_.load(); }
 
     /// waitIdle, and what was freed actually given back: on Metal slang-rhi
     /// keeps a freed buffer in the device's residency set -- still resident,
@@ -193,6 +202,8 @@ private:
     std::atomic<uint64_t>           memoryBudget_{0};
     std::mutex                      queueErrorGuard_;
     std::optional<Error>            queueError_;
+    std::atomic<uint64_t>           syncs_{0};
+    bool                            traceSyncs_ = false;
 };
 
 /// Where the engine's own .slang files are: $ATHENEA_SHADER_DIR, then a

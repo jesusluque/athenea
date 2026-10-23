@@ -3159,11 +3159,13 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                            settings.height, visibility_, cutouts));
             break;
         }
-        // ATHENEA_STAGES: the visibility pass on its own, waited for.
+        // The visibility pass goes to the device now, not with the shading:
+        // it runs while the host records what comes after it. ATHENEA_STAGES
+        // waits for it on its own, to time it.
         const bool meshStages = !platform::env("ATHENEA_STAGES").empty();
         double meshVisibilityMs = 0.0;
+        ATHENEA_TRY(batch.submit(meshStages));
         if (meshStages) {
-            ATHENEA_TRY(batch.submit(true));
             meshVisibilityMs =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - meshStart).count();
         }
@@ -3331,7 +3333,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             ATHENEA_TRY(aovShading_->shade(batch, *scene_, visibility_, projection, slots, aovs_));
             aovsValid_ = true;
         }
-        ATHENEA_TRY(batch.submit(true));
+        // Submitted, not waited for: what reads the layer -- the splat
+        // blend, the domes, a readback -- comes after it on the same queue.
+        // ATHENEA_STAGES waits, to time what the mesh layer took.
+        ATHENEA_TRY(batch.submit(meshStages));
         // ATHENEA_STAGES=1: what the mesh layer took, a line a frame -- the
         // cloud map from the lights, and the visibility and shading passes.
         if (meshStages) {
@@ -3435,7 +3440,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             cursor["params"]["hasIds"].setData(uint32_t{carryIds ? 1u : 0u});
             cursor["params"]["pixels"].setData(static_cast<uint32_t>(pixels));
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         under = &opaqueLayer_;
     } else if (meshLayer) {
         under = &meshLayer_;
@@ -3563,7 +3568,7 @@ Result<void> Engine::gatherLightGroups(bool traced, uint32_t width, uint32_t hei
         cursor["params"]["scale"].setData(1.0F);
         cursor["params"]["pixels"].setData(entries);
     });
-    return batch.submit(true);
+    return batch.submit();
 }
 
 Result<void> Engine::applyExposure(double stops, uint32_t width, uint32_t height, render::RenderTargets& targets) {
@@ -3591,7 +3596,7 @@ Result<void> Engine::applyExposure(double stops, uint32_t width, uint32_t height
             cursor["params"]["pixels"].setData(entries);
         });
     }
-    return batch.submit(true);
+    return batch.submit();
 }
 
 namespace {
@@ -4027,7 +4032,7 @@ Result<void> Engine::compositePlates(const std::vector<PlateDraw>& plates, const
             p["hasDepth"].setData(uint32_t{depth ? 1u : 0u});
         });
     }
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     return ok();
 }
 
@@ -4089,7 +4094,7 @@ Result<void> Engine::paintDomes(const render::Projection& projection, uint32_t w
             cursor["background"][kNames[k]].setData(toWorld[k]);
         }
     });
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     return ok();
 }
 

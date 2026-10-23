@@ -205,6 +205,7 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
     }
 
     auto device = std::shared_ptr<Device>(new Device());
+    device->traceSyncs_ = !platform::env("ATHENEA_SYNC_TRACE").empty();
     device->searchPaths_.push_back(shaderDirectory().string());
     for (const auto& extra : desc.shaderPaths) {
         device->searchPaths_.push_back(extra.string());
@@ -504,7 +505,15 @@ ShaderCacheStats Device::shaderCacheStats() const {
                                    : ShaderCacheStats{};
 }
 
-void Device::waitIdle() {
+void Device::noteSync(std::string_view what, const std::source_location& where) {
+    syncs_.fetch_add(1);
+    if (traceSyncs_) {
+        log::info("sync {}: {}:{}", what, std::filesystem::path(where.file_name()).filename().string(), where.line());
+    }
+}
+
+void Device::waitIdle(std::source_location where) {
+    noteSync("wait", where);
     if (queue_ != nullptr) {
         if (auto waited = queueResult(queue_->waitOnHost(), "the work submitted"); !waited) {
             const std::lock_guard<std::mutex> held(queueErrorGuard_);

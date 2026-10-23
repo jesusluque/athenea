@@ -2039,6 +2039,15 @@ Result<void> StageRenderer::execute(uint32_t width, uint32_t height) {
         GfRect2i(GfVec2i(0), static_cast<int>(width), static_cast<int>(height))));
     HdTaskSharedPtrVector tasks = impl.controller->GetRenderingTasks();
     impl.engine.Execute(impl.index, &tasks);
+    // THE FRAME'S ONE WAIT. The render pass submits its passes without
+    // waiting between them -- each comes after the last on the one queue --
+    // and the image is finished here, where a host takes it: a caller of
+    // draw() reads the targets on the device as soon as this returns. A
+    // command buffer the device failed is this frame's error, not the next's.
+    device().waitIdle();
+    if (Result<void> queued = device().takeQueueError(); !queued) {
+        return queued;
+    }
     // What the render pass met and Hydra has no way to return: the device out
     // of memory, after the pass had given back what it could and tried again.
     if (auto* param = static_cast<HdAtheneaRenderParam*>(impl.delegate->GetRenderParam()); param != nullptr) {

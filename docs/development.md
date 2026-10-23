@@ -106,11 +106,21 @@ a pool of its own and wants only the crossing.
    count what the projection did -- why each culled splat was culled, which
    the projection leaves in the culled slot's depth key, and each cloud's
    share -- and `gpu::AsyncReadback` copies the counts out with the frame's
-   own submit and a fence. They are read later, never waited for: a number a
-   panel shows must not be a stall the panel caused.
+   own submit and a fence. A frame that asks for them waits for them, so
+   they are that frame's when it returns (on CUDA a fence is the host's own
+   value, set at submit, and never says a copy has finished); a frame that
+   does not ask waits for nothing on their account.
 6. Domes are painted behind, exposure is applied, and the frame is done.
    `technique::DisplayTransform` is what turns it into something to look at,
    and only a viewer or a preview calls it.
+7. Nothing between the passes waits for the device. Each pass submits its
+   batch and the next is submitted after it on the one queue, which is all
+   the ordering they need; the frame waits once, at the end of
+   `StageRenderer::execute`, where a host takes the image. What still waits
+   inside a frame is what reads a number back to decide what comes next --
+   a splat frame's visible and pair counts, which size its buffers -- and
+   `ATHENEA_STAGES`, which waits to time. `ATHENEA_SYNC_TRACE=1` names every
+   wait by its line.
 
 ### 1.4 A frame, path traced
 
@@ -312,6 +322,7 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 | `ATHENEA_VIEW_SWITCH_AT` | `=N`: the viewer flips its technique at frame N, as a click would, for reproducible `--frames` runs |
 | `ATHENEA_VIEW_ORBIT` | `=R`: the viewer's free camera turns R radians about its target every frame, as a drag would, to time a moving camera with `--frames` |
 | `ATHENEA_STAGES` | `=1`: a line a rasterised frame of splats saying where it went -- commit, per-part visibility, project, counts, depth sort, emit, tile sort, blend -- and, with meshes, a line for the mesh layer -- its preparation and the cloud shadow map in it, visibility, lobe directions, shadow rays, shading, the domes read prefiltered --; each stage waited for, so the frame is slower for it |
+| `ATHENEA_SYNC_TRACE` | `=1`: a line each time the host waits for the device -- a batch submitted and waited for, a buffer read back, a buffer made from data where that copy waits (CUDA, over 16 MiB) -- with the file and line that asked; a steady frame of meshes waits once |
 | `ATHENEA_PORTABLE_SORT` | `=1`: every radix sort takes the chunked passes, as before the tiled route existed; to set a backend's tiled route aside |
 | `ATHENEA_ORACLE_*` | the Storm side-by-side oracle's inputs; seven of them, documented where the test reads them |
 | `HDX_MSAA_SAMPLE_COUNT` | must be `1` for the Storm oracle; ctest sets it, and the test fails with an explanation if it is not |

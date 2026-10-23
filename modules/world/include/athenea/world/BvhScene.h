@@ -7,6 +7,8 @@
 // (athenea/rt/bvh_hierarchy, bvh_refit) with scene leaves (athenea/world/bvh_scene).
 #pragma once
 
+#include <tuple>
+
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
@@ -56,10 +58,18 @@ private:
 
     gpu::Device*       device_ = nullptr;
     gpu::RadixSort     sort_;
-    gpu::ComputeKernel triangleLeaves_, instanceLeaves_, instanceCodes_, hierarchy_, refit_, count_;
+    gpu::ComputeKernel triangleLeaves_, instanceLeaves_, instanceCodes_, hierarchy_, refit_, refitGroup_, count_;
     gpu::ComputeKernel boundsChunks_, boundsReduce_;
     uint64_t           generation_ = ~uint64_t{0};
     gpu::Buffer        topBoxes_, topChildren_, topLeaves_, meshBoxes_, meshChildren_, meshLeaves_;
+    /// The instances' tree's working buffers, kept between frames.
+    gpu::Buffer        topLeafBoxes_, topCentres_, topExtents_, topBounds_;
+    gpu::SortBuffers   topSorting_;
+    uint32_t           topCapacity_ = 0;
+    /// What the instances' tree was last built for: the scene's generation,
+    /// its points' and its instances' revisions, and their count.
+    std::tuple<uint64_t, uint64_t, uint64_t, uint32_t> topKey_{};
+    bool               topBuilt_ = false;
 };
 
 }   // namespace athenea::world

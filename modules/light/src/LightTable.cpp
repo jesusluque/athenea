@@ -236,6 +236,30 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
     if (iesValues.empty()) {
         iesValues.push_back(0.0F);
     }
+    if (records.empty()) {
+        records.emplace_back();   // a buffer to bind, which nothing reads
+    }
+    count_ = static_cast<uint32_t>(records.size()) - (lights.empty() ? 1u : 0u);
+    // WHETHER ANYTHING CHANGED, for what a frame keeps between frames
+    // (`revision`): the records as authored, the values beside them and the
+    // reach the shares are measured against, compared as bytes. Lights the
+    // device places or moves are new every frame.
+    const bool placed = !expansions.empty() || !motionExpansions.empty() || anyMoves_;
+    const bool same = !placed && records.size() == lastRecords_.size() && iesValues.size() == lastValues_.size() &&
+                      sceneRadius == lastRadius_ &&
+                      std::memcmp(records.data(), lastRecords_.data(), records.size() * sizeof(LightRecord)) == 0 &&
+                      std::memcmp(iesValues.data(), lastValues_.data(), iesValues.size() * sizeof(float)) == 0;
+    if (!same) {
+        ++revision_;
+        lastRecords_ = records;
+        lastValues_ = iesValues;
+        lastRadius_ = sceneRadius;
+    } else if (records_.valid() && iesValues_.valid()) {
+        // The same lights as the last frame's: their table, its shares and
+        // its tree are on the device already, and nothing goes up or is
+        // built again -- a frame used to rebuild them all, a dozen waits.
+        return ok();
+    }
     {
         auto madeRecords = gpu::Buffer::fromSpan<IesRecord>(*device_, iesRecords, "lights.ies.records");
         if (!madeRecords) return std::move(madeRecords).error();
@@ -267,25 +291,6 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
             });
         }
         ATHENEA_TRY(batch.submit(true));
-    }
-    if (records.empty()) {
-        records.emplace_back();   // a buffer to bind, which nothing reads
-    }
-    count_ = static_cast<uint32_t>(records.size()) - (lights.empty() ? 1u : 0u);
-    // WHETHER ANYTHING CHANGED, for what a frame keeps between frames
-    // (`revision`): the records as authored, the values beside them and the
-    // reach the shares are measured against, compared as bytes. Lights the
-    // device places or moves are new every frame.
-    const bool placed = !expansions.empty() || !motionExpansions.empty() || anyMoves_;
-    const bool same = !placed && records.size() == lastRecords_.size() && iesValues.size() == lastValues_.size() &&
-                      sceneRadius == lastRadius_ &&
-                      std::memcmp(records.data(), lastRecords_.data(), records.size() * sizeof(LightRecord)) == 0 &&
-                      std::memcmp(iesValues.data(), lastValues_.data(), iesValues.size() * sizeof(float)) == 0;
-    if (!same) {
-        ++revision_;
-        lastRecords_ = records;
-        lastValues_ = iesValues;
-        lastRadius_ = sceneRadius;
     }
     if (records.size() > capacity_ || !records_.valid()) {
         auto made = gpu::Buffer::fromSpan<LightRecord>(*device_, records, "lights.records");
