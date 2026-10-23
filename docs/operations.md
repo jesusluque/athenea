@@ -2332,7 +2332,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
 | `athenea mesh2splat` | a USD stage holding the cloud |
 | `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
-| `athenea lightmap` | `lightmap_<atlas>.exr` (half, linear, bottom row first) and `lightmapped.usda`, which sublayers the source |
+| `athenea lightmap` | `lightmap_<atlas>.exr` (half, linear, bottom row first) and `lightmapped.usda`, which sublayers the source; its materials are under the one root prim every baked mesh shares (`/<root>/AtheneaLightmaps`), so referencing that prim keeps them |
 | `athenea visibility` | the cloud's file, edited in place or copied |
 | `athenea aofx run` | one EXR |
 | `athenea migrate` | a copy of the stage, package or cloud; with `--recursive`, of what it names too |

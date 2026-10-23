@@ -70,7 +70,10 @@ struct OverTree {
     int32_t                         atlas = -1;
 };
 
-void writeOvers(std::ostream& out, const OverTree& node, int depth, const std::string& uv) {
+/// `inside`, where given, is written in the top-level prim `top` before it
+/// closes: the materials, under the root a host references.
+void writeOvers(std::ostream& out, const OverTree& node, int depth, const std::string& uv,
+                const std::string& base, const std::string& top = {}, const std::string& inside = {}) {
     const std::string indent(static_cast<size_t>(depth) * 4, ' ');
     for (const auto& [name, child] : node.children) {
         out << indent << "over \"" << name << "\"";
@@ -82,9 +85,12 @@ void writeOvers(std::ostream& out, const OverTree& node, int depth, const std::s
             out << indent << "    int primvars:athenea:unlit = 1 (\n"
                 << indent << "        interpolation = \"constant\"\n"
                 << indent << "    )\n"
-                << indent << "    rel material:binding = </AtheneaLightmaps/atlas" << child.atlas << ">\n";
+                << indent << "    rel material:binding = <" << base << "/atlas" << child.atlas << ">\n";
         }
-        writeOvers(out, child, depth + 1, uv);
+        writeOvers(out, child, depth + 1, uv, base);
+        if (depth == 0 && name == top) {
+            out << inside;
+        }
         out << indent << "}\n";
     }
 }
@@ -546,35 +552,47 @@ void addLightmap(CLI::App& app) {
                 node->atlas = a.index;
             }
         }
-        writeOvers(file, root, 0, o->uv);
-        file << "\ndef Scope \"AtheneaLightmaps\"\n{\n";
+        // THE MATERIALS UNDER THE ROOT PRIM every baked mesh shares, where
+        // there is one: a host that references that prim keeps the bindings.
+        // A scope beside it was left behind, and the set drew flat grey.
+        const std::string top = root.children.size() == 1 ? root.children.begin()->first : std::string();
+        const std::string scopePath = top.empty() ? std::string("/AtheneaLightmaps") : "/" + top + "/AtheneaLightmaps";
+        const std::string pad = top.empty() ? "" : "    ";
+        std::ostringstream materials;
+        materials << "\n" << pad << "def Scope \"AtheneaLightmaps\"\n" << pad << "{\n";
         for (const Atlas& a : atlases) {
             if (a.texels == 0) {
                 continue;
             }
             const std::string name = "atlas" + std::to_string(a.index);
-            const std::string base = "/AtheneaLightmaps/" + name;
-            file << "    def Material \"" << name << "\"\n    {\n"
-                 << "        token outputs:surface.connect = <" << base << "/Surface.outputs:surface>\n"
-                 << "        def Shader \"Surface\"\n        {\n"
-                 << "            uniform token info:id = \"UsdPreviewSurface\"\n"
-                 << "            color3f inputs:diffuseColor = (0, 0, 0)\n"
-                 << "            int inputs:useSpecularWorkflow = 1\n"
-                 << "            color3f inputs:specularColor = (0, 0, 0)\n"
-                 << "            color3f inputs:emissiveColor.connect = <" << base << "/Light.outputs:rgb>\n"
-                 << "            token outputs:surface\n        }\n"
-                 << "        def Shader \"Light\"\n        {\n"
-                 << "            uniform token info:id = \"UsdUVTexture\"\n"
-                 << "            asset inputs:file = @./lightmap_" << a.index << ".exr@\n"
-                 << "            token inputs:sourceColorSpace = \"raw\"\n"
-                 << "            float2 inputs:st.connect = <" << base << "/Coordinates.outputs:result>\n"
-                 << "            float3 outputs:rgb\n        }\n"
-                 << "        def Shader \"Coordinates\"\n        {\n"
-                 << "            uniform token info:id = \"UsdPrimvarReader_float2\"\n"
-                 << "            string inputs:varname = \"" << o->uv << "\"\n"
-                 << "            float2 outputs:result\n        }\n    }\n";
+            const std::string base = scopePath + "/" + name;
+            materials << pad << "    def Material \"" << name << "\"\n    {\n"
+                 << pad << "        token outputs:surface.connect = <" << base << "/Surface.outputs:surface>\n"
+                 << pad << "        def Shader \"Surface\"\n        {\n"
+                 << pad << "            uniform token info:id = \"UsdPreviewSurface\"\n"
+                 << pad << "            color3f inputs:diffuseColor = (0, 0, 0)\n"
+                 << pad << "            int inputs:useSpecularWorkflow = 1\n"
+                 << pad << "            color3f inputs:specularColor = (0, 0, 0)\n"
+                 << pad << "            color3f inputs:emissiveColor.connect = <" << base << "/Light.outputs:rgb>\n"
+                 << pad << "            token outputs:surface\n        }\n"
+                 << pad << "        def Shader \"Light\"\n        {\n"
+                 << pad << "            uniform token info:id = \"UsdUVTexture\"\n"
+                 << pad << "            asset inputs:file = @./lightmap_" << a.index << ".exr@\n"
+                 << pad << "            token inputs:sourceColorSpace = \"raw\"\n"
+                 << pad << "            float2 inputs:st.connect = <" << base << "/Coordinates.outputs:result>\n"
+                 << pad << "            float3 outputs:rgb\n        }\n"
+                 << pad << "        def Shader \"Coordinates\"\n        {\n"
+                 << pad << "            uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+                 << pad << "            string inputs:varname = \"" << o->uv << "\"\n"
+                 << pad << "            float2 outputs:result\n        }\n    }\n";
         }
-        file << "}\n";
+        materials << pad << "}\n";
+        if (top.empty()) {
+            writeOvers(file, root, 0, o->uv, scopePath);
+            file << materials.str();
+        } else {
+            writeOvers(file, root, 0, o->uv, scopePath, top, materials.str());
+        }
         file.close();
         cli::out("lightmap: wrote %s in %.1f s\n", layer.string().c_str(), msSince(started) / 1000.0);
     });

@@ -2401,7 +2401,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
 | `athenea mesh2splat` | una escena USD con la nube |
 | `athenea flatten` | ficheros `.ply`, `.spz`, `.glb` y USD de las nubes aplanadas, la escena compuesta junto a ellos, y con `--validate` lo que escribe `mesh2splat --validate` |
-| `athenea lightmap` | `lightmap_<atlas>.exr` (half, lineal, la fila de abajo primero) y `lightmapped.usda`, que pone el original como sublayer |
+| `athenea lightmap` | `lightmap_<atlas>.exr` (half, lineal, la fila de abajo primero) y `lightmapped.usda`, que pone el original como sublayer; sus materiales van bajo el prim raíz que comparten todas las mallas horneadas (`/<raíz>/AtheneaLightmaps`), así que referenciar ese prim los conserva |
 | `athenea visibility` | el fichero de la nube, editado en el sitio o copiado |
 | `athenea aofx run` | un EXR |
 | `athenea migrate` | una copia de la escena, el paquete o la nube; con `--recursive`, también de lo que nombra |
