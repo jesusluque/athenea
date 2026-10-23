@@ -220,6 +220,7 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         _engine->setDomePrefiltered(_delegate->GetDomePrefiltered());
         _engine->setDomeVisible(_delegate->GetDomeVisible());
         _engine->setScreenSpaceReflections(_delegate->GetScreenSpaceReflections());
+        _engine->setMeshAntialias(_delegate->GetMeshAntialias());
         _engine->setCloudShadowResolution(_delegate->GetCloudShadowResolution());
         _engine->setCloudShadowTerms(_delegate->GetCloudShadowTerms());
         _engine->setCloudShadowDensity(_delegate->GetCloudShadowDensity());

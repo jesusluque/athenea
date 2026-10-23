@@ -1305,6 +1305,10 @@ void StageRenderer::setScreenSpaceReflections(bool on) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:screenSpaceReflections"), VtValue(on));
 }
 
+void StageRenderer::setMeshAntialias(uint32_t samples) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:meshAntialias"), VtValue(static_cast<int>(samples)));
+}
+
 void StageRenderer::setGlassShadows(bool glass) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:glassShadows"), VtValue(glass));
 }

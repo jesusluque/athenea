@@ -770,6 +770,10 @@ void Engine::setGlassShadows(bool glass) { glassShadows_.store(glass); }
 void Engine::setDomeVisible(bool visible) { domeVisible_.store(visible); }
 void Engine::setScreenSpaceReflections(bool on) { screenSpaceReflections_.store(on); }
 
+void Engine::setMeshAntialias(uint32_t samples) {
+    meshAntialias_.store(samples <= 1 ? 0u : samples <= 4 ? 4u : samples <= 8 ? 8u : 16u);
+}
+
 void Engine::setPathError(float error) { pathError_.store(std::max(error, 1.0e-4F)); }
 
 uint32_t Engine::pathAccumulated() const noexcept {
@@ -3164,6 +3168,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // waits for it on its own, to time it.
         const bool meshStages = !platform::env("ATHENEA_STAGES").empty();
         double meshVisibilityMs = 0.0;
+        double meshAntialiasMs = 0.0;
         ATHENEA_TRY(batch.submit(meshStages));
         if (meshStages) {
             meshVisibilityMs =
@@ -3307,6 +3312,26 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         } else {
             materialShading_->timeStages(meshStages);
             ATHENEA_TRY(materialShading_->shade(batch, visibility_, projection, frame, meshLayer_));
+            // The edges, from the shaded layer and the ids alone, before
+            // anything composites it (athenea:meshAntialias).
+            if (const uint32_t samples = meshAntialias_.load(); samples > 1) {
+                if (!meshEdges_.has_value()) {
+                    auto made = technique::MeshAntialias::create(*library_);
+                    if (!made) return std::move(made).error();
+                    meshEdges_.emplace(std::move(*made));
+                }
+                const auto edgesStart = std::chrono::steady_clock::now();
+                if (meshStages) {
+                    ATHENEA_TRY(batch.submit(true));
+                }
+                ATHENEA_TRY(meshEdges_->resolve(batch, *scene_, visibility_, projection, samples, meshLayer_));
+                if (meshStages) {
+                    ATHENEA_TRY(batch.submit(true));
+                    meshAntialiasMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                                               edgesStart)
+                                          .count();
+                }
+            }
         }
         // WHICH PRIM EACH PIXEL'S SURFACE IS, for the matte the splat blend
         // builds: this layer's ids travel with it as its `cryptoIds`, and the
@@ -3342,9 +3367,11 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         if (meshStages) {
             const technique::MaterialShading::StageTimes& t = materialShading_->stageTimes();
             log::info("stages: mesh prepare {:.1f} ms (cloud shadow map {:.1f} of it), visibility {:.1f}, lobes {:.1f}, "
-                      "shadow rays {:.1f}, shading {:.1f}, domes {:.1f}, reflections {:.1f}; mesh layer {:.1f} in all",
+                      "shadow rays {:.1f}, shading {:.1f}, domes {:.1f}, reflections {:.1f}, antialias {:.1f}; "
+                      "mesh layer {:.1f} in all",
                       std::chrono::duration<double, std::milli>(meshStart - meshLayerStart).count(),
                       meshShadowMapMs_, meshVisibilityMs, t.lobes, t.shadows, t.shade, t.domes, t.reflections,
+                      meshAntialiasMs,
                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - meshLayerStart)
                           .count());
         }

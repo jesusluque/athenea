@@ -340,6 +340,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     screenSpaceReflections.name = "Screen-space reflections on the meshes that reflect";
     screenSpaceReflections.key = TfToken("athenea:screenSpaceReflections");
     screenSpaceReflections.defaultValue = VtValue(false);
+    HdRenderSettingDescriptor meshAntialias;
+    meshAntialias.name = "Raster: mesh edges resolved from 4, 8 or 16 samples a pixel (0: one sample)";
+    meshAntialias.key = TfToken("athenea:meshAntialias");
+    meshAntialias.defaultValue = VtValue(0);
     HdRenderSettingDescriptor domeVisible;
     domeVisible.name = "The dome drawn behind the frame (off: a transparent background)";
     domeVisible.key = TfToken("athenea:domeVisible");
@@ -402,7 +406,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
-            screenSpaceReflections};
+            screenSpaceReflections, meshAntialias};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -536,6 +540,11 @@ bool HdAtheneaRenderDelegate::GetDomeVisible() const {
 bool HdAtheneaRenderDelegate::GetScreenSpaceReflections() const {
     const VtValue value = GetRenderSetting(TfToken("athenea:screenSpaceReflections"));
     return value.IsHolding<bool>() && value.UncheckedGet<bool>();
+}
+
+uint32_t HdAtheneaRenderDelegate::GetMeshAntialias() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:meshAntialias"));
+    return value.IsHolding<int>() ? static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0)) : 0u;
 }
 
 uint32_t HdAtheneaRenderDelegate::GetSplatView() const {
