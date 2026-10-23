@@ -1440,7 +1440,13 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
         out.material = std::move(material);
         out.uv2 = hasUvs2 ? second : std::string();
         out.hasExtraUv = hasUvsExtra;
-        if (const UsdAttribute atlas = prim.GetAttribute(TfToken("userProperties:lightmap_atlas"))) {
+        // Where the exporter put it: on the mesh, or -- Blender's object
+        // properties -- on the Xform above it.
+        UsdAttribute atlas;
+        for (UsdPrim p = prim; p && !atlas; p = p.GetParent()) {
+            atlas = p.GetAttribute(TfToken("userProperties:lightmap_atlas"));
+        }
+        if (atlas) {
             VtValue value;
             if (atlas.Get(&value, at)) {
                 if (value.IsHolding<int>()) {

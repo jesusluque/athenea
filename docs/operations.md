@@ -656,7 +656,8 @@ is its atlas, read at the same coordinates.
 | `--default-lights` | flag | off | a dome and a sun for a stage with none |
 
 **Atlases.** A mesh goes in the atlas its `userProperties:lightmap_atlas`
-says (an int or a float), 0 where it says nothing; one file an atlas. A texel
+says (an int or a float) -- on the mesh, or on the nearest prim above it that
+has one, where Blender writes an object's properties -- 0 where none says; one file an atlas. A texel
 the first triangle to reach it claims; one whose centre is within half a
 texel of a triangle's edge is that triangle's. The bake is the path tracer's
 own (`mesh2splat`'s), degree 0: what the surface sends out, the same in

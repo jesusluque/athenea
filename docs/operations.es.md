@@ -671,7 +671,9 @@ textura es su atlas, leída en las mismas coordenadas.
 | `--default-lights` | flag | apagado | un dome y un sol para un stage que no tiene luces |
 
 **Atlas.** Una malla va en el atlas que dice su `userProperties:lightmap_atlas`
-(un int o un float), el 0 si no dice nada; un fichero por atlas. Un texel es
+(un int o un float) -- en la malla, o en el prim más cercano por encima que lo
+tenga, que es donde Blender escribe las propiedades de un objeto --, el 0 si
+ninguno lo dice; un fichero por atlas. Un texel es
 del primer triángulo que llega a él; uno cuyo centro queda a menos de medio
 texel del borde de un triángulo es de ese triángulo. El horneado es el del
 propio trazador de caminos (el de `mesh2splat`), de grado 0: lo que emite la

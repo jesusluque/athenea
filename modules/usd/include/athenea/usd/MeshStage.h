@@ -296,8 +296,8 @@ struct StageMesh {
     /// was built with them (`mesh.subsets` of them). Empty: one material.
     std::vector<StageSubset> subsets;
     /// Whether the mesh carries `MeshStageOptions::extraUv`, and the atlas a
-    /// lightmap of it goes in: `userProperties:lightmap_atlas` where
-    /// authored (an int or a float), else 0.
+    /// lightmap of it goes in: `userProperties:lightmap_atlas` on the mesh
+    /// or its nearest ancestor that has it (an int or a float), else 0.
     bool                  hasExtraUv = false;
     int32_t               lightmapAtlas = 0;
 };
