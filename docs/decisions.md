@@ -13414,6 +13414,21 @@ still the checker.
 a level is a box average over the atlas, so far enough away an island's
 margin -- the dilated light around it -- bleeds into its edge.
 
+A frame whose every mesh is unlit is `shadeUnlit`'s alone. A set lit once and
+played back from its lightmaps still paid the lit kernels a frame -- they ran
+over every pixel to find each one flagged unlit and step aside: on the M5 Pro,
+1920 x 1080, lobe directions 6.5 ms, shadow rays 1.5, the shading kernel 1.7
+and the prefiltered domes 0.8, for nothing drawn. The engine says whether any
+mesh it draws is lit (`MaterialFrame::lit`); where none is, `shade` runs no
+lobe, shadow ray, table, shading or dome kernel, whatever lights the stage
+has, and `shadeUnlit` (`unlitAlone`) writes what the shading kernel wrote
+where it found no surface or one not unlit: no colour, depth 0, the light
+groups at 0 and the domes' G-buffer cleared, which the reflections read. A
+lit mesh anywhere in the frame, even where no pixel sees it, keeps every
+kernel as before. Checked by an unlit square seen alone and with a lit square
+behind the camera, under a dome and without, with screen-space reflections
+and without: the four pairs of frames are equal to the bit.
+
 ### Screen-space reflections
 
 A floor that shines in a set lit by a lightmap reflects nothing of the set:

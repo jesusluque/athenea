@@ -558,12 +558,16 @@ void shadeTabled(uint3 tid: SV_DispatchThreadID) {
 /// where the mesh has one, else at `stSlot` -- with no light, no lobe and no
 /// dome: a surface whose light is baked into its texture. A row with no
 /// texture shows the instance's displayColor. Every other kernel steps aside
-/// for these pixels; the domes' G-buffer is cleared under them.
+/// for these pixels; the domes' G-buffer is cleared under them. In a frame
+/// whose every mesh is unlit (`unlitAlone`) the other kernels do not run at
+/// all, and this one writes what the shading kernel would have where no
+/// unlit surface is: nothing, at depth 0.
 const char* kUnlitBody = R"(
 StructuredBuffer<uint> unlitRows;   // 2 a material row: the texture's id and sampler; ~0 none
 uniform uint           unlitRowCount;   // rows in it: a row past them reads no texture
 uniform uint           unlitSlot;
 uniform uint           stSlot;
+uniform uint           unlitAlone;
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -571,16 +575,26 @@ void shadeUnlit(uint3 tid: SV_DispatchThreadID) {
     if (tid.x >= camera.width || tid.y >= camera.height) {
         return;
     }
-    const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
-    if (seen.x == 0) {
-        return;
-    }
-    const Surface s = surfaceAt(camera, tid.x, tid.y, seen);
-    if ((s.instance.flags & 2u) == 0) {
-        return;
-    }
     const uint at = tid.y * camera.width + tid.x;
     const uint pixels = camera.width * camera.height;
+    const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
+    Surface s;
+    bool unlit = false;
+    if (seen.x != 0) {
+        s = surfaceAt(camera, tid.x, tid.y, seen);
+        unlit = (s.instance.flags & 2u) != 0;
+    }
+    if (!unlit) {
+        if (unlitAlone != 0) {
+            colour[at] = float4(0.0);
+            depth[at] = 0.0;
+            float3 none[8];
+            for (uint g = 0; g < 8; ++g) none[g] = float3(0.0);
+            writeGroups(at, pixels, none, 0.0);
+            writeDomeSurface(tid.xy, false, float3(0.0), float3(0.0), 0.0);
+        }
+        return;
+    }
     const uint row = materialRowOf(s);
     float3 shown = s.instance.colour.rgb;
     const uint id = row < unlitRowCount ? unlitRows[row * 2] : 0xFFFFFFFFu;
@@ -1560,7 +1574,10 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
     uint32_t shadowWords = 0;
     uint32_t lobes = 0;
     const uint32_t lightCount = frame.lights != nullptr ? frame.lights->count() : 0u;
-    const bool tracing = !(domes && frame.domesOnly);
+    // A frame whose every mesh is unlit is shadeUnlit's alone: no lobe, no
+    // shadow ray, no shading kernel, no dome (kUnlitBody, `unlitAlone`).
+    const bool alone = !frame.lit && frame.unlitRows != nullptr && unlit_.has_value();
+    const bool tracing = !(domes && frame.domesOnly) && !alone;
     if (tracing && shadowed_ && trace_.has_value() && lobes_.has_value() && frame.shadows != nullptr &&
         lightCount > 0) {
         const uint64_t samples = std::max(frame.samples, 1u);
@@ -1618,7 +1635,7 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
     }
     // A material the same everywhere, under the domes alone, is tabulated
     // here, a row a material, and its pixels shaded from it (shadeTabled).
-    const uint32_t tableRows = domes && frame.domesOnly && table_.has_value() && tabled_.has_value()
+    const uint32_t tableRows = domes && frame.domesOnly && !alone && table_.has_value() && tabled_.has_value()
                                    ? static_cast<uint32_t>(frame.records->count())
                                    : 0u;
     if (domes && (!tableTexture_.valid() || tableTexture_.height() < std::max(tableRows, 1u))) {
@@ -1683,36 +1700,38 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             setCamera(cursor["camera"], projection, targets.width, targets.height);
         });
     }
-    kernel_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
-        bindMaterialFrame(cursor, frame, projection);
-        // The lights are these two kernels' alone.
-        bindLights(cursor);
-        if (shadowed_) {
-            cursor["shadowBits"].setBinding(shadowBits_.rhi());
-            cursor["shadowWords"].setData(shadowWords);
-        }
-        if (clouds) {
-            cursor["cloudShadow"].setBinding(frame.cloudShadow);
-            cursor["cloudShadowChain"].setBinding(frame.cloudShadowChain);
-        }
-        if (domes) {
-            cursor["domeDiffuseOut"].setBinding(domeDiffuseView_.get());
-            cursor["domeGlossyOut"].setBinding(domeGlossyView_.get());
-            cursor["domePointOut"].setBinding(domePointView_.get());
-            cursor["materialTable"].setBinding(tableView_.get());
-            cursor["materialTableRows"].setData(tableRows);
-            cursor["evaluatedMask"].setBinding(evaluatedMaskView_.get());
-            cursor["evaluatedRan"].setData(uint32_t{evaluating ? 1u : 0u});
-        }
-        cursor["visibility"].setBinding((*ids).get());
-        cursor["colour"].setBinding(out.colour.rhi());
-        cursor["depth"].setBinding(out.depth.rhi());
-        if (groups) {
-            cursor["groupColour"].setBinding(frame.groups.colour->rhi());
-            cursor["groupCount"].setData(std::min(frame.groups.count, kMaxLightGroups));
-        }
-        setCamera(cursor["camera"], projection, targets.width, targets.height);
-    });
+    if (!alone) {
+        kernel_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
+            bindMaterialFrame(cursor, frame, projection);
+            // The lights are these two kernels' alone.
+            bindLights(cursor);
+            if (shadowed_) {
+                cursor["shadowBits"].setBinding(shadowBits_.rhi());
+                cursor["shadowWords"].setData(shadowWords);
+            }
+            if (clouds) {
+                cursor["cloudShadow"].setBinding(frame.cloudShadow);
+                cursor["cloudShadowChain"].setBinding(frame.cloudShadowChain);
+            }
+            if (domes) {
+                cursor["domeDiffuseOut"].setBinding(domeDiffuseView_.get());
+                cursor["domeGlossyOut"].setBinding(domeGlossyView_.get());
+                cursor["domePointOut"].setBinding(domePointView_.get());
+                cursor["materialTable"].setBinding(tableView_.get());
+                cursor["materialTableRows"].setData(tableRows);
+                cursor["evaluatedMask"].setBinding(evaluatedMaskView_.get());
+                cursor["evaluatedRan"].setData(uint32_t{evaluating ? 1u : 0u});
+            }
+            cursor["visibility"].setBinding((*ids).get());
+            cursor["colour"].setBinding(out.colour.rhi());
+            cursor["depth"].setBinding(out.depth.rhi());
+            if (groups) {
+                cursor["groupColour"].setBinding(frame.groups.colour->rhi());
+                cursor["groupCount"].setData(std::min(frame.groups.count, kMaxLightGroups));
+            }
+            setCamera(cursor["camera"], projection, targets.width, targets.height);
+        });
+    }
     // The unlit surfaces (kUnlitBody), where the frame has any.
     if (frame.unlitRows != nullptr && unlit_.has_value()) {
         unlit_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
@@ -1725,6 +1744,7 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             cursor["unlitRowCount"].setData(static_cast<uint32_t>(frame.unlitRows->bytes() / 8));
             cursor["unlitSlot"].setData(frame.unlitSlot);
             cursor["stSlot"].setData(frame.stSlot);
+            cursor["unlitAlone"].setData(uint32_t{alone ? 1u : 0u});
             if (domes) {
                 cursor["domeDiffuseOut"].setBinding(domeDiffuseView_.get());
                 cursor["domeGlossyOut"].setBinding(domeGlossyView_.get());
@@ -1761,7 +1781,7 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
     ATHENEA_TRY(stage(times_.shade));
     // THE DOMES, PREFILTERED: added over what the shading kernel wrote, at
     // the pixels it left them to (dome_shade.slang).
-    if (domes && frame.lights != nullptr) {
+    if (domes && frame.lights != nullptr && !alone) {
         const std::array<float, 12> toWorld = aofx::xform::inverseAffine(projection.worldToView).rows3x4();
         domeKernel_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
             frame.lights->bind(cursor);

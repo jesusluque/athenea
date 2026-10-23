@@ -2230,6 +2230,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     // (MaterialFrame::varying).
     bool varyingRows = false;
     bool anyUnlit = false;
+    bool anyLit = false;   // with none, shadeUnlit draws the frame alone (MaterialFrame::lit)
     const auto rowOf = [&](const pxr::SdfPath& material) -> uint32_t {
         const auto found = materialRows_.find(material);
         const uint32_t row = found != materialRows_.end() ? found->second : 0u;
@@ -2543,6 +2544,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 set.doubleSided = entry.look.doubleSided;
                 set.unlit = entry.look.unlit;
                 anyUnlit = anyUnlit || set.unlit;
+                anyLit = anyLit || !set.unlit;
                 set.material = rowOf(entry.look.material);
                 set.subsetMaterials = subsetRowsOf(entry);
                 set.categories = categoryMask(entry.look.categories);
@@ -2578,6 +2580,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             instance.doubleSided = entry.look.doubleSided;
             instance.unlit = entry.look.unlit;
             anyUnlit = anyUnlit || instance.unlit;
+            anyLit = anyLit || !instance.unlit;
             instance.material = rowOf(entry.look.material);
             // Which material a mesh ended up with, for the days when a stage
             // arrives grey and the question is whether the material failed or
@@ -2974,6 +2977,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         frame.unlitRows = anyUnlit && materialUnlit_.valid() ? &materialUnlit_ : nullptr;
         frame.unlitSlot = scene_->slotOf("st_lightmap");
         frame.stSlot = scene_->slotOf("st");
+        frame.lit = anyLit;
         frame.reflections = screenSpaceReflections_.load() && !pathTracing;
         frame.reflectanceSlot = scene_->slotOf("athenea:reflectance");
         frame.roughnessSlot = scene_->slotOf("athenea:roughness");

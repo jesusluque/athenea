@@ -2767,6 +2767,50 @@ TEST_CASE("an unlit surface reads its texture at the level of its footprint", "[
     CHECK(close->over2 > 1000);
 }
 
+// A frame whose every mesh is unlit runs shadeUnlit alone; with one lit mesh
+// in it -- behind the camera, where no pixel sees it -- every lit kernel runs
+// as before and steps aside. The frames are the same, under a dome and
+// without, with screen-space reflections and without.
+TEST_CASE("a frame of unlit meshes alone draws what a frame with a lit one does", "[usd][gpu][mesh][unlit]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    const uint32_t w = 160, h = 120;
+    const fs::path png = unlitTexture("unlit_alone.png", 512, true);
+    for (const bool dome : {false, true}) {
+        for (const bool reflections : {false, true}) {
+            const auto renderOf = [&](bool litBehind) {
+                const fs::path path = unlitStage(std::string("unlit_alone_") + (litBehind ? "lit" : "unlit") +
+                                                     (dome ? "_dome" : "") + ".usda",
+                                                 png, litBehind, dome);
+                auto renderer = usd::StageRenderer::open(path);
+                if (!renderer) FAIL(renderer.error().toString());
+                (*renderer)->setScreenSpaceReflections(reflections);
+                auto image = (*renderer)->render("/Camera", 0.0, w, h);
+                if (!image) FAIL(image.error().toString());
+                gpu::BufferDesc desc;
+                desc.bytes = image->rgba.size() * sizeof(float);
+                desc.elementBytes = 16;
+                auto buffer = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+                REQUIRE(buffer);
+                return std::move(*buffer);
+            };
+            const gpu::Buffer alone = renderOf(false);
+            const gpu::Buffer mixed = renderOf(true);
+            auto diff = render::compareImages(*gpu->library, alone, mixed, w, h);
+            REQUIRE(diff);
+            auto words = render::countDifferent(*gpu->library, alone, mixed, w * h * 4);
+            REQUIRE(words);
+            std::printf("  unlit alone against a lit mesh behind (dome %d, reflections %d): p99 %u, max %u, "
+                        "%llu words differ\n",
+                        dome ? 1 : 0, reflections ? 1 : 0, diff->p99, diff->max,
+                        static_cast<unsigned long long>(*words));
+            CHECK(diff->max == 0);
+        }
+    }
+}
+
 // Multiple importance sampling (M6): next event estimation and the
 // material's own sampling, weighed by the power heuristic, on the case that
 // needs both -- a glossy metal floor under a large rect light, whose

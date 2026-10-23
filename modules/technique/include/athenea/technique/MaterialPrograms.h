@@ -130,6 +130,10 @@ struct MaterialFrame {
     const gpu::Buffer*            unlitRows = nullptr;
     uint32_t                      unlitSlot = ~0u;
     uint32_t                      stSlot = ~0u;
+    /// Whether any instance the frame draws is lit (not unlit). False, with
+    /// `unlitRows` set: every surface is shadeUnlit's, and the lit kernels --
+    /// lobes, shadow rays, shading, the table, the domes -- are not run.
+    bool                          lit = true;
     /// Screen-space reflections after the shading (shadeReflections), and
     /// the scene slots of the constant primvars an unlit surface says it
     /// reflects with: `athenea:reflectance` (F0) and `athenea:roughness`.

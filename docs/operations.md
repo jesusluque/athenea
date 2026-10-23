@@ -1892,7 +1892,10 @@ The texture is read at the level the pixel's footprint over those
 coordinates asks for, from the mip chain every texture file is given, and
 otherwise as it is: the material's scale, bias and other nodes are not
 applied. The pixels are the shading kernels' no more: the dome's prefiltered
-read and the light groups leave them alone. The raster route only.
+read and the light groups leave them alone. A frame whose every mesh is unlit
+runs none of the lit kernels -- no lobe, no shadow ray, no shading kernel, no
+dome -- whatever lights the stage has; `ATHENEA_STAGES` shows them at 0. The
+raster route only.
 
 **Screen-space reflections** (`athenea:screenSpaceReflections`, a render
 setting, off by default; `StageRenderer::setScreenSpaceReflections`;
