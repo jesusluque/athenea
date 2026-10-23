@@ -127,6 +127,30 @@ private:
     gpu::ComputeKernel shade_;
 };
 
+/// EDGES ANTIALIASED AFTER SHADING (`athenea:meshAntialias`): a mesh layer
+/// shaded at one sample a pixel, resolved where an edge crosses a pixel from
+/// the triangles its 3x3 neighbourhood saw -- each of `samples` sub-sample
+/// rays takes the nearest of them it meets, and the colour already shaded at
+/// the pixel that saw it (technique/mesh_antialias.slang). No visibility pass
+/// and no shading again; the ids are only read, so every route resolves the
+/// same.
+class MeshAntialias {
+public:
+    [[nodiscard]] static Result<MeshAntialias> create(gpu::ShaderLibrary& library);
+
+    /// `samples`: 4, 8 or 16; 0 or 1 leaves `layer` as it is. `layer` is the
+    /// shaded image of `targets` (its size, bottom row first), resolved in
+    /// place; its depth is left as the centre's.
+    [[nodiscard]] Result<void> resolve(gpu::CommandBatch& batch, const world::GpuScene& scene,
+                                       const VisibilityTargets& targets, const render::Projection& projection,
+                                       uint32_t samples, render::RenderTargets& layer);
+
+private:
+    gpu::Device*       device_ = nullptr;
+    gpu::ComputeKernel resolve_;
+    gpu::Buffer        source_;   ///< the layer's colour as shaded, which the resolve reads
+};
+
 /// Arbitrary outputs from visibility, bottom row first: ids (prim, instance,
 /// element; -1 for nothing), eye- and world-space normals, and primvars by
 /// scene slot.
