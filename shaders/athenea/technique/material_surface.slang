@@ -31,6 +31,48 @@ float2 planeBarycentrics(float3 origin, float3 direction, float3 a, float3 b, fl
     return float2(dot(s, p) * inverse, dot(direction, q) * inverse);
 }
 
+/// How the barycentrics (w1, w2) change one pixel across and one pixel down,
+/// from the neighbouring pixels' rays met on the triangle's plane: what a
+/// texture footprint is made of, with no other thread asked (a quad's
+/// neighbour may be another surface, another atlas island, or nothing).
+void pixelSteps(CameraParams camera, uint px, uint py, Surface s, float3 va, float3 vb, float3 vc,
+                out float2 stepX, out float2 stepY) {
+    float3 origin;
+    float3 direction;
+    viewRay(camera, float2(px, py) + float2(1.5, 0.5), origin, direction);
+    const float2 bx = planeBarycentrics(origin, direction, va, vb, vc);
+    viewRay(camera, float2(px, py) + float2(0.5, 1.5), origin, direction);
+    const float2 by = planeBarycentrics(origin, direction, va, vb, vc);
+    stepX = bx - s.weights.yz;
+    stepY = by - s.weights.yz;
+}
+
+/// A two-component primvar (`record`, primvarRecordOf's) at the pixel, and
+/// its footprint across the pixel and down it: what a texture read by that
+/// primvar takes its level from. kNoPrimvar: 0 and no footprint.
+public float2 primvarFootprint(CameraParams camera, uint px, uint py, Surface s, uint record, out float2 dx,
+                               out float2 dy) {
+    dx = float2(0.0);
+    dy = float2(0.0);
+    if (record == kNoPrimvar) {
+        return float2(0.0);
+    }
+    const InstanceRecord r = s.instance;
+    const uint base = s.mesh.firstPoint + s.instance.pointsOffset;
+    const float3 va = rowsApply(r.view0, r.view1, r.view2, positions[base + s.points.x].xyz, 1.0);
+    const float3 vb = rowsApply(r.view0, r.view1, r.view2, positions[base + s.points.y].xyz, 1.0);
+    const float3 vc = rowsApply(r.view0, r.view1, r.view2, positions[base + s.points.z].xyz, 1.0);
+    const float2 a = primvarAt(record, s.mesh, s.triangle, s.points, float3(1.0, 0.0, 0.0), float4(0.0)).xy;
+    const float2 b = primvarAt(record, s.mesh, s.triangle, s.points, float3(0.0, 1.0, 0.0), float4(0.0)).xy;
+    const float2 c = primvarAt(record, s.mesh, s.triangle, s.points, float3(0.0, 0.0, 1.0), float4(0.0)).xy;
+    float2 stepX;
+    float2 stepY;
+    pixelSteps(camera, px, py, s, va, vb, vc, stepX, stepY);
+    dx = (b - a) * stepX.x + (c - a) * stepX.y;
+    dy = (b - a) * stepY.x + (c - a) * stepY.y;
+    return primvarAt(record, s.mesh, s.triangle, s.points, s.weights, float4(0.0)).xy;
+}
+
 /// `cameraFootprint` is how wide a texture lookup here is: the pixel's own,
 /// which is what a frame wants. A bake has no camera -- its neighbouring
 /// threads are gaussians somewhere else on the model -- and taking the
@@ -72,17 +114,13 @@ public MaterialInputs materialInputsAt(CameraParams camera, ViewToWorld toWorld,
     const float3 va = rowsApply(r.view0, r.view1, r.view2, objectA, 1.0);
     const float3 vb = rowsApply(r.view0, r.view1, r.view2, objectB, 1.0);
     const float3 vc = rowsApply(r.view0, r.view1, r.view2, objectC, 1.0);
-    float3 origin;
-    float3 direction;
-    viewRay(camera, float2(px, py) + float2(1.5, 0.5), origin, direction);
-    const float2 bx = planeBarycentrics(origin, direction, va, vb, vc);
-    viewRay(camera, float2(px, py) + float2(0.5, 1.5), origin, direction);
-    const float2 by = planeBarycentrics(origin, direction, va, vb, vc);
-    const float2 here = s.weights.yz;
+    float2 stepX;
+    float2 stepY;
+    pixelSteps(camera, px, py, s, va, vb, vc, stepX, stepY);
     const float2 dstdb1 = stB - stA;
     const float2 dstdb2 = stC - stA;
-    inputs.uvDx = cameraFootprint ? dstdb1 * (bx.x - here.x) + dstdb2 * (bx.y - here.y) : float2(0.0);
-    inputs.uvDy = cameraFootprint ? dstdb1 * (by.x - here.x) + dstdb2 * (by.y - here.y) : float2(0.0);
+    inputs.uvDx = cameraFootprint ? dstdb1 * stepX.x + dstdb2 * stepX.y : float2(0.0);
+    inputs.uvDy = cameraFootprint ? dstdb1 * stepY.x + dstdb2 * stepY.y : float2(0.0);
 
     // dP/du and dP/dv in world space, orthonormalised against the normal.
     const float3 wa = applyRows(toWorld, va, 1.0);

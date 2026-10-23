@@ -13395,8 +13395,24 @@ shading kernel's pass over the same pixels, which returns at once.
 Measured on the RTX 3070 (CUDA, Nsight Compute), 1920 x 1080, an unlit
 floor across half the frame: `shadeUnlit` 0.22 ms.
 
-**Not done**: the texture is read at its finest level, with no footprint;
-the material's other nodes (a scale, a bias) are not applied.
+The texture is read with a footprint. Read at level 0 alone, a 4k lightmap's
+fine baked detail -- slats, a grille -- seen from across the set came out as
+speckle and moire. The footprint is the one a material's texture read takes
+(`primvarFootprint`, material_surface.slang): the neighbouring pixels' rays
+met on the triangle's plane, carried through the lightmap coordinates of its
+corners. Not the quad's differences (`atheneaDdx`): a lightmap atlas is cut
+into islands, and a quad that straddles a seam or a silhouette -- the other
+lane on another island, another mesh, or nothing -- would ask for a level
+the size of the jump and smear every seam. Every texture file is given a
+full mip chain when it is loaded, EXR included (`TextureStore`, `MipGenerator`),
+and the sampler filters between levels. Checked by a checker of single texels
+seen at about six texels a pixel against a texture of its average grey, max
+difference within 2 code values, and the same checker magnified, which is
+still the checker.
+
+**Not done**: the material's other nodes (a scale, a bias) are not applied;
+a level is a box average over the atlas, so far enough away an island's
+margin -- the dilated light around it -- bleeds into its edge.
 
 ### Screen-space reflections
 

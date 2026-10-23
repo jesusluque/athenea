@@ -1888,10 +1888,11 @@ baked. A material that reads no texture shows the mesh's `displayColor`.
 | `primvars:athenea:unlit` | a mesh | int (or bool), constant ‹nonzero: unlit› | `0`, shaded |
 | `primvars:st_lightmap` | a mesh | texCoord2f[] | none: `st` |
 
-The texture is read as it is, at its finest level: the material's scale,
-bias and other nodes are not applied. The pixels are the shading kernels' no
-more: the dome's prefiltered read and the light groups leave them alone. The
-raster route only.
+The texture is read at the level the pixel's footprint over those
+coordinates asks for, from the mip chain every texture file is given, and
+otherwise as it is: the material's scale, bias and other nodes are not
+applied. The pixels are the shading kernels' no more: the dome's prefiltered
+read and the light groups leave them alone. The raster route only.
 
 **Screen-space reflections** (`athenea:screenSpaceReflections`, a render
 setting, off by default; `StageRenderer::setScreenSpaceReflections`;

@@ -561,6 +561,7 @@ void shadeTabled(uint3 tid: SV_DispatchThreadID) {
 /// for these pixels; the domes' G-buffer is cleared under them.
 const char* kUnlitBody = R"(
 StructuredBuffer<uint> unlitRows;   // 2 a material row: the texture's id and sampler; ~0 none
+uniform uint           unlitRowCount;   // rows in it: a row past them reads no texture
 uniform uint           unlitSlot;
 uniform uint           stSlot;
 
@@ -582,15 +583,19 @@ void shadeUnlit(uint3 tid: SV_DispatchThreadID) {
     const uint pixels = camera.width * camera.height;
     const uint row = materialRowOf(s);
     float3 shown = s.instance.colour.rgb;
-    const uint id = unlitRows[row * 2];
+    const uint id = row < unlitRowCount ? unlitRows[row * 2] : 0xFFFFFFFFu;
     if (id != 0xFFFFFFFFu) {
         uint record = unlitSlot != kNoPrimvar ? primvarRecordOf(s.mesh, unlitSlot) : kNoPrimvar;
         if (record == kNoPrimvar && stSlot != kNoPrimvar) {
             record = primvarRecordOf(s.mesh, stSlot);
         }
-        const float2 uv = primvarAt(record, s.mesh, s.triangle, s.points, s.weights, float4(0.0)).xy;
+        // Read at the level the pixel's footprint asks for: from level 0
+        // alone, fine baked detail seen from afar aliases into speckle.
+        float2 dx;
+        float2 dy;
+        const float2 uv = primvarFootprint(camera, tid.x, tid.y, s, record, dx, dy);
         bool found;
-        const float4 texel = sampleTexture(gTextures, id, unlitRows[row * 2 + 1], uv, float2(0.0), float2(0.0), found);
+        const float4 texel = sampleTexture(gTextures, id, unlitRows[row * 2 + 1], uv, dx, dy, found);
         if (found) {
             shown = texel.rgb;
         }
@@ -1717,6 +1722,7 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             cursor["colour"].setBinding(out.colour.rhi());
             cursor["depth"].setBinding(out.depth.rhi());
             cursor["unlitRows"].setBinding(frame.unlitRows->rhi());
+            cursor["unlitRowCount"].setData(static_cast<uint32_t>(frame.unlitRows->bytes() / 8));
             cursor["unlitSlot"].setData(frame.unlitSlot);
             cursor["stSlot"].setData(frame.stSlot);
             if (domes) {

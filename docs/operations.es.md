@@ -1946,10 +1946,11 @@ textura muestra el `displayColor` de la malla.
 | `primvars:athenea:unlit` | una malla | int (o bool), constante ‹distinto de 0: sin luz› | `0`, sombreada |
 | `primvars:st_lightmap` | una malla | texCoord2f[] | ninguno: `st` |
 
-La textura se lee tal cual, en su nivel más fino: no se aplican la escala, el
-bias ni otros nodos del material. Los kernels de sombreado dejan esos píxeles:
-ni la lectura prefiltrada del dome ni los grupos de luz los tocan. Sólo en la
-ruta de raster.
+La textura se lee en el nivel que pide la huella del píxel sobre esas
+coordenadas, de la cadena de mips que recibe todo fichero de textura, y por lo
+demás tal cual: no se aplican la escala, el bias ni otros nodos del material.
+Los kernels de sombreado dejan esos píxeles: ni la lectura prefiltrada del
+dome ni los grupos de luz los tocan. Sólo en la ruta de raster.
 
 **Reflejos en espacio de pantalla** (`athenea:screenSpaceReflections`, un
 render setting, apagado por defecto; `StageRenderer::setScreenSpaceReflections`;

@@ -2655,6 +2655,118 @@ TEST_CASE("a stage without lights draws the same under rt as under the raster's 
     CHECK(diff->max <= 1);
 }
 
+namespace {
+
+/// A side x side texture, 8 bits: a checker of single texels, or one grey.
+fs::path unlitTexture(const std::string& name, uint32_t side, bool checker) {
+    const fs::path png = scratch(name);
+    fs::remove(png);
+    std::vector<uint32_t> texels(size_t{side} * side, 0xFF808080u);
+    if (checker) {
+        for (uint32_t y = 0; y < side; ++y) {
+            for (uint32_t x = 0; x < side; ++x) {
+                texels[size_t{y} * side + x] = ((x + y) & 1u) != 0 ? 0xFFFFFFFFu : 0xFF000000u;
+            }
+        }
+    }
+    HioImageSharedPtr image = HioImage::OpenForWriting(png.string());
+    REQUIRE(image);
+    HioImage::StorageSpec spec;
+    spec.width = static_cast<int>(side);
+    spec.height = static_cast<int>(side);
+    spec.depth = 1;
+    spec.format = HioFormatUNorm8Vec4;
+    spec.data = texels.data();
+    REQUIRE(image->Write(spec));
+    return png;
+}
+
+/// kSquareStage's square, unlit and shown as `png`, seen by /Camera and,
+/// closer, by /Near; with `litBehind`, a lit square behind the camera that
+/// no pixel sees; with `dome`, a dome light.
+fs::path unlitStage(const std::string& name, const fs::path& png, bool litBehind, bool dome) {
+    const fs::path path = scratch(name);
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+           "def Mesh \"Square\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+           "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+           "    point3f[] points = [(-1, -1, -5), (1, -1, -5), (1, 1, -5), (-1, 1, -5)]\n"
+           "    texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (\n"
+           "        interpolation = \"vertex\"\n    )\n"
+           "    int primvars:athenea:unlit = 1 (\n        interpolation = \"constant\"\n    )\n"
+           "    uniform token subdivisionScheme = \"none\"\n"
+           "    rel material:binding = </Materials/Mat>\n}\n";
+    if (litBehind) {
+        out << "def Mesh \"Behind\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-1, -1, 5), (1, -1, 5), (1, 1, 5), (-1, 1, 5)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n}\n";
+    }
+    if (dome) {
+        out << "def DomeLight \"Dome\"\n{\n    color3f inputs:color = (0.2, 0.3, 0.4)\n}\n";
+    }
+    out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n    float horizontalAperture = 24.576\n"
+           "    float verticalAperture = 18.432\n    float2 clippingRange = (0.1, 1000)\n}\n"
+           "def Camera \"Near\"\n{\n    float focalLength = 400\n    float horizontalAperture = 24.576\n"
+           "    float verticalAperture = 18.432\n    float2 clippingRange = (0.1, 1000)\n}\n"
+           "def Scope \"Materials\"\n{\n"
+           "    def Material \"Mat\"\n    {\n"
+           "        token outputs:mtlx:surface.connect = </Materials/Mat/Surface.outputs:out>\n"
+           "        def Shader \"Surface\"\n        {\n"
+           "            uniform token info:id = \"ND_surface_unlit\"\n"
+           "            color3f inputs:emission_color.connect = </Materials/Mat/Texture.outputs:out>\n"
+           "            token outputs:out\n        }\n"
+           "        def Shader \"Texture\"\n        {\n"
+           "            uniform token info:id = \"ND_image_color3\"\n"
+           "            asset inputs:file = @" << png.string() << "@ ( colorSpace = \"lin_rec709\" )\n"
+           "            color3f outputs:out\n        }\n    }\n}\n";
+    return path;
+}
+
+}   // namespace
+
+// An unlit surface reads its texture at the level its pixel's footprint asks
+// for: a checker of single texels seen at several texels a pixel is its own
+// average, as a texture of that average grey is -- read from level 0 alone it
+// was speckle. Seen close, a texel a pixel or more, it is the checker still.
+TEST_CASE("an unlit surface reads its texture at the level of its footprint", "[usd][gpu][mesh][unlit]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    const uint32_t w = 160, h = 120;
+    const fs::path checker = unlitStage("unlit_checker.usda", unlitTexture("unlit_checker.png", 512, true), false,
+                                        false);
+    const fs::path grey = unlitStage("unlit_grey.usda", unlitTexture("unlit_grey.png", 512, false), false, false);
+    const auto renderOf = [&](const fs::path& path, const char* camera) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        auto image = (*renderer)->render(camera, 0.0, w, h);
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto buffer = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(buffer);
+        return std::move(*buffer);
+    };
+    const gpu::Buffer far = renderOf(checker, "/Camera");
+    const gpu::Buffer farGrey = renderOf(grey, "/Camera");
+    const gpu::Buffer near = renderOf(checker, "/Near");
+    const gpu::Buffer nearGrey = renderOf(grey, "/Near");
+    auto distant = render::compareImages(*gpu->library, far, farGrey, w, h);
+    auto close = render::compareImages(*gpu->library, near, nearGrey, w, h);
+    REQUIRE(distant);
+    REQUIRE(close);
+    std::printf("  unlit checker against its grey: far p99 %u, max %u, %llu beyond 2; near p99 %u, max %u, "
+                "%llu beyond 2\n",
+                distant->p99, distant->max, static_cast<unsigned long long>(distant->over2), close->p99, close->max,
+                static_cast<unsigned long long>(close->over2));
+    CHECK(distant->max <= 2);   // 127.5 against 128 code values, and the filter's rounding
+    CHECK(close->max > 100);    // the texture is read: magnified, the checker is no grey
+    CHECK(close->over2 > 1000);
+}
+
 // Multiple importance sampling (M6): next event estimation and the
 // material's own sampling, weighed by the power heuristic, on the case that
 // needs both -- a glossy metal floor under a large rect light, whose
