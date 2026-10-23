@@ -15348,12 +15348,14 @@ twenty-two times a frame, at three kinds of place, which `ATHENEA_SYNC_TRACE=1` 
   buffer made with data up to 16 MiB is now made empty and filled by a queued upload, where slang-rhi's CUDA
   `createBuffer` copied it with `cuMemcpy` as well.
 
-| stage (RTX 3070, 1920x1080, `--no-readback`, median of 199) | before | after |
-|---|---|---|
-| one quad, unlit (`suelo.usda`) | 3.84 ms | 3.67 ms |
-| set A, 37 lightmapped meshes, still camera | 10.38 ms | 4.14 ms |
-| set B, 40 lightmapped meshes, still camera | 10.43 ms | 3.89 ms |
-| set A, the instances' tree rebuilt every frame (a moving camera) | 10.38 ms | 5.7-6.0 ms |
+| stage (RTX 3070, 1920x1080, `--no-readback`, median of 199) | before | after, still | after, moving (`--drift 0.01`) |
+|---|---|---|---|
+| one quad, unlit (`suelo.usda`) | 3.84 ms | 3.42-3.60 ms | 3.71 ms |
+| set A, 37 lightmapped meshes | 10.38 ms | 3.78-3.81 ms | 5.49 ms |
+| set B, 40 lightmapped meshes | 10.43 ms | 3.60-3.77 ms | 5.93 ms |
+
+Before, the lights and the instances' tree were rebuilt every frame whatever the camera did, so a moving camera
+cost what a still one did. After, a moving camera rebuilds the tree each frame and a still one does not.
 
 Waits in a steady frame: 10 on the quad and about 22 on set A before, one after (`ATHENEA_SYNC_TRACE`). nsys over 300
 frames of set A: `cuMemcpy` 1391 calls before the patch, 135 after (loading only); kernel time unchanged, 3.5 ms a
