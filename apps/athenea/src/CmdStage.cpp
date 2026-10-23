@@ -105,6 +105,7 @@ void addStage(CLI::App& app) {
         double fStop = 0.0, focus = 0.0;
         uint32_t frames = 1;
         bool noReadback = false;
+        double drift = 0.0;
         uint32_t pathSamples = 1, pathBounces = 1, pathTotal = 1, motionBuckets = 4, refine = 0;
         std::string shutter;
         std::vector<std::string> variants;
@@ -212,6 +213,9 @@ void addStage(CLI::App& app) {
     cmd->add_flag("--no-readback", o->noReadback,
                   "with --frames: time the frames as a host that keeps the image on the device sees them -- "
                   "drawn and waited for, not read back; the last frame is read for the output");
+    cmd->add_option("--drift", o->drift,
+                    "with --frames and a camera of its own: move it this far along its own x axis every frame, "
+                    "back and forth, so each frame sees a new view");
     cmd->callback([o] {
         uint32_t width = 0, height = 0;
         if (std::sscanf(o->size.c_str(), "%ux%u", &width, &height) != 2) {
@@ -373,6 +377,14 @@ void addStage(CLI::App& app) {
         for (uint32_t frame = 0; frame < std::max(o->frames, uint32_t{1}); ++frame) {
             const auto start = std::chrono::steady_clock::now();
             const bool last = frame + 1 >= std::max(o->frames, uint32_t{1});
+            if (own && o->drift != 0.0 && frame > 0) {
+                // A camera that moves, as a tracked one does: a step one way
+                // on odd frames and back on even ones.
+                const double step = (frame % 2 == 1) ? o->drift : -o->drift;
+                for (int r = 0; r < 3; ++r) {
+                    own->cameraToWorld.at(r, 3) += step * own->cameraToWorld.at(r, 0);
+                }
+            }
             if (o->noReadback && !last) {
                 // What a host drawing into its own window pays: the frame
                 // drawn, which returns once the device has run it.

@@ -383,6 +383,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--render-settings` | ruta de prim | sin poner | renderiza los productos de ese prim y para |
 | `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido |
 | `--no-readback` | flag | apagado | con `--frames`: todos los frames salvo el último se dibujan y se esperan, sin leerlos de vuelta -- lo que paga un host que deja la imagen en el dispositivo; el último se lee para `-o` |
+| `--drift` | número | `0` | con `--frames` y una cámara propia (`--eye`, `--frame-all`): unidades de escena que se mueve por su propio eje x en cada frame, a un lado y de vuelta, para medir una cámara en movimiento |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr
