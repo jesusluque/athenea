@@ -2750,12 +2750,12 @@ TEST_CASE("an unlit surface reads its texture at the level of its footprint", "[
         REQUIRE(buffer);
         return std::move(*buffer);
     };
-    const gpu::Buffer far = renderOf(checker, "/Camera");
+    const gpu::Buffer farChecker = renderOf(checker, "/Camera");
     const gpu::Buffer farGrey = renderOf(grey, "/Camera");
-    const gpu::Buffer near = renderOf(checker, "/Near");
+    const gpu::Buffer nearChecker = renderOf(checker, "/Near");
     const gpu::Buffer nearGrey = renderOf(grey, "/Near");
-    auto distant = render::compareImages(*gpu->library, far, farGrey, w, h);
-    auto close = render::compareImages(*gpu->library, near, nearGrey, w, h);
+    auto distant = render::compareImages(*gpu->library, farChecker, farGrey, w, h);
+    auto close = render::compareImages(*gpu->library, nearChecker, nearGrey, w, h);
     REQUIRE(distant);
     REQUIRE(close);
     std::printf("  unlit checker against its grey: far p99 %u, max %u, %llu beyond 2; near p99 %u, max %u, "
