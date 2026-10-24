@@ -418,6 +418,7 @@ private:
     gpu::Buffer sortedCounts_, offsets_, totalPairs_;
     gpu::SortBuffers tileSort_;    // keysLo = pair tiles, values = pair splats
     gpu::Buffer ranges_buffer_;
+    uint32_t    rangesEmpty_ = 0;   ///< tiles whose ranges a frame of no pairs left cleared
     gpu::Buffer placeholderColour_, placeholderDepth_;
     /// One word and one record of nothing, for a frame with no sky prepared:
     /// a name a shader declares must be bound whether it is read or not.
