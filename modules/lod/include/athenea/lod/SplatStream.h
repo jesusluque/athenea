@@ -96,6 +96,8 @@ public:
     [[nodiscard]] ChunkRequest request(uint32_t chunk) const override;
     /// Loader threads: the page's bytes, once; then they are freed.
     [[nodiscard]] Result<void> fetch(const ChunkRequest& request, std::span<std::byte> staging) override;
+    /// Frame thread: the page's bytes freed unfetched (its epoch was dropped).
+    void discard(const ChunkRequest& request) override;
     /// Frame thread: the pages pushed since the last call, gathered; every
     /// epoch now complete, in order.
     void poll(std::vector<ChunkChange>& out) override;

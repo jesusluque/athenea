@@ -111,6 +111,10 @@ public:
     /// once, for different requests.
     [[nodiscard]] virtual Result<void> fetch(const ChunkRequest& request, std::span<std::byte> staging) = 0;
 
+    /// FRAME THREAD: `request` will never be fetched (its epoch was dropped);
+    /// a source that holds its bytes frees them.
+    virtual void discard(const ChunkRequest& /*request*/) {}
+
     /// FRAME THREAD, each update: the changes of every epoch that became
     /// complete since the last call, in epoch order, an epoch's changes
     /// together. A file pushes none.

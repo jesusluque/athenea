@@ -1315,8 +1315,7 @@ Result<uint32_t> StreamingPool::Impl::updateOnDemand(bool wait, uint64_t budget)
 }
 
 Result<void> StreamingPool::Impl::startEpoch() {
-    // Taken off `incoming` only once it fits: an epoch refused stays first,
-    // and every update says so again.
+    // Taken off `incoming` once it is started, or dropped when it does not fit.
     const Epoch& e = incoming.front();
     const uint32_t chunks = cloud.chunks();
     nextSlots = cloud.slots;
@@ -1339,10 +1338,19 @@ Result<void> StreamingPool::Impl::startEpoch() {
         }
     }
     if (needed > free.size()) {
-        return Error::make(ErrorCode::OutOfMemory,
-                           "{}: epoch {} writes {} chunks, and the store has {} slots free beside the epoch shown; "
-                           "a live store needs room for two epochs (budgetSplats)",
-                           source->name(), e.id, needed, free.size());
+        // Dropped, not waited for: the epoch shown stays, and a later epoch
+        // that fits is shown. Its pages' bytes are given back to the source.
+        log::warn("{}: epoch {} dropped: it writes {} chunks, and the store has {} slots free beside the epoch "
+                  "shown; a live store needs room for two epochs (budgetSplats)",
+                  source->name(), e.id, needed, free.size());
+        for (const ChunkChange& c : e.changes) {
+            if (c.op != ChunkChange::Op::Remove) {
+                source->discard(c.request);
+            }
+        }
+        ++counters.droppedNoRoom;
+        incoming.pop_front();
+        return ok();
     }
     {
         std::lock_guard lock(mutex);
@@ -1407,7 +1415,7 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
     uint32_t deferred = 0;
     gpu::CommandBatch batch(*device);
     for (;;) {
-        if (!building && !incoming.empty()) {
+        while (!building && !incoming.empty()) {
             ATHENEA_TRY(startEpoch());
         }
         if (!building) {

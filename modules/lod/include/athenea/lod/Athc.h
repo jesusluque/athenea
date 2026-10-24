@@ -125,7 +125,9 @@ public:
     /// A live source: the epochs that became complete are loaded, in order,
     /// into slots the shown epoch does not use; when every page of one is
     /// placed, it is shown (cloud() changes) and the slots it no longer uses
-    /// are freed. `wait` blocks for the loads of the epoch being built.
+    /// are freed. An epoch with no room beside the one shown is dropped
+    /// (Status::droppedNoRoom, a warning) and the next is tried. `wait`
+    /// blocks for the loads of the epoch being built.
     ///
     /// Either way, at most `bytesPerFrame` chunk bytes are placed. Frame
     /// thread only: a call from any other is refused.
@@ -145,6 +147,7 @@ public:
         uint64_t ptpTime = 0;    ///< its PTP time
         uint32_t pendingEpochs = 0;   ///< complete, not yet shown
         uint64_t epochs = 0;     ///< epochs shown since open
+        uint64_t droppedNoRoom = 0;   ///< epochs dropped: no room beside the one shown
     };
     /// Any thread.
     [[nodiscard]] Status status() const;

@@ -158,6 +158,11 @@ Result<void> LiveSource::fetch(const ChunkRequest& request, std::span<std::byte>
     return ok();
 }
 
+void LiveSource::discard(const ChunkRequest& request) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->staged.erase(request.ticket);
+}
+
 void LiveSource::poll(std::vector<ChunkChange>& out) {
     Impl& s = *impl_;
     std::vector<PageUpdate> pages;

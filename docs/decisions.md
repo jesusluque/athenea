@@ -15576,8 +15576,9 @@ is full, but not past the budget. `Status::placedBytes` and `deferred` say what 
   the resident flags become the new epoch's, and the slots only the old one used are free. The cut runs between
   updates, so it only ever sees a whole epoch, and the device copies that placed it come before anything the
   frame records after them on the one queue. A live store therefore holds two epochs (`budgetSplats` up to twice
-  the chunks); an epoch that does not fit beside the shown one is refused with `OutOfMemory` and stays first, and
-  the stream shows the last epoch until it is given room.
+  the chunks); an epoch that does not fit beside the shown one is dropped -- a warning, once, and
+  `Status::droppedNoRoom` -- its pages' bytes freed unfetched (`ChunkSource::discard`), the shown epoch stays, and
+  the next epoch that fits is shown. A live stream wants the latest frame, not every one.
 - **Drawing**: a live cloud has no merged levels. `CutSelector::select` copies its shown chunks as they are, in
   chunk order, into the frame's cloud (device copies, no cut, no readback), and `LodCloud::chunkCounts` carries
   each page's own count. `Status::epoch` and `ptpTime` are the epoch shown.
@@ -15604,8 +15605,9 @@ compared on the device (`compareImages`) and only counts are read back:
   back and another removed, then ten epochs replacing everything in a store of exactly two epochs -- the pool
   shows the expected chunks, max 0 each time, and `resident` follows. An epoch that never comes whole is dropped
   when a later one does (counted, logged), its late page is counted late, and a page of the wrong size is refused
-  and changes nothing. A store with room for one epoch refuses a second that replaces everything with
-  `OutOfMemory` and keeps showing the first.
+  and changes nothing. A store with room for one epoch drops a second that replaces everything
+  (`droppedNoRoom` 1) and keeps showing the first, whole; the next epochs, which fit (a removal, then one
+  replace), are shown.
 - **The thread check.** `update` from another thread is refused with `InvalidArgument` naming the frame thread;
   so is `update` from inside a loader's `fetch` (a source that calls it on its first fetch), and the pool still
   settles on the whole cloud, max 0.

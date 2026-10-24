@@ -575,7 +575,7 @@ TEST_CASE("a live stream's replaces and removes change only their chunks", "[lod
         CHECK((*pool)->status().epoch == 16);
     }
 
-    SECTION("a store without room for an epoch beside the one shown says so") {
+    SECTION("an epoch without room beside the one shown is dropped, and a later one that fits is shown") {
         auto queue = std::make_shared<lod::PageQueue>();
         auto source = lod::LiveSource::create(queue, p.settings);
         REQUIRE(source);
@@ -593,10 +593,27 @@ TEST_CASE("a live stream's replaces and removes change only their chunks", "[lod
             flip.emplace_back(c, &p.blocksB[c]);
         }
         push(*queue, 2, flip);
-        auto refused = (*pool)->update(true);
-        REQUIRE(!refused);
-        CHECK(refused.error().code() == ErrorCode::OutOfMemory);
+        REQUIRE((*pool)->update(true));
         CHECK((*pool)->status().epoch == 1);
+        CHECK((*pool)->status().droppedNoRoom == 1);
+        State state(kChunks, nullptr);
+        for (uint32_t c = 0; c < kChunks; ++c) {
+            state[c] = &p.blocksA[c];
+        }
+        CHECK(shows(**pool, state) == 0);   // still epoch 1, whole
+        // Later epochs that fit: a removal takes no slot and frees one, and
+        // one replace then takes the slot it freed.
+        push(*queue, 3, {{0, nullptr}});
+        state[0] = nullptr;
+        REQUIRE((*pool)->update(true));
+        CHECK((*pool)->status().epoch == 3);
+        CHECK(shows(**pool, state) == 0);
+        push(*queue, 4, {{3, &p.blocksB[3]}});
+        state[3] = &p.blocksB[3];
+        REQUIRE((*pool)->update(true));
+        CHECK((*pool)->status().epoch == 4);
+        CHECK((*pool)->status().droppedNoRoom == 1);
+        CHECK(shows(**pool, state) == 0);
     }
     std::filesystem::remove(p.pathA);
     std::filesystem::remove(p.pathB);
