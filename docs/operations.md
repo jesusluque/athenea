@@ -513,7 +513,7 @@ recipe is §3.1 below.
 | `--validate-size` | W H | `960 540` | the frames, in pixels |
 | `--validate-paths` | integer | `512` | paths a pixel the GT holds |
 | `--validate-bounces` | integer | `6` | bounces of the GT's paths |
-| `--validate-material` | prim path or name | every material | only this one (repeatable) |
+| `--validate-material` | prim path or name | every material | only this one measured (repeatable); the frames still leave every other material's meshes out of the conversion, and `flatten` still draws its file with every mesh of the stage off |
 | `--validate-sky` | `white` or an image file | the stage's lights | every frame under another sky -- a constant of radiance one, or that image on the stage's domes -- with its other lights off; the GT is kept as `gt_<sky>.exr` |
 | `--shadow-catcher` | flag | off | convert the shadow `--prim` casts on its ground instead of `--prim`: a patch of gaussians on the ground under and around it, baked as a TX transfer (the object and the ground are what its rays meet), written with `primvars:athenea:splat:catcher` and drawn black, covering what the object takes of the light. Implies `--transfer` and one cell everywhere |
 | `--catcher-ground` | prim path | found | with `--shadow-catcher` or `--light-catcher`: the ground; found as the largest flat mesh outside `--prim` whose top is at its bottom and which reaches under it |
