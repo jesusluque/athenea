@@ -413,7 +413,11 @@ void addFlatten(CLI::App& app) {
                     header.count = static_cast<uint32_t>(total);
                     header.shDegree = 3;
                     header.fractionalBits = stats.fractionalBits;
-                    header.antialiased = true;
+                    // How the clouds were drawn when they were flattened: a
+                    // stage's clouds say nothing, so the engine's default
+                    // (RenderSettings::antialias, on) drew them, and the file
+                    // says so -- re-read, it is drawn the same way.
+                    header.antialiased = render::RenderSettings{}.antialias;
                     const fs::path path = out.string() + ".spz";
                     ATHENEA_TRY(io::writeSpz(path, header, streams->streams));
                     written.emplace_back(path.string(), fileBytes(path));

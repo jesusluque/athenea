@@ -15684,6 +15684,12 @@ contract rather than one reader among several.
   validation drops is left at opacity 0; the slot's count is the page's. The records and the decode's scratch
   are one set a staging slot, free when its fence passes. The pool needs the shader library for this payload
   (`StreamingSettings::library`).
+- **A page that cannot be read drops its epoch.** A live page a loader cannot fetch (an SPZ page that does not
+  decompress) drops its epoch as one without room does: a warning, `Status::droppedCorrupt`, its other pages
+  discarded, the shown epoch kept, the next epoch shown.
+- **Flatten's flag.** `athenea flatten` writes `antialiased` as the engine's default (`RenderSettings::antialias`,
+  on): the stage's clouds say nothing, so that is how they were drawn when flattened, and a re-read file is drawn
+  the same way.
 
 ### How it is checked
 
@@ -15704,7 +15710,11 @@ contract rather than one reader among several.
   64); the one saying it, drawn by default, equals the other with the filter forced on (max 0), and forced off
   the reverse (max 0), with the frame's default either way.
 - **SPZ live pages.** Three chunks of 450 to 560 gaussians, three epochs (all A; one replaced by B and one
-  removed; all B): each epoch's image equals the SPZ files loaded alone and drawn in chunk order, max 0.
+  removed; all B): each epoch's image equals the SPZ files loaded alone and drawn in chunk order, max 0. A fourth
+  epoch with a page that is no SPZ is dropped (`droppedCorrupt` 1, epoch 3 still shown, max 0) and a fifth is
+  shown, max 0.
+- **Flatten.** The flattened SPZ says `antialiased`, as the engine's default, and drawn by default it equals
+  itself drawn with the filter forced to that default, max 0 (versions 3 and 4).
 - **Unchanged.** `athenea_scene_tests "[io]"` (the hand-made version 2 and 3 files, now expanded on the device)
   and the whole lod suite (17 cases) pass. `athenea_render_tests "[flatten]"` fails its roughness floor and the
   flattened SPZ's p99 (5 against 4) exactly as the base branch does, measured on the same run.
@@ -15714,6 +15724,4 @@ contract rather than one reader among several.
 - Coordinate systems other than right-up-back and right-down-front: the decode would need per-axis signs (and a
   turn for the rotated families) on positions, rotations and each harmonic band.
 - The packed streams' offsets are 32-bit in the kernel: a cloud's streams past 4 GiB are refused.
-- An SPZ live page that fails to decompress fails the update and leaves its epoch incomplete; its size is known
-  only on the loader thread.
 - The rest of the readers (PLY, `.splat`) still expand on the CPU.

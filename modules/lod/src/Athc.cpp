@@ -894,6 +894,9 @@ struct StreamingPool::Impl {
     uint32_t                  busy = 0;   // loads a loader has taken
     bool                      stop = false;
     std::optional<Error>      failure;
+    /// A live source's pages a loader could not fetch (a corrupt SPZ page):
+    /// their epoch is dropped, not the update failed.
+    std::vector<std::pair<uint64_t, Error>> failedPages;
     std::vector<std::thread>  loaders;
     Status                    reported;   // `counters` as the last update left them, for status()
 
@@ -941,7 +944,9 @@ struct StreamingPool::Impl {
                 loaded.push_back({request, slot});
             } else {
                 freeStaging.push_back(slot);
-                if (!failure) {
+                if (live) {
+                    failedPages.emplace_back(request.ticket, std::move(fetched).error());
+                } else if (!failure) {
                     failure = std::move(fetched).error();
                 }
             }
@@ -1080,6 +1085,7 @@ struct StreamingPool::Impl {
     Result<uint32_t> updateOnDemand(bool wait, uint64_t budget);
     Result<uint32_t> updateLive(bool wait, uint64_t budget);
     Result<void>     startEpoch();
+    void             abandonEpoch(const Error& why);
     void             publish(gpu::CommandBatch& batch);
 };
 
@@ -1463,6 +1469,27 @@ Result<void> StreamingPool::Impl::startEpoch() {
     return ok();
 }
 
+void StreamingPool::Impl::abandonEpoch(const Error& why) {
+    log::warn("{}: epoch {} dropped: a page could not be read ({})", source->name(), building->id, why.message());
+    {
+        std::lock_guard lock(mutex);
+        // Its pages still queued are not loaded; those loading or loaded are
+        // given back when they arrive, their tickets no longer wanted.
+        for (auto it = queue.begin(); it != queue.end();) {
+            if (targets.count(it->ticket) != 0) {
+                source->discard(*it);
+                it = queue.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    targets.clear();
+    std::fill(reserved.begin(), reserved.end(), 0);
+    ++counters.droppedCorrupt;
+    building.reset();
+}
+
 void StreamingPool::Impl::publish(gpu::CommandBatch& batch) {
     const uint32_t chunks = cloud.chunks();
     for (uint32_t c = 0; c < chunks; ++c) {
@@ -1541,6 +1568,22 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
             more = !queue.empty() || busy > 0;
         }
         ATHENEA_TRY(takeFailure());
+        {
+            std::optional<Error> corrupt;
+            {
+                std::lock_guard lock(mutex);
+                for (auto& [ticket, error] : failedPages) {
+                    if (!corrupt && targets.count(ticket) != 0) {
+                        corrupt = std::move(error);
+                    }
+                }
+                failedPages.clear();
+            }
+            if (corrupt) {
+                abandonEpoch(*corrupt);
+                continue;   // the next epoch, if one is complete
+            }
+        }
         if (targets.empty()) {
             // Every page of the epoch is in its slot (the copies come before
             // anything this frame records after them): show it.

@@ -129,7 +129,9 @@ public:
     /// into slots the shown epoch does not use; when every page of one is
     /// placed, it is shown (cloud() changes) and the slots it no longer uses
     /// are freed. An epoch with no room beside the one shown is dropped
-    /// (Status::droppedNoRoom, a warning) and the next is tried. `wait`
+    /// (Status::droppedNoRoom, a warning) and the next is tried; so is one
+    /// with a page a loader could not read, a corrupt SPZ page
+    /// (Status::droppedCorrupt). `wait`
     /// blocks for the loads of the epoch being built.
     ///
     /// Either way, at most `bytesPerFrame` chunk bytes are placed. Frame
@@ -151,6 +153,7 @@ public:
         uint32_t pendingEpochs = 0;   ///< complete, not yet shown
         uint64_t epochs = 0;     ///< epochs shown since open
         uint64_t droppedNoRoom = 0;   ///< epochs dropped: no room beside the one shown
+        uint64_t droppedCorrupt = 0;  ///< epochs dropped: a page a loader could not read
     };
     /// Any thread.
     [[nodiscard]] Status status() const;

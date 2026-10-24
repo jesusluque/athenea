@@ -160,4 +160,17 @@ TEST_CASE("a live stream of SPZ pages shows, epoch by epoch, what its SPZ files 
     CHECK(second.max == 0);
     CHECK(third.max == 0);
     CHECK((*pool)->cloud().chunkCount(1) == 450 + 20);
+
+    // A page that is no SPZ at all: its epoch is dropped and counted, the one
+    // shown stays, and the next epoch is shown.
+    std::vector<uint8_t> corrupt(pagesA[0].size(), 0x5A);
+    push(4, {{0, &corrupt}, {1, &pagesA[1]}});
+    REQUIRE((*pool)->update(true));
+    CHECK((*pool)->status().epoch == 3);
+    CHECK((*pool)->status().droppedCorrupt == 1);
+    CHECK(compare(reference({&cloudsB[0], &cloudsB[1], &cloudsB[2]}), shown((*pool)->cloud())).max == 0);
+    push(5, {{1, &pagesA[1]}});
+    REQUIRE((*pool)->update(true));
+    CHECK((*pool)->status().epoch == 5);
+    CHECK(compare(reference({&cloudsB[0], &cloudsA[1], &cloudsB[2]}), shown((*pool)->cloud())).max == 0);
 }
