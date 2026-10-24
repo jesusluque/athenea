@@ -554,7 +554,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // way, and `hasPbr` is what says whether it is read.
             cursor["params"]["hasPbr"].setData(uint32_t{cloud->hasPbr() ? 1u : 0u});
             cursor["params"]["litBody"].setData(uint32_t{instance.litBody ? 1u : 0u});
-            setCloudSpace(cursor, *cloud);
+            setCloudSpace(cursor, *cloud, *common.settings);
             cursor["pbr"].setBinding(cloud->hasPbr() ? cloud->pbr.rhi() : cloud->shape.rhi());
             // The shading normal a conversion kept apart from the frame,
             // where the cloud has one: bound either way, read by `hasNormals`.

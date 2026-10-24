@@ -15647,3 +15647,73 @@ through Hydra run unchanged: all 16 lod test cases (6663 assertions) and the USD
   chunk (`chunkBounds`) for a later cull.
 - A CUDA fence that the device signals, which would let CUDA place without waiting as Metal and Vulkan now do.
 - A copy queue: slang-rhi has none, so uploads share the graphics queue under the byte budget.
+
+## SPZ as the input contract (phase 0 of live streams, 25 Oct)
+
+SPZ is how splats come in, from a file or, a page at a time, from a live stream. Four changes make it the
+contract rather than one reader among several.
+
+- **Bytes, not only paths.** `io::readSpz(std::span<const uint8_t>, source)` over
+  `spz::loadSpzPacked(data, size)`; the path version maps the file and calls it. A loader thread decompresses a
+  live page with it.
+- **The packed streams reach the device as they are.** `SplatEncoding::Record::SpzPacked`: `RawSplats::packed`
+  holds the six streams (each on a word), `RawSplats::spz` their offsets. `CloudLoader::upload` uploads them once
+  and `spz_records.slang` writes, a slice at a time, the float records the validate and decode already read. The
+  CPU expansion to 14 + 45 floats a splat (a `tbb::parallel_for` over every splat) is gone: the host holds 65
+  bytes a splat at degree 3 instead of 236. `CloudLoader::records(RawSplats)` reads the device's records back
+  for the host-side consumers (the USD export, `readSplatRecords`). The kernel only widens bytes and the 24-bit
+  integers; the dequantising is the decode's SPZ modes, as before.
+- **The file's axes.** nianticlabs/spz's extensions are vendored (`splat-extensions`,
+  `coordinate-system-adobe`, `safe-orbit-camera-adobe`, from 21715c3, the same commit the rest of
+  third_party/spz is) and built in, `SPZ_BUILD_EXTENSIONS` PUBLIC since it changes `PackedGaussians`' layout.
+  `flipYZ` comes from `getPackedCoordinateSystem` (right-up-back without the extension) instead of being always
+  true. Right-up-back and right-down-front are read; a system that would need another axis flipped or turned is
+  refused by name -- the decode turns y and z, nothing else. `io::writeSpz` writes the extension saying
+  right-up-back (after the streams inside the gzip for version 3, between the header and the table for 4).
+- **Antialiasing a cloud at a time.** The Mip-Splatting compensation was a frame setting
+  (`RenderSettings::antialias`). The SPZ header's `antialiased` flag now goes to `GpuSplats::antialiased`
+  (through the LOD, its cuts and its streams), and each projection dispatch sets `params.antialias` for its own
+  cloud (`setCloudSpace`): `antialiasOverride`, else the file's flag, else the frame's default. `athenea render
+  --no-antialias` is the override. An `.spz` saying it was not trained antialiased -- Niantic's packer's default
+  -- is now drawn without the compensation where it was drawn with it.
+- **SPZ live pages.** `ChunkFormat::Payload::Spz`: a page is an SPZ file. The loader thread decompresses it
+  (`readSpz` on the bytes) and stages a header -- count, offsets, fixed point, axes, flag -- and the six streams.
+  The frame thread reads the header back from staging (bookkeeping), clears the slot's positions, and records
+  `spz_records` from the staging buffer and the validate and decode into the slot
+  (`CloudLoader::recordSpz`, `decodeInto`: recorded into the update's batch, no wait, no readback). What
+  validation drops is left at opacity 0; the slot's count is the page's. The records and the decode's scratch
+  are one set a staging slot, free when its fence passes. The pool needs the shader library for this payload
+  (`StreamingSettings::library`).
+
+### How it is checked
+
+`athenea_render_tests "[spz]"`, `athenea_scene_tests "[io]"` and `athenea_lod_tests "[spz]"`, Metal (M5 Pro):
+
+- **From memory, packed.** An SPZ read from its bytes keeps `Record::SpzPacked`, no float records, 65 bytes a
+  splat; uploaded, it draws as the same file read from its path, max 0 (versions 3 and 4), and the records read
+  back through `CloudLoader::records` draw the same again, max 0.
+- **Axes.** The same 1500 gaussians saved right-up-back and, with the extension, right-down-front, against the
+  PLY they came from: p99 4 and 4 without harmonics, 13 and 12 at degree 3, versions 3 and 4 (the bounds of the
+  test above, 4 and 16). Before `flipYZ` came from the file, the right-down-front one was p99 161 and 173 (it was
+  turned when it should not have been). The same run found that a version 3 file read from memory lost its
+  extensions: third_party/spz's `membuf` could not seek, and `tryParseExtension` measures what remains with
+  `tellg`; the vendored copy now seeks (marked `athenea:` in load-spz.cc).
+- **The writer's axes.** `io::writeSpz` versions 3 and 4 read back through `spz::loadSpzPacked` with the
+  coordinate-system extension saying right-up-back, and `readSplats` turns them.
+- **Antialiasing.** Two files of the same gaussians, one saying antialiased: drawn as they say they differ (max
+  64); the one saying it, drawn by default, equals the other with the filter forced on (max 0), and forced off
+  the reverse (max 0), with the frame's default either way.
+- **SPZ live pages.** Three chunks of 450 to 560 gaussians, three epochs (all A; one replaced by B and one
+  removed; all B): each epoch's image equals the SPZ files loaded alone and drawn in chunk order, max 0.
+- **Unchanged.** `athenea_scene_tests "[io]"` (the hand-made version 2 and 3 files, now expanded on the device)
+  and the whole lod suite (17 cases) pass. `athenea_render_tests "[flatten]"` fails its roughness floor and the
+  flattened SPZ's p99 (5 against 4) exactly as the base branch does, measured on the same run.
+
+### Not done
+
+- Coordinate systems other than right-up-back and right-down-front: the decode would need per-axis signs (and a
+  turn for the rotated families) on positions, rotations and each harmonic band.
+- The packed streams' offsets are 32-bit in the kernel: a cloud's streams past 4 GiB are refused.
+- An SPZ live page that fails to decompress fails the update and leaves its epoch incomplete; its size is known
+  only on the loader thread.
+- The rest of the readers (PLY, `.splat`) still expand on the CPU.

@@ -176,7 +176,7 @@ athenea info
 | `--degree` | 0..3 | `3` | cap on the harmonics evaluated |
 | `--lod` | number | `0` | pixels a merged cell may span; 0 draws every splat |
 | `--stream-budget` | integer | `0` | `.athc`: splats kept on the device; 0 reads the file whole |
-| `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation |
+| `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation for every cloud, over what an `.spz` says |
 | `-o`, `--output` | path | `out.exr` | half RGBA plus a `Z` channel |
 
 Checked while it runs, not while it parses:
@@ -2325,6 +2325,18 @@ running it; they are listed in [development.md §3](development.md#3-working-in-
 or a bare `meta.json` (PlayCanvas, needs libwebp), `.athc` (this engine's
 chunked container).
 
+An `.spz` (versions 2 to 4) is the engine's input contract for splats:
+- **Axes.** The file's coordinate-system extension says what its data is
+  stored in; without one it is right-up-back, the format's default. Right-up-back
+  and right-down-front are read; any other system is refused.
+- **Antialiasing.** The header's `antialiased` flag decides whether the cloud
+  is drawn with the Mip-Splatting filter's compensation, whatever the frame's
+  default; formats that do not say take the default (on). `--no-antialias`
+  turns it off for every cloud.
+- **Memory.** The six quantised streams stay packed until the device turns
+  them into records (65 bytes a splat at degree 3, against 236 as
+  floats).
+
 **Points read.** `.ply`, `.xyz`, `.txt`, `.pts`, `.csv`, and COLMAP's
 `points3D.txt` and `points3D.bin`.
 
@@ -2333,7 +2345,8 @@ photometric profiles; and material textures through OpenUSD's image plugins,
 so whatever that build reads.
 
 **Clouds written.** `athenea flatten` writes 3DGS `.ply`, `.spz` (versions 3
-and 4; 4 needs zstd), glTF `.glb` with `KHR_gaussian_splatting`, and USD
+and 4; 4 needs zstd; each carries the coordinate-system extension saying
+right-up-back), glTF `.glb` with `KHR_gaussian_splatting`, and USD
 (§2.8.1).
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
@@ -2390,6 +2403,7 @@ A script's own header says what it needs and where it puts things.
 | `measure: an empty window` | `athenea compare --window` (or the effect's `window`) holds no pixel | give X0 < X1 and Y0 < Y1 inside the image |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |
 | `this build reads no .spz` | zstd was missing when this binary was built | rebuild with zstd, or convert the capture elsewhere |
+| `SPZ data stored in coordinate system N; this reader reads right-up-back (4) and right-down-front (6)` | the file's coordinate-system extension names another system | re-export it right-up-back or right-down-front |
 | `.sog` refused | libwebp was missing | install it and rebuild |
 | `a .athc is drawn through its levels of detail: give --lod` | a container was given to a plain render | add `--lod`, and use `--technique raster` |
 | `mesh visibility by rays: the device has no ray tracing` | `--visibility rays` on a device without it | use `automatic`, which picks what the device has |

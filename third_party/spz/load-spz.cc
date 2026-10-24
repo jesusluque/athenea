@@ -186,6 +186,21 @@ struct membuf : std::streambuf {
     auto *p = reinterpret_cast<char *>(const_cast<uint8_t *>(data));
     setg(p, p, p + size);
   }
+
+  // athenea: seeking, which tryParseExtension's remainingBytes needs (tellg and
+  // seekg). Without it every extension of a legacy (gzip) file read from
+  // memory is refused as longer than the stream.
+  pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which) override {
+    if ((which & std::ios_base::in) == 0) return pos_type(off_type(-1));
+    char *base = dir == std::ios_base::beg ? eback() : dir == std::ios_base::cur ? gptr() : egptr();
+    char *to = base + off;
+    if (to < eback() || to > egptr()) return pos_type(off_type(-1));
+    setg(eback(), to, egptr());
+    return pos_type(to - eback());
+  }
+  pos_type seekpos(pos_type pos, std::ios_base::openmode which) override {
+    return seekoff(off_type(pos), std::ios_base::beg, which);
+  }
 };
 
 }  // namespace

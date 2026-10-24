@@ -181,7 +181,9 @@ int run(const RenderOptions& options, bool bench) {
     render::RenderSettings settings;
     settings.width = width;
     settings.height = height;
-    settings.antialias = !options.noAntialias;
+    if (options.noAntialias) {
+        settings.antialiasOverride = false;   // over what any file says
+    }
     settings.timeStages = options.stages;
     render::RenderTargets targets;
     std::optional<render::PointRasterizer> pointRaster;

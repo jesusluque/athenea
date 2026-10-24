@@ -42,7 +42,8 @@ inline void setFrame(rhi::ShaderCursor cursor, const FrameCommon& f) {
     p["nearZ"].setData(static_cast<float>(f.projection->nearZ));
     p["farZ"].setData(static_cast<float>(f.projection->farZ));
     p["orthographic"].setData(uint32_t{f.projection->orthographic ? 1u : 0u});
-    p["antialias"].setData(uint32_t{f.settings->antialias ? 1u : 0u});
+    // The frame's own; a cloud's projection sets its own (setCloudSpace).
+    p["antialias"].setData(uint32_t{f.settings->antialiasOverride.value_or(f.settings->antialias) ? 1u : 0u});
     p["surfels"].setData(uint32_t{f.settings->surfels ? 1u : 0u});
     // The lens, where the camera authored one: the projection carries it for
     // the path tracer, and the raster spreads the covariance by it instead of
@@ -94,8 +95,18 @@ inline void setObject(rhi::ShaderCursor cursor, const Mat4& objectToView, const 
 /// The space a cloud's colours are in (`scene::GpuSplats::linear`), set at
 /// every projection dispatch: the projection makes a capture's sRGB light a
 /// splat at a time, and takes a cloud that holds light as it is.
-inline void setCloudSpace(rhi::ShaderCursor cursor, const scene::GpuSplats& splats) {
+/// Whether `splats` is drawn with the Mip-Splatting filter's compensation:
+/// the frame's override, else what its file said, else the frame's default.
+inline bool antialiasOf(const scene::GpuSplats& splats, const RenderSettings& settings) {
+    return settings.antialiasOverride.value_or(splats.antialiased.value_or(settings.antialias));
+}
+
+/// What is the cloud's own and not the frame's: the space its colours are in
+/// and whether it was trained antialiased. After setFrame, at every
+/// projection dispatch.
+inline void setCloudSpace(rhi::ShaderCursor cursor, const scene::GpuSplats& splats, const RenderSettings& settings) {
     cursor["params"]["linearCloud"].setData(uint32_t{splats.linear ? 1u : 0u});
+    cursor["params"]["antialias"].setData(uint32_t{antialiasOf(splats, settings) ? 1u : 0u});
 }
 
 /// What moves during the shutter, per instance. Called at every projection

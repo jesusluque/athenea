@@ -179,7 +179,7 @@ athenea info
 | `--degree` | 0..3 | `3` | tope de armónicos evaluados |
 | `--lod` | número | `0` | píxeles que puede abarcar una celda fundida; 0 dibuja todos los splats |
 | `--stream-budget` | entero | `0` | `.athc`: splats que se quedan en el dispositivo; 0 lee el fichero entero |
-| `--no-antialias` | flag | apagado | quita la compensación de filtro 2D de Mip-Splatting |
+| `--no-antialias` | flag | apagado | quita la compensación de filtro 2D de Mip-Splatting a todas las nubes, por encima de lo que diga un `.spz` |
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más un canal `Z` |
 
 Lo que se comprueba al ejecutar, no al analizar:
@@ -2393,6 +2393,18 @@ de quien lo ejecuta: están en
 zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.athc`
 (el contenedor por chunks de este motor).
 
+Un `.spz` (versiones 2 a 4) es el contrato de entrada de splats del motor:
+- **Ejes.** La extensión de sistema de coordenadas del fichero dice en cuál
+  están guardados sus datos; sin ella es right-up-back, el del formato. Se
+  leen right-up-back y right-down-front; cualquier otro sistema se rechaza.
+- **Antialiasing.** El flag `antialiased` de la cabecera decide si la nube se
+  dibuja con la compensación del filtro de Mip-Splatting, sea cual sea el
+  valor por defecto del frame; los formatos que no lo dicen toman el valor por
+  defecto (encendido). `--no-antialias` lo apaga para todas las nubes.
+- **Memoria.** Los seis streams cuantizados siguen empaquetados hasta que el
+  dispositivo los convierte en registros (65 bytes por splat en grado 3,
+  frente a 236 en floats).
+
 **Puntos que se leen.** `.ply`, `.xyz`, `.txt`, `.pts`, `.csv`, y los
 `points3D.txt` y `points3D.bin` de COLMAP.
 
@@ -2401,7 +2413,8 @@ fotométricos IESNA LM-63; y las texturas de materiales por los plugins de
 imagen de OpenUSD, así que lo que lea esa compilación.
 
 **Nubes que se escriben.** `athenea flatten` escribe `.ply` de 3DGS, `.spz`
-(versiones 3 y 4; la 4 necesita zstd), `.glb` de glTF con
+(versiones 3 y 4; la 4 necesita zstd; cada uno lleva la extensión de sistema de
+coordenadas diciendo right-up-back), `.glb` de glTF con
 `KHR_gaussian_splatting`, y USD (§2.8.1).
 
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
@@ -2459,6 +2472,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |
 | `this build reads no .spz` | faltaba zstd cuando se compiló este binario | recompila con zstd, o convierte la captura en otro sitio |
+| `SPZ data stored in coordinate system N; this reader reads right-up-back (4) and right-down-front (6)` | la extensión de sistema de coordenadas del fichero nombra otro sistema | reexpórtalo en right-up-back o right-down-front |
 | un `.sog` rechazado | faltaba libwebp | instálalo y recompila |
 | `a .athc is drawn through its levels of detail: give --lod` | se le dio un contenedor a un render normal | añade `--lod`, y usa `--technique raster` |
 | `mesh visibility by rays: the device has no ray tracing` | `--visibility rays` en un dispositivo sin ello | usa `automatic`, que elige lo que el dispositivo tiene |

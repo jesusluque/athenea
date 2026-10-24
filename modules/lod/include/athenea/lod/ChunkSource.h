@@ -16,7 +16,8 @@
 //   producers      anyone else (network, IPC, files): they only enqueue
 //                  (PageQueue::push), and never see the device or the pool.
 //
-// A chunk's bytes are the .athc chunk block: n positions (float4), n shapes
+// A chunk's bytes are the .athc chunk block (or, for a live stream of SPZ
+// pages, an SPZ file: ChunkFormat::Payload): n positions (float4), n shapes
 // (4 uint), n * shWords SH words, n finest-group words, then -- where the
 // format says -- n normals, n emissions and each extra's n * words. n is at
 // most `chunkSplats`.
@@ -40,6 +41,13 @@ namespace athenea::lod {
 
 /// What every chunk of a source holds, element by element.
 struct ChunkFormat {
+    /// WHAT A CHUNK'S BYTES ARE. Athc: the .athc chunk block below, copied
+    /// into the store as it is. Spz: an SPZ file (any version the reader
+    /// takes), decompressed by a loader thread into staging and turned into
+    /// the store's layout by the device (spz_records, then the validate and
+    /// decode every format takes) -- a live page only.
+    enum class Payload : uint8_t { Athc, Spz };
+    Payload  payload = Payload::Athc;
     uint32_t chunkSplats = 0;     ///< the most splats a chunk holds
     uint32_t restPerColour = 0;   ///< 0, 3, 8, 15
     uint32_t shWords = 0;
@@ -52,12 +60,24 @@ struct ChunkFormat {
     uint32_t transferWords = 0;
     uint32_t shadowWords = 0;
 
-    /// Bytes one splat takes in a chunk block.
+    /// Staging an SPZ chunk takes: a header, then its six streams (the most
+    /// a splat's take, degree 4: 9 + 1 + 3 + 3 + 4 + 72 bytes), each on a word.
+    static constexpr uint64_t kSpzHeaderBytes = 128;
+    static constexpr uint64_t kSpzSplatBytes = 92;
+
+    /// Bytes one splat takes in a chunk block (Athc), or at most in staging (Spz).
     [[nodiscard]] uint64_t elementBytes() const noexcept {
+        if (payload == Payload::Spz) {
+            return kSpzSplatBytes;
+        }
         return 16 + 16 + 4 * uint64_t{shWords} + 4 + (normals ? 4 : 0) + (emission ? 4 : 0) +
                4 * uint64_t{pbrWords + lobesWords + transferWords + shadowWords};
     }
-    [[nodiscard]] uint64_t chunkBytes() const noexcept { return elementBytes() * chunkSplats; }
+    /// The most a chunk takes in staging.
+    [[nodiscard]] uint64_t chunkBytes() const noexcept {
+        return payload == Payload::Spz ? kSpzHeaderBytes + kSpzSplatBytes * chunkSplats + 6 * 4
+                                       : elementBytes() * chunkSplats;
+    }
     bool operator==(const ChunkFormat&) const = default;
 };
 

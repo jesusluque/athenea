@@ -100,8 +100,12 @@ athenea_test(athenea_technique_tests
 target_compile_definitions(athenea_technique_tests PRIVATE ATHENEA_MATERIALX_ROOT="${ATHENEA_USD_ROOT}")
 
 athenea_test(athenea_lod_tests
-    SOURCES lod/test_lod.cpp lod/test_stream.cpp
+    SOURCES lod/test_lod.cpp lod/test_stream.cpp $<$<BOOL:${ATHENEA_HAVE_SPZ}>:lod/test_stream_spz.cpp>
     LIBS athenea::lod)
+if(ATHENEA_HAVE_SPZ)
+    # Niantic's packer writes the SPZ pages a live stream is fed.
+    target_link_libraries(athenea_lod_tests PRIVATE athenea_spz)
+endif()
 
 athenea_test(athenea_volume_tests
     SOURCES volume/test_volume.cpp

@@ -91,6 +91,9 @@ struct StreamingSettings {
     /// Chunks the loaders may hold in staging at once (each a whole chunk's
     /// bytes, in one mapped upload buffer). 0: 2 * loaders + 4.
     uint32_t stagingChunks = 0;
+    /// The kernels a source of SPZ pages (ChunkFormat::Payload::Spz) is
+    /// decoded with; needed for that payload only.
+    gpu::ShaderLibrary* library = nullptr;
 };
 
 class StreamingPool {

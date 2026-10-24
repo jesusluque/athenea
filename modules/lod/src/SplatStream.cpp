@@ -1,10 +1,14 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/lod/SplatStream.h"
 
+#include <algorithm>
 #include <cstring>
+#include <string>
 #include <map>
 
 #include "athenea/core/Log.h"
+#include "athenea/io/Readers.h"
+#include "SpzStaging.h"
 
 namespace athenea::lod {
 
@@ -99,6 +103,14 @@ Result<void> LiveSource::check(const PageUpdate& page, const LiveSettings& setti
         }
         return ok();
     }
+    if (f.payload == ChunkFormat::Payload::Spz) {
+        // An SPZ file: how many splats it holds is known once a loader has
+        // decompressed it (fetch says so then).
+        if (page.bytes.empty()) {
+            return Error::make(ErrorCode::InvalidArgument, "{}: chunk {} page is empty", settings.name, page.chunk);
+        }
+        return ok();
+    }
     const uint64_t per = f.elementBytes();
     const uint64_t n = page.bytes.size() / per;
     if (page.bytes.size() % per != 0 || n == 0 || n > f.chunkSplats) {
@@ -149,6 +161,31 @@ Result<void> LiveSource::fetch(const ChunkRequest& request, std::span<std::byte>
         }
         bytes = std::move(it->second);
         impl_->staged.erase(it);
+    }
+    if (impl_->settings.format.payload == ChunkFormat::Payload::Spz) {
+        // Decompressed here, on the loader's thread, and laid in staging as
+        // a header and the six streams; the device does the rest.
+        auto raw = io::readSpz(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()),
+                               name() + " chunk " + std::to_string(request.chunk));
+        if (!raw) return std::move(raw).error();
+        if (raw->count > impl_->settings.format.chunkSplats ||
+            ChunkFormat::kSpzHeaderBytes + raw->packed.size() > staging.size()) {
+            return Error::make(ErrorCode::InvalidArgument, "{}: chunk {} page holds {} splats, past a chunk's {}",
+                               name(), request.chunk, raw->count, impl_->settings.format.chunkSplats);
+        }
+        SpzStaged h;
+        h.count = raw->count;
+        h.shDim = raw->spz.shDim;
+        h.fractionalBits = raw->spz.fractionalBits;
+        h.smallestThree = raw->spz.smallestThree ? 1u : 0u;
+        h.flipYZ = raw->encoding.flipYZ ? 1u : 0u;
+        h.antialiased = raw->antialiased.value_or(false) ? 1u : 0u;
+        const io::SpzStreams& at = raw->spz;
+        const uint64_t offsets[6] = {at.positions, at.alphas, at.colours, at.scales, at.rotations, at.sh};
+        std::copy(offsets, offsets + 6, h.offsets);
+        std::memcpy(staging.data(), &h, sizeof h);
+        std::memcpy(staging.data() + ChunkFormat::kSpzHeaderBytes, raw->packed.data(), raw->packed.size());
+        return ok();
     }
     if (bytes.size() != staging.size()) {
         return Error::make(ErrorCode::InvalidArgument, "{}: page {} is {} bytes, staged into {}", name(),
@@ -219,8 +256,11 @@ void LiveSource::poll(std::vector<ChunkChange>& out) {
                 c.request.chunk = chunk;
                 if (page.op != PageUpdate::Op::Remove) {
                     c.request.ticket = s.nextTicket++;
-                    c.request.bytes = page.bytes.size();
-                    c.request.splats = static_cast<uint32_t>(page.bytes.size() / per);
+                    const bool spz = s.settings.format.payload == ChunkFormat::Payload::Spz;
+                    // An SPZ page: staging for the most a chunk takes, and
+                    // its count known when a loader has decompressed it.
+                    c.request.bytes = spz ? s.settings.format.chunkBytes() : page.bytes.size();
+                    c.request.splats = spz ? 0u : static_cast<uint32_t>(page.bytes.size() / per);
                     toStage.emplace_back(c.request.ticket, std::move(page.bytes));
                     newBounds.emplace_back(chunk, page.bounds);
                 }

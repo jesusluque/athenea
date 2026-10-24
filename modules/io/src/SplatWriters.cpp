@@ -125,7 +125,18 @@ Result<void> writeSpz(const std::filesystem::path& path, const SpzHeader& header
                                streams[s].size(), uint64_t{header.count} * perGaussian[s]);
         }
     }
-    const uint8_t flags = header.antialiased ? kFlagAntialiased : 0;
+    // THE AXES, said: the coordinate-system extension (nianticlabs/spz's
+    // SPZ_ADOBE_coordinate_system) recording that the data is right-up-back,
+    // the format's default. A reader without extensions skips it and reads
+    // right-up-back anyway; one with them need not guess.
+    constexpr uint32_t kExtensionCoordinateSystem = 0xADBE0003u;
+    constexpr uint32_t kRightUpBack = 4;
+    constexpr uint8_t  kFlagHasExtensions = 0x2;
+    std::vector<uint8_t> extensions;
+    put(extensions, kExtensionCoordinateSystem);
+    put(extensions, uint32_t{4});   // payload bytes
+    put(extensions, kRightUpBack);
+    const uint8_t flags = static_cast<uint8_t>((header.antialiased ? kFlagAntialiased : 0) | kFlagHasExtensions);
     std::vector<uint8_t> file;
     if (header.version == 3) {
         // The legacy layout: a 16-byte header and the six streams, gzipped
@@ -141,6 +152,7 @@ Result<void> writeSpz(const std::filesystem::path& path, const SpzHeader& header
         for (const std::vector<uint8_t>& stream : streams) {
             body.insert(body.end(), stream.begin(), stream.end());
         }
+        body.insert(body.end(), extensions.begin(), extensions.end());   // after the streams, inside the gzip
         auto zipped = gzipped(body);
         if (!zipped) return std::move(zipped).error();
         file = std::move(*zipped);
@@ -176,8 +188,9 @@ Result<void> writeSpz(const std::filesystem::path& path, const SpzHeader& header
         put(file, static_cast<uint8_t>(header.fractionalBits));
         put(file, flags);
         put(file, static_cast<uint8_t>(chunks.size()));
-        put(file, uint32_t{32});   // the table follows the header: no extensions
+        put(file, static_cast<uint32_t>(32 + extensions.size()));   // the table follows the extensions
         file.resize(32, 0);
+        file.insert(file.end(), extensions.begin(), extensions.end());
         for (size_t k = 0; k < chunks.size(); ++k) {
             put(file, static_cast<uint64_t>(chunks[k].size()));
             put(file, sizes[k]);

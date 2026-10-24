@@ -191,6 +191,7 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
     auto splats = packed(device, n, cloud.restPerColour, cloud.shWords, "lod.splats", normals, emission);
     if (!splats) return std::move(splats).error();
     splats->linear = cloud.linear;   // reordered, in the space they were in
+    splats->antialiased = cloud.antialiased;
     {
         gpu::CommandBatch batch(device);
         morton_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -317,6 +318,7 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
         if (!gaussians) return std::move(gaussians).error();
         // Merged in the space the cloud keeps its colours in (lod_leaf_moments).
         gaussians->linear = cloud.linear;
+        gaussians->antialiased = cloud.antialiased;
         gpu::CommandBatch batch(device);
         if (r == finest) {
             leafMoments_.dispatch(batch, {level.groups, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -501,6 +503,7 @@ Result<void> CutSelector::ensureCloud(const LodCloud& lod, Frame& frame, uint32_
     }
     frame.cloud.source = lod.splats.source;
     frame.cloud.linear = lod.splats.linear;
+    frame.cloud.antialiased = lod.splats.antialiased;
     frame.cloud.count = drawn;
     frame.cloud.declared = lod.count;
     frame.cloud.bounds = lod.splats.bounds;
@@ -900,6 +903,7 @@ Result<LodCloud> Decimator::prune(const LodCloud& lod, const gpu::Buffer& score,
     out.splats.restPerColour = lod.splats.restPerColour;
     out.splats.shWords = shWords;
     out.splats.linear = lod.splats.linear;
+    out.splats.antialiased = lod.splats.antialiased;
     out.splats.bounds = lod.splats.bounds;
     auto positions = make(kept, 16, "prune.positions");
     auto shape = make(uint64_t{kept} * 4, 4, "prune.shape");
@@ -1301,6 +1305,8 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         if (!out) return std::move(out).error();
         out->source = lod.splats.source;
         out->linear = lod.splats.linear;
+    out->antialiased = lod.splats.antialiased;
+        out->antialiased = lod.splats.antialiased;
         out->count = outputs;
         out->declared = outputs;
         out->bounds = lod.splats.bounds;
@@ -1644,6 +1650,7 @@ Result<DecimateResult> Decimator::decimate(const LodCloud& lod, const gpu::Buffe
     if (!ranges) return std::move(ranges).error();
     out->source = lod.splats.source;
     out->linear = lod.splats.linear;
+    out->antialiased = lod.splats.antialiased;
     out->count = kept;
     out->declared = kept;
     out->bounds = lod.splats.bounds;

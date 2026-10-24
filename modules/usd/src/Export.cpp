@@ -2,6 +2,7 @@
 #include "athenea/usd/Export.h"
 
 #include "athenea/scene/DecodeParams.h"
+#include "athenea/scene/GpuClouds.h"
 
 #include <algorithm>
 #include <functional>
@@ -634,6 +635,14 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
 
 Result<void> writeParticleFieldStage(gpu::ShaderLibrary& library, const io::RawSplats& raw,
                                      const std::filesystem::path& path, const ExportOptions& options) {
+    if (raw.encoding.record != io::SplatEncoding::Record::Floats) {
+        // SPZ's packed streams: their records made on the device first.
+        auto loader = scene::CloudLoader::create(library);
+        if (!loader) return std::move(loader).error();
+        auto floats = loader->records(raw);
+        if (!floats) return std::move(floats).error();
+        return writeParticleFieldStage(library, *floats, path, options);
+    }
     const io::SplatEncoding& e = raw.encoding;
     if (raw.records.size() < size_t{raw.count} * e.floatsPerRecord) {
         return Error(ErrorCode::InvalidArgument, "export: fewer records than the count says");

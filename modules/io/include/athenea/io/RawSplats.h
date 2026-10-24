@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace athenea::io {
@@ -109,6 +110,25 @@ struct SplatEncoding {
     /// writes them, right-down-front: y and z of positions, rotations and
     /// harmonics change sign.
     bool     flipYZ = false;
+    /// HOW THE RECORDS ARE HELD. Floats: `RawSplats::records`, the layout
+    /// above. SpzPacked: SPZ's six quantised streams as the file packed them
+    /// (`RawSplats::packed`, `RawSplats::spz`), turned into those same float
+    /// records on the device (shaders/athenea/scene/spz_records.slang) and
+    /// never on the CPU; the offsets above describe the records that kernel
+    /// writes.
+    enum class Record : uint32_t { Floats = 0, SpzPacked = 1 };
+    Record   record = Record::Floats;
+};
+
+/// Where SPZ's six streams sit in `RawSplats::packed`, in bytes, and how to
+/// read them: positions (three 24-bit fixed point a splat), alphas (one
+/// byte), colours (three), scales (three), rotations (three bytes, or four
+/// for smallest three), harmonics (`shDim` bases rgb a splat, a byte each).
+struct SpzStreams {
+    uint64_t positions = 0, alphas = 0, colours = 0, scales = 0, rotations = 0, sh = 0;
+    uint32_t shDim = 0;           ///< bases per colour in the file (0, 3, 8, 15, 24)
+    uint32_t fractionalBits = 0;  ///< the positions' fixed point
+    bool     smallestThree = false;
 };
 
 struct RawSplats {
@@ -122,7 +142,14 @@ struct RawSplats {
     /// `athenea mesh2splat` writes, `primvars:athenea:splat:linear` -- whose
     /// colours are drawn as they are.
     bool               linear = false;
-    std::vector<float> records;   ///< count * encoding.floatsPerRecord
+    /// WHETHER THE CLOUD WAS TRAINED WITH THE MIP-SPLATTING FILTER, where
+    /// the file says (SPZ's `antialiased` flag): it is then drawn with the 2D
+    /// filter's compensation, and without where it says not. Unset for a
+    /// format that does not say: the frame's default decides.
+    std::optional<bool> antialiased;
+    std::vector<float> records;   ///< count * encoding.floatsPerRecord (Record::Floats)
+    std::vector<uint8_t> packed;  ///< the six streams (Record::SpzPacked)
+    SpzStreams         spz;
 };
 
 /// Points: x y z, then r g b, as the file gave them.

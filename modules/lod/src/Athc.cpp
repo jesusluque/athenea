@@ -18,6 +18,9 @@
 #include "athenea/core/Platform.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
+#include "athenea/io/Readers.h"
+#include "athenea/scene/GpuClouds.h"
+#include "SpzStaging.h"
 
 namespace athenea::lod {
 namespace {
@@ -903,6 +906,15 @@ struct StreamingPool::Impl {
     std::unordered_map<uint64_t, uint32_t> targets;    // the building epoch's pages not placed: ticket -> slot
     std::vector<uint8_t>                   reserved;   // per slot: a target of the building epoch
 
+    // SPZ pages (ChunkFormat::Payload::Spz): the device's records and the
+    // decode's scratch, one set a staging slot -- free when the slot is.
+    std::unique_ptr<scene::CloudLoader>    spzLoader;
+    struct SpzScratch {
+        gpu::Buffer                       records;
+        scene::CloudLoader::DecodeScratch decode;
+    };
+    std::vector<SpzScratch>                spzScratch;
+
     /// LOADER THREADS. Takes a request only with a staging slot for it, so a
     /// loader that has one always finishes.
     void load() {
@@ -996,11 +1008,67 @@ struct StreamingPool::Impl {
         return ok();
     }
 
-    /// Frame thread: copies `l` into `slot`.
-    void placeLoaded(gpu::CommandBatch& batch, const Loaded& l, uint32_t slot) {
-        placeStaged(batch, cloud, extra, slot, l.request.splats, staging.rhi(), uint64_t{l.staging} * stride);
+    /// Frame thread: copies `l` into `slot` -- or, an SPZ page, expands and
+    /// decodes it there. Returns the splats the slot now holds.
+    Result<uint32_t> placeLoaded(gpu::CommandBatch& batch, const Loaded& l, uint32_t slot) {
+        const uint64_t from = uint64_t{l.staging} * stride;
+        uint32_t splats = l.request.splats;
+        if (format.payload == ChunkFormat::Payload::Spz) {
+            auto placed = placeSpz(batch, l, slot, from);
+            if (!placed) return std::move(placed).error();
+            splats = *placed;
+        } else {
+            placeStaged(batch, cloud, extra, slot, splats, staging.rhi(), from);
+        }
         retiring.emplace_back(l.staging, fenceValue + 1);
         recorded = true;
+        return splats;
+    }
+
+    /// Frame thread: an SPZ page's header read back from staging (counts and
+    /// offsets, the loader's), its streams turned into records and decoded
+    /// into the slot by the device. The slot's positions are cleared first:
+    /// what validation drops leaves splats of opacity 0, not the last page's.
+    Result<uint32_t> placeSpz(gpu::CommandBatch& batch, const Loaded& l, uint32_t slot, uint64_t from) {
+        SpzStaged h;
+        std::memcpy(&h, mapped + from, sizeof h);
+        if (h.magic != SpzStaged::kMagic || h.count == 0 || h.count > format.chunkSplats) {
+            return Error::make(ErrorCode::InternalError, "{}: chunk {} staged without its SPZ header", source->name(),
+                               l.request.chunk);
+        }
+        SpzScratch& scratch = spzScratch[l.staging];
+        const io::SplatEncoding e = io::spzEncoding(h.shDim, h.fractionalBits, h.smallestThree != 0, h.flipYZ != 0);
+        if (!scratch.records.valid()) {
+            gpu::BufferDesc desc;
+            desc.bytes = uint64_t{format.chunkSplats} * (14 + 3 * 15) * 4;
+            desc.elementBytes = 4;
+            desc.label = "stream.spz.records";
+            auto records = gpu::Buffer::create(*device, desc);
+            if (!records) return std::move(records).error();
+            scratch.records = std::move(*records);
+            auto decode = spzLoader->decodeScratch(format.chunkSplats);
+            if (!decode) return std::move(decode).error();
+            scratch.decode = std::move(*decode);
+        }
+        io::SpzStreams streams;
+        streams.positions = h.offsets[0];
+        streams.alphas = h.offsets[1];
+        streams.colours = h.offsets[2];
+        streams.scales = h.offsets[3];
+        streams.rotations = h.offsets[4];
+        streams.sh = h.offsets[5];
+        streams.shDim = h.shDim;
+        streams.smallestThree = h.smallestThree != 0;
+        const uint64_t at = uint64_t{slot} * format.chunkSplats;
+        batch.encoder()->clearBuffer(cloud.splats.positions.rhi(), at * 16, uint64_t{format.chunkSplats} * 16);
+        spzLoader->recordSpz(batch, staging, streams, from + ChunkFormat::kSpzHeaderBytes, e, h.count,
+                             scratch.records);
+        const uint32_t keep = std::min(e.restPerColour, format.restPerColour);
+        ATHENEA_TRY(spzLoader->decodeInto(batch, scratch.records, e, h.count, static_cast<uint32_t>(at), keep,
+                                          cloud.splats, scratch.decode));
+        batch.markDirty();
+        cloud.splats.antialiased = h.antialiased != 0;
+        return h.count;
     }
 
     /// Frame thread: what status() answers from now on.
@@ -1108,6 +1176,22 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
     }
     for (uint32_t k = 0; k < stagingSlots; ++k) {
         p.freeStaging.push_back(stagingSlots - 1 - k);
+    }
+    if (p.format.payload == ChunkFormat::Payload::Spz) {
+        if (!p.live || settings.library == nullptr) {
+            return Error::make(ErrorCode::InvalidArgument,
+                               "{}: SPZ chunks are a live stream's, and need the shader library to decode them",
+                               p.source->name());
+        }
+        auto loader = scene::CloudLoader::create(*settings.library);
+        if (!loader) return std::move(loader).error();
+        p.spzLoader = std::make_unique<scene::CloudLoader>(std::move(*loader));
+        p.spzScratch.resize(stagingSlots);
+        // The decode says which record each splat came from: a word a store
+        // splat, read by nothing here.
+        auto origin = deviceBuffer(device, uint64_t{slots} * p.format.chunkSplats, 4, "stream.origin");
+        if (!origin) return std::move(origin).error();
+        p.cloud.splats.origin = std::move(*origin);
     }
     for (uint32_t k = 0; k < loaders; ++k) {
         p.loaders.emplace_back([&p] { p.load(); });
@@ -1273,7 +1357,7 @@ Result<uint32_t> StreamingPool::Impl::updateOnDemand(bool wait, uint64_t budget)
                 recorded = true;
                 ++counters.evictions;
             }
-            placeLoaded(batch, l, slot);
+            ATHENEA_TRY(placeLoaded(batch, l, slot));
             setResident(batch, lod, chunk, true);
             lod.slots[chunk] = static_cast<int32_t>(slot);
             owner[slot] = static_cast<int32_t>(chunk);
@@ -1330,9 +1414,11 @@ Result<void> StreamingPool::Impl::startEpoch() {
     size_t needed = 0;
     for (const ChunkChange& c : e.changes) {
         needed += c.op == ChunkChange::Op::Remove ? 0 : 1;
+        const bool spz = format.payload == ChunkFormat::Payload::Spz;
         if (c.request.chunk >= chunks || c.request.splats > format.chunkSplats ||
-            (c.op != ChunkChange::Op::Remove &&
-             (c.request.splats == 0 || c.request.bytes != c.request.splats * format.elementBytes()))) {
+            (c.op != ChunkChange::Op::Remove && !spz &&
+             (c.request.splats == 0 || c.request.bytes != c.request.splats * format.elementBytes())) ||
+            (c.op != ChunkChange::Op::Remove && spz && c.request.bytes != format.chunkBytes())) {
             return Error::make(ErrorCode::InvalidArgument, "{}: epoch {} has a page that is not a chunk of its stream",
                                source->name(), e.id);
         }
@@ -1440,7 +1526,9 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
                 held.push_back(l);
                 continue;
             }
-            placeLoaded(batch, l, target->second);
+            auto splats = placeLoaded(batch, l, target->second);
+            if (!splats) return std::move(splats).error();
+            nextCounts[l.request.chunk] = *splats;
             targets.erase(target);
             ++placed;
             placedBytes += l.request.bytes;

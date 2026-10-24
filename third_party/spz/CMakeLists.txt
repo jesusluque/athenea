@@ -1,7 +1,14 @@
 # Niantic's SPZ reference implementation (MIT, LICENSE beside it), vendored as
-# openFXplayer vendors it: seven files copied from its third_party/spz rather
-# than fetched, with extensions compiled out -- the engine reads gaussians, not
-# metadata records.
+# openFXplayer vendors it: copied from nianticlabs/spz (21715c3, src/cc and
+# extensions/cc) rather than fetched. Extensions are built in
+# (SPZ_BUILD_EXTENSIONS): the coordinate system a file says its data is stored
+# in decides how the engine turns it, and an extension a reader skips may have
+# changed how the streams were packed. The define is PUBLIC because it changes
+# PackedGaussians' layout, which every includer must agree on.
+#
+# One change to the shipped code, marked "athenea:" in load-spz.cc: membuf can
+# seek, without which a legacy (gzip) file read from memory loses its
+# extensions (tryParseExtension measures what remains with tellg/seekg).
 #
 # Used only to decompress: loadSpzPacked hands back the quantised bytes, and
 # the dequantising happens on the GPU (shaders/athenea/scene/splat_encoding.slang).
@@ -12,8 +19,10 @@ find_path(ATHENEA_ZSTD_INCLUDE zstd.h HINTS /opt/homebrew/opt/zstd/include /usr/
 find_library(ATHENEA_ZSTD_LIB zstd HINTS /opt/homebrew/opt/zstd/lib /usr/local/opt/zstd/lib)
 find_package(ZLIB)
 if(ATHENEA_ZSTD_INCLUDE AND ATHENEA_ZSTD_LIB AND ZLIB_FOUND)
-    add_library(athenea_spz STATIC load-spz.cc splat-types.cc)
+    add_library(athenea_spz STATIC load-spz.cc splat-types.cc splat-extensions.cc coordinate-system-adobe.cc
+        safe-orbit-camera-adobe.cc)
     target_include_directories(athenea_spz SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(athenea_spz PUBLIC SPZ_BUILD_EXTENSIONS)
     target_include_directories(athenea_spz PRIVATE ${ATHENEA_ZSTD_INCLUDE})
     # zlib by name on Apple: ZLIB::ZLIB carries the SDK's /usr/include as
     # -isystem, which puts the C headers ahead of libc++'s (openFXplayer's

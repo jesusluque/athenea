@@ -208,7 +208,13 @@ struct SplatLights {
 struct RenderSettings {
     uint32_t width = 1920;
     uint32_t height = 1080;
+    /// THE MIP-SPLATTING FILTER'S COMPENSATION, for a cloud whose file does
+    /// not say whether it was trained with it (GpuSplats::antialiased); one
+    /// whose file says is drawn as it says.
     bool     antialias = true;
+    /// Set: every cloud drawn with the compensation (true) or without
+    /// (false), whatever its file says -- `athenea render --no-antialias`.
+    std::optional<bool> antialiasOverride;
     /// SURFELS: a gaussian with a flat axis (a scale of exactly 0) drawn as
     /// the disc it is, by the ray through each pixel, with the 2DGS screen
     /// filter (docs/decisions.md, surfels). Off, it is the thin gaussian it
