@@ -360,6 +360,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--no-cloud-shadows` | flag | cloud shadows on | |
 | `--no-dome-prefilter` | flag | prefiltered | raster: a dome lights a mesh by one sample a pixel and a shadow ray |
 | `--screen-space-reflections` | flag | off | raster: `athenea:screenSpaceReflections` |
+| `--mesh-antialias` | `0`, `4`, `8`, `16` | `0` | raster: `athenea:meshAntialias`, samples a pixel the meshes' edges are resolved from; 0 is one sample a pixel |
 | `--cloud-shadow-texels` | integer | `1024` | a side, per light |
 | `--cloud-shadow-density` | number | `1.0` | multiplier on the cloud's optical depth |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 is the total alone, the rest add Fourier pairs; 0 lets what receives decide |
@@ -1521,6 +1522,7 @@ found and does not.
 | `athenea:pathMis` | bool | `true` | multiple importance sampling |
 | `athenea:domeVisible` | bool | `true` | every technique: a dome is drawn behind the frame; off, the pixels nothing covers stay transparent (alpha 0), as a host's transparent film asks, and the dome still lights the frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: the meshes that reflect show what the frame's meshes hold along their reflection (§4.3, *Screen-space reflections*) |
+| `athenea:meshAntialias` | int | `0` | raster: the meshes' edges resolved from 4, 8 or 16 samples a pixel, a count in between rounded up; 0 and 1 draw one sample a pixel (§4.3, *Mesh edges antialiased*) |
 | `athenea:splatView` | int | `0` | the raster: a parameter of the gaussians drawn in place of their light, blended by their opacity -- 1 albedo, 2 roughness (as the specular reads it), 3 metallic, 4 transmission, 5 ior (`ior - 1`, a grey), 6 normal (world, `n / 2 + 1/2`), 7 opacity, 8 size (the largest axis, a ramp from blue at 10 µm to red at 10 cm, a decade a quarter), 9 sky visibility (the transfer's cosine-weighted sky seen, 1 unoccluded), 10 bounce (the indirect half under a white sky), 11 open cells (the share of a TX transfer's directions that leave the scene), 12 emission, 13 reflected field (its mean under a white sky), 14 the light the cloud carries, 15 the material's own roughness (0 where not carried); a cloud that is not relit shows its light, opacity and size and nothing else. 0 draws the light |
 | `athenea:glassShadows` | bool | `true` | rt and its bakes: a light's shadow ray goes on through up to 4 faces of glass whose transmission is a delta (a thin wall; a solid of constant specular roughness under 0.03), tinted by each; off, glass stops it |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
@@ -1916,6 +1918,22 @@ by domes alone).
 What the screen does not hold is not reflected: what is behind the camera or
 past the frame's edge fades out, and splats are not reflected. The raster
 route only.
+
+**Mesh edges antialiased** (`athenea:meshAntialias`, a render setting, 0 --
+off -- by default; `StageRenderer::setMeshAntialias`;
+`athenea stage --mesh-antialias`): the mesh layer is still seen and shaded at
+one sample a pixel, and then a pixel beside which another triangle was seen
+is resolved from 4, 8 or 16 sub-samples (the standard multisample
+positions): each takes the nearest of the triangles its 3x3 neighbourhood saw
+that its ray
+meets and the colour already shaded at the pixel that saw it, the background
+where it meets none. Every visibility route resolves alike, lit or unlit, and
+the ids, the depth and the other outputs (AOVs, Cryptomatte) stay one sample a
+pixel. What it cannot resolve: a triangle that no pixel centre around it saw
+(a wire thinner than a pixel), the edge of a cutout's hole, and the splats
+composited over the layer, whose depth is the pixel centre's. The raster
+technique only; the path tracer antialiases by its own passes
+(`athenea:antialias`).
 
 ### 4.4 What the engine ignores, and what it refuses
 

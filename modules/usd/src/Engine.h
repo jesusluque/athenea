@@ -498,6 +498,11 @@ public:
     /// Whether a dome is drawn behind the frame (true) or its pixels are left
     /// transparent (false); either way the dome lights what the frame holds.
     void setScreenSpaceReflections(bool on);
+    /// athenea:meshAntialias: the raster mesh layer's edges resolved from
+    /// `samples` sub-samples a pixel (technique::MeshAntialias): 4, 8 or 16,
+    /// a count between rounded up to the next; 0 or 1, the default, draws one
+    /// sample a pixel as before.
+    void setMeshAntialias(uint32_t samples);
     void setDomeVisible(bool visible);
     /// Let the path tracer's shadow rays through glass whose transmission
     /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
@@ -805,6 +810,7 @@ private:
     std::atomic<bool>                         glassShadows_{true};
     std::atomic<bool>                         domeVisible_{true};
     std::atomic<bool>                         screenSpaceReflections_{false};
+    std::atomic<uint32_t>                     meshAntialias_{0};
     std::atomic<bool>                         transferIndirect_{true};
     std::atomic<bool>                         displayBlend_{false};
     render::SplatFlatten*                     flattenRequest_ = nullptr;
@@ -1011,6 +1017,7 @@ private:
     /// domes read the same builds nothing.
     std::vector<light::LightRecord>           environmentKeys_;
     std::optional<technique::CryptoShading>   cryptoShading_;
+    std::optional<technique::MeshAntialias>   meshEdges_;
     /// The Cryptomatte id of each prim id, as the frame's meshes hash: a table
     /// the id plane is read through, so an instanced prim needs no record of
     /// its own. Rebuilt when the scene's prims change.

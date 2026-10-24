@@ -804,3 +804,124 @@ TEST_CASE("the ray route and the compute BVH see the same triangles", "[techniqu
     CHECK(c[1] > 1000);   // the squares are there
     CHECK(c[0] == 0);     // and both routes found the same triangle at every pixel
 }
+
+TEST_CASE("edges resolved from the neighbourhood's triangles match the frame supersampled and boxed down",
+          "[technique][visibility][antialias]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    // Every device has the compute BVH; the rasteriser where there is one.
+    // CUDA has none, and its frames are seen by rays: the resolve reads the
+    // ids alone, so it is checked on each route the device has.
+    auto r = renderer(*gpu);
+    auto bvh = world::BvhScene::create(*gpu->library);
+    auto walk = technique::VisibilityBvh::create(*gpu->library);
+    if (!bvh) FAIL(bvh.error().toString());
+    if (!walk) FAIL(walk.error().toString());
+    for (const bool rasterised : {true, false}) {
+        if (rasterised && !gpu->device->caps().rasterization) {
+            continue;
+        }
+        std::printf("  %s:\n", rasterised ? "raster" : "compute BVH");
+        auto antialias = technique::MeshAntialias::create(*gpu->library);
+        if (!antialias) FAIL(antialias.error().toString());
+        auto reduce = gpu::ComputeKernel::create(*gpu->library, "athenea/test/box_reduce", "boxReduce");
+        if (!reduce) FAIL(reduce.error().toString());
+        const uint32_t w = 160;
+        const uint32_t h = 120;
+        const uint32_t factor = 8;
+        const render::Camera camera = render::Camera::lookingAt({0.4, 0.3, 6.0}, {0.0, 0.0, 0.0});
+        // A square turned in its plane, so its edges step, against the
+        // background; a second one nearer, across it, so an edge has a mesh on
+        // both sides at different depths; and one square split into its two
+        // triangles in one plane, whose diagonal is no edge at all.
+        const auto mesh = square(*r, 1.0F);
+        std::vector<world::MeshInstance> instances(2);
+        instances[0].mesh = mesh;
+        instances[0].objectToWorld = aofx::xform::rotationZ(17.0) * aofx::xform::rotationX(-20.0);
+        instances[0].displayColor = {0.9F, 0.8F, 0.2F};
+        instances[1].mesh = square(*r, 0.6F);
+        instances[1].objectToWorld = aofx::xform::translation({0.9, 0.5, 1.0}) * aofx::xform::rotationZ(-31.0);
+        instances[1].displayColor = {0.1F, 0.3F, 0.9F};
+
+        // One sample a pixel, and that frame resolved at each count the setting
+        // takes; the same scene eight times as wide and high, boxed down, is the
+        // reference.
+        const auto frame = [&](uint32_t width, uint32_t height, uint32_t samples) {
+            const render::Projection projection = render::projectionFor(camera, width, height);
+            REQUIRE(r->scene.update(instances, projection));
+            render::RenderTargets out;
+            gpu::CommandBatch batch(*gpu->device);
+            if (rasterised) {
+                REQUIRE(r->raster.render(batch, r->scene, projection, width, height, r->visibility));
+            } else {
+                REQUIRE(bvh->build(r->scene));
+                REQUIRE(walk->render(batch, r->scene, *bvh, projection, width, height, r->visibility));
+            }
+            REQUIRE(r->shading.shade(batch, r->scene, r->visibility, projection, out));
+            REQUIRE(antialias->resolve(batch, r->scene, r->visibility, projection, samples, out));
+            REQUIRE(batch.submit(true));
+            return out;
+        };
+        const render::RenderTargets wide = frame(w * factor, h * factor, 0);
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{w} * h * 16;
+        desc.elementBytes = 16;
+        desc.label = "test.boxed";
+        auto boxed = gpu::Buffer::create(*gpu->device, desc);
+        REQUIRE(boxed);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            reduce->dispatch(batch, {w, h, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["source"].setBinding(wide.colour.rhi());
+                cursor["reduced"].setBinding(boxed->rhi());
+                cursor["boxParams"]["width"].setData(w);
+                cursor["boxParams"]["height"].setData(h);
+                cursor["boxParams"]["factor"].setData(factor);
+            });
+            REQUIRE(batch.submit(true));
+        }
+        const render::RenderTargets off = frame(w, h, 0);
+        auto offDiff = render::compareImages(*gpu->library, off.colour, *boxed, w, h);
+        auto offHdr = render::compareHdr(*gpu->library, off.colour, *boxed, w, h);
+        REQUIRE(offDiff);
+        REQUIRE(offHdr);
+        std::printf("  one sample a pixel against 8x8 boxed down: p99 %u, max %u, %llu pixels beyond 2 codes, relMSE %.2e\n",
+                    offDiff->p99, offDiff->max, static_cast<unsigned long long>(offDiff->over2), offHdr->relMse);
+        CHECK(offDiff->over2 > 200);   // there are edges to resolve
+
+        // Off is one sample a pixel exactly: the resolve leaves the layer alone.
+        {
+            render::RenderTargets again = frame(w, h, 0);
+            auto same = render::countDifferent(*gpu->library, off.colour, again.colour, w * h * 4);
+            REQUIRE(same);
+            CHECK(*same == 0);
+        }
+        for (const uint32_t samples : {4u, 8u, 16u}) {
+            const render::RenderTargets on = frame(w, h, samples);
+            auto diff = render::compareImages(*gpu->library, on.colour, *boxed, w, h);
+            auto hdr = render::compareHdr(*gpu->library, on.colour, *boxed, w, h);
+            auto changed = render::countDifferent(*gpu->library, off.colour, on.colour, w * h * 4);
+            REQUIRE(diff);
+            REQUIRE(hdr);
+            REQUIRE(changed);
+            std::printf("  %2u samples against 8x8 boxed down: p99 %u, max %u, %llu pixels beyond 2 codes, relMSE %.2e; "
+                        "%llu words changed\n",
+                        samples, diff->p99, diff->max, static_cast<unsigned long long>(diff->over2), hdr->relMse,
+                        static_cast<unsigned long long>(*changed));
+            // Only the pixels an edge crosses move.
+            CHECK(*changed < uint64_t{w} * h * 4 / 10);
+            // Every edge pixel is a few codes off its coverage at any count
+            // (sRGB steepens them near black), so over2 hardly moves: the
+            // error is measured as radiance.
+            CHECK(hdr->relMse < offHdr->relMse / 4.0);
+            CHECK(diff->p99 <= offDiff->p99);
+            CHECK(diff->max < offDiff->max);
+        }
+        // A bad count is said, not drawn.
+        {
+            render::RenderTargets out = frame(w, h, 0);
+            gpu::CommandBatch batch(*gpu->device);
+            CHECK_FALSE(antialias->resolve(batch, r->scene, r->visibility,
+                                           render::projectionFor(camera, w, h), 6, out));
+        }
+    }
+}

@@ -2,6 +2,7 @@
 #include "athenea/technique/Visibility.h"
 
 #include <algorithm>
+#include <string>
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
@@ -383,6 +384,62 @@ Result<void> VisibilityBvh::render(gpu::CommandBatch& batch, const world::GpuSce
         cursor["ids"].setBinding((*view).get());
         setCamera(cursor["camera"], projection, width, height);
         cursor["scene"]["instances"].setData(scene.instanceCount());
+    });
+    return ok();
+}
+
+Result<MeshAntialias> MeshAntialias::create(gpu::ShaderLibrary& library) {
+    auto kernel = gpu::ComputeKernel::create(library, "athenea/technique/mesh_antialias", "meshAntialias");
+    if (!kernel) return std::move(kernel).error();
+    MeshAntialias antialias;
+    antialias.device_ = &library.device();
+    antialias.resolve_ = std::move(*kernel);
+    return antialias;
+}
+
+Result<void> MeshAntialias::resolve(gpu::CommandBatch& batch, const world::GpuScene& scene,
+                                    const VisibilityTargets& targets, const render::Projection& projection,
+                                    uint32_t samples, render::RenderTargets& layer) {
+    if (samples <= 1) {
+        return ok();
+    }
+    if (samples != 4 && samples != 8 && samples != 16) {
+        return Error(ErrorCode::InvalidArgument, "mesh antialias: 4, 8 or 16 samples, not " + std::to_string(samples));
+    }
+    if (layer.width != targets.width || layer.height != targets.height || !layer.colour.valid()) {
+        return Error(ErrorCode::InvalidArgument, "mesh antialias: the layer is not the visibility's size");
+    }
+    const uint64_t bytes = uint64_t{targets.width} * targets.height * 16;
+    if (!source_.valid() || source_.bytes() < bytes) {
+        gpu::BufferDesc desc;
+        desc.bytes = bytes;
+        desc.elementBytes = 16;
+        desc.label = "antialias.source";
+        auto made = gpu::Buffer::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        source_ = std::move(*made);
+    }
+    // The neighbours' colours as shaded, while the pixels around them are
+    // rewritten.
+    batch.encoder()->copyBuffer(source_.rhi(), 0, layer.colour.rhi(), 0, bytes);
+    batch.markDirty();
+    auto ids = targets.ids.view(0);
+    if (!ids) return std::move(ids).error();
+    resolve_.dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(scene.positions().rhi());
+        cursor["primvarRecords"].setBinding(scene.primvarRecords().rhi());
+        cursor["primvarValues"].setBinding(scene.primvarValues().rhi());
+        cursor["primvarSlots"].setBinding(scene.primvarSlots().rhi());
+        cursor["triangleCorners"].setBinding(scene.triangleCorners().rhi());
+        cursor["triangleFaces"].setBinding(scene.triangleFaces().rhi());
+        cursor["indices"].setBinding(scene.indices().rhi());
+        cursor["meshes"].setBinding(scene.meshRecords().rhi());
+        cursor["instances"].setBinding(scene.instanceRecords().rhi());
+        cursor["visibility"].setBinding((*ids).get());
+        cursor["source"].setBinding(source_.rhi());
+        cursor["colour"].setBinding(layer.colour.rhi());
+        cursor["antialias"]["samples"].setData(samples);
+        setCamera(cursor["camera"], projection, targets.width, targets.height);
     });
     return ok();
 }

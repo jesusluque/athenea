@@ -135,6 +135,9 @@ public:
     /// "athenea:screenSpaceReflections": the meshes that reflect show what
     /// the frame's meshes hold along their reflection (false, the default).
     [[nodiscard]] bool GetScreenSpaceReflections() const;
+    /// "athenea:meshAntialias": sub-samples a pixel the raster mesh layer's
+    /// edges are resolved from (Engine::setMeshAntialias); 0, the default, off.
+    [[nodiscard]] uint32_t GetMeshAntialias() const;
     /// "athenea:splatView": a parameter of the gaussians drawn in place of
     /// their light (render::RenderSettings::splatView); 0, the default, the light.
     [[nodiscard]] uint32_t GetSplatView() const;

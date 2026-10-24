@@ -367,6 +367,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--no-cloud-shadows` | flag | sombras de nube encendidas | |
 | `--no-dome-prefilter` | flag | prefiltrado | raster: un domo ilumina una malla con una muestra por píxel y un rayo de sombra |
 | `--screen-space-reflections` | flag | apagado | raster: `athenea:screenSpaceReflections` |
+| `--mesh-antialias` | `0`, `4`, `8`, `16` | `0` | raster: `athenea:meshAntialias`, muestras por píxel de las que se resuelven los bordes de las mallas; 0 es una muestra por píxel |
 | `--cloud-shadow-texels` | entero | `1024` | por lado, por luz |
 | `--cloud-shadow-density` | número | `1.0` | multiplicador de la profundidad óptica de la nube |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 es solo el total, el resto añaden pares de Fourier; 0 deja decidir a quien recibe |
@@ -1563,6 +1564,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
 | `athenea:domeVisible` | bool | `true` | toda técnica: se dibuja un dome detrás del frame; apagado, los píxeles que nada cubre quedan transparentes (alfa 0), como pide la película transparente de un host, y el dome sigue iluminando el frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: las mallas que reflejan muestran lo que tienen las mallas del frame a lo largo de su reflejo (§4.3, *Reflejos en espacio de pantalla*) |
+| `athenea:meshAntialias` | int | `0` | raster: los bordes de las mallas se resuelven de 4, 8 o 16 muestras por píxel, un número intermedio redondeado hacia arriba; 0 y 1 dibujan una muestra por píxel (§4.3, *Bordes de malla antialiasados*) |
 | `athenea:splatView` | int | `0` | el raster: un parámetro de las gaussianas dibujado en lugar de su luz, mezclado por su opacidad -- 1 albedo, 2 roughness (la que lee el especular), 3 metallic, 4 transmission, 5 ior (`ior - 1`, un gris), 6 normal (del mundo, `n / 2 + 1/2`), 7 opacidad, 8 tamaño (el eje mayor, una rampa de azul a 10 µm a rojo a 10 cm, una década cada cuarto), 9 visibilidad del cielo (el cielo visto por el transfer ponderado por el coseno, 1 sin nada delante), 10 rebote (la mitad indirecta bajo un cielo blanco), 11 celdas abiertas (la fracción de direcciones de un transfer TX que salen de la escena), 12 emisión, 13 campo reflejado (su media bajo un cielo blanco), 14 la luz que lleva la nube, 15 la roughness propia del material (0 donde no la lleva); una nube que no se reilumina muestra su luz, su opacidad y su tamaño y nada más. 0 dibuja la luz |
 | `athenea:glassShadows` | bool | `true` | rt y sus bakes: el rayo de sombra de una luz sigue a través de hasta 4 caras de vidrio cuya transmisión es una delta (una pared fina; un sólido de rugosidad especular constante por debajo de 0.03), teñido por cada una; apagado, el vidrio lo detiene |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
@@ -1975,6 +1977,22 @@ iluminado sólo por domes).
 Lo que la pantalla no tiene no se refleja: lo que está detrás de la cámara o
 pasado el borde del frame se desvanece, y los splats no se reflejan. Sólo en
 la ruta de raster.
+
+**Bordes de malla antialiasados** (`athenea:meshAntialias`, un render
+setting, 0 -- apagado -- por defecto; `StageRenderer::setMeshAntialias`;
+`athenea stage --mesh-antialias`): la capa de mallas se sigue viendo y
+sombreando con una muestra por píxel, y después un píxel junto al que se vio
+otro triángulo se resuelve de 4, 8 o 16 submuestras (las posiciones
+estándar de multisample): cada una toma el más cercano de los triángulos que
+vio su vecindad de 3x3 que su rayo encuentra y el color ya sombreado en el píxel que lo vio,
+el fondo donde no encuentra ninguno. Todas las rutas de visibilidad resuelven
+igual, con luz o sin ella, y los ids, la profundidad y las demás salidas (AOVs,
+Cryptomatte) siguen con una muestra por píxel. Lo que no puede resolver: un
+triángulo que no vio ningún centro de píxel a su alrededor (un cable más fino
+que un píxel), el borde del agujero de un recorte, y los splats compuestos
+sobre la capa, cuya profundidad es la del centro del píxel. Sólo la técnica
+raster; el path tracer antialiasa con sus propias pasadas
+(`athenea:antialias`).
 
 ### 4.4 Qué ignora el motor, y qué rechaza
 

@@ -118,6 +118,7 @@ void addStage(CLI::App& app) {
         bool cloudShadows = true;
         bool domePrefiltered = true;
         bool screenSpaceReflections = false;
+        uint32_t meshAntialias = 0;
         bool antialias = true;
         uint32_t cloudShadowTexels = 1024;
         uint32_t cloudShadowTerms = 0;
@@ -181,6 +182,10 @@ void addStage(CLI::App& app) {
     cmd->add_flag("--screen-space-reflections", o->screenSpaceReflections,
                   "raster: the meshes that reflect show the frame's meshes along their reflection "
                   "(athenea:screenSpaceReflections)");
+    cmd->add_option("--mesh-antialias", o->meshAntialias,
+                    "raster: the meshes' edges resolved from this many samples a pixel, 4, 8 or 16; 0 draws "
+                    "one sample a pixel (athenea:meshAntialias)")
+        ->check(CLI::IsMember(std::vector<uint32_t>{0, 4, 8, 16}));
     cmd->add_flag("!--no-dome-prefilter", o->domePrefiltered,
                   "raster: a dome lights a mesh by one sample a pixel and a shadow ray, as it used to (by "
                   "default it is read prefiltered: no sample, no ray, no grain)");
@@ -257,6 +262,7 @@ void addStage(CLI::App& app) {
         (*renderer)->setCloudShadows(o->cloudShadows);
         (*renderer)->setDomePrefiltered(o->domePrefiltered);
         (*renderer)->setScreenSpaceReflections(o->screenSpaceReflections);
+        (*renderer)->setMeshAntialias(o->meshAntialias);
         (*renderer)->setCloudShadowResolution(o->cloudShadowTexels);
         (*renderer)->setCloudShadowTerms(o->cloudShadowTerms);
         (*renderer)->setCloudShadowDensity(static_cast<float>(o->cloudShadowDensity));

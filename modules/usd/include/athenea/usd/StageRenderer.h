@@ -504,6 +504,10 @@ public:
     /// athenea:screenSpaceReflections: the meshes that reflect show what the
     /// frame's meshes hold along their reflection (off by default).
     void setScreenSpaceReflections(bool on);
+    /// athenea:meshAntialias: the raster mesh layer's edges resolved from 4, 8
+    /// or 16 sub-samples a pixel (a count between rounds up); 0, the default,
+    /// one sample a pixel.
+    void setMeshAntialias(uint32_t samples);
     /// athenea:splatView: a parameter of the gaussians drawn in place of
     /// their light -- 1 albedo, 2 roughness, 3 metallic, 4 transmission,
     /// 5 ior, 6 normal, 7 opacity, 8 size, 9 sky visibility, 10 bounce,
