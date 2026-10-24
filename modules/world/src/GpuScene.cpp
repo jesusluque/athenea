@@ -137,7 +137,7 @@ Result<void> GpuScene::refresh(uint32_t k, const geom::GpuMesh& m) {
         valueAt += p.count;
     }
     batch.markDirty();
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     // The record's box is the mesh's new one; the rest of the record stands.
     constexpr size_t kWords = sizeof(MeshRecord) / 4;
     constexpr size_t kLoWord = offsetof(MeshRecord, lo) / 4;
@@ -513,7 +513,7 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
                 p["open"].setData(static_cast<float>(shutterOpen));
                 p["close"].setData(static_cast<float>(shutterClose));
             });
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());
             ++meshRevisions_[m];   // its structures follow the new positions each frame
         }
         if (anyDeforms) {
@@ -587,6 +587,24 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
     const bool sameRecords = buckets_ <= 1 && sets.empty() && instanceRecords_.rhi() == recordsBuffer_ &&
                              records.size() * sizeof(InstanceRecord) == lastRecords_.size() &&
                              std::memcmp(records.data(), lastRecords_.data(), lastRecords_.size()) == 0;
+    // WHETHER THEY STAND WHERE THEY STOOD, for what is built in world space
+    // (RayTracingScene's top level): the same comparison without the view and
+    // the normal matrix, which a camera that moved changes and the world
+    // transform, the mesh, the flags and the mask do not.
+    bool samePlacement = sameRecords;
+    if (!sameRecords && buckets_ <= 1 && sets.empty() && instanceRecords_.rhi() == recordsBuffer_ &&
+        records.size() * sizeof(InstanceRecord) == lastRecords_.size()) {
+        constexpr size_t kPlaced = offsetof(InstanceRecord, world);
+        samePlacement = true;
+        for (size_t k = 0; samePlacement && k < records.size(); ++k) {
+            samePlacement = std::memcmp(reinterpret_cast<const std::byte*>(&records[k]) + kPlaced,
+                                        lastRecords_.data() + k * sizeof(InstanceRecord) + kPlaced,
+                                        sizeof(InstanceRecord) - kPlaced) == 0;
+        }
+    }
+    if (!samePlacement) {
+        ++placementRevision_;
+    }
     if (!sameRecords) {
         ++instancesRevision_;
         recordsBuffer_ = instanceRecords_.rhi();
@@ -622,7 +640,7 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
                 p[kNames[k]].setData(view[k]);
             }
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
     }
     // Every set's records in one dispatch. Their chains are pooled, copied
     // on the device when the sets' chains change; per frame only the sets'
@@ -739,7 +757,7 @@ Result<void> GpuScene::update(std::span<const MeshInstance> instances, const ren
             }
         });
     }
-    ATHENEA_TRY(batch.submit(true));
+    ATHENEA_TRY(batch.submit());
     return ok();
 }
 

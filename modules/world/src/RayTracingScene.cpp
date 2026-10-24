@@ -2,6 +2,7 @@
 #include "athenea/world/RayTracingScene.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>   // slang-rhi's acceleration-structure-utils.h calls memcpy without it
 
 #include <slang-rhi/acceleration-structure-utils.h>
@@ -145,12 +146,22 @@ Result<void> RayTracingScene::build(const GpuScene& scene, bool refit) {
             batch.encoder()->buildAccelerationStructure(build, bottom_[s], bottom_[s],
                                                         rhi::BufferOffsetPair(updateScratch_.rhi(), 0), 0, nullptr);
             batch.markDirty();
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());   // the next refit's use of the scratch comes after it on the queue
             meshRevisions_[s] = scene.meshRevision(m);
         }
     }
 
+    // THE TOP LEVEL STANDS while what it is built from does: the bottom
+    // levels (the pools and their refits) and where the instances stand in
+    // the world. A camera that moves changes the records' view and nothing
+    // here. It used to be rebuilt every frame, and waited for twice.
     const uint32_t count = scene.tlasCount();
+    const std::array<uint64_t, 5> topKey{scene.generation(), scene.positionsRevision(), scene.placementRevision(),
+                                         count, scene.tlasFirst()};
+    if (topLevel_ != nullptr && topKey == topKey_) {
+        return ok();
+    }
+    topKey_ = topKey;
     const auto type = rhi::getAccelerationStructureInstanceDescType(device.rhi());
     const size_t stride = rhi::getAccelerationStructureInstanceDescSize(type);
     const uint32_t layout = type == rhi::AccelerationStructureInstanceDescType::Metal   ? 2u
@@ -182,7 +193,7 @@ Result<void> RayTracingScene::build(const GpuScene& scene, bool refit) {
             cursor["params"]["doubleSided"].setData(
                 static_cast<uint32_t>(rhi::AccelerationStructureInstanceFlags::TriangleFacingCullDisable));
         });
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());   // the build below comes after it on the queue
     }
     rhi::AccelerationStructureBuildInput input = {};
     input.type = rhi::AccelerationStructureBuildInputType::Instances;
@@ -193,9 +204,34 @@ Result<void> RayTracingScene::build(const GpuScene& scene, bool refit) {
     build.inputs = &input;
     build.inputCount = 1;
     build.flags = rhi::AccelerationStructureBuildFlags::PreferFastBuild;
-    auto top = buildStructure(device, build, rhi::AccelerationStructureKind::TopLevel, "scene.tlas");
-    if (!top) return std::move(top).error();
-    topLevel_ = std::move(*top);
+    // Built without a wait: its scratch is kept here rather than freed when
+    // the build returns, and the frame's rays are submitted after it on the
+    // one queue. The structure it replaces is kept one build longer, for a
+    // frame the device may still be tracing against it.
+    rhi::AccelerationStructureSizes sizes;
+    if (SLANG_FAILED(device.rhi()->getAccelerationStructureSizes(build, &sizes))) {
+        return Error(ErrorCode::DeviceFailure, "no sizes for acceleration structure 'scene.tlas'");
+    }
+    if (topScratch_.bytes() < std::max<uint64_t>(sizes.scratchSize, 1)) {
+        auto made = deviceBuffer(device, sizes.scratchSize * 3 / 2, 1, "scene.tlas.scratch");
+        if (!made) return std::move(made).error();
+        topScratch_ = std::move(*made);
+    }
+    rhi::AccelerationStructureDesc desc;
+    desc.kind = rhi::AccelerationStructureKind::TopLevel;
+    desc.size = sizes.accelerationStructureSize;
+    desc.label = "scene.tlas";
+    rhi::ComPtr<rhi::IAccelerationStructure> top;
+    if (SLANG_FAILED(device.rhi()->createAccelerationStructure(desc, top.writeRef()))) {
+        return Error(ErrorCode::OutOfMemory, "cannot allocate acceleration structure 'scene.tlas'");
+    }
+    gpu::CommandBatch batch(device);
+    batch.encoder()->buildAccelerationStructure(build, top, nullptr, rhi::BufferOffsetPair(topScratch_.rhi(), 0), 0,
+                                                nullptr);
+    batch.markDirty();
+    ATHENEA_TRY(batch.submit());
+    previousTop_ = std::move(topLevel_);
+    topLevel_ = std::move(top);
     return ok();
 }
 
