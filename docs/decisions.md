@@ -15483,3 +15483,144 @@ the L4.
 - The edge of a cutout's hole is not resolved (the candidate is not trusted there).
 - Texture aliasing inside a surface is the mip selection's, not this pass's.
 - The copy of the layer the kernel reads its neighbours from is a full-frame copy each frame.
+
+## Live splat streams, phase 1: a chunk source, a staging ring, epochs (24 Oct)
+
+A streamed cloud's chunks used to come from one place, a `.athc` file, read by `StreamingPool` itself. A live
+stream -- a capture sent over the network, another process writing pages, a file played back -- pushes chunks
+instead, and a frame must never show half of a change. Phase 1 makes the pool take its chunks from a
+`lod::ChunkSource`, moves the loaders' bytes into a mapped upload ring, caps what an update places, and adds the
+live source.
+
+### The threading rule
+
+Exactly one thread calls the device: the frame thread, the one that opened the pool. Nobody else uploads, decodes
+or submits.
+
+- **Frame thread.** `StreamingPool::open`, `want`, `update`, `cloud`, `chunkBounds`, and through `update` the
+  source's `openCloud` and `poll`. `update` asks `FrameThread::require` first (`core/FrameThread.h`, one
+  comparison of thread ids, on in every build) and refuses any other thread with `InvalidArgument`; `want`
+  ignores one.
+- **Loader threads** (the pool's own, `loaders`). `ChunkSource::fetch` copies a chunk's bytes into a staging
+  slot the frame thread handed out; no device call.
+- **Producers** (anyone). `PageQueue::push`, and `LiveSource::check` to validate a page before pushing it.
+- `status()` may be called from any thread: it reads a snapshot the last `update` left under the pool's lock.
+- slang-rhi has only `QueueType::Graphics`, no copy queue, so uploads go on the one queue, ordered with the
+  frame's work, under a per-frame byte budget. Shared fences (`FenceDesc::isShared`) exist on Vulkan, CUDA and
+  Metal and are not needed yet: nothing outside the process waits on the pool.
+
+### `ChunkSource`
+
+`lod/ChunkSource.h`: the format every chunk holds (`ChunkFormat`, the `.athc` chunk block's element layout),
+the chunk count, a chunk's bounds, `openCloud` (the device part that is not chunks: the merged levels and the
+finest groups' starts), `request(chunk)` and `fetch(request, staging)`, and for a live source `poll`, which
+hands over the changes of every epoch now complete. A request carries a ticket (0 for a file, whose chunks have
+one version; a page's for a live source), so a loader fetches the version an epoch asked for.
+
+`AthcSource` is the file: the header parsed and the file mapped at `open` (any thread, no device), a chunk's
+bytes copied off the mapping in `fetch`. `StreamingPool::open(device, path, settings)` is now
+`open(device, AthcSource::open(path), settings)`; the placement policy -- most wanted first, a free slot, then
+the least recently wanted, then one wanted less than half as much -- is unchanged.
+
+### Staging: a mapped upload ring
+
+Loaders used to copy a chunk into a `std::vector`, and `update` handed the vector to `uploadBufferData`, which
+copied it again into slang-rhi's staging heap on the frame thread. Now the pool makes one `Memory::Upload` buffer
+of `stagingChunks` whole chunks (default `2 * loaders + 4`), maps it once at open and keeps it mapped. A loader
+takes a free slot of it before it takes a request (so a loader that has a request always finishes), `fetch`
+writes the chunk there, and `update` records device copies out of it (`copyBuffer`, one an array) into the store.
+The frame thread does no memcpy. A slot goes back to the loaders when the pool's fence passes the submit that
+read it.
+
+Whether another thread may write a mapped upload buffer while the frame thread records: in slang-rhi
+(`e17f6d7`), `mapBuffer` of an upload buffer returns
+- Metal: `MTLBuffer::contents()` of a shared, write-combined buffer -- the same pointer for the buffer's life;
+  `unmapBuffer` does nothing.
+- CUDA: the host pointer of a pinned host allocation (`m_hostMemHeap`); `unmapBuffer` does nothing.
+- Vulkan: `vkMapMemory` over `HOST_VISIBLE | HOST_COHERENT` memory; one map held for the buffer's life is
+  legal, and coherent memory needs no flush.
+
+So the pointer is plain memory on all three, and writing it from another thread is safe as long as no copy is
+reading the same bytes: the ring's slots and the fence give that. The writes are made visible to the frame thread
+by the pool's mutex (a loader publishes the slot under it), and to the device by the submit that follows. The
+debug layer's map validation (`SLANG_RHI_DEBUG_ENABLE_BUFFER_MAP_VALIDATION`) is compiled out; with it on it
+would only check map/unmap pairing, which one map for the buffer's life keeps.
+
+One exception: slang-rhi's CUDA fence takes its value when the host submits, not when the device gets there (see
+"A frame waits for the device once"). On CUDA a batch that read staging is therefore submitted and waited for, as
+every `update` was before; on Metal and Vulkan `update` no longer waits for the device at all, and an update that
+placed nothing submits nothing.
+
+### The frame's budget
+
+`StreamingSettings::bytesPerFrame` (default 0, no limit) caps the chunk bytes one `update` places; a loaded chunk
+past it stays in staging, still in flight, for the next frame. The first chunk of a frame is always placed, so a
+chunk bigger than the cap still comes. `update(true)` waits for the loads, round after round while the staging
+is full, but not past the budget. `Status::placedBytes` and `deferred` say what the last update did.
+
+### Live streams (`lod/SplatStream.h`)
+
+- **`PageUpdate`** `{stream, epoch, chunk, op add|replace|remove, bytes, bounds, ptpTime, pages}`. The bytes are
+  the `.athc` chunk block of the stream's format, 1 to `chunkSplats` splats, so no new reader was needed; SPZ
+  pages come later. `pages` is how many pages the epoch has, on every page of it: completeness is a count, not an
+  end marker, so several producers may write one epoch in any order.
+- **`PageQueue`**: many producers, one consumer; a mutex and a vector a stream, drained whole.
+- **`LiveSource`**: gathers a stream's pages into epochs (a later page of a chunk in the same epoch replaces the
+  earlier), refuses pages that fail `check` (wrong stream, chunk, size) and pages of an epoch already handed
+  over (late), and hands the pool every complete epoch in order. When a later epoch is complete while an earlier
+  one is not, the earlier is dropped and counted: a stream's pages of epoch N are all pushed before any of
+  N + 1. The page bytes wait in the source until a loader fetches them, once.
+- **In the pool**: an epoch is built beside the one shown. Each add or replace takes a slot the shown epoch does
+  not use, and its chunk's entry in a second slot table (`nextSlots`) points there; a remove clears the entry.
+  Only when every page of the epoch is placed are the tables swapped: `cloud().slots`, the per-chunk counts and
+  the resident flags become the new epoch's, and the slots only the old one used are free. The cut runs between
+  updates, so it only ever sees a whole epoch, and the device copies that placed it come before anything the
+  frame records after them on the one queue. A live store therefore holds two epochs (`budgetSplats` up to twice
+  the chunks); an epoch that does not fit beside the shown one is refused with `OutOfMemory` and stays first, and
+  the stream shows the last epoch until it is given room.
+- **Drawing**: a live cloud has no merged levels. `CutSelector::select` copies its shown chunks as they are, in
+  chunk order, into the frame's cloud (device copies, no cut, no readback), and `LodCloud::chunkCounts` carries
+  each page's own count. `Status::epoch` and `ptpTime` are the epoch shown.
+
+### How it is checked
+
+`athenea_lod_tests "[stream]"`, Metal (M5 Pro), clouds of 6000 splats in 6 chunks of 1000; every image is
+compared on the device (`compareImages`) and only counts are read back:
+
+- **`AthcSource` is today's pool.** Opened over an explicit `AthcSource` with a single staging slot, updated
+  without waiting, the pool settles on the cloud read whole: at threshold 0 in 13 frames, 6000 splats, max 0; at
+  24 px in 5 frames, 105 splats + 2596 merged, the same counts as the cloud in memory, max 0. Opened by path and
+  waited for, as before, max 0.
+- **The budget.** One chunk's bytes a frame (the cap at 1.5 chunks): every update places at most one chunk and
+  `placedBytes` never passes the cap; all of it in 7 updates where the uncapped pool took 3, and the image the
+  uncapped one settles on, max 0.
+- **Whole epochs.** A producer thread pushes 8 epochs of 6 pages (each chunk A's, B's or removed, every epoch a
+  different image -- each pair of consecutive references differs), 3 ms apart; the frame thread updates with a
+  budget of one page a frame and renders after every update. Over 1984 frames, 32 of them drawn while an epoch was
+  being built, every frame equals the reference of the epoch `status()` names (a cloud uploaded straight from
+  that epoch's chunk blocks, in chunk order), max 0, never a mismatch; epochs never go back; all 8 shown, 48
+  pages, none refused or dropped.
+- **Replace and remove.** Epoch by epoch -- all six added, one replaced and one removed, the removed one added
+  back and another removed, then ten epochs replacing everything in a store of exactly two epochs -- the pool
+  shows the expected chunks, max 0 each time, and `resident` follows. An epoch that never comes whole is dropped
+  when a later one does (counted, logged), its late page is counted late, and a page of the wrong size is refused
+  and changes nothing. A store with room for one epoch refuses a second that replaces everything with
+  `OutOfMemory` and keeps showing the first.
+- **The thread check.** `update` from another thread is refused with `InvalidArgument` naming the frame thread;
+  so is `update` from inside a loader's `fetch` (a source that calls it on its first fetch), and the pool still
+  settles on the whole cloud, max 0.
+
+The existing lod tests (`"a .athc reads back as it was built, and a stream settles on the same image"`, whose
+pool now opens through `AthcSource` and fills through the staging ring) and the USD test that streams a `.athc`
+through Hydra run unchanged: all 16 lod test cases (6663 assertions) and the USD one pass.
+
+### Not done
+
+- Hydra and USD: no `AtheneaLiveSourceAPI` schema yet, and `Engine` still opens pools by path; the live source
+  is reached only through the C++ API.
+- SPZ pages (after phase 0): a page is the `.athc` chunk block.
+- Shared fences: nothing outside the process waits on or signals the pool.
+- Merged levels for live content: a live cloud is drawn whole, without a cut; its pages' bounds are kept per
+  chunk (`chunkBounds`) for a later cull.
+- A CUDA fence that the device signals, which would let CUDA place without waiting as Metal and Vulkan now do.
+- A copy queue: slang-rhi has none, so uploads share the graphics queue under the byte budget.

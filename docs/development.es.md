@@ -50,7 +50,7 @@ coinciden, la cabecera tiene razón.
 | 13 | light | `light/LightTable.h` — una luz en el dispositivo |
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
+| 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `lod/ChunkSource.h` (de dónde vienen los chunks de una nube en streaming, y qué hilo puede hacer qué), `lod/SplatStream.h` (streams en vivo: páginas empujadas por épocas); `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
 | 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
@@ -78,6 +78,18 @@ slang-rhi de un buffer gpe, un handle gpe sobre un buffer slang-rhi -- son
 tres funciones libres en `gpu_host/Views.h`, sobre el dispositivo y el pool
 desnudos; los métodos del contexto las llaman, y también un programa que ya
 tiene hilo de GPU y pool propios y sólo quiere el cruce.
+
+La misma regla vale dentro del motor dondequiera que se encuentren hilos:
+**un solo hilo llama al dispositivo, el hilo del frame**. Un
+`lod::StreamingPool` es el modelo. Su hilo del frame es el que lo abrió
+(`core/FrameThread.h`), y toda llamada que graba un comando lo pregunta antes
+y rechaza cualquier otro hilo con un error, en todos los builds. Sus hilos
+cargadores leen y descomprimen, y copian a un buffer de staging que el hilo
+del frame mapeó una vez al abrir; nunca llegan al dispositivo. Los
+productores -- un receptor de red, otro proceso, un fichero que se reproduce
+-- sólo empujan `lod::PageUpdate`s a una `lod::PageQueue`. Una función nueva
+que pertenece a uno de ellos dice a cuál en su comentario (hilo del frame,
+hilos cargadores, cualquier hilo), y un test la llama desde el equivocado.
 
 ### 1.3 Un frame, rasterizado
 

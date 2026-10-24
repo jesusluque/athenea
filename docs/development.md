@@ -50,7 +50,7 @@ document, the header is right.
 | 13 | light | `light/LightTable.h` — a light on the device |
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
+| 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `lod/ChunkSource.h` (where a streamed cloud's chunks come from, and which thread may do what), `lod/SplatStream.h` (live streams: pages pushed in epochs); `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
 | 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
@@ -78,6 +78,17 @@ slang-rhi view of a gpe buffer, a gpe handle on a slang-rhi buffer -- is
 three free functions in `gpu_host/Views.h`, on the bare device and pool; the
 context's methods call them, and so does a program that has a GPU thread and
 a pool of its own and wants only the crossing.
+
+The same rule holds inside the engine wherever threads meet: **one thread
+calls the device, the frame thread**. A `lod::StreamingPool` is the model.
+Its frame thread is the one that opened it (`core/FrameThread.h`), and every
+call that records a command asks first and refuses any other thread with an
+error, in every build. Its loader threads read and decompress, and copy into
+a staging buffer the frame thread mapped once at open; they never reach the
+device. Producers -- a network receiver, another process, a file played --
+only push `lod::PageUpdate`s onto a `lod::PageQueue`. A new function that
+belongs to one of these says which in its comment (frame thread, loader
+threads, any thread), and a test calls it from the wrong one.
 
 ### 1.3 A frame, rasterised
 

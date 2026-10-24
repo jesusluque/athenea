@@ -471,17 +471,77 @@ std::vector<Run> runsOf(const LodCloud& lod) {
             previous = -2;
             continue;
         }
+        // A chunk holding fewer than chunkSplats (the last, or a live page)
+        // leaves a gap before the next slot: the run ends with it.
         if (slot == previous + 1 && !runs.empty()) {
             runs.back().count += lod.chunkCount(c);
         } else {
             runs.push_back({static_cast<uint32_t>(slot) * lod.chunkSplats, lod.chunkCount(c)});
         }
-        previous = slot;
+        previous = lod.chunkCount(c) == lod.chunkSplats ? slot : -2;
     }
     return runs;
 }
 
 }   // namespace
+
+Result<void> CutSelector::ensureCloud(const LodCloud& lod, Frame& frame, uint32_t drawn) {
+    gpu::Device& device = *device_;
+    if (frame.capacity < drawn || frame.cloud.restPerColour != lod.splats.restPerColour ||
+        frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid() ||
+        frame.cloud.hasNormals() != lod.splats.hasNormals() ||
+        frame.cloud.hasEmission() != lod.splats.hasEmission() || !sameExtras(lod.splats, frame.cloud)) {
+        const uint32_t capacity = std::max(drawn, frame.capacity + frame.capacity / 2);
+        auto made = packed(device, std::max(capacity, 1u), lod.splats.restPerColour, lod.splats.shWords,
+                           "cut.frame", lod.splats.hasNormals(), lod.splats.hasEmission());
+        if (!made) return std::move(made).error();
+        ATHENEA_TRY(allocateExtras(device, lod.splats, std::max(capacity, 1u), *made));
+        frame.cloud = std::move(*made);
+        frame.capacity = std::max(capacity, 1u);
+    }
+    frame.cloud.source = lod.splats.source;
+    frame.cloud.linear = lod.splats.linear;
+    frame.cloud.count = drawn;
+    frame.cloud.declared = lod.count;
+    frame.cloud.bounds = lod.splats.bounds;
+    return ok();
+}
+
+Result<uint32_t> CutSelector::copyChunks(const LodCloud& lod, Frame& frame) {
+    const std::vector<Run> runs = runsOf(lod);
+    uint32_t drawn = 0;
+    for (const Run& run : runs) {
+        drawn += run.count;
+    }
+    if (drawn == 0) {
+        return drawn;
+    }
+    ATHENEA_TRY(ensureCloud(lod, frame, drawn));
+    gpu::CommandBatch batch(*device_);
+    rhi::ICommandEncoder* e = batch.encoder();
+    const auto copy = [&](const gpu::Buffer& from, const gpu::Buffer& to, uint64_t perSplat) {
+        uint64_t at = 0;
+        for (const Run& run : runs) {
+            e->copyBuffer(to.rhi(), at * perSplat, from.rhi(), uint64_t{run.offset} * perSplat, run.count * perSplat);
+            at += run.count;
+        }
+    };
+    copy(lod.splats.positions, frame.cloud.positions, 16);
+    copy(lod.splats.shape, frame.cloud.shape, 16);
+    copy(lod.splats.sh, frame.cloud.sh, 4 * uint64_t{lod.splats.shWords});
+    if (lod.splats.hasNormals()) {
+        copy(lod.splats.normals, frame.cloud.normals, 4);
+    }
+    if (lod.splats.hasEmission()) {
+        copy(lod.splats.emission, frame.cloud.emission, 4);
+    }
+    for (const Extra& x : extrasOf(lod.splats)) {
+        copy(lod.splats.*x.member, frame.cloud.*x.member, 4 * uint64_t{x.words});
+    }
+    batch.markDirty();
+    ATHENEA_TRY(batch.submit());
+    return drawn;
+}
 
 Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Projection& projection,
                                                                std::span<const LodInstance> instances,
@@ -504,10 +564,26 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         }
         const float cutThreshold = instance.threshold.value_or(threshold);
         const LodCloud& lod = *instance.cloud;
-        if (lod.levels.empty()) {
-            return Error(ErrorCode::InvalidArgument, lod.splats.source + ": a cut needs a merged level");
-        }
         Frame& frame = *frames_[k];
+        if (lod.levels.empty()) {
+            if (!lod.streamed) {
+                return Error(ErrorCode::InvalidArgument, lod.splats.source + ": a cut needs a merged level");
+            }
+            // A live stream's: nothing to cut to, its chunks on the device
+            // copied as they are into the frame's cloud.
+            auto drawn = copyChunks(lod, frame);
+            if (!drawn) return std::move(drawn).error();
+            if (stats != nullptr) {
+                CutStats s;
+                s.splats = *drawn;
+                s.available = *drawn;
+                stats->push_back(std::move(s));
+            }
+            if (*drawn > 0) {
+                out.push_back({&frame.cloud, instance.objectToWorld, instance.edit});
+            }
+            continue;
+        }
         const std::vector<Run> runs = runsOf(lod);
         const size_t levels = lod.levels.size();
         const size_t parts = levels + runs.size();
@@ -622,23 +698,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             drawn += read[part];
             splatsDrawn += part < levels ? 0 : read[part];
         }
-        if (frame.capacity < drawn || frame.cloud.restPerColour != lod.splats.restPerColour ||
-            frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid() ||
-            frame.cloud.hasNormals() != lod.splats.hasNormals() ||
-            frame.cloud.hasEmission() != lod.splats.hasEmission() || !sameExtras(lod.splats, frame.cloud)) {
-            const uint32_t capacity = std::max(drawn, frame.capacity + frame.capacity / 2);
-            auto made = packed(device, std::max(capacity, 1u), lod.splats.restPerColour, lod.splats.shWords,
-                               "cut.frame", lod.splats.hasNormals(), lod.splats.hasEmission());
-            if (!made) return std::move(made).error();
-            ATHENEA_TRY(allocateExtras(device, lod.splats, std::max(capacity, 1u), *made));
-            frame.cloud = std::move(*made);
-            frame.capacity = std::max(capacity, 1u);
-        }
-        frame.cloud.source = lod.splats.source;
-        frame.cloud.linear = lod.splats.linear;
-        frame.cloud.count = drawn;
-        frame.cloud.declared = lod.count;
-        frame.cloud.bounds = lod.splats.bounds;
+        ATHENEA_TRY(ensureCloud(lod, frame, drawn));
         {
             gpu::CommandBatch batch(device);
             uint32_t base = 0;

@@ -49,6 +49,8 @@ struct LodLevel {
 /// the Morton order, the last holding the rest -- which need not be. A chunk
 /// on the device sits in a slot of the store (slot k: splats from
 /// k * chunkSplats); built in memory, chunk c is slot c and all are there.
+/// A live stream's cloud (SplatStream.h) has no merged levels: its chunks
+/// on the device are drawn as they are, and the others not at all.
 struct LodCloud {
     uint32_t              count = 0;         ///< splats in the cloud
     uint32_t              chunkSplats = 0;   ///< splats per chunk
@@ -56,7 +58,7 @@ struct LodCloud {
     gpu::Buffer           groups;            ///< uint per store splat: its finest-level group
     std::vector<int32_t>  slots;             ///< per chunk: its slot, or -1 when not on the device
     gpu::Buffer           resident;          ///< uint per chunk: 1 when on the device
-    std::vector<LodLevel> levels;            ///< coarsest first, consecutive levels, never empty
+    std::vector<LodLevel> levels;            ///< coarsest first, consecutive levels; empty only for a live stream
     gpu::Buffer           starts;            ///< uint per finest-level group: its first splat
     /// uint per store splat: which splat of the cloud it was built from --
     /// the Morton order, kept so that what the cloud carries beside its
@@ -66,10 +68,14 @@ struct LodCloud {
     float                 extent = 0.0F;     ///< the largest edge of the bounds
     /// Chunks come and go (a StreamingPool's): the cut says which it wants.
     bool                  streamed = false;
+    /// Per chunk, its splats, where chunks hold any number up to
+    /// `chunkSplats` (a live stream's pages); empty where each holds
+    /// `chunkSplats` but the last.
+    std::vector<uint32_t> chunkCounts;
 
     [[nodiscard]] uint32_t chunks() const noexcept { return static_cast<uint32_t>(slots.size()); }
     [[nodiscard]] uint32_t chunkCount(uint32_t chunk) const noexcept {
-        return std::min(chunkSplats, count - chunk * chunkSplats);
+        return chunk < chunkCounts.size() ? chunkCounts[chunk] : std::min(chunkSplats, count - chunk * chunkSplats);
     }
     [[nodiscard]] uint32_t mergedGaussians() const noexcept {
         uint32_t n = 0;
@@ -132,7 +138,8 @@ public:
 
     /// Each instance's cut for this view, as instances the rasteriser draws.
     /// A cell is drawn merged when it projects to at most `threshold` pixels;
-    /// 0 draws every splat as it is. The returned clouds belong to this
+    /// 0 draws every splat as it is. A cloud without merged levels (a live
+    /// stream's) draws its chunks on the device as they are, in chunk order. The returned clouds belong to this
     /// selector and are rewritten by the next call. `stats`, when given, holds
     /// one entry per instance, in order.
     [[nodiscard]] Result<std::vector<render::SplatInstance>> select(const render::Projection& projection,
@@ -143,6 +150,11 @@ public:
 private:
     CutSelector();
     struct Frame;
+    /// The frame's cloud with room for `drawn` gaussians of `lod`'s kind.
+    [[nodiscard]] Result<void> ensureCloud(const LodCloud& lod, Frame& frame, uint32_t drawn);
+    /// A cloud without merged levels: its chunks on the device copied into
+    /// the frame's cloud, in chunk order. Returns the splats copied.
+    [[nodiscard]] Result<uint32_t> copyChunks(const LodCloud& lod, Frame& frame);
     gpu::Device*                        device_ = nullptr;
     gpu::PrefixSum                      prefix_;
     gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_, extrasGather_;
