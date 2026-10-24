@@ -1845,6 +1845,21 @@ captura graduada aquí no coincide con los mismos números aplicados a su sRGB.
 | `primvars:athenea:lod:threshold` | float | `1` |
 | `primvars:athenea:stream:budget` | int64 | `0`, lee entero |
 
+**`AtheneaLiveSourceAPI`** — una nube dibujada desde un stream en vivo de
+páginas SPZ que productores del mismo proceso empujan, una época cada vez, al
+stream de este nombre (`lod::PageQueue::named`). Un frame dibuja la última
+época cuyas páginas están todas en el dispositivo, nunca media; una época sin
+sitio junto a la que se muestra, o con una página que no se descomprime, se
+descarta con un aviso. Sólo la dibuja el rasterizador, sin niveles de detalle.
+
+| Atributo | Tipo | Por defecto |
+|---|---|---|
+| `primvars:athenea:live:stream` | string | —, no se dibuja nada |
+| `primvars:athenea:live:chunks` | int | `64`; los ids de chunk de las páginas van de 0 a este menos uno |
+| `primvars:athenea:live:chunkSplats` | int | `65536`; las gaussianas que como mucho tiene una página |
+| `primvars:athenea:live:degree` | int 0..3 | `3`; armónicos que se guardan |
+| `primvars:athenea:stream:budget` | int64 ‹gaussianas› | `0`: dos veces `chunks` × `chunkSplats` |
+
 **Niveles de detalle de un ParticleField** — la misma nube convertida con
 varias celdas (`athenea mesh2splat --lod-levels`).
 

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "Engine.h"
+#include "athenea/lod/SplatStream.h"
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/pxOsd/tokens.h>
 #include <pxr/base/gf/vec4f.h>
@@ -127,7 +128,7 @@ std::string Engine::relieveMemory() {
         // Every streamed asset opened again, at the budget this level allows.
         const std::lock_guard<std::mutex> held(guard_);
         for (auto& [id, entry] : splats_) {
-            if (!entry.asset.path.empty() && !entry.assetPending.has_value()) {
+            if (!entry.asset.path.empty() && entry.asset.live.empty() && !entry.assetPending.has_value()) {
                 entry.assetPending = entry.asset;
                 entry.asset = StreamedAsset{};
                 entry.lodCloud.reset();
@@ -1371,10 +1372,37 @@ Result<size_t> Engine::commit() {
         if (entry.assetPending.has_value()) {
             StreamedAsset asset = std::move(*entry.assetPending);
             entry.assetPending.reset();
-            if (asset.path != entry.asset.path || asset.budget != entry.asset.budget) {
+            if (!asset.sameSource(entry.asset)) {
                 entry.lodCloud.reset();
                 entry.pool.reset();
-                if (!asset.path.empty()) {
+                entry.liveEpoch = 0;
+                if (!asset.live.empty()) {
+                    // A LIVE STREAM: the queue its name stands for, a
+                    // LiveSource over it, and a pool this thread -- the only
+                    // one that calls the device -- updates every frame.
+                    lod::LiveSettings live;
+                    live.stream = 0;
+                    live.chunks = std::max(asset.liveChunks, 1u);
+                    live.name = asset.live;
+                    live.format.payload = lod::ChunkFormat::Payload::Spz;
+                    live.format.chunkSplats = std::max(asset.liveChunkSplats, 1u);
+                    static constexpr uint32_t kPerDegree[] = {0, 3, 8, 15};
+                    live.format.restPerColour = kPerDegree[std::min(asset.liveDegree, 3u)];
+                    live.format.shWords = live.format.restPerColour == 0 ? 1 : (live.format.restPerColour * 3 + 1) / 2;
+                    auto source = lod::LiveSource::create(lod::PageQueue::named(asset.live), live);
+                    lod::StreamingSettings settings;
+                    settings.budgetSplats = asset.budget != 0 ? asset.budget
+                                                              : uint64_t{2} * live.chunks * live.format.chunkSplats;
+                    settings.library = library_.get();
+                    auto pool = source ? lod::StreamingPool::open(
+                                             *device_, std::unique_ptr<lod::ChunkSource>(std::move(*source)), settings)
+                                       : Result<std::unique_ptr<lod::StreamingPool>>(source.error());
+                    if (pool) {
+                        entry.pool = std::move(*pool);
+                    } else {
+                        log::warn("hdAthenea: {}: {}", id.GetString(), pool.error().toString());
+                    }
+                } else if (!asset.path.empty()) {
                     // Held to the device's budget (streamBudget), which may
                     // stream a file asked to be read whole.
                     if (const uint64_t budget = streamBudget(id, asset); budget > 0) {
@@ -1397,7 +1425,20 @@ Result<size_t> Engine::commit() {
             }
             entry.asset = std::move(asset);
         }
-        if (!entry.asset.path.empty()) {
+        if (entry.pool != nullptr && !entry.asset.live.empty()) {
+            // The epochs placed since the last frame, before this frame's
+            // cut: it draws the last one whole. A new one is a change any
+            // accumulation must start again from.
+            auto placed = entry.pool->update(false);
+            if (!placed) {
+                log::warn("hdAthenea: {}: {}", id.GetString(), placed.error().toString());
+            } else if (const uint64_t epoch = entry.pool->status().epoch; epoch != entry.liveEpoch) {
+                entry.liveEpoch = epoch;
+                revision_.fetch_add(1);
+                ++uploaded;
+            }
+        }
+        if (entry.asset.any()) {
             // The asset stands in for the prim's own arrays.
             entry.pending.reset();
             entry.gpu.reset();
@@ -2480,7 +2521,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             // cell may span: a coarser cut, fewer splats.
             cuts.push_back({cloud, entry.objectToWorld, entry.edit,
                             entry.asset.threshold * static_cast<float>(1u << lodBias_)});
-            poolOf.push_back(entry.pool.get());
+            // A live pool is updated before the cut (commit), not by what it wants.
+            poolOf.push_back(entry.asset.live.empty() ? entry.pool.get() : nullptr);
             cutPrims.push_back(id.GetString());
         }
         for (const auto& [id, entry] : meshes_) {

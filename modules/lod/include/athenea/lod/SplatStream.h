@@ -61,6 +61,12 @@ public:
     /// page of it pushed so far, in push order, appended to `out`.
     void drain(uint32_t stream, std::vector<PageUpdate>& out);
 
+    /// THE QUEUE A NAME STANDS FOR, made on first use and shared by every
+    /// caller of the same name for the process's life: how a producer and a
+    /// stage that names the stream (AtheneaLiveSourceAPI) meet without
+    /// knowing each other. Any thread.
+    [[nodiscard]] static std::shared_ptr<PageQueue> named(const std::string& name);
+
 private:
     std::mutex                                            mutex_;
     std::unordered_map<uint32_t, std::vector<PageUpdate>> pending_;

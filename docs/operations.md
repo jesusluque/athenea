@@ -1790,6 +1790,21 @@ capture graded here does not match the same numbers applied to its sRGB.
 | `primvars:athenea:lod:threshold` | float | `1` |
 | `primvars:athenea:stream:budget` | int64 | `0`, read whole |
 
+**`AtheneaLiveSourceAPI`** — a cloud drawn from a live stream of SPZ pages that
+producers in the same process push, an epoch at a time, onto the stream of
+this name (`lod::PageQueue::named`). A frame draws the last epoch whose every
+page is on the device, never half of one; an epoch without room beside the
+one shown, or with a page that does not decompress, is dropped with a warning.
+Drawn by the rasteriser only, without levels of detail.
+
+| Attribute | Type | Default |
+|---|---|---|
+| `primvars:athenea:live:stream` | string | —, nothing drawn |
+| `primvars:athenea:live:chunks` | int | `64`; page chunk ids are 0 to this less one |
+| `primvars:athenea:live:chunkSplats` | int | `65536`; the most gaussians a page holds |
+| `primvars:athenea:live:degree` | int 0..3 | `3`; harmonics kept |
+| `primvars:athenea:stream:budget` | int64 ‹gaussians› | `0`: twice `chunks` × `chunkSplats` |
+
 **Levels of detail of a ParticleField** — the same cloud converted at several
 cells (`athenea mesh2splat --lod-levels`).
 

@@ -2184,7 +2184,8 @@ TEST_CASE("the codeless athenea schemas register, with their defaults", "[usd][s
     // skinning one was read by name for a whole milestone without being
     // registered at all, and three sets of primvars were consumed with no
     // declaration anywhere.
-    for (const char* name : {"AtheneaStreamedAssetAPI", "AtheneaSplatSkinningAPI", "AtheneaSplatVisibilityAPI", "AtheneaVolumeAPI"}) {
+    for (const char* name : {"AtheneaStreamedAssetAPI", "AtheneaLiveSourceAPI", "AtheneaSplatSkinningAPI",
+                             "AtheneaSplatVisibilityAPI", "AtheneaVolumeAPI"}) {
         INFO(name);
         CHECK(registry.FindAppliedAPIPrimDefinition(TfToken(name)) != nullptr);
     }

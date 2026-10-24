@@ -15722,8 +15722,7 @@ through Hydra run unchanged: all 16 lod test cases (6663 assertions) and the USD
 
 ### Not done
 
-- Hydra and USD: no `AtheneaLiveSourceAPI` schema yet, and `Engine` still opens pools by path; the live source
-  is reached only through the C++ API.
+- Hydra and USD: done in phase 1d below.
 - SPZ pages (after phase 0): a page is the `.athc` chunk block.
 - Shared fences: nothing outside the process waits on or signals the pool.
 - Merged levels for live content: a live cloud is drawn whole, without a cut; its pages' bounds are kept per
@@ -15808,3 +15807,39 @@ contract rather than one reader among several.
   turn for the rotated families) on positions, rotations and each harmonic band.
 - The packed streams' offsets are 32-bit in the kernel: a cloud's streams past 4 GiB are refused.
 - The rest of the readers (PLY, `.splat`) still expand on the CPU.
+
+## A live stream named by a stage (phase 1d, 25 Oct)
+
+`AtheneaLiveSourceAPI` (codeless, beside `AtheneaStreamedAssetAPI`): a ParticleField whose gaussians come from a
+live stream of SPZ pages. `primvars:athenea:live:stream` names it; `chunks`, `chunkSplats` and `degree` give its
+shape, and `primvars:athenea:stream:budget` its store (0: two epochs of every chunk full).
+
+- **The meeting point.** `lod::PageQueue::named(name)`: a queue a name stands for, made on first use and shared
+  for the process's life. A producer pushes to it without knowing the stage; the engine finds it by the name the
+  prim gives.
+- **Threads.** Sync only records the name and the shape in the cloud's `StreamedAsset` (`ParticleField.cpp`),
+  as it does an `.athc` path. The render thread's commit opens a `StreamingPool` over a `LiveSource` on the named
+  queue, and on every frame, before the cut, updates it without waiting: the frame draws the last complete
+  epoch, never one this frame half placed. A new epoch raises `revision_`, so an accumulation (a path-traced
+  frame) starts again from it. The pool is left out of the cut's `want`/`update`, which serve on-demand pools.
+- **Drawn** by the rasteriser, as a cut of a cloud without levels (every shown chunk as it is), as any streamed
+  asset is.
+
+### How it is checked
+
+`athenea_usd_tests "a live stream a stage names is drawn through Hydra a whole epoch at a time"` (Metal, M5
+Pro): a stage names a stream of three chunks; a producer thread pushes five epochs of SPZ pages (a chunk
+removed in each, the rest new gaussians), 15 ms apart, while `StageRenderer` draws frame after frame. Each frame
+is compared with every epoch drawn directly from its pages' clouds: over 228 frames every frame is one whole
+epoch (p99 1, max 2 or closer, as Hydra and a direct draw are elsewhere), the epochs never go back, all six
+states (none, 1 to 5) are seen, and the last is reached. The `.athc` Hydra test and the schema registry test
+(which now lists `AtheneaLiveSourceAPI`) pass.
+
+### Not done
+
+- A producer in another binary image: the named queues live in this engine's `lod` library, so a producer must
+  share the process image the delegate runs in (StageRenderer, or a host linking the same library). IPC and
+  network receivers come later.
+- The live cloud's bounds are not known to the stage (`splats.bounds` is empty): framing and bounds queries do
+  not see it.
+- Path tracing a live stream: the rasteriser alone draws it, as with any streamed asset.

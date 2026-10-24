@@ -32,6 +32,17 @@ void PageQueue::drain(uint32_t stream, std::vector<PageUpdate>& out) {
     }
 }
 
+std::shared_ptr<PageQueue> PageQueue::named(const std::string& name) {
+    static std::mutex                                                 mutex;
+    static std::unordered_map<std::string, std::shared_ptr<PageQueue>> queues;
+    std::lock_guard lock(mutex);
+    std::shared_ptr<PageQueue>& queue = queues[name];
+    if (queue == nullptr) {
+        queue = std::make_shared<PageQueue>();
+    }
+    return queue;
+}
+
 namespace {
 
 /// An epoch's pages as they come: by chunk, a later page of a chunk in the

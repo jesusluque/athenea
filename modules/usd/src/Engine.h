@@ -66,12 +66,25 @@
 
 namespace athenea::usd {
 
-/// AtheneaStreamedAssetAPI: a .athc drawn with its levels of detail.
+/// AtheneaStreamedAssetAPI: a .athc drawn with its levels of detail; or
+/// AtheneaLiveSourceAPI: a live stream of SPZ pages, named, that producers push
+/// onto lod::PageQueue::named(live). Sync records them; the render thread
+/// opens the pool.
 struct StreamedAsset {
     std::string path;              ///< resolved; empty when the prim has none
     float       threshold = 1.0F;  ///< px a merged cell may span
-    uint64_t    budget = 0;        ///< splats on the device; 0 reads the file whole
+    uint64_t    budget = 0;        ///< splats on the device; 0 reads the file whole (a stream: two epochs' room)
+    std::string live;              ///< the stream's name; empty when the prim names none
+    uint32_t    liveChunks = 64;   ///< chunk ids 0 .. liveChunks - 1
+    uint32_t    liveChunkSplats = 65536;
+    uint32_t    liveDegree = 3;    ///< harmonics kept, 0..3
 
+    [[nodiscard]] bool any() const noexcept { return !path.empty() || !live.empty(); }
+    /// The same pool, whatever the threshold.
+    [[nodiscard]] bool sameSource(const StreamedAsset& o) const noexcept {
+        return path == o.path && budget == o.budget && live == o.live && liveChunks == o.liveChunks &&
+               liveChunkSplats == o.liveChunkSplats && liveDegree == o.liveDegree;
+    }
     bool operator==(const StreamedAsset&) const = default;
 };
 
@@ -143,7 +156,8 @@ struct SplatEntry {
     std::optional<StreamedAsset>        assetPending;
     StreamedAsset                       asset;
     std::unique_ptr<lod::LodCloud>      lodCloud;   ///< the asset read whole
-    std::unique_ptr<lod::StreamingPool> pool;       ///< or streamed
+    std::unique_ptr<lod::StreamingPool> pool;       ///< or streamed, or live
+    uint64_t                            liveEpoch = 0;   ///< the live pool's epoch last drawn
     /// AtheneaSplatSkinningAPI. The cloud on the device is the bind pose; `posed`
     /// is the same cloud with the skeleton's transforms in it, and is what a
     /// frame draws. Its buffers outlive the frame, so the cloud a renderer

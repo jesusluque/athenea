@@ -88,6 +88,37 @@ ParticleField itself."""
     )
 }
 
+class "AtheneaLiveSourceAPI" (
+    doc = """A Gaussian splat cloud drawn from a live stream: SPZ pages that a
+producer -- a network receiver, another process, a player -- pushes onto the
+stream of this name (lod::PageQueue::named), an epoch at a time, each page
+one chunk. The frame draws the last epoch whose every page is on the device,
+never half of one; the ParticleField's own arrays may be left empty. Its
+properties are constant primvars; author them on the ParticleField itself."""
+)
+{
+    string primvars:athenea:live:stream = "" (
+        doc = "The stream's name: what its producers push to."
+        interpolation = "constant"
+    )
+    int primvars:athenea:live:chunks = 64 (
+        doc = "Chunk ids a page may name, 0 to this less one."
+        interpolation = "constant"
+    )
+    int primvars:athenea:live:chunkSplats = 65536 (
+        doc = "The most gaussians a page holds."
+        interpolation = "constant"
+    )
+    int primvars:athenea:live:degree = 3 (
+        doc = "Harmonics kept of the pages', 0 to 3."
+        interpolation = "constant"
+    )
+    int64 primvars:athenea:stream:budget = 0 (
+        doc = "Gaussians the device holds for the stream (0: two epochs of every chunk full, the one shown and the one being built)."
+        interpolation = "constant"
+    )
+}
+
 class "AtheneaPointStyleAPI" (
     doc = """How athenea draws a UsdGeomPoints: widths are world units
 unless sizeInPixels says otherwise, with optional eye-dome lighting and
