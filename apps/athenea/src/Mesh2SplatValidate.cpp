@@ -5,6 +5,7 @@
 // pixel is the device's (athenea/usd/m2s_validate.slang, the Measure effect).
 #include "Mesh2SplatValidate.h"
 #include "Output.h"
+#include "ValidateFrames.h"
 
 #include <algorithm>
 #include <cmath>
@@ -60,20 +61,6 @@ Result<image::ImagePtr> pictureOf(const usd::StageImage& frame) {
                     size_t{frame.width} * 4, floats.begin() + static_cast<std::ptrdiff_t>(size_t{y} * stride * 4));
     }
     return *image;
-}
-
-/// A name a file can have: the material prim's last element.
-std::string fileNameOf(const std::string& material) {
-    if (material.empty()) {
-        return "no_material";
-    }
-    std::string name = material.substr(material.find_last_of('/') + 1);
-    for (char& c : name) {
-        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-') {
-            c = '_';
-        }
-    }
-    return name;
 }
 
 /// A layer over `source`: nested overs down to each prim of `off`, switched
@@ -177,14 +164,8 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
     }
     auto groups = usd::stageMaterialGroups(source, job.prim, job.hidden, job.time);
     if (!groups) return std::move(groups).error();
-    if (!job.materials.empty()) {
-        std::erase_if(*groups, [&](const usd::MaterialGroup& g) {
-            return std::none_of(job.materials.begin(), job.materials.end(), [&](const std::string& want) {
-                return want == g.material || want == fileNameOf(g.material);
-            });
-        });
-    }
-    if (groups->empty()) {
+    const std::vector<ValidateFrame> frames = validateFrames(*groups, job.materials, job.hidden, job.wholeCloud);
+    if (frames.empty()) {
         return Error(ErrorCode::NotFound, "--validate: no material to measure");
     }
     auto meshStage = usd::MeshStage::open(source);
@@ -233,7 +214,7 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         gtName = "gt_" + (white ? std::string("white") : fs::path(job.sky).stem().string()) + ".exr";
         cli::out("validate: under %s, the stage's other lights off\n", white ? "a white sky" : file.c_str());
     }
-    cli::out("validate: %zu materials, %ux%u through %s\n", groups->size(), job.width, job.height,
+    cli::out("validate: %zu materials, %ux%u through %s\n", frames.size(), job.width, job.height,
                 camera.c_str());
 
     gpu::Device& device = library.device();
@@ -305,26 +286,16 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         std::string error;
     };
     std::vector<Row> rows;
-    for (const usd::MaterialGroup& group : *groups) {
+    for (const ValidateFrame& frame : frames) {
+        const usd::MaterialGroup& group = frame.group;
         Row row;
         row.material = group.material.empty() ? "(none)" : group.material;
         row.meshes = static_cast<uint32_t>(group.meshes.size());
-        const std::string name = fileNameOf(group.material);
+        const std::string name = validateFileName(group.material);
         const fs::path cloud = fs::absolute(dir / "clouds" / (name + ".usdc"));
-        // ONLY THIS MATERIAL'S MESHES CONVERTED: every other mesh of the stage
-        // is left out of the conversion, and stays a mesh in the frame.
-        std::vector<std::string> hidden = job.hidden;
-        for (const usd::MaterialGroup& other : *groups) {
-            if (&other == &group) continue;
-            for (const std::string& mesh : other.meshes) {
-                if (!std::binary_search(group.meshes.begin(), group.meshes.end(), mesh)) {
-                    hidden.push_back(mesh);
-                }
-            }
-        }
-        std::sort(hidden.begin(), hidden.end());
-        hidden.erase(std::unique(hidden.begin(), hidden.end()), hidden.end());
-        auto converted = convert(bakeStage, hidden, cloud.string());
+        // What the conversion leaves out and the frame switches off:
+        // ValidateFrames.h.
+        auto converted = convert(bakeStage, frame.hidden, cloud.string());
         if (!converted) {
             row.error = converted.error().toString();
             cli::out("validate: %s: %s\n", row.material.c_str(), row.error.c_str());
@@ -335,15 +306,7 @@ Result<void> validateConversion(const ValidateJob& job, gpu_host::Context& conte
         const fs::path composed = dir / "clouds" / (name + ".usda");
         {
             std::ofstream out(composed);
-            std::vector<std::string> off = group.meshes;
-            if (job.wholeCloud) {
-                for (const usd::MaterialGroup& other : *groups) {
-                    off.insert(off.end(), other.meshes.begin(), other.meshes.end());
-                }
-                std::sort(off.begin(), off.end());
-                off.erase(std::unique(off.begin(), off.end()), off.end());
-            }
-            out << composedStage(source.string(), off, cloud.string(), upAxis, metersPerUnit);
+            out << composedStage(source.string(), frame.off, cloud.string(), upAxis, metersPerUnit);
         }
         Result<void> measured = ok();
         auto drew = context.run([&] {

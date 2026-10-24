@@ -522,7 +522,7 @@ receta es §3.1.
 | `--validate-size` | W H | `960 540` | los fotogramas, en píxeles |
 | `--validate-paths` | entero | `512` | caminos por píxel que reúne el GT |
 | `--validate-bounces` | entero | `6` | rebotes de los caminos del GT |
-| `--validate-material` | ruta de prim o nombre | todos los materiales | sólo este (repetible) |
+| `--validate-material` | ruta de prim o nombre | todos los materiales | sólo se mide este (repetible); los fotogramas siguen dejando fuera de la conversión las mallas de los demás materiales, y `flatten` sigue dibujando su fichero con todas las mallas del stage apagadas |
 | `--validate-sky` | `white` o un fichero de imagen | las luces de la escena | cada fotograma bajo otro cielo -- una constante de radiancia uno, o esa imagen en los domos de la escena -- con sus demás luces apagadas; el GT se guarda como `gt_<cielo>.exr` |
 | `--shadow-catcher` | flag | apagado | convertir la sombra que `--prim` arroja sobre su suelo en vez de `--prim`: un parche de gaussianas sobre el suelo bajo él y alrededor, horneado como transfer TX (el objeto y el suelo son lo que encuentran sus rayos), escrito con `primvars:athenea:splat:catcher` y dibujado negro, cubriendo lo que el objeto quita de la luz. Implica `--transfer` y una sola celda en todas partes |
 | `--catcher-ground` | ruta de prim | encontrado | con `--shadow-catcher` o `--light-catcher`: el suelo; se encuentra como la malla plana más grande fuera de `--prim` cuya cara superior está en su base y que llega por debajo de él |

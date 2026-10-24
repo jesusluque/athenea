@@ -110,8 +110,11 @@ set_target_properties(athenea_volume_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}
 
 athenea_test(athenea_usd_tests
     SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_glass_shadows.cpp usd/test_glass_tint.cpp
+            usd/test_validate_frames.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
+# What a measure's frames leave out is the athenea app's (ValidateFrames.h).
+target_include_directories(athenea_usd_tests PRIVATE ${ATHENEA_ROOT}/apps/athenea/src)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
                            ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
                            ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive"

@@ -13778,6 +13778,27 @@ Measurements (the pawn and the Corvette under the baked sky and under
 table_mountain, flatten times, file sizes) are queued for the GPU and not in
 yet.
 
+**A measure narrowed to one material frames the whole stage.** What a frame
+leaves out -- the meshes kept out of a material's conversion, and the meshes
+switched off where the written file stands in for the stage -- is worked out
+over every material group of the stage, and `--validate-material` only
+chooses which groups are measured (`apps/athenea/src/ValidateFrames.h`). It
+used to be worked out over the chosen groups alone, so a flattened set
+measured on its back wall's LED material was drawn with every other mesh of
+the set still standing among the gaussians: the panels and the back wall came
+out black, and the side walls striped where meshes and gaussians fought for
+depth. That read as the SPZ (and the PLY) coming back wrong. It was not: the
+same file read by `athenea render` and through `athenea convert` into a
+ParticleField stage draws the panels and the wall as the bake does, and its
+streams decode, by the format's own definitions, to the set's geometry (each
+wall's gaussians flat across it, all of them opaque). `mesh2splat --validate
+--validate-material` had the same fault the other way: the other materials'
+meshes were converted along with the one measured. `athenea_usd_tests
+"[validate]"` holds both on a stage of two meshes and two materials. Measured
+on the set (M_led_fondo, 16 paths a pixel, 1063 x 525): relMSE 0.522 before,
+0.380 after; the mean over the material's pixels 1.17 before and 1.96 after,
+against 6.88 path traced.
+
 ### Not done
 
 - The convention battery of proposal 070 §7.3 (one coefficient a gaussian, in
