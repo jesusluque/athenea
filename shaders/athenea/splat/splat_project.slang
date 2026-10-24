@@ -149,14 +149,33 @@ float3 lampLight(uint i) {
     return sum;
 }
 
-/// HOW MANY OF A CATCHER'S GAUSSIANS A POINT OF IT LIES UNDER, weighed by
-/// their falloff: a square lattice of cell d whose gaussians are sigma d
-/// wide sums to 2 pi sigma^2 everywhere, and the conversion's sigma is 1. A
-/// gaussian of opacity a then leaves about exp(-2 pi a) of what is behind
-/// the layer. (2.4, the coverage a converted surface reaches at opacity one,
-/// was the first guess: the Corvette's shadow came out 2.2 to 3 times as
-/// deep as the path traced frame's in optical depth, which is 2 pi over 2.4.)
-static const float kCatcherDepth = 6.2831853;
+/// The least opacity a catcher's gaussian is drawn at: fainter ones are
+/// thinned to it (projectSplat).
+static const float kCatcherFloor = 0.03;
+
+/// THE OPACITY THAT LEAVES `ratio` OF WHAT IS BEHIND THE LAYER, measured
+/// rather than modelled: over a square lattice of gaussians sigma = 1 cell
+/// wide, each of opacity a, composited as the blend composites -- the
+/// product of (1 - a g), each term dropped below 1/255 -- the mean
+/// transmission over a cell, inverted at eight ratios (scratch lattice.py,
+/// task PLAY-G) and read here between them in ln(ratio). -ln(ratio) / 2 pi,
+/// the exponential's own, is a product of exp(-a g): the darker the shadow
+/// the further 1 - a g falls below that, 8% dark at a ratio of 0.2.
+float catcherAlphaFor(float ratio) {
+    static const float kLn[8] = { -0.0513, -0.2231, -0.5108, -0.9163, -1.6094, -2.3026, -2.9957, -3.9120 };
+    static const float kA[8]  = { 0.0121, 0.0390, 0.0835, 0.1443, 0.2434, 0.3368, 0.4244, 0.5315 };
+    const float l = log(max(ratio, 1.0e-4));
+    if (l >= kLn[0]) {
+        return kA[0] * l / kLn[0];
+    }
+    for (uint k = 1; k < 8; ++k) {
+        if (l >= kLn[k]) {
+            const float t = (l - kLn[k - 1]) / (kLn[k] - kLn[k - 1]);
+            return lerp(kA[k - 1], kA[k], t);
+        }
+    }
+    return saturate(kA[7] + (l - kLn[7]) * (kA[7] - kA[6]) / (kLn[7] - kLn[6]));
+}
 
 /// WHAT THE OBJECT TOOK OF THE LIGHT REACHING A CATCHER GAUSSIAN, as the
 /// opacity that takes as much out of what is drawn behind it.
@@ -172,8 +191,8 @@ static const float kCatcherDepth = 6.2831853;
 /// sky's own irradiance on the other side: two band limits that do not cancel,
 /// and a ground that was not one where nothing stood over it.
 ///
-/// The layer leaves exp(-kCatcherDepth a) of what is behind it, so a =
-/// -ln(ratio) / that. Light the object bounces onto the ground beyond what it
+/// The opacity that leaves that ratio of what is behind the layer is
+/// catcherAlphaFor's. Light the object bounces onto the ground beyond what it
 /// takes (a ratio over one) is not drawn: a black layer can only take.
 float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     if (params.relight == 0 || params.shadowBits < 8u) {
@@ -209,6 +228,17 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     }
     float with = 0.0;
     float without = 0.0;
+    // THE SKY ALONG A CELL, from the prefiltered map at a roughness whose lobe
+    // is about the cell's width -- not the harmonics, which hold a horizon
+    // badly: under the Corvette's bumper, where only the horizon is open, the
+    // degree-3 sky drew the contact 12% darker than the path tracer did. The
+    // map keeps its sun, which is added apart below, so a cell within the
+    // sun's cone takes the harmonics' residual sky instead.
+    float4 disc = environment.sun[dome * 2];
+    disc.xyz = transferAlong(inCloud, disc.xyz);
+    const float cellAngle = 3.5449077 / float(side);   // sqrt(4 pi) / side
+    const float sunReach = disc.w > 0.0 ? cos(disc.w + cellAngle) : 2.0;
+    const float cellRoughness = sqrt(saturate(0.5 * cellAngle));
     for (uint cell = 0; cell < side * side; ++cell) {
         const float2 uv = (float2(float(cell % side), float(cell / side)) + 0.5) / float(side);
         const float3 d = octDecode(uv);
@@ -217,8 +247,12 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
             continue;
         }
         float radiance = 0.0;
-        [unroll] for (uint k = 0; k < coefficients; ++k) {
-            radiance += sky[k] * envBasisValue(k, d);
+        if (dot(d, disc.xyz) >= sunReach) {
+            [unroll] for (uint k = 0; k < coefficients; ++k) {
+                radiance += sky[k] * envBasisValue(k, d);
+            }
+        } else {
+            radiance = dot(envRadiance(environment.texels, dome, transferBack(inCloud, d), cellRoughness, params.envBaseSide), luma);
         }
         const float l1 = abs(d.x) + abs(d.y) + abs(d.z);
         const float worth = max(radiance, 0.0) * cosine * (4.0 / float(side * side)) * l1 * l1 * l1;
@@ -227,8 +261,6 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
             with += worth;
         }
     }
-    float4 disc = environment.sun[dome * 2];
-    disc.xyz = transferAlong(inCloud, disc.xyz);
     if (disc.w > 0.0) {
         const float facing = max(dot(n, disc.xyz), 0.0);
         const float sun = dot(environment.sun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
@@ -253,7 +285,7 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
         without += sun;
     }
     const float ratio = saturate(with / max(without, 1.0e-6));
-    return opacity * saturate(-log(max(ratio, 1.0e-4)) / kCatcherDepth);
+    return opacity * catcherAlphaFor(ratio);
 }
 
 /// WHAT A RELIT SPLAT SHOWS AN EYE, in linear light: the surface built from
@@ -602,7 +634,21 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                            : posOpacity.w > 1.0 ? posOpacity.w
                            : surfel ? posOpacity.w * surfelPaid
                                     : paidOpacity(posOpacity.w, paid);
-    const float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
+    float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
+    // A FAINT CATCHER IS THINNED, NOT CULLED. Far from the object the
+    // shadow is a few per cent -- the Corvette's open ground loses 5% of its
+    // sky to the car's flank -- and at a grazing view the antialias's payment
+    // takes such a gaussian under the 1/255 the cull and the blend drop: the
+    // whole faint shadow went. Black has no colour to scale up, as a sheet's
+    // has, so a faint catcher gaussian is drawn at kCatcherFloor by a lot (a
+    // hash of its index) with probability its own opacity over that: the
+    // same coverage in the mean, where a faint layer's coverages add.
+    if (kTransfer == kProjectCatcher && alpha > 0.0 && alpha < kCatcherFloor) {
+        uint h = i * 747796405u + 2891336453u;
+        h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+        h = (h >> 22u) ^ h;
+        alpha = float(h >> 8) * (1.0 / 16777216.0) < alpha / kCatcherFloor ? kCatcherFloor : 0.0;
+    }
     if (!(alpha >= 1.0 / 255.0)) {
         cull(slot, kCullFaint);
         return;

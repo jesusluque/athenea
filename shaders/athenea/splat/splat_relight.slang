@@ -294,6 +294,12 @@ public float3 transferAlong(SplatSurface s, float3 d) {
     return s.cloudTurned && !splatTransferZonal(s) ? normalize(mul(s.cloudFromWorld, d)) : d;
 }
 
+/// transferAlong's inverse: a direction of the frame the transfer was
+/// measured in, back in the world (the prefiltered sky is the world's).
+public float3 transferBack(SplatSurface s, float3 d) {
+    return s.cloudTurned && !splatTransferZonal(s) ? normalize(mul(d, s.cloudFromWorld)) : d;
+}
+
 /// A direction of the world in the gaussian's own frame, where its transfer
 /// keeps one (a zonal transfer's shadow bits); in the cloud's otherwise.
 float3 transferLocal(SplatSurface s, float3 d) {

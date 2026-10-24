@@ -13658,6 +13658,60 @@ under the car and on the open ground, and 40% at the contact, where the
 catcher is still dark: a gap of a few centimetres under the bumper against
 a 1.26 cm cell, with the light coming through a wedge at the horizon.
 
+### The contact under the bumper: what the layer composites
+
+The catcher read the bumper's contact 30% dark (0.030 against the path
+traced 0.043 at 960 x 540) whatever its cell (1.26 cm and 0.6 cm alike). Read
+off the catcher's file on the CPU, its bits were right -- the cosine-weighted
+open share under the bumper, row by row, 0.200 / 0.232 / 0.306 of the open
+ground's against the path traced 0.184 / 0.209 / 0.277 -- with no noise to
+speak of (0.008 between neighbours) and no bounce (0.3%). Under a plain white
+dome, where the expected ratio is exactly the bits', the frame drew 15% dark
+at the contact: the layer composites the product of (1 - a g), not of
+exp(-a g), and the darker the shadow the further the one falls below the
+other. The opacity is now read off a lattice simulated the way the blend
+composites -- sigma one cell, each term dropped below 1/255 -- and inverted
+at eight ratios (`catcherAlphaFor`): under white, 6% dark at the contact
+where it was 15%; under the workshop sky the contact crop 0.034 against
+0.043 (0.030 before), under the car 0.184 against 0.182.
+
+What is left is the sky's: the workshop's light is a ceiling of lamps, and
+the catcher weighs its open cells by a degree-3 sky that cannot place them.
+The gate's contact tolerance is 25% now (40%).
+
+### The sky a catcher weighs its cells by, and its faint gaussians
+
+**The sky per cell from the prefiltered map.** The workshop's light is a
+ceiling of lamps that a degree-3 sky cannot place, and under the bumper,
+where only the horizon is open, the catcher drew its contact 24% dark of the
+path traced frame at the first rows. Each open cell is now weighed by the
+prepared octahedral map read at a roughness the size of a cell (about 13
+degrees) -- which holds the lamps where they are, with no extractor -- and a
+cell within the extracted sun's cone takes the harmonics' residual sky, since
+the sun is added apart. At 960 x 540 under the workshop sky, rows 410 / 420 /
+430 below the bumper read 0.0348 / 0.0417 / 0.0596 against the path traced
+0.0399 / 0.0453 / 0.0601 (0.0304 / 0.0376 / 0.0553 with the harmonics), the
+contact window 0.038 against 0.043. Under goegap the sun's contact is still
+too bright (0.029 against 0.016): its shadow's edge right under the bumper is
+read through 16 x 16 cells.
+
+**A faint catcher is thinned, not culled.** Far from the car the shadow is a
+few per cent, and at a grazing view the antialias's payment took those
+gaussians under the 1/255 the cull and the blend drop: the open ground under
+a white dome read 5% bright (0.249 against 0.236). A catcher gaussian under
+kCatcherFloor (0.03) is drawn at it by a lot -- a hash of its index -- with
+probability its opacity over that, the same coverage in the mean: 0.2386
+against 0.2361.
+
+**A catcher's open directions on a 32 x 32 grid.** Under goegap's sun the
+contact under the bumper read 0.029 against the path traced 0.016: the sun's
+shadow edge there is narrower than a 16 x 16 cell (11 degrees), and its
+share is read through four of them. On 32 x 32 (5.6 degrees, 1024 bits a
+gaussian) it reads 0.021, the workshop sky unchanged (0.038 against 0.043),
+so `--shadow-catcher` takes 32 unless told. Weighing the four cells nearer
+than bilinearly (a smoothstep on the fractions) was tried and left out: rows
+430 and 440 came closer, the contact window went the other way (0.023).
+
 ## The sun is the texels that are it
 
 env_sun found a dome's sun on a grid of 1.8 degree cells, measured its

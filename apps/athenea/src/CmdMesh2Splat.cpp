@@ -3069,7 +3069,7 @@ void addMesh2Splat(CLI::App& app) {
                     "--transfer: the harmonics' degree, 3 (16 coefficients direct, 48 indirect) or 2 (9 and 27, "
                     "the first transfer's)")
         ->check(CLI::IsMember({2u, 3u}));
-    cmd->add_option("--transfer-cells", o->transferCells,
+    CLI::Option* cellsAsked = cmd->add_option("--transfer-cells", o->transferCells,
                     "--transfer: cells a side of the grid of open directions over the whole sphere, 16 or 32; "
                     "0 keeps the first transfer's 8 x 8 over the half a gaussian faces")
         ->check(CLI::IsMember({0u, 16u, 32u}));
@@ -3136,7 +3136,7 @@ void addMesh2Splat(CLI::App& app) {
                     "the USD time code the stage is read at: the pose that becomes gaussians, "
                     "and the instant the bake traces; a skinned transfer is traced at the bind pose");
     cmd->add_option("--path", o->paths, "extra AOFX bundle directories");
-    cmd->callback([o] {
+    cmd->callback([o, cellsAsked] {
         if (o->density != "per-model" && o->density != "per-mesh") {
             cli::err("--density wants per-model or per-mesh, not '%s'\n", o->density.c_str());
             throw CLI::RuntimeError(1);
@@ -3205,6 +3205,11 @@ void addMesh2Splat(CLI::App& app) {
             // and the lamps' light is light, baked as it stands.
             o->transfer = o->shadowCatcher;
             o->bake = o->bake || o->lightCatcher;
+            // A sun's shadow edge under a bumper is narrower than 16 x 16
+            // cells (11 degrees): a shadow catcher takes 32 x 32 unless told.
+            if (o->shadowCatcher && cellsAsked->count() == 0) {
+                o->transferCells = 32;
+            }
             o->density = "per-mesh";
             o->cellFromCamera.clear();
             const double cell = made->cell;
