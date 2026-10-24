@@ -13712,6 +13712,67 @@ so `--shadow-catcher` takes 32 unless told. Weighing the four cells nearer
 than bilinearly (a smoothstep on the fractions) was tried and left out: rows
 430 and 440 came closer, the contact window went the other way (0.023).
 
+## Playing the TX car: where it stands, and the order of what is left (task PLAY, 24 Oct)
+
+The goal is the TX Corvette in raster at an interactive rate, its ground
+gaussians as well (a shadow catcher, not a mesh plane). The first figures, at
+1920 x 1080 on the M5 Pro: the car alone 168 ms a frame, on its mesh ground
+646 ms, 3.1 GB of transfer.
+
+### What is in, and from where
+
+- **The ground** (PLAY-G, above): the prefiltered dome, the cloud map built
+  when what it shows changes, the uniform material from a table -- the mesh
+  ground from 637 to 201 ms -- and then the ground's shadow as gaussians:
+  `--shadow-catcher`, its gate, and `--light-catcher` for the lamps' light.
+- **Three catcher changes that stayed on `play-ground`** -- the opacity
+  composited as the blend composites, the sky per cell from the prefiltered
+  map with the faint gaussians thinned, the 32 x 32 grid -- are merged here.
+  This branch reads the cells, the sky and the sun in the cloud's frame (a
+  turned stage), so the map along a cell is turned back into the world
+  (`transferBack`) before it is read.
+- `txf` carries the catcher into `athenea flatten`; TXF is out of the plan
+  and that branch is not merged.
+
+### Where a frame goes
+
+| | median a frame |
+|---|---|
+| the car alone, before the view-independent terms were kept | 158 ms: projection 84.5 (the field and its coupling 24, the cells the lobes read 16.5, the sun's share and bounce 12, the body's transfer 7.5), the two sorts 30, the blend 25 |
+| the car on its mesh ground, the ground's four changes | 201 ms (mesh layer 11; the blend 30 more than without a ground) |
+| the car and its catcher, no mesh | 147 ms |
+
+The view-independent terms (`transferViewless`) are kept since; the profile
+after them has not been taken. The car's frame is the projection's first.
+
+### What the catcher still lacks
+
+1. **Lights that are not the first dome.** A distant light, a sphere or a
+   rect cast nothing on the catcher: `catcherOpacity` read the first dome and
+   its extracted sun, and a stage without a dome drew no shadow at all. Done
+   below.
+2. **Its patch is the object's footprint and 1.5 heights round it.** A sun
+   lower than about 34 degrees throws a shadow past it, which ends at the
+   patch's edge.
+3. **Light the object bounces onto the ground** (a ratio over one) is not
+   drawn: a black layer only takes (LIGHT4).
+4. **Its one check on a real asset is the Corvette gate**, a conversion,
+   which is not run since 14 Oct; the synthetic test below is the check that
+   runs.
+
+### The order
+
+1. The catcher: other lights (below), then the patch's reach.
+2. The frame's cost: `ATHENEA_STAGES` medians on the TX car cloud kept
+   locally (no conversion), the projection first, then the blend's composite
+   variant over an opaque layer.
+3. Compression (proposal 034): the coverage mips rebuilt from the bits when
+   a cloud is read (70% of the transfer, no loss), then the indirect
+   harmonics quantised after a fixed rotation; each measured against the
+   uncompressed frame.
+4. Levels of detail: the cut by screen error each frame, carrying the
+   transfer, within a resident budget.
+
 ## The sun is the texels that are it
 
 env_sun found a dome's sun on a grid of 1.8 degree cells, measured its
