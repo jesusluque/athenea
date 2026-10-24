@@ -149,9 +149,11 @@ float3 lampLight(uint i) {
     return sum;
 }
 
-/// The least opacity a catcher's gaussian is drawn at: fainter ones are
-/// thinned to it (projectSplat).
-static const float kCatcherFloor = 0.03;
+/// A catcher gaussian drawn under kCatcherThin -- one the blend would drop,
+/// or keep only the middle of -- is thinned: drawn at kCatcherFloor by a lot,
+/// or not at all (projectSplat).
+static const float kCatcherThin = 2.0 / 255.0;
+static const float kCatcherFloor = 4.0 / 255.0;
 
 /// THE OPACITY THAT LEAVES `ratio` OF WHAT IS BEHIND THE LAYER, measured
 /// rather than modelled: over a square lattice of gaussians sigma = 1 cell
@@ -186,15 +188,16 @@ float catcherAlphaFor(float ratio) {
 /// frame's harmonics times the cosine and the cell's solid angle -- with the
 /// object, the cells the bake found open; without it, every cell above the
 /// surface -- and the sun `env_sun` took out of the sky, at its cosine, read
-/// along its own direction through the same bits on the first side alone.
-/// The transfer's projection onto harmonics was the first try, against the
+/// along its own direction through the same bits on the first side alone;
+/// then every other light of the frame the same way, so a stage lit by a
+/// distant light alone has a shadow on its catcher too. The transfer's projection onto harmonics was the first try, against the
 /// sky's own irradiance on the other side: two band limits that do not cancel,
 /// and a ground that was not one where nothing stood over it.
 ///
 /// The opacity that leaves that ratio of what is behind the layer is
 /// catcherAlphaFor's. Light the object bounces onto the ground beyond what it
 /// takes (a ratio over one) is not drawn: a black layer can only take.
-float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
+float catcherOpacity(uint i, float3 position, float3x3 r, float3 scale, float opacity) {
     if (params.relight == 0 || params.shadowBits < 8u) {
         return 0.0;
     }
@@ -204,9 +207,6 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
             dome = environment.ofLight[k];
             break;
         }
-    }
-    if (dome == kEnvNone) {
-        return 0.0;
     }
     const float4 w0 = float4(params.w00, params.w01, params.w02, params.w03);
     const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
@@ -221,68 +221,105 @@ float catcherOpacity(uint i, float3x3 r, float3 scale, float opacity) {
     const uint base = i * words;
     const uint coefficients = 16u;
     const float3 luma = float3(0.2126, 0.7152, 0.0722);
-    // The sky's luminance coefficients, once.
-    float sky[16];
-    [unroll] for (uint k = 0; k < coefficients; ++k) {
-        sky[k] = dot(environment.sh[params.skyCloud + dome * kEnvCoefficients + k].rgb, luma);
-    }
     float with = 0.0;
     float without = 0.0;
-    // THE SKY ALONG A CELL, from the prefiltered map at a roughness whose lobe
-    // is about the cell's width -- not the harmonics, which hold a horizon
-    // badly: under the Corvette's bumper, where only the horizon is open, the
-    // degree-3 sky drew the contact 12% darker than the path tracer did. The
-    // map keeps its sun, which is added apart below, so a cell within the
-    // sun's cone takes the harmonics' residual sky instead.
-    float4 disc = environment.sun[dome * 2];
-    disc.xyz = transferAlong(inCloud, disc.xyz);
-    const float cellAngle = 3.5449077 / float(side);   // sqrt(4 pi) / side
-    const float sunReach = disc.w > 0.0 ? cos(disc.w + cellAngle) : 2.0;
-    const float cellRoughness = sqrt(saturate(0.5 * cellAngle));
-    for (uint cell = 0; cell < side * side; ++cell) {
-        const float2 uv = (float2(float(cell % side), float(cell / side)) + 0.5) / float(side);
-        const float3 d = octDecode(uv);
-        const float cosine = dot(n, d);
-        if (!(cosine > 0.0)) {
-            continue;
+    // The first dome the frame prepared, and its sun.
+    if (dome != kEnvNone) {
+        // The sky's luminance coefficients, once.
+        float sky[16];
+        [unroll] for (uint k = 0; k < coefficients; ++k) {
+            sky[k] = dot(environment.sh[params.skyCloud + dome * kEnvCoefficients + k].rgb, luma);
         }
-        float radiance = 0.0;
-        if (dot(d, disc.xyz) >= sunReach) {
-            [unroll] for (uint k = 0; k < coefficients; ++k) {
-                radiance += sky[k] * envBasisValue(k, d);
-            }
-        } else {
-            radiance = dot(envRadiance(environment.texels, dome, transferBack(inCloud, d), cellRoughness, params.envBaseSide), luma);
-        }
-        const float l1 = abs(d.x) + abs(d.y) + abs(d.z);
-        const float worth = max(radiance, 0.0) * cosine * (4.0 / float(side * side)) * l1 * l1 * l1;
-        without += worth;
-        if (((shadowBits[base + (cell >> 5u)] >> (cell & 31u)) & 1u) != 0u) {
-            with += worth;
-        }
-    }
-    if (disc.w > 0.0) {
-        const float facing = max(dot(n, disc.xyz), 0.0);
-        const float sun = dot(environment.sun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
-        // The sun's open share: its four cells about its direction, weighed
-        // bilinearly, those behind the surface left out (splatCellsOpen).
-        const float2 at = octEncode(disc.xyz) * float(side) - 0.5;
-        const float2 lo = floor(at);
-        const float2 f = at - lo;
-        float open = 0.0;
-        float weight = 0.0;
-        [unroll] for (uint k = 0; k < 4; ++k) {
-            const int2 c = clamp(int2(lo) + int2(k & 1, k >> 1), int2(0), int2(int(side) - 1));
-            const float wk = ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
-            if (wk <= 0.0 || dot(octDecode((float2(c) + 0.5) / float(side)), n) <= 0.0) {
+        // THE SKY ALONG A CELL, from the prefiltered map at a roughness whose lobe
+        // is about the cell's width -- not the harmonics, which hold a horizon
+        // badly: under the Corvette's bumper, where only the horizon is open, the
+        // degree-3 sky drew the contact 12% darker than the path tracer did. The
+        // map keeps its sun, which is added apart below, so a cell within the
+        // sun's cone takes the harmonics' residual sky instead.
+        float4 disc = environment.sun[dome * 2];
+        disc.xyz = transferAlong(inCloud, disc.xyz);
+        const float cellAngle = 3.5449077 / float(side);   // sqrt(4 pi) / side
+        const float sunReach = disc.w > 0.0 ? cos(disc.w + cellAngle) : 2.0;
+        const float cellRoughness = sqrt(saturate(0.5 * cellAngle));
+        for (uint cell = 0; cell < side * side; ++cell) {
+            const float2 uv = (float2(float(cell % side), float(cell / side)) + 0.5) / float(side);
+            const float3 d = octDecode(uv);
+            const float cosine = dot(n, d);
+            if (!(cosine > 0.0)) {
                 continue;
             }
-            const uint index = uint(c.y) * side + uint(c.x);
-            open += wk * float((shadowBits[base + (index >> 5u)] >> (index & 31u)) & 1u);
-            weight += wk;
+            float radiance = 0.0;
+            if (dot(d, disc.xyz) >= sunReach) {
+                [unroll] for (uint k = 0; k < coefficients; ++k) {
+                    radiance += sky[k] * envBasisValue(k, d);
+                }
+            } else {
+                radiance = dot(envRadiance(environment.texels, dome, transferBack(inCloud, d), cellRoughness, params.envBaseSide), luma);
+            }
+            const float l1 = abs(d.x) + abs(d.y) + abs(d.z);
+            const float worth = max(radiance, 0.0) * cosine * (4.0 / float(side * side)) * l1 * l1 * l1;
+            without += worth;
+            if (((shadowBits[base + (cell >> 5u)] >> (cell & 31u)) & 1u) != 0u) {
+                with += worth;
+            }
         }
-        with += sun * (weight > 0.0 ? open / weight : 1.0);
-        without += sun;
+        if (disc.w > 0.0) {
+            const float facing = max(dot(n, disc.xyz), 0.0);
+            const float sun = dot(environment.sun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
+            // The sun's open share: its four cells about its direction, weighed
+            // bilinearly, those behind the surface left out (splatCellsOpen).
+            const float2 at = octEncode(disc.xyz) * float(side) - 0.5;
+            const float2 lo = floor(at);
+            const float2 f = at - lo;
+            float open = 0.0;
+            float weight = 0.0;
+            [unroll] for (uint k = 0; k < 4; ++k) {
+                const int2 c = clamp(int2(lo) + int2(k & 1, k >> 1), int2(0), int2(int(side) - 1));
+                const float wk = ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
+                if (wk <= 0.0 || dot(octDecode((float2(c) + 0.5) / float(side)), n) <= 0.0) {
+                    continue;
+                }
+                const uint index = uint(c.y) * side + uint(c.x);
+                open += wk * float((shadowBits[base + (index >> 5u)] >> (index & 31u)) & 1u);
+                weight += wk;
+            }
+            with += sun * (weight > 0.0 ? open / weight : 1.0);
+            without += sun;
+        }
+    }
+    // EVERY OTHER LIGHT OF THE FRAME, by the same bits: a distant light,
+    // a sphere, a disk, a rect -- one sample at the gaussian, its irradiance
+    // at the cosine on both sides and, with the object, the share of the cone
+    // it subtends that the cells leave open (splatConeOpen, its penumbra, as
+    // a TX gaussian reads it). A light that casts no shadow is open.
+    SplatSurface cells = inCloud;
+    cells.cellWords = words;
+    cells.cellBase = base;
+    const float3 pWorld = relightToWorld(w0, w1, w2, position);
+    const float3 nWorld = normalize(relightNormalToWorld(w0, w1, w2, storedFacing(r, scale, i)));
+    for (uint k = 0; k < params.lightCount; ++k) {
+        const LightRecord light = lights[k];
+        if (light.kind == kLightDome || !lightLinked(light.lightCategory, params.categoriesLo, params.categoriesHi)) {
+            continue;
+        }
+        const LightSample ls = sampleLight(light, pWorld, nWorld, float2(0.5, 0.5));
+        if (!ls.valid || !(ls.pdf > 0.0)) {
+            continue;
+        }
+        const float e = dot(ls.radiance / ls.pdf, luma) * max(dot(nWorld, ls.wi), 0.0);
+        if (!(e > 0.0)) {
+            continue;
+        }
+        float open = 1.0;
+        if ((light.flags & kLightShadow) != 0u) {
+            const float o = splatConeOpen(cells, shadowBits, ls.wi, lightHalfAngle(light, ls.distance), nWorld);
+            open = o >= 0.0 ? o : 1.0;
+        }
+        with += e * open;
+        without += e;
+    }
+    if (!(without > 0.0)) {
+        return 0.0;
     }
     const float ratio = saturate(with / max(without, 1.0e-6));
     return opacity * catcherAlphaFor(ratio);
@@ -579,7 +616,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     const bool surfel = params.surfels != 0 && isSurfel(scale) && params.motion == 0 &&
                         !(params.lensRadius > 0.0 && !ortho);
     if (kTransfer == kProjectCatcher) {
-        posOpacity.w = catcherOpacity(i, r, scale, posOpacity.w);
+        posOpacity.w = catcherOpacity(i, posOpacity.xyz, r, scale, posOpacity.w);
     }
     // A THIN SHEET OF GLASS IS DRAWN AS A LAYER. Its gaussians cover what the
     // sheet reflects head on -- 0.0055 for a windshield at 1.16 -- and carry
@@ -640,10 +677,14 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // sky to the car's flank -- and at a grazing view the antialias's payment
     // takes such a gaussian under the 1/255 the cull and the blend drop: the
     // whole faint shadow went. Black has no colour to scale up, as a sheet's
-    // has, so a faint catcher gaussian is drawn at kCatcherFloor by a lot (a
-    // hash of its index) with probability its own opacity over that: the
-    // same coverage in the mean, where a faint layer's coverages add.
-    if (kTransfer == kProjectCatcher && alpha > 0.0 && alpha < kCatcherFloor) {
+    // has, so a catcher gaussian drawn under kCatcherThin is drawn at
+    // kCatcherFloor by a lot (a hash of its index) with probability its
+    // opacity over that: the same coverage in the mean, where a faint layer's
+    // coverages add. Only those: a gaussian drawn whole at a faint opacity
+    // the blend keeps is drawn as it is. Thinned from 0.03 down, a pawn's
+    // faint halo, two pixels a gaussian, came out a grain of dots a few per
+    // cent dark.
+    if (kTransfer == kProjectCatcher && alpha > 0.0 && alpha < kCatcherThin) {
         uint h = i * 747796405u + 2891336453u;
         h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
         h = (h >> 22u) ^ h;
@@ -1271,7 +1312,7 @@ void flattenSplat<let kTransfer : int>(uint i) {
     if (kTransfer == kProjectCatcher) {
         // Black, and as opaque as the frame draws it: the colour 0.5 + Y0 c0
         // is zero.
-        opacity = catcherOpacity(i, r, scale, opacity);
+        opacity = catcherOpacity(i, posOpacity.xyz, r, scale, opacity);
         c[0] = float3(-kShDcOffset);
         flags |= 2u;
     } else {

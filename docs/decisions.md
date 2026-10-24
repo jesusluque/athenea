@@ -13750,7 +13750,7 @@ after them has not been taken. The car's frame is the projection's first.
 1. **Lights that are not the first dome.** A distant light, a sphere or a
    rect cast nothing on the catcher: `catcherOpacity` read the first dome and
    its extracted sun, and a stage without a dome drew no shadow at all. Done
-   below.
+   below, with the thinning of faint gaussians narrowed.
 2. **Its patch is the object's footprint and 1.5 heights round it.** A sun
    lower than about 34 degrees throws a shadow past it, which ends at the
    patch's edge.
@@ -13772,6 +13772,72 @@ after them has not been taken. The car's frame is the projection's first.
    uncompressed frame.
 4. Levels of detail: the cut by screen error each frame, carrying the
    transfer, within a resident budget.
+
+### Every light of the frame on the catcher
+
+`catcherOpacity` weighed the first dome and the sun `env_sun` took out of
+it, and returned nothing without a dome: a stage lit by a distant light, a
+sphere or a rect drew no shadow on its catcher. Every other light of the
+frame now goes into both sides of the ratio as a TX gaussian reads it: one
+sample at the gaussian (`sampleLight`), its irradiance at the cosine, and on
+the side with the object the share of the cone it subtends that the cells
+leave open (`splatConeOpen`, held to a cell at least). A light that casts no
+shadow is open; one not linked to the cloud is left out. A frame with no
+light at all leaves the catcher out.
+
+**A faint catcher thinned only where the blend would drop it.** The thinning
+merged above drew every catcher gaussian under 0.03 at 0.03 by a lot. Where
+a gaussian is drawn whole -- the pawn from above, two pixels a sigma -- its
+faint opacity is kept by the blend, and the lot drew the pawn's halo as a
+grain of dots a few per cent dark across the patch. Only a gaussian drawn
+under 2/255 (one the cull or the blend's 1/255 would take, or keep only the
+middle of) is thinned now, and to 4/255.
+
+**Checked** (`athenea_usd_tests "[catcher]"`, `tests/usd/test_shadow_catcher.cpp`):
+a lattice of catcher gaussians written with its cells, not baked -- a cone
+about straight up closed -- over a plain backdrop, through Hydra, measured
+by `imageStats` and `compareImages`:
+
+| | what it leaves | closed form |
+|---|---|---|
+| plain dome, every cell open | 1.000 | 1 |
+| plain dome, a 25 degree cone closed | 0.824 | 0.821 (1 - sin^2) |
+| a distant light straight above, its cone closed | 0.000006 (1.000 before) | 0 |
+| the dome and the light at the same irradiance | 0.413 (0.824 before) | 0.411 |
+| plain dome, a 15 degree cone closed | 0.932 (0.914 thinned at 0.03) | 0.933 |
+
+The last frame against the backdrop scaled by its mean: p99 1 code value,
+none over 2 (p99 5, 4507 pixels over 2 thinned at 0.03).
+
+**The pawn** (the Open Chess Set's, its catcher baked with
+`--shadow-catcher` at 32 x 32, 132 k gaussians), from above at 1024 x 1024
+against the path traced mesh pawn on a grey ground (1024 paths, denoised).
+The raster draws the catcher over the sky's own floor, so each side is read
+as what the object leaves: the frame with it over the frame without, red,
+in windows of the ground (rows from the bottom):
+
+| | path traced | after | before (h1eprod-aa) |
+|---|---|---|---|
+| workshop dome: in front of the base (470 400 560 420) | 0.736 | 0.758 | 0.765 |
+| workshop dome: a lamp's shadow, right (650 490 730 540) | 0.976 | 0.978 | 0.996 |
+| workshop dome: a lamp's shadow, left (260 490 340 540) | 0.994 | 0.990 | 1.000 |
+| workshop dome: towards the camera (420 330 500 380) | 0.967 | 0.952 | 0.972 |
+| workshop dome: open ground (100 100 200 160) | 0.997 | 0.996 | 1.000 |
+| and a distant light of 10 at 50 degrees: its shadow (320 440 400 470) | 0.252 | 0.439 | 0.957 |
+| the same: open ground (200 300 300 350) | 0.995 | 0.995 | 1.000 |
+
+The sun's shadow stands where the path traced one does and as long; it is
+lighter in the window because it is soft: a 0.53 degree sun read through
+cells of 5.6 degrees gives a penumbra of a cell, and the pawn's shadow is
+little wider than that.
+
+**What it costs.** The projection of that frame (1.75 M gaussians, the
+catcher's 132 k among them; `ATHENEA_STAGES`, medians of 19): 15.0 ms
+before, 22.5 after -- the sky read from the prefiltered map along each of
+the 1024 cells, merged above, more than the one light. What a catcher
+gaussian computes depends on the lights alone, not on the eye: it can be
+kept as the TX terms are (`transferViewless`) and worked out again only when
+the lights' revision changes.
 
 ## The sun is the texels that are it
 
