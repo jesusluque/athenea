@@ -1961,8 +1961,9 @@ Result<void> Engine::writeAov(const render::RenderTargets& targets, AovSource ao
         p["p23"].setData(static_cast<float>(projection[11]));
         p["p33"].setData(static_cast<float>(projection[15]));
     });
-    ATHENEA_TRY(batch.submit(true));
-    // A readback for a host that maps the buffer: output IO, the only copy.
+    ATHENEA_TRY(batch.submit());
+    // A readback for a host that maps the buffer: output IO, the only copy,
+    // and the one wait -- the read waits for the conversion before it.
     return out->read(*device_, 0, bytes, into.data());
 }
 
