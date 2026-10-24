@@ -122,7 +122,12 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
    que lee un número de vuelta para decidir lo siguiente -- los recuentos de
    visibles y de pares de un frame de splats, que dimensionan sus buffers --
    y `ATHENEA_STAGES`, que espera para medir. `ATHENEA_SYNC_TRACE=1` nombra
-   cada espera por su línea.
+   cada espera por su línea, y `athenea_usd_tests "[sync]"` cuenta las
+   esperas de un frame estable en cada ruta de mallas (`Device::syncs()`):
+   una pasada que añade una falla ahí. Una estructura construida en espacio
+   de mundo -- el nivel superior del trazado de rayos -- se mantiene mientras
+   lo hace `GpuScene::placementRevision()`, así que una cámara que se mueve
+   no reconstruye nada de ella.
 
 ### 1.4 Un frame, trazado
 

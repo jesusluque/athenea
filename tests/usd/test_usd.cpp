@@ -2811,6 +2811,49 @@ TEST_CASE("a frame of unlit meshes alone draws what a frame with a lit one does"
     }
 }
 
+// A FRAME WAITS FOR THE DEVICE ONCE, where StageRenderer hands the image
+// over: the passes are submitted without waiting between them, and what does
+// not change from frame to frame -- the lights, the trees and acceleration
+// structures over still instances -- is not rebuilt. Device::syncs() counts
+// every wait (a batch waited for, a buffer read back, a wait for idle), so a
+// wait that comes back on any route is caught here without a timing. Unlit
+// alone and with a lit mesh under a dome, the camera still and moving.
+TEST_CASE("a steady frame waits for the device once, on every mesh route", "[usd][gpu][mesh][sync]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    const fs::path png = unlitTexture("sync_frame.png", 64, true);
+    for (const bool lit : {false, true}) {
+        const fs::path path = unlitStage(std::string("sync_frame_") + (lit ? "lit" : "unlit") + ".usda", png, lit, lit);
+        for (const char* route : {"raster", "rays", "bvh"}) {
+            if (std::string(route) == "raster" && !caps.rasterization) continue;
+            if (std::string(route) == "rays" && !(caps.accelerationStructure && (caps.rayQuery || caps.rayTracing))) {
+                continue;
+            }
+            auto renderer = usd::StageRenderer::open(path);
+            if (!renderer) FAIL(renderer.error().toString());
+            REQUIRE((*renderer)->setMeshVisibility(route));
+            gpu::Device& device = (*renderer)->device();
+            for (const bool moving : {false, true}) {
+                render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 0.0}, {0.0, 0.0, -1.0});
+                for (uint32_t frame = 0; frame < 6; ++frame) {
+                    if (moving) {
+                        camera.cameraToWorld.at(0, 3) += (frame % 2 == 0) ? 0.01 : -0.01;
+                    }
+                    const uint64_t before = device.syncs();
+                    auto drawn = (*renderer)->draw(camera, 0.0, 96, 72);
+                    if (!drawn) FAIL(drawn.error().toString());
+                    const uint64_t waits = device.syncs() - before;
+                    if (frame >= 3) {   // the first frames load, compile and build
+                        INFO((lit ? "lit" : "unlit") << " route " << route << (moving ? " moving" : " still")
+                                                     << " frame " << frame << ": " << waits << " waits");
+                        CHECK(waits == 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Multiple importance sampling (M6): next event estimation and the
 // material's own sampling, weighed by the power heuristic, on the case that
 // needs both -- a glossy metal floor under a large rect light, whose
