@@ -16,6 +16,7 @@
 
 #include <bit>
 #include <cmath>
+#include <optional>
 
 using namespace athenea;
 
@@ -24,7 +25,7 @@ namespace {
 struct Renderer {
     geom::MeshBuilder           builder;
     world::GpuScene             scene;
-    technique::VisibilityRaster raster;
+    std::optional<technique::VisibilityRaster> raster;   // where the device rasterises
     technique::HeadlightShading shading;
     technique::VisibilityTargets visibility;
 };
@@ -32,14 +33,18 @@ struct Renderer {
 std::unique_ptr<Renderer> renderer(test::Gpu& gpu) {
     auto builder = geom::MeshBuilder::create(*gpu.library);
     auto scene = world::GpuScene::create(*gpu.library);
-    auto raster = technique::VisibilityRaster::create(*gpu.library);
+    std::optional<technique::VisibilityRaster> raster;
+    if (gpu.device->caps().rasterization) {
+        auto made = technique::VisibilityRaster::create(*gpu.library);
+        if (!made) FAIL(made.error().toString());
+        raster.emplace(std::move(*made));
+    }
     auto shading = technique::HeadlightShading::create(*gpu.library);
     if (!builder) FAIL(builder.error().toString());
     if (!scene) FAIL(scene.error().toString());
-    if (!raster) FAIL(raster.error().toString());
     if (!shading) FAIL(shading.error().toString());
     return std::unique_ptr<Renderer>(
-        new Renderer{std::move(*builder), std::move(*scene), std::move(*raster), std::move(*shading), {}});
+        new Renderer{std::move(*builder), std::move(*scene), std::move(raster), std::move(*shading), {}});
 }
 
 /// A unit square in z = 0, two triangles, facing +z.
@@ -65,7 +70,7 @@ render::RenderTargets draw(test::Gpu& gpu, Renderer& r, std::span<const world::M
     REQUIRE(r.scene.update(instances, projection, sets));
     render::RenderTargets out;
     gpu::CommandBatch batch(*gpu.device);
-    REQUIRE(r.raster.render(batch, r.scene, projection, w, h, r.visibility));
+    REQUIRE(r.raster->render(batch, r.scene, projection, w, h, r.visibility));
     REQUIRE(r.shading.shade(batch, r.scene, r.visibility, projection, out));
     REQUIRE(batch.submit(true));
     return out;
@@ -348,7 +353,7 @@ TEST_CASE("rays see the triangles the rasteriser sees", "[technique][visibility]
     technique::VisibilityTargets traced;
     {
         gpu::CommandBatch batch(*gpu->device);
-        REQUIRE(r->raster.render(batch, r->scene, projection, w, h, rastered));
+        REQUIRE(r->raster->render(batch, r->scene, projection, w, h, rastered));
         REQUIRE(batch.submit(true));
     }
     REQUIRE(rt->build(r->scene));
@@ -492,7 +497,7 @@ TEST_CASE("a closed mesh is inside only where it is seen from within, mirrored o
         REQUIRE(r->scene.update(std::span<const world::MeshInstance>(&i, 1), projection));
         gpu::Buffer counts = test::uintBuffer(*gpu->device, 3, "counts");
         gpu::CommandBatch batch(*gpu->device);
-        REQUIRE(r->raster.render(batch, r->scene, projection, w, h, r->visibility));
+        REQUIRE(r->raster->render(batch, r->scene, projection, w, h, r->visibility));
         auto ids = r->visibility.ids.view(0);
         REQUIRE(ids);
         const std::array<float, 12> toWorld = aofx::xform::inverseAffine(projection.worldToView).rows3x4();
@@ -647,7 +652,7 @@ TEST_CASE("a deformed mesh refits its acceleration structures and the routes sti
         technique::VisibilityTargets walked;
         {
             gpu::CommandBatch batch(*gpu->device);
-            REQUIRE(r->raster.render(batch, r->scene, projection, w, h, rastered));
+            REQUIRE(r->raster->render(batch, r->scene, projection, w, h, rastered));
             REQUIRE(batch.submit(true));
         }
         REQUIRE(rt->build(r->scene, refit));
@@ -851,7 +856,7 @@ TEST_CASE("edges resolved from the neighbourhood's triangles match the frame sup
             render::RenderTargets out;
             gpu::CommandBatch batch(*gpu->device);
             if (rasterised) {
-                REQUIRE(r->raster.render(batch, r->scene, projection, width, height, r->visibility));
+                REQUIRE(r->raster->render(batch, r->scene, projection, width, height, r->visibility));
             } else {
                 REQUIRE(bvh->build(r->scene));
                 REQUIRE(walk->render(batch, r->scene, *bvh, projection, width, height, r->visibility));
