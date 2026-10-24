@@ -13348,6 +13348,45 @@ body behind it, so at grazing angles they showed through the faces in
 front. `flatten --facing X Y Z` writes every gaussian whose surface faces
 away from the point transparent (a thin wall is kept).
 
+**Unless the point sees it.** Cut by orientation alone, the cull left a
+thin dark seam between a set's oak slats on its left wall and the white panel
+beside them. The slats stand 5 cm proud of a black backer that shows 6 cm
+past the last one; from the PTZ that strip is behind the slat's body (its
+shadow on the wall reaches a centimetre past the panel's edge). But a
+gaussian surface has no hard edge: the slat's face fades out over its
+gaussians' footprint, and what filled the fade was the far side's
+gaussians -- facing away, so written transparent -- and behind them the
+backer. The path trace from the same camera shows no seam. Now a gaussian
+facing away is written transparent only if the point does not see it: the
+cloud is drawn from the point onto a cube (six faces of
+`FlattenSettings::facingSize`, 1024 pixels, keeping the depth where a pixel
+is first half covered), and a gaussian is kept when its centre, or a point
+two standard deviations out along any of its axes, lies no further than
+that depth plus three of its own standard deviations along the ray. One at
+a body's edge reaches past the edge and is seen -- it is the silhouette;
+one behind a face, the streaks the cull was for, is still cut. The centre
+alone was not enough: the far side's outermost gaussians sit a centimetre
+behind the face's fading edge, so they were cut and the strip stayed (the
+test below, unchanged). A gaussian whose stored normal points the wrong way
+on a surface the point sees is kept the same way.
+
+On a virtual set (its on-air cloud, `--facing` at the PTZ, the PTZ panned 40
+degrees left, 1920x1080): the seam is gone and the slat's edge meets the
+panel as in the path trace. In the wide shot 2.9% of pixels change, all at
+panel edges: the sides and rims of the panels come back as the cloud
+without `--facing` draws them (a similar dark line at the top left red
+panel's edge went with them); no streak came back in that frame. The test
+`flatten --facing keeps what the point sees at a body's edge` draws a slat
+on a dark backer beside a white panel from the point, flattened, against
+the source cloud: without `--facing` it matches exactly; with it, cut by
+orientation alone, p99 35 and 4% of the pixels over 2 code values; now p99
+1 and 0.6% (a few code values along the edge and at the slat's open ends).
+
+What is not done: the cube is drawn from the point alone, not from the
+whole PTZ tolerance; a camera a few centimetres off sees slightly past a
+silhouette, which the footprint's two standard deviations cover for these
+sets' cell sizes but nothing guarantees for a coarser cloud.
+
 ### A plate: an image over the frame, mixed by its alpha
 
 A camera image keyed and put into the set, so that what stands nearer than

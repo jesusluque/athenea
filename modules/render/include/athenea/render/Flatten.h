@@ -63,9 +63,13 @@ struct FlattenSettings {
     /// with its light baked in is written as the frame shows it.
     bool                 everyCloud = false;
     /// A camera that only turns about `facingPoint` (world units): a
-    /// gaussian facing away from it is written transparent.
+    /// gaussian facing away from it is written transparent, unless the point
+    /// sees it all the same -- at a body's edge it is the silhouette. What
+    /// the point sees is the cloud drawn from there onto six square faces of
+    /// `facingSize` pixels.
     bool                 facingCull = false;
     std::array<float, 3> facingPoint{0.0F, 0.0F, 0.0F};
+    uint32_t             facingSize = 1024;
     bool                 zone = false;
     std::array<float, 3> zoneMin{0, 0, 0};
     std::array<float, 3> zoneMax{0, 0, 0};

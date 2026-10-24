@@ -595,7 +595,7 @@ apagadas (`<output>_flatten_stage.usda`, que se queda junto a los ficheros).
 | `--fit-lambda` | número | `1e-4` | la regularización del ajuste, por l²(l+1)² |
 | `--back-weight` | número | `0.01` | lo que pesa en el ajuste el hemisferio trasero de una superficie; una pared fina pesa en toda la esfera |
 | `--baked` | flag | no | todas las nubes de la stage, con la luz horneada (`mesh2splat` sin `--transfer`), escritas como las muestra el frame; no solo las nubes TX reiluminadas |
-| `--facing` | 3 números, unidades del mundo | ninguno | una cámara que solo gira en torno a este punto (una cabeza PTZ): toda gaussiana cuya superficie mira hacia otro lado se escribe transparente, porque esa cámara nunca la ve; una pared fina se conserva |
+| `--facing` | 3 números, unidades del mundo | ninguno | una cámara que solo gira en torno a este punto (una cabeza PTZ): toda gaussiana cuya superficie mira hacia otro lado se escribe transparente, porque esa cámara nunca la ve -- salvo que la nube dibujada desde el punto la muestre (en el borde de un cuerpo es la silueta); una pared fina se conserva. La vista del punto se dibuja antes en un cubo de seis caras de 1024 píxeles |
 | `--view-box` | 6 números, unidades del mundo | ninguno | la zona de la cámara, `MINX MINY MINZ MAXX MAXY MAXZ`: cada gaussiana se ajusta a las direcciones desde las que se ve allí, y el resto de la esfera pesa `--view-box-outside` de ellas |
 | `--view-box-samples` | 16..4096 | `256` | `--view-box`: puntos de la zona desde los que se mira cada gaussiana |
 | `--view-box-outside` | 0..1 | `0.05` | `--view-box`: lo que pesan las `--directions` de la esfera frente a las de la zona |

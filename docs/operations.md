@@ -586,7 +586,7 @@ kept beside the files).
 | `--fit-lambda` | number | `1e-4` | the fit's regularisation, times l²(l+1)² |
 | `--back-weight` | number | `0.01` | what a surface's back hemisphere weighs in the fit; a thin wall weighs all round |
 | `--baked` | flag | off | every cloud of the stage, its light baked in (`mesh2splat` without `--transfer`), written as the frame shows it -- not only the relit TX clouds |
-| `--facing` | 3 numbers, world units | none | a camera that only turns about this point (a PTZ head): every gaussian whose surface faces away from it is written transparent, since that camera never sees it; a thin wall is kept |
+| `--facing` | 3 numbers, world units | none | a camera that only turns about this point (a PTZ head): every gaussian whose surface faces away from it is written transparent, since that camera never sees it -- unless the cloud drawn from the point shows it (at a body's edge it is the silhouette); a thin wall is kept. The point's view is drawn onto a cube of six 1024-pixel faces first |
 | `--view-box` | 6 numbers, world units | none | the camera's zone, `MINX MINY MINZ MAXX MAXY MAXZ`: each gaussian fitted to the directions it is seen from there, the rest of the sphere weighing `--view-box-outside` of them |
 | `--view-box-samples` | 16..4096 | `256` | `--view-box`: points of the zone a gaussian is looked at from |
 | `--view-box-outside` | 0..1 | `0.05` | `--view-box`: what the sphere's `--directions` weigh against the zone's |

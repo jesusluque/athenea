@@ -384,6 +384,11 @@ private:
     gpu::ComputeKernel flattenCatcher_;
     gpu::Buffer        emptyFlat_;   ///< bound where a frame flattens nothing
     bool               flattenMade_ = false;
+    /// `--facing`: the cloud's depth seen from the facing point, six faces
+    /// (facingCube), and the copy of a face into it.
+    gpu::ComputeKernel facingGather_;
+    gpu::Buffer        facingDepth_;
+    [[nodiscard]] Result<void> facingCube(std::span<const SplatInstance> instances, const RenderSettings& settings);
     struct TxCache {
         gpu::Buffer buffer;
         uint64_t    key = 0;

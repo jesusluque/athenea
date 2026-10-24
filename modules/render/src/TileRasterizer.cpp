@@ -356,11 +356,17 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             if (!made) return std::move(made).error();
             auto catcher = gpu::ComputeKernel::create(*library_, "athenea/splat/splat_project", "splatFlattenCatcher");
             if (!catcher) return std::move(catcher).error();
+            auto gather = gpu::ComputeKernel::create(*library_, "athenea/splat/flatten_facing", "flattenFacingGather");
+            if (!gather) return std::move(gather).error();
             flatten_ = std::move(*made);
             flattenCatcher_ = std::move(*catcher);
+            facingGather_ = std::move(*gather);
             flattenMade_ = true;
         }
         ATHENEA_TRY(batch.submit(true));
+        if (settings.flatten->settings.facingCull) {
+            ATHENEA_TRY(facingCube(instances, settings));
+        }
     }
     Stopwatch watch(batch, settings.timeStages);
     ++frameOfCaches_;
@@ -614,6 +620,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             flatten["basisRows"].setBinding(flattening ? settings.flatten->basis->rhi() : emptyFlat_.rhi());
             flatten["floorCandidate"].setBinding(flattening ? settings.flatten->floor->rhi() : emptyFlat_.rhi());
             flatten["records"].setBinding(flattening ? flatOut->rhi() : emptyFlat_.rhi());
+            const bool facing = flattening && settings.flatten->settings.facingCull && facingDepth_.valid();
+            flatten["facingDepth"].setBinding(facing ? facingDepth_.rhi() : emptyFlat_.rhi());
             if (flattening) {
                 const FlattenSettings& f = settings.flatten->settings;
                 rhi::ShaderCursor p = flatten["params"];
@@ -632,6 +640,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 p["facingX"].setData(f.facingPoint[0]);
                 p["facingY"].setData(f.facingPoint[1]);
                 p["facingZ"].setData(f.facingPoint[2]);
+                p["facingSize"].setData(f.facingSize);
                 p["zoneSamples"].setData(f.zoneSamples);
                 p["zoneOutside"].setData(f.zoneOutside);
                 p["lambda"].setData(f.lambda);
@@ -862,6 +871,69 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                                                               frameStart)
                         .count();
     return stats;
+}
+
+Result<void> TileRasterizer::facingCube(std::span<const SplatInstance> instances, const RenderSettings& settings) {
+    // WHAT THE FACING POINT SEES: every cloud of the frame drawn from it
+    // onto the six faces of a cube, the depth where a pixel is first half
+    // covered kept -- the back faces included, since standing for a body
+    // is what they do at its edge. splat_project.slang's facingFace has the
+    // same frames.
+    const FlattenSettings& f = settings.flatten->settings;
+    const uint32_t size = std::max<uint32_t>(f.facingSize, 16);
+    const uint64_t pixels = uint64_t{size} * size;
+    if (!facingDepth_.valid() || facingDepth_.bytes() < pixels * 6 * sizeof(float)) {
+        auto made = buffer(*device_, pixels * 6, 4, "splat.flatten.facingDepth");
+        if (!made) return std::move(made).error();
+        facingDepth_ = *made;
+    }
+    RenderSettings face = settings;
+    face.flatten = nullptr;
+    face.contribution = nullptr;
+    face.finalColour = nullptr;
+    face.countSplats = false;
+    face.timeStages = false;
+    face.cryptomatte = false;
+    face.width = size;
+    face.height = size;
+    face.maxShDegree = 0;
+    face.depth = RenderSettings::Depth::Threshold;
+    face.depthThreshold = 0.5F;
+    const Vec3 point{f.facingPoint[0], f.facingPoint[1], f.facingPoint[2]};
+    for (uint32_t k = 0; k < 6; ++k) {
+        const uint32_t axis = k / 2;
+        const double sign = (k & 1u) == 0 ? 1.0 : -1.0;
+        const Vec3 forward{axis == 0 ? sign : 0.0, axis == 1 ? sign : 0.0, axis == 2 ? sign : 0.0};
+        const Vec3 up = axis == 1 ? Vec3{0.0, 0.0, 1.0} : Vec3{0.0, 1.0, 0.0};
+        const Vec3 right{up.y * forward.z - up.z * forward.y, up.z * forward.x - up.x * forward.z,
+                         up.x * forward.y - up.y * forward.x};
+        Projection projection;
+        const std::array<Vec3, 3> rows{right, up, forward};
+        for (int r = 0; r < 3; ++r) {
+            const Vec3& row = rows[static_cast<size_t>(r)];
+            projection.worldToView.at(r, 0) = row.x;
+            projection.worldToView.at(r, 1) = row.y;
+            projection.worldToView.at(r, 2) = row.z;
+            projection.worldToView.at(r, 3) = -(row.x * point.x + row.y * point.y + row.z * point.z);
+        }
+        projection.focalX = 0.5 * size;   // ninety degrees across
+        projection.focalY = 0.5 * size;
+        projection.centreX = 0.5 * size;
+        projection.centreY = 0.5 * size;
+        projection.nearZ = 1.0e-3;
+        projection.eyeWorld = point;
+        RenderTargets targets;
+        ATHENEA_TRY(render(projection, instances, face, targets));
+        gpu::CommandBatch batch(*device_);
+        facingGather_.dispatch(batch, {static_cast<uint32_t>(pixels), 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["faceDepth"].setBinding(targets.depth.rhi());
+            cursor["cube"].setBinding(facingDepth_.rhi());
+            cursor["params"]["pixels"].setData(static_cast<uint32_t>(pixels));
+            cursor["params"]["face"].setData(k);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    return ok();
 }
 
 Result<void> TileRasterizer::countFrame(gpu::CommandBatch& batch, std::span<const SplatInstance> instances,

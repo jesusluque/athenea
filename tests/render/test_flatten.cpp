@@ -10,7 +10,11 @@
 //   (versions 3 and 4) by this engine's packers, read back by its readers
 //   (the SPZ one is Niantic's decompression), render alike. SPZ is right-up-
 //   back and the engine reads it as right-down-front, so its frame is drawn
-//   turned half about x -- which is what puts it where the PLY is.
+//   turned half about x -- which is what puts it where the PLY is;
+// - `--facing`: what a camera turning about one point sees from there is
+//   what it saw before the cull -- a slat standing on a dark backer, its far
+//   side facing away from the point, must not leave the backer showing
+//   between it and the panel beside it.
 //
 // Everything compared on the device; only counters and the image metrics
 // come back.
@@ -30,6 +34,7 @@
 #include "athenea/render/ReferenceRenderer.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
+#include "SplatFixtures.h"
 
 using namespace athenea;
 namespace fs = std::filesystem;
@@ -178,5 +183,132 @@ TEST_CASE("a flattened cloud written as PLY and as SPZ renders alike", "[render]
         // 8-bit colour, 1/16-stop sizes and 8-bit harmonics: a few code
         // values; a wrong axis or sign is tens.
         CHECK(diff->p99 <= (degree == 0 ? 4u : 8u));
+    }
+}
+
+namespace {
+
+/// A wall seen at a slant from the origin, as a set's side wall is from its
+/// camera: a slat 5 cm proud of it, a dark backer under the slat and a white
+/// panel beside it, gaussians a centimetre apart with their surface's normal
+/// (what `athenea mesh2splat` writes). From the origin the slat's far side
+/// faces away and the backer between the slat and the panel is behind the
+/// slat's body.
+test::CloudBuilder slatOnAWall() {
+    test::CloudBuilder b;
+    std::vector<float> normals;
+    constexpr float kStep = 0.01F;
+    constexpr float kSide = 0.007F;
+    constexpr float kThin = 0.0005F;
+    const std::array<float, 3> wood{0.45F, 0.28F, 0.15F};
+    const std::array<float, 3> black{0.03F, 0.03F, 0.03F};
+    const std::array<float, 3> white{0.8F, 0.8F, 0.8F};
+    const auto sheet = [&](int count, auto place, std::array<float, 3> scale, std::array<float, 3> normal,
+                           std::array<float, 3> colour) {
+        for (int row = 0; row < 30; ++row) {
+            const float y = -0.145F + kStep * static_cast<float>(row);
+            for (int k = 0; k < count; ++k) {
+                const std::array<float, 2> xz = place(k);
+                b.add(xz[0], y, xz[1], 0.95F, scale[0], scale[1], scale[2], {1, 0, 0, 0}, colour);
+                normals.insert(normals.end(), normal.begin(), normal.end());
+            }
+        }
+    };
+    const auto step = [](int k) { return 0.005F + kStep * static_cast<float>(k); };
+    // The slat's face, towards the room: x = -0.95, z from -1.25 to -1.30.
+    sheet(5, [&](int k) { return std::array<float, 2>{-0.95F, -1.25F - step(k)}; }, {kThin, kSide, kSide},
+          {1, 0, 0}, wood);
+    // Its near side (z = -1.25, towards the origin) and its far side (z =
+    // -1.30, away from it), from the wall at x = -1 to the face.
+    sheet(5, [&](int k) { return std::array<float, 2>{-1.0F + step(k), -1.25F}; }, {kSide, kSide, kThin},
+          {0, 0, 1}, wood);
+    sheet(5, [&](int k) { return std::array<float, 2>{-1.0F + step(k), -1.30F}; }, {kSide, kSide, kThin},
+          {0, 0, -1}, wood);
+    // The backer on the wall, under the slat and 6 cm past it, then the panel.
+    sheet(11, [&](int k) { return std::array<float, 2>{-1.0F, -1.25F - step(k)}; }, {kThin, kSide, kSide},
+          {1, 0, 0}, black);
+    sheet(54, [&](int k) { return std::array<float, 2>{-1.0F, -1.36F - step(k)}; }, {kThin, kSide, kSide},
+          {1, 0, 0}, white);
+    test::giveNormals(b, normals);
+    return b;
+}
+
+}   // namespace
+
+TEST_CASE("flatten --facing keeps what the point sees at a body's edge", "[render][flatten][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    const test::CloudBuilder built = slatOnAWall();
+    auto source = loader->upload(built.raw, 0);
+    REQUIRE(source);
+    REQUIRE(source->hasNormals());
+    auto fit = render::FlattenFit::create(*gpu->library);
+    REQUIRE(fit);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    REQUIRE(raster);
+    auto pack = render::FlattenPack::create(*gpu->library);
+    REQUIRE(pack);
+
+    // Seen from the point itself, towards the slat's far edge.
+    render::RenderSettings view;
+    view.width = 256;
+    view.height = 256;
+    view.maxShDegree = 0;
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 0.0}, {-0.97, 0.0, -1.33});
+    camera.lens.focal = 100.0;
+    camera.lens.vaperture = camera.lens.haperture;
+    std::vector<render::SplatInstance> sourceInstance(1);
+    sourceInstance[0].splats = &*source;
+    render::RenderTargets truth;
+    REQUIRE(raster->render(camera, sourceInstance, view, truth));
+
+    const fs::path dir = fs::temp_directory_path() / "athenea-tests";
+    fs::create_directories(dir);
+    for (const bool facing : {false, true}) {
+        render::SplatFlatten request;
+        request.settings.directions = 64;
+        // The source's colours are what a viewer shows, and so are the
+        // file's (display-referred, the default): drawn alike they match.
+        request.settings.everyCloud = true;
+        request.settings.facingCull = facing;
+        REQUIRE(fit->prepare(request.settings));
+        request.basis = &fit->basis();
+        request.floor = &fit->floor();
+        render::RenderSettings flat;
+        flat.width = 64;
+        flat.height = 64;
+        flat.flatten = &request;
+        render::RenderTargets unused;
+        REQUIRE(raster->render(camera, sourceInstance, flat, unused));
+        REQUIRE(request.clouds.size() == 1);
+        auto floats = pack->ply(request.clouds[0], -12.0F);
+        REQUIRE(floats);
+        const fs::path path = dir / (facing ? "flattened-facing.ply" : "flattened-plain.ply");
+        const std::vector<std::vector<float>> chunks{*floats};
+        REQUIRE(io::writePly3dgs(path, chunks, std::vector<std::string>{"slat"}));
+        auto raw = io::readSplats(path);
+        if (!raw) {
+            FAIL(raw.error().toString());
+        }
+        auto cloud = loader->upload(*raw, 0);
+        REQUIRE(cloud);
+        std::vector<render::SplatInstance> instance(1);
+        instance[0].splats = &*cloud;
+        render::RenderTargets drawn;
+        REQUIRE(raster->render(camera, instance, view, drawn));
+        auto diff = render::compareImages(*gpu->library, drawn.colour, truth.colour, view.width, view.height);
+        REQUIRE(diff);
+        std::printf("  flattened%s vs the cloud, from the point: p99 %u, max %u, %llu of %llu pixels over 2\n",
+                    facing ? " --facing" : "", diff->p99, diff->max, static_cast<unsigned long long>(diff->over2),
+                    static_cast<unsigned long long>(diff->pixels));
+        // What the point sees is what it saw: the cull takes only what it
+        // never sees, so no edge opens onto the backer. Cut by orientation
+        // alone, the slat's edge showed it the slat's height: p99 35, 4% of
+        // the pixels over 2. Kept where the point sees a footprint, what is
+        // left is a few code values along the edge and at the slat's open
+        // ends: p99 1, 0.6%.
+        CHECK(diff->p99 <= 2u);
+        CHECK(diff->over2 <= diff->pixels / 100);
     }
 }

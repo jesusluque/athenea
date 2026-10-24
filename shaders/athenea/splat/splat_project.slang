@@ -1105,9 +1105,13 @@ struct FlattenParams {
     // SEEN FROM ONE PLACE (`--facing`): 1, a gaussian whose surface faces
     // away from the point is written transparent -- a camera that only
     // turns there never sees it, and drawn it shows through at grazing
-    // angles as streaks.
+    // angles as streaks -- unless the point sees it all the same: where it
+    // stands at a body's edge, its footprint is the body's silhouette.
+    // `facingDepth` is the cloud seen from the point, six square faces of
+    // `facingSize` pixels (TileRasterizer's facingCube).
     uint  facingCull;
     float facingX; float facingY; float facingZ;
+    uint  facingSize;
     float lambda;          // the fit's regularisation (flatten_fit.slang), for a zone's own solve
     float backWeight;      // a surface's back, likewise
     float zoneMinX; float zoneMinY; float zoneMinZ;
@@ -1126,6 +1130,9 @@ struct FlattenInputs {
     StructuredBuffer<uint>      floorCandidate;
     // kFlatStride floats a gaussian of this cloud (flatten_basis.slang).
     RWStructuredBuffer<float>   records;
+    // `--facing`: the view z the cloud shows from the point, six faces of
+    // facingSize^2 (facingFace's frames), 0 where nothing was drawn.
+    StructuredBuffer<float>     facingDepth;
 };
 ParameterBlock<FlattenInputs> flatten;
 
@@ -1179,6 +1186,73 @@ float3 zonePoint(uint j) {
            u * float3(f.zoneMaxX - f.zoneMinX, f.zoneMaxY - f.zoneMinY, f.zoneMaxZ - f.zoneMinZ);
 }
 
+/// The cube face `face` seen from the facing point: its right, up and
+/// forward in the world -- the frames TileRasterizer's facingCube draws.
+void facingFace(uint face, out float3 right, out float3 up, out float3 forward) {
+    const uint axis = face / 2u;
+    const float sign = (face & 1u) == 0u ? 1.0 : -1.0;
+    forward = float3(axis == 0u ? sign : 0.0, axis == 1u ? sign : 0.0, axis == 2u ? sign : 0.0);
+    up = axis == 1u ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+    right = cross(up, forward);
+}
+
+/// Whether the facing point sees the point `p` of a gaussian: no further
+/// than the depth the cloud shows towards it (the first gaussian that half
+/// covers that pixel) plus `slack` along the ray.
+bool facingSeesPoint(float3 p, float slack) {
+    const FlattenParams f = flatten.params;
+    const float3 v = p - float3(f.facingX, f.facingY, f.facingZ);
+    const float3 a = abs(v);
+    const uint axis = a.x >= a.y && a.x >= a.z ? 0u : (a.y >= a.z ? 1u : 2u);
+    const uint face = axis * 2u + (v[axis] >= 0.0 ? 0u : 1u);
+    float3 right, up, forward;
+    facingFace(face, right, up, forward);
+    const float z = dot(v, forward);
+    if (!(z > 1.0e-6)) {
+        return true;
+    }
+    const float half = 0.5 * float(f.facingSize);
+    const int px = int(floor(half * dot(v, right) / z + half));
+    const int py = int(floor(half * dot(v, up) / z + half));
+    const int last = int(f.facingSize) - 1;
+    const uint at = face * f.facingSize * f.facingSize + uint(clamp(py, 0, last)) * f.facingSize +
+                    uint(clamp(px, 0, last));
+    const float shown = flatten.facingDepth[at];
+    // Nothing drawn there, or this point in front of what is: seen. The
+    // slack is along the ray, the depth along the face's axis.
+    return !(shown > 0.0) || z <= shown + slack * z / length(v);
+}
+
+/// WHETHER THE POINT SEES A GAUSSIAN ANYWHERE ON ITS FOOTPRINT: its centre
+/// or a point two standard deviations out along any of its axes, each
+/// against the depth the cloud shows there, with three of its standard
+/// deviations along the ray as slack. One at a body's edge reaches past
+/// the edge and is seen -- it is the silhouette, and the body's face beside
+/// it fades out over its own footprint; one behind the face is not.
+bool facingSeen(float3 pWorld, float3x3 linear, float3x3 r, float3 scale) {
+    const FlattenParams f = flatten.params;
+    const float3 ray = normalize(pWorld - float3(f.facingX, f.facingY, f.facingZ));
+    float3 axes[3];
+    float spread = 0.0;
+    [ForceUnroll]
+    for (uint k = 0; k < 3; ++k) {
+        axes[k] = mul(linear, float3(r[0][k], r[1][k], r[2][k])) * scale[k];
+        const float along = dot(ray, axes[k]);
+        spread += along * along;
+    }
+    const float slack = 3.0 * sqrt(spread);
+    if (facingSeesPoint(pWorld, slack)) {
+        return true;
+    }
+    [ForceUnroll]
+    for (uint k = 0; k < 3; ++k) {
+        if (facingSeesPoint(pWorld + 2.0 * axes[k], slack) || facingSeesPoint(pWorld - 2.0 * axes[k], slack)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// ONE GAUSSIAN FLATTENED: looked at from N directions of its own frame,
 /// shaded each time exactly as the raster shades it for an eye there
 /// (`relitToward`), what that shows fitted (flatten_basis.slang), the higher
@@ -1211,7 +1285,8 @@ void flattenSplat<let kTransfer : int>(uint i) {
     const uint cls = thin ? 1u : 0u;
     const uint n = flatten.params.directions;
     if (flatten.params.facingCull != 0 && !thin &&
-        dot(float3(flatten.params.facingX, flatten.params.facingY, flatten.params.facingZ) - pWorld, facing) < 0.0) {
+        dot(float3(flatten.params.facingX, flatten.params.facingY, flatten.params.facingZ) - pWorld, facing) < 0.0 &&
+        !facingSeen(pWorld, linear, r, scale)) {
         opacity = 0.0;
     }
 
