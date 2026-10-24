@@ -15436,7 +15436,90 @@ finished without a wait.
   calls on set A; the instances' tree takes half of them when the camera moves.
 - `TextureStore::bind` rebinds every slot and sampler at each dispatch that reads textures.
 - The ray route's TLAS (`RayTracingScene`) is still rebuilt and waited for every frame where the device traces
-  inline; CUDA does not take that route.
+  inline; CUDA does not take that route. (Done: see "What a frame still waited for", 24 Oct.)
+
+## What a frame still waited for (24 Oct)
+
+An inventory, from the code, of every place the host waits for the device on the per-frame path of
+`StageRenderer::draw` -> `Engine::render`, for the mesh routes lit and unlit, after "A frame waits for the device
+once": a batch submitted with `submit(true)`, a buffer read back (`Buffer::read`, which waits for idle), a
+`waitIdle`, a count read to size a later dispatch. `ATHENEA_SYNC_TRACE=1` confirmed it on a one-quad stage unlit, the
+same quad lit under a dome and a sphere light, and a 37-mesh set, on the rays and the compute BVH routes, still and
+with a camera that moves (`stage --drift`).
+
+| where | when | waits a frame | now |
+|---|---|---|---|
+| `StageRenderer::execute`, `waitIdle` | every frame | 1 | kept: the frame's one, where a host takes the image |
+| `RayTracingScene::build`: the instance descriptors, then the top level (its scratch freed on return) | the rays route; and lit frames where shading's shadow rays are inline (Metal) | 2 | 0: the top level stands while the instances' world placement does, and is built without a wait |
+| `RayTracingScene::build`: a deformed mesh's bottom level refit | a mesh deformed this frame | 1 a mesh | 0 |
+| `MaterialShading`: the copy screen-space reflections read | `athenea:screenSpaceReflections` on | 2 | 0 |
+| `GpuScene::update`: positions lerped for a deforming mesh; the bucket records; the instancers' records | under motion blur; any point instancer | 1 each | 0 |
+| `GpuScene::refresh` | a mesh deformed in place (same topology) | 1 a mesh | 0 |
+| `Engine::writeAov`: the conversion, then the read | each render buffer a host maps | 2 | 1, the read |
+| `BvhScene::refit`: a deformed mesh's tree, a readback every eight passes | the BVH route, a mesh deformed | 1-4 a mesh | kept (below) |
+| `TileRasterizer`: the visible and pair counts | a frame with splats | 1 | kept (below) |
+| `ATHENEA_STAGES` | when asked | one a stage | kept: it waits to time |
+
+Steady-frame waits counted by the trace, before and after, at 640x360:
+
+| stage | route | before, still / moving | after |
+|---|---|---|---|
+| one quad, unlit | compute BVH | 1 / 1 | 1 / 1 |
+| one quad, unlit | rays | 3 / 3 | 1 / 1 |
+| one quad, lit (dome, sphere) | compute BVH (shadows by inline rays) | 3 / 3 | 1 / 1 |
+| one quad, lit | rays | 3 / 3 | 1 / 1 |
+| 37 lightmapped meshes, moving | either | 3 | 1 |
+
+The images are the same: the top level built from the same records is the same structure, and the waits removed
+were between passes the one queue already orders.
+
+**The top level stands.** `GpuScene::placementRevision()` counts the frames whose instance records differ from the
+last's in anything but the view and the normal matrix -- the world transform, the mesh, the flags, the mask -- or
+that the device wrote (instancers, motion buckets), and `RayTracingScene` keeps its top level while that, the pools'
+generation and the meshes' positions revision do. A camera that moves changes only the records' view, so it rebuilds
+nothing; the compute BVH's tree over the instances is in view space and is still rebuilt (one batch, no wait) when
+the camera moves. The scratch the build used to free on return is kept, and the structure replaced is kept one build
+longer, for a frame the device may still be tracing.
+
+**A test counts them.** `athenea_usd_tests "[sync]"` draws a quad unlit, and lit under a dome, on every route the
+device has, still and moving, and checks that each steady frame adds exactly one to `Device::syncs()`. A pass that
+starts waiting again fails it, with no timing.
+
+**What the trace does not see.** slang-rhi's CUDA backend waits in places the engine does not call a wait: a buffer
+made with more than 16 MiB of data (noted, loading only), a texture copy (`cuMemcpy3D`, device to array, which does
+not wait for the host by CUDA's rules), an indirect dispatch, which reads its arguments back (the engine has none).
+None is on a steady frame of these stages.
+
+**On CUDA these stages already waited once.** CUDA takes the compute BVH route, and shading's shadow rays are inline
+only, so a CUDA frame built no top level: the waits removed here are Metal's, and CUDA's under motion, instancers and
+reflections. A profile of a frame on CUDA with about nine `cuStreamSynchronize` is what the build before "A frame
+waits for the device once" did (ten on the quad); one from a build after it has one. What remains of the gap between
+a frame's kernels and its time on CUDA is the host's: recording and launching some forty dispatches.
+
+**On an L4 the engine's draw is about 2.9 ms.** A set of unlit lightmapped meshes at 1920x1080, drawn and not read back,
+300 frames on the base of this work (Linux, CUDA 12.8): median 2.89 ms, 3.84 ms with `athenea:meshAntialias` 4;
+`ATHENEA_STAGES`: visibility 1.0 ms, shading 0.6, the mesh layer 2.2. A render that costs a host three times that is
+spending it outside `StageRenderer::draw` -- reading the image back, or setting a frame up per call.
+
+**A frame of no splats counts nothing.** The same `ATHENEA_STAGES` gave the splat stages 0.6 ms with no splat in the
+frame: two prefix sums over one element, the tiles' ranges cleared, and the blend that composites the mesh layer.
+The sums are skipped where the frame has no splats or points and no panel counts it, and the ranges are cleared only
+where a frame of pairs wrote them: a frame of none leaves them empty for the next. The blend stays -- it is what puts
+the background and the depth convention on the mesh layer -- and a frame drawn after a frame of splats is the frame
+a rasteriser that never drew one draws, to the bit (`athenea_render_tests`, "a frame of no splats over a layer").
+
+### Not done
+
+- A frame of meshes alone still runs the splat blend over the whole image (0.4 ms of the 0.6 on an L4). The mesh
+  layer could be the frame's targets where no splat or point is drawn, if the background and the depth it writes
+  were the blend's.
+- `BvhScene::refit` of a deformed mesh still reads a count back every eight passes. One group's dispatch
+  (`bvhRefitGroup`, what the instances' tree uses) would walk a mesh of a million triangles on 256 threads; a fixed
+  number of passes needs the tree's depth, read once when it is built.
+- The splat rasteriser's visible and pair counts (unchanged from "A frame waits for the device once").
+- The host's recording cost per dispatch on CUDA (the constant data copied per launch, `TextureStore::bind`
+  rebinding every slot): measured on a CUDA device, not here.
+- The compute BVH's tree over the instances is built in view space and rebuilt when the camera moves.
 
 ## Mesh edges antialiased from the neighbourhood's triangles (23 Oct)
 

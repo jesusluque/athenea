@@ -131,7 +131,11 @@ threads, any thread), and a test calls it from the wrong one.
    inside a frame is what reads a number back to decide what comes next --
    a splat frame's visible and pair counts, which size its buffers -- and
    `ATHENEA_STAGES`, which waits to time. `ATHENEA_SYNC_TRACE=1` names every
-   wait by its line.
+   wait by its line, and `athenea_usd_tests "[sync]"` counts a steady frame's
+   waits on every mesh route (`Device::syncs()`): a pass that adds one fails
+   there. A structure built in world space -- the ray tracing top level --
+   stands while `GpuScene::placementRevision()` does, so a camera that moves
+   rebuilds nothing of it.
 
 ### 1.4 A frame, path traced
 

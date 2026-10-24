@@ -1873,3 +1873,44 @@ TEST_CASE("the counters a panel reads say how many splats were kept and why the 
     REQUIRE(still.has_value());
     CHECK(still->tag == 42);
 }
+
+// A frame of no splats over a layer -- meshes alone -- skips its counts and
+// leaves the tiles' ranges as the last such frame cleared them. What it draws
+// is what a rasteriser that never drew splats draws, after a frame of splats
+// had written every range and after a second frame of none.
+TEST_CASE("a frame of no splats over a layer draws what it drew before a frame of splats", "[render][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder built = randomCloud(3000, 11);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    const std::vector<render::SplatInstance> instances{{&*cloud, render::Mat4::identity()}};
+    render::RenderSettings settings;
+    settings.width = 250;
+    settings.height = 190;
+    const render::Camera camera = render::Camera::lookingAt({1.5, 1.0, 6.0}, {0.0, 0.0, 0.0});
+    // The layer: the cloud from elsewhere, drawn by a rasteriser of its own.
+    auto other = render::TileRasterizer::create(*gpu->library);
+    REQUIRE(other);
+    render::RenderTargets layer;
+    REQUIRE(other->render(render::Camera::lookingAt({-2.0, 0.5, 5.0}, {0.0, 0.0, 0.0}), instances, settings, layer));
+    auto fresh = render::TileRasterizer::create(*gpu->library);
+    REQUIRE(fresh);
+    render::RenderTargets alone;
+    REQUIRE(fresh->render(camera, {}, settings, alone, {}, &layer));
+    render::RenderTargets splats;
+    REQUIRE(h->raster.render(camera, instances, settings, splats));
+    for (int frame = 0; frame < 2; ++frame) {
+        render::RenderTargets after;
+        auto stats = h->raster.render(camera, {}, settings, after, {}, &layer);
+        REQUIRE(stats);
+        CHECK(stats->pairs == 0);
+        for (const bool colour : {true, false}) {
+            const gpu::Buffer& a = colour ? alone.colour : alone.depth;
+            const gpu::Buffer& b = colour ? after.colour : after.depth;
+            auto words = render::countDifferent(*gpu->library, a, b, static_cast<uint32_t>(a.bytes() / 4));
+            REQUIRE(words);
+            CHECK(*words == 0);
+        }
+    }
+}

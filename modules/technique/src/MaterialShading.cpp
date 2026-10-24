@@ -1816,11 +1816,12 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             if (!made) return std::move(made).error();
             reflectionSource_ = std::move(*made);
         }
-        // What the domes added is in the copy: they are done first.
-        ATHENEA_TRY(batch.submit(true));
+        // What the domes added is in the copy: they are submitted first, and
+        // the copy and the kernel that reads it after, on the one queue.
+        ATHENEA_TRY(batch.submit());
         batch.encoder()->copyBuffer(reflectionSource_.rhi(), 0, out.colour.rhi(), 0, bytes);
         batch.markDirty();
-        ATHENEA_TRY(batch.submit(true));
+        ATHENEA_TRY(batch.submit());
         reflections_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
             bindMaterialFrame(cursor, frame, projection);
             bindLights(cursor);

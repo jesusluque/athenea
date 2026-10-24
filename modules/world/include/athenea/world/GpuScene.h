@@ -144,6 +144,11 @@ public:
     [[nodiscard]] uint64_t positionsRevision() const noexcept { return positionsRevision_; }
     /// Counts the frames whose instance records differ from the last's.
     [[nodiscard]] uint64_t instancesRevision() const noexcept { return instancesRevision_; }
+    /// Counts the frames whose records differ from the last's in more than
+    /// the view: a world transform, a mesh, a flag or a mask changed, or the
+    /// device wrote them (sets, motion). What is built in world space -- a
+    /// ray tracing top level -- stands while this does.
+    [[nodiscard]] uint64_t placementRevision() const noexcept { return placementRevision_; }
     /// Per mesh: raised each time it was deformed in place (0 after a repack).
     [[nodiscard]] uint64_t meshRevision(uint32_t mesh) const { return meshRevisions_[mesh]; }
 
@@ -186,6 +191,7 @@ private:
     [[nodiscard]] static bool sameLayout(const geom::GpuMesh& a, const geom::GpuMesh& b) noexcept;
     uint64_t                                           positionsRevision_ = 0;
     uint64_t                                           instancesRevision_ = 0;
+    uint64_t                                           placementRevision_ = 0;
     std::vector<std::byte>                             lastRecords_;     ///< the last frame's records, as uploaded
     const void*                                        recordsBuffer_ = nullptr;   ///< the buffer they went to
     std::vector<uint64_t>                              meshRevisions_;
