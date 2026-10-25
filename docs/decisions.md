@@ -13882,7 +13882,7 @@ the ring's cell is twice the patch's, or less where the patch's longest side
 would not keep its own. The pawn: 132 k gaussians on the patch at 0.66 mm,
 92 k on the ring at 1.21 mm (1.83 times, held by the boxes), baked together
 in 10 s. Under the workshop sky the lamps' lobes reach past the patch's edge,
-which no longer shows as a square; the open ground at 3 heights reads 0.9970
+which no longer shows as a square; the open-ground window reads 0.9970
 of the light against the path traced 0.9970. A light lower than about 18
 degrees still throws a shadow past the ring.
 
