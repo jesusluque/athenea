@@ -68,7 +68,7 @@ endif()
 
 athenea_test(athenea_render_tests
     SOURCES render/test_splat_render.cpp render/test_points.cpp render/test_ray_tracing.cpp
-            render/test_splat_motion.cpp render/test_splat_lens.cpp
+            render/test_splat_motion.cpp render/test_splat_lens.cpp render/test_ply_qa.cpp
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_spz.cpp>
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_flatten.cpp>
             $<$<BOOL:${ATHENEA_HAVE_WEBP}>:render/test_sog.cpp>
@@ -154,7 +154,7 @@ set_target_properties(athenea_storm_oracle_tests PROPERTIES CXX_VISIBILITY_PRESE
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_mcp_tests
-    SOURCES mcp/test_mcp.cpp $<$<BOOL:${ATHENEA_HAVE_SPZ}>:mcp/test_mcp_live.cpp>
+    SOURCES mcp/test_mcp.cpp mcp/test_mcp_live_qa.cpp $<$<BOOL:${ATHENEA_HAVE_SPZ}>:mcp/test_mcp_live.cpp>
     LIBS athenea::mcp nlohmann_json::nlohmann_json)
 if(ATHENEA_HAVE_SPZ)
     target_link_libraries(athenea_mcp_tests PRIVATE athenea_spz)
