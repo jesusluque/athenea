@@ -242,7 +242,8 @@ def describe(data):
     total = sum(size for _, size in records)
     per_frame = [struct.unpack_from("<I", data, at + 52)[0] for at, _ in records]
     gaussians = statistics.median(per_frame)
-    out = dict(id=h["rendition"], gaussians=int(gaussians), maxGaussians=max(per_frame), shDegree={0: 0, 3: 1, 8: 2, 15: 3}[h["restPerColour"]],
+    degree = {0: 0, 3: 1, 8: 2, 15: 3}[h["restPerColour"]]
+    out = dict(id=h["rendition"], gaussians=int(gaussians), maxGaussians=max(per_frame), shDegree=degree,
                quality=h["quality"], bits=h["bits"], restPerColour=h["restPerColour"], chunkSplats=h["chunkSplats"],
                columns=h["columns"], maxSplats=h["maxSplats"], hiInVideo=h["hiInVideo"],
                antialiased=h["antialiased"], positionBlock=h["positionBlock"],

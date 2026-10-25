@@ -87,7 +87,9 @@ public struct PairParams {
     public float histogramLo;    // log10 of the cheapest cost the histogram holds
     public float histogramStep;  // log10 a bin
     public uint  relaxed;        // 1: the guards are lifted (Lod.cpp, relaxTop); its merges' costs are recorded negative
-    public float maxGrowth;      // a merge whose size (sqrt of its covariance's trace) passes this times its larger member's is refused (0: off)
+    // A merge whose size (the square root of its covariance's trace) passes
+    // this times its wider member's is refused (0: off).
+    public float maxGrowth;
 };
 
 ConstantBuffer<PairParams>  params;

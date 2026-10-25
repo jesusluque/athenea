@@ -603,7 +603,8 @@ void addVideo(CLI::App& app) {
             auto cloud = loadFrame(**device, *loader, (*frames)[k], o->shDegree, aa);
             if (!cloud) cli::fail(cloud.error());
             if (o->gaussians != 0) {
-                cloud = reducer.reduce(std::move(*cloud), o->gaussians, Reduction{o->reduce, o->mergeGrowth, o->mergeOpacity});
+                cloud = reducer.reduce(std::move(*cloud), o->gaussians,
+                                       Reduction{o->reduce, o->mergeGrowth, o->mergeOpacity});
                 if (!cloud) cli::fail(cloud.error());
             }
             if (encoder != nullptr) return std::move(*cloud);
@@ -951,10 +952,13 @@ void addVideo(CLI::App& app) {
                     hi = std::max(hi, b);
                     total += bins[b];
                 }
+                const auto share = [&](uint32_t from, uint32_t to) {
+                    uint64_t n = 0;
+                    for (uint32_t b = from; b < to; ++b) n += bins[b];
+                    return 100.0 * static_cast<double>(n) / static_cast<double>(std::max<uint64_t>(total, 1));
+                };
                 cli::out("video-decode: picture %u (%u x %u): plane 0 from %u to %u, %.2f%% at 128, %.2f%% under 16, "
-                         "%.2f%% over 235\n", k, w, hgt, lo, hi, 100.0 * bins[128] / std::max<uint64_t>(total, 1),
-                         [&] { uint64_t n = 0; for (uint32_t b = 0; b < 16; ++b) n += bins[b]; return 100.0 * n / std::max<uint64_t>(total, 1); }(),
-                         [&] { uint64_t n = 0; for (uint32_t b = 236; b < 256; ++b) n += bins[b]; return 100.0 * n / std::max<uint64_t>(total, 1); }());
+                         "%.2f%% over 235\n", k, w, hgt, lo, hi, share(128, 129), share(0, 16), share(236, 256));
             }
         }
         cli::out("video-decode: %u pictures of %s (%u frames, %.2f MB a picture): read %.2f ms, hardware decode %.2f "
