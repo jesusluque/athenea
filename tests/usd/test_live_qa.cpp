@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "load-spz.h"
+#include "athenea/core/Platform.h"
 #include "athenea/io/Readers.h"
 #include "athenea/lod/SplatStream.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -279,4 +280,118 @@ TEST_CASE("qa: a stream renamed, removed and named again shows its latest epoch"
     CHECK(notWhole == 0);
     CHECK(toLatest > 0);
     CHECK(toLatest <= 5);
+}
+
+TEST_CASE("qa soak: a producer at 30 epochs a second for ATHENEA_SOAK_SECONDS while the stage draws",
+          "[.soak][usd][gpu][live][qa]") {
+    // Odd epochs replace all eight chunks with set k; even ones replace the
+    // first four and remove the rest -- so the page count changes every
+    // epoch. Every frame is compared with the state the epoch the stage says
+    // it shows must draw; the counters are printed as it goes, for a script
+    // that samples the process's memory beside it.
+    ATHENEA_REQUIRE_GPU(gpu);
+    const std::string said = platform::env("ATHENEA_SOAK_SECONDS");
+    const double seconds = said.empty() ? 60.0 : std::atof(said.c_str());
+    Rig rig(gpu);
+    const std::string stream = "athenea-qa-soak";
+    std::string prim = livePrim("Live", stream, "    ");
+    prim.replace(prim.find("chunks = 3"), 10, "chunks = 8");
+    const fs::path shot = writeStage("live-qa-soak.usda", "def Xform \"World\"\n{\n" + prim + kCamera + "}\n");
+    constexpr uint32_t kSets = 4, kHalf = 4, kAll = 8;
+    std::vector<std::vector<std::vector<uint8_t>>> pages(kSets);
+    std::vector<std::vector<scene::GpuSplats>> clouds(kSets);
+    std::vector<render::RenderTargets> full, half;
+    for (uint32_t k = 0; k < kSets; ++k) {
+        for (uint32_t c = 0; c < kAll; ++c) {
+            pages[k].push_back(spzPage(200 + 30 * c + 7 * k, 5000 + 100 * k + c));
+            auto raw = io::readSpz(std::span<const uint8_t>(pages[k].back()), "page");
+            REQUIRE(raw);
+            auto cloud = rig.loader->upload(*raw, 3);
+            REQUIRE(cloud);
+            clouds[k].push_back(std::move(*cloud));
+        }
+        for (const uint32_t n : {kAll, kHalf}) {
+            std::vector<render::SplatInstance> instances;
+            for (uint32_t c = 0; c < n; ++c) instances.push_back({&clouds[k][c], render::Mat4::identity()});
+            render::RenderTargets t;
+            REQUIRE(rig.raster->render(rig.projection, instances, rig.settings, t));
+            (n == kAll ? full : half).push_back(std::move(t));
+        }
+    }
+    auto renderer = usd::StageRenderer::open(shot);
+    if (!renderer) FAIL(renderer.error().toString());
+    auto queue = lod::PageQueue::named(stream);
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> pushed{0};
+    std::thread producer([&] {
+        const auto t0 = std::chrono::steady_clock::now();
+        for (uint64_t e = 1; !stop; ++e) {
+            std::this_thread::sleep_until(t0 + std::chrono::microseconds(33333 * e));
+            const uint32_t k = static_cast<uint32_t>(e % kSets);
+            for (uint32_t c = 0; c < kAll; ++c) {
+                lod::PageUpdate u;
+                u.epoch = e;
+                u.chunk = c;
+                u.pages = kAll;
+                u.ptpTime = e;
+                if (e % 2 == 1 || c < kHalf) {
+                    u.op = lod::PageUpdate::Op::Replace;
+                    u.bytes.resize(pages[k][c].size());
+                    std::memcpy(u.bytes.data(), pages[k][c].data(), pages[k][c].size());
+                } else {
+                    u.op = lod::PageUpdate::Op::Remove;
+                }
+                queue->push(std::move(u));
+            }
+            pushed = e;
+        }
+    });
+    uint64_t frames = 0, wrong = 0, backwards = 0, last = 0;
+    const auto start = std::chrono::steady_clock::now();
+    auto report = start;
+    const auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); };
+    usd::StageRenderer::LiveStream s;
+    while (elapsed() < seconds) {
+        auto image = (*renderer)->render("/World/Shot", 0.0, kWidth, kHeight);
+        if (!image) FAIL(image.error().toString());
+        const auto live = (*renderer)->liveStreams();
+        REQUIRE(live.size() == 1);
+        s = live.front();
+        ++frames;
+        backwards += s.epoch < last ? 1 : 0;
+        last = s.epoch;
+        if (s.epoch > 0) {
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto hydra = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(hydra);
+            const uint32_t k = static_cast<uint32_t>(s.epoch % kSets);
+            const auto& want = s.epoch % 2 == 1 ? full[k] : half[k];
+            auto d = render::compareImages(*gpu->library, *hydra, want.colour, kWidth, kHeight);
+            REQUIRE(d);
+            wrong += d->p99 <= 1 && d->max <= 2 ? 0 : 1;
+        }
+        if (std::chrono::steady_clock::now() - report > std::chrono::seconds(30)) {
+            report = std::chrono::steady_clock::now();
+            std::printf("soak %.0f s: %llu frames, epoch %llu of %llu pushed, %llu shown, %u pending, dropped %llu/%llu, "
+                        "%llu not their epoch, %llu backwards\n",
+                        elapsed(), static_cast<unsigned long long>(frames), static_cast<unsigned long long>(s.epoch),
+                        static_cast<unsigned long long>(pushed.load()), static_cast<unsigned long long>(s.epochs),
+                        s.pendingEpochs, static_cast<unsigned long long>(s.droppedNoRoom),
+                        static_cast<unsigned long long>(s.droppedCorrupt), static_cast<unsigned long long>(wrong),
+                        static_cast<unsigned long long>(backwards));
+            std::fflush(stdout);
+        }
+    }
+    stop = true;
+    producer.join();
+    std::printf("soak end %.0f s: %llu frames, %llu epochs shown of %llu pushed, %llu not their epoch\n", elapsed(),
+                static_cast<unsigned long long>(frames), static_cast<unsigned long long>(s.epochs),
+                static_cast<unsigned long long>(pushed.load()), static_cast<unsigned long long>(wrong));
+    CHECK(wrong == 0);
+    CHECK(backwards == 0);
+    CHECK(s.droppedNoRoom == 0);
+    CHECK(s.droppedCorrupt == 0);
+    CHECK(s.epochs + 2 >= pushed.load());
 }

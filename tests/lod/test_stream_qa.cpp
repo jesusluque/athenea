@@ -785,3 +785,83 @@ TEST_CASE("qa: an SPZ whose fixed point is past what a word holds is refused", "
     }
     CHECK(accepted == 0);
 }
+
+namespace {
+
+/// A live source whose loader leaves one staged SPZ page unreadable (its
+/// header zeroed after the page was fetched): what a source that gets fetch
+/// wrong -- a network receiver, a player -- hands the pool. Everything else
+/// is the LiveSource's.
+class GarblingSource final : public lod::ChunkSource {
+public:
+    explicit GarblingSource(std::unique_ptr<lod::LiveSource> inner) : inner_(std::move(inner)) {}
+    const lod::ChunkFormat& format() const noexcept override { return inner_->format(); }
+    uint32_t chunkCount() const noexcept override { return inner_->chunkCount(); }
+    scene::Bounds bounds(uint32_t c) const override { return inner_->bounds(c); }
+    std::string name() const override { return inner_->name(); }
+    bool live() const noexcept override { return true; }
+    Result<lod::LodCloud> openCloud(gpu::Device& device) override { return inner_->openCloud(device); }
+    lod::ChunkRequest request(uint32_t c) const override { return inner_->request(c); }
+    Result<void> fetch(const lod::ChunkRequest& r, std::span<std::byte> staging) override {
+        ATHENEA_TRY(inner_->fetch(r, staging));
+        if (garble_.fetch_sub(1) > 0) {
+            std::memset(staging.data(), 0, lod::ChunkFormat::kSpzHeaderBytes);
+        }
+        return ok();
+    }
+    void discard(const lod::ChunkRequest& r) override { inner_->discard(r); }
+    void poll(std::vector<lod::ChunkChange>& out) override { inner_->poll(out); }
+    std::atomic<int> garble_{0};
+
+private:
+    std::unique_ptr<lod::LiveSource> inner_;
+};
+
+}   // namespace
+
+TEST_CASE("qa: a page the pool cannot place drops its epoch, and the stream goes on",
+          "[lod][gpu][stream][live][spz][qa]") {
+    // Epoch 2 has a page whose staged header the pool cannot read (placeSpz
+    // refuses it). Whatever update says about it, epoch 3, whole and good,
+    // must be shown after it -- and the staging slots must all come back.
+    ATHENEA_REQUIRE_GPU(gpu);
+    SpzRig rig(gpu);
+    rig.live.chunks = 3;
+    rig.live.format.payload = lod::ChunkFormat::Payload::Spz;
+    rig.live.format.chunkSplats = 300;
+    rig.live.format.restPerColour = 0;
+    rig.live.format.shWords = 1;
+    rig.live.name = "qa-garbled";
+    rig.queue = std::make_shared<lod::PageQueue>();
+    auto inner = lod::LiveSource::create(rig.queue, rig.live);
+    REQUIRE(inner);
+    auto garbling = std::make_unique<GarblingSource>(std::move(*inner));
+    GarblingSource* source = garbling.get();
+    lod::StreamingSettings streaming;
+    streaming.library = gpu->library.get();
+    auto pool = lod::StreamingPool::open(*gpu->device, std::unique_ptr<lod::ChunkSource>(std::move(garbling)), streaming);
+    if (!pool) FAIL(pool.error().toString());
+    rig.pool = std::move(*pool);
+    const std::vector<uint8_t> a = spzBytes(200, 81), b = spzBytes(210, 82), c = spzBytes(220, 83);
+    const scene::GpuSplats ca = rig.cloudOf(a), cb = rig.cloudOf(b), cc = rig.cloudOf(c);
+    rig.push(1, {&a, &b, &c});
+    REQUIRE(rig.pool->update(true));
+    REQUIRE(rig.pool->status().epoch == 1);
+
+    source->garble_ = 1;
+    rig.push(2, {&b, &c, &a});
+    int failed = 0;
+    for (int k = 0; k < 4; ++k) failed += rig.pool->update(true) ? 0 : 1;
+    rig.push(3, {&c, &a, &b});
+    for (int k = 0; k < 8; ++k) failed += rig.pool->update(true) ? 0 : 1;
+    const auto st = rig.pool->status();
+    std::printf("  a page the pool cannot place in epoch 2: %d updates failed; epoch %llu shown after epoch 3 came, "
+                "%u epochs pending, %llu dropped as corrupt, %u in flight\n",
+                failed, static_cast<unsigned long long>(st.epoch), st.pendingEpochs,
+                static_cast<unsigned long long>(st.droppedCorrupt), st.inFlight);
+    CHECK(st.epoch == 3);
+    CHECK(st.pendingEpochs == 0);
+    if (st.epoch == 3) {
+        CHECK(rig.maxDiff(rig.draw({&cc, &ca, &cb}), rig.shown()) == 0);
+    }
+}
