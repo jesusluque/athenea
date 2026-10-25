@@ -21,6 +21,7 @@
 #include "athenea/io/Readers.h"
 #include "athenea/scene/GpuClouds.h"
 #include "SpzStaging.h"
+#include "athenea/lod/DevicePages.h"
 #include "athenea/lod/SplatStream.h"
 
 namespace athenea::lod {
@@ -937,6 +938,9 @@ struct StreamingPool::Impl {
         scene::CloudLoader::DecodeScratch decode;
     };
     std::vector<SpzScratch>                spzScratch;
+    /// The producers whose device pages this pool has placed (DevicePages.h):
+    /// told when the batches that placed them have run.
+    std::vector<std::shared_ptr<DevicePages>> devicePages;
 
     /// LOADER THREADS. Takes a request only with a staging slot for it, so a
     /// loader that has one always finishes.
@@ -980,6 +984,9 @@ struct StreamingPool::Impl {
         uint64_t completed = 0;
         if (!all && SLANG_FAILED(fence->getCurrentValue(&completed))) {
             return;
+        }
+        for (const auto& pages : devicePages) {
+            pages->retired(this, all ? fenceValue : completed);
         }
         std::lock_guard lock(mutex);
         size_t kept = 0;
@@ -1058,6 +1065,9 @@ struct StreamingPool::Impl {
     /// into the slot by the device. The slot's positions are cleared first:
     /// what validation drops leaves splats of opacity 0, not the last page's.
     Result<uint32_t> placeSpz(gpu::CommandBatch& batch, const Loaded& l, uint32_t slot, uint64_t from) {
+        if (DevicePages::isDevicePage(std::span<const std::byte>(mapped + from, sizeof(DevicePageHeader)))) {
+            return placeDevicePage(batch, l, slot, from);
+        }
         SpzStaged h;
         std::memcpy(&h, mapped + from, sizeof h);
         if (h.magic != SpzStaged::kMagic || h.count == 0 || h.count > format.chunkSplats) {
@@ -1099,6 +1109,34 @@ struct StreamingPool::Impl {
         return h.count;
     }
 
+    /// Frame thread: a device page (DevicePages.h): its producer records
+    /// what writes its splats into the slot, read from what it holds and
+    /// from the page's payload in staging. The slot's positions are cleared
+    /// first, as for an SPZ page.
+    Result<uint32_t> placeDevicePage(gpu::CommandBatch& batch, const Loaded& l, uint32_t slot, uint64_t from) {
+        DevicePageHeader h;
+        std::memcpy(&h, mapped + from, sizeof h);
+        if (h.count == 0 || h.count > format.chunkSplats) {
+            return Error::make(ErrorCode::InternalError, "{}: chunk {} staged a device page of {} splats",
+                               source->name(), l.request.chunk, h.count);
+        }
+        auto pages = DevicePages::find(h.source);
+        if (pages == nullptr) {
+            return Error::make(ErrorCode::NotFound, "{}: chunk {} names a producer that has gone", source->name(),
+                               l.request.chunk);
+        }
+        if (std::find(devicePages.begin(), devicePages.end(), pages) == devicePages.end()) {
+            devicePages.push_back(pages);
+        }
+        const uint64_t at = uint64_t{slot} * format.chunkSplats;
+        batch.encoder()->clearBuffer(cloud.splats.positions.rhi(), at * 16, uint64_t{format.chunkSplats} * 16);
+        ATHENEA_TRY(pages->place(batch, h, staging, from + sizeof h, cloud.splats, at, format.restPerColour, this,
+                                 fenceValue + 1));
+        batch.markDirty();
+        lastFlag = h.antialiased != 0 ? int8_t{1} : int8_t{0};
+        return h.count;
+    }
+
     /// Frame thread: what status() answers from now on.
     void report() {
         std::lock_guard lock(mutex);
@@ -1125,6 +1163,11 @@ StreamingPool::~StreamingPool() {
     impl_->work.notify_all();
     for (std::thread& t : impl_->loaders) {
         t.join();
+    }
+    // Producers of device pages hold nothing more for this pool (what the
+    // device still runs keeps its own references to what it reads).
+    for (const auto& pages : impl_->devicePages) {
+        pages->retired(impl_.get(), UINT64_MAX);
     }
     if (impl_->mapped != nullptr) {
         (void)impl_->device->rhi()->unmapBuffer(impl_->staging.rhi());

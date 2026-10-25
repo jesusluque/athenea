@@ -473,7 +473,7 @@ cada frame como una época, con su tiempo PTP, y el frame dibuja la última
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `stage` | ruta, obligatoria | — | un stage con un ParticleField bajo `AtheneaLiveSourceAPI`; sus `chunks` al menos las páginas por frame de la secuencia, su `chunkSplats` al menos `--chunk-splats`, `degree` 3 |
-| `pages` | directorio, obligatorio | — | contiene `stream.txt` y las páginas |
+| `pages` | directorio o `.athv`, obligatorio | — | contiene `stream.txt` y las páginas; o un vídeo que escribió `athenea video-encode` (§2.7.2), cada frame decodificado por el decodificador hardware al empujarlo |
 | `--stream` | nombre | el que nombra el stage | |
 | `--camera` | ruta de prim | la primera del stage | |
 | `--size` | `ANCHOxALTO` | `960x540` | |
@@ -489,6 +489,14 @@ Por el reloj imprime los frames dibujados, las épocas mostradas y saltadas,
 con qué retraso se mostró una época respecto a cuándo tocaba, y si el ritmo
 se sostuvo (cada época dibujada). El productor está en este proceso: las colas
 con nombre son las del propio motor (`lod::PageQueue::named`).
+
+Un `.athv` se reproduce en el mismo stage: un frame de vídeo es una época,
+sus chunks las páginas, y los `chunks` del stage tienen que ser al menos los
+del frame más grande del vídeo (`chunkSplats` 32768, `degree` 3). La imagen
+decodificada se queda donde la escribió el decodificador; el dispositivo la
+lee allí y escribe las gaussianas en el almacén. La ejecución imprime además
+cuánto tardó el decodificador hardware por frame (mediana y p95) y cuántas
+páginas se colocaron. Por ahora solo en macOS.
 
 ### 2.7.2 `athenea video-encode` — frames de gaussianas como vídeo hardware
 
@@ -1517,6 +1525,9 @@ athenea flatten sparrow.usda --range 1:61 --chunk-splats 32768 --spz-version 4 -
 # sobre x en un stage Z arriba (las páginas son Y arriba, y los ejes de SPZ van girados)
 athenea stream live.usda pages --lockstep --reference sparrow.usda --splat-display-blend -o frames
 athenea stream live.usda pages --rate 30 --loops 3 --splat-display-blend
+# los mismos frames como vídeo hardware: una quinta parte de los bytes de las páginas a calidad 0.5
+athenea video-encode pages -o sparrow.athv --check
+athenea stream live.usda sparrow.athv --rate 30 --loops 3 --splat-display-blend --frame-producer
 ```
 
 `pages/stream.txt` lista el ritmo, las páginas por frame como mucho
@@ -2648,6 +2659,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
+| `athenea stream` | nada, o con `-o` un EXR por frame mostrado |
 | `athenea video-encode` | un `.athv`, y con `--hevc` el vídeo solo como Annex B |
 | `athenea video-decode` | nada; los tiempos por la salida estándar |
 | `athenea mesh2splat` | una escena USD con la nube |

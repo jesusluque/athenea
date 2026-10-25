@@ -9,9 +9,52 @@
 
 #include "athenea/core/Log.h"
 #include "athenea/io/Readers.h"
+#include "athenea/lod/DevicePages.h"
 #include "SpzStaging.h"
 
 namespace athenea::lod {
+
+namespace {
+struct DevicePagesRegistry {
+    std::mutex                                                     mutex;
+    uint64_t                                                       next = 1;
+    std::unordered_map<uint64_t, std::shared_ptr<DevicePages>>     byKey;
+};
+DevicePagesRegistry& devicePagesRegistry() {
+    static DevicePagesRegistry r;
+    return r;
+}
+}   // namespace
+
+uint64_t DevicePages::publish(std::shared_ptr<DevicePages> pages) {
+    DevicePagesRegistry& r = devicePagesRegistry();
+    std::lock_guard lock(r.mutex);
+    const uint64_t key = r.next++;
+    r.byKey[key] = std::move(pages);
+    return key;
+}
+
+void DevicePages::withdraw(uint64_t key) {
+    DevicePagesRegistry& r = devicePagesRegistry();
+    std::lock_guard lock(r.mutex);
+    r.byKey.erase(key);
+}
+
+std::shared_ptr<DevicePages> DevicePages::find(uint64_t key) {
+    DevicePagesRegistry& r = devicePagesRegistry();
+    std::lock_guard lock(r.mutex);
+    const auto it = r.byKey.find(key);
+    return it == r.byKey.end() ? nullptr : it->second;
+}
+
+bool DevicePages::isDevicePage(std::span<const std::byte> bytes) noexcept {
+    if (bytes.size() < sizeof(DevicePageHeader)) {
+        return false;
+    }
+    uint32_t magic = 0;
+    std::memcpy(&magic, bytes.data(), sizeof magic);
+    return magic == DevicePageHeader::kMagic;
+}
 
 void PageQueue::push(PageUpdate page) {
     std::lock_guard lock(mutex_);
@@ -263,6 +306,19 @@ Result<void> LiveSource::fetch(const ChunkRequest& request, std::span<std::byte>
         }
         bytes = std::move(it->second);
         impl_->staged.erase(it);
+    }
+    if (impl_->settings.format.payload == ChunkFormat::Payload::Spz && DevicePages::isDevicePage(bytes)) {
+        // A page whose splats the device decodes from what its producer holds
+        // (DevicePages.h): staged as it is, header and payload.
+        DevicePageHeader h;
+        std::memcpy(&h, bytes.data(), sizeof h);
+        if (h.count == 0 || h.count > impl_->settings.format.chunkSplats ||
+            sizeof h + uint64_t{h.payloadBytes} != bytes.size() || bytes.size() > staging.size()) {
+            return Error::make(ErrorCode::InvalidArgument, "{}: chunk {} device page of {} splats and {} bytes",
+                               name(), request.chunk, h.count, bytes.size());
+        }
+        std::memcpy(staging.data(), bytes.data(), bytes.size());
+        return ok();
     }
     if (impl_->settings.format.payload == ChunkFormat::Payload::Spz) {
         // Decompressed here, on the loader's thread, and laid in staging as

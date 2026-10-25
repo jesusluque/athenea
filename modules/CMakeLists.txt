@@ -26,7 +26,8 @@ add_subdirectory(light)
 add_subdirectory(world)
 add_subdirectory(technique)
 add_subdirectory(lod)
-# Gaussian splats as video planes through the platform's hardware codec.
+# Gaussian splats as video planes through the platform's hardware codec, and
+# a video played into a live stream (lod's DevicePages).
 add_subdirectory(video)
 add_subdirectory(usd)
 if(NOT ATHENEA_IOS)

@@ -105,8 +105,8 @@ the ones above it.
 | material | `TextureStore` (decode into the working space, mips, UDIM, the texture table), `MaterialCompiler` (MaterialX graphs into Slang), the lobe library |
 | light | UsdLux lights on the device: a record per light, and how a shading point samples one |
 | technique | how a frame is drawn: `VisibilityRaster` / `VisibilityTrace` / `VisibilityBvh` (same ids), `HeadlightShading`, `AovShading`, `Denoiser` (OIDN on the engine's own queue: Metal, CUDA, and Vulkan through CUDA with imported memory), `DisplayTransform` (view transforms, and an OpenColorIO view through `colour::ColourCompiler`), `SplatVisibility` (per-part visibility fields: baked once, a product of table reads a frame, no ray) |
-| lod | `LodBuilder`, `CutSelector`; `Athc.h` for the `.athc` reader/writer and `StreamingPool` |
-| video | splats as video planes: `Planes` (the layout and its kernels), `.athv` (`Athv.h`), the hardware codec (`Codec.h`: VideoToolbox; NVDEC and WebCodecs are where it goes next) |
+| lod | `LodBuilder`, `CutSelector`; `Athc.h` for the `.athc` reader/writer and `StreamingPool`; `SplatStream.h` (live streams), `DevicePages.h` (live pages the device decodes from what their producer holds) |
+| video | splats as video planes: `Planes` (the layout and its kernels), `.athv` (`Athv.h`), the hardware codec (`Codec.h`: VideoToolbox; NVDEC and WebCodecs are where it goes next), `VideoStream` (a video into a live stream) |
 | usd | `Engine`, `StageRenderer`, `Export`; the `hdAthenea` plugin; codeless schemas in `modules/usd/schemas` |
 | aofx | this engine's side of the AOFX host (aopenfx `host/`, ABI 26): capabilities, `renderEffect`, the bundles under plugins/ |
 | mcp | the engine as an MCP server: JSON-RPC 2.0 (`Server`), the tools over a warm stage (`Tools.cpp`); `apps/athenea-mcp` is the stdio transport |
@@ -164,8 +164,8 @@ How the pieces fit:
 - **The CLI** is `apps/athenea` (CLI11): `CmdRender` (render/bench),
   `CmdStage` (convert/stage), `CmdView`, `CmdAofx`, `CmdLive`, `CmdInfo`,
   `CmdMesh2Splat` (a mesh into gaussians, optionally skinned), `CmdVisibility`
-  (bake a skinned cloud's per-part visibility into its file), `CmdVideo`
-  (video-encode/video-decode).
+  (bake a skinned cloud's per-part visibility into its file), `CmdStream`
+  (pages or a video into a live stream), `CmdVideo` (video-encode/video-decode).
 - **athenea view** keeps frames on the device: `StageRenderer::draw`, then
   `DisplayTransform` writes the window's surface texture and ImGui draws over
   it. Hydra render buffers are converted only when a host maps them.

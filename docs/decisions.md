@@ -16193,3 +16193,21 @@ every attribute back within half a step plus what packing adds (0.75 steps at 8 
 and 4 after renormalising), no high part wrong. The same cloud through the hardware encoder and decoder at
 quality 0.9: no high part wrong, every attribute's mean error under 8 steps. `.athv` written and read back,
 slices and Annex B included.
+
+### Into a live stream
+
+- **Device pages** (`lod/DevicePages.h`). A page of a live stream of SPZ pages whose bytes start with "ATVP" is a
+  64-byte header (producer key, its frame ticket, chunk, first splat, count, antialiasing) and the producer's
+  payload -- here the frame's ranges and the chunk's high parts, ~100 KB -- staged as it is by the loader. When the
+  pool places it, it asks the producer (found by key in a process-wide registry) to record what writes the
+  chunk's splats into the slot, from what the producer holds; it tells the producer which of those batches its
+  fence has passed (`retired`). Nothing else in the pool changes: epochs, held epochs, the clock and the counts
+  are the SPZ pages' own, so any stage under `AtheneaLiveSourceAPI` with chunks of 32768 and degree 3 plays a
+  video unchanged.
+- **`video::VideoStream`** is that producer: it reads a frame's records, has the hardware decoder decode its
+  pictures (the producer's thread, or the frame thread with `--frame-producer`), keeps each decoded picture until
+  every pool that placed its pages retired them (or 16 newer frames came, for an epoch that was dropped), and
+  pushes a page a chunk; a frame of slices is one epoch. At placement the luma plane is wrapped as a texture once
+  a picture and `videoPlanesDecode` writes the chunk straight into the store.
+- **`athenea stream STAGE VIDEO.athv`** plays it, lockstep or by the clock, with `--reference` and `-o` as for
+  pages, and prints the decoder's ms a frame and the pages placed.

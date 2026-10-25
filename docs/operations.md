@@ -464,7 +464,7 @@ the device.
 | Option | Value | Default | Notes |
 |---|---|---|---|
 | `stage` | path, required | — | a stage with a ParticleField under `AtheneaLiveSourceAPI`; its `chunks` at least the sequence's pages a frame, its `chunkSplats` at least `--chunk-splats`, `degree` 3 |
-| `pages` | directory, required | — | holds `stream.txt` and the pages |
+| `pages` | directory or `.athv`, required | — | holds `stream.txt` and the pages; or a video `athenea video-encode` wrote (§2.7.2), each frame decoded by the hardware decoder as it is pushed |
 | `--stream` | name | the one the stage names | |
 | `--camera` | prim path | the stage's first | |
 | `--size` | `WIDTHxHEIGHT` | `960x540` | |
@@ -480,6 +480,13 @@ By the clock it prints the frames drawn, the epochs shown and skipped, how
 late an epoch was shown after it was due, and whether the rate held (every
 epoch drawn). The producer is in this process: the named queues are the
 engine's own (`lod::PageQueue::named`).
+
+A `.athv` plays into the same stage: a video frame is an epoch, its chunks
+the pages, and the stage's `chunks` must be at least those of the video's
+largest frame (`chunkSplats` 32768, `degree` 3). The decoded picture stays
+where the decoder wrote it; the device reads it there and writes the splats
+into the store. The run also prints how long the hardware decoder took a
+frame (median and p95) and how many pages were placed. macOS only for now.
 
 ### 2.7.2 `athenea video-encode` — splat frames as hardware video
 
@@ -1475,6 +1482,9 @@ athenea flatten sparrow.usda --range 1:61 --chunk-splats 32768 --spz-version 4 -
 # about x on a Z-up stage (the pages are Y up, and SPZ's axes are turned)
 athenea stream live.usda pages --lockstep --reference sparrow.usda --splat-display-blend -o frames
 athenea stream live.usda pages --rate 30 --loops 3 --splat-display-blend
+# the same frames as hardware video: a fifth of the pages' bytes at quality 0.5
+athenea video-encode pages -o sparrow.athv --check
+athenea stream live.usda sparrow.athv --rate 30 --loops 3 --splat-display-blend --frame-producer
 ```
 
 `pages/stream.txt` lists the rate, the most pages a frame (`chunks`),
@@ -2568,6 +2578,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
+| `athenea stream` | nothing, or with `-o` one EXR a frame shown |
 | `athenea video-encode` | a `.athv`, and with `--hevc` the video alone as Annex B |
 | `athenea video-decode` | nothing; timings on standard output |
 | `athenea mesh2splat` | a USD stage holding the cloud |

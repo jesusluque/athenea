@@ -1,7 +1,9 @@
 // Copyright (c) 2026 jesus luque.
 //
 // `athenea stream`: a sequence of SPZ pages (`athenea flatten --range`, one
-// epoch a frame) played into the live stream a stage names
+// epoch a frame) -- or a `.athv` video of splats (`athenea video-encode`,
+// one epoch a video frame, decoded by the hardware decoder as it is pushed)
+// -- played into the live stream a stage names
 // (AtheneaLiveSourceAPI), and the stage drawn while it plays. A producer
 // thread pushes each frame's pages at the sequence's rate, with the epoch's
 // PTP time; the frame thread draws the stage, which shows the last epoch whose
@@ -26,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -41,6 +44,7 @@
 #include "athenea/lod/SplatStream.h"
 #include "athenea/render/ReferenceRenderer.h"
 #include "athenea/usd/StageRenderer.h"
+#include "athenea/video/VideoStream.h"
 
 namespace athenea::cli {
 namespace {
@@ -145,7 +149,8 @@ void addStream(CLI::App& app) {
         "stream", "play a sequence of SPZ pages (athenea flatten --range) into the live stream a stage names, "
                   "drawing the stage as it plays");
     cmd->add_option("stage", o->stage, "a stage with a ParticleField under AtheneaLiveSourceAPI")->required();
-    cmd->add_option("pages", o->pages, "the pages' directory (its stream.txt)")->required();
+    cmd->add_option("pages", o->pages, "the pages' directory (its stream.txt), or a .athv video (video-encode)")
+        ->required();
     cmd->add_option("--stream", o->stream, "the stream pushed to (default: the one the stage names)");
     cmd->add_option("--camera", o->camera, "camera prim (default: the stage's first)");
     cmd->add_option("--size", o->size, "WIDTHxHEIGHT");
@@ -172,18 +177,40 @@ void addStream(CLI::App& app) {
             cli::err("stream: --reference compares frame by frame, and needs --lockstep\n");
             throw CLI::RuntimeError(kExitFailure);
         }
-        auto sequence = readSequence(o->pages);
-        if (!sequence) cli::fail(sequence.error());
-        const Sequence& seq = *sequence;
+        const bool isVideo = fs::path(o->pages).extension() == ".athv";
+        auto device = gpu::Device::create();
+        if (!device) cli::fail(device.error());
+        gpu::ShaderLibrary library(*device);
+        // A video: its frames' time codes and sizes from the file's records;
+        // each is read and decoded when it is pushed.
+        std::shared_ptr<video::VideoStream> videoStream;
+        Sequence seq;
+        if (isVideo) {
+            auto opened = video::VideoStream::open(o->pages, library);
+            if (!opened) cli::fail(opened.error());
+            videoStream = std::move(*opened);
+            seq.rate = videoStream->header().rate;
+            seq.chunks = videoStream->chunks();
+            seq.chunkSplats = videoStream->header().chunkSplats;
+            for (uint32_t k = 0; k < videoStream->frames(); ++k) {
+                Frame f;
+                f.time = videoStream->time(k);
+                f.bytes = videoStream->frameBytes(k);
+                seq.frames.push_back(std::move(f));
+            }
+        } else {
+            auto sequence = readSequence(o->pages);
+            if (!sequence) cli::fail(sequence.error());
+            seq = std::move(*sequence);
+        }
         const double rate = o->rate > 0.0 ? o->rate : seq.rate;
         std::vector<double> perEpoch;
         for (const Frame& f : seq.frames) perEpoch.push_back(static_cast<double>(f.bytes));
         cli::out("stream: %zu frames of up to %u pages (%u gaussians a page), %.2f MB an epoch (median), at %g a "
-                 "second\n",
-                 seq.frames.size(), seq.chunks, seq.chunkSplats, median(perEpoch) / 1.0e6, rate);
+                 "second%s\n",
+                 seq.frames.size(), seq.chunks, seq.chunkSplats, median(perEpoch) / 1.0e6, rate,
+                 isVideo ? ", from video" : "");
 
-        auto device = gpu::Device::create();
-        if (!device) cli::fail(device.error());
         auto renderer = usd::StageRenderer::open(o->stage, *device);
         if (!renderer) cli::fail(renderer.error());
         std::unique_ptr<usd::StageRenderer> reference;
@@ -193,7 +220,6 @@ void addStream(CLI::App& app) {
             reference = std::move(*opened);
         }
         (*renderer)->setSplatDisplayBlend(o->displayBlend);
-        gpu::ShaderLibrary library(*device);
         const std::string camera = o->camera.empty() ? ((*renderer)->cameras().empty() ? std::string()
                                                                                          : (*renderer)->cameras()[0])
                                                      : o->camera;
@@ -226,7 +252,20 @@ void addStream(CLI::App& app) {
         const auto ptpOf = [&](uint64_t epoch) {
             return ptpStart + static_cast<uint64_t>(std::llround(static_cast<double>(epoch - 1) * 1.0e9 / rate));
         };
+        // A producer's failure (a frame the decoder refused), kept for the
+        // frame thread to report.
+        std::mutex failedMutex;
+        std::optional<Error> pushFailed;
         const auto push = [&](uint64_t epoch) {
+            if (videoStream != nullptr) {
+                const uint32_t k = static_cast<uint32_t>((epoch - 1) % seq.frames.size());
+                auto pushed = videoStream->push(*queue, 0, k, epoch, ptpOf(epoch), seq.chunks);
+                if (!pushed) {
+                    std::lock_guard lock(failedMutex);
+                    if (!pushFailed) pushFailed = std::move(pushed).error();
+                }
+                return;
+            }
             const Frame& f = seq.frames[(epoch - 1) % seq.frames.size()];
             const uint32_t pages = std::max<uint32_t>(seq.chunks, static_cast<uint32_t>(f.pages.size()));
             for (uint32_t c = 0; c < pages; ++c) {
@@ -243,6 +282,21 @@ void addStream(CLI::App& app) {
                 }
                 queue->push(std::move(u));
             }
+        };
+        // What playing the video took: its frames read and decoded, its
+        // pages placed; and a producer's failure, which ends the run.
+        const auto videoReport = [&] {
+            if (videoStream == nullptr) return;
+            const video::VideoStream::Stats st = videoStream->stats();
+            cli::out("stream: video: %zu frames decoded by the %s decoder in %.2f ms (median, p95 %.2f), read in "
+                     "%.2f ms; %llu pages placed\n",
+                     st.decodeMs.size(), st.hardware ? "hardware" : "software", median(st.decodeMs), percentile(st.decodeMs, 0.95),
+                     median(st.readMs), static_cast<unsigned long long>(st.placed));
+            videoStream->close();
+        };
+        const auto failIfPushFailed = [&] {
+            std::lock_guard lock(failedMutex);
+            if (pushFailed) cli::fail(*pushFailed);
         };
         const auto write = [&](uint64_t n, const std::vector<float>& rgba, const std::vector<float>& depth,
                                const char* prefix, uint64_t epoch) -> Result<void> {
@@ -265,6 +319,7 @@ void addStream(CLI::App& app) {
             for (uint64_t epoch = 1; epoch <= total; ++epoch) {
                 const Clock::time_point start = Clock::now();
                 push(epoch);
+                failIfPushFailed();
                 Result<usd::StageImage> image = Error(ErrorCode::InvalidArgument, "no frame");
                 for (int k = 0; k < 400; ++k) {
                     image = (*renderer)->render(camera, 0.0, width, height);
@@ -319,6 +374,7 @@ void addStream(CLI::App& app) {
                          median(p99s), percentile(p99s, 1.0), median(maxes), worstMax,
                          static_cast<unsigned long long>(worstAt), median(over2s), percentile(over2s, 1.0));
             }
+            videoReport();
             return;
         }
 
@@ -402,6 +458,8 @@ void addStream(CLI::App& app) {
                  static_cast<unsigned long long>(end.droppedCorrupt));
         cli::out("stream: the rate %s: %s\n", shownCount == total ? "holds" : "does not hold",
                  shownCount == total ? "every epoch was drawn" : "epochs were skipped for later ones");
+        failIfPushFailed();
+        videoReport();
     });
 }
 
