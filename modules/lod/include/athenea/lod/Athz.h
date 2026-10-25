@@ -58,19 +58,23 @@ namespace athenea::lod {
 inline constexpr uint32_t kAthzGeometry = 1;     ///< G: position, shape but the colour, the tail word, normal, material
 inline constexpr uint32_t kAthzAppearance = 2;   ///< A: the base colour, harmonics, emission
 inline constexpr uint32_t kAthzTransfer = 4;     ///< T: transfer and its open directions
-inline constexpr uint32_t kAthzTemporal = 8;     ///< K: none written yet
+inline constexpr uint32_t kAthzTemporal = 8;     ///< K: a skinned cloud's rig and its joints a frame
 inline constexpr uint32_t kAthzAllLayers = 15;
 
 /// LAYER K: the rig that moves a skinned cloud, once -- each splat's four
 /// (joint, weight) float pairs and their gradients in the store's order, as
 /// scene::SplatSkinner takes them -- and its joints at each frame, written in
-/// halves (each matrix's first three columns; the fourth is 0 0 0 1).
+/// halves (each matrix's first three rows as the skinner takes it; the fourth
+/// is 0 0 0 1).
 struct AthzTemporal {
     const gpu::Buffer*    influences = nullptr;   ///< 8 words a store splat
     const gpu::Buffer*    gradients = nullptr;    ///< 3 words a store splat, or null
     uint32_t              joints = 0;
     std::vector<double>   times;
-    std::vector<float>    xforms;                 ///< times * joints * 16, row major
+    /// times * joints * 16: each matrix as scene::SplatSkinner takes it --
+    /// USD's GfMatrix4d transposed, the translation in the last column and the
+    /// last row 0 0 0 1 (kept as the first three rows).
+    std::vector<float>    xforms;
     std::array<float, 16> geomBind{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 };
 

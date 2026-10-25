@@ -509,8 +509,10 @@ TEST_CASE("an .athz's layer K keeps the rig bit for bit and the joints in halves
         k.times.push_back(1.0 + f);
         for (uint32_t j = 0; j < 3; ++j) {
             const float a = 0.2F * float(f) * float(j);
-            const std::array<float, 16> m{std::cos(a), 0, -std::sin(a), 0, 0, 1, 0, 0,
-                                          std::sin(a), 0, std::cos(a), 0, 0.1F * f, -0.05F * j, 0.3F, 1};
+            // As the skinner takes a joint: USD's matrix transposed, the
+            // translation in the last column, the last row 0 0 0 1.
+            const std::array<float, 16> m{std::cos(a), 0, std::sin(a), 0.1F * f, 0, 1, 0, -0.05F * j,
+                                          -std::sin(a), 0, std::cos(a), 0.3F, 0, 0, 0, 1};
             k.xforms.insert(k.xforms.end(), m.begin(), m.end());
         }
     }
@@ -537,10 +539,13 @@ TEST_CASE("an .athz's layer K keeps the rig bit for bit and the joints in halves
     REQUIRE(lod::athzFrameXforms(*gpu->library, *back, 4, frame));
     auto exact = gpu::Buffer::fromSpan(*gpu->device, std::span<const float>(k.xforms.data() + 4 * 48, 48), "test.exact");
     REQUIRE(exact);
-    // The fourth columns are exact (0 0 0 1 written back), the rest rounded.
+    // The last rows are exact (0 0 0 1 written back), the first three rounded.
     uint32_t differ = differing(*h, *exact, 0, frame, 0, 48);
     std::printf("  frame 4: %u of 48 floats rounded by the halves\n", differ);
     CHECK(differ <= 36);
+    uint32_t lastRows = 0;
+    for (uint32_t j = 0; j < 3; ++j) lastRows += differing(*h, *exact, j * 16 + 12, frame, j * 16 + 12, 4);
+    CHECK(lastRows == 0);
 }
 
 TEST_CASE("every transform an .athz word takes decodes bit for bit", "[lod][gpu][athz]") {

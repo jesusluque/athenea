@@ -267,14 +267,18 @@ dibuja con `athenea stage --splat-override PRIM=0,1,0,R,G,B,1`.
 
 ### 2.4.5 `athenea athz-skin-check` — un `.athz` con esqueleto, fotograma a fotograma
 
-`athenea athz-skin-check source.usd cloud.athz [--size 960x540] [--dir D --every 10]`:
+`athenea athz-skin-check source.usd cloud.athz [--size 960x540] [--eye X Y Z --target X Y Z --up X Y Z --focal MM] [--dir D --every 10 | --frames T...]`:
 las dos nubes se deforman en el dispositivo en cada fotograma autorizado --
-el rig y las articulaciones de la fuente tal como los tiene la escena; la pose
+el rig y las articulaciones de la fuente tal como los tiene la escena (cada
+matriz traspuesta, como la envía hdAthenea); la pose
 de reposo del `.athz`, el rig de la capa K y sus articulaciones en halves -- y
 se dibujan desde una cámara que encuadra la pose de reposo. Cada fotograma
 imprime el del `.athz` frente al de la fuente (p99, max) y el parpadeo de cada
 uno (la segunda diferencia de tres fotogramas); `--dir` guarda cada
-`--every`-ésimo fotograma de las dos como EXR.
+`--every`-ésimo fotograma de las dos como EXR (o los time codes que nombra
+`--frames`). Las opciones de cámara son las de `athenea stage`, así que el mismo
+fotograma dibujado por el motor (`athenea stage ... --time T`) es la referencia
+con la que comparar.
 
 ### 2.4.2 `athenea athz-census` — lo que cuestan los planos de bytes de una nube
 

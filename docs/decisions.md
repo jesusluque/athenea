@@ -16210,24 +16210,38 @@ gaussians.
 
 **Layer K, the sparrow** (`sparrow_tx_vis.usdc`: 1.50 M splats, 609 joints, 61 frames): 107.6 MB in all (the
 USD file is 226 MB), of which layer K's pages are 34.9 MB -- the rig a splat, eleven words (four joints and
-weights, three gradient words), not the frames -- and the frames 0.89 MB (609 x 24 B x 61). `athz-skin-check`,
-both clouds skinned on the device every frame, 1280 x 720: the `.athz` against the source, p99 median 3, worst
-5, max at most 45 code values (the joints in halves); the flicker of the two (second difference of three frames)
-is the same to three digits every frame -- the bird's own motion, not noise either adds. The rig a splat is what
-costs, at 23 B a splat: E1b's transforms took it from 44 B; the weights' gradients and joint indices are where
-to look next.
+weights, three gradient words), not the frames -- and the frames 0.89 MB (609 x 24 B x 61). The rig a splat is
+what costs, at 23 B a splat; the weights' gradients and joint indices are where to look next.
+
+Judged against the engine's own skinned render: hdAthenea drawing the stage (the cloud, the relight off so both
+sides draw the cloud's own colour) at frames 1, 30 and 61, 1024 x 1024, and the `.athz` -- its rest pose, layer
+K's rig and the joints in halves -- skinned by `scene::SplatSkinner` and drawn by the same rasteriser from the
+same camera (`athz-skin-check --eye ... --frames 1 30 61`):
+
+| frame | `.athz` against the engine | the check's source route against the engine |
+|---:|---|---|
+| 1 | PSNR 68.7, p99 1, max 17, 1 030 pixels past 2 codes | PSNR 104.4, p99 0, max 1 |
+| 30 | PSNR 69.0, p99 0, max 19, 874 pixels | PSNR 103.8, p99 0, max 1 |
+| 61 | PSNR 68.7, p99 1, max 17, 1 030 pixels (the cycle closes: frame 61 is frame 1) | PSNR 104.4, p99 0, max 1 |
+
+Over all 61 frames, the `.athz` against the source skinned the same way: p99 1 everywhere, max at most 35 --
+what the joints in halves move. A first run was measured against a reference built by the check itself, which
+sent USD's row-major joint matrices to the skinner as they are where hdAthenea transposes them: both halves came
+out torn alike, so their p99 of 3 meant nothing. The matrices now go over transposed (`AthzTemporal::xforms` is
+the skinner's layout; the halves keep its first three rows), and the check's own source route agrees with the
+engine to a code value; the reference is the engine.
 
 ### How it is checked
 
 `athenea_lod_tests "[athz]"`: ten cases, the seven before and three new -- a TX cloud with curvature read whole
 and streamed (0 words differ in transfer, open directions, curvature), the CPCA layer against the codec run on
 the source (0 words), layer K's rig bit for bit and its joints within a half's step (16 of 48 floats rounded,
-the fourth columns exact). The whole lod suite (27 cases) passes.
+the last rows exact). The whole lod suite (27 cases) passes.
 
 ### Not done
 
 - The streamed `.athz` (and `.athc`) path relighting TX clouds with their transfer and the other TX attributes.
 - A CPCA basis fitted per asset; the 8-bit weights the codec also has.
-- Layer K's rig at fewer bytes (joint indices shared by neighbours; the gradients); a sparrow file in version 4
-  (the one measured was written as version 3 with K's fields, before the version was raised).
+- Layer K's rig at fewer bytes (joint indices shared by neighbours; the gradients).
+- Layer K drawn by hdAthenea (a streamed `.athz` is not skinned there yet): the check skins it outside Hydra.
 - The whole Corvette at 60/90 MB: no whole-car tree on the internal disk.

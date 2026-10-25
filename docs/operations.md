@@ -261,13 +261,15 @@ A class map is drawn with `athenea stage --splat-override PRIM=0,1,0,R,G,B,1`.
 
 ### 2.4.5 `athenea athz-skin-check` — a skinned `.athz` frame by frame
 
-`athenea athz-skin-check source.usd cloud.athz [--size 960x540] [--dir D --every 10]`:
+`athenea athz-skin-check source.usd cloud.athz [--size 960x540] [--eye X Y Z --target X Y Z --up X Y Z --focal MM] [--dir D --every 10 | --frames T...]`:
 both clouds skinned on the device at every authored frame -- the source's rig
-and joints as the stage holds them, the `.athz`'s rest pose, layer K's rig and
+and joints as the stage holds them (each matrix transposed, as hdAthenea sends it), the `.athz`'s rest pose, layer K's rig and
 its joints in halves -- and drawn from a camera framing the rest pose. Each
 frame prints the `.athz` frame against the source's (p99, max) and the flicker
 of each (the second difference of three frames); `--dir` keeps every
-`--every`-th frame of both as EXR.
+`--every`-th frame of both as EXR (or the time codes `--frames` names). The
+camera options are `athenea stage`'s, so the same frame drawn by the engine
+(`athenea stage ... --time T`) is the reference to compare with.
 
 ### 2.4.2 `athenea athz-census` — what a cloud's byte planes cost
 

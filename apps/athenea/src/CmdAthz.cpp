@@ -144,6 +144,19 @@ Result<uint64_t> recordDifference(gpu::ShaderLibrary& library, const lod::LodClo
     return n;
 }
 
+/// Joint matrices as the skinner takes them: USD's row-major GfMatrix
+/// transposed, as hdAthenea sends them (Engine.cpp), a rearrangement of the
+/// values the file holds.
+std::vector<float> forSkinner(const std::vector<float>& usd) {
+    std::vector<float> out(usd.size());
+    for (size_t m = 0; m + 16 <= usd.size(); m += 16) {
+        for (size_t r = 0; r < 4; ++r) {
+            for (size_t c = 0; c < 4; ++c) out[m + r * 4 + c] = usd[m + c * 4 + r];
+        }
+    }
+    return out;
+}
+
 /// The names of an element's bytes, field by field (Athz.cpp's order).
 std::vector<std::string> byteNames(const lod::LodCloud& cloud, uint32_t planes) {
     std::vector<std::string> names;
@@ -343,7 +356,7 @@ bool convertWithAthz(const std::string& input, const std::string& output, const 
         k.gradients = gradients ? &*gradients : nullptr;
         k.joints = skin->joints;
         k.times = skin->times;
-        k.xforms = skin->xforms;
+        k.xforms = forSkinner(skin->xforms);
         k.geomBind = skin->geomBindTransform;
         lod::AthzSettings s;
         s.runGaussians = o.run;
@@ -527,6 +540,9 @@ void addAthzSkinCheck(CLI::App& app) {
         std::string source, athz, dir;
         std::string size = "960x540";
         uint32_t    every = 10;
+        std::vector<double> eye, target, up{0.0, 0.0, 1.0};
+        double      focal = 35.0;
+        std::vector<double> frames;   ///< time codes written
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("athz-skin-check",
@@ -537,6 +553,11 @@ void addAthzSkinCheck(CLI::App& app) {
     cmd->add_option("--size", o->size, "WIDTHxHEIGHT");
     cmd->add_option("--dir", o->dir, "where every --every-th frame of both is written (.exr)");
     cmd->add_option("--every", o->every, "frames between those written");
+    cmd->add_option("--eye", o->eye, "the camera at x y z (with --target), as `athenea stage --eye`")->expected(3);
+    cmd->add_option("--target", o->target, "where it looks")->expected(3);
+    cmd->add_option("--up", o->up, "its up vector")->expected(3);
+    cmd->add_option("--focal", o->focal, "its focal length, mm (24.576 mm aperture), as `athenea stage --focal`");
+    cmd->add_option("--frames", o->frames, "the time codes written to --dir (in place of --every)");
     cmd->callback([o] {
         uint32_t width = 960, height = 540;
         if (std::sscanf(o->size.c_str(), "%ux%u", &width, &height) != 2) fail(Error(ErrorCode::InvalidArgument, "--size"));
@@ -577,8 +598,14 @@ void addAthzSkinCheck(CLI::App& app) {
         const double cx = (b.min[0] + b.max[0]) * 0.5, cy = (b.min[1] + b.max[1]) * 0.5,
                      cz = (b.min[2] + b.max[2]) * 0.5;
         const double size = std::max({b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]});
-        const render::Camera camera = render::Camera::lookingAt({cx + 0.6 * size, cy - 1.6 * size, cz + 0.5 * size},
-                                                                {cx, cy, cz}, {0.0, 0.0, 1.0});
+        render::Camera camera = render::Camera::lookingAt({cx + 0.6 * size, cy - 1.6 * size, cz + 0.5 * size},
+                                                          {cx, cy, cz}, {0.0, 0.0, 1.0});
+        if (o->eye.size() == 3 && o->target.size() == 3) {
+            camera = render::Camera::lookingAt({o->eye[0], o->eye[1], o->eye[2]},
+                                               {o->target[0], o->target[1], o->target[2]},
+                                               {o->up[0], o->up[1], o->up[2]});
+        }
+        camera.lens.focal = o->focal;
         const render::Projection projection = render::projectionFor(camera, width, height);
         render::RenderSettings settings;
         settings.width = width;
@@ -615,12 +642,13 @@ void addAthzSkinCheck(CLI::App& app) {
             return t.colour;
         };
         const uint32_t frames = static_cast<uint32_t>(std::min(skin->times.size(), athz->times.size()));
+        const std::vector<float> sourceXforms = forSkinner(skin->xforms);
         std::vector<gpu::Buffer> fromSource, fromAthz;
         std::vector<double> p99, maxima;
         gpu::Buffer athzXforms;
         for (uint32_t f = 0; f < frames; ++f) {
             auto srcXforms = gpu::Buffer::fromSpan(**device,
-                                                   std::span<const float>(skin->xforms.data() + uint64_t{f} * skin->joints * 16,
+                                                   std::span<const float>(sourceXforms.data() + uint64_t{f} * skin->joints * 16,
                                                                           uint64_t{skin->joints} * 16),
                                                    "check.xforms");
             if (!srcXforms) fail(srcXforms.error());
@@ -634,11 +662,15 @@ void addAthzSkinCheck(CLI::App& app) {
             if (!diff) fail(diff.error());
             p99.push_back(diff->p99);
             maxima.push_back(diff->max);
-            if (!o->dir.empty() && o->every > 0 && f % o->every == 0) {
+            const bool asked = o->frames.empty()
+                                   ? (o->every > 0 && f % o->every == 0)
+                                   : std::find(o->frames.begin(), o->frames.end(), skin->times[f]) != o->frames.end();
+            if (!o->dir.empty() && asked) {
                 for (const auto& [name, img] : {std::pair{"source", &fromSource.back()}, std::pair{"athz", &fromAthz.back()}}) {
                     std::vector<float> rgba(uint64_t{width} * height * 4);
                     if (auto r = img->read(**device, 0, rgba.size() * 4, rgba.data()); !r) fail(r.error());
-                    const fs::path path = fs::path(o->dir) / std::format("skin_{}_{:03}.exr", name, f);
+                    const fs::path path =
+                        fs::path(o->dir) / std::format("skin_{}_{:03}.exr", name, static_cast<int>(skin->times[f]));
                     if (auto r = io::writeExr(path, width, height, rgba, {}, false); !r) fail(r.error());
                 }
             }

@@ -110,9 +110,10 @@ void athzGather(uint3 tid: SV_DispatchThreadID) {
     }
 }
 
-/// THE JOINTS A FRAME, IN HALVES: each joint's matrix (sixteen floats, row
-/// major, the last column 0 0 0 1) kept as its first three columns, twelve
-/// halves in six words; and back, frame `frame` of them into floats.
+/// THE JOINTS A FRAME, IN HALVES: each joint's matrix as the skinner takes
+/// it (sixteen floats, USD's GfMatrix transposed: the translation in the last
+/// column, the last row 0 0 0 1) kept as its first three rows, twelve halves
+/// in six words; and back, frame `frame` of them into floats.
 struct HalvesParams {
     uint matrices;   ///< joints * frames
     uint joints;
@@ -133,10 +134,8 @@ void athzToHalves(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     uint h[12];
-    for (uint r = 0; r < 4u; ++r) {
-        for (uint c = 0; c < 3u; ++c) {
-            h[r * 3u + c] = f32tof16(asfloat(matricesIn.Load((m * 16u + r * 4u + c) * 4u)));
-        }
+    for (uint k = 0; k < 12u; ++k) {   // rows 0 to 2
+        h[k] = f32tof16(asfloat(matricesIn.Load((m * 16u + k) * 4u)));
     }
     for (uint k = 0; k < 6u; ++k) {
         halvesOut.Store((m * 6u + k) * 4u, h[2u * k] | (h[2u * k + 1u] << 16));
@@ -151,15 +150,12 @@ void athzFromHalves(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint m = halves.frame * halves.joints + j;
-    for (uint r = 0; r < 4u; ++r) {
-        for (uint c = 0; c < 4u; ++c) {
-            float v = c == 3u ? (r == 3u ? 1.0 : 0.0) : 0.0;
-            if (c < 3u) {
-                const uint k = r * 3u + c;
-                const uint word = halvesIn.Load((m * 6u + k / 2u) * 4u);
-                v = f16tof32((k & 1u) != 0u ? (word >> 16) : (word & 0xFFFFu));
-            }
-            matricesOut.Store((j * 16u + r * 4u + c) * 4u, asuint(v));
+    for (uint k = 0; k < 16u; ++k) {
+        float v = k == 15u ? 1.0 : 0.0;   // the last row: 0 0 0 1
+        if (k < 12u) {
+            const uint word = halvesIn.Load((m * 6u + k / 2u) * 4u);
+            v = f16tof32((k & 1u) != 0u ? (word >> 16) : (word & 0xFFFFu));
         }
+        matricesOut.Store((j * 16u + k) * 4u, asuint(v));
     }
 }

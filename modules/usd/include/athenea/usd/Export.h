@@ -236,8 +236,9 @@ struct DeviceSplatRecords {
 
 /// THE RIG THAT CARRIES A FIELD, read back (SplatSkinning above, four
 /// influences a gaussian): AtheneaSplatSkinningAPI's names or
-/// SkelBindingAPI's, each authored time's joint matrices. Values read and
-/// laid out, none computed.
+/// SkelBindingAPI's, each authored time's joint matrices row major as USD
+/// holds them (the skinner takes each transposed, as hdAthenea sends it).
+/// Values read and laid out, none computed.
 [[nodiscard]] Result<SplatSkinning> readSplatSkinning(const std::filesystem::path& path, const std::string& prim = {});
 
 /// AN ARRAY A GAUSSIAN ELSE THE FIELD CARRIES: a vertex primvar (a
