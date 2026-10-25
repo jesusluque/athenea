@@ -15545,11 +15545,15 @@ through the BVH against the GT path traced on Metal with ray queries, relMSE 4.0
 cloud, CUDA's against Metal's, relMSE 5.7e-6 and 5.9e-7 (`athenea compare`). The set's cloud, drawn through the set's
 camera, shows its occlusion -- the cube's shadow on the floor, the corners -- where the OptiX bake left no cloud.
 
+Under WSL2 on the same laptop (Linux, CUDA 12.9), which loads no OptiX and where a bake used to be refused:
+`[technique][path][bvh]` passes with the same numbers; the set bakes, 797 269 gaussians in 237 s from an empty shader
+cache (200 s of it the bake), and drawn through its camera it is the Windows bake's picture (mean difference 4e-5).
+The kernels compiled there in about a minute where Windows took seven to fifteen: the time is the Windows side's
+nvrtc and driver JIT, not the kernel's size.
+
 ### Not done
 
-- Not run on Linux: under WSL2, which loads no OptiX and where a bake used to be refused, the route is the same CUDA
-  code, but the machine's WSL instance was not answering when this was measured.
-- The kernel's first compile on CUDA is minutes, not seconds; an optimisation level for the driver's JIT, or a
+- The kernel's first compile on CUDA under Windows is minutes, not seconds; an optimisation level for the driver's JIT, or a
   kernel split by what a frame uses, would be the places to look.
 - Motion blur: the trees hold the frame's own records at the shutter's open, so a ray of a later shutter bucket
   meets the geometry where it was at the open.
