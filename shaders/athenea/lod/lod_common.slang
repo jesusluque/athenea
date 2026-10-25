@@ -92,6 +92,10 @@ public struct LodParams {
     /// 1: the cut reads each group's material (`pbr`): a group of glass or
     /// a sheet is never drawn merged, its splats are.
     public uint  pbrs;
+    /// finalize: the most a merged Gaussian's opacity may be. Over 1 it is
+    /// the harder kernel (splat/frame.slang's falloffAlpha), which keeps the
+    /// mass of members that covered their cell more than once.
+    public float mostOpacity;
 };
 
 /// A GLASS OR A SHEET, by its material word (splat_encoding's pbr): what

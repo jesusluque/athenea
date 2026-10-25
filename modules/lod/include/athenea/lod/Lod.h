@@ -16,6 +16,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -73,6 +74,17 @@ struct LodCloud {
     /// is (GpuSplats::payloadIndex) rather than copying it.
     std::vector<uint32_t> payloadBase;
     uint32_t              payloadCount = 0;   ///< elements in the joined buffers; 0: not joined
+    /// Counted up whenever chunks come or go (a StreamingPool's update): a
+    /// cut of the same view over the same residency is the last one. It
+    /// starts at a number no other cloud of the process started at, so a
+    /// cloud made where a freed one stood is not taken for it.
+    uint64_t              residency = firstResidency();
+
+    /// A fresh cloud's residency: 2^32 apart from every other's.
+    [[nodiscard]] static uint64_t firstResidency() noexcept {
+        static std::atomic<uint64_t> clouds{1};
+        return clouds.fetch_add(1, std::memory_order_relaxed) << 32;
+    }
 
     [[nodiscard]] uint32_t chunks() const noexcept { return static_cast<uint32_t>(slots.size()); }
     [[nodiscard]] uint32_t chunkCount(uint32_t chunk) const noexcept {
@@ -101,6 +113,11 @@ struct LodBuildSettings {
     uint32_t coarsestLevel = 1;
     /// Splats per chunk: what a stream loads and drops at once.
     uint32_t chunkSplats = uint32_t{1} << 16;
+    /// The most a merged Gaussian's opacity may be: its members' mass over
+    /// its area, which over 1 draws as the harder kernel (up to 5,
+    /// splat/frame.slang). 0.99 is the merge held under one opacity, which
+    /// leaves a coarse level see-through where its members overlapped.
+    float mostMergedOpacity = 5.0F;
 };
 
 class LodBuilder {
@@ -160,6 +177,17 @@ private:
     gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_, extrasGather_,
                                         payloadIndex_, selectionChanged_;
     std::vector<std::unique_ptr<Frame>> frames_;
+    /// Every cut's counts in one buffer, and every cut's changes in another:
+    /// one read each a frame, whatever the number of clouds.
+    gpu::Buffer                         counts_, changes_;
+    /// THE LAST CALL, kept: a call with the same view, the same instances and
+    /// the same residency (LodCloud::residency) returns it with no work and
+    /// no wait.
+    uint64_t                            lastKey_ = 0;
+    bool                                haveLast_ = false;
+    std::vector<render::SplatInstance>  lastOut_;
+    std::vector<size_t>                 lastFrom_;   ///< each of lastOut_'s instance
+    std::vector<CutStats>               lastStats_;
 };
 
 /// HOW MUCH A DECIMATION MAY LOSE, and what it did.

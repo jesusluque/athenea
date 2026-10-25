@@ -211,6 +211,7 @@ emit, tile sort and blend times separately.
 | `output` | path, required | — | `.usda`, `.usdc`, `.usd`, or `.athc` |
 | `--chunk-splats` | integer | `65536` | `.athc`: splats per streamed chunk |
 | `--max-group-fraction` | number | `0.5` | `.athc`: groups per splat the finest merged level may hold |
+| `--merged-opacity` | 0.01..5 | `5` | `.athc`: the most a merged gaussian's opacity may be; over 1 it draws as the harder kernel |
 | `--degree` | 0..3 | `3` | harmonics kept |
 | `--rotate-x` | number | `0` | degrees; COLMAP clouds want `180` |
 | `--no-camera` | flag | off | do not add `/World/Camera` to the stage written |
@@ -1261,6 +1262,20 @@ rest are read as the view asks for them; `0` reads the file whole.
 On a stage, the same two are `primvars:athenea:lod:threshold` and
 `primvars:athenea:stream:budget` on the prim that names the asset with
 `primvars:athenea:asset`.
+
+A merged gaussian keeps its members' mass: where they covered their cell more
+than once, its opacity passes 1 and it draws as the harder kernel, as solid as
+they were to the cell's edge. A region whose chunks are not on the device yet
+draws its finest merged level, and those merges side by side cover it as its
+splats did. `--merged-opacity 0.99` writes the levels held under one opacity,
+as files written before it were; such levels show what is behind them between
+merges.
+
+The streamed prims of a stage share one store: its size is the sum of their
+budgets, and each frame its slots go to the chunks the view wants most,
+whichever prim they belong to -- a panel near the camera takes slots a far one
+does not need. A `.athc` laid out unlike the others (another chunk size, or
+other payloads) keeps a store of its own, sized by its own budget.
 
 A TX cloud's levels keep apart what a merge would spoil: a merged group holds
 splats whose shading normals lean the same way along the same axis -- a

@@ -54,6 +54,7 @@ StructuredBuffer<uint>   groups;           // per splat in the store: its finest
 
 static const uint kWanted = 1;
 static const uint kDrawn = 2;
+static const uint kKept = 4;   // glass or a sheet: nothing drawn in its place while it is away
 
 /// The finest merged level: drawn as any level is, and also wherever its cell
 /// wants splats that are not all on the device yet.
@@ -76,8 +77,11 @@ void lodCutFinest(uint3 tid: SV_DispatchThreadID) {
             resident = resident && residentChunks[c] != 0;
         }
     }
-    selected[g] = ((here && !above) || (!here && !resident)) ? 1u : 0u;
-    state[g] = (here ? 0u : kWanted) | ((!here && resident) ? kDrawn : 0u);
+    // Glass and sheets not on the device yet draw nothing, not their merge:
+    // a merge of a glass's splats is no glass (lodKeptApart), and the Corvette's
+    // windscreen drew black blocks over the cabin until its chunks came.
+    selected[g] = ((here && !above) || (!here && !resident && !kept)) ? 1u : 0u;
+    state[g] = (here ? 0u : kWanted) | ((!here && resident) ? kDrawn : 0u) | (kept ? kKept : 0u);
 }
 
 /// Splats of a run of the store, from `offset`: drawn when their group says.
@@ -116,7 +120,11 @@ void lodChunkNeeds(uint3 tid: SV_DispatchThreadID) {
     float largest = 0.0;
     for (uint g = first; g < params.count && starts[g] < hi; ++g) {
         if ((state[g] & kWanted) != 0) {
-            largest = max(largest, projectedEdge(cells[g], params.level));
+            // Glass draws nothing until it comes (lodCutFinest): it is wanted
+            // as a cell four times the threshold is, ahead of what a merge
+            // stands in for, where it is not wanted more by its own size.
+            const float edge = projectedEdge(cells[g], params.level);
+            largest = max(largest, (state[g] & kKept) != 0 ? max(edge, 4.0 * params.threshold) : edge);
         }
     }
     selected[c] = largest > 0.0 ? uint(clamp(largest * 16.0, 1.0, 4294967040.0)) : 0u;

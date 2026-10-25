@@ -63,7 +63,12 @@ void lodFinalize(uint3 tid: SV_DispatchThreadID) {
     }
     const float3 s = sqrt(max(float3(cov[0][0], cov[1][1], cov[2][2]), float3(1e-14)));
     const float area = discArea(s);
-    const float opacity = min(moments[at] / max(area, 1e-30), 0.99);
+    // ITS MASS, KEPT. A cell's members cover it W / area times over; a
+    // merge held under one opacity drew a gaussian's falloff where they had
+    // been solid to its edge, and a grid of merges -- a region whose chunks
+    // are not on the device -- showed what is behind it between them. Over
+    // one the merge is Spark's harder kernel, as solid as its members were.
+    const float opacity = min(moments[at] / max(area, 1e-30), params.mostOpacity);
     const float3 base = float3(moments[at + 10], moments[at + 11], moments[at + 12]) / weight;
 
     positions[g] = float4(mu, opacity);

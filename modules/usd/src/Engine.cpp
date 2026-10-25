@@ -1378,7 +1378,17 @@ Result<size_t> Engine::commit() {
                     // Held to the device's budget (streamBudget), which may
                     // stream a file asked to be read whole.
                     if (const uint64_t budget = streamBudget(id, asset); budget > 0) {
-                        auto pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
+                        // Into the store the other streamed prims share
+                        // (lod::StreamingShare); a file laid out unlike
+                        // theirs keeps a store of its own.
+                        if (!streamShare_) {
+                            streamShare_ = lod::makeStreamingShare(*device_);
+                        }
+                        auto pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2}, streamShare_);
+                        if (!pool) {
+                            log::info("hdAthenea: {}: {}", id.GetString(), pool.error().toString());
+                            pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
+                        }
                         if (pool) {
                             entry.pool = std::move(*pool);
                         } else {

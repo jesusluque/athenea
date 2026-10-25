@@ -34,6 +34,7 @@ void addConvert(CLI::App& app) {
         bool noCamera = false;
         uint32_t chunkSplats = uint32_t{1} << 16;
         float maxGroupFraction = 0.5F;
+        float mostMergedOpacity = 5.0F;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("convert",
@@ -47,6 +48,9 @@ void addConvert(CLI::App& app) {
     cmd->add_option("--chunk-splats", o->chunkSplats, ".athc: splats per streamed chunk");
     cmd->add_option("--max-group-fraction", o->maxGroupFraction,
                     ".athc: the finest merged level holds at most this many groups per splat");
+    cmd->add_option("--merged-opacity", o->mostMergedOpacity,
+                    ".athc: the most a merged gaussian's opacity may be (over 1: the harder kernel)")
+        ->check(CLI::Range(0.01F, 5.0F));
     cmd->add_option("--degree", o->degree, "harmonic degree cap 0..3");
     cmd->add_option("--rotate-x", o->rotateX, "turn the cloud about x (COLMAP clouds: 180)");
     cmd->add_flag("--no-camera", o->noCamera, "do not add /World/Camera");
@@ -83,6 +87,7 @@ void addConvert(CLI::App& app) {
             lod::LodBuildSettings settings;
             settings.chunkSplats = o->chunkSplats;
             settings.maxGroupFraction = o->maxGroupFraction;
+            settings.mostMergedOpacity = o->mostMergedOpacity;
             auto built = builder->build(*splats, settings);
             auto written = built ? lod::writeAthc(**device, *built, o->output) : Result<void>(built.error());
             if (!written) {

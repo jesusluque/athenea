@@ -14167,6 +14167,88 @@ the count its tree's log gives, into a 1.09 GB `.athc` in 434 s, 1.9 GB of
 memory at most. The whole master is about 69 M leaves, some 23 GB on the
 device at a TX gaussian's 330 bytes: more than this Mac's GPU holds at once.
 
+### The whole car streamed: merges that cover, one store, a cut that does not wait (25 Oct)
+
+**A merge keeps its members' mass.** The coarse levels of a `.athc` are built
+from moments (`lod_finalize`), and a merge's opacity was its members' mass
+over its own area held under 0.99. A cell of a converted surface is covered
+two to eight times over by its members, so the cap dropped most of it, and a
+single gaussian at 0.99 falls off towards its cell's edges: on a grid of merges
+about 3.5 sigma apart, half way between two of them the frame showed about 40%
+of what was behind. Wherever a region's chunks were not on the device, the
+finest merged level drew the car see-through and grey, in rectangles that were
+the chunks' Morton runs. The cap is now `LodBuildSettings::mostMergedOpacity`,
+5 by default (`athenea convert --merged-opacity`): over 1 the merge is Spark's
+harder kernel (`falloffAlpha`), flat to about its cell's edge. On a floor of
+discs as wide as their spacing, ten to a cell, with no chunk on the device, the
+merges held under one differ from the floor by p99 166 and keep their mass by
+p99 0 (`athenea_lod_tests "a region whose chunks*"`). The cost is in volumes:
+on the random cloud of "far away, a dense cloud...", whose members lie behind
+each other and whose summed mass is more than their union, p99 at 2 and 4 px
+goes from 9 and 29 to 14 and 41. The car's 25 panels were converted again
+(`--max-group-fraction 0.1`, 24.1 GB, about 80 minutes).
+
+**Glass not on the device draws nothing, and comes first.** A glass group
+whose chunks were missing drew its merge, which is no glass: black blocks over
+the cabin at 1 px, the whole windscreen black at 4 px. The finest level now
+selects nothing for it, and its chunks are wanted as a cell four times the
+threshold is (`lodChunkNeeds`), ahead of what a merge stands in for. From the
+camera the windscreen then draws the same at 1 and 4 px, its own splats at
+both (`f01m/glass2/cam_1_4_crop.png`).
+
+**One store for every streamed prim** (`lod::StreamingShare`). A pool opened
+with a share takes no store of its own; the first cut that asks for a cloud
+lays one out for all of them -- slots for the sum of their budgets, the payload
+joined with every pool's levels after the slots -- and each frame the share's
+update gives its slots to the chunks most wanted, whichever prim's they are,
+evicting the least wanted as one pool did. The engine opens every streamed
+prim into one share; a file with another chunk size or other payloads keeps a
+store of its own. Two copies of a cloud, one thirty units behind the other,
+each with the 8 slots that alone left chunks missing: the near one takes 13 of
+the 16, the far one none (`athenea_lod_tests "a .athc reads back*"`).
+
+**A frame that changes nothing waits for nothing.** The cut's kernels for every
+instance go in one batch with one read of all counts; cuts whose counts are
+the last frame's compare their selections in a second batch, one counter a
+cut; changed cuts are gathered in a third that is not waited for. A call with
+the same view over clouds whose residency is unchanged returns the last cut
+without touching the device. A cloud's residency starts at a number no other
+cloud of the process started at, and a cut regathers when it changed: a cloud
+made where a freed one stood was taken for it, and a slot that took another
+chunk kept the old one's gaussians. The steady frame's cut makes no host wait
+(the test counts `Device::syncs()`; the car below logs none from `lod/` in its
+last frame, `ATHENEA_SYNC_TRACE`).
+
+The whole car (`car5120`, f01m, the stage's 25 x 262 144 splats in one store)
+from three views, 1920 x 1080, 8 frames. The GPU was shared with another
+session's jobs, and the medians are not comparable between runs: the fastest
+frame is given beside them. 2 and 4 px against 1 px, which the budget caps.
+
+| view | px | median / fastest ms | drawn | cut waits | p99 / relMSE vs 1 px |
+|---|---|---|---|---|---|
+| cam | 1 | 1426 / 805 | 10.60 M | 0 | -- |
+| cam | 2 | 2150 / 1328 | 10.06 M | 0 | 0 / 9e-14 |
+| cam | 4 | 751 / 526 | 7.62 M | 0 | 75 / 0.12 |
+| rear | 1 | 701 / 323 | 10.51 M | 0 | -- |
+| rear | 2 | 1140 / 722 | 10.46 M | 0 | 0 / 5e-8 |
+| rear | 4 | 1134 / 952 | 7.74 M | 0 | 27 / 0.091 |
+| front | 1 | 1340 / 754 | 10.62 M | 0 | -- |
+| front | 2 | 1043 / 748 | 10.02 M | 0 | 0 / 8e-6 |
+| front | 4 | 968 / 809 | 7.99 M | 0 | 62 / 0.042 |
+
+Under the budget 1 and 2 px draw the same: the store is full at 2 px already,
+and both draw what it holds. Most of 4 px's difference in this table is the
+windscreen, which 4 px then drew as a black merge (measured before the glass
+change above), and the merges' harder kernel streaking the paint's reflections
+where they are drawn over many pixels. The 1 px frame leaves about
+1.8 GB of this Mac's memory free.
+
+Not done: the glass change is seen from the camera only, and the table is not
+measured again with it; merges keep their
+mass but not their members' reflections, which a merge of a curved panel
+spreads; and the budget is still the sum of the prims' budgets rather than a
+share of the device.
+
 ## The sun is the texels that are it
 
 env_sun found a dome's sun on a grid of 1.8 degree cells, measured its

@@ -184,6 +184,17 @@ Result<void> joinPayload(gpu::Device& device, LodCloud& lod) {
     }
     batch.markDirty();
     ATHENEA_TRY(batch.submit(true));
+    // The levels' own copies go: a joined cloud's cut reads its payload in
+    // the joined buffers. The material stays, which the cut reads to keep
+    // glass apart (lodKeptApart).
+    for (const Extra& e : extras) {
+        if (e.member == &scene::GpuSplats::pbr) {
+            continue;
+        }
+        for (LodLevel& level : lod.levels) {
+            level.gaussians.*e.member = gpu::Buffer{};
+        }
+    }
     lod.payloadBase = std::move(bases);
     lod.payloadCount = static_cast<uint32_t>(total);
     return ok();
@@ -442,6 +453,7 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
             p["keep"].setData(keep);
             p["shWords"].setData(cloud.shWords);
             p["stride"].setData(stride);
+            p["mostOpacity"].setData(settings.mostMergedOpacity);
         });
         // And what the cloud carries beside, merged over each group's run.
         ATHENEA_TRY(allocateExtras(device, lod.splats, level.groups, *gaussians));
@@ -504,6 +516,9 @@ struct CutSelector::Frame {
     /// its payload was joined -- what tells the next cut it may keep it.
     bool                     gathered = false;
     const LodCloud*          gatheredFrom = nullptr;
+    /// Its residency then: a slot may since hold another chunk at the same
+    /// indices, and a cloud made where a freed one stood starts at another.
+    uint64_t                 gatheredResidency = 0;
     bool                     joined = false;
     std::vector<uint32_t>    lastCounts;
     std::vector<gpu::Buffer> lastSelected;
@@ -577,6 +592,55 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                                                                std::span<const LodInstance> instances,
                                                                float threshold, std::vector<CutStats>* stats) {
     gpu::Device& device = *device_;
+    // THE SAME VIEW OVER THE SAME CLOUDS IS THE LAST CUT. A cut reads the eye,
+    // the focal length, the thresholds, the clouds' places and which of their
+    // chunks are on the device (LodCloud::residency); where none changed, the
+    // last call's clouds and counts stand, and the frame does no work and does
+    // not wait for the device.
+    uint64_t key = 0xcbf29ce484222325ULL;
+    const auto mix = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ULL; };
+    const auto mixDouble = [&mix](double d) {
+        uint64_t bits = 0;
+        std::memcpy(&bits, &d, sizeof bits);
+        mix(bits);
+    };
+    mixDouble(projection.eyeWorld.x);
+    mixDouble(projection.eyeWorld.y);
+    mixDouble(projection.eyeWorld.z);
+    mixDouble(projection.focalX);
+    mix(projection.orthographic ? 1u : 0u);
+    mixDouble(threshold);
+    mix(instances.size());
+    for (const LodInstance& instance : instances) {
+        mix(reinterpret_cast<uintptr_t>(instance.cloud));
+        mix(instance.cloud != nullptr ? instance.cloud->residency : 0u);
+        // Which chunk is in which slot, as the CPU keeps it: a residency
+        // changed by hand counts as one changed by a pool.
+        if (instance.cloud != nullptr) {
+            for (const int32_t slot : instance.cloud->slots) {
+                mix(static_cast<uint32_t>(slot));
+            }
+        }
+        mix(instance.cloud != nullptr ? instance.cloud->count : 0u);
+        mixDouble(instance.threshold.value_or(-1.0F));
+        for (float v : instance.objectToWorld.rows3x4()) {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &v, 4);
+            mix(bits);
+        }
+    }
+    if (haveLast_ && key == lastKey_ && (stats == nullptr || lastStats_.size() == instances.size())) {
+        if (stats != nullptr) {
+            *stats = lastStats_;
+        }
+        // The edit is the projection's, not the cut's: each instance's own.
+        std::vector<render::SplatInstance> out = lastOut_;
+        for (size_t i = 0; i < out.size() && i < lastFrom_.size(); ++i) {
+            out[i].edit = instances[lastFrom_[i]].edit;
+        }
+        return out;
+    }
+
     std::vector<render::SplatInstance> out;
     if (stats != nullptr) {
         stats->clear();
@@ -584,79 +648,103 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
     while (frames_.size() < instances.size()) {
         frames_.push_back(std::make_unique<Frame>());
     }
+    const auto ensure = [&](gpu::Buffer& into, uint64_t count, const char* label) -> Result<void> {
+        if (into.count() < std::max<uint64_t>(count, 1)) {
+            auto made = buffer(device, count, 4, label);
+            if (!made) return std::move(made).error();
+            into = std::move(*made);
+        }
+        return ok();
+    };
+
+    // WHAT EACH INSTANCE'S CUT IS, recorded for all of them before any is read.
+    struct Work {
+        const LodInstance* instance = nullptr;
+        Frame*             frame = nullptr;
+        std::vector<Run>   runs;
+        size_t             levels = 0, parts = 0;
+        uint32_t           chunks = 0, finestGroups = 0;
+        float              cutThreshold = 0.0F;
+        uint64_t           countsAt = 0;   ///< its counts, then its needs, in counts_
+        std::vector<uint32_t> read;
+        uint32_t           drawn = 0, splatsDrawn = 0;
+        bool               joined = false, changed = false;
+        uint32_t           countOf(size_t part) const {
+            return part < levels ? instance->cloud->levels[part].gaussians.count : runs[part - levels].count;
+        }
+    };
+    std::vector<Work> works;
+    uint64_t countWords = 0;
     for (size_t k = 0; k < instances.size(); ++k) {
         const LodInstance& instance = instances[k];
         if (instance.cloud == nullptr || instance.cloud->count == 0) {
-            if (stats != nullptr) {
-                stats->emplace_back();
-            }
             continue;
         }
-        const float cutThreshold = instance.threshold.value_or(threshold);
         const LodCloud& lod = *instance.cloud;
         if (lod.levels.empty()) {
             return Error(ErrorCode::InvalidArgument, lod.splats.source + ": a cut needs a merged level");
         }
-        Frame& frame = *frames_[k];
-        const std::vector<Run> runs = runsOf(lod);
-        const size_t levels = lod.levels.size();
-        const size_t parts = levels + runs.size();
-        const uint32_t chunks = lod.chunks();
-        const uint32_t finestGroups = lod.levels.back().gaussians.count;
-        frame.selected.resize(parts);
-        frame.dest.resize(parts);
-        frame.totals.resize(parts);
-        const auto countOf = [&](size_t part) {
-            return part < levels ? lod.levels[part].gaussians.count : runs[part - levels].count;
-        };
-        const auto ensure = [&](gpu::Buffer& into, uint64_t count, const char* label) -> Result<void> {
-            if (into.count() < std::max<uint64_t>(count, 1)) {
-                auto made = buffer(device, count, 4, label);
-                if (!made) return std::move(made).error();
-                into = std::move(*made);
-            }
-            return ok();
-        };
-        for (size_t part = 0; part < parts; ++part) {
-            ATHENEA_TRY(ensure(frame.selected[part], countOf(part), "cut.selected"));
-            ATHENEA_TRY(ensure(frame.dest[part], countOf(part), "cut.dest"));
+        Work w;
+        w.instance = &instance;
+        w.frame = frames_[k].get();
+        w.runs = runsOf(lod);
+        w.levels = lod.levels.size();
+        w.parts = w.levels + w.runs.size();
+        w.chunks = lod.chunks();
+        w.finestGroups = lod.levels.back().gaussians.count;
+        w.cutThreshold = instance.threshold.value_or(threshold);
+        w.joined = lod.payloadCount > 0;
+        w.countsAt = countWords;
+        countWords += w.parts + (lod.streamed ? w.chunks : 0);
+        Frame& frame = *w.frame;
+        frame.selected.resize(w.parts);
+        frame.dest.resize(w.parts);
+        frame.totals.resize(w.parts);
+        for (size_t part = 0; part < w.parts; ++part) {
+            ATHENEA_TRY(ensure(frame.selected[part], w.countOf(part), "cut.selected"));
+            ATHENEA_TRY(ensure(frame.dest[part], w.countOf(part), "cut.dest"));
             ATHENEA_TRY(ensure(frame.totals[part], 1, "cut.total"));
         }
-        ATHENEA_TRY(ensure(frame.state, finestGroups, "cut.state"));
-        ATHENEA_TRY(ensure(frame.needs, chunks, "cut.needs"));
-        const size_t wanted = parts + (lod.streamed ? chunks : 0);
-        ATHENEA_TRY(ensure(frame.readback, wanted, "cut.readback"));
+        ATHENEA_TRY(ensure(frame.state, w.finestGroups, "cut.state"));
+        ATHENEA_TRY(ensure(frame.needs, w.chunks, "cut.needs"));
+        works.push_back(std::move(w));
+    }
+    ATHENEA_TRY(ensure(counts_, countWords, "cut.counts"));
 
-        // The eye in the cloud's space. Perspective size is edge over distance,
-        // which a uniform scale leaves alone; orthographic size is not.
-        const render::Mat4 toCloud = aofx::xform::inverseAffine(instance.objectToWorld);
-        const render::Vec3 eye = toCloud.point(projection.eyeWorld);
-        const double scale = std::max({aofx::xform::length(instance.objectToWorld.column(0)),
-                                       aofx::xform::length(instance.objectToWorld.column(1)),
-                                       aofx::xform::length(instance.objectToWorld.column(2))});
-        const float pixelsPerUnit = static_cast<float>(projection.orthographic ? projection.focalX * scale
-                                                                               : projection.focalX);
-        const auto setCut = [&](rhi::ShaderCursor p, uint32_t count, uint32_t level, bool coarsest) {
-            p["count"].setData(count);
-            p["level"].setData(level);
-            setBounds(p, lod);
-            p["eyeX"].setData(static_cast<float>(eye.x));
-            p["eyeY"].setData(static_cast<float>(eye.y));
-            p["eyeZ"].setData(static_cast<float>(eye.z));
-            p["pixelsPerUnit"].setData(pixelsPerUnit);
-            p["threshold"].setData(cutThreshold);
-            p["orthographic"].setData(uint32_t{projection.orthographic ? 1u : 0u});
-            p["coarsest"].setData(uint32_t{coarsest ? 1u : 0u});
-            p["chunkSplats"].setData(lod.chunkSplats);
-            p["chunks"].setData(chunks);
-            p["splats"].setData(lod.count);
-        };
-        {
-            gpu::CommandBatch batch(device);
-            for (size_t part = 0; part < levels; ++part) {
+    {
+        gpu::CommandBatch batch(device);
+        for (Work& w : works) {
+            const LodInstance& instance = *w.instance;
+            const LodCloud& lod = *instance.cloud;
+            Frame& frame = *w.frame;
+            // The eye in the cloud's space. Perspective size is edge over
+            // distance, which a uniform scale leaves alone; orthographic size is not.
+            const render::Mat4 toCloud = aofx::xform::inverseAffine(instance.objectToWorld);
+            const render::Vec3 eye = toCloud.point(projection.eyeWorld);
+            const double scale = std::max({aofx::xform::length(instance.objectToWorld.column(0)),
+                                           aofx::xform::length(instance.objectToWorld.column(1)),
+                                           aofx::xform::length(instance.objectToWorld.column(2))});
+            const float pixelsPerUnit = static_cast<float>(projection.orthographic ? projection.focalX * scale
+                                                                                   : projection.focalX);
+            const auto setCut = [&](rhi::ShaderCursor p, uint32_t count, uint32_t level, bool coarsest) {
+                p["count"].setData(count);
+                p["level"].setData(level);
+                setBounds(p, lod);
+                p["eyeX"].setData(static_cast<float>(eye.x));
+                p["eyeY"].setData(static_cast<float>(eye.y));
+                p["eyeZ"].setData(static_cast<float>(eye.z));
+                p["pixelsPerUnit"].setData(pixelsPerUnit);
+                p["threshold"].setData(w.cutThreshold);
+                p["orthographic"].setData(uint32_t{projection.orthographic ? 1u : 0u});
+                p["coarsest"].setData(uint32_t{coarsest ? 1u : 0u});
+                p["chunkSplats"].setData(lod.chunkSplats);
+                p["chunks"].setData(w.chunks);
+                p["splats"].setData(lod.count);
+            };
+            for (size_t part = 0; part < w.levels; ++part) {
                 const LodLevel& level = lod.levels[part];
                 const uint32_t count = level.gaussians.count;
-                const bool finest = part + 1 == levels;
+                const bool finest = part + 1 == w.levels;
                 (finest ? cutFinest_ : cutGroups_).dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["cells"].setBinding(level.cells.rhi());
                     // Glass and sheets drawn as their splats (lodKeptApart).
@@ -672,8 +760,8 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["params"]["pbrs"].setData(uint32_t{pbrs ? 1u : 0u});
                 });
             }
-            for (size_t part = levels; part < parts; ++part) {
-                const Run& run = runs[part - levels];
+            for (size_t part = w.levels; part < w.parts; ++part) {
+                const Run& run = w.runs[part - w.levels];
                 cutSplats_.dispatch(batch, {run.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["groups"].setBinding(lod.groups.rhi());
                     cursor["state"].setBinding(frame.state.rhi());
@@ -683,124 +771,150 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 });
             }
             if (lod.streamed) {
-                chunkNeeds_.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                chunkNeeds_.dispatch(batch, {w.chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["cells"].setBinding(lod.levels.back().cells.rhi());
                     cursor["starts"].setBinding(lod.starts.rhi());
                     cursor["state"].setBinding(frame.state.rhi());
                     cursor["selected"].setBinding(frame.needs.rhi());
-                    setCut(cursor["params"], finestGroups, lod.levels.back().level, false);
+                    setCut(cursor["params"], w.finestGroups, lod.levels.back().level, false);
                 });
             }
-            for (size_t part = 0; part < parts; ++part) {
+            for (size_t part = 0; part < w.parts; ++part) {
                 ATHENEA_TRY(prefix_.apply(batch, frame.selected[part], frame.dest[part], frame.totals[part],
-                                      countOf(part)));
+                                      w.countOf(part)));
             }
-            // Every count into one buffer, so they come back in one read and
-            // not one read a part (that was most of the cut's time).
-            for (size_t part = 0; part < parts; ++part) {
-                batch.encoder()->copyBuffer(frame.readback.rhi(), part * sizeof(uint32_t), frame.totals[part].rhi(),
-                                            0, sizeof(uint32_t));
+            // Every count of every cut into one buffer: one read for them all.
+            for (size_t part = 0; part < w.parts; ++part) {
+                batch.encoder()->copyBuffer(counts_.rhi(), (w.countsAt + part) * sizeof(uint32_t),
+                                            frame.totals[part].rhi(), 0, sizeof(uint32_t));
             }
             if (lod.streamed) {
-                batch.encoder()->copyBuffer(frame.readback.rhi(), parts * sizeof(uint32_t), frame.needs.rhi(), 0,
-                                            chunks * sizeof(uint32_t));
+                batch.encoder()->copyBuffer(counts_.rhi(), (w.countsAt + w.parts) * sizeof(uint32_t),
+                                            frame.needs.rhi(), 0, w.chunks * sizeof(uint32_t));
             }
-            batch.markDirty();
-            ATHENEA_TRY(batch.submit(true));
         }
-        std::vector<uint32_t> read(wanted, 0);
-        ATHENEA_TRY(frame.readback.read(device, 0, wanted * sizeof(uint32_t), read.data()));
-        uint32_t drawn = 0;
-        uint32_t splatsDrawn = 0;
-        for (size_t part = 0; part < parts; ++part) {
-            drawn += read[part];
-            splatsDrawn += part < levels ? 0 : read[part];
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit(true));
+    }
+    std::vector<uint32_t> counts(countWords, 0);
+    if (countWords > 0) {
+        ATHENEA_TRY(counts_.read(device, 0, countWords * sizeof(uint32_t), counts.data()));
+    }
+
+    // WHICH CUTS CHANGED: their counts first, then, where those are the last
+    // cut's, every element of their selection -- one counter a cut, one read.
+    std::vector<size_t> compared;
+    for (size_t i = 0; i < works.size(); ++i) {
+        Work& w = works[i];
+        const LodCloud& lod = *w.instance->cloud;
+        Frame& frame = *w.frame;
+        w.read.assign(counts.begin() + static_cast<std::ptrdiff_t>(w.countsAt),
+                      counts.begin() + static_cast<std::ptrdiff_t>(w.countsAt + w.parts + (lod.streamed ? w.chunks : 0)));
+        for (size_t part = 0; part < w.parts; ++part) {
+            w.drawn += w.read[part];
+            w.splatsDrawn += part < w.levels ? 0 : w.read[part];
         }
-        // THE PAYLOAD WHERE IT IS (joinPayload): a cut gathers positions,
-        // shapes, harmonics, normals and emission, and says of each gaussian
-        // where its material, layers, ids, transfer, open directions and
-        // curvature are -- four bytes, not the 330 a TX gaussian carries.
-        const bool joined = lod.payloadCount > 0;
-        // AND ONLY WHEN IT CHANGED: the same counts and the same selection as
-        // the last cut gathered leave the cloud as it is, and what was kept of
-        // it (a TX cloud's view-independent terms) with it.
-        bool changed = !frame.gathered || frame.gatheredFrom != &lod || frame.lastCounts.size() != parts ||
-                       frame.joined != joined;
-        for (size_t part = 0; !changed && part < parts; ++part) {
-            changed = frame.lastCounts[part] != read[part];
+        w.changed = !frame.gathered || frame.gatheredFrom != &lod || frame.gatheredResidency != lod.residency ||
+                    frame.lastCounts.size() != w.parts ||
+                    frame.joined != w.joined;
+        for (size_t part = 0; !w.changed && part < w.parts; ++part) {
+            w.changed = frame.lastCounts[part] != w.read[part];
         }
-        if (!changed) {
-            ATHENEA_TRY(ensure(frame.changes, 1, "cut.changes"));
-            gpu::CommandBatch batch(device);
-            const uint32_t zero = 0;
-            batch.encoder()->uploadBufferData(frame.changes.rhi(), 0, sizeof zero, &zero);
-            for (size_t part = 0; part < parts; ++part) {
-                selectionChanged_.dispatch(batch, {countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+        if (!w.changed) {
+            compared.push_back(i);
+        }
+    }
+    if (!compared.empty()) {
+        ATHENEA_TRY(ensure(changes_, compared.size(), "cut.changes"));
+        gpu::CommandBatch batch(device);
+        std::vector<uint32_t> zeros(compared.size(), 0u);
+        batch.encoder()->uploadBufferData(changes_.rhi(), 0, zeros.size() * 4, zeros.data());
+        for (size_t c = 0; c < compared.size(); ++c) {
+            Work& w = works[compared[c]];
+            Frame& frame = *w.frame;
+            for (size_t part = 0; part < w.parts; ++part) {
+                selectionChanged_.dispatch(batch, {w.countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
                     for (const char* unused : {"order", "starts", "dest"}) {
                         cursor[unused].setBinding(frame.selected[part].rhi());
                     }
                     cursor["positions"].setBinding(frame.cloud.positions.rhi());
                     cursor["selected"].setBinding(frame.selected[part].rhi());
                     cursor["source"].setBinding(frame.lastSelected[part].rhi());
-                    cursor["target"].setBinding(frame.changes.rhi());
-                    cursor["params"]["count"].setData(countOf(part));
+                    cursor["target"].setBinding(changes_.rhi());
+                    cursor["params"]["count"].setData(w.countOf(part));
+                    cursor["params"]["base"].setData(static_cast<uint32_t>(c));
                 });
             }
-            batch.markDirty();
-            ATHENEA_TRY(batch.submit(true));
-            uint32_t differing = 0;
-            ATHENEA_TRY(frame.changes.read(device, 0, sizeof differing, &differing));
-            changed = differing != 0;
         }
-        if (changed) {
-        if (frame.capacity < drawn || frame.cloud.restPerColour != lod.splats.restPerColour ||
-            frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid() ||
-            frame.cloud.hasNormals() != lod.splats.hasNormals() ||
-            frame.cloud.hasEmission() != lod.splats.hasEmission() || (!joined && !sameExtras(lod.splats, frame.cloud))) {
-            const uint32_t capacity = std::max(drawn, frame.capacity + frame.capacity / 2);
-            auto made = packed(device, std::max(capacity, 1u), lod.splats.restPerColour, lod.splats.shWords,
-                               "cut.frame", lod.splats.hasNormals(), lod.splats.hasEmission());
-            if (!made) return std::move(made).error();
-            if (!joined) {
-                ATHENEA_TRY(allocateExtras(device, lod.splats, std::max(capacity, 1u), *made));
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit(true));
+        std::vector<uint32_t> differing(compared.size(), 0);
+        ATHENEA_TRY(changes_.read(device, 0, differing.size() * 4, differing.data()));
+        for (size_t c = 0; c < compared.size(); ++c) {
+            works[compared[c]].changed = differing[c] != 0;
+        }
+    }
+
+    // THE CUTS THAT CHANGED, GATHERED: one batch for them all, not waited for
+    // -- what draws them comes after it on the one queue.
+    {
+        gpu::CommandBatch batch(device);
+        bool recorded = false;
+        for (Work& w : works) {
+            if (!w.changed) {
+                continue;
             }
-            frame.cloud = std::move(*made);
-            frame.capacity = std::max(capacity, 1u);
-        }
-        if (joined) {
-            for (const Extra& e : extrasOf(lod.splats)) {
-                frame.cloud.*e.member = lod.splats.*e.member;
+            const LodCloud& lod = *w.instance->cloud;
+            Frame& frame = *w.frame;
+            const uint32_t drawn = w.drawn;
+            if (frame.capacity < drawn || frame.cloud.restPerColour != lod.splats.restPerColour ||
+                frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid() ||
+                frame.cloud.hasNormals() != lod.splats.hasNormals() ||
+                frame.cloud.hasEmission() != lod.splats.hasEmission() ||
+                (!w.joined && !sameExtras(lod.splats, frame.cloud))) {
+                const uint32_t capacity = std::max(drawn, frame.capacity + frame.capacity / 2);
+                auto made = packed(device, std::max(capacity, 1u), lod.splats.restPerColour, lod.splats.shWords,
+                                   "cut.frame", lod.splats.hasNormals(), lod.splats.hasEmission());
+                if (!made) return std::move(made).error();
+                if (!w.joined) {
+                    ATHENEA_TRY(allocateExtras(device, lod.splats, std::max(capacity, 1u), *made));
+                }
+                frame.cloud = std::move(*made);
+                frame.capacity = std::max(capacity, 1u);
             }
-            frame.cloud.transferCount = lod.splats.transferCount;
-            frame.cloud.transferWords = lod.splats.transferWords;
-            frame.cloud.shadowWords = lod.splats.shadowWords;
-            frame.cloud.curvaturePacked = lod.splats.hasCurvature() && lod.splats.curvaturePacked;
-            ATHENEA_TRY(ensure(frame.payload, frame.capacity, "cut.payload"));
-            frame.cloud.payloadIndex = frame.payload;
-            frame.cloud.payloadCount = lod.payloadCount;
-        } else {
-            frame.cloud.payloadIndex = gpu::Buffer{};
-            frame.cloud.payloadCount = 0;
-        }
-        frame.cloud.source = lod.splats.source;
-        frame.cloud.linear = lod.splats.linear;
-        // Gathered anew: whatever was kept of the last cut's gaussians (a TX
-        // cloud's view-independent terms, keyed on the revision) is not this
-        // cut's, even where the count is the same.
-        ++frame.cloud.revision;
-        frame.cloud.count = drawn;
-        frame.cloud.declared = lod.count;
-        frame.cloud.bounds = lod.splats.bounds;
-        {
-            gpu::CommandBatch batch(device);
+            if (w.joined) {
+                for (const Extra& e : extrasOf(lod.splats)) {
+                    frame.cloud.*e.member = lod.splats.*e.member;
+                }
+                frame.cloud.transferCount = lod.splats.transferCount;
+                frame.cloud.transferWords = lod.splats.transferWords;
+                frame.cloud.shadowWords = lod.splats.shadowWords;
+                frame.cloud.curvaturePacked = lod.splats.hasCurvature() && lod.splats.curvaturePacked;
+                ATHENEA_TRY(ensure(frame.payload, frame.capacity, "cut.payload"));
+                frame.cloud.payloadIndex = frame.payload;
+                frame.cloud.payloadCount = lod.payloadCount;
+            } else {
+                frame.cloud.payloadIndex = gpu::Buffer{};
+                frame.cloud.payloadCount = 0;
+            }
+            frame.cloud.source = lod.splats.source;
+            frame.cloud.linear = lod.splats.linear;
+            // Gathered anew: whatever was kept of the last cut's gaussians (a
+            // TX cloud's view-independent terms, keyed on the revision) is not
+            // this cut's, even where the count is the same.
+            ++frame.cloud.revision;
+            frame.cloud.count = drawn;
+            frame.cloud.declared = lod.count;
+            frame.cloud.bounds = lod.splats.bounds;
             uint32_t base = 0;
-            for (size_t part = 0; part < parts; ++part) {
-                if (read[part] == 0) {
+            for (size_t part = 0; part < w.parts; ++part) {
+                if (w.read[part] == 0) {
                     continue;
                 }
-                const bool merged = part < levels;
+                const bool merged = part < w.levels;
                 const scene::GpuSplats& source = merged ? lod.levels[part].gaussians : lod.splats;
-                gather_.dispatch(batch, {countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                const uint32_t offset = merged ? 0u : w.runs[part - w.levels].offset;
+                gather_.dispatch(batch, {w.countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["selected"].setBinding(frame.selected[part].rhi());
                     cursor["dest"].setBinding(frame.dest[part].rhi());
                     cursor["srcPositions"].setBinding(source.positions.rhi());
@@ -811,14 +925,14 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["sh"].setBinding(frame.cloud.sh.rhi());
                     bindNormals(cursor, source, frame.cloud);
                     bindEmission(cursor, source, frame.cloud);
-                    cursor["params"]["count"].setData(countOf(part));
+                    cursor["params"]["count"].setData(w.countOf(part));
                     cursor["params"]["base"].setData(base);
-                    cursor["params"]["offset"].setData(merged ? 0u : runs[part - levels].offset);
+                    cursor["params"]["offset"].setData(offset);
                     cursor["params"]["shWords"].setData(lod.splats.shWords);
                 });
-                if (joined) {
+                if (w.joined) {
                     // Where each one's payload is.
-                    payloadIndex_.dispatch(batch, {countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    payloadIndex_.dispatch(batch, {w.countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
                         for (const char* unused : {"order", "starts", "source"}) {
                             cursor[unused].setBinding(frame.dest[part].rhi());
                         }
@@ -826,66 +940,86 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                         cursor["selected"].setBinding(frame.selected[part].rhi());
                         cursor["dest"].setBinding(frame.dest[part].rhi());
                         cursor["target"].setBinding(frame.payload.rhi());
-                        cursor["params"]["count"].setData(countOf(part));
+                        cursor["params"]["count"].setData(w.countOf(part));
                         cursor["params"]["base"].setData(base);
-                        cursor["params"]["offset"].setData(merged ? lod.payloadBase[part]
-                                                                  : runs[part - levels].offset);
+                        cursor["params"]["offset"].setData(merged ? lod.payloadBase[part] : offset);
                     });
-                }
-                // And what the cloud carries beside, the same gaussians'.
-                for (const Extra& e : joined ? std::vector<Extra>{} : extrasOf(lod.splats)) {
-                    if (!(source.*e.member).valid()) {
-                        continue;
-                    }
-                    extrasGather_.dispatch(batch, {countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
-                        for (const char* unused : {"order", "starts"}) {
-                            cursor[unused].setBinding(frame.dest[part].rhi());
+                } else {
+                    // And what the cloud carries beside, the same gaussians'.
+                    for (const Extra& e : extrasOf(lod.splats)) {
+                        if (!(source.*e.member).valid()) {
+                            continue;
                         }
-                        cursor["positions"].setBinding(source.positions.rhi());
-                        cursor["selected"].setBinding(frame.selected[part].rhi());
-                        cursor["dest"].setBinding(frame.dest[part].rhi());
-                        cursor["source"].setBinding((source.*e.member).rhi());
-                        cursor["target"].setBinding((frame.cloud.*e.member).rhi());
-                        cursor["params"]["count"].setData(countOf(part));
-                        cursor["params"]["words"].setData(e.words);
-                        cursor["params"]["base"].setData(base);
-                        cursor["params"]["offset"].setData(merged ? 0u : runs[part - levels].offset);
-                    });
+                        extrasGather_.dispatch(batch, {w.countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                            for (const char* unused : {"order", "starts"}) {
+                                cursor[unused].setBinding(frame.dest[part].rhi());
+                            }
+                            cursor["positions"].setBinding(source.positions.rhi());
+                            cursor["selected"].setBinding(frame.selected[part].rhi());
+                            cursor["dest"].setBinding(frame.dest[part].rhi());
+                            cursor["source"].setBinding((source.*e.member).rhi());
+                            cursor["target"].setBinding((frame.cloud.*e.member).rhi());
+                            cursor["params"]["count"].setData(w.countOf(part));
+                            cursor["params"]["words"].setData(e.words);
+                            cursor["params"]["base"].setData(base);
+                            cursor["params"]["offset"].setData(offset);
+                        });
+                    }
                 }
-                base += read[part];
+                base += w.read[part];
             }
             // The selection, kept to tell the next cut whether it changed.
-            frame.lastSelected.resize(parts);
-            for (size_t part = 0; part < parts; ++part) {
-                ATHENEA_TRY(ensure(frame.lastSelected[part], countOf(part), "cut.lastSelected"));
+            frame.lastSelected.resize(w.parts);
+            for (size_t part = 0; part < w.parts; ++part) {
+                ATHENEA_TRY(ensure(frame.lastSelected[part], w.countOf(part), "cut.lastSelected"));
                 batch.encoder()->copyBuffer(frame.lastSelected[part].rhi(), 0, frame.selected[part].rhi(), 0,
-                                            uint64_t{countOf(part)} * 4);
+                                            uint64_t{w.countOf(part)} * 4);
             }
+            frame.gathered = true;
+            frame.gatheredFrom = &lod;
+            frame.gatheredResidency = lod.residency;
+            frame.joined = w.joined;
+            frame.lastCounts.assign(w.read.begin(), w.read.begin() + static_cast<std::ptrdiff_t>(w.parts));
+            recorded = true;
+        }
+        if (recorded) {
             batch.markDirty();
-            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY(batch.submit());
         }
-        frame.gathered = true;
-        frame.gatheredFrom = &lod;
-        frame.joined = joined;
-        frame.lastCounts.assign(read.begin(), read.begin() + static_cast<std::ptrdiff_t>(parts));
+    }
+
+    size_t at = 0;
+    std::vector<size_t> from;
+    for (size_t k = 0; k < instances.size(); ++k) {
+        const LodInstance& instance = instances[k];
+        if (instance.cloud == nullptr || instance.cloud->count == 0) {
+            if (stats != nullptr) {
+                stats->emplace_back();
+            }
+            continue;
         }
+        const Work& w = works[at++];
+        const LodCloud& lod = *instance.cloud;
         if (stats != nullptr) {
             CutStats s;
-            s.splats = splatsDrawn;
-            s.merged = drawn - splatsDrawn;
+            s.splats = w.splatsDrawn;
+            s.merged = w.drawn - w.splatsDrawn;
             s.available = lod.count;
             if (lod.streamed) {
-                s.needs.resize(chunks);
-                for (uint32_t c = 0; c < chunks; ++c) {
-                    s.needs[c] = read[parts + c];
-                }
+                s.needs.assign(w.read.begin() + static_cast<std::ptrdiff_t>(w.parts), w.read.end());
             }
             stats->push_back(std::move(s));
         }
-        if (drawn > 0) {
-            out.push_back({&frame.cloud, instance.objectToWorld, instance.edit});
+        if (w.drawn > 0) {
+            out.push_back({&w.frame->cloud, instance.objectToWorld, instance.edit});
+            from.push_back(k);
         }
     }
+    lastKey_ = key;
+    lastFrom_ = std::move(from);
+    haveLast_ = true;
+    lastOut_ = out;
+    lastStats_ = stats != nullptr ? *stats : std::vector<CutStats>{};
     return out;
 }
 

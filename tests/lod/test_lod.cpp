@@ -178,15 +178,17 @@ TEST_CASE("far away, a dense cloud draws a fraction of its splats and looks the 
                     100.0 * (stats.splats + stats.merged) / stats.available, diff.p99, diff.max);
         // Random colours splat to splat are the worst case merging has: every
         // merged Gaussian is an average of colours no pixel showed. Bounds
-        // measured on this cloud (p99 0 / 9 / 29 at 1 / 2 / 4 px).
+        // measured on this cloud (p99 0 / 14 / 41 at 1 / 2 / 4 px; 9 / 29
+        // with merges held under one opacity: a random volume's members lie
+        // behind each other, and their summed mass is more than their union).
         if (threshold == 1.0F) {
             CHECK(diff.p99 <= 1);
         } else if (threshold == 2.0F) {
             CHECK(stats.splats + stats.merged < stats.available * 3 / 4);
-            CHECK(diff.p99 <= 12);
+            CHECK(diff.p99 <= 16);
         } else {
             CHECK(stats.splats + stats.merged < stats.available / 4);
-            CHECK(diff.p99 <= 36);
+            CHECK(diff.p99 <= 44);
         }
     }
 }
@@ -199,6 +201,7 @@ namespace {
 lod::LodCloud streamedCopy(Harness& h, const lod::LodCloud& lod, const std::vector<bool>& keep) {
     gpu::Device& device = *h.gpu->device;
     lod::LodCloud out = lod;
+    out.residency = lod::LodCloud::firstResidency();   // another cloud, for a cut
     out.streamed = true;
     const auto like = [&](const gpu::Buffer& b) {
         gpu::BufferDesc desc;
@@ -348,6 +351,67 @@ TEST_CASE("chunks not on the device are drawn merged, and chunks not wanted chan
             CHECK(diff.max == 0);
         }
     }
+}
+
+// A REGION NOT ON THE DEVICE COVERS AS ITS SPLATS DID. A floor of discs as
+// wide as their spacing -- a conversion's surface -- with no chunk on the
+// device, close enough that every finest-level cell wants its splats: each
+// draws its merge. Held under one opacity, the merges' falloff left the
+// background showing between them; keeping their members' mass (over one,
+// the harder kernel) they are as solid as the floor.
+TEST_CASE("a region whose chunks are not on the device draws merged and as solid as its splats",
+          "[lod][gpu][athc]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    constexpr int kSide = 96;
+    constexpr float kSpacing = 2.0F / kSide;
+    CloudBuilder built;
+    for (int y = 0; y < kSide; ++y) {
+        for (int x = 0; x < kSide; ++x) {
+            built.add(-1.0F + (x + 0.5F) * kSpacing, -1.0F + (y + 0.5F) * kSpacing, 0.0F, 0.95F, kSpacing, kSpacing,
+                      kSpacing * 0.1F, {1.0F, 0.0F, 0.0F, 0.0F}, {0.55F, 0.45F, 0.35F});
+        }
+    }
+    auto cloud = h->loader.upload(built.raw, 0);
+    REQUIRE(cloud);
+    render::RenderSettings settings;
+    settings.width = 160;
+    settings.height = 160;
+    const render::Projection projection = render::projectionFor(
+        render::Camera::lookingAt({0.0, 0.0, 2.2}, {0.0, 0.0, 0.0}), settings.width, settings.height);
+    render::RenderTargets whole;
+    REQUIRE(h->raster.render(projection, std::vector<render::SplatInstance>{{&*cloud, render::Mat4::identity()}},
+                             settings, whole));
+    uint32_t p99[2] = {0, 0};
+    for (const int mass : {0, 1}) {
+        lod::LodBuildSettings chunked;
+        chunked.chunkSplats = 1024;
+        // A finest merged level of ten splats a cell, as a large cloud's.
+        chunked.maxGroupFraction = 0.1F;
+        chunked.mostMergedOpacity = mass != 0 ? 5.0F : 0.99F;
+        auto lod = h->builder.build(*cloud, chunked);
+        if (!lod) FAIL(lod.error().toString());
+        const lod::LodCloud none = streamedCopy(*h, *lod, std::vector<bool>(lod->chunks(), false));
+        const Cut cut = cutAndRender(*h, projection, none, 0.0F, settings);
+        CHECK(cut.stats.splats == 0);
+        CHECK(cut.stats.merged > 0);
+        auto diff = render::compareImages(*gpu->library, whole.colour, cut.targets.colour, settings.width,
+                                          settings.height);
+        REQUIRE(diff);
+        p99[mass] = diff->p99;
+        if (const char* dump = std::getenv("ATHENEA_TEST_DUMP"); dump != nullptr) {
+            for (const auto& [t, which] : {std::pair{static_cast<const render::RenderTargets*>(&whole), "whole"}, std::pair{&cut.targets, "merged"}}) {
+                auto c = t->colour.readAll<float>(*gpu->device);
+                REQUIRE(c);
+                REQUIRE(io::writeExr(std::string(dump) + "/absent" + std::to_string(mass) + "_" + which + ".exr",
+                                     settings.width, settings.height, *c));
+            }
+        }
+        std::printf("  no chunk on the device, merges %s: %u merged; p99 %u, max %u, %llu over 2\n",
+                    mass != 0 ? "keeping their mass" : "held under one", cut.stats.merged, diff->p99, diff->max,
+                    static_cast<unsigned long long>(diff->over2));
+    }
+    CHECK(p99[1] < p99[0]);
 }
 
 // No device: the header is read on the CPU, and migrateLrtc parses what it
@@ -618,6 +682,52 @@ TEST_CASE("a .athc reads back as it was built, and a stream settles on the same 
         CHECK(status.missing == 0);
         CHECK(behind.stats.splats == behindMemory.stats.splats);
         CHECK(compare(behindMemory, behind).max == 0);
+    }
+
+    // ONE STORE FOR TWO CLOUDS, given by the view: the same file twice, one
+    // near and one thirty units behind it, each with the budget that alone
+    // left chunks missing. The near one takes slots its own budget would not
+    // have had, and a frame that changes nothing waits for nothing.
+    SECTION("two clouds share one store, and the nearer has the slots") {
+        auto share = lod::makeStreamingShare(*gpu->device);
+        auto a = lod::StreamingPool::open(*gpu->device, path, {8000, 2}, share);
+        auto b = lod::StreamingPool::open(*gpu->device, path, {8000, 2}, share);
+        if (!a) FAIL(a.error().toString());
+        if (!b) FAIL(b.error().toString());
+        render::Mat4 behind = render::Mat4::identity();
+        behind.at(2, 3) = -30.0;
+        std::vector<lod::CutStats> stats;
+        const auto frame = [&] {
+            const std::vector<lod::LodInstance> instances{{&(*a)->cloud(), render::Mat4::identity()},
+                                                          {&(*b)->cloud(), behind}};
+            auto selected = h->cut.select(near, instances, 36.0F, &stats);
+            if (!selected) FAIL(selected.error().toString());
+            REQUIRE(stats.size() == 2);
+            (*a)->want(stats[0].needs);
+            (*b)->want(stats[1].needs);
+            auto placedA = (*a)->update(true);
+            auto placedB = (*b)->update(true);
+            REQUIRE(placedA);
+            REQUIRE(placedB);
+            return *placedA + *placedB;
+        };
+        int rounds = 1;
+        while (frame() > 0 && rounds < 16) {
+            ++rounds;
+        }
+        const auto nearStatus = (*a)->status();
+        const auto farStatus = (*b)->status();
+        std::printf("  two clouds, 16 shared slots, threshold 36 px: near %u resident (%u missing), far %u (%u "
+                    "missing), %d rounds\n",
+                    nearStatus.resident, nearStatus.missing, farStatus.resident, farStatus.missing, rounds);
+        CHECK((*a)->ready());
+        CHECK(nearStatus.slots == 16);
+        CHECK(nearStatus.resident > 8);
+        CHECK(nearStatus.resident + farStatus.resident <= 16);
+        CHECK(nearStatus.resident >= farStatus.resident);
+        const uint64_t syncs = gpu->device->syncs();
+        CHECK(frame() == 0);
+        CHECK(gpu->device->syncs() == syncs);
     }
     std::filesystem::remove(path);
 }
@@ -1160,7 +1270,8 @@ TEST_CASE("a shape operator packed into one word comes back within half a step",
 // payload, read through its index, is word for word what the other cut
 // gathered: a material, a transfer, its open directions and a curvature, each
 // different for every gaussian. And the joined cut, cut again from the same
-// view, is not gathered again: its cloud keeps its revision.
+// view, is not gathered again: its cloud keeps its revision, and the device is
+// not waited for.
 TEST_CASE("a cut reads its payload through its index as it would have gathered it", "[lod][gpu][athc]") {
     ATHENEA_REQUIRE_GPU(gpu);
     auto h = harness(gpu);
@@ -1258,9 +1369,13 @@ TEST_CASE("a cut reads its payload through its index as it would have gathered i
     REQUIRE(last);
     const scene::GpuSplats& indexed = *(*last)[0].splats;
     const uint32_t revision = indexed.revision;
+    // The same view over the same clouds: the last cut, with no work and
+    // no wait for the device.
+    const uint64_t syncs = gpu->device->syncs();
     auto again = other->select(projection, b, 1.0F, &statsB);
     REQUIRE(again);
     CHECK((*again)[0].splats->revision == revision);
+    CHECK(gpu->device->syncs() == syncs);
 }
 
 // WHAT A MERGE MAY NOT MIX (lod_class.slang), in a TX cloud: splats whose

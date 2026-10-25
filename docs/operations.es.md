@@ -214,6 +214,7 @@ sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 | `output` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd` o `.athc` |
 | `--chunk-splats` | entero | `65536` | `.athc`: splats por chunk |
 | `--max-group-fraction` | número | `0.5` | `.athc`: grupos por splat que puede tener el nivel fundido más fino |
+| `--merged-opacity` | 0.01..5 | `5` | `.athc`: la opacidad máxima de una gaussiana fundida; por encima de 1 se dibuja con el núcleo más duro |
 | `--degree` | 0..3 | `3` | armónicos que se conservan |
 | `--rotate-x` | número | `0` | grados; las nubes de COLMAP quieren `180` |
 | `--no-camera` | flag | apagado | no añadir `/World/Camera` a la escena escrita |
@@ -1295,6 +1296,20 @@ entero.
 En una escena, esos dos son `primvars:athenea:lod:threshold` y
 `primvars:athenea:stream:budget` en el prim que nombra el asset con
 `primvars:athenea:asset`.
+
+Una gaussiana fundida conserva la masa de sus miembros: donde cubrían su celda
+más de una vez, su opacidad pasa de 1 y se dibuja con el núcleo más duro, tan
+sólida como ellos hasta el borde de la celda. Una región cuyos chunks aún no
+están en el dispositivo dibuja su nivel fundido más fino, y esas fusiones, una
+junto a otra, la cubren como la cubrían sus splats. `--merged-opacity 0.99`
+escribe los niveles por debajo de opacidad uno, como los ficheros escritos
+antes; esos niveles dejan ver lo que hay detrás entre fusión y fusión.
+
+Los prims en streaming de una escena comparten un solo almacén: su tamaño es la
+suma de sus presupuestos, y en cada fotograma sus huecos van a los chunks que
+la vista más pide, sea cual sea su prim -- un panel cerca de la cámara toma
+huecos que uno lejano no necesita. Un `.athc` con otra disposición (otro tamaño
+de chunk u otras cargas) tiene un almacén propio, del tamaño de su presupuesto.
 
 Los niveles de una nube TX mantienen aparte lo que una fusión estropearía: un
 grupo fundido reúne splats cuyas normales de sombreado se inclinan hacia el

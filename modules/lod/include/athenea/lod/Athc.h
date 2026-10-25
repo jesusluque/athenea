@@ -49,19 +49,33 @@ namespace athenea::lod {
 
 struct StreamingSettings {
     /// The store's size in splats, rounded down to whole chunks (at least one).
+    /// In a StreamingShare, what this pool adds to the one store they share.
     uint64_t budgetSplats = uint64_t{4} << 20;
     uint32_t loaders = 2;
 };
+
+/// ONE STORE FOR SEVERAL POOLS (a car's 25 panels): the pools that open into
+/// it give it their budgets and take their slots from it as the view wants
+/// them -- the chunk most wanted, whichever cloud it is of, first -- rather
+/// than each keeping a fixed number of its own. Their payloads are joined in
+/// one place (LodCloud::payloadBase). Pools of one share keep the same layout:
+/// chunk size, harmonics, normals, emission and extras.
+struct StreamingShare;
+[[nodiscard]] std::shared_ptr<StreamingShare> makeStreamingShare(gpu::Device& device);
 
 class StreamingPool {
 public:
     [[nodiscard]] static Result<std::unique_ptr<StreamingPool>> open(gpu::Device& device,
                                                                      const std::filesystem::path& path,
-                                                                     const StreamingSettings& settings = {});
+                                                                     const StreamingSettings& settings = {},
+                                                                     std::shared_ptr<StreamingShare> share = {});
     ~StreamingPool();
 
-    /// Cut this, as any cloud; it changes only in update().
+    /// Cut this, as any cloud; it changes only in update(). In a share, the
+    /// first call after a pool joined or left lays the shared store out again
+    /// (every chunk leaves it) and may fail: `ready()` says it did not.
     [[nodiscard]] const LodCloud& cloud() const noexcept;
+    [[nodiscard]] bool ready() const noexcept;
 
     /// What a cut of this frame wants (CutStats::needs), once per instance.
     void want(std::span<const uint32_t> needs);
@@ -73,6 +87,8 @@ public:
     /// frame. Chunks loaded since the last update are placed the same way.
     /// `wait` blocks until the queued ones have loaded and places them too: an
     /// offline render's way to a complete frame. Returns the chunks placed.
+    /// In a share the first pool's update after the wants does every pool's,
+    /// and the others' return 0.
     [[nodiscard]] Result<uint32_t> update(bool wait = false);
 
     struct Status {
@@ -85,9 +101,10 @@ public:
     };
     [[nodiscard]] Status status() const;
 
+    struct Impl;
+
 private:
     StreamingPool();
-    struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 

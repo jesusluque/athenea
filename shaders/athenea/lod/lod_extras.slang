@@ -131,8 +131,9 @@ void lodPayloadIndex(uint3 tid: SV_DispatchThreadID) {
 }
 
 /// HOW MANY ELEMENTS OF THIS FRAME'S SELECTION DIFFER FROM THE LAST
-/// (`source`, a copy of it), counted into `target[0]`: a cut that has not
-/// changed is not gathered again.
+/// (`source`, a copy of it), counted into `target[params.base]` -- one counter
+/// a cut, every cut's in one buffer: a cut that has not changed is not
+/// gathered again.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void lodSelectionChanged(uint3 tid: SV_DispatchThreadID) {
@@ -141,6 +142,6 @@ void lodSelectionChanged(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     if (selected[i] != source[i]) {
-        InterlockedAdd(target[0], 1u);
+        InterlockedAdd(target[params.base], 1u);
     }
 }
