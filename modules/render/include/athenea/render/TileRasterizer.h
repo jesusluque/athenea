@@ -239,6 +239,20 @@ struct RenderSettings {
     uint32_t splatView = 0;
     /// Wait after every stage so `FrameStats` times each one. Slower; for bench.
     bool     timeStages = false;
+    /// READ THE FRAME'S COUNTS ON THE HOST (true, the default): how many
+    /// splats are visible and how many (tile, splat) pairs they make are read
+    /// back between the projection and the sorts -- two host waits -- and
+    /// everything after is sized exactly. False leaves the frame in flight:
+    /// the sorts, the gather, the emit and the ranges are dispatched for the
+    /// most there can be and read the counts on the device (RadixSort's and
+    /// PrefixSum's device-sized forms); `FrameStats::visible` and `pairs` are
+    /// then those of the newest frame the device has finished, copied out
+    /// without waiting. The pairs are the one thing sized before they are
+    /// known: a frame that made more than the buffers hold is drawn short of
+    /// them -- the pairs past the capacity are not drawn, that frame only --
+    /// and the buffers grow for the next (`pairOverflows`). The image is
+    /// otherwise the one the default draws, bit for bit.
+    bool     waitForCounts = true;
     /// COUNT WHAT THE FRAME DID on the device -- why each culled splat was
     /// culled, the most tiles one touched, what each cloud kept -- and copy
     /// it out without waiting: `TileRasterizer::latestCounters` hands back
@@ -307,6 +321,12 @@ struct FrameStats {
     uint32_t pairs = 0;
     double   projectMs = 0, depthSortMs = 0, countsMs = 0, emitMs = 0, tileSortMs = 0,
              blendMs = 0, totalMs = 0;
+    /// With `RenderSettings::waitForCounts` off: which frame `visible` and
+    /// `pairs` are of (1 the first this rasteriser drew; 0 none finished
+    /// yet), and how many frames so far made more pairs than the buffers
+    /// held -- each drawn short of them, the buffers grown after.
+    uint64_t countsOfFrame = 0;
+    uint64_t pairOverflows = 0;
 };
 
 /// The images a frame writes: bottom row first, width * height.
@@ -453,6 +473,15 @@ private:
     gpu::ComputeKernel countersClear_, counters_, countersCloud_;
     gpu::Buffer        counterWords_;
     gpu::AsyncReadback counterReadback_;
+    /// A FRAME LEFT IN FLIGHT (waitForCounts off): its visible and pair
+    /// totals, copied out with its last submit and read a frame or more
+    /// later, never waited for.
+    gpu::Buffer        frameTotals_;
+    gpu::AsyncReadback totalsReadback_;
+    uint64_t           framesInFlight_ = 0;
+    uint64_t           totalsFrame_ = 0;
+    uint32_t           lastVisible_ = 0, lastPairs_ = 0;
+    uint64_t           pairOverflows_ = 0;
 };
 
 }   // namespace athenea::render

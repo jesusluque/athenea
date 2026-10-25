@@ -3614,6 +3614,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     splatSettings.countSplats = countSplats_.load();
     splatSettings.countersTag = frameSerial_;
     splatSettings.displayBlend = displayBlend_.load();
+    splatSettings.waitForCounts = !frameInFlight_.load();
     // A frame asked to flatten (setFlatten) flattens and draws nothing; whose
     // each instance was is kept for the caller.
     splatSettings.flatten = flattenRequest_;

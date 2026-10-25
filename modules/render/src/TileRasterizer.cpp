@@ -2,10 +2,12 @@
 #include "athenea/render/TileRasterizer.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <chrono>
 #include <cstring>
 
+#include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
@@ -731,23 +733,48 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
     }
     // The totals are read back below, and a read waits for the device: a
-    // frame without splats reads nothing and waits for nothing.
-    ATHENEA_TRY(batch.submit());
+    // frame without splats reads nothing and waits for nothing. A frame left
+    // in flight reads nothing at all: what follows is sized on the device.
+    const bool inFlight = !settings.waitForCounts;
     uint32_t visibleCount = 0;
     uint32_t pairs = 0;
-    if (splatCount > 0) {
-        ATHENEA_TRY(visibleTotal_.read(*device_, 0, sizeof(visibleCount), &visibleCount));
-        ATHENEA_TRY(touchedTotal_.read(*device_, 0, sizeof(pairs), &pairs));
+    if (!inFlight) {
+        ATHENEA_TRY(batch.submit());
+        if (splatCount > 0) {
+            ATHENEA_TRY(visibleTotal_.read(*device_, 0, sizeof(visibleCount), &visibleCount));
+            ATHENEA_TRY(touchedTotal_.read(*device_, 0, sizeof(pairs), &pairs));
+        }
+    } else {
+        // The pairs are sized before they are known: what the last frame
+        // grew them to, and half as much again as the splats the first time.
+        if (pairCapacity_ == 0) {
+            ATHENEA_TRY(reservePairs(std::max(splatCount + splatCount / 2, 1u)));
+        }
+        if (!frameTotals_.valid()) {
+            auto made = buffer(*device_, 2, 4, "splat.frameTotals");
+            if (!made) return std::move(made).error();
+            frameTotals_ = *made;
+            auto readback = gpu::AsyncReadback::create(*device_, 8, 3, "splat.frameTotals.readback");
+            if (!readback) return std::move(readback).error();
+            totalsReadback_ = std::move(*readback);
+        }
     }
     ms = watch.lap();
     if (!ms) return std::move(ms).error();
     stats.countsMs = *ms;
     stats.visible = visibleCount;
     stats.pairs = pairs;
-    ATHENEA_TRY(reservePairs(std::max(pairs, 1u)));
+    if (!inFlight) {
+        ATHENEA_TRY(reservePairs(std::max(pairs, 1u)));
+    }
+    // In flight, every pass after the sums runs over the most there can be
+    // and stops at the count the device holds: the splats for the depth
+    // order, the pairs' buffers for the tile order.
+    const bool anything = inFlight ? splatCount > 0 : visibleCount > 0;
+    const uint32_t sortedSplats = inFlight ? splatCount : visibleCount;
 
     // --- batch 2: sort the visible, emit, tile sort, ranges, blend ---------
-    if (visibleCount > 0) {
+    if (anything) {
         compact_.dispatch(batch, {splatCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["visible"].setBinding(visible_.rhi());
             cursor["visibleOffsets"].setBinding(visibleOffsets_.rhi());
@@ -757,7 +784,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             setFrame(cursor, common);
             cursor["params"]["count"].setData(splatCount);
         });
-        if (visibleCount > 1) {
+        if (inFlight) {
+            ATHENEA_TRY(sort_.sort(batch, depthSort_, visibleTotal_, splatCount, 24));
+        } else if (visibleCount > 1) {
             ATHENEA_TRY(sort_.sort(batch, depthSort_, visibleCount, 24));
         }
     }
@@ -765,16 +794,21 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     if (!ms) return std::move(ms).error();
     stats.depthSortMs = *ms;
 
-    if (pairs > 0) {
-        gather_.dispatch(batch, {visibleCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+    if (inFlight ? anything : pairs > 0) {
+        gather_.dispatch(batch, {sortedSplats, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["order"].setBinding(depthSort_.values.rhi());
             cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
             cursor["sortedCounts"].setBinding(sortedCounts_.rhi());
+            cursor["visibleTotal"].setBinding(visibleTotal_.rhi());
             setFrame(cursor, common);
-            cursor["params"]["count"].setData(visibleCount);
+            cursor["params"]["count"].setData(sortedSplats);
         });
-        ATHENEA_TRY(prefix_.apply(batch, sortedCounts_, offsets_, totalPairs_, visibleCount));
-        emit_.dispatch(batch, {visibleCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        if (inFlight) {
+            ATHENEA_TRY(prefix_.apply(batch, sortedCounts_, offsets_, totalPairs_, visibleTotal_, splatCount));
+        } else {
+            ATHENEA_TRY(prefix_.apply(batch, sortedCounts_, offsets_, totalPairs_, visibleCount));
+        }
+        emit_.dispatch(batch, {sortedSplats, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["order"].setBinding(depthSort_.values.rhi());
             cursor["offsets"].setBinding(offsets_.rhi());
             cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
@@ -782,8 +816,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["proj"].setBinding(proj_.rhi());
             cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());
             cursor["pairSplats"].setBinding(tileSort_.values.rhi());
+            cursor["visibleTotal"].setBinding(visibleTotal_.rhi());
             setFrame(cursor, common);
-            cursor["params"]["count"].setData(visibleCount);
+            cursor["params"]["count"].setData(sortedSplats);
             cursor["params"]["base"].setData(pairCapacity_);
         });
     }
@@ -791,27 +826,32 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     if (!ms) return std::move(ms).error();
     stats.emitMs = *ms;
 
-    if (pairs > 1) {
+    if (inFlight && anything) {
+        ATHENEA_TRY(sort_.sort(batch, tileSort_, totalPairs_, pairCapacity_, bitsFor(tiles)));
+    } else if (pairs > 1) {
         ATHENEA_TRY(sort_.sort(batch, tileSort_, pairs, bitsFor(tiles)));
     }
     // The tiles' ranges, cleared where a frame of pairs left them written:
     // after a frame of none they stay empty, and the next such frame of no
-    // more tiles leaves them as they are.
-    if (pairs > 0 || rangesEmpty_ < tiles) {
+    // more tiles leaves them as they are. A frame in flight does not know
+    // whether it has pairs, and clears them whenever it has splats.
+    const bool mayHavePairs = inFlight ? anything : pairs > 0;
+    if (mayHavePairs || rangesEmpty_ < tiles) {
         clear_.dispatch(batch, {tiles, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["ranges"].setBinding(ranges_buffer_.rhi());
             setFrame(cursor, common);
         });
-        rangesEmpty_ = pairs > 0 ? 0u : tiles;
+        rangesEmpty_ = mayHavePairs ? 0u : tiles;
     }
-    if (pairs > 0) {
-        ranges_.dispatch(batch, {pairs, 1, 1}, [&](rhi::ShaderCursor cursor) {
+    if (mayHavePairs) {
+        const uint32_t rangeCount = inFlight ? pairCapacity_ : pairs;
+        ranges_.dispatch(batch, {rangeCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());
             cursor["ranges"].setBinding(ranges_buffer_.rhi());
+            cursor["totalPairs"].setBinding(totalPairs_.rhi());
             setFrame(cursor, common);
-            cursor["params"]["count"].setData(pairs);
+            cursor["params"]["count"].setData(rangeCount);
         });
-
     }
     ms = watch.lap();
     if (!ms) return std::move(ms).error();
@@ -862,11 +902,48 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         }
         ATHENEA_TRY(countFrame(batch, instances, splatSlots, all));
         // Waited for, as only a frame that asks for its counts is: they are
-        // that frame's when it returns.
-        ATHENEA_TRY(counterReadback_.submit(batch, counterWords_, settings.countersTag, true));
-    } else {
+        // that frame's when it returns. A frame in flight waits for nothing:
+        // its counts come a frame or two later, as the panel's always may.
+        ATHENEA_TRY(counterReadback_.submit(batch, counterWords_, settings.countersTag, !inFlight));
+    } else if (!inFlight) {
         ATHENEA_TRY(batch.submit());
     }
+    if (inFlight) {
+        // The frame's two totals, copied out with its last submit and read
+        // when the device has got there: never waited for.
+        if (splatCount > 0) {
+            batch.encoder()->copyBuffer(frameTotals_.rhi(), 0, visibleTotal_.rhi(), 0, 4);
+            batch.encoder()->copyBuffer(frameTotals_.rhi(), 4, totalPairs_.rhi(), 0, 4);
+        } else {
+            batch.encoder()->clearBuffer(frameTotals_.rhi(), 0, 8);
+        }
+        batch.markDirty();
+        const uint64_t drawn = ++framesInFlight_;
+        ATHENEA_TRY(totalsReadback_.submit(batch, frameTotals_, drawn, false));
+        std::array<uint32_t, 2> totals{};
+        const auto read = totalsReadback_.latest(
+            std::span<uint8_t>(reinterpret_cast<uint8_t*>(totals.data()), totals.size() * sizeof(uint32_t)));
+        if (read.has_value() && *read > totalsFrame_) {
+            totalsFrame_ = *read;
+            lastVisible_ = totals[0];
+            lastPairs_ = totals[1];
+            // MORE PAIRS THAN THE BUFFERS HELD: the emit kept those that
+            // fitted, so that frame was drawn short of the rest; the buffers
+            // grow for the frames after it. Counted, and said once.
+            if (lastPairs_ > pairCapacity_) {
+                if (pairOverflows_++ == 0) {
+                    log::warn("a splat frame in flight made {} tile pairs where its buffers held {}: drawn "
+                                     "short of them once, the buffers grown for the next",
+                                     lastPairs_, pairCapacity_);
+                }
+                ATHENEA_TRY(reservePairs(lastPairs_));
+            }
+        }
+        stats.visible = lastVisible_;
+        stats.pairs = lastPairs_;
+        stats.countsOfFrame = totalsFrame_;
+    }
+    stats.pairOverflows = pairOverflows_;
     ms = watch.lap();
     if (!ms) return std::move(ms).error();
     stats.blendMs = *ms;

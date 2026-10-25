@@ -1705,6 +1705,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:splatTransferIndirect` | bool | `true` | una nube con transfer suma su mitad rebotada |
 | `athenea:splatDisplayBlend` | bool | `false` | raster: cada splat se codifica en sRGB antes de la mezcla y el píxel se decodifica después, como dibujan Spark, SuperSplat y el rasterizador de 3DGS |
 | `athenea:splatReflections` | bool | `false` | rt: una gaussiana refleja la nube a la que pertenece, un rayo cada una |
+| `athenea:frameInFlight` | bool | `false` | raster: un frame de splats no lee ningún recuento a mitad de camino -- sus ordenaciones se dimensionan en el dispositivo --, así que no añade ninguna espera del host; la imagen es la misma, los recuentos de visibles y de pares que da llegan un frame o más tarde, y un frame que hace más pares de tesela de los que caben en los buffers que dejó el anterior se dibuja sin ellos una vez (se avisa una vez) |
 | `athenea:splatShadows` | bool | `false` | rt: una nube relit se sombrea a sí misma |
 | `athenea:cloudShadows` | bool | `true` | el mapa de transmitancia de una nube en cada luz |
 | `athenea:domePrefiltered` | bool | `true` | raster: un domo ilumina una malla prefiltrado, sin muestra ni rayo |

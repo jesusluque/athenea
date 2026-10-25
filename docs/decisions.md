@@ -16282,3 +16282,54 @@ Side-by-side frames (SPZ | video | difference x 8), full frames: `athenea-render
   that predict a slice from the same slice; the high parts as deltas.
 - **The TX transfer** as planes: the video carries a flattened cloud, not a relightable one.
 - Frames of very different sizes in one stream (every picture is the first frame's size).
+
+## A splat frame left in flight: counts on the device (live bridge, 25 Oct)
+
+A frame of splats read two numbers back in its middle -- how many splats are visible and how many (tile, splat)
+pairs they make (`TileRasterizer`, after the projection's prefix sums) -- to size the depth sort, the gather, the
+emit, the tile sort and the ranges: two host waits a frame with splats, beside the frame's own at its end. A frame
+handed to another process with a shared fence must wait for nothing. `RenderSettings::waitForCounts` (on by
+default: the frame as it was) off leaves the frame in flight, the approach of the older `c2-no-host-waits` work
+ported to today's rasteriser:
+
+- **Sized on the device.** `RadixSort::sort(batch, buffers, countBuffer, maxCount, keyBits)` and
+  `PrefixSum::apply(batch, input, output, total, countBuffer, maxCount)` are dispatched for `maxCount` and read
+  the count from a buffer an earlier pass of the same batch wrote (`counted` in the kernels' params; `countFrom`
+  bound either way, by name); the tiled sort's tiles past the count are empty. The depth sort takes
+  `visibleTotal`, the pairs' prefix sum takes it too, the tile sort and the ranges take `totalPairs`; the gather
+  and the emit stop at `visibleTotal[0]` (bound in the default path as well, where it equals the count the host
+  read).
+- **The pairs are sized before they are known**: the buffers the last frame grew them to, and half as much again
+  as the splats the first time. The emit writes none past them. The two totals are copied out with the frame's
+  last submit through a `gpu::AsyncReadback` and read when the device has got there; a frame that made more pairs
+  than the buffers held is then counted (`FrameStats::pairOverflows`, a warning the first time) and the buffers
+  grow. That frame was drawn short of the pairs past the capacity -- and so is any frame recorded before its
+  totals came back; the frames after are whole. `FrameStats::visible`/`pairs` are those of frame
+  `countsOfFrame`, a frame or more late.
+- **`athenea:frameInFlight`** (render setting, off by default) sets it from Hydra: `Engine::setFrameInFlight`,
+  read where the engine builds the rasteriser's settings. What else a frame waits for (`StageRenderer::execute`'s
+  `waitIdle`) is the caller's.
+
+### How it is checked
+
+Metal (M5 Pro):
+
+- `athenea_gpu_tests "[algo]"`: a sort and a sum sized on the device leave what the host-sized ones leave, word for
+  word (counts 0, 1, 4097 and 70001 to 300007 of capacities 5000 to 600000, 13 to 32 key bits, both the chunked
+  and the tiled routes), and add no host wait.
+- `athenea_render_tests "[waits]"`: 3000 random gaussians at 250 x 190 -- a counted frame waits twice (2935
+  visible, 23625 pairs); left in flight, eight frames add 0 host waits each (`Device::syncs()`), and the frame
+  equals the counted one, 0 colour and 0 depth words different (compareImages max 0); the counts that come back
+  late are the counted frame's; a frame of no splats waits for nothing. 600 large gaussians at 320 x 240 (40540
+  pairs where the first guess held 1024): the first frame in flight is drawn short (307200 words differ), its
+  overflow is counted when the next frame reads its totals (`pairOverflows` 1), and the frames after equal the
+  counted image, 0 words.
+- `athenea_render_tests "[render]"` otherwise as on the base: the flatten cases' two known failures and the ray
+  tracer's refit case (max 3 and 16 against 1) fail identically on the unmodified build, run in the same job.
+
+### Not done
+
+- On CUDA an `AsyncReadback` fence takes its value at submit, so a total may be read before the device wrote it
+  (late counts may be stale by a frame, an overflow seen a frame later); untested there.
+- The light table, the point layer and the mesh passes are not part of this: what else a splat frame waits for
+  is `athenea_usd_tests "[sync]"`'s to count.

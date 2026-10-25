@@ -1914,3 +1914,137 @@ TEST_CASE("a frame of no splats over a layer draws what it drew before a frame o
         }
     }
 }
+
+/// A FRAME OF SPLATS LEFT IN FLIGHT (RenderSettings::waitForCounts off)
+/// reads nothing back in its middle: the sorts, the gather, the emit and the
+/// ranges are sized by the device's own counts. A steady frame then adds
+/// nothing to the device's host waits, and draws the image the default --
+/// which reads both counts back -- draws, word for word.
+TEST_CASE("a splat frame left in flight waits for nothing and draws the image a counted frame draws",
+          "[render][gpu][waits]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto counted = harness(gpu);
+    auto flying = harness(gpu);
+    CloudBuilder built = randomCloud(3000, 7);
+    auto cloud = counted->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    const std::vector<render::SplatInstance> instances{{&*cloud, render::Mat4::identity()}};
+    render::Camera camera = render::Camera::lookingAt({1.5, 1.0, 6.0}, {0.0, 0.0, 0.0});
+    camera.lens.focal = 30.0;
+    render::RenderSettings settings;
+    settings.width = 250;
+    settings.height = 190;
+    gpu::Device& device = *gpu->device;
+    const uint32_t pixels = settings.width * settings.height;
+
+    render::RenderTargets truth;
+    uint64_t before = device.syncs();
+    auto drawn = counted->raster.render(camera, instances, settings, truth);
+    if (!drawn) FAIL(drawn.error().toString());
+    const uint64_t countedWaits = device.syncs() - before;
+    std::printf("  a counted frame: %llu host waits, %u visible, %u pairs\n",
+                static_cast<unsigned long long>(countedWaits), drawn->visible, drawn->pairs);
+    CHECK(countedWaits == 2);   // the two counts, read between the projection and the sorts
+
+    render::RenderSettings inFlight = settings;
+    inFlight.waitForCounts = false;
+    render::RenderTargets targets;
+    std::vector<uint64_t> waits;
+    for (uint32_t frame = 0; frame < 8; ++frame) {
+        before = device.syncs();
+        auto flown = flying->raster.render(camera, instances, inFlight, targets);
+        if (!flown) FAIL(flown.error().toString());
+        waits.push_back(device.syncs() - before);
+        if (frame == 1) {
+            device.waitIdle();   // the first frame's totals are in: the pairs grow if it outgrew them
+        }
+    }
+    for (uint32_t frame = 2; frame < waits.size(); ++frame) {
+        CAPTURE(frame);
+        CHECK(waits[frame] == 0);
+    }
+    std::printf("  in flight: waits a frame %llu %llu %llu %llu %llu %llu %llu %llu\n",
+                static_cast<unsigned long long>(waits[0]), static_cast<unsigned long long>(waits[1]),
+                static_cast<unsigned long long>(waits[2]), static_cast<unsigned long long>(waits[3]),
+                static_cast<unsigned long long>(waits[4]), static_cast<unsigned long long>(waits[5]),
+                static_cast<unsigned long long>(waits[6]), static_cast<unsigned long long>(waits[7]));
+    auto colour = render::countDifferent(*gpu->library, targets.colour, truth.colour, pixels * 4);
+    auto depth = render::countDifferent(*gpu->library, targets.depth, truth.depth, pixels);
+    auto diff = render::compareImages(*gpu->library, targets.colour, truth.colour, settings.width, settings.height);
+    REQUIRE(colour);
+    REQUIRE(depth);
+    REQUIRE(diff);
+    std::printf("  in flight against counted: %llu colour words, %llu depth words differ; max %u\n",
+                static_cast<unsigned long long>(*colour), static_cast<unsigned long long>(*depth), diff->max);
+    CHECK(*colour == 0);
+    CHECK(*depth == 0);
+    CHECK(diff->max == 0);
+
+    // The counts arrive late, and are the counted frame's.
+    auto late = flying->raster.render(camera, instances, inFlight, targets);
+    if (!late) FAIL(late.error().toString());
+    CHECK(late->countsOfFrame > 0);
+    CHECK(late->visible == drawn->visible);
+    CHECK(late->pairs == drawn->pairs);
+
+    // A frame of nothing waits for nothing either.
+    before = device.syncs();
+    auto empty = flying->raster.render(camera, {}, inFlight, targets);
+    if (!empty) FAIL(empty.error().toString());
+    CHECK(device.syncs() - before == 0);
+}
+
+/// THE PAIRS ARE SIZED BEFORE THEY ARE KNOWN, in a frame left in flight:
+/// half as much again as the splats the first time. Large splats over a
+/// small frame make many more: that frame is drawn short of them, the
+/// overflow is counted when its totals come back, the buffers grow, and the
+/// frames after draw the counted image again.
+TEST_CASE("a splat frame in flight that outgrew its pairs is drawn short once, and the next are whole",
+          "[render][gpu][waits]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto counted = harness(gpu);
+    auto flying = harness(gpu);
+    CloudBuilder built = randomCloud(600, 11, 0.25F, 0.9F, 0.3F, 0.95F);
+    auto cloud = counted->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    const std::vector<render::SplatInstance> instances{{&*cloud, render::Mat4::identity()}};
+    render::Camera camera = render::Camera::lookingAt({0.5, 0.4, 6.0}, {0.0, 0.0, 0.0});
+    camera.lens.focal = 30.0;
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    const uint32_t words = settings.width * settings.height * 4;
+
+    render::RenderTargets truth;
+    auto drawn = counted->raster.render(camera, instances, settings, truth);
+    if (!drawn) FAIL(drawn.error().toString());
+    REQUIRE(drawn->pairs > drawn->splats + drawn->splats / 2);   // more than the first guess
+
+    render::RenderSettings inFlight = settings;
+    inFlight.waitForCounts = false;
+    render::RenderTargets first;
+    auto short1 = flying->raster.render(camera, instances, inFlight, first);
+    if (!short1) FAIL(short1.error().toString());
+    CHECK(short1->pairOverflows == 0);   // not known yet: its totals are still on the device
+    auto lost = render::countDifferent(*gpu->library, first.colour, truth.colour, words);
+    REQUIRE(lost);
+    CHECK(*lost > 0);   // drawn short of the pairs past the capacity
+
+    render::RenderTargets later;
+    auto grown = flying->raster.render(camera, instances, inFlight, later);   // reads the first's totals
+    if (!grown) FAIL(grown.error().toString());
+    CHECK(grown->pairOverflows == 1);
+    CHECK(grown->pairs == drawn->pairs);
+    for (uint32_t frame = 0; frame < 2; ++frame) {
+        auto whole = flying->raster.render(camera, instances, inFlight, later);
+        if (!whole) FAIL(whole.error().toString());
+        CHECK(whole->pairOverflows == 1);
+    }
+    auto same = render::countDifferent(*gpu->library, later.colour, truth.colour, words);
+    REQUIRE(same);
+    std::printf("  outgrown: %u pairs against %u splats; the short frame differs in %llu words, the grown "
+                "ones in %llu\n",
+                drawn->pairs, drawn->splats, static_cast<unsigned long long>(*lost),
+                static_cast<unsigned long long>(*same));
+    CHECK(*same == 0);
+}

@@ -33,6 +33,7 @@ public struct BlockParams {
     public uint blocks;   // tiles, ceil(count / 1024)
     public uint shift;    // this pass's digit
     public uint wide;     // 1: keys are 64 bits
+    public uint counted;  // 1: the count is countFrom[0], at most `count`
 };
 
 StructuredBuffer<uint>      keysLo;
@@ -43,6 +44,8 @@ StructuredBuffer<uint>      srcValues;
 RWStructuredBuffer<uint>    dstKeysLo;
 RWStructuredBuffer<uint>    dstKeysHi;
 RWStructuredBuffer<uint>    dstValues;
+// A device-sized sort's count (see radix_histogram.slang). Bound either way.
+StructuredBuffer<uint>      countFrom;
 ConstantBuffer<BlockParams> blockParams;
 
 groupshared uint sCount[kDigits];
@@ -72,6 +75,12 @@ uint groupExclusive(uint value, uint lane, out uint total) {
     return inclusive - value;
 }
 
+/// The pairs this sort holds: the device's count where it was sized there.
+/// A tile past it is empty -- its counts are zeros, and it scatters nothing.
+uint pairCount() {
+    return blockParams.counted != 0 ? min(countFrom[0], blockParams.count) : blockParams.count;
+}
+
 uint digitHere(uint lo, uint hi) {
     return digitOf(lo, hi, blockParams.shift, blockParams.wide);
 }
@@ -81,12 +90,18 @@ uint digitHere(uint lo, uint hi) {
 void radixBlockHistogram(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) {
     const uint lane = thread.x;
     const uint block = group.x;
+    const uint count = pairCount();
+    const uint base = block * kTile;
+    if (base >= count) {
+        // The whole group, uniformly: an empty tile's counts are zeros.
+        blockHistogram[lane * blockParams.blocks + block] = 0;
+        return;
+    }
     sCount[lane] = 0;
     GroupMemoryBarrierWithGroupSync();
-    const uint base = block * kTile;
     for (uint k = 0; k < kPerThread; ++k) {
         const uint i = base + k * kBlockThreads + lane;   // neighbouring threads, neighbouring keys
-        if (i < blockParams.count) {
+        if (i < count) {
             const uint hi = blockParams.wide != 0 ? keysHi[i] : 0u;
             InterlockedAdd(sCount[digitHere(keysLo[i], hi)], 1u);
         }
@@ -101,7 +116,11 @@ void radixBlockScatter(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID) 
     const uint lane = thread.x;
     const uint block = group.x;
     const uint base = block * kTile;
-    const uint valid = min(kTile, blockParams.count - base);
+    const uint count = pairCount();
+    if (base >= count) {
+        return;   // the whole group: nothing of this tile is a pair
+    }
+    const uint valid = min(kTile, count - base);
 
     // The tile, in its order. What lies past the end takes the last digit,
     // so the splits leave it after every real pair and nothing writes it.

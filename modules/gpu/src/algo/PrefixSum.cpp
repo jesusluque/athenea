@@ -8,10 +8,11 @@
 namespace athenea::gpu {
 namespace {
 
-void setParams(rhi::ShaderCursor cursor, uint32_t count, uint32_t chunks) {
+void setParams(rhi::ShaderCursor cursor, uint32_t count, uint32_t chunks, bool counted) {
     cursor["params"]["count"].setData(count);
     cursor["params"]["chunkSize"].setData(PrefixSum::chunkFor(count));
     cursor["params"]["chunkCount"].setData(chunks);
+    cursor["params"]["counted"].setData(uint32_t{counted ? 1u : 0u});
 }
 
 }   // namespace
@@ -57,6 +58,19 @@ Result<void> PrefixSum::reserve(uint32_t chunks) {
 
 Result<void> PrefixSum::apply(CommandBatch& batch, const Buffer& input, const Buffer& output,
                               const Buffer& total, uint32_t count) {
+    return run(batch, input, output, total, nullptr, count);
+}
+
+Result<void> PrefixSum::apply(CommandBatch& batch, const Buffer& input, const Buffer& output,
+                              const Buffer& total, const Buffer& count, uint32_t maxCount) {
+    if (count.count() < 1) {
+        return Error(ErrorCode::InvalidArgument, "a prefix sum's count buffer is empty");
+    }
+    return run(batch, input, output, total, &count, maxCount);
+}
+
+Result<void> PrefixSum::run(CommandBatch& batch, const Buffer& input, const Buffer& output,
+                            const Buffer& total, const Buffer* countFrom, uint32_t count) {
     if (input.rhi() == output.rhi()) {
         return Error(ErrorCode::InvalidArgument, "prefix sum input and output must differ");
     }
@@ -67,22 +81,27 @@ Result<void> PrefixSum::apply(CommandBatch& batch, const Buffer& input, const Bu
     const uint32_t chunks = count == 0 ? 1 : (count + chunk - 1) / chunk;
     ATHENEA_TRY(reserve(chunks));
 
+    const bool counted = countFrom != nullptr;
+    // Bound either way, as every name a shader declares: the input stands in.
+    rhi::IBuffer* countBinding = counted ? countFrom->rhi() : input.rhi();
     totals_.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["input"].setBinding(input.rhi());
+        cursor["countFrom"].setBinding(countBinding);
         cursor["chunkTotals"].setBinding(chunkTotals_.rhi());
-        setParams(cursor, count, chunks);
+        setParams(cursor, count, chunks, counted);
     });
     starts_.dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["chunkTotals"].setBinding(chunkTotals_.rhi());
         cursor["chunkStarts"].setBinding(chunkStarts_.rhi());
         cursor["total"].setBinding(total.rhi());
-        setParams(cursor, count, chunks);
+        setParams(cursor, count, chunks, counted);
     });
     local_.dispatch(batch, {chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["input"].setBinding(input.rhi());
+        cursor["countFrom"].setBinding(countBinding);
         cursor["chunkStarts"].setBinding(chunkStarts_.rhi());
         cursor["output"].setBinding(output.rhi());
-        setParams(cursor, count, chunks);
+        setParams(cursor, count, chunks, counted);
     });
     return ok();
 }

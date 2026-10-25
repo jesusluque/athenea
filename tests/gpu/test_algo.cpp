@@ -8,6 +8,7 @@
 
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/algo/RadixSort.h"
+#include "athenea/render/ReferenceRenderer.h"
 
 using namespace athenea;
 
@@ -374,6 +375,79 @@ TEST_CASE("the radix sort orders, keeps ties stable and loses nothing, for every
                 CAPTURE(k);
                 CHECK(after[k] == before[k]);   // the same pairs, permuted
             }
+        }
+    }
+}
+
+/// A sort and a sum told their count by a buffer an earlier pass wrote (as a
+/// frame of splats tells them, so the host never waits to learn it) must
+/// leave what the host-sized ones leave, word for word: the frame's image
+/// depends on nothing else. Past the count the buffers hold the generator's
+/// pairs, which the device-sized sort must neither read nor sort in.
+TEST_CASE("a sort and a sum sized on the device leave what the host-sized ones leave, bit for bit",
+          "[gpu][algo][waits]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto sort = gpu::RadixSort::create(*gpu->library);
+    auto prefix = gpu::PrefixSum::create(*gpu->library);
+    if (!sort) FAIL(sort.error().toString());
+    if (!prefix) FAIL(prefix.error().toString());
+    gpu::ComputeKernel counts = test::kernel(*gpu, "athenea/test/counts_generate");
+    struct Case {
+        uint32_t count;      // what the device says
+        uint32_t capacity;   // what the host dispatches for
+        uint32_t keyBits;
+    };
+    // Both routes: the chunked passes under 2^16, the tiled ones over it;
+    // a count of nothing, of one, and of all there is.
+    for (const Case c : {Case{0, 5000, 24}, Case{1, 5000, 24}, Case{4097, 9000, 13}, Case{70001, 300007, 24},
+                         Case{300007, 300007, 32}, Case{250001, 600000, 13}}) {
+        CAPTURE(c.count, c.capacity, c.keyBits);
+        gpu::SortBuffers onDevice = sortBuffers(*gpu->device, c.capacity);
+        gpu::SortBuffers onHost = sortBuffers(*gpu->device, c.capacity);
+        generate(*gpu, onDevice, c.capacity, 0, c.keyBits);
+        generate(*gpu, onHost, c.capacity, 0, c.keyBits);
+        gpu::Buffer count = test::uintBuffer(*gpu->device, 1, "count");
+        REQUIRE(count.write(*gpu->device, 0, sizeof(uint32_t), &c.count));
+        const uint64_t waits = gpu->device->syncs();
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(sort->sort(batch, onDevice, count, c.capacity, c.keyBits));
+        if (c.count > 0) {
+            REQUIRE(sort->sort(batch, onHost, c.count, c.keyBits));
+        }
+        REQUIRE(batch.submit());
+        CHECK(gpu->device->syncs() == waits);   // nothing asked the host
+        if (c.count > 0) {
+            auto keys = render::countDifferent(*gpu->library, onDevice.keysLo, onHost.keysLo, c.count);
+            auto values = render::countDifferent(*gpu->library, onDevice.values, onHost.values, c.count);
+            REQUIRE(keys);
+            REQUIRE(values);
+            CHECK(*keys == 0);
+            CHECK(*values == 0);
+            CHECK(statsOf(*gpu, onDevice, c.count, false)[0] == 0);   // ordered, and stable on ties
+        }
+
+        // The sum, over counts the generator wrote for the whole capacity.
+        gpu::Buffer input = test::uintBuffer(*gpu->device, c.capacity, "counts");
+        gpu::Buffer outDevice = test::uintBuffer(*gpu->device, c.capacity, "offsets.device");
+        gpu::Buffer outHost = test::uintBuffer(*gpu->device, c.capacity, "offsets.host");
+        gpu::Buffer totalDevice = test::uintBuffer(*gpu->device, 1, "total.device");
+        gpu::Buffer totalHost = test::uintBuffer(*gpu->device, 1, "total.host");
+        gpu::CommandBatch sums(*gpu->device);
+        counts.dispatch(sums, {c.capacity, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["counts"].setBinding(input.rhi());
+            cursor["params"]["count"].setData(c.capacity);
+            cursor["params"]["seed"].setData(uint32_t{4321});
+        });
+        REQUIRE(prefix->apply(sums, input, outDevice, totalDevice, count, c.capacity));
+        REQUIRE(prefix->apply(sums, input, outHost, totalHost, std::max(c.count, 1u)));
+        REQUIRE(sums.submit());
+        if (c.count > 0) {
+            auto offsets = render::countDifferent(*gpu->library, outDevice, outHost, c.count);
+            auto totals = render::countDifferent(*gpu->library, totalDevice, totalHost, 1);
+            REQUIRE(offsets);
+            REQUIRE(totals);
+            CHECK(*offsets == 0);
+            CHECK(*totals == 0);
         }
     }
 }

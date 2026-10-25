@@ -1658,6 +1658,7 @@ found and does not.
 | `athenea:splatTransferIndirect` | bool | `true` | a transferred cloud adds its bounced half |
 | `athenea:splatDisplayBlend` | bool | `false` | raster: each splat sRGB-encoded before the blend and the pixel decoded after, as Spark, SuperSplat and the 3DGS rasteriser draw |
 | `athenea:splatReflections` | bool | `false` | rt: a gaussian reflects the cloud it belongs to, one ray each |
+| `athenea:frameInFlight` | bool | `false` | raster: a frame of splats reads no count back in its middle -- its sorts are sized on the device -- so it adds no host wait; the image is the same, the visible and pair counts it reports are a frame or more late, and a frame that makes more tile pairs than the last grew the buffers to is drawn short of them once (warned once) |
 | `athenea:splatShadows` | bool | `false` | rt: a relit cloud shadows itself |
 | `athenea:cloudShadows` | bool | `true` | a cloud's transmittance map at each light |
 | `athenea:domePrefiltered` | bool | `true` | raster: a dome lights a mesh prefiltered, no sample and no ray |

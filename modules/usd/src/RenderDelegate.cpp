@@ -375,6 +375,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     displayBlend.name = "Splats blended as a standard viewer blends them (sRGB values summed)";
     displayBlend.key = TfToken("athenea:splatDisplayBlend");
     displayBlend.defaultValue = VtValue(false);
+    HdRenderSettingDescriptor frameInFlight;
+    frameInFlight.name = "Splat frames read no count back in their middle (sized on the device)";
+    frameInFlight.key = TfToken("athenea:frameInFlight");
+    frameInFlight.defaultValue = VtValue(false);
     HdRenderSettingDescriptor splatShadows;
     splatShadows.name = "A relit cloud shadows itself, one ray a splat (rt)";
     splatShadows.key = TfToken("athenea:splatShadows");
@@ -406,7 +410,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
-            screenSpaceReflections, meshAntialias};
+            screenSpaceReflections, meshAntialias, frameInFlight};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -524,6 +528,11 @@ bool HdAtheneaRenderDelegate::GetSplatTransferIndirect() const {
 
 bool HdAtheneaRenderDelegate::GetSplatDisplayBlend() const {
     const VtValue value = GetRenderSetting(TfToken("athenea:splatDisplayBlend"));
+    return value.IsHolding<bool>() && value.UncheckedGet<bool>();
+}
+
+bool HdAtheneaRenderDelegate::GetFrameInFlight() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:frameInFlight"));
     return value.IsHolding<bool>() && value.UncheckedGet<bool>();
 }
 

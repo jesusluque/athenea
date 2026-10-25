@@ -8,12 +8,15 @@ struct PrefixParams {
     uint count;
     uint chunkSize;
     uint chunkCount;
-    uint pad0;
+    uint counted;   // 1: the count is countFrom[0], at most `count`
 };
 
 StructuredBuffer<uint>       input;
 StructuredBuffer<uint>       chunkStarts;
 RWStructuredBuffer<uint>     output;
+// A device-sized sum's count, written by an earlier pass of the same frame:
+// `params.count` is then only the most it can be. Bound either way.
+StructuredBuffer<uint>       countFrom;
 ConstantBuffer<PrefixParams> params;
 
 [shader("compute")]
@@ -24,7 +27,8 @@ void prefixLocal(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint begin = c * params.chunkSize;
-    const uint end = min(begin + params.chunkSize, params.count);
+    const uint count = params.counted != 0 ? min(countFrom[0], params.count) : params.count;
+    const uint end = min(begin + params.chunkSize, count);
     uint running = chunkStarts[c];
     for (uint i = begin; i < end; ++i) {
         const uint value = input[i];

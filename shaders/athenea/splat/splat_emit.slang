@@ -12,13 +12,14 @@ StructuredBuffer<uint>      tileRects;
 StructuredBuffer<ProjRecord> proj;
 RWStructuredBuffer<uint>    pairTiles;
 RWStructuredBuffer<uint>    pairSplats;
-ConstantBuffer<FrameParams> params;   // count: splats; base: pair capacity
+StructuredBuffer<uint>      visibleTotal;   // how many are visible: the projection's prefix sum
+ConstantBuffer<FrameParams> params;   // count: the most splats there can be; base: pair capacity
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void splatEmit(uint3 tid: SV_DispatchThreadID) {
     const uint k = tid.x;
-    if (k >= params.count) {
+    if (k >= min(params.count, visibleTotal[0])) {
         return;
     }
     const uint s = order[k];

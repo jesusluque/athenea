@@ -63,6 +63,14 @@ public:
     [[nodiscard]] Result<void> sort(CommandBatch& batch, SortBuffers& buffers, uint32_t count,
                                     uint32_t keyBits);
 
+    /// SIZED ON THE DEVICE: sorts the first `count[0]` pairs, a count an
+    /// earlier pass of the same batch wrote, at most `maxCount`. Dispatched
+    /// for `maxCount`; tiles and chunks past the count are empty, so the
+    /// order of what is sorted is the one `sort` gives for that count, and
+    /// the host never reads it. Past the count the buffers hold anything.
+    [[nodiscard]] Result<void> sort(CommandBatch& batch, SortBuffers& buffers, const Buffer& count,
+                                    uint32_t maxCount, uint32_t keyBits);
+
     [[nodiscard]] static uint32_t passesFor(uint32_t keyBits) noexcept {
         return (keyBits + 7) / 8;
     }
@@ -103,7 +111,9 @@ private:
     Buffer        blockTotal_;
     uint32_t      blockCapacity_ = 0;
     [[nodiscard]] Result<void> sortTiles(CommandBatch& batch, SortBuffers& buffers, uint32_t count,
-                                         uint32_t keyBits);
+                                         uint32_t keyBits, const Buffer* countFrom);
+    [[nodiscard]] Result<void> run(CommandBatch& batch, SortBuffers& buffers, uint32_t count, uint32_t keyBits,
+                                   const Buffer* countFrom);
     uint32_t      capacity_ = 0;
     uint32_t      chunks_ = 0;   ///< the last sort's, for `working`
 };

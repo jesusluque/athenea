@@ -9,6 +9,10 @@ RWStructuredBuffer<uint>    dstKeysLo;
 RWStructuredBuffer<uint>    dstKeysHi;
 RWStructuredBuffer<uint>    dstValues;
 RWStructuredBuffer<uint>    chunkStarts;   // consumed: each row is its chunk's cursors
+// The count a device-sized sort takes, written by an earlier pass of the
+// same frame (a prefix sum's total): `params.count` is then only the most
+// it can be. Bound either way.
+StructuredBuffer<uint>      countFrom;
 ConstantBuffer<RadixParams> params;
 
 [shader("compute")]
@@ -20,7 +24,8 @@ void radixScatter(uint3 tid: SV_DispatchThreadID) {
     }
     const uint row = c * kDigits;
     const uint begin = c * params.chunkSize;
-    const uint end = min(begin + params.chunkSize, params.count);
+    const uint count = params.counted != 0 ? min(countFrom[0], params.count) : params.count;
+    const uint end = min(begin + params.chunkSize, count);
     for (uint i = begin; i < end; ++i) {
         const uint lo = srcKeysLo[i];
         const uint hi = params.wide != 0 ? srcKeysHi[i] : 0;

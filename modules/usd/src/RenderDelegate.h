@@ -125,6 +125,9 @@ public:
     /// default: linear light). What a file `athenea flatten` wrote is measured
     /// under.
     [[nodiscard]] bool GetSplatDisplayBlend() const;
+    /// athenea:frameInFlight: a splat frame reads no count back in its middle
+    /// (render::RenderSettings::waitForCounts off). Off by default.
+    [[nodiscard]] bool GetFrameInFlight() const;
 
     /// "athenea:pathMis": light and material sampling weighed (true, the default).
     [[nodiscard]] bool GetPathMis() const;

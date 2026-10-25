@@ -438,6 +438,11 @@ public:
     /// values summed (render::RenderSettings::displayBlend), rather than in
     /// linear light (`athenea:splatBlend`).
     void setSplatDisplayBlend(bool display);
+    /// `athenea:frameInFlight`: the splat rasteriser reads no count back in
+    /// the middle of a frame (render::RenderSettings::waitForCounts off): its
+    /// sorts are sized on the device. The image is the same; what a frame
+    /// says it counted is a frame or two late. Render thread.
+    void setFrameInFlight(bool inFlight) { frameInFlight_.store(inFlight); }
     /// THE NEXT RASTERISED FRAME FLATTENS RATHER THAN DRAWS (`athenea
     /// flatten`, render/Flatten.h): `request` is filled with a record set a
     /// relit TX cloud, and `flattenedPrims` says whose each instance was.
@@ -849,6 +854,7 @@ private:
     std::atomic<uint32_t>                     meshAntialias_{0};
     std::atomic<bool>                         transferIndirect_{true};
     std::atomic<bool>                         displayBlend_{false};
+    std::atomic<bool>                         frameInFlight_{false};
     render::SplatFlatten*                     flattenRequest_ = nullptr;
     std::vector<std::string>                  flattenedPrims_;
     /// How many times a cloud's arrays were uploaded: once a cloud, unless
