@@ -648,6 +648,13 @@ public:
     /// The level of each LOD group a view draws (athenea:lod:group).
     [[nodiscard]] std::set<const SplatEntry*> lodLevelsFor(const render::Projection& projection) const;
     [[nodiscard]] uint64_t cloudUploads() const noexcept { return cloudUploads_.load(); }
+    /// The live pools (AtheneaLiveSourceAPI) as the last commit left them:
+    /// the prim, the stream it names, and its pool's status.
+    struct LiveStatus {
+        std::string                 prim, stream;
+        lod::StreamingPool::Status  status;
+    };
+    [[nodiscard]] std::vector<LiveStatus> liveStatus() const;
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
     }
