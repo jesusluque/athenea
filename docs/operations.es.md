@@ -526,6 +526,10 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--sh-degree` | 0 a 3 | `3` | como mucho el de la fuente |
 | `--columns` | teselas por fila | el mosaico más cuadrado | |
 | `--max-picture` | `ANCHOxALTO` | 16384 de lado | la imagen más grande, para un decodificador que admite menos (el de un teléfono); un frame que necesita más va en porciones |
+| `--position-block` | gaussianas | `0`: el rango del frame | una potencia de dos de 64 a 32768: cada tramo de tantas gaussianas del orden de Morton se cuantiza sobre su propia caja (seis halves al principio de los datos laterales de cada chunk) |
+| `--position-high-bits` | 0 a `--bits` | `--bits` | los bits de una posición por encima de la muestra, enviados exactos junto al vídeo; 0 no envía ninguno (con `--position-block`, la caja es lo que la mantiene cerca) |
+| `--chroma` | flag | no | colores como YCoCg: la Y de cada color un plano de luma, su Co y su Cg el Cb y el Cr de esa tesela, una muestra por bloque de 2 x 2 de cuatro gaussianas consecutivas en el orden de Morton; solo 8 bits |
+| `--chroma-weight` | `mean` o `area` | `mean` | el croma de un bloque: la media simple de sus gaussianas, o ponderada por opacidad x el área de sus dos ejes mayores |
 | `--gaussians` | número | las del frame | unas tantas por frame: cada frame fusionado por pares donde fusionar pierde menos (la fusión NanoGS de la decimación, `docs/decisions.md`), nunca descartadas; sin surfels |
 | `--rendition` | 0..65535 | `0` | el id que lleva cada registro, uno por rendición de una escalera (`athv_stream.py`) |
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
@@ -2639,19 +2643,21 @@ coordenadas diciendo right-up-back), `.glb` de glTF con
 páginas SPZ y su `stream.txt` (§3.7), que lee `athenea stream`.
 
 **Vídeo que se escribe.** `athenea video-encode` escribe un `.athv`,
-versión 2: una cabecera de 64 bytes (códec, bits, coeficientes de resto,
+versión 2: una cabecera de 128 bytes (códec, bits, coeficientes de resto,
 tamaño de chunk, columnas del mosaico, las gaussianas que caben como mucho en
 una imagen, si las partes altas de la posición son planos, el antialiasing de
-la fuente, el id de la rendición, el ritmo y el ritmo como fracción, los
-frames de origen, la calidad) y un registro por imagen, cada uno completo en
+la fuente, si el color va en el croma, el id de la rendición, el ritmo y el
+ritmo como fracción, los frames de origen, la calidad, el bloque y los bits
+altos de la posición) y un registro por imagen, cada uno completo en
 sí mismo. Un registro empieza con un prefijo fijo -- magic `ATVF`, tipo de
 registro (u16, 0), rendición (u16), frame de presentación (u32), tiempo PTP
 (u64 en ns en el offset 12), los bytes del registro, la versión y los flags
 (bit 0 imagen clave) --, así que un relé enruta con sus primeros 28 bytes;
 después su índice, el frame de origen y qué porción suya es, dónde empiezan
 sus gaussianas en el frame, cuántas son, el time code y la etiqueta de
-timecode, los rangos (dos floats por atributo), las partes altas de la
-posición con deflate (zlib), los conjuntos de parámetros HEVC en una imagen
+timecode, los rangos (dos floats por atributo), los datos laterales con
+deflate (zlib: las cajas de los bloques de cada chunk y después sus partes
+altas de la posición), los conjuntos de parámetros HEVC en una imagen
 clave y la unidad de acceso como unidades NAL precedidas de su longitud.
 Little endian; los ficheros de la versión 1 se siguen leyendo.
 `modules/video/include/athenea/video/Athv.h` es su especificación.

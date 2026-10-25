@@ -514,6 +514,10 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--sh-degree` | 0 to 3 | `3` | at most the source's |
 | `--columns` | tiles a row | the squarest mosaic | |
 | `--max-picture` | `WIDTHxHEIGHT` | 16384 a side | the largest picture, for a decoder that takes less (a phone's); a frame that needs more goes as slices |
+| `--position-block` | splats | `0`: the frame's range | a power of two from 64 to 32768: each run of that many splats of the Morton order quantised over its own box (six halves at the head of each chunk's side data) |
+| `--position-high-bits` | 0 to `--bits` | `--bits` | a position's bits past the sample, sent exact beside the video; 0 sends none (with `--position-block`, the box is what keeps it near) |
+| `--chroma` | flag | off | colours as YCoCg: each colour's Y a luma plane, its Co and Cg the Cb and Cr of that tile, one sample a 2 x 2 block of four consecutive Morton splats; 8 bits only |
+| `--chroma-weight` | `mean` or `area` | `mean` | a block's chroma: the plain mean of its splats, or weighed by opacity x the area of their two largest axes |
 | `--gaussians` | count | the frame's | about this many a frame: each frame merged by pairs where merging loses least (the decimation's NanoGS merge, `docs/decisions.md`), never dropped; no surfels |
 | `--rendition` | 0..65535 | `0` | the id every record carries, one a rendition of a ladder (`athv_stream.py`) |
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
@@ -2561,17 +2565,19 @@ right-up-back), glTF `.glb` with `KHR_gaussian_splatting`, and USD
 and its `stream.txt` (§3.7), which `athenea stream` reads.
 
 **Video written.** `athenea video-encode` writes a `.athv`, version 2: a
-64-byte header (codec, bits, rest coefficients, chunk size, mosaic columns,
+128-byte header (codec, bits, rest coefficients, chunk size, mosaic columns,
 the most splats a picture holds, whether the position high parts are planes,
-the source's antialiasing, the rendition id, the rate and the rate as a
-fraction, the source frames, the quality) and a record a picture, each whole
+the source's antialiasing, whether colour is in chroma, the rendition id, the
+rate and the rate as a fraction, the source frames, the quality, the position
+block and high bits) and a record a picture, each whole
 in itself. A record starts with a fixed prefix -- magic `ATVF`, record type
 (u16, 0), rendition (u16), presentation frame (u32), PTP time (u64 ns at
 offset 12), the record's bytes, version and flags (bit 0 a key picture) -- so
 a relay routes on its first 28 bytes; then its index, the source frame and
 which of its slices it is, where its splats start in the frame, its splats,
 time code and timecode label, the ranges (two floats an attribute), the
-position high parts deflated (zlib), the HEVC parameter sets on a key picture
+side data deflated (zlib: each chunk's blocks' boxes, then its position high
+parts), the HEVC parameter sets on a key picture
 and the access unit as length-prefixed NAL units. Little endian; version 1
 files are still read. `modules/video/include/athenea/video/Athv.h` is its
 specification.
