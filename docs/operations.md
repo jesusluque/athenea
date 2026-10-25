@@ -244,6 +244,7 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--ratio` | 1..10000 | off | merge by pairs instead of cutting the octree, until this many times fewer gaussians; the four tolerances above are not read then |
 | `--edge` | 0..2 | `0.15` | `--ratio`: a colour difference, sRGB-encoded, never merged across |
 | `--max-angle` | degrees, 0..180 | `60` | `--ratio`: normals further apart are never merged |
+| `--merge-growth` | factor | `0`: none | `--ratio`: no merge wider (the square root of its covariance's trace) than this times the wider of the two it merges; the ratio is then the most it goes to |
 | `--max-aspect` | 1..1000 | `1000` (off) | `--ratio`: a merge whose plane comes out longer than this against its width (or than 1.25 times its members' already were) is refused -- a chain of discs along a trim would merge into a needle that smears |
 | `--merge-glass` | flag | off | `--ratio`: transmitting gaussians (glass) merge among themselves too; off, glass is kept as it is |
 | `--no-surfels` | flag | off | `--ratio`: a flat merge stays a thin gaussian rather than a surfel |

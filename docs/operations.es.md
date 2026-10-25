@@ -247,6 +247,7 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 | `--ratio` | 1..10000 | apagado | fundir por pares en vez de cortar el octree, hasta tener estas veces menos gaussianas; entonces no se leen las cuatro tolerancias de arriba |
 | `--edge` | 0..2 | `0.15` | `--ratio`: una diferencia de color, codificada en sRGB, que nunca se funde |
 | `--max-angle` | grados, 0..180 | `60` | `--ratio`: normales más separadas no se funden nunca |
+| `--merge-growth` | factor | `0`: ninguno | `--ratio`: ninguna fusión más ancha (la raíz de la traza de su covarianza) que este factor por la más ancha de las dos que fusiona; la proporción es entonces lo más lejos que llega |
 | `--max-aspect` | 1..1000 | `1000` (apagado) | `--ratio`: se rechaza una fusión cuyo plano sale más largo que esto frente a su anchura (o que 1.25 veces lo que ya eran sus miembros) -- una cadena de discos a lo largo de un embellecedor se fundiría en una aguja que emborrona |
 | `--merge-glass` | flag | apagado | `--ratio`: las gaussianas que transmiten (vidrio) también se funden entre sí; apagado, el vidrio se conserva tal cual |
 | `--no-surfels` | flag | apagado | `--ratio`: una fusión plana sigue siendo una gaussiana fina en vez de un surfel |
