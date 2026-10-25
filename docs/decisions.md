@@ -13964,6 +13964,12 @@ Tried and left out, the image identical and the time not:
 What is left is arithmetic: two bilinear reads of two levels of the sky at
 every pixel a sharp record covers, and the shading's 18 ms.
 
+The sorts run at the tiled radix route's own rate (12.4 ms for four passes
+over ten million pairs, above): the depth sort is three passes of 8 bits over
+the 5.3 M visible (6.5 ms), the tile sort two over 11.8 M pairs whose 13 bits
+of tile already take the fewest passes (8.3 ms). The pairs are counted with
+the blend's own test, so there are none to drop without changing the frame.
+
 ## The sun is the texels that are it
 
 env_sun found a dome's sun on a grid of 1.8 degree cells, measured its
