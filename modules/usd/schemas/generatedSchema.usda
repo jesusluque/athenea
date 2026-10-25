@@ -109,6 +109,11 @@ properties are constant primvars; author them on the ParticleField itself."""
         doc = "The most gaussians a page holds."
         interpolation = "constant"
     )
+    token primvars:athenea:live:sync (
+        allowedTokens = ["latest", "clock"]
+        doc = "Which epoch a frame shows: the newest complete one (latest), or the newest whose ptpTime has come by the frame's instant (clock), later ones held. Unauthored, what the producer asked at stream_open, else latest."
+        interpolation = "constant"
+    )
     int primvars:athenea:live:degree = 3 (
         doc = "Harmonics kept of the pages', 0 to 3."
         interpolation = "constant"

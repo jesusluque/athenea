@@ -212,3 +212,113 @@ TEST_CASE("a live stream a stage names is drawn through Hydra a whole epoch at a
     CHECK((*bounds)->min == std::array<float, 3>{0, 0, 0});
     CHECK((*bounds)->max == std::array<float, 3>{2, 1, 1});
 }
+
+TEST_CASE("a clock-synced live stream a stage names shows the epoch of the frame's instant", "[usd][gpu][live]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    constexpr uint32_t kEpochs = 4;
+    constexpr uint64_t kStep = 40'000'000;
+    const std::string stream = "athenea-test-live-clock";
+    const fs::path dir = fs::temp_directory_path() / "athenea-tests";
+    fs::create_directories(dir);
+    const fs::path shot = dir / "live-clock.usda";
+    {
+        std::ofstream out(shot);
+        out << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n)\n"
+               "def Xform \"World\"\n{\n"
+               "    def ParticleField3DGaussianSplat \"Live\" (\n"
+               "        prepend apiSchemas = [\"AtheneaLiveSourceAPI\"]\n    )\n    {\n"
+               "        string primvars:athenea:live:stream = \"" << stream << "\" ( interpolation = \"constant\" )\n"
+               "        token primvars:athenea:live:sync = \"clock\" ( interpolation = \"constant\" )\n"
+               "        int primvars:athenea:live:chunks = 1 ( interpolation = \"constant\" )\n"
+               "        int primvars:athenea:live:chunkSplats = 600 ( interpolation = \"constant\" )\n"
+               "        int primvars:athenea:live:degree = 0 ( interpolation = \"constant\" )\n"
+               "    }\n"
+               "    def Camera \"Shot\"\n    {\n"
+               "        float2 clippingRange = (0.1, 1000)\n        float focalLength = 30\n"
+               "        float horizontalAperture = 24.576\n        float verticalAperture = 18.432\n"
+               "        double3 xformOp:translate = (0.3, 0.4, 6.0)\n"
+               "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n}\n";
+    }
+    std::vector<std::vector<uint8_t>> pages(kEpochs + 1);
+    std::vector<scene::GpuSplats> clouds;
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    clouds.emplace_back();
+    for (uint32_t e = 1; e <= kEpochs; ++e) {
+        pages[e] = spzPage(500, 500 + e);
+        auto raw = io::readSpz(std::span<const uint8_t>(pages[e]), "page");
+        REQUIRE(raw);
+        auto cloud = loader->upload(*raw, 3);
+        REQUIRE(cloud);
+        clouds.push_back(std::move(*cloud));
+    }
+    render::Camera camera;
+    camera.cameraToWorld = aofx::xform::translation({0.3, 0.4, 6.0});
+    camera.lens.focal = 30.0;
+    camera.lens.nearZ = 0.1;
+    camera.lens.farZ = 1000.0;
+    render::RenderSettings settings;
+    settings.width = 160;
+    settings.height = 120;
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    REQUIRE(raster);
+    const render::Projection projection = render::projectionFor(camera, settings.width, settings.height);
+    std::vector<render::RenderTargets> references(kEpochs + 1);
+    for (uint32_t e = 0; e <= kEpochs; ++e) {
+        std::vector<render::SplatInstance> instances;
+        if (e > 0) instances.push_back({&clouds[e], render::Mat4::identity()});
+        REQUIRE(raster->render(projection, instances, settings, references[e]));
+    }
+    auto renderer = usd::StageRenderer::open(shot);
+    if (!renderer) FAIL(renderer.error().toString());
+    std::atomic<uint64_t> instant{0};
+    (*renderer)->setLiveClock([&] { return instant.load(); });
+
+    // Every epoch pushed at once, each stamped ahead of the clock.
+    auto queue = lod::PageQueue::named(stream);
+    for (uint32_t e = 1; e <= kEpochs; ++e) {
+        lod::PageUpdate u;
+        u.epoch = e;
+        u.chunk = 0;
+        u.pages = 1;
+        u.ptpTime = e * kStep;
+        u.op = lod::PageUpdate::Op::Replace;
+        u.bytes.resize(pages[e].size());
+        std::memcpy(u.bytes.data(), pages[e].data(), pages[e].size());
+        queue->push(std::move(u));
+    }
+    // Which epoch a frame shows, once the loaders have caught up: frames at
+    // the same instant until eight in a row agree.
+    const auto showsAt = [&](uint64_t now) {
+        instant = now;
+        int previous = -1;
+        int agreeing = 0;
+        for (int frame = 0; frame < 120; ++frame) {
+            auto image = (*renderer)->render("/World/Shot", 0.0, settings.width, settings.height);
+            REQUIRE(image);
+            gpu::BufferDesc desc;
+            desc.bytes = image->rgba.size() * sizeof(float);
+            desc.elementBytes = 16;
+            auto hydra = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+            REQUIRE(hydra);
+            int best = -1;
+            for (uint32_t e = 0; e <= kEpochs; ++e) {
+                auto diff = render::compareImages(*gpu->library, *hydra, references[e].colour, settings.width,
+                                                  settings.height);
+                REQUIRE(diff);
+                if (diff->p99 <= 1 && diff->max <= 2) best = static_cast<int>(e);
+            }
+            agreeing = best == previous ? agreeing + 1 : 0;
+            if (best >= 0 && agreeing >= 7) {
+                return best;
+            }
+            previous = best;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return -1;
+    };
+    CHECK(showsAt(kStep / 2) == 0);
+    CHECK(showsAt(2 * kStep + kStep / 2) == 2);
+    CHECK(showsAt(kStep) == 2);           // back: what was shown stays
+    CHECK(showsAt(10 * kStep) == 4);      // forward past them all
+}

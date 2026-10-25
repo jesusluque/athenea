@@ -671,6 +671,11 @@ json streamOpen(Session& session, const json& args) {
     LiveStream stream;
     stream.ring = std::move(*memory);
     stream.queue = lod::PageQueue::named(name);
+    const std::string sync = args.value("sync", "");
+    if (!sync.empty() && sync != "latest" && sync != "clock") {
+        return textAnswer("stream_open: 'sync' is latest or clock, not '" + sync + "'.", true);
+    }
+    stream.queue->setSyncHint(sync == "clock" ? 2 : sync == "latest" ? 1 : 0);
     stream.chunks = args.value("chunks", 64u);
     session.streams.emplace(name, std::move(stream));
     const json answer{{"ring", ring}, {"bytes", bytes}};
@@ -889,7 +894,8 @@ const std::vector<ToolEntry>& toolTable() {
                          "names the same stream.",
                          object({{"name", field("string", "the stream's name, as primvars:athenea:live:stream says")},
                                  {"chunks", field("integer", "chunk ids a page may name, 64 by default")},
-                                 {"ringBytes", field("integer", "the ring's size in bytes, 64 MiB by default")}},
+                                 {"ringBytes", field("integer", "the ring's size in bytes, 64 MiB by default")},
+                                 {"sync", field("string", "latest (default) | clock: which epoch a frame shows, where the stage does not say")}},
                                 {"name"}),
                          streamOpen});
         tools.push_back({"stream_commit",

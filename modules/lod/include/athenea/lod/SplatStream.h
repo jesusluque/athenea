@@ -28,6 +28,7 @@
 // never all came) and counted.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -67,7 +68,14 @@ public:
     /// knowing each other. Any thread.
     [[nodiscard]] static std::shared_ptr<PageQueue> named(const std::string& name);
 
+    /// What the producer asked a frame to show (stream_open's `sync`), for a
+    /// stage that does not say: 0 unsaid, 1 the latest epoch, 2 by the clock.
+    /// Any thread.
+    void setSyncHint(uint8_t hint) noexcept { syncHint_.store(hint); }
+    [[nodiscard]] uint8_t syncHint() const noexcept { return syncHint_.load(); }
+
 private:
+    std::atomic<uint8_t>                                  syncHint_{0};
     std::mutex                                            mutex_;
     std::unordered_map<uint32_t, std::vector<PageUpdate>> pending_;
 };

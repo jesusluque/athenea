@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <map>
@@ -461,6 +462,10 @@ public:
     /// pixel rather than sampled at its middle. On by default; off is what
     /// two frames compared pixel by pixel need.
     void setAntialias(bool on);
+    /// The instant, PTP nanoseconds, a clock-synced live stream's frame shows
+    /// (athenea:live:sync = clock): a genlocked host's FrameClock. Empty, the
+    /// system clock. Applies from the next frame.
+    void setLiveClock(std::function<uint64_t()> nowPtpNs);
 
     /// Bakes the per-part visibility of the ParticleField at `prim` (a cloud
     /// a skeleton carries), commits the stage first so it is on the device,

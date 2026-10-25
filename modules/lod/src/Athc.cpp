@@ -871,6 +871,9 @@ struct StreamingPool::Impl {
     std::vector<scene::Bounds>   shownBounds;    // per chunk
     uint64_t                     frame = 1;
     uint64_t                     budgetBytes = 0;   // StreamingSettings::bytesPerFrame
+    LiveSync                     sync = LiveSync::Latest;
+    uint32_t                     heldEpochs = 8;
+    uint64_t                     now = 0;           // the instant a clock-synced frame shows (setClock)
     Status                       counters;
 
     // STAGING: one upload buffer of `stagingSlots` whole chunks, mapped once
@@ -1153,6 +1156,8 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
     p.counters.slots = slots;
     p.reported = p.counters;
     p.budgetBytes = settings.bytesPerFrame;
+    p.sync = settings.sync;
+    p.heldEpochs = std::max<uint32_t>(settings.heldEpochs, 1);
 
     // The staging ring: upload memory the loaders write and the device copies
     // from, mapped here once for the pool's life. Every backend slang-rhi
@@ -1223,6 +1228,12 @@ void StreamingPool::want(std::span<const uint32_t> needs) {
     const size_t n = std::min(needs.size(), p.wantedNow.size());
     for (size_t c = 0; c < n; ++c) {
         p.wantedNow[c] = std::max(p.wantedNow[c], needs[c]);
+    }
+}
+
+void StreamingPool::setClock(uint64_t ptpNs) {
+    if (impl_->frameThread.current()) {
+        impl_->now = ptpNs;
     }
 }
 
@@ -1545,12 +1556,30 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
         }
         incoming.back().changes.push_back(std::move(c));
     }
+    if (sync == LiveSync::Clock) {
+        // Complete epochs held for their instant, at most `heldEpochs`: past
+        // that the oldest goes, its pages unfetched.
+        while (incoming.size() > heldEpochs) {
+            for (const ChunkChange& c : incoming.front().changes) {
+                if (c.op != ChunkChange::Op::Remove) {
+                    source->discard(c.request);
+                }
+            }
+            log::warn("{}: epoch {} dropped: more than {} epochs held for their time", source->name(),
+                      incoming.front().id, heldEpochs);
+            incoming.pop_front();
+            ++counters.droppedHeld;
+        }
+    }
     uint32_t placed = 0;
     uint64_t placedBytes = 0;
     uint32_t deferred = 0;
     gpu::CommandBatch batch(*device);
     for (;;) {
-        while (!building && !incoming.empty()) {
+        // By the clock, only the epochs whose instant has come; every one of
+        // them, in order (an epoch is a change on the one before), so the
+        // last shown is the newest due.
+        while (!building && !incoming.empty() && (sync == LiveSync::Latest || incoming.front().ptpTime <= now)) {
             ATHENEA_TRY(startEpoch());
         }
         if (!building) {

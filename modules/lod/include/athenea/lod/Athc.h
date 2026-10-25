@@ -79,6 +79,13 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+/// WHICH EPOCH A LIVE STREAM'S FRAME SHOWS. Latest: the newest complete one,
+/// as soon as it is on the device. Clock: the newest complete one whose
+/// `ptpTime` is not after the instant the frame renders (StreamingPool::
+/// setClock); later ones are held, complete and unfetched, until their
+/// instant comes -- at most `heldEpochs` of them, the oldest dropped past it.
+enum class LiveSync : uint8_t { Latest, Clock };
+
 struct StreamingSettings {
     /// The store's size in splats, rounded down to whole chunks (at least one;
     /// a file's at most its chunks, a live stream's at most twice them, since
@@ -94,6 +101,10 @@ struct StreamingSettings {
     /// The kernels a source of SPZ pages (ChunkFormat::Payload::Spz) is
     /// decoded with; needed for that payload only.
     gpu::ShaderLibrary* library = nullptr;
+    /// A live source: which epoch a frame shows, and how many complete
+    /// epochs wait for their instant at most (LiveSync::Clock).
+    LiveSync sync = LiveSync::Latest;
+    uint32_t heldEpochs = 8;
 };
 
 class StreamingPool {
@@ -112,6 +123,12 @@ public:
     /// Frame thread. Cut this, as any cloud; it changes only in update(). A
     /// live source's shows one whole epoch, the last one complete.
     [[nodiscard]] const LodCloud& cloud() const noexcept;
+
+    /// Frame thread: the instant, PTP nanoseconds, the next update's frame
+    /// shows (LiveSync::Clock). An epoch already shown stays shown when the
+    /// clock goes back: an epoch is a change on the one before, and is not
+    /// undone; the epochs after it wait for the clock to come round again.
+    void setClock(uint64_t ptpNs);
 
     /// Frame thread. What a cut of this frame wants (CutStats::needs), once
     /// per instance. A live source's chunks are all wanted: ignored.
@@ -154,6 +171,7 @@ public:
         uint64_t epochs = 0;     ///< epochs shown since open
         uint64_t droppedNoRoom = 0;   ///< epochs dropped: no room beside the one shown
         uint64_t droppedCorrupt = 0;  ///< epochs dropped: a page a loader could not read
+        uint64_t droppedHeld = 0;     ///< epochs dropped: more than heldEpochs waiting for their instant
     };
     /// Any thread.
     [[nodiscard]] Status status() const;

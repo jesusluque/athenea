@@ -57,6 +57,7 @@ TF_DEFINE_PRIVATE_TOKENS(_assetTokens,
     ((liveChunks, "athenea:live:chunks"))
     ((liveChunkSplats, "athenea:live:chunkSplats"))
     ((liveDegree, "athenea:live:degree"))
+    ((liveSync, "athenea:live:sync"))
 );
 
 float floatOf(VtValue const& value, float fallback) {
@@ -194,6 +195,12 @@ athenea::usd::StreamedAsset assetOf(HdSceneDelegate* delegate, SdfPath const& id
                 asset.extent[k] = static_cast<float>(extent.GetMin()[k]);
                 asset.extent[k + 3] = static_cast<float>(extent.GetMax()[k]);
             }
+        }
+        const VtValue sync = delegate->Get(id, _assetTokens->liveSync);
+        if (sync.IsHolding<TfToken>()) {
+            asset.liveSync = sync.UncheckedGet<TfToken>().GetString();
+        } else if (sync.IsHolding<std::string>()) {
+            asset.liveSync = sync.UncheckedGet<std::string>();
         }
         asset.liveChunks = count(_assetTokens->liveChunks, asset.liveChunks);
         asset.liveChunkSplats = count(_assetTokens->liveChunkSplats, asset.liveChunkSplats);

@@ -86,6 +86,8 @@ namespace athenea::usd {
 
 struct StageRenderer::Impl {
     UsdStageRefPtr                         stage;
+    std::function<uint64_t()>              liveClock;          ///< setLiveClock's, handed over at execute
+    bool                                   liveClockSet = false;
     std::unique_ptr<HdAtheneaRenderDelegate>   delegate;
     HdsiLegacyDisplayStyleOverrideSceneIndexRefPtr displayStyle;
     HdsiSceneGlobalsSceneIndexRefPtr       globals;   ///< the active render settings prim, the frame
@@ -2018,8 +2020,21 @@ Result<void> StageRenderer::drawImage(const render::Camera& camera, double time,
     return executeUntilGathered(width, height);
 }
 
+void StageRenderer::setLiveClock(std::function<uint64_t()> nowPtpNs) {
+    impl_->liveClock = std::move(nowPtpNs);
+    impl_->liveClockSet = true;
+}
+
 Result<void> StageRenderer::execute(uint32_t width, uint32_t height) {
     Impl& impl = *impl_;
+    if (impl.liveClockSet) {
+        if (auto* param = static_cast<HdAtheneaRenderParam*>(impl.delegate->GetRenderParam()); param != nullptr) {
+            if (Engine* engine = param->GetEngine(); engine != nullptr) {
+                engine->setLiveClock(impl.liveClock);
+                impl.liveClockSet = false;
+            }
+        }
+    }
     // THE LAMPS' WEIGHTS for this frame, from the state and the levels the
     // render settings hold: a few numbers, handed over only when they change
     // (Engine::setLightWeights).

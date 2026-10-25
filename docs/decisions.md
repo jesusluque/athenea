@@ -15909,3 +15909,39 @@ exported through `CloudLoader::records`) passes.
 - The packed bytes are copied twice on the way (the file into `packed`, then into whole words with one past the
   end for the upload); a reader that pads would let the mapping be uploaded as it is.
 - Packed records past 4 GiB are refused: the kernel's byte offsets are 32-bit.
+
+## A live epoch chosen by the frame's instant (25 Oct)
+
+`athenea:live:sync = clock` (and `stream_open`'s `sync`, for a stage that does not say): a frame shows the newest
+complete epoch whose `ptpTime` has come by the instant it renders, where `latest` shows the newest complete one as
+soon as it is placed.
+
+- **Held, not placed.** Epochs ahead of the clock wait in the pool's queue of complete epochs, their pages still
+  in the source, unfetched; at the frame whose instant reaches one, it and every one before it are built and
+  shown in order -- an epoch is a change on the one before, so none due is skipped, and the last shown is the
+  newest due. `StreamingSettings::heldEpochs` (8) caps the queue: past it the oldest is dropped
+  (`Status::droppedHeld`, a warning), its pages discarded. Nothing is placed early, so a due epoch still takes
+  its loads' time to appear (a frame or a few); placing ahead, in a store of more than two epochs, is not done.
+- **The clock.** `StreamingPool::setClock(ptpNs)`, frame thread, before `update`. The engine reads it once a
+  frame from `Engine::setLiveClock` (`StageRenderer::setLiveClock`): a genlocked host's FrameClock -- sched is
+  optional and not linked by the engine -- and without one the system clock in nanoseconds, which a producer
+  stamping with the same clock agrees with (no TAI offset is applied).
+- **A jump back** leaves the shown epoch: it is not undone, and the held ones wait for the clock to come round.
+  **A jump forward** applies every epoch due in one update, in order.
+
+### How it is checked
+
+`athenea_lod_tests "a clock-synced live stream shows the newest epoch whose instant has come"` (Metal, M5 Pro):
+five whole-state epochs 40 ms apart pushed at once; at half a step nothing is shown, at the first's instant the
+first, at 2.5 steps the second with three held, at 4 steps + 1 ns the fourth (the third applied on the way), back
+at the first's instant still the fourth, at 5 steps the fifth -- each image the epoch's own, max 0. Ten more ahead
+of the clock with six held at most: four dropped (`droppedHeld` 4), and at 10 steps the tenth, max 0.
+`athenea_usd_tests "a clock-synced live stream a stage names shows the epoch of the frame's instant"`: the same
+through Hydra with the stage's `sync = clock` and `StageRenderer::setLiveClock`, each instant held until eight
+frames agree: nothing, the second, the second after a jump back, the fourth after a jump forward. The other live
+tests pass as before.
+
+### Not done
+
+- Interpolating the camera's pose to the instant.
+- Placing held epochs ahead of their instant, which would show a due one in the frame it is due.

@@ -1852,12 +1852,23 @@ stream de este nombre (`lod::PageQueue::named`). Un frame dibuja la última
 sitio junto a la que se muestra, o con una página que no se descomprime, se
 descarta con un aviso. Sólo la dibuja el rasterizador, sin niveles de detalle.
 
+Con `sync = clock` un frame muestra la época completa más nueva cuyo `ptpTime`
+(nanosegundos) ha llegado en el instante del frame -- el reloj con genlock del
+anfitrión (`StageRenderer::setLiveClock`), o el reloj del sistema si no lo hay
+-- y las épocas completas posteriores esperan, ocho como mucho: pasado eso se
+descarta la más antigua con un aviso. Toda época que ya toca se aplica en
+orden, así que un reloj que salta hacia delante muestra la más nueva que toca.
+Uno que salta hacia atrás deja la época mostrada como está: una época es un
+cambio sobre la anterior y no se deshace; la siguiente espera a que el reloj
+vuelva a llegar a ella.
+
 | Atributo | Tipo | Por defecto |
 |---|---|---|
 | `primvars:athenea:live:stream` | string | —, no se dibuja nada |
 | `primvars:athenea:live:chunks` | int | `64`; los ids de chunk de las páginas van de 0 a este menos uno |
 | `primvars:athenea:live:chunkSplats` | int | `65536`; las gaussianas que como mucho tiene una página |
 | `primvars:athenea:live:degree` | int 0..3 | `3`; armónicos que se guardan |
+| `primvars:athenea:live:sync` | token `latest` \| `clock` | sin autorar: lo que pidió `stream_open`, si no `latest` |
 | `primvars:athenea:stream:budget` | int64 ‹gaussianas› | `0`: dos veces `chunks` × `chunkSplats` |
 | `extent` | float3[2] | —; los límites del stream hasta que se muestra una época, cuyos límites de página son entonces los suyos |
 
@@ -2246,11 +2257,12 @@ La salida estándar lleva solo protocolo; el log va a la de error.
 prim `AtheneaLiveSourceAPI` (§4.3); un productor que no está en el proceso del
 servidor -- un script de Python, una aplicación anfitriona -- lo alimenta con
 tres herramientas:
-- `stream_open` `{name, chunks, ringBytes}` crea un anillo de memoria
+- `stream_open` `{name, chunks, ringBytes, sync}` crea un anillo de memoria
   compartida (memoria compartida POSIX en macOS y Linux, un file mapping con
   nombre en Windows; 64 MiB por defecto) y responde su nombre, que
   `multiprocessing.shared_memory.SharedMemory(name=...)` de Python abre tal
-  cual.
+  cual. `sync` (`latest`, `clock`) es lo que muestra una escena que no lo
+  dice.
 - El productor escribe ficheros SPZ en el anillo y luego `stream_commit`
   `{name, epoch, epochPages, pages: [{chunk, op: add|replace|remove, offset, bytes, bounds, ptpTime}]}`:
   `offset` y `bytes` dicen dónde está cada página; `epochPages` son las

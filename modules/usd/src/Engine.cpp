@@ -147,6 +147,11 @@ std::string Engine::relieveMemory() {
     return did;
 }
 
+void Engine::setLiveClock(std::function<uint64_t()> nowPtpNs) {
+    const std::lock_guard<std::mutex> held(guard_);
+    liveClock_ = std::move(nowPtpNs);
+}
+
 uint64_t Engine::streamBudget(const pxr::SdfPath& id, const StreamedAsset& asset) const {
     const uint64_t available = device_->memoryAvailable();
     uint64_t wanted = asset.budget;
@@ -1398,6 +1403,11 @@ Result<size_t> Engine::commit() {
                     settings.budgetSplats = asset.budget != 0 ? asset.budget
                                                               : uint64_t{2} * live.chunks * live.format.chunkSplats;
                     settings.library = library_.get();
+                    // The stage's word, else the producer's (stream_open), else the latest.
+                    const uint8_t hint = lod::PageQueue::named(asset.live)->syncHint();
+                    settings.sync = asset.liveSync == "clock" || (asset.liveSync.empty() && hint == 2)
+                                        ? lod::LiveSync::Clock
+                                        : lod::LiveSync::Latest;
                     auto pool = source ? lod::StreamingPool::open(
                                              *device_, std::unique_ptr<lod::ChunkSource>(std::move(*source)), settings)
                                        : Result<std::unique_ptr<lod::StreamingPool>>(source.error());
@@ -1433,6 +1443,10 @@ Result<size_t> Engine::commit() {
             // The epochs placed since the last frame, before this frame's
             // cut: it draws the last one whole. A new one is a change any
             // accumulation must start again from.
+            entry.pool->setClock(liveClock_ ? liveClock_()
+                                            : static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::system_clock::now().time_since_epoch())
+                                                                        .count()));
             auto placed = entry.pool->update(false);
             if (!placed) {
                 log::warn("hdAthenea: {}: {}", id.GetString(), placed.error().toString());

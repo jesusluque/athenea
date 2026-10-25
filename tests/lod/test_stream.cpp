@@ -618,3 +618,89 @@ TEST_CASE("a live stream's replaces and removes change only their chunks", "[lod
     std::filesystem::remove(p.pathA);
     std::filesystem::remove(p.pathB);
 }
+
+TEST_CASE("a clock-synced live stream shows the newest epoch whose instant has come", "[lod][gpu][stream][live]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    Pages p = pages(*h);
+    gpu::Device& device = *gpu->device;
+    const scene::Bounds bounds = p.a->bounds(0);
+    constexpr uint64_t kStep = 40'000'000;   // page(): epoch e is at e * 40 ms
+
+    // Epoch e: every chunk A's where (c + e) is even, else B's -- a whole
+    // state, each different.
+    const auto stateOf = [&](uint64_t e) {
+        State s(kChunks, nullptr);
+        for (uint32_t c = 0; c < kChunks; ++c) {
+            s[c] = (c + e) % 2 == 0 ? &p.blocksA[c] : &p.blocksB[c];
+        }
+        return s;
+    };
+    const auto push = [&](lod::PageQueue& q, uint64_t e) {
+        const State s = stateOf(e);
+        for (uint32_t c = 0; c < kChunks; ++c) {
+            q.push(page(p.settings.stream, e, c, lod::PageUpdate::Op::Replace, s[c], kChunks, bounds));
+        }
+    };
+    const auto shows = [&](lod::StreamingPool& pool, const State& state) {
+        const Cut cut = renderPool(*h, pool.cloud(), 0.0F);
+        return compare(*h, renderCloud(*h, uploadedState(device, p.settings.format, state)), cut.targets).max;
+    };
+
+    auto queue = std::make_shared<lod::PageQueue>();
+    auto source = lod::LiveSource::create(queue, p.settings);
+    REQUIRE(source);
+    lod::StreamingSettings settings;
+    settings.budgetSplats = 2 * kChunks * kChunkSplats;
+    settings.sync = lod::LiveSync::Clock;
+    settings.heldEpochs = 6;
+    auto pool = lod::StreamingPool::open(device, std::unique_ptr<lod::ChunkSource>(std::move(*source)), settings);
+    if (!pool) FAIL(pool.error().toString());
+
+    // The producer is ahead of the clock: five epochs, all complete now.
+    for (uint64_t e = 1; e <= 5; ++e) {
+        push(*queue, e);
+    }
+    const auto at = [&](uint64_t instant) {
+        (*pool)->setClock(instant);
+        auto placed = (*pool)->update(true);
+        if (!placed) FAIL(placed.error().toString());
+        return (*pool)->status();
+    };
+    auto s = at(kStep / 2);   // before the first epoch's instant: nothing yet
+    CHECK(s.epoch == 0);
+    CHECK(s.pendingEpochs == 5);
+    s = at(kStep);            // exactly the first's
+    CHECK(s.epoch == 1);
+    CHECK(shows(**pool, stateOf(1)) == 0);
+    s = at(2 * kStep + kStep / 2);
+    CHECK(s.epoch == 2);
+    CHECK(s.pendingEpochs == 3);
+    CHECK(shows(**pool, stateOf(2)) == 0);
+    // A jump forward: every epoch due is applied, in order, the newest shown.
+    s = at(4 * kStep + 1);
+    CHECK(s.epoch == 4);
+    CHECK(shows(**pool, stateOf(4)) == 0);
+    // A jump back: what was shown stays; the next waits for its instant again.
+    s = at(kStep);
+    CHECK(s.epoch == 4);
+    CHECK(s.pendingEpochs == 1);
+    CHECK(shows(**pool, stateOf(4)) == 0);
+    s = at(5 * kStep);
+    CHECK(s.epoch == 5);
+    CHECK(shows(**pool, stateOf(5)) == 0);
+
+    // Held past the cap: of ten epochs ahead of the clock the oldest four go.
+    for (uint64_t e = 6; e <= 15; ++e) {
+        push(*queue, e);
+    }
+    s = at(5 * kStep);
+    CHECK(s.epoch == 5);
+    CHECK(s.droppedHeld == 4);
+    CHECK(s.pendingEpochs == 6);
+    s = at(10 * kStep);   // 6..9 were dropped: the first held is 10
+    CHECK(s.epoch == 10);
+    CHECK(shows(**pool, stateOf(10)) == 0);
+    std::filesystem::remove(p.pathA);
+    std::filesystem::remove(p.pathB);
+}

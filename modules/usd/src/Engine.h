@@ -19,6 +19,7 @@
 #include <array>
 #include <map>
 #include <set>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <atomic>
@@ -78,6 +79,7 @@ struct StreamedAsset {
     uint32_t    liveChunks = 64;   ///< chunk ids 0 .. liveChunks - 1
     uint32_t    liveChunkSplats = 65536;
     uint32_t    liveDegree = 3;    ///< harmonics kept, 0..3
+    std::string liveSync;          ///< "latest", "clock", or empty: what the producer asked (stream_open)
     /// The prim's authored `extent` (min xyz, max xyz): the stream's bounds
     /// until an epoch is shown, whose pages' bounds then say.
     bool                 hasExtent = false;
@@ -87,7 +89,7 @@ struct StreamedAsset {
     /// The same pool, whatever the threshold.
     [[nodiscard]] bool sameSource(const StreamedAsset& o) const noexcept {
         return path == o.path && budget == o.budget && live == o.live && liveChunks == o.liveChunks &&
-               liveChunkSplats == o.liveChunkSplats && liveDegree == o.liveDegree;
+               liveChunkSplats == o.liveChunkSplats && liveDegree == o.liveDegree && liveSync == o.liveSync;
     }
     bool operator==(const StreamedAsset&) const = default;
 };
@@ -370,6 +372,13 @@ public:
     /// which is what `create(why)` does. Every call still comes from one
     /// thread; the host's thread is that thread.
     static std::unique_ptr<Engine> create(std::shared_ptr<gpu::Device> device, std::string& why);
+
+    /// THE INSTANT A CLOCK-SYNCED LIVE STREAM SHOWS (athenea:live:sync =
+    /// clock): PTP nanoseconds, read once a frame on the render thread. Unset,
+    /// the system clock's (TAI is not applied: a producer stamping with the
+    /// same clock agrees). A genlocked host gives its FrameClock's instant.
+    /// Any thread.
+    void setLiveClock(std::function<uint64_t()> nowPtpNs);
 
     // --- from Sync (any thread) ---
     void setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays> raw,
@@ -911,6 +920,7 @@ private:
         }
     };
     PathState                                 pathState_;
+    std::function<uint64_t()>                 liveClock_;   ///< under guard_
     std::atomic<uint64_t>                     revision_{1};   ///< raised by anything a path would see
     /// Frames still to draw before what is gathered is the shutter's: a
     /// shutter changed after the prims synced is answered by dirtying them

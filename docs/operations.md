@@ -1797,12 +1797,22 @@ page is on the device, never half of one; an epoch without room beside the
 one shown, or with a page that does not decompress, is dropped with a warning.
 Drawn by the rasteriser only, without levels of detail.
 
+With `sync = clock` a frame shows the newest complete epoch whose `ptpTime`
+(nanoseconds) has come by the frame's instant -- the host's genlocked clock
+(`StageRenderer::setLiveClock`), or the system clock without one -- and later
+complete epochs wait, eight at most: past that the oldest is dropped with a
+warning. Every epoch due is applied in order, so a clock that jumps forward
+shows the newest due. One that jumps back leaves the shown epoch as it is: an
+epoch is a change on the one before and is not undone; the next waits for the
+clock to reach it again.
+
 | Attribute | Type | Default |
 |---|---|---|
 | `primvars:athenea:live:stream` | string | —, nothing drawn |
 | `primvars:athenea:live:chunks` | int | `64`; page chunk ids are 0 to this less one |
 | `primvars:athenea:live:chunkSplats` | int | `65536`; the most gaussians a page holds |
 | `primvars:athenea:live:degree` | int 0..3 | `3`; harmonics kept |
+| `primvars:athenea:live:sync` | token `latest` \| `clock` | unauthored: what `stream_open` asked, else `latest` |
 | `primvars:athenea:stream:budget` | int64 ‹gaussians› | `0`: twice `chunks` × `chunkSplats` |
 | `extent` | float3[2] | —; the stream's bounds until an epoch is shown, whose pages' bounds then are |
 
@@ -2184,10 +2194,11 @@ Standard output carries protocol only; logging goes to standard error.
 **A live stream from another process.** A stage names the stream in an
 `AtheneaLiveSourceAPI` prim (§4.3); a producer that is not in the server's
 process -- a Python script, a host application -- feeds it through three tools:
-- `stream_open` `{name, chunks, ringBytes}` makes a ring of shared memory
+- `stream_open` `{name, chunks, ringBytes, sync}` makes a ring of shared memory
   (POSIX shared memory on macOS and Linux, a named file mapping on Windows;
   64 MiB by default) and answers its name, which Python's
   `multiprocessing.shared_memory.SharedMemory(name=...)` opens as it is.
+  `sync` (`latest`, `clock`) is what a stage that does not say shows.
 - The producer writes SPZ files into the ring, then `stream_commit`
   `{name, epoch, epochPages, pages: [{chunk, op: add|replace|remove, offset, bytes, bounds, ptpTime}]}`:
   `offset` and `bytes` say where each page lies; `epochPages` is the epoch's
