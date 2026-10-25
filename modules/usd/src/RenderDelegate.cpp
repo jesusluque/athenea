@@ -1,5 +1,8 @@
 // Copyright (c) 2026 jesus luque.
 #include <pxr/imaging/hd/visibilitySchema.h>
+
+#include <algorithm>
+#include <cstdint>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/coordSys.h>
 #include <pxr/imaging/hd/extComputation.h>
@@ -43,6 +46,26 @@
 #include "athenea/core/Log.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+/// A whole-number render setting, whatever integer type the host put in the
+/// VtValue: a C++ caller hands an `int`, but a Python int from Blender
+/// arrives as a wider integer, and another host may hand an `int64_t` or a
+/// whole `double`. Read as `int` alone, Blender's `athenea:pathTotal` was
+/// never seen and its F12 gathered one pass whatever the add-on asked for.
+static bool _WholeSetting(const VtValue& value, int64_t& out) {
+    if (value.IsHolding<int>()) { out = value.UncheckedGet<int>(); return true; }
+    if (value.IsHolding<unsigned int>()) { out = value.UncheckedGet<unsigned int>(); return true; }
+    if (value.IsHolding<long>()) { out = value.UncheckedGet<long>(); return true; }
+    if (value.IsHolding<unsigned long>()) { out = static_cast<int64_t>(value.UncheckedGet<unsigned long>()); return true; }
+    if (value.IsHolding<long long>()) { out = value.UncheckedGet<long long>(); return true; }
+    if (value.IsHolding<unsigned long long>()) {
+        out = static_cast<int64_t>(value.UncheckedGet<unsigned long long>());
+        return true;
+    }
+    if (value.IsHolding<double>()) { out = static_cast<int64_t>(value.UncheckedGet<double>()); return true; }
+    if (value.IsHolding<float>()) { out = static_cast<int64_t>(value.UncheckedGet<float>()); return true; }
+    return false;
+}
 
 /// Which prims the light linking scene index is about. Its defaults are not
 /// ours to assume: without saying so it sees the collections and marks
@@ -443,16 +466,18 @@ bool HdAtheneaRenderDelegate::GetDomePrefiltered() const {
 }
 
 uint32_t HdAtheneaRenderDelegate::GetCloudShadowResolution() const {
-    const VtValue value = GetRenderSetting(TfToken("athenea:cloudShadowResolution"));
-    if (value.IsHolding<int>()) return static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0));
-    if (value.IsHolding<unsigned int>()) return value.UncheckedGet<unsigned int>();
+    int64_t whole = 0;
+    if (_WholeSetting(GetRenderSetting(TfToken("athenea:cloudShadowResolution")), whole)) {
+        return static_cast<uint32_t>(std::clamp<int64_t>(whole, 0, UINT32_MAX));
+    }
     return 1024;
 }
 
 uint32_t HdAtheneaRenderDelegate::GetCloudShadowTerms() const {
-    const VtValue value = GetRenderSetting(TfToken("athenea:cloudShadowTerms"));
-    if (value.IsHolding<int>()) return static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0));
-    if (value.IsHolding<unsigned int>()) return value.UncheckedGet<unsigned int>();
+    int64_t whole = 0;
+    if (_WholeSetting(GetRenderSetting(TfToken("athenea:cloudShadowTerms")), whole)) {
+        return static_cast<uint32_t>(std::clamp<int64_t>(whole, 0, UINT32_MAX));
+    }
     return 0;   // automatic
 }
 
@@ -477,12 +502,9 @@ bool HdAtheneaRenderDelegate::GetChooseLights() const {
 }
 
 uint32_t HdAtheneaRenderDelegate::GetLightSamples() const {
-    const VtValue value = GetRenderSetting(_atheneaSettings->lightSamples);
-    if (value.IsHolding<int>()) {
-        return static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 1));
-    }
-    if (value.IsHolding<unsigned int>()) {
-        return std::max(value.UncheckedGet<unsigned int>(), 1u);
+    int64_t whole = 0;
+    if (_WholeSetting(GetRenderSetting(_atheneaSettings->lightSamples), whole)) {
+        return static_cast<uint32_t>(std::clamp<int64_t>(whole, 1, UINT32_MAX));
     }
     return 1;
 }
@@ -490,11 +512,9 @@ uint32_t HdAtheneaRenderDelegate::GetLightSamples() const {
 namespace {
 /// An int render setting, however the host spelled its type.
 uint32_t _UintSetting(const VtValue& value, uint32_t fallback, uint32_t least) {
-    if (value.IsHolding<int>()) {
-        return std::max(static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0)), least);
-    }
-    if (value.IsHolding<unsigned int>()) {
-        return std::max(value.UncheckedGet<unsigned int>(), least);
+    int64_t whole = 0;
+    if (_WholeSetting(value, whole)) {
+        return static_cast<uint32_t>(std::clamp<int64_t>(whole, least, UINT32_MAX));
     }
     return fallback;
 }
@@ -543,13 +563,17 @@ bool HdAtheneaRenderDelegate::GetScreenSpaceReflections() const {
 }
 
 uint32_t HdAtheneaRenderDelegate::GetMeshAntialias() const {
-    const VtValue value = GetRenderSetting(TfToken("athenea:meshAntialias"));
-    return value.IsHolding<int>() ? static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0)) : 0u;
+    int64_t whole = 0;
+    return _WholeSetting(GetRenderSetting(TfToken("athenea:meshAntialias")), whole)
+               ? static_cast<uint32_t>(std::clamp<int64_t>(whole, 0, UINT32_MAX))
+               : 0u;
 }
 
 uint32_t HdAtheneaRenderDelegate::GetSplatView() const {
-    const VtValue value = GetRenderSetting(TfToken("athenea:splatView"));
-    return value.IsHolding<int>() ? static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0)) : 0u;
+    int64_t whole = 0;
+    return _WholeSetting(GetRenderSetting(TfToken("athenea:splatView")), whole)
+               ? static_cast<uint32_t>(std::clamp<int64_t>(whole, 0, UINT32_MAX))
+               : 0u;
 }
 
 bool HdAtheneaRenderDelegate::GetGlassShadows() const {
@@ -736,8 +760,9 @@ HdAovDescriptor HdAtheneaRenderDelegate::GetDefaultAovDescriptor(TfToken const& 
     if (name == HdAovTokens->color) {
         const VtValue half = GetRenderSetting(TfToken("athenea:colourHalf"));
         // A bool, or the int a Python host's True can arrive as.
+        int64_t whole = 0;
         const bool wantsHalf = (half.IsHolding<bool>() && half.UncheckedGet<bool>()) ||
-                               (half.IsHolding<int>() && half.UncheckedGet<int>() != 0);
+                               (_WholeSetting(half, whole) && whole != 0);
         return HdAovDescriptor(wantsHalf ? HdFormatFloat16Vec4 : HdFormatFloat32Vec4, false,
                                VtValue(GfVec4f(0.0F)));
     }

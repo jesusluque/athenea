@@ -15510,3 +15510,14 @@ different faults reached it through the same door: slang-rhi asserting on a fail
   alone, before the flatten did not do it, the two together did. The surface now starts zeroed and takes
   `params.skyCloud` as the projection's does; `tx_module` then runs through the export, the points and the cancel
   without a crash. A turned cloud's flatten read the world's sky where its frame wanted the turned one.
+
+**#40, the cloud against a path traced reference: relMSE 0.72, p99 193.** The reference was one pass of one path a
+pixel. A Python int Blender hands to the delegate arrives as a wider integer than `int`, and every whole-number
+setting was read as `int` or `unsigned` alone, so `athenea:pathTotal` (the add-on's Paths, 256 here) and `athenea:pathSamples`
+(16) fell back to 1: F12 gathered one pass and called it converged. On macOS the denoiser hid it; this build has no
+OIDN and showed it. Measured in a 60 x 60 patch of the cube, F12 at 1, 16 and 256 paths drew the same picture
+(standard deviation 1.28 about a mean of 0.955) before; after, 16 paths read 0.33 and 256 read 0.082, a quarter of it
+for sixteen times the paths, the mean 0.962. A whole-number setting is now read whatever integer type, or whole
+`double`, the host put in it (`_WholeSetting`): the path counts, the bounces, the motion buckets, the light samples,
+the cloud shadow's size and terms, `meshAntialias`, `splatView`, and an int `colourHalf`. `tx_module`'s cloud
+against its reference: relMSE 0.0533 and 8-bit p99 18, under the 0.25 and 40 it asks.
