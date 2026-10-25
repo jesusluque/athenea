@@ -52,6 +52,7 @@ def parse_header(b):
     block, high_bits = struct.unpack_from("<2I", b, 64)
     target, = struct.unpack_from("<f", b, 72)
     geometry_interval, = struct.unpack_from("<I", b, 76)
+    geometry_bits, = struct.unpack_from("<I", b, 80)
     return dict(version=version, codec=struct.pack("<I", codec).decode("latin-1"), bits=bits, restPerColour=rest,
                 chunkSplats=chunk, columns=columns, maxSplats=most, hiInVideo=bool(flags & 1),
                 antialiased=bool(flags & 2), chroma=bool(flags & 4), stableOrder=bool(flags & 8),
@@ -59,7 +60,8 @@ def parse_header(b):
                 rateNumerator=num, rateDenominator=den,
                 sourceFrames=frames, quality=round(quality, 4), positionBlock=block, positionHighBits=high_bits,
                 positionTarget=round(target, 6), geometry=bool(flags & 16), geometryStagger=bool(flags & 32),
-                geometryInterval=geometry_interval)
+                geometryInterval=geometry_interval, geometryPositionBits=(geometry_bits & 255) or 16,
+                geometryScaleBits=((geometry_bits >> 8) & 255) or 10, geometryOrder=((geometry_bits >> 16) & 255) or 1)
 
 
 def layout(h):
@@ -261,7 +263,8 @@ def describe(data):
                antialiased=h["antialiased"], positionBlock=h["positionBlock"],
                positionHighBits=h["positionHighBits"], chromaPlanes=h["chroma"], stableOrder=h["stableOrder"],
                geometryLossless=h["geometry"], geometryKeyInterval=h["geometryInterval"],
-               geometryStagger=h["geometryStagger"], picturesPerFrame=first["slices"],
+               geometryStagger=h["geometryStagger"], geometryPositionBits=h["geometryPositionBits"],
+               geometryScaleBits=h["geometryScaleBits"], geometryOrder=h["geometryOrder"], picturesPerFrame=first["slices"],
                pictureWidth=lay["width"], pictureHeight=lay["height"], meanBytesPerFrame=round(total / frames),
                meanMbps=round(total / frames * 8 * h["rate"] / 1e6, 2), fullRange=True)
     if len(first["sets"]) == 3:

@@ -1035,6 +1035,8 @@ void addVideo(CLI::App& app) {
                     sliced->positionBlock = layout.positionBlock;
                     sliced->positionHighBits = layout.positionHighBits;
                     sliced->positionTarget = layout.positionTarget;
+                    sliced->geometryPositionBits = layout.geometryPositionBits;
+                    sliced->geometryScaleBits = layout.geometryScaleBits;
                     sliced->chromaWeight = layout.chromaWeight;
                     if (sliced->width != layout.width || sliced->height != layout.height) {
                         cli::err("video-encode: frame %zu needs a %u x %u mosaic, not the stream's %u x %u\n", k,
