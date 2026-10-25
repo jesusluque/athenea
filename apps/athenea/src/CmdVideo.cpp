@@ -1136,7 +1136,7 @@ void addVideo(CLI::App& app) {
             uvSources = std::move(*read);
         }
         if (o->geometry && (o->positionBlock != 0 || o->hi == "video" || o->positionTarget > 0.0F ||
-                            (o->geometryKey > 1 && o->order != "stable"))) {
+                            (o->geometryKey > 1 && !stable))) {
             cli::err("video-encode: --geometry takes no --position-block, --position-target or --hi video, and a "
                      "--geometry-key past 1 wants --order stable\n");
             throw CLI::RuntimeError(kExitFailure);
