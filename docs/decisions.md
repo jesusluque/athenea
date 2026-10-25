@@ -16126,3 +16126,108 @@ cases) passes.
   coefficient, the positions' low bytes and the scales.
 - Order 1 (measured above, not coded); CPCA as a lossy layer T in the file (measured, not written).
 - CUDA and WebGPU decodes of the transforms; the web player.
+
+## .athz: a lossy layer T, curvature, layer K and prefixes by size (25 Oct)
+
+- **Curvature** (three floats a gaussian) is an element field of layer G where the cloud carries it on every
+  level, so a TX cloud's lobes survive a round trip once the levels carry it (`LodBuilder` does not yet: the
+  `.athc` side of that is the playback branch's). The transfer is coded as the device holds it -- f16 pairs, not
+  the file's f32 -- so `.athz` is lossless against what is drawn.
+- **CPCA as layer T** (`convert --athz-transfer cpca --transfer-basis B`, format version 3): a TX transfer of 112
+  values is coded as `transfer_codec.slang`'s codec keeps it -- the nearest of 256 clusters and 24 weights of 4
+  bits -- in four words an element, through the same transforms (the parent's codes predict a group's); the
+  basis is stored once in the file (1.17 MB). The decoder writes the codes into a scratch and `athzCpcaUnpack`,
+  the next dispatch of the same batch, writes the transfer back into the record (halves). Exactly what the codec
+  gives: the test compares the decoded transfer with the codec run on the source, 0 words differ.
+- **Layer K** (`convert --athz-skinned`, version 4): each splat's four (joint, weight) pairs and their gradients
+  as element fields of layer K (zeros for merged groups: nothing skins them), in the store's order
+  (`athzGatherToStore` through `LodCloud::order`); every authored frame's joints once an asset, each matrix's
+  first three columns in halves (24 bytes a joint a frame). `readAthzSkinned` and `athzFrameXforms` hand
+  `scene::SplatSkinner` its inputs.
+- **Prefixes by size** (`athenea athz-prefix --mb N`): the most pages in band order whose file fits; hdAthenea
+  draws a prefix that keeps every merged level as a streamed cloud, and one cut inside them as its finest band.
+- **hdAthenea draws `.athz`** through `AtheneaStreamedAssetAPI`, as it draws a `.athc`.
+- **A bug found on the way:** the decoder wrote every word of an element, also of fields no array was bound for;
+  those went past the end of the 16-byte dummy buffer and overwrote the decoder's own tables, so a later batch
+  read back corrupt lanes. A field is now written only where its array is bound (`fieldsBound`).
+
+### Measured (Metal, M5 Pro)
+
+**Sizes.** The pawn (body 1.32 M splats + 0.27 M merged, glass head 0.29 M + 0.09 M) and the Corvette's
+close-up level (0.40 M + 0.25 M), transforms and rANS 2^11, runs of 256:
+
+| asset | lossless MB | CPCA layer T MB | B an element, CPCA | layer T lossless / CPCA |
+|---|---:|---:|---:|---:|
+| pawn body | 214.4 | 39.7 | 24.8 | 184.7 / 9.0 MB |
+| pawn head (glass) | 57.7 | 9.0 | 23.9 | 51.7 / 2.1 MB |
+| Corvette close 5120 | 79.5 | 17.1 | 26.0 | 67.2 / 3.8 MB |
+
+The whole pawn is 48.7 MB with CPCA. Proposal 101 §5 asks 60-90 MB for the whole Corvette; no whole-car tree
+is on the internal disk, so this is the close-up level's rate: at 25-26 B an element (merged groups counted),
+60 MB holds ~2.3 M gaussians and 90 MB ~3.5 M -- the proposal's "3-4.5 M at ~20 B" was for a smaller record;
+here CPCA takes layer T from 87 % of the file to 22 %, and G (positions, shape, normals, material) is now most of
+what is left (60 % on the pawn body).
+
+**CPCA under the full TX relight.** The streamed `.athz` path does not relight yet (below), so the codec is
+judged where it is drawn as it will be: the clouds' transfer coded and decoded by the same codec at 4 bits
+(`decimate --ratio 1 --transfer-basis B --transfer-bits 4`) in the USD stages, against the lossless cloud and a
+path trace (1024 x 1024 pawn under the workshop sky, 512 paths denoised; 1280 x 720 Corvette at night, the three
+converted parts' meshes alone). Per class: mean ratio to the reference, and the smoothed (sigma 2) relMSE after
+matching means (`athenea athz-compare`, class maps drawn by `--splat-override`):
+
+| frame | against | PSNR | relMSE | class: mean ratio / smoothed relMSE |
+|---|---|---:|---:|---|
+| pawn, lossless | path trace | 35.29 | 0.00416 | body 1.011 / 0.0105, glass 1.011 / 0.0279 |
+| pawn, CPCA | path trace | 34.64 | 0.00410 | body 0.938 / 0.0117, glass 0.997 / 0.0539 |
+| pawn, CPCA | lossless | 41.27 | 0.00084 | body 0.928 / 0.0034, glass 0.986 / 0.0193 |
+| Corvette, lossless | path trace | 26.39 | 0.0177 | chrome 0.820, plastic 0.120, logo 0.861 |
+| Corvette, CPCA | path trace | 26.40 | 0.0178 | chrome 0.833, plastic 0.121, logo 0.861 |
+| Corvette, CPCA | lossless | 57.35 | 0.000018 | chrome 1.016, plastic 1.006, logo 1.000 |
+
+On the Corvette, where the basis was fitted, CPCA is invisible (57 dB against lossless, every class within
+1.6 %); its distance to the path trace is the conversion's, not the codec's. On the pawn the same basis clips
+2.9 M of 32 M body weights and darkens the body 7 %: a basis fitted on the pawn (or per asset) is what the pawn
+needs. (The Corvette's plastic class mean is the conversion's own: the night frame's grille is near black in the
+path trace and lit in both clouds alike.)
+
+**The streamed `.athz` path, drawn.** Through hdAthenea the `.athz` clouds draw, but not relit from their
+transfer and without the TX cloud's other attributes (`ior`, `materialRoughness`, occlusion, surfels): the same
+gap `.athc` has, which the playback branch is closing for `.athc`. CPCA and lossless draw identically there
+(max 0) because the transfer is not read; the glass head draws opaque. Against the path trace: pawn 23.97 dB
+(lossless USD cloud 35.29).
+
+**Prefixes** of the pawn with CPCA (the head whole, the body cut to what is left), drawn through hdAthenea
+against the whole `.athz` drawn the same way:
+
+| budget | body pages | merged + splats held | against the whole |
+|---|---:|---:|---|
+| 20 MB | 112 of 526 | 272 795 + 52 224 | PSNR 42.68, p99 8 |
+| 30 MB | 269 of 526 | 272 795 + 534 528 | PSNR 43.38, p99 6 |
+| 48.7 MB | all | the whole pawn | -- |
+
+Every merged level fits in 11 MB, so both prefixes stream as clouds whose missing splats draw as their merged
+gaussians.
+
+**Layer K, the sparrow** (`sparrow_tx_vis.usdc`: 1.50 M splats, 609 joints, 61 frames): 107.6 MB in all (the
+USD file is 226 MB), of which layer K's pages are 34.9 MB -- the rig a splat, eleven words (four joints and
+weights, three gradient words), not the frames -- and the frames 0.89 MB (609 x 24 B x 61). `athz-skin-check`,
+both clouds skinned on the device every frame, 1280 x 720: the `.athz` against the source, p99 median 3, worst
+5, max at most 45 code values (the joints in halves); the flicker of the two (second difference of three frames)
+is the same to three digits every frame -- the bird's own motion, not noise either adds. The rig a splat is what
+costs, at 23 B a splat: E1b's transforms took it from 44 B; the weights' gradients and joint indices are where
+to look next.
+
+### How it is checked
+
+`athenea_lod_tests "[athz]"`: ten cases, the seven before and three new -- a TX cloud with curvature read whole
+and streamed (0 words differ in transfer, open directions, curvature), the CPCA layer against the codec run on
+the source (0 words), layer K's rig bit for bit and its joints within a half's step (16 of 48 floats rounded,
+the fourth columns exact). The whole lod suite (27 cases) passes.
+
+### Not done
+
+- The streamed `.athz` (and `.athc`) path relighting TX clouds with their transfer and the other TX attributes.
+- A CPCA basis fitted per asset; the 8-bit weights the codec also has.
+- Layer K's rig at fewer bytes (joint indices shared by neighbours; the gradients); a sparrow file in version 4
+  (the one measured was written as version 3 with K's fields, before the version was raised).
+- The whole Corvette at 60/90 MB: no whole-car tree on the internal disk.

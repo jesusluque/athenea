@@ -2483,7 +2483,7 @@ de quien lo ejecuta: están en
 zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.athc`
 (el contenedor por chunks de este motor), `.athz` (lo mismo, codificado en páginas que decodifica una GPU).
 
-**`.athz`.** `ATHZ`, versión 3 (se leen las versiones 1 y 2). La capa G lleva la curvatura donde la nube la lleva; la capa T va sin pérdida o en CPCA (`--athz-transfer`); la capa K, el rig de una nube con esqueleto y sus articulaciones por fotograma. Una cabecera de 64 bytes con su propio CRC-32,
+**`.athz`.** `ATHZ`, versión 4 (se leen las versiones 1 a 3). La capa G lleva la curvatura donde la nube la lleva; la capa T va sin pérdida o en CPCA (`--athz-transfer`); la capa K, el rig de una nube con esqueleto y sus articulaciones por fotograma. Una cabecera de 64 bytes con su propio CRC-32,
 extensiones que se pueden saltar, la tabla de asset en 4096 (la codificación
 de cada plano de bytes y las frecuencias de las tablas rANS), una entrada de
 64 bytes por página (elementos, banda, nivel, página padre, caja en f16,

@@ -26,7 +26,7 @@ namespace athenea::lod {
 namespace {
 
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'Z'};
-constexpr uint16_t kVersion = 3;   ///< 2: a word's transform in its plane entries (1: none); 3: curvature, CPCA
+constexpr uint16_t kVersion = 4;   ///< 2: a word's transform in its plane entries (1: none); 3: curvature, CPCA; 4: layer K
 constexpr uint64_t kPage = 4096;
 constexpr uint32_t kHeaderBytes = 64;
 constexpr uint32_t kEntryBytes = 64;
@@ -134,7 +134,7 @@ Result<Header> decodeHeader(std::span<const std::byte> bytes, const std::filesys
     }
     const uint16_t version = getAt<uint16_t>(b + 4);
     if (version < 1 || version > kVersion) {
-        return bad(path, "version " + std::to_string(version) + ", this reads 1 to 3");
+        return bad(path, "version " + std::to_string(version) + ", this reads 1 to 4");
     }
     if (getAt<uint16_t>(b + 6) != kHeaderBytes || getAt<uint32_t>(b + 60) != crcOf(b, 60)) {
         return bad(path, "the header's CRC");
@@ -350,6 +350,8 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
         a.cpcaLevels = r.get<float>();
         a.basisOffset = r.get<uint64_t>();
         a.basisBytes = r.get<uint64_t>();
+    }
+    if (h.version >= 4) {
         f.influenceWords = r.get<uint32_t>();
         f.gradientWords = r.get<uint32_t>();
         a.joints = r.get<uint32_t>();
@@ -2027,6 +2029,7 @@ Result<uint64_t> prefixPages(const Parsed& p, const std::filesystem::path* outPa
     const uint64_t oldBasis = p.asset.basisOffset;
     const std::vector<uint8_t> assetTable = encodeAsset(a);
     Header h = p.header;
+    h.version = kVersion;   // the asset table is written again, in this version's layout
     h.pages = keep;
     h.assetBytes = static_cast<uint32_t>(assetTable.size());
     h.pageTableOffset = pageTable;

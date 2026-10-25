@@ -2409,7 +2409,7 @@ running it; they are listed in [development.md §3](development.md#3-working-in-
 or a bare `meta.json` (PlayCanvas, needs libwebp), `.athc` (this engine's
 chunked container), `.athz` (the same, coded in pages a GPU decodes).
 
-**`.athz`.** `ATHZ`, version 3 (versions 1 and 2 are read). Layer G carries the curvature where the cloud does; layer T is lossless or CPCA (`--athz-transfer`); layer K the rig of a skinned cloud and its joints a frame. A 64-byte header with its own CRC-32, skippable
+**`.athz`.** `ATHZ`, version 4 (versions 1 to 3 are read). Layer G carries the curvature where the cloud does; layer T is lossless or CPCA (`--athz-transfer`); layer K the rig of a skinned cloud and its joints a frame. A 64-byte header with its own CRC-32, skippable
 extensions, the asset table at 4096 (each byte plane's coding and the rANS
 tables' frequencies), a 64-byte entry a page (elements, band, level, parent
 page, f16 box, error, each layer's offset and bytes, CRC-32), then sections
