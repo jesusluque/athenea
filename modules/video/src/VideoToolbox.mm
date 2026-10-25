@@ -124,7 +124,8 @@ public:
         return std::unique_ptr<VideoEncoder>(std::move(e));
     }
 
-    Result<std::vector<EncodedUnit>> encode(std::span<const std::byte> luma, uint64_t index) override {
+    Result<std::vector<EncodedUnit>> encode(std::span<const std::byte> luma, std::span<const std::byte> chroma,
+                                            uint64_t index) override {
         const EncoderSettings& s = settings_;
         const size_t sample = s.bits > 8 ? 2 : 1;
         if (luma.size() != size_t{s.width} * s.height * sample) {
@@ -143,11 +144,22 @@ public:
         for (uint32_t r = 0; r < s.height; ++r) {
             std::memcpy(y + r * yStride, luma.data() + r * row, row);
         }
-        // Chroma at mid grey: no data rides there.
+        // The second plane as the planes laid it (4:2:0 given, so the
+        // encoder's own downsampling never decides), or mid grey.
         auto* uv = static_cast<uint8_t*>(CVPixelBufferGetBaseAddressOfPlane(pb, 1));
         const size_t uvStride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1);
         const size_t uvRows = CVPixelBufferGetHeightOfPlane(pb, 1);
-        if (sample == 1) {
+        if (!chroma.empty()) {
+            if (sample != 1 || chroma.size() != size_t{s.width} * (s.height / 2) || uvRows < s.height / 2) {
+                CVPixelBufferUnlockBaseAddress(pb, 0);
+                CVPixelBufferRelease(pb);
+                return Error::make(ErrorCode::InvalidArgument, "video: {} bytes of chroma for {} x {}", chroma.size(),
+                                   s.width, s.height);
+            }
+            for (uint32_t r = 0; r < s.height / 2; ++r) {
+                std::memcpy(uv + r * uvStride, chroma.data() + size_t{r} * s.width, s.width);
+            }
+        } else if (sample == 1) {
             std::memset(uv, 128, uvStride * uvRows);
         } else {
             auto* words = reinterpret_cast<uint16_t*>(uv);
@@ -427,7 +439,30 @@ public:
         // holds the pixel buffer. Both live as long as the texture is used.
         auto pixels = std::shared_ptr<const void>(CVPixelBufferRetain(f->buffer()),
                                                   [](const void* p) { CVPixelBufferRelease(static_cast<CVPixelBufferRef>(const_cast<void*>(p))); });
-        out.keep = std::shared_ptr<void>(cv, [pixels](void* p) { CFRelease(static_cast<CFTypeRef>(p)); });
+        // The second plane, (Cb, Cr) a 2 x 2 block, as RG8Unorm over the same
+        // memory: what a frame with its colour in chroma reads (8 bits).
+        CVMetalTextureRef cvChroma = nullptr;
+        if (!wide && CVPixelBufferGetPlaneCount(f->buffer()) > 1 &&
+            CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, cache_, f->buffer(), nullptr,
+                                                      MTLPixelFormatRG8Unorm, w / 2, h / 2, 1,
+                                                      &cvChroma) == kCVReturnSuccess &&
+            cvChroma != nullptr) {
+            id<MTLTexture> mtlChroma = CVMetalTextureGetTexture(cvChroma);
+            rhi::TextureDesc cd = desc;
+            cd.size = {static_cast<uint32_t>(w / 2), static_cast<uint32_t>(h / 2), 1};
+            cd.format = rhi::Format::RG8Unorm;
+            cd.label = "video.chroma";
+            rhi::NativeHandle ch;
+            ch.type = rhi::NativeHandleType::MTLTexture;
+            ch.value = reinterpret_cast<uint64_t>((__bridge void*)mtlChroma);
+            if (SLANG_FAILED(device_->rhi()->createTextureFromNativeHandle(ch, cd, out.chroma.writeRef()))) {
+                out.chroma = nullptr;
+            }
+        }
+        out.keep = std::shared_ptr<void>(cv, [pixels, cvChroma](void* p) {
+            CFRelease(static_cast<CFTypeRef>(p));
+            if (cvChroma != nullptr) CFRelease(cvChroma);
+        });
         if (++wrapped_ % 64 == 0) {
             CVMetalTextureCacheFlush(cache_, 0);
         }

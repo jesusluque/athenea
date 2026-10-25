@@ -49,12 +49,15 @@ struct Encoded {
 };
 
 Encoded encode(gpu::Device& device, video::PlanesCodec& codec, const scene::GpuSplats& cloud, uint32_t bits,
-               bool hiInVideo) {
+               bool hiInVideo, uint32_t positionBlock = 0, int positionHighBits = -1, bool chroma = false) {
     Encoded e;
     auto layout = video::PlaneLayout::make(cloud.count, bits, cloud.restPerColour, hiInVideo,
-                                           video::PlaneLayout::kBandSplats, 0);
+                                           video::PlaneLayout::kBandSplats, 0, 0, 0, 0, chroma);
     REQUIRE(layout);
     e.layout = *layout;
+    e.layout.positionBlock = positionBlock;
+    e.layout.positionHighBits = positionHighBits < 0 ? bits : static_cast<uint32_t>(positionHighBits);
+
     REQUIRE(codec.ranges(cloud, e.layout, cloud.count, e.ranges));
     REQUIRE(codec.order(cloud, cloud.count, e.ranges, e.order));
     auto planes = codec.encode(cloud, e.layout, e.order, 0, e.ranges);
@@ -66,17 +69,18 @@ Encoded encode(gpu::Device& device, video::PlanesCodec& codec, const scene::GpuS
 
 /// The mosaic decoded back from `luma` and measured against `cloud`.
 std::vector<video::AttributeError> roundTrip(gpu::Device& device, video::PlanesCodec& codec,
-                                             const scene::GpuSplats& cloud, Encoded& e, rhi::ITexture* luma) {
+                                             const scene::GpuSplats& cloud, Encoded& e, rhi::ITexture* luma,
+                                             rhi::ITexture* chroma = nullptr) {
     gpu::Buffer side = sidePage(device, e.planes);
     auto back = video::PlanesCodec::allocate(device, cloud.count, e.layout.restPerColour, "test.back");
     REQUIRE(back);
     {
         gpu::CommandBatch batch(device);
-        REQUIRE(codec.decode(batch, e.layout, luma, side.rhi(), 0, e.layout.rangeBytes(), 0, cloud.count, *back, 0,
-                             e.layout.restPerColour));
+        REQUIRE(codec.decode(batch, e.layout, luma, chroma, side.rhi(), 0, e.layout.rangeBytes(), 0, cloud.count,
+                             *back, 0, e.layout.restPerColour));
         REQUIRE(batch.submit(true));
     }
-    auto errors = codec.compare(e.layout, *back, cloud, e.order, 0, e.ranges);
+    auto errors = codec.compare(e.layout, *back, cloud, e.order, 0, e.ranges, side, e.layout.rangeBytes());
     REQUIRE(errors);
     return std::move(*errors);
 }
@@ -130,6 +134,97 @@ TEST_CASE("video planes give a cloud back within half a step, the position high 
     }
 }
 
+TEST_CASE("positions over their block's box: the high parts exact, fewer of them or none", "[video][gpu][planes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = *gpu->device;
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto codec = video::PlanesCodec::create(*gpu->library);
+    REQUIRE(codec);
+    test::CloudBuilder built = test::randomCloud(70000, 17, 0.004F, 0.3F);
+    auto cloud = loader->upload(built.raw, 3);
+    REQUIRE(cloud);
+    for (const uint32_t block : {256u, 4096u}) {
+        for (const int high : {8, 4, 0}) {
+            CAPTURE(block, high);
+            Encoded e = encode(device, *codec, *cloud, 8, false, block, high);
+            // Each chunk's side payload: its blocks' boxes, then its high parts.
+            const uint64_t boxes = uint64_t{video::PlaneLayout::kBandSplats / block} * 12;
+            REQUIRE(e.layout.highChunkBytes() == boxes + (high == 0 ? 0u : 3u * video::PlaneLayout::kBandSplats));
+            REQUIRE(e.planes.high.size() == 3u * e.layout.highChunkBytes());
+            gpu::TextureDesc desc;
+            desc.width = e.layout.width;
+            desc.height = e.layout.height;
+            desc.format = rhi::Format::R8Unorm;
+            desc.label = "test.luma";
+            auto luma = gpu::Texture::create(device, desc);
+            REQUIRE(luma);
+            REQUIRE(luma->upload(device, 0, 0, e.planes.luma));
+            const std::vector<video::AttributeError> errors = roundTrip(device, *codec, *cloud, e, luma->rhi());
+            for (size_t a = 0; a < errors.size(); ++a) {
+                CAPTURE(a, errors[a].maxSteps, errors[a].meanSteps);
+                CHECK(errors[a].far == 0);
+                if (a < 3 && high == 8) {
+                    // 16 bits over a block's box are finer than over the frame's.
+                    CHECK(errors[a].maxSteps <= 0.75);
+                } else if (a >= 3) {
+                    const bool rotation = a >= 7 && a < 11;
+                    CHECK(errors[a].maxSteps <= (rotation ? 2.5 : 0.75));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("colour in chroma: Y a plane, Co and Cg one a 2 x 2 block of four Morton neighbours",
+          "[video][gpu][planes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = *gpu->device;
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto codec = video::PlanesCodec::create(*gpu->library);
+    REQUIRE(codec);
+    test::CloudBuilder built = test::randomCloud(70000, 17, 0.004F, 0.3F);
+    auto cloud = loader->upload(built.raw, 3);
+    REQUIRE(cloud);
+    Encoded e = encode(device, *codec, *cloud, 8, false, 256, 8, true);
+    // 3 position, 8 opacity / scale / rotation, and a Y plane for the base
+    // colour and each of degree 1's three bases.
+    REQUIRE(e.layout.planes() == 15);
+    REQUIRE(e.planes.chroma.size() == e.layout.chromaBytes());
+    gpu::TextureDesc desc;
+    desc.width = e.layout.width;
+    desc.height = e.layout.height;
+    desc.format = rhi::Format::R8Unorm;
+    desc.label = "test.luma";
+    auto luma = gpu::Texture::create(device, desc);
+    REQUIRE(luma);
+    REQUIRE(luma->upload(device, 0, 0, e.planes.luma));
+    desc.width /= 2;
+    desc.height /= 2;
+    desc.format = rhi::Format::RG8Unorm;
+    desc.label = "test.chroma";
+    auto chroma = gpu::Texture::create(device, desc);
+    REQUIRE(chroma);
+    REQUIRE(chroma->upload(device, 0, 0, e.planes.chroma));
+    const std::vector<video::AttributeError> errors =
+        roundTrip(device, *codec, *cloud, e, luma->rhi(), chroma->rhi());
+    for (size_t a = 0; a < errors.size(); ++a) {
+        CAPTURE(a, errors[a].maxSteps, errors[a].meanSteps);
+        CHECK(errors[a].far == 0);
+        const bool rotation = a >= 7 && a < 11;
+        const bool colour = a >= 11;
+        if (a < 11) {
+            CHECK(errors[a].maxSteps <= (rotation ? 2.5 : 0.75));
+        } else if (colour && (a - 11) % 3 == 0) {
+            // Y back within half a step and the halves' rounding; Co and Cg
+            // are their block's mean, which a random cloud's neighbours do
+            // not share, so only their Y is bounded here.
+            CHECK(errors[a].maxSteps <= 1.5);
+        }
+    }
+}
+
 TEST_CASE("the hardware video codec keeps the position high parts exact", "[video][gpu][codec]") {
     ATHENEA_REQUIRE_GPU(gpu);
     gpu::Device& device = *gpu->device;
@@ -151,7 +246,7 @@ TEST_CASE("the hardware video codec keeps the position high parts exact", "[vide
         SKIP("no hardware video encoder here: " << encoder.error().message());
     }
     REQUIRE(encoder);
-    auto units = (*encoder)->encode(e.planes.luma, 0);
+    auto units = (*encoder)->encode(e.planes.luma, e.planes.chroma, 0);
     REQUIRE(units);
     REQUIRE(units->size() == 1);
     REQUIRE(units->front().keyframe);

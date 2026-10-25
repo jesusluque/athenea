@@ -31,7 +31,7 @@ import struct
 import sys
 import time
 
-HEADER_BYTES = 64
+HEADER_BYTES = 128
 # Every record's fixed prefix (Athv.h, AthvRecordPrefix).
 MAGIC_AT, TYPE_AT, RENDITION_AT, FRAME_AT, PTP_AT, BYTES_AT, VERSION_AT, FLAGS_AT = 0, 4, 6, 8, 12, 20, 24, 26
 PICTURE, MANIFEST = 0, 1
@@ -49,16 +49,20 @@ def parse_header(b):
     rate, = struct.unpack_from("<d", b, 40)
     num, den, frames = struct.unpack_from("<3I", b, 48)
     quality, = struct.unpack_from("<f", b, 60)
+    block, high_bits = struct.unpack_from("<2I", b, 64)
     return dict(version=version, codec=struct.pack("<I", codec).decode("latin-1"), bits=bits, restPerColour=rest,
                 chunkSplats=chunk, columns=columns, maxSplats=most, hiInVideo=bool(flags & 1),
-                antialiased=bool(flags & 2), rendition=rendition, rate=rate, rateNumerator=num, rateDenominator=den,
-                sourceFrames=frames, quality=round(quality, 4))
+                antialiased=bool(flags & 2), chroma=bool(flags & 4), rendition=rendition, rate=rate,
+                rateNumerator=num, rateDenominator=den,
+                sourceFrames=frames, quality=round(quality, 4), positionBlock=block, positionHighBits=high_bits)
 
 
 def layout(h):
     """The mosaic the header implies (Planes.cpp, PlaneLayout::make)."""
     attributes = 14 + 3 * h["restPerColour"]
-    planes = (6 if h["hiInVideo"] else 3) + attributes - 3
+    first = 6 if h["hiInVideo"] else 3
+    # With colour in chroma: 8 opacity / scale / rotation planes and a Y plane a colour quantity.
+    planes = first + (8 + 1 + h["restPerColour"] if h["chroma"] else attributes - 3)
     chunks = (h["maxSplats"] + h["chunkSplats"] - 1) // h["chunkSplats"]
     tile_height = chunks * (h["chunkSplats"] // 512)
     rows = (planes + h["columns"] - 1) // h["columns"]
@@ -128,6 +132,30 @@ class Bits:
         while self.u(1) == 0:
             zeros += 1
         return (1 << zeros) - 1 + self.u(zeros)
+
+    def se(self):
+        k = self.ue()
+        return (k + 1) // 2 if k & 1 else -(k // 2)
+
+
+def pps_facts(pps):
+    """The PPS's initial QP and its chroma QP offsets."""
+    r = Bits(rbsp_of(pps))
+    r.ue()
+    r.ue()
+    r.u(1)
+    r.u(1)
+    r.u(3)
+    r.u(1)
+    r.u(1)
+    r.ue()
+    r.ue()
+    init_qp = 26 + r.se()
+    r.u(1)
+    r.u(1)
+    if r.u(1):
+        r.ue()
+    return dict(initQp=init_qp, cbQpOffset=r.se(), crQpOffset=r.se())
 
 
 def rbsp_of(nal):
@@ -216,7 +244,8 @@ def describe(data):
     out = dict(id=h["rendition"], gaussians=int(gaussians), shDegree={0: 0, 3: 1, 8: 2, 15: 3}[h["restPerColour"]],
                quality=h["quality"], bits=h["bits"], restPerColour=h["restPerColour"], chunkSplats=h["chunkSplats"],
                columns=h["columns"], maxSplats=h["maxSplats"], hiInVideo=h["hiInVideo"],
-               antialiased=h["antialiased"], chromaPlanes=False, picturesPerFrame=first["slices"],
+               antialiased=h["antialiased"], positionBlock=h["positionBlock"],
+               positionHighBits=h["positionHighBits"], chromaPlanes=h["chroma"], picturesPerFrame=first["slices"],
                pictureWidth=lay["width"], pictureHeight=lay["height"], meanBytesPerFrame=round(total / frames),
                meanMbps=round(total / frames * 8 * h["rate"] / 1e6, 2), fullRange=True)
     if len(first["sets"]) == 3:
@@ -256,6 +285,8 @@ def info(path, hvcc_path):
         print("SPS: %dx%d, profile_idc %d, tier %d, level_idc %d, chroma_format_idc %d, %d-bit luma, %d-bit chroma"
               % (f["width"], f["height"], f["profile"], f["tier"], f["level"], f["chroma"], f["depthLuma"],
                  f["depthChroma"]))
+        q = pps_facts(r["sets"][2])
+        print("PPS: init_qp %d, cb_qp_offset %d, cr_qp_offset %d" % (q["initQp"], q["cbQpOffset"], q["crQpOffset"]))
         print("codec (hvcC description, length-prefixed units):", codec_string(f["ptl"], "hvc1"))
         print("codec (Annex B, parameter sets in band):", codec_string(f["ptl"], "hev1"))
         print("hvcC (%d bytes): %s" % (len(record), record.hex()))

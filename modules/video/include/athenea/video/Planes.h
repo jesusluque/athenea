@@ -58,16 +58,44 @@ struct PlaneLayout {
     uint32_t tileHeight = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    /// POSITIONS OVER BLOCKS: 0, every position over the frame's range;
+    /// else a power of two (64 .. chunkSplats), each run of that many splats
+    /// of the Morton order over its own box (six halves, rounded outward,
+    /// at the head of each chunk's side payload). A run of Morton order is a
+    /// small box, so the same bits say much more.
+    uint32_t positionBlock = 0;
+    /// The position's bits past `bits` (0 .. bits): the high part, exact,
+    /// beside the video (a byte an axis); 0 sends no high part at all. A
+    /// position is `bits + positionHighBits` bits. `bits` unless asked.
+    uint32_t positionHighBits = 8;
+    /// COLOUR IN CHROMA: each colour quantity (the base colour, each
+    /// harmonic basis) as YCoCg -- Y a luma plane of its own, Co and Cg the
+    /// Cb and Cr of that plane's tile, one a 2 x 2 block of four consecutive
+    /// splats (video_planes_common.slang). 8 bits only.
+    bool     chroma = false;
+    /// The encode's block chroma: 0 the plain mean of its splats, 1 weighed
+    /// by opacity x the area of their two largest axes.
+    uint32_t chromaWeight = 0;
 
     [[nodiscard]] uint32_t attributes() const noexcept { return kAttributesBeforeRest + 3 * restPerColour; }
-    [[nodiscard]] uint32_t planes() const noexcept { return (hiInVideo ? 6u : 3u) + attributes() - 3u; }
+    [[nodiscard]] uint32_t planes() const noexcept {
+        return (hiInVideo ? 6u : 3u) + (chroma ? 8u + 1u + restPerColour : attributes() - 3u);
+    }
+    /// The second plane's bytes (NV12: a (Cb, Cr) pair a 2 x 2 block): only
+    /// with `chroma`.
+    [[nodiscard]] uint64_t chromaBytes() const noexcept { return chroma ? uint64_t{width} * (height / 2) : 0; }
     [[nodiscard]] uint32_t chunks() const noexcept { return (splats + chunkSplats - 1) / chunkSplats; }
     [[nodiscard]] uint32_t sampleBytes() const noexcept { return bits > 8 ? 2u : 1u; }
     [[nodiscard]] uint64_t lumaBytes() const noexcept { return uint64_t{width} * height * sampleBytes(); }
-    /// The side payload of one chunk: three axes of `chunkSplats` high parts
-    /// (none when they are planes).
+    /// The side payload of one chunk: its blocks' boxes (six halves each,
+    /// with `positionBlock`), then three axes of `chunkSplats` high parts
+    /// (none when they are planes or `positionHighBits` is 0).
+    [[nodiscard]] uint64_t blockBytes() const noexcept {
+        return positionBlock == 0 ? 0 : uint64_t{chunkSplats / positionBlock} * 12;
+    }
     [[nodiscard]] uint64_t highChunkBytes() const noexcept {
-        return hiInVideo ? 0 : uint64_t{3} * chunkSplats * sampleBytes();
+        return blockBytes() +
+               (hiInVideo || positionHighBits == 0 ? 0 : uint64_t{3} * chunkSplats * sampleBytes());
     }
     [[nodiscard]] uint64_t rangeBytes() const noexcept { return uint64_t{attributes()} * 2 * sizeof(float); }
 
@@ -86,18 +114,20 @@ struct PlaneLayout {
     [[nodiscard]] static Result<PlaneLayout> make(uint32_t splats, uint32_t bits, uint32_t restPerColour,
                                                   bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
                                                   uint32_t tileSplats = 0, uint32_t mostWidth = 0,
-                                                  uint32_t mostHeight = 0);
+                                                  uint32_t mostHeight = 0, bool chroma = false);
     /// A frame too big for one picture goes as SLICES, each a picture of its
     /// own holding a run of the frame's Morton order: the most splats one
     /// takes (a multiple of `chunkSplats`), `splats` when the frame fits.
     [[nodiscard]] static Result<uint32_t> sliceSplats(uint32_t splats, uint32_t bits, uint32_t restPerColour,
                                                       bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
-                                                      uint32_t mostWidth = 0, uint32_t mostHeight = 0);
+                                                      uint32_t mostWidth = 0, uint32_t mostHeight = 0,
+                                                      bool chroma = false);
 };
 
 /// One frame, encoded: what the codec takes and what goes beside it.
 struct EncodedPlanes {
     std::vector<std::byte> luma;     ///< width x height samples, top row first
+    std::vector<std::byte> chroma;   ///< with `chroma`: NV12's second plane, (Cb, Cr) a 2 x 2 block; else empty
     std::vector<float>     ranges;   ///< attributes x 2
     std::vector<std::byte> high;     ///< chunks x highChunkBytes (empty when hiInVideo)
 };
@@ -137,17 +167,23 @@ public:
     /// bit), `page` the side data (ranges at `rangesOffset`, high parts at
     /// `highOffset`, both bytes on a 4-byte boundary). `keep` rest
     /// coefficients a colour are written, zero past the planes' own.
+    /// `chromaPlane`: the decoded frame's second plane (RG8Unorm), read with
+    /// `layout.chroma`; may be null otherwise.
     [[nodiscard]] Result<void> decode(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::ITexture* luma,
+                                      rhi::ITexture* chromaPlane,
                                       rhi::IBuffer* page, uint64_t rangesOffset, uint64_t highOffset, uint32_t first,
                                       uint32_t count, scene::GpuSplats& store, uint64_t at, uint32_t keep);
 
     /// A slice decoded from the planes (`decoded`, in Morton order from rank
     /// `first`) against its source through `order`, attribute by attribute.
+    /// `page` and `highOffset`: the slice's side data as the decode read
+    /// it, whose high parts (and blocks' boxes) the position check takes.
     [[nodiscard]] Result<std::vector<AttributeError>> compare(const PlaneLayout& layout,
                                                               const scene::GpuSplats& decoded,
                                                               const scene::GpuSplats& source,
                                                               const gpu::Buffer& order, uint32_t first,
-                                                              const gpu::Buffer& ranges);
+                                                              const gpu::Buffer& ranges, const gpu::Buffer& page,
+                                                              uint64_t highOffset);
 
     /// A store of `count` packed splats with `restPerColour` rest
     /// coefficients a colour (positions, shape, harmonics only).
@@ -156,11 +192,11 @@ public:
 
 private:
     gpu::Device*       device_ = nullptr;
-    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, decode_, compare_;
+    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, blocks_, chroma_, decode_, compare_;
     gpu::RadixSort     sort_;
     gpu::SortBuffers   sorting_;
     uint32_t           sortingFor_ = 0;
-    gpu::Buffer        partialBuffer_, mosaic_, highBuffer_, errors_;
+    gpu::Buffer        partialBuffer_, mosaic_, chromaMosaic_, highBuffer_, errors_;
 };
 
 }   // namespace athenea::video

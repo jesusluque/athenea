@@ -7,7 +7,8 @@
 //   header   "ATHV", version, the codec's FourCC, the plane layout (bits,
 //            rest coefficients, chunk size, columns, whether the position high
 //            parts are planes), the rate (and as a fraction), the source's
-//            antialiasing flag, the rendition, the source frames, the quality
+//            antialiasing flag, the rendition, the source frames, the quality,
+//            how positions are sent (blocks, high bits); 128 bytes
 //   picture  "ATVF", then at fixed offsets its type, rendition, frame and
 //            PTP time (what a relay routes by, without reading further), its
 //            index, the source frame it belongs to, its slice of that frame
@@ -48,6 +49,8 @@ struct AthvHeader {
     uint32_t maxSplats = 0;        ///< the most a picture holds: what its tiles are sized for
     bool     hiInVideo = false;
     bool     antialiased = false;
+    /// Colours as YCoCg with Co and Cg in chroma (Planes.h, PlaneLayout::chroma).
+    bool     chroma = false;
     double   rate = 30.0;
     /// The rate as a fraction (30/1, 30000/1001): what a segmenter takes.
     uint32_t rateNumerator = 30;
@@ -59,6 +62,12 @@ struct AthvHeader {
     uint32_t sourceFrames = 0;
     /// The encoder's constant quality (0: by bit rate).
     float    quality = 0.0F;
+    /// Positions over blocks of this many splats (0: the frame's range) and
+    /// their bits past `bits` (Planes.h, PlaneLayout).
+    uint32_t positionBlock = 0;
+    uint32_t positionHighBits = 8;
+    /// The header's bytes: 64 at version 1, 128 at version 2.
+    [[nodiscard]] uint64_t bytes() const noexcept { return version >= 2 ? 128 : 64; }
 };
 
 /// THE RECORD'S FIXED OFFSETS, the same for every message a stream carries

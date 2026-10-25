@@ -20,6 +20,9 @@ import athenea.common.packing;
 import video_planes_common;
 
 Texture2D<float>                  luma;
+// The decoded picture's second plane, (Cb, Cr) a 2 x 2 block (RG8Unorm):
+// with `chroma`, a colour Y tile's Co and Cg. Bound to anything when not.
+Texture2D<float2>                 chromaPlane;
 StructuredBuffer<uint>            page;
 RWStructuredBuffer<float4>        outPositions;
 RWStructuredBuffer<uint>          outShape;
@@ -36,21 +39,60 @@ float rangeOf(uint a, uint end) {
     return asfloat(page[(params.rangesOffset >> 2) + a * 2 + end]);
 }
 
-/// The high part of axis `axis` of frame splat `i`, from the side payload:
-/// chunk by chunk from the page's own, axis by axis, `chunkSplats` entries.
-uint highOf(uint axis, uint i) {
-    const uint chunk = i / params.chunkSplats - params.first / params.chunkSplats;
-    const uint e = (chunk * 3u + axis) * params.chunkSplats + i % params.chunkSplats;
+/// Where chunk `chunk` (of the page's own) starts in the side payload, in words.
+uint chunkWord(uint chunk) {
+    return (params.hiOffset >> 2) + chunk * (params.highChunkBytes / 4u);
+}
+
+/// The high part of axis `axis` of picture splat `i`, from the side payload:
+/// chunk by chunk from `chunk` (the page's own), after the chunk's boxes,
+/// axis by axis, `chunkSplats` entries.
+uint highAt(uint chunk, uint axis, uint i) {
+    if (params.positionHighBits == 0) {
+        return 0u;
+    }
+    const uint e = axis * params.chunkSplats + i % params.chunkSplats;
+    const uint base = chunkWord(chunk) + blockBytes(params) / 4u;
     if (params.bits > 8) {
-        const uint word = page[(params.hiOffset >> 2) + e / 2u];
+        const uint word = page[base + e / 2u];
         return (word >> ((e & 1u) * 16u)) & 0xFFFFu;
     }
-    const uint word = page[(params.hiOffset >> 2) + e / 4u];
+    const uint word = page[base + e / 4u];
     return (word >> ((e & 3u) * 8u)) & 0xFFu;
+}
+
+/// The range axis `axis` of picture splat `i` was quantised over.
+float2 positionRangeAt(uint chunk, uint axis, uint i) {
+    if (params.positionBlock == 0) {
+        return float2(rangeOf(axis, 0), rangeOf(axis, 1));
+    }
+    const uint word = page[chunkWord(chunk) + blockWordOf(params, i, axis)];
+    return float2(lowHalf(word), highHalf(word));
+}
+
+uint highOf(uint axis, uint i) {
+    return highAt(i / params.chunkSplats - params.first / params.chunkSplats, axis, i);
 }
 
 float attributeAt(uint a, uint i) {
     return dequantise(sampleAt(attributePlane(params, a), i), rangeOf(a, 0), rangeOf(a, 1), sampleLevels(params));
+}
+
+/// Colour quantity q (0 the base colour, 1 + b harmonic basis b) of splat
+/// `i` as RGB: three luma planes, or (`chroma`) its Y plane and that tile's
+/// Co and Cg at the splat's 2 x 2 block.
+float3 colourAt(uint q, uint i) {
+    const uint a = kFirstColour + 3u * q;
+    if (params.chroma == 0) {
+        return float3(attributeAt(a, i), attributeAt(a + 1u, i), attributeAt(a + 2u, i));
+    }
+    const uint2 xy = pixelOf(params, attributePlane(params, a), i);
+    const float2 c = chromaPlane.Load(int3(int2(xy / 2u), 0));
+    const uint cb = uint(round(c.x * 255.0)), cr = uint(round(c.y * 255.0));
+    const float3 ycocg = float3(attributeAt(a, i),
+                                dequantise(cb, rangeOf(a + 1u, 0), rangeOf(a + 1u, 1), sampleLevels(params)),
+                                dequantise(cr, rangeOf(a + 2u, 0), rangeOf(a + 2u, 1), sampleLevels(params)));
+    return rgbOfYcocg(ycocg);
 }
 
 [shader("compute")]
@@ -65,7 +107,8 @@ void videoPlanesDecode(uint3 tid: SV_DispatchThreadID) {
     for (uint axis = 0; axis < 3; ++axis) {
         const uint lo = sampleAt(lowPlane(params, axis), i);
         const uint hi = params.hiInVideo != 0 ? sampleAt(axis, i) : highOf(axis, i);
-        p[axis] = dequantise(joinPosition(params, hi, lo), rangeOf(axis, 0), rangeOf(axis, 1), positionLevels(params));
+        const float2 r = positionRangeAt(i / params.chunkSplats - params.first / params.chunkSplats, axis, i);
+        p[axis] = dequantise(joinPosition(params, hi, lo), r.x, r.y, positionLevels(params));
     }
     const float opacity = clamp(attributeAt(3, i), 0.0, 5.0);
     outPositions[j] = float4(p, opacity);
@@ -74,7 +117,7 @@ void videoPlanesDecode(uint3 tid: SV_DispatchThreadID) {
     float4 q = float4(attributeAt(7, i), attributeAt(8, i), attributeAt(9, i), attributeAt(10, i));
     const float qLength = length(q);
     q = qLength > 1e-8 ? q / qLength : float4(0, 0, 0, 1);
-    const float3 base = float3(attributeAt(11, i), attributeAt(12, i), attributeAt(13, i));
+    const float3 base = colourAt(0, i);
     const uint row = j * 4;
     outShape[row + 0] = encodeQuaternion(q);
     outShape[row + 1] = packHalves(halfSafe(ls.x), halfSafe(ls.y));
@@ -88,8 +131,12 @@ void videoPlanesDecode(uint3 tid: SV_DispatchThreadID) {
     uint word = 0;
     uint filled = 0;
     uint w = 0;
+    float3 basis = float3(0.0, 0.0, 0.0);
     for (uint k = 0; k < params.keep * 3u; ++k) {
-        const float v = k / 3u < params.restPerColour ? attributeAt(14 + k, i) : 0.0;
+        if (k % 3u == 0) {
+            basis = k / 3u < params.restPerColour ? colourAt(1u + k / 3u, i) : float3(0.0, 0.0, 0.0);
+        }
+        const float v = basis[k % 3u];
         word |= (f32tof16(halfSafe(v)) & 0xFFFFu) << (filled * 16u);
         filled += 1;
         if (filled == 2) {
@@ -127,21 +174,26 @@ void videoPlanesCompare(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float lo = frameRanges[a * 2], hi = frameRanges[a * 2 + 1];
-    const float levels = float(a < 3 ? positionLevels(params) : sampleLevels(params));
+    const float levels = float(a < 3 ? referenceLevels(params) : sampleLevels(params));
     const float step = hi > lo ? (hi - lo) / levels : 1.0;
     uint largest = 0, sum = 0, far = 0;
     const uint end = min(params.count, (run + 1) * kCompareRun);
     for (uint i = run * kCompareRun; i < end; ++i) {
-        const float d = attributeOf(decodedPositions, decodedShape, decodedSh, params.shWords, params.restPerColour, i, a);
+        const float d = attributeOf(decodedPositions, decodedShape, decodedSh, params.shWords, params.restPerColour,
+                                    i, a, params.chroma);
         const float s = attributeOf(sourcePositions, sourceShape, sourceSh, params.sourceShWords, params.sourceRest,
-                                    order[params.first + i], a);
+                                    order[params.first + i], a, params.chroma);
         const float steps = abs(d - s) / step;
         const uint sixteenths = uint(min(steps * 16.0, 4.0e9));
         largest = max(largest, sixteenths);
         sum += min(sixteenths, 1u << 20);
         if (a < 3) {
-            const uint qd = quantise(d, lo, hi, positionLevels(params));
-            const uint qs = quantise(s, lo, hi, positionLevels(params));
+            // Both quantised over the range the position was sent over (the
+            // block's box, read from the side payload as the decode read
+            // it): the decoded high part against the source's.
+            const float2 r = params.hiInVideo == 0 ? positionRangeAt(i / params.chunkSplats, a, i) : float2(lo, hi);
+            const uint qd = quantise(d, r.x, r.y, positionLevels(params));
+            const uint qs = quantise(s, r.x, r.y, positionLevels(params));
             far += (qd >> params.bits) != (qs >> params.bits) ? 1u : 0u;
         }
     }

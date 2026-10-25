@@ -95,8 +95,10 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
         if (!decoded) return std::move(decoded).error();
         decodeMs += msSince(t);
         auto layout = PlaneLayout::make(frame->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats, h.columns,
-                                        h.maxSplats);
+                                        h.maxSplats, 0, 0, h.chroma);
         if (!layout) return std::move(layout).error();
+        layout->positionBlock = h.positionBlock;
+        layout->positionHighBits = h.positionHighBits;
         if ((*decoded)->width() != layout->width || (*decoded)->height() != layout->height ||
             frame->ranges.size() != size_t{layout->attributes()} * 2 ||
             frame->high.size() != uint64_t{layout->chunks()} * layout->highChunkBytes() ||
@@ -200,8 +202,9 @@ Result<void> VideoStream::place(gpu::CommandBatch& batch, const lod::DevicePageH
         return Error::make(ErrorCode::InvalidArgument, "video: chunk {} of {} splats past its frame's {}",
                            page.chunk, page.count, held.layout.splats);
     }
-    ATHENEA_TRY(codec_->decode(batch, held.layout, held.luma.texture.get(), staging.rhi(), payloadOffset,
-                               payloadOffset + held.layout.rangeBytes(), page.first, page.count, store, at, keepRest));
+    ATHENEA_TRY(codec_->decode(batch, held.layout, held.luma.texture.get(), held.luma.chroma.get(), staging.rhi(),
+                               payloadOffset, payloadOffset + held.layout.rangeBytes(), page.first, page.count, store,
+                               at, keepRest));
     held.uses.emplace_back(pool, fence);
     held.pagesLeft = held.pagesLeft > 0 ? held.pagesLeft - 1 : 0;
     ++stats_.placed;

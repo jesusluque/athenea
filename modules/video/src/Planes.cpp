@@ -49,13 +49,18 @@ void setLayout(rhi::ShaderCursor p, const PlaneLayout& l) {
     p["chunkSplats"].setData(l.chunkSplats);
     p["sampleScale"].setData(uint32_t{l.bits > 8 ? 65535u : 255u});
     p["sampleShift"].setData(uint32_t{l.bits > 8 ? 16u - l.bits : 0u});
+    p["positionBlock"].setData(l.positionBlock);
+    p["positionHighBits"].setData(l.positionHighBits);
+    p["highChunkBytes"].setData(static_cast<uint32_t>(l.highChunkBytes()));
+    p["chroma"].setData(uint32_t{l.chroma ? 1u : 0u});
+    p["chromaWeight"].setData(l.chromaWeight);
 }
 
 }   // namespace
 
 Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                       uint32_t nChunk, uint32_t nColumns, uint32_t tileSplats, uint32_t mostWidth,
-                                      uint32_t mostHeight) {
+                                      uint32_t mostHeight, bool nChroma) {
     const uint64_t mostW = mostWidth != 0 ? std::min(mostWidth, kMostSide) : kMostSide;
     const uint64_t mostH = mostHeight != 0 ? std::min(mostHeight, kMostSide) : kMostSide;
     if (nBits != 8 && nBits != 10) {
@@ -77,6 +82,8 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
     l.restPerColour = nRest;
     l.hiInVideo = nHi;
     l.chunkSplats = nChunk;
+    l.positionHighBits = nBits;
+    l.chroma = nChroma;
     const uint32_t tileChunks = std::max(l.chunks(), (tileSplats + nChunk - 1) / nChunk);
     l.tileHeight = tileChunks * (nChunk / kTileWidth);
     const uint32_t planes = l.planes();
@@ -113,15 +120,15 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
 
 Result<uint32_t> PlaneLayout::sliceSplats(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                           uint32_t nChunk, uint32_t nColumns, uint32_t mostWidth,
-                                          uint32_t mostHeight) {
-    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight)) {
+                                          uint32_t mostHeight, bool nChroma) {
+    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma)) {
         return nSplats;
     }
     // Chunk counts, from the most that could fit down: bookkeeping on sizes.
     for (uint32_t chunks = (nSplats + nChunk - 1) / nChunk; chunks > 0; --chunks) {
         const uint64_t n = uint64_t{chunks} * nChunk;
         if (n < nSplats &&
-            make(static_cast<uint32_t>(n), nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight)) {
+            make(static_cast<uint32_t>(n), nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma)) {
             return static_cast<uint32_t>(n);
         }
     }
@@ -169,6 +176,8 @@ Result<PlanesCodec> PlanesCodec::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.morton_, enc, "videoPlanesMorton"));
     ATHENEA_TRY(make(c.encode_, enc, "videoPlanesEncode"));
     ATHENEA_TRY(make(c.high_, enc, "videoPlanesHigh"));
+    ATHENEA_TRY(make(c.blocks_, enc, "videoPlanesBlocks"));
+    ATHENEA_TRY(make(c.chroma_, enc, "videoPlanesChroma"));
     ATHENEA_TRY(make(c.decode_, dec, "videoPlanesDecode"));
     ATHENEA_TRY(make(c.compare_, dec, "videoPlanesCompare"));
     return c;
@@ -250,12 +259,23 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
     gpu::Device& device = *device_;
     const uint32_t perWord = layout.bits > 8 ? 2u : 4u;
     const uint64_t lumaWords = uint64_t{layout.width} * layout.height / perWord;
-    const uint64_t highEntries = uint64_t{layout.chunks()} * 3 * layout.chunkSplats;
+    const uint64_t sideBytes = uint64_t{layout.chunks()} * layout.highChunkBytes();
+    const uint64_t sideWords = sideBytes / 4;
+    // The high parts' entries (one a thread's word), when there are any.
+    const bool highs = !layout.hiInVideo && layout.positionHighBits != 0;
+    const uint64_t highEntries = highs ? uint64_t{layout.chunks()} * 3 * layout.chunkSplats : 0;
     const uint64_t highWords = (highEntries + perWord - 1) / perWord;
+    const uint32_t blocks =
+        layout.positionBlock == 0 ? 0 : layout.chunks() * (layout.chunkSplats / layout.positionBlock);
     ATHENEA_TRY(ensure(device, mosaic_, lumaWords * 4, 4, "video.mosaic"));
-    if (!layout.hiInVideo) {
-        ATHENEA_TRY(ensure(device, highBuffer_, highWords * 4, 4, "video.high"));
+    if (layout.chroma && layout.bits != 8) {
+        return Error(ErrorCode::InvalidArgument, "video planes: colour in chroma is 8 bits only");
     }
+    const uint64_t chromaWords = layout.chromaBytes() / 4;
+    if (chromaWords != 0) {
+        ATHENEA_TRY(ensure(device, chromaMosaic_, chromaWords * 4, 4, "video.chroma"));
+    }
+    ATHENEA_TRY(ensure(device, highBuffer_, std::max<uint64_t>(sideWords, 1) * 4, 4, "video.high"));
     {
         gpu::CommandBatch batch(device);
         const auto bind = [&](rhi::ShaderCursor cursor) {
@@ -264,40 +284,54 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
             cursor["sh"].setBinding(cloud.sh.rhi());
             cursor["order"].setBinding(order.rhi());
             cursor["ranges"].setBinding(ranges.rhi());
+            cursor["high"].setBinding(highBuffer_.rhi());
             rhi::ShaderCursor p = cursor["params"];
             setLayout(p, layout);
             p["first"].setData(first);
             p["sourceShWords"].setData(cloud.shWords);
             p["sourceRest"].setData(cloud.restPerColour);
         };
+        // The blocks' boxes first: the mosaic and the high parts are taken
+        // over them.
+        if (blocks != 0) {
+            blocks_.dispatch(batch, {blocks, 1, 1}, bind);
+        }
         encode_.dispatch(batch, {static_cast<uint32_t>(lumaWords), 1, 1}, [&](rhi::ShaderCursor cursor) {
             bind(cursor);
             cursor["mosaic"].setBinding(mosaic_.rhi());
         });
-        if (!layout.hiInVideo) {
-            high_.dispatch(batch, {static_cast<uint32_t>(highWords), 1, 1}, [&](rhi::ShaderCursor cursor) {
+        if (chromaWords != 0) {
+            chroma_.dispatch(batch, {static_cast<uint32_t>(chromaWords), 1, 1}, [&](rhi::ShaderCursor cursor) {
                 bind(cursor);
-                cursor["high"].setBinding(highBuffer_.rhi());
+                cursor["chromaMosaic"].setBinding(chromaMosaic_.rhi());
             });
+        }
+        if (highWords != 0) {
+            high_.dispatch(batch, {static_cast<uint32_t>(highWords), 1, 1}, bind);
         }
         ATHENEA_TRY(batch.submit(true));
     }
     EncodedPlanes out;
     out.luma.resize(layout.lumaBytes());
     ATHENEA_TRY(mosaic_.read(device, 0, out.luma.size(), out.luma.data()));
+    if (chromaWords != 0) {
+        out.chroma.resize(layout.chromaBytes());
+        ATHENEA_TRY(chromaMosaic_.read(device, 0, out.chroma.size(), out.chroma.data()));
+    }
     out.ranges.resize(size_t{layout.attributes()} * 2);
     ATHENEA_TRY(ranges.read(device, 0, out.ranges.size() * sizeof(float), out.ranges.data()));
-    if (!layout.hiInVideo) {
-        out.high.resize(highEntries * layout.sampleBytes());
+    if (sideBytes != 0) {
+        out.high.resize(sideBytes);
         ATHENEA_TRY(highBuffer_.read(device, 0, out.high.size(), out.high.data()));
     }
     return out;
 }
 
 Result<void> PlanesCodec::decode(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::ITexture* luma,
+                                 rhi::ITexture* chromaPlane,
                                  rhi::IBuffer* page, uint64_t rangesOffset, uint64_t highOffset, uint32_t first,
                                  uint32_t count, scene::GpuSplats& store, uint64_t at, uint32_t keep) {
-    if (luma == nullptr || page == nullptr || count == 0) {
+    if (luma == nullptr || page == nullptr || count == 0 || (layout.chroma && chromaPlane == nullptr)) {
         return Error(ErrorCode::InvalidArgument, "video planes: a decode with no frame, no side data or no splats");
     }
     if (rangesOffset % 4 != 0 || highOffset % 4 != 0 || first % layout.chunkSplats != 0 ||
@@ -308,6 +342,7 @@ Result<void> PlanesCodec::decode(gpu::CommandBatch& batch, const PlaneLayout& la
     keep = std::min(keep, store.restPerColour);
     decode_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["luma"].setBinding(luma);
+        cursor["chromaPlane"].setBinding(chromaPlane != nullptr ? chromaPlane : luma);
         cursor["page"].setBinding(page);
         cursor["outPositions"].setBinding(store.positions.rhi());
         cursor["outShape"].setBinding(store.shape.rhi());
@@ -328,7 +363,8 @@ Result<void> PlanesCodec::decode(gpu::CommandBatch& batch, const PlaneLayout& la
 
 Result<std::vector<AttributeError>> PlanesCodec::compare(const PlaneLayout& layout, const scene::GpuSplats& decoded,
                                                          const scene::GpuSplats& source, const gpu::Buffer& order,
-                                                         uint32_t first, const gpu::Buffer& ranges) {
+                                                         uint32_t first, const gpu::Buffer& ranges,
+                                                         const gpu::Buffer& page, uint64_t highOffset) {
     gpu::Device& device = *device_;
     const uint32_t a = layout.attributes();
     ATHENEA_TRY(ensure(device, errors_, uint64_t{a} * 16, 4, "video.errors"));
@@ -345,10 +381,12 @@ Result<std::vector<AttributeError>> PlanesCodec::compare(const PlaneLayout& layo
             cursor["sourceSh"].setBinding(source.sh.rhi());
             cursor["order"].setBinding(order.rhi());
             cursor["frameRanges"].setBinding(ranges.rhi());
+            cursor["page"].setBinding(page.rhi());
             cursor["errors"].setBinding(errors_.rhi());
             rhi::ShaderCursor p = cursor["params"];
             setLayout(p, layout);
             p["first"].setData(first);
+            p["hiOffset"].setData(static_cast<uint32_t>(highOffset));
             p["shWords"].setData(decoded.shWords);
             p["sourceShWords"].setData(source.shWords);
             p["sourceRest"].setData(source.restPerColour);

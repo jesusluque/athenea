@@ -212,8 +212,11 @@ void addVideo(CLI::App& app) {
         std::vector<std::string> inputs;
         std::string output, hevc, range, hi = "side", order = "frame", ranges = "group", maxPicture;
         uint32_t bits = 8, keyInterval = 0, columns = 0, shDegree = 3, rendition = 0, gaussians = 0;
+        uint32_t positionBlock = 0;
+        int      positionHighBits = -1;
         double quality = 0.5, megabits = 0.0, rate = 0.0;
-        bool check = false, intra = false;
+        bool check = false, intra = false, chroma = false;
+        std::string chromaWeight = "mean";
     };
     auto o = std::make_shared<Options>();
     auto* enc = app.add_subcommand("video-encode",
@@ -243,6 +246,16 @@ void addVideo(CLI::App& app) {
     enc->add_option("--gaussians", o->gaussians,
                     "about this many gaussians a frame: each frame merged by pairs where merging loses least "
                     "(the decimation's NanoGS merge), not dropped");
+    enc->add_option("--position-block", o->positionBlock,
+                    "positions over the box of each run of this many splats of the Morton order (64 .. 32768, a "
+                    "power of two; 0: over the frame's range)");
+    enc->add_option("--position-high-bits", o->positionHighBits,
+                    "a position's bits past --bits, sent exact beside the video (0 .. --bits; default --bits)");
+    enc->add_flag("--chroma", o->chroma,
+                  "colours as YCoCg: Y a luma plane, Co and Cg the chroma of its tile, one a 2 x 2 block of four "
+                  "Morton neighbours (8 bits)");
+    enc->add_option("--chroma-weight", o->chromaWeight, "a block's chroma: mean, or area (weighed by opacity x area)")
+        ->check(CLI::IsMember({"mean", "area"}));
     enc->add_option("--rendition", o->rendition, "the rendition's id, which every record carries (0..65535)")
         ->check(CLI::Range(0u, 65535u));
     enc->add_option("--max-picture", o->maxPicture,
@@ -258,6 +271,20 @@ void addVideo(CLI::App& app) {
             (std::sscanf(o->maxPicture.c_str(), "%ux%u", &mostWidth, &mostHeight) != 2 || mostWidth == 0 ||
              mostHeight == 0)) {
             cli::err("video-encode: --max-picture wants WIDTHxHEIGHT\n");
+            throw CLI::RuntimeError(kExitFailure);
+        }
+        const uint32_t highBits = o->positionHighBits < 0 ? o->bits : static_cast<uint32_t>(o->positionHighBits);
+        if (highBits > o->bits ||
+            (o->positionBlock != 0 &&
+             (o->positionBlock < 64 || o->positionBlock > video::PlaneLayout::kBandSplats ||
+              (o->positionBlock & (o->positionBlock - 1)) != 0)) ||
+            (o->hi == "video" && (o->positionBlock != 0 || highBits != o->bits))) {
+            cli::err("video-encode: --position-block is 0 or a power of two from 64 to %u, --position-high-bits at "
+                     "most --bits, and neither goes with --hi video\n", video::PlaneLayout::kBandSplats);
+            throw CLI::RuntimeError(kExitFailure);
+        }
+        if (o->chroma && o->bits != 8) {
+            cli::err("video-encode: --chroma is 8 bits only\n");
             throw CLI::RuntimeError(kExitFailure);
         }
         double rate = o->rate;
@@ -331,7 +358,7 @@ void addVideo(CLI::App& app) {
             const uint32_t rest = std::min(cloud->restPerColour, restAsked);
             auto cap = video::PlaneLayout::sliceSplats(cloud->count, o->bits, rest, o->hi == "video",
                                                        video::PlaneLayout::kBandSplats, o->columns, mostWidth,
-                                                       mostHeight);
+                                                       mostHeight, o->chroma);
             if (!cap) cli::fail(cap.error());
             sliceCap = *cap;
             if (mostWidth != 0) {
@@ -341,7 +368,7 @@ void addVideo(CLI::App& app) {
                 // extra picture.
                 auto most = video::PlaneLayout::sliceSplats(uint32_t{1} << 30, o->bits, rest, o->hi == "video",
                                                             video::PlaneLayout::kBandSplats, o->columns, mostWidth,
-                                                            mostHeight);
+                                                            mostHeight, o->chroma);
                 if (!most) cli::fail(most.error());
                 const uint32_t band = video::PlaneLayout::kBandSplats;
                 const uint64_t roomy = (uint64_t{cloud->count} * 21 / 20 + band - 1) / band * band;
@@ -349,9 +376,12 @@ void addVideo(CLI::App& app) {
             }
             auto made = video::PlaneLayout::make(sliceCap, o->bits, rest, o->hi == "video",
                                                  video::PlaneLayout::kBandSplats, o->columns, 0, mostWidth,
-                                                 mostHeight);
+                                                 mostHeight, o->chroma);
             if (!made) cli::fail(made.error());
             layout = *made;
+            layout.positionBlock = o->positionBlock;
+            layout.positionHighBits = highBits;
+            layout.chromaWeight = o->chromaWeight == "area" ? 1u : 0u;
             // A frame cut into slices: each picture holds other splats than
             // the one before it, so none is predicted from another.
             if (sliceCap < cloud->count) keyInterval = 1;
@@ -388,6 +418,9 @@ void addVideo(CLI::App& app) {
             }
             header.rendition = o->rendition;
             header.quality = o->megabits > 0.0 ? 0.0F : static_cast<float>(o->quality);
+            header.positionBlock = layout.positionBlock;
+            header.positionHighBits = layout.positionHighBits;
+            header.chroma = layout.chroma;
             auto w = video::AthvWriter::create(o->output, header);
             if (!w) cli::fail(w.error());
             writer = std::move(*w);
@@ -430,8 +463,12 @@ void addVideo(CLI::App& app) {
                 for (uint32_t at = 0; at < cloud.count; at += sliceCap) {
                     const uint32_t count = std::min(sliceCap, cloud.count - at);
                     auto sliced = video::PlaneLayout::make(count, layout.bits, layout.restPerColour, layout.hiInVideo,
-                                                           layout.chunkSplats, layout.columns, sliceCap);
+                                                           layout.chunkSplats, layout.columns, sliceCap, 0, 0,
+                                                           layout.chroma);
                     if (!sliced) cli::fail(sliced.error());
+                    sliced->positionBlock = layout.positionBlock;
+                    sliced->positionHighBits = layout.positionHighBits;
+                    sliced->chromaWeight = layout.chromaWeight;
                     if (sliced->width != layout.width || sliced->height != layout.height) {
                         cli::err("video-encode: frame %zu needs a %u x %u mosaic, not the stream's %u x %u\n", k,
                                  sliced->width, sliced->height, layout.width, layout.height);
@@ -442,7 +479,7 @@ void addVideo(CLI::App& app) {
                     if (!planes) cli::fail(planes.error());
                     layMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
                     t = Clock::now();
-                    auto units = encoder->encode(planes->luma, picture);
+                    auto units = encoder->encode(planes->luma, planes->chroma, picture);
                     if (!units) cli::fail(units.error());
                     encodeMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
                     if (units->size() != 1) {
@@ -491,15 +528,17 @@ void addVideo(CLI::App& app) {
                     if (!back) cli::fail(back.error());
                     {
                         gpu::CommandBatch batch(**device);
-                        if (auto r = codec->decode(batch, *sliced, luma->texture.get(), side->rhi(), 0,
-                                                   sliced->rangeBytes(), 0, count, *back, 0, layout.restPerColour);
+                        if (auto r = codec->decode(batch, *sliced, luma->texture.get(), luma->chroma.get(),
+                                                   side->rhi(), 0, sliced->rangeBytes(), 0, count, *back, 0,
+                                                   layout.restPerColour);
                             !r) {
                             cli::fail(r.error());
                         }
                         if (auto r = batch.submit(true); !r) cli::fail(r.error());
                     }
                     checkMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
-                    auto errors = codec->compare(*sliced, *back, cloud, order, at, ranges);
+                    auto errors = codec->compare(*sliced, *back, cloud, order, at, ranges, *side,
+                                                 sliced->rangeBytes());
                     if (!errors) cli::fail(errors.error());
                     if (worst.empty()) {
                         worst.resize(errors->size());
@@ -592,8 +631,10 @@ void addVideo(CLI::App& app) {
             if (!frame) cli::fail(frame.error());
             decodeMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
             auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
-                                                   h.columns, h.maxSplats);
+                                                   h.columns, h.maxSplats, 0, 0, h.chroma);
             if (!layout) cli::fail(layout.error());
+            layout->positionBlock = h.positionBlock;
+            layout->positionHighBits = h.positionHighBits;
             if (store.count < f->splats) {
                 auto s = video::PlanesCodec::allocate(**device, f->splats, h.restPerColour, "video.decoded");
                 if (!s) cli::fail(s.error());
@@ -605,8 +646,8 @@ void addVideo(CLI::App& app) {
             auto luma = (*textures)->wrap(**frame);
             if (!luma) cli::fail(luma.error());
             gpu::CommandBatch batch(**device);
-            if (auto r = codec->decode(batch, *layout, luma->texture.get(), side->rhi(), 0, layout->rangeBytes(), 0,
-                                       f->splats, store, 0, h.restPerColour);
+            if (auto r = codec->decode(batch, *layout, luma->texture.get(), luma->chroma.get(), side->rhi(), 0,
+                                       layout->rangeBytes(), 0, f->splats, store, 0, h.restPerColour);
                 !r) {
                 cli::fail(r.error());
             }

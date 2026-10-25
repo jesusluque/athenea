@@ -63,9 +63,12 @@ class VideoEncoder {
 public:
     virtual ~VideoEncoder() = default;
     /// Frame `index`: `luma` is width x height samples, top row first (bytes,
-    /// or 16-bit words with the 10 bits high as P010 holds them). Returns its
+    /// or 16-bit words with the 10 bits high as P010 holds them); `chroma`
+    /// the second plane as NV12 holds it ((Cb, Cr) byte pairs, width x
+    /// height / 2 bytes, 8 bits only), or empty for mid grey. Returns its
     /// unit: the encoder finishes each frame before it takes the next.
     [[nodiscard]] virtual Result<std::vector<EncodedUnit>> encode(std::span<const std::byte> luma,
+                                                                  std::span<const std::byte> chroma,
                                                                   uint64_t index) = 0;
     /// What is left, once every frame has been given.
     [[nodiscard]] virtual Result<std::vector<EncodedUnit>> finish() = 0;
@@ -102,6 +105,9 @@ public:
 /// reads alive.
 struct LumaTexture {
     rhi::ComPtr<rhi::ITexture> texture;
+    /// The second plane, (Cb, Cr) a 2 x 2 block, as RG8Unorm (8 bits only;
+    /// null at 10).
+    rhi::ComPtr<rhi::ITexture> chroma;
     std::shared_ptr<void>      keep;
 };
 

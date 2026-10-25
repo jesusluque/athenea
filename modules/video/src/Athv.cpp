@@ -12,7 +12,7 @@ namespace athenea::video {
 namespace {
 
 constexpr uint32_t kFrameMagic = 0x46565441;   // "ATVF"
-constexpr uint64_t kHeaderBytes = 64;
+constexpr uint64_t kHeaderBytes = 128;   // version 2; version 1's was 64
 constexpr uint32_t kMostParameterSets = 16;
 constexpr uint64_t kMostRecord = uint64_t{1} << 31;
 
@@ -170,13 +170,16 @@ Result<void> AthvWriter::writeHeader() {
     o.u32(header_.chunkSplats);
     o.u32(header_.columns);
     o.u32(header_.maxSplats);
-    o.u32((header_.hiInVideo ? 1u : 0u) | (header_.antialiased ? 2u : 0u));
+    o.u32((header_.hiInVideo ? 1u : 0u) | (header_.antialiased ? 2u : 0u) | (header_.chroma ? 4u : 0u));
     o.u32(header_.rendition);
     o.f64(header_.rate);
     o.u32(header_.rateNumerator);
     o.u32(header_.rateDenominator);
     o.u32(header_.sourceFrames);
     o.f32(header_.quality);
+    o.u32(header_.positionBlock);
+    o.u32(header_.positionHighBits);
+    o.bytes.resize(kHeaderBytes, 0);
     const auto end = file_.tellp();
     file_.seekp(0);
     file_.write(reinterpret_cast<const char*>(o.bytes.data()), static_cast<std::streamsize>(o.bytes.size()));
@@ -213,7 +216,9 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
     r->size_ = static_cast<uint64_t>(r->file_.tellg());
     r->file_.seekg(0);
     std::vector<uint8_t> h(kHeaderBytes);
-    if (r->size_ < kHeaderBytes || !r->file_.read(reinterpret_cast<char*>(h.data()), kHeaderBytes)) {
+    if (r->size_ < 64 ||
+        !r->file_.read(reinterpret_cast<char*>(h.data()),
+                       static_cast<std::streamsize>(std::min(kHeaderBytes, r->size_)))) {
         return Error::make(ErrorCode::InvalidArgument, "athv: {} is shorter than a header", r->name_);
     }
     In in{h.data(), h.size()};
@@ -235,14 +240,19 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
     hd.rate = in.f64();
     hd.hiInVideo = (flags & 1u) != 0;
     hd.antialiased = (flags & 2u) != 0;
+    hd.chroma = (flags & 4u) != 0;
     if (version >= 2) {
         hd.rateNumerator = in.u32();
         hd.rateDenominator = in.u32();
         hd.sourceFrames = in.u32();
         hd.quality = in.f32();
+        hd.positionBlock = in.u32();
+        hd.positionHighBits = in.u32();
+    } else {
+        hd.positionHighBits = hd.bits;
     }
     // The records, walked by their lengths.
-    for (uint64_t at = kHeaderBytes; at < r->size_;) {
+    for (uint64_t at = hd.bytes(); at < r->size_;) {
         // Version 2: the fixed prefix, index, source, slice, slices, first
         // splat, splats, source splats, time code. Version 1: magic, bytes,
         // index, splats, flags, source, first splat, source splats, PTP time,
