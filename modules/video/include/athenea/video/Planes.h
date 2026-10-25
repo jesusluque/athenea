@@ -85,7 +85,7 @@ struct PlaneLayout {
     static constexpr uint32_t kGeometryPlanes = 16;
     uint32_t geometryPositionBits = 16;   ///< 10-16 a position axis
     uint32_t geometryScaleBits = 10;      ///< 6-10 a log scale
-    uint32_t geometryRotationBits = 10;   ///< 8-10 a rotation component (the store's word keeps 10)
+    uint32_t geometryRotationBits = 10;   ///< 7-10 a rotation component (the store's word keeps 10)
     [[nodiscard]] uint64_t geometryChunkBytes() const noexcept {
         return geometry ? uint64_t{kGeometryPlanes} * chunkSplats : 0;
     }

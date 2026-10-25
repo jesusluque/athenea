@@ -29,7 +29,7 @@ struct GeometryParams {
     uint scaleBits;     // 6-10
     uint order;         // the prediction: 1 the frame before, 2 its motion carried on
     uint state2At;      // decode: the word where the frame before's state starts in `state` (its second half)
-    uint rotationBits;  // 8-10: a rotation component's bits (the word keeps 10, the low ones zero)
+    uint rotationBits;  // 7-10: a rotation component's bits (the word keeps 10, the low ones zero)
     uint pad1;
     uint pad2;
 };

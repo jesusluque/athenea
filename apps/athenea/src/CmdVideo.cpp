@@ -653,7 +653,7 @@ void addVideo(CLI::App& app) {
         ->check(CLI::Range(6u, 10u));
     enc->add_option("--geometry-rotation-bits", o->geometryRotationBits,
                     "with --geometry: bits a rotation component (of the store's smallest three)")
-        ->check(CLI::Range(8u, 10u));
+        ->check(CLI::Range(7u, 10u));
     enc->add_option("--geometry-predict", o->geometryPredict,
                     "with --geometry-key: what a frame between keys is a residual from -- 1 the frame before, 2 the "
                     "frame before's motion carried on (2 b - c)")
