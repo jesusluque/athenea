@@ -165,20 +165,41 @@ TEST_CASE("qa: a PLY of any mix of types decodes as the same values in float32",
             continue;
         }
         REQUIRE(ca->count == cb->count);
+        // Positions and shape (opacity, scale, rotation, DC) word for word;
+        // the harmonics' words only where the cloud has harmonics past DC.
         uint64_t diff = 0;
+        uint64_t parts[3] = {};
+        int part = 0;
         for (const auto& [x, y, words] :
              {std::tuple{&ca->positions, &cb->positions, ca->count * 4}, std::tuple{&ca->shape, &cb->shape, ca->count * 4},
-              std::tuple{&ca->sh, &cb->sh, ca->count * ca->shWords}}) {
-            auto d = render::countDifferent(*gpu->library, *x, *y, words);
-            REQUIRE(d);
-            diff += *d;
+              std::tuple{&ca->sh, &cb->sh, ca->restPerColour > 0 ? ca->count * ca->shWords : 0u}}) {
+            if (words > 0) {
+                auto d = render::countDifferent(*gpu->library, *x, *y, words);
+                REQUIRE(d);
+                parts[part] = *d;
+                diff += *d;
+            }
+            ++part;
+        }
+        if (round == 0) {
+            // The control: the float file uploaded again against itself.
+            auto again = loader->upload(*b, 3);
+            REQUIRE(again);
+            auto p = render::countDifferent(*gpu->library, cb->positions, again->positions, cb->count * 4);
+            auto q = render::countDifferent(*gpu->library, cb->shape, again->shape, cb->count * 4);
+            REQUIRE(p);
+            REQUIRE(q);
+            std::printf("  control, float32 against itself: positions %llu, shape %llu words differ; restPerColour %u\n",
+                        static_cast<unsigned long long>(*p), static_cast<unsigned long long>(*q), cb->restPerColour);
         }
         if (diff != 0) {
             ++differing;
             std::string said;
             for (uint32_t p = 0; p < 14; ++p) said += std::string(kNames[p]) + ":" + kTypes[types[p]].name + " ";
-            std::printf("  round %d (%u unused): %llu words differ; %s\n", round, extra,
-                        static_cast<unsigned long long>(diff), said.c_str());
+            std::printf("  round %d (%u unused): %llu words differ (positions %llu, shape %llu, sh %llu); %s\n", round,
+                        extra, static_cast<unsigned long long>(diff), static_cast<unsigned long long>(parts[0]),
+                        static_cast<unsigned long long>(parts[1]), static_cast<unsigned long long>(parts[2]),
+                        said.c_str());
         }
     }
     std::printf("  24 mixed-type PLYs against float32: %d differ, %d not read\n", differing, failed);
