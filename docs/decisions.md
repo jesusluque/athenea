@@ -14151,6 +14151,22 @@ where groups of one side's splats meet (`car/lod_*_thresholds_classed.png`).
 Which threshold the car plays at is for the path trace to say, per material;
 that reference is blocked (above).
 
+### A merge tree read as its leaves
+
+The Corvette v8.2b master (`car5120`, 25 panels) is kept as merge trees
+(`athenea decimate --tree --tree-pages`): each panel's leaves and every merge
+over them, in page order, `lodTree` set. Drawn or repacked whole, the merges
+would stand over their leaves. `usd::uploadParticleField` (and so `athenea
+convert x.usdc y.athc`) keeps a tree's leaves alone: the gaussians whose
+`lodSize` is 1, marked and compacted on the device (`usd/tree_leaves.slang`,
+a prefix sum and a gather of every buffer the cloud carries), the CPU reading
+the count. Checked by `athenea_usd_tests "[tree]"`: six leaves and two merges
+written far from them give six gaussians, none far, their transfer kept. The
+bonnet's panel (`car_pan5120_5a.usdc`, 6 267 263 gaussians): 3 133 783 leaves,
+the count its tree's log gives, into a 1.09 GB `.athc` in 434 s, 1.9 GB of
+memory at most. The whole master is about 69 M leaves, some 23 GB on the
+device at a TX gaussian's 330 bytes: more than this Mac's GPU holds at once.
+
 ## The sun is the texels that are it
 
 env_sun found a dome's sun on a grid of 1.8 degree cells, measured its

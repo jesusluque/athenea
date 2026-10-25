@@ -217,8 +217,12 @@ struct DeviceSplatRecords {
 /// Cryptomatte ids, the lamps' layers -- as a frame draws it: the first
 /// UsdVolParticleField3DGaussianSplat of the stage at `path`, or `prim`. Read
 /// at the default time, its own space (no transform applied). Refused for a
-/// cloud a skeleton carries, which levels of detail cannot merge.
-[[nodiscard]] Result<scene::GpuSplats> uploadParticleField(scene::CloudLoader& loader,
+/// cloud a skeleton carries, which levels of detail cannot merge. A merge
+/// tree (`lodTree`, athenea decimate --tree) gives its leaves alone -- the
+/// gaussians whose `lodSize` is one, compacted on the device -- the cloud it
+/// was built from.
+[[nodiscard]] Result<scene::GpuSplats> uploadParticleField(gpu::ShaderLibrary& library,
+                                                           scene::CloudLoader& loader,
                                                            const std::filesystem::path& path,
                                                            const std::string& prim = {});
 

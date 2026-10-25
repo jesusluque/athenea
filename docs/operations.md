@@ -223,7 +223,10 @@ material and layers, its transfer and open directions, its curvature (packed,
 bit 6), its shading normals, emission and Cryptomatte ids -- in its own space,
 at the default time. Nothing is converted again: it is the same cloud with its
 levels of detail. One a skeleton carries is refused. What stays on the prim
-(`relight`, `ior`) is authored on the prim that names the asset.
+(`relight`, `ior`) is authored on the prim that names the asset. A merge tree
+(`primvars:athenea:splat:lodTree`, `athenea decimate --tree`) gives its leaves
+alone -- the gaussians whose `lodSize` is 1, compacted on the device -- the
+cloud the tree was built from; its merges would be drawn over them.
 
 A stage written here says `metersPerUnit = 1`: none of the input formats
 records a unit, and a capture's scale is taken to be metres. A cloud in

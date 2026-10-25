@@ -227,7 +227,10 @@ bit 6), sus normales de sombreado, su emisión y sus ids de Cryptomatte -- en su
 propio espacio, en el tiempo por defecto. No se convierte nada otra vez: es la
 misma nube con sus niveles de detalle. Uno que lleva un esqueleto se rechaza.
 Lo que queda en el prim (`relight`, `ior`) se escribe en el prim que nombra el
-asset.
+asset. Un árbol de fusiones (`primvars:athenea:splat:lodTree`, `athenea
+decimate --tree`) da solo sus hojas -- las gaussianas cuyo `lodSize` es 1,
+compactadas en el dispositivo --, la nube de la que se construyó el árbol; sus
+fusiones se dibujarían encima de ellas.
 
 Una escena escrita aquí dice `metersPerUnit = 1`: ninguno de los formatos de
 entrada registra una unidad, y la escala de una captura se toma como metros.

@@ -32,6 +32,7 @@
 #include <pxr/base/vt/array.h>
 #include <pxr/base/vt/types.h>
 
+#include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/core/Hash.h"
 #include "athenea/core/Log.h"
 #include "athenea/gpu/Buffer.h"
@@ -711,8 +712,97 @@ Result<void> writeVisibility(const std::filesystem::path& path, const std::strin
     return ok();
 }
 
-Result<scene::GpuSplats> uploadParticleField(scene::CloudLoader& loader, const std::filesystem::path& path,
-                                             const std::string& prim) {
+namespace {
+
+/// A tree's leaves kept, in place: every buffer the cloud carries a gaussian
+/// at a time compacted to the gaussians whose `lodSize` is one
+/// (usd/tree_leaves.slang), on the device; the CPU reads the count.
+Result<void> keepTreeLeaves(gpu::ShaderLibrary& library, scene::CloudLoader& loader, const VtIntArray& sizes,
+                            scene::GpuSplats& splats) {
+    gpu::Device& device = library.device();
+    auto byRecord = gpu::Buffer::fromSpan<int>(device, std::span<const int>(sizes.cdata(), sizes.size()),
+                                               "tree.lodSize");
+    if (!byRecord) return std::move(byRecord).error();
+    auto lodSize = loader.keptOnly(splats, *byRecord, 1, "tree.lodSize.kept");
+    if (!lodSize) return std::move(lodSize).error();
+    const uint32_t n = splats.count;
+    const auto make = [&](const char* entry) -> Result<gpu::ComputeKernel> {
+        return gpu::ComputeKernel::create(library, "athenea/usd/tree_leaves", entry);
+    };
+    auto leaves = make("treeLeaves");
+    if (!leaves) return std::move(leaves).error();
+    auto gather = make("treeGather");
+    if (!gather) return std::move(gather).error();
+    auto prefix = gpu::PrefixSum::create(library);
+    if (!prefix) return std::move(prefix).error();
+    const auto words = [&](uint64_t count, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(count, 1) * 4;
+        desc.elementBytes = 4;
+        desc.label = label;
+        return gpu::Buffer::create(device, desc);
+    };
+    auto selected = words(n, "tree.selected");
+    auto dest = words(n, "tree.dest");
+    auto total = words(1, "tree.total");
+    if (!selected) return std::move(selected).error();
+    if (!dest) return std::move(dest).error();
+    if (!total) return std::move(total).error();
+    {
+        gpu::CommandBatch batch(device);
+        leaves->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["lodSize"].setBinding(lodSize->rhi());
+            c["selected"].setBinding(selected->rhi());
+            for (const char* unused : {"dest", "source", "target"}) {
+                c[unused].setBinding(dest->rhi());
+            }
+            c["params"]["count"].setData(n);
+        });
+        ATHENEA_TRY(prefix->apply(batch, *selected, *dest, *total, n));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    uint32_t kept = 0;
+    ATHENEA_TRY(total->read(device, 0, sizeof kept, &kept));
+    if (kept == 0) {
+        return Error::make(ErrorCode::InvalidArgument, "{}: a merge tree with no leaf", splats.source);
+    }
+    // Every buffer a gaussian at a time, with its words a gaussian.
+    std::vector<std::pair<gpu::Buffer*, uint32_t>> members = {
+        {&splats.positions, 4}, {&splats.shape, 4}, {&splats.sh, splats.shWords},
+        {&splats.pbr, 1}, {&splats.crypto, 1}, {&splats.transfer, splats.transferWords},
+        {&splats.shadowBits, splats.shadowWords}, {&splats.origin, 1}, {&splats.normals, 1},
+        {&splats.curvature, splats.curvaturePacked ? 1u : 3u}, {&splats.emission, 1}, {&splats.lobes, 3},
+        {&splats.lightLayers, splats.lightLayerCount}};
+    gpu::CommandBatch batch(device);
+    for (auto& [member, perGaussian] : members) {
+        if (!member->valid() || perGaussian == 0 || member->bytes() < uint64_t{n} * perGaussian * 4) {
+            continue;
+        }
+        auto into = words(uint64_t{kept} * perGaussian, "tree.leaves");
+        if (!into) return std::move(into).error();
+        gather->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["lodSize"].setBinding(lodSize->rhi());
+            c["selected"].setBinding(selected->rhi());
+            c["dest"].setBinding(dest->rhi());
+            c["source"].setBinding(member->rhi());
+            c["target"].setBinding(into->rhi());
+            c["params"]["count"].setData(n);
+            c["params"]["words"].setData(perGaussian);
+        });
+        *member = std::move(*into);
+    }
+    batch.markDirty();
+    ATHENEA_TRY(batch.submit(true));
+    splats.count = kept;
+    ++splats.revision;
+    log::info("{}: a merge tree, {} leaves kept of {} gaussians", splats.source, kept, n);
+    return ok();
+}
+
+}   // namespace
+
+Result<scene::GpuSplats> uploadParticleField(gpu::ShaderLibrary& library, scene::CloudLoader& loader,
+                                             const std::filesystem::path& path, const std::string& prim) {
     UsdStageRefPtr stage = UsdStage::Open(path.string());
     if (!stage) {
         return Error::make(ErrorCode::IoFailure, "cannot open '{}'", path.string());
@@ -807,6 +897,18 @@ Result<scene::GpuSplats> uploadParticleField(scene::CloudLoader& loader, const s
     if (!splats) return std::move(splats).error();
     if (!streams.lightLayers.empty()) {
         ATHENEA_TRY(loader.uploadLightLayers(*splats, streams.lightLayers));
+    }
+    // A MERGE TREE (`lodTree`, athenea decimate --tree): its leaves alone,
+    // the cloud the tree was built from. Its merges stand for runs of them
+    // and would be drawn over them.
+    const VtValue tree = splat("lodTree");
+    if (tree.IsHolding<bool>() && tree.UncheckedGet<bool>()) {
+        const VtValue sizes = splat("lodSize");
+        if (!sizes.IsHolding<VtIntArray>() || sizes.UncheckedGet<VtIntArray>().size() != streams.count) {
+            return Error::make(ErrorCode::InvalidArgument, "{}: a merge tree without one lodSize a gaussian",
+                               field.GetPath().GetString());
+        }
+        ATHENEA_TRY(keepTreeLeaves(library, loader, sizes.UncheckedGet<VtIntArray>(), *splats));
     }
     return splats;
 }

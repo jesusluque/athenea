@@ -69,7 +69,7 @@ void addConvert(CLI::App& app) {
             // material, transfer, open directions, curvature (packed, bit 6).
             const std::string ext = std::filesystem::path(o->input).extension().string();
             const bool fromUsd = ext == ".usd" || ext == ".usda" || ext == ".usdc";
-            auto splats = fromUsd ? usd::uploadParticleField(*loader, o->input, o->prim)
+            auto splats = fromUsd ? usd::uploadParticleField(library, *loader, o->input, o->prim)
                                   : scene::loadSplatFile(*loader, o->input, o->degree);
             if (splats) {
                 if (auto packed = scene::packCurvature(library, *splats); !packed) {
