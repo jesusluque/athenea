@@ -16211,3 +16211,74 @@ slices and Annex B included.
   a picture and `videoPlanesDecode` writes the chunk straight into the store.
 - **`athenea stream STAGE VIDEO.athv`** plays it, lockstep or by the clock, with `--reference` and `-o` as for
   pages, and prints the decoder's ms a frame and the pages placed.
+
+### Measured (Metal, M5 Pro; jobs at background priority under the guard)
+
+**The sparrow**: the 61 flattened SPZ frames of the live-stream work (`sparrow-live/work/pages`, 300847 splats a
+frame, degree 3), 59 planes in a 4608 x 4480 mosaic, a key picture a second, Morton order a frame, group ranges,
+high parts beside. Drawn through `sparrow_live.usda` at 1024 x 1024 in lockstep: against the SPZ pages drawn the
+same way (the codec's own loss; every frame at quality 0.5, frames 1, 11, .. 61 otherwise) and against the
+skinned source (`--reference`, the whole path, as the pages were measured). Decode and kernel ms are
+`video-decode`'s medians a picture (the kernel submitted and waited for).
+
+| frames as | MB a frame (video + side) | Mbit/s at 24 / 30 | HW decode ms | planes -> gaussians ms | vs SPZ: p99 / max / relMSE / PSNR | vs skinned: p99 / max / over2 |
+|---|---:|---:|---:|---:|---|---|
+| SPZ pages (v4) | 9.56 | 1835 / 2294 | -- | -- | -- | 15 / 51 / 2.44 % |
+| quality 0.3 | 0.81 (0.60 + 0.21) | 155 / 193 | 8.9 | 2.5 | 12 / 102 / 4.3e-4 / 42.1 dB | 20 / 106 / 2.78 % |
+| **quality 0.5** | **1.89 (1.68 + 0.21)** | **362 / 453** | **15.8** | **2.3** | **7 / 93 / 1.6e-4 / 46.8 dB** | **17 / 109 / 2.65 %** |
+| quality 0.7 | 6.10 (5.89 + 0.21) | 1172 / 1465 | 45.1 | 2.7 | 2 / 96 / 5.0e-5 / 52.0 dB | 16 / 114 / 2.53 % |
+| 10 bit, quality 0.5 | 3.76 (3.10 + 0.66) | 723 / 903 | 28.2 | 2.5 | 4 / 33 / 4.4e-5 / 52.9 dB | 16 / 56 / 2.57 % |
+| quality 0.5, high parts in the video | 1.68 | 323 / 404 | 16.6 | 2.7 | 23 / 137 / 2.7e-3 / 35.8 dB | 29 / 138 / 2.99 % |
+
+athz layer K carries the same bird in 107.6 MB in all, 1.76 MB a frame over these 61 -- but as a rest cloud and a
+rig sent once and 15 KB of joints a frame, which a capture (no rig) does not have; per frame of non-rigged
+content the video's 0.8-1.9 MB is the comparable figure, SPZ's 9.56 the baseline.
+
+- **The protected byte.** With the high parts beside the video every position high part came back exact in every
+  setting and frame (`--check`: 0 of 55 M splat axes). Through the codec as planes, 45.0 M of 55.1 M (82 %) were
+  wrong at quality 0.5: the mean sample error is ~9 steps there, so a high part cannot ride in a lossy
+  plane. Positions' low parts: mean 9.4, max 70 steps of the 16-bit
+  position at 0.5; the other attributes mean 7-10, max 90-140 steps of 8 bits (3 / 2 / 0.6 at 0.7 / 0.9).
+- **What the order and the ranges are worth** (quality 0.5, MB a frame): the first frame's Morton order kept
+  for every frame 2.52 (its high parts deflate to 0.53, the bird having moved), a Morton order a frame 1.89
+  (0.21); each frame's own ranges instead of the group's 2.69 with the kept order; every picture a key frame
+  2.88. A predicted picture is only ~11 % smaller than a key one (1.67 against 1.88 MB): the planes of a moving,
+  relit bird change everywhere, and the per-frame sort moves splats between pixels.
+- **The live path.** Lockstep: an epoch shown 62 ms after it was pushed (median; SPZ pages 60 ms). By the clock,
+  three loops (183 epochs), the decoder on the frame thread (`--frame-producer`): at 30 a second 52 shown at
+  quality 0.5 (frames 56 ms) and 92 at 0.3 (31 ms), against 171 for the SPZ pages, whose decompression is on the
+  pool's loader threads; at 24, 91 / 121 / 181. With a producer thread of its own, decoding off the frame thread:
+  99 shown at 30 and 100 at 24 for the video, 39 and 43 for the pages (the guard's background priority wakes a
+  sleeping producer late, as the live-stream runs found). The hardware decode is the price: 16 ms a picture of
+  20.6 Mpx at quality 0.5, growing with the bit rate.
+
+**The pawn** (`example-pawn/pawn_gs.usda` flattened under its workshop sky into SPZ pages, 1 615 489 splats):
+one frame in two slices of 7680 x 8704, every picture a key frame, drawn through `pawn_live.usda` (the same
+pages through the same live stage as the reference) at 1024 x 1024:
+
+| as | MB | HW decode ms a picture | kernel ms a picture | vs SPZ: p99 / max / relMSE / PSNR |
+|---|---:|---:|---:|---|
+| SPZ pages | 26.96 | -- | -- | -- |
+| quality 0.5 | 6.58 | 145 | 13.7 | 6 / 65 / 1.7e-4 / 48.3 dB |
+| quality 0.7 | 13.74 | 172 | 17.2 | 3 / 20 / 2.4e-5 / 56.6 dB |
+| quality 0.9 | 29.23 | 250 | 15.9 | 1 / 7 / 3.6e-6 / 65.2 dB |
+| 10 bit, quality 0.7 | 22.74 | 182 | 18.0 | 1 / 12 / 6.6e-6 / 62.5 dB |
+
+The pawn's `.athz` with CPCA is 48.7 MB, but that is the TX cloud -- merged levels and the transfer that relights
+it; the video carries the flattened, unrelightable cloud, so the comparable figure is SPZ's 26.96 MB.
+
+Side-by-side frames (SPZ | video | difference x 8), full frames: `athenea-renders/video-planes/`
+`sparrow_<setting>_epoch{1,31}_spz_video_diff.png`, `pawn_<setting>_spz_video_diff.png`.
+
+### Not done
+
+- **NVDEC and WebCodecs.** `createHardwareDecoder` / `createLumaTextures` answer `Unsupported` off Apple; the
+  planes, the container and the live path do not change for them. The CUDA box is where NVDEC is measured.
+- **4:4:4.** Not used: VideoToolbox gave 4:2:0 for the AYUV input tried; luma only is the portable route.
+- **A network transport** (SRT: the `.athv` record is already a self-contained unit with its PTP time).
+- **Decoding off the frame thread without a producer thread** (a decoder thread the pool's loaders hand to), and
+  a deeper lead: by the clock with `--frame-producer` the decode is what drops epochs.
+- **Better prediction**: a stable order across frames with spatial coherence (sort once per group), P pictures
+  that predict a slice from the same slice; the high parts as deltas.
+- **The TX transfer** as planes: the video carries a flattened cloud, not a relightable one.
+- Frames of very different sizes in one stream (every picture is the first frame's size).
