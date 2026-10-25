@@ -13764,6 +13764,12 @@ after them has not been taken. The car's frame is the projection's first.
    catcher's share on its own plane, at the bake, is the candidate.
 6. **A sun's shadow is as soft as a cell** (5.6 degrees for a 0.53 degree
    sun): finer cells, or a sun term of its own, would sharpen it.
+7. **A cheaper sky for the sharp lobes** (one level instead of two, 9 ms of the
+   blend before the offset in closed form) changes the image, so it waits on
+   what judges it: a path traced Corvette at 1920 x 1080 from three views with
+   Cryptomatte masks, measured per material (chrome, paint, glass; the glass
+   by per-class means and mean-matched smoothed relMSE). Not rendered on the
+   shared Mac.
 
 ### The order
 
@@ -13996,6 +14002,41 @@ over ten million pairs, above): the depth sort is three passes of 8 bits over
 the 5.3 M visible (6.5 ms), the tile sort two over 11.8 M pairs whose 13 bits
 of tile already take the fewest passes (8.3 ms). The pairs are counted with
 the blend's own test, so there are none to drop without changing the frame.
+
+### Compression (proposal 034) and levels of detail: what applies
+
+**034's first step does not apply.** Its lossless saving -- rebuild the
+coverage mips from the bits at load instead of storing them, 70% of the
+transfer it priced -- is against the layout of proposals 028-032, which kept
+341 f16 mip values a gaussian beside the bits. The engine never stored them:
+a TX gaussian carries its bits and its harmonics, and every reader takes the
+bits directly (`splatCellsOpen`, `splatConeOpen`). There is nothing to
+rebuild. What the TX car is made of (`base_tx.usdc`, 5 380 804 gaussians,
+3.0 GB; 16 x 16 cells):
+
+| block | in the file (float32, int32) | on the device |
+|---|---|---|
+| transfer: direct 16, indirect 48, reflected field 48 | 448 B | 224 B (halves) |
+| open directions, 256 bits | 32 B | 32 B |
+| position, orientation, scales, opacity, colour | 44 B and up | 36 B |
+| material and layers (metallic ... sheen, specular, coat) | ~92 B | 12-24 B |
+| normal, curvature, Cryptomatte id | 28 B | 20 B |
+
+The transfer is two thirds of the device's bytes and four fifths of the
+file's. The file's floats are halves on the device already, so writing them
+as halves would halve the file losslessly against what is drawn; that is a
+format change, and on-disk coding is the `.athz` work's (pages a GPU decodes,
+transfer transforms, branch `athz`). The first frame of the car takes 10 to
+15 s, the stage read, the upload and the kernels' compilation together.
+
+**Levels of detail.** A `.athc` carries a TX transfer (bit 5), the material
+and the layers, and `LodBuilder` merges them (the transfer averaged, the bits
+by majority); the cut and the streaming pool draw it. What is missing for the
+TX car: no command writes a `.athc` from a USD ParticleField (`athenea convert`
+reads splat files, `mesh2splat -o x.athc` refuses `--transfer`), and a `.athc`
+keeps no curvature, so its sharp lobes would be drawn flat. The `.athz` pages
+hold the same record as a pool slot, transfer included (layer T), so the two
+lines meet in that record.
 
 ## The sun is the texels that are it
 
