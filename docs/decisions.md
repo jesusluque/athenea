@@ -15951,6 +15951,30 @@ release and debug builds under ThreadSanitizer and AddressSanitizer with UBSan:
    pages of that update with their staging slots, and no later update finishes or abandons it: no epoch is
    shown again.
 
+8. **A commit of epoch -1 kills the stream.** `stream_commit` reads `epoch` as unsigned: -1 is 2^64-1, queued,
+   and every later epoch of the stream is late for good. It also takes an op it does not know (as replace), an
+   `epochPages` smaller than the pages sent, and one chunk twice in a commit (which defect 1 then counts twice).
+9. **Two sessions on one stream.** A second server opens its own ring on a name another has open, and both push
+   into the one queue.
+10. **A crashed server's ring blocks the stream (POSIX).** Rings are `athlive-<hash>-<serial>`, the serial from 1
+    in each process, created `O_EXCL`; a server killed with a stream open leaves its ring, and the next server
+    cannot open that stream until it is unlinked by hand (reproduced with two `athenea-mcp` processes). A
+    Windows mapping goes with its last process.
+
+Passing beside them: every malformed MCP call is answered and a refused commit queues nothing (31 calls:
+names of the wrong type, offsets and sizes past the ring, wrapping offsets, chunks past the stream, bounds of
+text or NaN); a commit's pages are the bytes written even when the producer overwrites the ring and closes at
+once. Device-widened PLY: 24 files of random property types (all sixteen type names, unused properties between,
+every offset unaligned) decode word for word as their float32 twins, and 423 damaged PLYs (truncated, counts that
+lie or overflow, other formats, unknown types, lists, 4096 properties, 400 bit flips) are refused or read
+within the file. A degree-0 cloud's harmonic words are left unwritten by the upload (a comparison of them
+differs between any two uploads; nothing reads them).
+
+Cross-backend, ixwin (RTX 3070 laptop): native Windows builds without SPZ (no zstd there), so the Athc paths
+ran: `athenea_lod_tests "[stream]"` and `"[lod]"`, `athenea_scene_tests "[io]"` (the mixed-type PLY included)
+pass on Vulkan and on CUDA. The Windows `SharedMemory` branch compiles and passes the MCP QA cases (create,
+open, the copy, the ring gone after close), with defects 8 and 9 as on macOS.
+
 And beside the stream: `athenea flatten` wrote its wrapper layer at USD's default 24 time codes a second, so a
 stage at 30 composed through it was posed at 30/24 of the time asked (the sparrow's flattened frame t was frame
 1.25 t); the wrapper now carries the source's rate.
@@ -15981,5 +16005,5 @@ pages of 32768: 10 pages, 9.55 MB an epoch (median; SPZ version 4, degree 3), 1.
 ### Not done
 
 - The defects above are reported with their failing cases; none is fixed here.
-- Vulkan and CUDA on Windows, and CUDA under WSL: see the QA report of this branch.
+- SPZ pages on Windows: the native build there has no zstd.
 - Loaders beyond two for a live pool, and pages loaded ahead of the epoch being built.
