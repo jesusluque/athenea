@@ -16385,6 +16385,42 @@ Every picture is Main, Main tier, 8-bit 4:2:0 full range, level 4 (L120) or 3.1 
 quality 0.4 is as good as the 300k one at 0.25 for the same bits. The whole ladder streamed for ten seconds through
 a pipe: 324.5 Mbit/s, 30.00 frames a second, inter-frame jitter 0.44 ms, nothing broken or missing.
 
+### A stable order and an exact geometry layer
+
+The phone smooths a gaussian's colour over frames by its index (`stableOrder`), which needs the same gaussian at
+the same index in every frame: `flatten --keep-order` cuts each frame's pages in the stage's own order (the old
+pages were sorted along a Morton curve every frame), `--reduce keep` keeps the first frame's highest scored records
+in every frame, `--order stable` keeps the first frame's Morton order. 150k (134 306 kept), degree 1, chroma, quality
+0.3, 61 frames, against the SPZ pages; flicker is `video-flicker` (the change of the error from frame to frame,
+sRGB codes, mean / p99), the tail a rectangle on it:
+
+| | MB a frame | PSNR reference / 3x closer | flicker reference | tail reference | flicker close | tail close |
+|---|---:|---|---|---|---|---|
+| r3 (pairs each frame, sorted each frame) | 0.204 | 37.51 / 28.15 | 0.77 / 23 | -- | 6.38 / 64+ | -- |
+| stable, ranges a frame | 0.188 | 37.55 / 28.32 | 0.75 / 23 | -- | 6.06 / 64+ | -- |
+| stable, ranges over the sequence | 0.181 | 37.59 / 28.38 | 0.73 / 22 | 10.5 / 85 | 5.95 / 76 | 13.8 / 89 |
+| + boxes held over the sequence | 0.158 | 34.67 / 26.17 | 1.15 / 37 | -- | 8.69 / 64+ | -- |
+| geometry layer, 12-bit positions, 8-bit log scales | 0.692 | **41.48 / 31.67** | **0.35 / 13** | **5.6 / 39** | **3.29 / 32** | **7.5 / 47** |
+
+Held boxes cost more than they save: the union over the sequence is wide where the wings move. The geometry layer
+(`--geometry`: position, scale and rotation exact beside the video, the planes only opacity and colour, one 1024 x
+960 picture of 0.030 MB) is the quality, and its bytes are the price: deflated byte planes of the 134 306 gaussians,
+MB a frame (largest record):
+
+| keys | 16-bit positions, 10-bit scales | 12-bit, 8-bit |
+|---|---|---|
+| every frame | 1.350 (1.40 MB) | 1.130 (1.17 MB) |
+| every 30, residuals from the frame before | 0.889 (1.39 MB) | **0.662** (1.17 MB) |
+| every 30, the frame before's motion carried on | -- | 0.683 |
+| every 15, motion carried on | -- | 0.697 |
+| staggered over 30, motion carried on | -- | 0.678 (0.78 MB) |
+
+The residuals are noise-like: each frame's flatten fits its gaussians anew, so neighbours do not move together
+(predicting a block's residuals from its first gaussian's made them larger) and carrying the motion on does not
+help. Rotation is half of a residual frame (0.35 of 0.59 MB), the positions' low bytes most of the rest; deflate
+beats an order-0 entropy coder (an rANS stand-in) on every plane (0.59 against 0.71 MB). 12-bit positions (56 um)
+draw the same as 16-bit (41.48 against 41.49 dB).
+
 ### Checked against the player
 
 - `video-decode --dump-compare` takes another decoder's gaussians of a frame (a CSV) and compares them with this
