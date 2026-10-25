@@ -15550,6 +15550,14 @@ denoiser hid them), the bundle's shaders any platform's, and the F12's first-fra
   loading and the device's own start are each a share of it, and a Blender that kept one engine between renders would
   pay it once.
 - `viewport_readback.py` still times whole F12 renders; the map alone is not timed from inside Blender.
-- One of three full `tx_module` runs ended its Esc step with code 1 rather than 4 or 0; the run before and the run
-  after it ended 4, and a script running that step alone four times ended 0 and then 4 each time. Not reproduced.
-- Not run under Linux: the Blender add-on on Linux (WSL2) was not rebuilt for these.
+- The F12's first frame is the same on Linux: `viewport_readback.py` under WSL2 (CUDA) gave 2.34 to 2.45 s an F12
+  at both sizes, float or half.
+
+**`tx_module`'s Esc step.** It ended with code 1 on some runs: the points' conversion before it hides the cube again,
+a hidden object is not exported, and the step's job then failed on a stage with no mesh (`no meshes to convert`)
+unless the cancel was looked at first -- so 1 or 4 by timing. The test shows the cube again before the step.
+
+**On Linux (WSL2, CUDA 12.9, no OptiX)**, the add-on built from these with the path tracer on the compute BVH:
+`test_module` passes whole; `tx_module` passes whole -- it was refused there before, since a bake wanted OptiX --
+the cloud against its reference relMSE 0.0528 and p99 9 (this build has OIDN), Esc ends 4; `viewport_readback.py`
+passes (half draws what float draws, p99 0).
