@@ -16438,3 +16438,152 @@ draw the same as 16-bit (41.48 against 41.49 dB).
   1.5 and 2.
 - SRT itself (the producer writes to stdout; the player's server forwards it over a WebSocket).
 - P pictures for slices (each slice would need its own encoder session).
+
+## A gaussian's place on its source, and the order that is its identity (25 Oct)
+
+Every gaussian `athenea mesh2splat` makes now says where on its source mesh it stands, and the cloud is written in the
+order those coordinates give. The contract is the order: index i of a cloud -- and of every frame flattened from it
+with `--keep-order`, and of a rerun of the conversion at the same density -- is one point of the surface. No id lookup
+is needed for continuity; the 64-bit id each gaussian carries is a check of the order, not the order.
+
+### What a gaussian carries
+
+- **The coordinates** (`primvars:athenea:splat:source*`, written by the export from device buffers): the mesh's rank
+  among the stage's meshes sorted by prim path (`sourceMeshes` lists them), the mesh's own triangle in `HdMeshUtil`'s
+  triangulation (a GeomSubset's piece is packed as a mesh of its own; its listed triangle is taken back to the mesh's
+  numbering by the gather), the cell (i, j) of the triangle's walk that the gaussian's point falls in, counted from
+  the walk's first cell in the triangle's projection plane, and the mesh's `st` at that point -- NaN where the mesh
+  has none. The effect writes the triangle, the cell and the gaussian's rank among its triangle's gaussians as the
+  bits of one more record entry (`writeSource`, Mesh2Splat's uniform `sourceEntry`, the last entry); `st` was already
+  in the record. A block of `--simplify` or a cell the relief splits gives the cell its centre is in; the rank tells
+  a split cell's gaussians apart.
+- **The id** (`sourceId`, two ints): the mesh's path hashed to 64 bits (two MurmurHash3 seeds, on the host: a name),
+  folded on the device with the triangle, the cell and the rank. It is the same in every run at one density; across
+  densities the cells differ and so do the ids -- what relates a coarse gaussian to the finer ones is its `st` (a
+  coarse cell covers the fine cells whose `st` falls inside its own footprint) or, without `st`, its triangle.
+
+### The order
+
+`shaders/athenea/common/source_order.slang`: a 64-bit key, mesh rank (16 bits) | `st`'s unit tile (12) | the
+Hilbert index of `st` inside the tile at 2^16 steps a unit (32); without `st`, mesh rank | triangle (24) | the
+Morton index of the cell (24). A gaussian a reader drops (no finite position, a size that is not one, an opacity
+under 1/255) is keyed last, so dropping it at load keeps every other index. A stable 64-bit radix sort of the keys
+(ties keep the walk's order: deterministic) is a permutation that every buffer the conversion holds a gaussian long
+goes through on the device (records, rays, joints and their gradients, samplings, shape operators, the coordinates
+and the ids) and the per-gaussian lists the host builds -- ids, thin walls, closed shells, Schlick metals, the
+material's roughness -- go through as words. It runs once, after the last run and before the bake, so the bake, the
+transfer and the visibility bake see the cloud as it is written.
+
+Why these choices:
+- **A fixed grid over `st`, not over what the run produced.** Every set of gaussians on one mesh, at any density, is
+  ordered by the same curve, so a coarser set's order is the finer set's restricted to it: interleaved, never
+  crossed. A per-run box of the gaussians' `st` would move with the density by a cell and break that.
+- **Hilbert, not Morton.** The Hilbert curve has no jumps: consecutive keys are adjacent in `st`, so a neighbour in
+  the order is a neighbour on the surface wherever `st` is continuous. A Z curve jumps at every block boundary.
+- **The mesh first, by path.** Traversal order changes when a stage is edited; sorted paths do not, and a mesh added
+  or removed shifts whole meshes, never interleaves into one.
+- **Where `st` is not continuous** -- a seam, a mirrored half, charts that overlap in `st` (the sparrow's feather
+  cards share feather texels) -- the curve interleaves the pieces that share texels. The order is still a function of
+  the surface; a neighbour in it is then a neighbour in the texture, not always on the surface.
+
+### Through the rest of the pipeline
+
+- **Skinned** (`--skinned`): the joints and their gradients go through the permutation with the records; the rig's
+  arrays are read back after it. A skinned cloud is posed by index, so every posed frame keeps the order.
+- **Flatten** (`flatten --range --keep-order`): each frame's pages list the stage's gaussians in the stage's order,
+  which is now the surface's. Page gaussian i of every frame is cloud gaussian i (the empty slots, last, are what the
+  loader drops), checked on the device position by position.
+- **Decimation** (`athenea decimate`): the coordinates are not merge keys (they would forbid every merge) but a new
+  merge mode, `Representative` (`lod_attributes.slang` mode 8): a merge takes the words of the member that weighs most
+  in it (opacity times the disc's area, as the moments weigh), the first on a tie. The result is then laid out by the
+  same key again (`m2sSourceKeyOf`, `m2sPermute`), records and every array; a merge tree written with `--tree` keeps
+  its tree order, since its arrays are indices.
+
+### Video planes laid out as a texture (`video-encode --layout uv`)
+
+`shaders/athenea/scene/video_uv.slang`. The source cloud's `sourceMesh` and `sourceUv` (`--sources`) place each
+gaussian of the first frame once: each mesh a rectangle of its count over `--uv-fill` pixels with its `st` box's
+aspect, the rectangles packed in shelves 512 wide (one plane tile); a gaussian asks for the pixel its `st` falls on,
+the lowest index wins a contested pixel (an atomic max of ~g: the same result whatever runs first), and the rest try
+a spiral of offsets out to `--uv-reach` pixels (48), one offset a round, then any free pixel in slot order. A pixel of the atlas is a
+slot of the tile's own order (bands of 64 rows, blocks of 64 columns, Z order), so a frame laid out this way is just
+a frame of 512 x height splats: the codec, the `.athv` and every decoder are unchanged, and the stream says
+`stableOrder`. A pixel nobody took holds the nearest placed gaussian's copy with opacity 0 -- nothing drawn, and
+little for the codec (its neighbours' values). `--uv-picture` writes the atlas's base colours as a PNG.
+
+### How it is checked
+
+`athenea_mesh2splat_tests "[source]"` over `tests/data/source_patch.usda` -- nine quads whose `st` is turned a
+quarter from their positions (so the order of `st` is not the order of the walk) and a bare quad without `st`:
+two runs agree word for word (records, ids, cells, st); the cloud at resolution 32, at 16 and the
+skinned corner (no st) are in key order everywhere; each of the 68 coarse gaussians with st, its key placed among the
+344 fine keys by bisection, falls next to a fine gaussian of its mesh within a coarse cell in st; three frames of the
+patch's TX conversion flattened with `--keep-order` list the cloud's 330 gaussians at their indices (distance from
+the first gaussian, which SPZ's axes do not change); a decimation by pairs to 81 keeps only ids of the cloud and is in
+key order.
+
+### Measured: the sparrow
+
+`SparrowBird.usda` converted again with `sparrow_tx_vis.usdc`'s settings (skinned, transfer as two zonal lobes,
+256 paths, 3 bounces, the visibility bake by 12 parts) at `--resolution` 181 and 128: 155 807 and 85 013 gaussians
+(155 793 and 85 004 drawn; the floor of one gaussian a triangle keeps the second above 75k). `--max-splats 150000` at
+resolution 512 was tried first and cut the body's and eyes' last triangles off (a piece coarsened for its share can
+want more than the share), so the counts come from the resolution. Each flattened over its 61 frames with
+`--keep-order` (SPZ pages, chunks of 32768), then encoded as the web renditions are (degree 1, colour in chroma,
+quality 0.3, all-intra, pictures at most 1920 x 1080, ranges over the sequence) and drawn in lockstep at 1024 x 1024
+from the reference camera and one 3x closer. PSNR is the median over the 61 frames against the same cloud's pages
+drawn the same way (the codec's and the layout's loss alone), and in brackets against the 300k pages of the earlier
+measurements (frames 1, 11, .. 61); flicker is `video-flicker` against the same cloud's pages, mean / p99 in sRGB
+codes, the tail the rectangle used before.
+
+| | MB a frame (video + side) | PSNR reference | PSNR close | flicker ref / tail | flicker close / tail |
+|---|---|---|---|---|---|
+| 150k stable, planes (256 boxes, no high bits) | 0.231 (0.224 + 0.007) | 37.75 (36.05) | 29.24 (27.37) | 0.74 / 22; 9.8 / 88 | 5.51 / 75; 12.9 / 91 |
+| 150k **uv**, planes (256 boxes, no high bits) | 0.338 (0.324 + 0.014) | 30.77 (29.87) | 21.64 (21.11) | 1.88 / 71; 20.2 / 113 | 15.80 / 132; 24.9 / 111 |
+| 150k stable, planes, 8 high bits | 0.795 (0.322 + 0.473) | 40.62 (37.83) | 30.91 (28.20) | 0.47 / 15; 7.0 / 65 | 4.14 / 51; 9.9 / 81 |
+| 150k **uv**, planes, 8 high bits | 1.042 (0.416 + 0.626) | 40.03 (37.28) | 30.29 (27.75) | 0.47 / 16; 6.9 / 59 | 4.26 / 50; 9.6 / 75 |
+| 150k stable, geometry layer | 0.763 (0.056 + 0.707) | **44.97** (39.21) | **35.21** (29.65) | 0.29 / 11; 4.4 / 30 | 2.63 / 25; 5.4 / 32 |
+| 150k **uv**, geometry layer | 1.102 (0.072 + 1.030) | 43.77 (38.61) | 33.62 (28.98) | 0.28 / 11; 4.2 / 30 | 2.71 / 26; 5.4 / 32 |
+| 85k stable, planes | 0.132 (0.128 + 0.004) | 37.46 (35.03) | 28.62 (26.37) | 0.78 / 24; 10.6 / 90 | 5.93 / 79; 13.8 / 92 |
+| 85k **uv**, planes | 0.202 (0.193 + 0.009) | 30.92 (29.91) | 21.53 (20.90) | 1.85 / 69; 19.6 / 112 | 15.61 / 129; 24.1 / 110 |
+| 85k stable, geometry layer | 0.423 (0.031 + 0.392) | 44.82 (38.42) | 35.13 (28.82) | 0.29 / 11; 4.4 / 32 | 2.55 / 25; 5.1 / 29 |
+| 85k **uv**, geometry layer | 0.643 (0.045 + 0.598) | **44.47** (38.16) | 34.47 (28.38) | **0.27** / 11; **3.9** / 27 | **2.53** / 24; **4.9** / 28 |
+
+Geometry layer: 12-bit positions, 8-bit log scales, keys every 30 frames; its MB a frame is the side figure (0.707 /
+1.030 at 150k, 0.392 / 0.598 at 85k).
+
+The placement: the 150k cloud's 155 793 gaussians in a 512 x 768 atlas (40 % of its pixels), 38.9 % on their own
+pixel, 36.9 % within 48 pixels, 24.1 % wherever a pixel was free; the 85k one in 512 x 576 (29 %), 40.3 / 42.0 /
+17.7 %. Within 6 pixels instead of 48 left 43 % anywhere; `--uv-fill 0.3` (a 512 x 1088 atlas) put 49.9 % on their
+pixel and left 20.7 % anywhere, for 0.452 against 0.347 MB a frame on two frames. The sparrow's `st` is the reason:
+measured over the cloud's coordinates, the feathers' gaussians stand on 17 % of their chart's box at the atlas's
+resolution, 2.9 a pixel there, and separate only at 4096 pixels across; the wings' cards share their texels (44 % of
+their gaussians stand on a texel another wing card has at any resolution). A texture laid out for painting is not laid
+out for even density, so one picture a texture leaves most of it empty or moves many gaussians off their pixel; layers
+of the chart (a gaussian on the same pixel of a second copy) would place 45-50 % instead of 39 %, not more.
+
+What it says:
+- **The order holds.** Every frame of every rendition is the same gaussians at the same indices -- the flicker of
+  the uv layout with the geometry layer is the lowest measured (0.27 codes at the reference, 3.9 on the tail) -- and
+  so is a rerun of the conversion.
+- **As planes, the uv layout costs a third more bytes and loses 7 dB.** A run of 256 slots of the atlas (16 x 16
+  pixels) holds gaussians that share texels but not space -- the feathers' cards overlap in `st`, and the gaussians
+  moved off their pixel sit among strangers -- so a block's position box spans the bird, and 8 bits over it are the
+  blur in the frames. With the high bits beside the video the two layouts are within 0.6 dB and the uv layout is a
+  third larger; with the geometry layer (positions exact) within 1.2 dB at 150k and 0.4 at 85k, its geometry layer
+  1.5 times larger (neighbours in the atlas move less alike than Morton neighbours).
+- **Morton stays the default**; `--layout uv` is for what wants a texture -- a gaussian found at its `st`'s pixel, a
+  picture an artist can read -- paired with the geometry layer. Full frames (the pages | stable | uv | |uv - pages| x 8,
+  frames 1 and 31, both cameras, planes and geometry layer): `athenea-renders/splat-uv/sparrow_<k>_<planes|geom>_<ref|close>_f<1|31>_pages_stable_uv_diff8.png`;
+  the atlases `sparrow_150k_uv_atlas.png` and `sparrow_85k_uv_atlas.png`.
+
+### Not done
+
+- `.athc` output (`mesh2splat -o x.athc`, `LodBuilder`'s octree levels): in Morton order, no coordinates carried.
+- The `--lod-levels` assembly is ordered level by level (each a conversion of its own); a cut that draws levels
+  together does not interleave them.
+- `--reduce keep` and the other reductions with `--layout uv`: refused (the kept records' indices would have to be
+  carried to the placement).
+- A player that skips the opacity-0 slots of a uv layout before decoding them (they are decoded and culled).
+- `--max-splats` under the per-piece share: a coarsened piece can want more than its share and then loses its last
+  triangles (the sparrow's body and eyes at resolution 512 and 150k); the measurements use `--resolution` instead.
