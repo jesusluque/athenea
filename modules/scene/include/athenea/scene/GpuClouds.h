@@ -359,8 +359,9 @@ public:
                                           uint32_t recordBase = 0);
 
     /// Float records of any RawSplats: as they are, or -- SPZ's packed
-    /// streams -- expanded on the device (spz_records.slang) and read back,
-    /// for what consumes records on the host side.
+    /// streams, a file's packed records -- widened on the device
+    /// (spz_records.slang, packed_records.slang) and read back, for what
+    /// consumes records on the host side.
     [[nodiscard]] Result<io::RawSplats> records(const io::RawSplats& raw);
     /// `detail` keeps that fraction of the points, the same ones every time.
     [[nodiscard]] Result<GpuPoints> upload(const io::RawPoints& raw, float detail = 1.0F);
@@ -395,9 +396,11 @@ public:
     [[nodiscard]] Result<Bounds> boundsOf(const gpu::Buffer& positions, uint32_t count);
 
 private:
-    /// SPZ's packed streams on the device, once, as words.
+    /// SPZ's packed streams or a file's packed records on the device, once,
+    /// as words.
     [[nodiscard]] Result<gpu::Buffer> spzOnDevice(const io::RawSplats& raw);
-    /// Records `first` .. `first + n` of them into `into`.
+    /// Records `first` .. `first + n` of them into `into`: spz_records or
+    /// packed_records.
     [[nodiscard]] Result<void> spzSlice(const io::RawSplats& raw, const gpu::Buffer& packed, uint32_t first,
                                         uint32_t n, const gpu::Buffer& into);
 
@@ -426,6 +429,7 @@ private:
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel sogDecode_;
     gpu::ComputeKernel spzRecords_;
+    gpu::ComputeKernel packedRecords_;
     gpu::PrefixSum     prefix_;
     gpu::ComputeKernel splatValidate_;
     gpu::ComputeKernel splatDecode_;

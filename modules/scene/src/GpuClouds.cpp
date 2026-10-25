@@ -91,6 +91,7 @@ Result<CloudLoader> CloudLoader::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(loader.splatValidate_, "athenea/scene/splat_validate", "splatValidate"));
     ATHENEA_TRY(make(loader.sogDecode_, "athenea/scene/sog_decode", "sogDecode"));
     ATHENEA_TRY(make(loader.spzRecords_, "athenea/scene/spz_records", "spzRecords"));
+    ATHENEA_TRY(make(loader.packedRecords_, "athenea/scene/packed_records", "packedRecords"));
     ATHENEA_TRY(make(loader.splatDecode_, "athenea/scene/splat_decode", "splatDecode"));
     ATHENEA_TRY(make(loader.splatKept_, "athenea/scene/splat_kept", "splatKept"));
     ATHENEA_TRY(make(loader.splatKeptScatter_, "athenea/scene/splat_kept", "splatKeptScatter"));
@@ -411,10 +412,14 @@ Result<void> CloudLoader::finishSplats(GpuSplats& splats, uint32_t written) {
 }
 
 Result<gpu::Buffer> CloudLoader::spzOnDevice(const io::RawSplats& raw) {
-    if (raw.packed.empty() || raw.packed.size() % 4 != 0 || raw.packed.size() > UINT32_MAX) {
-        return Error::make(ErrorCode::InvalidArgument, "'{}': no SPZ streams, or past 4 GiB of them", raw.source);
+    if (raw.packed.empty() || raw.packed.size() > UINT32_MAX - 8) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': no packed records, or past 4 GiB of them", raw.source);
     }
-    return deviceBuffer(*device_, raw.packed.size() / 4, 4, "spz.packed", raw.packed.data());
+    // Whole words, and one past the end: a value read at any byte offset
+    // reads the word after it.
+    std::vector<uint8_t> words((raw.packed.size() + 3) / 4 * 4 + 4, 0);
+    std::copy(raw.packed.begin(), raw.packed.end(), words.begin());
+    return deviceBuffer(*device_, words.size() / 4, 4, "splats.packed", words.data());
 }
 
 void CloudLoader::recordSpz(gpu::CommandBatch& batch, const gpu::Buffer& packed, const io::SpzStreams& at,
@@ -440,6 +445,33 @@ void CloudLoader::recordSpz(gpu::CommandBatch& batch, const gpu::Buffer& packed,
 
 Result<void> CloudLoader::spzSlice(const io::RawSplats& raw, const gpu::Buffer& packed, uint32_t first, uint32_t n,
                                    const gpu::Buffer& into) {
+    if (raw.encoding.record == io::SplatEncoding::Record::PackedRecords) {
+        const io::PackedFields& f = raw.fields;
+        if (f.offsets.size() != raw.encoding.floatsPerRecord || f.types.size() != f.offsets.size() ||
+            uint64_t{raw.count} * f.stride > raw.packed.size()) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': packed records that do not match their fields",
+                               raw.source);
+        }
+        std::vector<uint32_t> table;
+        for (size_t k = 0; k < f.offsets.size(); ++k) {
+            table.push_back(f.offsets[k]);
+            table.push_back(static_cast<uint32_t>(f.types[k]));
+        }
+        auto fields = deviceBuffer(*device_, table.size() / 2, 8, "splats.fields", table.data());
+        if (!fields) return std::move(fields).error();
+        gpu::CommandBatch batch(*device_);
+        packedRecords_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["packed"].setBinding(packed.rhi());
+            cursor["fields"].setBinding(fields->rhi());
+            cursor["records"].setBinding(into.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(n);
+            p["first"].setData(first);
+            p["stride"].setData(f.stride);
+            p["fields"].setData(static_cast<uint32_t>(f.offsets.size()));
+        });
+        return batch.submit(true);   // the field table lives only as long as this call
+    }
     const io::SpzStreams& at = raw.spz;
     gpu::CommandBatch batch(*device_);
     spzRecords_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -505,7 +537,7 @@ Result<io::RawSplats> CloudLoader::records(const io::RawSplats& raw) {
 
 Result<GpuSplats> CloudLoader::upload(const io::RawSplats& raw, uint32_t maxDegree) {
     const io::SplatEncoding& e = raw.encoding;
-    const bool packedSpz = e.record == io::SplatEncoding::Record::SpzPacked;
+    const bool packedSpz = e.record != io::SplatEncoding::Record::Floats;   // SPZ streams or packed records
     if (raw.count == 0 || e.floatsPerRecord == 0 ||
         (!packedSpz && raw.records.size() < size_t{raw.count} * e.floatsPerRecord)) {
         return Error::make(ErrorCode::InvalidArgument, "'{}': no splat records", raw.source);

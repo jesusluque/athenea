@@ -15881,3 +15881,31 @@ states (none, 1 to 5) are seen, and the last is reached. The `.athc` Hydra test 
   place would need the producer to know when a range is free again.
 - A frame after a commit may show the epoch before: the loaders decompress while the frame is drawn, and the
   example renders twice.
+
+## PLY and .splat widened on the device (25 Oct)
+
+The last CPU loops over splats in the readers are gone. `io::readSplatPly` and `io::readDotSplat` keep the
+file's own records (`SplatEncoding::Record::PackedRecords`): `RawSplats::packed` is the vertex block (or the
+whole `.splat`) as bytes, and `RawSplats::fields` says, a float of the record each, at what byte of a record the
+value lies and of which type (f32, f64, u8, i8, u16, i16, u32, i32). `packed_records.slang` writes the float
+records validate and decode read, a slice at a time, as `spz_records.slang` does for SPZ's streams: values are
+converted, not decoded. A double is rounded to the nearest float, ties to even, from its bits (Metal has no
+doubles), as the C++ cast rounded it; a value below the floats' normal range is computed as a float. Before, an
+all-float32 PLY was one memcpy and any other a `readPlyValue` a value on the CPU (`tbb::parallel_for`); TBB is no
+longer used by the readers. `CloudLoader::records` widens and reads back for the host-side consumers.
+
+### How it is checked
+
+`athenea_scene_tests "[io]"` (Metal, M5 Pro): a PLY whose positions are doubles, opacity a short and an unused
+uchar between them -- every later value at an unaligned offset -- decodes as the values say: the doubles to the
+very floats the CPU cast gives (1e-3 and 2e-3 included), the short's logits to their opacities; its records read
+back draw the same. The float PLY and `.splat` decode tests, now through the device, pass unchanged and check
+the records stay packed. `athenea_render_tests "[spz],[flatten],[io]"` passes but for the flatten test's two
+known failures, and `athenea_usd_tests "[points]"` (Blender's points against the PLY they came from, the PLY
+exported through `CloudLoader::records`) passes.
+
+### Not done
+
+- The packed bytes are copied twice on the way (the file into `packed`, then into whole words with one past the
+  end for the upload); a reader that pads would let the mapping be uploaded as it is.
+- Packed records past 4 GiB are refused: the kernel's byte offsets are 32-bit.
