@@ -1425,6 +1425,14 @@ Result<size_t> Engine::commit() {
                         }
                     } else {
                         auto read = coded ? lod::readAthz(*library_, asset.path) : lod::readAthc(*device_, asset.path);
+                        if (!read && coded) {
+                            // A prefix that stops inside the merged levels:
+                            // its finest whole band, with levels of its own.
+                            auto cut = lod::readAthzCut(*library_, asset.path);
+                            auto builder = cut ? lod::LodBuilder::create(*library_)
+                                               : Result<lod::LodBuilder>(cut.error());
+                            read = builder ? builder->build(*cut) : Result<lod::LodCloud>(builder.error());
+                        }
                         if (read) {
                             entry.lodCloud = std::make_unique<lod::LodCloud>(std::move(*read));
                         } else {

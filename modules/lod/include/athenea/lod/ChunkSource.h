@@ -70,6 +70,10 @@ struct ChunkFormat {
     /// Athz: three words of curvature an element (GpuSplats::curvature),
     /// where the cloud carries it. Not in a .athc block (elementBytes).
     uint32_t curvatureWords = 0;
+    /// Athz, layer K: the words of a gaussian's joints and weights, and of
+    /// their gradients (the skinner's influences). Not in a .athc block.
+    uint32_t influenceWords = 0;
+    uint32_t gradientWords = 0;
 
     /// Staging an SPZ chunk takes: a header, then its six streams (the most
     /// a splat's take, degree 4: 9 + 1 + 3 + 3 + 4 + 72 bytes), each on a word.

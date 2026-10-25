@@ -25,7 +25,11 @@
 #include "athenea/io/SplatWriters.h"
 #include "athenea/lod/Athc.h"
 #include "athenea/lod/Athz.h"
+#include "athenea/render/Camera.h"
+#include "athenea/render/ReferenceRenderer.h"
+#include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/scene/SplatSkinner.h"
 #include "athenea/usd/Export.h"
 
 namespace athenea::cli {
@@ -307,6 +311,53 @@ bool convertWithAthz(const std::string& input, const std::string& output, const 
     if (!loader) {
         fail(loader.error());
     }
+    if (toAthz && o.skinned) {
+        // LAYER K: the rest cloud once, its rig in the store's order, its
+        // joints at every authored frame.
+        auto skin = usd::readSplatSkinning(input);
+        if (!skin) fail(skin.error());
+        auto rest = usd::loadParticleField(*loader, input, {}, o.degree);
+        if (!rest) fail(rest.error());
+        auto builder = lod::LodBuilder::create(library);
+        if (!builder) fail(builder.error());
+        lod::LodBuildSettings build;
+        build.chunkSplats = o.chunkSplats;
+        auto tree = builder->build(*rest, build);
+        if (!tree) fail(tree.error());
+        const auto upload = [&](const std::vector<uint32_t>& words, uint32_t per) -> gpu::Buffer {
+            auto b = gpu::Buffer::fromSpan(**device, std::span<const uint32_t>(words), "convert.rig");
+            if (!b) fail(b.error());
+            auto kept = loader->keptOnly(*rest, *b, per, "convert.rigKept");
+            if (!kept) fail(kept.error());
+            auto store = lod::athzGatherToStore(library, *kept, per, tree->order, nullptr, tree->count);
+            if (!store) fail(store.error());
+            return std::move(*store);
+        };
+        std::vector<uint32_t> influenceWords(skin->influences.size());
+        std::memcpy(influenceWords.data(), skin->influences.data(), influenceWords.size() * 4);
+        const gpu::Buffer influences = upload(influenceWords, 8);
+        std::optional<gpu::Buffer> gradients;
+        if (!skin->weightGradients.empty()) gradients = upload(skin->weightGradients, 3);
+        lod::AthzTemporal k;
+        k.influences = &influences;
+        k.gradients = gradients ? &*gradients : nullptr;
+        k.joints = skin->joints;
+        k.times = skin->times;
+        k.xforms = skin->xforms;
+        k.geomBind = skin->geomBindTransform;
+        lod::AthzSettings s;
+        s.runGaussians = o.run;
+        s.pageRuns = o.pageRuns;
+        s.tableLog = o.tableLog;
+        s.temporal = &k;
+        s.source = fs::path(input).filename().string();
+        if (o.transfer == "cpca") s.transferBasis = o.transferBasis;
+        auto stats = lod::writeAthz(library, *tree, output, s);
+        if (!stats) fail(stats.error());
+        out("wrote %s: %u splats, %u joints over %zu frames, %.2f MB (K %.2f MB of pages)\n", output.c_str(),
+            tree->count, skin->joints, skin->times.size(), mb(stats->fileBytes), mb(stats->layerBytes[3]));
+        return true;
+    }
     if (toAthz) {
         auto tree = loadTree(library, *loader, input, o.degree, o.chunkSplats);
         if (!tree) fail(tree.error());
@@ -446,6 +497,170 @@ void addAthzCompare(CLI::App& app) {
                 static_cast<double>(count), static_cast<double>(means[k * 3 + 1] / std::max(means[k * 3 + 2], 1e-12F)),
                 static_cast<double>(errors[k] / count));
         }
+    });
+}
+
+void addAthzPrefix(CLI::App& app) {
+    struct Options {
+        std::string input, output;
+        double mb = 60.0;
+    };
+    auto o = std::make_shared<Options>();
+    auto* cmd = app.add_subcommand("athz-prefix",
+                                   "the first pages of a .athz, in band order, that fit a size: a fixed cut of it");
+    cmd->add_option("input", o->input, ".athz")->required();
+    cmd->add_option("output", o->output, ".athz")->required();
+    cmd->add_option("--mb", o->mb, "the most the file may take, in MB (10^6 bytes)");
+    cmd->callback([o] {
+        auto prefix = lod::writeAthzPrefixBytes(o->input, o->output, static_cast<uint64_t>(o->mb * 1.0e6));
+        if (!prefix) fail(prefix.error());
+        out("wrote %s: %u pages, %.2f MB; %llu merged gaussians and %llu splats (%llu in all)%s\n", o->output.c_str(),
+            prefix->pages, mb(prefix->bytes), static_cast<unsigned long long>(prefix->merged),
+            static_cast<unsigned long long>(prefix->splats),
+            static_cast<unsigned long long>(prefix->merged + prefix->splats),
+            prefix->levelsWhole ? "; every merged level whole" : "; the merged levels cut short: a fixed cut");
+    });
+}
+
+void addAthzSkinCheck(CLI::App& app) {
+    struct Options {
+        std::string source, athz, dir;
+        std::string size = "960x540";
+        uint32_t    every = 10;
+    };
+    auto o = std::make_shared<Options>();
+    auto* cmd = app.add_subcommand("athz-skin-check",
+                                   "a skinned .athz drawn frame after frame against the cloud it came from, both "
+                                   "skinned on the device: each frame's difference, and the flicker of each");
+    cmd->add_option("source", o->source, "the skinned ParticleField (.usd)")->required();
+    cmd->add_option("athz", o->athz, "its .athz with layer K")->required();
+    cmd->add_option("--size", o->size, "WIDTHxHEIGHT");
+    cmd->add_option("--dir", o->dir, "where every --every-th frame of both is written (.exr)");
+    cmd->add_option("--every", o->every, "frames between those written");
+    cmd->callback([o] {
+        uint32_t width = 960, height = 540;
+        if (std::sscanf(o->size.c_str(), "%ux%u", &width, &height) != 2) fail(Error(ErrorCode::InvalidArgument, "--size"));
+        auto device = gpu::Device::create();
+        if (!device) fail(device.error());
+        gpu::ShaderLibrary library(*device);
+        auto loader = scene::CloudLoader::create(library);
+        auto raster = render::TileRasterizer::create(library);
+        auto skinner = scene::SplatSkinner::create(library);
+        if (!loader) fail(loader.error());
+        if (!raster) fail(raster.error());
+        if (!skinner) fail(skinner.error());
+        auto skin = usd::readSplatSkinning(o->source);
+        if (!skin) fail(skin.error());
+        auto source = usd::loadParticleField(*loader, o->source, {}, 3);
+        if (!source) fail(source.error());
+        auto athz = lod::readAthzSkinned(library, o->athz);
+        if (!athz) fail(athz.error());
+        // The source's rig, kept as its splats are.
+        const auto kept = [&](const void* data, uint64_t words, uint32_t per) {
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<uint64_t>(words, 1) * 4;
+            desc.elementBytes = 4;
+            desc.label = "check.rig";
+            auto b = gpu::Buffer::create(**device, desc, data);
+            if (!b) fail(b.error());
+            auto k = loader->keptOnly(*source, *b, per, "check.rigKept");
+            if (!k) fail(k.error());
+            return std::move(*k);
+        };
+        const gpu::Buffer influences = kept(skin->influences.data(), skin->influences.size(), 8);
+        std::optional<gpu::Buffer> gradients;
+        if (!skin->weightGradients.empty()) {
+            gradients = kept(skin->weightGradients.data(), skin->weightGradients.size(), 3);
+        }
+        // A camera framing the rest cloud from its side (bounds: the header's).
+        const scene::Bounds& b = source->bounds;
+        const double cx = (b.min[0] + b.max[0]) * 0.5, cy = (b.min[1] + b.max[1]) * 0.5,
+                     cz = (b.min[2] + b.max[2]) * 0.5;
+        const double size = std::max({b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]});
+        const render::Camera camera = render::Camera::lookingAt({cx + 0.6 * size, cy - 1.6 * size, cz + 0.5 * size},
+                                                                {cx, cy, cz}, {0.0, 0.0, 1.0});
+        const render::Projection projection = render::projectionFor(camera, width, height);
+        render::RenderSettings settings;
+        settings.width = width;
+        settings.height = height;
+        const auto posed = [&](const scene::GpuSplats& rest, const gpu::Buffer& inf, const gpu::Buffer* grad,
+                               const gpu::Buffer& xforms, const std::array<float, 16>& bind) {
+            scene::GpuSplats p = rest;
+            gpu::BufferDesc desc;
+            desc.bytes = uint64_t{rest.count} * 16;
+            desc.elementBytes = 16;
+            desc.label = "check.posed";
+            auto positions = gpu::Buffer::create(**device, desc);
+            desc.elementBytes = 4;
+            auto shape = gpu::Buffer::create(**device, desc);
+            if (!positions || !shape) fail(Error(ErrorCode::OutOfMemory, "check: the posed cloud"));
+            scene::SplatSkinInput in;
+            in.rest = &rest;
+            in.influences = &inf;
+            in.perSplat = 4;
+            in.weightGradients = grad;
+            in.skinningXforms = &xforms;
+            in.geomBindTransform = bind;
+            gpu::CommandBatch batch(**device);
+            if (auto r = skinner->skin(batch, in, *positions, *shape); !r) fail(r.error());
+            if (auto r = batch.submit(true); !r) fail(r.error());
+            p.positions = std::move(*positions);
+            p.shape = std::move(*shape);
+            return p;
+        };
+        const auto draw = [&](const scene::GpuSplats& cloud) {
+            render::RenderTargets t;
+            std::vector<render::SplatInstance> instances{{&cloud, render::Mat4::identity()}};
+            if (auto r = raster->render(projection, instances, settings, t); !r) fail(r.error());
+            return t.colour;
+        };
+        const uint32_t frames = static_cast<uint32_t>(std::min(skin->times.size(), athz->times.size()));
+        std::vector<gpu::Buffer> fromSource, fromAthz;
+        std::vector<double> p99, maxima;
+        gpu::Buffer athzXforms;
+        for (uint32_t f = 0; f < frames; ++f) {
+            auto srcXforms = gpu::Buffer::fromSpan(**device,
+                                                   std::span<const float>(skin->xforms.data() + uint64_t{f} * skin->joints * 16,
+                                                                          uint64_t{skin->joints} * 16),
+                                                   "check.xforms");
+            if (!srcXforms) fail(srcXforms.error());
+            if (auto r = lod::athzFrameXforms(library, *athz, f, athzXforms); !r) fail(r.error());
+            fromSource.push_back(draw(posed(*source, influences, gradients ? &*gradients : nullptr, *srcXforms,
+                                            skin->geomBindTransform)));
+            fromAthz.push_back(draw(posed(athz->rest, athz->influences,
+                                          athz->gradients.valid() ? &athz->gradients : nullptr, athzXforms,
+                                          athz->geomBind)));
+            auto diff = render::compareImages(library, fromAthz.back(), fromSource.back(), width, height);
+            if (!diff) fail(diff.error());
+            p99.push_back(diff->p99);
+            maxima.push_back(diff->max);
+            if (!o->dir.empty() && o->every > 0 && f % o->every == 0) {
+                for (const auto& [name, img] : {std::pair{"source", &fromSource.back()}, std::pair{"athz", &fromAthz.back()}}) {
+                    std::vector<float> rgba(uint64_t{width} * height * 4);
+                    if (auto r = img->read(**device, 0, rgba.size() * 4, rgba.data()); !r) fail(r.error());
+                    const fs::path path = fs::path(o->dir) / std::format("skin_{}_{:03}.exr", name, f);
+                    if (auto r = io::writeExr(path, width, height, rgba, {}, false); !r) fail(r.error());
+                }
+            }
+            if (f >= 2) {
+                // Keep only the last three of each.
+                fromSource.erase(fromSource.begin(), fromSource.end() - 3);
+                fromAthz.erase(fromAthz.begin(), fromAthz.end() - 3);
+            }
+            if (fromSource.size() == 3) {
+                auto fs = render::compareFlicker(library, fromSource[0], fromSource[1], fromSource[2], width, height);
+                auto fa = render::compareFlicker(library, fromAthz[0], fromAthz[1], fromAthz[2], width, height);
+                if (!fs) fail(fs.error());
+                if (!fa) fail(fa.error());
+                out("frame %3u: athz against source p99 %u max %u; flicker source p99 %u relMSE %.3g, athz p99 %u "
+                    "relMSE %.3g\n", f - 1, static_cast<unsigned>(p99[f - 1]), static_cast<unsigned>(maxima[f - 1]),
+                    fs->codes.p99, fs->hdr.relMse, fa->codes.p99, fa->hdr.relMse);
+            }
+        }
+        std::sort(p99.begin(), p99.end());
+        std::sort(maxima.begin(), maxima.end());
+        out("%u frames: athz against source, p99 median %.0f worst %.0f; max worst %.0f\n", frames,
+            p99[p99.size() / 2], p99.back(), maxima.back());
     });
 }
 

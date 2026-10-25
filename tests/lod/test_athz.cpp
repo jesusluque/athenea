@@ -13,6 +13,7 @@
 #include <fstream>
 #include <thread>
 #include <bit>
+#include <cmath>
 #include <vector>
 
 #include "athenea/core/Platform.h"
@@ -475,6 +476,71 @@ TEST_CASE("an .athz's CPCA layer T decodes to what the codec gives, on the devic
     CHECK(differ == 0);
     CHECK(rest == 0);
     CHECK(differing(*h, cloud.splats.transfer, 0, back->splats.transfer, 0, n * 56) > 0);   // lossy, as it says
+}
+
+TEST_CASE("an .athz's layer K keeps the rig bit for bit and the joints in halves", "[lod][gpu][athz]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    lod::LodCloud cloud = cloudOf(*h, 20000, 170, false);
+    const uint64_t n = cloud.splats.positions.bytes() / 16;
+    test::Lcg rng;
+    rng.state ^= 171;
+    // Four (joint, weight) pairs a splat over three joints, and their gradients: a fixture's numbers.
+    std::vector<float> influences(n * 8);
+    for (uint64_t i = 0; i < n; ++i) {
+        float left = 1.0F;
+        for (uint32_t k = 0; k < 4; ++k) {
+            const float w = k < 3 ? left * rng.next() : left;
+            left -= w;
+            influences[i * 8 + 2 * k] = float(k % 3);
+            influences[i * 8 + 2 * k + 1] = w;
+        }
+    }
+    std::vector<uint32_t> gradients(n * 3);
+    for (auto& g : gradients) g = uint32_t(rng.next() * 65535.0F) * 0x00010001u & 0x3BFF3BFFu;
+    auto inf = gpu::Buffer::fromSpan(*gpu->device, std::span<const float>(influences), "test.influences");
+    auto grad = gpu::Buffer::fromSpan(*gpu->device, std::span<const uint32_t>(gradients), "test.gradients");
+    REQUIRE((inf && grad));
+    lod::AthzTemporal k;
+    k.influences = &*inf;
+    k.gradients = &*grad;
+    k.joints = 3;
+    for (int f = 0; f < 5; ++f) {
+        k.times.push_back(1.0 + f);
+        for (uint32_t j = 0; j < 3; ++j) {
+            const float a = 0.2F * float(f) * float(j);
+            const std::array<float, 16> m{std::cos(a), 0, -std::sin(a), 0, 0, 1, 0, 0,
+                                          std::sin(a), 0, std::cos(a), 0, 0.1F * f, -0.05F * j, 0.3F, 1};
+            k.xforms.insert(k.xforms.end(), m.begin(), m.end());
+        }
+    }
+    lod::AthzSettings s;
+    s.temporal = &k;
+    const auto path = temp("athenea_test_k.athz");
+    auto stats = lod::writeAthz(*gpu->library, cloud, path, s);
+    if (!stats) FAIL(stats.error().toString());
+    for (const uint32_t layers : {lod::kAthzGeometry | lod::kAthzAppearance, lod::kAthzAllLayers}) {
+        auto plain = lod::readAthz(*gpu->library, path, layers);
+        std::printf("  layer K file read with layers %u: %s\n", layers, plain ? "ok" : plain.error().message().c_str());
+    }
+    auto back = lod::readAthzSkinned(*gpu->library, path);
+    if (!back) FAIL(back.error().toString());
+    const uint64_t count = cloud.count;
+    CHECK(differing(*h, *inf, 0, back->influences, 0, count * 8) == 0);
+    CHECK(differing(*h, *grad, 0, back->gradients, 0, count * 3) == 0);
+    CHECK(differing(*h, cloud.splats.positions, 0, back->rest.positions, 0, count * 4) == 0);
+    CHECK(back->times.size() == 5);
+    std::printf("  layer K: %.2f MB of pages, %u joints x %zu frames\n", static_cast<double>(stats->layerBytes[3]) / 1e6,
+                back->joints, back->times.size());
+    // The joints: what the halves hold, each within a half's step of the float.
+    gpu::Buffer frame;
+    REQUIRE(lod::athzFrameXforms(*gpu->library, *back, 4, frame));
+    auto exact = gpu::Buffer::fromSpan(*gpu->device, std::span<const float>(k.xforms.data() + 4 * 48, 48), "test.exact");
+    REQUIRE(exact);
+    // The fourth columns are exact (0 0 0 1 written back), the rest rounded.
+    uint32_t differ = differing(*h, *exact, 0, frame, 0, 48);
+    std::printf("  frame 4: %u of 48 floats rounded by the halves\n", differ);
+    CHECK(differ <= 36);
 }
 
 TEST_CASE("every transform an .athz word takes decodes bit for bit", "[lod][gpu][athz]") {

@@ -31,8 +31,8 @@ struct AthzDecodeParams {
     uint shadowWords;
     uint words;
     uint curvatureWords;
-    uint pad1;
-    uint pad2;
+    uint influenceWords;
+    uint gradientWords;
     uint pad3;
     uint pages;
     uint pageRuns;
@@ -44,7 +44,7 @@ struct AthzDecodeParams {
     uint tailWord;   ///< the tail word's index in an element
     uint parentCount;   ///< merged groups: the level above's groups (0: none, the coarsest)
     uint leaves;     ///< 1: the cloud's splats, whose parent is their finest group
-    uint pad0;
+    uint fieldsBound;   ///< a bit a field (athz_common's): the arrays written; the rest are dropped
 };
 ConstantBuffer<AthzDecodeParams> params;
 
@@ -66,6 +66,8 @@ RWByteAddressBuffer dstLobes;
 RWByteAddressBuffer dstTransfer;
 RWByteAddressBuffer dstShadow;
 RWByteAddressBuffer dstCurvature;
+RWByteAddressBuffer dstInfluences;
+RWByteAddressBuffer dstGradients;
 /// [0]: lanes whose run did not come back to its first state, or read past
 /// its words -- a corrupt run.
 RWStructuredBuffer<Atomic<uint>> errors;
@@ -99,12 +101,17 @@ AthzLayout layout() {
     l.transferWords = params.transferWords;
     l.shadowWords = params.shadowWords;
     l.curvatureWords = params.curvatureWords;
+    l.influenceWords = params.influenceWords;
+    l.gradientWords = params.gradientWords;
     return l;
 }
 
 void storeWord(uint e, uint w, uint value) {
     const AthzLayout l = layout();
     const uint2 f = athzField(l, w);
+    if (((params.fieldsBound >> f.x) & 1u) == 0u) {
+        return;   // no array for it: a layer left out, or a field the caller does not keep
+    }
     const uint at = athzAddress(l, f, e);
     switch (f.x) {
     case kFieldPositions: dstPositions.Store(at, value); break;
@@ -117,7 +124,9 @@ void storeWord(uint e, uint w, uint value) {
     case kFieldLobes: dstLobes.Store(at, value); break;
     case kFieldTransfer: dstTransfer.Store(at, value); break;
     case kFieldShadow: dstShadow.Store(at, value); break;
-    default: dstCurvature.Store(at, value); break;
+    case kFieldCurvature: dstCurvature.Store(at, value); break;
+    case kFieldInfluences: dstInfluences.Store(at, value); break;
+    default: dstGradients.Store(at, value); break;
     }
 }
 
@@ -136,7 +145,8 @@ uint loadParent(uint e, uint w) {
     case kFieldLobes: return parLobes.Load(at);
     case kFieldTransfer: return parTransfer.Load(at);
     case kFieldShadow: return parShadow.Load(at);
-    default: return parCurvature.Load(at);
+    case kFieldCurvature: return parCurvature.Load(at);
+    default: return 0u;   // layer K: a merged group carries none
     }
 }
 

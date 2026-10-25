@@ -795,6 +795,85 @@ Result<scene::GpuSplats> loadParticleField(scene::CloudLoader& loader, const std
     return loader.upload(streams, maxDegree);
 }
 
+Result<SplatSkinning> readSplatSkinning(const std::filesystem::path& path, const std::string& prim) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::IoFailure, "cannot open '{}'", path.string());
+    }
+    UsdPrim field;
+    if (!prim.empty()) {
+        field = stage->GetPrimAtPath(SdfPath(prim));
+    } else {
+        for (const UsdPrim& candidate : stage->Traverse()) {
+            if (candidate.IsA<UsdVolParticleField3DGaussianSplat>()) {
+                field = candidate;
+                break;
+            }
+        }
+    }
+    if (!field) {
+        return Error::make(ErrorCode::NotFound, "'{}' has no gaussian ParticleField", path.string());
+    }
+    const auto attribute = [&](std::initializer_list<const char*> names) {
+        for (const char* n : names) {
+            if (UsdAttribute a = field.GetAttribute(TfToken(n)); a && a.HasValue()) return a;
+        }
+        return UsdAttribute();
+    };
+    const UsdTimeCode at = UsdTimeCode::EarliestTime();
+    VtIntArray indices;
+    VtFloatArray weights;
+    UsdAttribute ia = attribute({"primvars:athenea:splat:jointIndices", "primvars:skel:jointIndices"});
+    UsdAttribute wa = attribute({"primvars:athenea:splat:jointWeights", "primvars:skel:jointWeights"});
+    if (!ia || !wa || !ia.Get(&indices, at) || !wa.Get(&weights, at) || indices.size() != weights.size()) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': no joints and weights a gaussian", path.string());
+    }
+    SplatSkinning s;
+    if (UsdGeomPrimvar(ia).GetElementSize() != 4) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': four joints a gaussian are read, not {}", path.string(),
+                           UsdGeomPrimvar(ia).GetElementSize());
+    }
+    s.influences.resize(indices.size() * 2);
+    for (size_t k = 0; k < indices.size(); ++k) {
+        s.influences[2 * k] = static_cast<float>(indices[k]);   // the skinner's (joint, weight) pair
+        s.influences[2 * k + 1] = weights[k];
+    }
+    if (UsdAttribute ga = attribute({"primvars:athenea:splat:jointWeightGradients"})) {
+        VtHalfArray halves;
+        if (ga.Get(&halves, at)) {
+            s.weightGradients.resize((halves.size() + 1) / 2, 0u);
+            for (size_t k = 0; k < halves.size(); ++k) {
+                s.weightGradients[k / 2] |= uint32_t{halves[k].bits()} << (16 * (k & 1));
+            }
+        }
+    }
+    if (UsdAttribute ba = attribute({"primvars:athenea:splat:geomBindTransform", "primvars:skel:geomBindTransform"})) {
+        GfMatrix4d m;
+        if (ba.Get(&m, at)) {
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) s.geomBindTransform[size_t(r * 4 + c)] = static_cast<float>(m[r][c]);
+        }
+    }
+    UsdAttribute xa = attribute({"primvars:athenea:splat:skinningXforms"});
+    if (!xa) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': no joint matrices (skinningXforms)", path.string());
+    }
+    std::vector<double> times;
+    xa.GetTimeSamples(&times);
+    if (times.empty()) times.push_back(UsdTimeCode::Default().GetValue());
+    for (const double t : times) {
+        VtMatrix4dArray m;
+        if (!xa.Get(&m, t)) continue;
+        if (s.joints == 0) s.joints = static_cast<uint32_t>(m.size());
+        if (m.size() != s.joints) continue;
+        for (size_t j = 0; j < m.size(); ++j)
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) s.xforms.push_back(static_cast<float>(m[j][r][c]));
+        s.times.push_back(t);
+    }
+    return s;
+}
+
 Result<io::RawSplats> readParticleFieldRecords(const std::filesystem::path& path, const std::string& prim,
                                                std::string* where, bool* moved) {
     UsdStageRefPtr stage = UsdStage::Open(path.string());

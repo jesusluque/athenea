@@ -52,6 +52,8 @@ int main(int argc, char** argv) {
     athenea::cli::addLights(app);
     athenea::cli::addAthzCensus(app);
     athenea::cli::addAthzCompare(app);
+    athenea::cli::addAthzPrefix(app);
+    athenea::cli::addAthzSkinCheck(app);
 #if ATHENEA_HAVE_LIVE
     athenea::cli::addLive(app);
 #endif

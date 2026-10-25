@@ -234,6 +234,12 @@ struct DeviceSplatRecords {
                                                          const std::filesystem::path& path,
                                                          const std::string& prim = {}, uint32_t maxDegree = 3);
 
+/// THE RIG THAT CARRIES A FIELD, read back (SplatSkinning above, four
+/// influences a gaussian): AtheneaSplatSkinningAPI's names or
+/// SkelBindingAPI's, each authored time's joint matrices. Values read and
+/// laid out, none computed.
+[[nodiscard]] Result<SplatSkinning> readSplatSkinning(const std::filesystem::path& path, const std::string& prim = {});
+
 /// AN ARRAY A GAUSSIAN ELSE THE FIELD CARRIES: a vertex primvar (a
 /// material's values, an id, a rig, a transfer, which parts see the sky) or
 /// any other attribute one or more values a gaussian long, as 32-bit words --

@@ -221,6 +221,9 @@ sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 | `--athz-table-log` | entero | `11` | `.athz`: tablas rANS de 2^n entradas, de 9 a 12; 12 pasa de la memoria de grupo de WebGPU |
 | `--athz-raw` | flag | apagado | `.athz`: todos los planos en bit-packing crudo, sin rANS |
 | `--spz-version` | 3 o 4 | `3` | `.spz` desde un `.athz` o un `.athc`: 3 gzip, 4 ZSTD (necesita zstd) |
+| `--athz-transfer` | `lossless`, `cpca` | `lossless` | `.athz` de una nube TX: `cpca` codifica su transfer (grado 3, 112 valores) como un id de clúster y 24 pesos de cuatro bits, con pérdida, la base guardada una vez en el fichero |
+| `--transfer-basis` | ruta | ninguna | con `cpca`: la base de PCA por clústeres (f32, 256 clústeres, 8 ejes por bloque, como la toma `decimate --transfer-basis`) |
+| `--athz-skinned` | flag | apagado | `.athz` de un ParticleField con esqueleto (cuatro articulaciones por gaussiana): la nube en reposo, su rig y las articulaciones de cada fotograma autorizado en halves, como capa K |
 
 Un `.athz` guarda lo mismo que un `.athc`, bit a bit, codificado en páginas
 que decodifica una GPU (`lod/Athz.h`, §8.2). Un SPZ sacado de él es la banda
@@ -242,6 +245,36 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 athenea convert cloud.usdc cloud.athz --athz-table-log 11
 athenea convert cloud.athz cloud.spz
 ```
+
+### 2.4.3 `athenea athz-prefix` — las primeras páginas de un `.athz` que caben en un tamaño
+
+Escribe el mayor número de páginas, en orden de banda (el nivel fundido más
+grueso primero, los splats al final), cuyo fichero ocupa como mucho `--mb` MB
+(10^6 bytes; por defecto `60`), y dice cuántas gaussianas fundidas y cuántos
+splats lleva. Un prefijo que conserva todos los niveles fundidos se transmite
+como una nube cuyos splats ausentes se dibujan como sus gaussianas fundidas; uno
+que se corta dentro de ellos se dibuja como su banda entera más fina.
+
+### 2.4.4 `athenea athz-compare` — una imagen frente a su referencia, clase a clase
+
+`athenea athz-compare image.exr reference.exr classes.exr [--names A B C]`:
+los píxeles donde el rojo, el verde o el azul del mapa de clases es al menos
+tres veces cada uno de los otros dos (y pasa de 0.02) son tres clases; para
+cada una, los píxeles, la luminancia media de la imagen sobre la de la
+referencia, y el relMSE de las dos tras un desenfoque gaussiano de sigma 2 y
+con la media de la imagen igualada a la de la referencia. El mapa de clases se
+dibuja con `athenea stage --splat-override PRIM=0,1,0,R,G,B,1`.
+
+### 2.4.5 `athenea athz-skin-check` — un `.athz` con esqueleto, fotograma a fotograma
+
+`athenea athz-skin-check source.usd cloud.athz [--size 960x540] [--dir D --every 10]`:
+las dos nubes se deforman en el dispositivo en cada fotograma autorizado --
+el rig y las articulaciones de la fuente tal como los tiene la escena; la pose
+de reposo del `.athz`, el rig de la capa K y sus articulaciones en halves -- y
+se dibujan desde una cámara que encuadra la pose de reposo. Cada fotograma
+imprime el del `.athz` frente al de la fuente (p99, max) y el parpadeo de cada
+uno (la segunda diferencia de tres fotogramas); `--dir` guarda cada
+`--every`-ésimo fotograma de las dos como EXR.
 
 ### 2.4.2 `athenea athz-census` — lo que cuestan los planos de bytes de una nube
 
@@ -1879,7 +1912,7 @@ Un grade (`tint`, `saturation`, `brightness`) trabaja sobre el color de cada
 splat en luz lineal, como la mezcla: un brillo de 2 dobla la luz, y una
 captura graduada aquí no coincide con los mismos números aplicados a su sRGB.
 
-**`AtheneaStreamedAssetAPI`** — una nube dibujada desde un `.athc`.
+**`AtheneaStreamedAssetAPI`** — una nube dibujada desde un `.athc` o un `.athz` (sus páginas decodificadas en el dispositivo según llegan). Una nube reiluminada dice además `bool primvars:athenea:splat:relight = true`.
 
 | Atributo | Tipo | Por defecto |
 |---|---|---|
@@ -2450,7 +2483,7 @@ de quien lo ejecuta: están en
 zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.athc`
 (el contenedor por chunks de este motor), `.athz` (lo mismo, codificado en páginas que decodifica una GPU).
 
-**`.athz`.** `ATHZ`, versión 2 (la versión 1, sin transformadas, se lee). Una cabecera de 64 bytes con su propio CRC-32,
+**`.athz`.** `ATHZ`, versión 3 (se leen las versiones 1 y 2). La capa G lleva la curvatura donde la nube la lleva; la capa T va sin pérdida o en CPCA (`--athz-transfer`); la capa K, el rig de una nube con esqueleto y sus articulaciones por fotograma. Una cabecera de 64 bytes con su propio CRC-32,
 extensiones que se pueden saltar, la tabla de asset en 4096 (la codificación
 de cada plano de bytes y las frecuencias de las tablas rANS), una entrada de
 64 bytes por página (elementos, banda, nivel, página padre, caja en f16,
@@ -2502,6 +2535,9 @@ solo se escribe como la vista previa de MCP.
 | `athenea bench` | nada; los tiempos por la salida estándar |
 | `athenea convert` | una escena USD, un `.athc`, un `.athz` o un `.spz` |
 | `athenea athz-census` | tablas por la salida estándar; los ficheros medidos y un CSV por plano en `--dir` |
+| `athenea athz-prefix` | un `.athz` |
+| `athenea athz-compare` | una tabla por la salida estándar |
+| `athenea athz-skin-check` | una línea por fotograma por la salida estándar; con `--dir`, EXR |
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |

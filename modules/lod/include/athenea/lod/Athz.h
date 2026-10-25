@@ -61,6 +61,19 @@ inline constexpr uint32_t kAthzTransfer = 4;     ///< T: transfer and its open d
 inline constexpr uint32_t kAthzTemporal = 8;     ///< K: none written yet
 inline constexpr uint32_t kAthzAllLayers = 15;
 
+/// LAYER K: the rig that moves a skinned cloud, once -- each splat's four
+/// (joint, weight) float pairs and their gradients in the store's order, as
+/// scene::SplatSkinner takes them -- and its joints at each frame, written in
+/// halves (each matrix's first three columns; the fourth is 0 0 0 1).
+struct AthzTemporal {
+    const gpu::Buffer*    influences = nullptr;   ///< 8 words a store splat
+    const gpu::Buffer*    gradients = nullptr;    ///< 3 words a store splat, or null
+    uint32_t              joints = 0;
+    std::vector<double>   times;
+    std::vector<float>    xforms;                 ///< times * joints * 16, row major
+    std::array<float, 16> geomBind{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+};
+
 struct AthzSettings {
     /// Elements a run: 32, 64, 128 or 256 (a lane's symbols a plane are
     /// runGaussians / 32).
@@ -89,6 +102,8 @@ struct AthzSettings {
     /// 4 bits (transfer_codec.slang's codec), the basis kept once in the file;
     /// the decoder writes the transfer back from them. Empty: lossless.
     std::filesystem::path transferBasis;
+    /// Layer K, where the cloud is skinned (null: none).
+    const AthzTemporal* temporal = nullptr;
     /// The census: each plane's order-1 entropy under two contexts, measured.
     bool measureContexts = false;
     /// Not 0: the pages' histograms are counted in an order shuffled by this
@@ -152,6 +167,41 @@ struct AthzStats {
 /// the splats) as a file of their own: bytes copied, the tables cut short.
 [[nodiscard]] Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesystem::path& out,
                                            uint32_t bands);
+
+/// A SKINNED .athz READ BACK: the cloud's own splats in their rest pose (the
+/// store's order), layer K's influences beside them, and every frame's
+/// joints in halves on the device; `athzFrameXforms` writes one frame's as
+/// the skinner's floats.
+struct AthzSkinned {
+    scene::GpuSplats      rest;
+    gpu::Buffer           influences;
+    gpu::Buffer           gradients;   ///< invalid where the file has none
+    uint32_t              joints = 0;
+    std::vector<double>   times;
+    gpu::Buffer           halves;
+    std::array<float, 16> geomBind{};
+};
+[[nodiscard]] Result<AthzSkinned> readAthzSkinned(gpu::ShaderLibrary& library, const std::filesystem::path& path);
+[[nodiscard]] Result<void> athzFrameXforms(gpu::ShaderLibrary& library, const AthzSkinned& skinned, uint32_t frame,
+                                           gpu::Buffer& xforms);
+/// A file's per-gaussian words (`words` a record) in the store's order:
+/// `order` a store splat's splat of the decoded cloud, `origin` (or null) a
+/// decoded splat's record.
+[[nodiscard]] Result<gpu::Buffer> athzGatherToStore(gpu::ShaderLibrary& library, const gpu::Buffer& fileWords,
+                                                    uint32_t words, const gpu::Buffer& order,
+                                                    const gpu::Buffer* origin, uint32_t count);
+
+/// THE PREFIX THAT FITS: the most pages, in band order, whose file is at
+/// most `maxBytes` -- a fixed cut of that size. What it holds.
+struct AthzPrefix {
+    uint32_t pages = 0;
+    uint64_t bytes = 0;
+    uint64_t merged = 0;       ///< merged gaussians in its pages
+    uint64_t splats = 0;       ///< the cloud's own splats in its pages
+    bool     levelsWhole = false;   ///< every merged level is in it: it streams as a cloud
+};
+[[nodiscard]] Result<AthzPrefix> writeAthzPrefixBytes(const std::filesystem::path& in, const std::filesystem::path& out,
+                                                      uint64_t maxBytes);
 
 /// E1: how long the device takes to decode the file's splat pages (all
 /// layers), in dispatches of at most `batchBytes` coded bytes, and in

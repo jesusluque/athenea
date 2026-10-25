@@ -218,6 +218,9 @@ emit, tile sort and blend times separately.
 | `--athz-table-log` | integer | `11` | `.athz`: rANS tables of 2^n slots, 9 to 12; 12 is past WebGPU's workgroup memory |
 | `--athz-raw` | flag | off | `.athz`: every plane raw bit-packed, no rANS |
 | `--spz-version` | 3 or 4 | `3` | `.spz` out of a `.athz` or `.athc`: 3 gzip, 4 ZSTD (needs zstd) |
+| `--athz-transfer` | `lossless`, `cpca` | `lossless` | `.athz` of a TX cloud: `cpca` codes its transfer (degree 3, 112 values) as a cluster id and 24 four-bit weights, lossy, the basis kept once in the file |
+| `--transfer-basis` | path | none | with `cpca`: the clustered PCA basis (f32, 256 clusters, 8 axes a block, as `decimate --transfer-basis` takes) |
+| `--athz-skinned` | flag | off | `.athz` of a skinned ParticleField (four joints a gaussian): the rest cloud, its rig and each authored frame's joints in halves, as layer K |
 
 A `.athz` holds what a `.athc` does, bit for bit, coded in pages a GPU
 decodes (`lod/Athz.h`, §8.2). An SPZ out of one is the finest band the file
@@ -238,6 +241,33 @@ athenea convert capture.ply capture.athc --chunk-splats 131072
 athenea convert cloud.usdc cloud.athz --athz-table-log 11
 athenea convert cloud.athz cloud.spz
 ```
+
+### 2.4.3 `athenea athz-prefix` — the first pages of a `.athz` that fit a size
+
+Writes the most pages, in band order (coarsest merged level first, the splats
+last), whose file takes at most `--mb` MB (10^6 bytes; default `60`), and says
+how many merged gaussians and splats they hold. A prefix that keeps every
+merged level streams as a cloud whose missing splats are drawn as their merged
+gaussians; one that stops inside them is drawn as its finest whole band.
+
+### 2.4.4 `athenea athz-compare` — an image against its reference, class by class
+
+`athenea athz-compare image.exr reference.exr classes.exr [--names A B C]`:
+the pixels where the class map's red, green or blue is at least three times
+both others (and above 0.02) are three classes; for each, the pixels, the mean
+luminance of the image over the reference's, and the relMSE of the two after a
+gaussian blur of sigma 2 and with the image's mean matched to the reference's.
+A class map is drawn with `athenea stage --splat-override PRIM=0,1,0,R,G,B,1`.
+
+### 2.4.5 `athenea athz-skin-check` — a skinned `.athz` frame by frame
+
+`athenea athz-skin-check source.usd cloud.athz [--size 960x540] [--dir D --every 10]`:
+both clouds skinned on the device at every authored frame -- the source's rig
+and joints as the stage holds them, the `.athz`'s rest pose, layer K's rig and
+its joints in halves -- and drawn from a camera framing the rest pose. Each
+frame prints the `.athz` frame against the source's (p99, max) and the flicker
+of each (the second difference of three frames); `--dir` keeps every
+`--every`-th frame of both as EXR.
 
 ### 2.4.2 `athenea athz-census` — what a cloud's byte planes cost
 
@@ -1821,7 +1851,7 @@ A grade (`tint`, `saturation`, `brightness`) works on each splat's colour in
 linear light, as the blend does: a brightness of 2 doubles the light, and a
 capture graded here does not match the same numbers applied to its sRGB.
 
-**`AtheneaStreamedAssetAPI`** — a cloud drawn from a `.athc`.
+**`AtheneaStreamedAssetAPI`** — a cloud drawn from a `.athc` or a `.athz` (its pages decoded on the device as they come). A relit cloud also says `bool primvars:athenea:splat:relight = true`.
 
 | Attribute | Type | Default |
 |---|---|---|
@@ -2379,7 +2409,7 @@ running it; they are listed in [development.md §3](development.md#3-working-in-
 or a bare `meta.json` (PlayCanvas, needs libwebp), `.athc` (this engine's
 chunked container), `.athz` (the same, coded in pages a GPU decodes).
 
-**`.athz`.** `ATHZ`, version 2 (version 1, without transforms, is read). A 64-byte header with its own CRC-32, skippable
+**`.athz`.** `ATHZ`, version 3 (versions 1 and 2 are read). Layer G carries the curvature where the cloud does; layer T is lossless or CPCA (`--athz-transfer`); layer K the rig of a skinned cloud and its joints a frame. A 64-byte header with its own CRC-32, skippable
 extensions, the asset table at 4096 (each byte plane's coding and the rANS
 tables' frequencies), a 64-byte entry a page (elements, band, level, parent
 page, f16 box, error, each layer's offset and bytes, CRC-32), then sections
@@ -2429,6 +2459,9 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea bench` | nothing; timings on standard output |
 | `athenea convert` | a USD stage, a `.athc`, a `.athz` or an `.spz` |
 | `athenea athz-census` | tables on standard output; the measured files and a CSV a plane in `--dir` |
+| `athenea athz-prefix` | a `.athz` |
+| `athenea athz-compare` | a table on standard output |
+| `athenea athz-skin-check` | a line a frame on standard output; with `--dir`, EXRs |
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |

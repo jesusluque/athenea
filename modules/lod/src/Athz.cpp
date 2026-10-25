@@ -79,7 +79,7 @@ uint32_t crcOf(const void* data, uint64_t bytes, uint32_t crc = 0) {
 
 /// Words an element is: the .athc block's, and its curvature.
 uint32_t recordWords(const ChunkFormat& f) {
-    return static_cast<uint32_t>(f.elementBytes() / 4) + f.curvatureWords;
+    return static_cast<uint32_t>(f.elementBytes() / 4) + f.curvatureWords + f.influenceWords + f.gradientWords;
 }
 
 Error bad(const std::filesystem::path& path, const std::string& why) {
@@ -195,6 +195,11 @@ struct Asset {
     float    cpcaLevels = 0;
     uint64_t basisOffset = 0;
     uint64_t basisBytes = 0;
+    /// Layer K's frames (the rig's joints in halves), once an asset.
+    uint32_t joints = 0;
+    uint32_t frames = 0;
+    uint64_t temporalOffset = 0;
+    uint64_t temporalBytes = 0;
     float    boundsLo[3] = {0, 0, 0};
     float    extent = 0;
     scene::Bounds bounds;
@@ -273,6 +278,12 @@ std::vector<uint8_t> encodeAsset(Asset& a) {
         w.put<float>(a.cpcaLevels);
         w.put<uint64_t>(a.basisOffset);
         w.put<uint64_t>(a.basisBytes);
+        w.put<uint32_t>(f.influenceWords);
+        w.put<uint32_t>(f.gradientWords);
+        w.put<uint32_t>(a.joints);
+        w.put<uint32_t>(a.frames);
+        w.put<uint64_t>(a.temporalOffset);
+        w.put<uint64_t>(a.temporalBytes);
         for (float v : a.boundsLo) w.put<float>(v);
         w.put<float>(a.extent);
         for (float v : a.bounds.min) w.put<float>(v);
@@ -339,6 +350,12 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
         a.cpcaLevels = r.get<float>();
         a.basisOffset = r.get<uint64_t>();
         a.basisBytes = r.get<uint64_t>();
+        f.influenceWords = r.get<uint32_t>();
+        f.gradientWords = r.get<uint32_t>();
+        a.joints = r.get<uint32_t>();
+        a.frames = r.get<uint32_t>();
+        a.temporalOffset = r.get<uint64_t>();
+        a.temporalBytes = r.get<uint64_t>();
     }
     f.linear = (h.flags & kFlagLinear) != 0;
     a.coded = f;
@@ -392,6 +409,12 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
     if (f.curvatureWords != 0 && f.curvatureWords != 3) {
         return bad(path, "curvature");
     }
+    if ((f.influenceWords != 0 && f.influenceWords != 8) || (f.gradientWords != 0 && f.gradientWords != 3) ||
+        (f.influenceWords != 0) != (a.frames != 0) || a.temporalOffset > bytes.size() ||
+        a.temporalBytes > bytes.size() - a.temporalOffset ||
+        (a.frames != 0 && a.temporalBytes != 64 + uint64_t{a.frames} * 8 + uint64_t{a.frames} * a.joints * 24)) {
+        return bad(path, "layer K");
+    }
     for (size_t i = 0; i < a.planeEntries.size(); ++i) {
         PlaneEntry& p = a.planeEntries[i];
         if (h.version < 2) {
@@ -431,9 +454,9 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
 // --- what an element is ---------------------------------------------------------
 
 /// Words of each array an element carries, in its order (athz_common's fields).
-std::array<uint32_t, 11> fieldWords(const ChunkFormat& f) {
+std::array<uint32_t, 13> fieldWords(const ChunkFormat& f) {
     return {4, 4, f.shWords, 1, f.normals ? 1u : 0u, f.emission ? 1u : 0u, f.pbrWords, f.lobesWords, f.transferWords,
-            f.shadowWords, f.curvatureWords};
+            f.shadowWords, f.curvatureWords, f.influenceWords, f.gradientWords};
 }
 
 
@@ -445,9 +468,9 @@ std::array<uint32_t, 11> fieldWords(const ChunkFormat& f) {
 uint32_t layerOfByte(const ChunkFormat& f, uint32_t b) {
     uint32_t w = b / 4;
     const uint32_t inWord = b % 4;
-    const std::array<uint32_t, 11> words = fieldWords(f);
+    const std::array<uint32_t, 13> words = fieldWords(f);
     uint32_t field = 0;
-    for (; field < 11; ++field) {
+    for (; field < 13; ++field) {
         if (w < words[field]) break;
         w -= words[field];
     }
@@ -461,6 +484,8 @@ uint32_t layerOfByte(const ChunkFormat& f, uint32_t b) {
     case 6: return 0;
     case 7: return 0;
     case 10: return 0;   // curvature: geometry
+    case 11: return 3;   // the rig: temporal
+    case 12: return 3;
     default: return 2;
     }
 }
@@ -497,13 +522,13 @@ ChunkFormat formatOfCloud(const LodCloud& cloud, uint32_t pageGaussians) {
 
 /// An element's arrays, as buffers (the tail apart from the cloud's).
 struct Arrays {
-    std::array<const gpu::Buffer*, 11> field{};
+    std::array<const gpu::Buffer*, 13> field{};
 };
 
 Arrays arraysOf(const scene::GpuSplats& s, const gpu::Buffer& tail) {
     Arrays a;
     a.field = {&s.positions, &s.shape, &s.sh, &tail, &s.normals, &s.emission, &s.pbr, &s.lobes, &s.transfer,
-               &s.shadowBits, &s.curvature};
+               &s.shadowBits, &s.curvature, nullptr, nullptr};
     return a;
 }
 
@@ -517,14 +542,14 @@ struct Parents {
 
 constexpr std::array<const char*, 11> kParNames = {"parPositions", "parShape", "parSh", "parTail", "parNormals",
                                                    "parEmission", "parPbr", "parLobes", "parTransfer", "parShadow",
-                                                   "parCurvature"};
+                                                   "parCurvature"};   // layer K has no parent
 
-constexpr std::array<const char*, 11> kSrcNames = {"srcPositions", "srcShape", "srcSh", "srcTail", "srcNormals",
+constexpr std::array<const char*, 13> kSrcNames = {"srcPositions", "srcShape", "srcSh", "srcTail", "srcNormals",
                                                    "srcEmission", "srcPbr", "srcLobes", "srcTransfer", "srcShadow",
-                                                   "srcCurvature"};
-constexpr std::array<const char*, 11> kDstNames = {"dstPositions", "dstShape", "dstSh", "dstTail", "dstNormals",
+                                                   "srcCurvature", "srcInfluences", "srcGradients"};
+constexpr std::array<const char*, 13> kDstNames = {"dstPositions", "dstShape", "dstSh", "dstTail", "dstNormals",
                                                    "dstEmission", "dstPbr", "dstLobes", "dstTransfer", "dstShadow",
-                                                   "dstCurvature"};
+                                                   "dstCurvature", "dstInfluences", "dstGradients"};
 
 void setLayout(rhi::ShaderCursor p, const ChunkFormat& f) {
     p["shWords"].setData(f.shWords);
@@ -536,6 +561,8 @@ void setLayout(rhi::ShaderCursor p, const ChunkFormat& f) {
     p["shadowWords"].setData(f.shadowWords);
     p["words"].setData(recordWords(f));
     p["curvatureWords"].setData(f.curvatureWords);
+    p["influenceWords"].setData(f.influenceWords);
+    p["gradientWords"].setData(f.gradientWords);
 }
 
 Result<gpu::Buffer> deviceBuffer(gpu::Device& device, uint64_t bytes, uint32_t element, const char* label,
@@ -862,6 +889,11 @@ public:
             c["params"]["tailWord"].setData(8u + asset_->format.shWords);
             c["params"]["parentCount"].setData(parents.count);
             c["params"]["leaves"].setData(parents.leaves ? 1u : 0u);
+            uint32_t bound = 0;
+            for (size_t f = 0; f < kDstNames.size(); ++f) {
+                if (dst.field[f] != nullptr && dst.field[f]->valid()) bound |= 1u << f;
+            }
+            c["params"]["fieldsBound"].setData(bound);
             for (size_t f = 0; f < kParNames.size(); ++f) {
                 const gpu::Buffer* b = parents.arrays.field[f];
                 c[kParNames[f]].setBinding((b != nullptr && b->valid() ? *b : dummy_).rhi());
@@ -1167,6 +1199,17 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
 
     Asset asset;
     asset.format = formatOfCloud(cloud, PG);
+    const AthzTemporal* temporal = settings.temporal;
+    if (temporal != nullptr) {
+        if (temporal->influences == nullptr || temporal->joints == 0 || temporal->times.empty() ||
+            temporal->xforms.size() != temporal->times.size() * temporal->joints * 16) {
+            return Error(ErrorCode::InvalidArgument, "athz: layer K needs influences and every frame's joints");
+        }
+        asset.format.influenceWords = 8;
+        asset.format.gradientWords = temporal->gradients != nullptr ? 3 : 0;
+        asset.joints = temporal->joints;
+        asset.frames = static_cast<uint32_t>(temporal->times.size());
+    }
     asset.coded = asset.format;
     // A LOSSY LAYER T: the transfer coded by CPCA, its id and weights in
     // four words (athz_cpca.slang), where a basis is given and the cloud's
@@ -1217,14 +1260,14 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         if (!cells) return std::move(cells).error();
         mergedCells = std::move(*cells);
         const Arrays to = arraysOf(merged, mergedCells);
-        const std::array<uint32_t, 11> fw = fieldWords(decodedFormat);
+        const std::array<uint32_t, 13> fw = fieldWords(decodedFormat);
         gpu::CommandBatch batch(device);
         uint64_t at = 0;
         uint32_t page = 0;
         for (size_t li = 0; li < cloud.levels.size(); ++li) {
             const LodLevel& l = cloud.levels[li];
             const Arrays from = arraysOf(l.gaussians, l.cells);
-            for (size_t k = 0; k < fw.size(); ++k) {
+            for (size_t k = 0; k < 11; ++k) {   // layer K is the splats' alone
                 if (fw[k] == 0) continue;
                 const uint64_t per = uint64_t{fw[k]} * 4;
                 batch.encoder()->copyBuffer(to.field[k]->rhi(), at * per, from.field[k]->rhi(), 0,
@@ -1255,6 +1298,22 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         }
         kinds[1].arrays = arraysOf(cloud.splats, cloud.groups);
         kinds[1].elements = cloud.count;
+    }
+    // Layer K: the splats' rig, and zeros for the merged groups (nothing skins them).
+    gpu::Buffer mergedInfluences, mergedGradients;
+    if (temporal != nullptr) {
+        auto z = zeros(device, kinds[0].elements * 8, "athz.mergedInfluences");
+        if (!z) return std::move(z).error();
+        mergedInfluences = std::move(*z);
+        kinds[0].arrays.field[11] = &mergedInfluences;
+        kinds[1].arrays.field[11] = temporal->influences;
+        if (temporal->gradients != nullptr) {
+            auto g = zeros(device, kinds[0].elements * 3, "athz.mergedGradients");
+            if (!g) return std::move(g).error();
+            mergedGradients = std::move(*g);
+            kinds[0].arrays.field[12] = &mergedGradients;
+            kinds[1].arrays.field[12] = temporal->gradients;
+        }
     }
     const uint32_t totalPages = static_cast<uint32_t>((kinds[0].pageList.size() + kinds[1].pageList.size()) / 4);
     // The CPCA codes of each kind, in place of its transfer.
@@ -1702,6 +1761,35 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         w.put<uint32_t>(0);
         tlv = std::move(w.bytes);
     }
+    // Layer K's frames: the joints in halves (the device's), with the bind
+    // transform and the times.
+    std::vector<uint8_t> temporalBytes;
+    if (temporal != nullptr) {
+        const uint64_t matrices = uint64_t{asset.frames} * asset.joints;
+        auto in = deviceBuffer(device, temporal->xforms.size() * 4, 4, "athz.xforms", temporal->xforms.data());
+        auto out = deviceBuffer(device, matrices * 24, 4, "athz.halves");
+        auto toHalves = gpu::ComputeKernel::create(library, "athenea/lod/athz_interleave", "athzToHalves");
+        if (!in) return std::move(in).error();
+        if (!out) return std::move(out).error();
+        if (!toHalves) return std::move(toHalves).error();
+        gpu::CommandBatch batch(device);
+        toHalves->dispatch(batch, {static_cast<uint32_t>(matrices), 1, 1}, [&](rhi::ShaderCursor c) {
+            c["halves"]["matrices"].setData(static_cast<uint32_t>(matrices));
+            c["halves"]["joints"].setData(asset.joints);
+            c["matricesIn"].setBinding(in->rhi());
+            c["halvesOut"].setBinding(out->rhi());
+            for (const char* unused : {"halvesIn", "matricesOut", "records", "gatherFrom", "order", "origin",
+                                       "gatherTo"}) {
+                c[unused].setBinding(out->rhi());
+            }
+        });
+        ATHENEA_TRY(batch.submit(true));
+        temporalBytes.resize(64 + uint64_t{asset.frames} * 8 + matrices * 24);
+        std::memcpy(temporalBytes.data(), temporal->geomBind.data(), 64);
+        std::memcpy(temporalBytes.data() + 64, temporal->times.data(), uint64_t{asset.frames} * 8);
+        ATHENEA_TRY(out->read(device, 0, matrices * 24, temporalBytes.data() + 64 + uint64_t{asset.frames} * 8));
+        asset.temporalBytes = temporalBytes.size();
+    }
     std::vector<uint8_t> starts(uint64_t{asset.finestGroups} * 4);
     ATHENEA_TRY(cloud.starts.read(device, 0, starts.size(), starts.data()));
     asset.startsBytes = starts.size();
@@ -1717,6 +1805,10 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         asset.basisBytes = basisBytes.size();
         at = aligned(at + basisBytes.size(), kPage);
     }
+    if (temporal != nullptr) {
+        asset.temporalOffset = at;
+        at = aligned(at + temporalBytes.size(), kPage);
+    }
     for (uint32_t L = 0; L < 4; ++L) {
         asset.sectionOffset[L] = ((layerMask >> L) & 1u) != 0 ? at : 0;
         asset.sectionBytes[L] = sections[L].size();
@@ -1726,6 +1818,7 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
     Header h;
     h.flags = ((layerMask & kAthzTransfer) != 0 ? kFlagTransfer : 0) | (f.restPerColour > 0 ? kFlagHarmonics : 0) |
               (f.linear ? kFlagLinear : 0) | (f.emission ? kFlagEmission : 0) |
+              (temporal != nullptr ? kFlagTemporal : 0u) |
               (std::any_of(asset.planeEntries.begin(), asset.planeEntries.end(),
                            [](const PlaneEntry& e) { return e[3] >= 4; })
                    ? kFlagPredicted
@@ -1767,6 +1860,10 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
     if (asset.cpca) {
         padTo(asset.basisOffset);
         put(basisBytes.data(), basisBytes.size());
+    }
+    if (temporal != nullptr) {
+        padTo(asset.temporalOffset);
+        put(temporalBytes.data(), temporalBytes.size());
     }
     for (uint32_t L = 0; L < 4; ++L) {
         if (asset.sectionOffset[L] == 0) continue;
@@ -1890,14 +1987,13 @@ Result<scene::GpuSplats> readAthzCut(gpu::ShaderLibrary& library, const std::fil
     return std::move(*cloud);
 }
 
-Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesystem::path& out, uint32_t bands) {
-    auto parsed = parse(in);
-    if (!parsed) return std::move(parsed).error();
-    const Parsed& p = **parsed;
+namespace {
+
+/// The first `keep` pages of `p` as a file of their own at `out` -- or, with
+/// no `out`, only the size that file would be.
+Result<uint64_t> prefixPages(const Parsed& p, const std::filesystem::path* outPath, uint32_t keep) {
     Asset a = p.asset;
-    const uint32_t keep = std::min(p.header.pages, bands < a.levels.size() ? a.levels[bands].firstPage
-                                                                            : (bands == a.levels.size() ? p.leafFirstPage
-                                                                                                        : p.header.pages));
+    keep = std::min(keep, p.header.pages);
     std::array<uint64_t, 4> bytes{};
     for (uint32_t L = 0; L < 4; ++L) {
         bytes[L] = keep < p.header.pages ? p.pages[keep].offset[L] : a.sectionBytes[L];
@@ -1912,11 +2008,20 @@ Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesys
         a.basisOffset = at;
         at = aligned(at + a.basisBytes, kPage);
     }
+    const uint64_t oldTemporal = p.asset.temporalOffset;
+    if (a.frames != 0) {
+        a.temporalOffset = at;
+        at = aligned(at + a.temporalBytes, kPage);
+    }
     for (uint32_t L = 0; L < 4; ++L) {
         if (a.sectionOffset[L] == 0) continue;
         a.sectionOffset[L] = at;
         at = aligned(at + bytes[L], kPage);
     }
+    if (outPath == nullptr) {
+        return at;
+    }
+    const std::filesystem::path& out = *outPath;
     const uint64_t oldStarts = a.startsOffset;
     a.startsOffset = startsOffset;
     const uint64_t oldBasis = p.asset.basisOffset;
@@ -1954,6 +2059,10 @@ Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesys
         padTo(a.basisOffset);
         put(base + oldBasis, a.basisBytes);
     }
+    if (a.frames != 0) {
+        padTo(a.temporalOffset);
+        put(base + oldTemporal, a.temporalBytes);
+    }
     for (uint32_t L = 0; L < 4; ++L) {
         if (a.sectionOffset[L] == 0) continue;
         padTo(a.sectionOffset[L]);
@@ -1969,7 +2078,149 @@ Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesys
     if (ec) {
         return Error(ErrorCode::IoFailure, "cannot move " + partial.string() + " to " + out.string());
     }
+    return written;
+}
+
+}   // namespace
+
+Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesystem::path& out, uint32_t bands) {
+    auto parsed = parse(in);
+    if (!parsed) return std::move(parsed).error();
+    const Parsed& p = **parsed;
+    const Asset& a = p.asset;
+    const uint32_t keep = bands < a.levels.size() ? a.levels[bands].firstPage
+                                                  : (bands == a.levels.size() ? p.leafFirstPage : p.header.pages);
+    auto written = prefixPages(p, &out, keep);
+    if (!written) return std::move(written).error();
     return ok();
+}
+
+Result<AthzPrefix> writeAthzPrefixBytes(const std::filesystem::path& in, const std::filesystem::path& out,
+                                        uint64_t maxBytes) {
+    auto parsed = parse(in);
+    if (!parsed) return std::move(parsed).error();
+    const Parsed& p = **parsed;
+    // The most pages whose file fits: sizes only grow with pages.
+    uint32_t lo = 0, hi = p.header.pages;
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo + 1) / 2;
+        auto size = prefixPages(p, nullptr, mid);
+        if (!size) return std::move(size).error();
+        if (*size <= maxBytes) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    auto written = prefixPages(p, &out, lo);
+    if (!written) return std::move(written).error();
+    AthzPrefix r;
+    r.pages = lo;
+    r.bytes = *written;
+    for (uint32_t page = 0; page < lo; ++page) {
+        (page < p.leafFirstPage ? r.merged : r.splats) += p.pages[page].count();
+    }
+    r.levelsWhole = lo >= p.leafFirstPage;
+    return r;
+}
+
+Result<AthzSkinned> readAthzSkinned(gpu::ShaderLibrary& library, const std::filesystem::path& path) {
+    gpu::Device& device = library.device();
+    auto parsed = parse(path);
+    if (!parsed) return std::move(parsed).error();
+    const Parsed& p = **parsed;
+    const Asset& a = p.asset;
+    if (a.frames == 0 || (p.header.layerMask & kAthzTemporal) == 0) {
+        return Error::make(ErrorCode::InvalidArgument, "{}: no layer K (the cloud is not skinned)", path.string());
+    }
+    if (p.header.pages < p.leafFirstPage + p.leafPages) {
+        return Error::make(ErrorCode::InvalidArgument, "{}: a skinned cloud is read whole", path.string());
+    }
+    auto decoder = Decoder::create(library, p, kAthzAllLayers);
+    if (!decoder) return std::move(decoder).error();
+    auto levels = decodeLevels(device, **decoder, p, static_cast<uint32_t>(a.levels.size() - 1));
+    if (!levels) return std::move(levels).error();
+    AthzSkinned out;
+    auto rest = emptyCloud(device, a.format, a.count, path.filename().string(), a.bounds);
+    if (!rest) return std::move(rest).error();
+    out.rest = std::move(*rest);
+    auto tail = deviceBuffer(device, uint64_t{a.count} * 4, 4, "athz.tail");
+    auto influences = deviceBuffer(device, uint64_t{a.count} * 32, 4, "athz.influences");
+    if (!tail) return std::move(tail).error();
+    if (!influences) return std::move(influences).error();
+    out.influences = std::move(*influences);
+    if (a.format.gradientWords != 0) {
+        auto g = deviceBuffer(device, uint64_t{a.count} * 12, 4, "athz.gradients");
+        if (!g) return std::move(g).error();
+        out.gradients = std::move(*g);
+    }
+    auto dst = leafArrays(device, **decoder, a, out.rest, *tail, a.count);
+    if (!dst) return std::move(dst).error();
+    dst->field[11] = &out.influences;
+    dst->field[12] = out.gradients.valid() ? &out.gradients : nullptr;
+    std::vector<uint32_t> pages, where;
+    for (uint32_t c = 0; c < p.leafPages; ++c) {
+        pages.push_back(p.leafFirstPage + c);
+        where.push_back(c * a.format.chunkSplats);
+    }
+    ATHENEA_TRY(decodePages(device, **decoder, p, 1, pages, where, *dst,
+                            leafParents(levels->back(), **decoder, levels->size() - 1), &out.rest.transfer));
+    // The frames, as the file keeps them: the bind transform, the times,
+    // the joints in halves (copied up; the device turns them into floats).
+    const std::byte* k = p.file.bytes().data() + a.temporalOffset;
+    std::memcpy(out.geomBind.data(), k, 64);
+    out.times.resize(a.frames);
+    std::memcpy(out.times.data(), k + 64, uint64_t{a.frames} * 8);
+    out.joints = a.joints;
+    auto halves = deviceBuffer(device, uint64_t{a.frames} * a.joints * 24, 4, "athz.halves",
+                               k + 64 + uint64_t{a.frames} * 8);
+    if (!halves) return std::move(halves).error();
+    out.halves = std::move(*halves);
+    return out;
+}
+
+Result<void> athzFrameXforms(gpu::ShaderLibrary& library, const AthzSkinned& skinned, uint32_t frame,
+                             gpu::Buffer& xforms) {
+    gpu::Device& device = library.device();
+    if (frame >= skinned.times.size()) {
+        return Error::make(ErrorCode::InvalidArgument, "athz: frame {} of {}", frame, skinned.times.size());
+    }
+    if (!xforms.valid() || xforms.bytes() < uint64_t{skinned.joints} * 64) {
+        auto made = deviceBuffer(device, uint64_t{skinned.joints} * 64, 4, "athz.frameXforms");
+        if (!made) return std::move(made).error();
+        xforms = std::move(*made);
+    }
+    auto kernel = gpu::ComputeKernel::create(library, "athenea/lod/athz_interleave", "athzFromHalves");
+    if (!kernel) return std::move(kernel).error();
+    gpu::CommandBatch batch(device);
+    kernel->dispatch(batch, {skinned.joints, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["halves"]["joints"].setData(skinned.joints);
+        c["halves"]["frame"].setData(frame);
+        c["halvesIn"].setBinding(skinned.halves.rhi());
+        c["matricesOut"].setBinding(xforms.rhi());
+    });
+    return batch.submit(true);
+}
+
+Result<gpu::Buffer> athzGatherToStore(gpu::ShaderLibrary& library, const gpu::Buffer& fileWords, uint32_t words,
+                                      const gpu::Buffer& order, const gpu::Buffer* origin, uint32_t count) {
+    gpu::Device& device = library.device();
+    auto out = deviceBuffer(device, uint64_t{count} * words * 4, 4, "athz.gathered");
+    if (!out) return std::move(out).error();
+    auto kernel = gpu::ComputeKernel::create(library, "athenea/lod/athz_interleave", "athzGather");
+    if (!kernel) return std::move(kernel).error();
+    gpu::CommandBatch batch(device);
+    kernel->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["gather"]["count"].setData(count);
+        c["gather"]["words"].setData(words);
+        c["gather"]["useOrigin"].setData(origin != nullptr && origin->valid() ? 1u : 0u);
+        c["gatherFrom"].setBinding(fileWords.rhi());
+        c["order"].setBinding(order.rhi());
+        c["origin"].setBinding((origin != nullptr && origin->valid() ? *origin : order).rhi());
+        c["gatherTo"].setBinding(out->rhi());
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return std::move(*out);
 }
 
 Result<std::vector<AthzDecodeTiming>> timeAthzDecode(gpu::ShaderLibrary& library, const std::filesystem::path& path,

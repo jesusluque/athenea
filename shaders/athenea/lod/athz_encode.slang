@@ -49,8 +49,8 @@ struct AthzParams {
     uint  elements;       ///< athzParents: elements of the kind
     uint  groups;         ///< athzEntropy: groups of 256 counts
     uint  curvatureWords;
-    uint  pad1;
-    uint  pad2;
+    uint  influenceWords;
+    uint  gradientWords;
 };
 ConstantBuffer<AthzParams> params;
 
@@ -92,6 +92,8 @@ AthzLayout layout() {
     l.transferWords = params.transferWords;
     l.shadowWords = params.shadowWords;
     l.curvatureWords = params.curvatureWords;
+    l.influenceWords = params.influenceWords;
+    l.gradientWords = params.gradientWords;
     return l;
 }
 

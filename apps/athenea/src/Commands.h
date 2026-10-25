@@ -55,6 +55,8 @@ void addLights(CLI::App& app);
 void addLive(CLI::App& app);
 void addAthzCensus(CLI::App& app);
 void addAthzCompare(CLI::App& app);
+void addAthzPrefix(CLI::App& app);
+void addAthzSkinCheck(CLI::App& app);
 
 /// What `athenea convert` takes for a .athz (CmdAthz.cpp).
 struct AthzConvertOptions {
@@ -67,6 +69,7 @@ struct AthzConvertOptions {
     uint32_t spzVersion = 3;
     std::string transfer = "lossless";   ///< or cpca
     std::string transferBasis;
+    bool        skinned = false;   ///< layer K: the rig and its frames
 };
 /// A conversion into or out of a .athz (or a .athc into SPZ): done and true,
 /// or false when it is not one.
