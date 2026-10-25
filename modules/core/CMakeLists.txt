@@ -4,7 +4,8 @@ athenea_add_module(core
         src/Error.cpp
         src/Hash.cpp
         src/Log.cpp
-        src/Platform.cpp)
+        src/Platform.cpp
+        src/PlatformIpc.cpp)
 find_package(Threads REQUIRED)
 # dladdr (platform::moduleDir), in libdl before glibc 2.34.
 target_link_libraries(athenea_core PUBLIC Threads::Threads ${CMAKE_DL_LIBS})

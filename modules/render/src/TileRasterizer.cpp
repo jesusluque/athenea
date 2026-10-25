@@ -746,10 +746,20 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         }
     } else {
         // The pairs are sized before they are known: what the last frame
-        // grew them to, and half as much again as the splats the first time.
-        if (pairCapacity_ == 0) {
-            ATHENEA_TRY(reservePairs(std::max(splatCount + splatCount / 2, 1u)));
+        // grew them to -- and, whenever the frame holds more splats than the
+        // buffers were last sized for (the first frame, a live epoch that
+        // brings more), as many pairs a splat as the last counts said, half
+        // as much again, and never under 8: a frame that outgrows its pairs
+        // is drawn short.
+        if (pairCapacity_ == 0 || splatCount > pairsSizedFor_) {
+            const uint64_t perSplat =
+                std::max<uint64_t>(8, lastVisible_ > 0 ? (uint64_t{lastPairs_} * 3 / 2 + lastVisible_ - 1) / lastVisible_
+                                                       : 0);
+            const uint64_t wanted = std::min<uint64_t>(uint64_t{std::max(splatCount, 1u)} * perSplat, 0x7FFFFFFFull);
+            ATHENEA_TRY(reservePairs(static_cast<uint32_t>(wanted)));
+            pairsSizedFor_ = std::max(splatCount, pairsSizedFor_);
         }
+        drawnCapacity_ = pairCapacity_;
         if (!frameTotals_.valid()) {
             auto made = buffer(*device_, 2, 4, "splat.frameTotals");
             if (!made) return std::move(made).error();
@@ -936,7 +946,12 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                                      "short of them once, the buffers grown for the next",
                                      lastPairs_, pairCapacity_);
                 }
-                ATHENEA_TRY(reservePairs(lastPairs_));
+                ATHENEA_TRY(reservePairs(lastPairs_ + lastPairs_ / 2));
+            } else if (lastPairs_ > pairCapacity_ / 4 * 3) {
+                // AHEAD OF IT: a frame that came within a quarter of the
+                // buffers grows them by half again before one overflows --
+                // a camera closing in makes more pairs a frame at a time.
+                ATHENEA_TRY(reservePairs(lastPairs_ + lastPairs_ / 2));
             }
         }
         stats.visible = lastVisible_;

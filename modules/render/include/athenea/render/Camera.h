@@ -31,6 +31,12 @@ struct Lens {
     double windowTranslate[2] = {0.0, 0.0};   ///< in half-widths, both axes
     double windowScale[2] = {1.0, 1.0};
     double windowRoll = 0.0;                  ///< degrees, counter-clockwise
+    /// Where the window sits off the lens's axis, mm, as UsdGeomCamera's
+    /// horizontalApertureOffset and verticalApertureOffset: positive moves
+    /// the window right and up, so what the lens points at moves left and
+    /// down in the picture. A principal point (cx, cy) in pixels, top row
+    /// first, of a W-wide picture is ((W/2 - cx), (cy - H/2)) * haperture / W.
+    double apertureOffset[2] = {0.0, 0.0};
 
     double exposure = 0.0;   ///< stops, as UsdGeomCamera authors it
     /// The diaphragm, as UsdGeomCamera authors it: 0 is a pinhole. The lens

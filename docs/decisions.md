@@ -16333,3 +16333,181 @@ Metal (M5 Pro):
   (late counts may be stale by a frame, an overflow seen a frame later); untested there.
 - The light table, the point layer and the mesh passes are not part of this: what else a splat frame waits for
   is `athenea_usd_tests "[sync]"`'s to count.
+
+## Live splats, phase 2: a bridge to another process (25 Oct)
+
+Phase 1 fed a live stream from another process through shared memory and SPZ pages the engine's loaders
+decompress. Phase 2 closes the loop: the other process sets the camera, writes pages with its own device, and reads
+the frames back where the engine's device left them -- colour, depth and the rest -- ordered by fences the two
+devices share, with no host waiting for any device in a steady frame.
+
+### The frame thread of an MCP session
+
+The server's tools used to run on the thread that read the message, and that thread drew. A subscription draws on
+its own, at a rate, so the session now has a frame thread (`mcp/src/FrameLoop.h`): every tool that touches the stage
+or the device runs there between frames (`FrameLoop::run`; the server's thread waits for the answer), and the frames
+of a subscription are drawn there at each frame start of the clock -- SMPTE ST 2059-1's alignment through
+`sched::FrameClock` where the build has genlock, the same arithmetic on the system clock otherwise. Two tools only
+queue and answer from the server's thread: `stream_commit` and `camera_set`, which must not wait behind a frame.
+The device keeps one caller.
+
+### Handles across processes (`core/Platform.h`, `PlatformIpc.cpp`)
+
+A frame in shared memory needs only a name, but a fence is a device object only the OS can carry: a Metal shared
+event is a Mach port, a Vulkan buffer's memory or timeline semaphore a descriptor. `platform::HandleServer` answers
+`platform::fetchHandles(name, token)` from a thread of its own with copies of what was offered under the token (the
+token is the capability; the MCP answer carries it):
+
+- **macOS**: a bootstrap name the process checks in itself (`bootstrap_check_in` on a name with its pid and a
+  random word -- launchd lets an unsandboxed process do so; `NSXPCListener` and `xpc_connection_create_mach_service`
+  with such a name were tried and fail, the service unknown to launchd), a request carrying the token and a
+  send-once reply right, an answer carrying the ports (a descriptor as a fileport).
+- **POSIX**: a Unix socket in /tmp, descriptors by `SCM_RIGHTS`: Linux's route, and on macOS too
+  (`HandleTransport::Socket`), which is how it is tested here.
+- **An MTLSharedEvent as a port.** Apple carries an `MTLSharedEventHandle` only through XPC (`encodeWithCoder:`
+  throws for any other coder: "may only be encoded by an NSXPCCoder"). The handle answers `eventPort`, and
+  `-[MTLDevice newSharedEventWithMachPort:]` makes the event again from the port: both Metal's own methods, not in
+  its public headers, asked for by name (`respondsToSelector:`) and refused with `Unsupported` where a system does
+  not answer to them (`exportMetalSharedEvent`, `importMetalSharedEvent`).
+
+### A fence two processes share (`gpu/SharedFence.h`)
+
+Made here, it is slang-rhi's fence (`FenceDesc::isShared`): the engine signals it after a batch
+(`CommandBatch::submitSignalling`) or makes a batch wait on it (`CommandBatch::waitBefore`, new: waits a submit
+carries in `rhi::SubmitDesc::waitFences`, kept until a submit that runs commands). Imported, it is an
+`MTLSharedEvent` slang-rhi did not make and cannot submit with -- slang-rhi has no fence from a native handle, and
+forking it is not what this engine does -- so it is tied to a local slang-rhi fence by an event chain
+(`platform::metalChainEvents`: one command buffer on slang-rhi's queue that waits for one event and signals the
+other). Signalling: the batch signals the local fence, the chain raises the imported one once the local one is
+reached. Waiting: the chain raises the local fence once the imported one is reached, and the batch waits on the
+local one. Correct by the events alone, whatever order command buffers start in. Vulkan exports (a timeline
+semaphore's opaque descriptor); importing one, and CUDA (whose slang-rhi fence is a value the host sets at submit),
+are not done.
+
+### Frames to another process (`bridge/Frames.h`, `render_subscribe`)
+
+- **The ring**: shared memory with a header (`ATFR`), the AOVs' layout, and a record a frame (64 kept): its slot,
+  the instant it stands for, the epoch it showed and that epoch's time, when it was recorded, and the camera it was
+  drawn from. The engine's host writes a record when it records the frame; the subscriber reads it once the frame's
+  fence has risen (the frame word written last, read before and after).
+- **The slots** (Metal): a second shared memory region, each AOV of each slot on whole pages, so either side makes a
+  buffer over its own pages (`gpu::Buffer::overSharedPages`, `newBufferWithBytesNoCopy` on unified memory) and the
+  subscriber's device reads what the engine's wrote, in place: no copy, no IOSurface, no XPC. A kernel
+  (`bridge/bridge_pack.slang`) writes each AOV from the frame's buffer as it lies (`StageRenderer::displaySource`)
+  in the format asked: float32 words as they are, halves, ids; `rgba8` is the display transform's texture
+  (`bridge_shown.slang`). Vulkan: one exportable buffer (a descriptor) with the AOVs at offsets, untested.
+- **The fences.** `frames`: the engine's device raises it to F once frame F's AOVs are written. `release`: the
+  subscriber raises it to F once done with every frame up to F; before writing a slot again the engine's device
+  waits for the frame it last held to be released. A subscriber that stops releasing would hold the engine's queue,
+  so after 2 s without a frame drawn the engine raises `release` itself (`unblocked`), and `render_unsubscribe`
+  does the same before the slots go. Poll mode, for a reader with no device: `completed` and `released` words in the
+  header instead, and a frame whose slot is not released is not published (`skipped`).
+- **A frame left in flight.** `StageRenderer::setFrameInFlight`: `draw` records and submits and returns without its
+  end-of-frame `waitIdle`, and `athenea:frameInFlight` makes the splat rasteriser size its passes on the device
+  (the section before). What reads the frame -- the pack kernels, the fence -- is submitted after it on the one
+  queue. The loop holds its pace by the frames fence alone: with `maxInFlight` (2) frames on the device it skips a
+  tick (`late`) instead of waiting. A render or a timing tool between frames puts the waits back for itself.
+- **The rasteriser sizes its pairs ahead, and says when it did not.** A frame in flight learns its pairs a frame
+  late, and a frame whose pairs outgrow the buffers is drawn short. So whenever a frame holds more splats than the
+  pairs were last sized for -- the first frame, a live epoch that brings more -- they are sized at the pairs a
+  splat the last counts showed, half as much again, never under 8; and a frame that came within a quarter of the
+  buffers grows them by half again before one overflows. Beside the AOVs each slot carries the frame's state, four
+  words the device writes (`FrameState`: the rasteriser's visible and pair totals as its last pass left them, the
+  pairs its buffers held, 1): a subscriber knows a short frame from the frame itself, without asking anybody.
+
+### Cameras at their instants (`bridge/CameraQueue.h`, `camera_set`)
+
+`camera_set {ptpTime, pose | position + rotation, focal/apertures/offsets | fx, fy, cx, cy, resolution, near,
+far}` queues a camera; each subscription frame takes its instant (its frame start, in the live streams' timebase:
+the system clock's nanoseconds, or TAI), hands it to the live clock (`StageRenderer::setLiveClock`) -- so the epoch
+shown is the one of that instant -- and draws from the pose interpolated there: position along the line, the turn
+by slerp, the lens in proportion; held before the first and after the last, never extrapolated. Pixel intrinsics
+become a lens over the default aperture, the principal point as UsdGeomCamera's aperture offsets
+(`Lens::apertureOffset`, new, honoured by `projectionFor` and by StageRenderer's free camera). A camera that makes no
+frustum is refused, counted and never queued, as `stream_commit` refuses pages.
+
+### Pages a producer's device wrote (`bridge/ClientPages.h`)
+
+`stream_open {devicePages: {records, degree}}` adds shared memory the producer writes float records into with its
+own device (a 3DGS PLY vertex's floats) and a `written` fence it raises; a commit's device pages name records and
+the fence's value. They are `lod::DevicePages` pages: the pool places them as any page, and at placement the
+batch is told to wait on the device for the fence (`SharedFence::waitBefore`) before the validate and decode read
+the records (`CloudLoader::decodeInto`). The header's `consumed` word says which epoch's records the pools are done
+with, so the producer knows when it may write over them.
+
+### What a frame still waited for, and does not
+
+Counted with `Device::syncs()` on every subscription frame (`subscription_status`'s `hostWaitsSteadyMax`, after
+the first eight) and found by line with `ATHENEA_SYNC_TRACE`. The splat rasteriser's two count reads went with the
+section before; `StageRenderer::execute`'s `waitIdle` with `setFrameInFlight`. A stage with a dome (the sparrow's)
+still waited four times a frame: `Engine::prepareSplatLights` measured every cloud's box on the device to weigh a
+dome's and a sun's power by the scene's reach -- a submit waited for and a read, a cloud each frame -- and the light
+table, seeing a new reach, rebuilt itself with two more. Left in flight, a cloud that knows its box gives it, and one
+that does not (a live stream's cut) keeps the reach the last measure gave; the table is then the same table and
+rebuilds nothing. Frames not in flight measure as before.
+
+### How it is checked
+
+`athenea_mcp_tests "[bridge]"`, Metal (M5 Pro), under the GPU guard (`taskpolicy -b`: background priority, whose
+sleeps wake late):
+
+- **Handles by token**, over Mach and over the socket: a descriptor offered once is fetched twice, an unknown token
+  and a withdrawn one are refused (NotFound), a server that is not there is unreachable.
+- **Cameras**: between reports at 1000 and 2000 ns, the instant 1500 is the pose halfway -- the position midway,
+  the turn a 45 degree one between 0 and 90 (to 1e-9) -- and the focal length midway; before the first and after
+  the last, held; only the report before the instant is kept. A scaled, a mirroring, a NaN and a clipped camera are
+  refused and counted; `at` from a second thread is refused. Through the server, ten malformed `camera_set`s (no
+  instant, -1, fifteen numbers, a scale, a quaternion of length 2, a null, fx and fy apart, a focal of -3, near past
+  far, no pose) are refused and counted, three good ones queued, and a fourth at an instant already queued
+  replaces it.
+- **The fence**: made, exported as a port, imported on the same device. The imported side raises it on the device
+  and the maker reads it; a batch waits on the device for the imported side until the maker's host raises it
+  (100 ms held, then run) and the other way round.
+- **Frames in one process**: a publisher and a subscriber over two slots, fence and poll: four frames each read
+  where they lie equal what was drawn (colour max 0, depth 0 words), each slot's state written; in poll mode a frame
+  whose slot was not released is skipped; `publish` from another thread is refused.
+- **The aperture offset**: a camera of the caller's with offsets (2, -1.5) mm against a stage camera authoring them:
+  p99 0, max 1 (GfCamera's float offsets); centred instead, p99 221 (the picture moved); the rasteriser through
+  `projectionFor` against Hydra, p99 0, max 0.
+- **Another process, end to end.** The test starts `athenea-mcp` on pipes, opens a stage naming a live stream (two
+  chunks, `sync = clock`), asks for device pages, queues two cameras four seconds apart (one as a matrix, one as a
+  position, a quaternion and pixel intrinsics) and subscribes to colour and depth at 60 frames a second, fence mode.
+  Epoch 1 is two SPZ pages from the ring; epoch 2 one SPZ page and one device page whose records this process's
+  device writes 150 ms *after* the commit, raising the fence then; epoch 3 removes a chunk and places records at
+  another offset, written before the commit; then 24 SPZ epochs, two contents in turn. Each frame read is compared
+  where it lies with the epoch its record names drawn directly from the camera its record names: 36 frames a run,
+  four runs, p99 0, max 1 to 2 -- and in one frame of a run, one pixel 8 or 27 code values off: a splat on a pixel's
+  edge between Hydra's single precision camera and the direct draw's double; depth equal in coverage, and to 1e-3 but
+  for one pixel; 16 to 21 frames a run of interpolated cameras, equal to the interpolation recomputed here (0 off). The device page whose fence came
+  after its commit is drawn whole: the engine's device waited for it, its host did not. **Host waits: 0** on every
+  steady frame (64 to 68 a run). **Push to the AOVs' fence**, as this process sees it (its polling wakes late
+  under the guard too), four runs: 195 to 300 ms for the first epoch, 337 to 353 ms for the one whose fence came
+  150 ms after its commit, 10 to 380 ms for the device page written before its commit, and over the 24 SPZ epochs a
+  median of 209 to 340 ms, p95 370 to 400 -- the SPZ pages' decompression on the pool's loaders, the frame that
+  places them, the epoch due at the next frame start, and that frame, at frame starts a background-priority sleep
+  overshoots.
+- **The sparrow through Python.** `live_producer.py --subscribe --sequence` on the 61 flattened frames' SPZ pages
+  (10 pages, 300 847 gaussians a frame) through `sparrow_live.usda`, colour as `rgba8` at 640 x 360 and 30 a
+  second in poll mode: each epoch's frame read from shared memory 0.45 to 0.65 s after its push; the frames are
+  `athenea-renders/live-bridge/subscribed_*.png`. Its steady frames waited 4 times each (the lights' reach, above)
+  before the fix and 0 after.
+- The suites the work touches pass: `athenea_mcp_tests` (the rest), `athenea_lod_tests "[stream]"`,
+  `athenea_usd_tests "[live],[sync]"`, `athenea_render_tests "[waits]"`, `athenea_gpu_tests "[algo]"`.
+
+### Not done
+
+- **A remote transport.** The bridge is one machine: shared memory and Mach ports. Over a network the frame ring's
+  records and the slots' bytes would travel (gRPC or QUIC, or SRT as the video route plans), with the fences
+  replaced by the frame numbers the records already carry; out of scope here.
+- **CUDA**: refused. Its slang-rhi fence is a value the host sets at submit, so nothing another process could wait
+  on; a frame there would go by an IPC event a slot (`cuIpcGetEventHandle`) and its memory by `cuIpcGetMemHandle`,
+  through the driver loaded by name in Platform.
+- **Vulkan**: the publisher exports the slots' buffer and both fences as descriptors (slang-rhi's shared handles)
+  and the socket carries them -- compiled, not run; the subscriber side (importing them) is not written.
+- **Python with a device**: the example reads in poll mode; a Python package that imports the fences (PyObjC's
+  Metal, or a small native module over `bridge::FrameSubscriber`) would let it wait on the device.
+- **Private Metal**: the event's port is Metal's own `eventPort` and `newSharedEventWithMachPort:`; a system that
+  drops them answers Unsupported, and the frames then go in poll mode only.
+- **Pages a producer's device wrote** are decoded from float records copied (on the device) to where the decode
+  reads; SPZ-packed or quantised records written by a device are not taken.
+- A frame drawn short is said so (its state), not drawn again.

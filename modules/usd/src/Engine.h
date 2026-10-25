@@ -443,6 +443,15 @@ public:
     /// sorts are sized on the device. The image is the same; what a frame
     /// says it counted is a frame or two late. Render thread.
     void setFrameInFlight(bool inFlight) { frameInFlight_.store(inFlight); }
+    /// The last splat frame in flight's totals on the device and the pairs
+    /// its buffers held (render::TileRasterizer::frameTotals); null before
+    /// one. The render thread.
+    [[nodiscard]] const gpu::Buffer* splatFrameTotals() const noexcept {
+        return rasterizer_.has_value() && rasterizer_->frameTotals().valid() ? &rasterizer_->frameTotals() : nullptr;
+    }
+    [[nodiscard]] uint32_t splatPairCapacity() const noexcept {
+        return rasterizer_.has_value() ? rasterizer_->drawnPairCapacity() : 0;
+    }
     /// THE NEXT RASTERISED FRAME FLATTENS RATHER THAN DRAWS (`athenea
     /// flatten`, render/Flatten.h): `request` is filled with a record set a
     /// relit TX cloud, and `flattenedPrims` says whose each instance was.
@@ -805,6 +814,7 @@ private:
     };
     std::map<pxr::SdfPath, LightEntry>        lights_;
     float                                     lightSceneRadius_ = 1.0F;   ///< the scene's reach, for domes' and suns' power
+    bool                                      lightRadiusMeasured_ = false;   ///< once, before frames in flight keep it
     uint64_t                                  lightRadiusGeneration_ = ~uint64_t{0};
     uint64_t                                  lightRadiusRevision_ = ~uint64_t{0};
     std::map<pxr::SdfPath, VolumeArrays>      volumes_;

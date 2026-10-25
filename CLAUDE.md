@@ -95,7 +95,7 @@ the ones above it.
 | sched | `FrameClock`: genlock PTP and ST 2059-1 alignment, timecode |
 | image | `Image`: float32 RGBA premultiplied, bottom-left origin, pluggable storage; what gpe and aofx exchange |
 | io | CPU file readers (PLY header, SPZ, SOG zip/WebP), EXR with attributes |
-| gpu | slang-rhi device, `ShaderLibrary`, `ComputeKernel`, `CommandBatch`, `Buffer`, `AsyncReadback` (counts from a frame, never waited for); `gpu/algo` for PrefixSum and RadixSort |
+| gpu | slang-rhi device, `ShaderLibrary`, `ComputeKernel`, `CommandBatch`, `Buffer`, `AsyncReadback` (counts from a frame, never waited for), `SharedFence` (a fence another process shares); `gpu/algo` for PrefixSum and RadixSort |
 | gpu_host | gpe adopting slang-rhi's device: one `MTLDevice` or CUDA context, buffers shared without copies; the crossing as free functions (`Views.h`) for a program with a context of its own |
 | colour | `ColourCompiler` (OpenColorIO as a compiler: a colour space or a display and view into a generated Slang function `athenea_cs_<hash>` and its LUTs), `ColourNames` (what a colour space's name means) |
 | scene | `CloudLoader`: raw records uploaded, decoded on the GPU into `GpuSplats` / `GpuPoints` |
@@ -107,9 +107,10 @@ the ones above it.
 | technique | how a frame is drawn: `VisibilityRaster` / `VisibilityTrace` / `VisibilityBvh` (same ids), `HeadlightShading`, `AovShading`, `Denoiser` (OIDN on the engine's own queue: Metal, CUDA, and Vulkan through CUDA with imported memory), `DisplayTransform` (view transforms, and an OpenColorIO view through `colour::ColourCompiler`), `SplatVisibility` (per-part visibility fields: baked once, a product of table reads a frame, no ray) |
 | lod | `LodBuilder`, `CutSelector`; `Athc.h` for the `.athc` reader/writer and `StreamingPool`; `SplatStream.h` (live streams), `DevicePages.h` (live pages the device decodes from what their producer holds) |
 | video | splats as video planes: `Planes` (the layout and its kernels), `.athv` (`Athv.h`), the hardware codec (`Codec.h`: VideoToolbox; NVDEC and WebCodecs are where it goes next), `VideoStream` (a video into a live stream) |
+| bridge | frames, cameras and pages shared with another process: `FramePublisher`/`FrameSubscriber` (the frame ring render_subscribe hands over), `CameraQueue` (camera_set's cameras at their instants), `ClientPages` (live pages another process's device wrote) |
 | usd | `Engine`, `StageRenderer`, `Export`; the `hdAthenea` plugin; codeless schemas in `modules/usd/schemas` |
 | aofx | this engine's side of the AOFX host (aopenfx `host/`, ABI 26): capabilities, `renderEffect`, the bundles under plugins/ |
-| mcp | the engine as an MCP server: JSON-RPC 2.0 (`Server`), the tools over a warm stage (`Tools.cpp`); `apps/athenea-mcp` is the stdio transport |
+| mcp | the engine as an MCP server: JSON-RPC 2.0 (`Server`), the tools over a warm stage (`Tools.cpp`), run on the session's frame thread (`FrameLoop`); `apps/athenea-mcp` is the stdio transport |
 | view | `athenea view`: GLFW `Window`, `ImGuiRenderer` (Dear ImGui on the engine's device), `runViewer` |
 
 How the pieces fit:

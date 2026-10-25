@@ -2397,6 +2397,10 @@ La salida estándar lleva solo protocolo; el log va a la de error.
 | `stream_open` | un stream en vivo que alimenta otro proceso; responde `{"ring", "bytes"}`, la memoria compartida donde escribir las páginas |
 | `stream_commit` | las páginas de una época, cada una nombrada por dónde está en el anillo |
 | `stream_close` | cierra el stream y quita su anillo |
+| `camera_set` | una cámara con el instante PTP en que era cierta, en cola para los frames de una suscripción |
+| `render_subscribe` | frames dibujados a un ritmo y sus AOV entregadas a otro proceso tal como están en el dispositivo; responde qué abrir |
+| `render_unsubscribe` | para los frames y quita su anillo; responde qué hicieron los frames |
+| `subscription_status` | qué hicieron los frames: dibujados, tarde, saltados, las esperas del host por frame, las cámaras en cola y rechazadas |
 
 **Un stream en vivo desde otro proceso.** Una escena nombra el stream en un
 prim `AtheneaLiveSourceAPI` (§4.3); un productor que no está en el proceso del
@@ -2429,10 +2433,111 @@ tres herramientas:
 - Un frame dibuja la última época cuyas páginas están todas en el
   dispositivo: el render que sigue a un commit puede mostrar aún la anterior.
 
+- **Páginas que escribió el dispositivo de un productor.** `devicePages`
+  `{records, degree}` de `stream_open` (de 1 a 2^26 registros, grado de 0 a 3,
+  3 por defecto; solo Metal, y con una escena abierta) añade memoria
+  compartida que ven los dos dispositivos y un fence, que se responden como
+  `devicePages {memory, bytes, records, floatsPerRecord, degree, recordsAt,
+  server, token}`. La memoria es una página de cabecera (`ATCP`, luego
+  `consumed`, más abajo) y los registros desde el byte `recordsAt` (una
+  página): float32, los 14 de un vértice de un PLY de 3DGS -- x y z, la
+  opacidad como logit, tres escalas logarítmicas, la rotación w x y z, el
+  color DC -- y después los coeficientes de resto, todo el rojo, luego el
+  verde, luego el azul. El productor los escribe con su propio dispositivo
+  (un buffer sobre las mismas páginas), sube el fence `written` (que se
+  obtiene de `server` con `token`) a un valor que elige, y hace commit de
+  páginas `{chunk, op, device: {first, count}}` con el `fence` del commit a
+  ese valor: el dispositivo del motor espera al fence antes de leerlas --
+  nunca su host -- y las decodifica como cualquier nube. `fence` 0 (por
+  defecto) es para registros ya escritos. La palabra `consumed` de la
+  cabecera (byte 24, u64) es la época más nueva con la que han terminado
+  todos los pools: los registros que nombró una época se pueden sobrescribir
+  cuando llega a ella.
+
 `scripts/examples/live_producer.py` lo hace todo con la biblioteca estándar:
 `live_producer.py --mcp <build>/bin/athenea-mcp --epochs 6 --out <dir> a.spz b.spz`
 escribe una escena que nombra el stream (o toma `--stage`), hace commit de los
 ficheros como chunks época tras época, y renderiza un PNG después de cada una.
+
+**Frames a otro proceso.** `render_subscribe` dibuja la escena abierta a un
+ritmo de frames y entrega las AOV de cada frame donde están, sin copia:
+- `aovs` las nombra, cada una un nombre o `{name, format}`: `color` (`rgba32f`
+  por defecto, `rgba16f`, o `rgba8`: tal como se ve -- la vista AgX, sRGB, la
+  fila de arriba primero), `alpha` y `depth` (z de vista, 0 donde no se dibujó
+  nada; `r32f`, `r16f`), `normal` y `Neye` (`rgba32f`, `rgba16f`), `primId`,
+  `instanceId` y `elementId` (`r32u`), `CryptoObject00` a `02` (`rgba32f`,
+  (id, cobertura, id, cobertura)). Ocho como mucho. Las filas van de abajo
+  arriba salvo en `rgba8`.
+- `width` y `height` (de 1 a 16384) son obligatorios. `slots` (de 2 a 8, 3 por
+  defecto) es cuántos frames guarda el anillo; `rate` son frames por segundo
+  (30 por defecto; un entero o `"30000/1001"`), en los inicios de frame de
+  SMPTE ST 2059-1 (`sched::FrameClock` donde la compilación tiene genlock, la
+  misma alineación sobre el reloj del sistema si no); `maxInFlight` (de 1 a
+  8, 2) es cuántos frames puede tener el dispositivo antes de saltar uno
+  (`late`). `camera` es una cámara de la escena desde la que dibujar hasta que
+  llegue un `camera_set` (una escena sin ninguna se encuadra). Solo raster.
+- La respuesta: `ring` y `ringBytes` (memoria compartida: la cabecera, la
+  disposición de las AOV, un registro por frame), `data` y `dataBytes`
+  (memoria compartida: los slots; cada AOV de cada slot en páginas enteras, a
+  `slotBytes` por slot y su `offset`), `stateOffset` (dónde dice el
+  dispositivo, dentro de un slot, si el frame se dibujó entero), `server` y
+  `token` (los fences), `slots`, `width`, `height`, `sync`, `aovs [{name,
+  format, offset, bytes}]`, `rate`, `timebase`, `clock`. La disposición está
+  en §8.2.
+- **`sync` `fence`** (por defecto): el motor sube el fence `frames` al frame F
+  cuando las AOV de F están en su slot; el suscriptor sube `release` a F
+  cuando ha terminado con todos los frames hasta F; el dispositivo del motor
+  espera a `release` antes de volver a escribir un slot. Los dos son shared
+  events de Metal (se obtienen de `server` con `token`, como puertos Mach). Un
+  suscriptor que deja de liberar retiene el dispositivo del motor: tras 2 s
+  sin dibujar un frame el motor sube `release` él mismo (`unblocked`).
+  **`poll`**: para un lector sin dispositivo (el ejemplo de Python): el número
+  del frame está en la palabra `completed` de la cabecera cuando el motor lo
+  ha visto escrito (un frame tarde como mucho), el lector escribe en
+  `released` el frame más nuevo con el que ha terminado, y un frame cuyo slot
+  no se ha liberado no se publica (`skipped`): nada espera.
+- **Instantes.** Cada frame representa el instante de su inicio de frame en
+  el reloj: en `timebase` `utc` (por defecto: el reloj del sistema en
+  nanosegundos, en el que se cuenta el `ptpTime` de `stream_commit`) o `tai`.
+  Ese mismo instante elige la época en vivo que muestra
+  (`athenea:live:sync = clock`) y la cámara desde la que se dibuja. El
+  registro de un frame dice qué slot lo tiene, el instante, la época y la
+  hora de esa época, cuándo se registró, y la cámara desde la que se dibujó
+  (cámara a mundo, focal, aperturas, desplazamientos de apertura, recorte).
+- **`camera_set`** `{ptpTime, pose | position + rotation, focal, haperture,
+  vaperture, apertureOffset | fx, fy, cx, cy, resolution, near, far}` pone en
+  cola una cámara en un instante (nanosegundos, la misma base de tiempo).
+  `pose` es cámara a mundo, dieciséis números fila a fila, mirando hacia -z;
+  `rotation` un cuaternión unitario x y z w. Los intrínsecos en píxeles (`cx`,
+  `cy` desde la esquina de arriba a la izquierda de una imagen `resolution`
+  [w, h]) se convierten en una lente sobre la apertura por defecto de 24.576
+  mm: solo píxeles cuadrados. Un frame se dibuja desde la pose entre las dos
+  cámaras en cola que rodean su instante -- la posición por la recta, el giro
+  por el arco, la lente en proporción -- o se mantiene la primera o la
+  última; nunca se extrapola. Una cámara se rechaza y se cuenta (nunca se
+  pone en cola) por un instante que falta o es negativo, números que no son
+  finitos, una matriz que no es una rotación y una traslación (a 1e-3) o que
+  refleja, un cuaternión que no mide 1 (a 1e-3), una focal o apertura de 0 o
+  menos, planos de recorte que no cumplen 0 < near < far, o fx y fy que
+  difieren en más de 1e-3. Se guardan 1024; una cámara en un instante ya en
+  cola lo sustituye.
+- **Los hilos.** Toda herramienta que toca la escena o el dispositivo corre en
+  el hilo de frame de la sesión, entre frames; `stream_commit` y `camera_set`
+  solo encolan y responden al momento, también mientras se dibuja un frame.
+  Un frame estable de una suscripción espera al dispositivo 0 veces
+  (`hostWaitsSteadyMax` de `subscription_status`).
+- **`subscription_status`** responde `frame` (el último publicado), `ticks`,
+  `drawn`, `late`, `skipped`, `failed`, `completed`, `unblocked`,
+  `hostWaitsLastFrame`, `hostWaitsSteadyMax`, `hostWaitsSteadyTotal`,
+  `steadyFrames` (después de los ocho primeros), `camerasQueued`,
+  `camerasAccepted`, `camerasRefused`, `lastError`; `render_unsubscribe`
+  responde lo mismo.
+- `live_producer.py --subscribe` se suscribe en modo `poll`, lee el frame de
+  cada época del slot como un `memoryview` (el color como `rgba8`) y lo
+  escribe como PNG.
+- Metal en esta máquina; Vulkan exporta sus slots y fences (descriptores) sin
+  probar; CUDA se rechaza. Por red: no está hecho (un transporte que lleve los
+  bytes de los slots es donde va eso).
 
 **El `output` de `render` escribe dos ficheros distintos.** Un nombre que
 acaba en `.exr` recibe los números del beauty, lineales. Cualquier otro nombre
@@ -2642,6 +2747,30 @@ rangos (dos floats por atributo), las partes altas de la posición con
 deflate, los conjuntos de parámetros HEVC en una imagen clave y la unidad de
 acceso como unidades NAL precedidas de su longitud. Little endian.
 `modules/video/include/athenea/video/Athv.h` es su especificación.
+
+**El anillo de frames** (el `ring` de `render_subscribe`;
+`modules/bridge/include/athenea/bridge/Frames.h` es su especificación), little
+endian, palabras de 8 bytes que se leen y escriben enteras:
+
+| Bytes | Qué |
+|---|---|
+| 0 | magic `ATFR`, versión u32 (1), backend, slots, ancho, alto, AOV, sync por fence (u32 cada uno) |
+| 32 | bytes por slot, bytes de datos (u64) |
+| 48 | `published`: el frame más nuevo registrado (u64, el motor) |
+| 56 | `completed`: el frame más nuevo visto escrito (u64, el motor) |
+| 64 | `released`: el frame más nuevo con el que ha terminado el lector (u64, el lector; modo poll) |
+| 72 | dónde está el estado de un frame dentro de su slot (u64): cuatro u32 que escribe el dispositivo con las AOV -- visibles, pares, los pares que cabían en los buffers del rasterizador, 1 escrito; un frame con más pares que los que cabían se dibujó corto |
+| 80 | 8 AOV de 56 bytes: nombre (32), formato, bytes por píxel (u32), offset en un slot, bytes (u64) |
+| 528 | 64 registros de 256 bytes, el frame F en F mod 64: frame, slot, instante, época, hora de la época, registrado a las, muestras de cámara (0 ninguna, 1 mantenida, 2 interpolada), relleno (u64); cámara a mundo (16 doubles); focal, apertura horizontal y vertical, desplazamientos de apertura, near, far, time code (doubles) |
+
+La palabra de frame de un registro se escribe la última y se lee antes y
+después del resto: un registro cuyas dos lecturas no coinciden se está
+sustituyendo.
+
+**Páginas de dispositivo** (`devicePages` de `stream_open`): una página de
+cabecera de 64 bytes -- `ATCP`, versión, floats por registro, grado (u32),
+registros, `consumed`, páginas colocadas (u64) -- y después los registros
+desde la página siguiente.
 
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere

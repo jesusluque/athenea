@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -209,6 +210,21 @@ Result<std::vector<uint8_t>> preview(usd::StageRenderer& renderer, const std::st
     return io::encodePng(width, height, bytes);
 }
 
+/// A render or a timing waits for its own frame: a subscription's frames
+/// left in flight are put back for it, and left in flight again after.
+struct InFlightPause {
+    usd::StageRenderer& renderer;
+    bool                was;
+    explicit InFlightPause(usd::StageRenderer& r) : renderer(r), was(r.frameInFlight()) {
+        if (was) renderer.setFrameInFlight(false);
+    }
+    ~InFlightPause() {
+        if (was) renderer.setFrameInFlight(true);
+    }
+    InFlightPause(const InFlightPause&) = delete;
+    InFlightPause& operator=(const InFlightPause&) = delete;
+};
+
 json imageAnswer(std::string text, const std::vector<uint8_t>& png) {
     static constexpr char kBase64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string encoded;
@@ -337,6 +353,7 @@ json renderTool(Session& session, const json& args) {
     if (auto ready = ensureStage(session, args); !ready) return textAnswer(errorText(ready.error()), true);
     applySettings(session, args);
     usd::StageRenderer& renderer = *session.renderer;
+    const InFlightPause waitsForItsFrame(renderer);
     const uint32_t width = args.value("width", 640u);
     const uint32_t height = args.value("height", 360u);
     const double time = args.value("time", 0.0);
@@ -588,6 +605,7 @@ json timingsTool(Session& session, const json& args) {
     if (auto ready = ensureStage(session, args); !ready) return textAnswer(errorText(ready.error()), true);
     applySettings(session, args);
     usd::StageRenderer& renderer = *session.renderer;
+    const InFlightPause waitsForItsFrame(renderer);
     const uint32_t width = args.value("width", 640u);
     const uint32_t height = args.value("height", 360u);
     const uint32_t frames = std::max(args.value("frames", 5u), 1u);
@@ -670,6 +688,36 @@ std::optional<uint64_t> unsignedArg(const json& value, uint64_t least, uint64_t 
     return v;
 }
 
+/// The session's handle server, made on first use. Frame thread (the session's tools).
+Result<platform::HandleServer*> sessionHandles(Session& session) {
+    if (!session.handles) {
+        auto made = platform::HandleServer::create("athenea.bridge");
+        if (!made) return std::move(made).error();
+        session.handles = std::move(*made);
+    }
+    return session.handles.get();
+}
+
+/// A finite number, or nothing.
+std::optional<double> numberArg(const json& args, const char* name) {
+    if (!args.contains(name) || !args[name].is_number()) return std::nullopt;
+    const double v = args[name].get<double>();
+    return std::isfinite(v) ? std::optional<double>(v) : std::nullopt;
+}
+
+/// `count` finite numbers, or nothing.
+std::optional<std::vector<double>> numbersArg(const json& args, const char* name, size_t count) {
+    if (!args.contains(name) || !args[name].is_array() || args[name].size() != count) return std::nullopt;
+    std::vector<double> out;
+    for (const json& v : args[name]) {
+        if (!v.is_number()) return std::nullopt;
+        const double d = v.get<double>();
+        if (!std::isfinite(d)) return std::nullopt;
+        out.push_back(d);
+    }
+    return out;
+}
+
 }   // namespace
 
 json streamOpen(Session& session, const json& args) {
@@ -724,9 +772,41 @@ json streamOpen(Session& session, const json& args) {
     stream.queue = queue;
     stream.chunks = chunks;
     stream.claim = std::move(claim);
+    json answer{{"ring", ring}, {"bytes", bytes}};
+    // RECORDS THE PRODUCER'S DEVICE WRITES (bridge::ClientPages): memory both
+    // devices see, and a fence the producer raises when it has written.
+    if (args.contains("devicePages")) {
+        const json& asked = args["devicePages"];
+        const auto records = asked.is_object() && asked.contains("records")
+                                 ? unsignedArg(asked["records"], 1, uint64_t{1} << 26)
+                                 : std::nullopt;
+        const auto degree = asked.is_object() && asked.contains("degree") ? unsignedArg(asked["degree"], 0, 3)
+                                                                           : std::optional<uint64_t>(3);
+        if (!records || !degree) {
+            return textAnswer("stream_open: 'devicePages' is {records: 1 to 2^26, degree: 0 to 3}.", true);
+        }
+        if (!session.open()) {
+            return textAnswer("stream_open: device pages need the device, which opens with a stage: open_stage "
+                              "first.", true);
+        }
+        auto server = sessionHandles(session);
+        if (!server) return textAnswer(errorText(server.error()), true);
+        auto pages = bridge::ClientPages::create(session.renderer->device(), session.renderer->library(), **server,
+                                                 *records, static_cast<uint32_t>(*degree));
+        if (!pages) return textAnswer(errorText(pages.error()), true);
+        const bridge::ClientPages::Info& info = (*pages)->info();
+        char token[17];
+        std::snprintf(token, sizeof token, "%016llx", static_cast<unsigned long long>(info.token));
+        answer["devicePages"] = json{{"memory", info.memory},   {"bytes", info.bytes},
+                                     {"records", info.records}, {"floatsPerRecord", info.floatsPerRecord},
+                                     {"degree", info.degree},   {"recordsAt", platform::pageSize()},
+                                     {"server", info.server},   {"token", token}};
+        const uint64_t key = (*pages)->key();
+        stream.devicePagesKey = std::shared_ptr<void>(nullptr, [key](void*) { lod::DevicePages::withdraw(key); });
+        stream.devicePages = std::move(*pages);
+    }
     queue->setSyncHint(sync == "clock" ? 2 : sync == "latest" ? 1 : 0);
     session.streams.emplace(name, std::move(stream));
-    const json answer{{"ring", ring}, {"bytes", bytes}};
     return textAnswer(answer.dump());
 }
 
@@ -760,6 +840,16 @@ json streamCommit(Session& session, const json& args) {
         epochPages = static_cast<uint32_t>(*given);
     }
     const std::span<std::byte> ring = stream.ring.bytes();
+    // The value the `written` fence reaches once the producer's device has
+    // written this commit's device pages; 0 when its host already knows.
+    uint64_t fence = 0;
+    if (args.contains("fence")) {
+        const auto given = unsignedArg(args["fence"], 0, ~uint64_t{0});
+        if (!given) return textAnswer("stream_commit: 'fence' is the written fence's value, an integer from 0; "
+                                      "nothing of the epoch was queued.", true);
+        fence = *given;
+    }
+    uint32_t devicePages = 0;
     std::vector<lod::PageUpdate> updates;
     std::set<uint32_t> chunks;
     const auto refuse = [](const std::string& why) {
@@ -805,7 +895,28 @@ json streamCommit(Session& session, const json& args) {
                 u.bounds.max[k] = b[k + 3].get<float>();
             }
         }
-        if (u.op != lod::PageUpdate::Op::Remove) {
+        if (u.op != lod::PageUpdate::Op::Remove && page.contains("device")) {
+            // Records the producer's device wrote: the page is a device page
+            // the pool places once the `written` fence reaches `fence`.
+            const json& device = page["device"];
+            if (stream.devicePages == nullptr) {
+                return refuse("a device page on a stream opened without devicePages");
+            }
+            const auto first = device.is_object() && device.contains("first")
+                                   ? unsignedArg(device["first"], 0, stream.devicePages->info().records - 1)
+                                   : std::nullopt;
+            const auto count = device.is_object() && device.contains("count")
+                                   ? unsignedArg(device["count"], 1, uint64_t{1} << 20)
+                                   : std::nullopt;
+            if (!first || !count) {
+                return refuse("a device page is {first, count}: records in the region");
+            }
+            auto bytes = stream.devicePages->page(*epoch, u.chunk, *first, static_cast<uint32_t>(*count), fence,
+                                                  page.value("antialiased", true));
+            if (!bytes) return refuse(errorText(bytes.error()));
+            u.bytes = std::move(*bytes);
+            ++devicePages;
+        } else if (u.op != lod::PageUpdate::Op::Remove) {
             const auto offset = page.contains("offset") ? unsignedArg(page["offset"], 0, ring.size()) : std::nullopt;
             const auto size = page.contains("bytes") ? unsignedArg(page["bytes"], 1, ring.size()) : std::nullopt;
             if (!offset || !size || *size > ring.size() - *offset) {
@@ -815,6 +926,9 @@ json streamCommit(Session& session, const json& args) {
                            ring.begin() + static_cast<std::ptrdiff_t>(*offset + *size));
         }
         updates.push_back(std::move(u));
+    }
+    if (devicePages > 0) {
+        stream.devicePages->committed(*epoch, devicePages);
     }
     for (lod::PageUpdate& u : updates) {
         stream.queue->push(std::move(u));
@@ -828,6 +942,395 @@ json streamClose(Session& session, const json& args) {
         return textAnswer("no stream '" + name + "'.", true);
     }
     return textAnswer("closed '" + name + "'");
+}
+
+
+// --- cameras with their instants, and frames another process reads ------------------
+
+/// camera_set: a pose, a lens and the PTP instant they were true at, queued;
+/// the frame at an instant is drawn from the pose interpolated there. Runs on
+/// the server's thread: it only queues.
+json cameraSet(Session& session, const json& args) {
+    bridge::CameraQueue& cameras = *session.cameras;
+    const auto refuse = [&](const std::string& why) {
+        cameras.countRefused();
+        return textAnswer("camera_set: " + why + "; the camera was not queued.", true);
+    };
+    const auto ptp = args.contains("ptpTime") ? unsignedArg(args["ptpTime"], 0, ~uint64_t{0}) : std::nullopt;
+    if (!ptp) return refuse("'ptpTime' is the instant, nanoseconds, an integer from 0");
+    bridge::CameraSample sample;
+    sample.ptpNs = *ptp;
+    render::Camera& camera = sample.camera;
+    if (args.contains("pose")) {
+        const auto m = numbersArg(args, "pose", 16);
+        if (!m) return refuse("'pose' is sixteen finite numbers, camera to world row by row");
+        std::copy(m->begin(), m->end(), camera.cameraToWorld.m.begin());
+    } else if (args.contains("position") || args.contains("rotation")) {
+        const auto p = numbersArg(args, "position", 3);
+        const auto q = numbersArg(args, "rotation", 4);
+        if (!p || !q) return refuse("'position' is three numbers and 'rotation' a quaternion x y z w");
+        const double n = std::sqrt((*q)[0] * (*q)[0] + (*q)[1] * (*q)[1] + (*q)[2] * (*q)[2] + (*q)[3] * (*q)[3]);
+        if (std::abs(n - 1.0) > 1e-3) return refuse("'rotation' is a unit quaternion (its length is 1 within 1e-3)");
+        camera.cameraToWorld = bridge::matrixFromQuat({(*q)[0] / n, (*q)[1] / n, (*q)[2] / n, (*q)[3] / n},
+                                                      {(*p)[0], (*p)[1], (*p)[2]});
+    } else {
+        return refuse("a pose: 'pose' (sixteen numbers) or 'position' and 'rotation'");
+    }
+    const bool pixels = args.contains("fx") || args.contains("fy") || args.contains("cx") || args.contains("cy");
+    if (pixels) {
+        const auto fx = numberArg(args, "fx");
+        const auto fy = numberArg(args, "fy");
+        const auto cx = numberArg(args, "cx");
+        const auto cy = numberArg(args, "cy");
+        const auto res = numbersArg(args, "resolution", 2);
+        if (!fx || !fy || !cx || !cy || !res) {
+            return refuse("intrinsics in pixels are fx, fy, cx, cy and 'resolution' [width, height]");
+        }
+        const double w = (*res)[0];
+        const double h = (*res)[1];
+        if (w < 1.0 || h < 1.0 || *fx <= 0.0 || *fy <= 0.0) {
+            return refuse("fx and fy above 0, a resolution of at least one pixel");
+        }
+        if (std::abs(*fx - *fy) > 1e-3 * *fx) return refuse("square pixels only: fx and fy agree within 1e-3");
+        // In millimetres over the default aperture: only their ratios matter.
+        const double mmPerPixel = camera.lens.haperture / w;
+        camera.lens.focal = *fx * mmPerPixel;
+        camera.lens.vaperture = h * mmPerPixel;
+        camera.lens.apertureOffset[0] = (w * 0.5 - *cx) * mmPerPixel;
+        camera.lens.apertureOffset[1] = (*cy - h * 0.5) * mmPerPixel;
+    } else {
+        if (args.contains("focal")) {
+            const auto focal = numberArg(args, "focal");
+            if (!focal) return refuse("'focal' is a finite number, mm");
+            camera.lens.focal = *focal;
+        }
+        if (args.contains("haperture")) {
+            const auto a = numberArg(args, "haperture");
+            if (!a) return refuse("'haperture' is a finite number, mm");
+            camera.lens.haperture = *a;
+        }
+        camera.lens.vaperture = camera.lens.haperture * 0.75;
+        if (args.contains("vaperture")) {
+            const auto a = numberArg(args, "vaperture");
+            if (!a) return refuse("'vaperture' is a finite number, mm");
+            camera.lens.vaperture = *a;
+        }
+        if (args.contains("apertureOffset")) {
+            const auto o = numbersArg(args, "apertureOffset", 2);
+            if (!o) return refuse("'apertureOffset' is two finite numbers, mm");
+            camera.lens.apertureOffset[0] = (*o)[0];
+            camera.lens.apertureOffset[1] = (*o)[1];
+        }
+    }
+    for (const char* plane : {"near", "far"}) {
+        if (args.contains(plane)) {
+            const auto v = numberArg(args, plane);
+            if (!v) return refuse(std::string("'") + plane + "' is a finite number");
+            (std::string(plane) == "near" ? camera.lens.nearZ : camera.lens.farZ) = *v;
+        }
+    }
+    if (Result<void> queued = cameras.push(sample); !queued) {
+        return textAnswer("camera_set: " + errorText(queued.error()) + "; the camera was not queued.", true);
+    }
+    const bridge::CameraQueue::Stats stats = cameras.stats();
+    return textAnswer(json{{"queued", cameras.size()}, {"accepted", stats.queued}, {"refused", stats.refused},
+                           {"replaced", stats.replaced}}
+                          .dump());
+}
+
+namespace {
+
+/// The engine's AOV a subscription's AOV comes from.
+struct AovMap {
+    std::string source;   ///< displaySource's name
+    uint32_t    component = 0;
+};
+AovMap sourceOf(const std::string& aov) {
+    if (aov == "alpha") return {"color", 3};
+    return {aov, 0};
+}
+
+/// FRAME THREAD: one frame of the subscription -- the instant, the camera
+/// there, the draw left in flight, its AOVs into a slot. Never waits on the
+/// device; skips a frame when `maxInFlight` are still on it.
+void subscriptionTick(Session& session, int64_t startTaiNs) {
+    if (!session.subscription || !session.renderer) {
+        return;
+    }
+    Subscription& sub = *session.subscription;
+    usd::StageRenderer& renderer = *session.renderer;
+    gpu::Device& device = renderer.device();
+    ++sub.ticks;
+    const uint64_t inFlight = sub.publisher->observe();
+    const uint64_t nowNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    if (inFlight >= sub.maxInFlight) {
+        ++sub.late;
+        // A subscriber that stopped releasing holds the device (fence mode):
+        // after two seconds its release is raised for it.
+        if (sub.stalledSinceNs == 0) {
+            sub.stalledSinceNs = nowNs;
+        } else if (nowNs - sub.stalledSinceNs > 2'000'000'000ULL) {
+            sub.publisher->unblock();
+            sub.stalledSinceNs = 0;
+        }
+        return;
+    }
+    sub.stalledSinceNs = 0;
+    const int64_t instantSigned = sub.timebaseTai ? startTaiNs : startTaiNs - session.frameLoop().taiMinusUtcNs();
+    const uint64_t instant = instantSigned > 0 ? static_cast<uint64_t>(instantSigned) : 0;
+    session.liveInstant->store(instant);
+    const uint64_t syncsBefore = device.syncs();
+    bridge::RingRecord record;
+    record.instantNs = instant;
+    record.time = sub.time;
+    Result<void> drawn = ok();
+    auto at = session.cameras->at(instant);
+    if (!at) {
+        sub.lastError = errorText(at.error());
+        ++sub.failed;
+        return;
+    }
+    std::optional<render::Camera> used;
+    if (at->has_value()) {
+        used = (*at)->camera;
+        record.cameraSamples = (*at)->samples;
+    } else if (sub.framing) {
+        used = *sub.framing;
+    }
+    drawn = used ? renderer.draw(*used, sub.time, sub.width, sub.height)
+                 : renderer.draw(sub.camera, sub.time, sub.width, sub.height);
+    if (!drawn) {
+        sub.lastError = errorText(drawn.error());
+        ++sub.failed;
+        return;
+    }
+    if (used) {
+        std::copy(used->cameraToWorld.m.begin(), used->cameraToWorld.m.end(), record.cameraToWorld);
+        record.focal = used->lens.focal;
+        record.haperture = used->lens.haperture;
+        record.vaperture = used->lens.vaperture;
+        record.windowX = used->lens.apertureOffset[0];
+        record.windowY = used->lens.apertureOffset[1];
+        record.nearZ = used->lens.nearZ;
+        record.farZ = used->lens.farZ;
+    }
+    for (const usd::StageRenderer::LiveStream& live : renderer.liveStreams()) {
+        record.epoch = live.epoch;
+        record.epochPtpNs = live.ptpTime;
+        break;
+    }
+    // The AOVs as the frame holds them, a word layout each.
+    std::vector<technique::DisplaySource> shown(sub.aovs.size());
+    std::vector<bridge::AovSource> sources(sub.aovs.size());
+    for (size_t k = 0; k < sub.aovs.size(); ++k) {
+        const AovMap map = sourceOf(sub.aovs[k].aov);
+        auto source = renderer.displaySource(map.source);
+        if (!source) {
+            sub.lastError = errorText(source.error());
+            ++sub.failed;
+            return;
+        }
+        shown[k] = *source;
+        const bool words = source->kind == technique::DisplaySource::Kind::Depth ||
+                           source->kind == technique::DisplaySource::Kind::Ids;
+        const uint32_t entry = words ? 1u : 4u;
+        sources[k].buffer = source->buffer;
+        sources[k].stride = source->stride * entry;
+        sources[k].offset = source->offset * entry + map.component;
+        sources[k].shown = &shown[k];
+    }
+    record.recordedNs = nowNs;
+    const usd::StageRenderer::SplatFrameTotals totals = renderer.splatFrameTotals();
+    auto published = sub.publisher->publish(sub.frame + 1, sources, record, {totals.totals, totals.pairCapacity});
+    if (!published) {
+        sub.lastError = errorText(published.error());
+        ++sub.failed;
+        return;
+    }
+    if (*published) {
+        ++sub.frame;
+        ++sub.drawn;
+    } else {
+        ++sub.skipped;
+    }
+    sub.waitsLast = device.syncs() - syncsBefore;
+    // Steady: after the first frames, which load, compile and build.
+    if (sub.drawn > 8) {
+        sub.waitsSteadyMax = std::max(sub.waitsSteadyMax, sub.waitsLast);
+        sub.waitsSteadyTotal += sub.waitsLast;
+        ++sub.waitsSteadyFrames;
+    }
+}
+
+json subscriptionStats(const Session& session) {
+    if (!session.subscription) return json{{"subscribed", false}};
+    const Subscription& sub = *session.subscription;
+    const bridge::FramePublisher::Stats p = sub.publisher->stats();
+    const bridge::CameraQueue::Stats c = session.cameras->stats();
+    return json{{"subscribed", true},
+                {"frame", sub.frame},
+                {"ticks", sub.ticks},
+                {"drawn", sub.drawn},
+                {"late", sub.late},
+                {"skipped", sub.skipped},
+                {"failed", sub.failed},
+                {"completed", p.completed},
+                {"unblocked", p.unblocked},
+                {"hostWaitsLastFrame", sub.waitsLast},
+                {"hostWaitsSteadyMax", sub.waitsSteadyMax},
+                {"hostWaitsSteadyTotal", sub.waitsSteadyTotal},
+                {"steadyFrames", sub.waitsSteadyFrames},
+                {"camerasQueued", session.cameras->size()},
+                {"camerasAccepted", c.queued},
+                {"camerasRefused", c.refused},
+                {"lastError", sub.lastError}};
+}
+
+}   // namespace
+
+/// render_subscribe: frames drawn at the clock's rate, their AOVs handed over
+/// as they lie on the device. FRAME THREAD.
+json renderSubscribe(Session& session, const json& args) {
+    if (auto ready = ensureStage(session, args); !ready) return textAnswer(errorText(ready.error()), true);
+    if (session.subscription) {
+        return textAnswer("render_subscribe: a subscription is running; render_unsubscribe it first.", true);
+    }
+    const auto width = args.contains("width") ? unsignedArg(args["width"], 1, 16384) : std::nullopt;
+    const auto height = args.contains("height") ? unsignedArg(args["height"], 1, 16384) : std::nullopt;
+    if (!width || !height) return textAnswer("render_subscribe wants 'width' and 'height', 1 to 16384.", true);
+    if (!args.contains("aovs") || !args["aovs"].is_array() || args["aovs"].empty()) {
+        return textAnswer("render_subscribe wants 'aovs': names, or {name, format} objects.", true);
+    }
+    bridge::PublisherDesc desc;
+    desc.width = static_cast<uint32_t>(*width);
+    desc.height = static_cast<uint32_t>(*height);
+    for (const json& asked : args["aovs"]) {
+        std::string name;
+        std::string format;
+        if (asked.is_string()) {
+            name = asked.get<std::string>();
+        } else if (asked.is_object() && asked.contains("name") && asked["name"].is_string()) {
+            name = asked["name"].get<std::string>();
+            format = asked.contains("format") && asked["format"].is_string() ? asked["format"].get<std::string>()
+                                                                              : "?";
+        } else {
+            return textAnswer("render_subscribe: an AOV is a name or {name, format}.", true);
+        }
+        auto f = bridge::formatFor(name, format);
+        if (!f) return textAnswer("render_subscribe: " + errorText(f.error()), true);
+        desc.aovs.push_back({name, *f});
+    }
+    if (args.contains("slots")) {
+        const auto slots = unsignedArg(args["slots"], 2, 8);
+        if (!slots) return textAnswer("render_subscribe: 'slots' is 2 to 8.", true);
+        desc.slots = static_cast<uint32_t>(*slots);
+    }
+    const std::string sync = args.value("sync", std::string("fence"));
+    if (sync != "fence" && sync != "poll") return textAnswer("render_subscribe: 'sync' is fence or poll.", true);
+    desc.fenceSync = sync == "fence";
+    FrameRate rate;
+    if (args.contains("rate")) {
+        const json& r = args["rate"];
+        if (r.is_number_integer() && r.get<int64_t>() > 0) {
+            rate = {r.get<int64_t>(), 1};
+        } else if (r.is_string()) {
+            const std::string text = r.get<std::string>();
+            const size_t slash = text.find('/');
+            try {
+                rate = slash == std::string::npos ? FrameRate{std::stoll(text), 1}
+                                                  : FrameRate{std::stoll(text.substr(0, slash)),
+                                                              std::stoll(text.substr(slash + 1))};
+            } catch (...) {
+                rate = {0, 0};
+            }
+        } else {
+            rate = {0, 0};
+        }
+        if (rate.numerator <= 0 || rate.denominator <= 0) {
+            return textAnswer("render_subscribe: 'rate' is frames a second, an integer or \"30000/1001\".", true);
+        }
+    }
+    const std::string timebase = args.value("timebase", std::string("utc"));
+    if (timebase != "utc" && timebase != "tai") {
+        return textAnswer("render_subscribe: 'timebase' is utc (the system clock, as stream_commit's ptpTime) or tai.",
+                          true);
+    }
+    if (args.value("technique", std::string("raster")) != "raster") {
+        return textAnswer("render_subscribe draws raster frames: a path traced frame gathers over many.", true);
+    }
+    auto server = sessionHandles(session);
+    if (!server) return textAnswer(errorText(server.error()), true);
+    usd::StageRenderer& renderer = *session.renderer;
+    // The ids a frame must keep beside colour and depth.
+    std::vector<std::string> outputs;
+    for (const bridge::AovSpec& a : desc.aovs) {
+        if (a.aov != "color" && a.aov != "depth" && a.aov != "alpha") outputs.push_back(a.aov);
+    }
+    if (!outputs.empty()) renderer.requestOutputs(outputs);
+    auto sub = std::make_unique<Subscription>();
+    sub->aovs = desc.aovs;
+    sub->width = desc.width;
+    sub->height = desc.height;
+    sub->time = args.value("time", 0.0);
+    sub->camera = args.value("camera", std::string{});
+    sub->timebaseTai = timebase == "tai";
+    if (args.contains("maxInFlight")) {
+        const auto m = unsignedArg(args["maxInFlight"], 1, 8);
+        if (!m) return textAnswer("render_subscribe: 'maxInFlight' is 1 to 8.", true);
+        sub->maxInFlight = static_cast<uint32_t>(*m);
+    }
+    if (sub->camera.empty() && renderer.cameras().empty()) {
+        auto framed = renderer.framingCamera(sub->time, args.value("focal", 35.0));
+        if (!framed) return textAnswer(errorText(framed.error()), true);
+        sub->framing = *framed;
+    }
+    auto publisher = bridge::FramePublisher::create(renderer.device(), renderer.library(), **server, desc);
+    if (!publisher) return textAnswer(errorText(publisher.error()), true);
+    sub->publisher = std::move(*publisher);
+    const json info = json::parse(sub->publisher->info().toJson());
+    session.subscription = std::move(sub);
+    // The frames' instant is the live clock's: the epoch a frame shows and
+    // the camera it is drawn from are chosen at the same instant.
+    renderer.setLiveClock([instant = session.liveInstant] { return instant->load(); });
+    renderer.setFrameInFlight(true);
+    Session* owner = &session;
+    if (Result<void> ticking = session.frameLoop().setTicker(
+            [owner](int64_t, int64_t startTaiNs) { subscriptionTick(*owner, startTaiNs); }, rate);
+        !ticking) {
+        session.subscription.reset();
+        renderer.setFrameInFlight(false);
+        return textAnswer(errorText(ticking.error()), true);
+    }
+    json answer = info;
+    answer["rate"] = std::to_string(rate.numerator) + "/" + std::to_string(rate.denominator);
+    answer["timebase"] = timebase;
+    answer["clock"] = session.frameLoop().clockName();
+    return textAnswer(answer.dump());
+}
+
+/// render_unsubscribe: the frames stop, a subscriber still holding the device
+/// is let go, the ring goes. FRAME THREAD.
+json renderUnsubscribe(Session& session, const json& args) {
+    (void)args;
+    if (!session.subscription) return textAnswer("no subscription.", true);
+    (void)session.frameLoop().setTicker(nullptr, {});
+    json stats = subscriptionStats(session);
+    session.subscription->publisher->unblock();
+    // What the device still does with the slots finishes before they go:
+    // a wait outside any frame.
+    session.renderer->device().waitIdle();
+    session.subscription.reset();
+    session.renderer->setFrameInFlight(false);
+    session.renderer->setLiveClock(nullptr);
+    return textAnswer(stats.dump());
+}
+
+/// subscription_status: what the frames did. FRAME THREAD, between frames.
+json subscriptionStatus(Session& session, const json& args) {
+    (void)args;
+    return textAnswer(subscriptionStats(session).dump());
 }
 
 json textAnswer(std::string text, bool isError) {
@@ -978,6 +1481,10 @@ const std::vector<ToolEntry>& toolTable() {
                          "({\"ring\", \"bytes\"}) to write SPZ pages into. The stage's AtheneaLiveSourceAPI prim "
                          "names the same stream.",
                          object({{"name", field("string", "the stream's name, as primvars:athenea:live:stream says")},
+                                 {"devicePages", json{{"type", "object"},
+                                                      {"description", "{records, degree}: memory the producer's "
+                                                                      "device writes gaussians into, and a fence "
+                                                                      "it raises when they are written"}}},
                                  {"chunks", field("integer", "chunk ids a page may name, 64 by default")},
                                  {"ringBytes", field("integer", "the ring's size in bytes, 64 MiB by default")},
                                  {"sync", field("string", "latest (default) | clock: which epoch a frame shows, where the stage does not say")}},
@@ -989,14 +1496,76 @@ const std::vector<ToolEntry>& toolTable() {
                          object({{"name", field("string", "the stream")},
                                  {"epoch", field("integer", "from 1, increasing")},
                                  {"epochPages", field("integer", "pages the epoch has in all (this call's, by default)")},
+                                 {"fence", field("integer", "device pages: the written fence's value once they "
+                                                            "are written")},
                                  {"pages", json{{"type", "array"},
                                                 {"description", "{chunk, op: add|replace|remove, offset, bytes, "
-                                                                "bounds: [minx, miny, minz, maxx, maxy, maxz], ptpTime}"},
+                                                                "bounds: [minx, miny, minz, maxx, maxy, maxz], "
+                                                                "ptpTime}, or device: {first, count} in place of "
+                                                                "offset and bytes"},
                                                 {"items", {{"type", "object"}}}}}},
                                 {"name", "epoch", "pages"}),
-                         streamCommit});
+                         streamCommit, true});
         tools.push_back({"stream_close", "Close a stream this session opened and remove its ring.",
                          object({{"name", field("string", "the stream")}}, {"name"}), streamClose});
+        tools.push_back({"camera_set",
+                         "Queue a camera with the PTP instant it was true at: a subscription's frame is drawn from "
+                         "the pose interpolated at the frame's instant (the instant that also picks a live "
+                         "stream's epoch). A camera that does not make a frustum is refused and counted.",
+                         object({{"ptpTime", field("integer", "the instant, nanoseconds (the live streams' timebase)")},
+                                 {"pose", json{{"type", "array"}, {"items", {{"type", "number"}}},
+                                               {"description", "camera to world, sixteen numbers row by row, "
+                                                               "looking down -z with +y up"}}},
+                                 {"position", json{{"type", "array"}, {"items", {{"type", "number"}}},
+                                                   {"description", "or where it stands (x y z)"}}},
+                                 {"rotation", json{{"type", "array"}, {"items", {{"type", "number"}}},
+                                                   {"description", "and how it turns: a unit quaternion x y z w"}}},
+                                 {"focal", field("number", "focal length, mm")},
+                                 {"haperture", field("number", "horizontal aperture, mm (24.576)")},
+                                 {"vaperture", field("number", "vertical aperture, mm")},
+                                 {"apertureOffset", json{{"type", "array"}, {"items", {{"type", "number"}}},
+                                                         {"description", "the window off the axis, mm, as "
+                                                                         "UsdGeomCamera's offsets"}}},
+                                 {"fx", field("number", "or intrinsics in pixels: focal length")},
+                                 {"fy", field("number", "the same, vertically (square pixels: equal to fx)")},
+                                 {"cx", field("number", "principal point, pixels from the left")},
+                                 {"cy", field("number", "principal point, pixels from the top")},
+                                 {"resolution", json{{"type", "array"}, {"items", {{"type", "number"}}},
+                                                     {"description", "[width, height] the pixels are of"}}},
+                                 {"near", field("number", "near clipping plane, scene units")},
+                                 {"far", field("number", "far clipping plane, scene units")}},
+                                {"ptpTime"}),
+                         cameraSet, true});
+        tools.push_back({"render_subscribe",
+                         "Draw the open stage at a frame rate and hand each frame's AOVs to another process as they "
+                         "lie on the device: shared memory both devices map, a fence the engine raises to the frame "
+                         "number, one the subscriber raises when it is done with a frame. Answers what to open.",
+                         object({{"aovs", json{{"type", "array"},
+                                               {"description", "names or {name, format}: color (rgba32f, rgba16f, "
+                                                               "rgba8), alpha, depth (r32f, r16f), normal, Neye "
+                                                               "(rgba32f, rgba16f), primId, instanceId, elementId "
+                                                               "(r32u), CryptoObject00..02 (rgba32f)"}}},
+                                 {"width", field("integer", "pixels across")},
+                                 {"height", field("integer", "pixels down")},
+                                 {"slots", field("integer", "frames the ring holds, 2 to 8 (3)")},
+                                 {"sync", field("string", "fence (default: the device waits for the subscriber's "
+                                                          "release) or poll (a frame is skipped instead)")},
+                                 {"rate", field("string", "frames a second: 30 or \"30000/1001\" (30)")},
+                                 {"timebase", field("string", "utc (default, the system clock) or tai: what a "
+                                                              "frame's instant is counted in")},
+                                 {"camera", field("string", "a stage camera to draw from until camera_set")},
+                                 {"time", field("number", "USD time code")},
+                                 {"maxInFlight", field("integer", "frames on the device before one is skipped (2)")},
+                                 {"stage", field("string", "open this stage first")}},
+                                {"aovs", "width", "height"}),
+                         renderSubscribe});
+        tools.push_back({"render_unsubscribe", "Stop the subscription's frames and remove its ring. Answers what "
+                                               "the frames did.",
+                         object({}), renderUnsubscribe});
+        tools.push_back({"subscription_status",
+                         "What the subscription's frames did: drawn, late, skipped, the host's waits a frame, the "
+                         "cameras queued and refused.",
+                         object({}), subscriptionStatus});
         return tools;
     }();
     return table;

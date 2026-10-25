@@ -4,6 +4,7 @@
 #include <cstring>
 #include <format>
 
+#include "athenea/core/Platform.h"
 #include "athenea/gpu/Device.h"
 
 namespace athenea::gpu {
@@ -33,6 +34,9 @@ rhi::BufferDesc toRhi(const BufferDesc& desc) {
         break;
     }
     out.usage = out.usage | desc.extraUsage;
+    if (desc.shared) {
+        out.usage = out.usage | rhi::BufferUsage::Shared;
+    }
     return out;
 }
 
@@ -102,6 +106,37 @@ Result<Buffer> Buffer::wrap(Device& device, rhi::NativeHandle handle, const Buff
     buffer.bytes_ = desc.bytes;
     buffer.elementBytes_ = desc.elementBytes;
     return buffer;
+}
+
+Result<Buffer> Buffer::overSharedPages(Device& device, void* pages, uint64_t bytes, uint32_t elementBytes,
+                                       std::string label) {
+    if (device.backend() != Backend::Metal) {
+        return Error::make(ErrorCode::Unsupported, "buffer '{}': host pages are read in place on Metal only", label);
+    }
+    void* mtlDevice = reinterpret_cast<void*>(device.native().device.value);
+    void* native = platform::newMetalBufferOverPages(mtlDevice, pages, bytes);
+    if (native == nullptr) {
+        return Error::make(ErrorCode::DeviceFailure,
+                           "buffer '{}': the device took no buffer over {} bytes of shared pages (page-aligned, "
+                           "whole pages, unified memory)", label, bytes);
+    }
+    BufferDesc desc;
+    desc.bytes = bytes;
+    desc.elementBytes = elementBytes;
+    desc.label = std::move(label);
+    auto wrapped = wrap(device, rhi::NativeHandle{rhi::NativeHandleType::MTLBuffer, reinterpret_cast<uint64_t>(native)},
+                        desc);
+    // slang-rhi keeps its own reference; ours goes.
+    platform::releaseMetalBuffer(native);
+    return wrapped;
+}
+
+Result<rhi::NativeHandle> Buffer::sharedHandle() const {
+    rhi::NativeHandle handle;
+    if (buffer_ == nullptr || SLANG_FAILED(buffer_->getSharedHandle(&handle)) || !handle) {
+        return Error(ErrorCode::Unsupported, "this backend exports no handle for a buffer (made shared?)");
+    }
+    return handle;
 }
 
 rhi::NativeHandle Buffer::native() const {

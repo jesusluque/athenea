@@ -88,6 +88,8 @@ struct StageRenderer::Impl {
     UsdStageRefPtr                         stage;
     std::function<uint64_t()>              liveClock;          ///< setLiveClock's, handed over at execute
     bool                                   liveClockSet = false;
+    /// setFrameInFlight: draw() returns without waiting for the device.
+    bool                                   frameInFlight = false;
     std::unique_ptr<HdAtheneaRenderDelegate>   delegate;
     HdsiLegacyDisplayStyleOverrideSceneIndexRefPtr displayStyle;
     HdsiSceneGlobalsSceneIndexRefPtr       globals;   ///< the active render settings prim, the frame
@@ -1501,6 +1503,8 @@ Result<void> StageRenderer::aim(const render::Camera& camera, double time, uint3
     lens.SetFocalLength(static_cast<float>(camera.lens.focal));
     lens.SetHorizontalAperture(static_cast<float>(camera.lens.haperture));
     lens.SetVerticalAperture(static_cast<float>(camera.lens.haperture * height / width));
+    lens.SetHorizontalApertureOffset(static_cast<float>(camera.lens.apertureOffset[0]));
+    lens.SetVerticalApertureOffset(static_cast<float>(camera.lens.apertureOffset[1]));
     lens.SetClippingRange(GfRange1f(static_cast<float>(camera.lens.nearZ), static_cast<float>(camera.lens.farZ)));
     if (camera.lens.projection == render::Lens::Projection::Orthographic) {
         lens.SetProjection(GfCamera::Orthographic);
@@ -2044,6 +2048,26 @@ Result<void> StageRenderer::drawImage(const render::Camera& camera, double time,
     return executeUntilGathered(width, height);
 }
 
+void StageRenderer::setFrameInFlight(bool inFlight) {
+    impl_->frameInFlight = inFlight;
+    impl_->delegate->SetRenderSetting(TfToken("athenea:frameInFlight"), VtValue(inFlight));
+}
+
+bool StageRenderer::frameInFlight() const {
+    return impl_->frameInFlight;
+}
+
+StageRenderer::SplatFrameTotals StageRenderer::splatFrameTotals() const {
+    SplatFrameTotals out;
+    if (auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam()); param != nullptr) {
+        if (const Engine* engine = param->GetEngine(); engine != nullptr) {
+            out.totals = engine->splatFrameTotals();
+            out.pairCapacity = engine->splatPairCapacity();
+        }
+    }
+    return out;
+}
+
 void StageRenderer::setLiveClock(std::function<uint64_t()> nowPtpNs) {
     impl_->liveClock = std::move(nowPtpNs);
     impl_->liveClockSet = true;
@@ -2087,7 +2111,13 @@ Result<void> StageRenderer::execute(uint32_t width, uint32_t height) {
     // and the image is finished here, where a host takes it: a caller of
     // draw() reads the targets on the device as soon as this returns. A
     // command buffer the device failed is this frame's error, not the next's.
-    device().waitIdle();
+    // In flight (setFrameInFlight), the frame is left to the queue: what
+    // reads it next -- a kernel copying it out for another process -- is
+    // submitted after it on the same queue, and nothing here waits. A
+    // command buffer that failed is reported by the next submit instead.
+    if (!impl.frameInFlight) {
+        device().waitIdle();
+    }
     if (Result<void> queued = device().takeQueueError(); !queued) {
         return queued;
     }

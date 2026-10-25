@@ -52,13 +52,14 @@ coinciden, la cabecera tiene razón.
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `lod/ChunkSource.h` (de dónde vienen los chunks de una nube en streaming, y qué hilo puede hacer qué), `lod/SplatStream.h` (streams en vivo: páginas empujadas por épocas); `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
 | 17 | video | `video/Planes.h` (una nube como planos de vídeo, y el lado del host de sus kernels: `shaders/athenea/scene/video_planes_*.slang`), `video/Athv.h` — **la única especificación del formato `.athv`**, `video/Codec.h` (el códec hardware como entrada y salida, y dónde está cada plataforma), `video/VideoStream.h` (un vídeo reproducido en un stream en vivo a través de `lod/DevicePages.h`) |
-| 18 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
-| 19 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
+| 18 | bridge | `bridge/Frames.h` — **la única especificación del anillo de frames** que lee otro proceso (render_subscribe), y qué hilo hace qué; `bridge/CameraQueue.h` (cámaras con sus instantes, qué se rechaza), `bridge/ClientPages.h` (páginas en vivo que escribió el dispositivo de otro proceso); `gpu/SharedFence.h` para los fences que comparten los dos procesos |
+| 19 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
+| 20 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta; `src/FrameLoop.h` (el hilo del frame de la sesión: toda herramienta que llega al dispositivo, y los frames de una suscripción) |
 | 20 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
 | 21 | view | `view/Viewer.h` — las opciones de la ventana |
 
 Una cosa que parece una violación y no lo es: `render` (10) enlaza `aofx::aofx`
-(20). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
+(21). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
 le toma son `Mat4` y `Vec3`. La regla de orden es sobre librerías compiladas.
 
 ### 1.2 Una GPU, un hilo
@@ -91,6 +92,18 @@ productores -- un receptor de red, otro proceso, un fichero que se reproduce
 -- sólo empujan `lod::PageUpdate`s a una `lod::PageQueue`. Una función nueva
 que pertenece a uno de ellos dice a cuál en su comentario (hilo del frame,
 hilos cargadores, cualquier hilo), y un test la llama desde el equivocado.
+
+**Entre procesos el orden es el de los dispositivos.** Lo que otro proceso
+escribe para el motor, o lee de él, lo ordena un fence que comparten
+(`gpu::SharedFence`): el dispositivo que lee espera en él, el dispositivo que
+escribió lo sube, y ningún host espera a ninguno. En Metal es un
+`MTLSharedEvent` que viaja como puerto Mach (`platform::HandleServer`); un
+event que no hizo slang-rhi se ata a uno que sí hizo con una cadena de events,
+así que nada depende del orden en que empiezan los command buffers. En el
+servidor MCP el hilo del frame es el de la sesión (`mcp/src/FrameLoop.h`):
+toda herramienta que toca la escena o el dispositivo corre ahí entre frames, y
+solo las herramientas que encolan (`stream_commit`, `camera_set`) responden
+desde el hilo del servidor.
 
 ### 1.3 Un frame, rasterizado
 
@@ -543,7 +556,7 @@ Diecinueve binarios, uno por área, todos bajo `tests/`.
 | `athenea_volume_tests` | volúmenes |
 | `athenea_usd_tests` | el delegate de punta a punta |
 | `athenea_storm_oracle_tests` | Storm como oráculo de geometría; su propio proceso y dispositivo, y `HDX_MSAA_SAMPLE_COUNT=1` |
-| `athenea_mcp_tests` | el servidor JSON-RPC y sus herramientas |
+| `athenea_mcp_tests` | el servidor JSON-RPC y sus herramientas; el puente: handles por token, fences compartidos, frames leídos donde están, y athenea-mcp arrancado como segundo proceso, alimentado y leído |
 | `athenea_host_tests` | el plugin por `UsdImagingGLEngine`; **no enlaza `athenea::usd` a propósito** |
 | `athenea_view_tests` | el viewer; etiqueta `display` |
 | `athenea_gpu_host_tests` | gpe adoptando el dispositivo de slang-rhi; etiqueta `gpe` |

@@ -44,8 +44,11 @@ Projection projectionFor(const Camera& camera, uint32_t width, uint32_t height) 
                          std::max(camera.lens.haperture, 1e-9);
     out.focalX = focal * camera.lens.windowScale[0];
     out.focalY = focal * camera.lens.windowScale[1];
-    out.centreX = w * 0.5 + camera.lens.windowTranslate[0] * w * 0.5;
-    out.centreY = h * 0.5 + camera.lens.windowTranslate[1] * w * 0.5;
+    // The aperture's offset in pixels (square pixels: w / haperture a mm),
+    // rows counted from the bottom as the engine draws them.
+    const double pixelsPerMm = w / std::max(camera.lens.haperture, 1e-9);
+    out.centreX = w * 0.5 + camera.lens.windowTranslate[0] * w * 0.5 - camera.lens.apertureOffset[0] * pixelsPerMm;
+    out.centreY = h * 0.5 + camera.lens.windowTranslate[1] * w * 0.5 - camera.lens.apertureOffset[1] * pixelsPerMm;
     out.nearZ = camera.lens.nearZ;
     out.farZ = camera.lens.farZ;
     out.orthographic = camera.lens.projection == Lens::Projection::Orthographic;

@@ -29,6 +29,12 @@ struct BufferDesc {
     Memory      memory = Memory::Device;
     /// Add vertex/index/indirect/AS-input usage on top of storage + copy.
     rhi::BufferUsage extraUsage = rhi::BufferUsage::None;
+    /// EXPORTABLE to another process (rhi::BufferUsage::Shared): its memory
+    /// has a handle another API or process can import (sharedHandle) --
+    /// an opaque descriptor on Vulkan. Metal and CUDA export no buffer
+    /// through slang-rhi: a frame another process maps lives in shared
+    /// memory there (overSharedPages) or is named by its device pointer.
+    bool        shared = false;
     std::string label;
 };
 
@@ -45,6 +51,14 @@ public:
     /// buffer, found by its MTLBuffer* or CUDA pointer. The owner keeps it.
     [[nodiscard]] static Result<Buffer> wrap(Device& device, rhi::NativeHandle handle,
                                              const BufferDesc& desc);
+
+    /// A buffer over memory another process maps too: `pages` (page-aligned,
+    /// whole pages, a platform::SharedMemory mapping) as they are, no copy,
+    /// where the device reads host memory in place -- Metal on unified
+    /// memory. Unsupported elsewhere. The pages must outlive the buffer.
+    /// The device's one caller.
+    [[nodiscard]] static Result<Buffer> overSharedPages(Device& device, void* pages, uint64_t bytes,
+                                                        uint32_t elementBytes, std::string label);
 
     template <typename T>
     [[nodiscard]] static Result<Buffer> fromSpan(Device& device, std::span<const T> data,
@@ -67,6 +81,10 @@ public:
     }
     [[nodiscard]] rhi::IBuffer* rhi() const noexcept { return buffer_.get(); }
     [[nodiscard]] rhi::NativeHandle native() const;
+    /// What another process imports this buffer's memory by: made `shared`,
+    /// on a backend that exports one (Vulkan: an opaque descriptor, still
+    /// the buffer's -- duplicate it before giving it away). Any thread.
+    [[nodiscard]] Result<rhi::NativeHandle> sharedHandle() const;
 
     /// Synchronous readback, for the CLI's final image and for tests' metric
     /// counters. Never on a frame path: see gpu::AsyncReadback.

@@ -2329,6 +2329,10 @@ Standard output carries protocol only; logging goes to standard error.
 | `stream_open` | a live stream another process feeds; answers `{"ring", "bytes"}`, the shared memory to write pages into |
 | `stream_commit` | one epoch's pages, each named by where it lies in the ring |
 | `stream_close` | closes the stream and removes its ring |
+| `camera_set` | a camera with the PTP instant it was true at, queued for a subscription's frames |
+| `render_subscribe` | frames drawn at a rate and their AOVs handed to another process as they lie on the device; answers what to open |
+| `render_unsubscribe` | stops the frames and removes their ring; answers what the frames did |
+| `subscription_status` | what the frames did: drawn, late, skipped, the host's waits a frame, the cameras queued and refused |
 
 **A live stream from another process.** A stage names the stream in an
 `AtheneaLiveSourceAPI` prim (§4.3); a producer that is not in the server's
@@ -2358,10 +2362,101 @@ process -- a Python script, a host application -- feeds it through three tools:
 - A frame draws the last epoch whose pages are all on the device: the render
   that follows a commit may still show the epoch before.
 
+- **Pages a producer's device wrote.** `stream_open`'s `devicePages`
+  `{records, degree}` (1 to 2^26 records, degree 0 to 3, 3 by default; Metal
+  only, and a stage must be open) adds shared memory both devices see and a
+  fence, answered as `devicePages {memory, bytes, records, floatsPerRecord,
+  degree, recordsAt, server, token}`. The memory is one page of header
+  (`ATCP`, then `consumed`, below) and the records from byte `recordsAt` (a
+  page): float32, a 3DGS PLY vertex's 14 -- x y z, opacity as a logit, three
+  log scales, the rotation w x y z, the DC colour -- then the rest
+  coefficients, all red, then green, then blue. The producer writes them with
+  its own device (a buffer over the same pages), raises the `written` fence
+  (fetched from `server` by `token`) to a value of its choosing, and commits
+  pages as `{chunk, op, device: {first, count}}` with the commit's `fence`
+  set to that value: the engine's device waits for the fence before it reads
+  them -- never its host -- and decodes them as any cloud. `fence` 0 (the
+  default) is for records already written. The header's `consumed` word (byte
+  24, u64) is the newest epoch every pool is done with: records an epoch named
+  may be written over once it reaches it.
+
 `scripts/examples/live_producer.py` does all of it with the standard library:
 `live_producer.py --mcp <build>/bin/athenea-mcp --epochs 6 --out <dir> a.spz b.spz`
 writes a stage naming the stream (or takes `--stage`), commits the files as
 chunks epoch after epoch, and renders a PNG after each.
+
+**Frames to another process.** `render_subscribe` draws the open stage at a
+frame rate and hands every frame's AOVs over where they lie, without a copy:
+- `aovs` names them, each a name or `{name, format}`: `color` (`rgba32f` by
+  default, `rgba16f`, or `rgba8`: as shown -- the AgX view, sRGB, top row
+  first), `alpha` and `depth` (view z, 0 where nothing drew; `r32f`, `r16f`),
+  `normal` and `Neye` (`rgba32f`, `rgba16f`), `primId`, `instanceId` and
+  `elementId` (`r32u`), `CryptoObject00` to `02` (`rgba32f`, (id, coverage,
+  id, coverage)). At most eight. Rows are bottom first but for `rgba8`.
+- `width` and `height` (1 to 16384) are required. `slots` (2 to 8, 3 by
+  default) is how many frames the ring holds; `rate` is frames a second (30
+  by default; an integer or `"30000/1001"`), at the frame starts of SMPTE ST
+  2059-1 (`sched::FrameClock` where the build has genlock, the same alignment
+  on the system clock otherwise); `maxInFlight` (1 to 8, 2) is how many frames
+  the device may hold before a frame is skipped (`late`). `camera` is a stage
+  camera to draw from until a `camera_set` comes (a stage without one is
+  framed). Raster only.
+- The answer: `ring` and `ringBytes` (shared memory: the header, the AOVs'
+  layout, a record a frame), `data` and `dataBytes` (shared memory: the
+  slots; each AOV of each slot on whole pages, at `slotBytes` a slot and its
+  `offset`), `stateOffset` (where in a slot the device says whether the frame
+  was drawn whole), `server` and `token` (the fences), `slots`, `width`,
+  `height`, `sync`, `aovs [{name, format, offset, bytes}]`, `rate`,
+  `timebase`, `clock`. §8.2 has the layout.
+- **`sync` `fence`** (the default): the engine raises the `frames` fence to
+  frame F once F's AOVs are in its slot; the subscriber raises `release` to
+  F once it is done with every frame up to F; the engine's device waits for
+  `release` before it writes a slot again. Both are Metal shared events
+  (fetched from `server` by `token`, as Mach ports). A subscriber that stops
+  releasing holds the engine's device: after 2 s without a frame drawn the
+  engine raises `release` itself (`unblocked`). **`poll`**: for a reader with
+  no device (the Python example): the frame's number is in the header's
+  `completed` word once the engine has seen it written (a frame late at most),
+  the reader writes the newest frame it is done with into `released`, and a
+  frame whose slot is not released is not published (`skipped`): nothing waits.
+- **Instants.** Each frame stands for the instant its frame start on the clock
+  is: in `timebase` `utc` (the default: the system clock in nanoseconds, what
+  `stream_commit`'s `ptpTime` is counted in) or `tai`. That one instant
+  chooses the live epoch it shows (`athenea:live:sync = clock`) and the camera
+  it is drawn from. A frame's record says which slot holds it, the instant,
+  the epoch and that epoch's time, when it was recorded, and the camera it
+  was drawn from (camera to world, focal, apertures, aperture offsets, clipping).
+- **`camera_set`** `{ptpTime, pose | position + rotation, focal, haperture,
+  vaperture, apertureOffset | fx, fy, cx, cy, resolution, near, far}` queues a
+  camera at an instant (nanoseconds, the same timebase). `pose` is camera to
+  world, sixteen numbers row by row, looking down -z; `rotation` a unit
+  quaternion x y z w. Intrinsics in pixels (`cx`, `cy` from the top left of a
+  `resolution` [w, h] picture) become a lens over the default 24.576 mm
+  aperture: square pixels only. A frame is drawn from the pose between the two
+  queued cameras that bracket its instant -- the position along the line, the
+  turn along the arc, the lens in proportion -- or the first or last held;
+  never extrapolated. A camera is refused and counted (never queued) for a
+  missing or negative instant, numbers that are not finite, a matrix that is
+  not a rotation and a translation (to 1e-3) or that mirrors, a quaternion
+  not of length 1 (to 1e-3), a focal length or aperture of 0 or less,
+  clipping planes not 0 < near < far, or fx and fy that differ by more than
+  1e-3. 1024 are kept; a camera at an instant already queued replaces it.
+- **The threads.** Every tool that touches the stage or the device runs on
+  the session's frame thread, between frames; `stream_commit` and
+  `camera_set` only queue and are answered at once, even while a frame is
+  drawn. A steady subscription frame waits for the device 0 times
+  (`subscription_status`'s `hostWaitsSteadyMax`).
+- **`subscription_status`** answers `frame` (the last published), `ticks`,
+  `drawn`, `late`, `skipped`, `failed`, `completed`, `unblocked`,
+  `hostWaitsLastFrame`, `hostWaitsSteadyMax`, `hostWaitsSteadyTotal`,
+  `steadyFrames` (after the first eight), `camerasQueued`, `camerasAccepted`,
+  `camerasRefused`, `lastError`; `render_unsubscribe` answers the same.
+- `live_producer.py --subscribe` subscribes in `poll` mode, reads each
+  epoch's frame from the slot as a `memoryview` (colour as `rgba8`) and
+  writes it as a PNG.
+- Metal on this machine; Vulkan exports its slots and fences (descriptors)
+  untested; CUDA is refused. Over a network: not done (a transport that
+  carries the slots' bytes is where that goes).
 
 **`render`'s `output` writes two different files.** A name ending in `.exr`
 gets the beauty's own numbers, linear. Any other name gets the frame **as it
@@ -2562,6 +2657,27 @@ or not, PTP time, time code and timecode label, the ranges (two floats an
 attribute), the position high parts deflated, the HEVC parameter sets on a
 key picture and the access unit as length-prefixed NAL units. Little endian.
 `modules/video/include/athenea/video/Athv.h` is its specification.
+
+**The frame ring** (`render_subscribe`'s `ring`; `modules/bridge/include/athenea/bridge/Frames.h`
+is its specification), little endian, 8-byte words read and written whole:
+
+| Bytes | What |
+|---|---|
+| 0 | `ATFR` magic, u32 version (1), backend, slots, width, height, AOVs, fence sync (u32 each) |
+| 32 | slot bytes, data bytes (u64) |
+| 48 | `published`: the newest frame recorded (u64, the engine) |
+| 56 | `completed`: the newest frame seen written (u64, the engine) |
+| 64 | `released`: the newest frame the reader is done with (u64, the reader; poll mode) |
+| 72 | where a frame's state lies in its slot (u64): four u32 the device writes with the AOVs -- visible, pairs, the pairs the rasteriser's buffers held, 1 written; a frame with more pairs than were held was drawn short |
+| 80 | 8 AOVs of 56 bytes: name (32), format, bytes a pixel (u32), offset in a slot, bytes (u64) |
+| 528 | 64 records of 256 bytes, frame F at F mod 64: frame, slot, instant, epoch, epoch's time, recorded at, camera samples (0 none, 1 held, 2 interpolated), pad (u64); camera to world (16 doubles); focal, horizontal and vertical aperture, aperture offsets, near, far, time code (doubles) |
+
+A record's frame word is written last and is read before and after the rest:
+a record whose two reads disagree is being replaced.
+
+**Device pages** (`stream_open`'s `devicePages`): a 64-byte header page --
+`ATCP`, version, floats a record, degree (u32), records, `consumed`, pages
+placed (u64) -- then the records from the next page.
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by

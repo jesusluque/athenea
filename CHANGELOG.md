@@ -8,6 +8,12 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **A bridge to another process**: `render_subscribe` hands each frame's AOVs
+  over where they lie on the device (shared memory, Metal shared events as
+  fences), `camera_set` queues cameras with their PTP instants and frames are
+  drawn from the pose at their own instant, and live pages may come from the
+  other process's device; a steady subscription frame waits for the device 0
+  times.
 - **Nuke and Natron**: an OpenFX node (`integrations/ofx`) draws a stage through
   the shot camera with RGBA, depth, P (world position) and Cryptomatte planes,
   and an HDRI the artist picks and rotates; the engine runs out of process

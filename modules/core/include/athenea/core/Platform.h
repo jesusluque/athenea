@@ -81,6 +81,121 @@ private:
 /// This process's id. Any thread.
 [[nodiscard]] uint32_t processId() noexcept;
 
+// --- handles another process can be given (PlatformIpc.cpp) --------------------
+//
+// A frame shared with another process is memory both map (SharedMemory) and
+// device objects only the system can carry across: a Metal shared event is a
+// Mach port, a Vulkan buffer's memory or timeline semaphore a file
+// descriptor. A HandleServer hands them to whoever asks with the right token.
+// Nothing here touches a device except where it says so.
+
+/// A handle the system carries between processes: a Mach send right (macOS)
+/// or a file descriptor (POSIX). The holder closes it (closeOsHandle).
+struct OsHandle {
+    enum class Kind : uint32_t { None = 0, MachPort = 1, Fd = 2 };
+    Kind     kind = Kind::None;
+    uint64_t value = 0;
+};
+/// Gives the right or the descriptor back. Any thread.
+void closeOsHandle(OsHandle handle) noexcept;
+/// A second reference to the same port or descriptor, for a holder that
+/// gives its own away. Any thread.
+[[nodiscard]] Result<OsHandle> duplicateOsHandle(OsHandle handle);
+
+/// How a HandleServer is reached. `Native` is a Mach bootstrap name on macOS
+/// (a descriptor travels as a fileport there) and a Unix socket elsewhere;
+/// `Socket` is the Unix socket on any POSIX system, descriptors only.
+enum class HandleTransport { Native, Socket };
+
+/// ANSWERS fetchHandles: a thread of its own receives a request carrying a
+/// token and replies with copies of the handles offered under it, so one
+/// offer serves any number of fetches. The token is a capability: only a
+/// process told it (in an MCP answer) can fetch. Every method: any thread.
+class HandleServer {
+public:
+    [[nodiscard]] static Result<std::unique_ptr<HandleServer>> create(
+        const std::string& prefix, HandleTransport transport = HandleTransport::Native);
+    virtual ~HandleServer() = default;
+    /// What fetchHandles takes to reach this server.
+    [[nodiscard]] virtual const std::string& name() const noexcept = 0;
+    /// The server owns `handles` from now until withdrawn or gone.
+    virtual void offer(uint64_t token, std::vector<OsHandle> handles) = 0;
+    virtual void withdraw(uint64_t token) = 0;
+    /// Fetches answered with handles, and fetches refused (a token not offered).
+    [[nodiscard]] virtual uint64_t served() const noexcept = 0;
+    [[nodiscard]] virtual uint64_t refused() const noexcept = 0;
+};
+
+/// The handles `server` offers under `token`, the caller's now. NotFound for
+/// a token the server does not know; IoFailure where the server cannot be
+/// reached within `timeout`. Any thread.
+[[nodiscard]] Result<std::vector<OsHandle>> fetchHandles(const std::string& server, uint64_t token,
+                                                         std::chrono::milliseconds timeout = std::chrono::seconds(5));
+
+/// A random 64-bit token from the system's generator. Any thread.
+[[nodiscard]] uint64_t randomToken();
+
+/// THE METAL SIDE OF A SHARED EVENT (macOS; elsewhere Unsupported). An
+/// MTLSharedEvent crosses processes as the Mach port its MTLSharedEventHandle
+/// holds. Apple carries that port only inside XPC messages, and XPC needs a
+/// service launchd was told of, which a process started by hand is not; so
+/// the port is taken from the handle (`eventPort`) and the event made again
+/// from it (`-[MTLDevice newSharedEventWithMachPort:]`). Both are Metal's own
+/// methods, absent from its public headers: asked for by name, and refused
+/// with Unsupported where a system does not answer to them.
+/// `mtlSharedEvent` is an id<MTLSharedEvent>. Any thread.
+[[nodiscard]] Result<OsHandle> exportMetalSharedEvent(void* mtlSharedEvent);
+/// An id<MTLSharedEvent> on `mtlDevice` over the event `port` names, retained
+/// once for the caller (releaseMetalObject). `port` stays the caller's. Any thread.
+[[nodiscard]] Result<void*> importMetalSharedEvent(void* mtlDevice, OsHandle port);
+/// The value the event holds now, and a value set from the host. Any
+/// thread; neither waits.
+[[nodiscard]] uint64_t metalSharedEventValue(void* mtlSharedEvent) noexcept;
+void setMetalSharedEventValue(void* mtlSharedEvent, uint64_t value) noexcept;
+/// ONE COMMAND BUFFER ON `mtlQueue` THAT WAITS, THEN SIGNALS: the device waits
+/// for `waitEvent` to reach `waitValue` and then sets `signalEvent` to
+/// `signalValue`. How an event slang-rhi did not make is tied to one it did
+/// (gpu::SharedFence): the chain relies on the two events alone, not on any
+/// order between command buffers. Committed, never waited for. The device's
+/// one caller (the frame thread).
+[[nodiscard]] Result<void> metalChainEvents(void* mtlQueue, void* waitEvent, uint64_t waitValue, void* signalEvent,
+                                            uint64_t signalValue);
+/// -[NSObject release], for what importMetalSharedEvent made. Any thread.
+void releaseMetalObject(void* object) noexcept;
+
+/// A PROCESS STARTED WITH ITS STANDARD INPUT AND OUTPUT AS PIPES: a test's
+/// second process, or a client starting athenea-mcp. Standard error is
+/// inherited. POSIX only (Unsupported on Windows). Every method: the thread
+/// that holds it.
+class ChildProcess {
+public:
+    /// `argv[0]` is the program's path; `env` entries ("NAME=value") are
+    /// added to this process's environment.
+    [[nodiscard]] static Result<ChildProcess> spawn(const std::vector<std::string>& argv,
+                                                    const std::vector<std::string>& env = {});
+    ChildProcess() = default;
+    ChildProcess(ChildProcess&&) noexcept;
+    ChildProcess& operator=(ChildProcess&&) noexcept;
+    ChildProcess(const ChildProcess&) = delete;
+    ChildProcess& operator=(const ChildProcess&) = delete;
+    /// Closes its input and waits for it to end.
+    ~ChildProcess();
+
+    [[nodiscard]] Result<void> writeLine(const std::string& line);
+    /// The next line it writes, without the newline; IoFailure when it closes
+    /// its output or `timeout` passes first.
+    [[nodiscard]] Result<std::string> readLine(std::chrono::milliseconds timeout = std::chrono::seconds(60));
+    /// Closes its input and waits for its exit status.
+    [[nodiscard]] Result<int> wait();
+    [[nodiscard]] int64_t pid() const noexcept { return pid_; }
+
+private:
+    int64_t     pid_ = -1;
+    int         in_ = -1;    // its standard input, written here
+    int         out_ = -1;   // its standard output, read here
+    std::string pending_;
+};
+
 /// Removes the shared memory regions named `<prefix><pid>-...` whose process
 /// is gone -- what a server that crashed with a region open left. Where the
 /// system lists its regions (Linux, /dev/shm); macOS lists none, and a

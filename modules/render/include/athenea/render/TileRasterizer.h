@@ -361,6 +361,15 @@ public:
                                             std::span<const PointInstance> points = {},
                                             const RenderTargets* under = nullptr,
                                             const SplatLights* lights = nullptr);
+    /// THE LAST FRAME IN FLIGHT'S TOTALS where the device wrote them:
+    /// (visible, pairs), two uints its last pass leaves (zeros for a frame
+    /// of no splats), and the pairs its buffers held: a frame whose pairs
+    /// passed them was drawn short. What a frame handed on with its fence
+    /// carries beside it, so a reader knows without asking the host.
+    /// Invalid before the first frame in flight. The frame thread.
+    [[nodiscard]] const gpu::Buffer& frameTotals() const noexcept { return frameTotals_; }
+    [[nodiscard]] uint32_t drawnPairCapacity() const noexcept { return drawnCapacity_; }
+
     /// The same, from a projection someone else computed (a Hydra host).
     [[nodiscard]] Result<FrameStats> render(const Projection& projection,
                                             std::span<const SplatInstance> instances,
@@ -481,6 +490,10 @@ private:
     uint64_t           framesInFlight_ = 0;
     uint64_t           totalsFrame_ = 0;
     uint32_t           lastVisible_ = 0, lastPairs_ = 0;
+    /// The most splats a frame in flight held when its pairs were sized.
+    uint32_t           pairsSizedFor_ = 0;
+    /// The pairs the last frame in flight's buffers held.
+    uint32_t           drawnCapacity_ = 0;
     uint64_t           pairOverflows_ = 0;
 };
 

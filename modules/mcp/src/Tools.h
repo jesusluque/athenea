@@ -19,6 +19,10 @@ struct ToolEntry {
     std::string    description;
     nlohmann::json schema;
     std::function<nlohmann::json(Session&, const nlohmann::json&)> handler;
+    /// The thread it runs on: the session's frame thread -- the device's one
+    /// caller -- unless it only queues (stream_commit, camera_set), which
+    /// must not wait behind a frame.
+    bool anyThread = false;
 };
 
 [[nodiscard]] const std::vector<ToolEntry>& toolTable();

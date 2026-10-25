@@ -466,6 +466,25 @@ public:
     /// (athenea:live:sync = clock): a genlocked host's FrameClock. Empty, the
     /// system clock. Applies from the next frame.
     void setLiveClock(std::function<uint64_t()> nowPtpNs);
+    /// A FRAME LEFT IN FLIGHT: draw() records and submits the frame and
+    /// returns without waiting for the device -- no wait at its end, and
+    /// the splat rasteriser reads no count back in its middle
+    /// (`athenea:frameInFlight`). For a caller that hands the frame on on
+    /// the device (render_subscribe's frames), whose next work is queued
+    /// after it. render() and the readbacks still wait for what they read.
+    /// The device's caller, between frames.
+    void setFrameInFlight(bool inFlight);
+    [[nodiscard]] bool frameInFlight() const;
+    /// THE LAST FRAME IN FLIGHT'S SPLAT TOTALS on the device -- (visible,
+    /// pairs), two uints -- and the pairs the rasteriser's buffers held for
+    /// it: pairs past those were not drawn (a frame drawn short, once, as
+    /// the buffers grow). Null totals before a frame in flight. The device's
+    /// caller, after draw().
+    struct SplatFrameTotals {
+        const gpu::Buffer* totals = nullptr;
+        uint32_t           pairCapacity = 0;
+    };
+    [[nodiscard]] SplatFrameTotals splatFrameTotals() const;
 
     /// Bakes the per-part visibility of the ParticleField at `prim` (a cloud
     /// a skeleton carries), commits the stage first so it is on the device,

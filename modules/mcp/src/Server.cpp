@@ -56,11 +56,17 @@ struct Server::Impl {
                 // An argument of the wrong type (a number sent as null, which
                 // is how JSON writes a NaN) is the call's failure, not the
                 // server's: the JSON library throws, and the caller is told.
-                try {
-                    return entry.handler(session, args);
-                } catch (const json::exception& error) {
-                    return textAnswer("'" + name + "': an argument is not what the tool takes: " + error.what(), true);
-                }
+                const auto call = [&]() -> json {
+                    try {
+                        return entry.handler(session, args);
+                    } catch (const json::exception& error) {
+                        return textAnswer("'" + name + "': an argument is not what the tool takes: " + error.what(),
+                                          true);
+                    }
+                };
+                // THE DEVICE HAS ONE CALLER: the session's frame thread.
+                // A tool that only queues runs here, on the server's thread.
+                return entry.anyThread ? call() : session.frameLoop().run(call);
             }
         }
         return textAnswer("Unknown tool '" + name + "'.", true);

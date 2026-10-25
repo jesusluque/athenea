@@ -2128,7 +2128,14 @@ Result<void> Engine::prepareSplatLights(std::vector<light::Light>& lamps,
     if (!splats.empty()) {
         // A dome's or a sun's share of the power wants the scene's reach;
         // a cloud's own bounds are what there is.
+        // A FRAME LEFT IN FLIGHT measures nothing (a measure is a wait for
+        // the device): a cloud that knows its box gives it, and one that
+        // does not -- a live stream's cut, made this frame -- keeps the reach
+        // the last measure gave. A dome's share of the power follows a cloud
+        // that grows a frame or more late.
+        const bool inFlight = frameInFlight_.load() && lightRadiusMeasured_;
         float radius = 0.0F;
+        bool  kept = false;
         for (const render::SplatInstance& instance : splats) {
             if (instance.splats == nullptr) {
                 continue;
@@ -2136,12 +2143,24 @@ Result<void> Engine::prepareSplatLights(std::vector<light::Light>& lamps,
             if (!loader_.has_value()) {
                 break;
             }
-            auto bounds = loader_->boundsOf(instance.splats->positions, instance.splats->count);
-            if (!bounds) return std::move(bounds).error();
-            const scene::Bounds& b = *bounds;
+            scene::Bounds b = instance.splats->bounds;
+            const bool known = b.max[0] > b.min[0] || b.max[1] > b.min[1] || b.max[2] > b.min[2];
+            if (inFlight && !known) {
+                kept = true;
+                continue;
+            }
+            if (!inFlight) {
+                auto bounds = loader_->boundsOf(instance.splats->positions, instance.splats->count);
+                if (!bounds) return std::move(bounds).error();
+                b = *bounds;
+            }
             const float dx = b.max[0] - b.min[0], dy = b.max[1] - b.min[1], dz = b.max[2] - b.min[2];
             radius = std::max(radius, 0.5F * std::sqrt(dx * dx + dy * dy + dz * dz));
         }
+        if (kept) {
+            radius = std::max(radius, lightSceneRadius_);
+        }
+        lightRadiusMeasured_ = lightRadiusMeasured_ || !inFlight;
         lightSceneRadius_ = std::max(radius, 1.0e-3F);
     }
     ATHENEA_TRY(lightTable_->set(lamps, lightSceneRadius_));

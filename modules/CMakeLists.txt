@@ -29,6 +29,11 @@ add_subdirectory(lod)
 # Gaussian splats as video planes through the platform's hardware codec, and
 # a video played into a live stream (lod's DevicePages).
 add_subdirectory(video)
+if(NOT ATHENEA_IOS)
+    # Frames, cameras and pages shared with another process (the MCP
+    # server's render_subscribe, camera_set and device pages).
+    add_subdirectory(bridge)
+endif()
 add_subdirectory(usd)
 if(NOT ATHENEA_IOS)
     # mcp is a stdio server, and the AOFX host loads plugin bundles -- which an
