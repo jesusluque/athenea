@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "Commands.h"
+#include "athenea/core/Platform.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
@@ -137,7 +138,7 @@ void addStream(CLI::App& app) {
         std::string stage, pages, stream, camera, size = "960x540", output, reference;
         double rate = 0.0;
         uint32_t loops = 1;
-        bool lockstep = false, displayBlend = false;
+        bool lockstep = false, displayBlend = false, frameProducer = false;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand(
@@ -151,6 +152,8 @@ void addStream(CLI::App& app) {
     cmd->add_option("--rate", o->rate, "epochs a second (default: the sequence's)");
     cmd->add_option("--loops", o->loops, "times the sequence is played, its epochs counting on");
     cmd->add_flag("--lockstep", o->lockstep, "each frame waits for its epoch: every epoch drawn once");
+    cmd->add_flag("--frame-producer", o->frameProducer,
+                  "by the clock: the frame thread pushes the epochs due before each frame, not a thread of its own");
     cmd->add_flag("--splat-display-blend", o->displayBlend,
                   "the stage's splats blended as a standard viewer blends them, sRGB values summed -- how the "
                   "colours flatten fits are meant to be drawn (athenea:splatDisplayBlend)");
@@ -327,12 +330,30 @@ void addStream(CLI::App& app) {
             return t0 + std::chrono::nanoseconds(
                             static_cast<int64_t>(std::llround(static_cast<double>(epoch - 1) * 1.0e9 / rate)));
         };
+        // --frame-producer: the frame thread pushes what has come due before
+        // each frame, in place of a producer thread -- for a run at
+        // background priority, where a sleeping thread wakes late.
+        uint64_t nextDue = 1;
+        const auto pushDue = [&] {
+            for (; o->frameProducer && nextDue <= total && Clock::now() >= dueOf(nextDue); ++nextDue) {
+                push(nextDue);
+            }
+            if (o->frameProducer && nextDue > total) {
+                produced = true;
+            }
+        };
         std::thread producer([&] {
-            for (uint64_t epoch = 1; epoch <= total; ++epoch) {
-                std::this_thread::sleep_until(dueOf(epoch));
+            for (uint64_t epoch = 1; !o->frameProducer && epoch <= total; ++epoch) {
+                // Woken on time (platform::sleepPrecisely): a plain sleep of a
+                // thread at background priority -- how a guarded job runs --
+                // overran by up to 200 ms and pushed epochs in bursts.
+                const auto wait = dueOf(epoch) - Clock::now();
+                if (wait.count() > 0) {
+                    platform::sleepPrecisely(std::chrono::duration_cast<std::chrono::nanoseconds>(wait));
+                }
                 push(epoch);
             }
-            produced = true;
+            if (!o->frameProducer) produced = true;
         });
         std::vector<double> frameMs, lateMs;
         std::vector<uint8_t> seen(total + 1, 0);
@@ -340,6 +361,7 @@ void addStream(CLI::App& app) {
         Clock::time_point previous = Clock::now();
         const Clock::time_point stopAt = dueOf(total) + std::chrono::seconds(2);
         while (Clock::now() < stopAt) {
+            pushDue();
             auto image = (*renderer)->render(camera, 0.0, width, height);
             if (!image) {
                 produced = true;

@@ -16109,3 +16109,26 @@ And the findings: **a live prim's store follows what is sent** (`StreamingSettin
 default when `stream:budget` is 0): it starts at one chunk and grows -- room for the shown epoch and two more,
 copied on the device -- up to three epochs of every chunk; **the loaders are a prim's** (`athenea:live:loaders`,
 4 by default).
+
+### The sparrow at 24 and 30 a second, after the fixes
+
+The QA's pages (61 frames of 10 SPZ pages, 9.56 MB an epoch), the same stage, 1024 x 1024, M5 Pro under the GPU
+guard (`taskpolicy -b`), three loops each:
+
+| run | epochs shown | late (median, p95) | frame (median) |
+|---|---|---|---|
+| lockstep (before: 89.5 ms an epoch) | 61 of 61, p99 15 against the skinned cloud as before | 64.3 ms push to shown | -- |
+| 30 a second, frame thread pushing | 174 of 183 (before: 128) | 74.5 ms, 98.2 (before: 2013, 3652) | 30.0 ms |
+| 24 a second, frame thread pushing | 182 of 183 (before: 152) | 69.3 ms, 93.9 (before: 1696, 3126) | 25.6 ms |
+| 30 a second, producer thread | 42 of 183 | 90.9 ms, 200.1 | 16.9 ms |
+| 24 a second, producer thread | 40 of 183 | 85.9 ms, 180.0 | 16.7 ms |
+
+The pool keeps up: traced (`ATHENEA_STREAM_TRACE`), an epoch is started, loaded, placed and shown within one or
+two frames of coming whole, and the store grew to two epochs (20 slots). What a producer thread runs into is the
+guard: at background priority its sleeps wake up to 200 ms late, and it pushes six or seven epochs at once,
+which a live stream rightly collapses into the newest -- shown on time, the others never drawn. With the frame
+thread pushing what is due (`athenea stream --frame-producer`), the rate holds within a few epochs at 30 and
+within one at 24; the frame then costs the epoch's placing (25-30 ms against 17), and the seconds of lateness
+the backlog caused are gone. A frame that draws the newest epoch about 70 ms after it is due is two frames of
+loading and placing and the frame itself. The lockstep frames are `sparrow-live/live-stream/png` and
+`sparrow_live_stream.mp4`.

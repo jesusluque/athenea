@@ -1423,6 +1423,9 @@ Result<size_t> Engine::commit() {
                     settings.budgetSplats = asset.budget != 0 ? asset.budget
                                                               : uint64_t{3} * live.chunks * live.format.chunkSplats;
                     settings.loaders = std::max(asset.liveLoaders, 1u);
+                    // Staging for two epochs of every chunk, at least: the next
+                    // epoch's pages load while one is placed.
+                    settings.stagingChunks = std::max(2 * settings.loaders + 4, 2 * live.chunks);
                     settings.library = library_.get();
                     // The stage's word, else the producer's (stream_open), else the latest.
                     const uint8_t hint = lod::PageQueue::named(asset.live)->syncHint();

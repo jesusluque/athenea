@@ -21,6 +21,7 @@
 #include "athenea/io/Readers.h"
 #include "athenea/scene/GpuClouds.h"
 #include "SpzStaging.h"
+#include "athenea/lod/SplatStream.h"
 
 namespace athenea::lod {
 namespace {
@@ -1855,6 +1856,28 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
     counters.resident = resident;
     counters.missing = 0;
     counters.pendingEpochs = static_cast<uint32_t>(incoming.size() + built.size());
+    static const bool trace = !platform::env("ATHENEA_STREAM_TRACE").empty();
+    if (trace) {
+        std::string ahead;
+        for (const Built& b : built) {
+            ahead += std::format(" {}:{}", b.e.id, b.targets.size());
+        }
+        size_t queued = 0, inFlight = 0, free = 0;
+        {
+            std::lock_guard lock(mutex);
+            queued = queue.size();
+            inFlight = busy + loaded.size();
+            free = freeStaging.size();
+        }
+        std::string said;
+        if (const auto* liveSource = dynamic_cast<const LiveSource*>(source.get()); liveSource != nullptr) {
+            const LiveSource::Stats st = liveSource->stats();
+            said = std::format(" source: pages {} epochs {} late {} dropped {} refused {}", st.pages, st.epochs,
+                               st.late, st.dropped, st.refused);
+        }
+        log::info("stream {}: frame {} shown {} placed {} incoming {} built [{}] queue {} loading {} staging free {}{}",
+                  source->name(), frame, counters.epoch, placed, incoming.size(), ahead, queued, inFlight, free, said);
+    }
     ++frame;
     report();
     return placed;
