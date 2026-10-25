@@ -2605,6 +2605,7 @@ on the monotonic clock, so the rate does not drift.
 | `--rate` | frames a second | the files' | |
 | `--loops` | count | `0`: forever | |
 | `--manifest-every` | frames | the rate (a second) | |
+| `--spin-ms` | ms | `12` | how long before a frame's time it stops sleeping and spins: a sleeping process wakes up to ~10 ms late (3 ms left 7 ms of jitter, 12 ms 0.5 ms) |
 | `--stats` | flag | off | a line a second on stderr: frames a second, Mbit/s, how late the latest frame went out |
 
 `scripts/examples/athv_read.py` is the other end: it reads the messages from

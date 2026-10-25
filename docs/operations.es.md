@@ -2686,6 +2686,7 @@ que el ritmo no deriva.
 | `--rate` | frames por segundo | el de los ficheros | |
 | `--loops` | número | `0`: siempre | |
 | `--manifest-every` | frames | el ritmo (un segundo) | |
+| `--spin-ms` | ms | `12` | cuánto antes del tiempo de un frame deja de dormir y espera activamente: un proceso dormido despierta hasta ~10 ms tarde (3 ms dejaron 7 ms de jitter, 12 ms 0,5 ms) |
 | `--stats` | flag | no | una línea por segundo en stderr: frames por segundo, Mbit/s, con qué retraso salió el último frame |
 
 `scripts/examples/athv_read.py` es el otro extremo: lee los mensajes de la

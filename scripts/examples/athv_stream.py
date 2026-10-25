@@ -26,8 +26,9 @@ length and then that many bytes:
 
 Pacing is by the monotonic clock against a fixed schedule (frame k is due at
 start + k / rate), so the rate does not drift; a frame sent late is sent at
-once and the schedule kept. It sleeps to 3 ms before a frame's time and
-spins the rest, as a sleeping process is woken up to ~10 ms late. `--stats`
+once and the schedule kept. It sleeps to --spin-ms (12) before a frame's
+time and spins the rest: a sleeping process is woken up to ~10 ms late (3 ms
+of spin left 7 ms of jitter, 12 ms left 0.5 ms). `--stats`
 prints, every second on stderr, what was sent.
 
 The messages are docs/operations.md §8.2 ("Video sent as a stream"); the file
@@ -43,7 +44,6 @@ import time
 
 import athv_read as athv
 
-SPIN_NS = 3_000_000
 
 
 def manifest_message(manifest, frame):
@@ -62,8 +62,10 @@ def main():
     ap.add_argument("--rate", type=float, default=0.0, help="frames a second (default: the files')")
     ap.add_argument("--loops", type=int, default=0, help="times the frames are played (default 0: forever)")
     ap.add_argument("--manifest-every", type=int, default=0, help="frames between manifests (default: a second)")
+    ap.add_argument("--spin-ms", type=float, default=12.0, help="ms before a frame's time spent spinning, not asleep")
     ap.add_argument("--stats", action="store_true", help="a line a second on stderr: frames, Mbit/s, lateness")
     a = ap.parse_args()
+    spin_ns = int(a.spin_ms * 1e6)
 
     files = []
     for path in a.athv:
@@ -106,8 +108,8 @@ def main():
         while a.loops <= 0 or k < a.loops * frames:
             due = start + int(round(k * period_ns))
             now = time.monotonic_ns()
-            if due - now > SPIN_NS:
-                time.sleep((due - now - SPIN_NS) / 1.0e9)
+            if due - now > spin_ns:
+                time.sleep((due - now - spin_ns) / 1.0e9)
             while time.monotonic_ns() < due:
                 pass
             worst_late = max(worst_late, time.monotonic_ns() - due)
