@@ -263,6 +263,9 @@ struct Options {
     bool                     shadowCatcher = false;
     std::string              catcherGround;
     double                   catcherMargin = 1.5;
+    /// How far a shadow catcher's ring of coarser cells reaches past the
+    /// footprint, in heights (0: no ring): a low light's long shadow.
+    double                   catcherReach = 3.0;
     /// The catcher's cell, world units; 0 is a hundredth of the object's height
     /// (a thirtieth for a light catcher, whose light is smooth).
     double                   catcherCell = 0.0;
@@ -3049,6 +3052,10 @@ void addMesh2Splat(CLI::App& app) {
                     "whose top is at its bottom)");
     cmd->add_option("--catcher-margin", o->catcherMargin,
                     "--shadow-catcher, --light-catcher: how far past the object's footprint the catcher reaches, in its heights");
+    cmd->add_option("--catcher-reach", o->catcherReach,
+                    "--shadow-catcher: how far past the object's footprint a ring of cells twice the catcher's "
+                    "reaches, in its heights, for a low light's long shadow (0, or no more than "
+                    "--catcher-margin: none)");
     cmd->add_option("--catcher-cell", o->catcherCell,
                     "--shadow-catcher, --light-catcher: the catcher's cell, world units (0: a hundredth of the "
                     "object's height; a thirtieth for a light catcher)");
@@ -3187,6 +3194,9 @@ void addMesh2Splat(CLI::App& app) {
             catcher.ground = o->catcherGround;
             catcher.margin = o->catcherMargin;
             catcher.cell = o->catcherCell;
+            if (o->shadowCatcher) {
+                catcher.reach = o->catcherReach;
+            }
             if (o->lightCatcher) {
                 catcher.reachLong = o->lightReach;
                 catcher.cellsPerHeight = 30.0;
@@ -3215,6 +3225,13 @@ void addMesh2Splat(CLI::App& app) {
             const double cell = made->cell;
             o->cellMin = cell;
             o->cellMax = cell;
+            // A ring: each mesh's cell is its longest side over the
+            // resolution, held between the two -- the ring's own, and the
+            // patch's held up to its cell.
+            if (made->ringCell > 0.0) {
+                o->cellMax = made->ringCell;
+                o->resolution = static_cast<uint32_t>(std::ceil(made->ringAcross / made->ringCell));
+            }
             cli::out("mesh2splat: the %s catcher of %s on %s, a cell of %.4g\n",
                         o->lightCatcher ? "light" : "shadow", catcher.object.c_str(), made->ground.c_str(), cell);
         }

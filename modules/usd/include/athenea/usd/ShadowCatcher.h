@@ -12,8 +12,9 @@
 //                along the stage's up axis, whose top is where the object's
 //                bottom is -- or named
 //   the patch    a grid of quads on the ground's plane over the object's
-//                footprint widened by `margin` times its height, which is as
-//                far as a sky's shadow of it reaches in any useful amount
+//                footprint widened by `margin` times its height
+//   the ring     past it, out to `reach` heights, at a coarser cell: where a
+//                low light's long shadow falls
 //
 // and a stage that is the source with that quad in it, for `athenea
 // mesh2splat` to convert and bake: the object and the ground stay in it as
@@ -53,6 +54,13 @@ struct ShadowCatcherOptions {
     /// --light-catcher`): a car's low beam lights the road metres ahead and
     /// its tail lamps the road behind.
     double      reachLong = 0.0;
+    /// HOW FAR THE RING REACHES, in heights of the object past its footprint:
+    /// past the patch's `margin`, a ring of coarser cells (`ringCellScale`
+    /// times the patch's) out to here, where a light low over the horizon
+    /// throws the object's shadow. 0, or no more than `margin`, is no ring;
+    /// a light catcher (`reachLong`) has none.
+    double      reach = 0.0;
+    double      ringCellScale = 2.0;
     /// The Xform the patch is written under: a shadow catcher's, or a light
     /// catcher's.
     std::string root = "AtheneaShadowCatcher";
@@ -65,6 +73,8 @@ struct ShadowCatcherStage {
     double                height = 0.0;   ///< the object's, along up
     double                cell = 0.0;     ///< what the patch is to be converted at
     uint32_t              quads = 1;      ///< the grid's quads a side
+    double                ringCell = 0.0;   ///< the ring's cell; 0: no ring
+    double                ringAcross = 0.0; ///< the ring's box's longest side
     std::array<double, 3> min{};          ///< the patch's box, in the world
     std::array<double, 3> max{};
 };

@@ -13753,7 +13753,7 @@ after them has not been taken. The car's frame is the projection's first.
    below, with the thinning of faint gaussians narrowed.
 2. **Its patch is the object's footprint and 1.5 heights round it.** A sun
    lower than about 34 degrees throws a shadow past it, which ends at the
-   patch's edge.
+   patch's edge. A ring of coarser cells now reaches 3 heights (below).
 3. **Light the object bounces onto the ground** (a ratio over one) is not
    drawn: a black layer only takes (LIGHT4).
 4. **Its one check on a real asset is the Corvette gate**, a conversion,
@@ -13869,6 +13869,42 @@ were.
 16.3 ms on h1eprod-aa (its catcher computed every frame from the harmonics),
 22.5 with the merged per-cell sky computed every frame (the patch alone,
 132 k), 13.0 kept.
+
+### A ring for the long shadows, and the TX car's frame
+
+**The ring** (`--catcher-reach`, 3 heights). Past the patch's 1.5 heights,
+`usd/ShadowCatcher` writes a second mesh, `Ring`: four strips round the patch
+out to 3 heights from the footprint, held to the ground, and the catcher is
+the Xform with both. The conversion takes each mesh's cell as its longest
+side over one resolution, held between the patch's cell and the ring's, so
+the resolution is the ring's box over its cell and the patch keeps its own;
+the ring's cell is twice the patch's, or less where the patch's longest side
+would not keep its own. The pawn: 132 k gaussians on the patch at 0.66 mm,
+92 k on the ring at 1.21 mm (1.83 times, held by the boxes), baked together
+in 10 s. Under the workshop sky the lamps' lobes reach past the patch's edge,
+which no longer shows as a square; the open ground at 3 heights reads 0.9970
+of the light against the path traced 0.9970. A light lower than about 18
+degrees still throws a shadow past the ring.
+
+**The TX car's frame.** The car cloud kept here (`base_tx.usdc`, 5.38 M
+gaussians, 8 Oct; no conversion), alone under the scene's dome from
+/World/Camera at 1920 x 1080, `ATHENEA_STAGES` medians over 19 frames, the
+same on h1eprod-aa's build and this one (no catcher in it):
+
+| stage | median |
+|---|---|
+| project (the view-independent terms kept) | 29.9 ms |
+| counts | 2.2 |
+| depth sort | 6.5 |
+| emit | 4.0 |
+| tile sort (11.8 M pairs) | 8.2 |
+| blend | 31.1 |
+| frame | 95.8 ms (95.1 on h1eprod-aa) |
+
+The projection and the blend are two thirds of it, a third each; the sorts
+and the emit 21 ms. The 158 ms of the first profile were the 14.7 M car;
+per million gaussians this is 17.8 ms a frame against its 10.7, the stage
+timer's own waits included.
 
 ## The sun is the texels that are it
 
