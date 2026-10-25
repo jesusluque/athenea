@@ -145,6 +145,12 @@ struct Reduction {
     /// lod::PairSettings::opacityRule: 0 the members' mean, widened, under
     /// 0.99; 3 their mass, not widened, up to 5 (Spark's harder kernel).
     uint32_t    opacityRule = 0;
+    /// `mix`: the share of the excess pruned before the merges.
+    float       pruneShare = 0.5F;
+    /// video_reduce.slang's score: 0 opacity x area, 1 thin gaussians kept.
+    uint32_t    score = 0;
+    /// lod::PairSettings::maxAspect: no merge longer than this against its width.
+    float       maxAspect = 1000.0F;
 };
 
 struct Reducer {
@@ -167,6 +173,8 @@ struct Reducer {
     }
 
     /// The store of `lod` without its least contributing splats, about `goal` left.
+    uint32_t scoreKind = 0;
+
     Result<lod::LodCloud> pruneTo(const lod::LodCloud& lod, uint32_t goal) {
         gpu::Device& device = library->device();
         gpu::BufferDesc desc;
@@ -182,6 +190,7 @@ struct Reducer {
                 c["shape"].setBinding(lod.splats.shape.rhi());
                 c["score"].setBinding(scores->rhi());
                 c["params"]["count"].setData(lod.count);
+                c["params"]["kind"].setData(scoreKind);
             });
             ATHENEA_TRY(batch.submit(true));
         }
@@ -209,6 +218,7 @@ struct Reducer {
 
     Result<scene::GpuSplats> reduce(scene::GpuSplats cloud, uint32_t target, const Reduction& r) {
         if (target == 0 || cloud.count <= target) return cloud;
+        scoreKind = r.score;
         auto lod = build(cloud);
         if (!lod) return std::move(lod).error();
         if (r.mode == "prune") {
@@ -253,7 +263,9 @@ struct Reducer {
         const lod::LodCloud* from = &*lod;
         std::optional<lod::LodCloud> pruned;
         if (r.mode == "mix") {
-            auto kept = pruneTo(*lod, cloud.count - (cloud.count - target) / 2);
+            const auto excess = static_cast<double>(cloud.count - target);
+            const double share = std::clamp(static_cast<double>(r.pruneShare), 0.0, 1.0);
+            auto kept = pruneTo(*lod, cloud.count - static_cast<uint32_t>(excess * share));
             if (!kept) return std::move(kept).error();
             pruned = std::move(*kept);
             from = &*pruned;
@@ -263,6 +275,7 @@ struct Reducer {
         settings.surfels = false;
         settings.maxGrowth = r.growth;
         settings.opacityRule = r.opacityRule;
+        settings.maxAspect = r.maxAspect;
         auto kept = decimator->decimatePairs(*from, cloud.origin, settings);
         if (!kept) return std::move(kept).error();
         kept->cloud.antialiased = cloud.antialiased;
@@ -453,6 +466,9 @@ void addVideo(CLI::App& app) {
         std::string reduce = "pairs";
         float    mergeGrowth = 0.0F;
         uint32_t mergeOpacity = 0;
+        float    pruneShare = 0.5F;
+        float    mergeAspect = 1000.0F;
+        std::string pruneScore = "area";
         double quality = 0.5, megabits = 0.0, rate = 0.0;
         bool check = false, intra = false, chroma = false;
         std::string chromaWeight = "mean";
@@ -502,6 +518,14 @@ void addVideo(CLI::App& app) {
     enc->add_option("--merge-growth", o->mergeGrowth,
                     "pairs, mix: no merge wider than this times the wider of the two (0: no limit); what it leaves "
                     "above --gaussians is pruned");
+    enc->add_option("--prune-share", o->pruneShare, "mix: the share of the excess pruned before the merges")
+        ->check(CLI::Range(0.0F, 1.0F));
+    enc->add_option("--prune-score", o->pruneScore,
+                    "prune, mix: area (opacity x the area of the two widest axes) or edge (opacity x sqrt(area) x "
+                    "widest / middle: thin gaussians kept)")
+        ->check(CLI::IsMember({"area", "edge"}));
+    enc->add_option("--merge-aspect", o->mergeAspect,
+                    "pairs, mix: no merge longer than this against its width (default 1000: no limit)");
     enc->add_option("--merge-opacity", o->mergeOpacity,
                     "pairs, mix: a merge's opacity -- 0 its members' mean, the merge widened, under 0.99; 1 their "
                     "mass over the widened area; 2 their mass, not widened; 3 their mass, not widened, up to 5")
@@ -604,7 +628,8 @@ void addVideo(CLI::App& app) {
             if (!cloud) cli::fail(cloud.error());
             if (o->gaussians != 0) {
                 cloud = reducer.reduce(std::move(*cloud), o->gaussians,
-                                       Reduction{o->reduce, o->mergeGrowth, o->mergeOpacity});
+                                       Reduction{o->reduce, o->mergeGrowth, o->mergeOpacity, o->pruneShare,
+                                                 o->pruneScore == "edge" ? 1u : 0u, o->mergeAspect});
                 if (!cloud) cli::fail(cloud.error());
             }
             if (encoder != nullptr) return std::move(*cloud);
