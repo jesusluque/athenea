@@ -1432,7 +1432,10 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // is what every side of a cloud was answered with before a transfer
         // existed. Without this a glass ball that carries one is a dark
         // shell, because half its body has nowhere to take its light from.
-        float3 behind = transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide);
+        // Only where some of the body passes: an opaque gaussian weighs what
+        // is behind it, and its far face's reflection, by nothing.
+        const bool passesAny = transmittedWeight(s) > 0.0;
+        float3 behind = passesAny ? transmittedBehind(s, wo, dome, envTexels, envSh, envBaseSide) : float3(0.0);
         // WHAT A TX TRANSFER'S GLASS SHOWS THROUGH (step 5). The rasteriser
         // traces nothing, and one bend at the entry face showed the sky where
         // a windscreen shows the cabin. A transmitting gaussian's cells were
@@ -1506,7 +1509,7 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
         // The far face's reflection leaves through a third point of the
         // lens (lensFarReflection), where the cloud keeps its curvature.
         float3 farSeen = seen;
-        if (kTransfer >= 2 && slope.curvature > 0.0 && !s.hasReflection) {
+        if (passesAny && kTransfer >= 2 && slope.curvature > 0.0 && !s.hasReflection) {
             const float3 farOut = lensFarReflection(s, wo, slope.curvature);
             if (dot(farOut, farOut) > 0.5) {
                 farSeen = envRadiance(envTexels, dome, farOut, transmittedRoughness(s.roughness, s.ior), envBaseSide);

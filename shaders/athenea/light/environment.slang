@@ -104,16 +104,30 @@ public float3 envTexelAt(StructuredBuffer<uint> texels, uint dome, uint level, u
 /// Bilinear over one level of the octahedral square. The seam runs along the
 /// square's edges, so a lookup is clamped rather than wrapped: at the seam the
 /// two sides hold the same direction and the clamp reads the nearer of them.
+///
+/// The level's first texel is found once for its four: `envTexelAt` walks the
+/// levels below it to find where it starts (`envLevelOffset`) and the domes'
+/// size (`envTexelsPerDome`), sixteen steps a texel, and a sharp lobe reads
+/// two levels of two lobes at every pixel it covers -- half of the TX car's
+/// blend. The same words are read.
+float3 envWordsAt(StructuredBuffer<uint> texels, uint texel) {
+    const uint lo = texels[texel * kEnvWordsPerTexel];
+    const uint hi = texels[texel * kEnvWordsPerTexel + 1];
+    return float3(f16tof32(lo & 0xFFFFu), f16tof32(lo >> 16), f16tof32(hi & 0xFFFFu));
+}
+
 float3 envLevelAt(StructuredBuffer<uint> texels, uint dome, uint level, float3 dir, uint baseSide) {
-    const float side = float(envSideOf(level, baseSide));
+    const uint sideU = envSideOf(level, baseSide);
+    const float side = float(sideU);
     const float2 at = clamp(octEncode(dir) * side - 0.5, 0.0, side - 1.0);
     const uint2 lo = uint2(floor(at));
-    const uint2 hi = min(lo + 1, uint2(uint(side) - 1, uint(side) - 1));
+    const uint2 hi = min(lo + 1, uint2(sideU - 1, sideU - 1));
     const float2 f = at - float2(lo);
-    const float3 v00 = envTexelAt(texels, dome, level, lo, baseSide);
-    const float3 v10 = envTexelAt(texels, dome, level, uint2(hi.x, lo.y), baseSide);
-    const float3 v01 = envTexelAt(texels, dome, level, uint2(lo.x, hi.y), baseSide);
-    const float3 v11 = envTexelAt(texels, dome, level, hi, baseSide);
+    const uint first = dome * envTexelsPerDome(baseSide) + envLevelOffset(level, baseSide);
+    const float3 v00 = envWordsAt(texels, first + lo.y * sideU + lo.x);
+    const float3 v10 = envWordsAt(texels, first + lo.y * sideU + hi.x);
+    const float3 v01 = envWordsAt(texels, first + hi.y * sideU + lo.x);
+    const float3 v11 = envWordsAt(texels, first + hi.y * sideU + hi.x);
     return lerp(lerp(v00, v10, f.x), lerp(v01, v11, f.x), f.y);
 }
 

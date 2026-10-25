@@ -13759,6 +13759,11 @@ after them has not been taken. The car's frame is the projection's first.
 4. **Its one check on a real asset is the Corvette gate**, a conversion,
    which is not run since 14 Oct; the synthetic test below is the check that
    runs.
+5. **Each open cell is one hard shadow**, so a lamp's soft lobe is drawn as
+   overlapping discs a few tenths of a per cent deep: a filter of the
+   catcher's share on its own plane, at the bake, is the candidate.
+6. **A sun's shadow is as soft as a cell** (5.6 degrees for a 0.53 degree
+   sun): finer cells, or a sun term of its own, would sharpen it.
 
 ### The order
 
@@ -13905,6 +13910,59 @@ The projection and the blend are two thirds of it, a third each; the sorts
 and the emit 21 ms. The 158 ms of the first profile were the 14.7 M car;
 per million gaussians this is 17.8 ms a frame against its 10.7, the stage
 timer's own waits included.
+
+### Where the TX car's frame goes, priced part by part
+
+The car cloud kept here (`base_tx.usdc`, 5.38 M gaussians), alone under the
+scene's dome at 1920 x 1080, `ATHENEA_STAGES` medians of 19 frames. Each
+part was priced by a shader variant that switches it off (the image then
+differs; the variants are measurements, not changes), alternated with the
+unchanged shaders in the same run:
+
+| switched off | project | blend | frame |
+|---|---|---|---|
+| nothing | 29.8 ms | 30.7 ms | 96 ms |
+| the shading (the albedo drawn) | 4.6 | 15.1 | 55 |
+| the curvature (no slope, no sharp lobe) | 20.6 | 14.3 | 70 |
+| the per-pixel lobes in the blend | 29.9 | 14.1 | 79 |
+| the reflected field | 23.0 | 30.6 | 91 |
+
+So the projection is 4.6 ms of geometry and 25 of shading, and half the
+blend is the sharp lobes it reads per pixel; the sorts (6.5 + 8.3 ms), the
+emit (3.9) and the counts (2.2) are the rest. After the two changes below,
+the sharp lobes priced again: the polish's sky 8.6 ms, the coat's 3.4, the
+sun through them 0.4; the reflected field 6.7 ms of projection, the slope's
+two extra sky reads 1.3.
+
+**A level's first texel found once.** `envTexelAt` found every texel's
+address by walking the levels below it (`envLevelOffset`) and the domes'
+size (`envTexelsPerDome`), sixteen steps a texel, and a bilinear read of two
+levels is eight texels. `envLevelAt` finds the level's first texel once and
+reads its four from there (`envWordsAt`): the same words.
+
+**What an opaque gaussian weighs by nothing is not computed.** The sky
+behind a gaussian and its far face's reflection are multiplied by its
+transmitted weight; where that is zero -- all of the car but its glass --
+neither is read now.
+
+| | project | blend | frame | against the last commit |
+|---|---|---|---|---|
+| the last commit | 29.8 ms | 31.0 ms | 97.5 ms | |
+| a level's texel found once | 24.0 | 28.2 | 89.1 | relMSE 0, p99 0, max 0 |
+| and an opaque gaussian's behind skipped | 22.5 | 28.4 | 86.2 | relMSE 0, p99 0, max 0 |
+
+The images are identical to the bit (`athenea compare`, the whole frame:
+`car/frame_before_after.png`, `car/frame_diff_x100.png`).
+
+Tried and left out, the image identical and the time not:
+- the blend's group memory at 32 bytes a record (the record's colour, a
+  surfel's disc and a slope read from memory where a record covers the
+  pixel): 21 KB to 9 KB a group, 30.9 ms against 30.7;
+- a sharp record's polish loaded with the batch rather than read at every
+  pixel: 28.5 / 28.8 against 28.0 / 28.3.
+
+What is left is arithmetic: two bilinear reads of two levels of the sky at
+every pixel a sharp record covers, and the shading's 18 ms.
 
 ## The sun is the texels that are it
 
