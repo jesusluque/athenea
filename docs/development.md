@@ -51,13 +51,14 @@ document, the header is right.
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `lod/ChunkSource.h` (where a streamed cloud's chunks come from, and which thread may do what), `lod/SplatStream.h` (live streams: pages pushed in epochs); `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
-| 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
-| 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
-| 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
-| 20 | view | `view/Viewer.h` — the window's options |
+| 17 | video | `video/Planes.h` (a cloud as video planes, and the kernels' host side: `shaders/athenea/scene/video_planes_*.slang`), `video/Athv.h` — **the only specification of the `.athv` format**, `video/Codec.h` (the hardware codec as input and output, and where each platform stands) |
+| 18 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
+| 19 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
+| 20 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
+| 21 | view | `view/Viewer.h` — the window's options |
 
 One thing that looks like a violation and is not: `render` (10) links
-`aofx::aofx` (19). That target is headers only, an `INTERFACE` library, and
+`aofx::aofx` (20). That target is headers only, an `INTERFACE` library, and
 what `render` takes from it is `Mat4` and `Vec3`. The ordering rule is about
 compiled libraries.
 
@@ -218,7 +219,10 @@ boundary and turned into an `Error`.
 
 **The operating system lives in `core/Platform`.** Every OS call the engine
 makes outside its dependencies is behind one header, so the Windows port has
-one file to start from rather than a search. A file a command writes for
+one file to start from rather than a search. The one other place a framework is called
+is the hardware video codec (`modules/video/src/VideoToolbox.mm` on Apple):
+the encoder is fixed-function output, like a file write; nothing there
+computes on a value. A file a command writes for
 another step to read is written through `platform::writeAtomically`: under a
 partial name beside it, renamed when complete, so a failure leaves no half
 file under the name asked for.
@@ -516,6 +520,7 @@ Nineteen binaries, one per area, all under `tests/`.
 | `athenea_material_tests` | the texture store, the lobes, the MaterialX compiler |
 | `athenea_technique_tests` | visibility, display, materials, lights, splat shadows and visibility |
 | `athenea_lod_tests` | building levels, cut selection, `.athc` |
+| `athenea_video_tests` | `.athv` |
 | `athenea_volume_tests` | volumes |
 | `athenea_usd_tests` | the delegate end to end |
 | `athenea_storm_oracle_tests` | Storm as the geometry oracle; its own process and device, and `HDX_MSAA_SAMPLE_COUNT=1` |

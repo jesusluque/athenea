@@ -51,13 +51,14 @@ coinciden, la cabecera tiene razón.
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `lod/ChunkSource.h` (de dónde vienen los chunks de una nube en streaming, y qué hilo puede hacer qué), `lod/SplatStream.h` (streams en vivo: páginas empujadas por épocas); `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
-| 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
-| 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
-| 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
-| 20 | view | `view/Viewer.h` — las opciones de la ventana |
+| 17 | video | `video/Planes.h` (una nube como planos de vídeo, y el lado del host de sus kernels: `shaders/athenea/scene/video_planes_*.slang`), `video/Athv.h` — **la única especificación del formato `.athv`**, `video/Codec.h` (el códec hardware como entrada y salida, y dónde está cada plataforma) |
+| 18 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
+| 19 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
+| 20 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
+| 21 | view | `view/Viewer.h` — las opciones de la ventana |
 
 Una cosa que parece una violación y no lo es: `render` (10) enlaza `aofx::aofx`
-(19). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
+(20). Ese target es solo cabeceras, una librería `INTERFACE`, y lo que `render`
 le toma son `Mat4` y `Vec3`. La regla de orden es sobre librerías compiladas.
 
 ### 1.2 Una GPU, un hilo
@@ -225,7 +226,10 @@ captura en el borde de ese módulo y se convierte en un `Error`.
 
 **El sistema operativo vive en `core/Platform`.** Cada llamada al sistema que
 hace el motor fuera de sus dependencias está detrás de una cabecera, así que
-el port a Windows tiene un fichero por el que empezar y no una búsqueda. Un
+el port a Windows tiene un fichero por el que empezar y no una búsqueda. El otro sitio
+donde se llama a un framework es el códec de vídeo hardware
+(`modules/video/src/VideoToolbox.mm` en Apple): el codificador es salida de
+función fija, como escribir un fichero; nada ahí calcula sobre un valor. Un
 fichero que un comando escribe para que otro paso lo lea se escribe con
 `platform::writeAtomically`: con un nombre parcial a su lado, renombrado al
 completarse, así que un fallo no deja medio fichero con el nombre pedido.
@@ -533,6 +537,7 @@ Diecinueve binarios, uno por área, todos bajo `tests/`.
 | `athenea_material_tests` | el texture store, los lobes, el compilador de MaterialX |
 | `athenea_technique_tests` | visibilidad, display, materiales, luces, sombras y visibilidad de splats |
 | `athenea_lod_tests` | construir niveles, elegir el corte, `.athc` |
+| `athenea_video_tests` | `.athv` |
 | `athenea_volume_tests` | volúmenes |
 | `athenea_usd_tests` | el delegate de punta a punta |
 | `athenea_storm_oracle_tests` | Storm como oráculo de geometría; su propio proceso y dispositivo, y `HDX_MSAA_SAMPLE_COUNT=1` |

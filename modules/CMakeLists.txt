@@ -26,6 +26,8 @@ add_subdirectory(light)
 add_subdirectory(world)
 add_subdirectory(technique)
 add_subdirectory(lod)
+# Gaussian splats as video planes through the platform's hardware codec.
+add_subdirectory(video)
 add_subdirectory(usd)
 if(NOT ATHENEA_IOS)
     # mcp is a stdio server, and the AOFX host loads plugin bundles -- which an

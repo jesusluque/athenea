@@ -481,6 +481,48 @@ late an epoch was shown after it was due, and whether the rate held (every
 epoch drawn). The producer is in this process: the named queues are the
 engine's own (`lod::PageQueue::named`).
 
+### 2.7.2 `athenea video-encode` — splat frames as hardware video
+
+Lays each frame's gaussians into planes on the device -- sorted by Morton
+code, each attribute a luma tile of one mosaic, quantised over its group of
+pictures' range (`shaders/athenea/scene/video_planes_encode.slang`) -- and
+has the hardware HEVC encoder encode the mosaic. Positions are twice
+`--bits`: the high half goes beside the video, deflated and exact, the low
+half through the codec. Chroma is held at mid grey, so the 4:2:0 every
+decoder takes loses nothing. The file is a `.athv` (§8.2).
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `input` | directory, or splat files, required | — | a pages directory (`stream.txt`, every frame), or files read as one frame |
+| `-o`, `--output` | path, required | — | the `.athv`; written under a partial name and renamed when complete |
+| `--bits` | `8` or `10` | `8` | HEVC Main or Main 10; a position is 16 or 20 bits |
+| `--range` | `FIRST:LAST` | every frame | the sequence's frames by index from 0, both included |
+| `--quality` | 0 to 1 | `0.5` | the encoder's constant quality |
+| `--megabits` | Mbit/s | by quality | an average bit rate instead |
+| `--keyint` | pictures | the rate (a second) | between key frames: where a player can start |
+| `--intra` | flag | off | every picture a key frame |
+| `--hi` | `side` or `video` | `side` | the position high parts beside the video (exact) or as planes of their own (through the codec, and not exact: `docs/decisions.md`, "Video planes") |
+| `--order` | `frame` or `first` | `frame` | each frame sorted by Morton code, or the first frame's order kept while the count is the same |
+| `--ranges` | `group` or `frame` | `group` | each attribute's range over a group of pictures (from one key frame to the next), or each frame's own |
+| `--sh-degree` | 0 to 3 | `3` | at most the source's |
+| `--columns` | tiles a row | the squarest mosaic | |
+| `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
+| `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
+
+**Sizes.** A picture is at most 8192 x 8192 in area and 16384 a side (the
+hardware encoder refused 10240 x 9600). A frame whose planes need more is cut
+into slices -- runs of its Morton order, a picture each, every one a key
+frame -- and a frame is still one epoch. Every picture is the size of the
+first frame's; a frame needs a tile of 512 x 64 rows for every 32768 splats,
+and a plane for each attribute: 59 at degree 3 (62 with `--hi video`).
+
+**What it prints.** The mosaic and the slices; MB a frame (the video and the
+side data apart) and Mbit/s at 24 and 30 a second; a key picture's size
+against a predicted one's.
+
+macOS (VideoToolbox) only for now; elsewhere the encoder is refused
+(`Unsupported`).
+
 ### 2.8 `athenea mesh2splat` — a model into gaussians
 
 The conversion itself, and the light bake that follows it. What each stage
@@ -2481,6 +2523,16 @@ right-up-back), glTF `.glb` with `KHR_gaussian_splatting`, and USD
 **Pages written.** `athenea flatten --range` writes a directory of SPZ pages
 and its `stream.txt` (§3.7), which `athenea stream` reads.
 
+**Video written.** `athenea video-encode` writes a `.athv`: a 64-byte header
+(codec, bits, rest coefficients, chunk size, mosaic columns, the most splats
+a picture holds, whether the position high parts are planes, the source's
+antialiasing, the rate) and a record a picture, each whole in itself: the
+source frame it belongs to and where its splats start in it, its splats, key
+or not, PTP time, time code and timecode label, the ranges (two floats an
+attribute), the position high parts deflated, the HEVC parameter sets on a
+key picture and the access unit as length-prefixed NAL units. Little endian.
+`modules/video/include/athenea/video/Athv.h` is its specification.
+
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
 default with a `Z` channel; a render product's channels follow its vars, and a
@@ -2497,6 +2549,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
+| `athenea video-encode` | a `.athv`, and with `--hevc` the video alone as Annex B |
 | `athenea mesh2splat` | a USD stage holding the cloud |
 | `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, linear, bottom row first) and `lightmapped.usda`, which sublayers the source; its materials are under the one root prim every baked mesh shares (`/<root>/AtheneaLightmaps`), so referencing that prim keeps them |

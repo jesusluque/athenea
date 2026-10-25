@@ -107,6 +107,10 @@ if(ATHENEA_HAVE_SPZ)
     target_link_libraries(athenea_lod_tests PRIVATE athenea_spz)
 endif()
 
+athenea_test(athenea_video_tests
+    SOURCES video/test_video.cpp
+    LIBS athenea::video)
+
 athenea_test(athenea_volume_tests
     SOURCES volume/test_volume.cpp
     LIBS athenea::world athenea::io)

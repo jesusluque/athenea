@@ -16132,3 +16132,40 @@ within one at 24; the frame then costs the epoch's placing (25-30 ms against 17)
 the backlog caused are gone. A frame that draws the newest epoch about 70 ms after it is due is two frames of
 loading and placing and the frame itself. The lockstep frames are `sparrow-live/live-stream/png` and
 `sparrow_live_stream.mp4`.
+
+## Video planes: gaussians through the hardware video codec (research 101 §4.2-4.4, 25 Oct)
+
+Gaussian streams carried as ordinary HEVC, encoded and decoded by the platform's hardware codec, which is taken
+as fixed-function input and output like a file read (the reading of the rule research 101 §4.3 left to the user,
+who approved it). Everything before the encoder and after the decoder is a Slang kernel. The route is the one 101
+calls safe: every attribute in luma, 8 bits (or 10), the position split into an exact high part and a low part,
+the splats in Morton order; 4:4:4 is not used. Module `video` (after `lod`), `.athv` as the container.
+
+### Planes and the encoder
+
+- **Layout** (`shaders/athenea/scene/video_planes_common.slang`, `video/Planes.h`). A frame's splats sorted by
+  30-bit Morton code over the position ranges (radix sort). Each attribute is a 512-wide luma tile of one mosaic:
+  splat i lies in 64 x 64 blocks of 4096 Morton-ordered splats, eight blocks a row, Z order inside a block, so a
+  chunk of 32768 splats is a band of 64 rows -- what a live page is. Attributes: position xyz, opacity, log scale
+  (clamped to [-20, 20]), rotation xyzw with w >= 0, base colour, the rest coefficients rgb per basis: 59 planes
+  at degree 3. Spare tiles are mid grey; samples past the last splat repeat it.
+- **Quantisation.** Each attribute over its range: 8 or 10 bits a sample, the position 16 or 20 bits as a high
+  and a low part; on odd high parts the low part is stored mirrored, so the low plane has no saw teeth at the
+  high part's steps. The ranges are a group of pictures' (from a key frame to the next: their union, a kernel),
+  so what stays put keeps its samples and the codec can predict it; `--ranges frame` keeps each frame's.
+- **The high parts** go beside the video, deflated, chunk by chunk, axis by axis (`--hi side`, the default): exact
+  by construction. `--hi video` makes them planes 0-2 instead (measured below: not exact).
+- **The encoder** (`video/Codec.h`, `src/VideoToolbox.mm`): VideoToolbox HEVC, hardware required, Main or
+  Main 10, full-range 4:2:0 ('420f' / 'xf20'), chroma at mid grey, frame reordering off, constant quality or an
+  average rate, a key frame every `--keyint` (a second by default). Each frame is finished before the next goes
+  in, so a picture's bytes are its own. The CPU copies the read-back mosaic into the encoder's buffer: no value
+  is touched on the processor (the kernels lay, quantise and range everything).
+- **Sizes.** The encoder took up to 8192 x 8192 and 16384 x 2048 and refused 10240 x 9600 (-12903); a picture is
+  held to 8192^2 in area and 16384 a side. A frame whose planes need more is cut into slices -- runs of its Morton
+  order, a picture each, every one a key frame -- and stays one epoch. Every picture of a stream is the first
+  frame's size (tiles sized for the most a picture holds).
+- **`.athv`** (`video/Athv.h`, its specification): a 64-byte header and a record a picture, each whole in itself
+  (what a network sender would cut into packets): source frame and first splat, key or not, PTP time, time code,
+  timecode label, ranges, deflated high parts, parameter sets on a key picture, the access unit as
+  length-prefixed NAL units. Written under a partial name and renamed. `--hevc` writes the same pictures as Annex
+  B, which `ffprobe` reads as HEVC Main / Main 10, `yuvj420p` full range.

@@ -1,0 +1,131 @@
+// Copyright (c) 2026 jesus luque.
+//
+// A CLOUD AS VIDEO PLANES. A frame's splats, sorted by Morton code, each
+// attribute in a luma tile of one mosaic, quantised over the frame's own
+// range: what a hardware video codec carries (docs/decisions.md, "Video
+// planes"). The layout and the quantisation are shaders/athenea/scene/
+// video_planes_common.slang's; this is the host side:
+//
+//   PlaneLayout   how many planes, how the tiles lie, how big the mosaic is
+//   PlanesCodec   the kernels: a cloud into a mosaic and its side data
+//
+// THE SIDE DATA of a frame: its ranges (two floats an attribute) and, unless
+// they are planes (`hiInVideo`), the high parts of its positions -- a
+// position is 2 x `bits`, the high part exact and the low one through the
+// codec. They are laid chunk by chunk, so a live page carries its own.
+#pragma once
+
+#include <cstdint>
+#include <vector>
+#include <cstddef>
+
+#include "athenea/core/Result.h"
+#include "athenea/gpu/Buffer.h"
+#include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/algo/RadixSort.h"
+
+namespace athenea::gpu {
+class Device;
+class ShaderLibrary;
+}   // namespace athenea::gpu
+
+namespace athenea::scene {
+struct GpuSplats;
+}
+
+namespace athenea::video {
+
+struct PlaneLayout {
+    static constexpr uint32_t kTileWidth = 512;
+    static constexpr uint32_t kBlock = 64;
+    static constexpr uint32_t kBlockSplats = kBlock * kBlock;
+    /// Splats a band of 64 rows of a tile holds: the smallest chunk.
+    static constexpr uint32_t kBandSplats = kBlockSplats * (kTileWidth / kBlock);
+    static constexpr uint32_t kAttributesBeforeRest = 14;
+
+    uint32_t splats = 0;
+    uint32_t bits = 8;            ///< 8 or 10 a sample
+    uint32_t restPerColour = 0;   ///< 0, 3, 8, 15
+    bool     hiInVideo = false;
+    uint32_t chunkSplats = kBandSplats;
+    uint32_t columns = 0;
+    uint32_t tileHeight = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+
+    [[nodiscard]] uint32_t attributes() const noexcept { return kAttributesBeforeRest + 3 * restPerColour; }
+    [[nodiscard]] uint32_t planes() const noexcept { return (hiInVideo ? 6u : 3u) + attributes() - 3u; }
+    [[nodiscard]] uint32_t chunks() const noexcept { return (splats + chunkSplats - 1) / chunkSplats; }
+    [[nodiscard]] uint32_t sampleBytes() const noexcept { return bits > 8 ? 2u : 1u; }
+    [[nodiscard]] uint64_t lumaBytes() const noexcept { return uint64_t{width} * height * sampleBytes(); }
+    /// The side payload of one chunk: three axes of `chunkSplats` high parts
+    /// (none when they are planes).
+    [[nodiscard]] uint64_t highChunkBytes() const noexcept {
+        return hiInVideo ? 0 : uint64_t{3} * chunkSplats * sampleBytes();
+    }
+    [[nodiscard]] uint64_t rangeBytes() const noexcept { return uint64_t{attributes()} * 2 * sizeof(float); }
+
+    /// THE LARGEST PICTURE the hardware encoders take: 8192 x 8192 in area
+    /// (VideoToolbox refused 10240 x 9600), 16384 a side.
+    static constexpr uint64_t kMostArea = uint64_t{8192} * 8192;
+    static constexpr uint32_t kMostSide = 16384;
+
+    /// A layout for `splats`: `columns` tiles a row (0: the squarest mosaic
+    /// within kMostSide and kMostArea). `chunkSplats` a multiple of
+    /// kBandSplats.
+    /// `tileSplats`: tiles sized for that many (0: for `splats`), so every
+    /// picture of a stream is the same size.
+    [[nodiscard]] static Result<PlaneLayout> make(uint32_t splats, uint32_t bits, uint32_t restPerColour,
+                                                  bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
+                                                  uint32_t tileSplats = 0);
+    /// A frame too big for one picture goes as SLICES, each a picture of its
+    /// own holding a run of the frame's Morton order: the most splats one
+    /// takes (a multiple of `chunkSplats`), `splats` when the frame fits.
+    [[nodiscard]] static Result<uint32_t> sliceSplats(uint32_t splats, uint32_t bits, uint32_t restPerColour,
+                                                      bool hiInVideo, uint32_t chunkSplats, uint32_t columns);
+};
+
+/// One frame, encoded: what the codec takes and what goes beside it.
+struct EncodedPlanes {
+    std::vector<std::byte> luma;     ///< width x height samples, top row first
+    std::vector<float>     ranges;   ///< attributes x 2
+    std::vector<std::byte> high;     ///< chunks x highChunkBytes (empty when hiInVideo)
+};
+
+class PlanesCodec {
+public:
+    [[nodiscard]] static Result<PlanesCodec> create(gpu::ShaderLibrary& library);
+
+    /// The ranges of the frame's `count` splats into `ranges` (two floats an
+    /// attribute of `layout`'s), on the device.
+    [[nodiscard]] Result<void> ranges(const scene::GpuSplats& cloud, const PlaneLayout& layout, uint32_t count,
+                                      gpu::Buffer& ranges);
+    /// A group of pictures' ranges in `into`: `frame`'s when `first`, else
+    /// their union with what `into` holds -- so a splat that stays put keeps
+    /// its samples from frame to frame and the codec can predict them.
+    [[nodiscard]] Result<void> widen(const PlaneLayout& layout, const gpu::Buffer& frame, gpu::Buffer& into,
+                                     bool first);
+    /// The Morton order of the frame's `count` splats over the position
+    /// ranges of `ranges` into `order`: a permutation, Morton rank -> splat.
+    [[nodiscard]] Result<void> order(const scene::GpuSplats& cloud, uint32_t count, const gpu::Buffer& ranges,
+                                     gpu::Buffer& order);
+    /// The mosaic and the side data of `cloud` in `order`, from Morton rank
+    /// `first` (a slice), read back for the codec and the file.
+    [[nodiscard]] Result<EncodedPlanes> encode(const scene::GpuSplats& cloud, const PlaneLayout& layout,
+                                               const gpu::Buffer& order, uint32_t first, const gpu::Buffer& ranges);
+
+    /// A store of `count` packed splats with `restPerColour` rest
+    /// coefficients a colour (positions, shape, harmonics only).
+    [[nodiscard]] static Result<scene::GpuSplats> allocate(gpu::Device& device, uint32_t count,
+                                                           uint32_t restPerColour, const char* label);
+
+private:
+    gpu::Device*       device_ = nullptr;
+    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_;
+    gpu::RadixSort     sort_;
+    gpu::SortBuffers   sorting_;
+    uint32_t           sortingFor_ = 0;
+    gpu::Buffer        partialBuffer_, mosaic_, highBuffer_;
+};
+
+}   // namespace athenea::video

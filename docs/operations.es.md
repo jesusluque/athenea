@@ -490,6 +490,51 @@ con qué retraso se mostró una época respecto a cuándo tocaba, y si el ritmo
 se sostuvo (cada época dibujada). El productor está en este proceso: las colas
 con nombre son las del propio motor (`lod::PageQueue::named`).
 
+### 2.7.2 `athenea video-encode` — frames de gaussianas como vídeo hardware
+
+Coloca las gaussianas de cada frame en planos en el dispositivo -- ordenadas
+por código de Morton, cada atributo una tesela de luma de un mosaico,
+cuantizado sobre el rango de su grupo de imágenes
+(`shaders/athenea/scene/video_planes_encode.slang`) -- y hace que el
+codificador HEVC hardware codifique el mosaico. Las posiciones tienen el
+doble de `--bits`: la mitad alta va junto al vídeo, comprimida con deflate y
+exacta, la baja por el códec. La croma se queda en gris medio, así que el
+4:2:0 que acepta cualquier decodificador no pierde nada. El fichero es un
+`.athv` (§8.2).
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `input` | directorio, o ficheros de splats, obligatorio | — | un directorio de páginas (`stream.txt`, todos sus frames), o ficheros leídos como un frame |
+| `-o`, `--output` | ruta, obligatoria | — | el `.athv`; se escribe con un nombre parcial y se renombra al completarse |
+| `--bits` | `8` o `10` | `8` | HEVC Main o Main 10; una posición tiene 16 o 20 bits |
+| `--range` | `PRIMERO:ÚLTIMO` | todos los frames | los frames de la secuencia por índice desde 0, ambos incluidos |
+| `--quality` | 0 a 1 | `0.5` | la calidad constante del codificador |
+| `--megabits` | Mbit/s | por calidad | una tasa media en su lugar |
+| `--keyint` | imágenes | el ritmo (un segundo) | entre fotogramas clave: donde puede empezar un reproductor |
+| `--intra` | flag | no | cada imagen un fotograma clave |
+| `--hi` | `side` o `video` | `side` | las partes altas de la posición junto al vídeo (exactas) o como planos propios (por el códec, y no exactas: `docs/decisions.md`, "Video planes") |
+| `--order` | `frame` o `first` | `frame` | cada frame ordenado por código de Morton, o el orden del primer frame mientras el número sea el mismo |
+| `--ranges` | `group` o `frame` | `group` | el rango de cada atributo sobre un grupo de imágenes (de un fotograma clave al siguiente), o el de cada frame |
+| `--sh-degree` | 0 a 3 | `3` | como mucho el de la fuente |
+| `--columns` | teselas por fila | el mosaico más cuadrado | |
+| `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
+| `--hevc` | ruta | ninguna | el vídeo solo como Annex B, para `ffprobe`; sus imágenes son planos, no una imagen |
+
+**Tamaños.** Una imagen tiene como mucho 8192 x 8192 de área y 16384 de lado
+(el codificador hardware rechazó 10240 x 9600). Un frame cuyos planos
+necesitan más se corta en porciones -- tramos de su orden de Morton, una
+imagen cada una, todas fotogramas clave -- y un frame sigue siendo una época.
+Todas las imágenes tienen el tamaño de las del primer frame; un frame
+necesita una tesela de 512 x 64 filas por cada 32768 gaussianas, y un plano
+por atributo: 59 en grado 3 (62 con `--hi video`).
+
+**Qué imprime.** El mosaico y las porciones; MB por frame (el vídeo y los
+datos laterales aparte) y Mbit/s a 24 y 30 por segundo; el tamaño de una
+imagen clave frente al de una predicha.
+
+Por ahora solo macOS (VideoToolbox); en otras plataformas el codificador se
+rechaza (`Unsupported`).
+
 ### 2.8 `athenea mesh2splat` — un modelo en gaussianas
 
 La conversión, y el bake de luz que viene después. Qué hace cada etapa está en
@@ -2555,6 +2600,18 @@ coordenadas diciendo right-up-back), `.glb` de glTF con
 **Páginas que se escriben.** `athenea flatten --range` escribe un directorio de
 páginas SPZ y su `stream.txt` (§3.7), que lee `athenea stream`.
 
+**Vídeo que se escribe.** `athenea video-encode` escribe un `.athv`: una
+cabecera de 64 bytes (códec, bits, coeficientes de resto, tamaño de chunk,
+columnas del mosaico, las gaussianas que caben como mucho en una imagen, si
+las partes altas de la posición son planos, el antialiasing de la fuente, el
+ritmo) y un registro por imagen, cada uno completo en sí mismo: el frame de
+origen al que pertenece y dónde empiezan en él sus gaussianas, cuántas son,
+si es clave o no, el tiempo PTP, el time code y la etiqueta de timecode, los
+rangos (dos floats por atributo), las partes altas de la posición con
+deflate, los conjuntos de parámetros HEVC en una imagen clave y la unidad de
+acceso como unidades NAL precedidas de su longitud. Little endian.
+`modules/video/include/athenea/video/Athv.h` es su especificación.
+
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere
 el formato. Un frame va en media por defecto con un canal `Z`; los canales de
@@ -2572,6 +2629,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
+| `athenea video-encode` | un `.athv`, y con `--hevc` el vídeo solo como Annex B |
 | `athenea mesh2splat` | una escena USD con la nube |
 | `athenea flatten` | ficheros `.ply`, `.spz`, `.glb` y USD de las nubes aplanadas, la escena compuesta junto a ellos, y con `--validate` lo que escribe `mesh2splat --validate` |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, lineal, la fila de abajo primero) y `lightmapped.usda`, que pone el original como sublayer; sus materiales van bajo el prim raíz que comparten todas las mallas horneadas (`/<raíz>/AtheneaLightmaps`), así que referenciar ese prim los conserva |
