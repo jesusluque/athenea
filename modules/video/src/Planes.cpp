@@ -189,6 +189,8 @@ Result<PlanesCodec> PlanesCodec::create(gpu::ShaderLibrary& library) {
     const char* geo = "athenea/scene/video_geometry";
     ATHENEA_TRY(make(c.geometryQuantise_, geo, "videoGeometryQuantise"));
     ATHENEA_TRY(make(c.geometryHold_, geo, "videoGeometryHold"));
+    ATHENEA_TRY(make(c.geometryFit_, geo, "videoGeometryFit"));
+    ATHENEA_TRY(make(c.geometryMotion_, geo, "videoGeometryMotion"));
     ATHENEA_TRY(make(c.geometryPack_, geo, "videoGeometryPack"));
     ATHENEA_TRY(make(c.geometryApply_, geo, "videoGeometryApply"));
     ATHENEA_TRY(make(c.decode_, dec, "videoPlanesDecode"));
@@ -366,6 +368,16 @@ Result<std::vector<std::byte>> PlanesCodec::geometryEncode(const scene::GpuSplat
     const uint32_t n = layout.splats;
     const uint64_t planeWords = uint64_t{layout.chunks()} * layout.geometryChunkBytes() / 4;
     ATHENEA_TRY(ensure(device, geometryPlanes_, std::max<uint64_t>(planeWords, 1) * 4, 4, "video.geometry"));
+    const bool motion = at.order == 3;
+    if (motion != layout.geometryMotion || (motion && first % layout.chunkSplats != 0)) {
+        return Error(ErrorCode::InvalidArgument, "video planes: motion (order 3) wants a layout made for it, by chunks");
+    }
+    // Order 3: what is sent a frame splat, and every cluster's motion, the
+    // frame's whole (a picture's clusters at their frame index).
+    const uint32_t clusterCount = (first + n + PlaneLayout::kMotionCluster - 1) / PlaneLayout::kMotionCluster;
+    ATHENEA_TRY(ensure(device, geometryCode_, uint64_t{std::max(first + n, 1u)} * 16, 4, "video.geometryCode"));
+    ATHENEA_TRY(ensure(device, geometryClusters_, uint64_t{std::max(clusterCount, 1u)} * PlaneLayout::kMotionBytes, 4,
+                       "video.geometryClusters"));
     gpu::CommandBatch batch(device);
     const auto bind = [&](rhi::ShaderCursor c) {
         c["positions"].setBinding(cloud.positions.rhi());
@@ -376,7 +388,10 @@ Result<std::vector<std::byte>> PlanesCodec::geometryEncode(const scene::GpuSplat
         c["before"].setBinding(before.rhi());
         c["before2"].setBinding(before2 != nullptr ? before2->rhi() : before.rhi());
         c["planes"].setBinding(geometryPlanes_.rhi());
+        c["code"].setBinding(geometryCode_.rhi());
+        c["clusters"].setBinding(geometryClusters_.rhi());
         c["page"].setBinding(now.rhi());
+        c["rangesPage"].setBinding(ranges.rhi());
         c["state"].setBinding(now.rhi());
         rhi::ShaderCursor p = c["params"];
         p["count"].setData(n);
@@ -388,19 +403,41 @@ Result<std::vector<std::byte>> PlanesCodec::geometryEncode(const scene::GpuSplat
         p["positionBits"].setData(layout.geometryPositionBits);
         p["scaleBits"].setData(layout.geometryScaleBits);
         p["rotationBits"].setData(layout.geometryRotationBits);
-        p["order"].setData(before2 != nullptr ? at.order : std::min(at.order, 1u));
+        p["order"].setData(motion ? 3u : before2 != nullptr ? at.order : std::min(at.order, 1u));
+        p["chunkBytes"].setData(static_cast<uint32_t>(layout.geometryChunkBytes()));
         p["holdPosition"].setData(at.holdPosition);
         p["holdScale"].setData(at.holdScale);
         p["holdRotation"].setData(at.holdRotation);
     };
-    if (at.holds() && at.order != 1) {
-        return Error(ErrorCode::InvalidArgument, "video planes: a geometry hold wants order 1 prediction");
+    if (at.holds() && at.order != 1 && !motion) {
+        return Error(ErrorCode::InvalidArgument, "video planes: a geometry hold wants order 1 or 3 prediction");
     }
-    geometryQuantise_.dispatch(batch, {n, 1, 1}, bind);
-    if (at.holds()) {
-        geometryHold_.dispatch(batch, {n, 1, 1}, bind);
+    if (motion) {
+        const uint32_t pictureClusters = clusterCount - first / PlaneLayout::kMotionCluster;
+        geometryFit_.dispatch(batch, {pictureClusters * PlaneLayout::kMotionCluster, 1, 1}, bind);
+        geometryMotion_.dispatch(batch, {n, 1, 1}, bind);
+        // The planes, then the decoder's own kernel on them: `now` (the held
+        // words) becomes what a decoder holds.
+        geometryPack_.dispatch(batch, {static_cast<uint32_t>(planeWords), 1, 1}, bind);
+        geometryApply_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+            bind(c);
+            c["page"].setBinding(geometryPlanes_.rhi());
+            c["state"].setBinding(now.rhi());
+            rhi::ShaderCursor p = c["params"];
+            p["count"].setData(n);
+            p["planesOffset"].setData(0u);
+            p["rangesOffset"].setData(0u);
+            p["frameFirst"].setData(first);
+            p["pageFirst"].setData(0u);
+            p["state2At"].setData(static_cast<uint32_t>(now.bytes() / 4));   // past the end: order 3 writes none
+        });
+    } else {
+        geometryQuantise_.dispatch(batch, {n, 1, 1}, bind);
+        if (at.holds()) {
+            geometryHold_.dispatch(batch, {n, 1, 1}, bind);
+        }
     }
-    if (!quantiseOnly) {
+    if (!quantiseOnly && !motion) {
         geometryPack_.dispatch(batch, {static_cast<uint32_t>(planeWords), 1, 1}, bind);
     }
     ATHENEA_TRY(batch.submit(true));
@@ -413,13 +450,16 @@ Result<std::vector<std::byte>> PlanesCodec::geometryEncode(const scene::GpuSplat
 }
 
 Result<void> PlanesCodec::geometryApply(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::IBuffer* page,
-                                        uint64_t planesOffset, const GeometryFrame& at, uint32_t frameFirst,
-                                        uint32_t pageFirst, uint32_t count, gpu::Buffer& state) {
-    if (page == nullptr || planesOffset % 4 != 0 || planesOffset > UINT32_MAX || pageFirst % layout.chunkSplats != 0) {
+                                        uint64_t rangesOffset, uint64_t planesOffset, const GeometryFrame& at,
+                                        uint32_t frameFirst, uint32_t pageFirst, uint32_t count, gpu::Buffer& state) {
+    if (page == nullptr || planesOffset % 4 != 0 || planesOffset > UINT32_MAX || rangesOffset % 4 != 0 ||
+        rangesOffset > UINT32_MAX || pageFirst % layout.chunkSplats != 0 ||
+        (at.order == 3) != layout.geometryMotion) {
         return Error(ErrorCode::InvalidArgument, "video planes: a geometry layer's planes off a page's chunks");
     }
     geometryApply_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
         c["page"].setBinding(page);
+        c["rangesPage"].setBinding(page);
         c["state"].setBinding(state.rhi());
         c["positions"].setBinding(state.rhi());
         c["shape"].setBinding(state.rhi());
@@ -429,8 +469,12 @@ Result<void> PlanesCodec::geometryApply(gpu::CommandBatch& batch, const PlaneLay
         c["before"].setBinding(state.rhi());
         c["before2"].setBinding(state.rhi());
         c["planes"].setBinding(state.rhi());
+        c["code"].setBinding(state.rhi());
+        c["clusters"].setBinding(state.rhi());
         rhi::ShaderCursor p = c["params"];
         p["count"].setData(count);
+        p["rangesOffset"].setData(static_cast<uint32_t>(rangesOffset));
+        p["chunkBytes"].setData(static_cast<uint32_t>(layout.geometryChunkBytes()));
         p["chunkSplats"].setData(layout.chunkSplats);
         p["frame"].setData(at.frame);
         p["interval"].setData(at.interval);

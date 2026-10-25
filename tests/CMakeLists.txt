@@ -109,7 +109,7 @@ endif()
 
 athenea_test(athenea_video_tests
     SOURCES video/test_video.cpp
-    LIBS athenea::video athenea::scene)
+    LIBS athenea::video athenea::scene athenea::render)
 
 athenea_test(athenea_volume_tests
     SOURCES volume/test_volume.cpp

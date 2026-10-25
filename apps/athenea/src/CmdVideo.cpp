@@ -467,11 +467,12 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
             layout->geometryPositionBits = h.geometryPositionBits;
             layout->geometryScaleBits = h.geometryScaleBits;
             layout->geometryRotationBits = h.geometryRotationBits;
+            layout->geometryMotion = h.geometryOrder == 3;
             auto side = sidePage(device, f->ranges, f->high, f->geometry);
             if (!side) cli::fail(side.error());
             gpu::CommandBatch batch(device);
             const video::GeometryFrame at{f->source, h.geometryInterval, h.geometryStagger, h.geometryOrder};
-            if (auto r = codec.geometryApply(batch, *layout, side->rhi(), layout->rangeBytes() + f->high.size(), at,
+            if (auto r = codec.geometryApply(batch, *layout, side->rhi(), 0, layout->rangeBytes() + f->high.size(), at,
                                              f->firstSplat, 0, f->splats, state);
                 !r) {
                 cli::fail(r.error());
@@ -498,6 +499,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
             layout->geometryPositionBits = h.geometryPositionBits;
             layout->geometryScaleBits = h.geometryScaleBits;
             layout->geometryRotationBits = h.geometryRotationBits;
+            layout->geometryMotion = h.geometryOrder == 3;
             layout->positionTarget = h.positionTarget;
         auto side = sidePage(device, f->ranges, f->high, f->geometry);
         if (!side) cli::fail(side.error());
@@ -506,7 +508,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
         gpu::CommandBatch batch(device);
         if (h.geometry) {
             const video::GeometryFrame at{f->source, h.geometryInterval, h.geometryStagger, h.geometryOrder};
-            if (auto r = codec.geometryApply(batch, *layout, side->rhi(), layout->rangeBytes() + f->high.size(), at,
+            if (auto r = codec.geometryApply(batch, *layout, side->rhi(), 0, layout->rangeBytes() + f->high.size(), at,
                                              f->firstSplat, 0, f->splats, state);
                 !r) {
                 cli::fail(r.error());
@@ -664,8 +666,10 @@ void addVideo(CLI::App& app) {
         ->check(CLI::Range(0u, 64u));
     enc->add_option("--geometry-predict", o->geometryPredict,
                     "with --geometry-key: what a frame between keys is a residual from -- 1 the frame before, 2 the "
-                    "frame before's motion carried on (2 b - c)")
-        ->check(CLI::Range(1u, 2u));
+                    "frame before's motion carried on (2 b - c), 3 motion: each run of 256 gaussians' rigid motion "
+                    "fitted from what the decoder holds, the rotation sent as a turn in steps by the gaussian's "
+                    "shape, and keys that send what the decoder would hold")
+        ->check(CLI::Range(1u, 3u));
     enc->add_flag("--geometry-stagger", o->geometryStagger,
                   "with --geometry-key: no whole key frames, blocks of 256 gaussians refreshed in turn");
     enc->add_flag("--hold-boxes", o->holdBoxes,
@@ -883,6 +887,7 @@ void addVideo(CLI::App& app) {
                 layout.geometryPositionBits = o->geometryPositionBits;
                 layout.geometryScaleBits = o->geometryScaleBits;
                 layout.geometryRotationBits = o->geometryRotationBits;
+                layout.geometryMotion = o->geometryPredict == 3;
             }
             layout.chromaWeight = o->chromaWeight == "area" ? 1u : 0u;
             // A frame cut into slices: each picture holds other splats than
@@ -996,7 +1001,7 @@ void addVideo(CLI::App& app) {
                     }
                 }
             }
-            if (deltas && o->geometryStagger && g == first) {
+            if (deltas && (o->geometryStagger || o->geometryPredict == 3) && g == first) {
                 // Staggered refreshes: the first frame's blocks that are not
                 // refreshed are differences from the last frame, which the
                 // loop shows before it.
@@ -1005,24 +1010,32 @@ void addVideo(CLI::App& app) {
                     if (auto r = codec->order(head, head.count, ranges, order); !r) cli::fail(r.error());
                     orderedFor = head.count;
                 }
-                if (o->geometryHold.size() == 3) {
+                const bool motion = o->geometryPredict == 3;
+                if (o->geometryHold.size() == 3 || motion) {
                     // Held values depend on every frame since a block's
                     // key: the loop's last `interval` frames, encoded as
                     // the stream does, leave in geomBefore what the decoder
                     // holds when the loop comes round (each block keyed once
-                    // in them).
-                    const size_t from = last + 1 - std::min<size_t>(o->geometryKey, last + 1 - first);
-                    for (size_t back = from; back <= last; ++back) {
+                    // in them). With motion a key sends the held state, so
+                    // the whole loop is run twice: what it holds at its end
+                    // is then what it started from.
+                    const size_t from =
+                        motion ? first : last + 1 - std::min<size_t>(o->geometryKey, last + 1 - first);
+                    for (size_t step = from; step <= last + (motion ? last + 1 - first : 0); ++step) {
+                        const size_t back = first + (step - first) % (last + 1 - first);
                         scene::GpuSplats tail = prepare(back);
                         frameBuffer(geomNow, tail.count, "video.geometryNow");
                         frameBuffer(geomBefore, tail.count, "video.geometryBefore");
                         frameBuffer(geomBefore2, tail.count, "video.geometryBefore2");
                         video::PlaneLayout whole = layout;
                         whole.splats = tail.count;
-                        video::GeometryFrame at{static_cast<uint32_t>(back - first), o->geometryKey, true, 1};
-                        at.holdPosition = o->geometryHold[0];
-                        at.holdScale = o->geometryHold[1];
-                        at.holdRotation = o->geometryHold[2];
+                        video::GeometryFrame at{static_cast<uint32_t>(back - first), o->geometryKey,
+                                                o->geometryStagger, motion ? 3u : 1u};
+                        if (o->geometryHold.size() == 3) {
+                            at.holdPosition = o->geometryHold[0];
+                            at.holdScale = o->geometryHold[1];
+                            at.holdRotation = o->geometryHold[2];
+                        }
                         auto held = codec->geometryEncode(tail, whole, order, 0, ranges, at, geomNow, geomBefore, true);
                         if (!held) cli::fail(held.error());
                         std::swap(geomBefore2, geomBefore);
@@ -1032,7 +1045,7 @@ void addVideo(CLI::App& app) {
                 // The loop's last two frames, what frame 0's first blocks
                 // are predicted from.
                 for (const size_t back : {last - 1, last}) {
-                    if (o->geometryHold.size() == 3) break;
+                    if (o->geometryHold.size() == 3 || motion) break;
                     if (back < first) continue;
                     scene::GpuSplats tail = prepare(back);
                     gpu::Buffer& into = back == last ? geomBefore : geomBefore2;
@@ -1084,6 +1097,7 @@ void addVideo(CLI::App& app) {
                     sliced->geometryPositionBits = layout.geometryPositionBits;
                     sliced->geometryScaleBits = layout.geometryScaleBits;
                     sliced->geometryRotationBits = layout.geometryRotationBits;
+                    sliced->geometryMotion = layout.geometryMotion;
                     sliced->chromaWeight = layout.chromaWeight;
                     if (sliced->width != layout.width || sliced->height != layout.height) {
                         cli::err("video-encode: frame %zu needs a %u x %u mosaic, not the stream's %u x %u\n", k,
@@ -1156,7 +1170,7 @@ void addVideo(CLI::App& app) {
                     {
                         gpu::CommandBatch batch(**device);
                         if (o->geometry) {
-                            if (auto r = codec->geometryApply(batch, *sliced, side->rhi(),
+                            if (auto r = codec->geometryApply(batch, *sliced, side->rhi(), 0,
                                                               sliced->rangeBytes() + f.high.size(), geomAt, at, 0,
                                                               count, geomState);
                                 !r) {
@@ -1405,6 +1419,7 @@ void addVideo(CLI::App& app) {
             layout->geometryPositionBits = h.geometryPositionBits;
             layout->geometryScaleBits = h.geometryScaleBits;
             layout->geometryRotationBits = h.geometryRotationBits;
+            layout->geometryMotion = h.geometryOrder == 3;
             layout->positionTarget = h.positionTarget;
             if (store.count < f->splats) {
                 auto s = video::PlanesCodec::allocate(**device, f->splats, h.restPerColour, "video.decoded");
@@ -1428,7 +1443,7 @@ void addVideo(CLI::App& app) {
                     geometryState = std::move(*made);
                 }
                 const video::GeometryFrame at{f->source, h.geometryInterval, h.geometryStagger, h.geometryOrder};
-                if (auto r = codec->geometryApply(batch, *layout, side->rhi(), layout->rangeBytes() + f->high.size(),
+                if (auto r = codec->geometryApply(batch, *layout, side->rhi(), 0, layout->rangeBytes() + f->high.size(),
                                                   at, f->firstSplat, 0, f->splats, geometryState);
                     !r) {
                     cli::fail(r.error());

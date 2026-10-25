@@ -138,7 +138,7 @@ Result<void> AthvWriter::write(AthvFrame& f) {
         uLongf size = compressBound(static_cast<uLong>(f.geometry.size()));
         geometry.resize(size);
         if (compress2(geometry.data(), &size, reinterpret_cast<const Bytef*>(f.geometry.data()),
-                      static_cast<uLong>(f.geometry.size()), 6) != Z_OK) {
+                      static_cast<uLong>(f.geometry.size()), 9) != Z_OK) {
             return Error::make(ErrorCode::IoFailure, "athv: frame {}: the geometry would not deflate", f.index);
         }
         geometry.resize(size);

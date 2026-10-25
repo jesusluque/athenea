@@ -15,6 +15,7 @@
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Texture.h"
+#include "athenea/render/ReferenceRenderer.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/video/Athv.h"
 #include "athenea/video/Codec.h"
@@ -289,7 +290,7 @@ TEST_CASE("the geometry layer carries position, scale and rotation exactly, as k
         REQUIRE(back);
         {
             gpu::CommandBatch batch(device);
-            REQUIRE(codec->geometryApply(batch, *layout, page.rhi(), layout->rangeBytes(), at, 0, 0, cloud->count,
+            REQUIRE(codec->geometryApply(batch, *layout, page.rhi(), 0, layout->rangeBytes(), at, 0, 0, cloud->count,
                                          *state));
             REQUIRE(codec->decode(batch, *layout, luma->rhi(), chroma->rhi(), page.rhi(), 0, layout->rangeBytes(), 0,
                                   cloud->count, *back, 0, layout->restPerColour, &*state, 0));
@@ -305,6 +306,69 @@ TEST_CASE("the geometry layer carries position, scale and rotation exactly, as k
                 CHECK((*errors)[a].maxSteps == 0.0);    // the rotation word itself
             }
         }
+        std::swap(*now, *before);
+    }
+}
+
+TEST_CASE("the geometry layer's motion: the decoder holds what the encoder held", "[video][gpu][planes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = *gpu->device;
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto codec = video::PlanesCodec::create(*gpu->library);
+    REQUIRE(codec);
+    test::CloudBuilder built = test::randomCloud(70000, 29, 0.004F, 0.3F);
+    auto cloud = loader->upload(built.raw, 3);
+    REQUIRE(cloud);
+    auto layout = video::PlaneLayout::make(cloud->count, 8, cloud->restPerColour, false,
+                                           video::PlaneLayout::kBandSplats, 0, 0, 0, 0, true, true);
+    REQUIRE(layout);
+    layout->positionHighBits = 0;
+    layout->geometryPositionBits = 12;
+    layout->geometryScaleBits = 8;
+    layout->geometryRotationBits = 8;
+    layout->geometryMotion = true;
+    gpu::Buffer ranges, order;
+    REQUIRE(codec->ranges(*cloud, *layout, cloud->count, ranges));
+    REQUIRE(codec->order(*cloud, cloud->count, ranges, order));
+    auto planes = codec->encode(*cloud, *layout, order, 0, ranges);
+    REQUIRE(planes);
+    gpu::BufferDesc words;
+    words.bytes = uint64_t{cloud->count} * 16;
+    words.elementBytes = 4;
+    std::vector<std::byte> zeros(words.bytes * 2);
+    auto now = gpu::Buffer::create(device, words, zeros.data());
+    auto before = gpu::Buffer::create(device, words, zeros.data());
+    gpu::BufferDesc twoFrames = words;
+    twoFrames.bytes *= 2;
+    auto state = gpu::Buffer::create(device, twoFrames, zeros.data());
+    REQUIRE(now);
+    REQUIRE(before);
+    REQUIRE(state);
+    // Keys every 3 frames, staggered or whole, with and without holds: each
+    // frame's planes, cluster motion and keys bring the decoder's state to
+    // the encoder's word for word.
+    for (const auto& [frame, stagger, hold] : {std::tuple{0u, false, 0u}, std::tuple{1u, false, 0u},
+                                               std::tuple{2u, false, 1u}, std::tuple{3u, false, 1u},
+                                               std::tuple{4u, true, 2u}, std::tuple{5u, true, 0u}}) {
+        CAPTURE(frame, stagger, hold);
+        video::GeometryFrame at{frame, 3, stagger, 3};
+        at.holdPosition = at.holdScale = at.holdRotation = hold;
+        auto geometry = codec->geometryEncode(*cloud, *layout, order, 0, ranges, at, *now, *before);
+        REQUIRE(geometry);
+        REQUIRE(geometry->size() == layout->chunks() * layout->geometryChunkBytes());
+        video::EncodedPlanes side = *planes;
+        side.high = *geometry;
+        gpu::Buffer page = sidePage(device, side);
+        {
+            gpu::CommandBatch batch(device);
+            REQUIRE(codec->geometryApply(batch, *layout, page.rhi(), 0, layout->rangeBytes(), at, 0, 0, cloud->count,
+                                         *state));
+            REQUIRE(batch.submit(true));
+        }
+        auto different = render::countDifferent(*gpu->library, *now, *state, cloud->count * 4);
+        REQUIRE(different);
+        CHECK(*different == 0);
         std::swap(*now, *before);
     }
 }

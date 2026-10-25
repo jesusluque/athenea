@@ -85,9 +85,18 @@ struct PlaneLayout {
     static constexpr uint32_t kGeometryPlanes = 16;
     uint32_t geometryPositionBits = 16;   ///< 10-16 a position axis
     uint32_t geometryScaleBits = 10;      ///< 6-10 a log scale
-    uint32_t geometryRotationBits = 10;   ///< 7-10 a rotation component (the store's word keeps 10)
+    uint32_t geometryRotationBits = 10;   ///< 5-10 a rotation component (the store's word keeps 10)
+    /// MOTION (geometry order 3, video_geometry.slang): clusters of
+    /// kMotionCluster gaussians predicted through their fitted rigid motion,
+    /// the rotation sent as a turn in steps by shape; each chunk's planes are
+    /// followed by its clusters' motion, kMotionBytes a cluster.
+    bool     geometryMotion = false;
+    static constexpr uint32_t kMotionCluster = 256;
+    static constexpr uint32_t kMotionBytes = 32;
     [[nodiscard]] uint64_t geometryChunkBytes() const noexcept {
-        return geometry ? uint64_t{kGeometryPlanes} * chunkSplats : 0;
+        if (!geometry) return 0;
+        return uint64_t{kGeometryPlanes} * chunkSplats +
+               (geometryMotion ? uint64_t{chunkSplats / kMotionCluster} * kMotionBytes : 0);
     }
     /// The encode's block chroma: 0 the plain mean of its splats, 1 weighed
     /// by opacity x the area of their two largest axes.
@@ -160,10 +169,11 @@ struct GeometryFrame {
     uint32_t frame = 0;      ///< the source frame, from 0
     uint32_t interval = 0;   ///< frames from one key to the next (0: every frame a key)
     bool     stagger = false;///< a key refreshes blocks of 256 in turn
-    uint32_t order = 1;      ///< the prediction between keys: 1 the frame before, 2 its motion carried on
-    /// CONDITIONAL REPLENISHMENT (encode only, order 1): between keys a
+    uint32_t order = 1;      ///< the prediction between keys: 1 the frame before, 2 its motion carried on, 3 motion
+    /// CONDITIONAL REPLENISHMENT (encode only, order 1 or 3): between keys a
     /// field that is no more than this many of its steps from the value the
-    /// decoder holds keeps that value (residual 0). 0: every change is sent.
+    /// decoder holds (order 3: from its prediction) keeps that value
+    /// (residual 0). 0: every change is sent.
     uint32_t holdPosition = 0;
     uint32_t holdScale = 0;
     uint32_t holdRotation = 0;   ///< all three components within it, the index unchanged
@@ -244,9 +254,11 @@ public:
     /// picture whose first splat in its frame is `frameFirst`. `state` holds
     /// two frames' words: this one's, and in its second half the one before
     /// (what order 2 predicts from) -- eight words a frame splat.
+    /// Order 3 reads the record's ranges at `rangesOffset` in `page`.
     [[nodiscard]] Result<void> geometryApply(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::IBuffer* page,
-                                             uint64_t planesOffset, const GeometryFrame& at, uint32_t frameFirst,
-                                             uint32_t pageFirst, uint32_t count, gpu::Buffer& state);
+                                             uint64_t rangesOffset, uint64_t planesOffset, const GeometryFrame& at,
+                                             uint32_t frameFirst, uint32_t pageFirst, uint32_t count,
+                                             gpu::Buffer& state);
 
     /// A slice decoded from the planes (`decoded`, in Morton order from rank
     /// `first`) against its source through `order`, attribute by attribute.
@@ -267,11 +279,13 @@ public:
 private:
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, blocks_, chroma_, boxUnion_, blockBits_;
-    gpu::ComputeKernel decode_, compare_, geometryQuantise_, geometryHold_, geometryPack_, geometryApply_;
+    gpu::ComputeKernel decode_, compare_, geometryQuantise_, geometryHold_, geometryFit_, geometryMotion_, geometryPack_,
+        geometryApply_;
     gpu::RadixSort     sort_;
     gpu::SortBuffers   sorting_;
     uint32_t           sortingFor_ = 0;
-    gpu::Buffer        partialBuffer_, mosaic_, chromaMosaic_, highBuffer_, boxBuffer_, errors_, geometryPlanes_;
+    gpu::Buffer        partialBuffer_, mosaic_, chromaMosaic_, highBuffer_, boxBuffer_, errors_, geometryPlanes_, geometryCode_,
+        geometryClusters_;
 };
 
 }   // namespace athenea::video

@@ -103,6 +103,7 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
         layout->geometryPositionBits = h.geometryPositionBits;
         layout->geometryScaleBits = h.geometryScaleBits;
         layout->geometryRotationBits = h.geometryRotationBits;
+            layout->geometryMotion = h.geometryOrder == 3;
         layout->positionTarget = h.positionTarget;
         if ((*decoded)->width() != layout->width || (*decoded)->height() != layout->height ||
             frame->ranges.size() != size_t{layout->attributes()} * 2 ||
@@ -225,7 +226,7 @@ Result<void> VideoStream::place(gpu::CommandBatch& batch, const lod::DevicePageH
             if (!made) return std::move(made).error();
             geometryState_ = std::move(*made);
         }
-        ATHENEA_TRY(codec_->geometryApply(batch, held.layout, staging.rhi(),
+        ATHENEA_TRY(codec_->geometryApply(batch, held.layout, staging.rhi(), payloadOffset,
                                           payloadOffset + held.layout.rangeBytes() + held.layout.highChunkBytes(),
                                           held.geometryAt, held.frameFirst, page.first, page.count, geometryState_));
     }
