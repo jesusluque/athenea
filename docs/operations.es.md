@@ -525,6 +525,9 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--ranges` | `group` o `frame` | `group` | el rango de cada atributo sobre un grupo de imágenes (de un fotograma clave al siguiente), o el de cada frame |
 | `--sh-degree` | 0 a 3 | `3` | como mucho el de la fuente |
 | `--columns` | teselas por fila | el mosaico más cuadrado | |
+| `--max-picture` | `ANCHOxALTO` | 16384 de lado | la imagen más grande, para un decodificador que admite menos (el de un teléfono); un frame que necesita más va en porciones |
+| `--gaussians` | número | las del frame | unas tantas por frame: cada frame fusionado por pares donde fusionar pierde menos (la fusión NanoGS de la decimación, `docs/decisions.md`), nunca descartadas; sin surfels |
+| `--rendition` | 0..65535 | `0` | el id que lleva cada registro, uno por rendición de una escalera (`athv_stream.py`) |
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
 | `--hevc` | ruta | ninguna | el vídeo solo como Annex B, para `ffprobe`; sus imágenes son planos, no una imagen |
 | `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente |
@@ -535,7 +538,12 @@ necesitan más se corta en porciones -- tramos de su orden de Morton, una
 imagen cada una, todas fotogramas clave -- y un frame sigue siendo una época.
 Todas las imágenes tienen el tamaño de las del primer frame; un frame
 necesita una tesela de 512 x 64 filas por cada 32768 gaussianas, y un plano
-por atributo: 59 en grado 3 (62 con `--hi video`).
+por atributo: 59 en grado 3 (62 con `--hi video`). Con `--max-picture` la imagen se limita
+además a ese tamaño: 1920 x 1080 admite tres columnas de teselas, así que un
+frame de 300847 gaussianas va en cuatro imágenes de 1536 x 960 en grado 0 (14
+planos) y en cinco de 1536 x 1024 en grado 1 (23); el grado 3 (59 planos) no
+cabe en 1080 filas. El nivel que el codificador escribe en el SPS sigue al
+tamaño de la imagen.
 
 **Qué imprime.** El mosaico y las porciones; MB por frame (el vídeo y los
 datos laterales aparte) y Mbit/s a 24 y 30 por segundo; el tamaño de una
@@ -2630,17 +2638,60 @@ coordenadas diciendo right-up-back), `.glb` de glTF con
 **Páginas que se escriben.** `athenea flatten --range` escribe un directorio de
 páginas SPZ y su `stream.txt` (§3.7), que lee `athenea stream`.
 
-**Vídeo que se escribe.** `athenea video-encode` escribe un `.athv`: una
-cabecera de 64 bytes (códec, bits, coeficientes de resto, tamaño de chunk,
-columnas del mosaico, las gaussianas que caben como mucho en una imagen, si
-las partes altas de la posición son planos, el antialiasing de la fuente, el
-ritmo) y un registro por imagen, cada uno completo en sí mismo: el frame de
-origen al que pertenece y dónde empiezan en él sus gaussianas, cuántas son,
-si es clave o no, el tiempo PTP, el time code y la etiqueta de timecode, los
-rangos (dos floats por atributo), las partes altas de la posición con
-deflate, los conjuntos de parámetros HEVC en una imagen clave y la unidad de
-acceso como unidades NAL precedidas de su longitud. Little endian.
+**Vídeo que se escribe.** `athenea video-encode` escribe un `.athv`,
+versión 2: una cabecera de 64 bytes (códec, bits, coeficientes de resto,
+tamaño de chunk, columnas del mosaico, las gaussianas que caben como mucho en
+una imagen, si las partes altas de la posición son planos, el antialiasing de
+la fuente, el id de la rendición, el ritmo y el ritmo como fracción, los
+frames de origen, la calidad) y un registro por imagen, cada uno completo en
+sí mismo. Un registro empieza con un prefijo fijo -- magic `ATVF`, tipo de
+registro (u16, 0), rendición (u16), frame de presentación (u32), tiempo PTP
+(u64 en ns en el offset 12), los bytes del registro, la versión y los flags
+(bit 0 imagen clave) --, así que un relé enruta con sus primeros 28 bytes;
+después su índice, el frame de origen y qué porción suya es, dónde empiezan
+sus gaussianas en el frame, cuántas son, el time code y la etiqueta de
+timecode, los rangos (dos floats por atributo), las partes altas de la
+posición con deflate (zlib), los conjuntos de parámetros HEVC en una imagen
+clave y la unidad de acceso como unidades NAL precedidas de su longitud.
+Little endian; los ficheros de la versión 1 se siguen leyendo.
 `modules/video/include/athenea/video/Athv.h` es su especificación.
+
+**Vídeo enviado como stream.** `scripts/examples/athv_stream.py` (biblioteca
+estándar de Python) lee un `.athv` por rendición -- los mismos frames a otros
+tamaños y calidades, cada uno codificado con su propio `--rendition` -- y
+escribe sus registros en la salida estándar al ritmo de los ficheros, en
+bucle, para que los lleve un transporte (un servidor WebSocket que reenvía
+stdout, o `srt-live-transmit file://con "srt://HOST:9000?mode=caller&latency=120"`).
+Cada mensaje es una longitud u32 little endian y esos bytes: un manifiesto
+(magic `ATVM`, tipo de registro 1, rendición 0xFFFF, el mismo prefijo fijo, y
+después una longitud u32 y JSON: el ritmo como fracción, los frames del bucle
+y, por rendición, su id, gaussianas, grado SH, calidad, imágenes por frame y
+su tamaño, Mbit/s medios, cadena de códec y hvcC), primero y después una vez
+por segundo; y cada registro, byte a byte como lo guarda el fichero salvo el
+frame de presentación (offset 8: sigue contando entre bucles, el mismo para
+el mismo instante en todas las rendiciones) y el tiempo PTP (offset 12:
+`CLOCK_REALTIME` en ns al enviarlo). El frame k de todas las rendiciones va
+antes que el frame k + 1, en inicio + k / ritmo según el reloj monótono, así
+que el ritmo no deriva.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `athv` | rutas, obligatorias | — | una por rendición; los mismos frames al mismo ritmo, ids de rendición distintos |
+| `--rate` | frames por segundo | el de los ficheros | |
+| `--loops` | número | `0`: siempre | |
+| `--manifest-every` | frames | el ritmo (un segundo) | |
+| `--stats` | flag | no | una línea por segundo en stderr: frames por segundo, Mbit/s, con qué retraso salió el último frame |
+
+`scripts/examples/athv_read.py` es el otro extremo: lee los mensajes de la
+entrada estándar durante `--seconds` (10 por defecto) e imprime frames por
+segundo, Mbit/s en total y por rendición, los huecos entre frames tal como
+llegan y tal como los marcó el emisor (mediana y la mayor desviación respecto
+al ritmo) y los frames que faltan; un mensaje con otro magic se cuenta y el
+stream se resincroniza en el siguiente `ATVF`. Con `--info FICHERO` describe
+en su lugar un `.athv` (versión 2): la cabecera y el mosaico que implica, los
+tamaños de los registros, el primer registro, el perfil, el tier y el nivel
+del SPS, y la cadena de códec de WebCodecs y el registro `hvcC` construido con
+el VPS, el SPS y el PPS de ese registro (`--hvcc SALIDA` lo escribe).
 
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere

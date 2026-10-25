@@ -6,18 +6,23 @@
 //
 //   header   "ATHV", version, the codec's FourCC, the plane layout (bits,
 //            rest coefficients, chunk size, columns, whether the position high
-//            parts are planes), the rate, the source's antialiasing flag
-//   picture  "ATVF", its index, the source frame it belongs to and where in
-//            it its splats start (a frame too big for one picture is cut
-//            into slices, Planes.h), splats, key or not, PTP time (ns), time code
-//            and timecode label, the frame's ranges (two floats an
-//            attribute), the position high parts deflated (unless they are
-//            planes), the codec's parameter sets on a key frame, and the
-//            access unit: NAL units, each after its 4-byte big-endian length
+//            parts are planes), the rate (and as a fraction), the source's
+//            antialiasing flag, the rendition, the source frames, the quality
+//   picture  "ATVF", then at fixed offsets its type, rendition, frame and
+//            PTP time (what a relay routes by, without reading further), its
+//            index, the source frame it belongs to, its slice of that frame
+//            and where its splats start (a frame too big for one picture is
+//            cut into slices, Planes.h), splats, key or not, time code and
+//            timecode label, the frame's ranges (two floats an attribute),
+//            the position high parts deflated (unless they are planes), the
+//            codec's parameter sets on a key frame, and the access unit: NAL
+//            units, each after its 4-byte big-endian length
 //
-// Little endian; every count and length is checked against the file before
-// anything is read past it. The CPU reads, writes and inflates; the values
-// are the device's (Planes.h).
+// Version 2 (version 1, without rendition, frame fraction or slices and with
+// the record's fields in another order, is still read). Little endian; every
+// count and length is checked against the file before anything is read past
+// it. The CPU reads, writes and inflates; the values are the device's
+// (Planes.h).
 #pragma once
 
 #include <cstdint>
@@ -33,7 +38,8 @@ namespace athenea::video {
 
 struct AthvHeader {
     static constexpr uint32_t kMagic = 0x56485441;   // "ATHV"
-    static constexpr uint32_t kVersion = 1;
+    static constexpr uint32_t kVersion = 2;
+    uint32_t version = kVersion;   ///< what was read (1 or 2); always written as kVersion
     uint32_t codec = 0x31637668;   // 'hvc1'
     uint32_t bits = 8;
     uint32_t restPerColour = 0;
@@ -43,11 +49,42 @@ struct AthvHeader {
     bool     hiInVideo = false;
     bool     antialiased = false;
     double   rate = 30.0;
+    /// The rate as a fraction (30/1, 30000/1001): what a segmenter takes.
+    uint32_t rateNumerator = 30;
+    uint32_t rateDenominator = 1;
+    /// One of several renditions of the same frames (a ladder of sizes and
+    /// qualities): its id, which every record repeats.
+    uint32_t rendition = 0;
+    /// Source frames in the file: the length of the loop.
+    uint32_t sourceFrames = 0;
+    /// The encoder's constant quality (0: by bit rate).
+    float    quality = 0.0F;
+};
+
+/// THE RECORD'S FIXED OFFSETS, the same for every message a stream carries
+/// (a picture "ATVF", or a stream's manifest "ATVM", scripts/examples/
+/// athv_stream.py): what a relay routes by.
+struct AthvRecordPrefix {
+    static constexpr uint32_t kMagicAt = 0;       ///< u32
+    static constexpr uint32_t kTypeAt = 4;        ///< u16: 0 picture, 1 manifest
+    static constexpr uint32_t kRenditionAt = 6;   ///< u16
+    static constexpr uint32_t kFrameAt = 8;       ///< u32: the presentation frame
+    static constexpr uint32_t kPtpAt = 12;        ///< u64: ns
+    static constexpr uint32_t kBytesAt = 20;      ///< u32: the whole record
+    static constexpr uint32_t kVersionAt = 24;    ///< u16
+    static constexpr uint32_t kFlagsAt = 26;      ///< u16: bit 0 a key picture
+    static constexpr uint32_t kBytes = 28;
 };
 
 struct AthvFrame {
     uint32_t                          index = 0;       ///< the picture's, in the file
+    uint32_t                          rendition = 0;   ///< the file's (AthvHeader::rendition)
+    /// The presentation frame: in a file the source frame; a stream that
+    /// loops counts on (athv_stream.py rewrites it).
+    uint32_t                          frame = 0;
     uint32_t                          source = 0;      ///< the source frame it is a slice of
+    uint32_t                          slice = 0;       ///< which of that frame's pictures
+    uint32_t                          slices = 1;      ///< the frame's pictures
     uint32_t                          firstSplat = 0;  ///< where in that frame its splats start
     uint32_t                          sourceSplats = 0;///< the source frame's splats
     uint32_t                          splats = 0;      ///< the picture's
@@ -71,10 +108,10 @@ public:
     /// Deflates `frame.high` and appends the record; `frame.highStored` and
     /// `frame.recordBytes` say what it took.
     [[nodiscard]] Result<void> write(AthvFrame& frame);
-    /// The header again, with the most splats seen; the file closed and
-    /// given its name (until then it is written under a partial one, and a
-    /// writer dropped unfinished leaves nothing).
-    [[nodiscard]] Result<void> finish(uint32_t maxSplats);
+    /// The header again, with the most splats seen and the source frames;
+    /// the file closed and given its name (until then it is written under a
+    /// partial one, and a writer dropped unfinished leaves nothing).
+    [[nodiscard]] Result<void> finish(uint32_t maxSplats, uint32_t sourceFrames = 0);
 
 private:
     AthvWriter() = default;

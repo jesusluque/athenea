@@ -18,8 +18,10 @@ constexpr uint64_t kMostRecord = uint64_t{1} << 31;
 
 struct Out {
     std::vector<uint8_t> bytes;
+    void u16(uint16_t v) { put(&v, 2); }
     void u32(uint32_t v) { put(&v, 4); }
     void u64(uint64_t v) { put(&v, 8); }
+    void f32(float v) { put(&v, 4); }
     void f64(double v) { put(&v, 8); }
     void put(const void* p, size_t n) {
         const auto* b = static_cast<const uint8_t*>(p);
@@ -45,8 +47,18 @@ struct In {
         at += k;
         return true;
     }
+    uint16_t u16() {
+        uint16_t v = 0;
+        take(&v, 2);
+        return v;
+    }
     uint32_t u32() {
         uint32_t v = 0;
+        take(&v, 4);
+        return v;
+    }
+    float f32() {
+        float v = 0;
         take(&v, 4);
         return v;
     }
@@ -89,15 +101,23 @@ AthvWriter::~AthvWriter() {
 
 Result<void> AthvWriter::write(AthvFrame& f) {
     Out o;
+    // The fixed prefix (AthvRecordPrefix): magic, type, rendition, frame,
+    // PTP time, the record's bytes, version, flags.
     o.u32(kFrameMagic);
-    o.u32(0);   // the record's bytes, below
-    o.u32(f.index);
-    o.u32(f.splats);
-    o.u32(f.keyframe ? 1u : 0u);
-    o.u32(f.source);
-    o.u32(f.firstSplat);
-    o.u32(f.sourceSplats);
+    o.u16(0);
+    o.u16(static_cast<uint16_t>(header_.rendition));
+    o.u32(f.frame);
     o.u64(f.ptpTime);
+    o.u32(0);   // the record's bytes, below
+    o.u16(static_cast<uint16_t>(AthvHeader::kVersion));
+    o.u16(f.keyframe ? 1u : 0u);
+    o.u32(f.index);
+    o.u32(f.source);
+    o.u32(f.slice);
+    o.u32(f.slices);
+    o.u32(f.firstSplat);
+    o.u32(f.splats);
+    o.u32(f.sourceSplats);
     o.f64(f.time);
     char label[16] = {};
     std::memcpy(label, f.timecode.data(), std::min<size_t>(f.timecode.size(), sizeof label - 1));
@@ -130,7 +150,7 @@ Result<void> AthvWriter::write(AthvFrame& f) {
     o.put(f.unit.data(), f.unit.size());
     o.align();
     const uint32_t total = static_cast<uint32_t>(o.bytes.size());
-    std::memcpy(o.bytes.data() + 4, &total, 4);
+    std::memcpy(o.bytes.data() + AthvRecordPrefix::kBytesAt, &total, 4);
     file_.write(reinterpret_cast<const char*>(o.bytes.data()), static_cast<std::streamsize>(o.bytes.size()));
     if (!file_) {
         return Error::make(ErrorCode::IoFailure, "athv: cannot write picture {} to {}", f.index, partial_.string());
@@ -151,9 +171,12 @@ Result<void> AthvWriter::writeHeader() {
     o.u32(header_.columns);
     o.u32(header_.maxSplats);
     o.u32((header_.hiInVideo ? 1u : 0u) | (header_.antialiased ? 2u : 0u));
-    o.u32(0);
+    o.u32(header_.rendition);
     o.f64(header_.rate);
-    o.bytes.resize(kHeaderBytes, 0);
+    o.u32(header_.rateNumerator);
+    o.u32(header_.rateDenominator);
+    o.u32(header_.sourceFrames);
+    o.f32(header_.quality);
     const auto end = file_.tellp();
     file_.seekp(0);
     file_.write(reinterpret_cast<const char*>(o.bytes.data()), static_cast<std::streamsize>(o.bytes.size()));
@@ -166,8 +189,9 @@ Result<void> AthvWriter::writeHeader() {
     return ok();
 }
 
-Result<void> AthvWriter::finish(uint32_t maxSplats) {
+Result<void> AthvWriter::finish(uint32_t maxSplats, uint32_t sourceFrames) {
     header_.maxSplats = std::max(header_.maxSplats, maxSplats);
+    header_.sourceFrames = std::max(header_.sourceFrames, sourceFrames);
     ATHENEA_TRY(writeHeader());
     file_.close();
     if (!file_) {
@@ -194,11 +218,12 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
     }
     In in{h.data(), h.size()};
     const uint32_t magic = in.u32(), version = in.u32();
-    if (magic != AthvHeader::kMagic || version != AthvHeader::kVersion) {
-        return Error::make(ErrorCode::InvalidArgument, "athv: {} is not a version {} .athv", r->name_,
+    if (magic != AthvHeader::kMagic || version < 1 || version > AthvHeader::kVersion) {
+        return Error::make(ErrorCode::InvalidArgument, "athv: {} is not a version 1 or {} .athv", r->name_,
                            AthvHeader::kVersion);
     }
     AthvHeader& hd = r->header_;
+    hd.version = version;
     hd.codec = in.u32();
     hd.bits = in.u32();
     hd.restPerColour = in.u32();
@@ -206,31 +231,62 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
     hd.columns = in.u32();
     hd.maxSplats = in.u32();
     const uint32_t flags = in.u32();
-    in.u32();
+    hd.rendition = version >= 2 ? in.u32() : (in.u32(), 0u);
     hd.rate = in.f64();
     hd.hiInVideo = (flags & 1u) != 0;
     hd.antialiased = (flags & 2u) != 0;
+    if (version >= 2) {
+        hd.rateNumerator = in.u32();
+        hd.rateDenominator = in.u32();
+        hd.sourceFrames = in.u32();
+        hd.quality = in.f32();
+    }
     // The records, walked by their lengths.
     for (uint64_t at = kHeaderBytes; at < r->size_;) {
-        // magic, bytes, index, splats, flags, source, first splat, source splats, PTP time, time code
-        uint8_t head[48] = {};
+        // Version 2: the fixed prefix, index, source, slice, slices, first
+        // splat, splats, source splats, time code. Version 1: magic, bytes,
+        // index, splats, flags, source, first splat, source splats, PTP time,
+        // time code.
+        uint8_t head[64] = {};
+        const size_t headBytes = version >= 2 ? 64 : 48;
         r->file_.seekg(static_cast<std::streamoff>(at));
-        if (r->size_ - at < sizeof head || !r->file_.read(reinterpret_cast<char*>(head), sizeof head)) {
+        if (r->size_ - at < headBytes || !r->file_.read(reinterpret_cast<char*>(head), headBytes)) {
             return Error::make(ErrorCode::InvalidArgument, "athv: {}: a broken record at byte {}", r->name_, at);
         }
-        In rec{head, sizeof head};
-        const uint32_t recordMagic = rec.u32(), bytes = rec.u32();
-        rec.u32();
-        rec.u32();
-        rec.u32();
-        const uint32_t source = rec.u32();
-        rec.u32();
-        const uint32_t sourceSplats = rec.u32();
-        rec.u64();
-        const double time = rec.f64();
+        In rec{head, headBytes};
+        uint32_t recordMagic = 0, bytes = 0, source = 0, sourceSplats = 0;
+        double time = 0.0;
+        if (version >= 2) {
+            recordMagic = rec.u32();
+            rec.u16();
+            rec.u16();
+            rec.u32();
+            rec.u64();
+            bytes = rec.u32();
+            rec.u32();
+            rec.u32();
+            source = rec.u32();
+            rec.u32();
+            rec.u32();
+            rec.u32();
+            rec.u32();
+            sourceSplats = rec.u32();
+            time = rec.f64();
+        } else {
+            recordMagic = rec.u32();
+            bytes = rec.u32();
+            rec.u32();
+            rec.u32();
+            rec.u32();
+            source = rec.u32();
+            rec.u32();
+            sourceSplats = rec.u32();
+            rec.u64();
+            time = rec.f64();
+        }
         // A slice of the frame before, or the next frame: a picture never
         // names a frame far past the last.
-        if (recordMagic != kFrameMagic || bytes < sizeof head || bytes > r->size_ - at || source > r->slices_.size()) {
+        if (recordMagic != kFrameMagic || bytes < headBytes || bytes > r->size_ - at || source > r->slices_.size()) {
             return Error::make(ErrorCode::InvalidArgument, "athv: {}: a broken record at byte {}", r->name_, at);
         }
         if (source == r->slices_.size()) {
@@ -262,16 +318,38 @@ Result<AthvFrame> AthvReader::read(uint32_t k) {
     }
     In in{rec.data(), rec.size()};
     AthvFrame f;
-    in.u32();
-    f.recordBytes = in.u32();
-    f.index = in.u32();
-    f.splats = in.u32();
-    f.keyframe = (in.u32() & 1u) != 0;
-    f.source = in.u32();
-    f.firstSplat = in.u32();
-    f.sourceSplats = in.u32();
-    f.ptpTime = in.u64();
-    f.time = in.f64();
+    if (header_.version >= 2) {
+        in.u32();
+        in.u16();
+        f.rendition = in.u16();
+        f.frame = in.u32();
+        f.ptpTime = in.u64();
+        f.recordBytes = in.u32();
+        in.u16();
+        f.keyframe = (in.u16() & 1u) != 0;
+        f.index = in.u32();
+        f.source = in.u32();
+        f.slice = in.u32();
+        f.slices = in.u32();
+        f.firstSplat = in.u32();
+        f.splats = in.u32();
+        f.sourceSplats = in.u32();
+        f.time = in.f64();
+    } else {
+        in.u32();
+        f.recordBytes = in.u32();
+        f.index = in.u32();
+        f.splats = in.u32();
+        f.keyframe = (in.u32() & 1u) != 0;
+        f.source = in.u32();
+        f.firstSplat = in.u32();
+        f.sourceSplats = in.u32();
+        f.ptpTime = in.u64();
+        f.time = in.f64();
+        f.frame = f.source;
+        f.slices = f.splats != 0 ? (f.sourceSplats + f.splats - 1) / f.splats : 1;
+        f.slice = f.splats != 0 ? f.firstSplat / f.splats : 0;
+    }
     char label[16] = {};
     in.take(label, sizeof label);
     label[15] = 0;

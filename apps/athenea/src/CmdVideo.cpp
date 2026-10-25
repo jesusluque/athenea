@@ -23,6 +23,8 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -33,6 +35,7 @@
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/io/Readers.h"
+#include "athenea/lod/Lod.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/video/Athv.h"
 #include "athenea/video/Codec.h"
@@ -129,6 +132,33 @@ Result<scene::GpuSplats> loadFrame(gpu::Device& device, scene::CloudLoader& load
     return std::move(*whole);
 }
 
+/// A frame merged by pairs to about `target` gaussians (lod::Decimator's
+/// NanoGS merge over the frame's own Morton order): the cloud the decimation
+/// keeps, its harmonics merged with it. No surfels: a scale of exactly 0 is
+/// a disc only to a reader that asks for discs.
+Result<scene::GpuSplats> reduced(gpu::ShaderLibrary& library, lod::LodBuilder& builder, lod::Decimator& decimator,
+                                 scene::GpuSplats cloud, uint32_t target) {
+    if (target == 0 || cloud.count <= target) return cloud;
+    if (!cloud.origin.valid()) {
+        // A frame put together from pages has no record index of its own:
+        // its splats are its records (an index list, bookkeeping).
+        std::vector<uint32_t> index(cloud.count);
+        for (uint32_t k = 0; k < cloud.count; ++k) index[k] = k;
+        auto origin = gpu::Buffer::fromSpan(library.device(), std::span<const uint32_t>(index), "video.origin");
+        if (!origin) return std::move(origin).error();
+        cloud.origin = std::move(*origin);
+    }
+    auto lod = builder.build(cloud);
+    if (!lod) return std::move(lod).error();
+    lod::PairSettings settings;
+    settings.ratio = static_cast<float>(cloud.count) / static_cast<float>(target);
+    settings.surfels = false;
+    auto kept = decimator.decimatePairs(*lod, cloud.origin, settings);
+    if (!kept) return std::move(kept).error();
+    kept->cloud.antialiased = cloud.antialiased;
+    return std::move(kept->cloud);
+}
+
 double median(std::vector<double> v) {
     if (v.empty()) return 0.0;
     std::sort(v.begin(), v.end());
@@ -180,8 +210,8 @@ const char* groupOf(uint32_t a) {
 void addVideo(CLI::App& app) {
     struct Options {
         std::vector<std::string> inputs;
-        std::string output, hevc, range, hi = "side", order = "frame", ranges = "group";
-        uint32_t bits = 8, keyInterval = 0, columns = 0, shDegree = 3;
+        std::string output, hevc, range, hi = "side", order = "frame", ranges = "group", maxPicture;
+        uint32_t bits = 8, keyInterval = 0, columns = 0, shDegree = 3, rendition = 0, gaussians = 0;
         double quality = 0.5, megabits = 0.0, rate = 0.0;
         bool check = false, intra = false;
     };
@@ -210,11 +240,26 @@ void addVideo(CLI::App& app) {
     enc->add_option("--sh-degree", o->shDegree, "harmonics degree carried, at most the source's")
         ->check(CLI::Range(0u, 3u));
     enc->add_option("--columns", o->columns, "tiles a mosaic row (default: the squarest mosaic)");
+    enc->add_option("--gaussians", o->gaussians,
+                    "about this many gaussians a frame: each frame merged by pairs where merging loses least "
+                    "(the decimation's NanoGS merge), not dropped");
+    enc->add_option("--rendition", o->rendition, "the rendition's id, which every record carries (0..65535)")
+        ->check(CLI::Range(0u, 65535u));
+    enc->add_option("--max-picture", o->maxPicture,
+                    "WIDTHxHEIGHT: the largest picture, for a decoder that takes less; a frame that needs more "
+                    "goes as slices");
     enc->add_option("--rate", o->rate, "frames a second (default: the sequence's, or 30)");
     enc->add_option("--hevc", o->hevc, "also the video alone as an Annex B .hevc, for a player or a probe");
     enc->add_flag("--check", o->check, "decode each frame again and measure it against its source");
 
     enc->callback([o] {
+        uint32_t mostWidth = 0, mostHeight = 0;
+        if (!o->maxPicture.empty() &&
+            (std::sscanf(o->maxPicture.c_str(), "%ux%u", &mostWidth, &mostHeight) != 2 || mostWidth == 0 ||
+             mostHeight == 0)) {
+            cli::err("video-encode: --max-picture wants WIDTHxHEIGHT\n");
+            throw CLI::RuntimeError(kExitFailure);
+        }
         double rate = o->rate;
         auto frames = inputFrames(o->inputs, rate);
         if (!frames) cli::fail(frames.error());
@@ -235,6 +280,16 @@ void addVideo(CLI::App& app) {
         if (!loader) cli::fail(loader.error());
         auto codec = video::PlanesCodec::create(library);
         if (!codec) cli::fail(codec.error());
+        std::optional<lod::LodBuilder> builder;
+        std::optional<lod::Decimator> decimator;
+        if (o->gaussians != 0) {
+            auto b = lod::LodBuilder::create(library);
+            if (!b) cli::fail(b.error());
+            auto d = lod::Decimator::create(library);
+            if (!d) cli::fail(d.error());
+            builder = std::move(*b);
+            decimator = std::move(*d);
+        }
         const uint32_t restAsked = o->shDegree == 0 ? 0u : (o->shDegree + 1) * (o->shDegree + 1) - 1;
 
         std::unique_ptr<video::AthvWriter> writer;
@@ -267,15 +322,34 @@ void addVideo(CLI::App& app) {
             bool aa = false;
             auto cloud = loadFrame(**device, *loader, (*frames)[k], o->shDegree, aa);
             if (!cloud) cli::fail(cloud.error());
+            if (o->gaussians != 0) {
+                cloud = reduced(library, *builder, *decimator, std::move(*cloud), o->gaussians);
+                if (!cloud) cli::fail(cloud.error());
+            }
             if (encoder != nullptr) return std::move(*cloud);
             antialiased = aa;
             const uint32_t rest = std::min(cloud->restPerColour, restAsked);
             auto cap = video::PlaneLayout::sliceSplats(cloud->count, o->bits, rest, o->hi == "video",
-                                                       video::PlaneLayout::kBandSplats, o->columns);
+                                                       video::PlaneLayout::kBandSplats, o->columns, mostWidth,
+                                                       mostHeight);
             if (!cap) cli::fail(cap.error());
             sliceCap = *cap;
+            if (mostWidth != 0) {
+                // Held to a size, the pictures are sized in whole chunks for
+                // the first frame and a twentieth more, so a later frame of a
+                // few more splats (a decimation's count varies) takes no
+                // extra picture.
+                auto most = video::PlaneLayout::sliceSplats(uint32_t{1} << 30, o->bits, rest, o->hi == "video",
+                                                            video::PlaneLayout::kBandSplats, o->columns, mostWidth,
+                                                            mostHeight);
+                if (!most) cli::fail(most.error());
+                const uint32_t band = video::PlaneLayout::kBandSplats;
+                const uint64_t roomy = (uint64_t{cloud->count} * 21 / 20 + band - 1) / band * band;
+                sliceCap = static_cast<uint32_t>(std::min<uint64_t>(*most, roomy));
+            }
             auto made = video::PlaneLayout::make(sliceCap, o->bits, rest, o->hi == "video",
-                                                 video::PlaneLayout::kBandSplats, o->columns);
+                                                 video::PlaneLayout::kBandSplats, o->columns, 0, mostWidth,
+                                                 mostHeight);
             if (!made) cli::fail(made.error());
             layout = *made;
             // A frame cut into slices: each picture holds other splats than
@@ -301,6 +375,19 @@ void addVideo(CLI::App& app) {
             header.hiInVideo = layout.hiInVideo;
             header.antialiased = antialiased;
             header.rate = rate;
+            // The rate as a fraction: whole, or NTSC's thousand-and-first.
+            if (std::abs(rate - std::round(rate)) < 1.0e-6) {
+                header.rateNumerator = static_cast<uint32_t>(std::lround(rate));
+                header.rateDenominator = 1;
+            } else if (std::abs(rate * 1.001 - std::round(rate * 1.001)) < 1.0e-3) {
+                header.rateNumerator = static_cast<uint32_t>(std::lround(rate * 1.001)) * 1000;
+                header.rateDenominator = 1001;
+            } else {
+                header.rateNumerator = static_cast<uint32_t>(std::lround(rate * 1000.0));
+                header.rateDenominator = 1000;
+            }
+            header.rendition = o->rendition;
+            header.quality = o->megabits > 0.0 ? 0.0F : static_cast<float>(o->quality);
             auto w = video::AthvWriter::create(o->output, header);
             if (!w) cli::fail(w.error());
             writer = std::move(*w);
@@ -365,6 +452,9 @@ void addVideo(CLI::App& app) {
                     video::EncodedUnit& unit = units->front();
                     video::AthvFrame f;
                     f.index = picture++;
+                    f.frame = static_cast<uint32_t>(k - first);
+                    f.slice = at / sliceCap;
+                    f.slices = (cloud.count + sliceCap - 1) / sliceCap;
                     f.source = static_cast<uint32_t>(k - first);
                     f.firstSplat = at;
                     f.sourceSplats = cloud.count;
@@ -424,7 +514,7 @@ void addVideo(CLI::App& app) {
                 }
             }
         }
-        if (auto fin = writer->finish(0); !fin) cli::fail(fin.error());
+        if (auto fin = writer->finish(0, static_cast<uint32_t>(last - first + 1)); !fin) cli::fail(fin.error());
         // Per frame (an epoch: one picture, or a frame's slices together).
         const double n = static_cast<double>(last - first + 1);
         double unitTotal = 0.0, sideTotal = 0.0;

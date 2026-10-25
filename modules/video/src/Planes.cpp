@@ -54,7 +54,10 @@ void setLayout(rhi::ShaderCursor p, const PlaneLayout& l) {
 }   // namespace
 
 Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
-                                      uint32_t nChunk, uint32_t nColumns, uint32_t tileSplats) {
+                                      uint32_t nChunk, uint32_t nColumns, uint32_t tileSplats, uint32_t mostWidth,
+                                      uint32_t mostHeight) {
+    const uint64_t mostW = mostWidth != 0 ? std::min(mostWidth, kMostSide) : kMostSide;
+    const uint64_t mostH = mostHeight != 0 ? std::min(mostHeight, kMostSide) : kMostSide;
     if (nBits != 8 && nBits != 10) {
         return Error::make(ErrorCode::InvalidArgument, "video planes: {} bits a sample (8 or 10)", nBits);
     }
@@ -85,7 +88,7 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
         }
         const uint64_t w = uint64_t{c} * kTileWidth;
         const uint64_t h = uint64_t{(planes + c - 1) / c} * l.tileHeight;
-        if (w > kMostSide || h > kMostSide || w * h > kMostArea) {
+        if (w > mostW || h > mostH || w * h > kMostArea) {
             continue;
         }
         const uint64_t side = std::max(w, h), area = w * h;
@@ -97,9 +100,9 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
     }
     if (best == 0) {
         return Error::make(ErrorCode::InvalidArgument,
-                           "video planes: {} planes of {} x {} do not fit a mosaic of at most {} a side and {} "
+                           "video planes: {} planes of {} x {} do not fit a mosaic of at most {} x {} and {} "
                            "pixels{}",
-                           planes, kTileWidth, l.tileHeight, kMostSide, kMostArea,
+                           planes, kTileWidth, l.tileHeight, mostW, mostH, kMostArea,
                            nColumns != 0 ? " with the nColumns asked for" : "");
     }
     l.columns = best;
@@ -109,19 +112,21 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
 }
 
 Result<uint32_t> PlaneLayout::sliceSplats(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
-                                          uint32_t nChunk, uint32_t nColumns) {
-    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns)) {
+                                          uint32_t nChunk, uint32_t nColumns, uint32_t mostWidth,
+                                          uint32_t mostHeight) {
+    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight)) {
         return nSplats;
     }
     // Chunk counts, from the most that could fit down: bookkeeping on sizes.
     for (uint32_t chunks = (nSplats + nChunk - 1) / nChunk; chunks > 0; --chunks) {
         const uint64_t n = uint64_t{chunks} * nChunk;
-        if (n < nSplats && make(static_cast<uint32_t>(n), nBits, nRest, nHi, nChunk, nColumns)) {
+        if (n < nSplats &&
+            make(static_cast<uint32_t>(n), nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight)) {
             return static_cast<uint32_t>(n);
         }
     }
-    return Error::make(ErrorCode::InvalidArgument, "video planes: not even a chunk of {} splats fits a picture",
-                       nChunk);
+    return Error::make(ErrorCode::InvalidArgument, "video planes: not even a chunk of {} splats fits a picture{}",
+                       nChunk, mostWidth != 0 || mostHeight != 0 ? " of the size asked for" : "");
 }
 
 Result<scene::GpuSplats> PlanesCodec::allocate(gpu::Device& device, uint32_t count, uint32_t restPerColour,

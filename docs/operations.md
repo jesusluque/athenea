@@ -513,6 +513,9 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--ranges` | `group` or `frame` | `group` | each attribute's range over a group of pictures (from one key frame to the next), or each frame's own |
 | `--sh-degree` | 0 to 3 | `3` | at most the source's |
 | `--columns` | tiles a row | the squarest mosaic | |
+| `--max-picture` | `WIDTHxHEIGHT` | 16384 a side | the largest picture, for a decoder that takes less (a phone's); a frame that needs more goes as slices |
+| `--gaussians` | count | the frame's | about this many a frame: each frame merged by pairs where merging loses least (the decimation's NanoGS merge, `docs/decisions.md`), never dropped; no surfels |
+| `--rendition` | 0..65535 | `0` | the id every record carries, one a rendition of a ladder (`athv_stream.py`) |
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
 | `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
 | `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source |
@@ -522,7 +525,12 @@ hardware encoder refused 10240 x 9600). A frame whose planes need more is cut
 into slices -- runs of its Morton order, a picture each, every one a key
 frame -- and a frame is still one epoch. Every picture is the size of the
 first frame's; a frame needs a tile of 512 x 64 rows for every 32768 splats,
-and a plane for each attribute: 59 at degree 3 (62 with `--hi video`).
+and a plane for each attribute: 59 at degree 3 (62 with `--hi video`). With `--max-picture` the picture is held
+to that size as well: 1920 x 1080 takes three columns of tiles, so a
+300847-splat frame goes as four pictures of 1536 x 960 at degree 0 (14
+planes) and five of 1536 x 1024 at degree 1 (23); degree 3 (59 planes) does
+not fit 1080 rows. The level the encoder writes in the SPS follows the
+picture's size.
 
 **What it prints.** The mosaic and the slices; MB a frame (the video and the
 side data apart) and Mbit/s at 24 and 30 a second; a key picture's size
@@ -2552,15 +2560,57 @@ right-up-back), glTF `.glb` with `KHR_gaussian_splatting`, and USD
 **Pages written.** `athenea flatten --range` writes a directory of SPZ pages
 and its `stream.txt` (§3.7), which `athenea stream` reads.
 
-**Video written.** `athenea video-encode` writes a `.athv`: a 64-byte header
-(codec, bits, rest coefficients, chunk size, mosaic columns, the most splats
-a picture holds, whether the position high parts are planes, the source's
-antialiasing, the rate) and a record a picture, each whole in itself: the
-source frame it belongs to and where its splats start in it, its splats, key
-or not, PTP time, time code and timecode label, the ranges (two floats an
-attribute), the position high parts deflated, the HEVC parameter sets on a
-key picture and the access unit as length-prefixed NAL units. Little endian.
-`modules/video/include/athenea/video/Athv.h` is its specification.
+**Video written.** `athenea video-encode` writes a `.athv`, version 2: a
+64-byte header (codec, bits, rest coefficients, chunk size, mosaic columns,
+the most splats a picture holds, whether the position high parts are planes,
+the source's antialiasing, the rendition id, the rate and the rate as a
+fraction, the source frames, the quality) and a record a picture, each whole
+in itself. A record starts with a fixed prefix -- magic `ATVF`, record type
+(u16, 0), rendition (u16), presentation frame (u32), PTP time (u64 ns at
+offset 12), the record's bytes, version and flags (bit 0 a key picture) -- so
+a relay routes on its first 28 bytes; then its index, the source frame and
+which of its slices it is, where its splats start in the frame, its splats,
+time code and timecode label, the ranges (two floats an attribute), the
+position high parts deflated (zlib), the HEVC parameter sets on a key picture
+and the access unit as length-prefixed NAL units. Little endian; version 1
+files are still read. `modules/video/include/athenea/video/Athv.h` is its
+specification.
+
+**Video sent as a stream.** `scripts/examples/athv_stream.py` (Python
+standard library) reads one `.athv` per rendition -- the same frames at
+other sizes and qualities, each encoded with its own `--rendition` -- and
+writes their records to standard output at the files' rate, looping, for a
+transport to carry (a WebSocket server that forwards stdout, or
+`srt-live-transmit file://con "srt://HOST:9000?mode=caller&latency=120"`).
+Each message is a u32 little-endian length and that many bytes: a manifest
+(magic `ATVM`, record type 1, rendition 0xFFFF, the same fixed prefix, then a
+u32 length and JSON: the rate as a fraction, the loop's frames and, per
+rendition, its id, gaussians, SH degree, quality, pictures a frame and their
+size, mean Mbit/s, codec string and hvcC), first and then once a second; and
+every record, byte for byte as the file holds it but for the presentation
+frame (offset 8: counts on across loops, the same for the same instant in
+every rendition) and the PTP time (offset 12: `CLOCK_REALTIME` in ns when
+sent). Frame k of every rendition goes before frame k + 1, at start + k / rate
+on the monotonic clock, so the rate does not drift.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `athv` | paths, required | — | one a rendition; the same frames at the same rate, distinct rendition ids |
+| `--rate` | frames a second | the files' | |
+| `--loops` | count | `0`: forever | |
+| `--manifest-every` | frames | the rate (a second) | |
+| `--stats` | flag | off | a line a second on stderr: frames a second, Mbit/s, how late the latest frame went out |
+
+`scripts/examples/athv_read.py` is the other end: it reads the messages from
+standard input for `--seconds` (default 10) and prints frames a second,
+Mbit/s in all and per rendition, the gaps between frames as they arrive and as
+the sender stamped them (median and the largest departure from the rate) and
+the frames missing; a message with another magic is counted and the stream
+resynchronised on the next `ATVF`. With `--info FILE` it describes a `.athv`
+(version 2) instead: the header and the mosaic it implies, the records'
+sizes, the first record, the SPS's profile, tier and level, and the WebCodecs
+codec string and `hvcC` record built from that record's VPS, SPS and PPS
+(`--hvcc OUT` writes it).
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by

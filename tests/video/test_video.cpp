@@ -185,6 +185,9 @@ TEST_CASE("a .athv keeps its pictures, their side data and their slices", "[vide
     header.maxSplats = 2 * video::PlaneLayout::kBandSplats;
     header.antialiased = true;
     header.rate = 24.0;
+    header.rateNumerator = 24;
+    header.rendition = 7;
+    header.quality = 0.5F;
     {
         auto writer = video::AthvWriter::create(path, header);
         REQUIRE(writer);
@@ -192,6 +195,9 @@ TEST_CASE("a .athv keeps its pictures, their side data and their slices", "[vide
             video::AthvFrame f;
             f.index = k;
             f.source = k / 2;   // pictures 0 and 1 are the slices of frame 0
+            f.frame = 100 + k / 2;
+            f.slice = k % 2;
+            f.slices = k < 2 ? 2 : 1;
             f.firstSplat = (k % 2) * header.maxSplats;
             f.sourceSplats = 3 * header.chunkSplats;
             f.splats = k == 1 ? header.chunkSplats : header.maxSplats;
@@ -205,7 +211,7 @@ TEST_CASE("a .athv keeps its pictures, their side data and their slices", "[vide
             f.unit = {0, 0, 0, 2, 0x26, static_cast<uint8_t>(k)};
             REQUIRE(writer->get()->write(f));
         }
-        REQUIRE(writer->get()->finish(0));
+        REQUIRE(writer->get()->finish(0, 2));
     }
     auto reader = video::AthvReader::open(path);
     REQUIRE(reader);
@@ -215,6 +221,12 @@ TEST_CASE("a .athv keeps its pictures, their side data and their slices", "[vide
     CHECK(h.maxSplats == header.maxSplats);
     CHECK(h.antialiased);
     CHECK(h.rate == 24.0);
+    CHECK(h.version == video::AthvHeader::kVersion);
+    CHECK(h.rateNumerator == 24);
+    CHECK(h.rateDenominator == 1);
+    CHECK(h.rendition == 7);
+    CHECK(h.sourceFrames == 2);
+    CHECK(h.quality == 0.5F);
     REQUIRE((*reader)->frames() == 3);
     REQUIRE((*reader)->sourceFrames() == 2);
     CHECK((*reader)->slicesOf(0) == std::vector<uint32_t>{0, 1});
@@ -225,6 +237,10 @@ TEST_CASE("a .athv keeps its pictures, their side data and their slices", "[vide
         REQUIRE(f);
         CHECK(f->index == k);
         CHECK(f->source == k / 2);
+        CHECK(f->rendition == 7);
+        CHECK(f->frame == 100 + k / 2);
+        CHECK(f->slice == k % 2);
+        CHECK(f->slices == (k < 2 ? 2u : 1u));
         CHECK(f->keyframe == (k != 2));
         CHECK(f->ptpTime == 1000 + k);
         CHECK(f->timecode == "00:00:00:0" + std::to_string(k));
@@ -240,4 +256,32 @@ TEST_CASE("a .athv keeps its pictures, their side data and their slices", "[vide
     }
     std::error_code ignored;
     fs::remove(path, ignored);
+}
+
+TEST_CASE("a picture held to a smaller size cuts the frame into slices that fit it", "[video][layout]") {
+    // The web sparrow's frame: 300847 splats, degree 0 (14 planes) and 1 (23), in 1920 x 1080 at most.
+    const uint32_t splats = 300847;
+    for (const uint32_t rest : {0u, 3u}) {
+        auto cap = video::PlaneLayout::sliceSplats(splats, 8, rest, false, video::PlaneLayout::kBandSplats, 0, 1920,
+                                                   1080);
+        REQUIRE(cap);
+        REQUIRE(*cap < splats);
+        REQUIRE(*cap % video::PlaneLayout::kBandSplats == 0);
+        auto layout = video::PlaneLayout::make(*cap, 8, rest, false, video::PlaneLayout::kBandSplats, 0, 0, 1920,
+                                               1080);
+        REQUIRE(layout);
+        CHECK(layout->width <= 1920);
+        CHECK(layout->height <= 1080);
+        // One more chunk would not fit.
+        CHECK_FALSE(video::PlaneLayout::make(*cap + video::PlaneLayout::kBandSplats, 8, rest, false,
+                                             video::PlaneLayout::kBandSplats, 0, 0, 1920, 1080));
+        // A decoder rebuilds the same layout from the header alone (columns and the most a picture holds).
+        auto again = video::PlaneLayout::make(*cap / 2, 8, rest, false, video::PlaneLayout::kBandSplats,
+                                              layout->columns, *cap);
+        REQUIRE(again);
+        CHECK(again->width == layout->width);
+        CHECK(again->height == layout->height);
+    }
+    // Degree 3 (59 planes) needs more than 1080 rows for even one chunk in three columns.
+    CHECK_FALSE(video::PlaneLayout::sliceSplats(splats, 8, 15, false, video::PlaneLayout::kBandSplats, 0, 1920, 1080));
 }

@@ -81,14 +81,18 @@ struct PlaneLayout {
     /// kBandSplats.
     /// `tileSplats`: tiles sized for that many (0: for `splats`), so every
     /// picture of a stream is the same size.
+    /// `mostWidth` x `mostHeight`: a smaller picture than the encoders take,
+    /// for a decoder that takes less (0: kMostSide).
     [[nodiscard]] static Result<PlaneLayout> make(uint32_t splats, uint32_t bits, uint32_t restPerColour,
                                                   bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
-                                                  uint32_t tileSplats = 0);
+                                                  uint32_t tileSplats = 0, uint32_t mostWidth = 0,
+                                                  uint32_t mostHeight = 0);
     /// A frame too big for one picture goes as SLICES, each a picture of its
     /// own holding a run of the frame's Morton order: the most splats one
     /// takes (a multiple of `chunkSplats`), `splats` when the frame fits.
     [[nodiscard]] static Result<uint32_t> sliceSplats(uint32_t splats, uint32_t bits, uint32_t restPerColour,
-                                                      bool hiInVideo, uint32_t chunkSplats, uint32_t columns);
+                                                      bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
+                                                      uint32_t mostWidth = 0, uint32_t mostHeight = 0);
 };
 
 /// One frame, encoded: what the codec takes and what goes beside it.
