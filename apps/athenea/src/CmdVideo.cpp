@@ -36,9 +36,11 @@
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/io/Exr.h"
+#include "athenea/io/Png.h"
 #include "athenea/io/Readers.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/usd/Export.h"
 #include "athenea/video/Athv.h"
 #include "athenea/video/Codec.h"
 #include "athenea/video/Planes.h"
@@ -153,6 +155,295 @@ struct Reduction {
     uint32_t    score = 0;
     /// lod::PairSettings::maxAspect: no merge longer than this against its width.
     float       maxAspect = 1000.0F;
+};
+
+/// THE PLANES AS A TEXTURE (`--layout uv`, video_uv.slang): each gaussian of
+/// the source frame placed at the pixel its st points at, in a rectangle a
+/// mesh, and the frame laid out by those pixels -- one slot a pixel of the
+/// atlas, a pixel no gaussian took holding a neighbour's copy with no opacity.
+/// Placed once, from the cloud's source coordinates (`sourceMesh`,
+/// `sourceUv`, mesh2splat's), and kept for every frame: a gaussian keeps its
+/// pixel. The rectangles' sizes and places are bookkeeping on the host, from
+/// each mesh's count and st box as a kernel counted them.
+struct UvAtlas {
+    gpu::ShaderLibrary* library = nullptr;
+    float     fill = 0.5F;      ///< gaussians a pixel of a rectangle, at most
+    int       reach = 48;       ///< pixels a gaussian may be moved from its own, before any free one
+    uint32_t  count = 0;        ///< the source frame's gaussians
+    uint32_t  slots = 0;        ///< the atlas's pixels: 512 x height
+    uint32_t  height = 0;
+    uint32_t  meshes = 0;
+    uint32_t  atTarget = 0, nearby = 0, leftover = 0;
+    gpu::Buffer slotSource;
+    std::optional<gpu::ComputeKernel> stats, target, claim, resolve, freeFlags, freeList, leftoverK, fillK, expand,
+        picture;
+    std::optional<gpu::PrefixSum> prefix;
+
+    Result<void> make() {
+        const auto k = [&](const char* entry, std::optional<gpu::ComputeKernel>& into) -> Result<void> {
+            auto made = gpu::ComputeKernel::create(*library, "athenea/scene/video_uv", entry);
+            if (!made) return std::move(made).error();
+            into = std::move(*made);
+            return ok();
+        };
+        ATHENEA_TRY(k("videoUvStats", stats));
+        ATHENEA_TRY(k("videoUvTarget", target));
+        ATHENEA_TRY(k("videoUvClaim", claim));
+        ATHENEA_TRY(k("videoUvResolve", resolve));
+        ATHENEA_TRY(k("videoUvFreeFlags", freeFlags));
+        ATHENEA_TRY(k("videoUvFreeList", freeList));
+        ATHENEA_TRY(k("videoUvLeftover", leftoverK));
+        ATHENEA_TRY(k("videoUvFill", fillK));
+        ATHENEA_TRY(k("videoUvExpand", expand));
+        ATHENEA_TRY(k("videoUvPicture", picture));
+        auto p = gpu::PrefixSum::create(*library);
+        if (!p) return std::move(p).error();
+        prefix = std::move(*p);
+        return ok();
+    }
+
+    /// The placement, from `n` gaussians' source coordinates (the first n of
+    /// the cloud's: a frame lists the cloud's kept gaussians in its order).
+    Result<void> place(const usd::SplatSources& sources, uint32_t n) {
+        gpu::Device& device = library->device();
+        if (sources.mesh.size() < n || sources.uv.size() < size_t{n} * 2) {
+            return Error::make(ErrorCode::InvalidArgument,
+                               "video-encode: --layout uv: the frame has {} gaussians and the source cloud {}", n,
+                               sources.mesh.size());
+        }
+        count = n;
+        meshes = std::max<uint32_t>(static_cast<uint32_t>(sources.meshes.size()), 1u);
+        for (uint32_t i = 0; i < n; ++i) {
+            meshes = std::max(meshes, static_cast<uint32_t>(sources.mesh[i]) + 1);   // bookkeeping: a count
+        }
+        const auto words = [&](uint64_t w, const char* label, const void* data = nullptr, uint32_t element = 4) {
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<uint64_t>(w, 1) * 4;
+            desc.elementBytes = element;
+            desc.label = label;
+            return gpu::Buffer::create(device, desc, data);
+        };
+        auto mesh = words(n, "video.uv.mesh", sources.mesh.data());
+        auto uvs = words(uint64_t{n} * 2, "video.uv.st", sources.uv.data(), 8);
+        std::vector<uint32_t> initial(size_t{meshes} * 8, 0u);
+        for (uint32_t m = 0; m < meshes; ++m) {
+            initial[m * 8 + 1] = initial[m * 8 + 2] = initial[m * 8 + 5] = 0xFFFFFFFFu;
+        }
+        auto statsBuffer = words(initial.size(), "video.uv.stats", initial.data());
+        if (!mesh || !uvs || !statsBuffer) return Error(ErrorCode::OutOfMemory, "video-encode: the uv atlas");
+        {
+            gpu::CommandBatch batch(device);
+            stats->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+                c["sourceMesh"].setBinding(mesh->rhi());
+                c["sourceUv"].setBinding(uvs->rhi());
+                c["stats"].setBinding(statsBuffer->rhi());
+                c["uv"]["count"].setData(n);
+                c["uv"]["meshes"].setData(meshes);
+            });
+            ATHENEA_TRY(batch.submit(true));
+        }
+        std::vector<uint32_t> st(initial.size());
+        ATHENEA_TRY(statsBuffer->read(device, 0, st.size() * 4, st.data()));
+        // THE RECTANGLES: a mesh's area its count over `fill`, its shape its
+        // st box's, packed in shelves 512 wide, the tallest first (bookkeeping
+        // over a handful of numbers a mesh).
+        const auto unordered = [](uint32_t b) {
+            const uint32_t bits = (b & 0x80000000u) != 0 ? (b & 0x7FFFFFFFu) : ~b;
+            float f;
+            std::memcpy(&f, &bits, 4);
+            return f;
+        };
+        struct Chart {
+            uint32_t rect[4];
+            float    box[4];
+            uint32_t info[4];
+        };
+        std::vector<Chart> charts(meshes);
+        std::vector<uint32_t> byHeight;
+        for (uint32_t m = 0; m < meshes; ++m) {
+            Chart& c = charts[m];
+            const uint32_t many = st[m * 8];
+            const bool withUv = st[m * 8 + 6] > 0;
+            float aspect = 1.0F;
+            if (withUv) {
+                c.box[0] = unordered(st[m * 8 + 1]);
+                c.box[1] = unordered(st[m * 8 + 2]);
+                c.box[2] = std::max(unordered(st[m * 8 + 3]) - c.box[0], 1.0e-6F);
+                c.box[3] = std::max(unordered(st[m * 8 + 4]) - c.box[1], 1.0e-6F);
+                aspect = std::clamp(c.box[2] / c.box[3], 0.125F, 8.0F);
+            }
+            const double area = many == 0 ? 0.0 : std::ceil(many / (withUv ? std::max(fill, 0.05F) : 1.0F));
+            uint32_t w = many == 0 ? 0 : static_cast<uint32_t>(std::ceil(std::sqrt(area * aspect)));
+            w = std::min<uint32_t>(std::max<uint32_t>((w + 1) & ~1u, 2), video::PlaneLayout::kTileWidth);
+            uint32_t h = many == 0 ? 0 : static_cast<uint32_t>(std::ceil(area / w));
+            h = many == 0 ? 0 : std::max<uint32_t>((h + 1) & ~1u, 2);
+            c.rect[2] = w;
+            c.rect[3] = h;
+            c.info[0] = st[m * 8 + 5] == 0xFFFFFFFFu ? 0 : st[m * 8 + 5];
+            c.info[1] = many;
+            c.info[2] = withUv ? 1 : 0;
+            if (many > 0) byHeight.push_back(m);
+        }
+        std::stable_sort(byHeight.begin(), byHeight.end(),
+                         [&](uint32_t a, uint32_t b) { return charts[a].rect[3] > charts[b].rect[3]; });
+        uint32_t x = 0, y = 0, shelf = 0;
+        for (const uint32_t m : byHeight) {
+            Chart& c = charts[m];
+            if (x + c.rect[2] > video::PlaneLayout::kTileWidth) {
+                x = 0;
+                y += shelf;
+                shelf = 0;
+            }
+            c.rect[0] = x;
+            c.rect[1] = y;
+            x += c.rect[2];
+            shelf = std::max(shelf, c.rect[3]);
+        }
+        height = (y + shelf + 63) / 64 * 64;
+        slots = video::PlaneLayout::kTileWidth * height;
+        for (const uint32_t m : byHeight) {
+            const Chart& c = charts[m];
+            cli::out("video-encode: --layout uv: mesh %u (%s): %u gaussians in %u x %u at (%u, %u)%s\n", m,
+                     m < sources.meshes.size() ? sources.meshes[m].c_str() : "?", c.info[1], c.rect[2], c.rect[3],
+                     c.rect[0], c.rect[1], c.info[2] != 0 ? "" : ", no st: by index");
+        }
+        auto chartBuffer = gpu::Buffer::fromSpan(device, std::span<const Chart>(charts), "video.uv.charts");
+        // The spiral: offsets within `reach` pixels, nearest first (constants).
+        std::vector<std::pair<int, int>> offs;
+        for (int dy = -reach; dy <= reach; ++dy) {
+            for (int dx = -reach; dx <= reach; ++dx) {
+                if (dx * dx + dy * dy <= reach * reach) offs.emplace_back(dx, dy);
+            }
+        }
+        std::stable_sort(offs.begin(), offs.end(), [](const auto& a, const auto& b) {
+            return a.first * a.first + a.second * a.second < b.first * b.first + b.second * b.second;
+        });
+        std::vector<int32_t> spiral;
+        for (const auto& [dx, dy] : offs) {
+            spiral.push_back(dx);
+            spiral.push_back(dy);
+        }
+        auto spiralBuffer = words(spiral.size(), "video.uv.spiral", spiral.data(), 8);
+        auto targetBuffer = words(n, "video.uv.target");
+        auto claimed = words(slots, "video.uv.claimed");
+        auto owner = words(slots, "video.uv.owner");
+        auto placedBuffer = words(n, "video.uv.placed");
+        auto counts = words(4, "video.uv.counts");
+        auto flags = words(std::max(slots, n), "video.uv.flags");
+        auto freeAt = words(std::max(slots, n), "video.uv.freeAt");
+        auto leftAt = words(std::max(slots, n), "video.uv.leftAt");
+        auto list = words(slots, "video.uv.freeList");
+        auto total = words(1, "video.uv.total");
+        auto source = words(slots, "video.uv.slotSource");
+        if (!chartBuffer || !spiralBuffer || !targetBuffer || !claimed || !owner || !placedBuffer || !counts ||
+            !flags || !freeAt || !leftAt || !list || !total || !source) {
+            return Error(ErrorCode::OutOfMemory, "video-encode: the uv atlas");
+        }
+        const uint32_t offsets = static_cast<uint32_t>(offs.size());
+        const auto bind = [&](rhi::ShaderCursor c, uint32_t round) {
+            c["sourceMesh"].setBinding(mesh->rhi());
+            c["sourceUv"].setBinding(uvs->rhi());
+            c["stats"].setBinding(statsBuffer->rhi());
+            c["charts"].setBinding(chartBuffer->rhi());
+            c["spiral"].setBinding(spiralBuffer->rhi());
+            c["target"].setBinding(targetBuffer->rhi());
+            c["claimed"].setBinding(claimed->rhi());
+            c["owner"].setBinding(owner->rhi());
+            c["placed"].setBinding(placedBuffer->rhi());
+            c["counts"].setBinding(counts->rhi());
+            c["freeFlag"].setBinding(flags->rhi());
+            c["freeAt"].setBinding(freeAt->rhi());
+            c["freeList"].setBinding(list->rhi());
+            c["leftAt"].setBinding(leftAt->rhi());
+            c["slotSource"].setBinding(source->rhi());
+            c["uv"]["count"].setData(n);
+            c["uv"]["slots"].setData(slots);
+            c["uv"]["meshes"].setData(meshes);
+            c["uv"]["round"].setData(round);
+            c["uv"]["offsets"].setData(offsets);
+            c["uv"]["height"].setData(height);
+        };
+        gpu::CommandBatch batch(device);
+        target->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 0); });
+        for (uint32_t r = 0; r < offsets; ++r) {
+            batch.encoder()->clearBuffer(claimed->rhi(), 0, uint64_t{slots} * 4);
+            batch.markDirty();
+            claim->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, r); });
+            resolve->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, r); });
+        }
+        // What no round placed: the free pixels in slot order, one each.
+        freeFlags->dispatch(batch, {slots, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 0); });
+        ATHENEA_TRY(prefix->apply(batch, *flags, *freeAt, *total, slots));
+        freeList->dispatch(batch, {slots, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 0); });
+        freeFlags->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 1); });
+        ATHENEA_TRY(prefix->apply(batch, *flags, *leftAt, *total, n));
+        leftoverK->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 0); });
+        fillK->dispatch(batch, {slots, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 0); });
+        ATHENEA_TRY(batch.submit(true));
+        uint32_t counted[4] = {0, 0, 0, 0};
+        ATHENEA_TRY(counts->read(device, 0, sizeof counted, counted));
+        atTarget = counted[0];
+        nearby = counted[1];
+        leftover = counted[2];
+        slotSource = std::move(*source);
+        cli::out("video-encode: --layout uv: %u gaussians in a 512 x %u atlas (%.0f %% of its pixels): %.1f %% at "
+                 "their st's pixel, %.1f %% within %d pixels of it, %.2f %% wherever a pixel was free\n",
+                 n, height, 100.0 * n / std::max(slots, 1u), 100.0 * atTarget / std::max(n, 1u),
+                 100.0 * nearby / std::max(n, 1u), reach, 100.0 * leftover / std::max(n, 1u));
+        return ok();
+    }
+
+    /// A frame laid out in the atlas's slots.
+    Result<scene::GpuSplats> lay(const scene::GpuSplats& cloud) {
+        if (cloud.count != count) {
+            return Error::make(ErrorCode::InvalidArgument,
+                               "video-encode: --layout uv: a frame of {} gaussians, the first {}", cloud.count, count);
+        }
+        gpu::Device& device = library->device();
+        auto out = video::PlanesCodec::allocate(device, slots, cloud.restPerColour, "video.uv.frame");
+        if (!out) return std::move(out).error();
+        out->count = slots;
+        out->antialiased = cloud.antialiased;
+        out->linear = cloud.linear;
+        gpu::CommandBatch batch(device);
+        expand->dispatch(batch, {slots, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["slotSource"].setBinding(slotSource.rhi());
+            c["inPositions"].setBinding(cloud.positions.rhi());
+            c["inShape"].setBinding(cloud.shape.rhi());
+            c["inSh"].setBinding(cloud.sh.rhi());
+            c["outPositions"].setBinding(out->positions.rhi());
+            c["outShape"].setBinding(out->shape.rhi());
+            c["outSh"].setBinding(out->sh.rhi());
+            c["uv"]["count"].setData(count);
+            c["uv"]["slots"].setData(slots);
+            c["uv"]["shWords"].setData(cloud.shWords);
+        });
+        ATHENEA_TRY(batch.submit(true));
+        return std::move(*out);
+    }
+
+    /// The atlas's base colours as a PNG: what a plane of colour shows.
+    Result<void> png(const scene::GpuSplats& cloud, const fs::path& path) {
+        gpu::Device& device = library->device();
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{slots} * 4;
+        desc.elementBytes = 4;
+        desc.label = "video.uv.picture";
+        auto rgba = gpu::Buffer::create(device, desc);
+        if (!rgba) return std::move(rgba).error();
+        gpu::CommandBatch batch(device);
+        picture->dispatch(batch, {slots, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["slotSource"].setBinding(slotSource.rhi());
+            c["inShape"].setBinding(cloud.shape.rhi());
+            c["rgba"].setBinding(rgba->rhi());
+            c["uv"]["count"].setData(count);
+            c["uv"]["slots"].setData(slots);
+        });
+        ATHENEA_TRY(batch.submit(true));
+        std::vector<uint8_t> bytes(uint64_t{slots} * 4);
+        ATHENEA_TRY(rgba->read(device, 0, bytes.size(), bytes.data()));
+        return io::writePng(path, video::PlaneLayout::kTileWidth, height, bytes);
+    }
 };
 
 struct Reducer {
@@ -619,6 +910,9 @@ void addVideo(CLI::App& app) {
         uint32_t geometryKey = 0, geometryPositionBits = 16, geometryScaleBits = 10, geometryPredict = 1;
         uint32_t geometryRotationBits = 10;
         std::string chromaWeight = "mean";
+        std::string layout = "morton", sources, uvPicture;
+        float       uvFill = 0.5F;
+        int         uvReach = 48;
     };
     auto o = std::make_shared<Options>();
     auto* enc = app.add_subcommand("video-encode",
@@ -717,6 +1011,20 @@ void addVideo(CLI::App& app) {
     enc->add_option("--rate", o->rate, "frames a second (default: the sequence's, or 30)");
     enc->add_option("--hevc", o->hevc, "also the video alone as an Annex B .hevc, for a player or a probe");
     enc->add_flag("--check", o->check, "decode each frame again and measure it against its source");
+    enc->add_option("--layout", o->layout,
+                    "morton (each plane a mosaic of the frame's order, --order says which) or uv (each gaussian at the "
+                    "pixel its source's st points at, a rectangle a mesh, kept for every frame: needs --sources)")
+        ->check(CLI::IsMember({"morton", "uv"}));
+    enc->add_option("--sources", o->sources,
+                    "with --layout uv: the mesh2splat cloud the frames were flattened from (flatten --keep-order), "
+                    "whose primvars:athenea:splat:sourceMesh and sourceUv place each gaussian");
+    enc->add_option("--uv-fill", o->uvFill, "with --layout uv: gaussians a pixel of a mesh's rectangle")
+        ->check(CLI::Range(0.05F, 1.0F));
+    enc->add_option("--uv-reach", o->uvReach,
+                    "with --layout uv: pixels a gaussian may be moved from its own where another took it, before it "
+                    "takes any free one")
+        ->check(CLI::Range(0, 64));
+    enc->add_option("--uv-picture", o->uvPicture, "with --layout uv: the first frame's atlas of base colours as a PNG");
 
     enc->callback([o] {
         uint32_t mostWidth = 0, mostHeight = 0;
@@ -809,7 +1117,24 @@ void addVideo(CLI::App& app) {
         uint32_t keyInterval =
             o->intra ? 1u : (o->keyInterval != 0 ? o->keyInterval : static_cast<uint32_t>(std::lround(rate)));
         const bool groupRanges = o->ranges == "group";
-        const bool stable = o->order == "stable";
+        const bool uvLayout = o->layout == "uv";
+        const bool stable = o->order == "stable" || uvLayout;
+        if (uvLayout && (o->sources.empty() || o->gaussians != 0)) {
+            cli::err("video-encode: --layout uv wants --sources and no --gaussians (the frames must list the source "
+                     "cloud's gaussians in its order)\n");
+            throw CLI::RuntimeError(kExitFailure);
+        }
+        UvAtlas atlas;
+        atlas.library = &library;
+        atlas.fill = o->uvFill;
+        atlas.reach = o->uvReach;
+        std::optional<usd::SplatSources> uvSources;
+        if (uvLayout) {
+            if (auto made = atlas.make(); !made) cli::fail(made.error());
+            auto read = usd::readSplatSources(o->sources);
+            if (!read) cli::fail(read.error());
+            uvSources = std::move(*read);
+        }
         if (o->geometry && (o->positionBlock != 0 || o->hi == "video" || o->positionTarget > 0.0F ||
                             (o->geometryKey > 1 && o->order != "stable"))) {
             cli::err("video-encode: --geometry takes no --position-block, --position-target or --hi video, and a "
@@ -839,6 +1164,27 @@ void addVideo(CLI::App& app) {
                 cloud = reducer.reduce(std::move(*cloud), o->gaussians,
                                        Reduction{o->reduce, o->mergeGrowth, o->mergeOpacity, o->pruneShare,
                                                  o->pruneScore == "edge" ? 1u : 0u, o->mergeAspect});
+                if (!cloud) cli::fail(cloud.error());
+            }
+            if (uvLayout) {
+                // THE PLANES AS A TEXTURE: placed from the first frame's
+                // count, and every frame laid out in those slots; the order
+                // is the slots' own.
+                if (atlas.count == 0) {
+                    if (auto placed = atlas.place(*uvSources, cloud->count); !placed) cli::fail(placed.error());
+                    if (!o->uvPicture.empty()) {
+                        if (auto p = atlas.png(*cloud, o->uvPicture); !p) cli::fail(p.error());
+                        cli::out("video-encode: --layout uv: the atlas's base colours in %s\n", o->uvPicture.c_str());
+                    }
+                    std::vector<uint32_t> index(atlas.slots);
+                    for (uint32_t k = 0; k < atlas.slots; ++k) index[k] = k;   // an index list, bookkeeping
+                    auto identity =
+                        gpu::Buffer::fromSpan(**device, std::span<const uint32_t>(index), "video.uv.order");
+                    if (!identity) cli::fail(identity.error());
+                    order = std::move(*identity);
+                    orderedFor = atlas.slots;
+                }
+                cloud = atlas.lay(*cloud);
                 if (!cloud) cli::fail(cloud.error());
             }
             if (encoder != nullptr) return std::move(*cloud);
@@ -1030,7 +1376,7 @@ void addVideo(CLI::App& app) {
                              orderedFor);
                     throw CLI::RuntimeError(kExitFailure);
                 }
-                if (o->order == "frame" || orderedFor != cloud.count) {
+                if (!uvLayout && (o->order == "frame" || orderedFor != cloud.count)) {
                     if (auto r = codec->order(cloud, cloud.count, ranges, order); !r) cli::fail(r.error());
                     orderedFor = cloud.count;
                 }

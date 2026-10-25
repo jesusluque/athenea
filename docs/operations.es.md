@@ -557,6 +557,11 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
 | `--hevc` | ruta | ninguna | el vídeo solo como Annex B, para `ffprobe`; sus imágenes son planos, no una imagen |
 | `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente |
+| `--layout` | `morton` o `uv` | `morton` | cada plano una tesela del orden del frame (`--order` dice cuál), o una textura: cada gaussiana en el píxel al que apunta el `st` de su origen, un rectángulo por malla, el mismo píxel en cada frame (abajo; implica `--order stable`, rechaza `--gaussians`) |
+| `--sources` | ruta | — | con `--layout uv`: la nube de mesh2splat de la que se aplanaron los frames (`flatten --range --keep-order`), cuyos `sourceMesh` y `sourceUv` colocan la gaussiana i del frame; los frames deben listar sus gaussianas en su orden (las primeras del recuento de un frame) |
+| `--uv-fill` | 0.05 a 1 | `0.5` | con `--layout uv`: gaussianas por píxel del rectángulo de una malla, como mucho; más bajo es una imagen mayor y más dispersa en la que se mueven menos gaussianas de su píxel |
+| `--uv-reach` | píxeles, 0 a 64 | `48` | con `--layout uv`: cuánto se puede mover una gaussiana de su píxel cuando otra lo tomó, antes de tomar cualquiera libre |
+| `--uv-picture` | ruta | ninguna | con `--layout uv`: los colores base del atlas como PNG (512 de ancho, en negro un píxel que no tomó ninguna gaussiana): cómo se ve un plano de color |
 
 **Tamaños.** Una imagen tiene como mucho 8192 x 8192 de área y 16384 de lado
 (el codificador hardware rechazó 10240 x 9600). Un frame cuyos planos
@@ -579,6 +584,24 @@ resto) el error mayor y el medio en pasos de su propia cuantización (los de
 una posición, de la de 16 o 20 bits), si todas las partes altas de la
 posición volvieron exactas, y la decodificación hardware y el kernel de
 planos -> gaussianas en ms (medianas, el kernel enviado y esperado).
+
+**Dispuesto como una textura** (`--layout uv`). Las gaussianas del primer frame
+se colocan una vez, en el dispositivo (`shaders/athenea/scene/video_uv.slang`),
+y se mantienen en cada frame: cada malla un rectángulo de su número de
+gaussianas entre `--uv-fill` píxeles con la forma de su caja de `st`, los
+rectángulos empaquetados en estantes de 512 de ancho (una tesela de plano); una
+gaussiana toma el píxel en el que cae su `st` (v hacia arriba), el índice más
+bajo donde varias quieren uno, y si no el píxel libre más cercano dentro de
+`--uv-reach` (una espiral, una ronda por paso), y después cualquiera libre en
+el orden de los slots. Una malla sin
+`st` llena su rectángulo fila a fila en su orden. Cada píxel es un slot del
+orden habitual de la tesela (bandas de 64 filas, bloques de 64 columnas, orden Z
+dentro), así que el códec, el contenedor y cada decodificador no cambian: un
+frame pasa a ser 512 x la altura del atlas splats, y un píxel que no tomó
+ninguna gaussiana lleva una copia de la de un vecino sin opacidad, que no
+dibuja nada. El log dice cuántas gaussianas cayeron en su propio píxel, cuántas
+dentro de `--uv-reach` y cuántas en cualquiera. El fichero dice `stableOrder`: el índice i
+es un píxel, y la gaussiana que está en él, en cada frame.
 
 Por ahora solo macOS (VideoToolbox); en otras plataformas el codificador se
 rechaza (`Unsupported`).

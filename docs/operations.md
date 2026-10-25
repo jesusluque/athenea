@@ -545,6 +545,11 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
 | `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
 | `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source |
+| `--layout` | `morton` or `uv` | `morton` | each plane a tile of the frame's order (`--order` says which), or a texture: each gaussian at the pixel its source's `st` points at, a rectangle a mesh, the same pixel every frame (below; implies `--order stable`, refuses `--gaussians`) |
+| `--sources` | path | — | with `--layout uv`: the mesh2splat cloud the frames were flattened from (`flatten --range --keep-order`), whose `sourceMesh` and `sourceUv` place frame gaussian i; the frames must list its gaussians in its order (the first of a frame's count) |
+| `--uv-fill` | 0.05 to 1 | `0.5` | with `--layout uv`: gaussians a pixel of a mesh's rectangle, at most; lower is a larger, sparser picture where fewer gaussians are moved off their pixel |
+| `--uv-reach` | pixels, 0 to 64 | `48` | with `--layout uv`: how far a gaussian may be moved from its pixel where another took it, before it takes any free one |
+| `--uv-picture` | path | none | with `--layout uv`: the atlas's base colours as a PNG (512 wide, a pixel no gaussian took black): what a colour plane looks like |
 
 **Sizes.** A picture is at most 8192 x 8192 in area and 16384 a side (the
 hardware encoder refused 10240 x 9600). A frame whose planes need more is cut
@@ -566,6 +571,21 @@ the mean error in steps of its own quantisation (a position's of the 16 or 20
 bit one), whether every position high part came back exact, and the hardware
 decode and the planes -> gaussians kernel in ms (medians, the kernel
 submitted and waited for).
+
+**Laid out as a texture** (`--layout uv`). The first frame's gaussians are
+placed once, on the device (`shaders/athenea/scene/video_uv.slang`), and kept
+for every frame: each mesh a rectangle of its gaussian count over `--uv-fill`
+pixels shaped as its `st` box, the rectangles packed in shelves 512 wide (one
+plane tile); a gaussian takes the pixel its `st` falls on (v up), the lowest
+index where several want one, and otherwise the nearest free pixel within
+`--uv-reach` (a spiral, a round a step), then any free one in slot order. A mesh without `st` fills its
+rectangle row by row in its order. Each pixel is a slot of the tile's usual
+order (bands of 64 rows, blocks of 64 columns, Z order inside), so the codec,
+the container and every decoder are unchanged: a frame becomes 512 x the
+atlas's height splats, a pixel no gaussian took holding a neighbour's copy
+with no opacity, which draws nothing. The log says how many gaussians landed
+on their own pixel, how many within `--uv-reach` and how many anywhere. The file says
+`stableOrder`: index i is one pixel, and the gaussian on it, in every frame.
 
 macOS (VideoToolbox) only for now; elsewhere the encoder is refused
 (`Unsupported`).
