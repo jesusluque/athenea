@@ -16275,10 +16275,130 @@ Side-by-side frames (SPZ | video | difference x 8), full frames: `athenea-render
 - **NVDEC and WebCodecs.** `createHardwareDecoder` / `createLumaTextures` answer `Unsupported` off Apple; the
   planes, the container and the live path do not change for them. The CUDA box is where NVDEC is measured.
 - **4:4:4.** Not used: VideoToolbox gave 4:2:0 for the AYUV input tried; luma only is the portable route.
-- **A network transport** (SRT: the `.athv` record is already a self-contained unit with its PTP time).
+- **A network transport**: the example producer is below ("For the web"); SRT itself was not measured.
 - **Decoding off the frame thread without a producer thread** (a decoder thread the pool's loaders hand to), and
   a deeper lead: by the clock with `--frame-producer` the decode is what drops epochs.
 - **Better prediction**: a stable order across frames with spatial coherence (sort once per group), P pictures
   that predict a slice from the same slice; the high parts as deltas.
 - **The TX transfer** as planes: the video carries a flattened cloud, not a relightable one.
 - Frames of very different sizes in one stream (every picture is the first frame's size).
+
+## Video planes for the web: a phone's decoder, a ladder of renditions (25 Oct)
+
+The sparrow's 61 flattened frames as video a phone's browser plays: WebCodecs hands the decoded picture's planes to a
+WebGPU decoder that ports `video_planes_decode.slang` (another session's player). What changed here is what that
+needs, measured on the Mac (M5 Pro) through athenea's own decode and drawn in lockstep against the degree-3 SPZ
+pages, full frames, 1024 x 1024.
+
+### The format and the stream
+
+- **`.athv` version 2.** Every record starts with a fixed 28-byte prefix -- magic, record type, rendition, the
+  presentation frame, PTP time, its bytes, version, flags -- so a relay routes on it alone; the header (128 bytes)
+  carries the rendition, the rate as a fraction, the loop's frames, the quality, how positions are sent and whether
+  colour is in chroma. Version 1 is still read.
+- **`scripts/examples/athv_stream.py`** writes one `.athv` per rendition to stdout, frame-aligned, length-prefixed,
+  with a JSON manifest (`ATVM`) every second and ancillary data (`ATVA`, the environment the frames were drawn under)
+  after it; the presentation frame and the PTP time are rewritten as it sends. A sleeping process is woken up to
+  ~10 ms late: sleeping to 3 ms before a frame and spinning left 7 ms of jitter, 12 ms leaves 0.15-0.5 ms.
+  `athv_read.py` reads such a stream and describes a file (profile, tier, level, codec string, hvcC, PPS chroma QP
+  offsets). Ten seconds through a pipe, four renditions at 218.6 Mbit/s: 30.00 frames a second, no record broken or
+  missing.
+- **Pictures held to a size** (`--max-picture`): a frame goes as slices of whole chunks. At 1920 x 1080 the
+  pictures are 1536 x 960/1024, level 4 (L120), Main, Main tier, full range -- what Safari's hardware decoder takes
+  and copies out bit for bit (it does not for video range: athenea's decoder now refuses a stream whose SPS says
+  so). The same bytes and quality as one large picture (1.013 against 1.010 MB a frame at quality 0.5).
+
+### What a frame costs
+
+**Positions over blocks** (`--position-block`, `--position-high-bits`): quantised over the box of each run of N
+Morton-ordered splats (six halves at the head of each chunk's side data) rather than the frame's range. Within a box
+the high bits are noise and deflate poorly, so the side data shrinks only when none are sent: 300k splats, degree 0,
+quality 0.5, frames 0-9:
+
+| positions | MB a frame (video + side) | mean / max error, 16-bit frame steps | PSNR vs SPZ |
+|---|---:|---|---:|
+| frame range, 8 high bits (before) | 1.479 (1.201 + 0.279) | 7.5 / 59 | 44.6 |
+| 256-splat boxes, 8 high bits | 2.118 (1.204 + 0.913) | 0.5 / 37 | 44.7 |
+| 256-splat boxes, 4 high bits | 1.555 (1.202 + 0.354) | 8.9 / 565 | 44.7 |
+| 256-splat boxes, none | 1.011 (0.998 + 0.013) | 154 / 8738 | 42.0 |
+| 1024-splat boxes, none | 0.904 (0.900 + 0.004) | 243 / 10306 | 40.9 |
+| 4096-splat boxes, none | 0.842 (0.840 + 0.002) | 348 / 8470 | 40.0 |
+
+Every high part came back exact. The web renditions take 256-splat boxes and no high part.
+
+**Colour in chroma** (`--chroma`): each colour quantity -- the base colour and each harmonic basis -- as YCoCg
+(lifting steps, exact in floats), Y a luma plane, Co and Cg the Cb and Cr of that tile, one sample a 2 x 2 block.
+The tiles' Z order already puts splats 4k .. 4k + 3 in a quad, so a chroma sample is four Morton neighbours; the
+encoder is given NV12 as laid. Planes a gaussian: 12 / 15 / 27 at degree 0 / 1 / 3 (14 / 23 / 59 without). 300k,
+quality 0.3, frames 0-29, frame 15:
+
+| | MB a frame | PSNR | | MB a frame | PSNR |
+|---|---:|---:|---|---:|---:|
+| degree 0, luma only | 0.441 | 38.66 | chroma | 0.428 | 38.51 |
+| degree 1, luma only | 0.457 | 39.04 | chroma | 0.439 | 38.89 |
+| degree 3, luma only (4608 x 4480, High tier) | 0.548 | 39.17 | chroma (3072 x 3200) | 0.477 | 39.60 |
+
+Weighing a block's chroma by opacity x area changed nothing (0.428 MB, 38.50 dB). VideoToolbox sets no chroma QP
+offset (the PPS says 0). The colour channels' mean against the SPZ frame: 0.998-0.999.
+
+**The quality setting is the lever**; the rest is a few percent. 300k, degree 0, 256-splat boxes: quality 0.5 1.010
+MB a frame (41.28 dB at frame 15), 0.3 0.441 (38.66), 0.2 0.219 (37.22). Groups of pictures with P pictures (an IDR
+every 8, 15 or 30) saved 9-11 % (0.400 / 0.396 / 0.394 MB at quality 0.3): the renditions stay all-intra, so a
+player joins or drops at any record.
+
+### Fewer gaussians
+
+Half the gaussians was the larger loss. The codec taken out (10-bit planes at quality 1.0, 20-bit positions), the
+300k cloud was 50.78 dB against the SPZ pages (p99 5, max 15) and the 150k NanoGS merge 44.18 (p99 9, max 101):
+the merge widens what it merges (`opacityRule` 0 holds the opacity under 0.99 and widens instead), the largest log
+scale up from -5.75 to -4.75 (median over frames). Ways to the count, frames 0-29, degree 1, codec out:
+
+| at 150k / 75k | PSNR (worst) | max | largest log scale, median |
+|---|---|---|---|
+| pairs (NanoGS) | 44.58 (42.61) / 42.17 | 100 / 107 | -4.79 / -4.63 |
+| pairs, no merge 1.5x wider than its wider member (`--merge-growth`, new in `lod::PairSettings`) | 44.69 / 42.40 | 99 / 107 | -5.19 / -5.13 |
+| pruned by opacity x area (`video_reduce.slang`) | 44.99 / 39.99 | 123 / 135 | -5.75 / -5.94 |
+| half the excess pruned, then capped pairs (`mix`) | 46.43 (44.73) / **43.75** (42.14) | 93 / 107 | -5.25 / -5.20 |
+| `mix`, merges keeping their mass, opacity up to 5 (`--merge-opacity 3`) | **47.34** (46.37) / 42.47 | 101 / 120 | -5.75 / -5.75 |
+| the octree's cut by error, tolerances bisected to the count | 32.25 / 30.96 | 117 / 118 | -3.55 / -3.27 |
+
+The renditions take `mix` with the growth cap: at 150k with merges keeping their mass, at 75k and 40k without.
+
+### The ladder
+
+Nine renditions of the 61 frames (`web-sparrow/ladder/`, ids 0-8), all colour in chroma, all-intra, pictures at
+most 1920 x 1080, 256-splat boxes and no high part; against the degree-3 SPZ pages, every frame, medians:
+
+| id | gaussians | SH | quality | pictures a frame | MB a frame | Mbit/s at 30 / 24 | PSNR (worst) | p99 / max |
+|---|---:|---:|---:|---|---:|---|---|---|
+| 0 | 300847 | 1 | 0.25 | 4 x 1536 x 960 | 0.325 | 77.9 / 62.3 | 38.36 (36.41) | 15 / 126 |
+| 1 | 300847 | 1 | 0.2 | 4 x 1536 x 960 | 0.223 | 53.4 / 42.8 | 37.74 (35.88) | 16 / 126 |
+| 2 | 150k | 1 | 0.4 | 2 x 1536 x 960 | 0.327 | 78.6 / 62.9 | 38.77 (37.17) | 14 / 130 |
+| 3 | 150k | 1 | 0.3 | 2 x 1536 x 960 | 0.204 | 48.9 / 39.1 | 37.51 (35.83) | 16 / 134 |
+| 4 | 150k | 0 | 0.2 | 2 x 1536 x 1024 | 0.084 | 20.2 / 16.1 | 35.60 (34.19) | 20 / 137 |
+| 5 | 75k | 1 | 0.3 | 1 x 1536 x 960 | 0.109 | 26.2 / 21.0 | 36.63 (35.00) | 20 / 129 |
+| 6 | 75k | 0 | 0.2 | 1 x 1536 x 768 | 0.043 | 10.3 / 8.2 | 35.31 (33.67) | 24 / 134 |
+| 7 | 40k | 0 | 0.2 | 1 x 1024 x 768 | 0.024 | 5.7 / 4.6 | 34.88 (32.94) | 27 / 136 |
+| 8 | 40k | 0 | 0.1 | 1 x 1024 x 768 | 0.010 | 2.4 / 1.9 | 33.97 (32.05) | 30 / 139 |
+
+Every picture is Main, Main tier, 8-bit 4:2:0 full range, level 4 (L120) or 3.1 (L93 at 1024 x 768). The 150k rung at
+quality 0.4 is as good as the 300k one at 0.25 for the same bits. The whole ladder streamed for ten seconds through
+a pipe: 324.5 Mbit/s, 30.00 frames a second, inter-frame jitter 0.44 ms, nothing broken or missing.
+
+### Checked against the player
+
+- `video-decode --dump-compare` takes another decoder's gaussians of a frame (a CSV) and compares them with this
+  decode on the device; it found the player's samples squeezed to 16-235 (Chrome on the Mac reports Annex B
+  pictures as video range), which the player then undid; on the 300k sample the two decodes then agree to 4 um
+  in position, 0.004 in opacity, 0.023 in log scale and 0.003 in colour (the halves' rounding). `--luma-histogram`: athenea's own decode spans 0-255 on
+  every picture measured, so no measurement here went through a squeezed decode.
+- No-background references (`web-sparrow/ref_noback/`) and the dome's latlong with a worked example (FORMAT.md):
+  athenea keeps an authored plain `DomeLight` on a Z-up stage as USD reads it, its pole on world +Y.
+
+### Not done
+
+- Chroma for anything but colour; the chroma under geometric tiles is mid grey.
+- A reduction that keeps the merges' mass at 75k as well as it does at 150k; the merge's growth cap measured only at
+  1.5 and 2.
+- SRT itself (the producer writes to stdout; the player's server forwards it over a WebSocket).
+- P pictures for slices (each slice would need its own encoder session).
