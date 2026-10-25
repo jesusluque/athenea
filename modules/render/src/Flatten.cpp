@@ -248,4 +248,91 @@ Result<std::vector<float>> FlattenPack::glb(const FlatCloud& cloud, float logSca
     return out;
 }
 
+Result<FlatChunker> FlatChunker::create(gpu::ShaderLibrary& library) {
+    FlatChunker c;
+    c.library_ = &library;
+    auto keys = gpu::ComputeKernel::create(library, "athenea/splat/flatten_chunks", "flatChunkKeys");
+    if (!keys) return std::move(keys).error();
+    auto gather = gpu::ComputeKernel::create(library, "athenea/splat/flatten_chunks", "flatChunkGather");
+    if (!gather) return std::move(gather).error();
+    auto sort = gpu::RadixSort::create(library);
+    if (!sort) return std::move(sort).error();
+    c.keys_ = std::move(*keys);
+    c.gather_ = std::move(*gather);
+    c.sort_.emplace(std::move(*sort));
+    return c;
+}
+
+Result<std::vector<FlatCloud>> FlatChunker::chunk(const std::vector<FlatCloud>& clouds, const FlatStats& box,
+                                                  uint32_t chunkSplats) {
+    if (chunkSplats == 0) {
+        return Error(ErrorCode::InvalidArgument, "flatten: a chunk holds at least one gaussian");
+    }
+    gpu::Device& device = library_->device();
+    uint64_t total = 0;
+    for (const FlatCloud& c : clouds) {
+        total += c.count;
+    }
+    if (total == 0) {
+        return std::vector<FlatCloud>{};
+    }
+    if (total * kFlatStride > 0xFFFFFFFFull) {
+        return Error(ErrorCode::Unsupported, "flatten: chunks of more than 2^26 gaussians at once");
+    }
+    const uint32_t n = static_cast<uint32_t>(total);
+    const uint64_t record = uint64_t{kFlatStride} * 4;
+    auto all = floatsBuffer(device, total * kFlatStride, "flatten.chunks.all");
+    if (!all) return std::move(all).error();
+    auto sorted = floatsBuffer(device, total * kFlatStride, "flatten.chunks.sorted");
+    if (!sorted) return std::move(sorted).error();
+    gpu::SortBuffers sorting;
+    for (gpu::Buffer* b : {&sorting.keysLo, &sorting.values, &sorting.scratchKeysLo, &sorting.scratchValues}) {
+        auto made = floatsBuffer(device, total, "flatten.chunks.sort");
+        if (!made) return std::move(made).error();
+        *b = std::move(*made);
+    }
+    std::array<float, 3> lo{}, scale{};
+    for (size_t a = 0; a < 3; ++a) {
+        lo[a] = box.min[a];
+        const float extent = (box.max[a] - box.min[a]) * 1.0001F;
+        scale[a] = extent > 0.0F ? 1023.0F / extent : 0.0F;
+    }
+    std::vector<FlatCloud> out;
+    {
+        gpu::CommandBatch batch(device);
+        uint64_t at = 0;
+        for (const FlatCloud& c : clouds) {
+            if (c.count > 0) {
+                batch.encoder()->copyBuffer(all->rhi(), at * record, c.records.rhi(), 0, uint64_t{c.count} * record);
+            }
+            at += c.count;
+        }
+        batch.markDirty();
+        const auto bind = [&](rhi::ShaderCursor cursor) {
+            cursor["records"].setBinding(all->rhi());
+            cursor["sorted"].setBinding(sorted->rhi());
+            cursor["keys"].setBinding(sorting.keysLo.rhi());
+            cursor["order"].setBinding(sorting.values.rhi());
+            cursor["params"]["count"].setData(n);
+            cursor["params"]["lo"].setData(lo);
+            cursor["params"]["scale"].setData(scale);
+        };
+        keys_.dispatch(batch, {n, 1, 1}, bind);
+        ATHENEA_TRY(sort_->sort(batch, sorting, n, 30));
+        gather_.dispatch(batch, {n, 1, 1}, bind);
+        for (uint32_t first = 0; first < n; first += chunkSplats) {
+            FlatCloud chunk;
+            chunk.count = std::min(chunkSplats, n - first);
+            auto records = floatsBuffer(device, uint64_t{chunk.count} * kFlatStride, "flatten.chunk");
+            if (!records) return std::move(records).error();
+            chunk.records = std::move(*records);
+            batch.encoder()->copyBuffer(chunk.records.rhi(), 0, sorted->rhi(), uint64_t{first} * record,
+                                        uint64_t{chunk.count} * record);
+            out.push_back(std::move(chunk));
+        }
+        ATHENEA_TRY(batch.submit(true));
+    }
+    return out;
+}
+
 }   // namespace athenea::render

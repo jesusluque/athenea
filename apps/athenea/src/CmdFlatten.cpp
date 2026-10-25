@@ -114,6 +114,8 @@ void addFlatten(CLI::App& app) {
         std::vector<uint32_t> validateSize;
         uint32_t validatePaths = 512, validateBounces = 6;
         std::vector<std::string> validateMaterials, paths;
+        std::string range;
+        uint32_t chunkSplats = 0;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand(
@@ -159,6 +161,12 @@ void addFlatten(CLI::App& app) {
     cmd->add_option("--spz-sh1-bits", o->sh1Bits, "bits SPZ keeps of band 1")->check(CLI::Range(1u, 8u));
     cmd->add_option("--spz-sh-rest-bits", o->shRestBits, "bits SPZ keeps of bands 2 and 3")->check(CLI::Range(1u, 8u));
     cmd->add_option("--time", o->time, "USD time code");
+    cmd->add_option("--range", o->range,
+                    "START:END[:STEP] time codes: a sequence, every frame flattened and cut into SPZ pages "
+                    "(implies --format spz; -o is a directory)");
+    cmd->add_option("--chunk-splats", o->chunkSplats,
+                    "with --range: the most gaussians a page holds; each frame's gaussians are ordered along a "
+                    "Morton curve and cut into runs of this many (default 65536)");
     cmd->add_option("--validate", o->validate,
                     "measure a written file against the meshes path traced, material by material, into this "
                     "directory");
@@ -195,6 +203,11 @@ void addFlatten(CLI::App& app) {
                 cli::err("flatten: '%s' is not a format (ply, spz, glb, usdc, usda)\n", f.c_str());
                 throw CLI::RuntimeError(1);
             }
+        }
+        if (!o->range.empty()) {
+            // A sequence of pages: SPZ, and -o names their directory.
+            formats = {"spz"};
+            out = fs::path(o->output);
         }
         const bool display = o->referred == "display";
         if (!display && (std::count(formats.begin(), formats.end(), "spz") != 0 ||
@@ -264,7 +277,17 @@ void addFlatten(CLI::App& app) {
         const fs::path composed = fs::path(out.string() + "_flatten_stage.usda");
         {
             std::ofstream layer(composed);
-            layer << overLayer(source.string(), off, bodies, upAxis, metersPerUnit, tail);
+            // The wrapper keeps the source's time codes a second: a sublayer
+            // of another rate is scaled by the ratio, and an animated stage
+            // flattened at --time would be posed at another instant.
+            std::string wrapper = overLayer(source.string(), off, bodies, upAxis, metersPerUnit, tail);
+            const size_t at = wrapper.find("    metersPerUnit = ");
+            if (at != std::string::npos) {
+                const double rate = meshStage->timeCodesPerSecond();
+                wrapper.insert(at, "    timeCodesPerSecond = " + std::to_string(rate) + "\n    framesPerSecond = " +
+                                       std::to_string(rate) + "\n");
+            }
+            layer << wrapper;
             if (!layer) {
                 cli::err("flatten: cannot write %s\n", composed.string().c_str());
                 throw CLI::RuntimeError(1);
@@ -335,6 +358,87 @@ void addFlatten(CLI::App& app) {
                 request.settings = settings;
                 request.basis = &fit->basis();
                 request.floor = &fit->floor();
+                if (!o->range.empty()) {
+                    // A SEQUENCE: each frame flattened at its time, cut into
+                    // chunks that lie together, each chunk an SPZ page --
+                    // one epoch of a live stream (AtheneaLiveSourceAPI). The
+                    // manifest says the rate and each frame's pages.
+                    double start = 0.0, end = 0.0, step = 1.0;
+                    const int parsed = std::sscanf(o->range.c_str(), "%lf:%lf:%lf", &start, &end, &step);
+                    if (parsed < 2 || step <= 0.0 || end < start) {
+                        return Error::make(ErrorCode::InvalidArgument, "flatten: --range wants START:END[:STEP], got '{}'",
+                                           o->range);
+                    }
+                    const uint32_t chunkSplats = o->chunkSplats != 0 ? o->chunkSplats : 65536u;
+                    std::error_code dirMade;
+                    fs::create_directories(out, dirMade);
+                    auto pack = render::FlattenPack::create(library);
+                    if (!pack) return std::move(pack).error();
+                    auto chunker = render::FlatChunker::create(library);
+                    if (!chunker) return std::move(chunker).error();
+                    std::vector<std::string> lines;
+                    size_t most = 0;
+                    uint64_t index = 0;
+                    for (double t = start; t <= end + 1e-9; t += step, ++index) {
+                        const Clock::time_point frameStart = Clock::now();
+                        request.clouds.clear();
+                        auto flattened = (*renderer)->flatten(request, t);
+                        if (!flattened) return std::move(flattened).error();
+                        std::vector<render::FlatCloud> flat;
+                        for (const auto& c : *flattened) {
+                            flat.push_back(c.cloud);
+                        }
+                        if (flat.empty()) {
+                            return Error::make(ErrorCode::NotFound, "flatten: nothing to flatten at time {}", t);
+                        }
+                        auto counted = pack->stats(flat, kLogScaleFloor);
+                        if (!counted) return std::move(counted).error();
+                        auto chunks = chunker->chunk(flat, *counted, chunkSplats);
+                        if (!chunks) return std::move(chunks).error();
+                        uint64_t bytes = 0, gaussians = 0;
+                        for (size_t c = 0; c < chunks->size(); ++c) {
+                            const render::FlatCloud& chunk = (*chunks)[c];
+                            auto streams = pack->spz({chunk}, counted->fractionalBits, o->sh1Bits, o->shRestBits);
+                            if (!streams) return std::move(streams).error();
+                            io::SpzHeader header;
+                            header.version = o->spzVersion;
+                            header.count = chunk.count;
+                            header.shDegree = 3;
+                            header.fractionalBits = counted->fractionalBits;
+                            header.antialiased = render::RenderSettings{}.antialias;
+                            char name[64];
+                            std::snprintf(name, sizeof name, "f%05llu_c%04zu.spz", static_cast<unsigned long long>(index), c);
+                            ATHENEA_TRY(io::writeSpz(out / name, header, streams->streams));
+                            bytes += fileBytes(out / name);
+                            gaussians += chunk.count;
+                        }
+                        most = std::max(most, chunks->size());
+                        char line[128];
+                        std::snprintf(line, sizeof line, "frame %llu %.6g %zu %llu %llu", static_cast<unsigned long long>(index),
+                                      t, chunks->size(), static_cast<unsigned long long>(gaussians),
+                                      static_cast<unsigned long long>(bytes));
+                        lines.emplace_back(line);
+                        cli::out("flatten: time %g: %llu gaussians in %zu pages of at most %u, %.2f MB, %.0f ms\n", t,
+                                 static_cast<unsigned long long>(gaussians), chunks->size(), chunkSplats,
+                                 static_cast<double>(bytes) / 1.0e6, msSince(frameStart));
+                    }
+                    std::ofstream manifest(out / "stream.txt");
+                    manifest << "# athenea flatten --range: SPZ pages, one epoch a frame\n"
+                             << "# frame <index> <time code> <pages> <gaussians> <bytes>; pages f<index>_c<page>.spz\n"
+                             << "rate " << meshStage->timeCodesPerSecond() << "\n"
+                             << "chunks " << most << "\n"
+                             << "chunkSplats " << chunkSplats << "\n"
+                             << "degree 3\n";
+                    for (const std::string& l : lines) {
+                        manifest << l << "\n";
+                    }
+                    if (!manifest) {
+                        return Error::make(ErrorCode::IoFailure, "flatten: cannot write {}", (out / "stream.txt").string());
+                    }
+                    cli::out("flatten: %zu frames into %s, %zu pages a frame at most, %.0f ms in all\n", lines.size(),
+                             out.string().c_str(), most, msSince(began));
+                    return ok();
+                }
                 const Clock::time_point flattenStart = Clock::now();
                 auto flattened = (*renderer)->flatten(request, o->time);
                 if (!flattened) return std::move(flattened).error();
@@ -445,6 +549,9 @@ void addFlatten(CLI::App& app) {
         }
         if (!inside) {
             cli::fail(inside.error());
+        }
+        if (!o->range.empty()) {
+            return;
         }
 
         for (const auto& c : clouds) {

@@ -452,6 +452,33 @@ genlock (`ATHENEA_WITH_GENLOCK`, on when `third_party/genlock` is checked out).
 Every frame written carries its timecode and rate as EXR attributes, along
 with the TAI instant, the frame index, the USD time and how late the wake was.
 
+### 2.7.1 `athenea stream` — a sequence of pages into a live stream
+
+Plays the SPZ pages `athenea flatten --range` wrote into the live stream a
+stage names (`AtheneaLiveSourceAPI`, §4.3) and draws the stage while it plays,
+in the same process: a producer thread pushes each frame's pages as one epoch,
+with its PTP time, and the frame draws the last epoch whose every page is on
+the device.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `stage` | path, required | — | a stage with a ParticleField under `AtheneaLiveSourceAPI`; its `chunks` at least the sequence's pages a frame, its `chunkSplats` at least `--chunk-splats`, `degree` 3 |
+| `pages` | directory, required | — | holds `stream.txt` and the pages |
+| `--stream` | name | the one the stage names | |
+| `--camera` | prim path | the stage's first | |
+| `--size` | `WIDTHxHEIGHT` | `960x540` | |
+| `--rate` | epochs a second | the sequence's (`stream.txt`, the stage's time codes a second) | |
+| `--loops` | integer | `1` | the sequence played again, epochs counting on |
+| `--lockstep` | flag | by the clock | each frame pushes its epoch and draws until the stage shows it: every epoch drawn once |
+| `--reference` | stage path | none | with `--lockstep`: drawn at each frame's time code and compared with the frame on the device (p99, max, pixels past 2 code values) |
+| `--splat-display-blend` | flag | linear blend | the live cloud blended as a standard viewer blends, which is what flatten's colours are fitted for |
+| `-o`, `--output` | directory | none | each frame shown as `frame_NNNNN.exr` (and `reference_NNNNN.exr`), carrying `athenea:timecode`, `athenea:ptpTime` (seconds) and `athenea:epoch` |
+
+By the clock it prints the frames drawn, the epochs shown and skipped, how
+late an epoch was shown after it was due, and whether the rate held (every
+epoch drawn). The producer is in this process: the named queues are the
+engine's own (`lod::PageQueue::named`).
+
 ### 2.8 `athenea mesh2splat` — a model into gaussians
 
 The conversion itself, and the light bake that follows it. What each stage
@@ -593,6 +620,8 @@ kept beside the files).
 | `--spz-version` | `3` \| `4` | `3` | 3 is gzip and what Spark reads; 4 is ZSTD and needs it in the build |
 | `--spz-sh1-bits`, `--spz-sh-rest-bits` | 1..8 | `8`, `8` | bits SPZ keeps of band 1, and of bands 2 and 3 |
 | `--time` | number | `0` | USD time code |
+| `--range` | `START:END[:STEP]` | unset | a sequence: every time code flattened and cut into SPZ pages, one epoch of a live stream a frame (§3.7); forces `--format spz` and makes `-o` a directory |
+| `--chunk-splats` | integer | `65536` | with `--range`: the most gaussians a page holds; a frame's gaussians are ordered along a Morton curve of its box and cut into runs of this many, so a page is a part of the model |
 | `--validate` | directory | none | measure a written file against the meshes path traced, material by material (§3.1, *A conversion measured*) |
 | `--validate-stage` | path | the input | the stage of meshes the GT is traced from |
 | `--validate-format` | `ply` \| `spz` | `spz` | which file is read back and measured |
@@ -1366,6 +1395,31 @@ light per unit of the group's radiance: the group's material at
 `emission_luminance` 1 when it was baked. Switching a lamp uploads nothing.
 Rules and time curves are not evaluated (a state and levels are what a frame
 takes), and only the rasteriser adds the layers.
+
+### 3.7 An animation over a live stream
+
+A skinned cloud played as a live stream of pages: each frame posed, flattened
+under the stage's light and cut into pages that lie together, then pushed an
+epoch a frame onto the stream a stage names. What a viewer is sent is
+standard SPZ, a frame at a time; the stage shows only whole frames.
+
+```sh
+athenea mesh2splat SparrowBird.usda --skinned --transfer --resolution 256 -o sparrow_tx.usdc
+# sparrow.usda: the cloud, a camera and a dome (the light flatten bakes in)
+athenea flatten sparrow.usda --range 1:61 --chunk-splats 32768 --spz-version 4 -o pages
+# live.usda: a ParticleField under AtheneaLiveSourceAPI, stream "sparrow",
+# chunks = the manifest's, chunkSplats 32768, degree 3, turned 270 degrees
+# about x on a Z-up stage (the pages are Y up, and SPZ's axes are turned)
+athenea stream live.usda pages --lockstep --reference sparrow.usda --splat-display-blend -o frames
+athenea stream live.usda pages --rate 30 --loops 3 --splat-display-blend
+```
+
+`pages/stream.txt` lists the rate, the most pages a frame (`chunks`),
+`chunkSplats` and a line a frame: index, time code, pages, gaussians, bytes;
+the pages are `f<index>_c<page>.spz`. A frame of fewer pages than the most
+removes the rest. `--reference` measures the whole path -- the fit to degree
+3, SPZ's quantisation, the stream and Hydra -- against the skinned cloud as it
+moves.
 
 ## 4. Authoring for this engine in USD
 
@@ -2407,6 +2461,9 @@ so whatever that build reads.
 and 4; 4 needs zstd; each carries the coordinate-system extension saying
 right-up-back), glTF `.glb` with `KHR_gaussian_splatting`, and USD
 (§2.8.1).
+
+**Pages written.** `athenea flatten --range` writes a directory of SPZ pages
+and its `stream.txt` (§3.7), which `athenea stream` reads.
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by

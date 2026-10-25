@@ -549,6 +549,16 @@ public:
     /// How many times a splat cloud's arrays have been uploaded: once a cloud
     /// unless what it holds changes. What a time step is held to.
     [[nodiscard]] uint64_t cloudUploads() const;
+    /// THE LIVE STREAMS THE STAGE NAMES (AtheneaLiveSourceAPI), as the last
+    /// frame's commit left them: the prim, the stream, and its pool's state --
+    /// the epoch shown and its PTP time, epochs shown, waiting and dropped,
+    /// and the chunk bytes the last update placed.
+    struct LiveStream {
+        std::string prim, stream;
+        uint64_t    epoch = 0, ptpTime = 0, epochs = 0, droppedNoRoom = 0, droppedCorrupt = 0, placedBytes = 0;
+        uint32_t    pendingEpochs = 0, resident = 0;
+    };
+    [[nodiscard]] std::vector<LiveStream> liveStreams() const;
 
     /// WHAT THE LAST FRAME HELD: splats handed over, splats a tile kept, the
     /// pairs the blend walked, the scene's instances and the frame's lights.

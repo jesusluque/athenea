@@ -18,12 +18,14 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/algo/RadixSort.h"
 
 namespace athenea::gpu {
 class ShaderLibrary;
@@ -146,6 +148,23 @@ public:
 private:
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  bounds_, resolve_, ply_, spz_, glb_;
+};
+
+/// FLATTENED CLOUDS CUT INTO CHUNKS THAT LIE TOGETHER: every cloud's records
+/// in one run, sorted by the Morton code of their positions in `box`, and cut
+/// into runs of at most `chunkSplats` -- the pages of a live stream
+/// (`athenea flatten --chunk-splats`), each packed alone. All on the device
+/// (flatten_chunks.slang, the radix sort); the processor only sizes buffers.
+class FlatChunker {
+public:
+    [[nodiscard]] static Result<FlatChunker> create(gpu::ShaderLibrary& library);
+    [[nodiscard]] Result<std::vector<FlatCloud>> chunk(const std::vector<FlatCloud>& clouds, const FlatStats& box,
+                                                       uint32_t chunkSplats);
+
+private:
+    gpu::ShaderLibrary*            library_ = nullptr;
+    gpu::ComputeKernel             keys_, gather_;
+    std::optional<gpu::RadixSort>  sort_;
 };
 
 }   // namespace athenea::render

@@ -51,6 +51,7 @@ void addLightmap(CLI::App& app);
 void addVisibility(CLI::App& app);
 void addLights(CLI::App& app);
 void addLive(CLI::App& app);
+void addStream(CLI::App& app);
 #if ATHENEA_HAVE_VIEW
 void addView(CLI::App& app);
 #endif

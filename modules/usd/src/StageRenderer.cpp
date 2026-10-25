@@ -1078,6 +1078,30 @@ uint64_t StageRenderer::cloudUploads() const {
     return engine != nullptr ? engine->cloudUploads() : 0;
 }
 
+std::vector<StageRenderer::LiveStream> StageRenderer::liveStreams() const {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
+    std::vector<LiveStream> out;
+    if (engine == nullptr) {
+        return out;
+    }
+    for (const Engine::LiveStatus& l : engine->liveStatus()) {
+        LiveStream s;
+        s.prim = l.prim;
+        s.stream = l.stream;
+        s.epoch = l.status.epoch;
+        s.ptpTime = l.status.ptpTime;
+        s.epochs = l.status.epochs;
+        s.droppedNoRoom = l.status.droppedNoRoom;
+        s.droppedCorrupt = l.status.droppedCorrupt;
+        s.placedBytes = l.status.placedBytes;
+        s.pendingEpochs = l.status.pendingEpochs;
+        s.resident = l.status.resident;
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
 std::map<std::string, uint32_t> StageRenderer::cryptoManifest() const {
     auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
     Engine* engine = param != nullptr ? param->GetEngine() : nullptr;

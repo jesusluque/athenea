@@ -853,6 +853,17 @@ void Engine::removeVolumeField(const pxr::SdfPath& id) {
     ++volumesVersion_;
 }
 
+std::vector<Engine::LiveStatus> Engine::liveStatus() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    std::vector<LiveStatus> out;
+    for (const auto& [id, entry] : splats_) {
+        if (entry.pool != nullptr && !entry.asset.live.empty()) {
+            out.push_back({id.GetString(), entry.asset.live, entry.pool->status()});
+        }
+    }
+    return out;
+}
+
 void Engine::remove(const pxr::SdfPath& id) {
     const std::lock_guard<std::mutex> held(guard_);
     splats_.erase(id);
