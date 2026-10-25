@@ -172,6 +172,7 @@ public:
         uint64_t droppedNoRoom = 0;   ///< epochs dropped: no room beside the one shown
         uint64_t droppedCorrupt = 0;  ///< epochs dropped: a page a loader could not read
         uint64_t droppedHeld = 0;     ///< epochs dropped: more than heldEpochs waiting for their instant
+        uint64_t lateEpochs = 0;      ///< by the clock: epochs not shown in the frame their instant came
     };
     /// Any thread.
     [[nodiscard]] Status status() const;

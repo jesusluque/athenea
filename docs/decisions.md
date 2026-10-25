@@ -15944,4 +15944,28 @@ tests pass as before.
 ### Not done
 
 - Interpolating the camera's pose to the instant.
-- Placing held epochs ahead of their instant, which would show a due one in the frame it is due.
+- Placing held epochs ahead of their instant: done next, below.
+
+## Clock-synced epochs placed ahead: shown in the frame they are due (25 Oct)
+
+By the clock, epochs are now started as soon as they are complete -- in order, ahead of their instant -- into
+slots no table in use holds, each with its own slot table made from the one before it (`Built`). Showing one is
+then a table swap: at each update the newest epoch whose pages, and the pages of every epoch before it, are all
+placed and whose instant has come becomes the shown table, and the slots only older tables used are free again.
+An epoch that does not fit beside the tables in use waits for the next swap (room comes when the one ahead of it
+is shown); one that would not fit even beside the shown table alone is dropped (`droppedNoRoom`), as before.
+`Status::lateEpochs` counts the epochs not shown in the frame their instant came: their pages not all placed by
+then (the loads, `bytesPerFrame`), or not started for want of room. `heldEpochs` now caps the epochs not yet
+started. A page that cannot be read drops its epoch and every one started after it (their tables were made on
+its), each counted in `droppedCorrupt`. By the latest, epochs still start one at a time, as before.
+
+### How it is checked
+
+`athenea_lod_tests "a clock-synced live stream shows each epoch in the very frame its instant comes"` (Metal, M5
+Pro): five whole-state epochs 40 ms apart pushed ahead of the clock, a store of two epochs (the shown one and one
+ahead), frames a millisecond apart from 20 ms before the first instant: every frame's epoch is the one of its
+instant -- the first frame at or after each instant included, and its image the epoch's own, max 0 -- with no
+budget and with a page a frame (`bytesPerFrame` one chunk); no epoch late. Frames 20 ms apart under a page a
+frame (two frames an epoch, fewer than its six pages take): the epochs come late, counted (5), never out of
+order or ahead of their instant, and the last is reached whole. The whole lod suite (19 cases) and the Hydra and
+MCP live tests pass.

@@ -704,3 +704,111 @@ TEST_CASE("a clock-synced live stream shows the newest epoch whose instant has c
     std::filesystem::remove(p.pathA);
     std::filesystem::remove(p.pathB);
 }
+
+TEST_CASE("a clock-synced live stream shows each epoch in the very frame its instant comes", "[lod][gpu][stream][live]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    Pages p = pages(*h);
+    gpu::Device& device = *gpu->device;
+    const scene::Bounds bounds = p.a->bounds(0);
+    constexpr uint64_t kStep = 40'000'000;   // page(): epoch e is at e * 40 ms
+    constexpr uint64_t kFrame = 1'000'000;   // the frames' clock: a millisecond a frame
+    constexpr uint64_t kEpochs = 5;
+
+    const auto stateOf = [&](uint64_t e) {
+        State s(kChunks, nullptr);
+        for (uint32_t c = 0; c < kChunks; ++c) {
+            s[c] = (c + e) % 2 == 0 ? &p.blocksA[c] : &p.blocksB[c];
+        }
+        return s;
+    };
+    std::vector<render::RenderTargets> references(kEpochs + 1);
+    for (uint64_t e = 1; e <= kEpochs; ++e) {
+        references[e] = renderCloud(*h, uploadedState(device, p.settings.format, stateOf(e)));
+    }
+
+    for (const uint64_t bytesPerFrame : {uint64_t{0}, p.settings.format.chunkBytes()}) {
+        INFO("bytes a frame " << bytesPerFrame);
+        auto queue = std::make_shared<lod::PageQueue>();
+        auto source = lod::LiveSource::create(queue, p.settings);
+        REQUIRE(source);
+        lod::StreamingSettings settings;
+        settings.budgetSplats = 2 * kChunks * kChunkSplats;   // the shown epoch and one ahead
+        settings.sync = lod::LiveSync::Clock;
+        settings.bytesPerFrame = bytesPerFrame;   // 0, or a page a frame
+        auto pool = lod::StreamingPool::open(device, std::unique_ptr<lod::ChunkSource>(std::move(*source)), settings);
+        if (!pool) FAIL(pool.error().toString());
+        for (uint64_t e = 1; e <= kEpochs; ++e) {
+            const State s = stateOf(e);
+            for (uint32_t c = 0; c < kChunks; ++c) {
+                queue->push(page(p.settings.stream, e, c, lod::PageUpdate::Op::Replace, s[c], kChunks, bounds));
+            }
+        }
+        // Frame after frame, a millisecond apart, from 20 ms before the first
+        // instant to past the last: every frame shows exactly the epoch of
+        // its instant, the first frame at or after an instant included.
+        int wrong = 0;
+        int checked = 0;
+        for (uint64_t now = kStep - 20 * kFrame; now <= kEpochs * kStep + 2 * kFrame; now += kFrame) {
+            (*pool)->setClock(now);
+            auto placed = (*pool)->update(false);
+            if (!placed) FAIL(placed.error().toString());
+            const uint64_t expected = std::min<uint64_t>(now / kStep, kEpochs);
+            const auto s = (*pool)->status();
+            wrong += s.epoch == expected ? 0 : 1;
+            // The image too, at each instant's first frame and the one before it.
+            const uint64_t within = now % kStep;
+            if (expected >= 1 && (within < kFrame || within >= kStep - kFrame)) {
+                const Cut cut = renderPool(*h, (*pool)->cloud(), 0.0F);
+                wrong += compare(*h, references[expected], cut.targets).max == 0 ? 0 : 1;
+                ++checked;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));   // the loaders' time
+        }
+        const auto s = (*pool)->status();
+        std::printf("  %llu bytes a frame: %d frames wrong, %d images checked, %llu late\n",
+                    static_cast<unsigned long long>(bytesPerFrame), wrong, checked,
+                    static_cast<unsigned long long>(s.lateEpochs));
+        CHECK(wrong == 0);
+        CHECK(s.lateEpochs == 0);
+        CHECK(s.epoch == kEpochs);
+    }
+
+    SECTION("epochs closer than their loads take come late, and are counted") {
+        auto queue = std::make_shared<lod::PageQueue>();
+        auto source = lod::LiveSource::create(queue, p.settings);
+        REQUIRE(source);
+        lod::StreamingSettings settings;
+        settings.budgetSplats = 2 * kChunks * kChunkSplats;
+        settings.sync = lod::LiveSync::Clock;
+        settings.bytesPerFrame = p.settings.format.chunkBytes();   // six frames an epoch at least
+        auto pool = lod::StreamingPool::open(device, std::unique_ptr<lod::ChunkSource>(std::move(*source)), settings);
+        if (!pool) FAIL(pool.error().toString());
+        for (uint64_t e = 1; e <= kEpochs; ++e) {
+            const State s = stateOf(e);
+            for (uint32_t c = 0; c < kChunks; ++c) {
+                queue->push(page(p.settings.stream, e, c, lod::PageUpdate::Op::Replace, s[c], kChunks, bounds));
+            }
+        }
+        // A frame every 20 ms: two frames an epoch, fewer than its loads take.
+        uint64_t previous = 0;
+        bool ordered = true;
+        for (uint64_t now = kStep; now <= 20 * kStep; now += kStep / 2) {
+            (*pool)->setClock(now);
+            REQUIRE((*pool)->update(false));
+            const uint64_t shown = (*pool)->status().epoch;
+            ordered = ordered && shown >= previous && shown <= now / kStep;
+            previous = shown;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const auto s = (*pool)->status();
+        std::printf("  two frames an epoch: %llu late, epoch %llu shown at the end\n",
+                    static_cast<unsigned long long>(s.lateEpochs), static_cast<unsigned long long>(s.epoch));
+        CHECK(ordered);
+        CHECK(s.lateEpochs > 0);
+        CHECK(s.epoch == kEpochs);
+        CHECK(compare(*h, references[kEpochs], renderPool(*h, (*pool)->cloud(), 0.0F).targets).max == 0);
+    }
+    std::filesystem::remove(p.pathA);
+    std::filesystem::remove(p.pathB);
+}

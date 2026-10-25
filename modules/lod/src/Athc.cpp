@@ -852,6 +852,19 @@ struct Epoch {
     uint64_t                 id = 0;
     uint64_t                 ptpTime = 0;
     std::vector<ChunkChange> changes;
+    bool                     late = false;   // counted in lateEpochs already
+};
+
+/// An epoch started: its pages loading or placed into slots no table in use
+/// holds, and its own slot table -- the one before it (or the shown one) with
+/// its changes made. Shown by swapping tables, when every page is placed.
+struct Built {
+    Epoch                                  e;
+    std::vector<int32_t>                   slots;    // per chunk
+    std::vector<uint32_t>                  counts;
+    std::vector<scene::Bounds>             bounds;
+    std::unordered_map<uint64_t, uint32_t> targets;  // pages not placed: ticket -> slot
+    [[nodiscard]] bool placed() const noexcept { return targets.empty(); }
 };
 
 }   // namespace
@@ -905,12 +918,11 @@ struct StreamingPool::Impl {
 
     // A live source's epochs (frame thread).
     std::deque<Epoch>                      incoming;   // complete, not started
-    std::optional<Epoch>                   building;   // being loaded beside the one shown
-    std::vector<int32_t>                   nextSlots;  // per chunk: its slot in the epoch being built
-    std::vector<uint32_t>                  nextCounts;
-    std::vector<scene::Bounds>             nextBounds;
-    std::unordered_map<uint64_t, uint32_t> targets;    // the building epoch's pages not placed: ticket -> slot
-    std::vector<uint8_t>                   reserved;   // per slot: a target of the building epoch
+    /// Started, in epoch order, each table made from the one before it. By
+    /// the latest, one at a time; by the clock, as many ahead of their
+    /// instant as the store has room for, so each is shown by a table swap
+    /// in the frame its instant comes.
+    std::deque<Built>                      built;
 
     // SPZ pages (ChunkFormat::Payload::Spz): the device's records and the
     // decode's scratch, one set a staging slot -- free when the slot is.
@@ -1087,9 +1099,11 @@ struct StreamingPool::Impl {
 
     Result<uint32_t> updateOnDemand(bool wait, uint64_t budget);
     Result<uint32_t> updateLive(bool wait, uint64_t budget);
-    Result<void>     startEpoch();
-    void             abandonEpoch(const Error& why);
-    void             publish(gpu::CommandBatch& batch);
+    enum class Start { Started, Wait, Dropped };
+    [[nodiscard]] std::vector<uint32_t> freeSlots() const;
+    Result<Start>    startEpoch();
+    void             abandonFrom(size_t index, const Error& why);
+    void             flip(gpu::CommandBatch& batch, size_t index);
 };
 
 StreamingPool::StreamingPool() : impl_(std::make_unique<Impl>()) {}
@@ -1148,7 +1162,6 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
         p.cloud.splats.count = static_cast<uint32_t>(uint64_t{slots} * p.format.chunkSplats);
     }
     p.owner.assign(slots, -1);
-    p.reserved.assign(slots, 0);
     p.wantedNow.assign(chunks, 0);
     p.lastWanted.assign(chunks, 0);
     p.inFlight.assign(chunks, 0);
@@ -1415,19 +1428,30 @@ Result<uint32_t> StreamingPool::Impl::updateOnDemand(bool wait, uint64_t budget)
     return placed;
 }
 
-Result<void> StreamingPool::Impl::startEpoch() {
-    // Taken off `incoming` once it is started, or dropped when it does not fit.
-    const Epoch& e = incoming.front();
-    const uint32_t chunks = cloud.chunks();
-    nextSlots = cloud.slots;
-    nextCounts = cloud.chunkCounts;
-    nextBounds = shownBounds;
+std::vector<uint32_t> StreamingPool::Impl::freeSlots() const {
+    std::vector<uint8_t> used(owner.size(), 0);
+    for (size_t k = 0; k < owner.size(); ++k) {
+        used[k] = owner[k] >= 0 ? 1 : 0;
+    }
+    for (const Built& b : built) {
+        for (const int32_t slot : b.slots) {
+            if (slot >= 0) {
+                used[static_cast<uint32_t>(slot)] = 1;
+            }
+        }
+    }
     std::vector<uint32_t> free;
-    for (uint32_t k = static_cast<uint32_t>(owner.size()); k-- > 0;) {
-        if (owner[k] < 0 && reserved[k] == 0) {
+    for (uint32_t k = static_cast<uint32_t>(used.size()); k-- > 0;) {
+        if (used[k] == 0) {
             free.push_back(k);
         }
     }
+    return free;
+}
+
+Result<StreamingPool::Impl::Start> StreamingPool::Impl::startEpoch() {
+    const Epoch& e = incoming.front();
+    const uint32_t chunks = cloud.chunks();
     size_t needed = 0;
     for (const ChunkChange& c : e.changes) {
         needed += c.op == ChunkChange::Op::Remove ? 0 : 1;
@@ -1440,7 +1464,11 @@ Result<void> StreamingPool::Impl::startEpoch() {
                                source->name(), e.id);
         }
     }
+    std::vector<uint32_t> free = freeSlots();
     if (needed > free.size()) {
+        if (!built.empty()) {
+            return Start::Wait;   // room comes when an epoch ahead of it is shown
+        }
         // Dropped, not waited for: the epoch shown stays, and a later epoch
         // that fits is shown. Its pages' bytes are given back to the source.
         log::warn("{}: epoch {} dropped: it writes {} chunks, and the store has {} slots free beside the epoch "
@@ -1453,41 +1481,54 @@ Result<void> StreamingPool::Impl::startEpoch() {
         }
         ++counters.droppedNoRoom;
         incoming.pop_front();
-        return ok();
+        return Start::Dropped;
     }
+    Built b;
+    b.slots = built.empty() ? cloud.slots : built.back().slots;
+    b.counts = built.empty() ? cloud.chunkCounts : built.back().counts;
+    b.bounds = built.empty() ? shownBounds : built.back().bounds;
     {
         std::lock_guard lock(mutex);
         for (const ChunkChange& c : e.changes) {
             const uint32_t chunk = c.request.chunk;
             if (c.op == ChunkChange::Op::Remove) {
-                nextSlots[chunk] = -1;
-                nextCounts[chunk] = 0;
+                b.slots[chunk] = -1;
+                b.counts[chunk] = 0;
                 continue;
             }
             const uint32_t slot = free.back();
             free.pop_back();
-            reserved[slot] = 1;
-            nextSlots[chunk] = static_cast<int32_t>(slot);
-            nextCounts[chunk] = c.request.splats;
-            nextBounds[chunk] = c.bounds;
-            targets[c.request.ticket] = slot;
+            b.slots[chunk] = static_cast<int32_t>(slot);
+            b.counts[chunk] = c.request.splats;
+            b.bounds[chunk] = c.bounds;
+            b.targets[c.request.ticket] = slot;
             queue.push_back(c.request);
         }
         work.notify_all();
     }
-    building = std::move(incoming.front());
+    b.e = std::move(incoming.front());
     incoming.pop_front();
-    return ok();
+    built.push_back(std::move(b));
+    return Start::Started;
 }
 
-void StreamingPool::Impl::abandonEpoch(const Error& why) {
-    log::warn("{}: epoch {} dropped: a page could not be read ({})", source->name(), building->id, why.message());
+void StreamingPool::Impl::abandonFrom(size_t index, const Error& why) {
+    // The epoch, and every one started after it: their tables were made on
+    // its, and a change on a change never made is not shown.
+    std::unordered_map<uint64_t, uint32_t> dropped;
+    for (size_t k = index; k < built.size(); ++k) {
+        log::warn("{}: epoch {} dropped: {}", source->name(), built[k].e.id,
+                  k == index ? "a page could not be read (" + why.message() + ")"
+                             : "it was built on epoch " + std::to_string(built[index].e.id));
+        dropped.insert(built[k].targets.begin(), built[k].targets.end());
+        ++counters.droppedCorrupt;
+    }
     {
         std::lock_guard lock(mutex);
-        // Its pages still queued are not loaded; those loading or loaded are
-        // given back when they arrive, their tickets no longer wanted.
+        // Their pages still queued are not loaded; those loading or loaded
+        // are given back when they arrive, their tickets no longer wanted.
         for (auto it = queue.begin(); it != queue.end();) {
-            if (targets.count(it->ticket) != 0) {
+            if (dropped.count(it->ticket) != 0) {
                 source->discard(*it);
                 it = queue.erase(it);
             } else {
@@ -1495,30 +1536,27 @@ void StreamingPool::Impl::abandonEpoch(const Error& why) {
             }
         }
     }
-    targets.clear();
-    std::fill(reserved.begin(), reserved.end(), 0);
-    ++counters.droppedCorrupt;
-    building.reset();
+    built.erase(built.begin() + static_cast<std::ptrdiff_t>(index), built.end());
 }
 
-void StreamingPool::Impl::publish(gpu::CommandBatch& batch) {
+void StreamingPool::Impl::flip(gpu::CommandBatch& batch, size_t index) {
+    const Built& b = built[index];
     const uint32_t chunks = cloud.chunks();
     for (uint32_t c = 0; c < chunks; ++c) {
-        if ((cloud.slots[c] >= 0) != (nextSlots[c] >= 0)) {
-            setResident(batch, cloud, c, nextSlots[c] >= 0);
+        if ((cloud.slots[c] >= 0) != (b.slots[c] >= 0)) {
+            setResident(batch, cloud, c, b.slots[c] >= 0);
             recorded = true;
         }
     }
     std::fill(owner.begin(), owner.end(), -1);
-    std::fill(reserved.begin(), reserved.end(), 0);
     for (uint32_t c = 0; c < chunks; ++c) {
-        if (nextSlots[c] >= 0) {
-            owner[static_cast<uint32_t>(nextSlots[c])] = static_cast<int32_t>(c);
+        if (b.slots[c] >= 0) {
+            owner[static_cast<uint32_t>(b.slots[c])] = static_cast<int32_t>(c);
         }
     }
-    cloud.slots = nextSlots;
-    cloud.chunkCounts = nextCounts;
-    shownBounds = nextBounds;
+    cloud.slots = b.slots;
+    cloud.chunkCounts = b.counts;
+    shownBounds = b.bounds;
     // The cloud's bounds, the union of its shown pages' (bookkeeping on what
     // the producers said); a page that said none (all zero) is left out, and
     // with none said the bounds stay as they were (the stream's declared ones).
@@ -1526,14 +1564,14 @@ void StreamingPool::Impl::publish(gpu::CommandBatch& batch) {
         bool any = false;
         scene::Bounds all;
         for (uint32_t c = 0; c < chunks; ++c) {
-            const scene::Bounds& b = shownBounds[c];
-            const bool said = b.min != std::array<float, 3>{0, 0, 0} || b.max != std::array<float, 3>{0, 0, 0};
+            const scene::Bounds& bb = shownBounds[c];
+            const bool said = bb.min != std::array<float, 3>{0, 0, 0} || bb.max != std::array<float, 3>{0, 0, 0};
             if (cloud.slots[c] < 0 || !said) {
                 continue;
             }
             for (size_t k = 0; k < 3; ++k) {
-                all.min[k] = any ? std::min(all.min[k], b.min[k]) : b.min[k];
-                all.max[k] = any ? std::max(all.max[k], b.max[k]) : b.max[k];
+                all.min[k] = any ? std::min(all.min[k], bb.min[k]) : bb.min[k];
+                all.max[k] = any ? std::max(all.max[k], bb.max[k]) : bb.max[k];
             }
             any = true;
         }
@@ -1541,10 +1579,10 @@ void StreamingPool::Impl::publish(gpu::CommandBatch& batch) {
             cloud.splats.bounds = all;
         }
     }
-    counters.epoch = building->id;
-    counters.ptpTime = building->ptpTime;
-    ++counters.epochs;
-    building.reset();
+    counters.epoch = b.e.id;
+    counters.ptpTime = b.e.ptpTime;
+    counters.epochs += index + 1;
+    built.erase(built.begin(), built.begin() + static_cast<std::ptrdiff_t>(index) + 1);
 }
 
 Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
@@ -1557,8 +1595,8 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
         incoming.back().changes.push_back(std::move(c));
     }
     if (sync == LiveSync::Clock) {
-        // Complete epochs held for their instant, at most `heldEpochs`: past
-        // that the oldest goes, its pages unfetched.
+        // Complete epochs held for their instant, at most `heldEpochs` not
+        // yet started: past that the oldest goes, its pages unfetched.
         while (incoming.size() > heldEpochs) {
             for (const ChunkChange& c : incoming.front().changes) {
                 if (c.op != ChunkChange::Op::Remove) {
@@ -1576,13 +1614,19 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
     uint32_t deferred = 0;
     gpu::CommandBatch batch(*device);
     for (;;) {
-        // By the clock, only the epochs whose instant has come; every one of
-        // them, in order (an epoch is a change on the one before), so the
-        // last shown is the newest due.
-        while (!building && !incoming.empty() && (sync == LiveSync::Latest || incoming.front().ptpTime <= now)) {
-            ATHENEA_TRY(startEpoch());
+        // START what may start: by the latest one at a time, as before; by
+        // the clock every epoch in order, ahead of its instant, while the
+        // store has room for it beside the tables in use.
+        bool progress = false;
+        while (!incoming.empty() && (sync == LiveSync::Clock || built.empty())) {
+            auto started = startEpoch();
+            if (!started) return std::move(started).error();
+            if (*started == Start::Wait) {
+                break;
+            }
+            progress = true;
         }
-        if (!building) {
+        if (built.empty()) {
             break;
         }
         std::vector<Loaded> arrived;
@@ -1595,21 +1639,35 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
         }
         std::vector<Loaded> held;
         for (const Loaded& l : arrived) {
-            const auto target = targets.find(l.request.ticket);
-            if (target == targets.end()) {
-                release(l.staging);   // cannot happen: every load is a target of the epoch built
+            size_t owner = built.size();
+            for (size_t k = 0; k < built.size(); ++k) {
+                if (built[k].targets.count(l.request.ticket) != 0) {
+                    owner = k;
+                    break;
+                }
+            }
+            if (owner == built.size()) {
+                release(l.staging);   // an epoch dropped since it was asked for
                 continue;
             }
             if (!withinBudget(budget, placedBytes, l.request.bytes)) {
                 held.push_back(l);
                 continue;
             }
-            auto splats = placeLoaded(batch, l, target->second);
+            Built& b = built[owner];
+            const uint32_t slot = b.targets[l.request.ticket];
+            auto splats = placeLoaded(batch, l, slot);
             if (!splats) return std::move(splats).error();
-            nextCounts[l.request.chunk] = *splats;
-            targets.erase(target);
+            // Its count, in its table and in every later one that kept it.
+            for (size_t k = owner; k < built.size(); ++k) {
+                if (built[k].slots[l.request.chunk] == static_cast<int32_t>(slot)) {
+                    built[k].counts[l.request.chunk] = *splats;
+                }
+            }
+            b.targets.erase(l.request.ticket);
             ++placed;
             placedBytes += l.request.bytes;
+            progress = true;
         }
         deferred = static_cast<uint32_t>(held.size());
         bool more = false;
@@ -1620,26 +1678,39 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
         }
         ATHENEA_TRY(takeFailure());
         {
-            std::optional<Error> corrupt;
+            std::optional<std::pair<size_t, Error>> corrupt;
             {
                 std::lock_guard lock(mutex);
                 for (auto& [ticket, error] : failedPages) {
-                    if (!corrupt && targets.count(ticket) != 0) {
-                        corrupt = std::move(error);
+                    for (size_t k = 0; k < built.size(); ++k) {
+                        if (built[k].targets.count(ticket) != 0 && (!corrupt || k < corrupt->first)) {
+                            corrupt.emplace(k, error);
+                        }
                     }
                 }
                 failedPages.clear();
             }
             if (corrupt) {
-                abandonEpoch(*corrupt);
+                abandonFrom(corrupt->first, corrupt->second);
                 continue;   // the next epoch, if one is complete
             }
         }
-        if (targets.empty()) {
-            // Every page of the epoch is in its slot (the copies come before
-            // anything this frame records after them): show it.
-            publish(batch);
-            continue;
+        // SHOW: the newest epoch whose every page -- and every page of those
+        // before it -- is placed, and, by the clock, whose instant has come.
+        size_t show = built.size();
+        for (size_t k = 0; k < built.size() && built[k].placed(); ++k) {
+            if (sync == LiveSync::Latest || built[k].e.ptpTime <= now) {
+                show = k;
+            } else {
+                break;
+            }
+        }
+        if (show < built.size()) {
+            flip(batch, show);
+            continue;   // room for more, and perhaps more due
+        }
+        if (progress && sync == LiveSync::Clock && !wait) {
+            break;
         }
         if (!wait || !held.empty() || !more) {
             break;
@@ -1648,6 +1719,22 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
     }
     ATHENEA_TRY(submit(batch, wait));
     ATHENEA_TRY(takeFailure());
+    if (sync == LiveSync::Clock) {
+        // LATE: an epoch whose instant has come and that this frame does not
+        // show -- its pages not all placed, or not started for want of room.
+        const auto late = [&](Epoch& e) {
+            if (e.ptpTime <= now && !e.late) {
+                e.late = true;
+                ++counters.lateEpochs;
+            }
+        };
+        for (Built& b : built) {
+            late(b.e);
+        }
+        for (Epoch& e : incoming) {
+            late(e);
+        }
+    }
     counters.loads += placed;
     counters.placedBytes = placedBytes;
     counters.deferred = deferred;
@@ -1657,7 +1744,7 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
     }
     counters.resident = resident;
     counters.missing = 0;
-    counters.pendingEpochs = static_cast<uint32_t>(incoming.size() + (building ? 1 : 0));
+    counters.pendingEpochs = static_cast<uint32_t>(incoming.size() + built.size());
     ++frame;
     report();
     return placed;

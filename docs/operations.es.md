@@ -1860,7 +1860,11 @@ descarta la más antigua con un aviso. Toda época que ya toca se aplica en
 orden, así que un reloj que salta hacia delante muestra la más nueva que toca.
 Uno que salta hacia atrás deja la época mostrada como está: una época es un
 cambio sobre la anterior y no se deshace; la siguiente espera a que el reloj
-vuelva a llegar a ella.
+vuelva a llegar a ella. Las épocas se colocan en el dispositivo antes de su
+instante según haya sitio en el almacén (`primvars:athenea:stream:budget`: el
+valor por defecto, dos épocas, guarda una por delante), así que cada una se
+muestra en el mismo frame en que llega su instante; una que no se pudo colocar
+a tiempo se muestra en cuanto lo está, y se cuenta como tardía.
 
 | Atributo | Tipo | Por defecto |
 |---|---|---|

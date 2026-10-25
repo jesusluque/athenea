@@ -1804,7 +1804,11 @@ complete epochs wait, eight at most: past that the oldest is dropped with a
 warning. Every epoch due is applied in order, so a clock that jumps forward
 shows the newest due. One that jumps back leaves the shown epoch as it is: an
 epoch is a change on the one before and is not undone; the next waits for the
-clock to reach it again.
+clock to reach it again. Epochs are placed on the device ahead of their instant
+as the store has room (`primvars:athenea:stream:budget`: the default, two
+epochs, holds one ahead), so each shows in the very frame its instant comes;
+one that could not be placed in time shows as soon as it is, and is counted
+late.
 
 | Attribute | Type | Default |
 |---|---|---|
