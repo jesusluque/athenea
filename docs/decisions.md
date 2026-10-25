@@ -16421,6 +16421,72 @@ help. Rotation is half of a residual frame (0.35 of 0.59 MB), the positions' low
 beats an order-0 entropy coder (an rANS stand-in) on every plane (0.59 against 0.71 MB). 12-bit positions (56 um)
 draw the same as 16-bit (41.48 against 41.49 dB).
 
+### Motion: a cluster's rigid fit, rotation turns by shape, holds and keys that hold (order 3)
+
+For 150k at 60 Mbit/s with no visible flicker, on any content and with no rig. Residuals from the frame before
+cost 3 B a gaussian per frame, and holding a field unless it moved (`--geometry-hold`, conditional replenishment
+against the frame before) saved little: 122.5 -> 118.3 Mbit/s at one step, 109.2 at two, because almost every
+rotation moves every frame. A closed-loop simulation of the decoder's state on the rig-merged 150k (10-bit
+positions, 7-bit scales, the 7-bit component step 1.28 deg; KB a frame, deflate 9) gave the order:
+
+| step | KB a frame | positions | rotation | scales | motion |
+|---|---:|---:|---:|---:|---:|
+| residual from the frame before, smallest three | 465 | 141 | 263 | 61 | -- |
+| rotation as a turn (log map) in the gaussian's own frame | 416 | 141 | 214 | 61 | -- |
+| + steps by shape | 262 | 141 | 60 | 61 | -- |
+| + a rigid fit for each 256 of the stable order | 226 | 114 | 44 | 61 | 7 |
+| + holds of a step against the prediction | **127** | 51 | 21 | 48 | 7 |
+
+- **Where the rotation's bytes go.** In the smallest-three residual, the 9.5 % of gaussians whose dropped index
+  changes between frames carry 20.8 % of the rotation's bytes. The steps by shape remove most of the rest. A
+  rotation about an axis moves the ellipsoid by the angle times the other two axes' difference, so the step on
+  that axis is widened until the move is half a position step. Where it would pass pi, nothing is sent. The
+  rotation's error as a move of the ellipsoid stays under a position step (p99 0.86).
+- **Clusters of 64 and 1024.** 136 and 147 KB.
+- **Rice coding.** Rice coding in blocks of 32 was 30 % larger than deflate on every row, so the layer stays
+  deflated, now at level 9 (6 % smaller than 6).
+
+The motion (`--geometry-predict 3`, video_geometry.slang) is that last row:
+- **Fit.** Each run of 256 gaussians (a staggered key's block) gets a Kabsch fit from the state the decoder holds
+  to the frame's source, on the GPU: centroids, cross-covariance, Horn's quaternion, a workgroup a run. It is sent
+  in 32 bytes after its chunk's planes and applied to positions in integer arithmetic only.
+- **Exactness.** The rotation's steps are float. The encoder runs the decoder's own kernel on its packed planes, so
+  the two hold the same words. Computing the state in the encoding kernel instead left one word in 280 000 apart, a
+  10-bit rounding taken the other way.
+- **Keys** send the held words, not the source again, so a key changes nothing on screen.
+- **A looping file** is run twice before it is written, so its last frame leads into its first. The frame after
+  the wrap measures like the others (30.15 against 29.98 and 29.97 for the next two, close camera).
+
+Measured on the second pass of a two-loop play (`--loops 2`; a staggered stream needs `interval` frames before
+every block has had its key). The references are upright, from the 300k pages: PSNR reference / close camera,
+flicker close mean / p99, the tail of the close camera mean / p99, open pixels over the ring. All rows use keys
+staggered over 60, 10-bit positions, 7-bit scales, the 7-bit rotation step, degree 1, chroma, quality 0.4:
+
+| cloud | geometry | Mbit/s at 30 (24) | PSNR | flicker close | tail close | ring |
+|---|---|---:|---|---|---|---:|
+| rig-merged 150k | residuals | 122.5 (98.0) | 44.20 / 34.13 | 3.08 / 28 | 6.37 / 35 | 36 |
+| rig-merged 150k | motion, holds 1,1,1 | 61.9 (49.5) | 44.30 / 33.80 | 3.12 / 29 | 6.69 / 37 | 194 |
+| rig-merged 150k | motion, holds 2,1,1 | 57.0 (45.6) | 43.97 / 33.47 | 3.25 / 30 | 7.14 / 41 | 414 |
+| mesh2splat 155 793 | residuals | 122.3 (97.8) | 40.51 / 30.49 | 3.30 / 32 | 7.04 / 43 | 4698 |
+| mesh2splat 155 793 | motion | 84.9 (67.9) | 40.45 / 30.45 | 3.35 / 33 | 7.08 / 43 | 4742 |
+| mesh2splat 155 793 | motion, holds 1,1,1 | 64.2 (51.3) | 40.33 / 30.26 | 3.41 / 33 | 7.33 / 45 | 4541 |
+| mesh2splat 155 793 | **motion, holds 2,1,1** | **59.4 (47.5)** | 40.14 / 30.15 | 3.48 / 34 | 7.53 / 47 | 4654 |
+| rig-merged 113 050 | motion, holds 2,1,1 | 42.4 (33.9) | 39.54 / 29.58 | 4.37 / 43 | 9.48 / 58 | 3587 |
+| mesh2splat 85 004 | motion, holds 1,1,1 | 38.0 (30.4) | 39.59 / 29.65 | 3.72 / 37 | 8.14 / 50 | 18209 |
+| mesh2splat 85 004 | motion, holds 2,1,1 | 35.4 (28.3) | 39.50 / 29.57 | 3.78 / 37 | 8.32 / 52 | 18435 |
+| rig-merged 75 094, growth 1.25 | motion, holds 2,1,1 | 33.0 (26.4) | 38.53 / 28.77 | 4.76 / 46 | 10.72 / 63 | 55 |
+
+- **Cost of each step.** On one cloud, the motion costs about 0.1 dB, and each hold step about 0.1-0.2 dB and 0.05
+  in the close camera's mean flicker.
+- **Key frames.** The flicker around frame 31 (where whole keys would land) is above frames 20-22 in every row,
+  the residuals' too. It is the bird's motion there, not a key.
+- **Reference bias.** The 300k pages are the references, so they favour the clouds merged from them: 44 against 40
+  dB for the same count. The mesh2splat clouds' silhouette is their own, which is the ring's 4.7k and 18k
+  pixels (the ring's source alpha is the 300k cloud's).
+- **Per field** (mesh2splat 155 793, holds 2,1,1, KB a frame, deflate 9 of each group): positions 49, log scales
+  42, rotation 32, motion 11.
+- **Scale.** Scales are now the largest share left: they are held, not predicted.
+
 ### Checked against the player
 
 - `video-decode --dump-compare` takes another decoder's gaussians of a frame (a CSV) and compares them with this
@@ -16434,7 +16500,10 @@ draw the same as 16-bit (41.48 against 41.49 dB).
 ### Not done
 
 - Chroma for anything but colour; the chroma under geometric tiles is mid grey.
-- A reduction that keeps the merges' mass at 75k as well as it does at 150k; the merge's growth cap measured only at
-  1.5 and 2.
+- A reduction that keeps the merges' mass at 75k as well as it does at 150k; the merge's growth cap measured at
+  1.25, 1.5 and 2.
+- The motion's float rotation steps on another GPU (WGSL on the phone): a word whose rounding falls the other way
+  is one code off until its key. Prediction of the scales, and a fit weighted by opacity and area. References from
+  a path trace of the mesh, which neither cloud's pages favour.
 - SRT itself (the producer writes to stdout; the player's server forwards it over a WebSocket).
 - P pictures for slices (each slice would need its own encoder session).

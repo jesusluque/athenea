@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/video/Athv.h"
+#include "athenea/video/Planes.h"
 
 #include <algorithm>
 #include <cstring>
@@ -434,7 +435,10 @@ Result<AthvFrame> AthvReader::read(uint32_t k) {
     }
     if (geometryStored != 0) {
         const uint64_t chunk = header_.chunkSplats;
-        const uint64_t raw = chunk == 0 ? 0 : (f.splats + chunk - 1) / chunk * 16 * chunk;
+        // A chunk's 16 planes, and with motion (order 3) its clusters' motion.
+        const uint64_t chunkBytes =
+            16 * chunk + (header_.geometryOrder == 3 ? chunk / PlaneLayout::kMotionCluster * PlaneLayout::kMotionBytes : 0);
+        const uint64_t raw = chunk == 0 ? 0 : (f.splats + chunk - 1) / chunk * chunkBytes;
         f.geometry.resize(raw);
         uLongf size = static_cast<uLongf>(raw);
         if (uncompress(reinterpret_cast<Bytef*>(f.geometry.data()), &size, geometry.data(),
