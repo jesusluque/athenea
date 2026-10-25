@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <numeric>
 #include <optional>
@@ -25,7 +26,7 @@ namespace athenea::lod {
 namespace {
 
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'Z'};
-constexpr uint16_t kVersion = 2;   ///< 2: a word's transform in its plane entries (1: none)
+constexpr uint16_t kVersion = 3;   ///< 2: a word's transform in its plane entries (1: none); 3: curvature, CPCA
 constexpr uint64_t kPage = 4096;
 constexpr uint32_t kHeaderBytes = 64;
 constexpr uint32_t kEntryBytes = 64;
@@ -74,6 +75,11 @@ uint32_t crcOf(const void* data, uint64_t bytes, uint32_t crc = 0) {
         bytes -= n;
     }
     return static_cast<uint32_t>(c);
+}
+
+/// Words an element is: the .athc block's, and its curvature.
+uint32_t recordWords(const ChunkFormat& f) {
+    return static_cast<uint32_t>(f.elementBytes() / 4) + f.curvatureWords;
 }
 
 Error bad(const std::filesystem::path& path, const std::string& why) {
@@ -128,7 +134,7 @@ Result<Header> decodeHeader(std::span<const std::byte> bytes, const std::filesys
     }
     const uint16_t version = getAt<uint16_t>(b + 4);
     if (version < 1 || version > kVersion) {
-        return bad(path, "version " + std::to_string(version) + ", this reads 1 and 2");
+        return bad(path, "version " + std::to_string(version) + ", this reads 1 to 3");
     }
     if (getAt<uint16_t>(b + 6) != kHeaderBytes || getAt<uint32_t>(b + 60) != crcOf(b, 60)) {
         return bad(path, "the header's CRC");
@@ -179,7 +185,16 @@ struct Asset {
     uint32_t tables = 0;
     uint32_t count = 0;
     uint32_t finestGroups = 0;
-    ChunkFormat format;    ///< what an element carries (payload Athz)
+    ChunkFormat format;    ///< what an element carries once decoded (payload Athz)
+    /// What the file codes an element as: the same, but a transfer coded by
+    /// CPCA (transferWords 4, its id and weights: athz_cpca.slang).
+    ChunkFormat coded;
+    bool     cpca = false;
+    uint32_t cpcaClusters = 0;
+    uint32_t cpcaComponents = 0;
+    float    cpcaLevels = 0;
+    uint64_t basisOffset = 0;
+    uint64_t basisBytes = 0;
     float    boundsLo[3] = {0, 0, 0};
     float    extent = 0;
     scene::Bounds bounds;
@@ -250,6 +265,14 @@ std::vector<uint8_t> encodeAsset(Asset& a) {
         w.put<uint32_t>(f.transferCount);
         w.put<uint32_t>(f.transferWords);
         w.put<uint32_t>(f.shadowWords);
+        // Version 3: curvature, and a transfer coded by CPCA.
+        w.put<uint32_t>(f.curvatureWords);
+        w.put<uint32_t>(a.cpca ? a.coded.transferWords : 0u);
+        w.put<uint32_t>(a.cpcaClusters);
+        w.put<uint32_t>(a.cpcaComponents);
+        w.put<float>(a.cpcaLevels);
+        w.put<uint64_t>(a.basisOffset);
+        w.put<uint64_t>(a.basisBytes);
         for (float v : a.boundsLo) w.put<float>(v);
         w.put<float>(a.extent);
         for (float v : a.bounds.min) w.put<float>(v);
@@ -307,7 +330,26 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
     f.transferCount = r.get<uint32_t>();
     f.transferWords = r.get<uint32_t>();
     f.shadowWords = r.get<uint32_t>();
+    uint32_t codedTransferWords = 0;
+    if (h.version >= 3) {
+        f.curvatureWords = r.get<uint32_t>();
+        codedTransferWords = r.get<uint32_t>();
+        a.cpcaClusters = r.get<uint32_t>();
+        a.cpcaComponents = r.get<uint32_t>();
+        a.cpcaLevels = r.get<float>();
+        a.basisOffset = r.get<uint64_t>();
+        a.basisBytes = r.get<uint64_t>();
+    }
     f.linear = (h.flags & kFlagLinear) != 0;
+    a.coded = f;
+    a.cpca = codedTransferWords != 0;
+    if (a.cpca) {
+        a.coded.transferWords = codedTransferWords;
+        if (codedTransferWords != 4 || f.transferCount != 112 || a.cpcaClusters == 0 || a.cpcaClusters > 256 ||
+            a.cpcaComponents != 8 || a.basisOffset > bytes.size() || a.basisBytes > bytes.size() - a.basisOffset) {
+            return bad(path, "the CPCA transfer's basis");
+        }
+    }
     for (float& v : a.boundsLo) v = r.get<float>();
     a.extent = r.get<float>();
     for (float& v : a.bounds.min) v = r.get<float>();
@@ -318,7 +360,7 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
     a.startsOffset = r.get<uint64_t>();
     a.startsBytes = r.get<uint64_t>();
     if (!r.ok || size != h.assetBytes || kinds != kKinds || levels == 0 || levels > 30 || a.count == 0 ||
-        f.shWords == 0 || f.shWords > 64 || a.planes != 4 * (f.elementBytes() / 4) || a.tableLog < 9 ||
+        f.shWords == 0 || f.shWords > 64 || a.planes != 4 * recordWords(a.coded) || a.tableLog < 9 ||
         a.tableLog > 12 || f.chunkSplats != uint32_t{h.runGaussians} * h.pageRuns || h.gaussians != a.count) {
         return bad(path, "inconsistent asset table");
     }
@@ -347,6 +389,9 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
         }
     }
     const uint32_t tailWord = 8 + f.shWords;
+    if (f.curvatureWords != 0 && f.curvatureWords != 3) {
+        return bad(path, "curvature");
+    }
     for (size_t i = 0; i < a.planeEntries.size(); ++i) {
         PlaneEntry& p = a.planeEntries[i];
         if (h.version < 2) {
@@ -386,10 +431,12 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
 // --- what an element is ---------------------------------------------------------
 
 /// Words of each array an element carries, in its order (athz_common's fields).
-std::array<uint32_t, 10> fieldWords(const ChunkFormat& f) {
+std::array<uint32_t, 11> fieldWords(const ChunkFormat& f) {
     return {4, 4, f.shWords, 1, f.normals ? 1u : 0u, f.emission ? 1u : 0u, f.pbrWords, f.lobesWords, f.transferWords,
-            f.shadowWords};
+            f.shadowWords, f.curvatureWords};
 }
+
+
 
 /// The layer of an element's byte `b` (0 G, 1 A, 2 T): position, rotation,
 /// scales, the tail word, normal and material are geometry; the base colour
@@ -398,9 +445,9 @@ std::array<uint32_t, 10> fieldWords(const ChunkFormat& f) {
 uint32_t layerOfByte(const ChunkFormat& f, uint32_t b) {
     uint32_t w = b / 4;
     const uint32_t inWord = b % 4;
-    const std::array<uint32_t, 10> words = fieldWords(f);
+    const std::array<uint32_t, 11> words = fieldWords(f);
     uint32_t field = 0;
-    for (; field < 10; ++field) {
+    for (; field < 11; ++field) {
         if (w < words[field]) break;
         w -= words[field];
     }
@@ -413,6 +460,7 @@ uint32_t layerOfByte(const ChunkFormat& f, uint32_t b) {
     case 5: return 1;
     case 6: return 0;
     case 7: return 0;
+    case 10: return 0;   // curvature: geometry
     default: return 2;
     }
 }
@@ -443,18 +491,19 @@ ChunkFormat formatOfCloud(const LodCloud& cloud, uint32_t pageGaussians) {
         f.transferWords = cloud.splats.transferWords;
         f.shadowWords = everywhere(&scene::GpuSplats::shadowBits) ? cloud.splats.shadowWords : 0;
     }
+    f.curvatureWords = everywhere(&scene::GpuSplats::curvature) ? 3u : 0u;
     return f;
 }
 
 /// An element's arrays, as buffers (the tail apart from the cloud's).
 struct Arrays {
-    std::array<const gpu::Buffer*, 10> field{};
+    std::array<const gpu::Buffer*, 11> field{};
 };
 
 Arrays arraysOf(const scene::GpuSplats& s, const gpu::Buffer& tail) {
     Arrays a;
     a.field = {&s.positions, &s.shape, &s.sh, &tail, &s.normals, &s.emission, &s.pbr, &s.lobes, &s.transfer,
-               &s.shadowBits};
+               &s.shadowBits, &s.curvature};
     return a;
 }
 
@@ -466,13 +515,16 @@ struct Parents {
     bool     leaves = false;
 };
 
-constexpr std::array<const char*, 10> kParNames = {"parPositions", "parShape", "parSh", "parTail", "parNormals",
-                                                   "parEmission", "parPbr", "parLobes", "parTransfer", "parShadow"};
+constexpr std::array<const char*, 11> kParNames = {"parPositions", "parShape", "parSh", "parTail", "parNormals",
+                                                   "parEmission", "parPbr", "parLobes", "parTransfer", "parShadow",
+                                                   "parCurvature"};
 
-constexpr std::array<const char*, 10> kSrcNames = {"srcPositions", "srcShape", "srcSh", "srcTail", "srcNormals",
-                                                   "srcEmission", "srcPbr", "srcLobes", "srcTransfer", "srcShadow"};
-constexpr std::array<const char*, 10> kDstNames = {"dstPositions", "dstShape", "dstSh", "dstTail", "dstNormals",
-                                                   "dstEmission", "dstPbr", "dstLobes", "dstTransfer", "dstShadow"};
+constexpr std::array<const char*, 11> kSrcNames = {"srcPositions", "srcShape", "srcSh", "srcTail", "srcNormals",
+                                                   "srcEmission", "srcPbr", "srcLobes", "srcTransfer", "srcShadow",
+                                                   "srcCurvature"};
+constexpr std::array<const char*, 11> kDstNames = {"dstPositions", "dstShape", "dstSh", "dstTail", "dstNormals",
+                                                   "dstEmission", "dstPbr", "dstLobes", "dstTransfer", "dstShadow",
+                                                   "dstCurvature"};
 
 void setLayout(rhi::ShaderCursor p, const ChunkFormat& f) {
     p["shWords"].setData(f.shWords);
@@ -482,7 +534,8 @@ void setLayout(rhi::ShaderCursor p, const ChunkFormat& f) {
     p["lobesWords"].setData(f.lobesWords);
     p["transferWords"].setData(f.transferWords);
     p["shadowWords"].setData(f.shadowWords);
-    p["words"].setData(static_cast<uint32_t>(f.elementBytes() / 4));
+    p["words"].setData(recordWords(f));
+    p["curvatureWords"].setData(f.curvatureWords);
 }
 
 Result<gpu::Buffer> deviceBuffer(gpu::Device& device, uint64_t bytes, uint32_t element, const char* label,
@@ -529,6 +582,7 @@ Result<scene::GpuSplats> emptyCloud(gpu::Device& device, const ChunkFormat& f, u
     if (f.lobesWords) ATHENEA_TRY(make(s.lobes, f.lobesWords, 4));
     if (f.transferWords) ATHENEA_TRY(make(s.transfer, f.transferWords, 4));
     if (f.shadowWords) ATHENEA_TRY(make(s.shadowBits, f.shadowWords, 4));
+    if (f.curvatureWords) ATHENEA_TRY(make(s.curvature, f.curvatureWords, 4));
     return s;
 }
 
@@ -657,12 +711,40 @@ uint64_t codedBytes(const Parsed& p, uint32_t page) {
     return n;
 }
 
+// --- CPCA ------------------------------------------------------------------------
+
+/// athz_cpca's parameters for an asset's basis (256 clusters, 8 axes a block,
+/// the three blocks' means after the centroids and norms).
+void bindCpca(rhi::ShaderCursor c, const Asset& a, const gpu::Buffer& basis, uint32_t count, uint32_t transferWords) {
+    const uint32_t dims[3] = {16, 48, 48};
+    const uint64_t clusters = a.cpcaClusters, k = a.cpcaComponents;
+    uint64_t floats = clusters * 112 + 3;
+    uint32_t meanAt[3] = {0, 0, 0};
+    for (int b = 0; b < 3; ++b) {
+        meanAt[b] = static_cast<uint32_t>(floats);
+        floats += clusters * dims[b] + clusters * dims[b] * k + clusters * k;
+    }
+    c["params"]["count"].setData(count);
+    c["params"]["clusters"].setData(a.cpcaClusters);
+    c["params"]["components"].setData(a.cpcaComponents);
+    c["params"]["levels"].setData(a.cpcaLevels);
+    c["params"]["meanAt0"].setData(meanAt[0]);
+    c["params"]["meanAt1"].setData(meanAt[1]);
+    c["params"]["meanAt2"].setData(meanAt[2]);
+    c["params"]["normAt"].setData(static_cast<uint32_t>(clusters * 112));
+    c["params"]["transferWords"].setData(transferWords);
+    c["params"]["codeWords"].setData(25u);
+    c["basis"].setBinding(basis.rhi());
+}
+
 // --- the decoder ---------------------------------------------------------------
 
 class Decoder {
 public:
-    static Result<std::unique_ptr<Decoder>> create(gpu::ShaderLibrary& library, const Asset& asset,
-                                                   uint32_t layerMask, uint32_t layers) {
+    static Result<std::unique_ptr<Decoder>> create(gpu::ShaderLibrary& library, const Parsed& parsed,
+                                                   uint32_t layers) {
+        const Asset& asset = parsed.asset;
+        const uint32_t layerMask = parsed.header.layerMask;
         auto d = std::unique_ptr<Decoder>(new Decoder());
         d->device_ = &library.device();
         d->asset_ = &asset;
@@ -710,7 +792,39 @@ public:
         auto dummy = zeros(device, 4, "athz.dummy");
         if (!dummy) return std::move(dummy).error();
         d->dummy_ = std::move(*dummy);
+        if (asset.cpca) {
+            auto unpack = gpu::ComputeKernel::create(library, "athenea/lod/athz_cpca", "athzCpcaUnpack");
+            if (!unpack) return std::move(unpack).error();
+            d->unpack_ = std::move(*unpack);
+            auto basis = deviceBuffer(device, asset.basisBytes, 4, "athz.basis",
+                                      parsed.file.bytes().data() + asset.basisOffset);
+            if (!basis) return std::move(basis).error();
+            d->basis_ = std::move(*basis);
+        }
         return d;
+    }
+
+    /// Whether layer T is CPCA codes, decoded into a scratch of 4 words an
+    /// element and written back as the transfer (record's `transferOut`).
+    [[nodiscard]] bool cpca() const noexcept { return asset_->cpca && (layers_ & kAthzTransfer) != 0; }
+
+    /// The CPCA codes' scratch of merged level `li` (kept: the level below
+    /// and the splats read their parents' codes from it), and the splats'.
+    Result<gpu::Buffer*> levelCodes(size_t li, uint64_t elements) {
+        // A deque: the codes of the levels above keep their place.
+        while (levelCodes_.size() <= li) levelCodes_.emplace_back();
+        return grown(levelCodes_[li], elements);
+    }
+    Result<gpu::Buffer*> leafCodes(uint64_t elements) { return grown(leafCodes_, elements); }
+    [[nodiscard]] const gpu::Buffer* levelCodesOf(size_t li) const {
+        return li < levelCodes_.size() && levelCodes_[li].valid() ? &levelCodes_[li] : nullptr;
+    }
+
+    /// `dst` with layer T's scratch in place of the transfer, where it is
+    /// CPCA codes; the record's transfer is then `transferOut`.
+    Result<Arrays> codedArrays(Arrays dst, gpu::Buffer* scratch) const {
+        if (cpca()) dst.field[8] = scratch;
+        return dst;
     }
 
     [[nodiscard]] uint32_t layers() const noexcept { return layers_; }
@@ -720,7 +834,7 @@ public:
     /// `kind` out of `source` into `dst`. One dispatch.
     Result<void> record(gpu::CommandBatch& batch, uint32_t kind, const gpu::Buffer& source,
                         std::span<const uint32_t> list, const Arrays& dst, uint32_t runGaussians, uint32_t pageRuns,
-                        const Parents& parents) {
+                        const Parents& parents, const gpu::Buffer* transferOut = nullptr) {
         const auto pages = static_cast<uint32_t>(list.size() / 8);
         if (pages == 0) {
             return ok();
@@ -737,7 +851,7 @@ public:
         const uint32_t runs = pages * pageRuns;
         const uint32_t groups = (runs + 7) / 8;
         decode_.dispatch(batch, {groups * 256, 1, 1}, [&](rhi::ShaderCursor c) {
-            setLayout(c["params"], asset_->format);
+            setLayout(c["params"], asset_->coded);
             c["params"]["pages"].setData(pages);
             c["params"]["pageRuns"].setData(pageRuns);
             c["params"]["runGaussians"].setData(runGaussians);
@@ -762,6 +876,22 @@ public:
             }
             c["errors"].setBinding(errors_.rhi());
         });
+        if (cpca() && transferOut != nullptr && dst.field[8] != nullptr) {
+            // Layer T's codes, decoded into their scratch, back into the
+            // transfer the record holds: the same batch, the next dispatch.
+            unpack_.dispatch(batch, {asset_->format.chunkSplats, pages, 1}, [&](rhi::ShaderCursor c) {
+                bindCpca(c, *asset_, basis_, 0, asset_->format.transferWords);
+                c["pack"]["pages"].setData(pages);
+                c["pageList"].setBinding(pageList.rhi());
+                c["packed"].setBinding(dst.field[8]->rhi());
+                c["transferOut"].setBinding(transferOut->rhi());
+                c["transfer"].setBinding(dummy_.rhi());
+                c["codes"].setBinding(dummy_.rhi());
+                c["histogram"].setBinding(dummy_.rhi());
+                c["bytes"].setBinding(dummy_.rhi());
+                c["groupOf"].setBinding(dummy_.rhi());
+            });
+        }
         return ok();
     }
 
@@ -782,10 +912,22 @@ private:
     const Asset*               asset_ = nullptr;
     uint32_t                   layers_ = 0;
     std::array<uint32_t, 2>    hasRans_{};
-    gpu::ComputeKernel         decode_;
+    gpu::ComputeKernel         decode_, unpack_;
+    gpu::Buffer                basis_;
     std::array<gpu::Buffer, 2> planes_;
     gpu::Buffer                tables_, errors_, dummy_;
     std::vector<gpu::Buffer>   lists_;
+    std::deque<gpu::Buffer>    levelCodes_;
+    gpu::Buffer                leafCodes_;
+
+    Result<gpu::Buffer*> grown(gpu::Buffer& b, uint64_t elements) {
+        if (!b.valid() || b.bytes() < elements * 16) {
+            auto made = deviceBuffer(*device_, std::max<uint64_t>(elements, 1) * 16, 4, "athz.cpcaScratch");
+            if (!made) return std::move(made).error();
+            b = std::move(*made);
+        }
+        return &b;
+    }
 };
 
 /// Pages [first, last) of the file uploaded together, and their page list:
@@ -828,7 +970,7 @@ Result<Upload> uploadPages(gpu::Device& device, const Parsed& p, const std::vect
 /// element dstElement[i], in batches of at most kReadBatchBytes.
 Result<void> decodePages(gpu::Device& device, Decoder& decoder, const Parsed& p, uint32_t kind,
                          const std::vector<uint32_t>& pages, const std::vector<uint32_t>& dstElement,
-                         const Arrays& dst, const Parents& parents) {
+                         const Arrays& dst, const Parents& parents, const gpu::Buffer* transferOut = nullptr) {
     size_t at = 0;
     while (at < pages.size()) {
         std::vector<uint32_t> some, where;
@@ -843,7 +985,7 @@ Result<void> decodePages(gpu::Device& device, Decoder& decoder, const Parsed& p,
         if (!upload) return std::move(upload).error();
         gpu::CommandBatch batch(device);
         ATHENEA_TRY(decoder.record(batch, kind, upload->source, upload->list, dst, p.header.runGaussians,
-                                   p.header.pageRuns, parents));
+                                   p.header.pageRuns, parents, transferOut));
         ATHENEA_TRY(batch.submit(true));
         auto errors = decoder.takeErrors();
         if (!errors) return std::move(errors).error();
@@ -879,20 +1021,47 @@ Result<std::vector<LodLevel>> decodeLevels(gpu::Device& device, Decoder& decoder
         if (li > 0) {
             parents.arrays = arraysOf(levels.back().gaussians, levels.back().cells);
             parents.count = levels.back().gaussians.count;
+            if (decoder.cpca()) parents.arrays.field[8] = decoder.levelCodesOf(li - 1);
         }
-        ATHENEA_TRY(decodePages(device, decoder, p, 0, pages, where, arraysOf(level.gaussians, level.cells), parents));
+        Arrays dst = arraysOf(level.gaussians, level.cells);
+        if (decoder.cpca()) {
+            auto codes = decoder.levelCodes(li, e.groups);
+            if (!codes) return std::move(codes).error();
+            dst.field[8] = *codes;
+        }
+        ATHENEA_TRY(decodePages(device, decoder, p, 0, pages, where, dst, parents, &level.gaussians.transfer));
         levels.push_back(std::move(level));
     }
     return levels;
 }
 
 /// The parents of the cloud's splats: its finest merged level.
-Parents leafParents(const LodLevel& finest) {
+Parents leafParents(const LodLevel& finest, const Decoder& decoder, size_t finestIndex) {
     Parents parents;
     parents.arrays = arraysOf(finest.gaussians, finest.cells);
     parents.count = finest.gaussians.count;
     parents.leaves = true;
+    if (decoder.cpca()) parents.arrays.field[8] = decoder.levelCodesOf(finestIndex);
     return parents;
+}
+
+/// The splats' arrays of `cloud` (its tail `tail`), layer T's codes in the
+/// decoder's scratch where they are CPCA; the curvature allocated where the
+/// asset carries it and the cloud does not yet.
+Result<Arrays> leafArrays(gpu::Device& device, Decoder& decoder, const Asset& a, scene::GpuSplats& cloud,
+                          const gpu::Buffer& tail, uint64_t elements) {
+    if (a.format.curvatureWords != 0 && (!cloud.curvature.valid() || cloud.curvature.bytes() < elements * 12)) {
+        auto c = deviceBuffer(device, elements * 4 * a.format.curvatureWords, 4, "athz.curvature");
+        if (!c) return std::move(c).error();
+        cloud.curvature = std::move(*c);
+    }
+    Arrays dst = arraysOf(cloud, tail);
+    if (decoder.cpca()) {
+        auto codes = decoder.leafCodes(elements);
+        if (!codes) return std::move(codes).error();
+        dst.field[8] = *codes;
+    }
+    return dst;
 }
 
 /// The merged levels and the finest level's starts on the device, as
@@ -998,8 +1167,33 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
 
     Asset asset;
     asset.format = formatOfCloud(cloud, PG);
-    const ChunkFormat& f = asset.format;
-    const uint32_t words = static_cast<uint32_t>(f.elementBytes() / 4);
+    asset.coded = asset.format;
+    // A LOSSY LAYER T: the transfer coded by CPCA, its id and weights in
+    // four words (athz_cpca.slang), where a basis is given and the cloud's
+    // transfer is the 112 values the basis is fitted to.
+    std::vector<std::byte> basisBytes;
+    if (!settings.transferBasis.empty()) {
+        if (asset.format.transferCount != 112) {
+            return Error(ErrorCode::InvalidArgument,
+                         "athz: a CPCA transfer needs the 112 values of a degree 3 TX transfer");
+        }
+        auto file = platform::MappedFile::open(settings.transferBasis);
+        if (!file) return std::move(file).error();
+        constexpr uint64_t kFloats = uint64_t{256} * 112 + 3 + 256 * (112 + 112 * 8 + 3 * 8);
+        if (file->size() != kFloats * 4) {
+            return Error::make(ErrorCode::InvalidArgument, "athz: {} is not a basis of 256 clusters and 8 axes a block",
+                               settings.transferBasis.string());
+        }
+        basisBytes.assign(file->bytes().begin(), file->bytes().end());
+        asset.cpca = true;
+        asset.cpcaClusters = 256;
+        asset.cpcaComponents = 8;
+        asset.cpcaLevels = 7.0F;
+        asset.coded.transferWords = 4;
+    }
+    const ChunkFormat& f = asset.coded;
+    const ChunkFormat& decodedFormat = asset.format;
+    const uint32_t words = recordWords(f);
     asset.planes = 4 * words;
     asset.tableLog = settings.tableLog;
     asset.count = cloud.count;
@@ -1016,14 +1210,14 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
     {
         uint64_t total = 0;
         for (const LodLevel& l : cloud.levels) total += l.gaussians.count;
-        auto m = emptyCloud(device, f, static_cast<uint32_t>(total), "athz.merged", asset.bounds);
+        auto m = emptyCloud(device, decodedFormat, static_cast<uint32_t>(total), "athz.merged", asset.bounds);
         if (!m) return std::move(m).error();
         merged = std::move(*m);
         auto cells = deviceBuffer(device, total * 4, 4, "athz.mergedCells");
         if (!cells) return std::move(cells).error();
         mergedCells = std::move(*cells);
         const Arrays to = arraysOf(merged, mergedCells);
-        const std::array<uint32_t, 10> fw = fieldWords(f);
+        const std::array<uint32_t, 11> fw = fieldWords(decodedFormat);
         gpu::CommandBatch batch(device);
         uint64_t at = 0;
         uint32_t page = 0;
@@ -1063,6 +1257,38 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         kinds[1].elements = cloud.count;
     }
     const uint32_t totalPages = static_cast<uint32_t>((kinds[0].pageList.size() + kinds[1].pageList.size()) / 4);
+    // The CPCA codes of each kind, in place of its transfer.
+    std::array<gpu::Buffer, 2> codes;
+    std::optional<gpu::Buffer> basis;
+    if (asset.cpca) {
+        auto b = deviceBuffer(device, basisBytes.size(), 4, "athz.basis", basisBytes.data());
+        if (!b) return std::move(b).error();
+        basis = std::move(*b);
+        auto cpca = gpu::ComputeKernel::create(library, "athenea/lod/athz_cpca", "athzCpca");
+        auto pack = gpu::ComputeKernel::create(library, "athenea/lod/athz_cpca", "athzCpcaPack");
+        if (!cpca) return std::move(cpca).error();
+        if (!pack) return std::move(pack).error();
+        for (uint32_t k = 0; k < kKinds; ++k) {
+            const auto n = static_cast<uint32_t>(kinds[k].elements);
+            auto wide = deviceBuffer(device, uint64_t{n} * 25 * 4, 4, "athz.cpcaCodes");
+            auto packed = deviceBuffer(device, uint64_t{n} * 16, 4, "athz.cpcaPacked");
+            if (!wide) return std::move(wide).error();
+            if (!packed) return std::move(packed).error();
+            gpu::CommandBatch batch(device);
+            const auto bind = [&](rhi::ShaderCursor c) {
+                bindCpca(c, asset, *basis, n, decodedFormat.transferWords);
+                c["transfer"].setBinding(kinds[k].arrays.field[8]->rhi());
+                c["codes"].setBinding(wide->rhi());
+                c["packed"].setBinding(packed->rhi());
+                c["pack"]["count"].setData(n);
+            };
+            cpca->dispatch(batch, {n, 1, 1}, bind);
+            pack->dispatch(batch, {n, 1, 1}, bind);
+            ATHENEA_TRY(batch.submit(true));
+            codes[k] = std::move(*packed);
+            kinds[k].arrays.field[8] = &codes[k];
+        }
+    }
     // Each kind's elements interleaved, a record after another: what the
     // encoder reads (one buffer for the records, one for their parents).
     std::array<gpu::Buffer, 2> interleaved;
@@ -1070,7 +1296,7 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         auto kernel = gpu::ComputeKernel::create(library, "athenea/lod/athz_interleave", "athzInterleave");
         if (!kernel) return std::move(kernel).error();
         for (uint32_t k = 0; k < kKinds; ++k) {
-            auto made = deviceBuffer(device, kinds[k].elements * f.elementBytes(), 0, "athz.records");
+            auto made = deviceBuffer(device, kinds[k].elements * words * 4, 0, "athz.records");
             if (!made) return std::move(made).error();
             interleaved[k] = std::move(*made);
             gpu::CommandBatch batch(device);
@@ -1093,7 +1319,7 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
     }
 
     AthzStats stats;
-    stats.elementBytes = static_cast<uint32_t>(f.elementBytes());
+    stats.elementBytes = words * 4;
     stats.pages = totalPages;
     std::array<std::vector<uint8_t>, 4> sections;
     std::vector<PageEntry> entries(totalPages);
@@ -1485,6 +1711,12 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
     const uint64_t pageTable = aligned(kPage + assetBytes, 64);
     asset.startsOffset = aligned(pageTable + uint64_t{totalPages} * kEntryBytes, kPage);
     uint64_t at = aligned(asset.startsOffset + asset.startsBytes, kPage);
+    if (asset.cpca) {
+        // The CPCA basis, once an asset: what layer T's codes decode against.
+        asset.basisOffset = at;
+        asset.basisBytes = basisBytes.size();
+        at = aligned(at + basisBytes.size(), kPage);
+    }
     for (uint32_t L = 0; L < 4; ++L) {
         asset.sectionOffset[L] = ((layerMask >> L) & 1u) != 0 ? at : 0;
         asset.sectionBytes[L] = sections[L].size();
@@ -1532,6 +1764,10 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
     put(entries.data(), entries.size() * kEntryBytes);
     padTo(asset.startsOffset);
     put(starts.data(), starts.size());
+    if (asset.cpca) {
+        padTo(asset.basisOffset);
+        put(basisBytes.data(), basisBytes.size());
+    }
     for (uint32_t L = 0; L < 4; ++L) {
         if (asset.sectionOffset[L] == 0) continue;
         padTo(asset.sectionOffset[L]);
@@ -1562,7 +1798,7 @@ Result<LodCloud> readAthz(gpu::ShaderLibrary& library, const std::filesystem::pa
     auto parsed = parse(path);
     if (!parsed) return std::move(parsed).error();
     const Parsed& p = **parsed;
-    auto decoder = Decoder::create(library, p.asset, p.header.layerMask, layers);
+    auto decoder = Decoder::create(library, p, layers);
     if (!decoder) return std::move(decoder).error();
     auto lod = levelsOf(device, **decoder, p);
     if (!lod) return std::move(lod).error();
@@ -1576,8 +1812,12 @@ Result<LodCloud> readAthz(gpu::ShaderLibrary& library, const std::filesystem::pa
         lod->slots[c] = static_cast<int32_t>(c);
         resident[c] = 1;
     }
-    ATHENEA_TRY(decodePages(device, **decoder, p, 1, pages, where, arraysOf(lod->splats, lod->groups),
-                            leafParents(lod->levels.back())));
+    auto dst = leafArrays(device, **decoder, a, lod->splats, lod->groups,
+                          uint64_t{p.leafPages} * a.format.chunkSplats);
+    if (!dst) return std::move(dst).error();
+    ATHENEA_TRY(decodePages(device, **decoder, p, 1, pages, where, *dst,
+                            leafParents(lod->levels.back(), **decoder, lod->levels.size() - 1),
+                            &lod->splats.transfer));
     ATHENEA_TRY(lod->resident.write(device, 0, resident.size() * 4, resident.data()));
     lod->streamed = pages.size() < p.leafPages;
     return std::move(*lod);
@@ -1589,7 +1829,7 @@ Result<scene::GpuSplats> readAthzCut(gpu::ShaderLibrary& library, const std::fil
     if (!parsed) return std::move(parsed).error();
     const Parsed& p = **parsed;
     const Asset& a = p.asset;
-    auto decoder = Decoder::create(library, a, p.header.layerMask, kAthzAllLayers);
+    auto decoder = Decoder::create(library, p, kAthzAllLayers);
     if (!decoder) return std::move(decoder).error();
     // The finest band all of whose pages are here.
     const auto bands = static_cast<uint32_t>(a.levels.size() + 1);
@@ -1621,8 +1861,10 @@ Result<scene::GpuSplats> readAthzCut(gpu::ShaderLibrary& library, const std::fil
     if (leaves) {
         auto levels = decodeLevels(device, **decoder, p, static_cast<uint32_t>(a.levels.size() - 1));
         if (!levels) return std::move(levels).error();
-        ATHENEA_TRY(decodePages(device, **decoder, p, 1, pages, where, arraysOf(*cloud, *tail),
-                                leafParents(levels->back())));
+        auto dst = leafArrays(device, **decoder, a, *cloud, *tail, uint64_t{n} * a.format.chunkSplats);
+        if (!dst) return std::move(dst).error();
+        ATHENEA_TRY(decodePages(device, **decoder, p, 1, pages, where, *dst,
+                                leafParents(levels->back(), **decoder, levels->size() - 1), &cloud->transfer));
     } else {
         Parents parents;
         std::vector<LodLevel> above;
@@ -1632,8 +1874,15 @@ Result<scene::GpuSplats> readAthzCut(gpu::ShaderLibrary& library, const std::fil
             above = std::move(*levels);
             parents.arrays = arraysOf(above.back().gaussians, above.back().cells);
             parents.count = above.back().gaussians.count;
+            if ((*decoder)->cpca()) parents.arrays.field[8] = (*decoder)->levelCodesOf(chosen - 1);
         }
-        ATHENEA_TRY(decodePages(device, **decoder, p, 0, pages, where, arraysOf(*cloud, *tail), parents));
+        Arrays dst = arraysOf(*cloud, *tail);
+        if ((*decoder)->cpca()) {
+            auto codes = (*decoder)->levelCodes(chosen, elements);
+            if (!codes) return std::move(codes).error();
+            dst.field[8] = *codes;
+        }
+        ATHENEA_TRY(decodePages(device, **decoder, p, 0, pages, where, dst, parents, &cloud->transfer));
     }
     if (band != nullptr) {
         *band = chosen;
@@ -1659,6 +1908,10 @@ Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesys
     const uint64_t startsOffset = aligned(pageTable + uint64_t{keep} * kEntryBytes, kPage);
     std::array<uint64_t, 4> oldOffset = a.sectionOffset;
     uint64_t at = aligned(startsOffset + a.startsBytes, kPage);
+    if (a.cpca) {
+        a.basisOffset = at;
+        at = aligned(at + a.basisBytes, kPage);
+    }
     for (uint32_t L = 0; L < 4; ++L) {
         if (a.sectionOffset[L] == 0) continue;
         a.sectionOffset[L] = at;
@@ -1666,6 +1919,7 @@ Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesys
     }
     const uint64_t oldStarts = a.startsOffset;
     a.startsOffset = startsOffset;
+    const uint64_t oldBasis = p.asset.basisOffset;
     const std::vector<uint8_t> assetTable = encodeAsset(a);
     Header h = p.header;
     h.pages = keep;
@@ -1696,6 +1950,10 @@ Result<void> writeAthzPrefix(const std::filesystem::path& in, const std::filesys
     put(p.pages.data(), uint64_t{keep} * kEntryBytes);
     padTo(startsOffset);
     put(base + oldStarts, a.startsBytes);
+    if (a.cpca) {
+        padTo(a.basisOffset);
+        put(base + oldBasis, a.basisBytes);
+    }
     for (uint32_t L = 0; L < 4; ++L) {
         if (a.sectionOffset[L] == 0) continue;
         padTo(a.sectionOffset[L]);
@@ -1721,28 +1979,30 @@ Result<std::vector<AthzDecodeTiming>> timeAthzDecode(gpu::ShaderLibrary& library
     if (!parsed) return std::move(parsed).error();
     const Parsed& p = **parsed;
     const Asset& a = p.asset;
-    auto decoder = Decoder::create(library, a, p.header.layerMask, kAthzAllLayers);
+    auto decoder = Decoder::create(library, p, kAthzAllLayers);
     if (!decoder) return std::move(decoder).error();
     const uint32_t present = p.header.pages > p.leafFirstPage ? p.header.pages - p.leafFirstPage : 0;
     auto store = emptyCloud(device, a.format, present * a.format.chunkSplats, "athz.timing", a.bounds);
     if (!store) return std::move(store).error();
     auto tail = deviceBuffer(device, uint64_t{present} * a.format.chunkSplats * 4, 4, "athz.tail");
     if (!tail) return std::move(tail).error();
-    const Arrays dst = arraysOf(*store, *tail);
     // The parents first, untimed: the merged levels a pool holds from its open.
     if (p.header.pages < p.leafFirstPage) {
         return Error::make(ErrorCode::InvalidArgument, "{}: no splat pages to time", path.string());
     }
     auto levels = decodeLevels(device, **decoder, p, static_cast<uint32_t>(a.levels.size() - 1));
     if (!levels) return std::move(levels).error();
-    const Parents parents = leafParents(levels->back());
+    const Parents parents = leafParents(levels->back(), **decoder, levels->size() - 1);
+    auto leafDst = leafArrays(device, **decoder, a, *store, *tail, uint64_t{present} * a.format.chunkSplats);
+    if (!leafDst) return std::move(leafDst).error();
+    const Arrays dst = *leafDst;
     std::vector<AthzDecodeTiming> out;
     const auto timeOne = [&](const std::vector<uint32_t>& pages, bool single) -> Result<void> {
         std::vector<uint32_t> where;
         uint64_t decoded = 0;
         for (uint32_t page : pages) {
             where.push_back((page - p.leafFirstPage) * a.format.chunkSplats);
-            decoded += uint64_t{p.pages[page].count()} * a.format.elementBytes();
+            decoded += uint64_t{p.pages[page].count()} * recordWords(a.format) * 4;
         }
         auto upload = uploadPages(device, p, pages, where, (*decoder)->layers());
         if (!upload) return std::move(upload).error();
@@ -1754,7 +2014,7 @@ Result<std::vector<AthzDecodeTiming>> timeAthzDecode(gpu::ShaderLibrary& library
             gpu::CommandBatch batch(device);
             ATHENEA_TRY(batch.submit(true));
             ATHENEA_TRY((*decoder)->record(batch, 1, upload->source, upload->list, dst, p.header.runGaussians,
-                                           p.header.pageRuns, parents));
+                                           p.header.pageRuns, parents, &store->transfer));
             gpu::GpuTimer timer;
             ATHENEA_TRY(timer.run(batch));
             least = std::min(least, timer.milliseconds());
@@ -1935,7 +2195,7 @@ std::string AthzSource::name() const {
 
 Result<LodCloud> AthzSource::openCloud(gpu::Device& device) {
     Impl& s = *impl_;
-    auto decoder = Decoder::create(*s.library, s.parsed->asset, s.parsed->header.layerMask, s.layers);
+    auto decoder = Decoder::create(*s.library, *s.parsed, s.layers);
     if (!decoder) return std::move(decoder).error();
     s.decoder = std::move(*decoder);
     return levelsOf(device, *s.decoder, *s.parsed);
@@ -1994,8 +2254,12 @@ Result<void> AthzSource::decode(gpu::CommandBatch& batch, const gpu::Buffer& sta
         list.push_back(0);
         list.push_back(0);
     }
-    return s.decoder->record(batch, 1, staging, list, arraysOf(cloud.splats, cloud.groups), p.header.runGaussians,
-                             p.header.pageRuns, leafParents(cloud.levels.back()));
+    auto dst = leafArrays(s.library->device(), *s.decoder, p.asset, cloud.splats, cloud.groups,
+                          cloud.splats.positions.bytes() / 16);
+    if (!dst) return std::move(dst).error();
+    return s.decoder->record(batch, 1, staging, list, *dst, p.header.runGaussians, p.header.pageRuns,
+                             leafParents(cloud.levels.back(), *s.decoder, cloud.levels.size() - 1),
+                             &cloud.splats.transfer);
 }
 
 }   // namespace athenea::lod

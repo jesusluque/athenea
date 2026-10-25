@@ -83,6 +83,12 @@ struct AthzSettings {
     /// parent. Each word takes the one whose planes measure least. 1: order 0
     /// on the words as they are.
     uint32_t transforms = 0x1FF;
+    /// A LOSSY LAYER T: where set (a clustered PCA basis, f32, 256 clusters
+    /// and 8 axes a block, as `athenea decimate --transfer-basis` takes), a
+    /// TX transfer of 112 values is coded as its cluster id and 24 weights of
+    /// 4 bits (transfer_codec.slang's codec), the basis kept once in the file;
+    /// the decoder writes the transfer back from them. Empty: lossless.
+    std::filesystem::path transferBasis;
     /// The census: each plane's order-1 entropy under two contexts, measured.
     bool measureContexts = false;
     /// Not 0: the pages' histograms are counted in an order shuffled by this

@@ -144,3 +144,89 @@ void athzCpcaBits(uint3 tid: SV_DispatchThreadID) {
     }
     bytes[tid.x] = uint(ceil(bits / 8.0));
 }
+
+// --- CPCA AS LAYER T (lossy, `athenea convert --athz-transfer cpca`) -----------
+//
+// A gaussian's code in four words: the cluster id in the low byte of the
+// first, then the 3 K = 24 weights, q + levels each (0 .. 2 levels), four bits
+// a weight -- six in the rest of the first word, eight in each of the next two,
+// two in the last. What the file codes in place of the transfer's words; the
+// decoder writes the transfer back from it and the basis (`athzCpcaUnpack`).
+
+RWByteAddressBuffer packed;   ///< 4 words an element
+/// athzCpcaUnpack: the decoder's page list (8 uints a page: [4] the element
+/// written from, [5] its elements).
+StructuredBuffer<uint> pageList;
+RWByteAddressBuffer    transferOut;   ///< transferWords an element
+
+struct CpcaPackParams {
+    uint count;
+    uint pages;
+    uint pageGaussians;
+    uint pad;
+};
+ConstantBuffer<CpcaPackParams> pack;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void athzCpcaPack(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= pack.count) {
+        return;
+    }
+    uint words[4] = { codes[g * 25u] & 0xFFu, 0u, 0u, 0u };
+    for (uint a = 0; a < 24u; ++a) {
+        const uint bit = 8u + 4u * a;
+        words[bit / 32u] |= (codes[g * 25u + 1u + a] & 0xFu) << (bit % 32u);
+    }
+    for (uint w = 0; w < 4u; ++w) {
+        packed.Store((g * 4u + w) * 4u, words[w]);
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void athzCpcaUnpack(uint3 tid: SV_DispatchThreadID) {
+    const uint page = tid.y;
+    const uint g = tid.x;
+    if (page >= pack.pages || g >= pageList[page * 8u + 5u]) {
+        return;
+    }
+    const uint e = pageList[page * 8u + 4u] + g;
+    uint words[4];
+    for (uint w = 0; w < 4u; ++w) {
+        words[w] = packed.Load((e * 4u + w) * 4u);
+    }
+    const uint id = min(words[0] & 0xFFu, params.clusters - 1u);
+    const uint meanAt[3] = { params.meanAt0, params.meanAt1, params.meanAt2 };
+    const uint k = params.components;
+    uint j = 0u;
+    uint pending = 0u;
+    for (uint b = 0; b < 3u; ++b) {
+        const uint dims = kDims[b];
+        const uint means = meanAt[b] + id * dims;
+        const uint axes = meanAt[b] + params.clusters * dims + id * dims * k;
+        const uint scales = meanAt[b] + params.clusters * dims + params.clusters * dims * k + id * k;
+        float weights[8];
+        for (uint a = 0; a < k && a < 8u; ++a) {
+            const uint bit = 8u + 4u * (b * k + a);
+            const float q = float((words[bit / 32u] >> (bit % 32u)) & 0xFu) - params.levels;
+            weights[a] = q * basis[scales + a] / params.levels;
+        }
+        for (uint d = 0; d < dims; ++d, ++j) {
+            float v = basis[means + d];
+            for (uint a = 0; a < k && a < 8u; ++a) {
+                v += basis[axes + d * k + a] * weights[a];
+            }
+            const uint h = f32tof16(clamp(v, -65000.0, 65000.0));
+            if ((j & 1u) == 0u) {
+                pending = h;
+            } else {
+                transferOut.Store((e * params.transferWords + j / 2u) * 4u, pending | (h << 16));
+            }
+        }
+    }
+    if ((j & 1u) != 0u) {
+        transferOut.Store((e * params.transferWords + j / 2u) * 4u, pending);
+    }
+}

@@ -48,6 +48,8 @@ void addConvert(CLI::App& app) {
     cmd->add_option("--athz-table-log", o->athz.tableLog, ".athz: log2 of a rANS table (9 to 12)");
     cmd->add_flag("--athz-raw", o->athz.raw, ".athz: every plane raw bit-packed, no rANS");
     cmd->add_option("--spz-version", o->athz.spzVersion, ".spz from a .athz: 3 (gzip) or 4 (ZSTD)");
+    cmd->add_option("--athz-transfer", o->athz.transfer, ".athz: a TX transfer lossless, or cpca (lossy, layer T)");
+    cmd->add_option("--transfer-basis", o->athz.transferBasis, ".athz with --athz-transfer cpca: the CPCA basis");
     cmd->add_option("--chunk-splats", o->chunkSplats, ".athc: splats per streamed chunk");
     cmd->add_option("--max-group-fraction", o->maxGroupFraction,
                     ".athc: the finest merged level holds at most this many groups per splat");

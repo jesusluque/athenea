@@ -48,7 +48,7 @@ struct AthzParams {
     uint  allowed;        ///< athzChoose: a bit a transform it may take
     uint  elements;       ///< athzParents: elements of the kind
     uint  groups;         ///< athzEntropy: groups of 256 counts
-    uint  pad0;
+    uint  curvatureWords;
     uint  pad1;
     uint  pad2;
 };
@@ -91,6 +91,7 @@ AthzLayout layout() {
     l.lobesWords = params.lobesWords;
     l.transferWords = params.transferWords;
     l.shadowWords = params.shadowWords;
+    l.curvatureWords = params.curvatureWords;
     return l;
 }
 

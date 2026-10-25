@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <bit>
 #include <vector>
 
 #include "athenea/core/Platform.h"
@@ -279,6 +280,201 @@ TEST_CASE("an .athz decodes to the records it was coded from, bit for bit", "[lo
             CHECK(differing(*h, cloud.splats.sh, 0, geometry->splats.sh, 0, uint64_t{cloud.count} * cloud.splats.shWords) > 0);
         }
     }
+}
+
+namespace {
+
+/// Gives a cloud built here what a TX conversion carries and the levels do not
+/// make: a degree 3 transfer (112 halves), open directions (8 words) and
+/// curvature (3 floats), on its splats and on every level -- random, finite.
+void giveTx(Harness& h, lod::LodCloud& cloud, uint64_t seed) {
+    test::Lcg rng;
+    rng.state ^= seed;
+    const auto words = [&](uint64_t n, auto&& make) {
+        std::vector<uint32_t> v(n);
+        for (auto& w : v) w = make();
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(n, 1) * 4;
+        desc.elementBytes = 4;
+        desc.label = "test.tx";
+        auto b = gpu::Buffer::create(*h.gpu->device, desc, v.data());
+        REQUIRE(b);
+        return *b;
+    };
+    const auto half = [&] {
+        const auto toHalf = [](float f) {   // a fixture's input, not a result: a half from a small float
+            const uint32_t x = std::bit_cast<uint32_t>(f);
+            const uint32_t sign = (x >> 16) & 0x8000u;
+            const int e = int((x >> 23) & 0xFF) - 127 + 15;
+            return e <= 0 ? sign : (sign | (uint32_t(e) << 10) | ((x >> 13) & 0x3FFu));
+        };
+        return toHalf(rng.range(-0.6F, 0.9F)) | (toHalf(rng.range(-0.6F, 0.9F)) << 16);
+    };
+    const auto bits = [&] { return uint32_t(rng.next() * 4294967295.0F); };
+    const auto curv = [&] { return std::bit_cast<uint32_t>(rng.range(-3.0F, 3.0F)); };
+    const auto give = [&](scene::GpuSplats& s, uint64_t n) {
+        s.transfer = words(n * 56, half);
+        s.transferCount = 112;
+        s.transferWords = 56;
+        s.shadowBits = words(n * 8, bits);
+        s.shadowWords = 8;
+        s.curvature = words(n * 3, curv);
+    };
+    give(cloud.splats, cloud.splats.positions.bytes() / 16);
+    for (lod::LodLevel& l : cloud.levels) give(l.gaussians, l.gaussians.count);
+}
+
+}   // namespace
+
+TEST_CASE("an .athz keeps a TX cloud's transfer, open directions and curvature bit for bit", "[lod][gpu][athz]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    lod::LodCloud cloud = cloudOf(*h, 20000, 150, true);
+    giveTx(*h, cloud, 151);
+    const auto path = temp("athenea_test_tx.athz");
+    auto stats = lod::writeAthz(*gpu->library, cloud, path);
+    if (!stats) FAIL(stats.error().toString());
+    auto back = lod::readAthz(*gpu->library, path);
+    if (!back) FAIL(back.error().toString());
+    REQUIRE(back->splats.curvature.valid());
+    const uint64_t n = cloud.count;
+    uint64_t words = cloudDifference(*h, cloud, *back);
+    words += differing(*h, cloud.splats.transfer, 0, back->splats.transfer, 0, n * 56);
+    words += differing(*h, cloud.splats.shadowBits, 0, back->splats.shadowBits, 0, n * 8);
+    words += differing(*h, cloud.splats.curvature, 0, back->splats.curvature, 0, n * 3);
+    for (size_t l = 0; l < cloud.levels.size(); ++l) {
+        const uint64_t g = cloud.levels[l].gaussians.count;
+        words += differing(*h, cloud.levels[l].gaussians.transfer, 0, back->levels[l].gaussians.transfer, 0, g * 56);
+        words += differing(*h, cloud.levels[l].gaussians.curvature, 0, back->levels[l].gaussians.curvature, 0, g * 3);
+    }
+    std::printf("  TX + curvature: %.1f B a splat; %llu words differ\n", static_cast<double>(stats->fileBytes) / n,
+                static_cast<unsigned long long>(words));
+    CHECK(words == 0);
+
+    // Streamed: the pool's store gets them too.
+    auto source = lod::AthzSource::open(*gpu->library, path);
+    REQUIRE(source);
+    lod::StreamingSettings settings;
+    settings.budgetSplats = uint64_t{1} << 30;
+    auto pool = lod::StreamingPool::open(*gpu->device, std::unique_ptr<lod::ChunkSource>(std::move(*source)), settings);
+    REQUIRE(pool);
+    std::vector<uint32_t> all((*pool)->cloud().chunks(), 1000);
+    (*pool)->want(all);
+    REQUIRE((*pool)->update(true));
+    const lod::LodCloud& streamed = (*pool)->cloud();
+    uint64_t placed = 0;
+    for (uint32_t c = 0; c < streamed.chunks(); ++c) {
+        REQUIRE(streamed.slots[c] >= 0);
+        const uint64_t from = uint64_t(streamed.slots[c]) * streamed.chunkSplats, at = uint64_t(c) * streamed.chunkSplats;
+        const uint64_t k = streamed.chunkCount(c);
+        placed += differing(*h, cloud.splats.transfer, at * 56, streamed.splats.transfer, from * 56, k * 56);
+        placed += differing(*h, cloud.splats.curvature, at * 3, streamed.splats.curvature, from * 3, k * 3);
+    }
+    CHECK(placed == 0);
+}
+
+TEST_CASE("an .athz's CPCA layer T decodes to what the codec gives, on the device", "[lod][gpu][athz]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    lod::LodCloud cloud = cloudOf(*h, 20000, 160, false);
+    giveTx(*h, cloud, 161);
+    // A basis of 256 clusters and 8 axes a block: a fixture's numbers.
+    constexpr uint64_t kFloats = uint64_t{256} * 112 + 3 + 256 * (112 + 112 * 8 + 3 * 8);
+    std::vector<float> basis(kFloats);
+    test::Lcg rng;
+    rng.state ^= 162;
+    for (auto& v : basis) v = rng.range(-0.3F, 0.3F);
+    for (uint64_t i = uint64_t{256} * 112; i < uint64_t{256} * 112 + 3; ++i) basis[i] = 1.0F;   // the norms
+    const auto basisPath = temp("athenea_test_basis.bin");
+    {
+        std::ofstream out(basisPath, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(basis.data()), static_cast<std::streamsize>(basis.size() * 4));
+    }
+    lod::AthzSettings s;
+    s.transferBasis = basisPath;
+    const auto lossy = temp("athenea_test_cpca.athz");
+    const auto lossless = temp("athenea_test_cpca_lossless.athz");
+    auto st = lod::writeAthz(*gpu->library, cloud, lossy, s);
+    if (!st) FAIL(st.error().toString());
+    auto full = lod::writeAthz(*gpu->library, cloud, lossless);
+    REQUIRE(full);
+    std::printf("  CPCA layer T: %.1f MB against %.1f lossless (T %.2f against %.2f MB)\n",
+                static_cast<double>(st->fileBytes) / 1e6, static_cast<double>(full->fileBytes) / 1e6,
+                static_cast<double>(st->layerBytes[2]) / 1e6, static_cast<double>(full->layerBytes[2]) / 1e6);
+    CHECK(st->layerBytes[2] * 4 < full->layerBytes[2]);
+    auto back = lod::readAthz(*gpu->library, lossy);
+    if (!back) FAIL(back.error().toString());
+    // What it must decode to: the codec run on the source's own transfer
+    // and written back, by the same kernels the writer and reader use.
+    const uint64_t n = cloud.count;
+    auto cpca = gpu::ComputeKernel::create(*gpu->library, "athenea/lod/athz_cpca", "athzCpca");
+    auto pack = gpu::ComputeKernel::create(*gpu->library, "athenea/lod/athz_cpca", "athzCpcaPack");
+    auto unpack = gpu::ComputeKernel::create(*gpu->library, "athenea/lod/athz_cpca", "athzCpcaUnpack");
+    REQUIRE(cpca);
+    REQUIRE(pack);
+    REQUIRE(unpack);
+    gpu::BufferDesc desc;
+    desc.elementBytes = 4;
+    desc.bytes = basis.size() * 4;
+    auto basisBuffer = gpu::Buffer::create(*gpu->device, desc, basis.data());
+    desc.bytes = n * 25 * 4;
+    auto codes = gpu::Buffer::create(*gpu->device, desc);
+    desc.bytes = n * 16;
+    auto packed = gpu::Buffer::create(*gpu->device, desc);
+    desc.bytes = n * 56 * 4;
+    auto expected = gpu::Buffer::create(*gpu->device, desc);
+    REQUIRE((basisBuffer && codes && packed && expected));
+    const uint32_t pages = static_cast<uint32_t>((n + 3071) / 3072);
+    std::vector<uint32_t> list;
+    for (uint32_t pg = 0; pg < pages; ++pg) {
+        list.insert(list.end(), {0, 0, 0, 0, pg * 3072, std::min<uint32_t>(3072, uint32_t(n) - pg * 3072), 0, 0});
+    }
+    auto pageList = gpu::Buffer::fromSpan(*gpu->device, std::span<const uint32_t>(list), "test.list");
+    REQUIRE(pageList);
+    gpu::CommandBatch batch(*gpu->device);
+    uint32_t meanAt[3];
+    {
+        uint64_t floats = uint64_t{256} * 112 + 3;
+        const uint32_t dims[3] = {16, 48, 48};
+        for (int b = 0; b < 3; ++b) {
+            meanAt[b] = uint32_t(floats);
+            floats += 256 * dims[b] + 256 * dims[b] * 8 + 256 * 8;
+        }
+    }
+    const auto bind = [&](rhi::ShaderCursor c) {
+        c["params"]["count"].setData(uint32_t(n));
+        c["params"]["clusters"].setData(256u);
+        c["params"]["components"].setData(8u);
+        c["params"]["levels"].setData(7.0F);
+        c["params"]["meanAt0"].setData(meanAt[0]);
+        c["params"]["meanAt1"].setData(meanAt[1]);
+        c["params"]["meanAt2"].setData(meanAt[2]);
+        c["params"]["normAt"].setData(256u * 112u);
+        c["params"]["transferWords"].setData(56u);
+        c["params"]["codeWords"].setData(25u);
+        c["pack"]["count"].setData(uint32_t(n));
+        c["pack"]["pages"].setData(pages);
+        c["basis"].setBinding(basisBuffer->rhi());
+        c["transfer"].setBinding(cloud.splats.transfer.rhi());
+        c["codes"].setBinding(codes->rhi());
+        c["packed"].setBinding(packed->rhi());
+        c["pageList"].setBinding(pageList->rhi());
+        c["transferOut"].setBinding(expected->rhi());
+        c["histogram"].setBinding(codes->rhi());
+        c["bytes"].setBinding(codes->rhi());
+        c["groupOf"].setBinding(codes->rhi());
+    };
+    cpca->dispatch(batch, {uint32_t(n), 1, 1}, bind);
+    pack->dispatch(batch, {uint32_t(n), 1, 1}, bind);
+    unpack->dispatch(batch, {3072, pages, 1}, bind);
+    REQUIRE(batch.submit(true));
+    const uint64_t differ = differing(*h, *expected, 0, back->splats.transfer, 0, n * 56);
+    const uint64_t rest = cloudDifference(*h, cloud, *back);
+    std::printf("  CPCA decoded: %llu transfer words differ from the codec's; %llu other words\n",
+                static_cast<unsigned long long>(differ), static_cast<unsigned long long>(rest));
+    CHECK(differ == 0);
+    CHECK(rest == 0);
+    CHECK(differing(*h, cloud.splats.transfer, 0, back->splats.transfer, 0, n * 56) > 0);   // lossy, as it says
 }
 
 TEST_CASE("every transform an .athz word takes decodes bit for bit", "[lod][gpu][athz]") {

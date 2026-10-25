@@ -17,7 +17,7 @@ struct InterleaveParams {
     uint shadowWords;
     uint words;
     uint count;
-    uint pad0;
+    uint curvatureWords;
     uint pad1;
     uint pad2;
 };
@@ -33,6 +33,7 @@ ByteAddressBuffer srcPbr;
 ByteAddressBuffer srcLobes;
 ByteAddressBuffer srcTransfer;
 ByteAddressBuffer srcShadow;
+ByteAddressBuffer srcCurvature;
 RWByteAddressBuffer records;
 
 [shader("compute")]
@@ -50,6 +51,7 @@ void athzInterleave(uint3 tid: SV_DispatchThreadID) {
     l.lobesWords = params.lobesWords;
     l.transferWords = params.transferWords;
     l.shadowWords = params.shadowWords;
+    l.curvatureWords = params.curvatureWords;
     for (uint w = 0; w < params.words; ++w) {
         const uint2 f = athzField(l, w);
         const uint at = athzAddress(l, f, e);
@@ -64,7 +66,8 @@ void athzInterleave(uint3 tid: SV_DispatchThreadID) {
         case kFieldPbr: v = srcPbr.Load(at); break;
         case kFieldLobes: v = srcLobes.Load(at); break;
         case kFieldTransfer: v = srcTransfer.Load(at); break;
-        default: v = srcShadow.Load(at); break;
+        case kFieldShadow: v = srcShadow.Load(at); break;
+        default: v = srcCurvature.Load(at); break;
         }
         records.Store((e * params.words + w) * 4u, v);
     }

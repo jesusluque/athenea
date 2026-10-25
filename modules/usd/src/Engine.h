@@ -48,6 +48,7 @@
 #include "athenea/world/GpuScene.h"
 #include "athenea/world/Instancing.h"
 #include "athenea/lod/Athc.h"
+#include "athenea/lod/Athz.h"
 #include "athenea/material/MaterialCompiler.h"
 #include "athenea/material/TextureStore.h"
 #include "athenea/io/Ies.h"

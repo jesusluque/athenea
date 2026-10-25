@@ -67,6 +67,9 @@ struct ChunkFormat {
     uint32_t shadowWords = 0;
     /// Athz: the most bytes a chunk's coded layers take (its staging).
     uint64_t codedBytes = 0;
+    /// Athz: three words of curvature an element (GpuSplats::curvature),
+    /// where the cloud carries it. Not in a .athc block (elementBytes).
+    uint32_t curvatureWords = 0;
 
     /// Staging an SPZ chunk takes: a header, then its six streams (the most
     /// a splat's take, degree 4: 9 + 1 + 3 + 3 + 4 + 72 bytes), each on a word.

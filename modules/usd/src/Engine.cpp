@@ -1405,15 +1405,26 @@ Result<size_t> Engine::commit() {
                 } else if (!asset.path.empty()) {
                     // Held to the device's budget (streamBudget), which may
                     // stream a file asked to be read whole.
+                    const bool coded = lod::isAthz(asset.path);
                     if (const uint64_t budget = streamBudget(id, asset); budget > 0) {
-                        auto pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
+                        Result<std::unique_ptr<lod::StreamingPool>> pool = Error(ErrorCode::Unknown, "");
+                        if (coded) {
+                            // A .athz: its pages decoded by the device as they come.
+                            auto source = lod::AthzSource::open(*library_, asset.path);
+                            pool = source ? lod::StreamingPool::open(
+                                                *device_, std::unique_ptr<lod::ChunkSource>(std::move(*source)),
+                                                {budget, 2})
+                                          : Result<std::unique_ptr<lod::StreamingPool>>(source.error());
+                        } else {
+                            pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
+                        }
                         if (pool) {
                             entry.pool = std::move(*pool);
                         } else {
                             log::warn("hdAthenea: {}: {}", id.GetString(), pool.error().toString());
                         }
                     } else {
-                        auto read = lod::readAthc(*device_, asset.path);
+                        auto read = coded ? lod::readAthz(*library_, asset.path) : lod::readAthc(*device_, asset.path);
                         if (read) {
                             entry.lodCloud = std::make_unique<lod::LodCloud>(std::move(*read));
                         } else {

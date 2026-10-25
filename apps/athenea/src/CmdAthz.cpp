@@ -21,6 +21,7 @@
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
+#include "athenea/io/Exr.h"
 #include "athenea/io/SplatWriters.h"
 #include "athenea/lod/Athc.h"
 #include "athenea/lod/Athz.h"
@@ -315,6 +316,14 @@ bool convertWithAthz(const std::string& input, const std::string& output, const 
         s.tableLog = o.tableLog;
         s.rans = !o.raw;
         s.source = fs::path(input).filename().string();
+        if (o.transfer == "cpca") {
+            if (o.transferBasis.empty()) {
+                fail(Error(ErrorCode::InvalidArgument, "--athz-transfer cpca needs --transfer-basis"));
+            }
+            s.transferBasis = o.transferBasis;
+        } else if (o.transfer != "lossless") {
+            fail(Error(ErrorCode::InvalidArgument, "--athz-transfer is lossless or cpca"));
+        }
         auto stats = lod::writeAthz(library, *tree, output, s);
         if (!stats) fail(stats.error());
         out("wrote %s: %u splats and %llu merged in %u pages, %.2f MB (%.2f B a splat; G %.2f A %.2f T %.2f MB)\n",
@@ -347,6 +356,97 @@ bool convertWithAthz(const std::string& input, const std::string& output, const 
     out("wrote %s: %u splats%s\n", output.c_str(), splats->count,
         fromAthz ? (" (band " + std::to_string(band) + ")").c_str() : "");
     return true;
+}
+
+void addAthzCompare(CLI::App& app) {
+    struct Options {
+        std::string image, reference, classes;
+        std::vector<std::string> names{"red", "green", "blue"};
+    };
+    auto o = std::make_shared<Options>();
+    auto* cmd = app.add_subcommand("athz-compare",
+                                   "an image against its reference class by class: each class's mean against the "
+                                   "reference's, and its smoothed relMSE once the means are matched");
+    cmd->add_option("image", o->image, ".exr")->required();
+    cmd->add_option("reference", o->reference, ".exr, the same size")->required();
+    cmd->add_option("classes", o->classes, ".exr: red, green and blue mark three classes' pixels")->required();
+    cmd->add_option("--names", o->names, "the three classes' names");
+    cmd->callback([o] {
+        auto device = gpu::Device::create();
+        if (!device) fail(device.error());
+        gpu::ShaderLibrary library(*device);
+        std::array<io::ExrPixels, 3> images;
+        const std::array<std::string, 3> paths{o->image, o->reference, o->classes};
+        for (size_t k = 0; k < 3; ++k) {
+            auto read = io::readExr(paths[k]);
+            if (!read) fail(read.error());
+            images[k] = std::move(*read);
+            if (images[k].width != images[0].width || images[k].height != images[0].height) {
+                fail(Error::make(ErrorCode::InvalidArgument, "{} is not the image's size", paths[k]));
+            }
+        }
+        const uint32_t w = images[0].width, h = images[0].height, n = w * h;
+        std::array<gpu::Buffer, 3> buffers;
+        for (size_t k = 0; k < 3; ++k) {
+            auto b = gpu::Buffer::fromSpan(**device, std::span<const float>(images[k].rgba), "compare.image");
+            if (!b) fail(b.error());
+            buffers[k] = std::move(*b);
+        }
+        const uint32_t groups = (n + 255) / 256;
+        std::vector<float> zero(uint64_t{groups} * 9 + 16, 0.0F);
+        auto partial = gpu::Buffer::fromSpan(**device, std::span<const float>(zero), "compare.partial");
+        auto totals = gpu::Buffer::fromSpan(**device, std::span<const float>(zero.data(), 16), "compare.totals");
+        if (!partial) fail(partial.error());
+        if (!totals) fail(totals.error());
+        auto sums = gpu::ComputeKernel::create(library, "athenea/lod/athz_classes", "athzClassSums");
+        auto reduce = gpu::ComputeKernel::create(library, "athenea/lod/athz_classes", "athzClassReduce");
+        auto error = gpu::ComputeKernel::create(library, "athenea/lod/athz_classes", "athzClassError");
+        if (!sums) fail(sums.error());
+        if (!reduce) fail(reduce.error());
+        if (!error) fail(error.error());
+        std::array<float, 3> scale{1, 1, 1};
+        const auto bind = [&](rhi::ShaderCursor c, uint32_t perGroup) {
+            c["params"]["width"].setData(w);
+            c["params"]["height"].setData(h);
+            c["params"]["groups"].setData(groups);
+            c["params"]["sums"].setData(perGroup);
+            c["params"]["scale1"].setData(scale[0]);
+            c["params"]["scale2"].setData(scale[1]);
+            c["params"]["scale3"].setData(scale[2]);
+            c["image"].setBinding(buffers[0].rhi());
+            c["reference"].setBinding(buffers[1].rhi());
+            c["classes"].setBinding(buffers[2].rhi());
+            c["partial"].setBinding(partial->rhi());
+            c["totals"].setBinding(totals->rhi());
+        };
+        std::array<float, 9> means{};
+        {
+            gpu::CommandBatch batch(**device);
+            sums->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 9); });
+            reduce->dispatch(batch, {9, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 9); });
+            if (auto s = batch.submit(true); !s) fail(s.error());
+            if (auto r = totals->read(**device, 0, 9 * 4, means.data()); !r) fail(r.error());
+        }
+        for (int k = 0; k < 3; ++k) {
+            scale[k] = means[k * 3 + 1] > 0 ? means[k * 3 + 2] / means[k * 3 + 1] : 1.0F;
+        }
+        std::array<float, 3> errors{};
+        {
+            gpu::CommandBatch batch(**device);
+            error->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 3); });
+            reduce->dispatch(batch, {3, 1, 1}, [&](rhi::ShaderCursor c) { bind(c, 3); });
+            if (auto s = batch.submit(true); !s) fail(s.error());
+            if (auto r = totals->read(**device, 0, 3 * 4, errors.data()); !r) fail(r.error());
+        }
+        out("| class | pixels | mean image / reference | smoothed relMSE, means matched |\n|---|---:|---:|---:|\n");
+        for (int k = 0; k < 3; ++k) {
+            const float count = means[k * 3];
+            if (count < 1) continue;
+            out("| %s | %.0f | %.4f | %.5f |\n", k < static_cast<int>(o->names.size()) ? o->names[k].c_str() : "?",
+                static_cast<double>(count), static_cast<double>(means[k * 3 + 1] / std::max(means[k * 3 + 2], 1e-12F)),
+                static_cast<double>(errors[k] / count));
+        }
+    });
 }
 
 void addAthzCensus(CLI::App& app) {

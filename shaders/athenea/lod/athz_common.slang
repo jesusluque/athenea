@@ -65,6 +65,7 @@ public static const uint kFieldPbr = 6;
 public static const uint kFieldLobes = 7;
 public static const uint kFieldTransfer = 8;
 public static const uint kFieldShadow = 9;
+public static const uint kFieldCurvature = 10;
 
 /// What an element carries: words of each array (0 where absent).
 public struct AthzLayout {
@@ -75,6 +76,7 @@ public struct AthzLayout {
     public uint lobesWords;
     public uint transferWords;
     public uint shadowWords;
+    public uint curvatureWords;
 };
 
 public uint athzFieldWords(AthzLayout l, uint field) {
@@ -88,21 +90,22 @@ public uint athzFieldWords(AthzLayout l, uint field) {
     case kFieldPbr: return l.pbrWords;
     case kFieldLobes: return l.lobesWords;
     case kFieldTransfer: return l.transferWords;
-    default: return l.shadowWords;
+    case kFieldShadow: return l.shadowWords;
+    default: return l.curvatureWords;
     }
 }
 
 /// Which array word `w` of an element is in (x), and which of that array's
 /// words an element (y).
 public uint2 athzField(AthzLayout l, uint w) {
-    for (uint f = 0; f < 10u; ++f) {
+    for (uint f = 0; f < 11u; ++f) {
         const uint n = athzFieldWords(l, f);
         if (w < n) {
             return uint2(f, w);
         }
         w -= n;
     }
-    return uint2(kFieldShadow, 0u);
+    return uint2(kFieldCurvature, 0u);
 }
 
 /// The byte address of word `y` of array element `e` in its array.
