@@ -46,13 +46,14 @@ driver de la GPU es el de la máquina.
 | Sistema | Instalador | Instala en | Necesita |
 |---|---|---|---|
 | macOS (Apple silicon) | `athenea-<v>-macos-arm64.pkg` | `/usr/local/athenea`, programas enlazados en `/usr/local/bin` | macOS 15 o posterior. Sin firma de Developer ID: se abre con clic derecho, Abrir. |
-| Linux (x86_64) | `athenea_<v>_amd64.deb` | `/opt/athenea`, programas enlazados en `/usr/bin` | glibc 2.39 (Ubuntu 24.04 o posterior) y un driver de NVIDIA con OptiX para hornear (570 o posterior). |
-| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, `bin\` añadido al `PATH` de la máquina | un driver de NVIDIA con OptiX (570 o posterior). Sin firma: SmartScreen pregunta una vez. |
+| Linux (x86_64) | `athenea_<v>_amd64.deb` | `/opt/athenea`, programas enlazados en `/usr/bin` | glibc 2.39 (Ubuntu 24.04 o posterior) y un driver de NVIDIA (570 o posterior). |
+| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, `bin\` añadido al `PATH` de la máquina | un driver de NVIDIA (570 o posterior). Sin firma: SmartScreen pregunta una vez. |
 
 Los archivos (`.zip`, `.tar.gz`) llevan la misma carpeta y funcionan desde
 donde se descompriman: los programas encuentran los shaders, los bundles AOFX
-y el plugin de Hydra con rutas relativas a ellos. Bajo WSL2 un horneado se
-rechaza: WSL2 no carga OptiX.
+y el plugin de Hydra con rutas relativas a ellos. Un horneado no necesita
+OptiX: bajo WSL2, que no lo carga, un horneado traza como en cualquier
+dispositivo CUDA.
 
 ### 1.2 El entorno de ejecución
 
@@ -83,7 +84,7 @@ lo que ve.
 | Open Image Denoise | `--denoise` y `athenea:denoise` no hacen nada; un frame trazado se queda como lo reunió. |
 | libwebp | las nubes `.sog` se rechazan al leerlas. |
 | OpenVDB | los campos de volumen `.vdb` se rechazan al leerlos. El path tracer sigue necesitando `nanovdb/PNanoVDB.h` de NanoVDB, solo cabecera: un prefijo de USD que no la tiene nombra un directorio que la contiene con `-DATHENEA_NANOVDB_INCLUDE=<dir>`, o el configure avisa de que los kernels del path tracer no compilarán. |
-| Cabeceras de OptiX (CUDA) | el ray tracing por pipeline en CUDA; los ray queries en línea siguen, así que casi todo el motor también. |
+| Cabeceras de OptiX (CUDA) | el ray tracing por pipeline en CUDA: la visibilidad de las mallas por rayos (`--visibility rays`) y la ruta por hardware del trazador de splats. El path tracer y los horneados trazan allí por el BVH por compute, estén o no. |
 | zstd | las nubes `.spz` se rechazan, con `this build reads no .spz`. |
 
 ### 1.4 Metal y CUDA
@@ -101,9 +102,12 @@ Lo que cambia entre ellos, en la práctica:
   aceleración pero no pipelines de rayos, así que la ruta que necesita un
   pipeline no está disponible y `athenea info` lo dice. CUDA tiene el pipeline
   (OptiX, con sus cabeceras y un driver que lo cargue) y no tiene ray queries.
-  Un horneado necesita uno de los dos: donde no hay ninguno -- CUDA bajo WSL2,
-  que no carga OptiX -- `athenea mesh2splat` lo rechaza con "has no ray
-  tracing".
+  El path tracer y todo horneado trazan en CUDA por el BVH por compute de la
+  escena, en un kernel de compute: un kernel trazado compila en minutos la
+  primera vez (de siete a quince en un portátil con RTX 3070, según lo que
+  haga el resto de la máquina) y sale de la caché de shaders después, donde su
+  pipeline de OptiX tardaba más de veinte minutos y 25 GB de memoria del host,
+  y fallaba sin ellos. CUDA bajo WSL2, que no carga OptiX, hornea igual.
 - **El denoiser.** En Metal, Open Image Denoise corre en la cola del propio
   motor. En Vulkan corre a través de CUDA con memoria importada.
 - **Media precisión.** `athenea info` dice si la hay; donde no la hay el motor se

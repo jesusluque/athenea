@@ -495,6 +495,108 @@ float3 pathShadow(float3 p, float3 n, float3 wi, float distance, uint shadowCate
 static const bool kTraces = true;
 )";
 
+/// The same two questions through the scene's compute BVHs (bvh_rays), where
+/// the device has no inline rays: on CUDA this keeps the tracer a compute
+/// kernel. Its ray tracing pipeline (OptiX) compiled the raygen of a bake --
+/// some 80 000 instructions, nineteen trace sites -- in over twenty minutes
+/// and more than 25 GB of host memory, and failed outright where the memory
+/// was not there. Here every ray calls one traversal that is not inlined.
+/// The shadow walk is the inline route's: nearest first, one surface at a
+/// time, so a light's link, a cut-out and a glass are asked of what it met.
+const char* kRaysBvh = R"(
+struct PathHit {
+    uint4  seen;          // (instance + 1, triangle, 0, 0); 0 for nothing
+    float  t;
+    float2 barycentrics;  // of the triangle met: where the ray met it
+};
+
+/// A world ray's trace: taken into view space, where the trees are.
+BvhHit pathBvhTrace(float3 origin, float3 direction, float tMin, float tMax, uint mask, bool cullBack, bool first) {
+    const float3 o = bvhWorldToView(toWorld.row0, toWorld.row1, toWorld.row2, origin, 1.0);
+    const float3 d = bvhWorldToView(toWorld.row0, toWorld.row1, toWorld.row2, direction, 0.0);
+    return bvhTrace(o, d, tMin, tMax, mask, cullBack, first);
+}
+
+PathHit traceNearestFrom(float3 origin, float3 direction, float tMin, uint mask, bool cullBack) {
+    const BvhHit found = pathBvhTrace(origin, direction, tMin, 3.0e38, mask, cullBack, false);
+    PathHit hit;
+    if (found.found()) {
+        hit.seen = uint4(found.instance + 1, found.triangle, 0, 0);
+        hit.t = found.t;
+        hit.barycentrics = found.barycentrics;
+    } else {
+        hit.seen = uint4(0);
+        hit.t = 0.0;
+        hit.barycentrics = float2(0.0);
+    }
+    return hit;
+}
+
+float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask, bool glass) {
+    const float scale = max(1.0, length(p));
+    const float3 away = dot(n, wi) < 0.0 ? -n : n;
+    const float3 origin = p + (away + wi) * (1.0e-3 * scale);
+    float tMin = 1.0e-3 * scale;
+    // Aimed at the point it ends at, as the inline route's (kRays).
+    float3 dir = wi;
+    float reach = distance;
+    if (distance < 1.0e29) {
+        const float3 to = p + wi * distance - origin;
+        reach = length(to);
+        dir = reach > 0.0 ? to / reach : wi;
+    }
+    const float tMax = max(reach, 0.0);
+    if (tMax <= tMin) {
+        return float3(1.0);
+    }
+    if (shadowCategory == kLightUnlinked && path.shadowCutouts == 0 && !glass) {
+        return pathBvhTrace(origin, dir, tMin, tMax, mask, false, true).found() ? float3(0.0) : float3(1.0);
+    }
+    float3 through = float3(1.0);
+    uint layers = 0;
+    for (uint step = 0; step < 64; ++step) {
+        const BvhHit found = pathBvhTrace(origin, dir, tMin, tMax, mask, false, false);
+        if (!found.found()) {
+            return through;
+        }
+        const bool linked = shadowCategory == kLightUnlinked ||
+                            lightLinked(shadowCategory, instances[found.instance].categoriesLo,
+                                        instances[found.instance].categoriesHi);
+        if (linked) {
+            PathHit hit;
+            hit.seen = uint4(found.instance + 1, found.triangle, 0, 0);
+            hit.t = found.t;
+            hit.barycentrics = found.barycentrics;
+            if (path.shadowCutouts == 0 || !shadowPassesThrough(hit, origin, dir)) {
+                if (!glass || layers >= kGlassLayers) {
+                    return float3(0.0);
+                }
+                through *= glassPasses(hit, origin, dir);
+                ++layers;
+                if (!any(through > float3(1.0e-4))) {
+                    return float3(0.0);
+                }
+            }
+        }
+        tMin = found.t + max(1.0e-4, found.t * 1.0e-5);
+        if (tMin >= tMax) {
+            return through;
+        }
+    }
+    return through;
+}
+
+bool pathOccluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+    return !any(shadowWalk(p, n, wi, distance, shadowCategory, mask, false) > float3(0.0));
+}
+
+float3 pathShadow(float3 p, float3 n, float3 wi, float distance, uint shadowCategory, uint mask) {
+    return shadowWalk(p, n, wi, distance, shadowCategory, mask, path.glassShadows != 0);
+}
+
+static const bool kTraces = true;
+)";
+
 const char* kNoRays = R"(
 struct PathHit {
     uint4  seen;
@@ -2986,14 +3088,21 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     // compiled without it -- which has no rays to read and is the frame's own
     // size, so exactly one point of the bake came back (the camera's pixel).
     if (programs.module() == module_ && groups == groups_ && volumes == volumes_ && splats == splats_ &&
-        aux == aux_ && bake_ == bakeBuilt_ && (kernel_.has_value() || rayKernel_.has_value())) {
+        aux == aux_ && bake_ == bakeBuilt_ && bvhRays_ == bvhRaysBuilt_ &&
+        (kernel_.has_value() || rayKernel_.has_value())) {
         return ok();
     }
     bakeBuilt_ = bake_;
+    bvhRaysBuilt_ = bvhRays_;
     splats_ = splats;
     aux_ = aux;
-    const bool traces = device_->caps().rayQuery && device_->caps().accelerationStructure;
-    const std::string name = programs.module() + (traces ? "_path_traced" : "_path_direct") +
+    // Where rays are not inline, the compute BVH when the frame brings one
+    // (MaterialFrame::bvh): a compute kernel like the inline route's. Where
+    // they are, only when asked (PathSettings::computeBvh).
+    const bool bvhRays = bvhRays_;
+    const bool traces = !bvhRays && device_->caps().rayQuery && device_->caps().accelerationStructure;
+    const std::string name = programs.module() +
+                             (traces ? "_path_traced" : bvhRays ? "_path_bvh" : "_path_direct") +
                              (groups ? "_groups" : "") + (volumes ? "_volumes" : "") +
                              (traces && splats ? "_splatshadows" : "") + (aux_ ? "_aux" : "") +
                              (bake_ ? "_bake" : "");
@@ -3001,16 +3110,18 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     // a compute kernel, a ray tracing pipeline where there are no inline rays
     // (CUDA, through OptiX), or no rays at all -- direct light alone, which
     // the tracer says of itself.
-    const bool pipeline = !traces && device_->caps().rayTracing && device_->caps().accelerationStructure;
+    const bool pipeline =
+        !traces && !bvhRays && device_->caps().rayTracing && device_->caps().accelerationStructure;
     // Splats shadow meshes only where the rays are inline: the pipeline route
     // would need the traversal again as an any hit program, and it carries two.
     const bool withSplats = traces && splats;
     const bool withAux = aux_;
     const std::string source = "import " + programs.module() + ";\n" +
                                (volumes ? std::string("import athenea.volume.medium;\n") : std::string()) +
-                               (withSplats ? std::string("import athenea.rt.rt_shadow_packed;\n") : std::string()) + kPrelude +
+                               (withSplats ? std::string("import athenea.rt.rt_shadow_packed;\n") : std::string()) +
+                               (bvhRays ? std::string("import athenea.technique.bvh_rays;\n") : std::string()) + kPrelude +
                                (groups ? kGroups : kNoGroups) + (volumes ? kVolumes : kNoVolumes) +
-                               (traces ? kRays : pipeline ? kRaysPipeline : kNoRays) +
+                               (traces ? kRays : bvhRays ? kRaysBvh : pipeline ? kRaysPipeline : kNoRays) +
                                (withSplats ? kSplats : kNoSplats) + (withAux ? kAux : kNoAux) +
                                (bake_ ? kBake : kNoBake) + kBody + kBodyRest +
                                (pipeline ? kEntryRays : kEntryCompute);
@@ -3088,10 +3199,13 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         splats = false;
     }
     const bool wantBake = bake != nullptr;
+    const bool wantBvh = frame.bvh != nullptr && (settings.computeBvh || !(device_->caps().rayQuery &&
+                                                                          device_->caps().accelerationStructure));
     if ((groups != groups_ || volumes != volumes_ || splats != splats_ || wantAux != aux_ ||
-         wantBake != bake_) &&
+         wantBake != bake_ || wantBvh != bvhRays_) &&
         frame.programs != nullptr) {
         bake_ = wantBake;
+        bvhRays_ = wantBvh;
         ATHENEA_TRY(setPrograms(*frame.programs, groups, volumes, splats, wantAux));
     }
     const uint32_t groupCount = std::min(frame.groups.count, kMaxLightGroups);
@@ -3182,8 +3296,20 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         if (frame.lights != nullptr) {
             frame.lights->bind(cursor);
         }
-        if (frame.shadows != nullptr) {
-            cursor["scene"].setBinding(frame.shadows);
+        // Only a kernel that traces in hardware declares the structure: the
+        // compute BVH route's does not, though the frame may carry one.
+        if (const rhi::ShaderCursor scene = cursor["scene"]; scene.isValid() && frame.shadows != nullptr) {
+            scene.setBinding(frame.shadows);
+        }
+        // Only the compute BVH route's kernel declares the trees.
+        if (const rhi::ShaderCursor top = cursor["rayTopBoxes"]; top.isValid() && frame.bvh != nullptr) {
+            top.setBinding(frame.bvh->topBoxes().rhi());
+            cursor["rayTopChildren"].setBinding(frame.bvh->topChildren().rhi());
+            cursor["rayTopLeaves"].setBinding(frame.bvh->topLeaves().rhi());
+            cursor["rayMeshBoxes"].setBinding(frame.bvh->meshBoxes().rhi());
+            cursor["rayMeshChildren"].setBinding(frame.bvh->meshChildren().rhi());
+            cursor["rayMeshLeaves"].setBinding(frame.bvh->meshLeaves().rhi());
+            cursor["rayBvh"]["instances"].setData(frame.scene != nullptr ? frame.scene->instanceCount() : 0u);
         }
         if (splats_ && frame.splatShadows != nullptr && frame.splatShadows->valid()) {
             const PackedShadowLayout& where = frame.splatShadows->layout();

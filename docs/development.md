@@ -132,6 +132,15 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
 (hardware acceleration structures, compute BVH) share
 `shaders/athenea/rt/rt_integrate.slang`.
 
+The path tracer's own rays -- a bounce, a shadow ray, a bake's -- go one of
+three ways, and its generated kernel carries exactly one: inline ray queries
+where the device has them (Metal, Vulkan, D3D12); the scene's compute BVHs
+(`world::BvhScene`, traversed by `technique/bvh_rays.slang`) where it has not
+and the frame brings them (`MaterialFrame::bvh`), which is what the engine
+does on CUDA; and an OptiX pipeline only for a caller that hands a CUDA
+device no BVH. `PathSettings::computeBvh` takes the BVH route on a device
+with inline rays too, which is how the two are checked against each other.
+
 ### 1.5 The shader layer
 
 `shaders/athenea/<area>` mirrors the modules: `common`, `algo`, `scene`, `splat`,

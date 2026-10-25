@@ -60,6 +60,10 @@ struct PathSettings {
     /// False: glass stops a shadow ray, and a lamp behind its lens lights
     /// only what the material's rays find through it.
     bool     glassShadows = true;
+    /// Trace through `MaterialFrame::bvh` even where the device has inline
+    /// rays: the route a device without them takes, for a check that the two
+    /// agree. Without a BVH in the frame it changes nothing.
+    bool     computeBvh = false;
 };
 
 /// How much of a frame has converged, for the adaptive gate: pixels the
@@ -250,6 +254,8 @@ private:
     bool                              aux_ = false;
     bool                              bake_ = false;
     bool                              bakeBuilt_ = false;   ///< the variant the kernel was built with
+    bool                              bvhRays_ = false;     ///< rays through MaterialFrame::bvh, where none are inline
+    bool                              bvhRaysBuilt_ = false;
     bool                              saidNoRoomForSplats_ = false;
     uint32_t                          sumPlanes_ = 1;   ///< 1 + 2 * light groups
     gpu::Buffer                       sum_;           ///< float4 a pixel: the paths added so far
