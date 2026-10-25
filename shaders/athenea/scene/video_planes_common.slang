@@ -60,9 +60,13 @@ public struct VideoPlanesParams {
     public uint highChunkBytes;    ///< a chunk's side payload: its blocks' boxes, then its high parts
     public uint chroma;            ///< 1: colours as YCoCg, Y in luma and Co, Cg in the tile's own chroma
     public uint chromaWeight;      ///< encode: a 2 x 2 block's chroma 0 the plain mean, 1 weighed by opacity x area
-    public uint pad4;
-    public uint pad5;
-    public uint pad6;
+    public float positionTarget;   ///< > 0: a block's high bits from its box (adaptive): what an 8-bit step covers
+    public uint geometry;          ///< 1: position, scale and rotation in the exact geometry layer, not in planes
+    public uint pad6;              ///< videoPlanesBoxUnion: 1 on a group's first frame
+    public uint geometryAt;        ///< decode: the picture's first splat in its frame (the geometry state's index)
+    public uint geometryPositionBits;  ///< the layer's bits a position axis (10-16)
+    public uint geometryScaleBits;     ///< the layer's bits a log scale (6-10)
+    public uint pad9;
 };
 
 public static const uint kTileWidth = 512;
@@ -108,11 +112,19 @@ public uint2 planeAndSplatOf(VideoPlanesParams p, uint2 pixel) {
 }
 
 /// The plane of position axis `axis`'s low part, of its high part (when the
-/// high parts are planes), and of attribute `a` >= 3.
+/// high parts are planes), and of attribute `a` >= 3. With the GEOMETRY LAYER
+/// (`geometry` 1) position, scale and rotation have no plane: plane 0 is the
+/// opacity and the colour planes follow it.
 public uint lowPlane(VideoPlanesParams p, uint axis) { return p.hiInVideo != 0 ? 3u + axis : axis; }
 /// The luma plane attribute `a` >= 3 lies in -- with `chroma`, a colour
 /// attribute's quantity's Y plane, whose tile's chroma holds its Co and Cg.
 public uint attributePlane(VideoPlanesParams p, uint a) {
+    if (p.geometry != 0) {
+        if (a < kFirstColour) {
+            return 0u;   // the opacity, the one attribute before the colours with a plane
+        }
+        return 1u + (p.chroma != 0 ? (a - kFirstColour) / 3u : a - kFirstColour);
+    }
     const uint first = p.hiInVideo != 0 ? 6u : 3u;
     if (p.chroma != 0 && a >= kFirstColour) {
         return first + 8u + (a - kFirstColour) / 3u;
@@ -122,6 +134,12 @@ public uint attributePlane(VideoPlanesParams p, uint a) {
 /// The attribute a luma plane past the position's holds (with `chroma`, a
 /// colour quantity's Y), and with `chroma` the quantity (or ~0u).
 public uint planeAttribute(VideoPlanesParams p, uint plane) {
+    if (p.geometry != 0) {
+        if (plane == 0) {
+            return 3u;
+        }
+        return kFirstColour + (p.chroma != 0 ? 3u * (plane - 1u) : plane - 1u);
+    }
     const uint first = p.hiInVideo != 0 ? 6u : 3u;
     if (p.chroma != 0 && plane >= first + 8u) {
         return kFirstColour + 3u * (plane - first - 8u);
@@ -129,6 +147,9 @@ public uint planeAttribute(VideoPlanesParams p, uint plane) {
     return plane - first + kFirstAttributePlane;
 }
 public uint colourQuantityOf(VideoPlanesParams p, uint plane) {
+    if (p.geometry != 0) {
+        return p.chroma != 0 && plane >= 1u ? plane - 1u : ~0u;
+    }
     const uint first = p.hiInVideo != 0 ? 6u : 3u;
     return p.chroma != 0 && plane >= first + 8u ? plane - first - 8u : ~0u;
 }
@@ -150,6 +171,23 @@ public float3 rgbOfYcocg(float3 y) {
 
 public uint sampleLevels(VideoPlanesParams p) { return (1u << p.bits) - 1u; }
 public uint positionLevels(VideoPlanesParams p) { return (1u << (p.bits + p.positionHighBits)) - 1u; }
+/// ADAPTIVE PRECISION (`positionTarget` > 0): each block carries its own
+/// count of high bits, a byte after the chunk's boxes -- 0 where its box is no
+/// wider than the target, else enough that a step of the low part is no
+/// wider than the target's: ceil(log2(widest / target)), at most
+/// `positionHighBits`. The high parts' storage stays one byte an axis.
+public bool adaptive(VideoPlanesParams p) { return p.positionTarget > 0.0; }
+public uint bitsBytes(VideoPlanesParams p) {
+    return adaptive(p) ? ((p.chunkSplats / p.positionBlock + 3u) & ~3u) : 0u;
+}
+public uint highsAt(VideoPlanesParams p) { return blockBytes(p) + bitsBytes(p); }
+public uint levelsWith(VideoPlanesParams p, uint highBits) { return (1u << (p.bits + highBits)) - 1u; }
+public uint bitsFor(VideoPlanesParams p, float widest) {
+    if (!(widest > p.positionTarget)) {
+        return 0u;
+    }
+    return min(uint(ceil(log2(widest / p.positionTarget))), p.positionHighBits);
+}
 /// What a position's error is measured in, whatever it was sent as: steps
 /// of 2 x `bits` over the frame's range.
 public uint referenceLevels(VideoPlanesParams p) { return (1u << (2u * p.bits)) - 1u; }
@@ -251,4 +289,103 @@ public uint joinPosition(VideoPlanesParams p, uint hi, uint lo) {
     const uint mask = sampleLevels(p);
     lo = min(lo, mask);
     return (hi << p.bits) | ((hi & 1u) != 0 ? mask - lo : lo);
+}
+
+// --- THE GEOMETRY LAYER (`geometry` 1) ------------------------------------------
+//
+// Position, scale and rotation beside the video, exact: a gaussian's
+// quantised geometry is four words -- position x | y << 16, z | log scale x
+// << 16, log scale y | z << 16, and the store's own rotation word
+// (packing.slang's smallest three) -- position `geometryPositionBits` an axis
+// and log scale `geometryScaleBits` over the record's ranges (attributes 0-2
+// and 4-6, one for the whole sequence). A frame sends each gaussian's
+// geometry absolute, or as a zigzagged residual from a prediction out of the
+// same gaussian's frames before: the frame before (order 1), or its motion
+// carried on (order 2: 2 b - c), mod 2^16 a field; the rotation's three 10-bit
+// components each mod 2^10 and its index as an exclusive or. 16 byte planes,
+// chunk by chunk -- planes 2f, 2f + 1 the low and high byte of field f (px,
+// py, pz, lsx, lsy, lsz), planes 12-15 the rotation's bytes -- `chunkSplats`
+// bytes a plane, deflated beside the video.
+
+public static const uint kGeometryPlanes = 16;
+public static const uint kGeometryKeyBlock = 256;   // a staggered refresh's block
+
+/// Whether gaussian `j` of frame `frame` goes absolute: every one on a key
+/// frame (`frame % interval == 0`), or with `stagger` the blocks of 256 whose
+/// index matches the frame's phase -- a block is refreshed once an interval.
+public bool geometryKey(uint j, uint frame, uint interval, uint stagger) {
+    if (interval <= 1) {
+        return true;
+    }
+    if (stagger != 0) {
+        return (j / kGeometryKeyBlock) % interval == frame % interval;
+    }
+    return frame % interval == 0;
+}
+
+public uint zigzag16(uint d) {
+    const int s = int(d << 16) >> 16;   // the low 16 bits as signed
+    return uint((s << 1) ^ (s >> 31)) & 0xFFFFu;
+}
+public uint unzigzag16(uint z) { return ((z >> 1) ^ (0u - (z & 1u))) & 0xFFFFu; }
+public uint zigzag10(uint d) {
+    const int s = int(d << 22) >> 22;   // the low 10 bits as signed
+    return uint((s << 1) ^ (s >> 31)) & 0x3FFu;
+}
+public uint unzigzag10(uint z) { return ((z >> 1) ^ (0u - (z & 1u))) & 0x3FFu; }
+
+/// A rotation word's residual against a predicted one: each 10-bit component
+/// zigzagged mod 2^10 (at bits 0, 10, 20), the index's exclusive or at 30.
+public uint rotationResidual(uint now, uint predicted) {
+    uint r = (now ^ predicted) & 3u;
+    r <<= 30u;
+    for (uint c = 0; c < 3; ++c) {
+        const uint shift = 22u - 10u * c;
+        r |= zigzag10(((now >> shift) - (predicted >> shift)) & 0x3FFu) << (10u * c);
+    }
+    return r;
+}
+public uint rotationFrom(uint residual, uint predicted) {
+    uint w = (predicted ^ (residual >> 30u)) & 3u;
+    for (uint c = 0; c < 3; ++c) {
+        const uint shift = 22u - 10u * c;
+        w |= (((predicted >> shift) + unzigzag10((residual >> (10u * c)) & 0x3FFu)) & 0x3FFu) << shift;
+    }
+    return w;
+}
+/// The prediction of a 10-bit component, or a 16-bit field, by order.
+public uint predictField(uint b, uint c, uint order, uint mask) {
+    return order >= 2 ? (2u * b - c) & mask : b;
+}
+public uint predictRotation(uint b, uint c, uint order) {
+    if (order < 2) {
+        return b;
+    }
+    uint w = b & 3u;
+    for (uint k = 0; k < 3; ++k) {
+        const uint shift = 22u - 10u * k;
+        w |= predictField((b >> shift) & 0x3FFu, (c >> shift) & 0x3FFu, 2u, 0x3FFu) << shift;
+    }
+    return w;
+}
+/// The prediction order for gaussian j at frame k: 0 a key (absolute), 1
+/// the frame after its key, else `order`.
+public uint geometryOrder(uint j, uint frame, uint interval, uint stagger, uint order) {
+    if (geometryKey(j, frame, interval, stagger)) {
+        return 0u;
+    }
+    const uint before = frame == 0 ? 0u : frame - 1u;
+    if (frame == 0 || geometryKey(j, before, interval, stagger)) {
+        return 1u;
+    }
+    return min(order, 2u);
+}
+
+/// Field f (0-5 the six 16-bit fields, 6 the rotation) of a geometry's words.
+public uint geometryField(uint4 g, uint f) {
+    if (f == 6) {
+        return g.w;
+    }
+    const uint w = f < 2 ? g.x : (f < 4 ? g.y : g.z);
+    return (f & 1u) == 0 ? (w & 0xFFFFu) : (w >> 16u);
 }

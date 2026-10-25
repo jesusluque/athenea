@@ -42,6 +42,7 @@ Result<std::shared_ptr<VideoStream>> VideoStream::open(const std::filesystem::pa
     auto codec = PlanesCodec::create(library);
     if (!codec) return std::move(codec).error();
     s->codec_ = std::make_unique<PlanesCodec>(std::move(*codec));
+    s->device_ = &library.device();
     s->key_ = DevicePages::publish(s);
     return s;
 }
@@ -95,10 +96,13 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
         if (!decoded) return std::move(decoded).error();
         decodeMs += msSince(t);
         auto layout = PlaneLayout::make(frame->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats, h.columns,
-                                        h.maxSplats, 0, 0, h.chroma);
+                                        h.maxSplats, 0, 0, h.chroma, h.geometry);
         if (!layout) return std::move(layout).error();
         layout->positionBlock = h.positionBlock;
         layout->positionHighBits = h.positionHighBits;
+        layout->geometryPositionBits = h.geometryPositionBits;
+        layout->geometryScaleBits = h.geometryScaleBits;
+        layout->positionTarget = h.positionTarget;
         if ((*decoded)->width() != layout->width || (*decoded)->height() != layout->height ||
             frame->ranges.size() != size_t{layout->attributes()} * 2 ||
             frame->high.size() != uint64_t{layout->chunks()} * layout->highChunkBytes() ||
@@ -116,6 +120,8 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
             Held& held = held_[p.ticket];
             held.frame = std::move(*decoded);
             held.layout = *layout;
+            held.geometryAt = GeometryFrame{frame->source, h.geometryInterval, h.geometryStagger, h.geometryOrder};
+            held.frameFirst = frame->firstSplat;
             held.pagesLeft = layout->chunks();
         }
         p.frame = std::move(*frame);
@@ -140,7 +146,8 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
             bounds.min[axis] = p.frame.ranges[axis * 2];
             bounds.max[axis] = p.frame.ranges[axis * 2 + 1];
         }
-        const uint64_t rangeBytes = layout.rangeBytes(), highBytes = layout.highChunkBytes();
+        const uint64_t rangeBytes = layout.rangeBytes(), highBytes = layout.highChunkBytes(),
+                       geometryBytes = layout.geometryChunkBytes();
         const uint32_t firstChunk = p.frame.firstSplat / h.chunkSplats;
         for (uint32_t c = 0; c < layout.chunks(); ++c) {
             lod::PageUpdate u;
@@ -156,7 +163,7 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
             ph.first = c * layout.chunkSplats;
             ph.count = std::min(layout.chunkSplats, layout.splats - ph.first);
             ph.antialiased = h.antialiased ? 1u : 0u;
-            ph.payloadBytes = static_cast<uint32_t>(rangeBytes + highBytes);
+            ph.payloadBytes = static_cast<uint32_t>(rangeBytes + highBytes + geometryBytes);
             u.op = lod::PageUpdate::Op::Replace;
             u.bounds = bounds;
             u.bytes.resize(sizeof ph + ph.payloadBytes);
@@ -164,6 +171,10 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
             std::memcpy(u.bytes.data() + sizeof ph, p.frame.ranges.data(), rangeBytes);
             if (highBytes != 0) {
                 std::memcpy(u.bytes.data() + sizeof ph + rangeBytes, p.frame.high.data() + c * highBytes, highBytes);
+            }
+            if (geometryBytes != 0 && p.frame.geometry.size() >= (c + 1) * geometryBytes) {
+                std::memcpy(u.bytes.data() + sizeof ph + rangeBytes + highBytes,
+                            p.frame.geometry.data() + c * geometryBytes, geometryBytes);
             }
             if (u.chunk < pages) covered[u.chunk] = 1;
             queue.push(std::move(u));
@@ -202,9 +213,24 @@ Result<void> VideoStream::place(gpu::CommandBatch& batch, const lod::DevicePageH
         return Error::make(ErrorCode::InvalidArgument, "video: chunk {} of {} splats past its frame's {}",
                            page.chunk, page.count, held.layout.splats);
     }
+    if (held.layout.geometry) {
+        const uint64_t want = uint64_t{reader_->mostSourceSplats()} * 32;   // this frame's words and the one before's
+        if (!geometryState_.valid() || geometryState_.bytes() < want) {
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<uint64_t>(want, 16);
+            desc.elementBytes = 4;
+            desc.label = "video.geometryState";
+            auto made = gpu::Buffer::create(*device_, desc);
+            if (!made) return std::move(made).error();
+            geometryState_ = std::move(*made);
+        }
+        ATHENEA_TRY(codec_->geometryApply(batch, held.layout, staging.rhi(),
+                                          payloadOffset + held.layout.rangeBytes() + held.layout.highChunkBytes(),
+                                          held.geometryAt, held.frameFirst, page.first, page.count, geometryState_));
+    }
     ATHENEA_TRY(codec_->decode(batch, held.layout, held.luma.texture.get(), held.luma.chroma.get(), staging.rhi(),
                                payloadOffset, payloadOffset + held.layout.rangeBytes(), page.first, page.count, store,
-                               at, keepRest));
+                               at, keepRest, held.layout.geometry ? &geometryState_ : nullptr, held.frameFirst));
     held.uses.emplace_back(pool, fence);
     held.pagesLeft = held.pagesLeft > 0 ? held.pagesLeft - 1 : 0;
     ++stats_.placed;

@@ -73,12 +73,30 @@ struct PlaneLayout {
     /// Cb and Cr of that plane's tile, one a 2 x 2 block of four consecutive
     /// splats (video_planes_common.slang). 8 bits only.
     bool     chroma = false;
+    /// ADAPTIVE PRECISION: > 0, each block carries its own high bits (a byte
+    /// after the chunk's boxes) -- none where its box is no wider than this
+    /// (metres), else enough that a low-part step is no wider than this
+    /// over 255; at most `positionHighBits`, which sizes the storage.
+    float    positionTarget = 0.0F;
+    /// THE GEOMETRY LAYER: position, scale and rotation not in planes but
+    /// exact beside the video (video_geometry.slang); the planes are the
+    /// opacity and the colours. Sixteen byte planes a chunk.
+    bool     geometry = false;
+    static constexpr uint32_t kGeometryPlanes = 16;
+    uint32_t geometryPositionBits = 16;   ///< 10-16 a position axis
+    uint32_t geometryScaleBits = 10;      ///< 6-10 a log scale
+    [[nodiscard]] uint64_t geometryChunkBytes() const noexcept {
+        return geometry ? uint64_t{kGeometryPlanes} * chunkSplats : 0;
+    }
     /// The encode's block chroma: 0 the plain mean of its splats, 1 weighed
     /// by opacity x the area of their two largest axes.
     uint32_t chromaWeight = 0;
 
     [[nodiscard]] uint32_t attributes() const noexcept { return kAttributesBeforeRest + 3 * restPerColour; }
     [[nodiscard]] uint32_t planes() const noexcept {
+        if (geometry) {
+            return 1u + (chroma ? 1u + restPerColour : 3u + 3u * restPerColour);
+        }
         return (hiInVideo ? 6u : 3u) + (chroma ? 8u + 1u + restPerColour : attributes() - 3u);
     }
     /// The second plane's bytes (NV12: a (Cb, Cr) pair a 2 x 2 block): only
@@ -93,8 +111,11 @@ struct PlaneLayout {
     [[nodiscard]] uint64_t blockBytes() const noexcept {
         return positionBlock == 0 ? 0 : uint64_t{chunkSplats / positionBlock} * 12;
     }
+    [[nodiscard]] uint64_t bitsBytes() const noexcept {
+        return positionTarget > 0.0F && positionBlock != 0 ? (uint64_t{chunkSplats / positionBlock} + 3) / 4 * 4 : 0;
+    }
     [[nodiscard]] uint64_t highChunkBytes() const noexcept {
-        return blockBytes() +
+        return blockBytes() + bitsBytes() +
                (hiInVideo || positionHighBits == 0 ? 0 : uint64_t{3} * chunkSplats * sampleBytes());
     }
     [[nodiscard]] uint64_t rangeBytes() const noexcept { return uint64_t{attributes()} * 2 * sizeof(float); }
@@ -114,14 +135,15 @@ struct PlaneLayout {
     [[nodiscard]] static Result<PlaneLayout> make(uint32_t splats, uint32_t bits, uint32_t restPerColour,
                                                   bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
                                                   uint32_t tileSplats = 0, uint32_t mostWidth = 0,
-                                                  uint32_t mostHeight = 0, bool chroma = false);
+                                                  uint32_t mostHeight = 0, bool chroma = false,
+                                                  bool geometry = false);
     /// A frame too big for one picture goes as SLICES, each a picture of its
     /// own holding a run of the frame's Morton order: the most splats one
     /// takes (a multiple of `chunkSplats`), `splats` when the frame fits.
     [[nodiscard]] static Result<uint32_t> sliceSplats(uint32_t splats, uint32_t bits, uint32_t restPerColour,
                                                       bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
                                                       uint32_t mostWidth = 0, uint32_t mostHeight = 0,
-                                                      bool chroma = false);
+                                                      bool chroma = false, bool geometry = false);
 };
 
 /// One frame, encoded: what the codec takes and what goes beside it.
@@ -130,6 +152,14 @@ struct EncodedPlanes {
     std::vector<std::byte> chroma;   ///< with `chroma`: NV12's second plane, (Cb, Cr) a 2 x 2 block; else empty
     std::vector<float>     ranges;   ///< attributes x 2
     std::vector<std::byte> high;     ///< chunks x highChunkBytes (empty when hiInVideo)
+};
+
+/// Where a picture's geometry layer stands in its sequence.
+struct GeometryFrame {
+    uint32_t frame = 0;      ///< the source frame, from 0
+    uint32_t interval = 0;   ///< frames from one key to the next (0: every frame a key)
+    bool     stagger = false;///< a key refreshes blocks of 256 in turn
+    uint32_t order = 1;      ///< the prediction between keys: 1 the frame before, 2 its motion carried on
 };
 
 /// How far a decoded cloud is from its source, an attribute: steps of its
@@ -180,10 +210,33 @@ public:
     /// coefficients a colour are written, zero past the planes' own.
     /// `chromaPlane`: the decoded frame's second plane (RG8Unorm), read with
     /// `layout.chroma`; may be null otherwise.
+    /// `geometryState`, `frameFirst`: with `layout.geometry`, the layer's
+    /// state (geometryApply wrote it) and the picture's first splat in its
+    /// frame.
     [[nodiscard]] Result<void> decode(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::ITexture* luma,
                                       rhi::ITexture* chromaPlane,
                                       rhi::IBuffer* page, uint64_t rangesOffset, uint64_t highOffset, uint32_t first,
-                                      uint32_t count, scene::GpuSplats& store, uint64_t at, uint32_t keep);
+                                      uint32_t count, scene::GpuSplats& store, uint64_t at, uint32_t keep,
+                                      const gpu::Buffer* geometryState = nullptr, uint32_t frameFirst = 0);
+
+    /// THE GEOMETRY LAYER, encode: the picture's gaussians quantised into
+    /// `now` (four words a frame splat, at Morton rank `first` + i of the
+    /// frame) and packed -- absolute, or against `before` -- into 16 byte
+    /// planes a chunk, read back. `quantiseOnly`: `now` alone, nothing packed.
+    [[nodiscard]] Result<std::vector<std::byte>> geometryEncode(const scene::GpuSplats& cloud,
+                                                                const PlaneLayout& layout, const gpu::Buffer& order,
+                                                                uint32_t first, const gpu::Buffer& ranges,
+                                                                const GeometryFrame& at, gpu::Buffer& now,
+                                                                const gpu::Buffer& before, bool quantiseOnly = false,
+                                                                const gpu::Buffer* before2 = nullptr);
+    /// THE GEOMETRY LAYER, decode: a page's planes (at `planesOffset` bytes
+    /// in `page`) onto `state` -- splats `pageFirst` .. + `count` of the
+    /// picture whose first splat in its frame is `frameFirst`. `state` holds
+    /// two frames' words: this one's, and in its second half the one before
+    /// (what order 2 predicts from) -- eight words a frame splat.
+    [[nodiscard]] Result<void> geometryApply(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::IBuffer* page,
+                                             uint64_t planesOffset, const GeometryFrame& at, uint32_t frameFirst,
+                                             uint32_t pageFirst, uint32_t count, gpu::Buffer& state);
 
     /// A slice decoded from the planes (`decoded`, in Morton order from rank
     /// `first`) against its source through `order`, attribute by attribute.
@@ -203,11 +256,12 @@ public:
 
 private:
     gpu::Device*       device_ = nullptr;
-    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, blocks_, chroma_, boxUnion_, decode_, compare_;
+    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, blocks_, chroma_, boxUnion_, blockBits_;
+    gpu::ComputeKernel decode_, compare_, geometryQuantise_, geometryPack_, geometryApply_;
     gpu::RadixSort     sort_;
     gpu::SortBuffers   sorting_;
     uint32_t           sortingFor_ = 0;
-    gpu::Buffer        partialBuffer_, mosaic_, chromaMosaic_, highBuffer_, boxBuffer_, errors_;
+    gpu::Buffer        partialBuffer_, mosaic_, chromaMosaic_, highBuffer_, boxBuffer_, errors_, geometryPlanes_;
 };
 
 }   // namespace athenea::video

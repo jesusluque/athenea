@@ -527,6 +527,10 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--order` | `frame`, `first` o `stable` | `frame` | cada frame ordenado por código de Morton, o el orden del primer frame mientras el número sea el mismo; `stable` es `first` para frames que listan las mismas gaussianas en el mismo orden (`flatten --keep-order`), con el mismo número en todos, y lo dice en el fichero (`stableOrder`): el índice i es una misma gaussiana de principio a fin |
 | `--range-group` | frames | el intervalo entre claves | frames cuyos rangos de atributo son una sola unión: la de toda la secuencia mantiene en su paso cuantizado un valor que no se mueve |
 | `--hold-boxes` | flag | no | con `--order stable`, `--position-block` y rangos por grupo: la caja de cada bloque es la unión sobre su grupo de rangos, para que sus pasos de posición no salten |
+| `--position-target` | metros | `0`: no | con `--position-block`: precisión adaptativa -- cada bloque con sus propios bits altos (un byte tras las cajas del chunk): ninguno donde su caja no es más ancha que esto, si no los que hagan falta para que un paso no sea más ancho que esto entre 255 |
+| `--geometry` | flag | no | posición, escala y rotación exactas junto al vídeo (posiciones de 16 bits, escalas logarítmicas de 10 bits sobre los rangos de la secuencia, la palabra de rotación del almacén), y los planos solo opacidad y color |
+| `--geometry-key` | frames | `0`: todos los frames absolutos | con `--geometry`: frames de una clave de geometría a la siguiente; los frames intermedios envían la diferencia de cada gaussiana respecto al frame anterior (necesita `--order stable` y un `--range-group` de toda la secuencia) |
+| `--geometry-stagger` | flag | no | con `--geometry-key`: sin frames clave completos; bloques de 256 gaussianas refrescados por turnos, cada uno una vez por intervalo |
 | `--ranges` | `group` o `frame` | `group` | el rango de cada atributo sobre un grupo de imágenes (de un fotograma clave al siguiente), o el de cada frame |
 | `--sh-degree` | 0 a 3 | `3` | como mucho el de la fuente |
 | `--columns` | teselas por fila | el mosaico más cuadrado | |
@@ -600,6 +604,7 @@ kernel; el host lee su histograma).
 | `video` | directorio, obligatorio | — | |
 | `source` | directorio, obligatorio | — | los mismos números de frame y el mismo tamaño |
 | `--first`, `--last` | números de frame | `1`, `61` | |
+| `--rect` | `X0 Y0 X1 Y1` | toda la imagen | solo estos píxeles, fila de arriba 0, los extremos pasado el último (una parte del frame: una cola, un ala) |
 
 ### 2.8 `athenea mesh2splat` — un modelo en gaussianas
 

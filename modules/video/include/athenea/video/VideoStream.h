@@ -86,6 +86,8 @@ private:
         std::shared_ptr<DecodedFrame>              frame;
         LumaTexture                                luma;     ///< made by the frame thread when first placed
         PlaneLayout                                layout;
+        GeometryFrame                              geometryAt;      ///< the source frame, for the layer's keys
+        uint32_t                                   frameFirst = 0;  ///< the picture's first splat in its frame
         uint32_t                                   pagesLeft = 0;
         std::vector<std::pair<const void*, uint64_t>> uses;  ///< (pool, fence) not yet retired
     };
@@ -96,6 +98,11 @@ private:
     std::unique_ptr<LumaTextures>  textures_;
     std::unique_ptr<PlanesCodec>   codec_;
     uint64_t                       key_ = 0;
+    /// The geometry layer's state: four words a frame splat, kept from one
+    /// frame to the next (its differences are applied in the order frames
+    /// are placed; a dropped frame between keys breaks it until the next).
+    gpu::Buffer                    geometryState_;
+    gpu::Device*                   device_ = nullptr;
     mutable std::mutex             mutex_;
     std::map<uint64_t, Held>       held_;
     uint64_t                       nextTicket_ = 1;

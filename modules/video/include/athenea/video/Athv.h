@@ -54,6 +54,16 @@ struct AthvHeader {
     /// Index i is the same gaussian in every frame (video-encode --order
     /// stable): a player may smooth a gaussian over frames.
     bool     stableOrder = false;
+    /// THE GEOMETRY LAYER (Planes.h, PlaneLayout::geometry): position, scale
+    /// and rotation exact beside the video, a key every `geometryInterval`
+    /// frames (0: every frame), or with `geometryStagger` blocks of 256 in
+    /// turn.
+    bool     geometry = false;
+    bool     geometryStagger = false;
+    uint32_t geometryInterval = 0;
+    uint32_t geometryPositionBits = 16;
+    uint32_t geometryScaleBits = 10;
+    uint32_t geometryOrder = 1;   ///< the prediction between keys: 1 the frame before, 2 its motion carried on
     double   rate = 30.0;
     /// The rate as a fraction (30/1, 30000/1001): what a segmenter takes.
     uint32_t rateNumerator = 30;
@@ -69,6 +79,8 @@ struct AthvHeader {
     /// their bits past `bits` (Planes.h, PlaneLayout).
     uint32_t positionBlock = 0;
     uint32_t positionHighBits = 8;
+    /// > 0: adaptive precision, each block's high bits from its box (Planes.h).
+    float    positionTarget = 0.0F;
     /// The header's bytes: 64 at version 1, 128 at version 2.
     [[nodiscard]] uint64_t bytes() const noexcept { return version >= 2 ? 128 : 64; }
 };
@@ -109,6 +121,11 @@ struct AthvFrame {
     uint64_t                          highStored = 0;  ///< bytes the high parts took in the file
     std::vector<std::vector<uint8_t>> parameterSets;   ///< VPS, SPS, PPS on a key frame
     std::vector<uint8_t>              unit;            ///< the access unit, length-prefixed NALs
+    /// The geometry layer's byte planes (inflated), 16 planes of
+    /// `chunkSplats` bytes a chunk; empty without one.
+    std::vector<std::byte>            geometry;
+    uint64_t                          geometryStored = 0;   ///< bytes it took in the file
+    bool                              geometryKey = false;  ///< every gaussian absolute (prefix flags bit 1)
     uint64_t                          recordBytes = 0; ///< the whole record in the file
 };
 

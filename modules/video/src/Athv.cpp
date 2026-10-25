@@ -110,7 +110,7 @@ Result<void> AthvWriter::write(AthvFrame& f) {
     o.u64(f.ptpTime);
     o.u32(0);   // the record's bytes, below
     o.u16(static_cast<uint16_t>(AthvHeader::kVersion));
-    o.u16(f.keyframe ? 1u : 0u);
+    o.u16(static_cast<uint16_t>((f.keyframe ? 1u : 0u) | (f.geometryKey ? 2u : 0u)));
     o.u32(f.index);
     o.u32(f.source);
     o.u32(f.slice);
@@ -133,14 +133,27 @@ Result<void> AthvWriter::write(AthvFrame& f) {
         deflated.resize(size);
     }
     f.highStored = deflated.size();
+    std::vector<uint8_t> geometry;
+    if (!f.geometry.empty()) {
+        uLongf size = compressBound(static_cast<uLong>(f.geometry.size()));
+        geometry.resize(size);
+        if (compress2(geometry.data(), &size, reinterpret_cast<const Bytef*>(f.geometry.data()),
+                      static_cast<uLong>(f.geometry.size()), 6) != Z_OK) {
+            return Error::make(ErrorCode::IoFailure, "athv: frame {}: the geometry would not deflate", f.index);
+        }
+        geometry.resize(size);
+    }
+    f.geometryStored = geometry.size();
     o.u32(static_cast<uint32_t>(f.ranges.size()));
     o.u32(static_cast<uint32_t>(f.high.size()));
     o.u32(static_cast<uint32_t>(deflated.size()));
     o.u32(static_cast<uint32_t>(f.parameterSets.size()));
     o.u32(static_cast<uint32_t>(f.unit.size()));
-    o.u32(0);
+    o.u32(static_cast<uint32_t>(geometry.size()));
     o.put(f.ranges.data(), f.ranges.size() * sizeof(float));
     o.put(deflated.data(), deflated.size());
+    o.align();
+    o.put(geometry.data(), geometry.size());
     o.align();
     for (const auto& ps : f.parameterSets) {
         o.u32(static_cast<uint32_t>(ps.size()));
@@ -171,7 +184,8 @@ Result<void> AthvWriter::writeHeader() {
     o.u32(header_.columns);
     o.u32(header_.maxSplats);
     o.u32((header_.hiInVideo ? 1u : 0u) | (header_.antialiased ? 2u : 0u) | (header_.chroma ? 4u : 0u) |
-          (header_.stableOrder ? 8u : 0u));
+          (header_.stableOrder ? 8u : 0u) |
+          (header_.geometry ? 16u : 0u) | (header_.geometryStagger ? 32u : 0u));
     o.u32(header_.rendition);
     o.f64(header_.rate);
     o.u32(header_.rateNumerator);
@@ -180,6 +194,9 @@ Result<void> AthvWriter::writeHeader() {
     o.f32(header_.quality);
     o.u32(header_.positionBlock);
     o.u32(header_.positionHighBits);
+    o.f32(header_.positionTarget);
+    o.u32(header_.geometryInterval);
+    o.u32(header_.geometryPositionBits | (header_.geometryScaleBits << 8u) | (header_.geometryOrder << 16u));
     o.bytes.resize(kHeaderBytes, 0);
     const auto end = file_.tellp();
     file_.seekp(0);
@@ -243,6 +260,8 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
     hd.antialiased = (flags & 2u) != 0;
     hd.chroma = (flags & 4u) != 0;
     hd.stableOrder = (flags & 8u) != 0;
+    hd.geometry = (flags & 16u) != 0;
+    hd.geometryStagger = (flags & 32u) != 0;
     if (version >= 2) {
         hd.rateNumerator = in.u32();
         hd.rateDenominator = in.u32();
@@ -250,6 +269,14 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
         hd.quality = in.f32();
         hd.positionBlock = in.u32();
         hd.positionHighBits = in.u32();
+        hd.positionTarget = in.f32();
+        hd.geometryInterval = in.u32();
+        const uint32_t geometryBits = in.u32();
+        if (geometryBits != 0) {
+            hd.geometryPositionBits = geometryBits & 0xFFu;
+            hd.geometryScaleBits = (geometryBits >> 8u) & 0xFFu;
+            hd.geometryOrder = (geometryBits >> 16u) & 0xFFu;
+        }
     } else {
         hd.positionHighBits = hd.bits;
     }
@@ -338,7 +365,9 @@ Result<AthvFrame> AthvReader::read(uint32_t k) {
         f.ptpTime = in.u64();
         f.recordBytes = in.u32();
         in.u16();
-        f.keyframe = (in.u16() & 1u) != 0;
+        const uint16_t recordFlags = in.u16();
+        f.keyframe = (recordFlags & 1u) != 0;
+        f.geometryKey = (recordFlags & 2u) != 0;
         f.index = in.u32();
         f.source = in.u32();
         f.slice = in.u32();
@@ -368,7 +397,7 @@ Result<AthvFrame> AthvReader::read(uint32_t k) {
     f.timecode = label;
     const uint32_t rangeCount = in.u32(), highRaw = in.u32(), highStored = in.u32(), sets = in.u32(),
                    unitBytes = in.u32();
-    in.u32();
+    const uint32_t geometryStored = header_.version >= 2 ? in.u32() : (in.u32(), 0u);
     if (in.bad || rangeCount > 4096 || sets > kMostParameterSets) {
         return Error::make(ErrorCode::InvalidArgument, "athv: {}: frame {} has a broken header", name_, k);
     }
@@ -378,6 +407,10 @@ Result<AthvFrame> AthvReader::read(uint32_t k) {
     in.take(deflated.data(), deflated.size());
     in.align();
     f.highStored = highStored;
+    std::vector<uint8_t> geometry(geometryStored);
+    in.take(geometry.data(), geometry.size());
+    in.align();
+    f.geometryStored = geometryStored;
     for (uint32_t s = 0; s < sets && !in.bad; ++s) {
         const uint32_t n = in.u32();
         if (n > in.n - in.at) {
@@ -396,6 +429,17 @@ Result<AthvFrame> AthvReader::read(uint32_t k) {
     }
     if (in.bad) {
         return Error::make(ErrorCode::InvalidArgument, "athv: {}: frame {} is cut short", name_, k);
+    }
+    if (geometryStored != 0) {
+        const uint64_t chunk = header_.chunkSplats;
+        const uint64_t raw = chunk == 0 ? 0 : (f.splats + chunk - 1) / chunk * 16 * chunk;
+        f.geometry.resize(raw);
+        uLongf size = static_cast<uLongf>(raw);
+        if (uncompress(reinterpret_cast<Bytef*>(f.geometry.data()), &size, geometry.data(),
+                       static_cast<uLong>(geometry.size())) != Z_OK ||
+            size != raw) {
+            return Error::make(ErrorCode::InvalidArgument, "athv: {}: frame {}'s geometry does not inflate", name_, k);
+        }
     }
     if (highRaw != 0) {
         f.high.resize(highRaw);

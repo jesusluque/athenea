@@ -50,11 +50,16 @@ def parse_header(b):
     num, den, frames = struct.unpack_from("<3I", b, 48)
     quality, = struct.unpack_from("<f", b, 60)
     block, high_bits = struct.unpack_from("<2I", b, 64)
+    target, = struct.unpack_from("<f", b, 72)
+    geometry_interval, = struct.unpack_from("<I", b, 76)
     return dict(version=version, codec=struct.pack("<I", codec).decode("latin-1"), bits=bits, restPerColour=rest,
                 chunkSplats=chunk, columns=columns, maxSplats=most, hiInVideo=bool(flags & 1),
-                antialiased=bool(flags & 2), chroma=bool(flags & 4), stableOrder=bool(flags & 8), rendition=rendition, rate=rate,
+                antialiased=bool(flags & 2), chroma=bool(flags & 4), stableOrder=bool(flags & 8),
+                rendition=rendition, rate=rate,
                 rateNumerator=num, rateDenominator=den,
-                sourceFrames=frames, quality=round(quality, 4), positionBlock=block, positionHighBits=high_bits)
+                sourceFrames=frames, quality=round(quality, 4), positionBlock=block, positionHighBits=high_bits,
+                positionTarget=round(target, 6), geometry=bool(flags & 16), geometryStagger=bool(flags & 32),
+                geometryInterval=geometry_interval)
 
 
 def layout(h):
@@ -63,6 +68,9 @@ def layout(h):
     first = 6 if h["hiInVideo"] else 3
     # With colour in chroma: 8 opacity / scale / rotation planes and a Y plane a colour quantity.
     planes = first + (8 + 1 + h["restPerColour"] if h["chroma"] else attributes - 3)
+    if h.get("geometry"):
+        # The geometry layer: the opacity and the colours only.
+        planes = 1 + (1 + h["restPerColour"] if h["chroma"] else 3 + 3 * h["restPerColour"])
     chunks = (h["maxSplats"] + h["chunkSplats"] - 1) // h["chunkSplats"]
     tile_height = chunks * (h["chunkSplats"] // 512)
     rows = (planes + h["columns"] - 1) // h["columns"]
@@ -92,12 +100,15 @@ def parse_record(b, at=0):
     (index, source, slice_, slices, first, splats, source_splats) = struct.unpack_from("<7I", b, at + 28)
     t, = struct.unpack_from("<d", b, at + 56)
     label = b[at + 64:at + 80].split(b"\0")[0].decode("ascii", "replace")
-    (n_ranges, hi_raw, hi_stored, n_sets, unit_bytes, _r) = struct.unpack_from("<6I", b, at + 80)
+    (n_ranges, hi_raw, hi_stored, n_sets, unit_bytes, geometry_stored) = struct.unpack_from("<6I", b, at + 80)
     p = at + 104
     ranges = struct.unpack_from("<%df" % n_ranges, b, p)
     p += 4 * n_ranges
     high = bytes(b[p:p + hi_stored])
     p += hi_stored
+    p = (p - at + 3) // 4 * 4 + at
+    geometry = bytes(b[p:p + geometry_stored])
+    p += geometry_stored
     p = (p - at + 3) // 4 * 4 + at
     sets = []
     for _ in range(n_sets):
@@ -107,6 +118,7 @@ def parse_record(b, at=0):
         p = (p - at + 3) // 4 * 4 + at
     unit = bytes(b[p:p + unit_bytes])
     return dict(size=size, rendition=rendition, frame=frame, ptp=ptp, version=version, key=bool(flags & 1),
+                geometryKey=bool(flags & 2), geometry=geometry, geometryStored=geometry_stored,
                 index=index, source=source, slice=slice_, slices=slices, firstSplat=first, splats=splats,
                 sourceSplats=source_splats, time=t, timecode=label, ranges=ranges, highRaw=hi_raw,
                 highStored=hi_stored, high=high, sets=sets, unit=unit)
@@ -247,7 +259,9 @@ def describe(data):
                quality=h["quality"], bits=h["bits"], restPerColour=h["restPerColour"], chunkSplats=h["chunkSplats"],
                columns=h["columns"], maxSplats=h["maxSplats"], hiInVideo=h["hiInVideo"],
                antialiased=h["antialiased"], positionBlock=h["positionBlock"],
-               positionHighBits=h["positionHighBits"], chromaPlanes=h["chroma"], stableOrder=h["stableOrder"], picturesPerFrame=first["slices"],
+               positionHighBits=h["positionHighBits"], chromaPlanes=h["chroma"], stableOrder=h["stableOrder"],
+               geometryLossless=h["geometry"], geometryKeyInterval=h["geometryInterval"],
+               geometryStagger=h["geometryStagger"], picturesPerFrame=first["slices"],
                pictureWidth=lay["width"], pictureHeight=lay["height"], meanBytesPerFrame=round(total / frames),
                meanMbps=round(total / frames * 8 * h["rate"] / 1e6, 2), fullRange=True)
     if len(first["sets"]) == 3:

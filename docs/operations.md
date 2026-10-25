@@ -515,6 +515,10 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--order` | `frame`, `first` or `stable` | `frame` | each frame sorted by Morton code, or the first frame's order kept while the count is the same; `stable` is `first` for frames that list the same gaussians in the same order (`flatten --keep-order`), every frame the same count, and says so in the file (`stableOrder`): index i is one gaussian throughout |
 | `--range-group` | frames | the key interval | frames whose attribute ranges are one union: the whole sequence's keeps a still value's quantised step put |
 | `--hold-boxes` | flag | off | with `--order stable`, `--position-block` and group ranges: each block's box the union over its range group, so its position steps do not jump |
+| `--position-target` | metres | `0`: off | with `--position-block`: adaptive precision -- each block's own high bits (a byte after the chunk's boxes): none where its box is no wider than this, else enough that a step is no wider than this over 255 |
+| `--geometry` | flag | off | position, scale and rotation exact beside the video (16-bit positions, 10-bit log scales over the sequence's ranges, the store's rotation word), the planes only opacity and colour |
+| `--geometry-key` | frames | `0`: every frame absolute | with `--geometry`: frames from one geometry key to the next; the frames between send each gaussian's difference from the frame before (needs `--order stable` and `--range-group` of the whole sequence) |
+| `--geometry-stagger` | flag | off | with `--geometry-key`: no whole key frames; blocks of 256 gaussians refreshed in turn, each once an interval |
 | `--ranges` | `group` or `frame` | `group` | each attribute's range over a group of pictures (from one key frame to the next), or each frame's own |
 | `--sh-degree` | 0 to 3 | `3` | at most the source's |
 | `--columns` | tiles a row | the squarest mosaic | |
@@ -586,6 +590,7 @@ p99.9 over every pixel of every pair (a kernel; the host reads its histogram).
 | `video` | directory, required | — | |
 | `source` | directory, required | — | the same frame numbers and size |
 | `--first`, `--last` | frame numbers | `1`, `61` | |
+| `--rect` | `X0 Y0 X1 Y1` | the whole image | only these pixels, top row 0, the ends past the last (a part of the frame: a tail, a wing) |
 
 ### 2.8 `athenea mesh2splat` — a model into gaussians
 

@@ -28,6 +28,9 @@ RWStructuredBuffer<float4>        outPositions;
 RWStructuredBuffer<uint>          outShape;
 RWStructuredBuffer<uint>          outSh;
 ConstantBuffer<VideoPlanesParams> params;
+// The geometry layer's state (`geometry` 1, video_geometry.slang's
+// videoGeometryApply): four words a frame splat. Bound to `page` when unused.
+StructuredBuffer<uint>            geometryState;
 
 uint sampleAt(uint plane, uint i) {
     const uint2 xy = pixelOf(params, plane, i);
@@ -52,7 +55,7 @@ uint highAt(uint chunk, uint axis, uint i) {
         return 0u;
     }
     const uint e = axis * params.chunkSplats + i % params.chunkSplats;
-    const uint base = chunkWord(chunk) + blockBytes(params) / 4u;
+    const uint base = chunkWord(chunk) + highsAt(params) / 4u;
     if (params.bits > 8) {
         const uint word = page[base + e / 2u];
         return (word >> ((e & 1u) * 16u)) & 0xFFFFu;
@@ -68,6 +71,17 @@ float2 positionRangeAt(uint chunk, uint axis, uint i) {
     }
     const uint word = page[chunkWord(chunk) + blockWordOf(params, i, axis)];
     return float2(lowHalf(word), highHalf(word));
+}
+
+/// The high bits picture splat `i`'s block carries (adaptive precision), or
+/// everyone's.
+uint highBitsAt(uint chunk, uint i) {
+    if (!adaptive(params)) {
+        return params.positionHighBits;
+    }
+    const uint b = (i % params.chunkSplats) / params.positionBlock;
+    const uint word = page[chunkWord(chunk) + (blockBytes(params) >> 2) + b / 4u];
+    return (word >> ((b & 3u) * 8u)) & 0xFFu;
 }
 
 uint highOf(uint axis, uint i) {
@@ -95,35 +109,7 @@ float3 colourAt(uint q, uint i) {
     return rgbOfYcocg(ycocg);
 }
 
-[shader("compute")]
-[numthreads(256, 1, 1)]
-void videoPlanesDecode(uint3 tid: SV_DispatchThreadID) {
-    if (tid.x >= params.pageCount) {
-        return;
-    }
-    const uint i = params.first + tid.x;
-    const uint j = params.at + tid.x;
-    float3 p;
-    for (uint axis = 0; axis < 3; ++axis) {
-        const uint lo = sampleAt(lowPlane(params, axis), i);
-        const uint hi = params.hiInVideo != 0 ? sampleAt(axis, i) : highOf(axis, i);
-        const float2 r = positionRangeAt(i / params.chunkSplats - params.first / params.chunkSplats, axis, i);
-        p[axis] = dequantise(joinPosition(params, hi, lo), r.x, r.y, positionLevels(params));
-    }
-    const float opacity = clamp(attributeAt(3, i), 0.0, 5.0);
-    outPositions[j] = float4(p, opacity);
-
-    const float3 ls = float3(attributeAt(4, i), attributeAt(5, i), attributeAt(6, i));
-    float4 q = float4(attributeAt(7, i), attributeAt(8, i), attributeAt(9, i), attributeAt(10, i));
-    const float qLength = length(q);
-    q = qLength > 1e-8 ? q / qLength : float4(0, 0, 0, 1);
-    const float3 base = colourAt(0, i);
-    const uint row = j * 4;
-    outShape[row + 0] = encodeQuaternion(q);
-    outShape[row + 1] = packHalves(halfSafe(ls.x), halfSafe(ls.y));
-    outShape[row + 2] = packHalves(halfSafe(ls.z), halfSafe(base.x));
-    outShape[row + 3] = packHalves(halfSafe(base.y), halfSafe(base.z));
-
+void writeRest(uint i, uint j) {
     if (params.keep == 0) {
         return;
     }
@@ -149,6 +135,61 @@ void videoPlanesDecode(uint3 tid: SV_DispatchThreadID) {
     if (filled == 1) {
         outSh[shRow + w] = word;
     }
+
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void videoPlanesDecode(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= params.pageCount) {
+        return;
+    }
+    const uint i = params.first + tid.x;
+    const uint j = params.at + tid.x;
+    if (params.geometry != 0) {
+        // Position, scale and rotation from the exact layer: their bits over
+        // the sequence's ranges, the rotation the store's own word.
+        const uint g = (params.geometryAt + i) * 4u;
+        const uint4 w = uint4(geometryState[g], geometryState[g + 1], geometryState[g + 2], geometryState[g + 3]);
+        float3 gp, gl;
+        for (uint axis = 0; axis < 3; ++axis) {
+            gp[axis] = dequantise(geometryField(w, axis), rangeOf(axis, 0), rangeOf(axis, 1),
+                                  (1u << params.geometryPositionBits) - 1u);
+            gl[axis] = dequantise(geometryField(w, 3u + axis), rangeOf(4u + axis, 0), rangeOf(4u + axis, 1),
+                                  (1u << params.geometryScaleBits) - 1u);
+        }
+        outPositions[j] = float4(gp, clamp(attributeAt(3, i), 0.0, 5.0));
+        const float3 gbase = colourAt(0, i);
+        outShape[j * 4 + 0] = w.w;
+        outShape[j * 4 + 1] = packHalves(halfSafe(gl.x), halfSafe(gl.y));
+        outShape[j * 4 + 2] = packHalves(halfSafe(gl.z), halfSafe(gbase.x));
+        outShape[j * 4 + 3] = packHalves(halfSafe(gbase.y), halfSafe(gbase.z));
+        writeRest(i, j);
+        return;
+    }
+    float3 p;
+    for (uint axis = 0; axis < 3; ++axis) {
+        const uint lo = sampleAt(lowPlane(params, axis), i);
+        const uint hi = params.hiInVideo != 0 ? sampleAt(axis, i) : highOf(axis, i);
+        const uint chunk = i / params.chunkSplats - params.first / params.chunkSplats;
+        const float2 r = positionRangeAt(chunk, axis, i);
+        p[axis] = dequantise(joinPosition(params, hi, lo), r.x, r.y, levelsWith(params, highBitsAt(chunk, i)));
+    }
+    const float opacity = clamp(attributeAt(3, i), 0.0, 5.0);
+    outPositions[j] = float4(p, opacity);
+
+    const float3 ls = float3(attributeAt(4, i), attributeAt(5, i), attributeAt(6, i));
+    float4 q = float4(attributeAt(7, i), attributeAt(8, i), attributeAt(9, i), attributeAt(10, i));
+    const float qLength = length(q);
+    q = qLength > 1e-8 ? q / qLength : float4(0, 0, 0, 1);
+    const float3 base = colourAt(0, i);
+    const uint row = j * 4;
+    outShape[row + 0] = encodeQuaternion(q);
+    outShape[row + 1] = packHalves(halfSafe(ls.x), halfSafe(ls.y));
+    outShape[row + 2] = packHalves(halfSafe(ls.z), halfSafe(base.x));
+    outShape[row + 3] = packHalves(halfSafe(base.y), halfSafe(base.z));
+
+    writeRest(i, j);
 }
 
 // --- the round trip, measured -----------------------------------------------
@@ -187,13 +228,15 @@ void videoPlanesCompare(uint3 tid: SV_DispatchThreadID) {
         const uint sixteenths = uint(min(steps * 16.0, 4.0e9));
         largest = max(largest, sixteenths);
         sum += min(sixteenths, 1u << 20);
-        if (a < 3) {
+        if (a < 3 && params.geometry == 0) {
             // Both quantised over the range the position was sent over (the
             // block's box, read from the side payload as the decode read
             // it): the decoded high part against the source's.
             const float2 r = params.hiInVideo == 0 ? positionRangeAt(i / params.chunkSplats, a, i) : float2(lo, hi);
-            const uint qd = quantise(d, r.x, r.y, positionLevels(params));
-            const uint qs = quantise(s, r.x, r.y, positionLevels(params));
+            const uint levels = params.hiInVideo == 0 ? levelsWith(params, highBitsAt(i / params.chunkSplats, i))
+                                                      : positionLevels(params);
+            const uint qd = quantise(d, r.x, r.y, levels);
+            const uint qs = quantise(s, r.x, r.y, levels);
             far += (qd >> params.bits) != (qs >> params.bits) ? 1u : 0u;
         }
     }

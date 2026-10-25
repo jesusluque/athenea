@@ -130,9 +130,42 @@ float2 positionRange(uint i, uint axis) {
     return float2(lowHalf(word), highHalf(word));
 }
 
+/// The high bits picture splat `i`'s block carries.
+uint blockHighBits(uint i) {
+    if (!adaptive(params)) {
+        return params.positionHighBits;
+    }
+    const uint b = (i % params.chunkSplats) / params.positionBlock;
+    const uint at = (i / params.chunkSplats) * (params.highChunkBytes / 4u) + (blockBytes(params) >> 2) + b / 4u;
+    const uint word = high[at];
+    return (word >> ((b & 3u) * 8u)) & 0xFFu;
+}
+
 uint positionOf(uint s, uint i, uint axis) {
     const float2 r = positionRange(i, axis);
-    return quantise(positions[s][axis], r.x, r.y, positionLevels(params));
+    return quantise(positions[s][axis], r.x, r.y, levelsWith(params, blockHighBits(i)));
+}
+
+/// ADAPTIVE PRECISION: each block's high bits from its box (videoPlanesBlocks
+/// wrote it, or the held one was copied in), a byte after the chunk's boxes;
+/// the bytes start zeroed. A thread a block.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void videoPlanesBlockBits(uint3 tid: SV_DispatchThreadID) {
+    const uint perChunk = params.chunkSplats / params.positionBlock;
+    const uint chunks = (params.count + params.chunkSplats - 1) / params.chunkSplats;
+    const uint chunk = tid.x / perChunk, b = tid.x % perChunk;
+    if (chunk >= chunks) {
+        return;
+    }
+    const uint base = chunk * (params.highChunkBytes / 4u);
+    float widest = 0.0;
+    for (uint axis = 0; axis < 3; ++axis) {
+        const uint word = high[base + b * 3u + axis];
+        widest = max(widest, highHalf(word) - lowHalf(word));
+    }
+    uint ignored;
+    InterlockedOr(high[base + (blockBytes(params) >> 2) + b / 4u], bitsFor(params, widest) << ((b & 3u) * 8u), ignored);
 }
 
 [shader("compute")]
@@ -166,7 +199,7 @@ void videoPlanesBlocks(uint3 tid: SV_DispatchThreadID) {
 uint sampleOf(uint plane, uint i) {
     i = min(i, params.count - 1);   // past the last splat: the last again, which costs the codec nothing
     const uint s = order[params.first + i];
-    if (plane < 3 || (params.hiInVideo != 0 && plane < 6)) {
+    if (params.geometry == 0 && (plane < 3 || (params.hiInVideo != 0 && plane < 6))) {
         const uint axis = plane % 3;
         const uint q = positionOf(s, i, axis);
         const uint2 parts = splitPosition(params, q);
@@ -225,7 +258,7 @@ void videoPlanesHigh(uint3 tid: SV_DispatchThreadID) {
         word |= v << (k * (32u / perWord));
     }
     const uint bytes = (e0 % perChunk) * (params.bits > 8 ? 2u : 1u);
-    high[chunk * (params.highChunkBytes / 4u) + (blockBytes(params) + bytes) / 4u] = word;
+    high[chunk * (params.highChunkBytes / 4u) + (highsAt(params) + bytes) / 4u] = word;
 }
 
 /// What a splat weighs in its block's chroma: 1, or its opacity times the

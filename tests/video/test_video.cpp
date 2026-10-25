@@ -225,6 +225,90 @@ TEST_CASE("colour in chroma: Y a plane, Co and Cg one a 2 x 2 block of four Mort
     }
 }
 
+TEST_CASE("the geometry layer carries position, scale and rotation exactly, as keys and as differences",
+          "[video][gpu][planes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = *gpu->device;
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto codec = video::PlanesCodec::create(*gpu->library);
+    REQUIRE(codec);
+    test::CloudBuilder built = test::randomCloud(70000, 17, 0.004F, 0.3F);
+    auto cloud = loader->upload(built.raw, 3);
+    REQUIRE(cloud);
+    auto layout = video::PlaneLayout::make(cloud->count, 8, cloud->restPerColour, false,
+                                           video::PlaneLayout::kBandSplats, 0, 0, 0, 0, true, true);
+    REQUIRE(layout);
+    REQUIRE(layout->planes() == 1 + 1 + cloud->restPerColour);   // opacity, base colour Y, a Y a basis
+    layout->positionHighBits = 0;
+    gpu::Buffer ranges, order;
+    REQUIRE(codec->ranges(*cloud, *layout, cloud->count, ranges));
+    REQUIRE(codec->order(*cloud, cloud->count, ranges, order));
+    auto planes = codec->encode(*cloud, *layout, order, 0, ranges);
+    REQUIRE(planes);
+    gpu::TextureDesc desc;
+    desc.width = layout->width;
+    desc.height = layout->height;
+    desc.format = rhi::Format::R8Unorm;
+    desc.label = "test.luma";
+    auto luma = gpu::Texture::create(device, desc);
+    REQUIRE(luma);
+    REQUIRE(luma->upload(device, 0, 0, planes->luma));
+    desc.width /= 2;
+    desc.height /= 2;
+    desc.format = rhi::Format::RG8Unorm;
+    auto chroma = gpu::Texture::create(device, desc);
+    REQUIRE(chroma);
+    REQUIRE(chroma->upload(device, 0, 0, planes->chroma));
+    gpu::BufferDesc words;
+    words.bytes = uint64_t{cloud->count} * 16;
+    words.elementBytes = 4;
+    std::vector<std::byte> zeros(words.bytes);
+    auto now = gpu::Buffer::create(device, words, zeros.data());
+    auto before = gpu::Buffer::create(device, words, zeros.data());
+    gpu::BufferDesc twoFrames = words;
+    twoFrames.bytes *= 2;
+    std::vector<std::byte> moreZeros(twoFrames.bytes);
+    auto state = gpu::Buffer::create(device, twoFrames, moreZeros.data());
+    REQUIRE(now);
+    REQUIRE(before);
+    REQUIRE(state);
+    // Frame 0 a key, frame 1 the same cloud as differences (all zero), frame
+    // 2 a staggered refresh: each comes back the same.
+    for (const auto& [frame, interval, stagger] : {std::tuple{0u, 4u, false}, std::tuple{1u, 4u, false},
+                                                   std::tuple{2u, 4u, true}}) {
+        CAPTURE(frame, interval, stagger);
+        const video::GeometryFrame at{frame, interval, stagger};
+        auto geometry = codec->geometryEncode(*cloud, *layout, order, 0, ranges, at, *now, *before);
+        REQUIRE(geometry);
+        REQUIRE(geometry->size() == layout->chunks() * layout->geometryChunkBytes());
+        video::EncodedPlanes side = *planes;
+        side.high = *geometry;   // the side page helper lays ranges then these bytes
+        gpu::Buffer page = sidePage(device, side);
+        auto back = video::PlanesCodec::allocate(device, cloud->count, layout->restPerColour, "test.back");
+        REQUIRE(back);
+        {
+            gpu::CommandBatch batch(device);
+            REQUIRE(codec->geometryApply(batch, *layout, page.rhi(), layout->rangeBytes(), at, 0, 0, cloud->count,
+                                         *state));
+            REQUIRE(codec->decode(batch, *layout, luma->rhi(), chroma->rhi(), page.rhi(), 0, layout->rangeBytes(), 0,
+                                  cloud->count, *back, 0, layout->restPerColour, &*state, 0));
+            REQUIRE(batch.submit(true));
+        }
+        auto errors = codec->compare(*layout, *back, *cloud, order, 0, ranges, page, layout->rangeBytes());
+        REQUIRE(errors);
+        for (size_t a = 0; a < 11; ++a) {
+            CAPTURE(a, (*errors)[a].maxSteps);
+            if (a < 3) {
+                CHECK((*errors)[a].maxSteps <= 0.75);   // 16 bits over the range: half a step of 2 x 8 bits
+            } else if (a >= 7) {
+                CHECK((*errors)[a].maxSteps == 0.0);    // the rotation word itself
+            }
+        }
+        std::swap(*now, *before);
+    }
+}
+
 TEST_CASE("the hardware video codec keeps the position high parts exact", "[video][gpu][codec]") {
     ATHENEA_REQUIRE_GPU(gpu);
     gpu::Device& device = *gpu->device;

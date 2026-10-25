@@ -54,13 +54,17 @@ void setLayout(rhi::ShaderCursor p, const PlaneLayout& l) {
     p["highChunkBytes"].setData(static_cast<uint32_t>(l.highChunkBytes()));
     p["chroma"].setData(uint32_t{l.chroma ? 1u : 0u});
     p["chromaWeight"].setData(l.chromaWeight);
+    p["positionTarget"].setData(l.positionTarget);
+    p["geometry"].setData(uint32_t{l.geometry ? 1u : 0u});
+    p["geometryPositionBits"].setData(l.geometryPositionBits);
+    p["geometryScaleBits"].setData(l.geometryScaleBits);
 }
 
 }   // namespace
 
 Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                       uint32_t nChunk, uint32_t nColumns, uint32_t tileSplats, uint32_t mostWidth,
-                                      uint32_t mostHeight, bool nChroma) {
+                                      uint32_t mostHeight, bool nChroma, bool nGeometry) {
     const uint64_t mostW = mostWidth != 0 ? std::min(mostWidth, kMostSide) : kMostSide;
     const uint64_t mostH = mostHeight != 0 ? std::min(mostHeight, kMostSide) : kMostSide;
     if (nBits != 8 && nBits != 10) {
@@ -84,6 +88,7 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
     l.chunkSplats = nChunk;
     l.positionHighBits = nBits;
     l.chroma = nChroma;
+    l.geometry = nGeometry;
     const uint32_t tileChunks = std::max(l.chunks(), (tileSplats + nChunk - 1) / nChunk);
     l.tileHeight = tileChunks * (nChunk / kTileWidth);
     const uint32_t planes = l.planes();
@@ -120,15 +125,16 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
 
 Result<uint32_t> PlaneLayout::sliceSplats(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                           uint32_t nChunk, uint32_t nColumns, uint32_t mostWidth,
-                                          uint32_t mostHeight, bool nChroma) {
-    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma)) {
+                                          uint32_t mostHeight, bool nChroma, bool nGeometry) {
+    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma, nGeometry)) {
         return nSplats;
     }
     // Chunk counts, from the most that could fit down: bookkeeping on sizes.
     for (uint32_t chunks = (nSplats + nChunk - 1) / nChunk; chunks > 0; --chunks) {
         const uint64_t n = uint64_t{chunks} * nChunk;
         if (n < nSplats &&
-            make(static_cast<uint32_t>(n), nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma)) {
+            make(static_cast<uint32_t>(n), nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma,
+                 nGeometry)) {
             return static_cast<uint32_t>(n);
         }
     }
@@ -179,6 +185,11 @@ Result<PlanesCodec> PlanesCodec::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.blocks_, enc, "videoPlanesBlocks"));
     ATHENEA_TRY(make(c.chroma_, enc, "videoPlanesChroma"));
     ATHENEA_TRY(make(c.boxUnion_, enc, "videoPlanesBoxUnion"));
+    ATHENEA_TRY(make(c.blockBits_, enc, "videoPlanesBlockBits"));
+    const char* geo = "athenea/scene/video_geometry";
+    ATHENEA_TRY(make(c.geometryQuantise_, geo, "videoGeometryQuantise"));
+    ATHENEA_TRY(make(c.geometryPack_, geo, "videoGeometryPack"));
+    ATHENEA_TRY(make(c.geometryApply_, geo, "videoGeometryApply"));
     ATHENEA_TRY(make(c.decode_, dec, "videoPlanesDecode"));
     ATHENEA_TRY(make(c.compare_, dec, "videoPlanesCompare"));
     return c;
@@ -295,6 +306,9 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
         };
         // The blocks' boxes first: the mosaic and the high parts are taken
         // over them.
+        // The side payload from zeros: the adaptive bits are or-ed in.
+        batch.encoder()->clearBuffer(highBuffer_.rhi(), 0, std::max<uint64_t>(sideWords, 1) * 4);
+        batch.markDirty();
         if (blocks != 0 && heldBoxes != nullptr) {
             // The held boxes of this slice's chunks, the frame's from chunk
             // first / chunkSplats on.
@@ -307,6 +321,9 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
             batch.markDirty();
         } else if (blocks != 0) {
             blocks_.dispatch(batch, {blocks, 1, 1}, bind);
+        }
+        if (blocks != 0 && layout.positionTarget > 0.0F) {
+            blockBits_.dispatch(batch, {blocks, 1, 1}, bind);
         }
         encode_.dispatch(batch, {static_cast<uint32_t>(lumaWords), 1, 1}, [&](rhi::ShaderCursor cursor) {
             bind(cursor);
@@ -337,6 +354,86 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
         ATHENEA_TRY(highBuffer_.read(device, 0, out.high.size(), out.high.data()));
     }
     return out;
+}
+
+Result<std::vector<std::byte>> PlanesCodec::geometryEncode(const scene::GpuSplats& cloud, const PlaneLayout& layout,
+                                                           const gpu::Buffer& order, uint32_t first,
+                                                           const gpu::Buffer& ranges, const GeometryFrame& at,
+                                                           gpu::Buffer& now, const gpu::Buffer& before,
+                                                           bool quantiseOnly, const gpu::Buffer* before2) {
+    gpu::Device& device = *device_;
+    const uint32_t n = layout.splats;
+    const uint64_t planeWords = uint64_t{layout.chunks()} * layout.geometryChunkBytes() / 4;
+    ATHENEA_TRY(ensure(device, geometryPlanes_, std::max<uint64_t>(planeWords, 1) * 4, 4, "video.geometry"));
+    gpu::CommandBatch batch(device);
+    const auto bind = [&](rhi::ShaderCursor c) {
+        c["positions"].setBinding(cloud.positions.rhi());
+        c["shape"].setBinding(cloud.shape.rhi());
+        c["order"].setBinding(order.rhi());
+        c["ranges"].setBinding(ranges.rhi());
+        c["now"].setBinding(now.rhi());
+        c["before"].setBinding(before.rhi());
+        c["before2"].setBinding(before2 != nullptr ? before2->rhi() : before.rhi());
+        c["planes"].setBinding(geometryPlanes_.rhi());
+        c["page"].setBinding(now.rhi());
+        c["state"].setBinding(now.rhi());
+        rhi::ShaderCursor p = c["params"];
+        p["count"].setData(n);
+        p["first"].setData(first);
+        p["chunkSplats"].setData(layout.chunkSplats);
+        p["frame"].setData(at.frame);
+        p["interval"].setData(at.interval);
+        p["stagger"].setData(uint32_t{at.stagger ? 1u : 0u});
+        p["positionBits"].setData(layout.geometryPositionBits);
+        p["scaleBits"].setData(layout.geometryScaleBits);
+        p["order"].setData(before2 != nullptr ? at.order : std::min(at.order, 1u));
+    };
+    geometryQuantise_.dispatch(batch, {n, 1, 1}, bind);
+    if (!quantiseOnly) {
+        geometryPack_.dispatch(batch, {static_cast<uint32_t>(planeWords), 1, 1}, bind);
+    }
+    ATHENEA_TRY(batch.submit(true));
+    std::vector<std::byte> out;
+    if (!quantiseOnly) {
+        out.resize(planeWords * 4);
+        ATHENEA_TRY(geometryPlanes_.read(device, 0, out.size(), out.data()));
+    }
+    return out;
+}
+
+Result<void> PlanesCodec::geometryApply(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::IBuffer* page,
+                                        uint64_t planesOffset, const GeometryFrame& at, uint32_t frameFirst,
+                                        uint32_t pageFirst, uint32_t count, gpu::Buffer& state) {
+    if (page == nullptr || planesOffset % 4 != 0 || planesOffset > UINT32_MAX || pageFirst % layout.chunkSplats != 0) {
+        return Error(ErrorCode::InvalidArgument, "video planes: a geometry layer's planes off a page's chunks");
+    }
+    geometryApply_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["page"].setBinding(page);
+        c["state"].setBinding(state.rhi());
+        c["positions"].setBinding(state.rhi());
+        c["shape"].setBinding(state.rhi());
+        c["order"].setBinding(state.rhi());
+        c["ranges"].setBinding(state.rhi());
+        c["now"].setBinding(state.rhi());
+        c["before"].setBinding(state.rhi());
+        c["before2"].setBinding(state.rhi());
+        c["planes"].setBinding(state.rhi());
+        rhi::ShaderCursor p = c["params"];
+        p["count"].setData(count);
+        p["chunkSplats"].setData(layout.chunkSplats);
+        p["frame"].setData(at.frame);
+        p["interval"].setData(at.interval);
+        p["stagger"].setData(uint32_t{at.stagger ? 1u : 0u});
+        p["planesOffset"].setData(static_cast<uint32_t>(planesOffset));
+        p["frameFirst"].setData(frameFirst);
+        p["pageFirst"].setData(pageFirst);
+        p["positionBits"].setData(layout.geometryPositionBits);
+        p["scaleBits"].setData(layout.geometryScaleBits);
+        p["order"].setData(at.order);
+        p["state2At"].setData(static_cast<uint32_t>(state.bytes() / 8));   // words: the second half
+    });
+    batch.markDirty();
+    return ok();
 }
 
 Result<void> PlanesCodec::holdBoxes(const scene::GpuSplats& cloud, const PlaneLayout& frame,
@@ -372,7 +469,11 @@ Result<void> PlanesCodec::holdBoxes(const scene::GpuSplats& cloud, const PlaneLa
 Result<void> PlanesCodec::decode(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::ITexture* luma,
                                  rhi::ITexture* chromaPlane,
                                  rhi::IBuffer* page, uint64_t rangesOffset, uint64_t highOffset, uint32_t first,
-                                 uint32_t count, scene::GpuSplats& store, uint64_t at, uint32_t keep) {
+                                 uint32_t count, scene::GpuSplats& store, uint64_t at, uint32_t keep,
+                                 const gpu::Buffer* geometryState, uint32_t frameFirst) {
+    if (layout.geometry && (geometryState == nullptr || !geometryState->valid())) {
+        return Error(ErrorCode::InvalidArgument, "video planes: a geometry layer decoded without its state");
+    }
     if (luma == nullptr || page == nullptr || count == 0 || (layout.chroma && chromaPlane == nullptr)) {
         return Error(ErrorCode::InvalidArgument, "video planes: a decode with no frame, no side data or no splats");
     }
@@ -398,6 +499,8 @@ Result<void> PlanesCodec::decode(gpu::CommandBatch& batch, const PlaneLayout& la
         p["shWords"].setData(store.shWords);
         p["rangesOffset"].setData(static_cast<uint32_t>(rangesOffset));
         p["hiOffset"].setData(static_cast<uint32_t>(highOffset));
+        p["geometryAt"].setData(frameFirst);
+        cursor["geometryState"].setBinding(layout.geometry ? geometryState->rhi() : page);
     });
     batch.markDirty();
     return ok();
